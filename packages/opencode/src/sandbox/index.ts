@@ -1,14 +1,8 @@
-import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime"
-import { Config } from "@/config/config"
-import { Instance } from "@/project/instance"
 import { Log } from "@/util/log"
-import { Permission } from "@/permission"
 
 const log = Log.create({ service: "sandbox" })
 
 export namespace Sandbox {
-  let initialized = false
-  let supported = true
   let currentSessionID: string | undefined
   let currentMessageID: string | undefined
   let currentCallID: string | undefined
@@ -26,134 +20,27 @@ export namespace Sandbox {
   }
 
   export async function initialize(): Promise<boolean> {
-    const config = await Config.get()
-    if (!config.sandbox?.enabled) {
-      log.info("sandbox disabled by config")
-      return false
-    }
-
-    const platform = process.platform === "darwin" ? "macos" : process.platform === "linux" ? "linux" : "unsupported"
-
-    if (!SandboxManager.isSupportedPlatform(platform as any)) {
-      log.warn("sandbox not supported on this platform", { platform })
-      supported = false
-      return false
-    }
-
-    if (!SandboxManager.checkDependencies()) {
-      log.warn("sandbox dependencies not available")
-      supported = false
-      return false
-    }
-
-    const networkConfig = config.sandbox.network ?? { allowedDomains: [], deniedDomains: [] }
-    const filesystemConfig = config.sandbox.filesystem ?? {
-      denyRead: ["~/.ssh", "~/.gnupg"],
-      allowWrite: ["."],
-      denyWrite: [],
-    }
-
-    const runtimeConfig: SandboxRuntimeConfig = {
-      network: {
-        allowedDomains: networkConfig.allowedDomains,
-        deniedDomains: networkConfig.deniedDomains,
-        allowUnixSockets: networkConfig.allowUnixSockets,
-        allowLocalBinding: networkConfig.allowLocalBinding,
-      },
-      filesystem: {
-        denyRead: filesystemConfig.denyRead,
-        allowWrite: filesystemConfig.allowWrite,
-        denyWrite: filesystemConfig.denyWrite,
-      },
-      enableWeakerNestedSandbox: config.sandbox.enableWeakerNestedSandbox,
-    }
-
-    try {
-      await SandboxManager.initialize(
-        runtimeConfig,
-        async ({ host, port }) => {
-          // Ask permission for network access to unknown hosts
-          if (!currentSessionID || !currentMessageID) {
-            log.warn("no session context for network permission")
-            return false
-          }
-
-          try {
-            await Permission.ask({
-              type: "network",
-              pattern: host,
-              sessionID: currentSessionID,
-              messageID: currentMessageID,
-              callID: currentCallID,
-              title: `Network access to ${host}${port ? `:${port}` : ""}`,
-              metadata: { host, port },
-            })
-            return true
-          } catch {
-            return false
-          }
-        },
-        false, // don't enable log monitor
-      )
-
-      initialized = true
-      log.info("sandbox initialized", { platform })
-      return true
-    } catch (err) {
-      log.error("failed to initialize sandbox", { error: err })
-      supported = false
-      return false
-    }
+    // Sandbox disabled - Anthropic sandbox-runtime removed
+    log.info("sandbox disabled (anthropic sandbox-runtime removed)")
+    return false
   }
 
   export function isEnabled(): boolean {
-    return initialized && SandboxManager.isSandboxingEnabled()
+    return false
   }
 
   export function isSupported(): boolean {
-    return supported
+    return false
   }
 
   export async function wrapCommand(command: string): Promise<string> {
-    if (!isEnabled()) return command
-
-    try {
-      const wrapped = await SandboxManager.wrapWithSandbox(command)
-      log.info("wrapped command with sandbox", {
-        originalLength: command.length,
-        wrappedLength: wrapped.length,
-      })
-      return wrapped
-    } catch (err) {
-      log.error("failed to wrap command with sandbox", { error: err })
-      return command
-    }
+    // No sandboxing - return command as-is
+    return command
   }
 
-  export function annotateStderr(command: string, stderr: string): string {
-    if (!isEnabled()) return stderr
-    return SandboxManager.annotateStderrWithSandboxFailures(command, stderr)
-  }
-
-  export async function reset(): Promise<void> {
-    if (initialized) {
-      try {
-        await SandboxManager.reset()
-        initialized = false
-        log.info("sandbox reset")
-      } catch (err) {
-        log.error("failed to reset sandbox", { error: err })
-      }
-    }
-  }
-
-  export function getConfig() {
-    return SandboxManager.getConfig()
-  }
-
-  export function getGlobPatternWarnings(): string[] {
-    if (!isEnabled()) return []
-    return SandboxManager.getLinuxGlobPatternWarnings()
+  export function annotateStderr(_command: string, stderr: string): string {
+    // No sandbox annotations
+    return stderr
   }
 
   // Hidden/obfuscation character detection

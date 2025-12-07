@@ -340,45 +340,6 @@ export namespace Config {
   export const Permission = z.union([z.literal("ask"), z.literal("allow"), z.literal("deny"), z.literal("pin")])
   export type Permission = z.infer<typeof Permission>
 
-  // Sandbox configuration schemas
-  export const SandboxNetworkConfig = z
-    .object({
-      allowedDomains: z
-        .array(z.string())
-        .default([])
-        .describe("Domains allowed for network access (e.g., ['github.com', '*.npmjs.org'])"),
-      deniedDomains: z.array(z.string()).default([]).describe("Domains explicitly denied"),
-      allowUnixSockets: z.array(z.string()).optional().describe("Unix socket paths allowed (macOS only)"),
-      allowLocalBinding: z.boolean().optional().describe("Allow binding to local ports"),
-    })
-    .meta({ ref: "SandboxNetworkConfig" })
-  export type SandboxNetworkConfig = z.infer<typeof SandboxNetworkConfig>
-
-  export const SandboxFilesystemConfig = z
-    .object({
-      denyRead: z.array(z.string()).default(["~/.ssh", "~/.gnupg"]).describe("Paths denied for reading"),
-      allowWrite: z
-        .array(z.string())
-        .default(["."])
-        .describe("Paths allowed for writing (default: current directory only)"),
-      denyWrite: z
-        .array(z.string())
-        .default([])
-        .describe("Paths denied for writing (takes precedence over allowWrite)"),
-    })
-    .meta({ ref: "SandboxFilesystemConfig" })
-  export type SandboxFilesystemConfig = z.infer<typeof SandboxFilesystemConfig>
-
-  export const SandboxConfig = z
-    .object({
-      enabled: z.boolean().default(false).describe("Enable OS-level sandboxing for bash commands"),
-      network: SandboxNetworkConfig.optional().describe("Network restrictions configuration"),
-      filesystem: SandboxFilesystemConfig.optional().describe("Filesystem restrictions configuration"),
-      enableWeakerNestedSandbox: z.boolean().optional().describe("Enable weaker sandbox mode for Docker environments"),
-    })
-    .meta({ ref: "SandboxConfig" })
-  export type SandboxConfig = z.infer<typeof SandboxConfig>
-
   export const Command = z.object({
     template: z.string(),
     description: z.string().optional(),
@@ -631,7 +592,6 @@ export namespace Config {
         ),
       instructions: z.array(z.string()).optional().describe("Additional instruction files or patterns to include"),
       layout: Layout.optional().describe("@deprecated Always uses stretch layout."),
-      sandbox: SandboxConfig.optional().describe("OS-level sandboxing configuration for bash commands"),
       permission: z
         .object({
           edit: Permission.optional(),
