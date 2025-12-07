@@ -14,9 +14,9 @@ echo ""
 # Make scripts executable
 chmod +x build.sh install.sh clean.sh update-from-upstream.sh 2>/dev/null || true
 
-# Clean any copied node_modules
-echo "Cleaning copied node_modules..."
-rm -rf packages/*/node_modules packages/sdk/js/node_modules 2>/dev/null || true
+# Clean any broken caches
+echo "Cleaning caches..."
+rm -rf .bun packages/*/node_modules packages/sdk/js/node_modules 2>/dev/null || true
 
 # Set up environment
 export BUN_TMPDIR=/tmp
@@ -25,6 +25,48 @@ export BUN_INSTALL="$(pwd)/.bun"
 # Install deps
 echo "Installing dependencies..."
 bun install
+
+# Set up global config symlinks
+echo ""
+echo "=== Setting up global config ==="
+GLOBAL_CONFIG="$HOME/.config/opencode"
+mkdir -p "$GLOBAL_CONFIG"
+
+# Link agent folder
+if [ -L "$GLOBAL_CONFIG/agent" ]; then
+    rm "$GLOBAL_CONFIG/agent"
+fi
+if [ ! -e "$GLOBAL_CONFIG/agent" ]; then
+    ln -s "$SCRIPT_DIR/.opencode/agent" "$GLOBAL_CONFIG/agent"
+    echo "Linked: $GLOBAL_CONFIG/agent -> $SCRIPT_DIR/.opencode/agent"
+fi
+
+# Link opencode.json
+if [ -L "$GLOBAL_CONFIG/opencode.json" ]; then
+    rm "$GLOBAL_CONFIG/opencode.json"
+fi
+if [ ! -e "$GLOBAL_CONFIG/opencode.json" ]; then
+    ln -s "$SCRIPT_DIR/.opencode/opencode.json" "$GLOBAL_CONFIG/opencode.json"
+    echo "Linked: $GLOBAL_CONFIG/opencode.json -> $SCRIPT_DIR/.opencode/opencode.json"
+fi
+
+# Link command folder
+if [ -L "$GLOBAL_CONFIG/command" ]; then
+    rm "$GLOBAL_CONFIG/command"
+fi
+if [ ! -e "$GLOBAL_CONFIG/command" ]; then
+    ln -s "$SCRIPT_DIR/.opencode/command" "$GLOBAL_CONFIG/command"
+    echo "Linked: $GLOBAL_CONFIG/command -> $SCRIPT_DIR/.opencode/command"
+fi
+
+# Link themes folder
+if [ -L "$GLOBAL_CONFIG/themes" ]; then
+    rm "$GLOBAL_CONFIG/themes"
+fi
+if [ ! -e "$GLOBAL_CONFIG/themes" ]; then
+    ln -s "$SCRIPT_DIR/.opencode/themes" "$GLOBAL_CONFIG/themes"
+    echo "Linked: $GLOBAL_CONFIG/themes -> $SCRIPT_DIR/.opencode/themes"
+fi
 
 # Build
 echo ""
