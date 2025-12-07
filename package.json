@@ -1,0 +1,53 @@
+{
+  "name": "opencode2",
+  "description": "Minimal AI terminal for coders",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.3",
+  "scripts": {
+    "dev": "bun run --cwd packages/opencode --conditions=browser src/index.ts",
+    "build": "./build.sh",
+    "install-bin": "./install.sh",
+    "clean": "./clean.sh",
+    "update": "./update-from-upstream.sh",
+    "typecheck": "bun turbo typecheck"
+  },
+  "workspaces": {
+    "packages": [
+      "packages/opencode",
+      "packages/plugin",
+      "packages/script",
+      "packages/sdk/js"
+    ],
+    "catalog": {
+      "@types/bun": "1.3.0",
+      "@hono/zod-validator": "0.4.2",
+      "ulid": "3.0.1",
+      "@types/node": "22.13.9",
+      "@tsconfig/node22": "22.0.2",
+      "@tsconfig/bun": "1.0.9",
+      "@openauthjs/openauth": "0.0.0-20250322224806",
+      "@pierre/precision-diffs": "0.4.4",
+      "diff": "8.0.2",
+      "ai": "5.0.8",
+      "hono": "4.7.10",
+      "typescript": "5.8.2",
+      "@typescript/native-preview": "7.0.0-dev.20251014.1",
+      "zod": "4.1.8",
+      "remeda": "2.26.0",
+      "solid-js": "1.9.9"
+    }
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "catalog:",
+    "turbo": "2.5.6"
+  },
+  "trustedDependencies": [
+    "esbuild",
+    "protobufjs",
+    "sharp",
+    "tree-sitter",
+    "tree-sitter-bash",
+    "web-tree-sitter"
+  ]
+}

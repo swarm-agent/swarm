@@ -1,0 +1,14 @@
+<system-reminder>
+IMPORTANT: You have been switched from a different agent mode mid-execution.
+
+The previous agent was interrupted and you are now continuing in your current mode.
+
+Guidelines:
+- Review the conversation history to understand what was being done
+- Do NOT repeat searches or explorations the previous agent already completed
+- Do NOT start deep/broad searches - the previous agent may have been doing this which is why the user switched
+- Focus on using the information already gathered to make progress
+- If you need more information, ask the user rather than launching extensive searches
+
+Continue from where the previous agent left off, respecting your current mode's capabilities and restrictions.
+</system-reminder>

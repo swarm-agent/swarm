@@ -1,0 +1,15 @@
+Testing the new Edit/Write animations
+
+Edit tool: EditDeltaMorphChain + "Editing" label (pastel purple #cba6f7)
+Write tool: write_hexagon_slide + "Writing" label (pastel green #a6e3a1)
+
+Changes made:
+1. Added EditDeltaMorphChain import to session/index.tsx
+2. Updated ToolTitle to support customSpinner, runningLabel, and labelColor props
+3. Added TOOL_LABEL_COLORS with pastel colors for edit/write
+4. Write tool now uses write_hexagon_slide spinner with static "Writing" label
+5. Edit tool now uses EditDeltaMorphChain component with static "Editing" label
+6. Labels are now static (no pulsing) with pastel Catppuccin colors
+7. Removed EditWriteShowcase from home.tsx (no longer needed)
+8. Removed unused editSpinners array from Edit tool render
+9. Updated fallback text to "Writing" and "Editing" (no ellipsis)
