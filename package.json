@@ -1,5 +1,5 @@
 {
-  "name": "opencode2",
+  "name": "swarm",
   "description": "Minimal AI terminal for coders",
   "private": true,
   "type": "module",

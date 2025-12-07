@@ -79,7 +79,12 @@ const allTargets: {
 ]
 
 const targets = singleFlag
-  ? allTargets.filter((item) => item.os === process.platform && item.arch === process.arch)
+  ? allTargets.filter((item) => 
+      item.os === process.platform && 
+      item.arch === process.arch && 
+      item.avx2 !== false &&  // skip baseline variants for single build
+      item.abi === undefined  // skip musl variants for single build
+    )
   : allTargets
 
 await $`rm -rf dist`
@@ -101,45 +106,30 @@ for (const item of targets) {
   await $`mkdir -p dist/${name}/bin`
 
   // Extract platform-specific native modules (our custom explicit path version)
+  const opentuiVersion = pkg.dependencies["@opentui/core"]
+  const watcherVersion = pkg.dependencies["@parcel/watcher"]
   const opentui = `@opentui/core-${item.os === "windows" ? "win32" : item.os}-${item.arch}${item.avx2 === false ? "-baseline" : ""}`
   await $`mkdir -p ../../node_modules/${opentui}`
-  await Bun.spawn(["/usr/bin/npm", "pack", `${opentui}@${pkg.dependencies["@opentui/core"]}`], {
+  
+  // Use npm with a writable cache
+  const npmCacheDir = path.join(dir, "../../.npm-cache")
+  await $`mkdir -p ${npmCacheDir}`
+  
+  await Bun.spawn(["/usr/bin/npm", "pack", "--cache", npmCacheDir, `${opentui}@${opentuiVersion}`], {
     cwd: path.join(dir, "../../node_modules"),
     stdio: ["inherit", "inherit", "inherit"],
   }).exited
-  await Bun.spawn(
-    [
-      "/usr/bin/tar",
-      "-xf",
-      `../../node_modules/${opentui.replace("@opentui/", "opentui-")}-*.tgz`,
-      "-C",
-      `../../node_modules/${opentui}`,
-      "--strip-components=1",
-    ],
-    {
-      stdio: ["inherit", "inherit", "inherit"],
-    },
-  ).exited
+  const opentuiTgz = `${opentui.replace("@opentui/", "opentui-")}-${opentuiVersion}.tgz`
+  await $`cd ../../node_modules && /usr/bin/tar -xf ${opentuiTgz} -C ${opentui} --strip-components=1`
 
   const watcher = `@parcel/watcher-${item.os === "windows" ? "win32" : item.os}-${item.arch}${item.avx2 === false ? "-baseline" : ""}${item.os === "linux" && !item.abi ? "-glibc" : ""}`
   await $`mkdir -p ../../node_modules/${watcher}`
-  await Bun.spawn(["/usr/bin/npm", "pack", watcher], {
+  await Bun.spawn(["/usr/bin/npm", "pack", "--cache", npmCacheDir, watcher], {
     cwd: path.join(dir, "../../node_modules"),
     stdio: ["inherit", "pipe", "pipe"],
   }).exited
-  await Bun.spawn(
-    [
-      "/usr/bin/tar",
-      "-xf",
-      `../../node_modules/${watcher.replace("@parcel/", "parcel-")}-*.tgz`,
-      "-C",
-      `../../node_modules/${watcher}`,
-      "--strip-components=1",
-    ],
-    {
-      stdio: ["inherit", "inherit", "inherit"],
-    },
-  ).exited
+  const watcherTgz = `${watcher.replace("@parcel/", "parcel-")}-${watcherVersion}.tgz`
+  await $`cd ../../node_modules && /usr/bin/tar -xf ${watcherTgz} -C ${watcher} --strip-components=1`
 
   const parserWorker = fs.realpathSync(path.resolve(dir, "./node_modules/@opentui/core/parser.worker.js"))
   const workerPath = "./src/cli/cmd/tui/worker.ts"
@@ -151,8 +141,8 @@ for (const item of targets) {
     sourcemap: "external",
     compile: {
       target: name.replace(pkg.name, "bun") as any,
-      outfile: `dist/${name}/bin/opencode`,
-      execArgv: [`--user-agent=opencode/${Script.version}`, `--env-file=""`, `--`],
+      outfile: `dist/${name}/bin/swarm`,
+      execArgv: [`--user-agent=swarm/${Script.version}`, `--env-file=""`, `--`],
       windows: {},
     },
     entrypoints: ["./src/index.ts", parserWorker, workerPath],

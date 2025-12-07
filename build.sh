@@ -3,7 +3,7 @@ set -e
 
 cd "$(dirname "$0")"
 
-echo "=== opencode2 build ==="
+echo "=== swarm build ==="
 echo ""
 
 # Set up environment for sandboxed builds
@@ -25,8 +25,8 @@ bun run build --single
 echo ""
 echo "=== Done! ==="
 echo ""
-echo "Binary: $(pwd)/dist/opencode-linux-x64/bin/opencode"
-echo "Size:   $(ls -lh dist/opencode-linux-x64/bin/opencode | awk '{print $5}')"
+echo "Binary: $(pwd)/dist/swarm-linux-x64/bin/swarm"
+echo "Size:   $(ls -lh dist/swarm-linux-x64/bin/swarm | awk '{print $5}')"
 echo ""
 echo "To install globally:"
-echo "  cp $(pwd)/dist/opencode-linux-x64/bin/opencode ~/.local/bin/opencode"
+echo "  cp $(pwd)/dist/swarm-linux-x64/bin/swarm ~/.local/bin/swarm"

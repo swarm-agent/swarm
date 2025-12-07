@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "version": "1.0.62",
-  "name": "opencode",
+  "name": "swarm",
   "type": "module",
   "private": true,
   "scripts": {
@@ -12,7 +12,7 @@
     "random": "echo 'Random script updated at $(date)'"
   },
   "bin": {
-    "opencode": "./bin/opencode"
+    "swarm": "./bin/swarm"
   },
   "exports": {
     "./*": "./src/*.ts"

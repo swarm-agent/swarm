@@ -52,7 +52,7 @@ BUN_TMPDIR=/tmp BUN_INSTALL=$(pwd)/../../.bun bun run build --single
 ### Install Globally
 
 ```bash
-cp packages/opencode/dist/opencode-linux-x64/bin/opencode ~/.local/bin/
+cp packages/opencode/dist/swarm-linux-x64/bin/swarm ~/.local/bin/
 ```
 
 ## Development
