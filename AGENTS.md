@@ -86,11 +86,98 @@ Everything else from the original monorepo:
 - `infra/` - SST deployment configs
 - `github/` - GitHub Actions
 
+## Sandbox (Anthropic Sandbox Runtime)
+
+The CLI uses `@anthropic-ai/sandbox-runtime` for OS-level sandboxing of bash commands.
+
+### Package Location (IMPORTANT - npm 404s, we have it cached!)
+
+```
+# Symlink in workspace:
+packages/opencode/node_modules/@anthropic-ai/sandbox-runtime
+
+# Actual cached location:
+node_modules/.bun/@anthropic-ai+sandbox-runtime@0.0.18/node_modules/@anthropic-ai/sandbox-runtime
+
+# Contains:
+- dist/           # Compiled JS
+- vendor/seccomp/ # Pre-built seccomp binaries
+  - x64/apply-seccomp      # 827KB static binary
+  - x64/unix-block.bpf     # 104 bytes BPF filter
+  - arm64/apply-seccomp    # 542KB static binary  
+  - arm64/unix-block.bpf   # 88 bytes BPF filter
+```
+
+### Linux Dependencies
+
+```bash
+apt install bubblewrap socat ripgrep
+```
+
+### Config (in opencode.json)
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "network": {
+      "allowedDomains": ["github.com", "*.github.com", "npmjs.org"],
+      "deniedDomains": [],
+      "allowLocalBinding": true,
+      "socketBridges": {
+        "/tmp/swarm-api.sock": "localhost:3456"
+      }
+    },
+    "filesystem": {
+      "denyRead": ["~/.ssh", "~/.gnupg"],
+      "allowWrite": [".", "/tmp"],
+      "denyWrite": [".env", "*.key"]
+    }
+  }
+}
+```
+
+### How It Works
+
+1. Uses **bubblewrap** (`bwrap`) with `--unshare-net` for network namespace isolation
+2. HTTP/SOCKS5 proxies filter network by domain allowlist
+3. Unix sockets bridge proxy traffic into the sandbox
+4. **seccomp BPF** blocks new Unix socket creation (prevents bypassing proxy)
+5. Filesystem bind mounts enforce read/write restrictions
+
+### Socket Bridges (Local API Access)
+
+Socket bridges allow sandboxed commands to access local TCP services securely via Unix sockets.
+
+**Why needed:** The sandbox blocks all network access including `localhost`. Socket bridges provide a controlled way to reach local APIs.
+
+**Configuration:** Add to `sandbox.network.socketBridges` in opencode.json:
+```json
+"socketBridges": {
+  "/tmp/swarm-api.sock": "localhost:3456",
+  "/tmp/my-db.sock": "localhost:5432"
+}
+```
+
+**Usage from sandboxed commands:**
+```bash
+# Direct localhost access is BLOCKED:
+curl http://localhost:3456/health  # ❌ Connection refused
+
+# Use the Unix socket instead:
+curl --unix-socket /tmp/swarm-api.sock http://localhost/health  # ✅ Works!
+
+# The URL host doesn't matter when using --unix-socket, but use "localhost" by convention
+curl --unix-socket /tmp/swarm-api.sock http://localhost/api/tasks
+```
+
+**How it works:** When the sandbox starts, `socat` processes are spawned to bridge each Unix socket to its TCP target. The sockets are bind-mounted into the sandbox, allowing access while the network remains isolated.
+
 ## Security Notes
 
 1. **Run the binary in production**, not dev mode
 2. The binary has **zero runtime npm dependencies**
-3. For extra isolation, run under `firejail` or `bubblewrap`
+3. **Enable sandbox** in config for OS-level isolation
 4. Rebuild periodically to get updates
 
 ## Git Workflow
