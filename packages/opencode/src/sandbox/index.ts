@@ -3,8 +3,46 @@ import { Config } from "@/config/config"
 import { Instance } from "@/project/instance"
 import { Log } from "@/util/log"
 import { Permission } from "@/permission"
+import fs from "fs/promises"
 
 const log = Log.create({ service: "sandbox" })
+
+// Track spawned socat processes for socket bridges
+const socketBridgeProcesses: Map<string, Bun.Subprocess> = new Map()
+
+async function startSocketBridges(bridges: Record<string, string>): Promise<void> {
+  for (const [socketPath, tcpEndpoint] of Object.entries(bridges)) {
+    // Clean up stale socket file if exists
+    await fs.unlink(socketPath).catch(() => {})
+
+    // Spawn socat: UNIX-LISTEN:socket,fork TCP:endpoint
+    const proc = Bun.spawn(["socat", `UNIX-LISTEN:${socketPath},fork`, `TCP:${tcpEndpoint}`], {
+      stdout: "ignore",
+      stderr: "pipe",
+    })
+
+    // Wait a moment and check if process started successfully
+    await new Promise((r) => setTimeout(r, 100))
+
+    if (proc.exitCode !== null) {
+      const stderr = await new Response(proc.stderr).text()
+      log.error("socket bridge failed to start", { socket: socketPath, endpoint: tcpEndpoint, exitCode: proc.exitCode, stderr })
+      continue
+    }
+
+    socketBridgeProcesses.set(socketPath, proc)
+    log.info("started socket bridge", { socket: socketPath, endpoint: tcpEndpoint, pid: proc.pid })
+  }
+}
+
+async function stopSocketBridges(): Promise<void> {
+  for (const [socketPath, proc] of socketBridgeProcesses) {
+    proc.kill()
+    await fs.unlink(socketPath).catch(() => {})
+    log.info("stopped socket bridge", { socket: socketPath })
+  }
+  socketBridgeProcesses.clear()
+}
 
 export namespace Sandbox {
   let initialized = false
@@ -98,6 +136,13 @@ export namespace Sandbox {
 
       initialized = true
       log.info("sandbox initialized", { platform })
+
+      // Start socket bridges if configured
+      const socketBridges = config.sandbox?.network?.socketBridges
+      if (socketBridges && Object.keys(socketBridges).length > 0) {
+        await startSocketBridges(socketBridges)
+      }
+
       return true
     } catch (err) {
       log.error("failed to initialize sandbox", { error: err })
@@ -136,6 +181,9 @@ export namespace Sandbox {
   }
 
   export async function reset(): Promise<void> {
+    // Stop socket bridges first
+    await stopSocketBridges()
+
     if (initialized) {
       try {
         await SandboxManager.reset()

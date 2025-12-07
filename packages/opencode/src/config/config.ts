@@ -350,6 +350,10 @@ export namespace Config {
       deniedDomains: z.array(z.string()).default([]).describe("Domains explicitly denied"),
       allowUnixSockets: z.array(z.string()).optional().describe("Unix socket paths allowed (macOS only)"),
       allowLocalBinding: z.boolean().optional().describe("Allow binding to local ports"),
+      socketBridges: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe("Map Unix socket paths to TCP endpoints for sandbox access (e.g., {'/tmp/api.sock': 'localhost:3456'})"),
     })
     .meta({ ref: "SandboxNetworkConfig" })
   export type SandboxNetworkConfig = z.infer<typeof SandboxNetworkConfig>
