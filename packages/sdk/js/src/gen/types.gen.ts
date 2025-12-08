@@ -344,6 +344,10 @@ export type Config = {
    */
   autoupdate?: boolean
   /**
+   * Enable Hyprland workspace session tracking
+   */
+  hyprland?: boolean
+  /**
    * Disable providers that are loaded automatically
    */
   disabled_providers?: Array<string>

@@ -668,6 +668,12 @@ export namespace Config {
         .describe(
           "Process idle timeout in minutes. Opencode will exit after this duration of user inactivity. Set to 0 to disable. Default: disabled.",
         ),
+      hyprland: z
+        .boolean()
+        .optional()
+        .describe(
+          "Enable Hyprland workspace session tracking. Shows session status in TUI and writes to ~/.config/swarm/sessions.json for external tools. Default: false.",
+        ),
       tools: z.record(z.string(), z.boolean()).optional(),
       experimental: z
         .object({

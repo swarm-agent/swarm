@@ -20,6 +20,9 @@ export interface SessionEntry {
 const SESSIONS_DIR = path.join(os.homedir(), ".config", "swarm")
 const SESSIONS_FILE = path.join(SESSIONS_DIR, "sessions.json")
 
+// Whether hyprland session tracking is enabled (set via config)
+let enabled = false
+
 // Current session info stored in memory
 let currentSession: {
   pid: number
@@ -103,6 +106,21 @@ async function getHyprlandClients(): Promise<Map<number, number>> {
 
 export const Hyprland = {
   /**
+   * Initialize hyprland tracking (call with config value)
+   */
+  init(isEnabled: boolean): void {
+    enabled = isEnabled
+    log.info("hyprland tracking", { enabled })
+  },
+
+  /**
+   * Check if hyprland tracking is enabled
+   */
+  isEnabled(): boolean {
+    return enabled
+  },
+
+  /**
    * Get the current Hyprland workspace for the active window
    */
   async getWorkspace(): Promise<number | null> {
@@ -114,6 +132,8 @@ export const Hyprland = {
    * Register this session on startup
    */
   async register(cwd: string): Promise<void> {
+    if (!enabled) return
+
     const hyprInfo = await getHyprlandInfo()
     const pid = process.pid
 
@@ -154,6 +174,7 @@ export const Hyprland = {
    * Unregister this session on exit
    */
   async unregister(): Promise<void> {
+    if (!enabled) return
     if (!currentSession) return
 
     const sessions = await readSessions()
@@ -168,6 +189,7 @@ export const Hyprland = {
    * Update the status of this session
    */
   async setStatus(status: SessionStatus): Promise<void> {
+    if (!enabled) return
     if (!currentSession) return
 
     const sessions = await readSessions()
