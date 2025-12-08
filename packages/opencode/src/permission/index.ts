@@ -10,6 +10,7 @@ import * as fs from "fs/promises"
 import * as path from "path"
 import { parse as parseJsonc } from "jsonc-parser"
 import { Pin } from "../auth/pin"
+import { Hyprland } from "../hyprland"
 
 export namespace Permission {
   const log = Log.create({ service: "permission" })
@@ -249,41 +250,50 @@ export namespace Permission {
       permissionID: info.id,
       metadataRef: Object.keys(info.metadata).join(","),
     })
-    await new Promise<void>((resolve, reject) => {
-      pending[input.sessionID][info.id] = {
-        info,
-        resolve,
-        reject,
-      }
-      Bus.publish(Event.Updated, info)
 
-      // Forward permission to parent session if this is a child session
-      Session.get(input.sessionID)
-        .then((session) => {
-          if (session.parentID) {
-            const forwardedInfo: Info = {
-              ...info,
-              sessionID: session.parentID,
-              metadata: {
-                ...info.metadata,
-                originSessionID: input.sessionID,
-                originSessionTitle: session.title,
-              },
+    // Set status to blocked while waiting for user input
+    await Hyprland.setStatus("blocked")
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        pending[input.sessionID][info.id] = {
+          info,
+          resolve,
+          reject,
+        }
+        Bus.publish(Event.Updated, info)
+
+        // Forward permission to parent session if this is a child session
+        Session.get(input.sessionID)
+          .then((session) => {
+            if (session.parentID) {
+              const forwardedInfo: Info = {
+                ...info,
+                sessionID: session.parentID,
+                metadata: {
+                  ...info.metadata,
+                  originSessionID: input.sessionID,
+                  originSessionTitle: session.title,
+                },
+              }
+              // Add to parent's pending list as well so responses work
+              pending[session.parentID] = pending[session.parentID] || {}
+              pending[session.parentID][info.id] = {
+                info: forwardedInfo,
+                resolve, // Same resolve/reject as child - they should be linked
+                reject,
+              }
+              Bus.publish(Event.Updated, forwardedInfo)
             }
-            // Add to parent's pending list as well so responses work
-            pending[session.parentID] = pending[session.parentID] || {}
-            pending[session.parentID][info.id] = {
-              info: forwardedInfo,
-              resolve, // Same resolve/reject as child - they should be linked
-              reject,
-            }
-            Bus.publish(Event.Updated, forwardedInfo)
-          }
-        })
-        .catch(() => {
-          // Session not found, ignore
-        })
-    })
+          })
+          .catch(() => {
+            // Session not found, ignore
+          })
+      })
+    } finally {
+      // Set status back to working after user responds
+      await Hyprland.setStatus("working")
+    }
 
     log.info("permission resolved", {
       permissionID: info.id,

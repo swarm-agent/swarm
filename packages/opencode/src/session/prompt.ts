@@ -9,6 +9,7 @@ import { SessionRevert } from "./revert"
 import { Session } from "."
 import { Agent } from "../agent/agent"
 import { Provider } from "../provider/provider"
+import { Hyprland } from "../hyprland"
 import {
   generateText,
   streamText,
@@ -1523,6 +1524,8 @@ export namespace SessionPrompt {
       sessionID,
     })
     log.info("locking", { sessionID })
+    // Set Hyprland status to working when session starts processing
+    Hyprland.setStatus("working").catch(() => {})
     return {
       signal: handle.signal,
       abort: handle.abort,
@@ -1532,6 +1535,9 @@ export namespace SessionPrompt {
 
         const session = await Session.get(sessionID)
         if (session.parentID) return
+
+        // Set Hyprland status to idle when session finishes
+        await Hyprland.setStatus("idle").catch(() => {})
 
         Bus.publish(Event.Idle, {
           sessionID,

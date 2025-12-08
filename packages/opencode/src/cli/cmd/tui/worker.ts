@@ -4,6 +4,7 @@ import { Log } from "@/util/log"
 import { Instance } from "@/project/instance"
 import { Rpc } from "@/util/rpc"
 import { upgrade } from "@/cli/upgrade"
+import { Hyprland } from "@/hyprland"
 
 await Log.init({
   print: process.argv.includes("--print-logs"),
@@ -26,6 +27,20 @@ process.on("uncaughtException", (e) => {
   })
 })
 
+// Ensure Hyprland session cleanup on exit
+const cleanupHyprland = () => {
+  Hyprland.unregister().catch(() => {})
+}
+process.on("exit", cleanupHyprland)
+process.on("SIGINT", () => {
+  cleanupHyprland()
+  process.exit(0)
+})
+process.on("SIGTERM", () => {
+  cleanupHyprland()
+  process.exit(0)
+})
+
 upgrade()
 
 let server: Bun.Server<undefined>
@@ -34,6 +49,8 @@ export const rpc = {
     if (server) await server.stop(true)
     try {
       server = Server.listen(input)
+      // Register with Hyprland session tracker
+      await Hyprland.register(process.cwd())
       return {
         url: server.url.toString(),
       }
@@ -43,6 +60,8 @@ export const rpc = {
     }
   },
   async shutdown() {
+    // Unregister from Hyprland session tracker
+    await Hyprland.unregister()
     await Instance.disposeAll()
     await server.stop(true)
   },

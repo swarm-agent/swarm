@@ -32,6 +32,7 @@ import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { SwarmIndicator } from "@tui/component/indicator-swarm"
 import { BackgroundAgentIndicator } from "@tui/component/indicator-background-agents"
+import { HyprlandIndicator } from "@tui/component/indicator-hyprland"
 import { ThinkingIndicator } from "@tui/ui/tool-animations"
 import { GitProvider, useGit } from "@tui/context/git"
 import { KeybindProvider } from "@tui/context/keybind"
@@ -614,6 +615,7 @@ function App() {
             <SwarmIndicator />
           </box>
           <BackgroundAgentIndicator />
+          <HyprlandIndicator />
           <Show when={git.status().enabled}>
             <box flexDirection="row" paddingLeft={1} flexShrink={1} gap={1}>
               <text fg={theme.primary}>{git.status().branch}</text>
