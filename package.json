@@ -49,8 +49,5 @@
     "tree-sitter",
     "tree-sitter-bash",
     "web-tree-sitter"
-  ],
-  "overrides": {
-    "js-yaml": "4.1.1"
-  }
+  ]
 }
