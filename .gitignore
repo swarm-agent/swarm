@@ -46,3 +46,4 @@ swarm.json
 
 # Logs
 logs/
+nohup.out
