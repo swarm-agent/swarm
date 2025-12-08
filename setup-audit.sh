@@ -1,11 +1,18 @@
 #!/bin/bash
-# Setup npm/bun audit monitoring
+# Setup npm/bun audit monitoring - v3 (systemd timer)
+
+echo "🛡️ Setting up security audit monitoring..."
 
 # Create the audit script
+mkdir -p ~/.local/bin
 cat > ~/.local/bin/npm-audit-cron.sh << 'SCRIPT'
 #!/bin/bash
 LOG_FILE="$HOME/.npm-audit.log"
-PROJECTS=("$HOME/swarm_agent_prod" "$HOME/swarm-cli" "$HOME/todo")
+PROJECTS=(
+    "$HOME/swarm_agent_prod"
+    "$HOME/swarm-cli"
+    "$HOME/todo"
+)
 
 [[ -z "$HYPRLAND_INSTANCE_SIGNATURE" ]] && \
     export HYPRLAND_INSTANCE_SIGNATURE=$(ls -t /run/user/1000/hypr/ 2>/dev/null | head -1)
@@ -49,7 +56,7 @@ scan_project() {
 echo "[$(date '+%Y-%m-%d %H:%M')] === Audit scan ===" >> "$LOG_FILE"
 
 for p in "${PROJECTS[@]}"; do
-    scan_project "$p"
+    [[ -d "$p" ]] && scan_project "$p"
     for s in "$p"/*/; do
         [[ -f "${s}package.json" ]] && scan_project "$s"
     done
@@ -59,14 +66,64 @@ SCRIPT
 chmod +x ~/.local/bin/npm-audit-cron.sh
 echo "✅ Created ~/.local/bin/npm-audit-cron.sh"
 
-# Add cron job
-(crontab -l 2>/dev/null | grep -v npm-audit-cron; echo "0 */6 * * * $HOME/.local/bin/npm-audit-cron.sh") | crontab -
-echo "✅ Added cron job (every 6 hours)"
+# Setup systemd user timer (every 3 hours)
+mkdir -p ~/.config/systemd/user
 
-# Test it
-echo "🔍 Running test scan..."
+cat > ~/.config/systemd/user/npm-audit.service << 'SERVICE'
+[Unit]
+Description=NPM/Bun security audit
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/npm-audit-cron.sh
+Environment=PATH=/home/roy/.bun/bin:/usr/local/bin:/usr/bin
+SERVICE
+
+cat > ~/.config/systemd/user/npm-audit.timer << 'TIMER'
+[Unit]
+Description=Run npm audit every 3 hours
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=3h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+systemctl --user daemon-reload
+systemctl --user enable --now npm-audit.timer
+echo "✅ Enabled systemd timer (every 3 hours)"
+
+# Add to Hyprland autostart if not already there
+HYPR_CONF="$HOME/.config/hypr/hyprland.conf"
+if [[ -f "$HYPR_CONF" ]] && ! grep -q "npm-audit-cron" "$HYPR_CONF"; then
+    echo "" >> "$HYPR_CONF"
+    echo "# Security audit on startup" >> "$HYPR_CONF"
+    echo "exec-once = sleep 30 && ~/.local/bin/npm-audit-cron.sh" >> "$HYPR_CONF"
+    echo "✅ Added to Hyprland autostart"
+else
+    echo "ℹ️  Hyprland autostart already configured or not found"
+fi
+
+# Run initial scan
+echo ""
+echo "🔍 Running initial scan..."
 ~/.local/bin/npm-audit-cron.sh
 
 echo ""
 echo "📊 Results:"
 tail -10 ~/.npm-audit.log
+
+echo ""
+echo "✅ Setup complete!"
+echo "   - Timer: every 3 hours (systemd)"
+echo "   - Also runs: 2min after boot"
+echo "   - Hyprland: 30s after session starts"
+echo "   - Projects: swarm_agent_prod, swarm-cli, todo"
+echo ""
+echo "📋 Commands:"
+echo "   systemctl --user status npm-audit.timer  # Check timer"
+echo "   systemctl --user list-timers             # List all timers"
+echo "   journalctl --user -u npm-audit           # View logs"
