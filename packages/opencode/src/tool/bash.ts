@@ -135,7 +135,10 @@ export const BashTool = Tool.define("bash", {
         const action = Wildcard.allStructured({ head: command[0], tail: command.slice(1) }, permissions)
         if (action === "deny") {
           throw new Error(
-            `The user has specifically restricted access to this command, you are not allowed to execute it. Here is the configuration: ${JSON.stringify(permissions)}`,
+            `BLOCKED: This command is restricted by security configuration and cannot be executed.\n\n` +
+              `Command: ${params.command}\n\n` +
+              `What to do: Use the 'manual-command' tool to provide the user with a copy-able command they can run manually. ` +
+              `Include a clear explanation of what the command does and any warnings about potential consequences.`,
           )
         }
         if (action === "pin") {

@@ -270,8 +270,8 @@ export function DialogPermission(props: DialogPermissionProps) {
     }
 
     // Actions
-    if (evt.name === "c" && perm?.type === "exit-plan-mode") {
-      // c = approve with comment (for exit-plan-mode only)
+    if (((evt.name === "return" && evt.shift) || (evt.name === "c" && evt.shift)) && perm?.type === "exit-plan-mode") {
+      // Shift+Enter or Shift+C = approve with comment (for exit-plan-mode only)
       setStore("inputMode", true)
       setStore("inputModeType", "approve-with-comment")
       evt.preventDefault()
@@ -282,7 +282,7 @@ export function DialogPermission(props: DialogPermissionProps) {
       })
       return
     }
-    if (evt.name === "return") {
+    if (evt.name === "return" && !evt.shift) {
       if (perm) respondToPermission(perm.id, "once")
       evt.preventDefault()
     }
@@ -291,12 +291,13 @@ export function DialogPermission(props: DialogPermissionProps) {
       if (perm) respondToPermission(perm.id, "always")
       evt.preventDefault()
     }
-    if (evt.name === "d") {
+    if (evt.name === "d" && !evt.shift) {
       const perm = currentPermission()
       if (perm) respondToPermission(perm.id, "reject")
       evt.preventDefault()
     }
-    if (evt.name === "i") {
+    if (evt.name === "i" || (evt.name === "d" && evt.shift && perm?.type === "exit-plan-mode")) {
+      // i or Shift+D (exit-plan-mode) = deny with message
       setStore("inputMode", true)
       setStore("inputModeType", "reject")
       evt.preventDefault()
@@ -306,6 +307,7 @@ export function DialogPermission(props: DialogPermissionProps) {
           rejectionTextarea.focus()
         }
       })
+      return
     }
     if (evt.name === "r") {
       rejectAll()
@@ -694,17 +696,27 @@ export function DialogPermission(props: DialogPermissionProps) {
                         <span style={{ fg: theme.text }}> deny</span>
                       </Show>
                     </text>
-                    <text>
-                      <span style={{ fg: theme.warning, attributes: TextAttributes.BOLD }}>i</span>
-                      <Show when={!isVeryCompact()} fallback={null}>
-                        <span style={{ fg: theme.text }}> msg</span>
-                      </Show>
-                    </text>
+                    {/* For exit-plan-mode: Shift+D for deny+msg, Shift+Enter for approve+msg */}
+                    {/* For other permissions: i for deny+msg */}
+                    <Show when={currentPermission()!.type !== "exit-plan-mode"}>
+                      <text>
+                        <span style={{ fg: theme.warning, attributes: TextAttributes.BOLD }}>i</span>
+                        <Show when={!isVeryCompact()} fallback={null}>
+                          <span style={{ fg: theme.text }}> msg</span>
+                        </Show>
+                      </text>
+                    </Show>
                     <Show when={currentPermission()!.type === "exit-plan-mode"}>
                       <text>
-                        <span style={{ fg: theme.success, attributes: TextAttributes.BOLD }}>c</span>
+                        <span style={{ fg: theme.error, attributes: TextAttributes.BOLD }}>D</span>
                         <Show when={!isVeryCompact()} fallback={null}>
-                          <span style={{ fg: theme.text }}> +msg</span>
+                          <span style={{ fg: theme.text }}> deny+msg</span>
+                        </Show>
+                      </text>
+                      <text>
+                        <span style={{ fg: theme.success, attributes: TextAttributes.BOLD }}>C</span>
+                        <Show when={!isVeryCompact()} fallback={null}>
+                          <span style={{ fg: theme.text }}> ok+msg</span>
                         </Show>
                       </text>
                     </Show>
