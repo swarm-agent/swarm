@@ -72,6 +72,35 @@ async function getHyprlandInfo(): Promise<{ workspace: number; windowPid: number
   }
 }
 
+/**
+ * Get all Hyprland clients (windows) and their workspaces
+ * Returns a Map of windowPid -> workspaceId
+ */
+async function getHyprlandClients(): Promise<Map<number, number>> {
+  const clients = new Map<number, number>()
+  try {
+    const proc = Bun.spawn(["hyprctl", "clients", "-j"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const output = await new Response(proc.stdout).text()
+    await proc.exited
+    if (proc.exitCode !== 0) return clients
+
+    const data = JSON.parse(output)
+    if (Array.isArray(data)) {
+      for (const client of data) {
+        if (client.pid && client.workspace?.id) {
+          clients.set(client.pid, client.workspace.id)
+        }
+      }
+    }
+  } catch {
+    // Hyprland not available
+  }
+  return clients
+}
+
 export const Hyprland = {
   /**
    * Get the current Hyprland workspace for the active window
@@ -153,8 +182,10 @@ export const Hyprland = {
 
   /**
    * Get all sessions (for status bar display)
+   * Prunes stale sessions first to ensure fresh data
    */
   async getSessions(): Promise<SessionEntry[]> {
+    await Hyprland.prune()
     return readSessions()
   },
 
@@ -167,27 +198,60 @@ export const Hyprland = {
   },
 
   /**
-   * Get blocked sessions
+   * Get blocked sessions (prunes stale first)
    */
   async getBlockedSessions(): Promise<SessionEntry[]> {
+    await Hyprland.prune()
     const sessions = await readSessions()
     return sessions.filter((s) => s.status === "blocked")
   },
 
   /**
-   * Prune dead sessions (PIDs that no longer exist)
+   * Prune stale sessions:
+   * 1. PIDs that no longer exist (process died)
+   * 2. Window PIDs no longer on their claimed workspace (terminal closed/moved)
    */
   async prune(): Promise<void> {
     const sessions = await readSessions()
+    const clients = await getHyprlandClients()
     const alive: SessionEntry[] = []
 
     for (const session of sessions) {
+      // Check 1: Is the process still alive?
+      let processAlive = false
       try {
-        process.kill(session.pid, 0) // Check if process exists
-        alive.push(session)
+        process.kill(session.pid, 0)
+        processAlive = true
       } catch {
-        log.info("pruned dead session", { pid: session.pid })
+        log.info("pruned dead process", { pid: session.pid })
+        continue
       }
+
+      // Check 2: If we have hyprland info, verify window is still on claimed workspace
+      if (session.hyprWindowPid !== null && session.hyprWorkspace !== null) {
+        const currentWorkspace = clients.get(session.hyprWindowPid)
+        if (currentWorkspace === undefined) {
+          // Window no longer exists in hyprland (terminal closed)
+          log.info("pruned closed window", {
+            pid: session.pid,
+            hyprWindowPid: session.hyprWindowPid,
+            claimedWorkspace: session.hyprWorkspace,
+          })
+          continue
+        }
+        if (currentWorkspace !== session.hyprWorkspace) {
+          // Window moved to different workspace - update it
+          log.info("window moved workspace", {
+            pid: session.pid,
+            from: session.hyprWorkspace,
+            to: currentWorkspace,
+          })
+          session.hyprWorkspace = currentWorkspace
+          session.lastUpdated = Date.now()
+        }
+      }
+
+      alive.push(session)
     }
 
     if (alive.length !== sessions.length) {

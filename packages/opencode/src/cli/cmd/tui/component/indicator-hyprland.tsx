@@ -14,9 +14,11 @@ export function HyprlandIndicator() {
         Hyprland.getSessions(),
         Hyprland.getWorkspace(),
       ])
-      // Filter to only show OTHER sessions (not current PID)
+      // Filter to only show OTHER sessions (not current PID), sorted by workspace
       const currentPid = Hyprland.getCurrentSession()?.pid
-      const others = allSessions.filter((s) => s.pid !== currentPid)
+      const others = allSessions
+        .filter((s) => s.pid !== currentPid)
+        .sort((a, b) => (a.hyprWorkspace ?? 999) - (b.hyprWorkspace ?? 999))
       setSessions(others)
       setCurrentWorkspace(workspace)
     }
@@ -43,10 +45,10 @@ export function HyprlandIndicator() {
       case "blocked":
         return "!"
       case "working":
-        return "~"
+        return "●"
       case "idle":
       default:
-        return ""
+        return "○"
     }
   }
 
@@ -56,8 +58,7 @@ export function HyprlandIndicator() {
         <For each={sessions()}>
           {(session) => (
             <text fg={getStatusColor(session.status)}>
-              W{session.hyprWorkspace ?? "?"}
-              {getStatusSymbol(session.status)}
+              W{session.hyprWorkspace ?? "?"}{getStatusSymbol(session.status)}
             </text>
           )}
         </For>
