@@ -28,6 +28,7 @@ test-permission.sh
 # Local config files
 opencode.json
 !.opencode/opencode.json
+!packages/opencode/src/**/opencode.json
 packages/opencode/opencode.json
 oc-dev.sh
 
@@ -45,6 +46,7 @@ opencode.json.backup
 # Swarm integration session data
 swarm.json
 !.opencode/themes/swarm.json
+!packages/opencode/src/**/swarm.json
 
 # Logs
 logs/
