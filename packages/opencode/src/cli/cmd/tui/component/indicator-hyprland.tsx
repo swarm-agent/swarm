@@ -5,22 +5,17 @@ import { Hyprland, type SessionEntry } from "@/hyprland"
 export function HyprlandIndicator() {
   const { theme } = useTheme()
   const [sessions, setSessions] = createSignal<SessionEntry[]>([])
-  const [currentWorkspace, setCurrentWorkspace] = createSignal<number | null>(null)
+  const currentPid = process.pid
 
   // Poll for session updates
   onMount(() => {
     const update = async () => {
-      const [allSessions, workspace] = await Promise.all([
-        Hyprland.getSessions(),
-        Hyprland.getWorkspace(),
-      ])
-      // Filter to only show OTHER sessions (not current PID), sorted by workspace
-      const currentPid = Hyprland.getCurrentSession()?.pid
-      const others = allSessions
-        .filter((s) => s.pid !== currentPid)
-        .sort((a, b) => (a.hyprWorkspace ?? 999) - (b.hyprWorkspace ?? 999))
-      setSessions(others)
-      setCurrentWorkspace(workspace)
+      const allSessions = await Hyprland.getSessions()
+      // Show ALL sessions (including current), sorted by workspace
+      const sorted = allSessions.sort(
+        (a, b) => (a.hyprWorkspace ?? 999) - (b.hyprWorkspace ?? 999)
+      )
+      setSessions(sorted)
     }
 
     update()
@@ -58,7 +53,7 @@ export function HyprlandIndicator() {
         <For each={sessions()}>
           {(session) => (
             <text fg={getStatusColor(session.status)}>
-              W{session.hyprWorkspace ?? "?"}{getStatusSymbol(session.status)}
+              {session.pid === currentPid ? "*" : ""}W{session.hyprWorkspace ?? "?"}{getStatusSymbol(session.status)}
             </text>
           )}
         </For>
