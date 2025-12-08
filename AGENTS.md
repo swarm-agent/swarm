@@ -180,6 +180,37 @@ curl --unix-socket /tmp/swarm-api.sock http://localhost/api/tasks
 3. **Enable sandbox** in config for OS-level isolation
 4. Rebuild periodically to get updates
 
+## Configuration
+
+The main configuration file is at `.opencode/opencode.json`. This file controls:
+- Model selection
+- Sandbox settings (network, filesystem)
+- Permission rules for bash commands
+- Agent definitions (build, plan, auto modes)
+
+**Location:** `.opencode/opencode.json` (this is the base config that gets used)
+
+### Bash Permission Levels
+
+| Level | Meaning |
+|-------|---------|
+| `allow` | Command runs without asking |
+| `ask` | Prompts user for approval |
+| `pin` | Requires PIN verification |
+| `deny` | Blocked completely - cannot be bypassed |
+
+### Safety Rules (Hardcoded Denials)
+
+These commands are **always blocked** regardless of mode:
+- `rm -rf *`, `rm -r *`, `rm -R *`, `rm --recursive *`, `rm -fr *` - No recursive directory deletion
+- `dd *`, `mkfs *`, `fdisk *` - Disk operations
+- `reboot`, `shutdown`, `halt`, `poweroff` - System control
+- `chown *`, `chgrp *` - Ownership changes
+- `shred *` - Secure delete
+- `git push --force *`, `git reset --hard *` - Destructive git operations
+
+Single file deletion (`rm file.txt`, `rm -f file.txt`) requires PIN.
+
 ## Git Workflow
 
 This is a separate repo from the main opencode monorepo.
