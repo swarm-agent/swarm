@@ -49,5 +49,10 @@
     "tree-sitter",
     "tree-sitter-bash",
     "web-tree-sitter"
-  ]
+  ],
+  "overrides": {
+    "gray-matter": {
+      "js-yaml": "3.14.1"
+    }
+  }
 }
