@@ -66,6 +66,10 @@ export interface SessionEntry {
   status: SessionStatus
   startedAt: number
   lastUpdated: number
+  // Rich session info
+  sessionId?: string
+  agent?: string
+  model?: string
 }
 
 const SESSIONS_DIR = path.join(os.homedir(), ".config", "swarm")
@@ -259,6 +263,24 @@ export const Hyprland = {
       await writeSessions(sessions)
       log.info("status updated", { pid: currentSession.pid, status })
     }
+  },
+
+  /**
+   * Update rich session info (sessionId, agent, model)
+   * Works from any thread by looking up session by PID
+   */
+  async setSessionInfo(info: { sessionId?: string; agent?: string; model?: string }): Promise<void> {
+    // Don't require enabled/currentSession - just try to update by PID
+    const sessions = await readSessions()
+    const entry = sessions.find((s) => s.pid === process.pid)
+    if (!entry) return // No session registered for this PID
+
+    if (info.sessionId !== undefined) entry.sessionId = info.sessionId
+    if (info.agent !== undefined) entry.agent = info.agent
+    if (info.model !== undefined) entry.model = info.model
+    entry.lastUpdated = Date.now()
+    await writeSessions(sessions)
+    log.info("session info updated", { pid: process.pid, ...info })
   },
 
   /**

@@ -1,7 +1,7 @@
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 // test commit to see double chevron ahead indicator 󰄿
 import { Clipboard } from "@tui/util/clipboard"
-import { TextAttributes, RGBA } from "@opentui/core"
+import { TextAttributes } from "@opentui/core"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import {
   Switch,
@@ -13,7 +13,6 @@ import {
   createSignal,
   onMount,
   batch,
-  createMemo,
 } from "solid-js"
 import { Installation } from "@/installation"
 import { Global } from "@/global"
@@ -21,8 +20,7 @@ import { DialogProvider, useDialog } from "@tui/ui/dialog"
 import { SDKProvider, useSDK } from "@tui/context/sdk"
 import { SyncProvider, useSync } from "@tui/context/sync"
 import { LocalProvider, useLocal } from "@tui/context/local"
-import type { AssistantMessage } from "@opencode-ai/sdk"
-import { pipe, sumBy } from "remeda"
+
 import { DialogModel } from "@tui/component/dialog-model"
 import { DialogStatus } from "@tui/component/dialog-status"
 import { DialogThemeList } from "@tui/component/dialog-theme-list"
@@ -30,11 +28,8 @@ import { DialogHelp } from "./ui/dialog-help"
 import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command"
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
-import { SwarmIndicator } from "@tui/component/indicator-swarm"
-import { BackgroundAgentIndicator } from "@tui/component/indicator-background-agents"
-import { HyprlandIndicator } from "@tui/component/indicator-hyprland"
-import { ThinkingIndicator } from "@tui/ui/tool-animations"
-import { GitProvider, useGit } from "@tui/context/git"
+import { UnifiedStatusBar } from "@tui/component/indicator-unified-status"
+import { GitProvider } from "@tui/context/git"
 import { KeybindProvider } from "@tui/context/keybind"
 import { ThemeProvider, useTheme } from "@tui/context/theme"
 import { Home } from "@tui/routes/home"
@@ -49,6 +44,7 @@ import { KVProvider, useKV } from "./context/kv"
 import { Provider } from "@/provider/provider"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import { IdleProvider, useIdle } from "./context/idle"
+import { Hyprland } from "@/hyprland"
 
 async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
@@ -181,23 +177,12 @@ function App() {
   const { theme, mode, setMode } = useTheme()
   const sync = useSync()
   const exit = useExit()
-  const git = useGit()
   const idle = useIdle()
 
   // Reset idle timer on any keyboard activity
   useKeyboard(() => {
     idle.touch()
   })
-
-  // RGB gradient for context percentage: swarm blue (#4a9eff) -> swarm red (#ff4a6b)
-  const contextColor = (percentage: number) => {
-    const t = Math.min(percentage, 100) / 100
-    // Swarm blue (74, 158, 255) -> Swarm red (255, 74, 107)
-    const r = Math.round(74 + t * 181)
-    const g = Math.round(158 - t * 84)
-    const b = Math.round(255 - t * 148)
-    return RGBA.fromInts(r, g, b)
-  }
 
   createEffect(() => {
     console.log(JSON.stringify(route.data))
@@ -237,6 +222,14 @@ function App() {
         })
       }
     }
+  })
+
+  // Update Hyprland session info when route/agent/model changes
+  createEffect(() => {
+    const sessionId = route.data.type === "session" ? route.data.sessionID : undefined
+    const agent = local.agent.current().name
+    const model = local.model.parsed().model
+    Hyprland.setSessionInfo({ sessionId, agent, model })
   })
 
   function handleAgentSwitch(direction: 1 | -1) {
@@ -505,76 +498,7 @@ function App() {
     }
   })
 
-  // Helper function to format model name
-  const formatModelName = (modelName: string) => {
-    // Remove "(latest)" or other parenthetical suffixes
-    let cleaned = modelName.replace(/\s*\([^)]*\)\s*/g, "").trim()
 
-    // Remove "Claude " prefix if it exists
-    cleaned = cleaned.replace(/^Claude\s+/i, "")
-
-    return cleaned.toLowerCase()
-  }
-
-  // Helper function to create ASCII progress bar
-  const createProgressBar = (percentage: number) => {
-    const total = 10
-    const filled = Math.round((percentage / 100) * total)
-    const empty = total - filled
-    return `[${"█".repeat(filled)}${"░".repeat(empty)}]`
-  }
-
-  // Get current session ID from route
-  const sessionID = createMemo(() => {
-    if (route.data.type === "session") {
-      return route.data.sessionID
-    }
-    return undefined
-  })
-
-  // Calculate context info
-  const contextInfo = createMemo(() => {
-    const sid = sessionID()
-    if (!sid) return undefined
-    const messages = sync.data.message[sid] ?? []
-    const last = messages.findLast((x) => x.role === "assistant" && x.tokens.output > 0) as AssistantMessage
-    if (!last) return undefined
-    const total =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    const model = sync.data.provider.find((x) => x.id === last.providerID)?.models[last.modelID]
-    if (!model?.limit.context) return undefined
-    const percentage = Math.round((total / model.limit.context) * 100)
-    return {
-      total,
-      percentage,
-      bar: createProgressBar(percentage),
-    }
-  })
-
-  // Helper to truncate text with ellipsis
-  const truncate = (str: string, maxLen: number) => {
-    if (str.length <= maxLen) return str
-    return str.substring(0, maxLen - 1) + "…"
-  }
-
-  // Format git dirty files - show filenames if space, otherwise just count
-  const gitFilesDisplay = createMemo(() => {
-    const status = git.status()
-    if (status.dirty === 0) return ""
-    const files = status.files
-    if (files.length === 0) return `+${status.dirty}`
-    const joined = files.join(",")
-    // Max 20 chars for files, truncate if needed
-    if (joined.length > 20) return truncate(joined, 20)
-    return joined
-  })
-
-  // Calculate available width for dynamic sizing
-  const availableWidth = createMemo(() => {
-    const width = dimensions().width
-    // Reserve space for logo (10) + agent name (~15) + padding
-    return Math.max(0, width - 35)
-  })
 
   return (
     <box
@@ -605,53 +529,7 @@ function App() {
           </Match>
         </Switch>
       </box>
-      <box height={1} flexDirection="row" justifyContent="space-between" flexShrink={0}>
-        {/* LEFT: swarm + git info */}
-        <box flexDirection="row" flexShrink={1} minWidth={0}>
-          <box flexDirection="row" paddingLeft={1} paddingRight={1} flexShrink={0} gap={1}>
-            <text fg={theme.text} attributes={TextAttributes.BOLD}>
-              swarm
-            </text>
-            <SwarmIndicator />
-          </box>
-          <BackgroundAgentIndicator />
-          <HyprlandIndicator />
-          <Show when={git.status().enabled}>
-            <box flexDirection="row" paddingLeft={1} flexShrink={1} gap={1}>
-              <text fg={theme.primary}>{git.status().branch}</text>
-              <Show when={git.status().dirty > 0}>
-                <text fg={theme.textMuted}>({gitFilesDisplay()})</text>
-              </Show>
-              <Show when={git.status().untracked.length > 0}>
-                <text fg={theme.warning}>?{git.status().untracked.length}</text>
-              </Show>
-              <Show when={git.status().ahead > 0 || git.status().behind > 0}>
-                <text fg={theme.textMuted}>
-                  {git.status().ahead > 0 ? ` 󰄿${git.status().ahead}` : ""}
-                  {git.status().behind > 0 ? ` 󰄼${git.status().behind}` : ""}
-                </text>
-              </Show>
-            </box>
-          </Show>
-        </box>
-        {/* RIGHT: model + context + agent */}
-        <box flexDirection="row" flexShrink={0} gap={1} paddingLeft={1} paddingRight={1}>
-          <Switch>
-            <Match when={availableWidth() > 30}>
-              <text fg={theme.textMuted}>{truncate(formatModelName(local.model.parsed().model), 15)}</text>
-            </Match>
-          </Switch>
-          <Show when={contextInfo()}>
-            {(ctx) => <text fg={contextColor(ctx().percentage)}>{ctx().percentage}%</text>}
-          </Show>
-          <Show when={local.thinking.enabled}>
-            <text>
-              <ThinkingIndicator />
-            </text>
-          </Show>
-          <text fg={local.agent.color(local.agent.current().name)}>{truncate(local.agent.current().name, 12)}</text>
-        </box>
-      </box>
+      <UnifiedStatusBar />
     </box>
   )
 }
