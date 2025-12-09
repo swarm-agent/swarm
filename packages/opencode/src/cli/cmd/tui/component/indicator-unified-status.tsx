@@ -3,6 +3,7 @@ import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { useLocal } from "@tui/context/local"
 import { useGit } from "@tui/context/git"
+import { useRoute } from "@tui/context/route"
 import { Hyprland, type SessionEntry } from "@/hyprland"
 import { RoundedBorder } from "@tui/component/border"
 import { RGBA } from "@opentui/core"
@@ -15,11 +16,92 @@ const STATUS_ICONS = {
   idle: "",      // cod-dash
 }
 
-// Session block - floating pill with rounded border
-function SessionBlock(props: {
-  session: SessionEntry
-  isCurrent: boolean
-}) {
+// Current session block - uses live app data (instant, no lag)
+function CurrentSessionBlock(props: { hyprWorkspace?: number }) {
+  const { theme } = useTheme()
+  const sync = useSync()
+  const local = useLocal()
+  const route = useRoute()
+
+  // Live data from app state
+  const agent = () => local.agent.current().name
+  const model = () => local.model.parsed().model
+  const sessionId = () => route.data.type === "session" ? route.data.sessionID : undefined
+
+  // Agent color - live
+  const agentColor = () => {
+    const a = agent()
+    if (!a) return theme.primary
+    return local.agent.color(a)
+  }
+
+  // Context % for current session
+  const contextPct = createMemo(() => {
+    const sid = sessionId()
+    if (!sid) return undefined
+    const messages = sync.data.message[sid] ?? []
+    const last = messages.findLast((x) => x.role === "assistant" && x.tokens.output > 0) as AssistantMessage
+    if (!last) return undefined
+    const total = last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
+    const m = sync.data.provider.find((x) => x.id === last.providerID)?.models[last.modelID]
+    if (!m?.limit.context) return undefined
+    return Math.round((total / m.limit.context) * 100)
+  })
+
+  // Context color gradient: blue -> yellow -> red
+  const ctxColor = () => {
+    const pct = contextPct()
+    if (pct === undefined) return theme.textMuted
+    const t = Math.min(pct, 100) / 100
+    const r = Math.round(74 + t * 181)
+    const g = Math.round(158 - t * 84)
+    const b = Math.round(255 - t * 148)
+    return RGBA.fromInts(r, g, b)
+  }
+
+  // Short model name
+  const modelShort = () => {
+    const m = model()
+    if (!m) return undefined
+    let name = m.replace(/\s*\([^)]*\)\s*/g, "").trim()
+    name = name.replace(/^Claude\s+/i, "")
+    if (name.toLowerCase().includes("opus")) return "opus"
+    if (name.toLowerCase().includes("sonnet")) return "sonnet"
+    if (name.toLowerCase().includes("haiku")) return "haiku"
+    return name.toLowerCase().slice(0, 8)
+  }
+
+  return (
+    <box
+      border={["left", "right", "top", "bottom"]}
+      customBorderChars={RoundedBorder.customBorderChars}
+      borderColor={agentColor()}
+      paddingLeft={1}
+      paddingRight={1}
+      flexShrink={0}
+    >
+      <box flexDirection="row" gap={1}>
+        {/* Workspace */}
+        <text fg={theme.text}>W{props.hyprWorkspace ?? "?"}</text>
+        {/* Agent name */}
+        <Show when={agent()}>
+          <text fg={agentColor()}>{agent()}</text>
+        </Show>
+        {/* Model */}
+        <Show when={modelShort()}>
+          <text fg={theme.textMuted}>{modelShort()}</text>
+        </Show>
+        {/* Context % */}
+        <Show when={contextPct() !== undefined}>
+          <text fg={ctxColor()}>{contextPct()}%</text>
+        </Show>
+      </box>
+    </box>
+  )
+}
+
+// Other session block - reads from JSON (for other instances)
+function OtherSessionBlock(props: { session: SessionEntry }) {
   const { theme } = useTheme()
   const sync = useSync()
   const local = useLocal()
@@ -31,15 +113,8 @@ function SessionBlock(props: {
     return local.agent.color(agent)
   }
 
-  // Border color: ONLY focused gets agent color, others muted
-  const borderColor = () => {
-    if (props.isCurrent) return agentColor()
-    return theme.border
-  }
-
-  // Status indicator - show icon for non-focused sessions
+  // Status indicator
   const statusSymbol = () => {
-    if (props.isCurrent) return "" // Focused doesn't need icon, border tells story
     switch (props.session.status) {
       case "blocked": return STATUS_ICONS.blocked
       case "working": return STATUS_ICONS.working
@@ -79,43 +154,23 @@ function SessionBlock(props: {
     return RGBA.fromInts(r, g, b)
   }
 
-  // Short model name for focused session
-  const modelShort = () => {
-    const model = props.session.model
-    if (!model) return undefined
-    // Remove "Claude " prefix and "(latest)" suffix
-    let name = model.replace(/\s*\([^)]*\)\s*/g, "").trim()
-    name = name.replace(/^Claude\s+/i, "")
-    // Shorten common names
-    if (name.toLowerCase().includes("opus")) return "opus"
-    if (name.toLowerCase().includes("sonnet")) return "sonnet"
-    if (name.toLowerCase().includes("haiku")) return "haiku"
-    return name.toLowerCase().slice(0, 8)
-  }
-
   return (
     <box
       border={["left", "right", "top", "bottom"]}
       customBorderChars={RoundedBorder.customBorderChars}
-      borderColor={borderColor()}
+      borderColor={theme.border}
       paddingLeft={1}
       paddingRight={1}
       flexShrink={0}
     >
       <box flexDirection="row" gap={1}>
-        {/* Status icon (non-focused only) */}
-        <Show when={!props.isCurrent && statusSymbol()}>
-          <text fg={statusColor()}>{statusSymbol()}</text>
-        </Show>
+        {/* Status icon */}
+        <text fg={statusColor()}>{statusSymbol()}</text>
         {/* Workspace */}
         <text fg={theme.text}>W{props.session.hyprWorkspace ?? "?"}</text>
         {/* Agent name */}
         <Show when={props.session.agent}>
           <text fg={agentColor()}>{props.session.agent}</text>
-        </Show>
-        {/* Model (focused only) */}
-        <Show when={props.isCurrent && modelShort()}>
-          <text fg={theme.textMuted}>{modelShort()}</text>
         </Show>
         {/* Context % */}
         <Show when={contextPct() !== undefined}>
@@ -232,24 +287,29 @@ function SwarmBlock() {
 // Main unified status bar - floating waybar style
 export function UnifiedStatusBar() {
   const sync = useSync()
-  const [sessions, setSessions] = createSignal<SessionEntry[]>([])
+  const [otherSessions, setOtherSessions] = createSignal<SessionEntry[]>([])
+  const [currentWorkspace, setCurrentWorkspace] = createSignal<number | undefined>()
   const currentPid = process.pid
 
   // Check if hyprland multi-session is enabled
   const isHyprlandEnabled = () => sync.data.config.hyprland === true
 
-  // Poll for session updates
+  // Poll for OTHER sessions only (current session uses live app data)
   onMount(() => {
     const update = async () => {
       if (!isHyprlandEnabled()) {
-        setSessions([])
+        setOtherSessions([])
         return
       }
       const allSessions = await Hyprland.getSessions()
-      const sorted = allSessions.sort(
-        (a, b) => (a.hyprWorkspace ?? 999) - (b.hyprWorkspace ?? 999)
-      )
-      setSessions(sorted)
+      // Find current session's workspace
+      const current = allSessions.find(s => s.pid === currentPid)
+      setCurrentWorkspace(current?.hyprWorkspace ?? undefined)
+      // Filter out current session, sort by workspace
+      const others = allSessions
+        .filter(s => s.pid !== currentPid)
+        .sort((a, b) => (a.hyprWorkspace ?? 999) - (b.hyprWorkspace ?? 999))
+      setOtherSessions(others)
     }
 
     update()
@@ -264,17 +324,15 @@ export function UnifiedStatusBar() {
         <SwarmBlock />
         <BackgroundAgentsBlock />
         
-        {/* Session blocks - only if hyprland enabled */}
-        <Show when={sessions().length > 0}>
-          <For each={sessions()}>
-            {(session) => (
-              <SessionBlock
-                session={session}
-                isCurrent={session.pid === currentPid}
-              />
-            )}
-          </For>
+        {/* Current session - always shown if hyprland enabled, uses LIVE data */}
+        <Show when={isHyprlandEnabled()}>
+          <CurrentSessionBlock hyprWorkspace={currentWorkspace()} />
         </Show>
+        
+        {/* Other sessions - from JSON */}
+        <For each={otherSessions()}>
+          {(session) => <OtherSessionBlock session={session} />}
+        </For>
       </box>
 
       {/* RIGHT: Git info */}

@@ -101,10 +101,15 @@ async function readSessions(): Promise<SessionEntry[]> {
 }
 
 async function writeSessions(sessions: SessionEntry[]) {
-  await ensureDir()
-  const tmpFile = `${SESSIONS_FILE}.tmp.${process.pid}`
-  await fs.writeFile(tmpFile, JSON.stringify({ sessions }, null, 2))
-  await fs.rename(tmpFile, SESSIONS_FILE)
+  try {
+    await ensureDir()
+    const tmpFile = `${SESSIONS_FILE}.tmp.${process.pid}.${Date.now()}`
+    await fs.writeFile(tmpFile, JSON.stringify({ sessions }, null, 2))
+    await fs.rename(tmpFile, SESSIONS_FILE)
+  } catch (err) {
+    // Race condition or write failure - log but don't crash
+    log.info("writeSessions failed (race condition)", { error: String(err) })
+  }
 }
 
 async function getHyprlandInfo(): Promise<{ workspace: number; windowPid: number } | null> {
