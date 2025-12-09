@@ -5,6 +5,57 @@ import { Log } from "../util/log"
 
 const log = Log.create({ service: "hyprland" })
 
+const HYPR_SOCKET_DIR = `/run/user/${process.getuid?.() ?? 1000}/hypr`
+
+/**
+ * Find the active Hyprland instance signature by checking which socket dir
+ * has a valid .socket.sock file. Picks the newest one if multiple exist.
+ */
+async function findHyprlandInstance(): Promise<string | null> {
+  try {
+    const entries = await fs.readdir(HYPR_SOCKET_DIR)
+    if (entries.length === 0) return null
+
+    // Sort by the timestamp in the directory name (second number after underscore)
+    // Format: <signature>_<timestamp1>_<timestamp2>
+    const sorted = entries.sort((a, b) => {
+      const aMatch = a.match(/_(\d+)_(\d+)$/)
+      const bMatch = b.match(/_(\d+)_(\d+)$/)
+      const aTime = aMatch ? parseInt(aMatch[1]) : 0
+      const bTime = bMatch ? parseInt(bMatch[1]) : 0
+      return bTime - aTime // newest first
+    })
+
+    // Check each one for a valid socket
+    for (const dir of sorted) {
+      const socketPath = path.join(HYPR_SOCKET_DIR, dir, ".socket.sock")
+      try {
+        const stat = await fs.stat(socketPath)
+        if (stat.isSocket()) {
+          return dir
+        }
+      } catch {
+        // Socket doesn't exist, try next
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Get env with correct HYPRLAND_INSTANCE_SIGNATURE
+ */
+async function getHyprEnv(): Promise<Record<string, string> | null> {
+  const instance = await findHyprlandInstance()
+  if (!instance) return null
+  return {
+    ...process.env,
+    HYPRLAND_INSTANCE_SIGNATURE: instance,
+  } as Record<string, string>
+}
+
 export type SessionStatus = "idle" | "working" | "blocked"
 
 export interface SessionEntry {
@@ -54,9 +105,13 @@ async function writeSessions(sessions: SessionEntry[]) {
 
 async function getHyprlandInfo(): Promise<{ workspace: number; windowPid: number } | null> {
   try {
+    const env = await getHyprEnv()
+    if (!env) return null
+
     const proc = Bun.spawn(["hyprctl", "activewindow", "-j"], {
       stdout: "pipe",
       stderr: "pipe",
+      env,
     })
     const output = await new Response(proc.stdout).text()
     await proc.exited
@@ -82,9 +137,13 @@ async function getHyprlandInfo(): Promise<{ workspace: number; windowPid: number
 async function getHyprlandClients(): Promise<Map<number, number>> {
   const clients = new Map<number, number>()
   try {
+    const env = await getHyprEnv()
+    if (!env) return clients
+
     const proc = Bun.spawn(["hyprctl", "clients", "-j"], {
       stdout: "pipe",
       stderr: "pipe",
+      env,
     })
     const output = await new Response(proc.stdout).text()
     await proc.exited
