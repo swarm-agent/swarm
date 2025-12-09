@@ -1,4 +1,5 @@
 import { For, Show, createMemo, createSignal, onMount, onCleanup } from "solid-js"
+import os from "os"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { useLocal } from "@tui/context/local"
@@ -9,11 +10,11 @@ import { RoundedBorder } from "@tui/component/border"
 import { RGBA } from "@opentui/core"
 import type { AssistantMessage } from "@opencode-ai/sdk"
 
-// Status icons (nerd fonts)
+// Status icons (ASCII fallback - nerd fonts were broken)
 const STATUS_ICONS = {
-  working: "",   // fa-angle_right
-  blocked: "󰔷",  // md-triangle_outline
-  idle: "",      // cod-dash
+  working: "›",   // working indicator
+  blocked: "!",   // needs attention
+  idle: "-",      // idle
 }
 
 // Current session block - uses live app data (instant, no lag)
@@ -71,6 +72,9 @@ function CurrentSessionBlock(props: { hyprWorkspace?: number }) {
     return name.toLowerCase().slice(0, 8)
   }
 
+  // Current working directory (~ for home)
+  const cwd = () => process.cwd().replace(os.homedir(), "~")
+
   return (
     <box
       border={["left", "right", "top", "bottom"]}
@@ -83,6 +87,8 @@ function CurrentSessionBlock(props: { hyprWorkspace?: number }) {
       <box flexDirection="row" gap={1}>
         {/* Workspace */}
         <text fg={theme.text}>W{props.hyprWorkspace ?? "?"}</text>
+        {/* Filepath */}
+        <text fg={theme.textMuted}>{cwd()}</text>
         {/* Agent name */}
         <Show when={agent()}>
           <text fg={agentColor()}>{agent()}</text>
@@ -130,6 +136,17 @@ function OtherSessionBlock(props: { session: SessionEntry }) {
     }
   }
 
+  // Border color - red when blocked
+  const borderColor = () => {
+    return props.session.status === "blocked" ? theme.error : theme.border
+  }
+
+  // Full path from cwd (~ for home)
+  const projectPath = () => {
+    const cwd = props.session.cwd
+    return cwd ? cwd.replace(os.homedir(), "~") : undefined
+  }
+
   // Context % for this session
   const contextPct = createMemo(() => {
     const sid = props.session.sessionId
@@ -158,7 +175,7 @@ function OtherSessionBlock(props: { session: SessionEntry }) {
     <box
       border={["left", "right", "top", "bottom"]}
       customBorderChars={RoundedBorder.customBorderChars}
-      borderColor={theme.border}
+      borderColor={borderColor()}
       paddingLeft={1}
       paddingRight={1}
       flexShrink={0}
@@ -168,6 +185,10 @@ function OtherSessionBlock(props: { session: SessionEntry }) {
         <text fg={statusColor()}>{statusSymbol()}</text>
         {/* Workspace */}
         <text fg={theme.text}>W{props.session.hyprWorkspace ?? "?"}</text>
+        {/* Full path (dimmed) */}
+        <Show when={projectPath()}>
+          <text fg={theme.textMuted}>{projectPath()}</text>
+        </Show>
         {/* Agent name */}
         <Show when={props.session.agent}>
           <text fg={agentColor()}>{props.session.agent}</text>
@@ -244,46 +265,6 @@ function BackgroundAgentsBlock() {
   )
 }
 
-// Swarm connection indicator - floating pill
-function SwarmBlock() {
-  const sync = useSync()
-  const { theme } = useTheme()
-
-  const swarmStatus = () => sync.data.swarm.status
-
-  const borderColor = () => {
-    switch (swarmStatus()) {
-      case "active": return theme.success
-      case "failed": return theme.error
-      default: return theme.border
-    }
-  }
-
-  const statusSymbol = () => {
-    switch (swarmStatus()) {
-      case "active": return "●"
-      case "failed": return "✗"
-      default: return "○"
-    }
-  }
-
-  return (
-    <box
-      border={["left", "right", "top", "bottom"]}
-      customBorderChars={RoundedBorder.customBorderChars}
-      borderColor={borderColor()}
-      paddingLeft={1}
-      paddingRight={1}
-      flexShrink={0}
-    >
-      <box flexDirection="row" gap={1}>
-        <text fg={theme.textMuted}>swarm</text>
-        <text fg={borderColor()}>{statusSymbol()}</text>
-      </box>
-    </box>
-  )
-}
-
 // Main unified status bar - floating waybar style
 export function UnifiedStatusBar() {
   const sync = useSync()
@@ -319,9 +300,8 @@ export function UnifiedStatusBar() {
 
   return (
     <box height={3} flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
-      {/* LEFT: Swarm + Background agents + Session blocks */}
+      {/* LEFT: Background agents + Session blocks */}
       <box flexDirection="row" gap={1} alignItems="center">
-        <SwarmBlock />
         <BackgroundAgentsBlock />
         
         {/* Current session - always shown if hyprland enabled, uses LIVE data */}
