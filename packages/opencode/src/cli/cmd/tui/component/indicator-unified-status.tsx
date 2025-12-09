@@ -3,13 +3,12 @@ import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { useLocal } from "@tui/context/local"
 import { useGit } from "@tui/context/git"
-import { useRoute } from "@tui/context/route"
 import { Hyprland, type SessionEntry } from "@/hyprland"
+import { RoundedBorder } from "@tui/component/border"
 import { RGBA } from "@opentui/core"
 import type { AssistantMessage } from "@opencode-ai/sdk"
-import { BackgroundAgentSpinner, ThinkingIndicator } from "@tui/ui/tool-animations"
 
-// Hyprland workspace session block - RICH INFO
+// Session block - floating pill with rounded border
 function SessionBlock(props: {
   session: SessionEntry
   isCurrent: boolean
@@ -18,15 +17,7 @@ function SessionBlock(props: {
   const sync = useSync()
   const local = useLocal()
 
-  // Status colors
-  const statusColor = () => {
-    switch (props.session.status) {
-      case "blocked": return theme.warning
-      case "working": return theme.success
-      default: return theme.textMuted
-    }
-  }
-
+  // Status indicator
   const statusSymbol = () => {
     switch (props.session.status) {
       case "blocked": return "!"
@@ -35,15 +26,30 @@ function SessionBlock(props: {
     }
   }
 
-  // Background: highlighted for current
-  const bgColor = () => {
-    if (props.isCurrent) {
-      return RGBA.fromInts(60, 65, 85, 255) // Highlighted blue-gray
+  const statusColor = () => {
+    switch (props.session.status) {
+      case "blocked": return theme.warning
+      case "working": return theme.success
+      default: return theme.textMuted
     }
-    return RGBA.fromInts(40, 44, 62, 255) // Dark gray
   }
 
-  // Calculate context % using sessionId
+  // Agent color
+  const agentColor = () => {
+    const agent = props.session.agent
+    if (!agent) return theme.primary
+    return local.agent.color(agent)
+  }
+
+  // Border color: agent color if focused, status-tinted if working/blocked, muted otherwise
+  const borderColor = () => {
+    if (props.isCurrent) return agentColor()
+    if (props.session.status === "blocked") return theme.warning
+    if (props.session.status === "working") return theme.success
+    return theme.border
+  }
+
+  // Context % for this session
   const contextPct = createMemo(() => {
     const sid = props.session.sessionId
     if (!sid) return undefined
@@ -56,7 +62,7 @@ function SessionBlock(props: {
     return Math.round((total / model.limit.context) * 100)
   })
 
-  // Context color gradient: blue -> red
+  // Context color gradient: blue -> yellow -> red
   const ctxColor = () => {
     const pct = contextPct()
     if (pct === undefined) return theme.textMuted
@@ -67,74 +73,52 @@ function SessionBlock(props: {
     return RGBA.fromInts(r, g, b)
   }
 
-  // Agent color
-  const agentColor = () => {
-    const agent = props.session.agent
-    if (!agent) return theme.textMuted
-    return local.agent.color(agent)
+  // Short model name for focused session
+  const modelShort = () => {
+    const model = props.session.model
+    if (!model) return undefined
+    // Remove "Claude " prefix and "(latest)" suffix
+    let name = model.replace(/\s*\([^)]*\)\s*/g, "").trim()
+    name = name.replace(/^Claude\s+/i, "")
+    // Shorten common names
+    if (name.toLowerCase().includes("opus")) return "opus"
+    if (name.toLowerCase().includes("sonnet")) return "sonnet"
+    if (name.toLowerCase().includes("haiku")) return "haiku"
+    return name.toLowerCase().slice(0, 8)
   }
 
   return (
     <box
-      backgroundColor={bgColor()}
+      border={["left", "right", "top", "bottom"]}
+      customBorderChars={RoundedBorder.customBorderChars}
+      borderColor={borderColor()}
       paddingLeft={1}
       paddingRight={1}
-      flexDirection="row"
-      gap={1}
       flexShrink={0}
     >
-      {/* Workspace indicator */}
-      <text fg={props.isCurrent ? theme.primary : theme.text}>
-        {props.isCurrent ? "*" : ""}W{props.session.hyprWorkspace ?? "?"}
-      </text>
-      {/* Status dot */}
-      <text fg={statusColor()}>{statusSymbol()}</text>
-      {/* Agent name */}
-      <Show when={props.session.agent}>
-        <text fg={agentColor()}>{props.session.agent}</text>
-      </Show>
-      {/* Context % */}
-      <Show when={contextPct() !== undefined}>
-        <text fg={ctxColor()}>{contextPct()}%</text>
-      </Show>
+      <box flexDirection="row" gap={1}>
+        {/* Status dot */}
+        <text fg={statusColor()}>{statusSymbol()}</text>
+        {/* Workspace */}
+        <text fg={theme.text}>W{props.session.hyprWorkspace ?? "?"}</text>
+        {/* Agent name */}
+        <Show when={props.session.agent}>
+          <text fg={agentColor()}>{props.session.agent}</text>
+        </Show>
+        {/* Model (focused only) */}
+        <Show when={props.isCurrent && modelShort()}>
+          <text fg={theme.textMuted}>{modelShort()}</text>
+        </Show>
+        {/* Context % */}
+        <Show when={contextPct() !== undefined}>
+          <text fg={ctxColor()}>{contextPct()}%</text>
+        </Show>
+      </box>
     </box>
   )
 }
 
-// Background agents block
-function BackgroundAgentsBlock() {
-  const sync = useSync()
-  const { theme } = useTheme()
-
-  const running = createMemo(() => sync.data.backgroundAgent.filter((a) => a.status === "running"))
-
-  const state = createMemo(() => {
-    const count = running().length
-    if (count >= 3) return "busy" as const
-    if (count >= 1) return "active" as const
-    return "idle" as const
-  })
-
-  return (
-    <Show when={running().length > 0}>
-      <box
-        backgroundColor={RGBA.fromInts(50, 55, 75, 255)}
-        paddingLeft={1}
-        paddingRight={1}
-        flexDirection="row"
-        gap={1}
-        flexShrink={0}
-      >
-        <BackgroundAgentSpinner state={state()} />
-        <text fg={theme.textMuted}>
-          {running().length}bg
-        </text>
-      </box>
-    </Show>
-  )
-}
-
-// Git status block
+// Git status block - floating pill
 function GitBlock() {
   const git = useGit()
   const { theme } = useTheme()
@@ -144,118 +128,71 @@ function GitBlock() {
   return (
     <Show when={status().enabled}>
       <box
-        backgroundColor={RGBA.fromInts(45, 50, 70, 255)}
+        border={["left", "right", "top", "bottom"]}
+        customBorderChars={RoundedBorder.customBorderChars}
+        borderColor={theme.border}
         paddingLeft={1}
         paddingRight={1}
-        flexDirection="row"
-        gap={1}
-        flexShrink={1}
+        flexShrink={0}
       >
-        <text fg={theme.primary}>{status().branch}</text>
-        <Show when={status().dirty > 0}>
-          <text fg={theme.warning}>~{status().dirty}</text>
-        </Show>
-        <Show when={status().untracked.length > 0}>
-          <text fg={theme.warning}>?{status().untracked.length}</text>
-        </Show>
-        <Show when={status().ahead > 0}>
-          <text fg={theme.success}>↑{status().ahead}</text>
-        </Show>
-        <Show when={status().behind > 0}>
-          <text fg={theme.error}>↓{status().behind}</text>
-        </Show>
+        <box flexDirection="row" gap={1}>
+          <text fg={theme.primary}>{status().branch}</text>
+          <Show when={status().dirty > 0}>
+            <text fg={theme.warning}>~{status().dirty}</text>
+          </Show>
+          <Show when={status().untracked.length > 0}>
+            <text fg={theme.warning}>?{status().untracked.length}</text>
+          </Show>
+          <Show when={status().ahead > 0}>
+            <text fg={theme.success}>↑{status().ahead}</text>
+          </Show>
+          <Show when={status().behind > 0}>
+            <text fg={theme.error}>↓{status().behind}</text>
+          </Show>
+        </box>
       </box>
     </Show>
   )
 }
 
-// Current session block - shows model, context%, thinking, agent
-function AgentBlock() {
-  const local = useLocal()
+// Background agents indicator - floating pill
+function BackgroundAgentsBlock() {
   const sync = useSync()
-  const route = useRoute()
   const { theme } = useTheme()
 
-  // Get current session ID
-  const sessionID = createMemo(() => {
-    if (route.data.type === "session") return route.data.sessionID
-    return undefined
-  })
-
-  // Calculate context %
-  const contextInfo = createMemo(() => {
-    const sid = sessionID()
-    if (!sid) return undefined
-    const messages = sync.data.message[sid] ?? []
-    const last = messages.findLast((x) => x.role === "assistant" && x.tokens.output > 0) as AssistantMessage
-    if (!last) return undefined
-    const total = last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    const model = sync.data.provider.find((x) => x.id === last.providerID)?.models[last.modelID]
-    if (!model?.limit.context) return undefined
-    return Math.round((total / model.limit.context) * 100)
-  })
-
-  // Context color gradient: blue -> red
-  const contextColor = () => {
-    const pct = contextInfo()
-    if (pct === undefined) return theme.textMuted
-    const t = Math.min(pct, 100) / 100
-    const r = Math.round(74 + t * 181)
-    const g = Math.round(158 - t * 84)
-    const b = Math.round(255 - t * 148)
-    return RGBA.fromInts(r, g, b)
-  }
-
-  // Format model name (remove "Claude " prefix, "(latest)" etc)
-  const modelName = () => {
-    let name = local.model.parsed().model
-    name = name.replace(/\s*\([^)]*\)\s*/g, "").trim()
-    name = name.replace(/^Claude\s+/i, "")
-    return name.toLowerCase()
-  }
+  const running = createMemo(() => sync.data.backgroundAgent.filter((a) => a.status === "running"))
 
   return (
-    <box
-      backgroundColor={RGBA.fromInts(55, 60, 80, 255)}
-      paddingLeft={1}
-      paddingRight={1}
-      flexDirection="row"
-      gap={1}
-      flexShrink={0}
-    >
-      {/* Model name */}
-      <text fg={theme.textMuted}>{modelName()}</text>
-      
-      {/* Context % */}
-      <Show when={contextInfo() !== undefined}>
-        <text fg={contextColor()}>{contextInfo()}%</text>
-      </Show>
-      
-      {/* Thinking indicator */}
-      <Show when={local.thinking.enabled}>
-        <text><ThinkingIndicator /></text>
-      </Show>
-      
-      {/* Agent name */}
-      <text fg={local.agent.color(local.agent.current().name)}>
-        {local.agent.current().name}
-      </text>
-    </box>
+    <Show when={running().length > 0}>
+      <box
+        border={["left", "right", "top", "bottom"]}
+        customBorderChars={RoundedBorder.customBorderChars}
+        borderColor={theme.accent}
+        paddingLeft={1}
+        paddingRight={1}
+        flexShrink={0}
+      >
+        <box flexDirection="row" gap={1}>
+          <text fg={theme.accent}>⚡</text>
+          <text fg={theme.text}>{running().length}</text>
+        </box>
+      </box>
+    </Show>
   )
 }
 
-// Swarm status block (logo + connection)
+// Swarm connection indicator - floating pill
 function SwarmBlock() {
   const sync = useSync()
   const { theme } = useTheme()
 
   const swarmStatus = () => sync.data.swarm.status
 
-  const statusColor = () => {
+  const borderColor = () => {
     switch (swarmStatus()) {
       case "active": return theme.success
       case "failed": return theme.error
-      default: return theme.textMuted
+      default: return theme.border
     }
   }
 
@@ -269,23 +206,24 @@ function SwarmBlock() {
 
   return (
     <box
-      backgroundColor={RGBA.fromInts(50, 55, 75, 255)}
+      border={["left", "right", "top", "bottom"]}
+      customBorderChars={RoundedBorder.customBorderChars}
+      borderColor={borderColor()}
       paddingLeft={1}
       paddingRight={1}
-      flexDirection="row"
-      gap={1}
       flexShrink={0}
     >
-      <text fg={theme.text}>swarm</text>
-      <text fg={statusColor()}>{statusSymbol()}</text>
+      <box flexDirection="row" gap={1}>
+        <text fg={theme.textMuted}>swarm</text>
+        <text fg={borderColor()}>{statusSymbol()}</text>
+      </box>
     </box>
   )
 }
 
-// Main unified status bar
+// Main unified status bar - floating waybar style
 export function UnifiedStatusBar() {
   const sync = useSync()
-  const route = useRoute()
   const [sessions, setSessions] = createSignal<SessionEntry[]>([])
   const currentPid = process.pid
 
@@ -311,22 +249,14 @@ export function UnifiedStatusBar() {
     onCleanup(() => clearInterval(interval))
   })
 
-  // Current session ID from route
-  const currentSessionId = createMemo(() => {
-    if (route.data.type === "session") {
-      return route.data.sessionID
-    }
-    return undefined
-  })
-
   return (
-    <box height={1} flexDirection="row" justifyContent="space-between" flexShrink={0}>
-      {/* LEFT SIDE: Swarm + Sessions */}
-      <box flexDirection="row" gap={1} flexShrink={1} minWidth={0}>
+    <box height={3} flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
+      {/* LEFT: Swarm + Background agents + Session blocks */}
+      <box flexDirection="row" gap={1} alignItems="center">
         <SwarmBlock />
         <BackgroundAgentsBlock />
         
-        {/* Session blocks - only if hyprland multi-session enabled */}
+        {/* Session blocks - only if hyprland enabled */}
         <Show when={sessions().length > 0}>
           <For each={sessions()}>
             {(session) => (
@@ -339,10 +269,9 @@ export function UnifiedStatusBar() {
         </Show>
       </box>
 
-      {/* RIGHT SIDE: Git + Agent */}
-      <box flexDirection="row" gap={1} flexShrink={0}>
+      {/* RIGHT: Git info */}
+      <box flexDirection="row" gap={1} alignItems="center">
         <GitBlock />
-        <AgentBlock />
       </box>
     </box>
   )
