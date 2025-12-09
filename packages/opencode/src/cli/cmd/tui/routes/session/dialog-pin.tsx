@@ -1,13 +1,15 @@
 import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../../context/theme"
 import { useDialog } from "../../ui/dialog"
-import { createSignal, onMount } from "solid-js"
+import { createSignal, createMemo, createEffect, on, onMount, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { Permission } from "@/permission"
 import { useSDK } from "../../context/sdk"
 
 export type DialogPinProps = {
-  permission: Permission.Info
+  // Use getter function to allow reactive updates when permissions change
+  // This allows the same component to handle multiple sequential PIN requests
+  getPinPermission: () => Permission.Info | undefined
   sessionID: string
 }
 
@@ -19,12 +21,34 @@ export function DialogPin(props: DialogPinProps) {
   const [pin, setPin] = createSignal("")
   const [error, setError] = createSignal("")
   const [submitting, setSubmitting] = createSignal(false)
+  // Track the last permission ID we submitted for to avoid double-submits
+  const [lastSubmittedId, setLastSubmittedId] = createSignal<string | null>(null)
+
+  // Access permission reactively through the getter
+  const permission = createMemo(() => props.getPinPermission())
+
+  // Reset state when permission changes (new PIN request comes in)
+  createEffect(
+    on(
+      () => permission()?.id,
+      (newId, oldId) => {
+        if (newId && newId !== oldId) {
+          // New permission arrived - reset all input state
+          setPin("")
+          setError("")
+          setSubmitting(false)
+        }
+      },
+    ),
+  )
 
   onMount(() => {
     dialog.setSize("medium")
   })
 
   useKeyboard((evt) => {
+    const perm = permission()
+    if (!perm) return // No permission to handle
     if (submitting()) return
 
     // Handle printable characters for PIN input
@@ -63,13 +87,19 @@ export function DialogPin(props: DialogPinProps) {
   })
 
   function submit() {
+    const perm = permission()
+    if (!perm) return
+    // Prevent double-submit for same permission
+    if (lastSubmittedId() === perm.id) return
+
     setSubmitting(true)
     setError("")
+    setLastSubmittedId(perm.id)
 
     sdk.client
       .postSessionIdPermissionsPermissionId({
         path: {
-          permissionID: props.permission.id,
+          permissionID: perm.id,
           id: props.sessionID,
         },
         body: {
@@ -81,14 +111,18 @@ export function DialogPin(props: DialogPinProps) {
         setError("Failed to verify PIN")
         setPin("")
         setSubmitting(false)
+        setLastSubmittedId(null) // Allow retry
       })
   }
 
   function cancel() {
+    const perm = permission()
+    if (!perm) return
+
     sdk.client
       .postSessionIdPermissionsPermissionId({
         path: {
-          permissionID: props.permission.id,
+          permissionID: perm.id,
           id: props.sessionID,
         },
         body: {
@@ -102,63 +136,69 @@ export function DialogPin(props: DialogPinProps) {
     // in dialog.tsx handles closing the dialog to prevent double-clear race conditions
   }
 
-  // Get command from metadata
-  const command = () => (props.permission.metadata.command as string) || props.permission.title
+  // Get command from metadata - reactive to permission changes
+  const command = createMemo(() => {
+    const perm = permission()
+    if (!perm) return ""
+    return (perm.metadata.command as string) || perm.title
+  })
 
   return (
-    <box flexDirection="column" padding={2} gap={1}>
-      {/* Header */}
-      <box flexDirection="row" gap={1}>
-        <text attributes={TextAttributes.BOLD}>
-          <span style={{ fg: theme.warning }}>󰌾 </span>
-          <span style={{ fg: theme.text }}>PIN Required</span>
-        </text>
-      </box>
-
-      {/* Command being protected */}
-      <box paddingTop={1}>
-        <text fg={theme.textMuted}>Command:</text>
-      </box>
-      <box paddingLeft={2}>
-        <text fg={theme.text}>{command()}</text>
-      </box>
-
-      {/* PIN Input Display */}
-      <box paddingTop={1}>
-        <text fg={theme.textMuted}>Enter PIN:</text>
-      </box>
-      <box paddingLeft={2} flexDirection="row">
-        <text>
-          <span style={{ fg: theme.primary }}>{"•".repeat(pin().length)}</span>
-          <span style={{ fg: theme.primary, attributes: TextAttributes.BLINK }}>▌</span>
-        </text>
-      </box>
-
-      {/* Error Message */}
-      {error() && (
-        <box paddingTop={1}>
-          <text fg={theme.error}>{error()}</text>
+    <Show when={permission()} fallback={<box />}>
+      <box flexDirection="column" padding={2} gap={1}>
+        {/* Header */}
+        <box flexDirection="row" gap={1}>
+          <text attributes={TextAttributes.BOLD}>
+            <span style={{ fg: theme.warning }}>󰌾 </span>
+            <span style={{ fg: theme.text }}>PIN Required</span>
+          </text>
         </box>
-      )}
 
-      {/* Submitting indicator */}
-      {submitting() && (
+        {/* Command being protected */}
         <box paddingTop={1}>
-          <text fg={theme.textMuted}>Verifying...</text>
+          <text fg={theme.textMuted}>Command:</text>
         </box>
-      )}
+        <box paddingLeft={2}>
+          <text fg={theme.text}>{command()}</text>
+        </box>
 
-      {/* Actions */}
-      <box flexDirection="row" gap={3} paddingTop={2}>
-        <text>
-          <span style={{ fg: theme.primary }}>↵</span>
-          <span style={{ fg: theme.textMuted }}> submit</span>
-        </text>
-        <text>
-          <span style={{ fg: theme.textMuted }}>esc</span>
-          <span style={{ fg: theme.textMuted }}> cancel</span>
-        </text>
+        {/* PIN Input Display */}
+        <box paddingTop={1}>
+          <text fg={theme.textMuted}>Enter PIN:</text>
+        </box>
+        <box paddingLeft={2} flexDirection="row">
+          <text>
+            <span style={{ fg: theme.primary }}>{"•".repeat(pin().length)}</span>
+            <span style={{ fg: theme.primary, attributes: TextAttributes.BLINK }}>▌</span>
+          </text>
+        </box>
+
+        {/* Error Message */}
+        <Show when={error()}>
+          <box paddingTop={1}>
+            <text fg={theme.error}>{error()}</text>
+          </box>
+        </Show>
+
+        {/* Submitting indicator */}
+        <Show when={submitting()}>
+          <box paddingTop={1}>
+            <text fg={theme.textMuted}>Verifying...</text>
+          </box>
+        </Show>
+
+        {/* Actions */}
+        <box flexDirection="row" gap={3} paddingTop={2}>
+          <text>
+            <span style={{ fg: theme.primary }}>↵</span>
+            <span style={{ fg: theme.textMuted }}> submit</span>
+          </text>
+          <text>
+            <span style={{ fg: theme.textMuted }}>esc</span>
+            <span style={{ fg: theme.textMuted }}> cancel</span>
+          </text>
+        </box>
       </box>
-    </box>
+    </Show>
   )
 }

@@ -304,10 +304,16 @@ export function Session() {
       }
 
       // Check if this is a PIN permission - route to PIN dialog
+      // Use getter function so the same component instance handles multiple sequential PINs
       const pinPerm = modalPerms.find((p) => p.type === "pin")
       if (pinPerm) {
         dialog.replace(
-          () => <DialogPin permission={pinPerm} sessionID={route.sessionID} />,
+          () => (
+            <DialogPin
+              getPinPermission={() => modalPermissions().find((p) => p.type === "pin")}
+              sessionID={route.sessionID}
+            />
+          ),
           handleClose,
           false, // Not fullscreen - PIN dialog is compact
         )
