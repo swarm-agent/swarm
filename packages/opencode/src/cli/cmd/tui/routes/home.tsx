@@ -8,6 +8,32 @@ import { Toast } from "../ui/toast"
 import { useArgs } from "../context/args"
 import { useRoute } from "../context/route"
 
+// Nerd font icons for status indicators
+const ICONS = {
+  // Working
+  chevron_right: "",
+  angle_right: "",
+  play: "",
+  arrow_right: "",
+  debug_start: "",
+  
+  // Blocked (triangles!)
+  triangle: "󰔶",
+  triangle_outline: "󰔷",
+  alert: "󰀦",
+  alert_outline: "󰀪",
+  warning: "",
+  error: "",
+  oct_alert: "",
+  
+  // Idle
+  circle: "",
+  circle_small: "",
+  circle_medium: "󰧞",
+  dash: "",
+  check: "",
+}
+
 let once = false
 
 function getRelativeTime(timestamp: number): string {
@@ -40,7 +66,6 @@ export function Home() {
       .filter((x) => x.parentID === undefined)
       .sort((a, b) => b.time.updated - a.time.updated)
 
-    // Build a map of parent -> children for quick lookup
     const childrenMap = new Map<string, typeof sync.data.session>()
     for (const session of sync.data.session) {
       if (session.parentID) {
@@ -50,13 +75,11 @@ export function Home() {
       }
     }
 
-    // Map parent sessions with children summary
     return parentSessions.slice(0, 5).map((session) => {
       const children = childrenMap.get(session.id) ?? []
 
       if (children.length === 0) return session
 
-      // Build children summary - show agent names from child titles
       const agentNames = children
         .map((child) => {
           const match = child.title.match(/@(\w+)\s+subagent/)
@@ -171,6 +194,46 @@ export function Home() {
       </Show>
 
       <Toast />
+
+      {/* Icon Focus Groups - TEMPORARY PREVIEW */}
+      <box width="100%" maxWidth={75} flexDirection="column" gap={1}>
+        <text fg={theme.textMuted}>─── Status Icon Focus Groups ───</text>
+        
+        <box flexDirection="row" gap={2}>
+          <text fg={theme.text}>SET A:</text>
+          <text fg={theme.success}>{ICONS.chevron_right} working</text>
+          <text fg={theme.error}>{ICONS.triangle} blocked</text>
+          <text fg={theme.textMuted}>{ICONS.circle_small} idle</text>
+        </box>
+        
+        <box flexDirection="row" gap={2}>
+          <text fg={theme.text}>SET B:</text>
+          <text fg={theme.success}>{ICONS.angle_right} working</text>
+          <text fg={theme.error}>{ICONS.alert} blocked</text>
+          <text fg={theme.textMuted}>(no idle)</text>
+        </box>
+        
+        <box flexDirection="row" gap={2}>
+          <text fg={theme.text}>SET C:</text>
+          <text fg={theme.success}>{ICONS.play} working</text>
+          <text fg={theme.error}>{ICONS.triangle_outline} blocked</text>
+          <text fg={theme.textMuted}>{ICONS.dash} idle</text>
+        </box>
+        
+        <box flexDirection="row" gap={2}>
+          <text fg={theme.text}>SET D:</text>
+          <text fg={theme.success}>{ICONS.arrow_right} working</text>
+          <text fg={theme.error}>{ICONS.oct_alert} blocked</text>
+          <text fg={theme.textMuted}>{ICONS.circle} idle</text>
+        </box>
+
+        <box flexDirection="row" gap={2}>
+          <text fg={theme.text}>SET E:</text>
+          <text fg={theme.success}>{ICONS.debug_start} working</text>
+          <text fg={theme.error}>{ICONS.alert_outline} blocked</text>
+          <text fg={theme.textMuted}>{ICONS.check} idle</text>
+        </box>
+      </box>
     </box>
   )
 }

@@ -8,6 +8,13 @@ import { RoundedBorder } from "@tui/component/border"
 import { RGBA } from "@opentui/core"
 import type { AssistantMessage } from "@opencode-ai/sdk"
 
+// Status icons (nerd fonts)
+const STATUS_ICONS = {
+  working: "",   // fa-angle_right
+  blocked: "󰔷",  // md-triangle_outline
+  idle: "",      // cod-dash
+}
+
 // Session block - floating pill with rounded border
 function SessionBlock(props: {
   session: SessionEntry
@@ -17,23 +24,6 @@ function SessionBlock(props: {
   const sync = useSync()
   const local = useLocal()
 
-  // Status indicator
-  const statusSymbol = () => {
-    switch (props.session.status) {
-      case "blocked": return "!"
-      case "working": return "●"
-      default: return "○"
-    }
-  }
-
-  const statusColor = () => {
-    switch (props.session.status) {
-      case "blocked": return theme.warning
-      case "working": return theme.success
-      default: return theme.textMuted
-    }
-  }
-
   // Agent color
   const agentColor = () => {
     const agent = props.session.agent
@@ -41,12 +31,28 @@ function SessionBlock(props: {
     return local.agent.color(agent)
   }
 
-  // Border color: agent color if focused, status-tinted if working/blocked, muted otherwise
+  // Border color: ONLY focused gets agent color, others muted
   const borderColor = () => {
     if (props.isCurrent) return agentColor()
-    if (props.session.status === "blocked") return theme.warning
-    if (props.session.status === "working") return theme.success
     return theme.border
+  }
+
+  // Status indicator - show icon for non-focused sessions
+  const statusSymbol = () => {
+    if (props.isCurrent) return "" // Focused doesn't need icon, border tells story
+    switch (props.session.status) {
+      case "blocked": return STATUS_ICONS.blocked
+      case "working": return STATUS_ICONS.working
+      default: return STATUS_ICONS.idle
+    }
+  }
+
+  const statusColor = () => {
+    switch (props.session.status) {
+      case "blocked": return theme.error
+      case "working": return agentColor()
+      default: return theme.textMuted
+    }
   }
 
   // Context % for this session
@@ -97,8 +103,10 @@ function SessionBlock(props: {
       flexShrink={0}
     >
       <box flexDirection="row" gap={1}>
-        {/* Status dot */}
-        <text fg={statusColor()}>{statusSymbol()}</text>
+        {/* Status icon (non-focused only) */}
+        <Show when={!props.isCurrent && statusSymbol()}>
+          <text fg={statusColor()}>{statusSymbol()}</text>
+        </Show>
         {/* Workspace */}
         <text fg={theme.text}>W{props.session.hyprWorkspace ?? "?"}</text>
         {/* Agent name */}
