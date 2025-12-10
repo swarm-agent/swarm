@@ -85,8 +85,10 @@ function CurrentSessionBlock(props: { hyprWorkspace?: number }) {
       flexShrink={0}
     >
       <box flexDirection="row" gap={1}>
-        {/* Workspace */}
-        <text fg={theme.text}>W{props.hyprWorkspace ?? "?"}</text>
+        {/* Workspace - only show if Hyprland detected it */}
+        <Show when={props.hyprWorkspace !== undefined}>
+          <text fg={theme.text}>W{props.hyprWorkspace}</text>
+        </Show>
         {/* Filepath */}
         <text fg={theme.textMuted}>{cwd()}</text>
         {/* Agent name */}
@@ -267,23 +269,15 @@ function BackgroundAgentsBlock() {
 
 // Main unified status bar - floating waybar style
 export function UnifiedStatusBar() {
-  const sync = useSync()
   const [otherSessions, setOtherSessions] = createSignal<SessionEntry[]>([])
   const [currentWorkspace, setCurrentWorkspace] = createSignal<number | undefined>()
   const currentPid = process.pid
 
-  // Check if hyprland multi-session is enabled
-  const isHyprlandEnabled = () => sync.data.config.hyprland === true
-
-  // Poll for OTHER sessions only (current session uses live app data)
+  // Poll for sessions and workspace info (auto-detects Hyprland availability)
   onMount(() => {
     const update = async () => {
-      if (!isHyprlandEnabled()) {
-        setOtherSessions([])
-        return
-      }
       const allSessions = await Hyprland.getSessions()
-      // Find current session's workspace
+      // Find current session's workspace (may be undefined if Hyprland unavailable)
       const current = allSessions.find(s => s.pid === currentPid)
       setCurrentWorkspace(current?.hyprWorkspace ?? undefined)
       // Filter out current session, sort by workspace
@@ -304,12 +298,10 @@ export function UnifiedStatusBar() {
       <box flexDirection="row" gap={1} alignItems="center">
         <BackgroundAgentsBlock />
         
-        {/* Current session - always shown if hyprland enabled, uses LIVE data */}
-        <Show when={isHyprlandEnabled()}>
-          <CurrentSessionBlock hyprWorkspace={currentWorkspace()} />
-        </Show>
+        {/* Current session - always shown, uses LIVE data */}
+        <CurrentSessionBlock hyprWorkspace={currentWorkspace()} />
         
-        {/* Other sessions - from JSON */}
+        {/* Other sessions - from JSON (only shows when Hyprland available and sessions exist) */}
         <For each={otherSessions()}>
           {(session) => <OtherSessionBlock session={session} />}
         </For>

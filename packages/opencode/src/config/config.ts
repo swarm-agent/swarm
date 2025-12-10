@@ -672,7 +672,7 @@ export namespace Config {
         .boolean()
         .optional()
         .describe(
-          "Enable Hyprland workspace session tracking. Shows session status in TUI and writes to ~/.config/swarm/sessions.json for external tools. Default: false.",
+          "@deprecated Hyprland workspace tracking now auto-detects. This option is ignored. Session info (filepath, agent, model) always shows; workspace number shows when Hyprland is available.",
         ),
       tools: z.record(z.string(), z.boolean()).optional(),
       experimental: z

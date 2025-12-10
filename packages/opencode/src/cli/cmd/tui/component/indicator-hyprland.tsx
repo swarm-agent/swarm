@@ -1,24 +1,15 @@
 import { useTheme } from "@tui/context/theme"
-import { useSync } from "@tui/context/sync"
 import { For, Show, createSignal, onMount, onCleanup } from "solid-js"
 import { Hyprland, type SessionEntry } from "@/hyprland"
 
 export function HyprlandIndicator() {
   const { theme } = useTheme()
-  const sync = useSync()
   const [sessions, setSessions] = createSignal<SessionEntry[]>([])
   const currentPid = process.pid
 
-  // Check if hyprland is enabled in config
-  const isEnabled = () => sync.data.config.hyprland === true
-
-  // Poll for session updates
+  // Poll for session updates (auto-detects Hyprland availability)
   onMount(() => {
     const update = async () => {
-      if (!isEnabled()) {
-        setSessions([])
-        return
-      }
       const allSessions = await Hyprland.getSessions()
       // Show ALL sessions (including current), sorted by workspace
       const sorted = allSessions.sort(

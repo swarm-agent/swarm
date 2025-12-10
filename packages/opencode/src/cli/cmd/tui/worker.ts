@@ -45,12 +45,11 @@ upgrade()
 
 let server: Bun.Server<undefined>
 export const rpc = {
-  async server(input: { port: number; hostname: string; hyprland?: boolean }) {
+  async server(input: { port: number; hostname: string }) {
     if (server) await server.stop(true)
     try {
       server = Server.listen(input)
-      // Initialize and register with Hyprland session tracker if enabled
-      Hyprland.init(input.hyprland ?? false)
+      // Register with Hyprland session tracker (auto-detects Hyprland availability)
       await Hyprland.register(process.cwd())
       return {
         url: server.url.toString(),

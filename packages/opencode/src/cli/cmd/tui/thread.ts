@@ -3,37 +3,11 @@ import { tui } from "./app"
 import { Rpc } from "@/util/rpc"
 import { type rpc } from "./worker"
 import path from "path"
-import os from "os"
 import { UI } from "@/cli/ui"
 import { iife } from "@/util/iife"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
-}
-
-// Quick check for hyprland config without full Config loading
-async function getHyprlandConfig(cwd: string): Promise<boolean> {
-  const configPaths = [
-    path.join(os.homedir(), ".config", "opencode", "opencode.json"),
-    path.join(os.homedir(), ".config", "opencode", "opencode.jsonc"),
-    path.join(cwd, ".opencode", "opencode.json"),
-    path.join(cwd, ".opencode", "opencode.jsonc"),
-    path.join(cwd, "opencode.json"),
-    path.join(cwd, "opencode.jsonc"),
-  ]
-
-  for (const configPath of configPaths) {
-    try {
-      const content = await Bun.file(configPath).text()
-      // Simple regex to find hyprland: true (handles both JSON and JSONC)
-      if (/"hyprland"\s*:\s*true/.test(content)) {
-        return true
-      }
-    } catch {
-      // File doesn't exist, continue
-    }
-  }
-  return false
 }
 
 export const TuiThreadCommand = cmd({
@@ -108,11 +82,9 @@ export const TuiThreadCommand = cmd({
     process.on("unhandledRejection", (e) => {
       console.error(e)
     })
-    const hyprland = await getHyprlandConfig(cwd)
     const server = await client.call("server", {
       port: args.port,
       hostname: args.hostname,
-      hyprland,
     })
     const prompt = await iife(async () => {
       const piped = !process.stdin.isTTY ? await Bun.stdin.text() : undefined
