@@ -194,46 +194,6 @@ export function Home() {
       </Show>
 
       <Toast />
-
-      {/* Icon Focus Groups - TEMPORARY PREVIEW */}
-      <box width="100%" maxWidth={75} flexDirection="column" gap={1}>
-        <text fg={theme.textMuted}>─── Status Icon Focus Groups ───</text>
-        
-        <box flexDirection="row" gap={2}>
-          <text fg={theme.text}>SET A:</text>
-          <text fg={theme.success}>{ICONS.chevron_right} working</text>
-          <text fg={theme.error}>{ICONS.triangle} blocked</text>
-          <text fg={theme.textMuted}>{ICONS.circle_small} idle</text>
-        </box>
-        
-        <box flexDirection="row" gap={2}>
-          <text fg={theme.text}>SET B:</text>
-          <text fg={theme.success}>{ICONS.angle_right} working</text>
-          <text fg={theme.error}>{ICONS.alert} blocked</text>
-          <text fg={theme.textMuted}>(no idle)</text>
-        </box>
-        
-        <box flexDirection="row" gap={2}>
-          <text fg={theme.text}>SET C:</text>
-          <text fg={theme.success}>{ICONS.play} working</text>
-          <text fg={theme.error}>{ICONS.triangle_outline} blocked</text>
-          <text fg={theme.textMuted}>{ICONS.dash} idle</text>
-        </box>
-        
-        <box flexDirection="row" gap={2}>
-          <text fg={theme.text}>SET D:</text>
-          <text fg={theme.success}>{ICONS.arrow_right} working</text>
-          <text fg={theme.error}>{ICONS.oct_alert} blocked</text>
-          <text fg={theme.textMuted}>{ICONS.circle} idle</text>
-        </box>
-
-        <box flexDirection="row" gap={2}>
-          <text fg={theme.text}>SET E:</text>
-          <text fg={theme.success}>{ICONS.debug_start} working</text>
-          <text fg={theme.error}>{ICONS.alert_outline} blocked</text>
-          <text fg={theme.textMuted}>{ICONS.check} idle</text>
-        </box>
-      </box>
     </box>
   )
 }
