@@ -28,7 +28,7 @@ export async function createOpencodeServer(options?: ServerOptions) {
     options ?? {},
   )
 
-  const proc = spawn(`opencode`, [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`], {
+  const proc = spawn(`swarm`, [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`], {
     signal: options.signal,
     env: {
       ...process.env,
@@ -45,7 +45,7 @@ export async function createOpencodeServer(options?: ServerOptions) {
       output += chunk.toString()
       const lines = output.split("\n")
       for (const line of lines) {
-        if (line.startsWith("opencode server listening")) {
+        if (line.startsWith("opencode server listening") || line.startsWith("swarm server listening")) {
           const match = line.match(/on\s+(https?:\/\/[^\s]+)/)
           if (!match) {
             throw new Error(`Failed to parse server url from output: ${line}`)
@@ -103,7 +103,7 @@ export function createOpencodeTui(options?: TuiOptions) {
     args.push(`--agent=${options.agent}`)
   }
 
-  const proc = spawn(`opencode`, args, {
+  const proc = spawn(`swarm`, args, {
     signal: options?.signal,
     stdio: "inherit",
     env: {
