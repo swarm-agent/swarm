@@ -519,13 +519,20 @@ export function UnifiedStatusBar() {
       const allSessions = await Hyprland.getSessions()
       const current = allSessions.find(s => s.pid === currentPid)
       setCurrentWorkspace(current?.hyprWorkspace ?? undefined)
-      const others = allSessions
-        .filter(s => s.pid !== currentPid)
-        .sort((a, b) => {
-          if (a.status === "blocked" && b.status !== "blocked") return -1
-          if (b.status === "blocked" && a.status !== "blocked") return 1
-          return (a.hyprWorkspace ?? 999) - (b.hyprWorkspace ?? 999)
-        })
+      // Sort ALL sessions by workspace number, current session included in the flow
+      const sorted = allSessions.sort((a, b) => {
+        const wsA = a.hyprWorkspace ?? 999
+        const wsB = b.hyprWorkspace ?? 999
+        if (wsA !== wsB) return wsA - wsB
+        // Current session first within same workspace
+        if (a.pid === currentPid) return -1
+        if (b.pid === currentPid) return 1
+        // Within same workspace, blocked sessions first
+        if (a.status === "blocked" && b.status !== "blocked") return -1
+        if (b.status === "blocked" && a.status !== "blocked") return 1
+        return 0
+      })
+      const others = sorted.filter(s => s.pid !== currentPid)
       setOtherSessions(others)
     }
     update()
@@ -576,17 +583,59 @@ export function UnifiedStatusBar() {
     })
   })
 
-  const visibleOtherSessions = createMemo(() => otherSessions().slice(0, layout().otherSessionCount))
-  const hiddenSessionCount = createMemo(() => otherSessions().length - layout().otherSessionCount)
+  // Build unified list: all sessions sorted by workspace, current marked
+  const allSessionsOrdered = createMemo(() => {
+    const others = otherSessions()
+    const ws = currentWorkspace()
+    const all: Array<{ type: "current" } | { type: "other"; session: SessionEntry }> = []
+
+    // Add current session placeholder
+    const currentEntry = { type: "current" as const, ws: ws ?? 999 }
+
+    // Combine and sort
+    const combined = [
+      ...others.map(s => ({ type: "other" as const, session: s, ws: s.hyprWorkspace ?? 999 })),
+      currentEntry,
+    ].sort((a, b) => a.ws - b.ws)
+
+    return combined
+  })
+
+  const visibleSessions = createMemo(() => {
+    const all = allSessionsOrdered()
+    // Count how many "other" sessions we can show
+    const maxOthers = layout().otherSessionCount
+    let othersShown = 0
+    const visible: typeof all = []
+
+    for (const item of all) {
+      if (item.type === "current") {
+        visible.push(item)
+      } else if (othersShown < maxOthers) {
+        visible.push(item)
+        othersShown++
+      }
+    }
+    return visible
+  })
+
+  const hiddenSessionCount = createMemo(() => {
+    const totalOthers = otherSessions().length
+    const maxOthers = layout().otherSessionCount
+    return Math.max(0, totalOthers - maxOthers)
+  })
 
   return (
     <box height={3} flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
       <box flexDirection="row" gap={1} alignItems="center">
         <ConnectionBlock />
         <BackgroundAgentsBlock layout={layout()} />
-        <CurrentSessionBlock hyprWorkspace={currentWorkspace()} layout={layout()} />
-        <For each={visibleOtherSessions()}>
-          {(session) => <OtherSessionBlock session={session} layout={layout()} />}
+        <For each={visibleSessions()}>
+          {(item) => (
+            item.type === "current"
+              ? <CurrentSessionBlock hyprWorkspace={currentWorkspace()} layout={layout()} />
+              : <OtherSessionBlock session={item.session} layout={layout()} />
+          )}
         </For>
         <Show when={hiddenSessionCount() > 0}>
           <HiddenSessionsIndicator count={hiddenSessionCount()} />
