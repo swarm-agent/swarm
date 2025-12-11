@@ -174,6 +174,7 @@ async function getHyprlandClients(): Promise<Map<number, number>> {
 /**
  * Parse a swarm terminal title into session info
  * Format: swarm:<status>:<agent>:<context>:<cwd>
+ * Or simple: swarm:<status>:<cwd>
  */
 function parseSwarmTitle(title: string): { status: SessionStatus; agent?: string; context?: string; cwd?: string } | null {
   if (!title.startsWith("swarm:")) return null
@@ -183,6 +184,14 @@ function parseSwarmTitle(title: string): { status: SessionStatus; agent?: string
 
   const status = parts[1] as SessionStatus
   if (!["idle", "working", "blocked"].includes(status)) return null
+
+  // Simple format: swarm:<status>:<cwd> (3 parts, third looks like a path)
+  if (parts.length === 3 && parts[2]?.startsWith("/")) {
+    return {
+      status,
+      cwd: parts[2],
+    }
+  }
 
   return {
     status,
