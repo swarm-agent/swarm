@@ -36,12 +36,8 @@ const STATUS_ICONS = {
   idle: "-",
 }
 
-// Connection type icons
-const CONNECTION_ICONS = {
-  local: "⌂",    // local session (house)
-  ssh: "⇄",      // SSH session (arrows)
-  remote: "☁",   // remote detected from title (cloud)
-}
+// Check if running in SSH session
+const IS_SSH = !!(process.env.SSH_CLIENT || process.env.SSH_TTY || process.env.SSH_CONNECTION)
 
 // ============================================================================
 // SMART LAYOUT SYSTEM - measures content, only reduces when needed
@@ -380,19 +376,6 @@ function OtherSessionBlock(props: { session: SessionEntry; layout: LayoutConfig 
     )
   }
 
-  // Connection icon: remote > ssh > local
-  const connectionIcon = () => {
-    if (props.session.remote) return CONNECTION_ICONS.remote
-    if (props.session.ssh) return CONNECTION_ICONS.ssh
-    return CONNECTION_ICONS.local
-  }
-
-  const connectionColor = () => {
-    if (props.session.remote) return theme.warning
-    if (props.session.ssh) return theme.info
-    return theme.textMuted
-  }
-
   return (
     <box
       border={["left", "right", "top", "bottom"]}
@@ -403,9 +386,10 @@ function OtherSessionBlock(props: { session: SessionEntry; layout: LayoutConfig 
       flexShrink={0}
     >
       <box flexDirection="row" gap={1}>
-        {/* Connection type icon (leftmost) */}
-        <text fg={connectionColor()}>{connectionIcon()}</text>
         <text fg={statusColor()}>{statusSymbol()}</text>
+        <Show when={props.session.remote}>
+          <text fg={theme.warning}>R</text>
+        </Show>
         <text fg={theme.text}>W{props.session.hyprWorkspace ?? "?"}</text>
         <Show when={props.layout.otherShowPath && projectPath()}>
           <text fg={theme.textMuted}>{projectPath()}</text>
@@ -460,6 +444,24 @@ function GitBlock(props: { layout: LayoutConfig }) {
         </box>
       </box>
     </Show>
+  )
+}
+
+// Connection indicator - shows if current session is local or SSH
+function ConnectionBlock() {
+  const { theme } = useTheme()
+
+  return (
+    <box
+      border={["left", "right", "top", "bottom"]}
+      customBorderChars={RoundedBorder.customBorderChars}
+      borderColor={theme.border}
+      paddingLeft={1}
+      paddingRight={1}
+      flexShrink={0}
+    >
+      <text fg={theme.textMuted}>{IS_SSH ? "ssh" : "local"}</text>
+    </box>
   )
 }
 
@@ -580,6 +582,7 @@ export function UnifiedStatusBar() {
   return (
     <box height={3} flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
       <box flexDirection="row" gap={1} alignItems="center">
+        <ConnectionBlock />
         <BackgroundAgentsBlock layout={layout()} />
         <CurrentSessionBlock hyprWorkspace={currentWorkspace()} layout={layout()} />
         <For each={visibleOtherSessions()}>

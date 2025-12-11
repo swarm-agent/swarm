@@ -72,19 +72,10 @@ export interface SessionEntry {
   model?: string
   // Remote session (detected from terminal title)
   remote?: boolean
-  // Session is running over SSH
-  ssh?: boolean
 }
 
 const SESSIONS_DIR = path.join(os.homedir(), ".config", "swarm")
 const SESSIONS_FILE = path.join(SESSIONS_DIR, "sessions.json")
-
-/**
- * Check if running in an SSH session
- */
-function isSSH(): boolean {
-  return !!(process.env.SSH_CLIENT || process.env.SSH_TTY || process.env.SSH_CONNECTION)
-}
 
 // Current session info stored in memory
 let currentSession: {
@@ -309,7 +300,6 @@ export const Hyprland = {
       status: "idle",
       startedAt: Date.now(),
       lastUpdated: Date.now(),
-      ssh: isSSH(),
     }
 
     filtered.push(entry)
