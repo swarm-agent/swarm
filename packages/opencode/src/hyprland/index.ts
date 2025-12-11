@@ -370,9 +370,13 @@ export const Hyprland = {
     const local = await readSessions()
     const remote = await getRemoteSessions()
 
-    // Filter out remote sessions that match local PIDs (avoid duplicates)
+    // Filter out remote sessions that match local sessions (avoid duplicates)
+    // Check both process PID and window PID since local sessions set titles too
     const localPids = new Set(local.map((s) => s.pid))
-    const uniqueRemote = remote.filter((r) => !localPids.has(r.pid))
+    const localWindowPids = new Set(local.map((s) => s.hyprWindowPid).filter(Boolean))
+    const uniqueRemote = remote.filter((r) =>
+      !localPids.has(r.pid) && !localWindowPids.has(r.hyprWindowPid)
+    )
 
     return [...local, ...uniqueRemote]
   },
