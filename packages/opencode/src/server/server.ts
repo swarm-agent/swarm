@@ -625,36 +625,6 @@ export namespace Server {
           return c.json(SessionLock.requestGracefulSwitch(id, agent))
         },
       )
-      .post(
-        "/session/:id/share",
-        describeRoute({
-          description: "Share a session",
-          operationId: "session.share",
-          responses: {
-            200: {
-              description: "Successfully shared session",
-              content: {
-                "application/json": {
-                  schema: resolver(Session.Info),
-                },
-              },
-            },
-            ...errors(400, 404),
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            id: z.string(),
-          }),
-        ),
-        async (c) => {
-          const id = c.req.valid("param").id
-          await Session.share(id)
-          const session = await Session.get(id)
-          return c.json(session)
-        },
-      )
       .get(
         "/session/:id/diff",
         describeRoute({
@@ -691,36 +661,6 @@ export namespace Server {
             messageID: query.messageID,
           })
           return c.json(result)
-        },
-      )
-      .delete(
-        "/session/:id/share",
-        describeRoute({
-          description: "Unshare the session",
-          operationId: "session.unshare",
-          responses: {
-            200: {
-              description: "Successfully unshared session",
-              content: {
-                "application/json": {
-                  schema: resolver(Session.Info),
-                },
-              },
-            },
-            ...errors(400, 404),
-          },
-        }),
-        validator(
-          "param",
-          z.object({
-            id: Session.unshare.schema,
-          }),
-        ),
-        async (c) => {
-          const id = c.req.valid("param").id
-          await Session.unshare(id)
-          const session = await Session.get(id)
-          return c.json(session)
         },
       )
       .post(
@@ -1875,12 +1815,7 @@ export namespace Server {
         },
       )
       .all("/*", async (c) => {
-        return proxy(`https://desktop.dev.opencode.ai${c.req.path}`, {
-          ...c.req,
-          headers: {
-            host: "desktop.dev.opencode.ai",
-          },
-        })
+        return c.notFound()
       }),
   )
 

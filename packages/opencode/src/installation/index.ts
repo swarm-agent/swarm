@@ -114,11 +114,7 @@ export namespace Installation {
     let cmd
     switch (method) {
       case "curl":
-        cmd = $`curl -fsSL https://opencode.ai/install | bash`.env({
-          ...process.env,
-          VERSION: target,
-        })
-        break
+        throw new Error("curl install not available - build from source or use npm/bun/brew")
       case "npm":
         cmd = $`npm install -g opencode-ai@${target}`
         break

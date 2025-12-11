@@ -91,7 +91,6 @@ const cli = yargs(hideBin(process.argv))
   .command(StatsCommand)
   .command(ExportCommand)
   .command(ImportCommand)
-  .command(GithubCommand)
   .command(PrCommand)
   .command(PinCommand)
   .fail((msg) => {

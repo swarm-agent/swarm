@@ -300,10 +300,6 @@ export const AuthLoginCommand = cmd({
           return
         }
 
-        if (provider === "opencode") {
-          prompts.log.info("Create an api key at https://opencode.ai/auth")
-        }
-
         if (provider === "vercel") {
           prompts.log.info("You can create an api key at https://vercel.link/ai-gateway-token")
         }

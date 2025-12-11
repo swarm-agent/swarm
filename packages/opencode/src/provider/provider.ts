@@ -38,25 +38,8 @@ export namespace Provider {
         },
       }
     },
-    async opencode(input) {
-      const hasKey = await (async () => {
-        if (input.env.some((item) => process.env[item])) return true
-        if (await Auth.get(input.id)) return true
-        return false
-      })()
-
-      if (!hasKey) {
-        for (const [key, value] of Object.entries(input.models)) {
-          if (value.cost.input === 0) continue
-          delete input.models[key]
-        }
-      }
-
-      return {
-        autoload: Object.keys(input.models).length > 0,
-        options: {},
-      }
-    },
+    // "opencode" provider removed - it proxies through opencode.ai/zen
+    // Users who want Zen can configure it manually in their config
     openai: async () => {
       return {
         autoload: false,
@@ -159,8 +142,7 @@ export namespace Provider {
         autoload: false,
         options: {
           headers: {
-            "HTTP-Referer": "https://opencode.ai/",
-            "X-Title": "opencode",
+            "X-Title": "swarm",
           },
         },
       }
@@ -170,8 +152,7 @@ export namespace Provider {
         autoload: false,
         options: {
           headers: {
-            "http-referer": "https://opencode.ai/",
-            "x-title": "opencode",
+            "x-title": "swarm",
           },
         },
       }

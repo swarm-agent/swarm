@@ -15,7 +15,6 @@ import { Sandbox } from "@/sandbox"
 export async function InstanceBootstrap() {
   Log.Default.info("bootstrapping", { directory: Instance.directory })
   await Plugin.init()
-  Share.init()
   Format.init()
   await LSP.init()
   FileWatcher.init()

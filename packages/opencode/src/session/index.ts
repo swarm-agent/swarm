@@ -212,44 +212,7 @@ export namespace Session {
     return read as Info
   })
 
-  export const getShare = fn(Identifier.schema("session"), async (id) => {
-    return Storage.read<ShareInfo>(["share", id])
-  })
 
-  export const share = fn(Identifier.schema("session"), async (id) => {
-    const cfg = await Config.get()
-    if (cfg.share === "disabled") {
-      throw new Error("Sharing is disabled in configuration")
-    }
-
-    const session = await get(id)
-    if (session.share) return session.share
-    const share = await Share.create(id)
-    await update(id, (draft) => {
-      draft.share = {
-        url: share.url,
-      }
-    })
-    await Storage.write(["share", id], share)
-    await Share.sync("session/info/" + id, session)
-    for (const msg of await messages({ sessionID: id })) {
-      await Share.sync("session/message/" + id + "/" + msg.info.id, msg.info)
-      for (const part of msg.parts) {
-        await Share.sync("session/part/" + id + "/" + msg.info.id + "/" + part.id, part)
-      }
-    }
-    return share
-  })
-
-  export const unshare = fn(Identifier.schema("session"), async (id) => {
-    const share = await getShare(id)
-    if (!share) return
-    await Storage.remove(["share", id])
-    await update(id, (draft) => {
-      draft.share = undefined
-    })
-    await Share.remove(id, share.secret)
-  })
 
   export async function update(id: string, editor: (session: Info) => void) {
     const project = Instance.project
@@ -309,7 +272,6 @@ export namespace Session {
       for (const child of await children(sessionID)) {
         await remove(child.id)
       }
-      await unshare(sessionID).catch(() => {})
       for (const msg of await Storage.list(["message", sessionID])) {
         for (const part of await Storage.list(["part", msg.at(-1)!])) {
           await Storage.remove(part)

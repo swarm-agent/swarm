@@ -49,10 +49,6 @@ export const RunCommand = cmd({
         describe: "session id to continue",
         type: "string",
       })
-      .option("share", {
-        type: "boolean",
-        describe: "share the session",
-      })
       .option("model", {
         type: "string",
         alias: ["m"],
@@ -272,19 +268,6 @@ export const RunCommand = cmd({
         process.exit(1)
       }
 
-      const cfgResult = await sdk.config.get()
-      if (cfgResult.data && (cfgResult.data.share === "auto" || Flag.OPENCODE_AUTO_SHARE || args.share)) {
-        const shareResult = await sdk.session.share({ path: { id: sessionID } }).catch((error) => {
-          if (error instanceof Error && error.message.includes("disabled")) {
-            UI.println(UI.Style.TEXT_DANGER_BOLD + "!  " + error.message)
-          }
-          return { error }
-        })
-        if (!shareResult.error) {
-          UI.println(UI.Style.TEXT_INFO_BOLD + "~  https://opencode.ai/s/" + sessionID.slice(-8))
-        }
-      }
-
       return await execute(sdk, sessionID)
     }
 
@@ -323,19 +306,6 @@ export const RunCommand = cmd({
         server.stop()
         UI.error("Session not found")
         process.exit(1)
-      }
-
-      const cfgResult = await sdk.config.get()
-      if (cfgResult.data && (cfgResult.data.share === "auto" || Flag.OPENCODE_AUTO_SHARE || args.share)) {
-        const shareResult = await sdk.session.share({ path: { id: sessionID } }).catch((error) => {
-          if (error instanceof Error && error.message.includes("disabled")) {
-            UI.println(UI.Style.TEXT_DANGER_BOLD + "!  " + error.message)
-          }
-          return { error }
-        })
-        if (!shareResult.error) {
-          UI.println(UI.Style.TEXT_INFO_BOLD + "~  https://opencode.ai/s/" + sessionID.slice(-8))
-        }
       }
 
       await execute(sdk, sessionID)
