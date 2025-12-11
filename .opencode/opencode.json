@@ -2,6 +2,10 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "anthropic/claude-opus-4-5",
   "processIdleTimeout": 30,
+  "notifications": {
+    "enabled": true,
+    "delayMs": 5000
+  },
   "sandbox": {
     "enabled": true,
     "network": {

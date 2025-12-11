@@ -668,6 +668,18 @@ export namespace Config {
         .describe(
           "Process idle timeout in minutes. Opencode will exit after this duration of user inactivity. Set to 0 to disable. Default: disabled.",
         ),
+      notifications: z
+        .object({
+          enabled: z.boolean().default(false).describe("Enable desktop notifications when blocked"),
+          delayMs: z
+            .number()
+            .int()
+            .min(0)
+            .default(5000)
+            .describe("Delay in ms before sending notification when blocked (default: 5000)"),
+        })
+        .optional()
+        .describe("Desktop notification settings for blocked states"),
       hyprland: z
         .boolean()
         .optional()

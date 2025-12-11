@@ -70,6 +70,8 @@ export interface SessionEntry {
   sessionId?: string
   agent?: string
   model?: string
+  // Remote session (detected from terminal title)
+  remote?: boolean
 }
 
 const SESSIONS_DIR = path.join(os.homedir(), ".config", "swarm")
@@ -167,6 +169,72 @@ async function getHyprlandClients(): Promise<Map<number, number>> {
     // Hyprland not available
   }
   return clients
+}
+
+/**
+ * Parse a swarm terminal title into session info
+ * Format: swarm:<status>:<agent>:<context>:<cwd>
+ */
+function parseSwarmTitle(title: string): { status: SessionStatus; agent?: string; context?: string; cwd?: string } | null {
+  if (!title.startsWith("swarm:")) return null
+
+  const parts = title.split(":")
+  if (parts.length < 2) return null
+
+  const status = parts[1] as SessionStatus
+  if (!["idle", "working", "blocked"].includes(status)) return null
+
+  return {
+    status,
+    agent: parts[2] || undefined,
+    context: parts[3] || undefined,
+    cwd: parts[4] || undefined,
+  }
+}
+
+/**
+ * Get remote sessions by scanning Hyprland window titles for swarm:* patterns
+ * Returns session entries for windows with swarm status in their title
+ */
+async function getRemoteSessions(): Promise<SessionEntry[]> {
+  const remote: SessionEntry[] = []
+  try {
+    const env = await getHyprEnv()
+    if (!env) return remote
+
+    const proc = Bun.spawn(["hyprctl", "clients", "-j"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    })
+    const output = await new Response(proc.stdout).text()
+    await proc.exited
+    if (proc.exitCode !== 0) return remote
+
+    const data = JSON.parse(output)
+    if (Array.isArray(data)) {
+      for (const client of data) {
+        const title = client.title || ""
+        const parsed = parseSwarmTitle(title)
+        if (parsed && client.pid && client.workspace?.id) {
+          remote.push({
+            pid: client.pid,
+            cwd: parsed.cwd || "remote",
+            hyprWorkspace: client.workspace.id,
+            hyprWindowPid: client.pid,
+            status: parsed.status,
+            startedAt: Date.now(),
+            lastUpdated: Date.now(),
+            agent: parsed.agent,
+            remote: true,
+          })
+        }
+      }
+    }
+  } catch {
+    // Hyprland not available
+  }
+  return remote
 }
 
 export const Hyprland = {
@@ -294,11 +362,19 @@ export const Hyprland = {
 
   /**
    * Get all sessions (for status bar display)
+   * Includes local sessions from file + remote sessions from window titles
    * Prunes stale sessions first to ensure fresh data
    */
   async getSessions(): Promise<SessionEntry[]> {
     await Hyprland.prune()
-    return readSessions()
+    const local = await readSessions()
+    const remote = await getRemoteSessions()
+
+    // Filter out remote sessions that match local PIDs (avoid duplicates)
+    const localPids = new Set(local.map((s) => s.pid))
+    const uniqueRemote = remote.filter((r) => !localPids.has(r.pid))
+
+    return [...local, ...uniqueRemote]
   },
 
   /**

@@ -11,6 +11,7 @@ import * as path from "path"
 import { parse as parseJsonc } from "jsonc-parser"
 import { Pin } from "../auth/pin"
 import { Hyprland } from "../hyprland"
+import { Notification } from "../notification"
 
 export namespace Permission {
   const log = Log.create({ service: "permission" })
@@ -254,6 +255,10 @@ export namespace Permission {
     // Set status to blocked while waiting for user input
     await Hyprland.setStatus("blocked")
 
+    // Send notification after delay if still blocked
+    const reason = info.title || `${info.type} permission`
+    await Notification.blocked(reason)
+
     try {
       await new Promise<void>((resolve, reject) => {
         pending[input.sessionID][info.id] = {
@@ -293,6 +298,7 @@ export namespace Permission {
     } finally {
       // Set status back to working after user responds
       await Hyprland.setStatus("working")
+      await Notification.unblocked()
     }
 
     log.info("permission resolved", {
