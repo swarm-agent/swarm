@@ -36,6 +36,11 @@ await createClient({
     },
   ],
 })
-await $`bun prettier --write src/gen`
+// Prettier formatting (optional - skip if not installed)
+try {
+  await $`bun prettier --write src/gen`
+} catch {
+  console.log("⚠️  prettier not installed, skipping formatting")
+}
 await $`rm -rf dist`
 await $`bun tsc`

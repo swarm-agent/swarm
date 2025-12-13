@@ -28,12 +28,21 @@ export async function createOpencodeServer(options?: ServerOptions) {
     options ?? {},
   )
 
+  // Extract sandbox config to pass via OPENCODE_SANDBOX (applied LAST, cannot be overridden by app config)
+  const { sandbox, ...restConfig } = options.config ?? {}
+  const env: Record<string, string> = {
+    ...process.env as Record<string, string>,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(restConfig),
+  }
+  
+  // SDK sandbox config is passed separately and applied LAST (replaces, not merges)
+  if (sandbox !== undefined) {
+    env.OPENCODE_SANDBOX = JSON.stringify(sandbox)
+  }
+
   const proc = spawn(`swarm`, [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`], {
     signal: options.signal,
-    env: {
-      ...process.env,
-      OPENCODE_CONFIG_CONTENT: JSON.stringify(options.config ?? {}),
-    },
+    env,
   })
 
   const url = await new Promise<string>((resolve, reject) => {
@@ -103,13 +112,22 @@ export function createOpencodeTui(options?: TuiOptions) {
     args.push(`--agent=${options.agent}`)
   }
 
+  // Extract sandbox config to pass via OPENCODE_SANDBOX (applied LAST, cannot be overridden by app config)
+  const { sandbox, ...restConfig } = options?.config ?? {}
+  const env: Record<string, string> = {
+    ...process.env as Record<string, string>,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(restConfig),
+  }
+  
+  // SDK sandbox config is passed separately and applied LAST (replaces, not merges)
+  if (sandbox !== undefined) {
+    env.OPENCODE_SANDBOX = JSON.stringify(sandbox)
+  }
+
   const proc = spawn(`swarm`, args, {
     signal: options?.signal,
     stdio: "inherit",
-    env: {
-      ...process.env,
-      OPENCODE_CONFIG_CONTENT: JSON.stringify(options?.config ?? {}),
-    },
+    env,
   })
 
   return {

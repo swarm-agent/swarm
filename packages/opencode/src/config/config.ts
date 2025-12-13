@@ -108,6 +108,14 @@ export namespace Config {
       result.permission = mergeDeep(result.permission ?? {}, JSON.parse(Flag.OPENCODE_PERMISSION))
     }
 
+    // SDK sandbox override - applied LAST, REPLACES entire sandbox config (not merge)
+    // NOTE: Read directly from process.env, not Flag, because Flag is evaluated at module load time
+    const sdkSandboxEnv = process.env["OPENCODE_SANDBOX"]
+    if (sdkSandboxEnv) {
+      log.debug("applying SDK sandbox override from OPENCODE_SANDBOX env var")
+      result.sandbox = JSON.parse(sdkSandboxEnv)  // REPLACE, not mergeDeep - SDK has full control
+    }
+
     if (!result.username) result.username = os.userInfo().username
 
     // Handle migration from autoshare to share field
