@@ -135,6 +135,7 @@ export namespace BackgroundAgent {
     const session = await Session.create({
       parentID: input.parentSessionID,
       title: `[BG] ${input.description} (@${agentInfo.name})`,
+      source: "background",
     })
 
     // 6. Create tracking info

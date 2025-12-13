@@ -102,6 +102,9 @@ export interface SpawnOptions {
   /** The prompt/task for the agent */
   prompt: string
   
+  /** Session title (defaults to truncated prompt) */
+  title?: string
+  
   /** Working directory (defaults to server cwd) - not yet implemented */
   cwd?: string
   
@@ -251,8 +254,13 @@ export function createSpawn(client: OpencodeClient) {
         })
         const sseResult = await ssePromise
 
-        // 2. Create session
-        sessionPromise = client.session.create()
+        // 2. Create session with title
+        const defaultTitle = `SDK: ${options.prompt.slice(0, 60)}${options.prompt.length > 60 ? "..." : ""}`
+        sessionPromise = client.session.create({
+          body: {
+            title: options.title ?? defaultTitle,
+          },
+        })
         const session = await sessionPromise
         if (!session.data) throw new Error("Failed to create session")
         const id = session.data.id

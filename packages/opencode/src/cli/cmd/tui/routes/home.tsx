@@ -36,6 +36,8 @@ const ICONS = {
 
 let once = false
 
+type SessionFilter = "primary" | "background"
+
 function getRelativeTime(timestamp: number): string {
   const now = Date.now()
   const diff = Math.abs(now - timestamp)
@@ -56,14 +58,27 @@ export function Home() {
   const route = useRoute()
   const [selectedIndex, setSelectedIndex] = createSignal(-1)
   const [listFocused, setListFocused] = createSignal(false)
+  const [sessionFilter, setSessionFilter] = createSignal<SessionFilter>("primary")
 
   const mcpError = createMemo(() => {
     return Object.values(sync.data.mcp).some((x) => x.status === "failed")
   })
 
   const sessions = createMemo(() => {
-    const parentSessions = sync.data.session
-      .filter((x) => x.parentID === undefined)
+    const filter = sessionFilter()
+    
+    // Filter sessions based on source
+    // Primary: no parentID and source is undefined or "tui"
+    // Background: has parentID OR source is "sdk" or "background"
+    const filteredSessions = sync.data.session
+      .filter((x) => {
+        if (filter === "primary") {
+          return x.parentID === undefined && (x.source === undefined || x.source === "tui")
+        } else {
+          // Background: SDK sessions, background sessions, or child sessions
+          return x.source === "sdk" || x.source === "background" || x.parentID !== undefined
+        }
+      })
       .sort((a, b) => b.time.updated - a.time.updated)
 
     const childrenMap = new Map<string, typeof sync.data.session>()
@@ -75,7 +90,7 @@ export function Home() {
       }
     }
 
-    return parentSessions.slice(0, 5).map((session) => {
+    return filteredSessions.slice(0, 5).map((session) => {
       const children = childrenMap.get(session.id) ?? []
 
       if (children.length === 0) return session
@@ -97,6 +112,20 @@ export function Home() {
         title: session.title + childrenSummary,
       }
     })
+  })
+  
+  // Count sessions in each category for the UI
+  const sessionCounts = createMemo(() => {
+    let primary = 0
+    let background = 0
+    for (const x of sync.data.session) {
+      if (x.parentID === undefined && (x.source === undefined || x.source === "tui")) {
+        primary++
+      } else {
+        background++
+      }
+    }
+    return { primary, background }
   })
 
   const Hint = (
@@ -146,7 +175,19 @@ export function Home() {
       if (evt.name === "down") {
         setSelectedIndex(Math.min(index + 1, list.length - 1))
       } else if (evt.name === "up") {
-        setSelectedIndex(Math.max(index - 1, 0))
+        if (index === 0) {
+          // At top of list, unfocus
+          setListFocused(false)
+          setSelectedIndex(-1)
+          prompt.focus()
+        } else {
+          setSelectedIndex(Math.max(index - 1, 0))
+        }
+      } else if (evt.name === "left" || evt.name === "right") {
+        // Switch between primary and background sessions
+        const newFilter = sessionFilter() === "primary" ? "background" : "primary"
+        setSessionFilter(newFilter)
+        setSelectedIndex(0) // Reset selection when switching tabs
       } else if (evt.name === "return") {
         const session = list[index]
         if (session) {
@@ -170,9 +211,26 @@ export function Home() {
         <Prompt ref={(r) => (prompt = r)} hint={Hint} />
       </box>
 
-      <Show when={sessions().length > 0}>
+      <Show when={sync.data.session.length > 0}>
         <box width="100%" maxWidth={75} flexDirection="column">
-          <text fg={theme.textMuted}>Recent sessions</text>
+          <box flexDirection="row" gap={2} marginBottom={1}>
+            <text
+              fg={sessionFilter() === "primary" ? theme.primary : theme.textMuted}
+              bold={sessionFilter() === "primary"}
+            >
+              Sessions ({sessionCounts().primary})
+            </text>
+            <text fg={theme.textMuted}>|</text>
+            <text
+              fg={sessionFilter() === "background" ? theme.primary : theme.textMuted}
+              bold={sessionFilter() === "background"}
+            >
+              Background ({sessionCounts().background})
+            </text>
+            <Show when={listFocused()}>
+              <text fg={theme.textMuted}> ← →</text>
+            </Show>
+          </box>
           <For each={sessions()}>
             {(session, index) => {
               const isSelected = () => listFocused() && selectedIndex() === index()

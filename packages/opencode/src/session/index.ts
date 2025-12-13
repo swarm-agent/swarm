@@ -34,12 +34,17 @@ export namespace Session {
     ).test(title)
   }
 
+  export const Source = z.enum(["tui", "sdk", "background"])
+  export type Source = z.infer<typeof Source>
+
   export const Info = z
     .object({
       id: Identifier.schema("session"),
       projectID: z.string(),
       directory: z.string(),
       parentID: Identifier.schema("session").optional(),
+      /** Source of the session: tui (default), sdk, or background */
+      source: Source.optional(),
       summary: z
         .object({
           additions: z.number(),
@@ -124,6 +129,7 @@ export namespace Session {
       .object({
         parentID: Identifier.schema("session").optional(),
         title: z.string().optional(),
+        source: Source.optional(),
       })
       .optional(),
     async (input) => {
@@ -131,6 +137,7 @@ export namespace Session {
         parentID: input?.parentID,
         directory: Instance.directory,
         title: input?.title,
+        source: input?.source,
       })
     },
   )
@@ -172,13 +179,14 @@ export namespace Session {
     })
   })
 
-  export async function createNext(input: { id?: string; title?: string; parentID?: string; directory: string }) {
+  export async function createNext(input: { id?: string; title?: string; parentID?: string; directory: string; source?: Source }) {
     const result: Info = {
       id: Identifier.descending("session", input.id),
       version: Installation.VERSION,
       projectID: Instance.project.id,
       directory: input.directory,
       parentID: input.parentID,
+      source: input.source,
       title: input.title ?? createDefaultTitle(!!input.parentID),
       time: {
         created: Date.now(),
