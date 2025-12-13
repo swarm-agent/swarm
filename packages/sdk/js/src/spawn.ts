@@ -2,12 +2,19 @@
  * Simple spawn API for running agents
  *
  * Usage:
- *   // Simple - uses 'edit' profile by default (no bash, safe file edits)
+ *   // Simple - noninteractive mode (auto-approves all permissions)
  *   const handle = spawn("fix the tests")
  *   await handle.wait()
  *
- *   // With profile
- *   const handle = spawn({ prompt: "analyze code", profile: "analyze" })
+ *   // Interactive mode with permission callback
+ *   const handle = spawn({
+ *     prompt: "run the tests",
+ *     mode: "interactive",
+ *     onPermission: async (p) => {
+ *       console.log(`Permission: ${p.title}`)
+ *       return "approve"  // or "reject", "always", { pin: "1234" }
+ *     }
+ *   })
  *
  *   // With agent type
  *   const handle = spawn({ prompt: "plan feature", agent: "plan" })
@@ -22,16 +29,19 @@
  *
  * Note: Call either stream() OR wait(), not both.
  *
- * Profiles:
+ * Modes:
+ *   - noninteractive (default): Auto-approves all "ask" permissions, fails on "pin"
+ *   - interactive: Uses onPermission callback for each permission request
+ *
+ * Profiles (optional, for convenience):
  *   - analyze: read-only, no modifications
- *   - edit: file edits allowed, no shell (DEFAULT)
- *   - full: all tools, bash requires approval
- *   - yolo: all tools, no restrictions (DANGER!)
+ *   - edit: file edits allowed, no shell
+ *   - full: all tools enabled
+ *   - yolo: all tools, noninteractive (DANGER!)
  */
 
 import type { OpencodeClient } from "./gen/sdk.gen.js"
 import type {
-  Part,
   EventMessagePartUpdated,
   EventSessionCompleted,
   EventSessionAborted,
@@ -39,15 +49,21 @@ import type {
   EventPermissionUpdated,
   Todo,
   ToolPart,
+  Permission,
 } from "./gen/types.gen.js"
 import { type ProfileName, getProfile } from "./profiles.js"
+
+// ============================================================================
+// Types
+// ============================================================================
 
 export type SpawnEvent =
   | { type: "text"; text: string; delta?: string }
   | { type: "tool.start"; name: string; input: Record<string, unknown> }
   | { type: "tool.end"; name: string; output: string }
   | { type: "todo"; todos: Todo[] }
-  | { type: "permission"; id: string; title: string; metadata: Record<string, unknown> }
+  | { type: "permission"; id: string; permissionType: string; title: string; metadata: Record<string, unknown> }
+  | { type: "permission.handled"; id: string; response: PermissionResponse }
   | { type: "completed" }
   | { type: "aborted" }
   | { type: "error"; error: Error }
@@ -58,6 +74,30 @@ export interface SpawnResult {
   error?: Error
 }
 
+/**
+ * Permission request received from the server
+ */
+export interface PermissionRequest {
+  /** Unique permission ID */
+  id: string
+  /** Permission type: "bash", "edit", "pin", "background_agent", etc. */
+  permissionType: string
+  /** Human-readable title/description */
+  title: string
+  /** Additional metadata (command, file path, etc.) */
+  metadata: Record<string, unknown>
+}
+
+/**
+ * Response to send back for a permission request
+ */
+export type PermissionResponse =
+  | "approve"              // Approve once
+  | "always"               // Approve and remember for session
+  | "reject"               // Reject
+  | { reject: string }     // Reject with message
+  | { pin: string }        // PIN verification
+
 export interface SpawnOptions {
   /** The prompt/task for the agent */
   prompt: string
@@ -66,11 +106,25 @@ export interface SpawnOptions {
   cwd?: string
   
   /**
-   * Predefined permission profile
+   * Execution mode
+   * - "noninteractive" (default): Auto-approves "ask" permissions, fails on "pin"
+   * - "interactive": Uses onPermission callback for each permission
+   */
+  mode?: "interactive" | "noninteractive"
+  
+  /**
+   * Permission handler (required for interactive mode)
+   * Called when a permission request is received
+   * Return the response to send back to the server
+   */
+  onPermission?: (request: PermissionRequest) => Promise<PermissionResponse>
+  
+  /**
+   * Predefined permission profile (optional convenience)
    * - analyze: read-only, no modifications
-   * - edit: file edits allowed, no shell (DEFAULT)
-   * - full: all tools, bash requires approval
-   * - yolo: all tools, no restrictions (DANGER!)
+   * - edit: file edits allowed, no shell
+   * - full: all tools enabled
+   * - yolo: all tools, forces noninteractive mode
    */
   profile?: ProfileName
   
@@ -84,9 +138,9 @@ export interface SpawnOptions {
   agent?: string
   
   /**
-   * Tool overrides - merged on top of profile settings
+   * Tool overrides - merged on top of profile/agent settings
    * Use to enable/disable specific tools
-   * @example { bash: true } to enable bash even with 'edit' profile
+   * @example { bash: true } to enable bash
    */
   tools?: Record<string, boolean>
   
@@ -103,15 +157,58 @@ export interface SpawnHandle {
   stream(): AsyncGenerator<SpawnEvent, SpawnResult, unknown>
   /** Abort the session */
   abort(): Promise<void>
+  /** Respond to a permission request manually (for custom handling) */
+  respondToPermission(permissionId: string, response: PermissionResponse): Promise<void>
 }
+
+// ============================================================================
+// Helper: Map SDK response to server response format
+// ============================================================================
+
+// The server accepts PIN responses but the generated SDK types may not include it
+// We use 'any' for the PIN case as a workaround until types are regenerated
+type ServerPermissionResponse = 
+  | "once" 
+  | "always" 
+  | "reject" 
+  | { type: "reject"; message: string }
+  | { type: "pin"; pin: string }
+
+function mapPermissionResponse(response: PermissionResponse): ServerPermissionResponse {
+  if (response === "approve") return "once"
+  if (response === "always") return "always"
+  if (response === "reject") return "reject"
+  if (typeof response === "object" && "reject" in response) {
+    return { type: "reject", message: response.reject }
+  }
+  if (typeof response === "object" && "pin" in response) {
+    return { type: "pin", pin: response.pin }
+  }
+  return "once" // fallback
+}
+
+// ============================================================================
+// Main spawn factory
+// ============================================================================
 
 export function createSpawn(client: OpencodeClient) {
   return function spawn(promptOrOptions: string | SpawnOptions): SpawnHandle {
     const options: SpawnOptions =
       typeof promptOrOptions === "string" ? { prompt: promptOrOptions } : promptOrOptions
 
-    // Get profile tools (default to 'edit' profile for safety)
-    const profileName = options.profile ?? "edit"
+    // Determine mode
+    // - yolo profile forces noninteractive
+    // - default is noninteractive for SDK use (automation-friendly)
+    const isYolo = options.profile === "yolo"
+    const mode = isYolo ? "noninteractive" : (options.mode ?? "noninteractive")
+    
+    // Validate: interactive mode should have onPermission callback
+    if (mode === "interactive" && !options.onPermission) {
+      console.warn("[spawn] Interactive mode without onPermission callback - permissions will block forever")
+    }
+
+    // Get profile tools (default to 'full' for SDK - user controls via mode)
+    const profileName = options.profile ?? "full"
     const profile = getProfile(profileName)
 
     // Merge profile tools with any explicit overrides
@@ -128,6 +225,16 @@ export function createSpawn(client: OpencodeClient) {
       _sessionIdResolve = resolve
       _sessionIdReject = reject
     })
+
+    // Helper to respond to permissions via API
+    async function respondToPermission(sessionId: string, permissionId: string, response: PermissionResponse) {
+      const mappedResponse = mapPermissionResponse(response)
+      await client.postSessionIdPermissionsPermissionId({
+        path: { id: sessionId, permissionID: permissionId },
+        // Cast needed because generated types may not include all server-supported response types
+        body: { response: mappedResponse as any },
+      })
+    }
 
     // Eagerly subscribe to SSE and create session
     // This allows sessionId to be available before stream() is called
@@ -240,12 +347,54 @@ export function createSpawn(client: OpencodeClient) {
             case "permission.updated": {
               const perm = props as EventPermissionUpdated["properties"]
               if (perm.sessionID !== id) continue
-              yield {
-                type: "permission",
+              
+              const permRequest: PermissionRequest = {
                 id: perm.id,
+                permissionType: perm.type,
                 title: perm.title,
                 metadata: perm.metadata,
               }
+              
+              // Yield the permission event first (for visibility/logging)
+              yield {
+                type: "permission",
+                id: perm.id,
+                permissionType: perm.type,
+                title: perm.title,
+                metadata: perm.metadata,
+              }
+              
+              // Handle permission based on mode
+              if (mode === "noninteractive") {
+                // Non-interactive: auto-approve (server already filtered by allow/deny)
+                // PIN permissions will fail since we can't provide a PIN
+                if (perm.type === "pin") {
+                  // Can't auto-approve PIN - reject with explanation
+                  await respondToPermission(id, perm.id, { 
+                    reject: "PIN verification required but running in non-interactive mode" 
+                  })
+                  yield { type: "permission.handled", id: perm.id, response: "reject" }
+                } else {
+                  // Auto-approve other permission types
+                  await respondToPermission(id, perm.id, "approve")
+                  yield { type: "permission.handled", id: perm.id, response: "approve" }
+                }
+              } else if (options.onPermission) {
+                // Interactive with callback: let user decide
+                try {
+                  const response = await options.onPermission(permRequest)
+                  await respondToPermission(id, perm.id, response)
+                  yield { type: "permission.handled", id: perm.id, response }
+                } catch (err) {
+                  // Callback threw - reject the permission
+                  const message = err instanceof Error ? err.message : "Permission callback failed"
+                  await respondToPermission(id, perm.id, { reject: message })
+                  yield { type: "permission.handled", id: perm.id, response: "reject" }
+                }
+              }
+              // else: Interactive but no callback - permission stays pending (blocks)
+              // User was warned at spawn() time
+              
               break
             }
 
@@ -306,6 +455,11 @@ export function createSpawn(client: OpencodeClient) {
         abortRequested = true
         const id = await sessionIdPromise
         await client.session.abort({ path: { id } })
+      },
+
+      async respondToPermission(permissionId: string, response: PermissionResponse): Promise<void> {
+        const id = await sessionIdPromise
+        await respondToPermission(id, permissionId, response)
       },
     }
   }
