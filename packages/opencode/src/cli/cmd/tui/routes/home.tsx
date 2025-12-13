@@ -36,7 +36,7 @@ const ICONS = {
 
 let once = false
 
-type SessionFilter = "primary" | "background"
+type SessionFilter = "primary" | "background" | "sdk"
 
 function getRelativeTime(timestamp: number): string {
   const now = Date.now()
@@ -64,19 +64,30 @@ export function Home() {
     return Object.values(sync.data.mcp).some((x) => x.status === "failed")
   })
 
+  // Helper to get tag for a session
+  function getSessionTag(session: typeof sync.data.session[0]): string | null {
+    if (session.source === "sdk") return "SDK"
+    if (session.source === "background") return "BG"
+    if (session.parentID) return "Sub"
+    return null
+  }
+
   const sessions = createMemo(() => {
     const filter = sessionFilter()
     
     // Filter sessions based on source
     // Primary: no parentID and source is undefined or "tui"
-    // Background: has parentID OR source is "sdk" or "background"
+    // Background: in-app background agents (source=background or has parentID but not SDK)
+    // SDK: source is "sdk"
     const filteredSessions = sync.data.session
       .filter((x) => {
         if (filter === "primary") {
           return x.parentID === undefined && (x.source === undefined || x.source === "tui")
+        } else if (filter === "sdk") {
+          return x.source === "sdk"
         } else {
-          // Background: SDK sessions, background sessions, or child sessions
-          return x.source === "sdk" || x.source === "background" || x.parentID !== undefined
+          // Background: in-app background agents and subagents (not SDK)
+          return (x.source === "background" || x.parentID !== undefined) && x.source !== "sdk"
         }
       })
       .sort((a, b) => b.time.updated - a.time.updated)
@@ -92,8 +103,17 @@ export function Home() {
 
     return filteredSessions.slice(0, 5).map((session) => {
       const children = childrenMap.get(session.id) ?? []
+      const tag = getSessionTag(session)
+      
+      // Build display title with tag
+      let displayTitle = session.title
+      if (tag && filter !== "primary") {
+        displayTitle = `[${tag}] ${session.title}`
+      }
 
-      if (children.length === 0) return session
+      if (children.length === 0) {
+        return { ...session, displayTitle }
+      }
 
       const agentNames = children
         .map((child) => {
@@ -102,14 +122,16 @@ export function Home() {
         })
         .filter((name) => name !== null)
 
-      if (agentNames.length === 0) return session
+      if (agentNames.length === 0) {
+        return { ...session, displayTitle }
+      }
 
       const uniqueAgents = [...new Set(agentNames)]
       const childrenSummary = ` • ${children.length} subagent${children.length > 1 ? "s" : ""} (${uniqueAgents.join(", ")})`
 
       return {
         ...session,
-        title: session.title + childrenSummary,
+        displayTitle: displayTitle + childrenSummary,
       }
     })
   })
@@ -118,14 +140,17 @@ export function Home() {
   const sessionCounts = createMemo(() => {
     let primary = 0
     let background = 0
+    let sdk = 0
     for (const x of sync.data.session) {
       if (x.parentID === undefined && (x.source === undefined || x.source === "tui")) {
         primary++
+      } else if (x.source === "sdk") {
+        sdk++
       } else {
         background++
       }
     }
-    return { primary, background }
+    return { primary, background, sdk }
   })
 
   const Hint = (
@@ -183,11 +208,18 @@ export function Home() {
         } else {
           setSelectedIndex(Math.max(index - 1, 0))
         }
-      } else if (evt.name === "left" || evt.name === "right") {
-        // Switch between primary and background sessions
-        const newFilter = sessionFilter() === "primary" ? "background" : "primary"
+      } else if (evt.name === "left") {
+        // Cycle filters: primary -> sdk -> background -> primary
+        const current = sessionFilter()
+        const newFilter = current === "primary" ? "sdk" : current === "sdk" ? "background" : "primary"
         setSessionFilter(newFilter)
-        setSelectedIndex(0) // Reset selection when switching tabs
+        setSelectedIndex(0)
+      } else if (evt.name === "right") {
+        // Cycle filters reverse: primary -> background -> sdk -> primary
+        const current = sessionFilter()
+        const newFilter = current === "primary" ? "background" : current === "background" ? "sdk" : "primary"
+        setSessionFilter(newFilter)
+        setSelectedIndex(0)
       } else if (evt.name === "return") {
         const session = list[index]
         if (session) {
@@ -227,6 +259,13 @@ export function Home() {
             >
               Background ({sessionCounts().background})
             </text>
+            <text fg={theme.textMuted}>|</text>
+            <text
+              fg={sessionFilter() === "sdk" ? theme.primary : theme.textMuted}
+              bold={sessionFilter() === "sdk"}
+            >
+              SDK ({sessionCounts().sdk})
+            </text>
             <Show when={listFocused()}>
               <text fg={theme.textMuted}> ← →</text>
             </Show>
@@ -240,7 +279,7 @@ export function Home() {
                   justifyContent="space-between"
                   onMouseUp={() => route.navigate({ type: "session", sessionID: session.id })}
                 >
-                  <text fg={isSelected() ? theme.primary : theme.text}>{Locale.truncate(session.title, 50)}</text>
+                  <text fg={isSelected() ? theme.primary : theme.text}>{Locale.truncate(session.displayTitle, 50)}</text>
                   <text fg={isSelected() ? theme.primary : theme.textMuted}>
                     {getRelativeTime(session.time.updated)}
                   </text>
