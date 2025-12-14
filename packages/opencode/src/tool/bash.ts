@@ -12,6 +12,7 @@ import { Filesystem } from "@/util/filesystem"
 import { Wildcard } from "@/util/wildcard"
 import { Permission } from "@/permission"
 import { Sandbox } from "@/sandbox"
+import { Config } from "@/config/config"
 import { Pin } from "@/auth/pin"
 import { Session } from "@/session"
 import { Profile } from "@/profile"
@@ -225,13 +226,20 @@ export const BashTool = Tool.define("bash", {
       })
     }
 
-    // Wrap command with sandbox if enabled
+    // Check if command should bypass sandbox (trustedCommands)
+    const config = await Config.get()
+    const trustedCommands = config.sandbox?.trustedCommands ?? []
+    const isTrustedCommand = trustedCommands.length > 0 && Wildcard.any(params.command, trustedCommands)
+
+    // Wrap command with sandbox if enabled (unless it's a trusted command)
     Sandbox.setContext({
       sessionID: ctx.sessionID,
       messageID: ctx.messageID,
       callID: ctx.callID,
     })
-    const commandToRun = await Sandbox.wrapCommand(params.command)
+    const commandToRun = isTrustedCommand
+      ? params.command
+      : await Sandbox.wrapCommand(params.command)
 
     // Check if session has a container profile
     const session = await Session.get(ctx.sessionID)

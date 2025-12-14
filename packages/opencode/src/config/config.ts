@@ -387,6 +387,10 @@ export namespace Config {
       network: SandboxNetworkConfig.optional().describe("Network restrictions configuration"),
       filesystem: SandboxFilesystemConfig.optional().describe("Filesystem restrictions configuration"),
       enableWeakerNestedSandbox: z.boolean().optional().describe("Enable weaker sandbox mode for Docker environments"),
+      trustedCommands: z
+        .array(z.string())
+        .optional()
+        .describe("Command patterns that bypass sandbox entirely (e.g., ['ssh *', 'scp *'])"),
     })
     .meta({ ref: "SandboxConfig" })
   export type SandboxConfig = z.infer<typeof SandboxConfig>

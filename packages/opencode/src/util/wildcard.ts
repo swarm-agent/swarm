@@ -51,4 +51,11 @@ export namespace Wildcard {
     }
     return false
   }
+
+  /**
+   * Check if input matches any of the patterns in the array
+   */
+  export function any(input: string, patterns: string[]): boolean {
+    return patterns.some((pattern) => match(input, pattern))
+  }
 }
