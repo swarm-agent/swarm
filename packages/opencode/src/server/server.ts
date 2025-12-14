@@ -426,6 +426,10 @@ export namespace Server {
         validator("json", Session.create.schema.optional()),
         async (c) => {
           const body = c.req.valid("json") ?? {}
+          // Inherit container profile from server if not specified
+          if (!body.containerProfile && process.env.OPENCODE_PROFILE) {
+            body.containerProfile = process.env.OPENCODE_PROFILE
+          }
           const session = await Session.create(body)
           return c.json(session)
         },
