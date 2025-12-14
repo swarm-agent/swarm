@@ -2578,6 +2578,271 @@ export function WebfetchShowcase() {
 }
 
 // ============================================================================
+// WEBSEARCH ANIMATION - Web search tool with radar/pulse visualization
+// Full flow: Pending → Running → Resolved
+// Similar to webfetch but with search-themed visuals (teal/cyan palette)
+// ============================================================================
+
+// Catppuccin colors for websearch - teal/cyan theme
+const WEBSEARCH_COLORS = {
+  palettes: [
+    // Teal → Sky → Sapphire gradient
+    [RGBA.fromHex("#94e2d5"), RGBA.fromHex("#89dceb"), RGBA.fromHex("#74c7ec")],
+    // Green → Teal → Sky gradient
+    [RGBA.fromHex("#a6e3a1"), RGBA.fromHex("#94e2d5"), RGBA.fromHex("#89dceb")],
+    // Sapphire → Blue → Lavender gradient
+    [RGBA.fromHex("#74c7ec"), RGBA.fromHex("#89b4fa"), RGBA.fromHex("#b4befe")],
+  ],
+  success: RGBA.fromHex("#a6e3a1"), // Catppuccin Green
+  error: RGBA.fromHex("#f38ba8"), // Catppuccin Red
+  dim: RGBA.fromHex("#6c7086"), // Catppuccin Overlay0
+  bracket: RGBA.fromHex("#585b70"), // Catppuccin Surface2
+}
+
+/**
+ * WebsearchSpinner - Three radar dots breathing in wave pattern
+ * Used for pending/running states - shows "searching" activity
+ */
+export function WebsearchSpinner(props: { paletteIndex?: number }) {
+  const palette = WEBSEARCH_COLORS.palettes[props.paletteIndex ?? 0]
+  const [opacities, setOpacities] = createSignal([0.5, 0.5, 0.5])
+  const [frame, setFrame] = createSignal(0)
+  const chars = ["◎", "◉", "●"]
+
+  // Wave breathing effect + character cycling
+  const interval = setInterval(() => {
+    const now = Date.now()
+    const newOpacities = palette.map((_, i) => {
+      const phase = ((now / 1500) * Math.PI * 2 + i * 0.8) % (Math.PI * 2)
+      return 0.35 + (1 - 0.35) * ((Math.sin(phase) + 1) / 2)
+    })
+    setOpacities(newOpacities)
+    setFrame((f) => (f + 1) % 12)
+  }, 60)
+
+  onCleanup(() => clearInterval(interval))
+
+  // Each dot cycles through ◎ → ◉ → ● with offset
+  const getChar = (idx: number) => {
+    const offset = Math.floor((frame() + idx * 4) / 4) % chars.length
+    return chars[offset]
+  }
+
+  const c0 = () => RGBA.fromInts(palette[0].r * 255, palette[0].g * 255, palette[0].b * 255, opacities()[0] * 255)
+  const c1 = () => RGBA.fromInts(palette[1].r * 255, palette[1].g * 255, palette[1].b * 255, opacities()[1] * 255)
+  const c2 = () => RGBA.fromInts(palette[2].r * 255, palette[2].g * 255, palette[2].b * 255, opacities()[2] * 255)
+
+  return (
+    <>
+      <span style={{ fg: c0() }}>{getChar(0)}</span>
+      <span style={{ fg: c1() }}>{getChar(1)}</span>
+      <span style={{ fg: c2() }}>{getChar(2)}</span>
+    </>
+  )
+}
+
+/**
+ * BreathingWebsearch - "websearch" text with breathing opacity
+ */
+export function BreathingWebsearch(props: { color?: RGBA }) {
+  const baseColor = props.color ?? WEBSEARCH_COLORS.palettes[0][0]
+  const [phase, setPhase] = createSignal(0)
+
+  const opacities = [0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.0, 0.8, 0.6, 0.5, 0.4, 0.3]
+
+  const interval = setInterval(() => {
+    setPhase((p) => (p + 1) % opacities.length)
+  }, 180)
+
+  onCleanup(() => clearInterval(interval))
+
+  const color = () => RGBA.fromInts(baseColor.r * 255, baseColor.g * 255, baseColor.b * 255, opacities[phase()] * 255)
+
+  return <span style={{ fg: color() }}>websearch</span>
+}
+
+/**
+ * WebsearchProgressBar - Wave-filled progress bar with teal color cycling
+ */
+export function WebsearchProgressBar(props: { width?: number; paletteIndex?: number }) {
+  const width = props.width ?? 8
+  const totalSteps = width * WAVE_BLOCKS.length
+  const [step, setStep] = createSignal(0)
+  const [currentPalette, setCurrentPalette] = createSignal(props.paletteIndex ?? 0)
+
+  const interval = setInterval(() => {
+    setStep((s) => {
+      const next = s + 1
+      if (next >= totalSteps) {
+        setCurrentPalette((p) => (p + 1) % WEBSEARCH_COLORS.palettes.length)
+        return 0
+      }
+      return next
+    })
+  }, 40)
+
+  onCleanup(() => clearInterval(interval))
+
+  const getColor = () => {
+    const palette = WEBSEARCH_COLORS.palettes[currentPalette()]
+    const progress = step() / totalSteps
+    const idx = Math.floor(progress * (palette.length - 1))
+    const t = progress * (palette.length - 1) - idx
+    const c1 = palette[Math.min(idx, palette.length - 1)]
+    const c2 = palette[Math.min(idx + 1, palette.length - 1)]
+
+    return RGBA.fromInts(
+      Math.round(c1.r * 255 * (1 - t) + c2.r * 255 * t),
+      Math.round(c1.g * 255 * (1 - t) + c2.g * 255 * t),
+      Math.round(c1.b * 255 * (1 - t) + c2.b * 255 * t),
+      255,
+    )
+  }
+
+  const bar = () => {
+    const fullChars = Math.floor(step() / WAVE_BLOCKS.length)
+    const partialIdx = step() % WAVE_BLOCKS.length
+    const emptyChars = width - fullChars - (partialIdx > 0 ? 1 : 0)
+
+    let result = "█".repeat(fullChars)
+    if (partialIdx > 0 && fullChars < width) result += WAVE_BLOCKS[partialIdx]
+    result += "░".repeat(Math.max(0, emptyChars))
+    return result
+  }
+
+  return (
+    <>
+      <span style={{ fg: WEBSEARCH_COLORS.bracket }}>[</span>
+      <span style={{ fg: getColor() }}>{bar()}</span>
+      <span style={{ fg: WEBSEARCH_COLORS.bracket }}>]</span>
+    </>
+  )
+}
+
+/**
+ * WebsearchPending - Spinner + breathing text + query
+ */
+export function WebsearchPending(props: { query?: string }) {
+  const { theme } = useTheme()
+  const [paletteIndex, setPaletteIndex] = createSignal(0)
+
+  const interval = setInterval(() => {
+    setPaletteIndex((p) => (p + 1) % WEBSEARCH_COLORS.palettes.length)
+  }, 3000)
+
+  onCleanup(() => clearInterval(interval))
+
+  const palette = () => WEBSEARCH_COLORS.palettes[paletteIndex()]
+
+  return (
+    <box gap={0}>
+      <text>
+        <WebsearchSpinner paletteIndex={paletteIndex()} /> <BreathingWebsearch color={palette()[0]} />{" "}
+        <span style={{ fg: theme.textMuted }}>{props.query ? `"${props.query}"` : "..."}</span>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * WebsearchRunning - Progress bar + text + query + elapsed time
+ */
+export function WebsearchRunning(props: { query?: string; startTime?: number }) {
+  const { theme } = useTheme()
+  const [paletteIndex, setPaletteIndex] = createSignal(0)
+
+  const interval = setInterval(() => {
+    setPaletteIndex((p) => (p + 1) % WEBSEARCH_COLORS.palettes.length)
+  }, 2500)
+
+  onCleanup(() => clearInterval(interval))
+
+  const palette = () => WEBSEARCH_COLORS.palettes[paletteIndex()]
+
+  return (
+    <box gap={0}>
+      <text>
+        <WebsearchProgressBar paletteIndex={paletteIndex()} /> <BreathingWebsearch color={palette()[1]} />{" "}
+        <span style={{ fg: theme.text }}>{props.query ? `"${props.query}"` : "..."}</span>{" "}
+        <Show when={props.startTime}>
+          <ElapsedTime startTime={props.startTime!} color={theme.textMuted} />
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * WebsearchResolved - Success/failure with query, result count, and time
+ */
+export function WebsearchResolved(props: {
+  success: boolean
+  query?: string
+  executionTime?: number
+  resultCount?: number
+}) {
+  const { theme } = useTheme()
+  const color = props.success ? WEBSEARCH_COLORS.success : WEBSEARCH_COLORS.error
+
+  const formatTime = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.floor((ms % 60000) / 1000)
+    return `${minutes}m ${seconds}s`
+  }
+
+  return (
+    <box gap={0}>
+      <text>
+        <span style={{ fg: color, bold: true }}>{props.success ? "✓" : "✗"}</span>{" "}
+        <span style={{ fg: WEBSEARCH_COLORS.dim }}>websearch</span>{" "}
+        <span style={{ fg: theme.text }}>{props.query ? `"${props.query}"` : ""}</span>
+        <Show when={props.resultCount !== undefined}>
+          <span style={{ fg: WEBSEARCH_COLORS.palettes[0][1] }}> {props.resultCount} results</span>
+        </Show>
+        <Show when={props.executionTime !== undefined}>
+          <span style={{ fg: theme.textMuted }}> {formatTime(props.executionTime!)}</span>
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * WebsearchToolAnimation - Complete flow handler (pending/running/completed/error)
+ */
+export function WebsearchToolAnimation(props: {
+  status: "pending" | "running" | "completed" | "error"
+  query?: string
+  startTime?: number
+  executionTime?: number
+  resultCount?: number
+}) {
+  return (
+    <Switch>
+      <Match when={props.status === "pending"}>
+        <WebsearchPending query={props.query} />
+      </Match>
+      <Match when={props.status === "running"}>
+        <WebsearchRunning query={props.query} startTime={props.startTime} />
+      </Match>
+      <Match when={props.status === "completed"}>
+        <WebsearchResolved
+          success={true}
+          query={props.query}
+          executionTime={props.executionTime}
+          resultCount={props.resultCount}
+        />
+      </Match>
+      <Match when={props.status === "error"}>
+        <WebsearchResolved success={false} query={props.query} executionTime={props.executionTime} />
+      </Match>
+    </Switch>
+  )
+}
+
+// ============================================================================
 // ASK-USER ANIMATION - Interactive question tool with progress visualization
 // Full flow: Pending → Running → Resolved
 // ============================================================================

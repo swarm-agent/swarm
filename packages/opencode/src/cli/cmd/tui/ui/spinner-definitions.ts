@@ -358,6 +358,14 @@ export const SPINNERS: Record<string, SpinnerDef> = {
     mode: "rgb",
   },
 
+  // Websearch - radar/search pulse animation
+  websearch_spinner: {
+    name: "websearch_spinner",
+    frames: ["◎··", "·◉·", "··●", "·◉·"],
+    interval: 150,
+    mode: "neon",
+  },
+
   // ============================================================================
   // TYPE B: TRAVELING EDIT/WRITE ANIMATIONS - Nerdfont icons that move
   // ============================================================================

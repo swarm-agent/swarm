@@ -9,6 +9,7 @@ import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { TodoWriteTool, TodoReadTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
+import { WebSearchTool } from "./websearch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { ExitPlanModeTool } from "./exit-plan"
@@ -90,6 +91,7 @@ export namespace ToolRegistry {
       BashTool,
       EditTool,
       WebFetchTool,
+      WebSearchTool,
       GlobTool,
       GrepTool,
       ListTool,
@@ -135,6 +137,7 @@ export namespace ToolRegistry {
     }
     if (agent.permission.webfetch === "deny") {
       result["webfetch"] = false
+      result["websearch"] = false
     }
 
     return result

@@ -84,6 +84,12 @@ export const TOOL_SPINNER_MAP: Record<string, ToolSpinnerConfig> = {
     spinner: "weather_storm", // Transition/change
     fallback: "rotating_arrow",
   },
+
+  // Web search - radar pulse
+  websearch: {
+    spinner: "websearch_spinner", // Radar/search pulse ◎·· ·◉· ··● ·◉·
+    fallback: "bloom",
+  },
 }
 
 /**

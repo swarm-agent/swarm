@@ -42,6 +42,7 @@ import type { ListTool } from "@/tool/ls"
 import type { EditTool } from "@/tool/edit"
 import type { PatchTool } from "@/tool/patch"
 import type { WebFetchTool } from "@/tool/webfetch"
+import type { WebSearchTool } from "@/tool/websearch"
 import type { TaskTool } from "@/tool/task"
 import { ExitPlanModeTool } from "@/tool/exit-plan"
 import type { AskUserTool } from "@/tool/ask-user"
@@ -78,6 +79,7 @@ import {
   PlanModeSpinner,
   EditDeltaMorphChain,
   WebfetchToolAnimation,
+  WebsearchToolAnimation,
   AskUserToolAnimation,
   ReadToolAnimation,
   GlobToolAnimation,
@@ -133,6 +135,7 @@ const TOOL_COLORS = {
   list: RGBA.fromInts(74, 255, 255, 255), // darkCyan
   task: RGBA.fromInts(255, 210, 74, 255), // darkYellow
   webfetch: RGBA.fromInts(137, 180, 250, 255), // Catppuccin Blue (#89b4fa)
+  websearch: RGBA.fromInts(148, 226, 213, 255), // Catppuccin Teal (#94e2d5)
   todo: RGBA.fromInts(255, 90, 125, 255), // diffHighlightRemoved
   patch: RGBA.fromInts(184, 74, 255, 255), // darkPurple
 }
@@ -186,6 +189,7 @@ function shouldShowInlinePermission(permission: Permission.Info): boolean {
   // These types are always small enough for inline
   if (permission.type === "external_directory") return true
   if (permission.type === "webfetch") return true
+  if (permission.type === "websearch") return true
   if (permission.type === "network") return true // Sandbox network access
 
   // Default to modal for unknown types
@@ -2322,6 +2326,48 @@ ToolRegistry.register<typeof WebFetchTool>({
           executionTime={executionTime()}
           bytesReceived={bytesReceived()}
           contentType={contentType()}
+        />
+      </ToolCard>
+    )
+  },
+})
+
+ToolRegistry.register<typeof WebSearchTool>({
+  name: "websearch",
+  container: "inline",
+  render(props) {
+    const query = (props.input as any).query
+
+    const executionTime = createMemo(() => {
+      if (props.state.status === "completed" && props.state.time) {
+        return props.state.time.end - props.state.time.start
+      }
+      return undefined
+    })
+
+    const startTime = createMemo(() => {
+      if (props.state.status !== "pending" && props.state.time?.start) {
+        return props.state.time.start
+      }
+      return undefined
+    })
+
+    // Count results by looking at output (rough estimate from "Title:" occurrences)
+    const resultCount = createMemo(() => {
+      const output = props.output
+      if (typeof output !== "string") return undefined
+      const matches = output.match(/^Title:/gm)
+      return matches?.length
+    })
+
+    return (
+      <ToolCard status={props.state.status} inline={true}>
+        <WebsearchToolAnimation
+          status={props.state.status}
+          query={query}
+          startTime={startTime()}
+          executionTime={executionTime()}
+          resultCount={resultCount()}
         />
       </ToolCard>
     )
