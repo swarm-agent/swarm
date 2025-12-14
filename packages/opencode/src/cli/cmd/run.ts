@@ -10,6 +10,7 @@ import { select } from "@clack/prompts"
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk"
 import { Server } from "../../server/server"
 import { Provider } from "../../provider/provider"
+import { Profile } from "../../profile"
 
 const TOOL: Record<string, [string, string]> = {
   todowrite: ["Todo", UI.Style.TEXT_WARNING_BOLD],
@@ -81,6 +82,10 @@ export const RunCommand = cmd({
       .option("port", {
         type: "number",
         describe: "port for the local server (defaults to random port if no value provided)",
+      })
+      .option("profile", {
+        type: "string",
+        describe: "container profile to use (auto-starts if not running)",
       })
   },
   handler: async (args) => {
@@ -272,6 +277,20 @@ export const RunCommand = cmd({
     }
 
     await bootstrap(process.cwd(), async () => {
+      // If profile specified, ensure container is running
+      if (args.profile) {
+        const profile = await Profile.get(args.profile)
+        if (!profile) {
+          UI.error(`Profile '${args.profile}' not found. Create it with: swarm profile create ${args.profile} --image <image>`)
+          process.exit(1)
+        }
+        if (profile.status !== "running") {
+          UI.println(`Starting container for profile '${args.profile}'...`)
+          await Profile.start(args.profile)
+        }
+        process.env.OPENCODE_PROFILE = args.profile
+      }
+
       const server = Server.listen({ port: args.port ?? 0, hostname: "127.0.0.1" })
       const sdk = createOpencodeClient({ baseUrl: `http://${server.hostname}:${server.port}` })
 
@@ -298,7 +317,12 @@ export const RunCommand = cmd({
               : args.title
             : undefined
 
-        const result = await sdk.session.create({ body: title ? { title } : {} })
+        const result = await sdk.session.create({ 
+          body: { 
+            ...(title ? { title } : {}),
+            ...(args.profile ? { containerProfile: args.profile } : {}),
+          } 
+        })
         return result.data?.id
       })()
 

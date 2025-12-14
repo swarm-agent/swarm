@@ -1,5 +1,7 @@
 import { Server } from "../../server/server"
 import { cmd } from "./cmd"
+import { Profile } from "../../profile"
+import { Config } from "../../config/config"
 
 export const ServeCommand = cmd({
   command: "serve",
@@ -15,16 +17,43 @@ export const ServeCommand = cmd({
         type: "string",
         describe: "hostname to listen on",
         default: "127.0.0.1",
+      })
+      .option("profile", {
+        type: "string",
+        describe: "container profile to use (auto-starts if not running)",
       }),
   describe: "starts a headless opencode server",
   handler: async (args) => {
     const hostname = args.hostname
     const port = args.port
+
+    // If profile specified, ensure container is running
+    if (args.profile) {
+      const profile = await Profile.get(args.profile)
+      if (!profile) {
+        console.error(`Profile '${args.profile}' not found. Create it with: swarm profile create ${args.profile} --image <image>`)
+        process.exit(1)
+      }
+      if (profile.status !== "running") {
+        console.log(`Starting container for profile '${args.profile}'...`)
+        await Profile.start(args.profile)
+        console.log(`Container started`)
+      }
+      // Store active profile for session creation
+      process.env.OPENCODE_PROFILE = args.profile
+    }
+
+    // Initialize profiles from config
+    await Profile.initFromConfig().catch(() => {})
+
     const server = Server.listen({
       port,
       hostname,
     })
     console.log(`opencode server listening on http://${server.hostname}:${server.port}`)
+    if (args.profile) {
+      console.log(`Using container profile: ${args.profile}`)
+    }
     await new Promise(() => {})
     await server.stop()
   },

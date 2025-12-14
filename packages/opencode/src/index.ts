@@ -26,6 +26,7 @@ import { EOL } from "os"
 import { WebCommand } from "./cli/cmd/web"
 import { PrCommand } from "./cli/cmd/pr"
 import { PinCommand } from "./cli/cmd/pin"
+import { ProfileCommand } from "./cli/cmd/profile"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -93,6 +94,7 @@ const cli = yargs(hideBin(process.argv))
   .command(ImportCommand)
   .command(PrCommand)
   .command(PinCommand)
+  .command(ProfileCommand)
   .fail((msg) => {
     if (
       msg.startsWith("Unknown argument") ||

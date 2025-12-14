@@ -4,6 +4,90 @@
 > **Branch**: main (unstaged changes)
 > **Revert**: `git restore packages/opencode/src/` to undo all changes
 
+## Current Progress (2025-12-14)
+
+### ✅ WORKING
+- `swarm profile create test-sandbox --image ubuntu:22.04` - creates profile
+- `swarm profile list` - shows profiles with status
+- `swarm profile start <name>` - starts container with security flags
+- `swarm profile stop <name>` - stops container
+- `swarm profile status <name>` - shows running state
+- `swarm profile exec <name> <cmd>` - executes commands in container
+- **Security flags applied**: `no-new-privileges:true`, ports bound to `127.0.0.1` only
+- **User-friendly error**: Shows install instructions when podman/docker missing
+- **Docker tested**: Working with docker runtime (daemon must be running)
+- `swarm run --profile <name>` - ✅ WORKS! Commands execute in container
+- **Bash tool routing** - ✅ WORKS! Container IS sandbox, bwrap skipped
+- **Volume mounts** - ✅ WORKS! Host files visible at /workspace (read+write)
+- **Dual mode**: Host sandbox (bwrap) works without profile, container sandbox works with profile
+
+### ⏳ NOT YET TESTED
+- `swarm serve --profile <name>` - server with profile
+- Podman runtime (need to install: `sudo pacman -S podman`)
+- Server reconnection to existing container
+
+### 📝 KNOWN ISSUES
+- Docker requires daemon running (`sudo systemctl start docker`)
+- Build can fail on npm pack issue - may need retry
+
+### 🔧 CONFIG FOR TESTING
+Current test config in `/home/roy/swarm-cli/opencode.json`:
+```json
+{
+  "container": {
+    "runtime": "docker"
+  }
+}
+```
+
+Active test profile: `test-sandbox` (ubuntu:22.04, container ID: 6bfc28e2eb9c)
+
+## Runtime Requirements
+
+### Podman (RECOMMENDED)
+Podman is **rootless** and **daemonless** - it just works without sudo or background services.
+
+```bash
+# Install podman
+Arch:   sudo pacman -S podman
+Ubuntu: sudo apt install podman
+Fedora: sudo dnf install podman
+macOS:  brew install podman
+
+# That's it! No daemon to start, no sudo needed to run containers
+podman run hello-world
+```
+
+### Docker (Alternative)
+Docker requires a **daemon running as root**. More friction but widely used.
+
+```bash
+# Install docker
+Arch:   sudo pacman -S docker
+Ubuntu: sudo apt install docker.io
+Fedora: sudo dnf install docker
+macOS:  brew install --cask docker
+
+# IMPORTANT: Docker requires the daemon to be running
+sudo systemctl start docker    # Start daemon (required every boot)
+sudo systemctl enable docker   # Auto-start on boot
+
+# Add yourself to docker group (to avoid sudo for every command)
+sudo usermod -aG docker $USER
+# Then log out and back in
+
+# Set docker as runtime in opencode.json:
+# { "container": { "runtime": "docker" } }
+```
+
+## Security Model
+
+Containers are configured with these safety measures:
+- **Ports bound to localhost only** (`127.0.0.1:port`) - not accessible from network
+- **No privilege escalation** (`--security-opt no-new-privileges:true`)
+- **Bridge network by default** - container can reach out, nothing can reach in unless ports exposed
+- **Rootless with podman** - container runs as your user, not root
+
 ## Goals
 
 1. **Isolated execution environment** - Run all bash commands inside a container (podman/docker)

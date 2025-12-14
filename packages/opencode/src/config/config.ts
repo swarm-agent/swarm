@@ -391,6 +391,73 @@ export namespace Config {
     .meta({ ref: "SandboxConfig" })
   export type SandboxConfig = z.infer<typeof SandboxConfig>
 
+  // Container profile configuration schemas
+  export const ContainerVolumeConfig = z
+    .object({
+      host: z.string().describe("Host path (supports ~ and . expansion)"),
+      container: z.string().describe("Container mount path"),
+      readonly: z.boolean().default(false).describe("Mount as read-only"),
+    })
+    .meta({ ref: "ContainerVolumeConfig" })
+  export type ContainerVolumeConfig = z.infer<typeof ContainerVolumeConfig>
+
+  export const ContainerNetworkConfig = z
+    .object({
+      mode: z.enum(["bridge", "host", "none"]).default("bridge").describe("Container network mode"),
+      allowedDomains: z.array(z.string()).optional().describe("Domain allowlist for network filtering"),
+      deniedDomains: z.array(z.string()).optional().describe("Domain denylist"),
+      socketBridges: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe("Unix socket → TCP mapping for localhost access"),
+      exposePorts: z.array(z.number()).optional().describe("Ports to expose from container"),
+    })
+    .meta({ ref: "ContainerNetworkConfig" })
+  export type ContainerNetworkConfig = z.infer<typeof ContainerNetworkConfig>
+
+  export const ContainerProfileConfig = z
+    .object({
+      name: z.string().describe("Unique profile name"),
+      image: z.string().describe("Container image (e.g., 'ubuntu:22.04')"),
+      volumes: z.array(ContainerVolumeConfig).optional().describe("Volume mounts"),
+      environment: z.record(z.string(), z.string()).optional().describe("Environment variables"),
+      network: ContainerNetworkConfig.optional().describe("Network configuration"),
+      workdir: z.string().default("/workspace").describe("Working directory in container"),
+      user: z.string().optional().describe("User to run as (uid:gid)"),
+      keepAlive: z.boolean().default(true).describe("Keep container running between commands"),
+      idleTimeoutMinutes: z.number().default(30).describe("Stop container after idle (0 = never)"),
+      serverPort: z.number().optional().describe("Port for swarm serve inside container"),
+      // Agent/model defaults for this profile
+      agent: z.string().optional().describe("Default agent for this profile"),
+      model: z.string().optional().describe("Default model for this profile"),
+      tools: z.record(z.string(), z.boolean()).optional().describe("Tool overrides"),
+      permission: z
+        .object({
+          edit: Permission.optional(),
+          bash: z.union([Permission, z.record(z.string(), Permission)]).optional(),
+          webfetch: Permission.optional(),
+          doom_loop: Permission.optional(),
+          external_directory: Permission.optional(),
+          background_agent: Permission.optional(),
+        })
+        .optional()
+        .describe("Permission overrides for this profile"),
+      // Sandbox inside the container (optional)
+      sandbox: SandboxConfig.optional().describe("Sandbox settings inside container (inherits if not set)"),
+    })
+    .meta({ ref: "ContainerProfileConfig" })
+  export type ContainerProfileConfig = z.infer<typeof ContainerProfileConfig>
+
+  export const ContainerConfig = z
+    .object({
+      enabled: z.boolean().default(false).describe("Enable container-based execution"),
+      runtime: z.enum(["podman", "docker"]).default("podman").describe("Container runtime to use"),
+      defaultProfile: z.string().optional().describe("Default profile when --profile not specified"),
+      profiles: z.record(z.string(), ContainerProfileConfig).optional().describe("Named container profiles"),
+    })
+    .meta({ ref: "ContainerConfig" })
+  export type ContainerConfig = z.infer<typeof ContainerConfig>
+
   export const Command = z.object({
     template: z.string(),
     description: z.string().optional(),
@@ -644,6 +711,7 @@ export namespace Config {
       instructions: z.array(z.string()).optional().describe("Additional instruction files or patterns to include"),
       layout: Layout.optional().describe("@deprecated Always uses stretch layout."),
       sandbox: SandboxConfig.optional().describe("OS-level sandboxing configuration for bash commands"),
+      container: ContainerConfig.optional().describe("Podman/Docker container profiles - additional isolation layer"),
       permission: z
         .object({
           edit: Permission.optional(),

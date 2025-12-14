@@ -25,6 +25,7 @@ import { Auth } from "../auth"
 import { Command } from "../command"
 import { Global } from "../global"
 import { ProjectRoute } from "./project"
+import { ProfileRoute } from "./profile"
 import { ToolRegistry } from "../tool/registry"
 import { zodToJsonSchema } from "zod-to-json-schema"
 import { SessionLock } from "../session/lock"
@@ -144,6 +145,7 @@ export namespace Server {
       )
       .use(validator("query", z.object({ directory: z.string().optional() })))
       .route("/project", ProjectRoute)
+      .route("/profile", ProfileRoute)
       .get(
         "/config",
         describeRoute({

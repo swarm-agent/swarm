@@ -45,6 +45,8 @@ export namespace Session {
       parentID: Identifier.schema("session").optional(),
       /** Source of the session: tui (default), sdk, or background */
       source: Source.optional(),
+      /** Container profile name if session runs in a container */
+      containerProfile: z.string().optional(),
       summary: z
         .object({
           additions: z.number(),
@@ -130,6 +132,7 @@ export namespace Session {
         parentID: Identifier.schema("session").optional(),
         title: z.string().optional(),
         source: Source.optional(),
+        containerProfile: z.string().optional(),
       })
       .optional(),
     async (input) => {
@@ -138,6 +141,7 @@ export namespace Session {
         directory: Instance.directory,
         title: input?.title,
         source: input?.source,
+        containerProfile: input?.containerProfile,
       })
     },
   )
@@ -179,7 +183,7 @@ export namespace Session {
     })
   })
 
-  export async function createNext(input: { id?: string; title?: string; parentID?: string; directory: string; source?: Source }) {
+  export async function createNext(input: { id?: string; title?: string; parentID?: string; directory: string; source?: Source; containerProfile?: string }) {
     const result: Info = {
       id: Identifier.descending("session", input.id),
       version: Installation.VERSION,
@@ -187,6 +191,7 @@ export namespace Session {
       directory: input.directory,
       parentID: input.parentID,
       source: input.source,
+      containerProfile: input.containerProfile,
       title: input.title ?? createDefaultTitle(!!input.parentID),
       time: {
         created: Date.now(),
