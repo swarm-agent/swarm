@@ -223,7 +223,7 @@ export namespace SessionPrompt {
         state().queued.set(input.sessionID, queue)
       })
     }
-    const agent = await Agent.get(input.agent ?? "build")
+    const agent = await Agent.get(input.agent ?? "build", { sessionID: input.sessionID })
     const model = await resolveModel({
       agent,
       model: input.model,
@@ -1275,7 +1275,7 @@ export namespace SessionPrompt {
                         JSON.stringify(p.state.input) === JSON.stringify(value.input),
                     )
                   ) {
-                    const permission = await Agent.get(input.agent).then((x) => x.permission)
+                    const permission = await Agent.get(input.agent, { sessionID: input.sessionID }).then((x) => x.permission)
                     if (permission.doom_loop === "ask") {
                       await Permission.ask({
                         type: "doom_loop",

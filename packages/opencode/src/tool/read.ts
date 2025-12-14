@@ -28,7 +28,7 @@ export const ReadTool = Tool.define("read", {
       filepath = path.join(process.cwd(), filepath)
     }
     const title = path.relative(Instance.worktree, filepath)
-    const agent = await Agent.get(ctx.agent)
+    const agent = await Agent.get(ctx.agent, { sessionID: ctx.sessionID })
 
     if (!ctx.extra?.["bypassCwdCheck"] && !Filesystem.contains(Instance.directory, filepath)) {
       const parentDir = path.dirname(filepath)

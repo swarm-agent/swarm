@@ -88,7 +88,7 @@ export const BashTool = Tool.define("bash", {
     if (!tree) {
       throw new Error("Failed to parse command")
     }
-    const agent = await Agent.get(ctx.agent)
+    const agent = await Agent.get(ctx.agent, { sessionID: ctx.sessionID })
     const permissions = agent.permission.bash
 
     const askPatterns = new Set<string>()

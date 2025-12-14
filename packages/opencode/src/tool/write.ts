@@ -28,7 +28,7 @@ export const WriteTool = Tool.define("write", {
       )
     }
 
-    const agent = await Agent.get(ctx.agent)
+    const agent = await Agent.get(ctx.agent, { sessionID: ctx.sessionID })
 
     const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
     if (!Filesystem.contains(Instance.directory, filepath)) {

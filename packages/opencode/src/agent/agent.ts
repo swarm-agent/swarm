@@ -6,6 +6,8 @@ import PROMPT_GENERATE from "./generate.txt"
 import { SystemPrompt } from "../session/system"
 import { Instance } from "../project/instance"
 import { mergeDeep } from "remeda"
+import { Session } from "../session"
+import { Profile } from "../profile"
 
 export namespace Agent {
   export const Info = z
@@ -180,9 +182,9 @@ export namespace Agent {
     return result
   })
 
-  export async function get(agent: string, options?: { isBackground?: boolean }) {
+  export async function get(agent: string, options?: { isBackground?: boolean; sessionID?: string }) {
     const agents = await state()
-    const result = agents[agent]
+    let result = agents[agent]
     if (!result) return result
 
     // If running as background agent, merge background-specific permissions
@@ -190,10 +192,38 @@ export namespace Agent {
       const cfg = await Config.get()
       const backgroundConfig = cfg.backgroundAgent
       if (backgroundConfig?.permission) {
-        return {
+        result = {
           ...result,
           permission: mergeAgentPermissions(result.permission, backgroundConfig.permission),
         }
+      }
+    }
+
+    // If sessionID provided, check for container profile permissions and tools
+    if (options?.sessionID) {
+      try {
+        const session = await Session.get(options.sessionID)
+        if (session?.containerProfile) {
+          const profile = await Profile.get(session.containerProfile)
+          if (profile?.config) {
+            // Merge permissions from profile
+            if (profile.config.permission) {
+              result = {
+                ...result,
+                permission: mergeAgentPermissions(result.permission, profile.config.permission),
+              }
+            }
+            // Merge tools from profile (profile tools override agent tools)
+            if (profile.config.tools) {
+              result = {
+                ...result,
+                tools: { ...result.tools, ...profile.config.tools },
+              }
+            }
+          }
+        }
+      } catch {
+        // Session not found or profile not found, continue with default permissions
       }
     }
 
@@ -236,19 +266,28 @@ export namespace Agent {
 }
 
 function mergeAgentPermissions(basePermission: any, overridePermission: any): Agent.Info["permission"] {
+  // If override bash is a simple string (like "deny" or "allow"), it completely replaces base bash permissions
+  // This allows profiles to say "bash: deny" to block all bash commands
+  const overrideBashIsSimple = typeof overridePermission?.bash === "string"
+
   if (typeof basePermission.bash === "string") {
     basePermission.bash = {
       "*": basePermission.bash,
     }
   }
-  if (typeof overridePermission.bash === "string") {
+  if (typeof overridePermission?.bash === "string") {
     overridePermission.bash = {
       "*": overridePermission.bash,
     }
   }
+
   const merged = mergeDeep(basePermission ?? {}, overridePermission ?? {}) as any
+
   let mergedBash
-  if (merged.bash) {
+  if (overrideBashIsSimple && overridePermission?.bash) {
+    // Simple string override completely replaces bash permissions
+    mergedBash = overridePermission.bash
+  } else if (merged.bash) {
     if (typeof merged.bash === "string") {
       mergedBash = {
         "*": merged.bash,

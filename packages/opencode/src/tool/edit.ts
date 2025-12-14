@@ -53,7 +53,7 @@ export const EditTool = Tool.define("edit", {
       throw new Error("oldString and newString must be different")
     }
 
-    const agent = await Agent.get(ctx.agent)
+    const agent = await Agent.get(ctx.agent, { sessionID: ctx.sessionID })
 
     const filePath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
     if (!Filesystem.contains(Instance.directory, filePath)) {

@@ -39,7 +39,7 @@ export const PatchTool = Tool.define("patch", {
     }
 
     // Validate file paths and check permissions
-    const agent = await Agent.get(ctx.agent)
+    const agent = await Agent.get(ctx.agent, { sessionID: ctx.sessionID })
     const fileChanges: Array<{
       filePath: string
       oldContent: string
