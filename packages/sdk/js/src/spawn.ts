@@ -111,6 +111,21 @@ export interface SpawnOptions {
   cwd?: string
   
   /**
+   * Container profile name - run this session inside a container
+   * Profile must be defined in opencode.json under container.profiles
+   * 
+   * @example
+   * ```typescript
+   * // Run in a pre-configured container
+   * spawn({
+   *   prompt: "...",
+   *   containerProfile: "twitter-bot",
+   * })
+   * ```
+   */
+  containerProfile?: string
+  
+  /**
    * Execution mode
    * - "noninteractive" (default): Auto-approves "ask" permissions, fails on "pin"
    * - "interactive": Uses onPermission callback for each permission
@@ -308,11 +323,12 @@ export function createSpawn(client: OpencodeClient) {
         })
         const sseResult = await ssePromise
 
-        // 2. Create session with title
+        // 2. Create session with title (and optional containerProfile)
         const defaultTitle = `SDK: ${options.prompt.slice(0, 60)}${options.prompt.length > 60 ? "..." : ""}`
         sessionPromise = client.session.create({
           body: {
             title: options.title ?? defaultTitle,
+            ...(options.containerProfile ? { containerProfile: options.containerProfile } : {}),
           },
         })
         const session = await sessionPromise
