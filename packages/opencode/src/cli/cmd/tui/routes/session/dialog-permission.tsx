@@ -327,9 +327,19 @@ export function DialogPermission(props: DialogPermissionProps) {
 
     const normalizedResponse = typeof response === "object" && "type" in response ? response.type : response
 
-    // IMPORTANT: Capture the selected agent name BEFORE any state changes
-    // This prevents reactive recomputation from changing the value when local.agent.set() is called
-    const selectedAgentName = perm && perm.type === "exit-plan-mode" ? selectedAgent()?.name : undefined
+    // IMPORTANT: Compute the selected agent directly from the permission being responded to,
+    // NOT from selectedAgent() which depends on currentPermission(). This fixes the bug where
+    // agent selection was lost when approving with Shift+C because currentPermission() might
+    // point to a different permission than the one being responded to.
+    let selectedAgentName: string | undefined = undefined
+    if (perm && perm.type === "exit-plan-mode") {
+      const agents = availableAgents()
+      const defaultAgent = (perm.metadata.switchToAgent as string) || "build"
+      const defaultIndex = agents.findIndex((a) => a.name === defaultAgent)
+      const fallbackIndex = defaultIndex >= 0 ? defaultIndex : 0
+      const agentIndex = Math.min(store.selectedAgentIndex ?? fallbackIndex, agents.length - 1)
+      selectedAgentName = agents[agentIndex]?.name
+    }
 
     // Switch agent BEFORE sending the response
     // This ensures the next message from the agent uses the new agent mode

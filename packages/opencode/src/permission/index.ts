@@ -119,7 +119,10 @@ export namespace Permission {
     z.literal("always"),
     z.literal("reject"),
     z.object({ type: z.literal("reject"), message: z.string() }),
-    // once with message - for approve with comment (Shift+Enter in plan mode)
+    // once with message AND agent - for approve with comment in plan mode (Shift+C)
+    // Must come before message-only variant since zod union matches first valid schema
+    z.object({ type: z.literal("once"), message: z.string(), agent: z.string() }),
+    // once with message only - for approve with comment (Shift+Enter in plan mode)
     z.object({ type: z.literal("once"), message: z.string() }),
     // answers variant MUST come before agent variant since agent is optional
     // and zod union matches first valid schema
