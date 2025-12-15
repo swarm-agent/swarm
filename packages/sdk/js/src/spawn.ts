@@ -51,7 +51,9 @@ import type {
   ToolPart,
   Permission,
 } from "./gen/types.gen.js"
-import { type ProfileName, getProfile } from "./profiles.js"
+import { type ProfileName, type CustomProfile, getProfile, isCustomProfile } from "./profiles.js"
+import type { McpServers, SwarmMcpServer } from "./mcp-server.js"
+import type { ToolContext } from "./tool.js"
 
 // ============================================================================
 // Types
@@ -123,13 +125,49 @@ export interface SpawnOptions {
   onPermission?: (request: PermissionRequest) => Promise<PermissionResponse>
   
   /**
-   * Predefined permission profile (optional convenience)
+   * Permission profile - predefined or custom
+   * 
+   * Predefined profiles:
    * - analyze: read-only, no modifications
    * - edit: file edits allowed, no shell
    * - full: all tools enabled
    * - yolo: all tools, forces noninteractive mode
+   * 
+   * Custom profiles (from createSwarmProfile):
+   * - Include custom MCP tools
+   * - Per-profile env files
+   * - Tool and permission overrides
+   * 
+   * @example
+   * ```typescript
+   * // Predefined
+   * spawn({ prompt: "...", profile: "full" })
+   * 
+   * // Custom
+   * const myProfile = createSwarmProfile({ ... })
+   * spawn({ prompt: "...", profile: myProfile })
+   * ```
    */
-  profile?: ProfileName
+  profile?: ProfileName | CustomProfile
+  
+  /**
+   * In-process MCP servers with custom tools
+   * Merged with profile mcpServers (explicit wins)
+   * 
+   * @example
+   * ```typescript
+   * spawn({
+   *   prompt: "...",
+   *   mcpServers: {
+   *     "my-tools": createSwarmMcpServer({
+   *       name: "my-tools",
+   *       tools: [tool("...", "...", {}, async () => "...")],
+   *     }),
+   *   },
+   * })
+   * ```
+   */
+  mcpServers?: McpServers
   
   /**
    * Agent type to use
@@ -199,10 +237,16 @@ export function createSpawn(client: OpencodeClient) {
     const options: SpawnOptions =
       typeof promptOrOptions === "string" ? { prompt: promptOrOptions } : promptOrOptions
 
+    // Handle custom vs predefined profiles
+    const customProfile = options.profile && isCustomProfile(options.profile) ? options.profile : null
+    const predefinedProfileName = !customProfile 
+      ? (typeof options.profile === "string" ? options.profile : "full")
+      : null
+
     // Determine mode
     // - yolo profile forces noninteractive
     // - default is noninteractive for SDK use (automation-friendly)
-    const isYolo = options.profile === "yolo"
+    const isYolo = predefinedProfileName === "yolo"
     const mode = isYolo ? "noninteractive" : (options.mode ?? "noninteractive")
     
     // Validate: interactive mode should have onPermission callback
@@ -210,14 +254,19 @@ export function createSpawn(client: OpencodeClient) {
       console.warn("[spawn] Interactive mode without onPermission callback - permissions will block forever")
     }
 
-    // Get profile tools (default to 'full' for SDK - user controls via mode)
-    const profileName = options.profile ?? "full"
-    const profile = getProfile(profileName)
+    // Get profile tools
+    const baseProfile = customProfile ?? getProfile(predefinedProfileName as ProfileName)
 
     // Merge profile tools with any explicit overrides
     const tools: Record<string, boolean> = {
-      ...profile.tools,
+      ...baseProfile.tools,
       ...(options.tools ?? {}),
+    }
+
+    // Merge MCP servers (profile + explicit)
+    const mcpServers: McpServers = {
+      ...(customProfile?.mcpServers ?? {}),
+      ...(options.mcpServers ?? {}),
     }
 
     let abortRequested = false
@@ -246,6 +295,11 @@ export function createSpawn(client: OpencodeClient) {
 
     const initPromise = (async () => {
       try {
+        // 0. Load env from custom profile (if configured)
+        if (customProfile) {
+          await customProfile.injectEnv()
+        }
+
         // 1. Subscribe to SSE FIRST (before creating session)
         ssePromise = client.event.subscribe({
           headers: {

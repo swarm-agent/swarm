@@ -20,9 +20,18 @@
     "@tsconfig/node22": "catalog:",
     "@types/node": "catalog:",
     "typescript": "catalog:",
-    "@typescript/native-preview": "catalog:"
+    "@typescript/native-preview": "catalog:",
+    "zod": "^3.23.0"
   },
   "dependencies": {},
+  "peerDependencies": {
+    "zod": "^3.23.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
   "publishConfig": {
     "directory": "dist"
   }
