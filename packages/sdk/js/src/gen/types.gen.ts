@@ -10,6 +10,192 @@ export type Project = {
     };
 };
 
+export type ContainerVolumeConfig = {
+    /**
+     * Host path (supports ~ and . expansion)
+     */
+    host: string;
+    /**
+     * Container mount path
+     */
+    container: string;
+    /**
+     * Mount as read-only
+     */
+    readonly?: boolean;
+};
+
+/**
+ * Network configuration
+ */
+export type ContainerNetworkConfig = {
+    /**
+     * Container network mode
+     */
+    mode?: 'bridge' | 'host' | 'none';
+    /**
+     * Domain allowlist for network filtering
+     */
+    allowedDomains?: Array<string>;
+    /**
+     * Domain denylist
+     */
+    deniedDomains?: Array<string>;
+    /**
+     * Unix socket → TCP mapping for localhost access
+     */
+    socketBridges?: {
+        [key: string]: string;
+    };
+    /**
+     * Ports to expose from container
+     */
+    exposePorts?: Array<number>;
+};
+
+/**
+ * Network restrictions configuration
+ */
+export type SandboxNetworkConfig = {
+    /**
+     * Domains allowed for network access (e.g., ['github.com', '*.npmjs.org'])
+     */
+    allowedDomains?: Array<string>;
+    /**
+     * Domains explicitly denied
+     */
+    deniedDomains?: Array<string>;
+    /**
+     * Unix socket paths allowed (macOS only)
+     */
+    allowUnixSockets?: Array<string>;
+    /**
+     * Allow binding to local ports
+     */
+    allowLocalBinding?: boolean;
+    /**
+     * Map Unix socket paths to TCP endpoints for sandbox access (e.g., {'/tmp/api.sock': 'localhost:3456'})
+     */
+    socketBridges?: {
+        [key: string]: string;
+    };
+};
+
+/**
+ * Filesystem restrictions configuration
+ */
+export type SandboxFilesystemConfig = {
+    /**
+     * Paths denied for reading
+     */
+    denyRead?: Array<string>;
+    /**
+     * Paths allowed for writing (default: current directory only)
+     */
+    allowWrite?: Array<string>;
+    /**
+     * Paths denied for writing (takes precedence over allowWrite)
+     */
+    denyWrite?: Array<string>;
+};
+
+/**
+ * Sandbox settings inside container (inherits if not set)
+ */
+export type SandboxConfig = {
+    /**
+     * Enable OS-level sandboxing for bash commands
+     */
+    enabled?: boolean;
+    network?: SandboxNetworkConfig;
+    filesystem?: SandboxFilesystemConfig;
+    /**
+     * Enable weaker sandbox mode for Docker environments
+     */
+    enableWeakerNestedSandbox?: boolean;
+    /**
+     * Command patterns that bypass sandbox entirely (e.g., ['ssh *', 'scp *'])
+     */
+    trustedCommands?: Array<string>;
+};
+
+export type ContainerProfileConfig = {
+    /**
+     * Unique profile name
+     */
+    name: string;
+    /**
+     * Container image (e.g., 'ubuntu:22.04')
+     */
+    image: string;
+    /**
+     * Volume mounts
+     */
+    volumes?: Array<ContainerVolumeConfig>;
+    /**
+     * Environment variables
+     */
+    environment?: {
+        [key: string]: string;
+    };
+    network?: ContainerNetworkConfig;
+    /**
+     * Working directory in container
+     */
+    workdir?: string;
+    /**
+     * User to run as (uid:gid)
+     */
+    user?: string;
+    /**
+     * Keep container running between commands
+     */
+    keepAlive?: boolean;
+    /**
+     * Stop container after idle (0 = never)
+     */
+    idleTimeoutMinutes?: number;
+    /**
+     * Port for swarm serve inside container
+     */
+    serverPort?: number;
+    /**
+     * Default agent for this profile
+     */
+    agent?: string;
+    /**
+     * Default model for this profile
+     */
+    model?: string;
+    /**
+     * Tool overrides
+     */
+    tools?: {
+        [key: string]: boolean;
+    };
+    /**
+     * Permission overrides for this profile
+     */
+    permission?: {
+        edit?: 'ask' | 'allow' | 'deny' | 'pin';
+        bash?: ('ask' | 'allow' | 'deny' | 'pin') | {
+            [key: string]: 'ask' | 'allow' | 'deny' | 'pin';
+        };
+        webfetch?: 'ask' | 'allow' | 'deny' | 'pin';
+        doom_loop?: 'ask' | 'allow' | 'deny' | 'pin';
+        external_directory?: 'ask' | 'allow' | 'deny' | 'pin';
+        background_agent?: 'ask' | 'allow' | 'deny' | 'pin';
+    };
+    sandbox?: SandboxConfig;
+};
+
+export type ProfileNotFoundError = {
+    name: 'ProfileNotFoundError';
+    data: {
+        name: string;
+    };
+};
+
 /**
  * Custom keybind configurations
  */
@@ -278,65 +464,27 @@ export type McpRemoteConfig = {
 export type LayoutConfig = 'auto' | 'stretch';
 
 /**
- * Network restrictions configuration
+ * Podman/Docker container profiles - additional isolation layer
  */
-export type SandboxNetworkConfig = {
+export type ContainerConfig = {
     /**
-     * Domains allowed for network access (e.g., ['github.com', '*.npmjs.org'])
-     */
-    allowedDomains?: Array<string>;
-    /**
-     * Domains explicitly denied
-     */
-    deniedDomains?: Array<string>;
-    /**
-     * Unix socket paths allowed (macOS only)
-     */
-    allowUnixSockets?: Array<string>;
-    /**
-     * Allow binding to local ports
-     */
-    allowLocalBinding?: boolean;
-    /**
-     * Map Unix socket paths to TCP endpoints for sandbox access (e.g., {'/tmp/api.sock': 'localhost:3456'})
-     */
-    socketBridges?: {
-        [key: string]: string;
-    };
-};
-
-/**
- * Filesystem restrictions configuration
- */
-export type SandboxFilesystemConfig = {
-    /**
-     * Paths denied for reading
-     */
-    denyRead?: Array<string>;
-    /**
-     * Paths allowed for writing (default: current directory only)
-     */
-    allowWrite?: Array<string>;
-    /**
-     * Paths denied for writing (takes precedence over allowWrite)
-     */
-    denyWrite?: Array<string>;
-};
-
-/**
- * OS-level sandboxing configuration for bash commands
- */
-export type SandboxConfig = {
-    /**
-     * Enable OS-level sandboxing for bash commands
+     * Enable container-based execution
      */
     enabled?: boolean;
-    network?: SandboxNetworkConfig;
-    filesystem?: SandboxFilesystemConfig;
     /**
-     * Enable weaker sandbox mode for Docker environments
+     * Container runtime to use
      */
-    enableWeakerNestedSandbox?: boolean;
+    runtime?: 'podman' | 'docker';
+    /**
+     * Default profile when --profile not specified
+     */
+    defaultProfile?: string;
+    /**
+     * Named container profiles
+     */
+    profiles?: {
+        [key: string]: ContainerProfileConfig;
+    };
 };
 
 export type Config = {
@@ -526,6 +674,7 @@ export type Config = {
     instructions?: Array<string>;
     layout?: LayoutConfig;
     sandbox?: SandboxConfig;
+    container?: ContainerConfig;
     permission?: {
         edit?: 'ask' | 'allow' | 'deny' | 'pin';
         bash?: ('ask' | 'allow' | 'deny' | 'pin') | {
@@ -646,6 +795,7 @@ export type Session = {
     directory: string;
     parentID?: string;
     source?: 'tui' | 'sdk' | 'background';
+    containerProfile?: string;
     summary?: {
         additions: number;
         deletions: number;
@@ -1347,6 +1497,82 @@ export type EventSessionAgentSwitch = {
     };
 };
 
+export type EventProfileCreated = {
+    type: 'profile.created';
+    properties: {
+        profile: {
+            name: string;
+            config: ContainerProfileConfig;
+            containerID?: string;
+            status: 'stopped' | 'starting' | 'running' | 'error';
+            lastStarted?: number;
+            lastActivity?: number;
+            sessionCount?: number;
+            error?: string;
+        };
+    };
+};
+
+export type EventProfileUpdated = {
+    type: 'profile.updated';
+    properties: {
+        profile: {
+            name: string;
+            config: ContainerProfileConfig;
+            containerID?: string;
+            status: 'stopped' | 'starting' | 'running' | 'error';
+            lastStarted?: number;
+            lastActivity?: number;
+            sessionCount?: number;
+            error?: string;
+        };
+    };
+};
+
+export type EventProfileDeleted = {
+    type: 'profile.deleted';
+    properties: {
+        name: string;
+    };
+};
+
+export type EventProfileStarting = {
+    type: 'profile.starting';
+    properties: {
+        name: string;
+    };
+};
+
+export type EventProfileStarted = {
+    type: 'profile.started';
+    properties: {
+        name: string;
+        containerID: string;
+    };
+};
+
+export type EventProfileStopping = {
+    type: 'profile.stopping';
+    properties: {
+        name: string;
+    };
+};
+
+export type EventProfileStopped = {
+    type: 'profile.stopped';
+    properties: {
+        name: string;
+    };
+};
+
+export type EventProfileError = {
+    type: 'profile.error';
+    properties: {
+        name: string;
+        error: string;
+    };
+};
+
 export type EventTodoUpdated = {
     type: 'todo.updated';
     properties: {
@@ -1406,6 +1632,10 @@ export type EventPermissionReplied = {
         response: 'once' | 'always' | 'reject' | {
             type: 'reject';
             message: string;
+        } | {
+            type: 'once';
+            message: string;
+            agent: string;
         } | {
             type: 'once';
             message: string;
@@ -1549,7 +1779,7 @@ export type EventFileWatcherUpdated = {
     };
 };
 
-export type Event = EventInstallationUpdated | EventLspClientDiagnostics | EventLspUpdated | EventMessageUpdated | EventMessageRemoved | EventMessagePartUpdated | EventMessagePartRemoved | EventSessionCompleted | EventSessionAborted | EventSessionAgentSwitch | EventTodoUpdated | EventSessionCompacted | EventSessionCompactingProgress | EventPermissionUpdated | EventPermissionReplied | EventBackgroundAgentSpawned | EventBackgroundAgentUpdated | EventBackgroundAgentCompleted | EventBackgroundAgentFailed | EventFileEdited | EventSessionPlanUpdated | EventCommandExecuted | EventSessionIdle | EventSessionCreated | EventSessionUpdated | EventSessionDeleted | EventSessionDiff | EventSessionError | EventTuiPromptAppend | EventTuiCommandExecute | EventTuiToastShow | EventSwarmStatusUpdated | EventServerConnected | EventFileWatcherUpdated;
+export type Event = EventInstallationUpdated | EventLspClientDiagnostics | EventLspUpdated | EventMessageUpdated | EventMessageRemoved | EventMessagePartUpdated | EventMessagePartRemoved | EventSessionCompleted | EventSessionAborted | EventSessionAgentSwitch | EventProfileCreated | EventProfileUpdated | EventProfileDeleted | EventProfileStarting | EventProfileStarted | EventProfileStopping | EventProfileStopped | EventProfileError | EventTodoUpdated | EventSessionCompacted | EventSessionCompactingProgress | EventPermissionUpdated | EventPermissionReplied | EventBackgroundAgentSpawned | EventBackgroundAgentUpdated | EventBackgroundAgentCompleted | EventBackgroundAgentFailed | EventFileEdited | EventSessionPlanUpdated | EventCommandExecuted | EventSessionIdle | EventSessionCreated | EventSessionUpdated | EventSessionDeleted | EventSessionDiff | EventSessionError | EventTuiPromptAppend | EventTuiCommandExecute | EventTuiToastShow | EventSwarmStatusUpdated | EventServerConnected | EventFileWatcherUpdated;
 
 export type ProjectListData = {
     body?: never;
@@ -1586,6 +1816,468 @@ export type ProjectCurrentResponses = {
 };
 
 export type ProjectCurrentResponse = ProjectCurrentResponses[keyof ProjectCurrentResponses];
+
+export type ProfileListData = {
+    body?: never;
+    path?: never;
+    query?: {
+        directory?: string;
+    };
+    url: '/profile';
+};
+
+export type ProfileListResponses = {
+    /**
+     * List of profiles
+     */
+    200: Array<{
+        name: string;
+        config: ContainerProfileConfig;
+        containerID?: string;
+        status: 'stopped' | 'starting' | 'running' | 'error';
+        lastStarted?: number;
+        lastActivity?: number;
+        sessionCount?: number;
+        error?: string;
+    }>;
+};
+
+export type ProfileListResponse = ProfileListResponses[keyof ProfileListResponses];
+
+export type ProfileCreateData = {
+    body?: ContainerProfileConfig;
+    path?: never;
+    query?: {
+        directory?: string;
+    };
+    url: '/profile';
+};
+
+export type ProfileCreateErrors = {
+    /**
+     * Bad request
+     */
+    400: {
+        data: unknown | null;
+        errors: Array<{
+            [key: string]: unknown;
+        }>;
+        success: false;
+    };
+};
+
+export type ProfileCreateError = ProfileCreateErrors[keyof ProfileCreateErrors];
+
+export type ProfileCreateResponses = {
+    /**
+     * Created profile
+     */
+    200: {
+        name: string;
+        config: ContainerProfileConfig;
+        containerID?: string;
+        status: 'stopped' | 'starting' | 'running' | 'error';
+        lastStarted?: number;
+        lastActivity?: number;
+        sessionCount?: number;
+        error?: string;
+    };
+};
+
+export type ProfileCreateResponse = ProfileCreateResponses[keyof ProfileCreateResponses];
+
+export type ProfileDeleteData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/profile/{name}';
+};
+
+export type ProfileDeleteErrors = {
+    /**
+     * Not found
+     */
+    404: ProfileNotFoundError;
+};
+
+export type ProfileDeleteError = ProfileDeleteErrors[keyof ProfileDeleteErrors];
+
+export type ProfileDeleteResponses = {
+    /**
+     * Profile deleted
+     */
+    200: boolean;
+};
+
+export type ProfileDeleteResponse = ProfileDeleteResponses[keyof ProfileDeleteResponses];
+
+export type ProfileGetData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/profile/{name}';
+};
+
+export type ProfileGetErrors = {
+    /**
+     * Not found
+     */
+    404: ProfileNotFoundError;
+};
+
+export type ProfileGetError = ProfileGetErrors[keyof ProfileGetErrors];
+
+export type ProfileGetResponses = {
+    /**
+     * Profile details
+     */
+    200: {
+        name: string;
+        config: ContainerProfileConfig;
+        containerID?: string;
+        status: 'stopped' | 'starting' | 'running' | 'error';
+        lastStarted?: number;
+        lastActivity?: number;
+        sessionCount?: number;
+        error?: string;
+    };
+};
+
+export type ProfileGetResponse = ProfileGetResponses[keyof ProfileGetResponses];
+
+export type ProfileUpdateData = {
+    body?: {
+        /**
+         * Unique profile name
+         */
+        name?: string;
+        /**
+         * Container image (e.g., 'ubuntu:22.04')
+         */
+        image?: string;
+        /**
+         * Volume mounts
+         */
+        volumes?: Array<ContainerVolumeConfig>;
+        /**
+         * Environment variables
+         */
+        environment?: {
+            [key: string]: string;
+        };
+        network?: ContainerNetworkConfig;
+        /**
+         * Working directory in container
+         */
+        workdir?: string;
+        /**
+         * User to run as (uid:gid)
+         */
+        user?: string;
+        /**
+         * Keep container running between commands
+         */
+        keepAlive?: boolean;
+        /**
+         * Stop container after idle (0 = never)
+         */
+        idleTimeoutMinutes?: number;
+        /**
+         * Port for swarm serve inside container
+         */
+        serverPort?: number;
+        /**
+         * Default agent for this profile
+         */
+        agent?: string;
+        /**
+         * Default model for this profile
+         */
+        model?: string;
+        /**
+         * Tool overrides
+         */
+        tools?: {
+            [key: string]: boolean;
+        };
+        /**
+         * Permission overrides for this profile
+         */
+        permission?: {
+            edit?: 'ask' | 'allow' | 'deny' | 'pin';
+            bash?: ('ask' | 'allow' | 'deny' | 'pin') | {
+                [key: string]: 'ask' | 'allow' | 'deny' | 'pin';
+            };
+            webfetch?: 'ask' | 'allow' | 'deny' | 'pin';
+            doom_loop?: 'ask' | 'allow' | 'deny' | 'pin';
+            external_directory?: 'ask' | 'allow' | 'deny' | 'pin';
+            background_agent?: 'ask' | 'allow' | 'deny' | 'pin';
+        };
+        sandbox?: SandboxConfig;
+    };
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/profile/{name}';
+};
+
+export type ProfileUpdateErrors = {
+    /**
+     * Bad request
+     */
+    400: {
+        data: unknown | null;
+        errors: Array<{
+            [key: string]: unknown;
+        }>;
+        success: false;
+    };
+    /**
+     * Not found
+     */
+    404: ProfileNotFoundError;
+};
+
+export type ProfileUpdateError = ProfileUpdateErrors[keyof ProfileUpdateErrors];
+
+export type ProfileUpdateResponses = {
+    /**
+     * Updated profile
+     */
+    200: {
+        name: string;
+        config: ContainerProfileConfig;
+        containerID?: string;
+        status: 'stopped' | 'starting' | 'running' | 'error';
+        lastStarted?: number;
+        lastActivity?: number;
+        sessionCount?: number;
+        error?: string;
+    };
+};
+
+export type ProfileUpdateResponse = ProfileUpdateResponses[keyof ProfileUpdateResponses];
+
+export type ProfileStartData = {
+    body?: {
+        pull?: boolean;
+    };
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/profile/{name}/start';
+};
+
+export type ProfileStartErrors = {
+    /**
+     * Not found
+     */
+    404: ProfileNotFoundError;
+};
+
+export type ProfileStartError = ProfileStartErrors[keyof ProfileStartErrors];
+
+export type ProfileStartResponses = {
+    /**
+     * Container started
+     */
+    200: {
+        containerID: string;
+    };
+};
+
+export type ProfileStartResponse = ProfileStartResponses[keyof ProfileStartResponses];
+
+export type ProfileStopData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/profile/{name}/stop';
+};
+
+export type ProfileStopErrors = {
+    /**
+     * Not found
+     */
+    404: ProfileNotFoundError;
+};
+
+export type ProfileStopError = ProfileStopErrors[keyof ProfileStopErrors];
+
+export type ProfileStopResponses = {
+    /**
+     * Container stopped
+     */
+    200: boolean;
+};
+
+export type ProfileStopResponse = ProfileStopResponses[keyof ProfileStopResponses];
+
+export type ProfileRestartData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/profile/{name}/restart';
+};
+
+export type ProfileRestartErrors = {
+    /**
+     * Not found
+     */
+    404: ProfileNotFoundError;
+};
+
+export type ProfileRestartError = ProfileRestartErrors[keyof ProfileRestartErrors];
+
+export type ProfileRestartResponses = {
+    /**
+     * Container restarted
+     */
+    200: {
+        containerID: string;
+    };
+};
+
+export type ProfileRestartResponse = ProfileRestartResponses[keyof ProfileRestartResponses];
+
+export type ProfileStatusData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/profile/{name}/status';
+};
+
+export type ProfileStatusErrors = {
+    /**
+     * Not found
+     */
+    404: ProfileNotFoundError;
+};
+
+export type ProfileStatusError = ProfileStatusErrors[keyof ProfileStatusErrors];
+
+export type ProfileStatusResponses = {
+    /**
+     * Container status
+     */
+    200: {
+        status: 'stopped' | 'starting' | 'running' | 'error';
+        containerID?: string;
+        running: boolean;
+    };
+};
+
+export type ProfileStatusResponse = ProfileStatusResponses[keyof ProfileStatusResponses];
+
+export type ProfileLogsData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+        follow?: boolean;
+        tail?: number;
+    };
+    url: '/profile/{name}/logs';
+};
+
+export type ProfileLogsErrors = {
+    /**
+     * Not found
+     */
+    404: ProfileNotFoundError;
+};
+
+export type ProfileLogsError = ProfileLogsErrors[keyof ProfileLogsErrors];
+
+export type ProfileLogsResponses = {
+    /**
+     * Log stream
+     */
+    200: string;
+};
+
+export type ProfileLogsResponse = ProfileLogsResponses[keyof ProfileLogsResponses];
+
+export type ProfileExecData = {
+    body?: {
+        command: Array<string>;
+    };
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/profile/{name}/exec';
+};
+
+export type ProfileExecErrors = {
+    /**
+     * Not found
+     */
+    404: ProfileNotFoundError;
+};
+
+export type ProfileExecError = ProfileExecErrors[keyof ProfileExecErrors];
+
+export type ProfileExecResponses = {
+    /**
+     * Execution result
+     */
+    200: {
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+    };
+};
+
+export type ProfileExecResponse = ProfileExecResponses[keyof ProfileExecResponses];
+
+export type ProfileEventsData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/profile/{name}/event';
+};
+
+export type ProfileEventsResponses = {
+    /**
+     * Event stream
+     */
+    200: unknown;
+};
 
 export type ConfigGetData = {
     body?: never;
@@ -1729,6 +2421,7 @@ export type SessionCreateData = {
         parentID?: string;
         title?: string;
         source?: 'tui' | 'sdk' | 'background';
+        containerProfile?: string;
     };
     path?: never;
     query?: {
@@ -2426,6 +3119,10 @@ export type PostSessionIdPermissionsPermissionIdData = {
         response: 'once' | 'always' | 'reject' | {
             type: 'reject';
             message: string;
+        } | {
+            type: 'once';
+            message: string;
+            agent: string;
         } | {
             type: 'once';
             message: string;

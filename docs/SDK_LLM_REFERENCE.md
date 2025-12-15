@@ -8,16 +8,29 @@
 ```
 Your Code (TypeScript)
        ↓
-   SDK spawn()
+   createOpencode({ profile: "..." })  ← Optional: auto-starts container
        ↓
-  Swarm Server (auto-started)
+   Swarm Server (auto-started)
        ↓
-  Agent executes in container (podman/docker)
+   spawn({ containerProfile: "..." })  ← Optional: route bash to container
        ↓
-  Results streamed back via SSE
+   Agent executes (host OR container)
+       ↓
+   Results streamed back via SSE
 ```
 
-**You write TypeScript. The SDK handles containers, permissions, and execution.**
+**You write TypeScript. The SDK handles server lifecycle, containers, permissions, and execution.**
+
+### Container Isolation (Optional but Recommended)
+
+```typescript
+// Define in ~/.config/opencode/opencode.json:
+// { "container": { "runtime": "podman", "profiles": { "my-bot": { "image": "...", ... }}}}
+
+const { spawn, server } = await createOpencode({ profile: "my-bot" })  // Starts container
+await spawn({ prompt: "...", containerProfile: "my-bot" }).wait()       // Bash in container
+server.close()
+```
 
 ---
 
@@ -68,11 +81,28 @@ for await (const event of handle.stream()) {
 }
 ```
 
-### Pattern 3: Custom Tools
+### Pattern 3: Container Isolation
 
 ```typescript
-import { createOpencode, tool, createSwarmMcpServer } from "@opencode-ai/sdk"
-import { z } from "zod"
+import { createOpencode } from "@opencode-ai/sdk"
+
+// Run agent in isolated container (podman/docker)
+// Profile must be defined in ~/.config/opencode/opencode.json
+const { spawn, server } = await createOpencode({ profile: "my-sandbox" })
+
+await spawn({
+  prompt: "install dependencies and run tests",
+  containerProfile: "my-sandbox",  // Bash commands run inside container
+}).wait()
+
+server.close()
+```
+
+### Pattern 4: Custom Tools
+
+```typescript
+// IMPORTANT: Import z from SDK to avoid Zod version conflicts
+import { createOpencode, tool, createSwarmMcpServer, z } from "@opencode-ai/sdk"
 
 // Define a tool
 const searchFiles = tool(
@@ -192,8 +222,8 @@ interface SpawnResult {
 ### `tool()` - Define Tools
 
 ```typescript
-import { tool } from "@opencode-ai/sdk"
-import { z } from "zod"
+// IMPORTANT: Import z from SDK to avoid Zod version conflicts
+import { tool, z } from "@opencode-ai/sdk"
 
 const myTool = tool(
   "tool_name",           // Unique name (alphanumeric, underscores, hyphens)
@@ -245,8 +275,8 @@ server.getTool(name)                  // Get tool by name
 ### Complete Tools Example
 
 ```typescript
-import { createOpencode, tool, createSwarmMcpServer } from "@opencode-ai/sdk"
-import { z } from "zod"
+// IMPORTANT: Import z from SDK to avoid Zod version conflicts
+import { createOpencode, tool, createSwarmMcpServer, z } from "@opencode-ai/sdk"
 import { serve } from "bun"
 
 // Define tools with different permission levels
@@ -535,14 +565,42 @@ Container profiles let you run agents inside isolated containers (podman/docker)
 
 ### Using Container Profiles
 
+**CLI:**
 ```bash
-# CLI
-swarm run --profile sandbox "install dependencies and run tests"
-swarm serve --profile sandbox
+# Run with container profile (auto-starts container)
+swarm serve --profile twitter-bot
 
-# Programmatically
-# Profile is started automatically when sessions use it
+# Manually manage profiles
+swarm profile list
+swarm profile create mybot --image docker.io/oven/bun:1.3
+swarm profile start mybot
+swarm profile stop mybot
+swarm profile logs mybot
+swarm profile exec mybot bun --version
 ```
+
+**SDK (IMPORTANT!):**
+```typescript
+import { createOpencode } from "@opencode-ai/sdk"
+
+// 1. Pass profile to createOpencode() - this auto-starts the container!
+const { spawn, server } = await createOpencode({ 
+  profile: "twitter-bot"  // <-- Auto-starts container
+})
+
+// 2. Pass containerProfile to spawn() - this routes bash to container
+await spawn({
+  prompt: "run npm test",
+  containerProfile: "twitter-bot",  // <-- Bash runs in container
+  mode: "noninteractive",
+}).wait()
+
+server.close()
+```
+
+**Both are required:**
+- `createOpencode({ profile: "..." })` → Starts the container
+- `spawn({ containerProfile: "..." })` → Routes bash commands to container
 
 ### ContainerRuntime API (Internal)
 
@@ -581,8 +639,8 @@ A bot that reviews PRs, runs linters, and posts comments.
 
 ```typescript
 #!/usr/bin/env bun
-import { createOpencode, tool, createSwarmMcpServer, createSwarmProfile } from "@opencode-ai/sdk"
-import { z } from "zod"
+// IMPORTANT: Import z from SDK to avoid Zod version conflicts
+import { createOpencode, tool, createSwarmMcpServer, createSwarmProfile, z } from "@opencode-ai/sdk"
 import { serve } from "bun"
 
 // =============================================================================
@@ -798,10 +856,20 @@ interface SpawnOptions {
   prompt: string
   agent?: string
   profile?: ProfileName | CustomProfile
+  containerProfile?: string  // Route bash to container
   mode?: "interactive" | "noninteractive"
   onPermission?: (p: PermissionRequest) => Promise<PermissionResponse>
   tools?: Record<string, boolean>
   model?: string
+}
+
+// server.ts
+interface ServerOptions {
+  hostname?: string
+  port?: number
+  timeout?: number
+  profile?: string  // Auto-start container profile
+  config?: Config
 }
 
 interface SpawnHandle {
@@ -1000,10 +1068,169 @@ The server didn't start. Check:
 2. Check image exists: `podman pull ubuntu:22.04`
 3. Check volume paths exist
 
+### 5. Container profile not working
+
+```typescript
+// WRONG - container never starts, bash runs on host
+const { spawn, server } = await createOpencode()
+await spawn({ prompt: "...", containerProfile: "my-bot" }).wait()
+
+// RIGHT - pass profile to createOpencode() to auto-start container
+const { spawn, server } = await createOpencode({ profile: "my-bot" })
+await spawn({ prompt: "...", containerProfile: "my-bot" }).wait()
+```
+
+Both are required:
+- `createOpencode({ profile })` → Starts the container
+- `spawn({ containerProfile })` → Routes bash to container
+
 ### Permissions hanging
 
 - In `noninteractive` mode: `pin` permissions always reject
 - In `interactive` mode: You MUST provide `onPermission` callback
+
+---
+
+## Complete Example: Containerized News Bot
+
+A bot that runs in an isolated container, searches news, and generates content.
+
+**Step 1: Create config (~/.config/opencode/opencode.json)**
+
+```json
+{
+  "container": {
+    "runtime": "podman",
+    "profiles": {
+      "news-bot": {
+        "name": "news-bot",
+        "image": "docker.io/oven/bun:1.3",
+        "workdir": "/workspace",
+        "volumes": [
+          { "host": "/path/to/your/project", "container": "/workspace", "readonly": false }
+        ],
+        "environment": {
+          "EXA_API_KEY": "your-exa-api-key"
+        },
+        "network": {
+          "mode": "bridge"
+        }
+      }
+    }
+  }
+}
+```
+
+**Step 2: Bot Code (news-bot.ts)**
+
+```typescript
+#!/usr/bin/env bun
+import { createOpencode, tool, createSwarmMcpServer, z } from "@opencode-ai/sdk"
+import { serve } from "bun"
+
+const PROFILE = "news-bot"
+const MCP_PORT = 19877
+
+// Tools
+const searchNews = tool(
+  "search_news",
+  "Search for recent news articles. Returns titles, URLs, and dates.",
+  {
+    query: z.string().describe("Search query"),
+    numResults: z.number().optional().default(5),
+  },
+  async (args) => {
+    const response = await fetch("https://api.exa.ai/search", {
+      method: "POST",
+      headers: {
+        "x-api-key": process.env.EXA_API_KEY!,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: args.query,
+        numResults: args.numResults,
+        type: "auto",
+      }),
+    })
+    const data = await response.json() as any
+    return JSON.stringify(data.results.map((r: any) => ({
+      title: r.title,
+      url: r.url,
+    })), null, 2)
+  },
+  { permission: "allow" }
+)
+
+// MCP Server
+const mcpServer = createSwarmMcpServer({ name: "news-tools", tools: [searchNews] })
+
+const httpServer = serve({
+  port: MCP_PORT,
+  async fetch(req) {
+    const body = await req.json() as any
+    if (body.method === "initialize") {
+      return Response.json({
+        jsonrpc: "2.0", id: body.id,
+        result: {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "news-tools", version: "1.0.0" },
+        },
+      })
+    }
+    if (body.method === "tools/list") {
+      return Response.json({
+        jsonrpc: "2.0", id: body.id,
+        result: { tools: mcpServer.listTools() },
+      })
+    }
+    if (body.method === "tools/call") {
+      const result = await mcpServer.executeTool(body.params.name, body.params.arguments || {}, {})
+      return Response.json({ jsonrpc: "2.0", id: body.id, result })
+    }
+    return Response.json({ error: "Unknown method" })
+  },
+})
+
+// Main
+const { client, spawn, server } = await createOpencode({ profile: PROFILE })
+
+await client.mcp.add({
+  body: { name: "news-tools", config: { type: "remote", url: `http://localhost:${MCP_PORT}` } },
+})
+await new Promise(r => setTimeout(r, 1000))
+
+console.log("Starting news bot in container...")
+
+const handle = spawn({
+  prompt: "Search for 'AI startup funding' news and write 3 tweet drafts about the top result",
+  containerProfile: PROFILE,
+  mode: "noninteractive",
+})
+
+for await (const event of handle.stream()) {
+  if (event.type === "text" && event.delta) process.stdout.write(event.delta)
+  if (event.type === "tool.start") console.log(`\n> ${event.name}`)
+  if (event.type === "completed") console.log("\n\nDone!")
+}
+
+httpServer.stop()
+server.close()
+```
+
+**Step 3: Run**
+
+```bash
+bun run news-bot.ts
+```
+
+**What happens:**
+1. SDK starts swarm server with `profile: "news-bot"`
+2. Server calls `Profile.initFromConfig()` → creates profile from config
+3. Server calls `Profile.start("news-bot")` → starts podman container
+4. `spawn({ containerProfile: "news-bot" })` → bash commands run inside container
+5. Container has network access to call Exa API
+6. Your host system is isolated from the bot's execution
 
 ---
 

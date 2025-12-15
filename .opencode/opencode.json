@@ -22,9 +22,10 @@
       ],
       "deniedDomains": [],
       "allowLocalBinding": true,
-      "allowUnixSockets": ["/tmp/swarm-api.sock"],
+      "allowUnixSockets": ["/tmp/swarm-api.sock", "/tmp/voiceagent.sock"],
       "socketBridges": {
-        "/tmp/swarm-api.sock": "localhost:3456"
+        "/tmp/swarm-api.sock": "localhost:3456",
+        "/tmp/voiceagent.sock": "localhost:8080"
       }
     },
     "filesystem": {
@@ -37,6 +38,29 @@
     "show_header": false
   },
   "theme": "swarm",
+  "container": {
+    "enabled": true,
+    "runtime": "podman",
+    "profiles": {
+      "twitter-bot": {
+        "name": "twitter-bot",
+        "image": "docker.io/oven/bun:1.3",
+        "volumes": [
+          { "host": "/home/roy/socialmedia/swarm-sdk-twitter", "container": "/workspace", "readonly": false }
+        ],
+        "environment": {
+          "EXA_API_KEY": "8da1cf9f-abc7-485d-825e-921c02957c42"
+        },
+        "workdir": "/workspace",
+        "keepAlive": true,
+        "idleTimeoutMinutes": 5,
+        "network": {
+          "mode": "bridge",
+          "allowedDomains": ["api.exa.ai", "api.twitter.com", "api.anthropic.com"]
+        }
+      }
+    }
+  },
   "permission": {
     "edit": "ask",
     "webfetch": "ask",

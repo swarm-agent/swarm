@@ -114,13 +114,15 @@ export interface SpawnOptions {
    * Container profile name - run this session inside a container
    * Profile must be defined in opencode.json under container.profiles
    * 
-   * @example
+   * NOTE: Pass profile to createOpencode() to auto-start the container:
    * ```typescript
-   * // Run in a pre-configured container
-   * spawn({
-   *   prompt: "...",
-   *   containerProfile: "twitter-bot",
-   * })
+   * const { spawn } = await createOpencode({ profile: "twitter-bot" })
+   * await spawn({ prompt: "...", containerProfile: "twitter-bot" }).wait()
+   * ```
+   * 
+   * Or start the profile manually first:
+   * ```bash
+   * swarm profile start twitter-bot
    * ```
    */
   containerProfile?: string

@@ -7,6 +7,8 @@ export type ServerOptions = {
   signal?: AbortSignal
   timeout?: number
   config?: Config
+  /** Container profile to use - auto-starts if not running */
+  profile?: string
 }
 
 export type TuiOptions = {
@@ -40,7 +42,14 @@ export async function createOpencodeServer(options?: ServerOptions) {
     env.OPENCODE_SANDBOX = JSON.stringify(sandbox)
   }
 
-  const proc = spawn(`swarm`, [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`], {
+  const args = [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`]
+  
+  // Pass profile to server for auto-start
+  if (options.profile) {
+    args.push(`--profile=${options.profile}`)
+  }
+  
+  const proc = spawn(`swarm`, args, {
     signal: options.signal,
     env,
   })
