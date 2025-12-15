@@ -3,20 +3,24 @@
  * Run Agent with Custom Tools
  * 
  * Real production example - spawns an agent with custom MCP tools.
+ * Shows permission levels: allow, ask, pin, deny
  * 
  * Usage:
  *   bun run example/run-with-tools.ts "What's the weather in Tokyo?"
  *   bun run example/run-with-tools.ts "Create a ticket for the login bug"
+ *   bun run example/run-with-tools.ts "Delete record 123"
  */
 
 import { z } from "zod"
-import { createOpencode, tool, createSwarmMcpServer } from "../src/index.js"
+import { createOpencode, tool, createSwarmMcpServer, type ToolPermissionRequest } from "../src/index.js"
 import { serve } from "bun"
+import * as readline from "readline"
 
 // =============================================================================
-// DEFINE YOUR CUSTOM TOOLS
+// DEFINE YOUR CUSTOM TOOLS (with permissions!)
 // =============================================================================
 
+// permission: "allow" (default) - executes immediately
 const getWeather = tool(
   "get_weather",
   "Get current weather for a city. Use when user asks about weather.",
@@ -27,8 +31,24 @@ const getWeather = tool(
     console.log(`\n🌤️  [get_weather] Called with: ${args.city}`)
     return `Weather in ${args.city}: Sunny, 72°F, Humidity 45%`
   }
+  // permission defaults to "allow"
 )
 
+// permission: "allow" - safe read operation
+const searchDocs = tool(
+  "search_docs", 
+  "Search documentation. Use when user asks how something works.",
+  {
+    query: z.string().describe("Search query"),
+  },
+  async (args) => {
+    console.log(`\n📚 [search_docs] Query: "${args.query}"`)
+    return `Found 3 results for "${args.query}":\n1. Getting Started\n2. API Reference\n3. FAQ`
+  },
+  { permission: "allow" }
+)
+
+// permission: "ask" - requires user approval
 const createTicket = tool(
   "create_ticket",
   "Create a support ticket. Use when user wants to track an issue.",
@@ -40,19 +60,48 @@ const createTicket = tool(
     const id = `TICKET-${Date.now().toString(36).toUpperCase()}`
     console.log(`\n🎫 [create_ticket] Created: ${id}`)
     return `Created ticket ${id}: "${args.title}" (${args.priority} priority)`
-  }
+  },
+  { permission: "ask" }  // Requires approval before creating
 )
 
-const searchDocs = tool(
-  "search_docs", 
-  "Search documentation. Use when user asks how something works.",
+// permission: "ask" - destructive operation needs approval
+const deleteRecord = tool(
+  "delete_record",
+  "Delete a record from the database. Use when user wants to remove data.",
   {
-    query: z.string().describe("Search query"),
+    id: z.string().describe("Record ID to delete"),
   },
   async (args) => {
-    console.log(`\n📚 [search_docs] Query: "${args.query}"`)
-    return `Found 3 results for "${args.query}":\n1. Getting Started\n2. API Reference\n3. FAQ`
-  }
+    console.log(`\n🗑️  [delete_record] Deleted: ${args.id}`)
+    return `Successfully deleted record: ${args.id}`
+  },
+  { permission: "ask" }  // Destructive - requires approval
+)
+
+// permission: "pin" - sensitive operation requires PIN
+const transferFunds = tool(
+  "transfer_funds",
+  "Transfer funds between accounts. Use for financial transactions.",
+  {
+    amount: z.number().describe("Amount to transfer"),
+    to: z.string().describe("Destination account"),
+  },
+  async (args) => {
+    console.log(`\n💸 [transfer_funds] Transferred $${args.amount} to ${args.to}`)
+    return `Transferred $${args.amount} to account ${args.to}`
+  },
+  { permission: "pin" }  // Requires PIN verification
+)
+
+// permission: "deny" - blocked tool (for testing/safety)
+const dangerousAction = tool(
+  "dangerous_action",
+  "This action is blocked for safety.",
+  {},
+  async () => {
+    return "This should never execute"
+  },
+  { permission: "deny" }  // Always blocked
 )
 
 // =============================================================================
@@ -62,8 +111,50 @@ const searchDocs = tool(
 const mcpServer = createSwarmMcpServer({
   name: "my-tools",
   version: "1.0.0",
-  tools: [getWeather, createTicket, searchDocs],
+  tools: [getWeather, searchDocs, createTicket, deleteRecord, transferFunds, dangerousAction],
 })
+
+// =============================================================================
+// PERMISSION HANDLER (prompts user for approval)
+// =============================================================================
+
+async function promptForPermission(request: ToolPermissionRequest): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  })
+
+  return new Promise((resolve) => {
+    const prefix = request.permission === "pin" ? "🔐 PIN required" : "⚠️  Approval required"
+    console.log(`\n${prefix} for tool: ${request.tool}`)
+    console.log(`   Description: ${request.description}`)
+    console.log(`   Arguments: ${JSON.stringify(request.args)}`)
+    
+    if (request.permission === "pin") {
+      rl.question("   Enter PIN to approve (or 'n' to reject): ", (answer) => {
+        rl.close()
+        // For demo: accept "1234" as valid PIN
+        if (answer === "1234") {
+          console.log("   ✅ PIN verified")
+          resolve(true)
+        } else if (answer.toLowerCase() === "n") {
+          console.log("   ❌ Rejected by user")
+          resolve(false)
+        } else {
+          console.log("   ❌ Invalid PIN")
+          resolve(false)
+        }
+      })
+    } else {
+      rl.question("   Approve? (y/n): ", (answer) => {
+        rl.close()
+        const approved = answer.toLowerCase() === "y" || answer.toLowerCase() === "yes"
+        console.log(approved ? "   ✅ Approved" : "   ❌ Rejected")
+        resolve(approved)
+      })
+    }
+  })
+}
 
 // =============================================================================
 // HOST MCP HTTP SERVER (for opencode to connect to)
@@ -108,7 +199,10 @@ function startMcpHttpServer(server: ReturnType<typeof createSwarmMcpServer>, por
 
       if (body.method === "tools/call") {
         const { name, arguments: args } = body.params
-        const result = await server.executeTool(name, args || {}, {})
+        // Execute with permission handler
+        const result = await server.executeTool(name, args || {}, {
+          onPermission: promptForPermission,
+        })
         return Response.json({
           jsonrpc: "2.0",
           id: body.id,
@@ -133,10 +227,17 @@ async function main() {
   const prompt = process.argv[2] || "Use the get_weather tool to check the weather in Tokyo"
   const MCP_PORT = 19876
 
-  console.log("🚀 Custom Tools Agent\n")
+  console.log("🚀 Custom Tools Agent with Permissions\n")
   console.log("Tools available:")
-  for (const t of mcpServer.listTools()) {
-    console.log(`  • ${t.name}: ${t.description}`)
+  const toolDefs = [getWeather, searchDocs, createTicket, deleteRecord, transferFunds, dangerousAction]
+  for (const t of toolDefs) {
+    const permIcon = {
+      allow: "✅",
+      ask: "⚠️",
+      pin: "🔐",
+      deny: "🚫",
+    }[t.permission]
+    console.log(`  ${permIcon} ${t.name} (${t.permission}): ${t.description.slice(0, 50)}...`)
   }
   console.log()
 

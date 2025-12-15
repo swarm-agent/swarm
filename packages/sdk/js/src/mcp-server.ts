@@ -136,6 +136,52 @@ export function createSwarmMcpServer(options: SwarmMcpServerOptions): SwarmMcpSe
         }
       }
 
+      // Check permission before executing
+      switch (tool.permission) {
+        case "deny":
+          return {
+            content: [{
+              type: "text",
+              text: `Error: Tool "${toolName}" is blocked by configuration (permission: deny)`,
+            }],
+          }
+        
+        case "ask":
+        case "pin":
+          // If no permission callback provided, deny by default for safety
+          if (!context.onPermission) {
+            return {
+              content: [{
+                type: "text",
+                text: `Error: Tool "${toolName}" requires ${tool.permission === "pin" ? "PIN verification" : "approval"} but no permission handler is configured`,
+              }],
+            }
+          }
+          
+          // Request permission
+          const approved = await context.onPermission({
+            tool: toolName,
+            permission: tool.permission,
+            args,
+            description: tool.description,
+          })
+          
+          if (!approved) {
+            return {
+              content: [{
+                type: "text",
+                text: `Error: Tool "${toolName}" execution was rejected by user`,
+              }],
+            }
+          }
+          break
+        
+        case "allow":
+        default:
+          // Execute immediately
+          break
+      }
+
       try {
         // Validate and parse args with Zod schema
         const parsed = tool.schema.parse(args)

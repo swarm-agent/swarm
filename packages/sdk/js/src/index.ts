@@ -12,7 +12,7 @@ import type { ServerOptions } from "./server.js"
 import { createSpawn, type SpawnHandle, type SpawnOptions, type SpawnResult, type SpawnEvent, type PermissionRequest, type PermissionResponse } from "./spawn.js"
 import type { ProfileName, Profile, CustomProfile, CustomProfileConfig } from "./profiles.js"
 import { createSwarmProfile } from "./profiles.js"
-import { tool, type ToolDefinition, type ToolContext, type ToolResult } from "./tool.js"
+import { tool, type ToolDefinition, type ToolContext, type ToolResult, type ToolPermission, type ToolPermissionRequest, type ToolOptions } from "./tool.js"
 import { createSwarmMcpServer, type SwarmMcpServer, type SwarmMcpServerOptions, type McpServers } from "./mcp-server.js"
 import { loadEnvFile, loadEnvString, injectEnvFile, createEnvLoader, resolveEnvVars } from "./env.js"
 
@@ -30,6 +30,9 @@ export type {
   ToolDefinition,
   ToolContext,
   ToolResult,
+  ToolPermission,
+  ToolPermissionRequest,
+  ToolOptions,
   SwarmMcpServer,
   SwarmMcpServerOptions,
   McpServers,

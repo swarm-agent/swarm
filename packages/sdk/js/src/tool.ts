@@ -28,17 +28,38 @@
 import { z, type ZodRawShape, type ZodObject } from "zod"
 
 /**
+ * Permission levels for tools (same as opencode's bash permissions)
+ */
+export type ToolPermission = "allow" | "ask" | "deny" | "pin"
+
+/**
+ * Permission request passed to onPermission callback
+ */
+export interface ToolPermissionRequest {
+  /** Tool name */
+  tool: string
+  /** Permission level required */
+  permission: "ask" | "pin"
+  /** Arguments being passed to the tool */
+  args: Record<string, unknown>
+  /** Tool description */
+  description: string
+}
+
+/**
  * Context provided to tool execute function
  */
 export interface ToolContext {
   /** Current session ID */
-  sessionID: string
+  sessionID?: string
   /** Current message ID */
-  messageID: string
+  messageID?: string
   /** Agent name */
-  agent: string
+  agent?: string
   /** Abort signal for cancellation */
-  abort: AbortSignal
+  abort?: AbortSignal
+  /** Permission callback for ask/pin tools */
+  onPermission?: (request: ToolPermissionRequest) => Promise<boolean>
 }
 
 /**
@@ -52,6 +73,20 @@ export interface ToolResult {
 }
 
 /**
+ * Options for tool definition
+ */
+export interface ToolOptions {
+  /**
+   * Permission level for this tool
+   * - "allow" (default): Execute immediately without asking
+   * - "ask": Prompt user for approval before executing
+   * - "deny": Block execution, return error
+   * - "pin": Require PIN verification before executing
+   */
+  permission?: ToolPermission
+}
+
+/**
  * Tool definition with typed parameters
  */
 export interface ToolDefinition<T extends ZodRawShape = ZodRawShape> {
@@ -61,6 +96,10 @@ export interface ToolDefinition<T extends ZodRawShape = ZodRawShape> {
   description: string
   /** Zod schema for parameters */
   schema: ZodObject<T>
+  /** Raw shape for accessing parameter definitions */
+  shape: T
+  /** Permission level */
+  permission: ToolPermission
   /** Execute function */
   execute: (args: z.infer<ZodObject<T>>, context: ToolContext) => Promise<ToolResult | string>
 }
@@ -72,20 +111,43 @@ export interface ToolDefinition<T extends ZodRawShape = ZodRawShape> {
  * @param description - Description for the agent (be detailed!)
  * @param parameters - Zod schema object for parameters
  * @param execute - Function to execute when tool is called
+ * @param options - Optional settings including permission level
  * 
  * @example
  * ```typescript
+ * // Basic tool (permission defaults to "allow")
  * const searchDocs = tool(
  *   "search_docs",
- *   "Search internal documentation. Use when user asks about company processes or APIs.",
- *   {
- *     query: z.string().describe("Search query"),
- *     limit: z.number().optional().default(5).describe("Max results"),
- *   },
- *   async (args) => {
- *     const results = await searchAPI(args.query, args.limit)
- *     return `Found ${results.length} results:\n${results.map(r => r.title).join("\n")}`
- *   }
+ *   "Search internal documentation.",
+ *   { query: z.string() },
+ *   async (args) => `Results for: ${args.query}`
+ * )
+ * 
+ * // Tool that requires approval
+ * const deleteRecord = tool(
+ *   "delete_record",
+ *   "Delete a database record.",
+ *   { id: z.string() },
+ *   async (args) => `Deleted: ${args.id}`,
+ *   { permission: "ask" }
+ * )
+ * 
+ * // Tool that requires PIN
+ * const transferFunds = tool(
+ *   "transfer_funds",
+ *   "Transfer money between accounts.",
+ *   { amount: z.number(), to: z.string() },
+ *   async (args) => `Transferred $${args.amount}`,
+ *   { permission: "pin" }
+ * )
+ * 
+ * // Blocked tool
+ * const dangerous = tool(
+ *   "dangerous_action",
+ *   "This tool is disabled.",
+ *   {},
+ *   async () => "never runs",
+ *   { permission: "deny" }
  * )
  * ```
  */
@@ -93,7 +155,8 @@ export function tool<T extends ZodRawShape>(
   name: string,
   description: string,
   parameters: T,
-  execute: (args: z.infer<ZodObject<T>>, context: ToolContext) => Promise<ToolResult | string>
+  execute: (args: z.infer<ZodObject<T>>, context: ToolContext) => Promise<ToolResult | string>,
+  options?: ToolOptions
 ): ToolDefinition<T> {
   // Validate name format
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
@@ -104,6 +167,8 @@ export function tool<T extends ZodRawShape>(
     name,
     description,
     schema: z.object(parameters),
+    shape: parameters,
+    permission: options?.permission ?? "allow",
     execute,
   }
 }
