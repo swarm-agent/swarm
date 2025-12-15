@@ -6,6 +6,12 @@ export * from "./tool.js"
 export * from "./mcp-server.js"
 export * from "./env.js"
 
+// Re-export Zod so users get the same instance used internally
+// This prevents "keyValidator._parse is not a function" errors
+// when schemas are created with a different Zod version
+export { z } from "zod"
+export type { ZodRawShape, ZodObject, ZodType } from "zod"
+
 import { createOpencodeClient } from "./client.js"
 import { createOpencodeServer } from "./server.js"
 import type { ServerOptions } from "./server.js"
