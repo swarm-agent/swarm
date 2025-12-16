@@ -358,11 +358,22 @@ export const SPINNERS: Record<string, SpinnerDef> = {
     mode: "rgb",
   },
 
-  // Websearch - radar/search pulse animation
+  // Websearch - enhanced radar sweep with parallel search indication
   websearch_spinner: {
     name: "websearch_spinner",
-    frames: ["◎··", "·◉·", "··●", "·◉·"],
-    interval: 150,
+    frames: [
+      "🔍·····",
+      "·🔎····",
+      "··🔍···",
+      "···🔎··",
+      "····🔍·",
+      "·····🔎",
+      "····🔍·",
+      "···🔎··",
+      "··🔍···",
+      "·🔎····",
+    ],
+    interval: 100,
     mode: "neon",
   },
 

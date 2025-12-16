@@ -3,17 +3,41 @@ import { Tool } from "./tool"
 import DESCRIPTION from "./websearch.txt"
 import { Config } from "../config/config"
 import { Permission } from "../permission"
+import { Auth } from "../auth"
 
 const API_CONFIG = {
-  BASE_URL: "https://mcp.exa.ai",
+  BASE_URL: "https://api.exa.ai",
   ENDPOINTS: {
-    SEARCH: "/mcp",
+    SEARCH: "/search",
   },
   DEFAULT_NUM_RESULTS: 8,
-  // Rate limiting
+  DEFAULT_CONTEXT_CHARS: 10000,
+  // Rate limiting - generous for API key users
   MAX_REQUESTS_PER_MINUTE: 10,
   RATE_LIMIT_WINDOW_MS: 60_000,
 } as const
+
+/**
+ * Get the Exa API key from auth.json or environment variable
+ * Returns undefined if not configured (tool will be disabled via registry)
+ */
+async function getExaApiKey(): Promise<string | undefined> {
+  // Check auth.json first (preferred)
+  const authInfo = await Auth.get("exa")
+  if (authInfo?.type === "api" && authInfo.key) {
+    return authInfo.key
+  }
+  // Fallback to environment variable
+  return process.env.EXA_API_KEY
+}
+
+/**
+ * Check if Exa API key is configured (used by registry for opt-in)
+ */
+export async function isExaConfigured(): Promise<boolean> {
+  const key = await getExaApiKey()
+  return !!key
+}
 
 // Simple in-memory rate limiter to prevent API spam
 const rateLimiter = {
@@ -38,29 +62,41 @@ const rateLimiter = {
   },
 }
 
-interface McpSearchRequest {
-  jsonrpc: string
-  id: number
-  method: string
-  params: {
-    name: string
-    arguments: {
-      query: string
-      numResults?: number
-      livecrawl?: "fallback" | "preferred"
-      type?: "auto" | "fast" | "deep"
-      contextMaxCharacters?: number
-    }
+/**
+ * Exa Search API Request (per OpenAPI spec)
+ * @see https://docs.exa.ai
+ */
+interface ExaSearchRequest {
+  query: string
+  type?: "neural" | "fast" | "auto" | "deep"
+  numResults?: number
+  contents?: {
+    text?: boolean | { maxCharacters?: number }
+    livecrawl?: "never" | "fallback" | "preferred" | "always"
   }
+  context?: boolean | { maxCharacters?: number }
 }
 
-interface McpSearchResponse {
-  jsonrpc: string
-  result: {
-    content: Array<{
-      type: string
-      text: string
-    }>
+/**
+ * Exa Search API Response
+ */
+interface ExaSearchResponse {
+  requestId: string
+  resolvedSearchType?: string
+  results: Array<{
+    title: string
+    url: string
+    publishedDate?: string | null
+    author?: string | null
+    id: string
+    text?: string
+    highlights?: string[]
+    highlightScores?: number[]
+    summary?: string
+  }>
+  context?: string
+  costDollars?: {
+    total: number
   }
 }
 
@@ -116,39 +152,47 @@ export const WebSearchTool = Tool.define("websearch", {
         },
       })
 
+    // Get API key (should always exist since registry disables tool without it)
+    const apiKey = await getExaApiKey()
+    if (!apiKey) {
+      throw new Error(
+        "Exa API key not configured. Add your API key with:\n" +
+        "  swarm auth login → Other → exa → paste key\n" +
+        "Or set EXA_API_KEY environment variable.\n" +
+        "Get your key at: https://exa.ai"
+      )
+    }
+
     // Record this request for rate limiting
     rateLimiter.record()
 
-    const searchRequest: McpSearchRequest = {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: {
-        name: "web_search_exa",
-        arguments: {
-          query: params.query,
-          type: params.type || "auto",
-          numResults: Math.min(params.numResults || API_CONFIG.DEFAULT_NUM_RESULTS, 20),
-          livecrawl: params.livecrawl || "fallback",
-          contextMaxCharacters: params.contextMaxCharacters,
-        },
+    // Build request per Exa API spec
+    const searchRequest: ExaSearchRequest = {
+      query: params.query,
+      type: params.type || "auto",
+      numResults: Math.min(params.numResults || API_CONFIG.DEFAULT_NUM_RESULTS, 100),
+      // Use context mode - combines all results into one LLM-friendly string
+      context: {
+        maxCharacters: params.contextMaxCharacters || API_CONFIG.DEFAULT_CONTEXT_CHARS,
+      },
+      contents: {
+        text: true,
+        livecrawl: params.livecrawl || "fallback",
       },
     }
 
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 25000)
+    const timeoutId = setTimeout(() => controller.abort(), 30000)
 
     try {
-      const headers: Record<string, string> = {
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-      }
-
       const response = await fetch(
         `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.SEARCH}`,
         {
           method: "POST",
-          headers,
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+          },
           body: JSON.stringify(searchRequest),
           signal: AbortSignal.any([controller.signal, ctx.abort]),
         }
@@ -158,32 +202,62 @@ export const WebSearchTool = Tool.define("websearch", {
 
       if (!response.ok) {
         const errorText = await response.text()
-        throw new Error(`Search error (${response.status}): ${errorText}`)
+        throw new Error(`Exa API error (${response.status}): ${errorText}`)
       }
 
-      const responseText = await response.text()
+      const data: ExaSearchResponse = await response.json()
 
-      // Parse SSE response
-      const lines = responseText.split("\n")
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const data: McpSearchResponse = JSON.parse(line.substring(6))
-          if (data.result && data.result.content && data.result.content.length > 0) {
-            return {
-              output: data.result.content[0].text,
-              title: `Web search: ${params.query}`,
-              metadata: {
-                rateLimitRemaining: rateLimiter.remaining(),
-              },
-            }
+      // Prefer context string (best for LLM consumption)
+      if (data.context) {
+        return {
+          output: data.context,
+          title: `Web search: ${params.query}`,
+          metadata: {
+            requestId: data.requestId,
+            resultCount: data.results?.length || 0,
+            searchType: data.resolvedSearchType,
+            rateLimitRemaining: rateLimiter.remaining(),
+            cost: data.costDollars?.total,
+          },
+        }
+      }
+
+      // Fallback: format individual results
+      if (data.results && data.results.length > 0) {
+        const formattedResults = data.results.map((result, i) => {
+          const parts = [`Title: ${result.title}`, `URL: ${result.url}`]
+          if (result.publishedDate) {
+            parts.push(`Published Date: ${result.publishedDate}`)
           }
+          if (result.author) {
+            parts.push(`Author: ${result.author}`)
+          }
+          if (result.text) {
+            parts.push(`Text: ${result.text}`)
+          }
+          return parts.join("\n")
+        }).join("\n\n---\n\n")
+
+        return {
+          output: formattedResults,
+          title: `Web search: ${params.query}`,
+          metadata: {
+            requestId: data.requestId,
+            resultCount: data.results.length,
+            searchType: data.resolvedSearchType,
+            rateLimitRemaining: rateLimiter.remaining(),
+            cost: data.costDollars?.total,
+          },
         }
       }
 
       return {
         output: "No search results found. Please try a different query.",
         title: `Web search: ${params.query}`,
-        metadata: {},
+        metadata: {
+          requestId: data.requestId,
+          rateLimitRemaining: rateLimiter.remaining(),
+        },
       }
     } catch (error) {
       clearTimeout(timeoutId)

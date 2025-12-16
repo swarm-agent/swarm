@@ -9,7 +9,7 @@ import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { TodoWriteTool, TodoReadTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
-import { WebSearchTool } from "./websearch"
+import { WebSearchTool, isExaConfigured } from "./websearch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { ExitPlanModeTool } from "./exit-plan"
@@ -137,6 +137,12 @@ export namespace ToolRegistry {
     }
     if (agent.permission.webfetch === "deny") {
       result["webfetch"] = false
+      result["websearch"] = false
+    }
+
+    // Opt-in websearch: only enable if Exa API key is configured
+    const hasExaKey = await isExaConfigured()
+    if (!hasExaKey) {
       result["websearch"] = false
     }
 
