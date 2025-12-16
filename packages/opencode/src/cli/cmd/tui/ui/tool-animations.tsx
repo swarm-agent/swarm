@@ -7,6 +7,8 @@ import { type SpinnerDef, getSpinner } from "./spinner-definitions"
 import type { Permission } from "@/permission"
 import { useDialog } from "./dialog"
 import { Shimmer } from "./shimmer"
+import { useWorkspace } from "@tui/context/workspace"
+import { useToast } from "./toast"
 
 /**
  * Animated spinner for tool execution - expanding ring animation
@@ -4690,7 +4692,13 @@ export function InlinePermission(props: {
   const { theme } = useTheme()
   const renderer = useRenderer()
   const dialog = useDialog()
+  const workspace = useWorkspace()
+  const toast = useToast()
   const [inputMode, setInputMode] = createSignal(false)
+
+  // Check if this is an external_directory permission (can add to workspace)
+  const isExternalDir = () => props.permission.type === "external_directory"
+  const parentDir = () => props.permission.metadata?.parentDir as string | undefined
 
   let textarea: TextareaRenderable
   let previousFocus: any = null // Track what was focused before entering input mode
@@ -4757,6 +4765,17 @@ export function InlinePermission(props: {
         }
       })
     }
+    // 'w' = add directory to workspace (only for external_directory permissions)
+    if (evt.name === "w" && isExternalDir() && parentDir()) {
+      workspace.add(parentDir()!)
+      toast.show({
+        variant: "success",
+        message: `Added ${parentDir()} to workspace`,
+        duration: 3000,
+      })
+      props.onRespond("always") // Allow and remember
+      evt.preventDefault()
+    }
   })
 
   return (
@@ -4812,6 +4831,12 @@ export function InlinePermission(props: {
             <span style={{ fg: theme.warning, attributes: TextAttributes.BOLD }}>i</span>
             <span style={{ fg: theme.textMuted }}> msg</span>
           </text>
+          <Show when={isExternalDir() && parentDir()}>
+            <text>
+              <span style={{ fg: theme.accent, attributes: TextAttributes.BOLD }}>w</span>
+              <span style={{ fg: theme.textMuted }}> add-dir</span>
+            </text>
+          </Show>
         </box>
       </Show>
     </box>

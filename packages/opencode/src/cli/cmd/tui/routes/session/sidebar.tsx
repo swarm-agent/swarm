@@ -2,8 +2,12 @@ import { useSync } from "@tui/context/sync"
 import { createMemo, For, Show, Switch, Match, createSignal, type Accessor } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useGit, type GitStatusFile } from "../../context/git"
+import { useWorkspace } from "../../context/workspace"
 import path from "path"
 import type { RGBA } from "@opentui/core"
+
+// Nerd Font Icons - Workspace
+const ICON_FOLDER = "\u{ea83}" // cod-folder
 
 // Nerd Font Icons - Git
 const ICON_SOURCE_CONTROL = "\u{ea68}" // cod-source_control
@@ -209,6 +213,7 @@ export function Sidebar(props: { sessionID: string }) {
   const sync = useSync()
   const { theme } = useTheme()
   const git = useGit()
+  const workspace = useWorkspace()
   const session = createMemo(() => sync.session.get(props.sessionID)!)
   const todos = createMemo(() => sync.data.todo[props.sessionID] ?? [])
 
@@ -219,6 +224,7 @@ export function Sidebar(props: { sessionID: string }) {
   const [mcpExpanded, setMcpExpanded] = createSignal(true)
   const [todoExpanded, setTodoExpanded] = createSignal(true)
   const [lspExpanded, setLspExpanded] = createSignal(true)
+  const [workspaceExpanded, setWorkspaceExpanded] = createSignal(true)
 
   // Git section states
   const [gitExpanded, setGitExpanded] = createSignal(true)
@@ -242,6 +248,32 @@ export function Sidebar(props: { sessionID: string }) {
               <text fg={theme.textMuted}>{session().share!.url}</text>
             </Show>
           </box>
+
+          {/* Workspaces Section - Shows when there are workspace dirs */}
+          <Show when={workspace.list().length > 0}>
+            <box>
+              <box flexDirection="row" gap={1} onMouseDown={() => setWorkspaceExpanded(!workspaceExpanded())}>
+                <text fg={theme.textMuted}>{workspaceExpanded() ? "▼" : "▶"}</text>
+                <text style={{ fg: "#fbbf24" }}>{ICON_FOLDER}</text>
+                <text fg={theme.text}>
+                  <b>Workspaces</b>
+                </text>
+                <text fg={theme.textMuted}>({workspace.list().length})</text>
+              </box>
+              <Show when={workspaceExpanded()}>
+                <box paddingLeft={2}>
+                  <For each={workspace.list()}>
+                    {(dir) => (
+                      <box flexDirection="row" gap={1}>
+                        <text fg={theme.textMuted}>{ICON_FOLDER}</text>
+                        <text fg={theme.text}>{truncatePath(dir, 30)}</text>
+                      </box>
+                    )}
+                  </For>
+                </box>
+              </Show>
+            </box>
+          </Show>
 
           {/* Todo Section - Shows first when available */}
           <Show when={todos().length > 0}>

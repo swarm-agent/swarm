@@ -2,6 +2,7 @@ import { Ripgrep } from "../file/ripgrep"
 import { Global } from "../global"
 import { Filesystem } from "../util/filesystem"
 import { Config } from "../config/config"
+import { readWorkspaceDirs } from "../cli/cmd/tui/context/workspace"
 
 import { Instance } from "../project/instance"
 import path from "path"
@@ -34,6 +35,24 @@ export namespace SystemPrompt {
 
   export async function environment() {
     const project = Instance.project
+    const workspaceDirs = await readWorkspaceDirs()
+
+    // Build workspace directories section if any exist
+    const workspaceSection = await (async () => {
+      if (workspaceDirs.length === 0) return ""
+
+      const sections: string[] = []
+      for (const dir of workspaceDirs) {
+        try {
+          const tree = await Ripgrep.tree({ cwd: dir, limit: 100 })
+          sections.push(`<workspace path="${dir}">\n  ${tree}\n</workspace>`)
+        } catch {
+          sections.push(`<workspace path="${dir}">\n  (unable to read)\n</workspace>`)
+        }
+      }
+      return sections.join("\n")
+    })()
+
     return [
       [
         `Here is some useful information about the environment you are running in:`,
@@ -42,6 +61,7 @@ export namespace SystemPrompt {
         `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
         `  Platform: ${process.platform}`,
         `  Today's date: ${new Date().toDateString()}`,
+        workspaceDirs.length > 0 ? `  Additional workspace directories: ${workspaceDirs.join(", ")}` : "",
         `</env>`,
         `<project>`,
         `  ${
@@ -53,7 +73,10 @@ export namespace SystemPrompt {
             : ""
         }`,
         `</project>`,
-      ].join("\n"),
+        workspaceSection,
+      ]
+        .filter(Boolean)
+        .join("\n"),
     ]
   }
 
@@ -83,6 +106,18 @@ export namespace SystemPrompt {
       if (await Bun.file(globalRuleFile).exists()) {
         paths.add(globalRuleFile)
         break
+      }
+    }
+
+    // Include AGENTS.md from workspace directories
+    const workspaceDirs = await readWorkspaceDirs()
+    for (const dir of workspaceDirs) {
+      for (const ruleFile of LOCAL_RULE_FILES) {
+        const rulePath = path.join(dir, ruleFile)
+        if (await Bun.file(rulePath).exists()) {
+          paths.add(rulePath)
+          break // Only include the first found rule file per workspace
+        }
       }
     }
 

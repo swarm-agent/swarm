@@ -20,6 +20,7 @@ import { DialogProvider, useDialog } from "@tui/ui/dialog"
 import { SDKProvider, useSDK } from "@tui/context/sdk"
 import { SyncProvider, useSync } from "@tui/context/sync"
 import { LocalProvider, useLocal } from "@tui/context/local"
+import { WorkspaceProvider } from "@tui/context/workspace"
 
 import { DialogModel } from "@tui/component/dialog-model"
 import { DialogStatus } from "@tui/component/dialog-status"
@@ -28,6 +29,7 @@ import { DialogHelp } from "./ui/dialog-help"
 import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command"
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
+import { DialogWorkspaceAdd, DialogWorkspaceRemove } from "@tui/component/dialog-workspace"
 import { UnifiedStatusBar } from "@tui/component/indicator-unified-status"
 import { GitProvider } from "@tui/context/git"
 import { KeybindProvider } from "@tui/context/keybind"
@@ -129,7 +131,8 @@ export function tui(input: { url: string; args: Args; onExit?: () => Promise<voi
                           <IdleProvider>
                             <ThemeProvider mode={mode}>
                               <LocalProvider>
-                                <KeybindProvider>
+                                <WorkspaceProvider>
+                                  <KeybindProvider>
                                   <DialogProvider>
                                     <CommandProvider>
                                       <PromptHistoryProvider>
@@ -140,6 +143,7 @@ export function tui(input: { url: string; args: Args; onExit?: () => Promise<voi
                                     </CommandProvider>
                                   </DialogProvider>
                                 </KeybindProvider>
+                                </WorkspaceProvider>
                               </LocalProvider>
                             </ThemeProvider>
                           </IdleProvider>
@@ -407,6 +411,22 @@ function App() {
       onSelect: (dialog) => {
         renderer.console.toggle()
         dialog.clear()
+      },
+    },
+    {
+      title: "Add workspace directory",
+      value: "workspace.add",
+      category: "Workspace",
+      onSelect: (dialog) => {
+        dialog.replace(() => <DialogWorkspaceAdd />)
+      },
+    },
+    {
+      title: "Remove workspace directory",
+      value: "workspace.remove",
+      category: "Workspace",
+      onSelect: (dialog) => {
+        dialog.replace(() => <DialogWorkspaceRemove />)
       },
     },
   ])

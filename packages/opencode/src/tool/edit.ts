@@ -18,6 +18,7 @@ import { Instance } from "../project/instance"
 import { Agent } from "../agent/agent"
 import { Snapshot } from "@/snapshot"
 import { Sandbox } from "@/sandbox"
+import { isInWorkspaceDir } from "@/cli/cmd/tui/context/workspace"
 
 export const EditTool = Tool.define("edit", {
   description: DESCRIPTION,
@@ -57,20 +58,24 @@ export const EditTool = Tool.define("edit", {
 
     const filePath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
     if (!Filesystem.contains(Instance.directory, filePath)) {
-      const parentDir = path.dirname(filePath)
-      if (agent.permission.external_directory === "ask") {
-        await Permission.ask({
-          type: "external_directory",
-          pattern: parentDir,
-          sessionID: ctx.sessionID,
-          messageID: ctx.messageID,
-          callID: ctx.callID,
-          title: `Edit file outside working directory: ${filePath}`,
-          metadata: {
-            filepath: filePath,
-            parentDir,
-          },
-        })
+      // Check if file is in a workspace directory (auto-allow)
+      const inWorkspace = await isInWorkspaceDir(filePath)
+      if (!inWorkspace) {
+        const parentDir = path.dirname(filePath)
+        if (agent.permission.external_directory === "ask") {
+          await Permission.ask({
+            type: "external_directory",
+            pattern: parentDir,
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            callID: ctx.callID,
+            title: `Edit file outside working directory: ${filePath}`,
+            metadata: {
+              filepath: filePath,
+              parentDir,
+            },
+          })
+        }
       }
     }
 

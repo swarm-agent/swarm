@@ -11,6 +11,7 @@ import { Provider } from "../provider/provider"
 import { Identifier } from "../id/id"
 import { Permission } from "../permission"
 import { Agent } from "@/agent/agent"
+import { isInWorkspaceDir } from "@/cli/cmd/tui/context/workspace"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -31,20 +32,24 @@ export const ReadTool = Tool.define("read", {
     const agent = await Agent.get(ctx.agent, { sessionID: ctx.sessionID })
 
     if (!ctx.extra?.["bypassCwdCheck"] && !Filesystem.contains(Instance.directory, filepath)) {
-      const parentDir = path.dirname(filepath)
-      if (agent.permission.external_directory === "ask") {
-        await Permission.ask({
-          type: "external_directory",
-          pattern: parentDir,
-          sessionID: ctx.sessionID,
-          messageID: ctx.messageID,
-          callID: ctx.callID,
-          title: `Access file outside working directory: ${filepath}`,
-          metadata: {
-            filepath,
-            parentDir,
-          },
-        })
+      // Check if file is in a workspace directory (auto-allow)
+      const inWorkspace = await isInWorkspaceDir(filepath)
+      if (!inWorkspace) {
+        const parentDir = path.dirname(filepath)
+        if (agent.permission.external_directory === "ask") {
+          await Permission.ask({
+            type: "external_directory",
+            pattern: parentDir,
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            callID: ctx.callID,
+            title: `Access file outside working directory: ${filepath}`,
+            metadata: {
+              filepath,
+              parentDir,
+            },
+          })
+        }
       }
     }
 

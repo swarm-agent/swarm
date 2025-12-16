@@ -11,6 +11,7 @@ import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Agent } from "../agent/agent"
 import { Sandbox } from "../sandbox"
+import { isInWorkspaceDir } from "@/cli/cmd/tui/context/workspace"
 
 export const WriteTool = Tool.define("write", {
   description: DESCRIPTION,
@@ -32,20 +33,24 @@ export const WriteTool = Tool.define("write", {
 
     const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(Instance.directory, params.filePath)
     if (!Filesystem.contains(Instance.directory, filepath)) {
-      const parentDir = path.dirname(filepath)
-      if (agent.permission.external_directory === "ask") {
-        await Permission.ask({
-          type: "external_directory",
-          pattern: parentDir,
-          sessionID: ctx.sessionID,
-          messageID: ctx.messageID,
-          callID: ctx.callID,
-          title: `Write file outside working directory: ${filepath}`,
-          metadata: {
-            filepath,
-            parentDir,
-          },
-        })
+      // Check if file is in a workspace directory (auto-allow)
+      const inWorkspace = await isInWorkspaceDir(filepath)
+      if (!inWorkspace) {
+        const parentDir = path.dirname(filepath)
+        if (agent.permission.external_directory === "ask") {
+          await Permission.ask({
+            type: "external_directory",
+            pattern: parentDir,
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            callID: ctx.callID,
+            title: `Write file outside working directory: ${filepath}`,
+            metadata: {
+              filepath,
+              parentDir,
+            },
+          })
+        }
       }
     }
 

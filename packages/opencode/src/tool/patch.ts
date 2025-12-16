@@ -11,6 +11,7 @@ import { Agent } from "../agent/agent"
 import { Patch } from "../patch"
 import { Filesystem } from "../util/filesystem"
 import { createTwoFilesPatch } from "diff"
+import { isInWorkspaceDir } from "@/cli/cmd/tui/context/workspace"
 
 const PatchParams = z.object({
   patchText: z.string().describe("The full patch text that describes all changes to be made"),
@@ -54,20 +55,24 @@ export const PatchTool = Tool.define("patch", {
       const filePath = path.resolve(Instance.directory, hunk.path)
 
       if (!Filesystem.contains(Instance.directory, filePath)) {
-        const parentDir = path.dirname(filePath)
-        if (agent.permission.external_directory === "ask") {
-          await Permission.ask({
-            type: "external_directory",
-            pattern: parentDir,
-            sessionID: ctx.sessionID,
-            messageID: ctx.messageID,
-            callID: ctx.callID,
-            title: `Patch file outside working directory: ${filePath}`,
-            metadata: {
-              filepath: filePath,
-              parentDir,
-            },
-          })
+        // Check if file is in a workspace directory (auto-allow)
+        const inWorkspace = await isInWorkspaceDir(filePath)
+        if (!inWorkspace) {
+          const parentDir = path.dirname(filePath)
+          if (agent.permission.external_directory === "ask") {
+            await Permission.ask({
+              type: "external_directory",
+              pattern: parentDir,
+              sessionID: ctx.sessionID,
+              messageID: ctx.messageID,
+              callID: ctx.callID,
+              title: `Patch file outside working directory: ${filePath}`,
+              metadata: {
+                filepath: filePath,
+                parentDir,
+              },
+            })
+          }
         }
       }
 

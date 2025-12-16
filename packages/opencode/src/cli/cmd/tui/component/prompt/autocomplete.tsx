@@ -8,6 +8,8 @@ import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { SplitBorder } from "@tui/component/border"
 import { useCommandDialog } from "@tui/component/dialog-command"
+import { useWorkspace } from "@tui/context/workspace"
+import { useToast } from "@tui/ui/toast"
 import { Locale } from "@/util/locale"
 import type { PromptInfo } from "./history"
 
@@ -183,6 +185,8 @@ export function Autocomplete(props: {
   })
 
   const session = createMemo(() => (props.sessionID ? sync.session.get(props.sessionID) : undefined))
+  const workspace = useWorkspace()
+  const toast = useToast()
   const commands = createMemo((): AutocompleteOption[] => {
     const results: AutocompleteOption[] = []
     const s = session()
@@ -315,6 +319,37 @@ export function Autocomplete(props: {
         aliases: ["/quit", "/q"],
         description: "exit the app",
         onSelect: () => command.trigger("app.exit"),
+      },
+      {
+        display: "/add-dir",
+        description: "add directory to workspace",
+        onSelect: () => command.trigger("workspace.add"),
+      },
+      {
+        display: "/list-dirs",
+        description: "list workspace directories",
+        onSelect: () => {
+          const dirs = workspace.list()
+          if (dirs.length === 0) {
+            toast.show({
+              variant: "info",
+              message: "No workspace directories added yet. Use /add-dir to add one.",
+              duration: 4000,
+            })
+          } else {
+            toast.show({
+              variant: "info",
+              title: "Workspace Directories",
+              message: dirs.join("\n"),
+              duration: 6000,
+            })
+          }
+        },
+      },
+      {
+        display: "/remove-dir",
+        description: "remove directory from workspace",
+        onSelect: () => command.trigger("workspace.remove"),
       },
     )
     const max = firstBy(results, [(x) => x.display.length, "desc"])?.display.length

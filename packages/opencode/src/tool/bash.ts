@@ -17,6 +17,7 @@ import { Pin } from "@/auth/pin"
 import { Session } from "@/session"
 import { Profile } from "@/profile"
 import { ContainerRuntime } from "@/container/runtime"
+import { isInWorkspaceDir } from "@/cli/cmd/tui/context/workspace"
 
 const MAX_OUTPUT_LENGTH = 30_000
 const DEFAULT_TIMEOUT = 1 * 60 * 1000
@@ -174,18 +175,22 @@ export const BashTool = Tool.define("bash", {
 
     if (externalPaths.size > 0 && agent.permission.external_directory === "ask") {
       for (const parentDir of externalPaths) {
-        await Permission.ask({
-          type: "external_directory",
-          pattern: parentDir,
-          sessionID: ctx.sessionID,
-          messageID: ctx.messageID,
-          callID: ctx.callID,
-          title: `Command accesses path outside working directory: ${parentDir}`,
-          metadata: {
-            command: params.command,
-            parentDir,
-          },
-        })
+        // Check if path is in a workspace directory (auto-allow)
+        const inWorkspace = await isInWorkspaceDir(parentDir)
+        if (!inWorkspace) {
+          await Permission.ask({
+            type: "external_directory",
+            pattern: parentDir,
+            sessionID: ctx.sessionID,
+            messageID: ctx.messageID,
+            callID: ctx.callID,
+            title: `Command accesses path outside working directory: ${parentDir}`,
+            metadata: {
+              command: params.command,
+              parentDir,
+            },
+          })
+        }
       }
     }
 
