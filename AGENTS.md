@@ -211,6 +211,296 @@ These commands are **always blocked** regardless of mode:
 
 Single file deletion (`rm file.txt`, `rm -f file.txt`) requires PIN.
 
+## Container Profiles (Podman/Docker Isolation)
+
+Container profiles provide **complete filesystem isolation** for AI agents. The agent runs inside a Podman/Docker container and can ONLY access directories you explicitly mount.
+
+### Why Use Container Profiles?
+
+Without a container profile, the agent runs on your host system and can see:
+- Your entire home directory
+- SSH keys, credentials, config files
+- Any file your user can access
+
+With a container profile, the agent ONLY sees:
+- The specific folder(s) you mount
+- The container's own filesystem (Debian/Alpine/etc.)
+- Nothing else from your host
+
+### How to Set Up a Container Profile
+
+#### Step 1: Define the profile in `opencode.json`
+
+```json
+{
+  "container": {
+    "enabled": true,
+    "runtime": "podman",
+    "profiles": {
+      "my-agent": {
+        "name": "my-agent",
+        "image": "docker.io/oven/bun:1.3",
+        "volumes": [
+          { 
+            "host": "/home/user/my-project",
+            "container": "/workspace",
+            "readonly": false 
+          }
+        ],
+        "environment": {
+          "NODE_ENV": "development"
+        },
+        "network": {
+          "mode": "bridge",
+          "socketBridges": {
+            "/tmp/my-api.sock": "localhost:8080"
+          }
+        },
+        "workdir": "/workspace",
+        "keepAlive": true,
+        "idleTimeoutMinutes": 30
+      }
+    }
+  }
+}
+```
+
+#### Step 2: Start the container
+
+```bash
+swarm profile start my-agent
+```
+
+#### Step 3: Use in SDK
+
+```typescript
+import { createOpencode } from "@anthropic-ai/swarm-sdk"
+
+const { spawn } = await createOpencode()
+
+const handle = spawn({
+  prompt: "List files in the workspace",
+  containerProfile: "my-agent",  // <-- THIS IS THE KEY
+  mode: "noninteractive",
+})
+
+await handle.wait()
+```
+
+### Profile Configuration Options
+
+| Option | Description |
+|--------|-------------|
+| `name` | Unique profile identifier |
+| `image` | Docker/Podman image (e.g., `docker.io/oven/bun:1.3`) |
+| `volumes` | Array of `{host, container, readonly}` mount points |
+| `environment` | Environment variables inside container |
+| `network.mode` | `bridge` (default), `host`, or `none` |
+| `network.socketBridges` | Unix socket to TCP bridges for local API access |
+| `workdir` | Working directory inside container |
+| `keepAlive` | Keep container running between commands |
+| `idleTimeoutMinutes` | Auto-stop after idle (0 = never) |
+
+### Managing Profiles
+
+```bash
+# List all profiles
+swarm profile list
+
+# Start a profile's container
+swarm profile start my-agent
+
+# Stop a profile's container
+swarm profile stop my-agent
+
+# Restart
+swarm profile restart my-agent
+
+# Check status
+swarm profile status my-agent
+```
+
+### Profile Storage Location
+
+Profiles are stored in: `~/.local/share/opencode/profiles/`
+
+Each profile has a JSON file with its config and current state (running/stopped, container ID, etc.)
+
+### Testing Container Isolation
+
+Run a quick test to verify isolation is working:
+
+```bash
+# Execute commands directly in the container
+podman exec $(podman ps -q --filter name=swarm-my-agent) pwd
+podman exec $(podman ps -q --filter name=swarm-my-agent) ls -la /
+podman exec $(podman ps -q --filter name=swarm-my-agent) ls /home
+```
+
+**Expected results:**
+- `pwd` → `/workspace`
+- `ls /` → Container filesystem (Debian/Alpine), NOT your host
+- `ls /home` → Container user (e.g., `bun`), NOT your home directory files
+
+### Common Mistakes
+
+#### ❌ Using relative paths in volumes
+
+```json
+"volumes": [{ "host": ".", "container": "/workspace" }]
+```
+
+This is **unpredictable** - "." depends on where you run the server from.
+
+#### ✅ Always use absolute paths
+
+```json
+"volumes": [{ "host": "/home/user/my-project", "container": "/workspace" }]
+```
+
+#### ❌ Forgetting to start the container
+
+```typescript
+spawn({ prompt: "...", containerProfile: "my-agent" })
+// Error: Container not running
+```
+
+#### ✅ Start the profile first
+
+```bash
+swarm profile start my-agent
+```
+
+### Example Profiles
+
+#### Voice Agent (isolated workspace)
+```json
+{
+  "voice-agent": {
+    "name": "voice-agent",
+    "image": "docker.io/oven/bun:1.3",
+    "volumes": [
+      { "host": "/home/user/voiceagent", "container": "/workspace" }
+    ],
+    "network": {
+      "mode": "bridge",
+      "socketBridges": {
+        "/tmp/voiceagent.sock": "localhost:8080"
+      }
+    },
+    "workdir": "/workspace"
+  }
+}
+```
+
+#### Twitter Bot (with API access)
+```json
+{
+  "twitter-bot": {
+    "name": "twitter-bot",
+    "image": "docker.io/oven/bun:1.3",
+    "volumes": [
+      { "host": "/home/user/twitter-bot", "container": "/workspace" }
+    ],
+    "environment": {
+      "TWITTER_API_KEY": "..."
+    },
+    "network": {
+      "mode": "bridge",
+      "allowedDomains": ["api.twitter.com", "api.anthropic.com"]
+    },
+    "workdir": "/workspace"
+  }
+}
+```
+
+---
+
+## SDK Usage
+
+### Basic Usage
+
+```typescript
+import { createOpencode } from "@anthropic-ai/swarm-sdk"
+
+// Start a server and get spawn function
+const { spawn, client, server } = await createOpencode()
+
+// Simple spawn
+const handle = spawn("Fix the tests")
+await handle.wait()
+
+// With options
+const handle = spawn({
+  prompt: "Run the build",
+  containerProfile: "my-agent",
+  mode: "noninteractive",
+})
+
+// Stream events
+for await (const event of handle.stream()) {
+  if (event.type === "text") console.log(event.delta)
+  if (event.type === "tool.start") console.log(`Running: ${event.name}`)
+}
+```
+
+### Spawn Options
+
+| Option | Description |
+|--------|-------------|
+| `prompt` | The task for the agent |
+| `containerProfile` | Run inside this container profile |
+| `mode` | `"noninteractive"` (auto-approve) or `"interactive"` |
+| `profile` | Permission profile: `"analyze"`, `"edit"`, `"full"`, `"yolo"` |
+| `agent` | Agent type: `"build"`, `"plan"`, custom |
+| `tools` | Tool overrides `{ bash: true, edit: false }` |
+| `onPermission` | Callback for interactive permission handling |
+| `onComplete` | Callback when done (for fire-and-forget) |
+
+### Permission Profiles
+
+| Profile | Tools | Permissions |
+|---------|-------|-------------|
+| `analyze` | Read-only (read, grep, glob, list) | No modifications |
+| `edit` | + edit, write | No bash |
+| `full` | All tools | Bash requires approval |
+| `yolo` | All tools | Everything auto-approved (DANGER!) |
+
+### Custom Tools via MCP
+
+```typescript
+import { createOpencode, tool, createSwarmMcpServer, z } from "@anthropic-ai/swarm-sdk"
+
+// Define a custom tool
+const speakTool = tool(
+  "speak",
+  "Send text to voice API",
+  { text: z.string() },
+  async (args) => {
+    await fetch("http://localhost:8080/speak", {
+      method: "POST",
+      body: JSON.stringify({ text: args.text })
+    })
+    return `Spoke: ${args.text}`
+  },
+  { permission: "allow" }
+)
+
+// Create MCP server with custom tools
+const mcpServer = createSwarmMcpServer({
+  name: "my-tools",
+  tools: [speakTool],
+})
+
+// Use in spawn
+spawn({
+  prompt: "Say hello",
+  mcpServers: { "my-tools": mcpServer },
+})
+```
+
+---
+
 ## Git Workflow
 
 This is a separate repo from the main opencode monorepo.
