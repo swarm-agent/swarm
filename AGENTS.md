@@ -416,88 +416,540 @@ swarm profile start my-agent
 
 ---
 
-## SDK Usage
+## Swarm SDK - Complete Reference
 
-### Basic Usage
+The SDK lets you programmatically spawn AI agents that run in isolated containers with custom tools.
+
+### Import Path
 
 ```typescript
-import { createOpencode } from "@anthropic-ai/swarm-sdk"
+// From source (during development)
+import { createOpencode, tool, createSwarmMcpServer, z } from "/path/to/swarm-cli/packages/sdk/js/src/index.ts"
 
-// Start a server and get spawn function
-const { spawn, client, server } = await createOpencode()
-
-// Simple spawn
-const handle = spawn("Fix the tests")
-await handle.wait()
-
-// With options
-const handle = spawn({
-  prompt: "Run the build",
-  containerProfile: "my-agent",
-  mode: "noninteractive",
-})
-
-// Stream events
-for await (const event of handle.stream()) {
-  if (event.type === "text") console.log(event.delta)
-  if (event.type === "tool.start") console.log(`Running: ${event.name}`)
-}
+// Or copy sdk-dist/ to your project and import from there
+import { createOpencode, tool, createSwarmMcpServer, z } from "./sdk-dist/index.js"
 ```
 
-### Spawn Options
+### What the SDK Exports
 
-| Option | Description |
-|--------|-------------|
-| `prompt` | The task for the agent |
-| `containerProfile` | Run inside this container profile |
-| `mode` | `"noninteractive"` (auto-approve) or `"interactive"` |
-| `profile` | Permission profile: `"analyze"`, `"edit"`, `"full"`, `"yolo"` |
-| `agent` | Agent type: `"build"`, `"plan"`, custom |
-| `tools` | Tool overrides `{ bash: true, edit: false }` |
-| `onPermission` | Callback for interactive permission handling |
-| `onComplete` | Callback when done (for fire-and-forget) |
+| Export | Purpose |
+|--------|---------|
+| `createOpencode(options)` | Start a server, get `{spawn, client, server}` |
+| `spawn(prompt \| options)` | Run an agent session |
+| `tool(name, desc, params, fn, opts)` | Define a custom tool |
+| `createSwarmMcpServer({name, tools})` | Bundle tools into an MCP server |
+| `createSwarmProfile(config)` | Create custom permission profiles |
+| `z` | Re-exported Zod (use for tool parameter schemas) |
+| `loadEnvFile(path)` | Load .env file to object |
+| `injectEnvFile(path)` | Load .env and inject into process.env |
 
-### Permission Profiles
+---
 
-| Profile | Tools | Permissions |
-|---------|-------|-------------|
-| `analyze` | Read-only (read, grep, glob, list) | No modifications |
-| `edit` | + edit, write | No bash |
-| `full` | All tools | Bash requires approval |
-| `yolo` | All tools | Everything auto-approved (DANGER!) |
-
-### Custom Tools via MCP
+### Quick Start: Minimal Agent
 
 ```typescript
-import { createOpencode, tool, createSwarmMcpServer, z } from "@anthropic-ai/swarm-sdk"
+import { createOpencode } from "./sdk-dist/index.js"
 
-// Define a custom tool
-const speakTool = tool(
-  "speak",
-  "Send text to voice API",
-  { text: z.string() },
+const { spawn, server } = await createOpencode()
+
+const handle = spawn("List all TypeScript files")
+await handle.wait()
+
+server.close()
+```
+
+---
+
+### Quick Start: Agent in Container with Custom Tool
+
+```typescript
+import { createOpencode, tool, createSwarmMcpServer, z } from "./sdk-dist/index.js"
+
+// 1. Define a custom tool
+const notifyTool = tool(
+  "notify",
+  "Send a notification to the user",
+  { message: z.string().describe("The message to send") },
   async (args) => {
-    await fetch("http://localhost:8080/speak", {
-      method: "POST",
-      body: JSON.stringify({ text: args.text })
-    })
-    return `Spoke: ${args.text}`
+    console.log(`[NOTIFY] ${args.message}`)
+    return `Notified: ${args.message}`
   },
   { permission: "allow" }
 )
 
-// Create MCP server with custom tools
+// 2. Bundle into MCP server
 const mcpServer = createSwarmMcpServer({
   name: "my-tools",
-  tools: [speakTool],
+  tools: [notifyTool],
 })
 
-// Use in spawn
+// 3. Start SDK server (auto-starts container profile if specified)
+const { spawn, client, server } = await createOpencode({
+  system: "You are a helpful assistant. Use the notify tool to communicate.",
+  profile: "my-agent",  // Container profile name
+  port: 4096,
+})
+
+// 4. Register MCP server with the running swarm server
+await client.mcp.add({
+  body: {
+    name: "my-tools",
+    config: { type: "remote", url: "http://localhost:19876" },  // You need to serve mcpServer separately
+  },
+})
+
+// 5. Spawn agent in container
+const handle = spawn({
+  prompt: "Say hello to the user",
+  containerProfile: "my-agent",
+  mode: "noninteractive",
+})
+
+// 6. Stream events
+for await (const event of handle.stream()) {
+  if (event.type === "text" && event.delta) {
+    process.stdout.write(event.delta)
+  }
+  if (event.type === "tool.start") {
+    console.log(`\n[TOOL] ${event.name}`)
+  }
+}
+
+server.close()
+```
+
+---
+
+### createOpencode(options) - Start the Server
+
+```typescript
+const { spawn, client, server } = await createOpencode({
+  // System prompt applied to all sessions
+  system: "You are a coding assistant.",
+  
+  // Container profile to auto-start (optional)
+  profile: "my-agent",
+  
+  // Server binding
+  hostname: "127.0.0.1",
+  port: 4096,
+  
+  // Startup timeout (ms)
+  timeout: 5000,
+})
+```
+
+**Returns:**
+- `spawn` - Function to create agent sessions
+- `client` - Raw API client for advanced operations
+- `server` - Server handle with `url` and `close()` method
+
+---
+
+### spawn(options) - Run an Agent
+
+```typescript
+// Simple: just a prompt
+const handle = spawn("Fix the failing tests")
+
+// Full options
+const handle = spawn({
+  // Required
+  prompt: "Deploy to staging",
+  
+  // Container isolation (IMPORTANT!)
+  containerProfile: "my-agent",
+  
+  // Permission mode
+  mode: "noninteractive",  // auto-approve (for bots)
+  // mode: "interactive",  // use onPermission callback
+  
+  // Permission profile (predefined)
+  profile: "full",  // or "analyze", "edit", "yolo"
+  
+  // Agent type
+  agent: "build",  // or "plan", "general", custom
+  
+  // Tool overrides (merge with profile)
+  tools: { bash: true, edit: false },
+  
+  // Interactive permission handling
+  onPermission: async (req) => {
+    console.log(`Permission requested: ${req.title}`)
+    return "approve"  // or "reject", "always", { pin: "1234" }
+  },
+  
+  // Fire-and-forget callback
+  onComplete: (result) => {
+    console.log(`Done: ${result.success}`)
+  },
+})
+```
+
+**SpawnHandle methods:**
+```typescript
+// Wait for completion (blocks)
+const result = await handle.wait()
+
+// Stream events (async generator)
+for await (const event of handle.stream()) {
+  // event.type: "text", "tool.start", "tool.end", "permission", "completed", "aborted", "error"
+}
+
+// Get session ID
+const sessionId = await handle.sessionId
+
+// Abort the session
+await handle.abort()
+
+// Respond to permission manually
+await handle.respondToPermission(permissionId, "approve")
+```
+
+---
+
+### Event Types from stream()
+
+```typescript
+for await (const event of handle.stream()) {
+  switch (event.type) {
+    case "text":
+      // event.text - full text so far
+      // event.delta - new text since last event
+      break
+    
+    case "tool.start":
+      // event.name - tool name (e.g., "bash", "edit", "mcp__my-tools__notify")
+      // event.input - tool arguments
+      break
+    
+    case "tool.end":
+      // event.name - tool name
+      // event.output - tool result
+      break
+    
+    case "permission":
+      // event.id - permission ID
+      // event.permissionType - "bash", "edit", "pin", etc.
+      // event.title - human-readable description
+      // event.metadata - additional context
+      break
+    
+    case "permission.handled":
+      // event.id - permission ID
+      // event.response - how it was handled
+      break
+    
+    case "todo":
+      // event.todos - array of todo items
+      break
+    
+    case "completed":
+      // Session finished successfully
+      break
+    
+    case "aborted":
+      // Session was aborted
+      break
+    
+    case "error":
+      // event.error - Error object
+      break
+  }
+}
+```
+
+---
+
+### Permission Profiles
+
+| Profile | Description | Tools Enabled | Bash |
+|---------|-------------|---------------|------|
+| `analyze` | Read-only | read, grep, glob, list, webfetch | ❌ Denied |
+| `edit` | File editing | + edit, write, patch | ❌ Denied |
+| `full` | Everything | All tools | ⚠️ Asks permission |
+| `yolo` | No restrictions | All tools | ✅ Auto-approved |
+
+```typescript
+// Use predefined profile
+spawn({ prompt: "...", profile: "full" })
+
+// Create custom profile
+import { createSwarmProfile } from "./sdk-dist/index.js"
+
+const myProfile = createSwarmProfile({
+  name: "backend-dev",
+  base: "full",  // extend from predefined
+  envFile: ".env.backend",  // load secrets
+  tools: { "background-agent": false },  // disable specific tools
+  permission: {
+    bash: { "npm *": "allow", "bun *": "allow" },  // allow specific commands
+  },
+})
+
+spawn({ prompt: "...", profile: myProfile })
+```
+
+---
+
+### Custom Tools with tool()
+
+```typescript
+import { tool, z } from "./sdk-dist/index.js"
+
+const myTool = tool(
+  // Name (alphanumeric, underscores, hyphens)
+  "search_docs",
+  
+  // Description (shown to Claude)
+  "Search internal documentation for a query",
+  
+  // Parameters (Zod schema object)
+  {
+    query: z.string().describe("Search query"),
+    limit: z.number().optional().default(10).describe("Max results"),
+  },
+  
+  // Execute function
+  async (args, context) => {
+    // args.query, args.limit are typed
+    // context.sessionID, context.abort available
+    
+    const results = await searchDocs(args.query, args.limit)
+    return `Found ${results.length} results:\n${results.join("\n")}`
+    
+    // Or return structured result:
+    // return { content: [{ type: "text", text: "..." }] }
+  },
+  
+  // Options
+  {
+    permission: "allow",  // "allow", "ask", "pin", "deny"
+  }
+)
+```
+
+**Permission levels for tools:**
+| Level | Behavior |
+|-------|----------|
+| `allow` | Runs immediately, no prompt |
+| `ask` | Requires user approval |
+| `pin` | Requires PIN verification |
+| `deny` | Blocked, returns error |
+
+---
+
+### MCP Server for Custom Tools
+
+Tools need to be served via MCP protocol. Two approaches:
+
+#### Approach 1: HTTP MCP Server (Recommended for production)
+
+```typescript
+import { createSwarmMcpServer, tool, z } from "./sdk-dist/index.js"
+import { serve } from "bun"
+
+const mcpServer = createSwarmMcpServer({
+  name: "my-tools",
+  tools: [
+    tool("greet", "Say hello", { name: z.string() }, async (args) => `Hello, ${args.name}!`),
+    tool("time", "Get current time", {}, async () => new Date().toISOString()),
+  ],
+})
+
+// Serve MCP over HTTP
+const httpServer = serve({
+  port: 19876,
+  async fetch(req) {
+    const body = await req.json()
+    
+    if (body.method === "initialize") {
+      return Response.json({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "my-tools", version: "1.0.0" },
+        },
+      })
+    }
+    
+    if (body.method === "tools/list") {
+      return Response.json({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: { tools: mcpServer.listTools() },
+      })
+    }
+    
+    if (body.method === "tools/call") {
+      const result = await mcpServer.executeTool(
+        body.params?.name || "",
+        body.params?.arguments || {},
+        {}
+      )
+      return Response.json({ jsonrpc: "2.0", id: body.id, result })
+    }
+    
+    return Response.json({ error: "Unknown method" })
+  },
+})
+
+// Register with swarm
+await client.mcp.add({
+  body: {
+    name: "my-tools",
+    config: { type: "remote", url: "http://localhost:19876" },
+  },
+})
+```
+
+#### Approach 2: In-Process (simpler, for development)
+
+```typescript
+// Pass mcpServers directly to spawn (not yet fully implemented in server)
 spawn({
-  prompt: "Say hello",
+  prompt: "Use my tools",
   mcpServers: { "my-tools": mcpServer },
 })
 ```
+
+---
+
+### Container Profiles - Full Setup
+
+#### 1. Create profile JSON file
+
+Location: `~/.local/share/opencode/profiles/my-agent.json`
+
+```json
+{
+  "name": "my-agent",
+  "config": {
+    "name": "my-agent",
+    "image": "docker.io/oven/bun:1.3",
+    "volumes": [
+      {
+        "host": "/home/user/my-project",
+        "container": "/workspace",
+        "readonly": false
+      }
+    ],
+    "environment": {
+      "NODE_ENV": "development"
+    },
+    "network": {
+      "mode": "bridge",
+      "socketBridges": {
+        "/tmp/my-api.sock": "localhost:8080"
+      }
+    },
+    "workdir": "/workspace",
+    "keepAlive": true,
+    "idleTimeoutMinutes": 30,
+    "permission": {
+      "edit": "allow",
+      "bash": "allow",
+      "webfetch": "allow"
+    }
+  },
+  "status": "stopped",
+  "sessionCount": 0
+}
+```
+
+#### 2. Start the container
+
+```bash
+swarm profile start my-agent
+```
+
+#### 3. Use in SDK
+
+```typescript
+const { spawn } = await createOpencode({ profile: "my-agent" })
+
+spawn({
+  prompt: "Build the project",
+  containerProfile: "my-agent",
+  mode: "noninteractive",
+})
+```
+
+#### 4. Check status
+
+```bash
+swarm profile status my-agent
+swarm profile list
+```
+
+---
+
+### Complete Example: Voice Agent
+
+See `/home/roy/pi/voiceagent/swarm-agent/voice-agent.ts` for a full implementation with:
+- Custom "speak" tool
+- Session persistence
+- HTTP API for external integration
+- Container isolation
+- Fire-and-forget task execution
+
+Key patterns:
+```typescript
+// Fire and forget (returns immediately)
+agent.fireAndForget("Do something in background", (success) => {
+  console.log(`Task completed: ${success}`)
+})
+
+// Continue conversation in same session
+const response = await agent.continueConversation("Follow up question")
+
+// New conversation (creates new session)
+const { response, sessionId } = await agent.newConversation("New task")
+```
+
+---
+
+### SDK File Structure
+
+```
+packages/sdk/js/
+├── src/
+│   ├── index.ts          # Main exports
+│   ├── spawn.ts          # spawn() implementation
+│   ├── server.ts         # createOpencodeServer()
+│   ├── client.ts         # API client
+│   ├── tool.ts           # tool() helper
+│   ├── mcp-server.ts     # createSwarmMcpServer()
+│   ├── profiles.ts       # Permission profiles
+│   ├── env.ts            # Environment loading
+│   └── gen/              # Generated API types
+└── example/
+    └── *.ts              # Example scripts
+```
+
+---
+
+### Troubleshooting
+
+#### "Container not running"
+```bash
+swarm profile start my-agent
+```
+
+#### "Permission denied" in container
+Check volume mounts in profile config. Container user must have access.
+
+#### Tools not appearing
+1. Check MCP server is running
+2. Check registration: `client.mcp.list()`
+3. Tool names are prefixed: `mcp__server-name__tool-name`
+
+#### Session hangs
+- In `interactive` mode without `onPermission` callback = hangs forever
+- Use `noninteractive` for bots
+- Check for permission requests in event stream
 
 ---
 
