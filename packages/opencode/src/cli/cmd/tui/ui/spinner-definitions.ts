@@ -377,6 +377,25 @@ export const SPINNERS: Record<string, SpinnerDef> = {
     mode: "neon",
   },
 
+  // Webcontents - page loading animation
+  webcontents_spinner: {
+    name: "webcontents_spinner",
+    frames: [
+      "📄·····",
+      "·📄····",
+      "··📄···",
+      "···📄··",
+      "····📄·",
+      "·····📄",
+      "····📄·",
+      "···📄··",
+      "··📄···",
+      "·📄····",
+    ],
+    interval: 100,
+    mode: "neon",
+  },
+
   // ============================================================================
   // TYPE B: TRAVELING EDIT/WRITE ANIMATIONS - Nerdfont icons that move
   // ============================================================================

@@ -90,6 +90,12 @@ export const TOOL_SPINNER_MAP: Record<string, ToolSpinnerConfig> = {
     spinner: "websearch_spinner", // Radar/search pulse ◎·· ·◉· ··● ·◉·
     fallback: "bloom",
   },
+
+  // Web contents - page loading
+  webcontents: {
+    spinner: "webcontents_spinner", // Page loading animation
+    fallback: "loading_bar",
+  },
 }
 
 /**

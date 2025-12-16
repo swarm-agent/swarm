@@ -1,0 +1,12 @@
+- Fetch full content from specific URLs found via websearch
+- Use this AFTER websearch to get detailed content from promising results
+- Returns clean text content from web pages
+- Supports fetching multiple URLs in one call (up to 5)
+- Requires Exa API key (same as websearch)
+
+Usage workflow:
+1. Use `websearch` to find relevant pages
+2. Review the summaries returned
+3. Use `webcontents` with specific URLs to get full text
+
+This is more efficient than fetching everything - only get details you need.
