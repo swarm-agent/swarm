@@ -60,7 +60,7 @@ export {
   resolveEnvVars,
 }
 
-export async function createOpencode(options?: ServerOptions) {
+export async function createOpencode(options?: ServerOptions & { system?: string }) {
   const server = await createOpencodeServer({
     ...options,
   })
@@ -69,7 +69,8 @@ export async function createOpencode(options?: ServerOptions) {
     baseUrl: server.url,
   })
 
-  const spawn = createSpawn(client)
+  // Pass system prompt to createSpawn as a default for all sessions
+  const spawn = createSpawn(client, { system: options?.system })
 
   return {
     client,

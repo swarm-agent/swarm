@@ -249,7 +249,7 @@ function mapPermissionResponse(response: PermissionResponse): ServerPermissionRe
 // Main spawn factory
 // ============================================================================
 
-export function createSpawn(client: OpencodeClient) {
+export function createSpawn(client: OpencodeClient, defaults?: { system?: string }) {
   return function spawn(promptOrOptions: string | SpawnOptions): SpawnHandle {
     const options: SpawnOptions =
       typeof promptOrOptions === "string" ? { prompt: promptOrOptions } : promptOrOptions
@@ -375,6 +375,7 @@ export function createSpawn(client: OpencodeClient) {
         body: {
           parts,
           tools,  // Path B: Pass tools directly in request body
+          system: options.system ?? defaults?.system,  // System prompt (per-call or from createOpencode)
         },
       }).catch(() => {}) // errors will come via SSE
 
