@@ -14,9 +14,7 @@ import { Permission } from "@/permission"
 import { Sandbox } from "@/sandbox"
 import { Config } from "@/config/config"
 import { Pin } from "@/auth/pin"
-import { Session } from "@/session"
-import { Profile } from "@/profile"
-import { ContainerRuntime } from "@/container/runtime"
+// NOTE: Container execution handled by running swarm serve INSIDE container - no routing needed
 import { isInWorkspaceDir } from "@/cli/cmd/tui/context/workspace"
 
 const MAX_OUTPUT_LENGTH = 30_000
@@ -246,44 +244,8 @@ export const BashTool = Tool.define("bash", {
       ? params.command
       : await Sandbox.wrapCommand(params.command)
 
-    // Check if session has a container profile
-    const session = await Session.get(ctx.sessionID)
-    const containerProfile = session?.containerProfile
-    let containerID: string | undefined
-
-    if (containerProfile) {
-      const profile = await Profile.get(containerProfile)
-      if (profile?.status === "running" && profile.containerID) {
-        containerID = profile.containerID
-        log.info("executing in container", { containerID, profile: containerProfile })
-      }
-    }
-
-    // If executing in container, use podman/docker exec
-    // NOTE: Use params.command directly, NOT commandToRun - the container IS the sandbox
-    if (containerID) {
-      const result = await ContainerRuntime.exec(containerID, ["bash", "-c", params.command])
-      const output = result.stdout + result.stderr
-      
-      ctx.metadata({
-        metadata: {
-          output,
-          description: params.description,
-        },
-      })
-
-      return {
-        title: params.command,
-        metadata: {
-          output,
-          exit: result.exitCode,
-          description: params.description,
-        },
-        output,
-      }
-    }
-
-    // Host execution (original code path)
+    // NOTE: Container execution is handled by running swarm serve INSIDE the container
+    // No routing needed here - if swarm runs in container, commands naturally run there
     const proc = spawn(commandToRun, {
       shell: true,
       cwd: Instance.directory,
