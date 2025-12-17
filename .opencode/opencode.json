@@ -8,7 +8,7 @@
   },
   "sandbox": {
     "enabled": true,
-    "trustedCommands": ["ssh *", "scp *", "rsync *"],
+    "trustedCommands": ["ssh *", "scp *", "rsync *", "podman *", "docker *"],
     "network": {
       "allowedDomains": [
         "github.com",
