@@ -15,7 +15,15 @@ export namespace Plugin {
     const client = createOpencodeClient({
       baseUrl: "http://localhost:4096",
       // @ts-ignore - fetch type incompatibility
-      fetch: async (...args) => Server.App().fetch(...args),
+      fetch: async (...args) => {
+        const response = await Server.App().fetch(...args)
+        if (!response) {
+          const req = args[0] as Request
+          log.error("fetch returned undefined", { url: req?.url, method: req?.method })
+          throw new Error(`Plugin fetch returned undefined for ${req?.method} ${req?.url}`)
+        }
+        return response
+      },
     })
     const config = await Config.get()
     const hooks = []
