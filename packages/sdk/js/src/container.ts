@@ -413,7 +413,13 @@ export async function sendMessage(
   url: string,
   sessionId: string,
   message: string,
-  options?: { autoApprove?: boolean; onText?: (text: string) => void; timeout?: number; system?: string }
+  options?: {
+    autoApprove?: boolean
+    onText?: (text: string) => void
+    onEvent?: (event: ContainerEvent) => void
+    timeout?: number
+    system?: string
+  }
 ): Promise<{ success: boolean; text: string }> {
   const timeout = options?.timeout ?? 120000 // 2 minutes default
 
@@ -476,6 +482,11 @@ export async function sendMessage(
         if (line.startsWith("data: ")) {
           try {
             const event = JSON.parse(line.slice(6)) as ContainerEvent
+
+            // Emit event to callback if provided
+            if (event.properties?.sessionID === sessionId || event.properties?.part?.sessionID === sessionId || event.properties?.info?.sessionID === sessionId) {
+              options?.onEvent?.(event)
+            }
 
             // Auto-approve permissions
             if (options?.autoApprove !== false && event.type === "permission.updated") {
