@@ -741,7 +741,328 @@ const myTool = tool(
 
 ### MCP Server for Custom Tools
 
-Tools need to be served via MCP protocol. Two approaches:
+Tools need to be served via MCP protocol. **CRITICAL: When using containers, the MCP server runs on the HOST and the container accesses it via `host.containers.internal`.**
+
+---
+
+## MCP HTTP Server with Containers (THE WORKING PATTERN)
+
+This is the pattern that actually works for custom tools in containerized agents.
+
+### The Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         HOST                                 │
+│                                                              │
+│  ┌──────────────────┐     ┌──────────────────────────────┐  │
+│  │  Your Script     │     │  MCP HTTP Server              │  │
+│  │  (voice-daemon)  │────▶│  Port: 19876                  │  │
+│  │                  │     │  Tools: speak, check_network  │  │
+│  └────────┬─────────┘     └──────────────────────────────┘  │
+│           │                            ▲                     │
+│           │ starts container           │ host.containers.internal:19876
+│           ▼                            │                     │
+│  ┌────────────────────────────────────┼──────────────────┐  │
+│  │  Podman Container                  │                  │  │
+│  │  ┌──────────────────────────────┐  │                  │  │
+│  │  │  Swarm Server (port 4096)    │──┘                  │  │
+│  │  │  - Registers MCP tools       │                     │  │
+│  │  │  - Runs agent sessions       │                     │  │
+│  │  └──────────────────────────────┘                     │  │
+│  │  Exposed as: localhost:4200                           │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Step-by-Step Setup
+
+#### Step 1: Import the SDK
+
+```typescript
+import {
+  spawnContainer,
+  sendMessage,
+  stopContainer,
+  startMcpServer,  // NEW: MCP HTTP server
+  tool,
+  z
+} from "/path/to/swarm-cli/packages/sdk/js/src/index.js"
+```
+
+#### Step 2: Define Your Tools
+
+```typescript
+const speakTool = tool(
+  "speak",
+  "Send text to be spoken via TTS",
+  {
+    text: z.string().describe("The text to speak"),
+    priority: z.enum(["normal", "urgent"]).default("normal"),
+  },
+  async (args) => {
+    console.log(`[SPEAK] ${args.text}`)
+    // Call your TTS API here
+    return `Spoken: "${args.text.slice(0, 50)}..."`
+  },
+  { permission: "allow" }  // No prompts needed
+)
+
+const customTool = tool(
+  "my_tool",
+  "Description of what this tool does",
+  { param: z.string() },
+  async (args) => {
+    // Your tool logic here - THIS RUNS ON THE HOST
+    return `Result: ${args.param}`
+  },
+  { permission: "allow" }
+)
+```
+
+#### Step 3: Start MCP HTTP Server (ON THE HOST)
+
+```typescript
+const MCP_PORT = 19876
+
+const mcpServer = await startMcpServer({
+  name: "my-tools",
+  port: MCP_PORT,
+  hostname: "0.0.0.0",  // IMPORTANT: Bind to all interfaces
+  tools: [speakTool, customTool],
+})
+
+console.log(`MCP server running at ${mcpServer.url}`)
+// Output: MCP server running at http://localhost:19876
+```
+
+#### Step 4: Start Container and Register MCP
+
+```typescript
+// Start the container
+const container = await spawnContainer({
+  name: "my-agent",
+  workspace: "/path/to/workspace",
+  system: "You are a helpful assistant.",
+})
+
+// CRITICAL: Register MCP with container-accessible URL
+// Container CANNOT reach "localhost" - must use host.containers.internal
+const mcpUrl = `http://host.containers.internal:${MCP_PORT}`
+
+await container.client.mcp.add({
+  body: {
+    name: "my-tools",
+    config: { type: "remote", url: mcpUrl },
+  },
+})
+
+console.log(`MCP tools registered at ${mcpUrl}`)
+```
+
+#### Step 5: Send Messages (Tools Work!)
+
+```typescript
+const result = await sendMessage(
+  container.url,
+  sessionId,
+  "Use the speak tool to say hello",
+  { autoApprove: true }
+)
+
+console.log(result.text)
+// The agent will call the speak tool, which runs on the HOST
+```
+
+### Complete Working Example
+
+```typescript
+#!/usr/bin/env bun
+/**
+ * Agent with Custom MCP Tools
+ */
+
+import {
+  spawnContainer,
+  sendMessage,
+  stopContainer,
+  startMcpServer,
+  tool,
+  z
+} from "/path/to/swarm-cli/packages/sdk/js/src/index.js"
+import { serve } from "bun"
+
+const MCP_PORT = 19876
+const API_PORT = 4097
+
+// ============================================================================
+// 1. DEFINE TOOLS (run on HOST)
+// ============================================================================
+
+const speakTool = tool(
+  "speak",
+  "Send text to TTS",
+  { text: z.string(), priority: z.enum(["normal", "urgent"]).default("normal") },
+  async (args) => {
+    console.log(`[SPEAK:${args.priority}] ${args.text}`)
+    // Your TTS integration here
+    return `Sent to TTS: "${args.text.slice(0, 50)}..."`
+  },
+  { permission: "allow" }
+)
+
+// ============================================================================
+// 2. START MCP SERVER (on HOST, port 19876)
+// ============================================================================
+
+const mcpServer = await startMcpServer({
+  name: "my-tools",
+  port: MCP_PORT,
+  hostname: "0.0.0.0",
+  tools: [speakTool],
+})
+console.log(`MCP server: ${mcpServer.url}`)
+
+// ============================================================================
+// 3. CONTAINER STATE
+// ============================================================================
+
+let container: Awaited<ReturnType<typeof spawnContainer>> | null = null
+let currentSessionId: string | null = null
+
+async function ensureContainer() {
+  if (container?.isRunning()) return container
+
+  console.log("Starting container...")
+
+  try { stopContainer("my-agent") } catch {}
+
+  container = await spawnContainer({
+    name: "my-agent",
+    workspace: "/path/to/workspace",
+    system: "You are a helpful assistant. Use the speak tool to communicate.",
+  })
+
+  // CRITICAL: Register MCP with container-accessible URL
+  const mcpUrl = `http://host.containers.internal:${MCP_PORT}`
+  await container.client.mcp.add({
+    body: {
+      name: "my-tools",
+      config: { type: "remote", url: mcpUrl },
+    },
+  })
+  console.log(`MCP registered at ${mcpUrl}`)
+
+  return container
+}
+
+// ============================================================================
+// 4. HTTP API
+// ============================================================================
+
+serve({
+  port: API_PORT,
+  async fetch(req) {
+    const url = new URL(req.url)
+
+    if (url.pathname === "/message" && req.method === "POST") {
+      const { text } = await req.json() as { text: string }
+
+      const c = await ensureContainer()
+
+      if (!currentSessionId) {
+        const session = await c.client.session.create({})
+        currentSessionId = session.data!.id
+      }
+
+      const result = await sendMessage(c.url, currentSessionId, text, { autoApprove: true })
+
+      return Response.json({ success: result.success, response: result.text })
+    }
+
+    return Response.json({ error: "Not found" }, { status: 404 })
+  },
+})
+
+console.log(`API server: http://localhost:${API_PORT}`)
+console.log(`POST /message - Send message to agent`)
+
+// Cleanup
+process.on("SIGINT", async () => {
+  mcpServer.stop()
+  if (container) await container.stop()
+  process.exit(0)
+})
+```
+
+### Common Mistakes
+
+#### ❌ WRONG: Using localhost for MCP URL
+
+```typescript
+await container.client.mcp.add({
+  body: {
+    name: "my-tools",
+    config: { type: "remote", url: "http://localhost:19876" },  // FAILS!
+  },
+})
+```
+
+The container CANNOT reach `localhost:19876` because that's the host's localhost, not the container's.
+
+#### ✅ CORRECT: Use host.containers.internal
+
+```typescript
+await container.client.mcp.add({
+  body: {
+    name: "my-tools",
+    config: { type: "remote", url: "http://host.containers.internal:19876" },
+  },
+})
+```
+
+#### ❌ WRONG: MCP server binding to localhost only
+
+```typescript
+const mcpServer = await startMcpServer({
+  hostname: "localhost",  // FAILS - container can't reach this
+  port: 19876,
+  ...
+})
+```
+
+#### ✅ CORRECT: Bind to all interfaces
+
+```typescript
+const mcpServer = await startMcpServer({
+  hostname: "0.0.0.0",  // Accessible from containers
+  port: 19876,
+  ...
+})
+```
+
+### Docker vs Podman
+
+| Runtime | Host URL from Container |
+|---------|------------------------|
+| Podman | `host.containers.internal` |
+| Docker | `host.docker.internal` |
+
+The SDK auto-detects which runtime you're using.
+
+### Verifying MCP Registration
+
+```bash
+# Check if MCP server is responding
+curl http://localhost:19876
+# Should return: {"name":"my-tools","version":"1.0.0","protocol":"mcp","tools":["speak",...]}
+
+# Check registered MCP servers in container
+curl http://localhost:4200/mcp
+# Should return: {"my-tools":{"status":"connected",...}}
+```
+
+---
 
 #### Approach 1: HTTP MCP Server (Recommended for production)
 
