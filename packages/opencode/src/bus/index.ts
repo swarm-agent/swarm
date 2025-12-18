@@ -85,6 +85,8 @@ export namespace Bus {
     const unsub = subscribe(def, (event) => {
       if (callback(event)) unsub()
     })
+    // Return unsub so callers can manually cleanup if needed
+    return unsub
   }
 
   export function subscribeAll(callback: (event: any) => void) {

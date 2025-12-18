@@ -4,9 +4,11 @@ import { type LanguageModelUsage, type ProviderMetadata } from "ai"
 
 import { Bus } from "../bus"
 import { Config } from "../config/config"
+import { FileTime } from "../file/time"
 import { Flag } from "../flag/flag"
 import { Identifier } from "../id/id"
 import { Installation } from "../installation"
+import { Permission } from "../permission"
 import type { ModelsDev } from "../provider/models"
 import { Share } from "../share/share"
 import { Storage } from "../storage/storage"
@@ -292,6 +294,13 @@ export namespace Session {
         await Storage.remove(msg)
       }
       await Storage.remove(["session", project.id, sessionID])
+      
+      // Cleanup session-scoped state to prevent memory leaks
+      FileTime.cleanup(sessionID)
+      Permission.cleanup(sessionID)
+      SessionPrompt.cleanup(sessionID)
+      log.info("cleaned up session state", { sessionID })
+      
       Bus.publish(Event.Deleted, {
         info: session,
       })

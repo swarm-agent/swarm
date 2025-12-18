@@ -305,7 +305,7 @@ export namespace ContainerRuntime {
   // Get container logs
   export async function* logs(
     containerID: string,
-    opts?: { follow?: boolean; tail?: number }
+    opts?: { follow?: boolean; tail?: number; signal?: AbortSignal }
   ): AsyncIterable<string> {
     const runtime = await detectRuntime(containerID)
 
@@ -319,13 +319,26 @@ export namespace ContainerRuntime {
       stderr: "pipe",
     })
 
+    // Handle abort signal
+    if (opts?.signal) {
+      opts.signal.addEventListener("abort", () => {
+        proc.kill()
+      }, { once: true })
+    }
+
     const reader = proc.stdout.getReader()
     const decoder = new TextDecoder()
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      yield decoder.decode(value)
+    try {
+      while (true) {
+        if (opts?.signal?.aborted) break
+        const { done, value } = await reader.read()
+        if (done) break
+        yield decoder.decode(value)
+      }
+    } finally {
+      // Ensure process is killed when iteration ends
+      proc.kill()
     }
   }
 

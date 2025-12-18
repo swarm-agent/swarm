@@ -307,8 +307,20 @@ export const ProfileRoute = new Hono()
       }
 
       return streamSSE(c, async (stream) => {
-        for await (const line of ContainerRuntime.logs(profile.containerID!, { follow, tail })) {
-          await stream.writeSSE({ data: line })
+        const abortController = new AbortController()
+        stream.onAbort(() => abortController.abort())
+        
+        try {
+          for await (const line of ContainerRuntime.logs(profile.containerID!, { 
+            follow, 
+            tail,
+            signal: abortController.signal 
+          })) {
+            await stream.writeSSE({ data: line })
+          }
+        } catch (err) {
+          // Ignore abort errors
+          if ((err as Error).name !== 'AbortError') throw err
         }
       })
     },
@@ -376,12 +388,16 @@ export const ProfileRoute = new Hono()
           }
         })
 
-        await new Promise<void>((resolve) => {
-          stream.onAbort(() => {
-            unsub()
-            resolve()
+        // Use try/finally to ALWAYS cleanup subscription
+        try {
+          await new Promise<void>((resolve) => {
+            stream.onAbort(() => {
+              resolve()
+            })
           })
-        })
+        } finally {
+          unsub()
+        }
       })
     },
   )

@@ -25,6 +25,18 @@ export namespace FileTime {
     return state().read[sessionID]?.[file]
   }
 
+  /**
+   * Cleanup all file time tracking for a session.
+   * Called when a session is deleted to prevent memory leaks.
+   */
+  export function cleanup(sessionID: string) {
+    const s = state()
+    if (s.read[sessionID]) {
+      log.info("cleanup", { sessionID, files: Object.keys(s.read[sessionID]).length })
+      delete s.read[sessionID]
+    }
+  }
+
   export async function assert(sessionID: string, filepath: string) {
     const time = get(sessionID, filepath)
     if (!time) throw new Error(`You must read the file ${filepath} before overwriting it. Use the Read tool first`)

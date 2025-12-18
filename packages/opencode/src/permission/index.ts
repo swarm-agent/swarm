@@ -184,6 +184,29 @@ export namespace Permission {
     return state().pending
   }
 
+  /**
+   * Cleanup all permission state for a session.
+   * Called when a session is deleted to prevent memory leaks.
+   */
+  export function cleanup(sessionID: string) {
+    const s = state()
+    
+    // Clean up pending permissions (reject any waiting)
+    if (s.pending[sessionID]) {
+      for (const item of Object.values(s.pending[sessionID])) {
+        item.reject(new RejectedError(sessionID, item.info.id, item.info.callID, item.info.metadata, "Session deleted"))
+      }
+      delete s.pending[sessionID]
+      log.info("cleanup pending", { sessionID })
+    }
+    
+    // Clean up approved permissions cache
+    if (s.approved[sessionID]) {
+      delete s.approved[sessionID]
+      log.info("cleanup approved", { sessionID })
+    }
+  }
+
   export async function ask(input: {
     type: Info["type"]
     title: Info["title"]

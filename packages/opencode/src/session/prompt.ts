@@ -99,6 +99,17 @@ export namespace SessionPrompt {
     },
   )
 
+  /**
+   * Cleanup queued callbacks for a session.
+   * Called when a session is deleted to prevent memory leaks.
+   */
+  export function cleanup(sessionID: string) {
+    const s = state()
+    if (s.queued.has(sessionID)) {
+      s.queued.delete(sessionID)
+    }
+  }
+
   export const PromptInput = z.object({
     sessionID: Identifier.schema("session"),
     messageID: Identifier.schema("message").optional(),

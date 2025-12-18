@@ -1810,13 +1810,18 @@ export namespace Server {
                 data: JSON.stringify(event),
               })
             })
-            await new Promise<void>((resolve) => {
-              stream.onAbort(() => {
-                unsub()
-                resolve()
-                log.info("event disconnected")
+            // Use try/finally to ALWAYS cleanup subscription, even on error/timeout
+            try {
+              await new Promise<void>((resolve) => {
+                stream.onAbort(() => {
+                  resolve()
+                  log.info("event disconnected (abort)")
+                })
               })
-            })
+            } finally {
+              unsub()
+              log.info("event subscription cleaned up")
+            }
           })
         },
       )
