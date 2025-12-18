@@ -413,7 +413,7 @@ export async function sendMessage(
   url: string,
   sessionId: string,
   message: string,
-  options?: { autoApprove?: boolean; onText?: (text: string) => void; timeout?: number }
+  options?: { autoApprove?: boolean; onText?: (text: string) => void; timeout?: number; system?: string }
 ): Promise<{ success: boolean; text: string }> {
   const timeout = options?.timeout ?? 120000 // 2 minutes default
 
@@ -432,12 +432,18 @@ export async function sendMessage(
   }
 
   // Now send the message (SSE connection is already established)
+  // System prompt can be passed in the body of /message endpoint
+  const body: Record<string, unknown> = {
+    parts: [{ type: "text", text: message }],
+  }
+  if (options?.system) {
+    body.system = options.system
+  }
+
   const sendResponse = await fetch(`${url}/session/${sessionId}/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      parts: [{ type: "text", text: message }],
-    }),
+    body: JSON.stringify(body),
   })
 
   if (!sendResponse.ok) {

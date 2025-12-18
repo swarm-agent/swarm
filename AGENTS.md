@@ -1050,6 +1050,136 @@ const mcpServer = await startMcpServer({
 
 The SDK auto-detects which runtime you're using.
 
+---
+
+## Host Networking Mode (Private MCP Server)
+
+For maximum security, you can bind the MCP server to `127.0.0.1` (localhost only) and use host networking mode for the container. This prevents ANY external access to your MCP server.
+
+### The Problem with 0.0.0.0
+
+When you bind to `0.0.0.0`, your MCP server is accessible from:
+- Your PC (localhost) ✓
+- Containers ✓
+- **Other devices on your network** ⚠️
+
+### The Solution: Host Networking
+
+With host networking, the container shares the host's network stack. `localhost` inside the container = `localhost` on the host.
+
+```typescript
+// 1. MCP server binds to localhost ONLY (private)
+const mcpServer = await startMcpServer({
+  name: "my-tools",
+  port: 19876,
+  hostname: "127.0.0.1",  // ← Private! Not 0.0.0.0
+  tools: [speakTool],
+})
+
+// 2. Container uses host networking
+const container = await spawnContainer({
+  name: "my-agent",
+  workspace: "/path/to/workspace",
+  network: "host",  // ← KEY: Container shares host network
+  system: SYSTEM_PROMPT,
+})
+
+// 3. Register MCP with localhost (works because of host networking!)
+await container.client.mcp.add({
+  body: {
+    name: "my-tools",
+    config: { type: "remote", url: "http://localhost:19876" },  // ← localhost works now!
+  },
+})
+```
+
+### Comparison
+
+| Mode | MCP Hostname | Container Network | MCP URL in Container | External Access |
+|------|-------------|-------------------|---------------------|-----------------|
+| Bridge (default) | `0.0.0.0` | bridge | `http://host.containers.internal:19876` | Yes (local network) |
+| **Host (secure)** | `127.0.0.1` | host | `http://localhost:19876` | **No** |
+
+### When to Use Host Networking
+
+- ✅ Personal agents (voice assistant, etc.)
+- ✅ Sensitive tools (file access, API keys)
+- ✅ Single-container setups
+
+### When NOT to Use Host Networking
+
+- ❌ Multi-container setups needing isolation
+- ❌ Production deployments with multiple agents
+- ❌ When container needs its own network namespace
+
+---
+
+## System Prompt for Container Sessions
+
+The system prompt tells the agent who it is and what tools are available. **You must pass it with the first message of each session.**
+
+### The Problem
+
+Sessions created via `client.session.create({})` don't have a system prompt. The agent won't know its instructions.
+
+### The Solution
+
+Use the `system` option in `sendMessage()`:
+
+```typescript
+// Track if current session has received system prompt
+let sessionHasSystemPrompt = false
+
+// When creating new session
+const session = await container.client.session.create({})
+sessionHasSystemPrompt = false  // Reset flag
+
+// When sending first message - include system prompt
+const result = await sendMessage(container.url, sessionId, userMessage, {
+  autoApprove: true,
+  system: sessionHasSystemPrompt ? undefined : SYSTEM_PROMPT,
+})
+sessionHasSystemPrompt = true  // Now it's set
+```
+
+### Complete Pattern
+
+```typescript
+let currentSessionId: string | null = null
+let sessionHasSystemPrompt = false
+
+const SYSTEM_PROMPT = `You are a helpful assistant with access to custom tools.
+Use the speak tool to communicate with the user.`
+
+async function sendToAgent(message: string, forceNewSession: boolean = false) {
+  const c = await ensureContainer()
+
+  // Create new session if needed
+  if (forceNewSession || !currentSessionId) {
+    const session = await c.client.session.create({})
+    currentSessionId = session.data!.id
+    sessionHasSystemPrompt = false
+  }
+
+  // Send message with system prompt if this is first message
+  const result = await sendMessage(c.url, currentSessionId, message, {
+    autoApprove: true,
+    ...(sessionHasSystemPrompt ? {} : { system: SYSTEM_PROMPT }),
+  })
+
+  if (!sessionHasSystemPrompt) {
+    sessionHasSystemPrompt = true
+  }
+
+  return result.text
+}
+
+// Usage:
+await sendToAgent("Hello!")  // First message includes system prompt
+await sendToAgent("What can you do?")  // Subsequent messages don't
+await sendToAgent("New topic", true)  // Force new session with new system prompt
+```
+
 ### Verifying MCP Registration
 
 ```bash
