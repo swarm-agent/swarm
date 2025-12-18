@@ -115,7 +115,7 @@ function generateContainerConfig(containerName: string): string {
 
   const config = {
     "$schema": "https://opencode.ai/config.json",
-    "model": "anthropic/claude-sonnet-4-5",
+    "model": "anthropic/claude-opus-4-5",
     "permission": {
       "edit": "allow",
       "write": "allow",
