@@ -204,6 +204,9 @@ export interface SpawnOptions {
   
   /** Called when complete (for fire-and-forget) */
   onComplete?: (result: SpawnResult) => void
+  
+  /** System prompt for this session (overrides createOpencode system prompt) */
+  system?: string
 }
 
 export interface SpawnHandle {
