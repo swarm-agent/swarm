@@ -16,6 +16,8 @@ export type ContainerOptions = {
   port?: number
   /** Container runtime: podman (default) or docker */
   runtime?: "podman" | "docker"
+  /** Network mode: bridge (default) or host. Host mode allows container to access localhost services */
+  network?: "bridge" | "host"
   /** Swarm CLI directory (default: auto-detect) */
   swarmDir?: string
   /** Auth file path (default: ~/.local/share/opencode/auth.json) */
@@ -216,18 +218,21 @@ export async function spawnContainer(options: ContainerOptions): Promise<Contain
   // Build the command
   // Use OPENCODE_CONFIG (file path) instead of OPENCODE_CONFIG_DIR (directory)
   // This ensures our permissionless config takes precedence over any merged configs
+  const useHostNetwork = options.network === "host"
   const args = [
     "run", "-d",
     "--name", containerName,
-    "-p", `127.0.0.1:${port}:4096`,
+    ...(useHostNetwork
+      ? ["--network", "host"]  // Host network: container shares host's network stack
+      : ["-p", `127.0.0.1:${port}:4096`]),  // Bridge network: port mapping
     ...volumeArgs,
     "-e", `OPENCODE_CONFIG=/opencode-config/opencode.json`,  // Point to FILE directly
     "-w", "/workspace",
     image,
     "/swarm/packages/opencode/dist/swarm-linux-x64/bin/swarm",
     "serve",
-    "--port", "4096",
-    "--hostname", "0.0.0.0",
+    "--port", useHostNetwork ? String(port) : "4096",  // Use actual port in host mode
+    "--hostname", useHostNetwork ? "127.0.0.1" : "0.0.0.0",
   ]
 
   // Spawn container
