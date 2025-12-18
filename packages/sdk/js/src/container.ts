@@ -1,6 +1,6 @@
 import { spawn, execSync } from "node:child_process"
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { createOpencodeClient } from "./client.js"
 import { createSpawn } from "./spawn.js"
@@ -103,14 +103,76 @@ function detectRuntime(): "podman" | "docker" {
   }
 }
 
+/**
+ * Generate a minimal permissionless config for containerized agents.
+ * Returns path to the generated config directory.
+ */
+function generateContainerConfig(containerName: string): string {
+  const configDir = join(tmpdir(), `opencode-${containerName}`)
+  mkdirSync(configDir, { recursive: true })
+
+  const config = {
+    "$schema": "https://opencode.ai/config.json",
+    "model": "anthropic/claude-sonnet-4-5",
+    "permission": {
+      "edit": "allow",
+      "write": "allow",
+      "webfetch": "allow",
+      "external_directory": "allow",
+      "bash": {
+        // Allow all safe operations
+        "pwd": "allow",
+        "ls": "allow",
+        "ls *": "allow",
+        "cat *": "allow",
+        "head *": "allow",
+        "tail *": "allow",
+        "grep *": "allow",
+        "rg *": "allow",
+        "find *": "allow",
+        "echo *": "allow",
+        "mkdir *": "allow",
+        "touch *": "allow",
+        "cp *": "allow",
+        "mv *": "allow",
+        "cd *": "allow",
+        "node *": "allow",
+        "bun *": "allow",
+        "npm *": "allow",
+        "git status*": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git show*": "allow",
+        "git branch*": "allow",
+        "git add *": "allow",
+        "git commit *": "allow",
+        // Deny destructive operations
+        "rm -rf *": "deny",
+        "rm -r *": "deny",
+        "rm -fr *": "deny",
+        "sudo *": "deny",
+        "chmod *": "deny",
+        "chown *": "deny",
+        // Default to allow for containers
+        "*": "allow",
+      },
+    },
+  }
+
+  writeFileSync(join(configDir, "opencode.json"), JSON.stringify(config, null, 2))
+  return configDir
+}
+
 export async function spawnContainer(options: ContainerOptions): Promise<ContainerHandle> {
   const runtime = options.runtime ?? detectRuntime()
   const swarmDir = options.swarmDir ?? process.env.SWARM_CLI_DIR ?? detectSwarmDir()
   const authFile = options.authFile ?? join(homedir(), ".local/share/opencode/auth.json")
-  const configDir = options.configDir ?? join(swarmDir, ".opencode")
   const image = options.image ?? "docker.io/oven/bun:1.3"
   const port = options.port === 0 || options.port === undefined ? findAvailablePort() : options.port
   const containerName = `swarm-${options.name}`
+
+  // Generate minimal permissionless config for container (unless explicit configDir provided)
+  const configDir = options.configDir ?? generateContainerConfig(containerName)
 
   // Validate paths
   if (!existsSync(options.workspace)) {
@@ -142,6 +204,7 @@ export async function spawnContainer(options: ContainerOptions): Promise<Contain
     `-v`, `${options.workspace}:/workspace:rw`,
     `-v`, `${swarmDir}:/swarm:ro`,
     `-v`, `${authFile}:/root/.local/share/opencode/auth.json:ro`,
+    `-v`, `${configDir}:/opencode-config:ro`,  // Mount generated config
   ]
 
   // Add additional volumes
@@ -151,12 +214,14 @@ export async function spawnContainer(options: ContainerOptions): Promise<Contain
   }
 
   // Build the command
+  // Use OPENCODE_CONFIG (file path) instead of OPENCODE_CONFIG_DIR (directory)
+  // This ensures our permissionless config takes precedence over any merged configs
   const args = [
     "run", "-d",
     "--name", containerName,
     "-p", `127.0.0.1:${port}:4096`,
     ...volumeArgs,
-    "-e", `OPENCODE_CONFIG_DIR=/swarm/.opencode`,
+    "-e", `OPENCODE_CONFIG=/opencode-config/opencode.json`,  // Point to FILE directly
     "-w", "/workspace",
     image,
     "/swarm/packages/opencode/dist/swarm-linux-x64/bin/swarm",
