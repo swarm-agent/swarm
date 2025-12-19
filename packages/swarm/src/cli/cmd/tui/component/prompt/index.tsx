@@ -477,12 +477,13 @@ export function Prompt(props: PromptProps) {
           command: command.slice(1),
           arguments: args.join(" "),
           agent: local.agent.current().name,
-          model: `${local.model.current().providerID}/${local.model.current().modelID}`,
+          model: local.model.current() ? `${local.model.current()!.providerID}/${local.model.current()!.modelID}` : "",
           messageID,
         },
       })
     } else {
       const model = local.model.current()
+      if (!model) return
       const thinkingBudget = local.thinking.enabled && model.providerID === "anthropic" ? 32000 : undefined
       sdk.client.session.prompt({
         path: {

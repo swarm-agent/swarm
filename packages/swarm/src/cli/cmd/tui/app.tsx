@@ -432,7 +432,9 @@ function App() {
   ])
 
   createEffect(() => {
-    const providerID = local.model.current().providerID
+    const model = local.model.current()
+    if (!model) return
+    const providerID = model.providerID
     if (providerID === "openrouter" && !kv.get("openrouter_warning", false)) {
       untrack(() => {
         DialogAlert.show(

@@ -168,7 +168,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           }
         }
         const provider = sync.data.provider[0]
+        if (!provider) {
+          return undefined
+        }
         const model = Object.values(provider.models)[0]
+        if (!model) {
+          return undefined
+        }
         return {
           providerID: provider.id,
           modelID: model.id,
@@ -194,11 +200,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         },
         parsed: createMemo(() => {
           const value = currentModel()
-          const provider = sync.data.provider.find((x) => x.id === value.providerID)!
+          if (!value) return { provider: "", model: "" }
+          const provider = sync.data.provider.find((x) => x.id === value.providerID)
+          if (!provider) return { provider: value.providerID, model: value.modelID }
           const model = provider.models[value.modelID]
           return {
             provider: provider.name ?? value.providerID,
-            model: model.name ?? value.modelID,
+            model: model?.name ?? value.modelID,
           }
         }),
         cycle(direction: 1 | -1) {
