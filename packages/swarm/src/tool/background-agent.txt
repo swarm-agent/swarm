@@ -1,0 +1,25 @@
+Spawn a background agent to work on a task independently while you continue with other work.
+
+The background agent runs asynchronously - this tool returns immediately after spawning, allowing you to continue working on other tasks without waiting.
+
+Use this when:
+- A task can run in parallel without blocking your main work
+- You want to delegate a self-contained task that doesn't need back-and-forth interaction
+- You have multiple independent tasks that could benefit from parallel execution
+- The task is well-defined and doesn't require iterative feedback
+
+The background agent will:
+- Run completely independently in its own session
+- Have access to the same tools (except spawning more background agents)
+- Show progress in the background agents indicator
+- Notify when complete via toast notification
+- Be visible in the session list as a child session
+
+Limitations:
+- Maximum 5 concurrent background agents
+- Cannot spawn nested background agents (no recursion)
+- Cannot interact with parent session after spawning
+- Results must be reviewed in the child session
+
+Available agents:
+{agents}

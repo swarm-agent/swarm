@@ -1,0 +1,12 @@
+- Search the web using Exa AI - performs real-time web searches and returns content from relevant websites
+- Provides up-to-date information for current events and recent data
+- Use this tool for accessing information beyond knowledge cutoff
+- PARALLEL SEARCHES ENABLED: You can make up to 10 parallel web searches at once for maximum efficiency
+- Rate limited to prevent abuse (max 10 searches per minute)
+
+Usage notes:
+  - IMPORTANT: You can batch multiple searches in parallel - call this tool multiple times simultaneously to get results faster
+  - Supports live crawling modes: 'fallback' (backup if cached unavailable) or 'preferred' (prioritize live crawling)
+  - Search types: 'auto' (balanced), 'fast' (quick results), 'deep' (comprehensive search)
+  - Default returns 8 results with up to 10000 characters of context per result
+  - When researching a topic, launch multiple targeted searches at once rather than sequential searches

@@ -1,0 +1,53 @@
+.DS_Store
+node_modules
+.bun
+.npm-cache
+bun.lock
+.worktrees
+.sst
+.env
+.idea
+.vscode
+*~
+openapi.json
+playground
+tmp
+dist
+.turbo
+**/.serena
+.serena/
+
+# Local test/demo files
+test-*.py
+test_*.py
+test-*.txt
+test-*.ts
+test_server.py
+test-permission.sh
+
+# Local config files
+opencode.json
+!.opencode/opencode.json
+!packages/opencode/src/**/opencode.json
+packages/opencode/opencode.json
+oc-dev.sh
+
+# Local documentation
+HOW_TO_TEST.md
+PR_DESCRIPTION.md
+SICK_SPINNERS.md
+SPINNER_TEST.md
+SPINNER_UPDATE_SUMMARY.md
+
+# Demo/test files
+spinner-demo.tsx
+opencode.json.backup
+
+# Swarm integration session data
+swarm.json
+!.opencode/themes/swarm.json
+!packages/opencode/src/**/swarm.json
+
+# Logs
+logs/
+nohup.out
