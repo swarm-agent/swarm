@@ -21,12 +21,42 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       [key in Event["type"]]: Extract<Event, { type: key }>
     }>()
 
-    sdk.event.subscribe().then(async (events) => {
-      for await (const event of events.stream) {
-        console.log("event", event.type)
-        emitter.emit(event.type, event)
+    // SSE reconnection logic
+    let reconnectAttempts = 0
+    const maxReconnectDelay = 30000 // 30 seconds max
+    const baseDelay = 1000 // 1 second base
+
+    async function subscribeWithReconnect() {
+      while (!abort.signal.aborted) {
+        try {
+          const events = await sdk.event.subscribe()
+          reconnectAttempts = 0 // Reset on successful connection
+          
+          for await (const event of events.stream) {
+            if (abort.signal.aborted) break
+            console.log("event", event.type)
+            emitter.emit(event.type, event)
+          }
+          
+          // Stream ended normally (server closed connection)
+          if (!abort.signal.aborted) {
+            console.log("SSE stream ended, reconnecting...")
+          }
+        } catch (err) {
+          if (abort.signal.aborted) break
+          console.error("SSE connection error, reconnecting...", err)
+        }
+        
+        // Exponential backoff with jitter
+        if (!abort.signal.aborted) {
+          const delay = Math.min(baseDelay * Math.pow(2, reconnectAttempts) + Math.random() * 1000, maxReconnectDelay)
+          reconnectAttempts++
+          await new Promise((resolve) => setTimeout(resolve, delay))
+        }
       }
-    })
+    }
+
+    subscribeWithReconnect()
 
     onCleanup(() => {
       abort.abort()
