@@ -80,7 +80,7 @@ function detectSwarmDir(): string {
   ]
 
   for (const dir of candidates) {
-    const binPath = join(dir, "packages/swarm/dist/swarm-linux-x64/bin/swarm")
+    const binPath = join(dir, "packages/opencode/dist/swarm-linux-x64/bin/swarm")
     if (existsSync(binPath)) {
       return dir
     }
@@ -187,7 +187,7 @@ export async function spawnContainer(options: ContainerOptions): Promise<Contain
     throw new Error(`Swarm directory not found: ${swarmDir}`)
   }
 
-  const binPath = join(swarmDir, "packages/swarm/dist/swarm-linux-x64/bin/swarm")
+  const binPath = join(swarmDir, "packages/opencode/dist/swarm-linux-x64/bin/swarm")
   if (!existsSync(binPath)) {
     throw new Error(`Swarm binary not found: ${binPath}. Build it first with ./build.sh`)
   }
@@ -229,7 +229,7 @@ export async function spawnContainer(options: ContainerOptions): Promise<Contain
     "-e", `SWARM_CONFIG=/opencode-config/swarm.json`,  // Point to FILE directly
     "-w", "/workspace",
     image,
-    "/swarm/packages/swarm/dist/swarm-linux-x64/bin/swarm",
+    "/swarm/packages/opencode/dist/swarm-linux-x64/bin/swarm",
     "serve",
     "--port", useHostNetwork ? String(port) : "4096",  // Use actual port in host mode
     "--hostname", useHostNetwork ? "127.0.0.1" : "0.0.0.0",
@@ -419,6 +419,8 @@ export async function sendMessage(
     onEvent?: (event: ContainerEvent) => void
     timeout?: number
     system?: string
+    /** Disable extended thinking for faster responses */
+    thinking?: boolean
   }
 ): Promise<{ success: boolean; text: string }> {
   const timeout = options?.timeout ?? 120000 // 2 minutes default
@@ -444,6 +446,10 @@ export async function sendMessage(
   }
   if (options?.system) {
     body.system = options.system
+  }
+  // Disable extended thinking for faster responses (voice use case)
+  if (options?.thinking === false) {
+    body.thinking = { type: "disabled" }
   }
 
   const sendResponse = await fetch(`${url}/session/${sessionId}/message`, {
