@@ -1,4 +1,4 @@
-# opencode agent guidelines
+# Swarm Development Guidelines
 
 ## Build/Test Commands
 
@@ -24,7 +24,7 @@
 - **Validation**: All inputs validated with Zod schemas
 - **Logging**: Use `Log.create({ service: "name" })` pattern
 - **Storage**: Use `Storage` namespace for persistence
-- **API Client**: Go TUI communicates with TypeScript server via stainless SDK. When adding/modifying server endpoints in `packages/opencode/src/server/server.ts`, ask the user to generate a new client SDK to proceed with client-side changes.
+- **API Client**: Go TUI communicates with TypeScript server via stainless SDK. When adding/modifying server endpoints in `packages/swarm/src/server/server.ts`, ask the user to generate a new client SDK to proceed with client-side changes.
 
 ## Tool Animation Pattern (TUI)
 
@@ -36,9 +36,9 @@ Tool animations display tool execution state in the TUI. They receive props from
 
 ### Key Files
 
-- **Animation Components**: `/packages/opencode/src/cli/cmd/tui/ui/tool-animations.tsx`
-- **Tool Registry**: `/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx`
-- **Spinner Definitions**: `/packages/opencode/src/cli/cmd/tui/ui/spinner-definitions.ts`
+- **Animation Components**: `/packages/swarm/src/cli/cmd/tui/ui/tool-animations.tsx`
+- **Tool Registry**: `/packages/swarm/src/cli/cmd/tui/routes/session/index.tsx`
+- **Spinner Definitions**: `/packages/swarm/src/cli/cmd/tui/ui/spinner-definitions.ts`
 
 ### Props Available to Tool Renderers
 
