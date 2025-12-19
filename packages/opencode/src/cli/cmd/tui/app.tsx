@@ -524,6 +524,7 @@ function App() {
     <box
       width={dimensions().width}
       height={dimensions().height}
+      backgroundColor={theme.background}
       onMouseUp={async () => {
         const text = renderer.getSelection()?.getSelectedText()
         if (text && text.length > 0) {
