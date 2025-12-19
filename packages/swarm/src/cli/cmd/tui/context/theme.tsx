@@ -7,6 +7,7 @@ import aura from "./theme/aura.json" with { type: "json" }
 import ayu from "./theme/ayu.json" with { type: "json" }
 import catppuccin from "./theme/catppuccin.json" with { type: "json" }
 import cobalt2 from "./theme/cobalt2.json" with { type: "json" }
+import crimson from "./theme/crimson.json" with { type: "json" }
 import dracula from "./theme/dracula.json" with { type: "json" }
 import everforest from "./theme/everforest.json" with { type: "json" }
 import github from "./theme/github.json" with { type: "json" }
@@ -104,6 +105,7 @@ export const DEFAULT_THEMES: Record<string, ThemeJson> = {
   ayu,
   catppuccin,
   cobalt2,
+  crimson,
   dracula,
   everforest,
   github,

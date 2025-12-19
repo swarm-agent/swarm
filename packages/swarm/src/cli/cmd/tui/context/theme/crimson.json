@@ -1,0 +1,232 @@
+{
+  "$schema": "https://opencode.ai/theme.json",
+  "defs": {
+    "base": "#0d0a0c",
+    "surface": "#16111a",
+    "overlay": "#1f1824",
+    "muted": "#6b5a6e",
+    "subtle": "#8a7a8d",
+    "text": "#f0e8ec",
+    "crimson": "#e63946",
+    "scarlet": "#ff4d5a",
+    "blood": "#c2202e",
+    "azure": "#4da6ff",
+    "cobalt": "#2d7dd2",
+    "frost": "#7ecfff",
+    "gold": "#f0a500",
+    "amber": "#ffb627",
+    "jade": "#4ecca3",
+    "violet": "#a855f7",
+    "highlightLow": "#1a1420",
+    "highlightMed": "#2a2233",
+    "highlightHigh": "#3d3347",
+    "lightBase": "#fdf7f9",
+    "lightSurface": "#fff0f3",
+    "lightOverlay": "#ffe4e8",
+    "lightMuted": "#9a8a8d",
+    "lightSubtle": "#7a6a6d",
+    "lightText": "#3d1a24"
+  },
+  "theme": {
+    "primary": {
+      "dark": "crimson",
+      "light": "blood"
+    },
+    "secondary": {
+      "dark": "azure",
+      "light": "cobalt"
+    },
+    "accent": {
+      "dark": "frost",
+      "light": "cobalt"
+    },
+    "error": {
+      "dark": "scarlet",
+      "light": "#d62828"
+    },
+    "warning": {
+      "dark": "amber",
+      "light": "#d9860e"
+    },
+    "success": {
+      "dark": "jade",
+      "light": "#2d8f6f"
+    },
+    "info": {
+      "dark": "azure",
+      "light": "cobalt"
+    },
+    "text": {
+      "dark": "text",
+      "light": "lightText"
+    },
+    "textMuted": {
+      "dark": "muted",
+      "light": "lightMuted"
+    },
+    "background": {
+      "dark": "base",
+      "light": "lightBase"
+    },
+    "backgroundPanel": {
+      "dark": "surface",
+      "light": "lightSurface"
+    },
+    "backgroundElement": {
+      "dark": "overlay",
+      "light": "lightOverlay"
+    },
+    "border": {
+      "dark": "highlightMed",
+      "light": "#e8d8db"
+    },
+    "borderActive": {
+      "dark": "crimson",
+      "light": "blood"
+    },
+    "borderSubtle": {
+      "dark": "highlightLow",
+      "light": "#f0e0e3"
+    },
+    "diffAdded": {
+      "dark": "jade",
+      "light": "#2d8f6f"
+    },
+    "diffRemoved": {
+      "dark": "scarlet",
+      "light": "#d62828"
+    },
+    "diffContext": {
+      "dark": "muted",
+      "light": "lightMuted"
+    },
+    "diffHunkHeader": {
+      "dark": "azure",
+      "light": "cobalt"
+    },
+    "diffHighlightAdded": {
+      "dark": "jade",
+      "light": "#2d8f6f"
+    },
+    "diffHighlightRemoved": {
+      "dark": "scarlet",
+      "light": "#d62828"
+    },
+    "diffAddedBg": {
+      "dark": "#0f2a24",
+      "light": "#e0f5ef"
+    },
+    "diffRemovedBg": {
+      "dark": "#2a0f14",
+      "light": "#ffe0e3"
+    },
+    "diffContextBg": {
+      "dark": "surface",
+      "light": "lightSurface"
+    },
+    "diffLineNumber": {
+      "dark": "muted",
+      "light": "lightMuted"
+    },
+    "diffAddedLineNumberBg": {
+      "dark": "#0f2a24",
+      "light": "#e0f5ef"
+    },
+    "diffRemovedLineNumberBg": {
+      "dark": "#2a0f14",
+      "light": "#ffe0e3"
+    },
+    "markdownText": {
+      "dark": "text",
+      "light": "lightText"
+    },
+    "markdownHeading": {
+      "dark": "crimson",
+      "light": "blood"
+    },
+    "markdownLink": {
+      "dark": "azure",
+      "light": "cobalt"
+    },
+    "markdownLinkText": {
+      "dark": "frost",
+      "light": "cobalt"
+    },
+    "markdownCode": {
+      "dark": "jade",
+      "light": "#2d8f6f"
+    },
+    "markdownBlockQuote": {
+      "dark": "muted",
+      "light": "lightMuted"
+    },
+    "markdownEmph": {
+      "dark": "gold",
+      "light": "#d9860e"
+    },
+    "markdownStrong": {
+      "dark": "scarlet",
+      "light": "#d62828"
+    },
+    "markdownHorizontalRule": {
+      "dark": "highlightMed",
+      "light": "#e8d8db"
+    },
+    "markdownListItem": {
+      "dark": "crimson",
+      "light": "blood"
+    },
+    "markdownListEnumeration": {
+      "dark": "azure",
+      "light": "cobalt"
+    },
+    "markdownImage": {
+      "dark": "azure",
+      "light": "cobalt"
+    },
+    "markdownImageText": {
+      "dark": "frost",
+      "light": "cobalt"
+    },
+    "markdownCodeBlock": {
+      "dark": "text",
+      "light": "lightText"
+    },
+    "syntaxComment": {
+      "dark": "muted",
+      "light": "lightMuted"
+    },
+    "syntaxKeyword": {
+      "dark": "crimson",
+      "light": "blood"
+    },
+    "syntaxFunction": {
+      "dark": "azure",
+      "light": "cobalt"
+    },
+    "syntaxVariable": {
+      "dark": "text",
+      "light": "lightText"
+    },
+    "syntaxString": {
+      "dark": "jade",
+      "light": "#2d8f6f"
+    },
+    "syntaxNumber": {
+      "dark": "violet",
+      "light": "#8b5cf6"
+    },
+    "syntaxType": {
+      "dark": "frost",
+      "light": "cobalt"
+    },
+    "syntaxOperator": {
+      "dark": "scarlet",
+      "light": "#d62828"
+    },
+    "syntaxPunctuation": {
+      "dark": "subtle",
+      "light": "lightSubtle"
+    }
+  }
+}
