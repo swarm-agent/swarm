@@ -119,6 +119,7 @@ export namespace Agent {
       },
       build: {
         name: "build",
+        color: "#7aa2f7",
         tools: { ...defaultTools },
         options: {},
         permission: agentPermission,
@@ -127,6 +128,7 @@ export namespace Agent {
       },
       plan: {
         name: "plan",
+        color: "#bb9af7",
         options: {},
         permission: planPermission,
         tools: {

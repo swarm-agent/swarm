@@ -1,7 +1,6 @@
 import { createStore } from "solid-js/store"
 import { batch, createEffect, createMemo } from "solid-js"
 import { useSync } from "@tui/context/sync"
-import { useTheme } from "@tui/context/theme"
 import { uniqueBy } from "remeda"
 import path from "path"
 import { Global } from "@/global"
@@ -56,15 +55,16 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }>({
         current: agents()[0].name,
       })
-      const { theme } = useTheme()
-      const colors = createMemo(() => [
-        theme.secondary,
-        theme.accent,
-        theme.success,
-        theme.warning,
-        theme.primary,
-        theme.error,
-      ])
+      // Fixed agent color palette - theme independent
+      // These are fallback colors for agents without explicit color configs
+      const AGENT_COLORS = [
+        RGBA.fromHex("#7aa2f7"), // Blue
+        RGBA.fromHex("#bb9af7"), // Purple
+        RGBA.fromHex("#7dcfff"), // Cyan
+        RGBA.fromHex("#e0af68"), // Yellow/Orange
+        RGBA.fromHex("#9ece6a"), // Green
+        RGBA.fromHex("#f7768e"), // Red/Pink
+      ]
       return {
         list() {
           return agents()
@@ -100,9 +100,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             const b = parseInt(hex.substring(4, 6), 16) / 255
             return RGBA.fromInts(r * 255, g * 255, b * 255, 255)
           }
+          // Fallback to fixed palette (NOT theme colors) for agents without explicit colors
           const index = agents().findIndex((x) => x.name === name)
-          if (index === -1) return colors()[0]
-          return colors()[index % colors().length]
+          if (index === -1) return AGENT_COLORS[0]
+          return AGENT_COLORS[index % AGENT_COLORS.length]
         },
       }
     })
