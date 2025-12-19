@@ -47,6 +47,7 @@ opencode.json.backup
 swarm.json
 !.opencode/themes/swarm.json
 !packages/opencode/src/**/swarm.json
+!packages/swarm/src/**/swarm.json
 
 # Logs
 logs/
