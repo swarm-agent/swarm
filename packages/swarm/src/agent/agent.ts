@@ -3,6 +3,7 @@ import z from "zod"
 import { Provider } from "../provider/provider"
 import { generateObject, type ModelMessage } from "ai"
 import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_EXPLORE from "./explore.txt"
 import { SystemPrompt } from "../session/system"
 import { Instance } from "../project/instance"
 import { mergeDeep } from "remeda"
@@ -54,6 +55,25 @@ export namespace Agent {
       external_directory: "ask",
     }
     const agentPermission = mergeAgentPermissions(defaultPermission, cfg.permission ?? {})
+
+    // Read-only permission for explore agent
+    const explorePermission: Info["permission"] = {
+      edit: "deny",
+      bash: {
+        "rm *": "deny",
+        "sudo *": "deny",
+        "chmod *": "deny",
+        "chown *": "deny",
+        "dd *": "deny",
+        "git add *": "deny",
+        "git commit *": "deny",
+        "git push *": "deny",
+        "git reset --hard *": "deny",
+        "*": "allow",
+      },
+      webfetch: "allow",
+      external_directory: "allow",
+    }
 
     const planPermission = mergeAgentPermissions(
       {
@@ -114,6 +134,35 @@ export namespace Agent {
         },
         options: {},
         permission: agentPermission,
+        mode: "subagent",
+        builtIn: true,
+      },
+      explore: {
+        name: "explore",
+        description:
+          "Codebase exploration specialist - rapidly explores directory structures, reads multiple files in parallel, and searches patterns. Use for understanding architecture, finding implementations, or gathering context across many files. Faster and more efficient than general for pure exploration tasks.",
+        color: "#50fa7b",
+        temperature: 0.2,
+        prompt: PROMPT_EXPLORE,
+        tools: {
+          "explore-tree": true,
+          read: true,
+          grep: true,
+          glob: true,
+          list: true,
+          bash: true,
+          webfetch: true,
+          // Disable modification tools
+          edit: false,
+          write: false,
+          task: false,
+          todowrite: false,
+          todoread: false,
+          "exit-plan-mode": false,
+          "background-agent": false,
+        },
+        options: {},
+        permission: explorePermission,
         mode: "subagent",
         builtIn: true,
       },
