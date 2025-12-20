@@ -7,6 +7,7 @@ import { Server } from "../server/server"
 import { BunProc } from "../bun"
 import { Instance } from "../project/instance"
 import { Flag } from "../flag/flag"
+import { AnthropicAuthPlugin } from "./anthropic-auth"
 
 export namespace Plugin {
   const log = Log.create({ service: "plugin" })
@@ -37,8 +38,16 @@ export namespace Plugin {
     const plugins = [...(config.plugin ?? [])]
     if (!Flag.SWARM_DISABLE_DEFAULT_PLUGINS) {
       plugins.push("opencode-copilot-auth@0.0.5")
-      plugins.push("opencode-anthropic-auth@0.0.2")
+      // AnthropicAuthPlugin is now bundled locally to avoid module resolution issues
     }
+
+    // Load the bundled Anthropic auth plugin first
+    if (!Flag.SWARM_DISABLE_DEFAULT_PLUGINS) {
+      log.info("loading bundled plugin", { name: "anthropic-auth" })
+      const init = await AnthropicAuthPlugin(input)
+      hooks.push(init)
+    }
+
     for (let plugin of plugins) {
       log.info("loading plugin", { path: plugin })
       if (!plugin.startsWith("file://")) {
