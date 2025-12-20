@@ -82,6 +82,7 @@ import {
   WebsearchToolAnimation,
   AskUserToolAnimation,
   ReadToolAnimation,
+  BatchReadToolAnimation,
   GlobToolAnimation,
   GrepToolAnimation,
   ListToolAnimation,
@@ -128,6 +129,7 @@ addDefaultParsers(parsers.parsers)
 const TOOL_COLORS = {
   bash: RGBA.fromInts(255, 68, 68, 255), // red (#ff4444)
   read: RGBA.fromInts(90, 255, 202, 255), // diffHighlightAdded
+  "batch-read": RGBA.fromInts(137, 220, 235, 255), // Catppuccin Sky (#89dceb)
   write: RGBA.fromInts(255, 154, 74, 255), // darkOrange
   edit: RGBA.fromInts(255, 210, 74, 255), // darkYellow
   glob: RGBA.fromInts(184, 74, 255, 255), // darkPurple
@@ -1864,7 +1866,14 @@ ToolRegistry.register<typeof ReadTool>({
   name: "read",
   container: "inline",
   render(props) {
+    // Detect batch mode vs single file mode
+    const isBatchMode = createMemo(() => Array.isArray(props.input.paths) && props.input.paths.length > 0)
+    
     const filePath = createMemo(() => (props.input.filePath ? normalizePath(props.input.filePath) : undefined))
+    const fileCount = createMemo(() => props.input.paths?.length)
+    const filesRead = createMemo(() => props.metadata.filesRead as number | undefined)
+    const filesRequested = createMemo(() => props.metadata.filesRequested as number | undefined)
+    
     const executionTime = createMemo(() => {
       if (props.state.status === "completed" && props.state.time) {
         return props.state.time.end - props.state.time.start
@@ -1876,8 +1885,7 @@ ToolRegistry.register<typeof ReadTool>({
       return props.state.time?.start
     })
     const lineCount = createMemo(() => {
-      if (!props.output) return undefined
-      // Try to extract line count from output
+      if (!props.output || isBatchMode()) return undefined
       const output = props.output as string
       if (output) {
         const lines = output.split("\n")
@@ -1888,13 +1896,24 @@ ToolRegistry.register<typeof ReadTool>({
 
     return (
       <ToolCard status={props.state.status} inline={true}>
-        <ReadToolAnimation
-          status={props.state.status}
-          filePath={filePath()}
-          startTime={startTime()}
-          executionTime={executionTime()}
-          lineCount={lineCount()}
-        />
+        <Show when={isBatchMode()} fallback={
+          <ReadToolAnimation
+            status={props.state.status}
+            filePath={filePath()}
+            startTime={startTime()}
+            executionTime={executionTime()}
+            lineCount={lineCount()}
+          />
+        }>
+          <BatchReadToolAnimation
+            status={props.state.status}
+            fileCount={fileCount()}
+            filesRead={filesRead()}
+            filesRequested={filesRequested()}
+            startTime={startTime()}
+            executionTime={executionTime()}
+          />
+        </Show>
       </ToolCard>
     )
   },

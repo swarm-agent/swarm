@@ -4012,6 +4012,195 @@ export function ReadToolAnimation(props: {
 }
 
 // ============================================================================
+// BATCH-READ TOOL ANIMATION - Cyan/Teal theme with multi-file wave pattern
+// Pattern: Multiple file icons cycling with staggered wave breathing
+// ============================================================================
+
+// Batch-read colors - same teal family as read, but with cyan accent for "batch"
+const BATCH_READ_CYAN = RGBA.fromHex("#89dceb") // Catppuccin Sky (cyan)
+const BATCH_READ_TEAL = RGBA.fromHex("#94e2d5") // Catppuccin Teal
+
+const BATCH_READ_COLORS = {
+  primary: BATCH_READ_CYAN,
+  secondary: BATCH_READ_TEAL,
+  success: RGBA.fromHex("#a6e3a1"),
+  error: RGBA.fromHex("#f38ba8"),
+  dim: RGBA.fromHex("#6c9a93"),
+}
+
+// Batch-read icons - file stack / multi-file indicators
+const BATCH_FILE_ICONS = ["󰈢", "󰷏", "󰈙", "󰈔", "󰈧"] // stacked files from nerdfonts
+
+/**
+ * BatchReadMorph - Single morphing icon for batch file reading
+ * Similar to ReadMorph but with stacked-file iconography
+ */
+export function BatchReadMorph(props: { color?: RGBA }) {
+  const baseColor = props.color ?? BATCH_READ_CYAN
+  const [frame, setFrame] = createSignal(0)
+  const [opacity, setOpacity] = createSignal(0.7)
+
+  // Morph through file stack icons
+  const morphInterval = setInterval(() => {
+    setFrame((f) => (f + 1) % BATCH_FILE_ICONS.length)
+  }, 300)
+
+  // Breathing opacity
+  const breathInterval = setInterval(() => {
+    const now = Date.now()
+    const phase = ((now / 1500) * Math.PI * 2) % (Math.PI * 2)
+    setOpacity(0.5 + (Math.sin(phase) + 1) * 0.25)
+  }, 50)
+
+  onCleanup(() => {
+    clearInterval(morphInterval)
+    clearInterval(breathInterval)
+  })
+
+  const color = () => RGBA.fromInts(baseColor.r * 255, baseColor.g * 255, baseColor.b * 255, opacity() * 255)
+
+  return <span style={{ fg: color() }}>{BATCH_FILE_ICONS[frame()]}</span>
+}
+
+/**
+ * BatchReadText - Breathing "batch-read" text
+ */
+export function BatchReadText(props: { color?: RGBA }) {
+  const baseColor = props.color ?? BATCH_READ_CYAN
+  const [opacity, setOpacity] = createSignal(0.7)
+
+  const interval = setInterval(() => {
+    const now = Date.now()
+    const phase = ((now / 1500) * Math.PI * 2) % (Math.PI * 2)
+    setOpacity(0.5 + (Math.sin(phase) + 1) * 0.25)
+  }, 50)
+
+  onCleanup(() => clearInterval(interval))
+
+  const color = () => RGBA.fromInts(baseColor.r * 255, baseColor.g * 255, baseColor.b * 255, opacity() * 255)
+
+  return <span style={{ fg: color() }}>batch-read</span>
+}
+
+/**
+ * BatchReadPending - Morph icon + breathing text
+ */
+export function BatchReadPending() {
+  return (
+    <box gap={0}>
+      <text>
+        <BatchReadMorph color={BATCH_READ_CYAN} /> <BatchReadText color={BATCH_READ_CYAN} />
+      </text>
+    </box>
+  )
+}
+
+/**
+ * BatchReadRunning - Morph icon + text + file count + elapsed time
+ */
+export function BatchReadRunning(props: { fileCount?: number; startTime?: number }) {
+  const { theme } = useTheme()
+
+  return (
+    <box gap={0}>
+      <text>
+        <BatchReadMorph color={BATCH_READ_CYAN} /> <BatchReadText color={BATCH_READ_CYAN} />
+        <Show when={props.fileCount !== undefined}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>•</span>{" "}
+          <span style={{ fg: BATCH_READ_TEAL }}>{props.fileCount} files</span>
+        </Show>
+        <Show when={props.startTime}>
+          {" "}
+          <ElapsedTime startTime={props.startTime!} color={theme.textMuted} />
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * BatchReadResolved - Completed state with success/error icon and stats
+ */
+export function BatchReadResolved(props: {
+  success: boolean
+  filesRead?: number
+  filesRequested?: number
+  executionTime?: number
+}) {
+  const { theme } = useTheme()
+  const icon = props.success ? "✓" : "✗"
+  const iconColor = props.success ? BATCH_READ_COLORS.success : BATCH_READ_COLORS.error
+  const dimmedCyan = RGBA.fromInts(BATCH_READ_CYAN.r * 255, BATCH_READ_CYAN.g * 255, BATCH_READ_CYAN.b * 255, 153)
+
+  const formatTime = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.floor((ms % 60000) / 1000)
+    return `${minutes}m ${seconds}s`
+  }
+
+  return (
+    <box gap={0}>
+      <text>
+        <span style={{ fg: iconColor, bold: true }}>{icon}</span> <span style={{ fg: dimmedCyan }}>batch-read</span>
+        <Show when={props.filesRead !== undefined && props.filesRequested !== undefined}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>•</span>{" "}
+          <span style={{ fg: theme.textMuted }}>
+            {props.filesRead}/{props.filesRequested} files
+          </span>
+        </Show>
+        <Show when={props.executionTime !== undefined}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>{formatTime(props.executionTime!)}</span>
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * BatchReadToolAnimation - Complete state machine for batch-read tool
+ */
+export function BatchReadToolAnimation(props: {
+  status: "pending" | "running" | "completed" | "error"
+  fileCount?: number
+  filesRead?: number
+  filesRequested?: number
+  startTime?: number
+  executionTime?: number
+}) {
+  return (
+    <Switch>
+      <Match when={props.status === "pending"}>
+        <BatchReadPending />
+      </Match>
+      <Match when={props.status === "running"}>
+        <BatchReadRunning fileCount={props.fileCount} startTime={props.startTime} />
+      </Match>
+      <Match when={props.status === "completed"}>
+        <BatchReadResolved
+          success={true}
+          filesRead={props.filesRead}
+          filesRequested={props.filesRequested}
+          executionTime={props.executionTime}
+        />
+      </Match>
+      <Match when={props.status === "error"}>
+        <BatchReadResolved
+          success={false}
+          filesRead={props.filesRead}
+          filesRequested={props.filesRequested}
+          executionTime={props.executionTime}
+        />
+      </Match>
+    </Switch>
+  )
+}
+
+// ============================================================================
 // GLOB TOOL ANIMATION - Purple theme with star pattern morphing
 // Pattern: asterisk → starburst → sparkle with breathing
 // ============================================================================

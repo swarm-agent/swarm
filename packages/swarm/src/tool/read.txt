@@ -10,3 +10,16 @@ Usage:
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
 - You can read image files using this tool.
+
+Batch Mode:
+- Use 'paths' parameter instead of 'filePath' to read multiple files in ONE call
+- Each entry in paths can have its own offset/limit for reading specific sections
+- Much faster than sequential reads - all files are read in parallel
+- Maximum 20 files per batch call
+
+Example (batch mode):
+  read({ paths: [
+    { path: "src/index.ts", offset: 0, limit: 100 },
+    { path: "src/util.ts", offset: 50, limit: 50 },
+    { path: "package.json" }
+  ]})
