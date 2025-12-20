@@ -42,7 +42,6 @@ import { TuiEvent } from "@/cli/cmd/tui/event"
 import { Snapshot } from "@/snapshot"
 import { SessionSummary } from "@/session/summary"
 import { BackgroundAgent } from "@/background-agent"
-import { Memory } from "@/memory"
 
 const ERRORS = {
   400: {
@@ -1846,10 +1845,6 @@ export namespace Server {
   }
 
   export function listen(opts: { port: number; hostname: string }) {
-    // Initialize memory system (subscribes to bash events for auto-updates)
-    // This is fire-and-forget, subscriptions will be active once init completes
-    Memory.init().catch((err) => log.error("failed to init memory system", { error: err }))
-
     const server = Bun.serve({
       port: opts.port,
       hostname: opts.hostname,

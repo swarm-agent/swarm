@@ -11,6 +11,7 @@ import { Command } from "../command"
 import { Instance } from "./instance"
 import { Log } from "@/util/log"
 import { Sandbox } from "@/sandbox"
+import { Memory } from "../memory"
 
 export async function InstanceBootstrap() {
   Log.Default.info("bootstrapping", { directory: Instance.directory })
@@ -20,6 +21,10 @@ export async function InstanceBootstrap() {
   FileWatcher.init()
   File.init()
   await Sandbox.initialize()
+  
+  // Initialize memory system (subscribes to bash events for auto-updates)
+  // Must be called within Instance context so Bus subscriptions are properly scoped
+  await Memory.init()
 
   Bus.subscribe(Command.Event.Executed, async (payload) => {
     if (payload.properties.name === Command.Default.INIT) {

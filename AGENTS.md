@@ -176,7 +176,9 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 ## Session Log
 
-- Added memory system - @memory agent, memory tool, auto-commit hooks
+| Date | Summary |
+|------|---------|
+| 2024-12-20 | Moved Memory.init() to InstanceBootstrap for proper Bus scope |
 
 ## Notes
 
@@ -184,3 +186,4 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 - TypeScript native preview (`tsgo`) used for type checking
 - Bun preloads `@opentui/solid/preload` for JSX support
 - Config supports JSONC (JSON with comments)
+- Memory.init() must be called in InstanceBootstrap (not server.ts) to ensure proper Bus scope
