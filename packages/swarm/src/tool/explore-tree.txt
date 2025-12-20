@@ -1,0 +1,23 @@
+Rapidly explore a codebase directory structure.
+
+Returns a tree view of directories and files, automatically filtering out noise like node_modules, .git, dist, build folders, lock files, etc.
+
+Use this tool when you need to:
+- Quickly understand a project's structure
+- Find where code is organized
+- Decide which directories to explore further
+- Get an overview before diving into specific files
+
+The output is optimized for fast scanning - directories are listed before files, sorted alphabetically.
+
+Parameters:
+- path: Directory to explore (optional, defaults to project root)
+- depth: Maximum depth to traverse (optional, default 8)
+- maxEntries: Maximum entries before truncating (optional, default 500)
+
+Example usage:
+- Explore entire project: explore-tree()
+- Explore specific directory: explore-tree(path: "src/components")
+- Shallow overview: explore-tree(depth: 3)
+
+The tool automatically truncates output if it exceeds safe context limits.

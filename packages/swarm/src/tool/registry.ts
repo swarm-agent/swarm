@@ -2,6 +2,7 @@ import { AskUserTool } from "./ask-user"
 import { BackgroundAgentTool } from "./background-agent"
 import { BashTool } from "./bash"
 import { EditTool } from "./edit"
+import { ExploreTreeTool } from "./explore-tree"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ListTool } from "./ls"
@@ -91,6 +92,7 @@ export namespace ToolRegistry {
       BackgroundAgentTool,
       BashTool,
       EditTool,
+      ExploreTreeTool,
       WebFetchTool,
       WebSearchTool,
       WebContentsTool,

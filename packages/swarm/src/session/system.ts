@@ -43,12 +43,8 @@ export namespace SystemPrompt {
 
       const sections: string[] = []
       for (const dir of workspaceDirs) {
-        try {
-          const tree = await Ripgrep.tree({ cwd: dir, limit: 100 })
-          sections.push(`<workspace path="${dir}">\n  ${tree}\n</workspace>`)
-        } catch {
-          sections.push(`<workspace path="${dir}">\n  (unable to read)\n</workspace>`)
-        }
+        const tree = await Ripgrep.tree({ cwd: dir, limit: 8 })
+        sections.push(`<workspace path="${dir}">\n  ${tree}\n</workspace>`)
       }
       return sections.join("\n")
     })()
@@ -64,14 +60,7 @@ export namespace SystemPrompt {
         workspaceDirs.length > 0 ? `  Additional workspace directories: ${workspaceDirs.join(", ")}` : "",
         `</env>`,
         `<project>`,
-        `  ${
-          project.vcs === "git"
-            ? await Ripgrep.tree({
-                cwd: Instance.directory,
-                limit: 200,
-              })
-            : ""
-        }`,
+        `  ${project.vcs === "git" ? await Ripgrep.tree({ cwd: Instance.directory }) : ""}`,
         `</project>`,
         workspaceSection,
       ]
