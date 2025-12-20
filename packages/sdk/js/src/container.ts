@@ -20,7 +20,7 @@ export type ContainerOptions = {
   network?: "bridge" | "host"
   /** Swarm CLI directory (default: auto-detect) */
   swarmDir?: string
-  /** Auth file path (default: ~/.local/share/opencode/auth.json) */
+  /** Auth file path (default: ~/.local/share/swarm/auth.json) */
   authFile?: string
   /** Config directory (default: swarmDir/.swarm) */
   configDir?: string
@@ -168,7 +168,7 @@ function generateContainerConfig(containerName: string): string {
 export async function spawnContainer(options: ContainerOptions): Promise<ContainerHandle> {
   const runtime = options.runtime ?? detectRuntime()
   const swarmDir = options.swarmDir ?? process.env.SWARM_CLI_DIR ?? detectSwarmDir()
-  const authFile = options.authFile ?? join(homedir(), ".local/share/opencode/auth.json")
+  const authFile = options.authFile ?? join(homedir(), ".local/share/swarm/auth.json")
   const image = options.image ?? "docker.io/oven/bun:1.3"
   const port = options.port === 0 || options.port === undefined ? findAvailablePort() : options.port
   const containerName = `swarm-${options.name}`
@@ -202,11 +202,13 @@ export async function spawnContainer(options: ContainerOptions): Promise<Contain
   }
 
   // Build volume mounts
+  const cacheDir = join(homedir(), ".cache/swarm")
   const volumeArgs: string[] = [
     `-v`, `${options.workspace}:/workspace:rw`,
     `-v`, `${swarmDir}:/swarm:ro`,
-    `-v`, `${authFile}:/root/.local/share/opencode/auth.json:ro`,
+    `-v`, `${authFile}:/root/.local/share/swarm/auth.json:ro`,
     `-v`, `${configDir}:/opencode-config:ro`,  // Mount generated config
+    `-v`, `${cacheDir}:/root/.cache/swarm:rw`,  // Mount cache for SDK packages
   ]
 
   // Add additional volumes

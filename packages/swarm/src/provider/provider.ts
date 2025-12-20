@@ -15,6 +15,17 @@ import { Global } from "../global"
 import { Flag } from "../flag/flag"
 import { iife } from "@/util/iife"
 
+// Pre-bundled provider SDKs (for compiled binary compatibility)
+import * as anthropicSdk from "@ai-sdk/anthropic"
+import * as googleVertexSdk from "@ai-sdk/google-vertex"
+import * as amazonBedrockSdk from "@ai-sdk/amazon-bedrock"
+
+const BUNDLED_SDKS: Record<string, any> = {
+  "@ai-sdk/anthropic": anthropicSdk,
+  "@ai-sdk/google-vertex": googleVertexSdk,
+  "@ai-sdk/amazon-bedrock": amazonBedrockSdk,
+}
+
 export namespace Provider {
   const log = Log.create({ service: "provider" })
 
@@ -459,9 +470,18 @@ export namespace Provider {
       // Ref: https://ai-sdk.dev/providers/ai-sdk-providers/google-vertex#google-vertex-anthropic-provider-usage
       // In addition, Bun's dynamic import logic does not support subpath imports,
       // so we patch the import path to load directly from `dist`.
-      const modPath =
-        provider.id === "google-vertex-anthropic" ? `${installedPath}/dist/anthropic/index.mjs` : installedPath
-      const mod = await import(modPath)
+      // Use pre-bundled SDK if available, otherwise fall back to dynamic require
+      let mod: any
+      if (BUNDLED_SDKS[pkg]) {
+        mod = BUNDLED_SDKS[pkg]
+      } else {
+        // Use full path to the dist file for better compatibility with bundled binaries
+        const modPath =
+          provider.id === "google-vertex-anthropic"
+            ? `${installedPath}/dist/anthropic/index.mjs`
+            : `${installedPath}/dist/index.js`
+        mod = require(modPath)
+      }
       if (options["timeout"] !== undefined && options["timeout"] !== null) {
         // Preserve custom fetch if it exists, wrap it with timeout logic
         const customFetch = options["fetch"]
