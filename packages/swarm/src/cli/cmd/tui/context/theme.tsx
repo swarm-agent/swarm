@@ -28,7 +28,7 @@ import synthwave84 from "./theme/synthwave84.json" with { type: "json" }
 import tokyonight from "./theme/tokyonight.json" with { type: "json" }
 import vesper from "./theme/vesper.json" with { type: "json" }
 import zenburn from "./theme/zenburn.json" with { type: "json" }
-import { useKV } from "./kv"
+
 import { useRenderer } from "@opentui/solid"
 import { createStore, produce } from "solid-js/store"
 import { Global } from "@/global"
@@ -146,11 +146,10 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
   name: "Theme",
   init: (props: { mode: "dark" | "light" }) => {
     const sync = useSync()
-    const kv = useKV()
     const [store, setStore] = createStore({
       themes: DEFAULT_THEMES,
       mode: props.mode,
-      active: (sync.data.config.theme ?? kv.get("theme", "swarm")) as string,
+      active: (sync.data.config.theme ?? "swarm") as string,
       ready: false,
     })
 
@@ -202,7 +201,16 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
       },
       set(theme: string) {
         setStore("active", theme)
-        kv.set("theme", theme)
+        // Save to global config file for persistence
+        const configPath = path.join(Global.Path.config, "swarm.json")
+        Bun.file(configPath)
+          .json()
+          .catch(() => ({}))
+          .then((config: any) => {
+            config.theme = theme
+            config.$schema = config.$schema ?? "https://swarm.ai/config.json"
+            return Bun.write(configPath, JSON.stringify(config, null, 2))
+          })
       },
       get ready() {
         return store.ready
