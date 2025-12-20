@@ -470,11 +470,13 @@ function BackgroundAgentsBlock(props: { layout: LayoutConfig; sessionID?: string
   const { theme } = useTheme()
   // Filter by current session's parentSessionID - only show agents spawned by THIS session
   // Require sessionID match - don't show on home route or for other sessions
-  const running = createMemo(() =>
-    sync.data.backgroundAgent.filter(
-      (a) => a.status === "running" && props.sessionID && a.parentSessionID === props.sessionID,
-    ),
-  )
+  // NOTE: Access props.sessionID DIRECTLY in memo (not inside filter callback) for SolidJS reactivity
+  const running = createMemo(() => {
+    const sessionID = props.sessionID
+    return sync.data.backgroundAgent.filter(
+      (a) => a.status === "running" && sessionID && a.parentSessionID === sessionID,
+    )
+  })
 
   return (
     <Show when={props.layout.showBgAgents && running().length > 0}>
