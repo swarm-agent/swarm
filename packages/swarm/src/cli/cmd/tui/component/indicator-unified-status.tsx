@@ -465,14 +465,14 @@ function ConnectionBlock() {
   )
 }
 
-function BackgroundAgentsBlock(props: { layout: LayoutConfig; sessionID?: string }) {
+function BackgroundAgentsBlock(props: { layout: LayoutConfig }) {
   const sync = useSync()
   const { theme } = useTheme()
+  const route = useRoute()
   // Filter by current session's parentSessionID - only show agents spawned by THIS session
-  // Require sessionID match - don't show on home route or for other sessions
-  // NOTE: Access props.sessionID DIRECTLY in memo (not inside filter callback) for SolidJS reactivity
+  // Use route directly here for proper SolidJS reactivity
   const running = createMemo(() => {
-    const sessionID = props.sessionID
+    const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
     return sync.data.backgroundAgent.filter(
       (a) => a.status === "running" && sessionID && a.parentSessionID === sessionID,
     )
@@ -641,10 +641,7 @@ export function UnifiedStatusBar() {
     <box height={3} flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
       <box flexDirection="row" gap={1} alignItems="center">
         <ConnectionBlock />
-        <BackgroundAgentsBlock
-          layout={layout()}
-          sessionID={route.data.type === "session" ? route.data.sessionID : undefined}
-        />
+        <BackgroundAgentsBlock layout={layout()} />
         <For each={visibleSessions()}>
           {(item) => (
             item.type === "current"
