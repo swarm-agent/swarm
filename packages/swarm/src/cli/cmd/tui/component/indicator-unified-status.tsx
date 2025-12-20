@@ -468,32 +468,15 @@ function ConnectionBlock() {
 function BackgroundAgentsBlock(props: { layout: LayoutConfig }) {
   const sync = useSync()
   const { theme } = useTheme()
-  const route = useRoute()
-  // Filter by current session's parentSessionID - only show agents spawned by THIS session
-  // Use route directly here for proper SolidJS reactivity
-  const running = createMemo(() => {
-    const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
-    return sync.data.backgroundAgent.filter(
-      (a) => a.status === "running" && sessionID && a.parentSessionID === sessionID,
-    )
-  })
+  // Show all running background agents globally with muted styling
+  const running = createMemo(() => sync.data.backgroundAgent.filter((a) => a.status === "running"))
 
   return (
     <Show when={props.layout.showBgAgents && running().length > 0}>
-      <box
-        border={["left", "right", "top", "bottom"]}
-        customBorderChars={RoundedBorder.customBorderChars}
-        borderColor={theme.accent}
-        paddingLeft={1}
-        paddingRight={1}
-        flexShrink={0}
-      >
-        <box flexDirection="row" gap={1}>
-          <text fg={theme.accent}>⚡</text>
-          <Show when={props.layout.showBgAgentCount}>
-            <text fg={theme.text}>{running().length}</text>
-          </Show>
-        </box>
+      <box flexDirection="row" gap={1} flexShrink={0}>
+        <text fg={theme.textMuted}>bg</text>
+        <text fg={theme.textMuted}>⚡</text>
+        <text fg={theme.textMuted}>{running().length}</text>
       </box>
     </Show>
   )
@@ -571,13 +554,9 @@ export function UnifiedStatusBar() {
   })
 
   // Smart layout calculation
-  const currentSessionID = () => (route.data.type === "session" ? route.data.sessionID : undefined)
   const layout = createMemo(() => {
     const gitStatus = git.status()
-    const sessionID = currentSessionID()
-    const bgAgentCount = sync.data.backgroundAgent.filter(
-      (a) => a.status === "running" && sessionID && a.parentSessionID === sessionID,
-    ).length
+    const bgAgentCount = sync.data.backgroundAgent.filter((a) => a.status === "running").length
 
     return calculateLayout(dimensions().width, {
       currentPath: process.cwd().replace(os.homedir(), "~"),

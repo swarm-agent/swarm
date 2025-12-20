@@ -179,6 +179,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-20 | Simplified background agent indicator to global muted display |
 | 2024-12-20 | Use useRoute() directly in BackgroundAgentsBlock for proper SolidJS reactivity |
 | 2024-12-20 | Fixed SolidJS reactivity for background agent session filtering in status indicator |
 | 2024-12-20 | Fixed background agent indicator to require exact session ID match |
