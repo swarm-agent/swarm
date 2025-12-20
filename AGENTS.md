@@ -179,6 +179,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-20 | Fixed background agent indicator to require exact session ID match |
 | 2024-12-20 | Added create-release.sh script for GitHub releases with multi-platform binaries |
 | 2024-12-20 | Simplified status bar indicator back to icon + count (reverted complex display) |
 | 2024-12-20 | Added background agents section to sidebar showing child agents tied to parent session |

@@ -469,9 +469,10 @@ function BackgroundAgentsBlock(props: { layout: LayoutConfig; sessionID?: string
   const sync = useSync()
   const { theme } = useTheme()
   // Filter by current session's parentSessionID - only show agents spawned by THIS session
+  // Require sessionID match - don't show on home route or for other sessions
   const running = createMemo(() =>
     sync.data.backgroundAgent.filter(
-      (a) => a.status === "running" && (!props.sessionID || a.parentSessionID === props.sessionID),
+      (a) => a.status === "running" && props.sessionID && a.parentSessionID === props.sessionID,
     ),
   )
 
@@ -573,7 +574,7 @@ export function UnifiedStatusBar() {
     const gitStatus = git.status()
     const sessionID = currentSessionID()
     const bgAgentCount = sync.data.backgroundAgent.filter(
-      (a) => a.status === "running" && (!sessionID || a.parentSessionID === sessionID),
+      (a) => a.status === "running" && sessionID && a.parentSessionID === sessionID,
     ).length
 
     return calculateLayout(dimensions().width, {
