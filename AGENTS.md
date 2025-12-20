@@ -190,6 +190,144 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 | 2024-12-20 | Enhanced background agent indicator with description and completion state display |
 | 2024-12-20 | Config now prefers .swarm/ over .opencode/, legacy paths used as fallback only |
 
+## Containerized Agents (SDK)
+
+The SDK supports spawning agents in isolated containers with custom tools via MCP.
+
+### Container Spawning
+
+```typescript
+import { spawnContainer, sendMessage, stopContainer } from "@swarm-ai/sdk/container"
+
+const container = await spawnContainer({
+  name: "my-agent",
+  workspace: "/path/to/workspace",  // Mounted at /workspace in container
+  volumes: [
+    // Additional volume mounts - MUST mount inside /workspace for agent visibility
+    { host: "/path/on/host", container: "/workspace/mydir", readonly: false },
+  ],
+  network: "host",  // "host" for localhost access, "bridge" for isolation
+  model: "anthropic/claude-opus-4-5",
+  system: "You are a helpful assistant...",
+})
+
+// Send messages
+const result = await sendMessage(container.url, sessionId, "Hello", {
+  autoApprove: true,
+  timeout: 300000,
+  thinking: false,  // Disable extended thinking for fast responses
+})
+
+// Clean up
+await container.stop()
+```
+
+### Volume Mounting (IMPORTANT!)
+
+**The agent's working directory is `/workspace`**. If you mount volumes elsewhere (e.g., `/mydir`), the agent won't find them naturally when exploring.
+
+```typescript
+// WRONG - agent won't find this easily
+volumes: [{ host: "/data", container: "/data" }]
+
+// CORRECT - agent sees it at /workspace/data
+volumes: [{ host: "/data", container: "/workspace/data" }]
+```
+
+### MCP Tools (Host-side)
+
+Tools run on the HOST, not inside the container. This lets them access host resources (git credentials, local APIs, etc).
+
+```typescript
+import { startMcpServer, tool, z } from "@swarm-ai/sdk"
+
+// Define a "mega tool" with multiple actions (reduces tool count)
+const myTool = tool(
+  "mytool",
+  `Description of what this tool does.
+
+Actions:
+- action1: Does thing 1
+- action2: Does thing 2`,
+  {
+    action: z.enum(["action1", "action2"]).describe("Action to perform"),
+    param: z.string().optional().describe("Optional parameter"),
+  },
+  async (args) => {
+    switch (args.action) {
+      case "action1": return "Result 1"
+      case "action2": return "Result 2"
+      default: return `Unknown action: ${args.action}`
+    }
+  },
+  { permission: "allow" }
+)
+
+// Start MCP server
+const mcpServer = await startMcpServer({
+  name: "my-tools",
+  port: 19876,
+  hostname: "127.0.0.1",
+  tools: [myTool],
+})
+
+// Register with container (use host network so localhost works)
+await container.client.mcp.add({
+  body: {
+    name: "my-tools",
+    config: { type: "remote", url: `http://localhost:${mcpServer.port}` },
+  },
+})
+```
+
+### Mega-Tool Pattern
+
+Instead of 50 individual tools, consolidate into "mega tools" with an `action` parameter:
+
+```typescript
+// Instead of: spotify_play, spotify_pause, spotify_next, spotify_search...
+// Use one tool:
+const spotifyTool = tool(
+  "spotify",
+  `Control Spotify. Actions: play, pause, next, search, ...`,
+  {
+    action: z.enum(["play", "pause", "next", "search", ...]),
+    query: z.string().optional(),
+    uri: z.string().optional(),
+  },
+  async (args) => {
+    switch (args.action) {
+      case "play": ...
+      case "pause": ...
+    }
+  }
+)
+```
+
+Benefits:
+- Fewer tools = less token overhead in system prompt
+- Related actions grouped logically
+- Easier to extend
+
+### Container Options Reference
+
+```typescript
+type ContainerOptions = {
+  name: string              // Unique container name
+  workspace: string         // Host path → /workspace
+  volumes?: Array<{         // Additional mounts
+    host: string
+    container: string
+    readonly?: boolean
+  }>
+  port?: number             // API port (0 = auto)
+  runtime?: "podman" | "docker"
+  network?: "bridge" | "host"  // host = share host network
+  system?: string           // System prompt
+  model?: string            // Model ID
+}
+```
+
 ## Notes
 
 - Memory tool creates sections if they don't exist
