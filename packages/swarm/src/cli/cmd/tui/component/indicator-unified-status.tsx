@@ -465,10 +465,15 @@ function ConnectionBlock() {
   )
 }
 
-function BackgroundAgentsBlock(props: { layout: LayoutConfig }) {
+function BackgroundAgentsBlock(props: { layout: LayoutConfig; sessionID?: string }) {
   const sync = useSync()
   const { theme } = useTheme()
-  const running = createMemo(() => sync.data.backgroundAgent.filter((a) => a.status === "running"))
+  // Filter by current session's parentSessionID - only show agents spawned by THIS session
+  const running = createMemo(() =>
+    sync.data.backgroundAgent.filter(
+      (a) => a.status === "running" && (!props.sessionID || a.parentSessionID === props.sessionID),
+    ),
+  )
 
   return (
     <Show when={props.layout.showBgAgents && running().length > 0}>
@@ -563,9 +568,13 @@ export function UnifiedStatusBar() {
   })
 
   // Smart layout calculation
+  const currentSessionID = () => (route.data.type === "session" ? route.data.sessionID : undefined)
   const layout = createMemo(() => {
     const gitStatus = git.status()
-    const bgAgentCount = sync.data.backgroundAgent.filter((a) => a.status === "running").length
+    const sessionID = currentSessionID()
+    const bgAgentCount = sync.data.backgroundAgent.filter(
+      (a) => a.status === "running" && (!sessionID || a.parentSessionID === sessionID),
+    ).length
 
     return calculateLayout(dimensions().width, {
       currentPath: process.cwd().replace(os.homedir(), "~"),
@@ -629,7 +638,10 @@ export function UnifiedStatusBar() {
     <box height={3} flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
       <box flexDirection="row" gap={1} alignItems="center">
         <ConnectionBlock />
-        <BackgroundAgentsBlock layout={layout()} />
+        <BackgroundAgentsBlock
+          layout={layout()}
+          sessionID={route.data.type === "session" ? route.data.sessionID : undefined}
+        />
         <For each={visibleSessions()}>
           {(item) => (
             item.type === "current"
