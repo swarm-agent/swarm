@@ -31,7 +31,8 @@ export namespace Config {
       log.debug("loaded custom config", { path: Flag.SWARM_CONFIG })
     }
 
-    for (const file of ["swarm.jsonc", "swarm.json"]) {
+    // Load project-level config files (swarm.* takes precedence over opencode.* for backwards compat)
+    for (const file of ["opencode.json", "opencode.jsonc", "swarm.jsonc", "swarm.json"]) {
       const found = await Filesystem.findUp(file, Instance.directory, Instance.worktree)
       for (const resolved of found.toReversed()) {
         result = mergeDeep(result, await loadFile(resolved))
@@ -57,9 +58,10 @@ export namespace Config {
 
     const directories = [
       Global.Path.config,
+      // Support both .opencode (legacy) and .swarm directories
       ...(await Array.fromAsync(
         Filesystem.up({
-          targets: [".swarm"],
+          targets: [".opencode", ".swarm"],
           start: Instance.directory,
           stop: Instance.worktree,
         }),
@@ -75,8 +77,10 @@ export namespace Config {
     for (const dir of directories) {
       await assertValid(dir)
 
-      if (dir.endsWith(".swarm")) {
-        for (const file of ["swarm.jsonc", "swarm.json"]) {
+      if (dir.endsWith(".swarm") || dir.endsWith(".opencode")) {
+        // Load config files from project config directory
+        // opencode.* loaded first (legacy), swarm.* takes precedence
+        for (const file of ["opencode.json", "opencode.jsonc", "swarm.jsonc", "swarm.json"]) {
           log.debug(`loading config from ${path.join(dir, file)}`)
           result = mergeDeep(result, await loadFile(path.join(dir, file)))
           // to satisy the type checker
@@ -187,7 +191,7 @@ export namespace Config {
       if (!md.data) continue
 
       const name = (() => {
-        const patterns = ["/.swarm/command/", "/command/"]
+        const patterns = ["/.swarm/command/", "/.opencode/command/", "/command/"]
         const pattern = patterns.find((p) => item.includes(p))
 
         if (pattern) {
@@ -229,9 +233,11 @@ export namespace Config {
       let agentName = path.basename(item, ".md")
       const agentFolderPath = item.includes("/.swarm/agent/")
         ? item.split("/.swarm/agent/")[1]
-        : item.includes("/agent/")
-          ? item.split("/agent/")[1]
-          : agentName + ".md"
+        : item.includes("/.opencode/agent/")
+          ? item.split("/.opencode/agent/")[1]
+          : item.includes("/agent/")
+            ? item.split("/agent/")[1]
+            : agentName + ".md"
 
       // If agent is in a subfolder, include folder path in name
       if (agentFolderPath.includes("/")) {
