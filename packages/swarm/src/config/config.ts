@@ -740,6 +740,23 @@ export namespace Config {
         })
         .optional()
         .describe("Configuration for background agents"),
+      memory: z
+        .object({
+          enabled: z
+            .boolean()
+            .default(false)
+            .describe("Enable the memory system - auto-updates AGENTS.md after commits"),
+          autoCommit: z
+            .boolean()
+            .default(true)
+            .describe("Automatically update AGENTS.md after git commits (when memory is enabled)"),
+          model: z
+            .string()
+            .optional()
+            .describe("Model to use for memory updates (default: anthropic/claude-sonnet-4-20250514)"),
+        })
+        .optional()
+        .describe("Memory system configuration - keeps AGENTS.md in sync with code changes"),
       processIdleTimeout: z
         .number()
         .int()

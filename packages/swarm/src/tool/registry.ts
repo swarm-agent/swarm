@@ -16,6 +16,7 @@ import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { ExitPlanModeTool } from "./exit-plan"
 import { ManualCommandTool } from "./manual-command"
+import { MemoryTool } from "./memory"
 import type { Agent } from "../agent/agent"
 import { Tool } from "./tool"
 import { Instance } from "../project/instance"
@@ -106,6 +107,7 @@ export namespace ToolRegistry {
       TaskTool,
       ExitPlanModeTool,
       ManualCommandTool,
+      MemoryTool,
       ...custom,
     ]
   }

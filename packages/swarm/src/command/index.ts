@@ -56,7 +56,32 @@ export namespace Command {
       result[Default.INIT] = {
         name: Default.INIT,
         description: "create/update AGENTS.md",
+        agent: "memory",
         template: PROMPT_INITIALIZE.replace("${path}", Instance.worktree),
+      }
+    }
+
+    // /memory command for post-commit updates
+    if (result["memory"] === undefined) {
+      result["memory"] = {
+        name: "memory",
+        description: "update AGENTS.md with recent changes",
+        agent: "memory",
+        template: `Update AGENTS.md based on recent git activity.
+
+1. Run \`git log --oneline -5\` to see recent commits
+2. Run \`git diff HEAD~1 --stat\` to see what files changed
+3. Read the current AGENTS.md
+4. Add an entry to the Session Log with today's date and a summary
+5. If architecture or patterns changed, update those sections
+6. Write the updated AGENTS.md
+7. Stage and amend the commit:
+   \`\`\`bash
+   git add AGENTS.md
+   git commit --amend --no-edit
+   \`\`\`
+
+$ARGUMENTS`,
       }
     }
 

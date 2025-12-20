@@ -1,0 +1,43 @@
+Update the project's AGENTS.md file with new learnings, patterns, or important information.
+
+Use this tool to persist knowledge that should be remembered across sessions. The AGENTS.md file serves as the project's persistent memory for AI agents.
+
+## When to Use This Tool
+
+- When you discover an important pattern or convention in the codebase
+- When the user shares critical information about how things work
+- When you learn something that future sessions should know
+- After completing significant work that changes the architecture
+- When you find gotchas, edge cases, or non-obvious behaviors
+
+## Sections You Can Update
+
+- **notes**: General learnings, gotchas, important decisions (most common)
+- **architecture**: Project structure, key patterns, technology stack
+- **commands**: Build, test, lint commands
+- **style**: Code conventions, naming patterns, formatting rules
+- **session**: Brief log entry of what was done (auto-dated)
+
+## Examples
+
+Add a learning about error handling:
+```
+memory({ section: "notes", content: "API errors return { error: string, code: number } format - always check .code for retry logic" })
+```
+
+Log significant work:
+```
+memory({ section: "session", content: "Refactored auth module to use JWT tokens" })
+```
+
+Update architecture info:
+```
+memory({ section: "architecture", content: "Event bus pattern: all cross-module communication goes through src/bus/" })
+```
+
+## Rules
+
+1. Keep entries concise - one line or short paragraph
+2. Don't duplicate existing information
+3. Focus on non-obvious things that would help future sessions
+4. Session entries are auto-dated

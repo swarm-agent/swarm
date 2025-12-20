@@ -14,6 +14,8 @@ import { Permission } from "@/permission"
 import { Sandbox } from "@/sandbox"
 import { Config } from "@/config/config"
 import { Pin } from "@/auth/pin"
+import { Bus } from "@/bus"
+import { Identifier } from "@/id/id"
 // NOTE: Container execution handled by running swarm serve INSIDE container - no routing needed
 import { isInWorkspaceDir } from "@/cli/cmd/tui/context/workspace"
 
@@ -23,6 +25,19 @@ const MAX_TIMEOUT = 10 * 60 * 1000
 const SIGKILL_TIMEOUT_MS = 200
 
 export const log = Log.create({ service: "bash-tool" })
+
+// Event emitted after bash command execution (for hooks like memory auto-update)
+export const BashEvent = {
+  Executed: Bus.event(
+    "bash.executed",
+    z.object({
+      command: z.string(),
+      exitCode: z.number().nullable(),
+      sessionID: Identifier.schema("session"),
+      isCommit: z.boolean(),
+    }),
+  ),
+}
 
 const parser = lazy(async () => {
   const { Parser } = await import("web-tree-sitter")
@@ -367,6 +382,17 @@ export const BashTool = Tool.define("bash", {
 
     // Clear sandbox context
     Sandbox.clearContext()
+
+    // Detect if this was a git commit command
+    const isCommit = /git\s+commit\b/.test(params.command) && !params.command.includes("--amend")
+
+    // Publish bash execution event (for hooks like memory auto-update)
+    Bus.publish(BashEvent.Executed, {
+      command: params.command,
+      exitCode: proc.exitCode,
+      sessionID: ctx.sessionID,
+      isCommit,
+    }).catch((err) => log.error("failed to publish bash event", { error: err }))
 
     return {
       title: params.command,

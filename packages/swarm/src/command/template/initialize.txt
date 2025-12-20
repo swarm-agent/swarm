@@ -1,10 +1,18 @@
-Please analyze this codebase and create an AGENTS.md file containing:
-1. Build/lint/test commands - especially for running a single test
-2. Code style guidelines including imports, formatting, types, naming conventions, error handling, etc.
+Create or update AGENTS.md for this project at: ${path}
 
-The file you create will be given to agentic coding agents (such as yourself) that operate in this repository. Make it about 20 lines long.
-If there are Cursor rules (in .cursor/rules/ or .cursorrules) or Copilot rules (in .github/copilot-instructions.md), make sure to include them.
+## If AGENTS.md doesn't exist:
+1. Explore the codebase structure with explore-tree
+2. Read key configuration files (package.json, Cargo.toml, pyproject.toml, Makefile, etc.)
+3. Look for existing conventions (.cursor/, .github/copilot-instructions.md, .editorconfig)
+4. Identify build, test, and lint commands
+5. Create a comprehensive AGENTS.md following the standard format
 
-If there's already an AGENTS.md, improve it if it's located in ${path}
+## If AGENTS.md exists:
+1. Read the current AGENTS.md
+2. Improve and expand it based on codebase exploration
+3. Preserve any custom sections the user has added
+4. Update outdated information
+
+Focus on information that helps AI agents work effectively: commands, patterns, conventions, and gotchas.
 
 $ARGUMENTS

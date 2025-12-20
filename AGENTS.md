@@ -7,9 +7,12 @@ AI-powered terminal for developers. This file provides guidance for AI agents wo
 | Command | Description |
 |---------|-------------|
 | `bun install` | Install dependencies |
-| `./build.sh` | Build binary |
+| `./build.sh` | Build binary (auto-installs to ~/.local/bin) |
 | `bun test` | Run all tests |
-| `bun run typecheck` | Type check |
+| `bun test test/path.test.ts` | Run single test file |
+| `bun run typecheck` | Type check all packages (via turbo) |
+| `bun dev` | Run development server |
+| `./clean.sh` | Clean all build artifacts |
 
 Binary output: `packages/swarm/dist/swarm-<platform>/bin/swarm`
 
@@ -17,15 +20,23 @@ Binary output: `packages/swarm/dist/swarm-<platform>/bin/swarm`
 
 ```
 packages/
-├── swarm/          # Main CLI application
-├── sdk/js/         # JavaScript/TypeScript SDK
-├── plugin/         # Plugin system
-└── script/         # Build utilities
+├── swarm/          # Main CLI application (Bun + TypeScript + SolidJS TUI)
+│   ├── src/
+│   │   ├── cli/cmd/tui/   # Terminal UI components (SolidJS + @opentui)
+│   │   ├── tool/          # Tool implementations (bash, read, write, etc.)
+│   │   ├── session/       # Session management, prompts
+│   │   ├── config/        # Configuration loading
+│   │   ├── server/        # HTTP API server
+│   │   └── provider/      # LLM provider integrations
+│   └── test/              # Test files (bun test)
+├── sdk/js/         # JavaScript/TypeScript SDK (@swarm-ai/sdk)
+├── plugin/         # Plugin system (@swarm-ai/plugin)
+└── script/         # Build utilities (@swarm-ai/script)
 ```
 
 ## Configuration
 
-Config file: `.swarm/swarm.json`
+Config file: `.swarm/swarm.json` or `.swarm/swarm.jsonc`
 
 ```json
 {
@@ -35,6 +46,12 @@ Config file: `.swarm/swarm.json`
   }
 }
 ```
+
+Config is loaded from multiple sources (merged in order):
+1. Global config: `~/.config/swarm/swarm.json`
+2. Project config: `.swarm/swarm.json` (searched up from cwd)
+3. `SWARM_CONFIG` env var (path to custom config)
+4. `SWARM_CONFIG_CONTENT` env var (inline JSON)
 
 ## SDK (Important!)
 
@@ -75,10 +92,95 @@ const { spawn, server } = await createSwarm({
 })
 ```
 
+## Code Style
+
+- **Runtime**: Bun with TypeScript ESM modules
+- **UI Framework**: SolidJS with @opentui for terminal rendering
+- **Imports**: Relative imports for local modules, path aliases `@/*` and `@tui/*`
+- **Types**: Zod schemas for validation, TypeScript interfaces for structure
+- **Naming**: camelCase for variables/functions, PascalCase for classes/namespaces
+- **Error handling**: Use Result patterns, avoid throwing exceptions in tools
+- **File structure**: Namespace-based organization (e.g., `Tool.define()`, `Session.create()`)
+- **Logging**: Use `Log.create({ service: "name" })` pattern
+
+## Architecture Patterns
+
+### Tool Definition
+
+Tools implement the `Tool.Info` interface:
+
+```typescript
+import { Tool } from "../tool/tool"
+import z from "zod"
+
+export const MyTool = Tool.define<z.ZodObject<...>, MetadataType>(
+  "mytool",
+  {
+    description: "What this tool does",
+    parameters: z.object({
+      param: z.string().describe("Parameter description"),
+    }),
+    async execute(args, ctx) {
+      // ctx.sessionID, ctx.abort, ctx.metadata() available
+      return {
+        title: "Result title",
+        metadata: { /* streaming metadata */ },
+        output: "Result output",
+      }
+    },
+  }
+)
+```
+
+### Context & DI
+
+- Pass `sessionID` in tool context
+- Use `App.provide()` for dependency injection
+- Storage via `Storage` namespace for persistence
+
+### API Server
+
+The TypeScript server (`packages/swarm/src/server/`) exposes HTTP endpoints. When modifying endpoints, regenerate the client SDK.
+
+## Testing
+
+```bash
+# Run all tests
+bun test
+
+# Run specific test file
+bun test packages/swarm/test/tool/bash.test.ts
+
+# Run tests matching pattern
+bun test --grep "pattern"
+```
+
+Test files use `.test.ts` extension and are located in `packages/swarm/test/`.
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `packages/swarm/src/index.ts` | CLI entry point |
+| `packages/swarm/src/tool/registry.ts` | Tool registration |
+| `packages/swarm/src/config/config.ts` | Config loading logic |
+| `packages/swarm/src/cli/cmd/tui/app.tsx` | TUI application root |
+| `packages/sdk/js/src/index.ts` | SDK entry point |
+
 ## Development
 
 See `packages/swarm/AGENTS.md` for detailed development guidelines including:
-- Code style and conventions
-- Architecture patterns
-- Tool animation system
-- Testing patterns
+- Tool animation system (custom spinners, streaming output)
+- TUI component patterns
+- State management
+
+## Session Log
+
+- Added memory system - @memory agent, memory tool, auto-commit hooks
+
+## Notes
+
+- Memory tool creates sections if they don't exist
+- TypeScript native preview (`tsgo`) used for type checking
+- Bun preloads `@opentui/solid/preload` for JSX support
+- Config supports JSONC (JSON with comments)

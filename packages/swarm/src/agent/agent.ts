@@ -4,6 +4,7 @@ import { Provider } from "../provider/provider"
 import { generateObject, type ModelMessage } from "ai"
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_EXPLORE from "./explore.txt"
+import PROMPT_MEMORY from "./memory.txt"
 import { SystemPrompt } from "../session/system"
 import { Instance } from "../project/instance"
 import { mergeDeep } from "remeda"
@@ -121,6 +122,34 @@ export namespace Agent {
       cfg.permission ?? {},
     )
 
+    // Memory agent permission - can write AGENTS.md and amend commits
+    const memoryPermission: Info["permission"] = {
+      edit: "allow", // Needed to write AGENTS.md
+      bash: {
+        // Allow git operations for memory updates
+        "git add AGENTS.md": "allow",
+        "git add ./AGENTS.md": "allow",
+        "git commit --amend --no-edit": "allow",
+        "git commit --amend -m *": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git show*": "allow",
+        "git status*": "allow",
+        // Read-only commands
+        "cat*": "allow",
+        "head*": "allow",
+        "tail*": "allow",
+        "ls*": "allow",
+        "find*": "allow",
+        "tree*": "allow",
+        "wc*": "allow",
+        // Block everything else
+        "*": "deny",
+      },
+      webfetch: "allow",
+      external_directory: "allow",
+    }
+
     const result: Record<string, Info> = {
       general: {
         name: "general",
@@ -163,6 +192,39 @@ export namespace Agent {
         },
         options: {},
         permission: explorePermission,
+        mode: "subagent",
+        builtIn: true,
+      },
+      memory: {
+        name: "memory",
+        description:
+          "AGENTS.md maintenance agent - creates and updates the project's persistent memory file. Use after commits to keep documentation in sync with code changes.",
+        color: "#f1fa8c", // Yellow for memory/documentation
+        temperature: 0.3,
+        prompt: PROMPT_MEMORY,
+        // Use configured model or default to opus
+        model: cfg.memory?.model
+          ? Provider.parseModel(cfg.memory.model)
+          : Provider.parseModel("anthropic/claude-opus-4-5"),
+        tools: {
+          "explore-tree": true,
+          read: true,
+          grep: true,
+          glob: true,
+          list: true,
+          bash: true,
+          write: true, // Can write AGENTS.md
+          webfetch: true,
+          // Disable tools that don't make sense for memory
+          edit: false, // Use write for AGENTS.md
+          task: false,
+          todowrite: false,
+          todoread: false,
+          "exit-plan-mode": false,
+          "background-agent": false,
+        },
+        options: {},
+        permission: memoryPermission,
         mode: "subagent",
         builtIn: true,
       },
