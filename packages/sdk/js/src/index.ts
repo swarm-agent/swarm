@@ -23,7 +23,7 @@ import type { ProfileName, Profile, CustomProfile, CustomProfileConfig } from ".
 import { createSwarmProfile } from "./profiles.js"
 import { tool, type ToolDefinition, type ToolContext, type ToolResult, type ToolPermission, type ToolPermissionRequest, type ToolOptions } from "./tool.js"
 import { createSwarmMcpServer, type SwarmMcpServer, type SwarmMcpServerOptions, type McpServers } from "./mcp-server.js"
-import { startMcpServer, getContainerMcpUrl, type McpHttpServer, type McpHttpServerOptions } from "./mcp-http-server.js"
+import { startMcpServer, getContainerMcpUrl, getSecurityModeOptions, type McpHttpServer, type McpHttpServerOptions, type ContainerSecurityMode } from "./mcp-http-server.js"
 import { loadEnvFile, loadEnvString, injectEnvFile, createEnvLoader, resolveEnvVars } from "./env.js"
 import type { ZodRawShape } from "zod"
 
@@ -49,6 +49,7 @@ export type {
   McpServers,
   McpHttpServer,
   McpHttpServerOptions,
+  ContainerSecurityMode,
 }
 
 export {
@@ -62,6 +63,7 @@ export {
   // MCP HTTP Server (for advanced users who want manual control)
   startMcpServer,
   getContainerMcpUrl,
+  getSecurityModeOptions,
   
   // Env loading
   loadEnvFile,

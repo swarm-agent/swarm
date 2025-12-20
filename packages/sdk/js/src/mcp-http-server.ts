@@ -46,10 +46,13 @@ export interface McpHttpServerOptions {
   name: string
   /** Server version */
   version?: string
-  /** Port to listen on (0 = auto-assign) */
+  /** Port to listen on (0 = auto-assign). Ignored if socket is set. */
   port?: number
-  /** Hostname to bind to (default: "0.0.0.0" for container access) */
+  /** Hostname to bind to (default: "0.0.0.0" for container access). Ignored if socket is set. */
   hostname?: string
+  /** Unix socket path. If set, server listens on socket instead of TCP port.
+   * This is more secure for container communication - mount the socket into the container. */
+  socket?: string
   /** Tools to expose */
   tools: ToolDefinition<ZodRawShape>[]
   /** Permission handler for ask/pin tools */
@@ -64,12 +67,14 @@ export interface McpHttpServerOptions {
  * Running MCP HTTP server handle
  */
 export interface McpHttpServer {
-  /** Server URL (use this for mcp.add) */
+  /** Server URL (use this for mcp.add). For socket mode, this is the socket path. */
   url: string
-  /** Port number */
+  /** Port number (0 if using socket) */
   port: number
-  /** Hostname */
+  /** Hostname (empty if using socket) */
   hostname: string
+  /** Unix socket path (empty if using TCP) */
+  socket: string
   /** Server name */
   name: string
   /** Stop the server */
@@ -133,6 +138,7 @@ export async function startMcpServer(options: McpHttpServerOptions): Promise<Mcp
     version = "1.0.0",
     port = 0,
     hostname = "0.0.0.0",
+    socket: socketPath,
     tools,
     onPermission,
     onToolCall,
@@ -304,50 +310,127 @@ export async function startMcpServer(options: McpHttpServerOptions): Promise<Mcp
   if (!BunGlobal.Bun?.serve) {
     throw new Error("MCP HTTP server requires Bun runtime")
   }
-  
-  const server: BunServer = BunGlobal.Bun.serve({
-    port,
-    hostname,
-    fetch: handleRequest,
-  })
 
-  const actualPort = server.port
-  const url = `http://${hostname === "0.0.0.0" ? "localhost" : hostname}:${actualPort}`
+  // Remove existing socket file if present (prevents EADDRINUSE)
+  if (socketPath) {
+    try {
+      const fs = await import("node:fs")
+      if (fs.existsSync(socketPath)) {
+        fs.unlinkSync(socketPath)
+      }
+    } catch {
+      // Ignore - file might not exist
+    }
+  }
+
+  const server: BunServer = socketPath
+    ? BunGlobal.Bun.serve({
+        unix: socketPath,
+        fetch: handleRequest,
+      })
+    : BunGlobal.Bun.serve({
+        port,
+        hostname,
+        fetch: handleRequest,
+      })
+
+  const actualPort = socketPath ? 0 : server.port
+  const url = socketPath
+    ? `unix://${socketPath}`
+    : `http://${hostname === "0.0.0.0" ? "localhost" : hostname}:${actualPort}`
 
   return {
     url,
     port: actualPort,
-    hostname,
+    hostname: socketPath ? "" : hostname,
+    socket: socketPath ?? "",
     name,
-    stop: () => server.stop(),
+    stop: () => {
+      server.stop()
+      // Clean up socket file
+      if (socketPath) {
+        try {
+          const fs = require("node:fs")
+          if (fs.existsSync(socketPath)) {
+            fs.unlinkSync(socketPath)
+          }
+        } catch {
+          // Ignore
+        }
+      }
+    },
     tools: tools.map(t => t.name),
   }
 }
 
 /**
  * Get the URL to use for registering MCP server with a containerized agent
- * 
+ *
  * Containers can't reach "localhost" on the host. Use this to get the right URL.
- * 
+ *
  * @param server - Running MCP server
  * @param runtime - Container runtime (podman or docker)
  * @returns URL accessible from inside container
- * 
+ *
  * @example
  * ```typescript
  * const server = await startMcpServer({ name: "tools", port: 9999, tools: [...] })
- * 
+ *
  * // For non-containerized agent
  * await client.mcp.add({ body: { name: "tools", config: { type: "remote", url: server.url } } })
- * 
- * // For containerized agent
+ *
+ * // For containerized agent (bridge network)
  * const containerUrl = getContainerMcpUrl(server, "podman")
  * await client.mcp.add({ body: { name: "tools", config: { type: "remote", url: containerUrl } } })
  * ```
  */
 export function getContainerMcpUrl(server: McpHttpServer, runtime: "podman" | "docker" = "podman"): string {
+  if (server.socket) {
+    // Socket mode - container should mount the socket and use it directly
+    // This requires custom transport support in MCP client
+    throw new Error("Socket-based MCP requires mounting the socket into the container")
+  }
   // Podman: host.containers.internal
   // Docker: host.docker.internal
   const hostAlias = runtime === "podman" ? "host.containers.internal" : "host.docker.internal"
   return `http://${hostAlias}:${server.port}`
+}
+
+/**
+ * Container network security modes
+ */
+export type ContainerSecurityMode = "host" | "bridge" | "isolated"
+
+/**
+ * Get recommended container options for a security mode
+ *
+ * @param mode - Security mode
+ * @returns Partial container options
+ *
+ * Modes:
+ * - "host": Full network access (dev only)
+ * - "bridge": Isolated network, can reach host via host.containers.internal
+ * - "isolated": No network except mounted unix socket (most secure, requires socket MCP)
+ */
+export function getSecurityModeOptions(mode: ContainerSecurityMode): {
+  network: "host" | "bridge" | "none"
+  mcpNote: string
+} {
+  switch (mode) {
+    case "host":
+      return {
+        network: "host",
+        mcpNote: "MCP accessible via localhost - least secure, use for dev only",
+      }
+    case "bridge":
+      return {
+        network: "bridge",
+        mcpNote: "MCP accessible via host.containers.internal - container is isolated from localhost",
+      }
+    case "isolated":
+      return {
+        network: "none",
+        mcpNote: "MCP must use unix socket mounted into container - most secure",
+      }
+  }
 }

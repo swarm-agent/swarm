@@ -383,7 +383,24 @@ export namespace Config {
       ref: "McpRemoteConfig",
     })
 
-  export const Mcp = z.discriminatedUnion("type", [McpLocal, McpRemote])
+  export const McpSocket = z
+    .object({
+      type: z.literal("socket").describe("Unix socket transport"),
+      socket: z.string().describe("Path to unix socket file"),
+      enabled: z.boolean().optional().describe("Enable or disable the MCP server on startup"),
+      timeout: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Timeout in ms for fetching tools. Defaults to 5000 if not specified."),
+    })
+    .strict()
+    .meta({
+      ref: "McpSocketConfig",
+    })
+
+  export const Mcp = z.discriminatedUnion("type", [McpLocal, McpRemote, McpSocket])
   export type Mcp = z.infer<typeof Mcp>
 
   export const Permission = z.union([z.literal("ask"), z.literal("allow"), z.literal("deny"), z.literal("pin")])

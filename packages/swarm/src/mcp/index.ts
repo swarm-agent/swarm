@@ -208,6 +208,38 @@ export namespace MCP {
         })
     }
 
+    if (mcp.type === "socket") {
+      // Unix socket transport using Bun's fetch with unix option
+      const socketPath = mcp.socket
+      const transport = new StreamableHTTPClientTransport(new URL("http://localhost"), {
+        // Override fetch to use unix socket
+        fetch: async (url: string | URL | Request, init?: RequestInit) => {
+          return fetch(url, { ...init, unix: socketPath } as any)
+        },
+      } as any)
+
+      await experimental_createMCPClient({
+        name: "swarm",
+        transport,
+      })
+        .then((client) => {
+          log.info("connected via socket", { key, socket: socketPath })
+          mcpClient = client
+          status = { status: "connected" }
+        })
+        .catch((error) => {
+          log.error("socket mcp startup failed", {
+            key,
+            socket: socketPath,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          status = {
+            status: "failed" as const,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        })
+    }
+
     if (!status) {
       status = {
         status: "failed" as const,

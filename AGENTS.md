@@ -328,6 +328,71 @@ type ContainerOptions = {
 }
 ```
 
+### Container Security Modes
+
+**Host Network (Development)**
+```typescript
+// Container shares host network - can access localhost services directly
+const container = await spawnContainer({
+  network: "host",  // Default
+  ...
+})
+
+// MCP via localhost
+const mcpServer = await startMcpServer({
+  port: 19876,
+  hostname: "127.0.0.1",
+  tools: [...],
+})
+await container.client.mcp.add({
+  body: { name: "tools", config: { type: "remote", url: "http://localhost:19876" } },
+})
+```
+
+**Bridge Network + Unix Socket (Secure/Production)**
+
+Container is isolated from host localhost but has internet access. MCP tools accessible via mounted unix socket.
+
+```typescript
+const MCP_SOCKET = "/tmp/my-mcp.sock"
+
+// 1. Start MCP server on socket (not TCP port)
+const mcpServer = await startMcpServer({
+  socket: MCP_SOCKET,  // Unix socket instead of port
+  tools: [...],
+})
+
+// 2. Spawn container with bridge network + socket mount
+const container = await spawnContainer({
+  network: "bridge",  // Isolated from host localhost
+  volumes: [
+    { host: MCP_SOCKET, container: "/mcp.sock", readonly: false },
+  ],
+  ...
+})
+
+// 3. Register MCP with socket type
+await container.client.mcp.add({
+  body: {
+    name: "tools",
+    config: { type: "socket", socket: "/mcp.sock" },
+  },
+})
+```
+
+**Security Comparison**
+
+| Mode | Host localhost | Internet | MCP Access |
+|------|----------------|----------|------------|
+| `host` | ✅ Full access | ✅ Yes | Via localhost port |
+| `bridge` + socket | ❌ Blocked | ✅ Yes | Via mounted socket only |
+
+With bridge + socket:
+- Container **cannot** access host services (databases, APIs on localhost)
+- Container **can** access the internet (web APIs, etc.)
+- Container **can** use MCP tools via the explicitly mounted socket
+- You control exactly what the agent can do through MCP tool definitions
+
 ## Notes
 
 - Memory tool creates sections if they don't exist
