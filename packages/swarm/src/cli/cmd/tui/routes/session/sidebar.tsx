@@ -3,8 +3,12 @@ import { createMemo, For, Show, Switch, Match, createSignal, type Accessor } fro
 import { useTheme } from "../../context/theme"
 import { useGit, type GitStatusFile } from "../../context/git"
 import { useWorkspace } from "../../context/workspace"
+import { BackgroundAgentSpinner } from "@tui/ui/tool-animations"
 import path from "path"
 import type { RGBA } from "@opentui/core"
+
+// Nerd Font Icons - Background Agents
+const ICON_AGENT = "\u{eb99}" // cod-rocket
 
 // Nerd Font Icons - Workspace
 const ICON_FOLDER = "\u{ea83}" // cod-folder
@@ -217,6 +221,12 @@ export function Sidebar(props: { sessionID: string }) {
   const session = createMemo(() => sync.session.get(props.sessionID)!)
   const todos = createMemo(() => sync.data.todo[props.sessionID] ?? [])
 
+  // Background agents spawned by THIS session
+  const backgroundAgents = createMemo(() =>
+    sync.data.backgroundAgent.filter((a) => a.parentSessionID === props.sessionID),
+  )
+  const runningAgents = createMemo(() => backgroundAgents().filter((a) => a.status === "running"))
+
   // Todo filtering - active (pending/in_progress) vs completed
   const activeTodos = createMemo(() => todos().filter((t) => t.status === "pending" || t.status === "in_progress"))
   const completedCount = createMemo(() => todos().filter((t) => t.status === "completed").length)
@@ -225,6 +235,7 @@ export function Sidebar(props: { sessionID: string }) {
   const [todoExpanded, setTodoExpanded] = createSignal(true)
   const [lspExpanded, setLspExpanded] = createSignal(true)
   const [workspaceExpanded, setWorkspaceExpanded] = createSignal(true)
+  const [bgAgentsExpanded, setBgAgentsExpanded] = createSignal(true)
 
   // Git section states
   const [gitExpanded, setGitExpanded] = createSignal(true)
@@ -267,6 +278,51 @@ export function Sidebar(props: { sessionID: string }) {
                       <box flexDirection="row" gap={1}>
                         <text fg={theme.textMuted}>{ICON_FOLDER}</text>
                         <text fg={theme.text}>{truncatePath(dir, 30)}</text>
+                      </box>
+                    )}
+                  </For>
+                </box>
+              </Show>
+            </box>
+          </Show>
+
+          {/* Background Agents Section - Shows agents spawned by this session */}
+          <Show when={backgroundAgents().length > 0}>
+            <box>
+              <box flexDirection="row" gap={1} onMouseDown={() => setBgAgentsExpanded(!bgAgentsExpanded())}>
+                <text fg={theme.textMuted}>{bgAgentsExpanded() ? "▼" : "▶"}</text>
+                <Show when={runningAgents().length > 0} fallback={<text style={{ fg: "#22c55e" }}>{ICON_AGENT}</text>}>
+                  <BackgroundAgentSpinner state={runningAgents().length >= 3 ? "busy" : "active"} />
+                </Show>
+                <text fg={theme.text}>
+                  <b>Background Agents</b>
+                </text>
+                <Show when={runningAgents().length > 0}>
+                  <text style={{ fg: "#22c55e" }}>({runningAgents().length} running)</text>
+                </Show>
+              </box>
+              <Show when={bgAgentsExpanded()}>
+                <box paddingLeft={2} gap={1}>
+                  <For each={backgroundAgents()}>
+                    {(agent) => (
+                      <box flexDirection="row" gap={1}>
+                        <Switch>
+                          <Match when={agent.status === "running"}>
+                            <text style={{ fg: "#22c55e" }}>●</text>
+                          </Match>
+                          <Match when={agent.status === "completed"}>
+                            <text style={{ fg: "#22c55e" }}>✓</text>
+                          </Match>
+                          <Match when={agent.status === "failed"}>
+                            <text style={{ fg: "#ef4444" }}>✗</text>
+                          </Match>
+                          <Match when={agent.status === "aborted"}>
+                            <text style={{ fg: "#f59e0b" }}>○</text>
+                          </Match>
+                        </Switch>
+                        <text fg={agent.status === "running" ? theme.text : theme.textMuted}>
+                          {truncateMessage(agent.description, 28)}
+                        </text>
                       </box>
                     )}
                   </For>

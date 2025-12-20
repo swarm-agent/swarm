@@ -178,6 +178,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-20 | Added background agents section to sidebar showing child agents tied to parent session |
 | 2024-12-20 | Enhanced background agent indicator with description and completion state display |
 | 2024-12-20 | Config now prefers .swarm/ over .opencode/, legacy paths used as fallback only |
 | 2024-12-20 | Moved Memory.init() to InstanceBootstrap for proper Bus scope |
