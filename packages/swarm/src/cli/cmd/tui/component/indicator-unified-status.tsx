@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, createEffect, onMount, onCleanup } from "solid-js"
+import { For, Show, createMemo, createSignal, onMount, onCleanup } from "solid-js"
 import os from "os"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
@@ -10,8 +10,6 @@ import { RoundedBorder } from "@tui/component/border"
 import { RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import type { AssistantMessage } from "@swarm-ai/sdk"
-import { BackgroundAgentSpinner } from "@tui/ui/tool-animations"
-import type { BackgroundAgent } from "@/background-agent"
 
 // Truncate path intelligently - keeps last N directories
 function truncatePath(path: string, maxLen: number): string {
@@ -470,98 +468,22 @@ function ConnectionBlock() {
 function BackgroundAgentsBlock(props: { layout: LayoutConfig }) {
   const sync = useSync()
   const { theme } = useTheme()
-
-  // Track running agents
   const running = createMemo(() => sync.data.backgroundAgent.filter((a) => a.status === "running"))
 
-  // Track recently completed agents (for brief display before disappearing)
-  const [recentlyCompleted, setRecentlyCompleted] = createSignal<BackgroundAgent.Info[]>([])
-  const completedTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
-
-  // Watch for agents that transition to completed/failed and add to recently completed
-  createEffect(() => {
-    const agents = sync.data.backgroundAgent
-    for (const agent of agents) {
-      if (agent.status === "completed" || agent.status === "failed") {
-        // Only add if not already tracked
-        if (!recentlyCompleted().find((a) => a.id === agent.id) && !completedTimeouts.has(agent.id)) {
-          setRecentlyCompleted((prev) => [...prev, agent])
-          // Remove after 3 seconds
-          const timeout = setTimeout(() => {
-            setRecentlyCompleted((prev) => prev.filter((a) => a.id !== agent.id))
-            completedTimeouts.delete(agent.id)
-          }, 3000)
-          completedTimeouts.set(agent.id, timeout)
-        }
-      }
-    }
-  })
-
-  // Cleanup timeouts on unmount
-  onCleanup(() => {
-    for (const timeout of completedTimeouts.values()) {
-      clearTimeout(timeout)
-    }
-  })
-
-  // Primary agent to display (running takes priority over recently completed)
-  const displayAgent = createMemo(() => running()[0] ?? recentlyCompleted()[0])
-  const isCompleted = createMemo(() => {
-    const agent = displayAgent()
-    return agent?.status === "completed" || agent?.status === "failed"
-  })
-  const isFailed = createMemo(() => displayAgent()?.status === "failed")
-  const extraCount = createMemo(() => Math.max(0, running().length - 1))
-
-  // Truncate description if too long
-  const description = createMemo(() => {
-    const desc = displayAgent()?.description ?? "Background agent"
-    const maxLen = props.layout.showBgAgentCount ? 30 : 20
-    return desc.length > maxLen ? desc.slice(0, maxLen - 1) + "…" : desc
-  })
-
-  // Determine spinner state based on load
-  const spinnerState = createMemo(() => {
-    const count = running().length
-    if (count >= 3) return "busy" as const
-    if (count >= 1) return "active" as const
-    return "idle" as const
-  })
-
-  // Border color: accent when running, success when completed, error when failed
-  const borderColor = createMemo(() => {
-    if (isFailed()) return theme.error
-    if (isCompleted()) return theme.success
-    return theme.accent
-  })
-
   return (
-    <Show when={props.layout.showBgAgents && (running().length > 0 || recentlyCompleted().length > 0)}>
+    <Show when={props.layout.showBgAgents && running().length > 0}>
       <box
         border={["left", "right", "top", "bottom"]}
         customBorderChars={RoundedBorder.customBorderChars}
-        borderColor={borderColor()}
+        borderColor={theme.accent}
         paddingLeft={1}
         paddingRight={1}
         flexShrink={0}
       >
         <box flexDirection="row" gap={1}>
-          {/* Spinner when running, checkmark/X when completed */}
-          <Show
-            when={!isCompleted()}
-            fallback={<text fg={isFailed() ? theme.error : theme.success}>{isFailed() ? "✗" : "✓"}</text>}
-          >
-            <BackgroundAgentSpinner state={spinnerState()} />
-          </Show>
-
-          {/* Agent description */}
+          <text fg={theme.accent}>⚡</text>
           <Show when={props.layout.showBgAgentCount}>
-            <text fg={isCompleted() ? (isFailed() ? theme.error : theme.success) : theme.text}>{description()}</text>
-          </Show>
-
-          {/* Extra count if multiple running */}
-          <Show when={extraCount() > 0}>
-            <text fg={theme.textMuted}>(+{extraCount()})</text>
+            <text fg={theme.text}>{running().length}</text>
           </Show>
         </box>
       </box>
