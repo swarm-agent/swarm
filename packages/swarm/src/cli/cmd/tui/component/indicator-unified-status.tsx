@@ -468,15 +468,25 @@ function ConnectionBlock() {
 function BackgroundAgentsBlock(props: { layout: LayoutConfig }) {
   const sync = useSync()
   const { theme } = useTheme()
-  // Show all running background agents globally with muted styling
+  // Show all running background agents globally
   const running = createMemo(() => sync.data.backgroundAgent.filter((a) => a.status === "running"))
 
   return (
     <Show when={props.layout.showBgAgents && running().length > 0}>
-      <box flexDirection="row" gap={1} flexShrink={0}>
-        <text fg={theme.textMuted}>bg</text>
-        <text fg={theme.textMuted}>⚡</text>
-        <text fg={theme.textMuted}>{running().length}</text>
+      <box
+        border={["left", "right", "top", "bottom"]}
+        customBorderChars={RoundedBorder.customBorderChars}
+        borderColor={theme.textMuted}
+        paddingLeft={1}
+        paddingRight={1}
+        flexShrink={0}
+      >
+        <box flexDirection="row" gap={1}>
+          <text fg={theme.textMuted}>⚡</text>
+          <Show when={props.layout.showBgAgentCount}>
+            <text fg={theme.textMuted}>{running().length}</text>
+          </Show>
+        </box>
       </box>
     </Show>
   )

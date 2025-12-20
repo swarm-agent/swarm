@@ -179,6 +179,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-20 | Restored original background agent indicator style with border |
 | 2024-12-20 | Simplified background agent indicator to global muted display |
 | 2024-12-20 | Use useRoute() directly in BackgroundAgentsBlock for proper SolidJS reactivity |
 | 2024-12-20 | Fixed SolidJS reactivity for background agent session filtering in status indicator |
@@ -188,7 +189,6 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 | 2024-12-20 | Added background agents section to sidebar showing child agents tied to parent session |
 | 2024-12-20 | Enhanced background agent indicator with description and completion state display |
 | 2024-12-20 | Config now prefers .swarm/ over .opencode/, legacy paths used as fallback only |
-| 2024-12-20 | Moved Memory.init() to InstanceBootstrap for proper Bus scope |
 
 ## Notes
 
