@@ -95,11 +95,6 @@ export const createClient = (config: Config = {}): Client => {
     const _fetch = opts.fetch!;
     let response = await _fetch(request);
 
-    // Guard against undefined response (can happen with custom fetch implementations)
-    if (!response) {
-      throw new Error(`Fetch returned undefined for ${request.method} ${request.url}`);
-    }
-
     for (const fn of interceptors.response._fns) {
       if (fn) {
         response = await fn(response, request, opts);

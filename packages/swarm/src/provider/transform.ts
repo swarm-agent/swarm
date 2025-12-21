@@ -193,7 +193,7 @@ export namespace ProviderTransform {
         if (budgetTokens + standardLimit <= modelCap) {
           return standardLimit
         }
-        return modelCap - budgetTokens
+        return Math.max(1, modelCap - budgetTokens)
       }
     }
 

@@ -179,6 +179,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-21 | Regenerated SDK types and fixed budget token calculation in provider transform |
 | 2024-12-20 | Restored original background agent indicator style with border |
 | 2024-12-20 | Simplified background agent indicator to global muted display |
 | 2024-12-20 | Use useRoute() directly in BackgroundAgentsBlock for proper SolidJS reactivity |
@@ -188,7 +189,6 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 | 2024-12-20 | Simplified status bar indicator back to icon + count (reverted complex display) |
 | 2024-12-20 | Added background agents section to sidebar showing child agents tied to parent session |
 | 2024-12-20 | Enhanced background agent indicator with description and completion state display |
-| 2024-12-20 | Config now prefers .swarm/ over .opencode/, legacy paths used as fallback only |
 
 ## Containerized Agents (SDK)
 

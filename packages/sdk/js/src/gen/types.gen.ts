@@ -458,6 +458,25 @@ export type McpRemoteConfig = {
     timeout?: number;
 };
 
+export type McpSocketConfig = {
+    /**
+     * Unix socket transport
+     */
+    type: 'socket';
+    /**
+     * Path to unix socket file
+     */
+    socket: string;
+    /**
+     * Enable or disable the MCP server on startup
+     */
+    enabled?: boolean;
+    /**
+     * Timeout in ms for fetching tools. Defaults to 5000 if not specified.
+     */
+    timeout?: number;
+};
+
 /**
  * @deprecated Always uses stretch layout.
  */
@@ -641,7 +660,7 @@ export type Config = {
      * MCP (Model Context Protocol) server configurations
      */
     mcp?: {
-        [key: string]: McpLocalConfig | McpRemoteConfig;
+        [key: string]: McpLocalConfig | McpRemoteConfig | McpSocketConfig;
     };
     formatter?: {
         [key: string]: {
@@ -706,6 +725,23 @@ export type Config = {
             };
             webfetch?: 'ask' | 'allow' | 'deny' | 'pin';
         };
+    };
+    /**
+     * Memory system configuration - keeps AGENTS.md in sync with code changes
+     */
+    memory?: {
+        /**
+         * Enable the memory system - auto-updates AGENTS.md after commits
+         */
+        enabled?: boolean;
+        /**
+         * Automatically update AGENTS.md after git commits (when memory is enabled)
+         */
+        autoCommit?: boolean;
+        /**
+         * Model to use for memory updates (default: anthropic/claude-sonnet-4-20250514)
+         */
+        model?: string;
     };
     /**
      * Process idle timeout in minutes. Opencode will exit after this duration of user inactivity. Set to 0 to disable. Default: disabled.
@@ -1425,6 +1461,57 @@ export type EventInstallationUpdated = {
     };
 };
 
+export type Permission = {
+    id: string;
+    type: string;
+    pattern?: string | Array<string>;
+    sessionID: string;
+    messageID: string;
+    callID?: string;
+    title: string;
+    metadata: {
+        [key: string]: unknown;
+    };
+    time: {
+        created: number;
+    };
+};
+
+export type EventPermissionUpdated = {
+    type: 'permission.updated';
+    properties: Permission;
+};
+
+export type EventPermissionReplied = {
+    type: 'permission.replied';
+    properties: {
+        sessionID: string;
+        permissionID: string;
+        response: 'once' | 'always' | 'reject' | {
+            type: 'reject';
+            message: string;
+        } | {
+            type: 'once';
+            message: string;
+            agent: string;
+        } | {
+            type: 'once';
+            message: string;
+        } | {
+            type: 'once';
+            answers: {
+                [key: string]: string | Array<string>;
+            };
+        } | {
+            type: 'once' | 'always';
+            agent?: string;
+        } | {
+            type: 'pin';
+            pin: string;
+        };
+    };
+};
+
 export type EventLspClientDiagnostics = {
     type: 'lsp.client.diagnostics';
     properties: {
@@ -1603,57 +1690,6 @@ export type EventSessionCompactingProgress = {
     };
 };
 
-export type Permission = {
-    id: string;
-    type: string;
-    pattern?: string | Array<string>;
-    sessionID: string;
-    messageID: string;
-    callID?: string;
-    title: string;
-    metadata: {
-        [key: string]: unknown;
-    };
-    time: {
-        created: number;
-    };
-};
-
-export type EventPermissionUpdated = {
-    type: 'permission.updated';
-    properties: Permission;
-};
-
-export type EventPermissionReplied = {
-    type: 'permission.replied';
-    properties: {
-        sessionID: string;
-        permissionID: string;
-        response: 'once' | 'always' | 'reject' | {
-            type: 'reject';
-            message: string;
-        } | {
-            type: 'once';
-            message: string;
-            agent: string;
-        } | {
-            type: 'once';
-            message: string;
-        } | {
-            type: 'once';
-            answers: {
-                [key: string]: string | Array<string>;
-            };
-        } | {
-            type: 'once' | 'always';
-            agent?: string;
-        } | {
-            type: 'pin';
-            pin: string;
-        };
-    };
-};
-
 export type EventBackgroundAgentSpawned = {
     type: 'background-agent.spawned';
     properties: {
@@ -1680,6 +1716,16 @@ export type EventBackgroundAgentFailed = {
     properties: {
         info: BackgroundAgent;
         error: string;
+    };
+};
+
+export type EventBashExecuted = {
+    type: 'bash.executed';
+    properties: {
+        command: string;
+        exitCode: number | null;
+        sessionID: string;
+        isCommit: boolean;
     };
 };
 
@@ -1779,7 +1825,7 @@ export type EventFileWatcherUpdated = {
     };
 };
 
-export type Event = EventInstallationUpdated | EventLspClientDiagnostics | EventLspUpdated | EventMessageUpdated | EventMessageRemoved | EventMessagePartUpdated | EventMessagePartRemoved | EventSessionCompleted | EventSessionAborted | EventSessionAgentSwitch | EventProfileCreated | EventProfileUpdated | EventProfileDeleted | EventProfileStarting | EventProfileStarted | EventProfileStopping | EventProfileStopped | EventProfileError | EventTodoUpdated | EventSessionCompacted | EventSessionCompactingProgress | EventPermissionUpdated | EventPermissionReplied | EventBackgroundAgentSpawned | EventBackgroundAgentUpdated | EventBackgroundAgentCompleted | EventBackgroundAgentFailed | EventFileEdited | EventSessionPlanUpdated | EventCommandExecuted | EventSessionIdle | EventSessionCreated | EventSessionUpdated | EventSessionDeleted | EventSessionDiff | EventSessionError | EventTuiPromptAppend | EventTuiCommandExecute | EventTuiToastShow | EventSwarmStatusUpdated | EventServerConnected | EventFileWatcherUpdated;
+export type Event = EventInstallationUpdated | EventPermissionUpdated | EventPermissionReplied | EventLspClientDiagnostics | EventLspUpdated | EventMessageUpdated | EventMessageRemoved | EventMessagePartUpdated | EventMessagePartRemoved | EventSessionCompleted | EventSessionAborted | EventSessionAgentSwitch | EventProfileCreated | EventProfileUpdated | EventProfileDeleted | EventProfileStarting | EventProfileStarted | EventProfileStopping | EventProfileStopped | EventProfileError | EventTodoUpdated | EventSessionCompacted | EventSessionCompactingProgress | EventBackgroundAgentSpawned | EventBackgroundAgentUpdated | EventBackgroundAgentCompleted | EventBackgroundAgentFailed | EventBashExecuted | EventFileEdited | EventSessionPlanUpdated | EventCommandExecuted | EventSessionIdle | EventSessionCreated | EventSessionUpdated | EventSessionDeleted | EventSessionDiff | EventSessionError | EventTuiPromptAppend | EventTuiCommandExecute | EventTuiToastShow | EventSwarmStatusUpdated | EventServerConnected | EventFileWatcherUpdated;
 
 export type ProjectListData = {
     body?: never;
@@ -3509,7 +3555,7 @@ export type McpStatusResponse = McpStatusResponses[keyof McpStatusResponses];
 export type McpAddData = {
     body?: {
         name: string;
-        config: McpLocalConfig | McpRemoteConfig;
+        config: McpLocalConfig | McpRemoteConfig | McpSocketConfig;
     };
     path?: never;
     query?: {
