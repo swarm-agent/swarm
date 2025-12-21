@@ -51,7 +51,10 @@ export interface McpHttpServerOptions {
   /** Hostname to bind to (default: "0.0.0.0" for container access). Ignored if socket is set. */
   hostname?: string
   /** Unix socket path. If set, server listens on socket instead of TCP port.
-   * This is more secure for container communication - mount the socket into the container. */
+   * This is more secure for container communication - mount the socket into the container.
+   *
+   * WARNING: Unix sockets can become unresponsive if bind-mounted into containers
+   * (e.g., podman/docker). Enable socketHealthCheck to auto-recover from this. */
   socket?: string
   /** Tools to expose */
   tools: ToolDefinition<ZodRawShape>[]
@@ -61,6 +64,22 @@ export interface McpHttpServerOptions {
   onToolCall?: (name: string, args: Record<string, unknown>) => void
   /** Called when a tool completes */
   onToolResult?: (name: string, result: ToolResult) => void
+  /**
+   * Enable health check for socket mode. When enabled, periodically verifies
+   * the socket is still accepting connections and auto-recovers if not.
+   *
+   * This is STRONGLY RECOMMENDED when mounting the socket into containers,
+   * as container bind-mounts can silently kill the socket listener.
+   *
+   * Default: true for socket mode, ignored for TCP mode
+   */
+  socketHealthCheck?: boolean
+  /** Health check interval in milliseconds. Default: 2000 (2 seconds) */
+  socketHealthCheckInterval?: number
+  /** Called when socket dies and is recovered. Useful for logging/debugging. */
+  onSocketRecovered?: () => void
+  /** Called when socket health check fails (before recovery attempt) */
+  onSocketDead?: (error: Error) => void
 }
 
 /**
@@ -77,10 +96,12 @@ export interface McpHttpServer {
   socket: string
   /** Server name */
   name: string
-  /** Stop the server */
+  /** Stop the server (also stops health check timer) */
   stop: () => void
   /** List tool names */
   tools: string[]
+  /** Number of times socket has been recovered (0 if never died) */
+  recoveryCount: number
 }
 
 /**
@@ -143,6 +164,10 @@ export async function startMcpServer(options: McpHttpServerOptions): Promise<Mcp
     onPermission,
     onToolCall,
     onToolResult,
+    socketHealthCheck = true, // Default ON for socket mode
+    socketHealthCheckInterval = 2000,
+    onSocketRecovered,
+    onSocketDead,
   } = options
 
   // Build tool map
@@ -311,8 +336,9 @@ export async function startMcpServer(options: McpHttpServerOptions): Promise<Mcp
     throw new Error("MCP HTTP server requires Bun runtime")
   }
 
-  // Remove existing socket file if present (prevents EADDRINUSE)
-  if (socketPath) {
+  // Helper to remove socket file
+  async function removeSocketFile() {
+    if (!socketPath) return
     try {
       const fs = await import("node:fs")
       if (fs.existsSync(socketPath)) {
@@ -323,31 +349,208 @@ export async function startMcpServer(options: McpHttpServerOptions): Promise<Mcp
     }
   }
 
-  const server: BunServer = socketPath
-    ? BunGlobal.Bun.serve({
-        unix: socketPath,
-        fetch: handleRequest,
+  // Helper to create/recreate the server
+  function createServer(): BunServer {
+    console.log(`[MCP:create] Creating server, socketPath=${socketPath}, port=${port}`)
+    const srv = socketPath
+      ? BunGlobal.Bun.serve({
+          unix: socketPath,
+          fetch: handleRequest,
+        })
+      : BunGlobal.Bun.serve({
+          port,
+          hostname,
+          fetch: handleRequest,
+        })
+    console.log(`[MCP:create] Server created, port=${srv.port}`)
+    return srv
+  }
+
+  // Remove existing socket file if present (prevents EADDRINUSE)
+  console.log(`[MCP:init] Removing existing socket file if present...`)
+  await removeSocketFile()
+
+  // Create initial server
+  console.log(`[MCP:init] Creating initial server...`)
+  let server: BunServer = createServer()
+  console.log(`[MCP:init] Initial server created`)
+  let recoveryCount = 0
+  let healthCheckTimer: ReturnType<typeof setInterval> | null = null
+  let stopped = false
+
+  // Socket health check - tests if socket is still accepting connections
+  // Uses subprocess to avoid self-connection issues within same event loop
+  async function checkSocketHealth(): Promise<boolean> {
+    if (!socketPath || stopped) {
+      console.log(`[MCP:health] Skip check: socketPath=${socketPath}, stopped=${stopped}`)
+      return true
+    }
+
+    const fs = await import("node:fs")
+
+    // Step 1: Check if socket file exists
+    const exists = fs.existsSync(socketPath)
+    console.log(`[MCP:health] Socket file exists: ${exists}`)
+    if (!exists) {
+      console.log(`[MCP:health] FAIL - socket file missing`)
+      return false
+    }
+
+    // Step 2: Check socket file stats
+    try {
+      const stats = fs.statSync(socketPath)
+      console.log(`[MCP:health] Socket stats: isSocket=${stats.isSocket()}, mode=${stats.mode.toString(8)}`)
+    } catch (e) {
+      console.log(`[MCP:health] FAIL - cannot stat socket: ${e}`)
+      return false
+    }
+
+    // Step 3: Use curl subprocess to test actual connectivity
+    // This avoids any issues with self-connection in same event loop
+    try {
+      console.log(`[MCP:health] Testing with curl subprocess...`)
+      const proc = Bun.spawn(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--unix-socket", socketPath, "http://localhost/"], {
+        stdout: "pipe",
+        stderr: "pipe",
       })
-    : BunGlobal.Bun.serve({
-        port,
-        hostname,
-        fetch: handleRequest,
-      })
+
+      const exitCode = await proc.exited
+      const stdout = await new Response(proc.stdout).text()
+      const stderr = await new Response(proc.stderr).text()
+
+      console.log(`[MCP:health] curl exit=${exitCode}, stdout="${stdout}", stderr="${stderr.slice(0, 100)}"`)
+
+      if (exitCode === 0 && stdout.startsWith("2")) {
+        console.log(`[MCP:health] SUCCESS - socket responding`)
+        return true
+      } else {
+        console.log(`[MCP:health] FAIL - curl failed or non-2xx response`)
+        return false
+      }
+    } catch (e) {
+      console.log(`[MCP:health] FAIL - curl subprocess error: ${e}`)
+      return false
+    }
+  }
+
+  // Recovery function
+  async function recoverSocket(): Promise<void> {
+    if (stopped) {
+      console.log(`[MCP:recover] Skip - stopped=${stopped}`)
+      return
+    }
+
+    console.log(`[MCP:recover] Starting recovery...`)
+
+    try {
+      // Stop old server with force
+      console.log(`[MCP:recover] Stopping old server...`)
+      try {
+        server.stop(true)
+        console.log(`[MCP:recover] Old server stopped`)
+      } catch (e) {
+        console.log(`[MCP:recover] Old server stop failed (expected if already dead): ${e}`)
+      }
+
+      // Small delay to let OS release socket
+      console.log(`[MCP:recover] Waiting 100ms for OS to release socket...`)
+      await new Promise(r => setTimeout(r, 100))
+
+      // Remove stale socket file
+      console.log(`[MCP:recover] Removing stale socket file...`)
+      await removeSocketFile()
+
+      // Double-check and force remove if needed
+      const fs = await import("node:fs")
+      if (socketPath && fs.existsSync(socketPath)) {
+        console.log(`[MCP:recover] Socket still exists, force removing...`)
+        try { fs.unlinkSync(socketPath) } catch (e) {
+          console.log(`[MCP:recover] Force remove failed: ${e}`)
+        }
+      }
+
+      // Create new server
+      console.log(`[MCP:recover] Creating new server...`)
+      server = createServer()
+      console.log(`[MCP:recover] New server created`)
+
+      // Small delay to let server bind
+      console.log(`[MCP:recover] Waiting 50ms for server to bind...`)
+      await new Promise(r => setTimeout(r, 50))
+
+      // Verify socket file exists
+      if (socketPath) {
+        const exists = fs.existsSync(socketPath)
+        console.log(`[MCP:recover] Socket file exists after create: ${exists}`)
+      }
+
+      // Verify by attempting connection
+      console.log(`[MCP:recover] Verifying with health check...`)
+      const testResult = await checkSocketHealth()
+      console.log(`[MCP:recover] Health check result: ${testResult}`)
+
+      if (testResult) {
+        recoveryCount++
+        console.log(`[MCP:recover] SUCCESS - recovery count: ${recoveryCount}`)
+        onSocketRecovered?.()
+      } else {
+        console.log(`[MCP:recover] FAIL - socket not responding after recovery`)
+      }
+    } catch (error) {
+      console.error(`[MCP:recover] EXCEPTION:`, error)
+    }
+  }
+
+  // Start health check for socket mode
+  if (socketPath && socketHealthCheck) {
+    console.log(`[MCP:init] Starting health check timer, interval=${socketHealthCheckInterval}ms`)
+    healthCheckTimer = setInterval(async () => {
+      if (stopped) {
+        console.log(`[MCP:timer] Skip - stopped`)
+        return
+      }
+
+      console.log(`[MCP:timer] Running health check...`)
+      const healthy = await checkSocketHealth()
+      console.log(`[MCP:timer] Health check result: ${healthy}`)
+
+      if (!healthy && !stopped) {
+        console.log(`[MCP:timer] Socket DEAD - triggering recovery`)
+        const error = new Error(`Socket ${socketPath} stopped accepting connections`)
+        onSocketDead?.(error)
+        await recoverSocket()
+        console.log(`[MCP:timer] Recovery complete, count: ${recoveryCount}`)
+      } else if (healthy) {
+        console.log(`[MCP:timer] Socket healthy, no action needed`)
+      }
+    }, socketHealthCheckInterval)
+
+    // Don't keep process alive just for health check
+    if (healthCheckTimer.unref) {
+      healthCheckTimer.unref()
+    }
+  }
 
   const actualPort = socketPath ? 0 : server.port
   const url = socketPath
     ? `unix://${socketPath}`
     : `http://${hostname === "0.0.0.0" ? "localhost" : hostname}:${actualPort}`
 
-  return {
+  // Return handle with recovery count getter
+  const handle: McpHttpServer = {
     url,
     port: actualPort,
     hostname: socketPath ? "" : hostname,
     socket: socketPath ?? "",
     name,
     stop: () => {
+      stopped = true
+      if (healthCheckTimer) {
+        clearInterval(healthCheckTimer)
+        healthCheckTimer = null
+      }
       server.stop()
-      // Clean up socket file
+      // Clean up socket file synchronously
       if (socketPath) {
         try {
           const fs = require("node:fs")
@@ -360,7 +563,12 @@ export async function startMcpServer(options: McpHttpServerOptions): Promise<Mcp
       }
     },
     tools: tools.map(t => t.name),
+    get recoveryCount() {
+      return recoveryCount
+    },
   }
+
+  return handle
 }
 
 /**
