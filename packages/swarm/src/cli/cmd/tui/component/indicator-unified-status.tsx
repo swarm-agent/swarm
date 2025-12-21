@@ -281,10 +281,14 @@ function CurrentSessionBlock(props: { hyprWorkspace?: number; layout: LayoutConf
     const m = model()
     if (!m) return undefined
     let name = m.replace(/\s*\([^)]*\)\s*/g, "").trim().replace(/^Claude\s+/i, "")
-    if (name.toLowerCase().includes("opus")) return "opus"
-    if (name.toLowerCase().includes("sonnet")) return "sonnet"
-    if (name.toLowerCase().includes("haiku")) return "haiku"
-    return name.toLowerCase().slice(0, 8)
+    const lower = name.toLowerCase()
+    // Extract version number for Claude models (e.g., "4.5", "4-5", "4.0", "4-0")
+    const versionMatch = lower.match(/(\d+)[.-](\d+)/)
+    const version = versionMatch ? ` ${versionMatch[1]}.${versionMatch[2]}` : ""
+    if (lower.includes("opus")) return `opus${version}`
+    if (lower.includes("sonnet")) return `sonnet${version}`
+    if (lower.includes("haiku")) return `haiku${version}`
+    return name.toLowerCase().slice(0, 10)
   }
 
   const cwd = () => truncatePath(process.cwd().replace(os.homedir(), "~"), props.layout.pathMaxLen)
@@ -557,10 +561,14 @@ export function UnifiedStatusBar() {
     const m = local.model.parsed().model
     if (!m) return undefined
     let name = m.replace(/\s*\([^)]*\)\s*/g, "").trim().replace(/^Claude\s+/i, "")
-    if (name.toLowerCase().includes("opus")) return "opus"
-    if (name.toLowerCase().includes("sonnet")) return "sonnet"
-    if (name.toLowerCase().includes("haiku")) return "haiku"
-    return name.toLowerCase().slice(0, 8)
+    const lower = name.toLowerCase()
+    // Extract version number for Claude models (e.g., "4.5", "4-5", "4.0", "4-0")
+    const versionMatch = lower.match(/(\d+)[.-](\d+)/)
+    const version = versionMatch ? ` ${versionMatch[1]}.${versionMatch[2]}` : ""
+    if (lower.includes("opus")) return `opus${version}`
+    if (lower.includes("sonnet")) return `sonnet${version}`
+    if (lower.includes("haiku")) return `haiku${version}`
+    return name.toLowerCase().slice(0, 10)
   })
 
   // Smart layout calculation

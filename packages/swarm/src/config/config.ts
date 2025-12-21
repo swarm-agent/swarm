@@ -31,22 +31,28 @@ export namespace Config {
       log.debug("loaded custom config", { path: Flag.SWARM_CONFIG })
     }
 
-    // Load project-level config files - prefer swarm.*, fall back to opencode.* (legacy)
-    const swarmFiles = await Filesystem.findUp("swarm.json", Instance.directory, Instance.worktree)
-    const swarmcFiles = await Filesystem.findUp("swarm.jsonc", Instance.directory, Instance.worktree)
-    const hasSwarmConfig = swarmFiles.length > 0 || swarmcFiles.length > 0
+    // Load project-level config files - prefer .swarm/, fall back to .opencode/ (legacy)
+    // Check for .swarm/ directory with config files
+    const swarmDirConfigs = await Array.fromAsync(
+      Filesystem.up({
+        targets: [".swarm/swarm.json", ".swarm/swarm.jsonc"],
+        start: Instance.directory,
+        stop: Instance.worktree,
+      }),
+    )
+    const hasSwarmConfig = swarmDirConfigs.length > 0
     
     if (hasSwarmConfig) {
-      // Use swarm config files
-      for (const file of ["swarm.jsonc", "swarm.json"]) {
+      // Use .swarm/ config files
+      for (const file of [".swarm/swarm.jsonc", ".swarm/swarm.json"]) {
         const found = await Filesystem.findUp(file, Instance.directory, Instance.worktree)
         for (const resolved of found.toReversed()) {
           result = mergeDeep(result, await loadFile(resolved))
         }
       }
     } else {
-      // Fall back to legacy opencode config files
-      for (const file of ["opencode.json", "opencode.jsonc"]) {
+      // Fall back to legacy .opencode/ config files, then root-level opencode.*
+      for (const file of [".opencode/opencode.jsonc", ".opencode/opencode.json", "opencode.jsonc", "opencode.json"]) {
         const found = await Filesystem.findUp(file, Instance.directory, Instance.worktree)
         for (const resolved of found.toReversed()) {
           result = mergeDeep(result, await loadFile(resolved))
