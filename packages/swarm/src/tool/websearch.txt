@@ -10,3 +10,7 @@ Usage notes:
   - Search types: 'auto' (balanced), 'fast' (quick results), 'deep' (comprehensive search)
   - Default returns 8 results with up to 10000 characters of context per result
   - When researching a topic, launch multiple targeted searches at once rather than sequential searches
+
+Content modes:
+  - 'smart' (default): Returns LLM-generated summaries + key highlights. Compact but high quality - best for most searches.
+  - 'detailed': Returns full text context. Use when you need complete information from pages.

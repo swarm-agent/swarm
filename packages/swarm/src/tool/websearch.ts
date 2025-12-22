@@ -11,7 +11,10 @@ const API_CONFIG = {
     SEARCH: "/search",
   },
   DEFAULT_NUM_RESULTS: 8,
+  // Context limits optimized for LLM consumption
+  // Exa recommends 10000+ for best RAG results, but we balance with context window
   DEFAULT_CONTEXT_CHARS: 10000,
+  COMPACT_CONTEXT_CHARS: 5000,
   // Rate limiting - generous for API key users
   MAX_REQUESTS_PER_MINUTE: 10,
   RATE_LIMIT_WINDOW_MS: 60_000,
@@ -72,6 +75,8 @@ interface ExaSearchRequest {
   numResults?: number
   contents?: {
     text?: boolean | { maxCharacters?: number }
+    highlights?: boolean | { query?: string; numSentences?: number; highlightsPerUrl?: number }
+    summary?: boolean | { query?: string }
     livecrawl?: "never" | "fallback" | "preferred" | "always"
   }
   context?: boolean | { maxCharacters?: number }
@@ -124,6 +129,12 @@ export const WebSearchTool = Tool.define("websearch", {
       .number()
       .optional()
       .describe("Maximum characters for context per result (default: 10000)"),
+    mode: z
+      .enum(["smart", "detailed"])
+      .optional()
+      .describe(
+        "Content mode - 'smart': highlights + summaries for compact results (default), 'detailed': full text context"
+      ),
   }),
   async execute(params, ctx) {
     // Rate limit check
@@ -166,19 +177,37 @@ export const WebSearchTool = Tool.define("websearch", {
     // Record this request for rate limiting
     rateLimiter.record()
 
+    const mode = params.mode || "smart"
+    const numResults = Math.min(params.numResults || API_CONFIG.DEFAULT_NUM_RESULTS, 100)
+
     // Build request per Exa API spec
+    // "smart" mode: Use highlights + summary for compact, high-quality extraction
+    // "detailed" mode: Use full context string for comprehensive results
     const searchRequest: ExaSearchRequest = {
       query: params.query,
       type: params.type || "auto",
-      numResults: Math.min(params.numResults || API_CONFIG.DEFAULT_NUM_RESULTS, 100),
-      // Use context mode - combines all results into one LLM-friendly string
-      context: {
-        maxCharacters: params.contextMaxCharacters || API_CONFIG.DEFAULT_CONTEXT_CHARS,
-      },
+      numResults,
       contents: {
-        text: true,
         livecrawl: params.livecrawl || "fallback",
+        ...(mode === "smart"
+          ? {
+              // Smart mode: Exa extracts key highlights and generates summaries
+              // Much more compact but retains the most relevant information
+              highlights: { highlightsPerUrl: 3, numSentences: 2 },
+              summary: true,
+              text: { maxCharacters: 1500 }, // Backup text, limited
+            }
+          : {
+              // Detailed mode: Full text with context string
+              text: true,
+            }),
       },
+      // Context string for RAG - only in detailed mode or as backup
+      ...(mode === "detailed" && {
+        context: {
+          maxCharacters: params.contextMaxCharacters || API_CONFIG.DEFAULT_CONTEXT_CHARS,
+        },
+      }),
     }
 
     const controller = new AbortController()
@@ -207,12 +236,13 @@ export const WebSearchTool = Tool.define("websearch", {
 
       const data: ExaSearchResponse = await response.json()
 
-      // Prefer context string (best for LLM consumption)
-      if (data.context) {
+      // Detailed mode: prefer context string (best for comprehensive LLM consumption)
+      if (mode === "detailed" && data.context) {
         return {
           output: data.context,
           title: `Web search: ${params.query}`,
           metadata: {
+            mode: "detailed",
             requestId: data.requestId,
             resultCount: data.results?.length || 0,
             searchType: data.resolvedSearchType,
@@ -222,26 +252,44 @@ export const WebSearchTool = Tool.define("websearch", {
         }
       }
 
-      // Fallback: format individual results
+      // Smart mode: format with highlights + summaries (compact but high quality)
       if (data.results && data.results.length > 0) {
-        const formattedResults = data.results.map((result, i) => {
-          const parts = [`Title: ${result.title}`, `URL: ${result.url}`]
-          if (result.publishedDate) {
-            parts.push(`Published Date: ${result.publishedDate}`)
-          }
-          if (result.author) {
-            parts.push(`Author: ${result.author}`)
-          }
-          if (result.text) {
-            parts.push(`Text: ${result.text}`)
-          }
-          return parts.join("\n")
-        }).join("\n\n---\n\n")
+        const formattedResults = data.results
+          .map((result) => {
+            const parts = [`**${result.title}**`, `URL: ${result.url}`]
+
+            if (result.publishedDate) {
+              parts.push(`Published: ${result.publishedDate}`)
+            }
+            if (result.author) {
+              parts.push(`Author: ${result.author}`)
+            }
+
+            // Prefer summary (LLM-generated, very compact)
+            if (result.summary) {
+              parts.push(`\nSummary: ${result.summary}`)
+            }
+
+            // Add highlights (key excerpts)
+            if (result.highlights && result.highlights.length > 0) {
+              parts.push(`\nKey excerpts:\n${result.highlights.map((h) => `• ${h}`).join("\n")}`)
+            }
+
+            // Fallback to truncated text if no summary/highlights
+            if (!result.summary && (!result.highlights || result.highlights.length === 0) && result.text) {
+              const truncated = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text
+              parts.push(`\n${truncated}`)
+            }
+
+            return parts.join("\n")
+          })
+          .join("\n\n---\n\n")
 
         return {
           output: formattedResults,
           title: `Web search: ${params.query}`,
           metadata: {
+            mode,
             requestId: data.requestId,
             resultCount: data.results.length,
             searchType: data.resolvedSearchType,
@@ -255,8 +303,12 @@ export const WebSearchTool = Tool.define("websearch", {
         output: "No search results found. Please try a different query.",
         title: `Web search: ${params.query}`,
         metadata: {
+          mode,
           requestId: data.requestId,
+          resultCount: 0,
+          searchType: data.resolvedSearchType,
           rateLimitRemaining: rateLimiter.remaining(),
+          cost: data.costDollars?.total,
         },
       }
     } catch (error) {
