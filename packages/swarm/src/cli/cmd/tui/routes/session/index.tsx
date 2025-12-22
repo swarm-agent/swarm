@@ -92,6 +92,8 @@ import {
   BackgroundAgentSpinner,
   GitToolAnimation,
   type GitOpType,
+  SwarmTaskToolAnimation,
+  SwarmThemeToolAnimation,
 } from "@tui/ui/tool-animations"
 import { getSpinner } from "@tui/ui/spinner-definitions"
 import { getToolSpinner } from "@tui/ui/tool-spinner-map"
@@ -2767,6 +2769,68 @@ ToolRegistry.register<typeof ManualCommandTool>({
         >
           <CopyBlock command={command()} label={reason()} icon="⚠️" />
         </Show>
+      </ToolCard>
+    )
+  },
+})
+
+// Swarm-Task Tool - Human-in-the-loop approval flow
+ToolRegistry.register({
+  name: "swarm-task",
+  container: "inline",
+  render(props) {
+    const startTime = createMemo(() => props.state.time?.start)
+    const executionTime = createMemo(() => {
+      if (props.state.status === "completed" && props.state.time) {
+        return props.state.time.end - props.state.time.start
+      }
+      return undefined
+    })
+
+    const action = props.input.action as "create" | "poll" | "result" | "list"
+    const summary = props.input.summary as string | undefined
+    const pollStatus = props.metadata?.status as string | undefined
+
+    return (
+      <ToolCard status={props.state.status} inline={true}>
+        <SwarmTaskToolAnimation
+          status={props.state.status}
+          action={action}
+          summary={summary}
+          startTime={startTime()}
+          executionTime={executionTime()}
+          pollStatus={pollStatus}
+        />
+      </ToolCard>
+    )
+  },
+})
+
+// Swarm-Theme Tool - Dashboard theme customization
+ToolRegistry.register({
+  name: "swarm-theme",
+  container: "inline",
+  render(props) {
+    const startTime = createMemo(() => props.state.time?.start)
+    const executionTime = createMemo(() => {
+      if (props.state.status === "completed" && props.state.time) {
+        return props.state.time.end - props.state.time.start
+      }
+      return undefined
+    })
+
+    const action = props.input.action as "get" | "preset"
+    const presetName = props.input.preset as string | undefined
+
+    return (
+      <ToolCard status={props.state.status} inline={true}>
+        <SwarmThemeToolAnimation
+          status={props.state.status}
+          action={action}
+          presetName={presetName}
+          startTime={startTime()}
+          executionTime={executionTime()}
+        />
       </ToolCard>
     )
   },

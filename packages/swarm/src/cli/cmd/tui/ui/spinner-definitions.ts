@@ -509,6 +509,70 @@ export const SPINNERS: Record<string, SpinnerDef> = {
     interval: 60,
     mode: "cyber",
   },
+
+  // ============================================================================
+  // SWARM-TASK SPINNERS - Human-in-the-loop approval flow
+  // ============================================================================
+
+  // Create task - transmission effect
+  swarm_task_create: {
+    name: "swarm_task_create",
+    frames: ["󰲸··", "·󰤇·", "··󰨜", "·󰥠·", "󰲸··"],
+    interval: 200,
+    mode: "cyber",
+  },
+
+  // Poll waiting - anticipation
+  swarm_task_poll: {
+    name: "swarm_task_poll",
+    frames: ["󰔏··", "·󱖐·", "··󰂞", "·󰥔·", "󰔏··"],
+    interval: 400,
+    mode: "neon",
+  },
+
+  // Approved - celebration
+  swarm_task_approved: {
+    name: "swarm_task_approved",
+    frames: ["󰄲󰄲󰄲", "󰌏󰄲󰌏", "󰅠󰌏󰅠", "󰌏󰄲󰌏"],
+    interval: 150,
+    mode: "rgb",
+  },
+
+  // Rejected - error
+  swarm_task_rejected: {
+    name: "swarm_task_rejected",
+    frames: ["󰅙󰅙󰅙", "󰅙·󰅙", "·󰅙·", "󰅙·󰅙"],
+    interval: 100,
+    mode: "glitch",
+  },
+
+  // Result - completion
+  swarm_task_result: {
+    name: "swarm_task_result",
+    frames: ["󰅠··", "·󰄲·", "··󰥠", "·󰄲·"],
+    interval: 250,
+    mode: "neon",
+  },
+
+  // ============================================================================
+  // SWARM-THEME SPINNERS - Dashboard theme customization
+  // ============================================================================
+
+  // Theme get - reading palette
+  swarm_theme_get: {
+    name: "swarm_theme_get",
+    frames: ["󰏘●○○", "󰏘○●○", "󰏘○○●", "󰏘○●○"],
+    interval: 200,
+    mode: "rgb",
+  },
+
+  // Theme preset - rainbow wave
+  swarm_theme_preset: {
+    name: "swarm_theme_preset",
+    frames: ["󰸌●●●", "󰏃●●●", "󰏘●●●", "󰃠●●●"],
+    interval: 150,
+    mode: "rgb",
+  },
 }
 
 // Helper function to get spinner by name with fallback

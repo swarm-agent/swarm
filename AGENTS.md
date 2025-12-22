@@ -394,9 +394,14 @@ With bridge + socket:
 - You control exactly what the agent can do through MCP tool definitions
 
 ## Notes
+- swarm-task and swarm-theme tools are opt-in - only enabled when SWARM_AGENT_API_KEY is configured or user runs `swarm auth login` for swarmagent provider.
 
 - Memory tool creates sections if they don't exist
 - TypeScript native preview (`tsgo`) used for type checking
 - Bun preloads `@opentui/solid/preload` for JSX support
 - Config supports JSONC (JSON with comments)
 - Memory.init() must be called in InstanceBootstrap (not server.ts) to ensure proper Bus scope
+
+## Session Log
+
+- Added swarm-task and swarm-theme tools for SwarmAgent web dashboard integration. Fixed PostgreSQL affectedRows compatibility bug in swarm-web that was causing result submission to fail with 409 errors.
