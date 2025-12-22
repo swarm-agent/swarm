@@ -87,7 +87,30 @@ export const AuthLoginCommand = cmd({
         UI.empty()
         prompts.intro("Add credential")
         
-        // Handle direct provider name (e.g., "swarm auth login swarmagent")
+        // Handle direct provider name (e.g., "swarm auth login swarmagent" or "swarm auth login exa")
+        if (args.url === "exa") {
+          prompts.log.info("Exa provides powerful AI-powered web search")
+          prompts.log.info("Get your API key at: https://dashboard.exa.ai/api-keys")
+
+          const key = await prompts.password({
+            message: "Enter your Exa API key",
+            validate: (x) => {
+              if (!x || x.length === 0) return "Required"
+              return undefined
+            },
+          })
+          if (prompts.isCancel(key)) throw new UI.CancelledError()
+
+          await Auth.set("exa", {
+            type: "api",
+            key,
+          })
+
+          prompts.log.success("Exa configured! You now have access to web search tools.")
+          prompts.outro("Done")
+          return
+        }
+        
         if (args.url === "swarmagent") {
           prompts.log.info("SwarmAgent enables agentic tasks & approvals via swarmagent.dev")
           prompts.log.info("Get your API key at: https://swarmagent.dev/dashboard → API Keys")
@@ -182,6 +205,11 @@ export const AuthLoginCommand = cmd({
               value: "swarmagent",
               label: "SwarmAgent",
               hint: "agentic tasks & approvals",
+            },
+            {
+              value: "exa",
+              label: "Exa",
+              hint: "AI-powered web search",
             },
             {
               value: "other",
@@ -330,6 +358,30 @@ export const AuthLoginCommand = cmd({
               return
             }
           }
+        }
+
+        // Exa special handling
+        if (provider === "exa") {
+          prompts.log.info("Exa provides powerful AI-powered web search")
+          prompts.log.info("Get your API key at: https://dashboard.exa.ai/api-keys")
+
+          const key = await prompts.password({
+            message: "Enter your Exa API key",
+            validate: (x) => {
+              if (!x || x.length === 0) return "Required"
+              return undefined
+            },
+          })
+          if (prompts.isCancel(key)) throw new UI.CancelledError()
+
+          await Auth.set("exa", {
+            type: "api",
+            key,
+          })
+
+          prompts.log.success("Exa configured! You now have access to web search tools.")
+          prompts.outro("Done")
+          return
         }
 
         // SwarmAgent special handling
