@@ -169,6 +169,9 @@ export async function startMcpServer(options: McpHttpServerOptions): Promise<Mcp
     onSocketRecovered,
     onSocketDead,
   } = options
+  
+  // Debug: log what we received
+  console.log(`[MCP] startMcpServer called with onPermission: ${onPermission ? 'DEFINED' : 'UNDEFINED'}`)
 
   // Build tool map
   const toolMap = new Map<string, ToolDefinition<ZodRawShape>>()
@@ -193,6 +196,9 @@ export async function startMcpServer(options: McpHttpServerOptions): Promise<Mcp
 
     onToolCall?.(toolName, args)
 
+    // Debug: log permission state
+    console.log(`[MCP] executeTool: ${toolName}, permission: ${tool.permission}, onPermission: ${onPermission ? 'DEFINED' : 'UNDEFINED'}`)
+
     // Check permission
     switch (tool.permission) {
       case "deny":
@@ -203,6 +209,7 @@ export async function startMcpServer(options: McpHttpServerOptions): Promise<Mcp
       case "ask":
       case "pin":
         if (!onPermission) {
+          console.log(`[MCP] ERROR: onPermission handler is not defined for tool ${toolName}`)
           return {
             content: [{
               type: "text",
