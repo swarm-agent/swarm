@@ -47,6 +47,7 @@ import type { TaskTool } from "@/tool/task"
 import { ExitPlanModeTool } from "@/tool/exit-plan"
 import type { AskUserTool } from "@/tool/ask-user"
 import type { ManualCommandTool } from "@/tool/manual-command"
+import type { MemoryTool } from "@/tool/memory"
 import { CopyBlock } from "@tui/ui/copy-block"
 import { useKeyboard, useRenderer, useTerminalDimensions, type BoxProps, type JSX } from "@opentui/solid"
 import { useSDK } from "@tui/context/sdk"
@@ -86,6 +87,7 @@ import {
   GlobToolAnimation,
   GrepToolAnimation,
   ListToolAnimation,
+  MemoryToolAnimation,
   ThinkingSpinner,
   AgentStreamingWave,
   InlinePermission,
@@ -2768,6 +2770,30 @@ ToolRegistry.register<typeof ManualCommandTool>({
           <CopyBlock command={command()} label={reason()} icon="⚠️" />
         </Show>
       </ToolCard>
+    )
+  },
+})
+
+// Memory Tool - persists learnings to AGENTS.md with floppy disk animation
+ToolRegistry.register<typeof MemoryTool>({
+  name: "memory",
+  container: "inline",
+  render(props) {
+    const executionTime = createMemo(() => {
+      if (props.state.status === "completed" && props.state.time) {
+        return props.state.time.end - props.state.time.start
+      }
+      return undefined
+    })
+
+    return (
+      <MemoryToolAnimation
+        status={props.state.status}
+        section={props.input.section}
+        content={props.input.content}
+        startTime={props.state.status !== "pending" && props.state.time?.start ? props.state.time.start : undefined}
+        executionTime={executionTime()}
+      />
     )
   },
 })

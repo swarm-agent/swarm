@@ -396,6 +396,23 @@ export const SPINNERS: Record<string, SpinnerDef> = {
     mode: "neon",
   },
 
+  // Memory - floppy disk save animation with write indicator
+  memory_spinner: {
+    name: "memory_spinner",
+    frames: [
+      "󰆓 ·",
+      "󰆓 ·",
+      "󰆓 ▪",
+      "󰆓 ▫",
+      "󰆓 ▪",
+      "󰆓 ▫",
+      "󰆓 ●",
+      "󰆓 ○",
+    ],
+    interval: 120,
+    mode: "neon",
+  },
+
   // ============================================================================
   // TYPE B: TRAVELING EDIT/WRITE ANIMATIONS - Nerdfont icons that move
   // ============================================================================

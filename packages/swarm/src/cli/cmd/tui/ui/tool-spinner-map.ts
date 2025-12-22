@@ -96,6 +96,12 @@ export const TOOL_SPINNER_MAP: Record<string, ToolSpinnerConfig> = {
     spinner: "webcontents_spinner", // Page loading animation
     fallback: "loading_bar",
   },
+
+  // Memory - floppy disk save animation
+  memory: {
+    spinner: "memory_spinner", // Floppy disk with write indicator
+    fallback: "wave_block",
+  },
 }
 
 /**

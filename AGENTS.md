@@ -400,3 +400,7 @@ With bridge + socket:
 - Bun preloads `@opentui/solid/preload` for JSX support
 - Config supports JSONC (JSON with comments)
 - Memory.init() must be called in InstanceBootstrap (not server.ts) to ensure proper Bus scope
+
+## Session Log
+
+- Fixed SSE buffering in voice HUD - added /container-events passthrough endpoint that pipes container SSE directly without buffering. HUD now connects to both daemon and container streams. Created pi-agent systemd service on Pi for auto-restart.

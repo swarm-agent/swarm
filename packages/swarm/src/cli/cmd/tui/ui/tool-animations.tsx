@@ -4767,6 +4767,215 @@ export function ListToolAnimation(props: {
 }
 
 // ============================================================================
+// MEMORY TOOL ANIMATION - Floppy disk save with content preview
+// Pattern: 󰆓 floppy disk with write indicator morphing
+// ============================================================================
+
+// Memory color - Catppuccin Lavender (persistence/storage vibe)
+const MEMORY_LAVENDER = RGBA.fromHex("#b4befe")
+
+const MEMORY_COLORS = {
+  primary: MEMORY_LAVENDER,
+  success: RGBA.fromHex("#a6e3a1"),
+  error: RGBA.fromHex("#f38ba8"),
+  dim: RGBA.fromHex("#7f849c"),
+  section: {
+    notes: RGBA.fromHex("#f9e2af"), // Yellow
+    architecture: RGBA.fromHex("#89b4fa"), // Blue
+    commands: RGBA.fromHex("#a6e3a1"), // Green
+    style: RGBA.fromHex("#cba6f7"), // Mauve
+    session: RGBA.fromHex("#94e2d5"), // Teal
+  },
+}
+
+// Floppy disk icon
+const FLOPPY = "󰆓"
+
+/**
+ * MemoryMorph - Animated floppy disk with write indicator
+ */
+export function MemoryMorph(props: { color?: RGBA }) {
+  const baseColor = props.color ?? MEMORY_LAVENDER
+  const [frame, setFrame] = createSignal(0)
+  const writeIndicators = ["·", "▪", "▫", "●", "○", "◉", "◎"]
+
+  const interval = setInterval(() => {
+    setFrame((f) => (f + 1) % writeIndicators.length)
+  }, 120)
+
+  onCleanup(() => clearInterval(interval))
+
+  return (
+    <>
+      <span style={{ fg: baseColor }}>{FLOPPY}</span>
+      <span style={{ fg: baseColor }}>{writeIndicators[frame()]}</span>
+    </>
+  )
+}
+
+/**
+ * MemoryText - Breathing "Memory" text
+ */
+export function MemoryText(props: { color?: RGBA }) {
+  const baseColor = props.color ?? MEMORY_LAVENDER
+  const [opacity, setOpacity] = createSignal(1)
+
+  const interval = setInterval(() => {
+    const phase = (Date.now() / 800) * Math.PI
+    setOpacity(0.5 + (Math.sin(phase) + 1) * 0.25)
+  }, 50)
+
+  onCleanup(() => clearInterval(interval))
+
+  const color = () => RGBA.fromInts(baseColor.r * 255, baseColor.g * 255, baseColor.b * 255, opacity() * 255)
+
+  return <span style={{ fg: color() }}>Memory</span>
+}
+
+/**
+ * MemoryPending - Initial state showing spinner + breathing text
+ */
+export function MemoryPending() {
+  return (
+    <box gap={0}>
+      <text>
+        <MemoryMorph color={MEMORY_LAVENDER} /> <MemoryText color={MEMORY_LAVENDER} />{" "}
+        <span style={{ fg: MEMORY_COLORS.dim }}>...</span>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * MemoryRunning - Active save state with section and content preview
+ */
+export function MemoryRunning(props: { section?: string; content?: string; startTime?: number }) {
+  const { theme } = useTheme()
+  const sectionColor = () =>
+    props.section ? MEMORY_COLORS.section[props.section as keyof typeof MEMORY_COLORS.section] ?? MEMORY_LAVENDER : MEMORY_LAVENDER
+
+  // Truncate content for preview
+  const preview = () => {
+    if (!props.content) return ""
+    const maxLen = 40
+    if (props.content.length <= maxLen) return props.content
+    return props.content.slice(0, maxLen) + "…"
+  }
+
+  return (
+    <box gap={0}>
+      <text>
+        <MemoryMorph color={sectionColor()} /> <MemoryText color={sectionColor()} />
+        <Show when={props.section}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>→</span>{" "}
+          <span style={{ fg: sectionColor() }}>{props.section}</span>
+        </Show>
+        <Show when={props.content}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>"{preview()}"</span>
+        </Show>
+        <Show when={props.startTime}>
+          {" "}
+          <ElapsedTime startTime={props.startTime!} color={theme.textMuted} />
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * MemoryResolved - Completed state showing saved content with scrollable preview
+ */
+export function MemoryResolved(props: {
+  success: boolean
+  section?: string
+  content?: string
+  executionTime?: number
+}) {
+  const { theme } = useTheme()
+  const icon = props.success ? "✓" : "✗"
+  const iconColor = props.success ? MEMORY_COLORS.success : MEMORY_COLORS.error
+  const dimmedLavender = RGBA.fromInts(MEMORY_LAVENDER.r * 255, MEMORY_LAVENDER.g * 255, MEMORY_LAVENDER.b * 255, 153)
+  const sectionColor = () =>
+    props.section ? MEMORY_COLORS.section[props.section as keyof typeof MEMORY_COLORS.section] ?? dimmedLavender : dimmedLavender
+
+  const formatTime = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.floor((ms % 60000) / 1000)
+    return `${minutes}m ${seconds}s`
+  }
+
+  // Truncate long content but show more than running state
+  const displayContent = () => {
+    if (!props.content) return ""
+    const maxLen = 60
+    if (props.content.length <= maxLen) return props.content
+    return props.content.slice(0, maxLen) + "…"
+  }
+
+  return (
+    <box flexDirection="column" gap={0}>
+      <text>
+        <span style={{ fg: iconColor, bold: true }}>{icon}</span>{" "}
+        <span style={{ fg: dimmedLavender }}>{FLOPPY}</span>{" "}
+        <span style={{ fg: dimmedLavender }}>Memory</span>
+        <Show when={props.section}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>→</span>{" "}
+          <span style={{ fg: sectionColor() }}>{props.section}</span>
+        </Show>
+        <Show when={props.executionTime !== undefined}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>{formatTime(props.executionTime!)}</span>
+        </Show>
+      </text>
+      <Show when={props.content && props.success}>
+        <text paddingLeft={4}>
+          <span style={{ fg: theme.textMuted }}>└─</span>{" "}
+          <span style={{ fg: theme.text }}>"{displayContent()}"</span>
+        </text>
+      </Show>
+    </box>
+  )
+}
+
+/**
+ * MemoryToolAnimation - Complete state machine for memory tool
+ */
+export function MemoryToolAnimation(props: {
+  status: "pending" | "running" | "completed" | "error"
+  section?: string
+  content?: string
+  startTime?: number
+  executionTime?: number
+}) {
+  return (
+    <Switch>
+      <Match when={props.status === "pending"}>
+        <MemoryPending />
+      </Match>
+      <Match when={props.status === "running"}>
+        <MemoryRunning section={props.section} content={props.content} startTime={props.startTime} />
+      </Match>
+      <Match when={props.status === "completed"}>
+        <MemoryResolved
+          success={true}
+          section={props.section}
+          content={props.content}
+          executionTime={props.executionTime}
+        />
+      </Match>
+      <Match when={props.status === "error"}>
+        <MemoryResolved success={false} section={props.section} content={props.content} executionTime={props.executionTime} />
+      </Match>
+    </Switch>
+  )
+}
+
+// ============================================================================
 // TOOL ANIMATION SHOWCASE - Display all tool animations for demo/testing
 // ============================================================================
 
@@ -4829,6 +5038,16 @@ export function ToolAnimationShowcase() {
         <box paddingLeft={2} flexDirection="column" gap={0}>
           <BashPending command="npm install" description="Installing dependencies" />
           <BashResolved success={true} command="npm install" executionTime={4523} />
+        </box>
+      </box>
+
+      {/* Memory Tool */}
+      <box flexDirection="column" gap={0}>
+        <text fg={theme.textMuted}>Memory Tool:</text>
+        <box paddingLeft={2} flexDirection="column" gap={0}>
+          <MemoryPending />
+          <MemoryRunning section="notes" content="API errors use { error, code } format" startTime={Date.now() - 300} />
+          <MemoryResolved success={true} section="notes" content="API errors use { error, code } format - check .code for retry logic" executionTime={45} />
         </box>
       </box>
     </box>
