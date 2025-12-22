@@ -2845,6 +2845,279 @@ export function WebsearchToolAnimation(props: {
 }
 
 // ============================================================================
+// WEBCONTENTS ANIMATION - Fetch specific URLs for detailed content
+// Full flow: Pending → Running → Resolved
+// Uses document/page themed visuals (warm purple/peach palette)
+// ============================================================================
+
+// Catppuccin colors for webcontents - warm purple/peach theme
+const WEBCONTENTS_COLORS = {
+  palettes: [
+    // Mauve → Peach → Yellow gradient
+    [RGBA.fromHex("#cba6f7"), RGBA.fromHex("#fab387"), RGBA.fromHex("#f9e2af")],
+    // Pink → Mauve → Lavender gradient
+    [RGBA.fromHex("#f38ba8"), RGBA.fromHex("#cba6f7"), RGBA.fromHex("#b4befe")],
+    // Peach → Yellow → Green gradient
+    [RGBA.fromHex("#fab387"), RGBA.fromHex("#f9e2af"), RGBA.fromHex("#a6e3a1")],
+  ],
+  success: RGBA.fromHex("#a6e3a1"), // Catppuccin Green
+  error: RGBA.fromHex("#f38ba8"), // Catppuccin Red
+  dim: RGBA.fromHex("#6c7086"), // Catppuccin Overlay0
+  bracket: RGBA.fromHex("#585b70"), // Catppuccin Surface2
+}
+
+/**
+ * WebcontentsSpinner - Three document/page icons breathing in wave pattern
+ * Uses page-themed characters to show "fetching content"
+ */
+export function WebcontentsSpinner(props: { paletteIndex?: number }) {
+  const palette = WEBCONTENTS_COLORS.palettes[props.paletteIndex ?? 0]
+  const [opacities, setOpacities] = createSignal([0.5, 0.5, 0.5])
+  const [frame, setFrame] = createSignal(0)
+  const chars = ["▫", "▪", "◻", "◼"]
+
+  // Wave breathing effect + character cycling
+  const interval = setInterval(() => {
+    const now = Date.now()
+    const newOpacities = palette.map((_, i) => {
+      const phase = ((now / 1600) * Math.PI * 2 + i * 0.7) % (Math.PI * 2)
+      return 0.4 + (1 - 0.4) * ((Math.sin(phase) + 1) / 2)
+    })
+    setOpacities(newOpacities)
+    setFrame((f) => (f + 1) % 16)
+  }, 50)
+
+  onCleanup(() => clearInterval(interval))
+
+  // Each icon cycles through with offset
+  const getChar = (idx: number) => {
+    const offset = Math.floor((frame() + idx * 4) / 4) % chars.length
+    return chars[offset]
+  }
+
+  const c0 = () => RGBA.fromInts(palette[0].r * 255, palette[0].g * 255, palette[0].b * 255, opacities()[0] * 255)
+  const c1 = () => RGBA.fromInts(palette[1].r * 255, palette[1].g * 255, palette[1].b * 255, opacities()[1] * 255)
+  const c2 = () => RGBA.fromInts(palette[2].r * 255, palette[2].g * 255, palette[2].b * 255, opacities()[2] * 255)
+
+  return (
+    <>
+      <span style={{ fg: c0() }}>{getChar(0)}</span>
+      <span style={{ fg: c1() }}>{getChar(1)}</span>
+      <span style={{ fg: c2() }}>{getChar(2)}</span>
+    </>
+  )
+}
+
+/**
+ * BreathingWebcontents - "webcontents" text with breathing opacity
+ */
+export function BreathingWebcontents(props: { color?: RGBA }) {
+  const baseColor = props.color ?? WEBCONTENTS_COLORS.palettes[0][0]
+  const [phase, setPhase] = createSignal(0)
+
+  const opacities = [0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.0, 0.8, 0.6, 0.5, 0.4, 0.3]
+
+  const interval = setInterval(() => {
+    setPhase((p) => (p + 1) % opacities.length)
+  }, 170)
+
+  onCleanup(() => clearInterval(interval))
+
+  const color = () => RGBA.fromInts(baseColor.r * 255, baseColor.g * 255, baseColor.b * 255, opacities[phase()] * 255)
+
+  return <span style={{ fg: color() }}>webcontents</span>
+}
+
+/**
+ * WebcontentsProgressBar - Wave-filled progress bar with warm color cycling
+ */
+export function WebcontentsProgressBar(props: { width?: number; paletteIndex?: number }) {
+  const width = props.width ?? 8
+  const totalSteps = width * WAVE_BLOCKS.length
+  const [step, setStep] = createSignal(0)
+  const [currentPalette, setCurrentPalette] = createSignal(props.paletteIndex ?? 0)
+
+  const interval = setInterval(() => {
+    setStep((s) => {
+      const next = s + 1
+      if (next >= totalSteps) {
+        setCurrentPalette((p) => (p + 1) % WEBCONTENTS_COLORS.palettes.length)
+        return 0
+      }
+      return next
+    })
+  }, 38)
+
+  onCleanup(() => clearInterval(interval))
+
+  const getColor = () => {
+    const palette = WEBCONTENTS_COLORS.palettes[currentPalette()]
+    const progress = step() / totalSteps
+    const idx = Math.floor(progress * (palette.length - 1))
+    const t = progress * (palette.length - 1) - idx
+    const c1 = palette[Math.min(idx, palette.length - 1)]
+    const c2 = palette[Math.min(idx + 1, palette.length - 1)]
+
+    return RGBA.fromInts(
+      Math.round(c1.r * 255 * (1 - t) + c2.r * 255 * t),
+      Math.round(c1.g * 255 * (1 - t) + c2.g * 255 * t),
+      Math.round(c1.b * 255 * (1 - t) + c2.b * 255 * t),
+      255,
+    )
+  }
+
+  const bar = () => {
+    const fullChars = Math.floor(step() / WAVE_BLOCKS.length)
+    const partialIdx = step() % WAVE_BLOCKS.length
+    const emptyChars = width - fullChars - (partialIdx > 0 ? 1 : 0)
+
+    let result = "█".repeat(fullChars)
+    if (partialIdx > 0 && fullChars < width) result += WAVE_BLOCKS[partialIdx]
+    result += "░".repeat(Math.max(0, emptyChars))
+    return result
+  }
+
+  return (
+    <>
+      <span style={{ fg: WEBCONTENTS_COLORS.bracket }}>[</span>
+      <span style={{ fg: getColor() }}>{bar()}</span>
+      <span style={{ fg: WEBCONTENTS_COLORS.bracket }}>]</span>
+    </>
+  )
+}
+
+/**
+ * WebcontentsPending - Spinner + breathing text + URL count
+ */
+export function WebcontentsPending(props: { urlCount?: number }) {
+  const { theme } = useTheme()
+  const [paletteIndex, setPaletteIndex] = createSignal(0)
+
+  const interval = setInterval(() => {
+    setPaletteIndex((p) => (p + 1) % WEBCONTENTS_COLORS.palettes.length)
+  }, 2800)
+
+  onCleanup(() => clearInterval(interval))
+
+  const palette = () => WEBCONTENTS_COLORS.palettes[paletteIndex()]
+
+  return (
+    <box gap={0}>
+      <text>
+        <WebcontentsSpinner paletteIndex={paletteIndex()} /> <BreathingWebcontents color={palette()[0]} />{" "}
+        <span style={{ fg: theme.textMuted }}>
+          {props.urlCount ? `${props.urlCount} URL${props.urlCount > 1 ? "s" : ""}` : "..."}
+        </span>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * WebcontentsRunning - Progress bar + text + URL count + elapsed time
+ */
+export function WebcontentsRunning(props: { urlCount?: number; startTime?: number }) {
+  const { theme } = useTheme()
+  const [paletteIndex, setPaletteIndex] = createSignal(0)
+
+  const interval = setInterval(() => {
+    setPaletteIndex((p) => (p + 1) % WEBCONTENTS_COLORS.palettes.length)
+  }, 2400)
+
+  onCleanup(() => clearInterval(interval))
+
+  const palette = () => WEBCONTENTS_COLORS.palettes[paletteIndex()]
+
+  return (
+    <box gap={0}>
+      <text>
+        <WebcontentsProgressBar paletteIndex={paletteIndex()} /> <BreathingWebcontents color={palette()[1]} />{" "}
+        <span style={{ fg: theme.text }}>
+          {props.urlCount ? `${props.urlCount} URL${props.urlCount > 1 ? "s" : ""}` : "..."}
+        </span>{" "}
+        <Show when={props.startTime}>
+          <ElapsedTime startTime={props.startTime!} color={theme.textMuted} />
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * WebcontentsResolved - Success/failure with URL count and time
+ */
+export function WebcontentsResolved(props: {
+  success: boolean
+  urlCount?: number
+  executionTime?: number
+  mode?: string
+}) {
+  const { theme } = useTheme()
+  const color = props.success ? WEBCONTENTS_COLORS.success : WEBCONTENTS_COLORS.error
+
+  const formatTime = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.floor((ms % 60000) / 1000)
+    return `${minutes}m ${seconds}s`
+  }
+
+  return (
+    <box gap={0}>
+      <text>
+        <span style={{ fg: color, bold: true }}>{props.success ? "✓" : "✗"}</span>{" "}
+        <span style={{ fg: WEBCONTENTS_COLORS.dim }}>webcontents</span>{" "}
+        <Show when={props.urlCount !== undefined}>
+          <span style={{ fg: WEBCONTENTS_COLORS.palettes[0][1] }}>
+            {props.urlCount} page{props.urlCount !== 1 ? "s" : ""}
+          </span>
+        </Show>
+        <Show when={props.mode}>
+          <span style={{ fg: theme.textMuted }}> [{props.mode}]</span>
+        </Show>
+        <Show when={props.executionTime !== undefined}>
+          <span style={{ fg: theme.textMuted }}> {formatTime(props.executionTime!)}</span>
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * WebcontentsToolAnimation - Complete flow handler (pending/running/completed/error)
+ */
+export function WebcontentsToolAnimation(props: {
+  status: "pending" | "running" | "completed" | "error"
+  urlCount?: number
+  startTime?: number
+  executionTime?: number
+  mode?: string
+}) {
+  return (
+    <Switch>
+      <Match when={props.status === "pending"}>
+        <WebcontentsPending urlCount={props.urlCount} />
+      </Match>
+      <Match when={props.status === "running"}>
+        <WebcontentsRunning urlCount={props.urlCount} startTime={props.startTime} />
+      </Match>
+      <Match when={props.status === "completed"}>
+        <WebcontentsResolved
+          success={true}
+          urlCount={props.urlCount}
+          executionTime={props.executionTime}
+          mode={props.mode}
+        />
+      </Match>
+      <Match when={props.status === "error"}>
+        <WebcontentsResolved success={false} urlCount={props.urlCount} executionTime={props.executionTime} />
+      </Match>
+    </Switch>
+  )
+}
+
+// ============================================================================
 // ASK-USER ANIMATION - Interactive question tool with progress visualization
 // Full flow: Pending → Running → Resolved
 // ============================================================================

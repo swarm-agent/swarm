@@ -43,6 +43,7 @@ import type { EditTool } from "@/tool/edit"
 import type { PatchTool } from "@/tool/patch"
 import type { WebFetchTool } from "@/tool/webfetch"
 import type { WebSearchTool } from "@/tool/websearch"
+import type { WebContentsTool } from "@/tool/webcontents"
 import type { TaskTool } from "@/tool/task"
 import { ExitPlanModeTool } from "@/tool/exit-plan"
 import type { AskUserTool } from "@/tool/ask-user"
@@ -80,6 +81,7 @@ import {
   EditDeltaMorphChain,
   WebfetchToolAnimation,
   WebsearchToolAnimation,
+  WebcontentsToolAnimation,
   AskUserToolAnimation,
   ReadToolAnimation,
   BatchReadToolAnimation,
@@ -2389,6 +2391,44 @@ ToolRegistry.register<typeof WebSearchTool>({
           startTime={startTime()}
           executionTime={executionTime()}
           resultCount={resultCount()}
+        />
+      </ToolCard>
+    )
+  },
+})
+
+ToolRegistry.register<typeof WebContentsTool>({
+  name: "webcontents",
+  container: "inline",
+  render(props) {
+    const urls = (props.input as any).urls as string[] | undefined
+
+    const executionTime = createMemo(() => {
+      if (props.state.status === "completed" && props.state.time) {
+        return props.state.time.end - props.state.time.start
+      }
+      return undefined
+    })
+
+    const startTime = createMemo(() => {
+      if (props.state.status !== "pending" && props.state.time?.start) {
+        return props.state.time.start
+      }
+      return undefined
+    })
+
+    // Get metadata from tool output
+    const urlCount = createMemo(() => urls?.length ?? (props.metadata as any)?.urlsFetched)
+    const mode = createMemo(() => (props.metadata as any)?.mode as string | undefined)
+
+    return (
+      <ToolCard status={props.state.status} inline={true}>
+        <WebcontentsToolAnimation
+          status={props.state.status}
+          urlCount={urlCount()}
+          startTime={startTime()}
+          executionTime={executionTime()}
+          mode={mode()}
         />
       </ToolCard>
     )
