@@ -392,13 +392,29 @@ export const BashTool = Tool.define("bash", {
     // Detect if this was a git commit command
     const isCommit = /git\s+commit\b/.test(params.command) && !params.command.includes("--amend")
 
+    // For git commits, try to detect the actual working directory from the command
+    // Handles patterns like: cd /path && git commit, git -C /path commit
+    let effectiveCwd = cwd
+    if (isCommit) {
+      // Match: cd /path && ... or cd /path;
+      const cdMatch = params.command.match(/^cd\s+["']?([^"';&]+)["']?\s*[;&]/)
+      if (cdMatch) {
+        effectiveCwd = cdMatch[1].trim()
+      }
+      // Match: git -C /path commit
+      const gitCMatch = params.command.match(/git\s+-C\s+["']?([^"'\s]+)["']?\s+commit/)
+      if (gitCMatch) {
+        effectiveCwd = gitCMatch[1].trim()
+      }
+    }
+
     // Publish bash execution event (for hooks like memory auto-update)
     Bus.publish(BashEvent.Executed, {
       command: params.command,
       exitCode: proc.exitCode,
       sessionID: ctx.sessionID,
       isCommit,
-      cwd: Instance.directory,
+      cwd: effectiveCwd,
     }).catch((err) => log.error("failed to publish bash event", { error: err }))
 
     return {
