@@ -179,6 +179,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-23 | Updated initialize template for tiered memory system with .context/ structure |
 | 2024-12-23 | Fixed memory agent cwd detection to parse `cd` and `git -C` paths from bash commands |
 | 2024-12-21 | Regenerated SDK types and fixed budget token calculation in provider transform |
 | 2024-12-20 | Restored original background agent indicator style with border |
@@ -188,7 +189,6 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 | 2024-12-20 | Fixed background agent indicator to require exact session ID match |
 | 2024-12-20 | Added create-release.sh script for GitHub releases with multi-platform binaries |
 | 2024-12-20 | Simplified status bar indicator back to icon + count (reverted complex display) |
-| 2024-12-20 | Added background agents section to sidebar showing child agents tied to parent session |
 
 ## Containerized Agents (SDK)
 
