@@ -47,7 +47,7 @@ export namespace Memory {
 
     // Subscribe to bash events
     Bus.subscribe(BashEvent.Executed, async (evt) => {
-      const { command, exitCode, sessionID, isCommit } = evt.properties
+      const { command, exitCode, sessionID, isCommit, cwd } = evt.properties
 
       // Only trigger on successful git commits (not amends)
       if (!isCommit || exitCode !== 0) return
@@ -59,15 +59,16 @@ export namespace Memory {
         return
       }
 
-      log.info("git commit detected, spawning memory agent", { command, sessionID })
+      log.info("git commit detected, spawning memory agent", { command, sessionID, cwd })
 
       try {
         // Spawn background memory agent to update AGENTS.md
         await BackgroundAgent.spawn({
           parentSessionID: sessionID,
           agent: "memory",
+          cwd,
           description: "Update AGENTS.md after commit",
-          prompt: `A git commit was just made. Update AGENTS.md with this change.
+          prompt: `A git commit was just made in ${cwd}. Update AGENTS.md with this change.
 
 1. Run \`git log --oneline -1\` to see the commit message
 2. Run \`git diff HEAD~1 --stat\` to see what files changed

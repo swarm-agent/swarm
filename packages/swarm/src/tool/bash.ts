@@ -4,6 +4,7 @@ import { Tool } from "./tool"
 import DESCRIPTION from "./bash.txt"
 import { Log } from "../util/log"
 import { Instance } from "../project/instance"
+import { Session } from "../session"
 import { lazy } from "@/util/lazy"
 import { Language } from "web-tree-sitter"
 import { Agent } from "@/agent/agent"
@@ -35,6 +36,7 @@ export const BashEvent = {
       exitCode: z.number().nullable(),
       sessionID: Identifier.schema("session"),
       isCommit: z.boolean(),
+      cwd: z.string(),
     }),
   ),
 }
@@ -73,6 +75,10 @@ export const BashTool = Tool.define("bash", {
     if (params.timeout !== undefined && params.timeout < 0) {
       throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
     }
+
+    // Get session directory (supports background agents with custom cwd)
+    const session = await Session.get(ctx.sessionID)
+    const cwd = session?.directory ?? Instance.directory
 
     // Check for obfuscation attempts in the command
     const sanitized = Sandbox.sanitize(params.command)
@@ -263,7 +269,7 @@ export const BashTool = Tool.define("bash", {
     // No routing needed here - if swarm runs in container, commands naturally run there
     const proc = spawn(commandToRun, {
       shell: true,
-      cwd: Instance.directory,
+      cwd,
       env: {
         ...process.env,
       },
@@ -392,6 +398,7 @@ export const BashTool = Tool.define("bash", {
       exitCode: proc.exitCode,
       sessionID: ctx.sessionID,
       isCommit,
+      cwd: Instance.directory,
     }).catch((err) => log.error("failed to publish bash event", { error: err }))
 
     return {
