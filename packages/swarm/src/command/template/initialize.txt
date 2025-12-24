@@ -1,40 +1,17 @@
-Create or update the memory system for this project at: ${path}
-
-## Check Current State
-
-1. Check if AGENTS.md exists
-2. Check if .context/ directory exists
-3. If AGENTS.md exists, check its line count with `wc -l AGENTS.md`
+Create or update AGENTS.md for this project at: ${path}
 
 ## If AGENTS.md doesn't exist:
 1. Explore the codebase structure with explore-tree
 2. Read key configuration files (package.json, Cargo.toml, pyproject.toml, Makefile, etc.)
-3. Identify logical topic groupings for context files
-4. Create .context/ directory: `mkdir -p .context`
-5. Create compact AGENTS.md with:
-   - Critical rules
-   - Context index table
-   - Key commands
-   - Session log
-   - Notes section
-6. Create detailed .context/*.md files for each topic
+3. Look for existing conventions (.cursor/, .github/copilot-instructions.md, .editorconfig)
+4. Identify build, test, and lint commands
+5. Create a comprehensive AGENTS.md following the standard format
 
-## If AGENTS.md exists and is over 200 lines (needs refactoring):
+## If AGENTS.md exists:
 1. Read the current AGENTS.md
-2. Identify sections that should become context files
-3. Create .context/ directory if it doesn't exist
-4. Extract detailed sections into appropriate .context/*.md files
-5. Rewrite AGENTS.md to be compact:
-   - Keep only critical rules
-   - Add context index pointing to .context/ files
-   - Keep key commands table
-   - Keep session log and notes
-6. Aim for AGENTS.md under 150 lines
-
-## If AGENTS.md exists and .context/ exists (already refactored):
-1. Read AGENTS.md and check it follows the compact format
-2. Verify context files are up to date
-3. Make any needed improvements
+2. Improve and expand it based on codebase exploration
+3. Preserve any custom sections the user has added
+4. Update outdated information
 
 Focus on information that helps AI agents work effectively: commands, patterns, conventions, and gotchas.
 
