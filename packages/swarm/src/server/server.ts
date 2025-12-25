@@ -1315,6 +1315,127 @@ export namespace Server {
           return c.json(modes)
         },
       )
+      .post(
+        "/agent",
+        describeRoute({
+          description: "Create a new agent",
+          operationId: "agent.create",
+          responses: {
+            200: {
+              description: "Created agent",
+              content: {
+                "application/json": {
+                  schema: resolver(Agent.Info),
+                },
+              },
+            },
+            ...errors(400),
+          },
+        }),
+        validator("json", Agent.CreateInput),
+        async (c) => {
+          try {
+            const input = c.req.valid("json")
+            const agent = await Agent.create(input)
+            return c.json(agent)
+          } catch (e) {
+            return c.json({ error: (e as Error).message }, { status: 400 })
+          }
+        },
+      )
+      .get(
+        "/agent/:name",
+        describeRoute({
+          description: "Get a specific agent",
+          operationId: "agent.get",
+          responses: {
+            200: {
+              description: "Agent info",
+              content: {
+                "application/json": {
+                  schema: resolver(Agent.Info),
+                },
+              },
+            },
+            ...errors(404),
+          },
+        }),
+        validator("param", z.object({ name: z.string() })),
+        async (c) => {
+          const { name } = c.req.valid("param")
+          const agent = await Agent.get(name)
+          if (!agent) {
+            return c.json({ error: "Agent not found" }, { status: 404 })
+          }
+          return c.json(agent)
+        },
+      )
+      .put(
+        "/agent/:name",
+        describeRoute({
+          description: "Update an existing agent",
+          operationId: "agent.update",
+          responses: {
+            200: {
+              description: "Updated agent",
+              content: {
+                "application/json": {
+                  schema: resolver(Agent.Info),
+                },
+              },
+            },
+            ...errors(400, 404),
+          },
+        }),
+        validator("param", z.object({ name: z.string() })),
+        validator("json", Agent.UpdateInput),
+        async (c) => {
+          try {
+            const { name } = c.req.valid("param")
+            const input = c.req.valid("json")
+            const agent = await Agent.update(name, input)
+            return c.json(agent)
+          } catch (e) {
+            const msg = (e as Error).message
+            if (msg.includes("not found")) {
+              return c.json({ error: msg }, { status: 404 })
+            }
+            return c.json({ error: msg }, { status: 400 })
+          }
+        },
+      )
+      .delete(
+        "/agent/:name",
+        describeRoute({
+          description: "Delete an agent",
+          operationId: "agent.delete",
+          responses: {
+            200: {
+              description: "Agent deleted",
+              content: {
+                "application/json": {
+                  schema: resolver(z.object({ deleted: z.boolean() })),
+                },
+              },
+            },
+            ...errors(400, 404),
+          },
+        }),
+        validator("param", z.object({ name: z.string() })),
+        async (c) => {
+          try {
+            const { name } = c.req.valid("param")
+            await Agent.remove(name)
+            return c.json({ deleted: true })
+          } catch (e) {
+            const msg = (e as Error).message
+            if (msg.includes("not found")) {
+              return c.json({ error: msg }, { status: 404 })
+            }
+            return c.json({ error: msg }, { status: 400 })
+          }
+        },
+      )
       .get(
         "/background-agent",
         describeRoute({

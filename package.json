@@ -54,5 +54,8 @@
     "gray-matter": {
       "js-yaml": "3.14.1"
     }
+  },
+  "dependencies": {
+    "yaml": "2.8.2"
   }
 }

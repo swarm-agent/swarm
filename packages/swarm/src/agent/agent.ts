@@ -10,6 +10,9 @@ import { Instance } from "../project/instance"
 import { mergeDeep } from "remeda"
 import { Session } from "../session"
 import { Profile } from "../profile"
+import * as fs from "node:fs/promises"
+import * as path from "node:path"
+import * as yaml from "yaml"
 
 export namespace Agent {
   export const Info = z
@@ -375,6 +378,164 @@ export namespace Agent {
       }),
     })
     return result.object
+  }
+
+  // Input schema for creating/updating agents
+  export const CreateInput = z.object({
+    name: z.string().min(1).regex(/^[a-z0-9-]+$/, "Name must be lowercase alphanumeric with dashes"),
+    description: z.string().optional(),
+    mode: z.enum(["subagent", "primary", "all"]).default("all"),
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+    prompt: z.string().optional(),
+    model: z.string().optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    topP: z.number().min(0).max(1).optional(),
+    tools: z.record(z.string(), z.boolean()).optional(),
+    permission: z.object({
+      edit: Config.Permission.optional(),
+      bash: z.union([Config.Permission, z.record(z.string(), Config.Permission)]).optional(),
+      webfetch: Config.Permission.optional(),
+      external_directory: Config.Permission.optional(),
+    }).optional(),
+  })
+  export type CreateInput = z.infer<typeof CreateInput>
+
+  export const UpdateInput = CreateInput.partial().omit({ name: true })
+  export type UpdateInput = z.infer<typeof UpdateInput>
+
+  // Get the agent config directory path
+  async function getAgentDir(): Promise<string> {
+    const cfg = await Config.get()
+    // Use project config dir if available, otherwise global
+    const configDir = cfg.configPath ? path.dirname(cfg.configPath) : path.join(process.env.HOME || "", ".config", "swarm")
+    const agentDir = path.join(configDir, "agent")
+    await fs.mkdir(agentDir, { recursive: true })
+    return agentDir
+  }
+
+  // Create a new agent
+  export async function create(input: CreateInput): Promise<Info> {
+    const existing = await state()
+    if (existing[input.name]) {
+      throw new Error(`Agent "${input.name}" already exists`)
+    }
+
+    const agentDir = await getAgentDir()
+    const agentPath = path.join(agentDir, `${input.name}.md`)
+
+    // Build frontmatter
+    const frontmatter: Record<string, any> = {}
+    if (input.description) frontmatter.description = input.description
+    if (input.mode) frontmatter.mode = input.mode
+    if (input.color) frontmatter.color = input.color
+    if (input.model) frontmatter.model = input.model
+    if (input.temperature !== undefined) frontmatter.temperature = input.temperature
+    if (input.topP !== undefined) frontmatter.top_p = input.topP
+    if (input.tools) frontmatter.tools = input.tools
+    if (input.permission) frontmatter.permission = input.permission
+
+    // Build markdown content
+    const content = `---
+${yaml.stringify(frontmatter).trim()}
+---
+
+${input.prompt || ""}
+`
+
+    await fs.writeFile(agentPath, content, "utf-8")
+
+    // Reload config to pick up new agent
+    await reload()
+
+    const agent = await get(input.name)
+    if (!agent) throw new Error("Failed to create agent")
+    return agent
+  }
+
+  // Update an existing agent
+  export async function update(name: string, input: UpdateInput): Promise<Info> {
+    const existing = await get(name)
+    if (!existing) {
+      throw new Error(`Agent "${name}" not found`)
+    }
+    if (existing.builtIn) {
+      throw new Error(`Cannot modify built-in agent "${name}"`)
+    }
+
+    const agentDir = await getAgentDir()
+    const agentPath = path.join(agentDir, `${name}.md`)
+
+    // Merge with existing
+    const merged = {
+      description: input.description ?? existing.description,
+      mode: input.mode ?? existing.mode,
+      color: input.color ?? existing.color,
+      model: input.model,
+      temperature: input.temperature ?? existing.temperature,
+      top_p: input.topP ?? existing.topP,
+      tools: input.tools ?? existing.tools,
+      permission: input.permission ?? existing.permission,
+      prompt: input.prompt ?? existing.prompt,
+    }
+
+    // Build frontmatter
+    const frontmatter: Record<string, any> = {}
+    if (merged.description) frontmatter.description = merged.description
+    if (merged.mode) frontmatter.mode = merged.mode
+    if (merged.color) frontmatter.color = merged.color
+    if (merged.model) frontmatter.model = merged.model
+    if (merged.temperature !== undefined) frontmatter.temperature = merged.temperature
+    if (merged.top_p !== undefined) frontmatter.top_p = merged.top_p
+    if (merged.tools && Object.keys(merged.tools).length > 0) frontmatter.tools = merged.tools
+    if (merged.permission) frontmatter.permission = merged.permission
+
+    // Build markdown content
+    const content = `---
+${yaml.stringify(frontmatter).trim()}
+---
+
+${merged.prompt || ""}
+`
+
+    await fs.writeFile(agentPath, content, "utf-8")
+
+    // Reload config to pick up changes
+    await reload()
+
+    const agent = await get(name)
+    if (!agent) throw new Error("Failed to update agent")
+    return agent
+  }
+
+  // Delete an agent
+  export async function remove(name: string): Promise<boolean> {
+    const existing = await get(name)
+    if (!existing) {
+      throw new Error(`Agent "${name}" not found`)
+    }
+    if (existing.builtIn) {
+      throw new Error(`Cannot delete built-in agent "${name}"`)
+    }
+
+    const agentDir = await getAgentDir()
+    const agentPath = path.join(agentDir, `${name}.md`)
+
+    try {
+      await fs.unlink(agentPath)
+    } catch (e) {
+      // File might not exist if agent was defined in config
+      console.warn(`Could not delete agent file: ${e}`)
+    }
+
+    // Reload config
+    await reload()
+    return true
+  }
+
+  // Reload agent configuration
+  export async function reload(): Promise<void> {
+    // Clear the instance state to force reload
+    await Instance.dispose()
   }
 }
 
