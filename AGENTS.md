@@ -206,6 +206,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-26 | Remove identity branding from system prompts (anthropic, polaris, beast, codex, gemini, qwen) |
 | 2024-12-26 | Add promptBlocks config for injecting custom prompts into all agents (including background/task agents) |
 | 2024-12-26 | Add tool preset flags (--code-only, --read-only, --no-agent) for easy agent configuration |
 | 2024-12-21 | Regenerated SDK types and fixed budget token calculation in provider transform |
