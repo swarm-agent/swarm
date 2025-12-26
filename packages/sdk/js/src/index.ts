@@ -86,6 +86,19 @@ function detectRuntime(): "podman" | "docker" {
 }
 
 /**
+ * Prompt block injected into system prompt for all agents
+ */
+export interface PromptBlock {
+  /** The prompt content to inject */
+  content: string
+  /**
+   * Agent types to apply this block to.
+   * If not specified, applies to all agent types.
+   */
+  agents?: Array<"primary" | "subagent" | "background">
+}
+
+/**
  * Options for createOpencode()
  */
 export interface CreateOpencodeOptions extends ServerOptions {
@@ -115,6 +128,21 @@ export interface CreateOpencodeOptions extends ServerOptions {
   mcpServerName?: string
   /** Container runtime for URL detection (auto-detected if not specified) */
   containerRuntime?: "podman" | "docker"
+  /**
+   * Prompt blocks injected into the system prompt for ALL agents.
+   * Set once at startup, automatically applies to every agent (primary, subagent, background).
+   * 
+   * @example
+   * ```typescript
+   * const { spawn } = await createOpencode({
+   *   promptBlocks: [
+   *     { content: "Always respond concisely for speech output." },
+   *     { content: "Use code-review style for subagents.", agents: ["subagent"] },
+   *   ],
+   * })
+   * ```
+   */
+  promptBlocks?: PromptBlock[]
 }
 
 /**
@@ -176,7 +204,23 @@ export async function createOpencode(options?: CreateOpencodeOptions) {
     baseUrl: swarmServer.url,
   })
 
-  // 3. Register MCP server with swarm (using correct URL for containers)
+  // 3. Set prompt blocks via config (if provided)
+  if (options?.promptBlocks?.length) {
+    try {
+      await client.config.update({
+        body: {
+          promptBlocks: options.promptBlocks,
+        },
+      })
+    } catch (err) {
+      // Clean up servers if config update fails
+      mcpServer?.stop()
+      swarmServer.close()
+      throw new Error(`Failed to set prompt blocks: ${err instanceof Error ? err.message : err}`)
+    }
+  }
+
+  // 4. Register MCP server with swarm (using correct URL for containers)
   if (mcpServer) {
     try {
       // Determine the correct URL based on whether we're using a container profile
@@ -199,10 +243,10 @@ export async function createOpencode(options?: CreateOpencodeOptions) {
     }
   }
 
-  // 4. Create spawn function
+  // 5. Create spawn function
   const spawn = createSpawn(client, { system: options?.system })
 
-  // 5. Return with wrapped close() that cleans up both servers
+  // 6. Return with wrapped close() that cleans up both servers
   return {
     client,
     spawn,

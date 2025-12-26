@@ -192,6 +192,7 @@ export namespace BackgroundAgent {
         providerID: model.providerID,
       },
       agent: agentInfo.name,
+      agentType: "background",
       tools: {
         todowrite: false,
         todoread: false,

@@ -125,6 +125,7 @@ export namespace SessionPrompt {
     tools: z.record(z.string(), z.boolean()).optional(),
     agentSwitch: z.boolean().optional(),
     thinkingBudget: z.number().optional(),
+    agentType: z.enum(["primary", "subagent", "background"]).optional(),
     parts: z.array(
       z.discriminatedUnion("type", [
         MessageV2.TextPart.omit({
@@ -247,6 +248,7 @@ export namespace SessionPrompt {
       modelID: model.info.id,
       agent,
       system: input.system,
+      agentType: input.agentType ?? "primary",
     })
 
     const processor = await createProcessor({
@@ -656,6 +658,7 @@ export namespace SessionPrompt {
     agent: Agent.Info
     providerID: string
     modelID: string
+    agentType: "primary" | "subagent" | "background"
   }) {
     let system = SystemPrompt.header(input.providerID)
     system.push(
@@ -667,6 +670,20 @@ export namespace SessionPrompt {
     )
     system.push(...(await SystemPrompt.environment()))
     system.push(...(await SystemPrompt.custom()))
+
+    // Inject prompt blocks from config
+    const cfg = await Config.get()
+    if (cfg.promptBlocks?.length) {
+      const matchingBlocks = cfg.promptBlocks.filter((block) => {
+        // If no agents specified, apply to all
+        if (!block.agents || block.agents.length === 0) return true
+        return block.agents.includes(input.agentType)
+      })
+      if (matchingBlocks.length > 0) {
+        system.push(...matchingBlocks.map((b) => b.content))
+      }
+    }
+
     // max 2 system prompt messages for caching purposes
     const [first, ...rest] = system
     system = [first, rest.join("\n")]

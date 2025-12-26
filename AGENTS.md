@@ -44,7 +44,13 @@ Config file: `.swarm/swarm.json` or `.swarm/swarm.jsonc`
   "model": "anthropic/claude-sonnet-4-5",
   "sandbox": {
     "enabled": true
-  }
+  },
+  "promptBlocks": [
+    {
+      "name": "Custom Instructions",
+      "content": "Always respond in a friendly tone."
+    }
+  ]
 }
 ```
 
@@ -53,6 +59,27 @@ Config is loaded from multiple sources (merged in order):
 2. Project config: `.swarm/swarm.json` (searched up from cwd)
 3. `SWARM_CONFIG` env var (path to custom config)
 4. `SWARM_CONFIG_CONTENT` env var (inline JSON)
+
+### Prompt Blocks
+
+Inject custom prompts into all agents (including background/task agents):
+
+```json
+{
+  "promptBlocks": [
+    {
+      "name": "Code Style",
+      "content": "Use functional programming patterns. Prefer immutable data."
+    },
+    {
+      "name": "Project Context",
+      "content": "This is a React + TypeScript project using Vite."
+    }
+  ]
+}
+```
+
+Prompt blocks are appended to the system prompt and apply to all sessions.
 
 ## SDK (Important!)
 
@@ -179,6 +206,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-26 | Add promptBlocks config for injecting custom prompts into all agents (including background/task agents) |
 | 2024-12-26 | Add tool preset flags (--code-only, --read-only, --no-agent) for easy agent configuration |
 | 2024-12-21 | Regenerated SDK types and fixed budget token calculation in provider transform |
 | 2024-12-20 | Restored original background agent indicator style with border |
@@ -400,7 +428,4 @@ With bridge + socket:
 - Bun preloads `@opentui/solid/preload` for JSX support
 - Config supports JSONC (JSON with comments)
 - Memory.init() must be called in InstanceBootstrap (not server.ts) to ensure proper Bus scope
-
-## Session Log
-
-- Fixed SSE buffering in voice HUD - added /container-events passthrough endpoint that pipes container SSE directly without buffering. HUD now connects to both daemon and container streams. Created pi-agent systemd service on Pi for auto-restart.
+- promptBlocks in config are injected into system prompt for all agents (main + background/task)

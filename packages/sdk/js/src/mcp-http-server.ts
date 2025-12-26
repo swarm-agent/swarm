@@ -33,7 +33,16 @@ import type { ToolDefinition, ToolContext, ToolResult, ToolPermissionRequest } f
 // Bun server type - use any for compatibility when types aren't available
 type BunServer = {
   port: number
-  stop: () => void
+  stop: (force?: boolean) => void
+}
+
+// Declare Bun global for TypeScript (available at runtime in Bun environment)
+declare const Bun: {
+  spawn: (cmd: string[], options?: { stdout?: "pipe"; stderr?: "pipe" }) => {
+    exited: Promise<number>
+    stdout: ReadableStream
+    stderr: ReadableStream
+  }
 }
 import { toolToJsonSchema } from "./tool.js"
 import type { ZodRawShape } from "zod"

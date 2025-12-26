@@ -848,6 +848,18 @@ export namespace Config {
           "@deprecated Hyprland workspace tracking now auto-detects. This option is ignored. Session info (filepath, agent, model) always shows; workspace number shows when Hyprland is available.",
         ),
       tools: z.record(z.string(), z.boolean()).optional(),
+      promptBlocks: z
+        .array(
+          z.object({
+            content: z.string().describe("The prompt content to inject"),
+            agents: z
+              .array(z.enum(["primary", "subagent", "background"]))
+              .optional()
+              .describe("Agent types to apply this block to (default: all)"),
+          }),
+        )
+        .optional()
+        .describe("Custom prompt blocks injected into system prompt for all agents"),
       experimental: z
         .object({
           hook: z
@@ -1041,15 +1053,42 @@ export namespace Config {
     }),
   )
 
+  // Runtime config override - merged on top of file-loaded config
+  // Provides immediate effect before file reload
+  let runtimeOverride: Partial<Info> = {}
+
   export async function get() {
-    return state().then((x) => x.config)
+    const fileConfig = await state().then((x) => x.config)
+    // Merge runtime override on top of file config
+    return Object.keys(runtimeOverride).length > 0
+      ? mergeDeep(fileConfig, runtimeOverride) as Info
+      : fileConfig
   }
 
-  export async function update(config: Info) {
-    const filepath = path.join(Instance.directory, "config.json")
-    const existing = await loadFile(filepath)
-    await Bun.write(filepath, JSON.stringify(mergeDeep(existing, config), null, 2))
-    await Instance.dispose()
+  export async function update(config: Partial<Info>) {
+    // 1. Update runtime override for immediate effect
+    runtimeOverride = mergeDeep(runtimeOverride, config)
+    log.debug("updated runtime config", { keys: Object.keys(config) })
+
+    // 2. Persist to .swarm/swarm.json for persistence across restarts
+    const swarmDir = path.join(Instance.worktree, ".swarm")
+    const configPath = path.join(swarmDir, "swarm.json")
+    
+    // Ensure .swarm directory exists
+    await fs.mkdir(swarmDir, { recursive: true }).catch(() => {})
+    
+    // Load existing config and merge
+    const existing = await loadFile(configPath)
+    const merged = mergeDeep(existing, config)
+    await Bun.write(configPath, JSON.stringify(merged, null, 2))
+    log.debug("persisted config to", { path: configPath })
+  }
+
+  /**
+   * Clear runtime override (revert to file-loaded config)
+   */
+  export function clearRuntimeOverride() {
+    runtimeOverride = {}
   }
 
   export async function directories() {

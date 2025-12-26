@@ -767,6 +767,19 @@ export type Config = {
     tools?: {
         [key: string]: boolean;
     };
+    /**
+     * Custom prompt blocks injected into system prompt for all agents
+     */
+    promptBlocks?: Array<{
+        /**
+         * The prompt content to inject
+         */
+        content: string;
+        /**
+         * Agent types to apply this block to (default: all)
+         */
+        agents?: Array<'primary' | 'subagent' | 'background'>;
+    }>;
     experimental?: {
         hook?: {
             file_edited?: {
@@ -2925,6 +2938,7 @@ export type SessionPromptData = {
         };
         agentSwitch?: boolean;
         thinkingBudget?: number;
+        agentType?: 'primary' | 'subagent' | 'background';
         parts: Array<TextPartInput | FilePartInput | AgentPartInput>;
     };
     path: {
@@ -3451,6 +3465,171 @@ export type AppAgentsResponses = {
 };
 
 export type AppAgentsResponse = AppAgentsResponses[keyof AppAgentsResponses];
+
+export type AgentCreateData = {
+    body?: {
+        name: string;
+        description?: string;
+        mode?: 'subagent' | 'primary' | 'all';
+        color?: string;
+        prompt?: string;
+        model?: string;
+        temperature?: number;
+        topP?: number;
+        toolPreset?: 'yolo' | 'readonly' | 'readwrite' | 'default';
+        tools?: {
+            [key: string]: boolean;
+        };
+        permission?: {
+            edit?: 'ask' | 'allow' | 'deny' | 'pin';
+            bash?: ('ask' | 'allow' | 'deny' | 'pin') | {
+                [key: string]: 'ask' | 'allow' | 'deny' | 'pin';
+            };
+            webfetch?: 'ask' | 'allow' | 'deny' | 'pin';
+            external_directory?: 'ask' | 'allow' | 'deny' | 'pin';
+        };
+    };
+    path?: never;
+    query?: {
+        directory?: string;
+    };
+    url: '/agent';
+};
+
+export type AgentCreateErrors = {
+    /**
+     * Bad request
+     */
+    400: BadRequestError;
+};
+
+export type AgentCreateError = AgentCreateErrors[keyof AgentCreateErrors];
+
+export type AgentCreateResponses = {
+    /**
+     * Created agent
+     */
+    200: Agent;
+};
+
+export type AgentCreateResponse = AgentCreateResponses[keyof AgentCreateResponses];
+
+export type AgentDeleteData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/agent/{name}';
+};
+
+export type AgentDeleteErrors = {
+    /**
+     * Bad request
+     */
+    400: BadRequestError;
+    /**
+     * Not found
+     */
+    404: NotFoundError;
+};
+
+export type AgentDeleteError = AgentDeleteErrors[keyof AgentDeleteErrors];
+
+export type AgentDeleteResponses = {
+    /**
+     * Agent deleted
+     */
+    200: {
+        deleted: boolean;
+    };
+};
+
+export type AgentDeleteResponse = AgentDeleteResponses[keyof AgentDeleteResponses];
+
+export type AgentGetData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/agent/{name}';
+};
+
+export type AgentGetErrors = {
+    /**
+     * Not found
+     */
+    404: NotFoundError;
+};
+
+export type AgentGetError = AgentGetErrors[keyof AgentGetErrors];
+
+export type AgentGetResponses = {
+    /**
+     * Agent info
+     */
+    200: Agent;
+};
+
+export type AgentGetResponse = AgentGetResponses[keyof AgentGetResponses];
+
+export type AgentUpdateData = {
+    body?: {
+        description?: string;
+        mode?: 'subagent' | 'primary' | 'all';
+        color?: string;
+        prompt?: string;
+        model?: string;
+        temperature?: number;
+        topP?: number;
+        toolPreset?: 'yolo' | 'readonly' | 'readwrite' | 'default';
+        tools?: {
+            [key: string]: boolean;
+        };
+        permission?: {
+            edit?: 'ask' | 'allow' | 'deny' | 'pin';
+            bash?: ('ask' | 'allow' | 'deny' | 'pin') | {
+                [key: string]: 'ask' | 'allow' | 'deny' | 'pin';
+            };
+            webfetch?: 'ask' | 'allow' | 'deny' | 'pin';
+            external_directory?: 'ask' | 'allow' | 'deny' | 'pin';
+        };
+    };
+    path: {
+        name: string;
+    };
+    query?: {
+        directory?: string;
+    };
+    url: '/agent/{name}';
+};
+
+export type AgentUpdateErrors = {
+    /**
+     * Bad request
+     */
+    400: BadRequestError;
+    /**
+     * Not found
+     */
+    404: NotFoundError;
+};
+
+export type AgentUpdateError = AgentUpdateErrors[keyof AgentUpdateErrors];
+
+export type AgentUpdateResponses = {
+    /**
+     * Updated agent
+     */
+    200: Agent;
+};
+
+export type AgentUpdateResponse = AgentUpdateResponses[keyof AgentUpdateResponses];
 
 export type BackgroundAgentListData = {
     body?: never;
