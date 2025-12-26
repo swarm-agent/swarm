@@ -66,11 +66,11 @@ export const AuthListCommand = cmd({
 })
 
 export const AuthLoginCommand = cmd({
-  command: "login [url]",
+  command: "login [provider]",
   describe: "log in to a provider",
   builder: (yargs) =>
-    yargs.positional("url", {
-      describe: "opencode auth provider",
+    yargs.positional("provider", {
+      describe: "provider name (e.g. google, anthropic, openai) or wellknown URL",
       type: "string",
     }),
   async handler(args) {
@@ -79,8 +79,10 @@ export const AuthLoginCommand = cmd({
       async fn() {
         UI.empty()
         prompts.intro("Add credential")
-        if (args.url) {
-          const wellknown = await fetch(`${args.url}/.well-known/opencode`).then((x) => x.json() as any)
+
+        // Handle wellknown URL auth (e.g. https://example.com)
+        if (args.provider && args.provider.startsWith("http")) {
+          const wellknown = await fetch(`${args.provider}/.well-known/opencode`).then((x) => x.json() as any)
           prompts.log.info(`Running \`${wellknown.auth.command.join(" ")}\``)
           const proc = Bun.spawn({
             cmd: wellknown.auth.command,
@@ -93,15 +95,16 @@ export const AuthLoginCommand = cmd({
             return
           }
           const token = await new Response(proc.stdout).text()
-          await Auth.set(args.url, {
+          await Auth.set(args.provider, {
             type: "wellknown",
             key: wellknown.auth.env,
             token: token.trim(),
           })
-          prompts.log.success("Logged into " + args.url)
+          prompts.log.success("Logged into " + args.provider)
           prompts.outro("Done")
           return
         }
+
         await ModelsDev.refresh().catch(() => {})
         const providers = await ModelsDev.get()
         const priority: Record<string, number> = {
@@ -113,29 +116,46 @@ export const AuthLoginCommand = cmd({
           openrouter: 5,
           vercel: 6,
         }
-        let provider = await prompts.autocomplete({
-          message: "Select provider",
-          maxItems: 8,
-          options: [
-            ...pipe(
-              providers,
-              values(),
-              sortBy(
-                (x) => priority[x.id] ?? 99,
-                (x) => x.name ?? x.id,
+
+        // If provider name passed as argument, use it directly
+        let provider: string
+        if (args.provider && providers[args.provider]) {
+          provider = args.provider
+          prompts.log.info(`Logging into ${providers[provider].name}`)
+        } else if (args.provider) {
+          // Unknown provider name passed
+          provider = args.provider
+          prompts.log.warn(
+            `Unknown provider "${provider}" - this only stores a credential, you may need to configure it in swarm.json`,
+          )
+        } else {
+          // Interactive selection
+          const selected = await prompts.autocomplete({
+            message: "Select provider",
+            maxItems: 8,
+            options: [
+              ...pipe(
+                providers,
+                values(),
+                sortBy(
+                  (x) => priority[x.id] ?? 99,
+                  (x) => x.name ?? x.id,
+                ),
+                map((x) => ({
+                  label: x.name,
+                  value: x.id,
+                  hint: priority[x.id] <= 1 ? "recommended" : undefined,
+                })),
               ),
-              map((x) => ({
-                label: x.name,
-                value: x.id,
-                hint: priority[x.id] <= 1 ? "recommended" : undefined,
-              })),
-            ),
-            {
-              value: "other",
-              label: "Other",
-            },
-          ],
-        })
+              {
+                value: "other",
+                label: "Other",
+              },
+            ],
+          })
+          if (prompts.isCancel(selected)) throw new UI.CancelledError()
+          provider = selected
+        }
 
         if (prompts.isCancel(provider)) throw new UI.CancelledError()
 
@@ -301,7 +321,35 @@ export const AuthLoginCommand = cmd({
         }
 
         if (provider === "vercel") {
-          prompts.log.info("You can create an api key at https://vercel.link/ai-gateway-token")
+          prompts.log.info("Get your API key at https://vercel.link/ai-gateway-token")
+        }
+
+        if (provider === "google") {
+          prompts.log.info("Get your API key at https://aistudio.google.com/apikey")
+        }
+
+        if (provider === "openai") {
+          prompts.log.info("Get your API key at https://platform.openai.com/api-keys")
+        }
+
+        if (provider === "anthropic") {
+          prompts.log.info("Get your API key at https://console.anthropic.com/settings/keys")
+        }
+
+        if (provider === "openrouter") {
+          prompts.log.info("Get your API key at https://openrouter.ai/keys")
+        }
+
+        if (provider === "groq") {
+          prompts.log.info("Get your API key at https://console.groq.com/keys")
+        }
+
+        if (provider === "mistral") {
+          prompts.log.info("Get your API key at https://console.mistral.ai/api-keys")
+        }
+
+        if (provider === "xai") {
+          prompts.log.info("Get your API key at https://console.x.ai")
         }
 
         const key = await prompts.password({

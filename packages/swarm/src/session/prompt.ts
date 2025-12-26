@@ -1408,9 +1408,14 @@ export namespace SessionPrompt {
                 })
                 assistantMsg.cost += usage.cost
                 assistantMsg.tokens = usage.tokens
+                // finishReason may be an object for some providers (e.g. Gemini)
+                const finishReason =
+                  typeof value.finishReason === "string"
+                    ? value.finishReason
+                    : value.finishReason?.type ?? "unknown"
                 await Session.updatePart({
                   id: Identifier.ascending("part"),
-                  reason: value.finishReason,
+                  reason: finishReason,
                   snapshot: await Snapshot.track(),
                   messageID: assistantMsg.id,
                   sessionID: assistantMsg.sessionID,
