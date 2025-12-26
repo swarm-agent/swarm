@@ -179,6 +179,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-26 | Add tool preset flags (--code-only, --read-only, --no-agent) for easy agent configuration |
 | 2024-12-21 | Regenerated SDK types and fixed budget token calculation in provider transform |
 | 2024-12-20 | Restored original background agent indicator style with border |
 | 2024-12-20 | Simplified background agent indicator to global muted display |
@@ -188,7 +189,6 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 | 2024-12-20 | Added create-release.sh script for GitHub releases with multi-platform binaries |
 | 2024-12-20 | Simplified status bar indicator back to icon + count (reverted complex display) |
 | 2024-12-20 | Added background agents section to sidebar showing child agents tied to parent session |
-| 2024-12-20 | Enhanced background agent indicator with description and completion state display |
 
 ## Containerized Agents (SDK)
 

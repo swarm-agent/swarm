@@ -15,6 +15,143 @@ import * as path from "node:path"
 import * as yaml from "yaml"
 
 export namespace Agent {
+  // Tool groups for easy preset configuration
+  export const TOOL_GROUPS = {
+    // Read-only tools - safe for exploration
+    readonly: [
+      "read",
+      "glob",
+      "grep",
+      "list",
+      "explore-tree",
+      "webfetch",
+      "websearch",
+      "webcontents",
+      "todoread",
+    ],
+    // Write tools - can modify files
+    write: ["write", "edit"],
+    // Execution tools - can run commands
+    execute: ["bash", "manual-command"],
+    // Agent tools - can spawn other agents
+    agent: ["task", "background-agent"],
+    // Planning tools
+    planning: ["todowrite", "todoread", "exit-plan-mode"],
+    // Interactive tools
+    interactive: ["ask-user"],
+    // Memory tools
+    memory: ["memory"],
+  } as const
+
+  // Preset configurations combining tool groups with permissions
+  export const PRESETS = {
+    // YOLO mode - all tools enabled, all permissions allowed
+    yolo: {
+      tools: {} as Record<string, boolean>, // Empty = all enabled (default behavior)
+      permission: {
+        edit: "allow" as const,
+        bash: { "*": "allow" as const },
+        webfetch: "allow" as const,
+        external_directory: "allow" as const,
+      },
+    },
+    // Read-only mode - only exploration tools, no modifications
+    readonly: {
+      tools: {
+        // Enable read-only tools
+        read: true,
+        glob: true,
+        grep: true,
+        list: true,
+        "explore-tree": true,
+        webfetch: true,
+        websearch: true,
+        webcontents: true,
+        todoread: true,
+        // Disable write/execute tools
+        write: false,
+        edit: false,
+        bash: false,
+        "manual-command": false,
+        task: false,
+        "background-agent": false,
+        todowrite: false,
+        "exit-plan-mode": false,
+        memory: false,
+      },
+      permission: {
+        edit: "deny" as const,
+        bash: { "*": "deny" as const },
+        webfetch: "allow" as const,
+        external_directory: "allow" as const,
+      },
+    },
+    // Read-write mode - can read and modify files, but limited bash
+    readwrite: {
+      tools: {
+        // Enable read tools
+        read: true,
+        glob: true,
+        grep: true,
+        list: true,
+        "explore-tree": true,
+        webfetch: true,
+        websearch: true,
+        webcontents: true,
+        todoread: true,
+        todowrite: true,
+        // Enable write tools
+        write: true,
+        edit: true,
+        // Limited execution
+        bash: true,
+        "manual-command": false,
+        // Disable agent spawning
+        task: false,
+        "background-agent": false,
+        "exit-plan-mode": false,
+        memory: false,
+      },
+      permission: {
+        edit: "allow" as const,
+        bash: {
+          // Allow safe bash commands
+          "ls*": "allow" as const,
+          "cat*": "allow" as const,
+          "head*": "allow" as const,
+          "tail*": "allow" as const,
+          "grep*": "allow" as const,
+          "rg*": "allow" as const,
+          "find*": "allow" as const,
+          "tree*": "allow" as const,
+          "wc*": "allow" as const,
+          "git status*": "allow" as const,
+          "git diff*": "allow" as const,
+          "git log*": "allow" as const,
+          "git show*": "allow" as const,
+          // Block dangerous commands
+          "rm -rf*": "deny" as const,
+          "sudo*": "deny" as const,
+          "*": "ask" as const,
+        },
+        webfetch: "allow" as const,
+        external_directory: "ask" as const,
+      },
+    },
+    // Default mode - standard tool set with ask permissions
+    default: {
+      tools: {} as Record<string, boolean>, // Empty = use defaults
+      permission: {
+        edit: "ask" as const,
+        bash: { "*": "ask" as const },
+        webfetch: "allow" as const,
+        external_directory: "ask" as const,
+      },
+    },
+  } as const
+
+  export type ToolPreset = keyof typeof PRESETS
+
   export const Info = z
     .object({
       name: z.string(),
@@ -390,7 +527,12 @@ export namespace Agent {
     model: z.string().optional(),
     temperature: z.number().min(0).max(2).optional(),
     topP: z.number().min(0).max(1).optional(),
+    // Tool preset for easy configuration (yolo, readonly, readwrite, default)
+    // If specified, preset tools/permissions are applied first, then explicit overrides
+    toolPreset: z.enum(["yolo", "readonly", "readwrite", "default"]).optional(),
+    // Fine-grained tool control (merged on top of preset if both specified)
     tools: z.record(z.string(), z.boolean()).optional(),
+    // Fine-grained permission control (merged on top of preset if both specified)
     permission: z.object({
       edit: Config.Permission.optional(),
       bash: z.union([Config.Permission, z.record(z.string(), Config.Permission)]).optional(),
@@ -413,6 +555,46 @@ export namespace Agent {
     return agentDir
   }
 
+  // Apply preset and merge with explicit overrides
+  function applyPreset(input: {
+    toolPreset?: ToolPreset
+    tools?: Record<string, boolean>
+    permission?: CreateInput["permission"]
+  }): { tools: Record<string, boolean>; permission: CreateInput["permission"] } {
+    // Start with preset if specified
+    const preset = input.toolPreset ? PRESETS[input.toolPreset] : undefined
+
+    // Merge tools: preset first, then explicit overrides
+    const tools: Record<string, boolean> = {
+      ...(preset?.tools ?? {}),
+      ...(input.tools ?? {}),
+    }
+
+    // Merge permissions: preset first, then explicit overrides
+    let permission: CreateInput["permission"] = undefined
+    if (preset?.permission || input.permission) {
+      const presetPerm = preset?.permission ?? {}
+      const inputPerm = input.permission ?? {}
+
+      // Handle bash specially - if input has bash, it should override preset bash
+      let bash: CreateInput["permission"]["bash"] = undefined
+      if (inputPerm.bash !== undefined) {
+        bash = inputPerm.bash
+      } else if (presetPerm.bash !== undefined) {
+        bash = presetPerm.bash as CreateInput["permission"]["bash"]
+      }
+
+      permission = {
+        edit: inputPerm.edit ?? presetPerm.edit,
+        bash,
+        webfetch: inputPerm.webfetch ?? presetPerm.webfetch,
+        external_directory: inputPerm.external_directory ?? presetPerm.external_directory,
+      }
+    }
+
+    return { tools, permission }
+  }
+
   // Create a new agent
   export async function create(input: CreateInput): Promise<Info> {
     const existing = await state()
@@ -423,6 +605,9 @@ export namespace Agent {
     const agentDir = await getAgentDir()
     const agentPath = path.join(agentDir, `${input.name}.md`)
 
+    // Apply preset and merge with explicit overrides
+    const { tools, permission } = applyPreset(input)
+
     // Build frontmatter
     const frontmatter: Record<string, any> = {}
     if (input.description) frontmatter.description = input.description
@@ -431,8 +616,8 @@ export namespace Agent {
     if (input.model) frontmatter.model = input.model
     if (input.temperature !== undefined) frontmatter.temperature = input.temperature
     if (input.topP !== undefined) frontmatter.top_p = input.topP
-    if (input.tools) frontmatter.tools = input.tools
-    if (input.permission) frontmatter.permission = input.permission
+    if (Object.keys(tools).length > 0) frontmatter.tools = tools
+    if (permission) frontmatter.permission = permission
 
     // Build markdown content
     const content = `---
@@ -465,7 +650,10 @@ ${input.prompt || ""}
     const agentDir = await getAgentDir()
     const agentPath = path.join(agentDir, `${name}.md`)
 
-    // Merge with existing
+    // Apply preset if specified, then merge with explicit overrides
+    const { tools: presetTools, permission: presetPermission } = applyPreset(input)
+
+    // Merge with existing (preset/explicit overrides take precedence)
     const merged = {
       description: input.description ?? existing.description,
       mode: input.mode ?? existing.mode,
@@ -473,8 +661,12 @@ ${input.prompt || ""}
       model: input.model,
       temperature: input.temperature ?? existing.temperature,
       top_p: input.topP ?? existing.topP,
-      tools: input.tools ?? existing.tools,
-      permission: input.permission ?? existing.permission,
+      // If preset was applied, use preset tools merged with explicit; otherwise use explicit or existing
+      tools: input.toolPreset
+        ? { ...existing.tools, ...presetTools }
+        : (Object.keys(presetTools).length > 0 ? presetTools : existing.tools),
+      // If preset was applied, use preset permission merged; otherwise use explicit or existing
+      permission: presetPermission ?? input.permission ?? existing.permission,
       prompt: input.prompt ?? existing.prompt,
     }
 
@@ -536,6 +728,41 @@ ${merged.prompt || ""}
   export async function reload(): Promise<void> {
     // Clear the instance state to force reload
     await Instance.dispose()
+  }
+
+  // Get available presets with their descriptions
+  export function getPresets(): Array<{
+    name: ToolPreset
+    description: string
+    toolGroups: string[]
+  }> {
+    return [
+      {
+        name: "yolo",
+        description: "All tools enabled, all permissions allowed - no restrictions",
+        toolGroups: ["readonly", "write", "execute", "agent", "planning", "interactive", "memory"],
+      },
+      {
+        name: "readonly",
+        description: "Read-only exploration - no file modifications or command execution",
+        toolGroups: ["readonly"],
+      },
+      {
+        name: "readwrite",
+        description: "Can read and modify files, limited bash with safe commands allowed",
+        toolGroups: ["readonly", "write"],
+      },
+      {
+        name: "default",
+        description: "Standard tool set with ask permissions for sensitive operations",
+        toolGroups: ["readonly", "write", "execute", "agent", "planning", "interactive", "memory"],
+      },
+    ]
+  }
+
+  // Get tool groups for reference
+  export function getToolGroups(): typeof TOOL_GROUPS {
+    return TOOL_GROUPS
   }
 }
 
