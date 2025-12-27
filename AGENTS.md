@@ -206,6 +206,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 
 | Date | Summary |
 |------|---------|
+| 2024-12-27 | Add base prompts for build, plan, auto agents (src/agent/*.txt files) |
 | 2024-12-27 | Add runtime sandbox toggle with status indicator (Ctrl+S to toggle, API endpoints for sandbox state) |
 | 2024-12-26 | Remove identity branding from system prompts (anthropic, polaris, beast, codex, gemini, qwen) |
 | 2024-12-26 | Add promptBlocks config for injecting custom prompts into all agents (including background/task agents) |

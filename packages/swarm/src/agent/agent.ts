@@ -5,6 +5,9 @@ import { generateObject, type ModelMessage } from "ai"
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_EXPLORE from "./explore.txt"
 import PROMPT_MEMORY from "./memory.txt"
+import PROMPT_BUILD from "./build.txt"
+import PROMPT_PLAN from "./plan.txt"
+import PROMPT_AUTO from "./auto.txt"
 import { SystemPrompt } from "../session/system"
 import { Instance } from "../project/instance"
 import { mergeDeep } from "remeda"
@@ -370,7 +373,9 @@ export namespace Agent {
       },
       build: {
         name: "build",
+        description: "Full development mode with permission controls",
         color: "#7aa2f7",
+        prompt: PROMPT_BUILD,
         tools: { ...defaultTools },
         options: {},
         permission: agentPermission,
@@ -379,11 +384,38 @@ export namespace Agent {
       },
       plan: {
         name: "plan",
+        description: "Analysis and planning mode - read-only exploration and planning",
         color: "#bb9af7",
+        prompt: PROMPT_PLAN,
         options: {},
         permission: planPermission,
         tools: {
           ...defaultTools,
+          edit: false,
+          write: false,
+        },
+        mode: "primary",
+        builtIn: true,
+      },
+      auto: {
+        name: "auto",
+        description: "Autonomous mode - auto-approves safe operations",
+        color: "#ff9a4a",
+        prompt: PROMPT_AUTO,
+        tools: { ...defaultTools },
+        options: {},
+        permission: {
+          edit: "allow",
+          webfetch: "allow",
+          external_directory: "allow",
+          bash: {
+            "rm -rf *": "deny",
+            "rm -r *": "deny",
+            "sudo *": "ask",
+            "git push --force *": "deny",
+            "git reset --hard *": "deny",
+            "*": "allow",
+          },
         },
         mode: "primary",
         builtIn: true,
