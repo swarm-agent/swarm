@@ -135,12 +135,14 @@ export namespace Session {
         title: z.string().optional(),
         source: Source.optional(),
         containerProfile: z.string().optional(),
+        /** Working directory override (defaults to Instance.directory) */
+        directory: z.string().optional(),
       })
       .optional(),
     async (input) => {
       return createNext({
         parentID: input?.parentID,
-        directory: Instance.directory,
+        directory: input?.directory ?? Instance.directory,
         title: input?.title,
         source: input?.source,
         containerProfile: input?.containerProfile,

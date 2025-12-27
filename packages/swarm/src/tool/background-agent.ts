@@ -27,6 +27,10 @@ export const BackgroundAgentTool = Tool.define("background-agent", async () => {
         .record(z.string(), z.boolean())
         .optional()
         .describe("Override tool availability for the background agent"),
+      cwd: z
+        .string()
+        .optional()
+        .describe("Working directory for the background agent (defaults to current session's directory)"),
     }),
 
     async execute(params, ctx) {
@@ -66,6 +70,7 @@ export const BackgroundAgentTool = Tool.define("background-agent", async () => {
         prompt: params.prompt,
         agent: resolvedAgent,
         tools: params.tools,
+        cwd: params.cwd,
       })
 
       ctx.metadata({

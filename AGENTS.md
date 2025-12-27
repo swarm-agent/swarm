@@ -210,6 +210,7 @@ See `packages/swarm/AGENTS.md` for detailed development guidelines including:
 | 2024-12-26 | Remove identity branding from system prompts (anthropic, polaris, beast, codex, gemini, qwen) |
 | 2024-12-26 | Add promptBlocks config for injecting custom prompts into all agents (including background/task agents) |
 | 2024-12-26 | Add tool preset flags (--code-only, --read-only, --no-agent) for easy agent configuration |
+| 2024-12-23 | Fixed memory agent cwd detection to parse `cd` and `git -C` paths from bash commands |
 | 2024-12-21 | Regenerated SDK types and fixed budget token calculation in provider transform |
 | 2024-12-20 | Restored original background agent indicator style with border |
 | 2024-12-20 | Simplified background agent indicator to global muted display |
@@ -424,6 +425,7 @@ With bridge + socket:
 - You control exactly what the agent can do through MCP tool definitions
 
 ## Notes
+- swarm-task and swarm-theme tools are opt-in - only enabled when SWARM_AGENT_API_KEY is configured or user runs `swarm auth login` for swarmagent provider.
 
 - Memory tool creates sections if they don't exist
 - TypeScript native preview (`tsgo`) used for type checking
@@ -431,3 +433,4 @@ With bridge + socket:
 - Config supports JSONC (JSON with comments)
 - Memory.init() must be called in InstanceBootstrap (not server.ts) to ensure proper Bus scope
 - promptBlocks in config are injected into system prompt for all agents (main + background/task)
+- Added swarm-task and swarm-theme tools for SwarmAgent web dashboard integration

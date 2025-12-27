@@ -4,6 +4,7 @@ import { Tool } from "./tool"
 import DESCRIPTION from "./bash.txt"
 import { Log } from "../util/log"
 import { Instance } from "../project/instance"
+import { Session } from "../session"
 import { lazy } from "@/util/lazy"
 import { Language } from "web-tree-sitter"
 import { Agent } from "@/agent/agent"
@@ -35,6 +36,7 @@ export const BashEvent = {
       exitCode: z.number().nullable(),
       sessionID: Identifier.schema("session"),
       isCommit: z.boolean(),
+      cwd: z.string(),
     }),
   ),
 }
@@ -73,6 +75,10 @@ export const BashTool = Tool.define("bash", {
     if (params.timeout !== undefined && params.timeout < 0) {
       throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
     }
+
+    // Get session directory (supports background agents with custom cwd)
+    const session = await Session.get(ctx.sessionID)
+    const cwd = session?.directory ?? Instance.directory
 
     // Check for obfuscation attempts in the command
     const sanitized = Sandbox.sanitize(params.command)
@@ -263,7 +269,7 @@ export const BashTool = Tool.define("bash", {
     // No routing needed here - if swarm runs in container, commands naturally run there
     const proc = spawn(commandToRun, {
       shell: true,
-      cwd: Instance.directory,
+      cwd,
       env: {
         ...process.env,
       },
@@ -386,12 +392,29 @@ export const BashTool = Tool.define("bash", {
     // Detect if this was a git commit command
     const isCommit = /git\s+commit\b/.test(params.command) && !params.command.includes("--amend")
 
+    // For git commits, try to detect the actual working directory from the command
+    // Handles patterns like: cd /path && git commit, git -C /path commit
+    let effectiveCwd = cwd
+    if (isCommit) {
+      // Match: cd /path && ... or cd /path;
+      const cdMatch = params.command.match(/^cd\s+["']?([^"';&]+)["']?\s*[;&]/)
+      if (cdMatch) {
+        effectiveCwd = cdMatch[1].trim()
+      }
+      // Match: git -C /path commit
+      const gitCMatch = params.command.match(/git\s+-C\s+["']?([^"'\s]+)["']?\s+commit/)
+      if (gitCMatch) {
+        effectiveCwd = gitCMatch[1].trim()
+      }
+    }
+
     // Publish bash execution event (for hooks like memory auto-update)
     Bus.publish(BashEvent.Executed, {
       command: params.command,
       exitCode: proc.exitCode,
       sessionID: ctx.sessionID,
       isCommit,
+      cwd: effectiveCwd,
     }).catch((err) => log.error("failed to publish bash event", { error: err }))
 
     return {

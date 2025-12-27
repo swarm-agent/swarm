@@ -7,6 +7,7 @@ export * from "./mcp-server.js"
 export * from "./mcp-http-server.js"
 export * from "./env.js"
 export * from "./container.js"
+export * from "./swarmagent.js"
 
 // Re-export Zod so users get the same instance used internally
 // This prevents "keyValidator._parse is not a function" errors

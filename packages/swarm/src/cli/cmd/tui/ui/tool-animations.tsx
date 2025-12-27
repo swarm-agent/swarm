@@ -2845,6 +2845,279 @@ export function WebsearchToolAnimation(props: {
 }
 
 // ============================================================================
+// WEBCONTENTS ANIMATION - Fetch specific URLs for detailed content
+// Full flow: Pending → Running → Resolved
+// Uses document/page themed visuals (warm purple/peach palette)
+// ============================================================================
+
+// Catppuccin colors for webcontents - warm purple/peach theme
+const WEBCONTENTS_COLORS = {
+  palettes: [
+    // Mauve → Peach → Yellow gradient
+    [RGBA.fromHex("#cba6f7"), RGBA.fromHex("#fab387"), RGBA.fromHex("#f9e2af")],
+    // Pink → Mauve → Lavender gradient
+    [RGBA.fromHex("#f38ba8"), RGBA.fromHex("#cba6f7"), RGBA.fromHex("#b4befe")],
+    // Peach → Yellow → Green gradient
+    [RGBA.fromHex("#fab387"), RGBA.fromHex("#f9e2af"), RGBA.fromHex("#a6e3a1")],
+  ],
+  success: RGBA.fromHex("#a6e3a1"), // Catppuccin Green
+  error: RGBA.fromHex("#f38ba8"), // Catppuccin Red
+  dim: RGBA.fromHex("#6c7086"), // Catppuccin Overlay0
+  bracket: RGBA.fromHex("#585b70"), // Catppuccin Surface2
+}
+
+/**
+ * WebcontentsSpinner - Three document/page icons breathing in wave pattern
+ * Uses page-themed characters to show "fetching content"
+ */
+export function WebcontentsSpinner(props: { paletteIndex?: number }) {
+  const palette = WEBCONTENTS_COLORS.palettes[props.paletteIndex ?? 0]
+  const [opacities, setOpacities] = createSignal([0.5, 0.5, 0.5])
+  const [frame, setFrame] = createSignal(0)
+  const chars = ["▫", "▪", "◻", "◼"]
+
+  // Wave breathing effect + character cycling
+  const interval = setInterval(() => {
+    const now = Date.now()
+    const newOpacities = palette.map((_, i) => {
+      const phase = ((now / 1600) * Math.PI * 2 + i * 0.7) % (Math.PI * 2)
+      return 0.4 + (1 - 0.4) * ((Math.sin(phase) + 1) / 2)
+    })
+    setOpacities(newOpacities)
+    setFrame((f) => (f + 1) % 16)
+  }, 50)
+
+  onCleanup(() => clearInterval(interval))
+
+  // Each icon cycles through with offset
+  const getChar = (idx: number) => {
+    const offset = Math.floor((frame() + idx * 4) / 4) % chars.length
+    return chars[offset]
+  }
+
+  const c0 = () => RGBA.fromInts(palette[0].r * 255, palette[0].g * 255, palette[0].b * 255, opacities()[0] * 255)
+  const c1 = () => RGBA.fromInts(palette[1].r * 255, palette[1].g * 255, palette[1].b * 255, opacities()[1] * 255)
+  const c2 = () => RGBA.fromInts(palette[2].r * 255, palette[2].g * 255, palette[2].b * 255, opacities()[2] * 255)
+
+  return (
+    <>
+      <span style={{ fg: c0() }}>{getChar(0)}</span>
+      <span style={{ fg: c1() }}>{getChar(1)}</span>
+      <span style={{ fg: c2() }}>{getChar(2)}</span>
+    </>
+  )
+}
+
+/**
+ * BreathingWebcontents - "webcontents" text with breathing opacity
+ */
+export function BreathingWebcontents(props: { color?: RGBA }) {
+  const baseColor = props.color ?? WEBCONTENTS_COLORS.palettes[0][0]
+  const [phase, setPhase] = createSignal(0)
+
+  const opacities = [0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.0, 0.8, 0.6, 0.5, 0.4, 0.3]
+
+  const interval = setInterval(() => {
+    setPhase((p) => (p + 1) % opacities.length)
+  }, 170)
+
+  onCleanup(() => clearInterval(interval))
+
+  const color = () => RGBA.fromInts(baseColor.r * 255, baseColor.g * 255, baseColor.b * 255, opacities[phase()] * 255)
+
+  return <span style={{ fg: color() }}>webcontents</span>
+}
+
+/**
+ * WebcontentsProgressBar - Wave-filled progress bar with warm color cycling
+ */
+export function WebcontentsProgressBar(props: { width?: number; paletteIndex?: number }) {
+  const width = props.width ?? 8
+  const totalSteps = width * WAVE_BLOCKS.length
+  const [step, setStep] = createSignal(0)
+  const [currentPalette, setCurrentPalette] = createSignal(props.paletteIndex ?? 0)
+
+  const interval = setInterval(() => {
+    setStep((s) => {
+      const next = s + 1
+      if (next >= totalSteps) {
+        setCurrentPalette((p) => (p + 1) % WEBCONTENTS_COLORS.palettes.length)
+        return 0
+      }
+      return next
+    })
+  }, 38)
+
+  onCleanup(() => clearInterval(interval))
+
+  const getColor = () => {
+    const palette = WEBCONTENTS_COLORS.palettes[currentPalette()]
+    const progress = step() / totalSteps
+    const idx = Math.floor(progress * (palette.length - 1))
+    const t = progress * (palette.length - 1) - idx
+    const c1 = palette[Math.min(idx, palette.length - 1)]
+    const c2 = palette[Math.min(idx + 1, palette.length - 1)]
+
+    return RGBA.fromInts(
+      Math.round(c1.r * 255 * (1 - t) + c2.r * 255 * t),
+      Math.round(c1.g * 255 * (1 - t) + c2.g * 255 * t),
+      Math.round(c1.b * 255 * (1 - t) + c2.b * 255 * t),
+      255,
+    )
+  }
+
+  const bar = () => {
+    const fullChars = Math.floor(step() / WAVE_BLOCKS.length)
+    const partialIdx = step() % WAVE_BLOCKS.length
+    const emptyChars = width - fullChars - (partialIdx > 0 ? 1 : 0)
+
+    let result = "█".repeat(fullChars)
+    if (partialIdx > 0 && fullChars < width) result += WAVE_BLOCKS[partialIdx]
+    result += "░".repeat(Math.max(0, emptyChars))
+    return result
+  }
+
+  return (
+    <>
+      <span style={{ fg: WEBCONTENTS_COLORS.bracket }}>[</span>
+      <span style={{ fg: getColor() }}>{bar()}</span>
+      <span style={{ fg: WEBCONTENTS_COLORS.bracket }}>]</span>
+    </>
+  )
+}
+
+/**
+ * WebcontentsPending - Spinner + breathing text + URL count
+ */
+export function WebcontentsPending(props: { urlCount?: number }) {
+  const { theme } = useTheme()
+  const [paletteIndex, setPaletteIndex] = createSignal(0)
+
+  const interval = setInterval(() => {
+    setPaletteIndex((p) => (p + 1) % WEBCONTENTS_COLORS.palettes.length)
+  }, 2800)
+
+  onCleanup(() => clearInterval(interval))
+
+  const palette = () => WEBCONTENTS_COLORS.palettes[paletteIndex()]
+
+  return (
+    <box gap={0}>
+      <text>
+        <WebcontentsSpinner paletteIndex={paletteIndex()} /> <BreathingWebcontents color={palette()[0]} />{" "}
+        <span style={{ fg: theme.textMuted }}>
+          {props.urlCount ? `${props.urlCount} URL${props.urlCount > 1 ? "s" : ""}` : "..."}
+        </span>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * WebcontentsRunning - Progress bar + text + URL count + elapsed time
+ */
+export function WebcontentsRunning(props: { urlCount?: number; startTime?: number }) {
+  const { theme } = useTheme()
+  const [paletteIndex, setPaletteIndex] = createSignal(0)
+
+  const interval = setInterval(() => {
+    setPaletteIndex((p) => (p + 1) % WEBCONTENTS_COLORS.palettes.length)
+  }, 2400)
+
+  onCleanup(() => clearInterval(interval))
+
+  const palette = () => WEBCONTENTS_COLORS.palettes[paletteIndex()]
+
+  return (
+    <box gap={0}>
+      <text>
+        <WebcontentsProgressBar paletteIndex={paletteIndex()} /> <BreathingWebcontents color={palette()[1]} />{" "}
+        <span style={{ fg: theme.text }}>
+          {props.urlCount ? `${props.urlCount} URL${props.urlCount > 1 ? "s" : ""}` : "..."}
+        </span>{" "}
+        <Show when={props.startTime}>
+          <ElapsedTime startTime={props.startTime!} color={theme.textMuted} />
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * WebcontentsResolved - Success/failure with URL count and time
+ */
+export function WebcontentsResolved(props: {
+  success: boolean
+  urlCount?: number
+  executionTime?: number
+  mode?: string
+}) {
+  const { theme } = useTheme()
+  const color = props.success ? WEBCONTENTS_COLORS.success : WEBCONTENTS_COLORS.error
+
+  const formatTime = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.floor((ms % 60000) / 1000)
+    return `${minutes}m ${seconds}s`
+  }
+
+  return (
+    <box gap={0}>
+      <text>
+        <span style={{ fg: color, bold: true }}>{props.success ? "✓" : "✗"}</span>{" "}
+        <span style={{ fg: WEBCONTENTS_COLORS.dim }}>webcontents</span>{" "}
+        <Show when={props.urlCount !== undefined}>
+          <span style={{ fg: WEBCONTENTS_COLORS.palettes[0][1] }}>
+            {props.urlCount} page{props.urlCount !== 1 ? "s" : ""}
+          </span>
+        </Show>
+        <Show when={props.mode}>
+          <span style={{ fg: theme.textMuted }}> [{props.mode}]</span>
+        </Show>
+        <Show when={props.executionTime !== undefined}>
+          <span style={{ fg: theme.textMuted }}> {formatTime(props.executionTime!)}</span>
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * WebcontentsToolAnimation - Complete flow handler (pending/running/completed/error)
+ */
+export function WebcontentsToolAnimation(props: {
+  status: "pending" | "running" | "completed" | "error"
+  urlCount?: number
+  startTime?: number
+  executionTime?: number
+  mode?: string
+}) {
+  return (
+    <Switch>
+      <Match when={props.status === "pending"}>
+        <WebcontentsPending urlCount={props.urlCount} />
+      </Match>
+      <Match when={props.status === "running"}>
+        <WebcontentsRunning urlCount={props.urlCount} startTime={props.startTime} />
+      </Match>
+      <Match when={props.status === "completed"}>
+        <WebcontentsResolved
+          success={true}
+          urlCount={props.urlCount}
+          executionTime={props.executionTime}
+          mode={props.mode}
+        />
+      </Match>
+      <Match when={props.status === "error"}>
+        <WebcontentsResolved success={false} urlCount={props.urlCount} executionTime={props.executionTime} />
+      </Match>
+    </Switch>
+  )
+}
+
+// ============================================================================
 // ASK-USER ANIMATION - Interactive question tool with progress visualization
 // Full flow: Pending → Running → Resolved
 // ============================================================================
@@ -5248,5 +5521,767 @@ export function InlinePermission(props: {
         </box>
       </Show>
     </box>
+  )
+}
+
+// ============================================================================
+// SWARM-TASK ANIMATION - Human-in-the-loop approval flow
+// Transmission → Waiting → Approved/Rejected → Result
+// Uses USER'S THEME COLORS for perfect integration
+// ============================================================================
+
+// Nerd Font icons for swarm-task
+const TASK_SEND = "󰲸" // md-send
+const TASK_SEND_CLOCK = "󰤇" // md-send_clock
+const TASK_CLOUD_UPLOAD = "󰥠" // md-cloud_upload
+const TASK_CLOUD_SYNC = "󰨜" // md-cloud_sync
+const TASK_TIMER_SAND = "󰔏" // md-timer_sand
+const TASK_BELL_RING = "󰂞" // md-bell_ring
+const TASK_HAND = "󱖐" // md-hand_wave
+const TASK_ACCOUNT = "󰌏" // md-account_check
+const TASK_CHECK_CIRCLE = "󰄲" // md-check_circle
+const TASK_CLOSE_CIRCLE = "󰅙" // md-close_circle
+const TASK_CLOCK = "󰥔" // md-clock_outline
+const TASK_CLOUD_CHECK = "󰅠" // md-cloud_check
+
+/**
+ * Derive a 3-color palette from a base theme color
+ * Creates variations with different opacities for wave effects
+ */
+function deriveThemePalette(base: RGBA): RGBA[] {
+  return [
+    base,
+    RGBA.fromInts(base.r * 255, base.g * 255, base.b * 255, 0.8 * 255),
+    RGBA.fromInts(base.r * 255, base.g * 255, base.b * 255, 0.6 * 255),
+  ]
+}
+
+/**
+ * Hook to get swarm-task colors derived from user's theme
+ */
+function useSwarmTaskColors() {
+  const { theme } = useTheme()
+  return {
+    create: deriveThemePalette(theme.info),
+    waiting: deriveThemePalette(theme.warning),
+    approved: deriveThemePalette(theme.success),
+    rejected: deriveThemePalette(theme.error),
+    result: deriveThemePalette(theme.secondary),
+    list: deriveThemePalette(theme.primary),
+    dim: theme.textMuted,
+    text: theme.text,
+  }
+}
+
+/**
+ * SwarmTaskCreateSpinner - Transmission wave animation
+ * Three icons morphing: send → sync → upload with wave breathing
+ * Uses theme.info for "sending to cloud" feel
+ */
+export function SwarmTaskCreateSpinner() {
+  const icons = [TASK_SEND, TASK_SEND_CLOCK, TASK_CLOUD_SYNC, TASK_CLOUD_UPLOAD]
+  const taskColors = useSwarmTaskColors()
+  const colors = taskColors.create
+  const [opacities, setOpacities] = createSignal([0.5, 0.5, 0.5])
+  const [iconIdx, setIconIdx] = createSignal(0)
+
+  // Wave breathing
+  const breathInterval = setInterval(() => {
+    const now = Date.now()
+    const newOpacities = colors.map((_, i) => {
+      const phase = ((now / 1200) * Math.PI * 2 + i * 0.8) % (Math.PI * 2)
+      return 0.4 + (1 - 0.4) * ((Math.sin(phase) + 1) / 2)
+    })
+    setOpacities(newOpacities)
+  }, 40)
+
+  // Icon morphing
+  const morphInterval = setInterval(() => {
+    setIconIdx((idx) => (idx + 1) % icons.length)
+  }, 350)
+
+  onCleanup(() => {
+    clearInterval(breathInterval)
+    clearInterval(morphInterval)
+  })
+
+  const getIcon = (offset: number) => icons[(iconIdx() + offset) % icons.length]
+
+  const c0 = () => RGBA.fromInts(colors[0].r * 255, colors[0].g * 255, colors[0].b * 255, opacities()[0] * 255)
+  const c1 = () => RGBA.fromInts(colors[1].r * 255, colors[1].g * 255, colors[1].b * 255, opacities()[1] * 255)
+  const c2 = () => RGBA.fromInts(colors[2].r * 255, colors[2].g * 255, colors[2].b * 255, opacities()[2] * 255)
+
+  return (
+    <>
+      <span style={{ fg: c0() }}>{getIcon(0)}</span>
+      <span style={{ fg: c1() }}>{getIcon(1)}</span>
+      <span style={{ fg: c2() }}>{getIcon(2)}</span>
+    </>
+  )
+}
+
+/**
+ * SwarmTaskPollWaitingSpinner - Radar sweep / anticipation animation
+ * Hourglass + hand + bell icons alternating, slow breathing
+ * Uses theme.warning for "waiting for human" feel
+ */
+export function SwarmTaskPollWaitingSpinner() {
+  const icons = [TASK_TIMER_SAND, TASK_HAND, TASK_BELL_RING, TASK_CLOCK]
+  const taskColors = useSwarmTaskColors()
+  const colors = taskColors.waiting
+  const [opacities, setOpacities] = createSignal([0.5, 0.5, 0.5])
+  const [iconIdx, setIconIdx] = createSignal(0)
+
+  // Slow breathing for waiting feel
+  const breathInterval = setInterval(() => {
+    const now = Date.now()
+    const newOpacities = colors.map((_, i) => {
+      const phase = ((now / 2000) * Math.PI * 2 + i * 0.6) % (Math.PI * 2)
+      return 0.35 + (1 - 0.35) * ((Math.sin(phase) + 1) / 2)
+    })
+    setOpacities(newOpacities)
+  }, 50)
+
+  // Slower morph for anticipation
+  const morphInterval = setInterval(() => {
+    setIconIdx((idx) => (idx + 1) % icons.length)
+  }, 600)
+
+  onCleanup(() => {
+    clearInterval(breathInterval)
+    clearInterval(morphInterval)
+  })
+
+  const getIcon = (offset: number) => icons[(iconIdx() + offset) % icons.length]
+
+  const c0 = () => RGBA.fromInts(colors[0].r * 255, colors[0].g * 255, colors[0].b * 255, opacities()[0] * 255)
+  const c1 = () => RGBA.fromInts(colors[1].r * 255, colors[1].g * 255, colors[1].b * 255, opacities()[1] * 255)
+  const c2 = () => RGBA.fromInts(colors[2].r * 255, colors[2].g * 255, colors[2].b * 255, opacities()[2] * 255)
+
+  return (
+    <>
+      <span style={{ fg: c0() }}>{getIcon(0)}</span>
+      <span style={{ fg: c1() }}>{getIcon(1)}</span>
+      <span style={{ fg: c2() }}>{getIcon(2)}</span>
+    </>
+  )
+}
+
+/**
+ * SwarmTaskApprovedSpinner - Celebration burst!
+ * Checkmarks with bouncy breathing - uses theme.success
+ */
+export function SwarmTaskApprovedSpinner() {
+  const icons = [TASK_CHECK_CIRCLE, TASK_ACCOUNT, TASK_CLOUD_CHECK]
+  const taskColors = useSwarmTaskColors()
+  const colors = taskColors.approved
+  const [opacities, setOpacities] = createSignal([0.6, 0.6, 0.6])
+  const [iconIdx, setIconIdx] = createSignal(0)
+
+  // Fast bouncy breathing for celebration
+  const breathInterval = setInterval(() => {
+    const now = Date.now()
+    const newOpacities = colors.map((_, i) => {
+      const phase = ((now / 800) * Math.PI * 2 + i * 0.5) % (Math.PI * 2)
+      // Use absolute value of sine for "bounce" effect
+      return 0.5 + Math.abs(Math.sin(phase)) * 0.5
+    })
+    setOpacities(newOpacities)
+  }, 30)
+
+  // Fast icon swap
+  const morphInterval = setInterval(() => {
+    setIconIdx((idx) => (idx + 1) % icons.length)
+  }, 300)
+
+  onCleanup(() => {
+    clearInterval(breathInterval)
+    clearInterval(morphInterval)
+  })
+
+  const getIcon = (offset: number) => icons[(iconIdx() + offset) % icons.length]
+
+  const c0 = () => RGBA.fromInts(colors[0].r * 255, colors[0].g * 255, colors[0].b * 255, opacities()[0] * 255)
+  const c1 = () => RGBA.fromInts(colors[1].r * 255, colors[1].g * 255, colors[1].b * 255, opacities()[1] * 255)
+  const c2 = () => RGBA.fromInts(colors[2].r * 255, colors[2].g * 255, colors[2].b * 255, opacities()[2] * 255)
+
+  return (
+    <>
+      <span style={{ fg: c0() }}>{getIcon(0)}</span>
+      <span style={{ fg: c1() }}>{getIcon(1)}</span>
+      <span style={{ fg: c2() }}>{getIcon(2)}</span>
+    </>
+  )
+}
+
+/**
+ * SwarmTaskRejectedSpinner - Error shake effect
+ * X icons with elastic wobble - uses theme.error
+ */
+export function SwarmTaskRejectedSpinner() {
+  const taskColors = useSwarmTaskColors()
+  const colors = taskColors.rejected
+  const [opacities, setOpacities] = createSignal([0.5, 0.5, 0.5])
+
+  // Shakier breathing for error feel
+  const breathInterval = setInterval(() => {
+    const now = Date.now()
+    const newOpacities = colors.map((_, i) => {
+      const phase = ((now / 600) * Math.PI * 2 + i * 1.0) % (Math.PI * 2)
+      return 0.4 + Math.abs(Math.sin(phase)) * 0.6
+    })
+    setOpacities(newOpacities)
+  }, 30)
+
+  onCleanup(() => clearInterval(breathInterval))
+
+  const c0 = () => RGBA.fromInts(colors[0].r * 255, colors[0].g * 255, colors[0].b * 255, opacities()[0] * 255)
+  const c1 = () => RGBA.fromInts(colors[1].r * 255, colors[1].g * 255, colors[1].b * 255, opacities()[1] * 255)
+  const c2 = () => RGBA.fromInts(colors[2].r * 255, colors[2].g * 255, colors[2].b * 255, opacities()[2] * 255)
+
+  return (
+    <>
+      <span style={{ fg: c0() }}>{TASK_CLOSE_CIRCLE}</span>
+      <span style={{ fg: c1() }}>{TASK_CLOSE_CIRCLE}</span>
+      <span style={{ fg: c2() }}>{TASK_CLOSE_CIRCLE}</span>
+    </>
+  )
+}
+
+/**
+ * SwarmTaskResultSpinner - Upload complete animation
+ * Uses theme.secondary for completion feel
+ */
+export function SwarmTaskResultSpinner() {
+  const icons = [TASK_CLOUD_CHECK, TASK_CHECK_CIRCLE, TASK_CLOUD_UPLOAD]
+  const taskColors = useSwarmTaskColors()
+  const colors = taskColors.result
+  const [opacities, setOpacities] = createSignal([0.5, 0.5, 0.5])
+  const [iconIdx, setIconIdx] = createSignal(0)
+
+  // Smooth completion breathing
+  const breathInterval = setInterval(() => {
+    const now = Date.now()
+    const newOpacities = colors.map((_, i) => {
+      const phase = ((now / 1400) * Math.PI * 2 + i * 0.7) % (Math.PI * 2)
+      return 0.45 + (1 - 0.45) * ((Math.sin(phase) + 1) / 2)
+    })
+    setOpacities(newOpacities)
+  }, 40)
+
+  // Icon morphing
+  const morphInterval = setInterval(() => {
+    setIconIdx((idx) => (idx + 1) % icons.length)
+  }, 400)
+
+  onCleanup(() => {
+    clearInterval(breathInterval)
+    clearInterval(morphInterval)
+  })
+
+  const getIcon = (offset: number) => icons[(iconIdx() + offset) % icons.length]
+
+  const c0 = () => RGBA.fromInts(colors[0].r * 255, colors[0].g * 255, colors[0].b * 255, opacities()[0] * 255)
+  const c1 = () => RGBA.fromInts(colors[1].r * 255, colors[1].g * 255, colors[1].b * 255, opacities()[1] * 255)
+  const c2 = () => RGBA.fromInts(colors[2].r * 255, colors[2].g * 255, colors[2].b * 255, opacities()[2] * 255)
+
+  return (
+    <>
+      <span style={{ fg: c0() }}>{getIcon(0)}</span>
+      <span style={{ fg: c1() }}>{getIcon(1)}</span>
+      <span style={{ fg: c2() }}>{getIcon(2)}</span>
+    </>
+  )
+}
+
+/**
+ * SwarmTaskListSpinner - List/info animation
+ * Uses theme.primary with standard breathing
+ */
+export function SwarmTaskListSpinner() {
+  const taskColors = useSwarmTaskColors()
+  const colors = taskColors.list
+  const [opacities, setOpacities] = createSignal([0.5, 0.5, 0.5])
+
+  const breathInterval = setInterval(() => {
+    const now = Date.now()
+    const newOpacities = colors.map((_, i) => {
+      const phase = ((now / 1500) * Math.PI * 2 + i * 0.7) % (Math.PI * 2)
+      return 0.4 + (1 - 0.4) * ((Math.sin(phase) + 1) / 2)
+    })
+    setOpacities(newOpacities)
+  }, 40)
+
+  onCleanup(() => clearInterval(breathInterval))
+
+  const c0 = () => RGBA.fromInts(colors[0].r * 255, colors[0].g * 255, colors[0].b * 255, opacities()[0] * 255)
+  const c1 = () => RGBA.fromInts(colors[1].r * 255, colors[1].g * 255, colors[1].b * 255, opacities()[1] * 255)
+  const c2 = () => RGBA.fromInts(colors[2].r * 255, colors[2].g * 255, colors[2].b * 255, opacities()[2] * 255)
+
+  return (
+    <>
+      <span style={{ fg: c0() }}>󰋗</span>
+      <span style={{ fg: c1() }}>󰋗</span>
+      <span style={{ fg: c2() }}>󰋗</span>
+    </>
+  )
+}
+
+/**
+ * BreathingSwarmTask - Breathing "swarm-task" text that matches spinner
+ * Uses theme colors for perfect integration
+ */
+export function BreathingSwarmTask(props: { action: "create" | "poll" | "result" | "list"; pollStatus?: string }) {
+  const taskColors = useSwarmTaskColors()
+  
+  const getBaseColor = () => {
+    if (props.action === "poll") {
+      if (props.pollStatus === "approved") return taskColors.approved[0]
+      if (props.pollStatus === "rejected") return taskColors.rejected[0]
+      return taskColors.waiting[0]
+    }
+    if (props.action === "create") return taskColors.create[0]
+    if (props.action === "result") return taskColors.result[0]
+    return taskColors.list[0]
+  }
+
+  const baseColor = getBaseColor()
+  const [opacity, setOpacity] = createSignal(0.7)
+
+  const interval = setInterval(() => {
+    const now = Date.now()
+    const phase = ((now / 1500) * Math.PI * 2) % (Math.PI * 2)
+    setOpacity(0.5 + (Math.sin(phase) + 1) * 0.25)
+  }, 50)
+
+  onCleanup(() => clearInterval(interval))
+
+  const color = () => RGBA.fromInts(baseColor.r * 255, baseColor.g * 255, baseColor.b * 255, opacity() * 255)
+
+  return <span style={{ fg: color() }}>swarm-task</span>
+}
+
+/**
+ * SwarmTaskPending - Pending state animation
+ */
+export function SwarmTaskPending(props: { action: "create" | "poll" | "result" | "list"; summary?: string }) {
+  const { theme } = useTheme()
+  const getSpinner = () => {
+    switch (props.action) {
+      case "create":
+        return <SwarmTaskCreateSpinner />
+      case "poll":
+        return <SwarmTaskPollWaitingSpinner />
+      case "result":
+        return <SwarmTaskResultSpinner />
+      case "list":
+        return <SwarmTaskListSpinner />
+    }
+  }
+
+  return (
+    <box gap={0}>
+      <text>
+        {getSpinner()} <BreathingSwarmTask action={props.action} />
+        <Show when={props.summary}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>{props.summary?.slice(0, 40)}...</span>
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * SwarmTaskRunning - Running state with elapsed time
+ */
+export function SwarmTaskRunning(props: {
+  action: "create" | "poll" | "result" | "list"
+  summary?: string
+  startTime?: number
+  pollStatus?: string
+}) {
+  const { theme } = useTheme()
+
+  const getSpinner = () => {
+    if (props.action === "poll") {
+      if (props.pollStatus === "approved") return <SwarmTaskApprovedSpinner />
+      if (props.pollStatus === "rejected") return <SwarmTaskRejectedSpinner />
+      return <SwarmTaskPollWaitingSpinner />
+    }
+    switch (props.action) {
+      case "create":
+        return <SwarmTaskCreateSpinner />
+      case "result":
+        return <SwarmTaskResultSpinner />
+      case "list":
+        return <SwarmTaskListSpinner />
+    }
+  }
+
+  return (
+    <box gap={0}>
+      <text>
+        {getSpinner()} <BreathingSwarmTask action={props.action} pollStatus={props.pollStatus} />
+        <Show when={props.summary}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>{props.summary?.slice(0, 40)}...</span>
+        </Show>
+        <Show when={props.startTime}>
+          {" "}
+          <ElapsedTime startTime={props.startTime!} color={theme.textMuted} />
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * SwarmTaskResolved - Completed/error state with result
+ * Uses theme colors for consistent appearance
+ */
+export function SwarmTaskResolved(props: {
+  success: boolean
+  action: "create" | "poll" | "result" | "list"
+  summary?: string
+  executionTime?: number
+  pollStatus?: string
+}) {
+  const { theme } = useTheme()
+  const taskColors = useSwarmTaskColors()
+
+  const getIconAndColor = () => {
+    if (props.action === "poll") {
+      if (props.pollStatus === "approved") {
+        return { icon: "✓", color: taskColors.approved[0] }
+      }
+      if (props.pollStatus === "rejected") {
+        return { icon: "✗", color: taskColors.rejected[0] }
+      }
+    }
+    return {
+      icon: props.success ? "✓" : "✗",
+      color: props.success ? taskColors.approved[0] : taskColors.rejected[0],
+    }
+  }
+
+  const { icon, color } = getIconAndColor()
+
+  const getTextColor = () => {
+    if (props.action === "create") return taskColors.create[0]
+    if (props.action === "poll") {
+      if (props.pollStatus === "approved") return taskColors.approved[0]
+      if (props.pollStatus === "rejected") return taskColors.rejected[0]
+      return taskColors.waiting[0]
+    }
+    if (props.action === "result") return taskColors.result[0]
+    return taskColors.list[0]
+  }
+  const dimColor = RGBA.fromInts(getTextColor().r * 255, getTextColor().g * 255, getTextColor().b * 255, 153)
+
+  const formatTime = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.floor((ms % 60000) / 1000)
+    return `${minutes}m ${seconds}s`
+  }
+
+  return (
+    <box gap={0}>
+      <text>
+        <span style={{ fg: color, bold: true }}>{icon}</span> <span style={{ fg: dimColor }}>swarm-task</span>
+        <Show when={props.summary}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>{props.summary?.slice(0, 40)}...</span>
+        </Show>
+        <Show when={props.executionTime !== undefined}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>{formatTime(props.executionTime!)}</span>
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * SwarmTaskToolAnimation - Complete state machine for swarm-task tool
+ */
+export function SwarmTaskToolAnimation(props: {
+  status: "pending" | "running" | "completed" | "error"
+  action: "create" | "poll" | "result" | "list"
+  summary?: string
+  startTime?: number
+  executionTime?: number
+  pollStatus?: string
+}) {
+  return (
+    <Switch>
+      <Match when={props.status === "pending"}>
+        <SwarmTaskPending action={props.action} summary={props.summary} />
+      </Match>
+      <Match when={props.status === "running"}>
+        <SwarmTaskRunning
+          action={props.action}
+          summary={props.summary}
+          startTime={props.startTime}
+          pollStatus={props.pollStatus}
+        />
+      </Match>
+      <Match when={props.status === "completed"}>
+        <SwarmTaskResolved
+          success={true}
+          action={props.action}
+          summary={props.summary}
+          executionTime={props.executionTime}
+          pollStatus={props.pollStatus}
+        />
+      </Match>
+      <Match when={props.status === "error"}>
+        <SwarmTaskResolved
+          success={false}
+          action={props.action}
+          summary={props.summary}
+          executionTime={props.executionTime}
+          pollStatus={props.pollStatus}
+        />
+      </Match>
+    </Switch>
+  )
+}
+
+// ============================================================================
+// SWARM-THEME ANIMATION - Dashboard theme customization
+// Uses USER'S THEME COLORS for the rainbow effect!
+// ============================================================================
+
+// Nerd Font icons for swarm-theme
+const THEME_PALETTE = "󰏘" // md-palette
+const THEME_PALETTE_OUTLINE = "󰏚" // md-palette_outline
+const THEME_FORMAT_PAINT = "󰏃" // md-format_paint
+const THEME_FORMAT_COLOR = "󰸌" // md-format_color_fill
+const THEME_BRIGHTNESS = "󰃠" // md-brightness_6
+const THEME_CIRCLE = "󰇊" // md-circle (color dot)
+
+/**
+ * Hook to get swarm-theme colors from user's actual theme
+ * The rainbow effect uses their theme's accent colors!
+ */
+function useSwarmThemeColors() {
+  const { theme } = useTheme()
+  return {
+    // Rainbow uses the user's actual theme palette
+    palette: [
+      theme.error,    // Their red/pink
+      theme.warning,  // Their yellow/orange
+      theme.success,  // Their green
+      theme.info,     // Their cyan/info
+      theme.primary,  // Their primary
+      theme.secondary // Their secondary
+    ],
+    dim: theme.textMuted,
+    success: theme.success,
+    error: theme.error,
+  }
+}
+
+/**
+ * SwarmThemeSpinner - Rainbow wave animation using USER'S THEME
+ * Palette icon + three color dots cycling through their actual theme colors!
+ */
+export function SwarmThemeSpinner(props: { action?: "get" | "preset" }) {
+  const themeColors = useSwarmThemeColors()
+  const icons =
+    props.action === "preset"
+      ? [THEME_FORMAT_COLOR, THEME_FORMAT_PAINT, THEME_PALETTE]
+      : [THEME_PALETTE, THEME_PALETTE_OUTLINE, THEME_BRIGHTNESS]
+  const [time, setTime] = createSignal(Date.now())
+  const [iconIdx, setIconIdx] = createSignal(0)
+
+  const interval = setInterval(() => {
+    setTime(Date.now())
+  }, 40)
+
+  const iconInterval = setInterval(() => {
+    setIconIdx((idx) => (idx + 1) % icons.length)
+  }, 400)
+
+  onCleanup(() => {
+    clearInterval(interval)
+    clearInterval(iconInterval)
+  })
+
+  // Get color from user's theme palette with smooth interpolation
+  const getColor = (offset: number) => {
+    const palette = themeColors.palette
+    const t = (time() / 200 + offset) % palette.length
+    const i = Math.floor(t)
+    const f = t - i
+    const n = (i + 1) % palette.length
+    const r = palette[i].r * 255 + (palette[n].r * 255 - palette[i].r * 255) * f
+    const g = palette[i].g * 255 + (palette[n].g * 255 - palette[i].g * 255) * f
+    const b = palette[i].b * 255 + (palette[n].b * 255 - palette[i].b * 255) * f
+    return RGBA.fromInts(Math.round(r), Math.round(g), Math.round(b), 255)
+  }
+
+  return (
+    <>
+      <span style={{ fg: getColor(0) }}>{icons[iconIdx()]}</span>
+      <span style={{ fg: getColor(1) }}>{THEME_CIRCLE}</span>
+      <span style={{ fg: getColor(2) }}>{THEME_CIRCLE}</span>
+      <span style={{ fg: getColor(3) }}>{THEME_CIRCLE}</span>
+    </>
+  )
+}
+
+/**
+ * BreathingSwarmTheme - Breathing "swarm-theme" text with user's theme rainbow
+ */
+export function BreathingSwarmTheme() {
+  const themeColors = useSwarmThemeColors()
+  const [time, setTime] = createSignal(Date.now())
+
+  const interval = setInterval(() => {
+    setTime(Date.now())
+  }, 50)
+
+  onCleanup(() => clearInterval(interval))
+
+  // Cycle through user's theme palette
+  const getColor = () => {
+    const palette = themeColors.palette
+    const t = (time() / 300) % palette.length
+    const i = Math.floor(t)
+    const f = t - i
+    const n = (i + 1) % palette.length
+    const r = palette[i].r * 255 + (palette[n].r * 255 - palette[i].r * 255) * f
+    const g = palette[i].g * 255 + (palette[n].g * 255 - palette[i].g * 255) * f
+    const b = palette[i].b * 255 + (palette[n].b * 255 - palette[i].b * 255) * f
+    // Add opacity breathing
+    const phase = ((time() / 1500) * Math.PI * 2) % (Math.PI * 2)
+    const opacity = 0.6 + (Math.sin(phase) + 1) * 0.2
+    return RGBA.fromInts(Math.round(r), Math.round(g), Math.round(b), opacity * 255)
+  }
+
+  return <span style={{ fg: getColor() }}>swarm-theme</span>
+}
+
+/**
+ * SwarmThemePending - Pending state animation
+ */
+export function SwarmThemePending(props: { action: "get" | "preset"; presetName?: string }) {
+  const { theme } = useTheme()
+
+  return (
+    <box gap={0}>
+      <text>
+        <SwarmThemeSpinner action={props.action} /> <BreathingSwarmTheme />
+        <Show when={props.presetName}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>→ {props.presetName}</span>
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * SwarmThemeRunning - Running state with elapsed time
+ */
+export function SwarmThemeRunning(props: { action: "get" | "preset"; presetName?: string; startTime?: number }) {
+  const { theme } = useTheme()
+
+  return (
+    <box gap={0}>
+      <text>
+        <SwarmThemeSpinner action={props.action} /> <BreathingSwarmTheme />
+        <Show when={props.presetName}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>→ {props.presetName}</span>
+        </Show>
+        <Show when={props.startTime}>
+          {" "}
+          <ElapsedTime startTime={props.startTime!} color={theme.textMuted} />
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * SwarmThemeResolved - Completed/error state using theme colors
+ */
+export function SwarmThemeResolved(props: {
+  success: boolean
+  action: "get" | "preset"
+  presetName?: string
+  executionTime?: number
+}) {
+  const { theme } = useTheme()
+  const themeColors = useSwarmThemeColors()
+  const icon = props.success ? "✓" : "✗"
+  const iconColor = props.success ? themeColors.success : themeColors.error
+
+  const formatTime = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.floor((ms % 60000) / 1000)
+    return `${minutes}m ${seconds}s`
+  }
+
+  return (
+    <box gap={0}>
+      <text>
+        <span style={{ fg: iconColor, bold: true }}>{icon}</span>{" "}
+        <span style={{ fg: themeColors.dim }}>swarm-theme</span>
+        <Show when={props.presetName}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>→ {props.presetName}</span>
+        </Show>
+        <Show when={props.executionTime !== undefined}>
+          {" "}
+          <span style={{ fg: theme.textMuted }}>{formatTime(props.executionTime!)}</span>
+        </Show>
+      </text>
+    </box>
+  )
+}
+
+/**
+ * SwarmThemeToolAnimation - Complete state machine for swarm-theme tool
+ */
+export function SwarmThemeToolAnimation(props: {
+  status: "pending" | "running" | "completed" | "error"
+  action: "get" | "preset"
+  presetName?: string
+  startTime?: number
+  executionTime?: number
+}) {
+  return (
+    <Switch>
+      <Match when={props.status === "pending"}>
+        <SwarmThemePending action={props.action} presetName={props.presetName} />
+      </Match>
+      <Match when={props.status === "running"}>
+        <SwarmThemeRunning action={props.action} presetName={props.presetName} startTime={props.startTime} />
+      </Match>
+      <Match when={props.status === "completed"}>
+        <SwarmThemeResolved
+          success={true}
+          action={props.action}
+          presetName={props.presetName}
+          executionTime={props.executionTime}
+        />
+      </Match>
+      <Match when={props.status === "error"}>
+        <SwarmThemeResolved
+          success={false}
+          action={props.action}
+          presetName={props.presetName}
+          executionTime={props.executionTime}
+        />
+      </Match>
+    </Switch>
   )
 }

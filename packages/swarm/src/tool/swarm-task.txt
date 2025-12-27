@@ -1,0 +1,84 @@
+Human-in-the-loop approval system. Request approval before sensitive actions, then report results back.
+
+## When to Use
+- Deployments, tweets, emails, purchases, destructive operations
+- Any action where you want human confirmation before proceeding
+
+## Workflow
+
+1. **create** → Get poll_token
+2. **poll** → Wait for approval (poll every 5-10s)
+3. **Execute** → Only if approved, do the actual work
+4. **result** → Report outcome back (URL, ID, error, etc.)
+
+## Actions
+
+### create
+Request approval. Returns poll_token for tracking.
+
+Parameters:
+- summary (required): What needs approval - be specific! e.g. "Post tweet: Check out our new feature..."
+- action_type: deploy | tweet | email | code | custom
+- urgency: low | normal | high | critical
+- workspace: Group related tasks
+- detailed_description: Full context, draft content, etc.
+
+### poll
+Check approval status. Call every 5-10 seconds until resolved.
+
+Parameters:
+- poll_token (required): From create response
+
+Returns: pending_approval | approved | rejected | expired
+- If approved: proceed with action, then call result
+- If rejected: stop, inform user why you can't proceed
+
+### result
+**IMPORTANT**: Call this AFTER executing the approved action to report what happened.
+
+Parameters:
+- poll_token (required): Same token from create
+- result_data (required): Object with outcome details
+
+Result examples:
+- Tweet: `{"success": true, "tweet_url": "https://twitter.com/...", "tweet_id": "123"}`
+- Deploy: `{"success": true, "url": "https://app.example.com", "version": "v2.0"}`
+- Email: `{"success": true, "message_id": "abc123", "recipients": 5}`
+- Failed: `{"success": false, "error": "Rate limited", "retry_after": 3600}`
+
+### list
+Show pending tasks awaiting approval.
+
+## Examples
+
+**Tweet Flow:**
+```
+// 1. Request approval
+create: summary="Tweet: Just shipped dark mode! 🌙", action_type=tweet
+
+// 2. Poll until approved
+poll: poll_token="swarm_xxx"
+
+// 3. If approved, post the tweet via Twitter API
+// 4. Report back the result
+result: poll_token="swarm_xxx", result_data={"success": true, "tweet_url": "https://x.com/user/status/123"}
+```
+
+**Deploy Flow:**
+```
+// 1. Request approval  
+create: summary="Deploy v2.0 to production", action_type=deploy, urgency=high
+
+// 2. Poll until approved
+poll: poll_token="swarm_xxx"
+
+// 3. If approved, run deployment
+// 4. Report outcome
+result: poll_token="swarm_xxx", result_data={"success": true, "url": "https://prod.example.com", "commit": "abc123"}
+```
+
+## Tips
+- Be specific in summary - include key details (tweet text preview, version number, etc.)
+- Use detailed_description for full content that won't fit in summary
+- Always submit result after executing - this closes the loop in the dashboard
+- If action fails after approval, still submit result with success=false and error details

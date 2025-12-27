@@ -194,8 +194,8 @@ tool.schema = {
   record: <V extends z.ZodType>(valueSchema: V) => z.record(z.string(), valueSchema),
   /** Optional wrapper */
   optional: <T extends z.ZodType>(schema: T) => schema.optional(),
-  /** Any type (use sparingly) */
-  any: () => z.any(),
+  /** Any type (use sparingly) - uses unknown for JSON schema compatibility */
+  any: () => z.unknown(),
 }
 
 /**

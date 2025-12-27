@@ -8,6 +8,8 @@ import { Permission } from "../permission"
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
 const MAX_TIMEOUT = 120 * 1000 // 2 minutes
+const DEFAULT_MAX_CHARS = 50000 // Default output limit to prevent context blowup
+const MAX_CHARS_LIMIT = 200000 // Absolute max to prevent extreme outputs
 
 export const WebFetchTool = Tool.define("webfetch", {
   description: DESCRIPTION,
@@ -17,6 +19,10 @@ export const WebFetchTool = Tool.define("webfetch", {
       .enum(["text", "markdown", "html"])
       .describe("The format to return the content in (text, markdown, or html)"),
     timeout: z.number().describe("Optional timeout in seconds (max 120)").optional(),
+    maxCharacters: z
+      .number()
+      .optional()
+      .describe("Maximum characters to return (default: 50000, max: 200000). Use lower values for faster processing."),
   }),
   async execute(params, ctx) {
     // Validate URL
@@ -88,58 +94,72 @@ export const WebFetchTool = Tool.define("webfetch", {
       throw new Error("Response too large (exceeds 5MB limit)")
     }
 
-    const content = new TextDecoder().decode(arrayBuffer)
+    const rawContent = new TextDecoder().decode(arrayBuffer)
     const contentType = response.headers.get("content-type") || ""
 
     const title = `${params.url} (${contentType})`
 
     const bytes = arrayBuffer.byteLength
+    const maxChars = Math.min(params.maxCharacters ?? DEFAULT_MAX_CHARS, MAX_CHARS_LIMIT)
+
+    // Helper to truncate content intelligently (try to break at sentence/paragraph)
+    const truncate = (text: string, limit: number): { text: string; truncated: boolean } => {
+      if (text.length <= limit) return { text, truncated: false }
+
+      // Try to break at paragraph
+      let breakPoint = text.lastIndexOf("\n\n", limit)
+      if (breakPoint < limit * 0.7) {
+        // Try sentence break
+        breakPoint = text.lastIndexOf(". ", limit)
+      }
+      if (breakPoint < limit * 0.7) {
+        // Try any newline
+        breakPoint = text.lastIndexOf("\n", limit)
+      }
+      if (breakPoint < limit * 0.7) {
+        // Fall back to hard cut
+        breakPoint = limit
+      }
+
+      return {
+        text: text.slice(0, breakPoint) + "\n\n[Content truncated - " + (text.length - breakPoint).toLocaleString() + " more characters available]",
+        truncated: true,
+      }
+    }
 
     // Handle content based on requested format and actual content type
+    let processedContent: string
     switch (params.format) {
       case "markdown":
-        if (contentType.includes("text/html")) {
-          const markdown = convertHTMLToMarkdown(content)
-          return {
-            output: markdown,
-            title,
-            metadata: { bytes, contentType },
-          }
-        }
-        return {
-          output: content,
-          title,
-          metadata: { bytes, contentType },
-        }
+        processedContent = contentType.includes("text/html")
+          ? convertHTMLToMarkdown(rawContent)
+          : rawContent
+        break
 
       case "text":
-        if (contentType.includes("text/html")) {
-          const text = await extractTextFromHTML(content)
-          return {
-            output: text,
-            title,
-            metadata: { bytes, contentType },
-          }
-        }
-        return {
-          output: content,
-          title,
-          metadata: { bytes, contentType },
-        }
+        processedContent = contentType.includes("text/html")
+          ? await extractTextFromHTML(rawContent)
+          : rawContent
+        break
 
       case "html":
-        return {
-          output: content,
-          title,
-          metadata: { bytes, contentType },
-        }
-
       default:
-        return {
-          output: content,
-          title,
-          metadata: { bytes, contentType },
-        }
+        processedContent = rawContent
+        break
+    }
+
+    const { text: finalOutput, truncated } = truncate(processedContent, maxChars)
+
+    return {
+      output: finalOutput,
+      title,
+      metadata: {
+        bytes,
+        contentType,
+        originalLength: processedContent.length,
+        truncated,
+        ...(truncated && { maxCharacters: maxChars }),
+      },
     }
   },
 })

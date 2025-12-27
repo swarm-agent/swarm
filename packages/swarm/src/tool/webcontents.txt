@@ -9,4 +9,8 @@ Usage workflow:
 2. Review the summaries returned
 3. Use `webcontents` with specific URLs to get full text
 
+Content modes:
+  - 'smart' (default): Returns LLM-generated summaries + key highlights. Compact but extracts the most relevant information.
+  - 'full': Returns complete text content. Use when you need the entire page.
+
 This is more efficient than fetching everything - only get details you need.

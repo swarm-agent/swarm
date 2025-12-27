@@ -1,0 +1,40 @@
+Manage themes for the SwarmAgent web dashboard.
+
+Use this tool to customize the appearance of the user's SwarmAgent dashboard.
+
+## Actions
+
+### get
+Get the current theme configuration.
+
+No parameters required. Returns current theme settings including colors, effects, and fonts.
+
+### preset
+Apply a predefined theme preset.
+
+Required parameters:
+- preset: One of the available theme presets
+
+## Available Presets
+
+| Preset | Description |
+|--------|-------------|
+| dark | Default dark theme with green accents |
+| midnight | Deep blue professional theme |
+| cyberpunk | Neon cyan and magenta futuristic theme |
+| matrix | Classic green terminal aesthetic |
+| dracula | Purple and pink dark theme |
+| nord | Cool blue Scandinavian design |
+| monokai | Classic code editor color scheme |
+| solarized | Warm professional solarized dark |
+
+## Example
+
+```
+// Get current theme
+action: get
+
+// Apply cyberpunk theme
+action: preset
+preset: cyberpunk
+```

@@ -96,6 +96,8 @@ export namespace BackgroundAgent {
         modelID: z.string(),
       })
       .optional(),
+    /** Working directory for the background agent session */
+    cwd: z.string().optional(),
   })
   export type SpawnInput = z.infer<typeof SpawnInput>
 
@@ -131,11 +133,12 @@ export namespace BackgroundAgent {
     const cfg = await Config.get()
     const backgroundConfig = cfg.backgroundAgent
 
-    // 5. Create child session
+    // 5. Create child session (with optional cwd override)
     const session = await Session.create({
       parentID: input.parentSessionID,
       title: `[BG] ${input.description} (@${agentInfo.name})`,
       source: "background",
+      directory: input.cwd,
     })
 
     // 6. Create tracking info

@@ -17,6 +17,9 @@ import { InvalidTool } from "./invalid"
 import { ExitPlanModeTool } from "./exit-plan"
 import { ManualCommandTool } from "./manual-command"
 import { MemoryTool } from "./memory"
+import { SwarmTaskTool } from "./swarm-task"
+import { SwarmThemeTool } from "./swarm-theme"
+import { isSwarmConfigured } from "./swarm-common"
 import type { Agent } from "../agent/agent"
 import { Tool } from "./tool"
 import { Instance } from "../project/instance"
@@ -108,6 +111,8 @@ export namespace ToolRegistry {
       ExitPlanModeTool,
       ManualCommandTool,
       MemoryTool,
+      SwarmTaskTool,
+      SwarmThemeTool,
       ...custom,
     ]
   }
@@ -151,6 +156,13 @@ export namespace ToolRegistry {
     if (!hasExaKey) {
       result["websearch"] = false
       result["webcontents"] = false
+    }
+
+    // Opt-in SwarmAgent tools: only enable if API key is configured
+    const hasSwarmKey = await isSwarmConfigured()
+    if (!hasSwarmKey) {
+      result["swarm-task"] = false
+      result["swarm-theme"] = false
     }
 
     return result

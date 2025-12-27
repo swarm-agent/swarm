@@ -9,6 +9,7 @@ import os from "os"
 import { Global } from "../../global"
 import { Plugin } from "../../plugin"
 import { Instance } from "../../project/instance"
+import { validateSwarmApiKey } from "../../tool/swarm-common"
 
 export const AuthCommand = cmd({
   command: "auth",
@@ -31,8 +32,14 @@ export const AuthListCommand = cmd({
     const results = await Auth.all().then((x) => Object.entries(x))
     const database = await ModelsDev.get()
 
+    // Custom name mappings for providers not in the models database
+    const customNames: Record<string, string> = {
+      swarmagent: "SwarmAgent",
+      exa: "Exa",
+    }
+
     for (const [providerID, result] of results) {
-      const name = database[providerID]?.name || providerID
+      const name = customNames[providerID] || database[providerID]?.name || providerID
       prompts.log.info(`${name} ${UI.Style.TEXT_DIM}${result.type}`)
     }
 
@@ -147,6 +154,16 @@ export const AuthLoginCommand = cmd({
                   hint: priority[x.id] <= 1 ? "recommended" : undefined,
                 })),
               ),
+              {
+                value: "swarmagent",
+                label: "SwarmAgent",
+                hint: "agentic tasks & approvals",
+              },
+              {
+                value: "exa",
+                label: "Exa",
+                hint: "AI-powered web search",
+              },
               {
                 value: "other",
                 label: "Other",
@@ -297,6 +314,70 @@ export const AuthLoginCommand = cmd({
               return
             }
           }
+        }
+
+        // Exa special handling
+        if (provider === "exa") {
+          prompts.log.info("Exa provides powerful AI-powered web search")
+          prompts.log.info("Get your API key at: https://dashboard.exa.ai/api-keys")
+
+          const key = await prompts.password({
+            message: "Enter your Exa API key",
+            validate: (x) => {
+              if (!x || x.length === 0) return "Required"
+              return undefined
+            },
+          })
+          if (prompts.isCancel(key)) throw new UI.CancelledError()
+
+          await Auth.set("exa", {
+            type: "api",
+            key,
+          })
+
+          prompts.log.success("Exa configured! You now have access to web search tools.")
+          prompts.outro("Done")
+          return
+        }
+
+        // SwarmAgent special handling
+        if (provider === "swarmagent") {
+          prompts.log.info("SwarmAgent enables agentic tasks & approvals via swarmagent.dev")
+          prompts.log.info("Get your API key at: https://swarmagent.dev/dashboard → API Keys")
+
+          const key = await prompts.password({
+            message: "Enter your SwarmAgent API key (starts with swarm_agent_)",
+            validate: (x) => {
+              if (!x || x.length === 0) return "Required"
+              if (!x.startsWith("swarm_agent_")) return "Key should start with swarm_agent_"
+              return undefined
+            },
+          })
+          if (prompts.isCancel(key)) throw new UI.CancelledError()
+
+          // Validate the key
+          const spinner = prompts.spinner()
+          spinner.start("Validating API key...")
+          const isValid = await validateSwarmApiKey(key)
+          if (isValid) {
+            spinner.stop("API key validated successfully")
+          } else {
+            spinner.stop("API key validation failed - key may be invalid", 1)
+            const proceed = await prompts.confirm({
+              message: "Save the key anyway?",
+              initialValue: false,
+            })
+            if (prompts.isCancel(proceed) || !proceed) throw new UI.CancelledError()
+          }
+
+          await Auth.set("swarmagent", {
+            type: "api",
+            key,
+          })
+
+          prompts.log.success("SwarmAgent configured! You now have access to swarm-task and swarm-theme tools.")
+          prompts.outro("Done")
+          return
         }
 
         if (provider === "other") {

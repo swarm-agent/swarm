@@ -43,6 +43,7 @@ import type { EditTool } from "@/tool/edit"
 import type { PatchTool } from "@/tool/patch"
 import type { WebFetchTool } from "@/tool/webfetch"
 import type { WebSearchTool } from "@/tool/websearch"
+import type { WebContentsTool } from "@/tool/webcontents"
 import type { TaskTool } from "@/tool/task"
 import { ExitPlanModeTool } from "@/tool/exit-plan"
 import type { AskUserTool } from "@/tool/ask-user"
@@ -81,6 +82,7 @@ import {
   EditDeltaMorphChain,
   WebfetchToolAnimation,
   WebsearchToolAnimation,
+  WebcontentsToolAnimation,
   AskUserToolAnimation,
   ReadToolAnimation,
   BatchReadToolAnimation,
@@ -94,6 +96,8 @@ import {
   BackgroundAgentSpinner,
   GitToolAnimation,
   type GitOpType,
+  SwarmTaskToolAnimation,
+  SwarmThemeToolAnimation,
 } from "@tui/ui/tool-animations"
 import { getSpinner } from "@tui/ui/spinner-definitions"
 import { getToolSpinner } from "@tui/ui/tool-spinner-map"
@@ -2395,6 +2399,44 @@ ToolRegistry.register<typeof WebSearchTool>({
   },
 })
 
+ToolRegistry.register<typeof WebContentsTool>({
+  name: "webcontents",
+  container: "inline",
+  render(props) {
+    const urls = (props.input as any).urls as string[] | undefined
+
+    const executionTime = createMemo(() => {
+      if (props.state.status === "completed" && props.state.time) {
+        return props.state.time.end - props.state.time.start
+      }
+      return undefined
+    })
+
+    const startTime = createMemo(() => {
+      if (props.state.status !== "pending" && props.state.time?.start) {
+        return props.state.time.start
+      }
+      return undefined
+    })
+
+    // Get metadata from tool output
+    const urlCount = createMemo(() => urls?.length ?? (props.metadata as any)?.urlsFetched)
+    const mode = createMemo(() => (props.metadata as any)?.mode as string | undefined)
+
+    return (
+      <ToolCard status={props.state.status} inline={true}>
+        <WebcontentsToolAnimation
+          status={props.state.status}
+          urlCount={urlCount()}
+          startTime={startTime()}
+          executionTime={executionTime()}
+          mode={mode()}
+        />
+      </ToolCard>
+    )
+  },
+})
+
 ToolRegistry.register<typeof EditTool>({
   name: "edit",
   container: "block",
@@ -2794,6 +2836,68 @@ ToolRegistry.register<typeof MemoryTool>({
         startTime={props.state.status !== "pending" && props.state.time?.start ? props.state.time.start : undefined}
         executionTime={executionTime()}
       />
+    )
+  },
+})
+
+// Swarm-Task Tool - Human-in-the-loop approval flow
+ToolRegistry.register({
+  name: "swarm-task",
+  container: "inline",
+  render(props) {
+    const startTime = createMemo(() => props.state.time?.start)
+    const executionTime = createMemo(() => {
+      if (props.state.status === "completed" && props.state.time) {
+        return props.state.time.end - props.state.time.start
+      }
+      return undefined
+    })
+
+    const action = props.input.action as "create" | "poll" | "result" | "list"
+    const summary = props.input.summary as string | undefined
+    const pollStatus = props.metadata?.status as string | undefined
+
+    return (
+      <ToolCard status={props.state.status} inline={true}>
+        <SwarmTaskToolAnimation
+          status={props.state.status}
+          action={action}
+          summary={summary}
+          startTime={startTime()}
+          executionTime={executionTime()}
+          pollStatus={pollStatus}
+        />
+      </ToolCard>
+    )
+  },
+})
+
+// Swarm-Theme Tool - Dashboard theme customization
+ToolRegistry.register({
+  name: "swarm-theme",
+  container: "inline",
+  render(props) {
+    const startTime = createMemo(() => props.state.time?.start)
+    const executionTime = createMemo(() => {
+      if (props.state.status === "completed" && props.state.time) {
+        return props.state.time.end - props.state.time.start
+      }
+      return undefined
+    })
+
+    const action = props.input.action as "get" | "preset"
+    const presetName = props.input.preset as string | undefined
+
+    return (
+      <ToolCard status={props.state.status} inline={true}>
+        <SwarmThemeToolAnimation
+          status={props.state.status}
+          action={action}
+          presetName={presetName}
+          startTime={startTime()}
+          executionTime={executionTime()}
+        />
+      </ToolCard>
     )
   },
 })
