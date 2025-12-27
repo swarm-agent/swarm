@@ -669,15 +669,13 @@ ${input.prompt || ""}
     return agent
   }
 
-  // Update an existing agent
+  // Update an existing agent (built-in agents can be overridden via config file)
   export async function update(name: string, input: UpdateInput): Promise<Info> {
     const existing = await get(name)
     if (!existing) {
       throw new Error(`Agent "${name}" not found`)
     }
-    if (existing.builtIn) {
-      throw new Error(`Cannot modify built-in agent "${name}"`)
-    }
+    // Built-in agents CAN be modified - creates a config override file
 
     const agentDir = await getAgentDir()
     const agentPath = path.join(agentDir, `${name}.md`)
@@ -731,18 +729,35 @@ ${merged.prompt || ""}
     return agent
   }
 
-  // Delete an agent
+  // Delete an agent (built-in agents can be disabled via config override)
   export async function remove(name: string): Promise<boolean> {
     const existing = await get(name)
     if (!existing) {
       throw new Error(`Agent "${name}" not found`)
     }
-    if (existing.builtIn) {
-      throw new Error(`Cannot delete built-in agent "${name}"`)
+    
+    // Prevent removing the last primary agent - always need at least "build"
+    if (name === "build") {
+      const agents = await state()
+      const primaryAgents = Object.values(agents).filter(a => a.mode === "primary")
+      if (primaryAgents.length <= 1) {
+        throw new Error(`Cannot delete "build" agent - it's the last primary agent`)
+      }
     }
 
     const agentDir = await getAgentDir()
     const agentPath = path.join(agentDir, `${name}.md`)
+
+    // For built-in agents, create a disable override file
+    if (existing.builtIn) {
+      const disableContent = `---
+disable: true
+---
+`
+      await fs.writeFile(agentPath, disableContent, "utf-8")
+      await reload()
+      return true
+    }
 
     try {
       await fs.unlink(agentPath)
