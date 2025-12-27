@@ -42,6 +42,7 @@ import { TuiEvent } from "@/cli/cmd/tui/event"
 import { Snapshot } from "@/snapshot"
 import { SessionSummary } from "@/session/summary"
 import { BackgroundAgent } from "@/background-agent"
+import { Sandbox } from "@/sandbox"
 
 const ERRORS = {
   400: {
@@ -189,6 +190,81 @@ export namespace Server {
           const config = c.req.valid("json")
           await Config.update(config)
           return c.json(config)
+        },
+      )
+
+      // Sandbox status and toggle endpoints
+      .get(
+        "/sandbox/status",
+        describeRoute({
+          description: "Get sandbox status",
+          operationId: "sandbox.status",
+          responses: {
+            200: {
+              description: "Sandbox status",
+              content: {
+                "application/json": {
+                  schema: resolver(
+                    z
+                      .object({
+                        enabled: z.boolean().describe("Whether sandbox is currently active"),
+                        initialized: z.boolean().describe("Whether sandbox has been initialized"),
+                        supported: z.boolean().describe("Whether platform supports sandboxing"),
+                        platform: z.enum(["macos", "linux", "unsupported"]).describe("Current platform"),
+                      })
+                      .meta({ ref: "SandboxStatus" }),
+                  ),
+                },
+              },
+            },
+          },
+        }),
+        async (c) => {
+          return c.json(Sandbox.status())
+        },
+      )
+      .post(
+        "/sandbox/toggle",
+        describeRoute({
+          description: "Toggle sandbox on/off",
+          operationId: "sandbox.toggle",
+          responses: {
+            200: {
+              description: "Sandbox toggled",
+              content: {
+                "application/json": {
+                  schema: resolver(
+                    z
+                      .object({
+                        enabled: z.boolean().describe("New sandbox enabled state"),
+                        initialized: z.boolean().describe("Whether sandbox is initialized"),
+                        supported: z.boolean().describe("Whether platform supports sandboxing"),
+                        platform: z.enum(["macos", "linux", "unsupported"]).describe("Current platform"),
+                      })
+                      .meta({ ref: "SandboxToggleResult" }),
+                  ),
+                },
+              },
+            },
+            ...errors(400),
+          },
+        }),
+        async (c) => {
+          const config = await Config.get()
+          const newEnabled = !(config.sandbox?.enabled ?? false)
+
+          // Update config
+          await Config.update({
+            sandbox: {
+              ...config.sandbox,
+              enabled: newEnabled,
+            },
+          })
+
+          // Reinitialize sandbox with new config
+          await Sandbox.reinitialize()
+
+          return c.json(Sandbox.status())
         },
       )
       .get(

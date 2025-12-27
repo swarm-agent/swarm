@@ -300,6 +300,11 @@ export function Autocomplete(props: {
         onSelect: () => command.trigger("theme.switch"),
       },
       {
+        display: "/sandbox",
+        description: "toggle sandbox",
+        onSelect: () => command.trigger("sandbox.toggle"),
+      },
+      {
         display: "/editor",
         description: "open editor",
         onSelect: () => command.trigger("prompt.editor", "prompt"),

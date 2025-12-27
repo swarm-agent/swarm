@@ -374,6 +374,46 @@ function App() {
       category: "System",
     },
     {
+      title: `${sync.data.config.sandbox?.enabled ? "Disable" : "Enable"} sandbox`,
+      value: "sandbox.toggle",
+      keybind: "sandbox_toggle" as any,
+      category: "System",
+      onSelect: async (dialog) => {
+        dialog.clear()
+        const currentEnabled = sync.data.config.sandbox?.enabled ?? false
+        toast.show({
+          variant: "info",
+          message: `${currentEnabled ? "Disabling" : "Enabling"} sandbox...`,
+          duration: 2000,
+        })
+        try {
+          const res = await fetch(`${sdk.url}/sandbox/toggle`, { method: "POST" })
+          const result = await res.json() as { enabled: boolean; supported: boolean }
+          if (!result.supported) {
+            toast.show({
+              variant: "warning",
+              message: "Sandbox not supported on this platform",
+              duration: 3000,
+            })
+          } else {
+            // Update sync config immediately for UI feedback
+            sync.set("config", "sandbox", { ...sync.data.config.sandbox, enabled: result.enabled })
+            toast.show({
+              variant: "success",
+              message: `Sandbox ${result.enabled ? "enabled" : "disabled"}`,
+              duration: 2000,
+            })
+          }
+        } catch (err) {
+          toast.show({
+            variant: "error",
+            message: `Failed to toggle sandbox: ${err}`,
+            duration: 3000,
+          })
+        }
+      },
+    },
+    {
       title: "Help",
       value: "help.show",
       onSelect: () => {

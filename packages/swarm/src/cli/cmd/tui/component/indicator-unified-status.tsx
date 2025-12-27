@@ -452,19 +452,22 @@ function GitBlock(props: { layout: LayoutConfig }) {
 }
 
 // Connection indicator - shows if current session is local or SSH
+// Border highlights green when sandbox is enabled
 function ConnectionBlock() {
   const { theme } = useTheme()
+  const sync = useSync()
+  const sandboxEnabled = () => sync.data.config.sandbox?.enabled ?? false
 
   return (
     <box
       border={["left", "right", "top", "bottom"]}
       customBorderChars={RoundedBorder.customBorderChars}
-      borderColor={theme.border}
+      borderColor={sandboxEnabled() ? theme.success : theme.border}
       paddingLeft={1}
       paddingRight={1}
       flexShrink={0}
     >
-      <text fg={theme.textMuted}>{IS_SSH ? "ssh" : "local"}</text>
+      <text fg={sandboxEnabled() ? theme.success : theme.textMuted}>{IS_SSH ? "ssh" : "local"}</text>
     </box>
   )
 }

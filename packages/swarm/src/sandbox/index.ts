@@ -195,6 +195,38 @@ export namespace Sandbox {
     }
   }
 
+  /**
+   * Re-initialize sandbox with fresh config.
+   * Call this after config changes to apply new sandbox settings.
+   */
+  export async function reinitialize(): Promise<boolean> {
+    log.info("reinitializing sandbox")
+    await reset()
+    // Reset supported flag so we can retry
+    supported = true
+    return initialize()
+  }
+
+  export type SandboxStatus = {
+    enabled: boolean
+    initialized: boolean
+    supported: boolean
+    platform: "macos" | "linux" | "unsupported"
+  }
+
+  /**
+   * Get current sandbox status for API/UI
+   */
+  export function status(): SandboxStatus {
+    const platform = process.platform === "darwin" ? "macos" : process.platform === "linux" ? "linux" : "unsupported"
+    return {
+      enabled: isEnabled(),
+      initialized,
+      supported,
+      platform: platform as SandboxStatus["platform"],
+    }
+  }
+
   export function getConfig() {
     return SandboxManager.getConfig()
   }
