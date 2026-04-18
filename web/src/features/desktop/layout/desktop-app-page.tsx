@@ -111,6 +111,41 @@ function normalizeRatio(value: number | undefined): number {
   return value
 }
 
+function fallbackWorkspaceNameFromPath(path: string): string {
+  const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || path.trim() || 'Temporary folder'
+}
+
+function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): WorkspaceEntry {
+  return {
+    path,
+    workspaceName,
+    themeId: '',
+    directories: [path],
+    isGitRepo: false,
+    replicationLinks: [],
+    sortIndex: -1,
+    addedAt: 0,
+    updatedAt: 0,
+    lastSelectedAt: 0,
+    active: true,
+    worktreeEnabled: false,
+    gitBranch: '',
+    gitHasGit: false,
+    gitClean: false,
+    gitDirtyCount: 0,
+    gitStagedCount: 0,
+    gitModifiedCount: 0,
+    gitUntrackedCount: 0,
+    gitConflictCount: 0,
+    gitAheadCount: 0,
+    gitBehindCount: 0,
+    gitCommittedFileCount: 0,
+    gitCommittedAdditions: 0,
+    gitCommittedDeletions: 0,
+  }
+}
+
 function connectionTone(connectionState: 'idle' | 'connecting' | 'open' | 'closed' | 'error'): 'muted' | 'success' | 'warning' | 'danger' {
   switch (connectionState) {
     case 'open':
@@ -815,6 +850,17 @@ export function DesktopAppPage() {
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
   )
+  const temporaryRouteWorkspace = useMemo<WorkspaceEntry | null>(() => {
+    const candidatePath = activeWorkspacePath?.trim() ?? ''
+    if (!routeWorkspaceSlug || routeSessionId || routeWorkspace || !candidatePath || workspaceByPath.has(candidatePath)) {
+      return null
+    }
+    const workspaceName = fallbackWorkspaceNameFromPath(candidatePath)
+    if (workspaceRouteSlugBase({ path: candidatePath, workspaceName }) !== routeWorkspaceSlug) {
+      return null
+    }
+    return buildTemporaryWorkspaceEntry(candidatePath, workspaceName)
+  }, [activeWorkspacePath, routeSessionId, routeWorkspace, routeWorkspaceSlug, workspaceByPath])
   const selectedWorkspacePath = useMemo<string | null>(() => {
     const routeSession = routeSessionId ? liveSessions[routeSessionId] ?? null : null
     if (routeSession?.workspacePath) {
@@ -823,41 +869,21 @@ export function DesktopAppPage() {
     if (routeWorkspace?.path) {
       return routeWorkspace.path
     }
+    if (temporaryRouteWorkspace?.path) {
+      return temporaryRouteWorkspace.path
+    }
     return null
-  }, [liveSessions, routeSessionId, routeWorkspace?.path])
-  const selectedWorkspace = selectedWorkspacePath ? workspaceByPath.get(selectedWorkspacePath) ?? null : null
+  }, [liveSessions, routeSessionId, routeWorkspace?.path, temporaryRouteWorkspace])
+  const savedSelectedWorkspace = selectedWorkspacePath ? workspaceByPath.get(selectedWorkspacePath) ?? null : null
+  const selectedWorkspace = savedSelectedWorkspace ?? (temporaryRouteWorkspace?.path === selectedWorkspacePath ? temporaryRouteWorkspace : null)
   const sidebarWorkspaceEntries = useMemo<WorkspaceEntry[]>(() => {
-    if (!selectedWorkspacePath || selectedWorkspace) {
+    if (!selectedWorkspacePath || savedSelectedWorkspace) {
       return workspaces
     }
-    return [{
-      path: selectedWorkspacePath,
-      workspaceName: routeWorkspace?.workspaceName || 'Temporary folder',
-      themeId: '',
-      directories: [selectedWorkspacePath],
-      isGitRepo: false,
-      replicationLinks: [],
-      sortIndex: -1,
-      addedAt: 0,
-      updatedAt: 0,
-      lastSelectedAt: 0,
-      active: true,
-      worktreeEnabled: false,
-      gitBranch: '',
-      gitHasGit: false,
-      gitClean: false,
-      gitDirtyCount: 0,
-      gitStagedCount: 0,
-      gitModifiedCount: 0,
-      gitUntrackedCount: 0,
-      gitConflictCount: 0,
-      gitAheadCount: 0,
-      gitBehindCount: 0,
-      gitCommittedFileCount: 0,
-      gitCommittedAdditions: 0,
-      gitCommittedDeletions: 0,
-    }, ...workspaces]
-  }, [routeWorkspace?.workspaceName, selectedWorkspace, selectedWorkspacePath, workspaces])
+    const temporaryWorkspace = temporaryRouteWorkspace
+      ?? buildTemporaryWorkspaceEntry(selectedWorkspacePath, fallbackWorkspaceNameFromPath(selectedWorkspacePath))
+    return [temporaryWorkspace, ...workspaces]
+  }, [savedSelectedWorkspace, selectedWorkspacePath, temporaryRouteWorkspace, workspaces])
   const mergedSidebarWorkspaceEntries = useMemo(() => sidebarWorkspaceEntries.map((workspace) => ({
     ...workspace,
     todoSummary: todoSummaries[workspace.path] ?? workspace.todoSummary,
