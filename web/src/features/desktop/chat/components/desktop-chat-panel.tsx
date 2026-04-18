@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { LoaderCircle, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
+import { LoaderCircle, Menu, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -130,6 +130,7 @@ interface DesktopChatPanelProps {
   onOpenSettingsTab: (tab: SettingsTabID) => void
   onOpenPermissions: () => void
   onOpenWorkspaceLauncher: () => void
+  onOpenSidebarMenu: () => void
   onStartNewSession: (workspacePath: string, workspaceName: string) => void
 }
 
@@ -613,6 +614,7 @@ export function DesktopChatPanel({
   onOpenSettingsTab,
   onOpenPermissions,
   onOpenWorkspaceLauncher,
+  onOpenSidebarMenu,
   onStartNewSession,
 }: DesktopChatPanelProps) {
   const queryClient = useQueryClient()
@@ -1993,19 +1995,27 @@ export function DesktopChatPanel({
 
   return (
     <Card className="flex flex-col h-full w-full flex-1 min-h-0 min-w-0 overflow-hidden rounded-none border-0 bg-[var(--app-surface)]">
-      <header className="shrink-0 flex h-[60px] items-center gap-2 border-b border-[var(--app-border)] px-4">
+      <header className="shrink-0 flex min-h-[60px] items-center gap-2 border-b border-[var(--app-border)] px-3 py-2 sm:h-[60px] sm:px-4 sm:py-0">
         <div className="min-w-0 flex-1">
-          <h1 className="flex items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)]">
+          <div className="sm:hidden">
+            <div className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-muted)]" title={workspaceName || workspacePath}>
+              {workspaceName || workspacePath}
+            </div>
+            <h1 className="truncate text-sm font-semibold text-[var(--app-text)]" title={liveSession?.title || 'New conversation'}>
+              {liveSession?.title || 'New conversation'}
+            </h1>
+          </div>
+          <h1 className="hidden items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)] sm:flex">
             <span className="truncate" title={liveSession?.title || 'New conversation'}>{liveSession?.title || 'New conversation'}</span>
             <span className="shrink-0 text-[var(--app-text-subtle)] font-normal">/</span>
             <span className="truncate text-[var(--app-text-muted)] font-normal" title={workspaceName}>{workspaceName}</span>
           </h1>
         </div>
-        <div className="flex items-center justify-end gap-2 ml-auto min-w-0">
+        <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5 sm:gap-2">
           {activePermission ? (
             <button
               type="button"
-              className="flex w-fit cursor-default items-center gap-2 rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-1.5 text-left text-xs text-[var(--app-danger)]"
+              className="flex w-fit cursor-default items-center gap-2 rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-2.5 py-1.5 text-left text-xs text-[var(--app-danger)] sm:px-3"
             >
               <ShieldAlert size={14} />
               <span>{pendingPermissionCount > 1 ? `${pendingPermissionCount} pending` : '1 pending'}</span>
@@ -2014,13 +2024,23 @@ export function DesktopChatPanel({
           <Button
             size="sm"
             variant="ghost"
-            className="h-10 w-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0 text-[var(--app-text)] hover:border-[var(--app-border-accent)]"
+            className="h-9 w-9 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0 text-[var(--app-text)] hover:border-[var(--app-border-accent)] sm:h-10 sm:w-10"
             onClick={openCommitModal}
             disabled={!sessionId || submitting || canStop}
             aria-label="Save changes"
             title="Save / commit changes"
           >
             <Save size={18} />
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-9 w-9 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0 text-[var(--app-text)] hover:border-[var(--app-border-accent)] sm:hidden"
+            onClick={onOpenSidebarMenu}
+            aria-label="Open sidebar"
+            title="Open sidebar"
+          >
+            <Menu size={18} />
           </Button>
         </div>
       </header>
