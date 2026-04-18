@@ -6,6 +6,7 @@ import { Bell, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, GitBranch
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
+import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { cn } from '../../../lib/cn'
 import { useDesktopStore } from '../state/use-desktop-store'
 import {
@@ -826,12 +827,15 @@ export function DesktopAppPage() {
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
   const notifications = useDesktopStore((state) => state.notifications)
+  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
+  const updateNotificationRecord = useDesktopStore((state) => state.updateNotificationRecord)
   const setActiveSession = useDesktopStore((state) => state.setActiveSession)
   const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
   const upsertSession = useDesktopStore((state) => state.upsertSession)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTabID>('agents')
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
@@ -928,8 +932,8 @@ export function DesktopAppPage() {
     () => notifications.filter((notification) => notification.source === 'swarm'),
     [notifications],
   )
-  const swarmNotificationCount = swarmNotifications.length
-  const latestSwarmNotification = swarmNotifications[0] ?? null
+  const swarmNotificationCount = notificationCenter.summary.unreadCount
+  const latestSwarmNotification = notificationCenter.items[0] ?? swarmNotifications[0] ?? null
   const swarmTargetSubtitle = currentSwarmTarget
     ? `${currentSwarmTarget.relationship}${currentSwarmTarget.online ? '' : ' · offline'}`
     : (latestSwarmNotification?.title ?? null)
@@ -1011,10 +1015,23 @@ export function DesktopAppPage() {
         activeSessionId: null,
         activeWorkspacePath: null,
         notifications: state.notifications.filter((notification) => notification.source !== 'swarm'),
+        notificationCenter: {
+          items: [],
+          summary: {
+            swarmID: '',
+            totalCount: 0,
+            unreadCount: 0,
+            activeCount: 0,
+            updatedAt: 0,
+          },
+          loading: false,
+          hydrated: false,
+        },
       }))
       await queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
       await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
       void useDesktopStore.getState().hydrate()
+      void useDesktopStore.getState().refreshNotifications()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to switch swarm target'
       setSwarmSwitchError(message)
@@ -1433,6 +1450,10 @@ export function DesktopAppPage() {
     void navigate({ to: '/swarm' })
   }, [navigate, routeWorkspaceSlug])
 
+  const handleOpenNotifications = useCallback(() => {
+    setNotificationsOpen(true)
+  }, [])
+
   const handleOpenWorkspaceLauncher = useCallback(() => {
     setMobileSidebarOpen(false)
     setActiveSession(null)
@@ -1504,9 +1525,9 @@ export function DesktopAppPage() {
                 <Button
                   variant="ghost"
                   className="relative h-12 w-12 min-w-12 p-0"
-                  onClick={handleOpenSwarmDashboard}
-                  aria-label="Open swarm dashboard"
-                  title={swarmNotificationCount > 0 ? `${swarmNotificationCount} swarm notification${swarmNotificationCount === 1 ? '' : 's'}` : 'No swarm notifications'}
+                  onClick={handleOpenNotifications}
+                  aria-label="Open notifications"
+                  title={swarmNotificationCount > 0 ? `${swarmNotificationCount} unread notification${swarmNotificationCount === 1 ? '' : 's'}` : 'No unread notifications'}
                 >
                   <Bell size={22} className="shrink-0" />
                   {swarmNotificationCount > 0 ? (
@@ -1875,6 +1896,24 @@ export function DesktopAppPage() {
           }}
         />
       ) : null}
+
+      <DesktopNotificationsModal
+        open={notificationsOpen}
+        onOpenChange={setNotificationsOpen}
+        notifications={notificationCenter.items}
+        summary={notificationCenter.summary}
+        loading={notificationCenter.loading}
+        connectionState={connectionState}
+        onMarkRead={async (record) => {
+          await updateNotificationRecord(record.id, { read: true })
+        }}
+        onAcknowledge={async (record) => {
+          await updateNotificationRecord(record.id, { acked: true, status: 'resolved' })
+        }}
+        onMute={async (record) => {
+          await updateNotificationRecord(record.id, { muted: true })
+        }}
+      />
 
       <DesktopSettingsModal
         open={settingsOpen}

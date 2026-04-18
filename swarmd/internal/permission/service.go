@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/privacy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -37,6 +38,7 @@ type Service struct {
 	publish                 func(pebblestore.EventEnvelope)
 	sessions                sessionLookup
 	hosted                  HostedPermissionSync
+	notifications           *notification.Service
 	localSwarmIDResolver    func() string
 	principalID             string
 	bypassPermissions       bool
@@ -126,6 +128,13 @@ func (s *Service) SetLocalSwarmIDResolver(resolver func() string) {
 		return
 	}
 	s.localSwarmIDResolver = resolver
+}
+
+func (s *Service) SetNotificationService(notifications *notification.Service) {
+	if s == nil {
+		return
+	}
+	s.notifications = notifications
 }
 
 func (s *Service) SetBypassPermissions(enabled bool) {
@@ -290,6 +299,7 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 		if err := s.storeMirroredPermission(record); err != nil {
 			return pebblestore.PermissionRecord{}, err
 		}
+		s.syncNotification(record, descriptor.HostSwarmID, strings.TrimSpace(descriptor.ChildSwarmID), "permission.requested")
 		return record, nil
 	}
 	runID := strings.TrimSpace(input.RunID)
@@ -355,6 +365,7 @@ func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord
 		return pebblestore.PermissionRecord{}, err
 	}
 
+	s.syncNotification(record, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.requested")
 	_, _ = s.emitLocked("session:"+sessionID, "permission.requested", sessionID, map[string]any{
 		"permission": record,
 	})
@@ -526,6 +537,9 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 		if err := s.storeMirroredPermissions(records); err != nil {
 			return nil, err
 		}
+		for _, record := range records {
+			s.syncNotification(record, descriptor.HostSwarmID, strings.TrimSpace(descriptor.ChildSwarmID), "permission.updated")
+		}
 		return records, nil
 	}
 	if strings.TrimSpace(reason) == "" {
@@ -568,6 +582,7 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 		s.detachRunWaitLocked(updated, now)
 		s.notifyWaitersLocked(updated)
 		cancelled = append(cancelled, updated)
+		s.syncNotification(updated, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.updated")
 		_, _ = s.emitLocked("session:"+sessionID, "permission.updated", sessionID, map[string]any{
 			"permission": updated,
 		})
@@ -630,6 +645,7 @@ func (s *Service) resolveLocked(sessionID, permissionID, action, reason, approve
 	}
 
 	s.notifyWaitersLocked(updated)
+	s.syncNotification(updated, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.updated")
 	_, _ = s.emitLocked("session:"+sessionID, "permission.updated", sessionID, map[string]any{
 		"permission": updated,
 	})
@@ -787,6 +803,7 @@ func (s *Service) MarkToolStarted(sessionID, runID, callID string, step int, sta
 		if err := s.storeMirroredPermission(record); err != nil {
 			return pebblestore.PermissionRecord{}, false, err
 		}
+		s.syncNotification(record, descriptor.HostSwarmID, strings.TrimSpace(descriptor.ChildSwarmID), "permission.updated")
 		return record, true, nil
 	}
 	if startedAt <= 0 {
@@ -815,6 +832,7 @@ func (s *Service) MarkToolStarted(sessionID, runID, callID string, step int, sta
 	if err := s.store.PutPermission(record, &previous); err != nil {
 		return pebblestore.PermissionRecord{}, false, err
 	}
+	s.syncNotification(record, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.updated")
 	_, _ = s.emitLocked("session:"+sessionID, "permission.updated", sessionID, map[string]any{
 		"permission": record,
 	})
@@ -838,6 +856,7 @@ func (s *Service) MarkToolCompleted(sessionID, runID, callID string, step int, r
 		if err := s.storeMirroredPermission(record); err != nil {
 			return pebblestore.PermissionRecord{}, false, err
 		}
+		s.syncNotification(record, descriptor.HostSwarmID, strings.TrimSpace(descriptor.ChildSwarmID), "permission.updated")
 		return record, true, nil
 	}
 	if completedAt <= 0 {
@@ -876,6 +895,7 @@ func (s *Service) MarkToolCompleted(sessionID, runID, callID string, step int, r
 	if err := s.store.PutPermission(record, &previous); err != nil {
 		return pebblestore.PermissionRecord{}, false, err
 	}
+	s.syncNotification(record, s.localSwarmID(), s.originSwarmIDForSession(sessionID), "permission.updated")
 	_, _ = s.emitLocked("session:"+sessionID, "permission.updated", sessionID, map[string]any{
 		"permission": record,
 	})
@@ -911,6 +931,15 @@ func firstNonZero(values ...int64) int64 {
 		}
 	}
 	return 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func resolutionExecutionStatus(current, action string) string {
@@ -1374,9 +1403,120 @@ func (s *Service) storeMirroredPermissionLocked(record pebblestore.PermissionRec
 	}
 	now := firstNonZero(record.UpdatedAt, record.ResolvedAt, record.CompletedAt, record.PermissionRequested, record.CreatedAt, time.Now().UnixMilli())
 	if strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
-		return s.attachRunWaitLocked(record, now)
+		if err := s.attachRunWaitLocked(record, now); err != nil {
+			return err
+		}
+	} else {
+		s.detachRunWaitLocked(record, now)
+		s.notifyWaitersLocked(record)
 	}
-	s.detachRunWaitLocked(record, now)
-	s.notifyWaitersLocked(record)
+	s.syncNotification(record, s.hostSwarmIDForSession(record.SessionID), s.originSwarmIDForSession(record.SessionID), permissionNotificationEventType(record))
 	return nil
+}
+
+func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID, originSwarmID, sourceEventType string) {
+	if s == nil || s.notifications == nil {
+		return
+	}
+	swarmID = strings.TrimSpace(swarmID)
+	if swarmID == "" {
+		swarmID = s.localSwarmID()
+	}
+	if swarmID == "" {
+		return
+	}
+	severity := pebblestore.NotificationSeverityWarning
+	status := pebblestore.NotificationStatusActive
+	readAt := int64(0)
+	ackedAt := int64(0)
+	if !strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
+		status = pebblestore.NotificationStatusResolved
+		readAt = firstNonZero(record.ResolvedAt, record.UpdatedAt)
+		ackedAt = readAt
+		switch strings.ToLower(strings.TrimSpace(record.Status)) {
+		case pebblestore.PermissionStatusApproved:
+			severity = pebblestore.NotificationSeverityInfo
+		case pebblestore.PermissionStatusDenied, pebblestore.PermissionStatusCancelled:
+			severity = pebblestore.NotificationSeverityError
+		default:
+			severity = pebblestore.NotificationSeverityInfo
+		}
+	}
+	_, _, _ = s.notifications.UpsertPermissionNotification(notification.PermissionUpsertInput{
+		SwarmID:         swarmID,
+		OriginSwarmID:   firstNonEmpty(originSwarmID, swarmID),
+		SessionID:       record.SessionID,
+		RunID:           record.RunID,
+		PermissionID:    record.ID,
+		ToolName:        record.ToolName,
+		Requirement:     record.Requirement,
+		Title:           permissionNotificationTitleFromRecord(record),
+		Body:            permissionNotificationBodyFromRecord(record),
+		Severity:        severity,
+		Status:          status,
+		SourceEventType: sourceEventType,
+		CreatedAt:       firstNonZero(record.PermissionRequested, record.CreatedAt),
+		UpdatedAt:       firstNonZero(record.UpdatedAt, record.ResolvedAt, record.CreatedAt),
+		ReadAt:          readAt,
+		AckedAt:         ackedAt,
+	})
+}
+
+func (s *Service) localSwarmID() string {
+	if s == nil || s.localSwarmIDResolver == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.localSwarmIDResolver())
+}
+
+func (s *Service) originSwarmIDForSession(sessionID string) string {
+	descriptor, hosted, err := s.hostedDescriptorForSession(sessionID)
+	if err == nil && hosted && strings.TrimSpace(descriptor.ChildSwarmID) != "" {
+		return strings.TrimSpace(descriptor.ChildSwarmID)
+	}
+	return s.localSwarmID()
+}
+
+func (s *Service) hostSwarmIDForSession(sessionID string) string {
+	descriptor, hosted, err := s.hostedDescriptorForSession(sessionID)
+	if err == nil && hosted && strings.TrimSpace(descriptor.HostSwarmID) != "" {
+		return strings.TrimSpace(descriptor.HostSwarmID)
+	}
+	return s.localSwarmID()
+}
+
+func permissionNotificationEventType(record pebblestore.PermissionRecord) string {
+	if strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
+		return "permission.requested"
+	}
+	return "permission.updated"
+}
+
+func permissionNotificationTitleFromRecord(record pebblestore.PermissionRecord) string {
+	if strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
+		return fmt.Sprintf("Permission requested: %s", fallbackToolName(record.ToolName))
+	}
+	return fmt.Sprintf("Permission %s: %s", strings.TrimSpace(record.Status), fallbackToolName(record.ToolName))
+}
+
+func permissionNotificationBodyFromRecord(record pebblestore.PermissionRecord) string {
+	toolName := fallbackToolName(record.ToolName)
+	if strings.EqualFold(strings.TrimSpace(record.Status), pebblestore.PermissionStatusPending) {
+		if strings.TrimSpace(record.Requirement) == "" {
+			return fmt.Sprintf("The %s action is waiting for approval.", toolName)
+		}
+		return fmt.Sprintf("The %s %s action is waiting for approval.", strings.TrimSpace(record.Requirement), toolName)
+	}
+	if strings.TrimSpace(record.Reason) != "" {
+		return fmt.Sprintf("%s %s: %s", toolName, strings.TrimSpace(record.Status), strings.TrimSpace(record.Reason))
+	}
+	return fmt.Sprintf("%s %s.", toolName, strings.TrimSpace(record.Status))
+}
+
+func fallbackToolName(toolName string) string {
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return "tool"
+	}
+	return toolName
 }

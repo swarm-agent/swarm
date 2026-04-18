@@ -28,6 +28,7 @@ import (
 	"swarm/packages/swarmd/internal/lock"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/anthropic"
 	"swarm/packages/swarmd/internal/provider/codex"
@@ -149,6 +150,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		return strings.TrimSpace(localNode.SwarmID)
 	})
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), events, hub.Publish)
+	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), events, hub.Publish)
 	permissionSvc.SetSessionResolver(sessionSvc)
 	permissionSvc.SetHostedSync(permission.NewHostedSyncClient(cfg.ConfigPath, swarmStore))
 	permissionSvc.SetLocalSwarmIDResolver(func() string {
@@ -159,6 +161,14 @@ func New(cfg config.Config) (*Daemon, error) {
 		return strings.TrimSpace(localNode.SwarmID)
 	})
 	permissionSvc.SetRetainToolOutputHistory(cfg.RetainToolOutputHistory)
+	notificationSvc.SetLocalSwarmIDResolver(func() string {
+		localNode, ok, err := swarmStore.GetLocalNode()
+		if err != nil || !ok {
+			return ""
+		}
+		return strings.TrimSpace(localNode.SwarmID)
+	})
+	permissionSvc.SetNotificationService(notificationSvc)
 	discoverySvc := discovery.NewService()
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
 	containerProfileSvc := containerprofiles.NewService(pebblestore.NewSwarmContainerProfileStore(store))
@@ -293,7 +303,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 
-	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, events, hub)
+	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)
 	apiServer.SetSandboxService(sandboxSvc)

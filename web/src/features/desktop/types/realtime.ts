@@ -130,6 +130,36 @@ export interface DesktopNotificationRecord {
   swarmChildName?: string | null
 }
 
+export interface DesktopNotificationCenterRecord {
+  id: string
+  swarmID: string
+  originSwarmID: string | null
+  sessionId: string | null
+  runId: string | null
+  category: string
+  severity: 'info' | 'warning' | 'error' | string
+  title: string
+  body: string
+  status: string
+  sourceEventType: string | null
+  permissionId: string | null
+  toolName: string | null
+  requirement: string | null
+  readAt: number | null
+  ackedAt: number | null
+  mutedAt: number | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface DesktopNotificationSummary {
+  swarmID: string
+  totalCount: number
+  unreadCount: number
+  activeCount: number
+  updatedAt: number
+}
+
 export interface DesktopVaultState {
   bootstrapped: boolean
   loading: boolean
@@ -142,15 +172,23 @@ export interface DesktopVaultState {
   openSettingsOnUnlock: boolean
 }
 
+export type DesktopConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
+
 export interface DesktopStoreState {
   hydrated: boolean
   hydrating: boolean
-  connectionState: 'idle' | 'connecting' | 'open' | 'closed' | 'error'
+  connectionState: DesktopConnectionState
   onboardingFlowRequested: boolean
   activeSessionId: string | null
   activeWorkspacePath: string | null
   sessions: Record<string, DesktopSessionRecord>
   notifications: DesktopNotificationRecord[]
+  notificationCenter: {
+    items: DesktopNotificationCenterRecord[]
+    summary: DesktopNotificationSummary
+    loading: boolean
+    hydrated: boolean
+  }
   reconnectTimer: number | null
   heartbeatTimer: number | null
   livenessTimer: number | null
@@ -165,6 +203,8 @@ export interface DesktopStoreState {
   setActiveWorkspacePath: (workspacePath: string | null) => void
   upsertSession: (session: DesktopSessionRecord) => void
   refreshSessionPermissions: (sessionId: string) => Promise<void>
+  refreshNotifications: () => Promise<void>
+  updateNotificationRecord: (id: string, patch: { read?: boolean; acked?: boolean; muted?: boolean; status?: string }) => Promise<void>
   setSessionDraft: (sessionId: string, draft: string) => void
   setSessionDraftMode: (sessionId: string, mode: 'plan' | 'auto' | 'read' | 'readwrite') => void
   getSessionDraft: (sessionId: string | null, workspacePath?: string | null) => string

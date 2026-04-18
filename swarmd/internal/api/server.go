@@ -28,6 +28,7 @@ import (
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/registry"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
@@ -76,6 +77,7 @@ type Server struct {
 	security                    *security.Service
 	providers                   *registry.Registry
 	perm                        permissionService
+	notifications               notificationService
 	hub                         *stream.Hub
 	events                      *pebblestore.EventLog
 	voice                       *voice.Service
@@ -202,6 +204,12 @@ type permissionService interface {
 	BypassPermissions() bool
 }
 
+type notificationService interface {
+	ListNotifications(swarmID string, limit int) ([]pebblestore.NotificationRecord, error)
+	Summary(swarmID string) (pebblestore.NotificationSummary, error)
+	UpdateNotification(input notification.UpdateInput) (pebblestore.NotificationRecord, bool, error)
+}
+
 type sandboxService interface {
 	GetStatus() (sandboxruntime.Status, error)
 	Preflight() (sandboxruntime.Status, error)
@@ -224,7 +232,7 @@ type mcpService interface {
 	SetEnabled(id string, enabled bool) (mcpruntime.Server, *pebblestore.EventEnvelope, error)
 }
 
-func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
+func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
 	runCtx, runCancel := context.WithCancel(context.Background())
 	return &Server{
 		auth:                 authSvc,
@@ -238,6 +246,7 @@ func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Servic
 		security:             securitySvc,
 		providers:            providers,
 		perm:                 permSvc,
+		notifications:        notificationSvc,
 		hub:                  hub,
 		events:               events,
 		mode:                 mode,
