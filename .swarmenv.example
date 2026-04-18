@@ -1,0 +1,6 @@
+# Local machine-specific Swarm container settings for ./scripts/rebuild-container.sh
+# This file is gitignored. Keep real values here on each machine.
+
+CONTAINER_NAME=swarm-container-mvp
+IMAGE_NAME=localhost/swarm-container-mvp:latest
+TS_HOSTNAME=my-device

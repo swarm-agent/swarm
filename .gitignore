@@ -1,0 +1,64 @@
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+!internal/fff/lib/linux-amd64-gnu/libfff_c.so
+!swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so
+*.dylib
+*.test
+*.out
+
+# Coverage
+coverage.out
+*.coverprofile
+
+# Build outputs in this repo
+/.bin/
+/swarm
+/swarmd/.bin/
+/swarmd/.data/
+/swarmd/.cache/
+/swarmtui
+/swarmd/swarmd
+/swarmd/swarmctl
+
+# Local runtime/cache data
+/.cache/
+/.runtime/
+/.swarm/
+/.tmp/
+/sandbox-cache/
+
+# Web build/runtime outputs
+/web/node_modules/
+/web/dist/
+/web/*.tsbuildinfo
+
+# Editor/OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local env files
+.env
+.env.*
+!.env.example
+.swarmenv
+.swarmenv.*
+!.swarmenv.example
+
+# Local investigation/tooling artifacts
+/tmp/
+/swarmd/tmp/
+/.tools/
+/.tmp-tools/
+/audit/
+/docs/
+/REPO_SHIP_READINESS_CHECKLIST.md
+/tests/swarmd/*_plan.md
+/scripts/benchmark-*.sh
+/scripts/debug-*.sh
+/scripts/demo-*.sh

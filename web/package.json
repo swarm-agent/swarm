@@ -1,0 +1,32 @@
+{
+  "name": "swarm-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node ./scripts/vite-launcher.mjs",
+    "build": "tsc -b && node ./scripts/vite-launcher.mjs build",
+    "preview": "node ./scripts/vite-launcher.mjs preview",
+    "test": "node --import tsx --test ./src/**/*.spec.ts"
+  },
+  "dependencies": {
+    "@tailwindcss/oxide-linux-x64-gnu": "^4.2.1",
+    "@tanstack/react-query": "^5.90.21",
+    "@tanstack/react-router": "^1.121.21",
+    "@tanstack/react-virtual": "^3.13.23",
+    "lucide-react": "^0.511.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwindcss": "^4.2.1",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^6.0.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.8.3",
+    "vite": "^8.0.5"
+  }
+}

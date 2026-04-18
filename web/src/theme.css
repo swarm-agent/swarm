@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #111111;
+  color: #f5f5f0;
+
+  --app-bg: #141413;
+  --app-bg-alt: #181716;
+  --app-bg-inset: #111111;
+  --app-surface: #1d1b19;
+  --app-surface-subtle: #25221f;
+  --app-surface-elevated: #2a2724;
+  --app-surface-hover: #312d2a;
+  --app-surface-active: #3a3531;
+  --app-border: #3b3733;
+  --app-border-strong: #4a453f;
+  --app-border-accent: #6b5b4d;
+  --app-primary: #d97706;
+  --app-primary-hover: #f59e0b;
+  --app-primary-active: #b45309;
+  --app-primary-text: #111111;
+  --app-accent: #8b5cf6;
+  --app-focus-ring: color-mix(in oklab, var(--app-primary) 35%, white);
+  --app-text: #f5f5f0;
+  --app-text-muted: #a8a29a;
+  --app-text-subtle: #7f7a73;
+  --app-text-inverse: #0f172a;
+  --app-text-accent: #d6d0c4;
+  --app-success: #86efac;
+  --app-success-bg: rgba(34, 197, 94, 0.12);
+  --app-success-border: rgba(34, 197, 94, 0.28);
+  --app-warning: #fbbf24;
+  --app-warning-bg: rgba(245, 158, 11, 0.12);
+  --app-warning-border: rgba(245, 158, 11, 0.28);
+  --app-danger: #fca5a5;
+  --app-danger-bg: rgba(239, 68, 68, 0.14);
+  --app-danger-border: rgba(239, 68, 68, 0.32);
+  --app-info: #93c5fd;
+  --app-info-bg: rgba(59, 130, 246, 0.14);
+  --app-info-border: rgba(59, 130, 246, 0.32);
+  --button-soft-bg: rgba(255, 255, 255, 0.04);
+  --button-soft-bg-hover: rgba(255, 255, 255, 0.08);
+  --button-soft-border: rgba(255, 255, 255, 0.08);
+  --button-soft-text: var(--app-text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(217, 119, 6, 0.08), transparent 32%),
+    linear-gradient(180deg, #1a1714 0%, var(--app-bg) 48%, #0f0f0f 100%);
+  color: var(--app-text);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+img,
+svg,
+video,
+canvas {
+  display: block;
+  max-width: 100%;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: var(--app-text);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--app-text-subtle);
+}
+
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown,
+.chat-markdown * {
+  min-width: 0;
+}
+
+.chat-markdown {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown p + p,
+.chat-markdown p + ul,
+.chat-markdown p + ol,
+.chat-markdown p + pre,
+.chat-markdown p + blockquote,
+.chat-markdown p + table,
+.chat-markdown ul + p,
+.chat-markdown ol + p,
+.chat-markdown pre + p,
+.chat-markdown blockquote + p,
+.chat-markdown table + p,
+.chat-markdown ul + ul,
+.chat-markdown ul + ol,
+.chat-markdown ol + ul,
+.chat-markdown ol + ol,
+.chat-markdown pre + pre,
+.chat-markdown blockquote + blockquote,
+.chat-markdown table + table,
+.chat-markdown hr + p,
+.chat-markdown hr + ul,
+.chat-markdown hr + ol,
+.chat-markdown hr + pre,
+.chat-markdown hr + blockquote,
+.chat-markdown hr + table {
+  margin-top: 0.75rem;
+}
+
+.chat-markdown input[type='checkbox'] {
+  margin-right: 0.5rem;
+}
