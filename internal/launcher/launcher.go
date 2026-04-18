@@ -1248,6 +1248,9 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 			return err
 		}
 	}
+	if _, err := InstallLaunchers(profile.Root); err != nil {
+		return err
+	}
 	if serviceScope != "" && serviceUnit != "" {
 		return restartSystemdService(serviceScope, serviceUnit, serviceActive)
 	}

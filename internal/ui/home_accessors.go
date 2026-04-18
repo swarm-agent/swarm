@@ -221,3 +221,13 @@ func (p *HomePage) SetSwarmName(name string) {
 	}
 	p.swarmName = name
 }
+
+func (p *HomePage) SetSwarmNotificationCount(count int) {
+	if p == nil {
+		return
+	}
+	if count < 0 {
+		count = 0
+	}
+	p.swarmNotificationCount = count
+}

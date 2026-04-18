@@ -314,6 +314,9 @@ func New() (*App, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
+	if count, err := app.loadSwarmNotificationCount(ctx); err == nil {
+		app.setSwarmNotificationCount(count)
+	}
 	next, loadErr := app.refreshHomeModel(ctx)
 	if loadErr != nil {
 		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v", loadErr))
@@ -680,7 +683,7 @@ func (a *App) consumeSessionStreamEvents() bool {
 func (a *App) applySessionStreamEvent(event client.StreamEventEnvelope) bool {
 	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
 	switch eventType {
-	case "swarm.enrollment.pending", "swarm.enrollment.approved", "swarm.enrollment.rejected":
+	case "swarm.enrollment.pending", "swarm.enrollment.approved", "swarm.enrollment.rejected", "notification.created", "notification.updated":
 		return a.applySwarmStreamEvent(event)
 	case "session.title.updated":
 		var payload struct {
@@ -954,17 +957,24 @@ func (a *App) applySwarmStreamEvent(event client.StreamEventEnvelope) bool {
 	switch eventType {
 	case "swarm.enrollment.pending":
 		a.swarmNotificationCount++
+		a.setSwarmNotificationCount(a.swarmNotificationCount)
+		return true
 	case "swarm.enrollment.approved", "swarm.enrollment.rejected":
 		if a.swarmNotificationCount > 0 {
 			a.swarmNotificationCount--
 		}
+		a.setSwarmNotificationCount(a.swarmNotificationCount)
+		return true
+	case "notification.created", "notification.updated":
+		count, err := a.loadSwarmNotificationCount(context.Background())
+		if err != nil {
+			return false
+		}
+		a.setSwarmNotificationCount(count)
+		return true
 	default:
 		return false
 	}
-	if a.chat != nil {
-		a.chat.SetSwarmNotificationCount(a.swarmNotificationCount)
-	}
-	return true
 }
 
 func (a *App) applySharedChatRuntimeEvent(event client.StreamEventEnvelope) bool {
@@ -2700,7 +2710,7 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		})
 	}
 	a.chat.SetPasteActive(a.pasteActive)
-	a.chat.SetSwarmNotificationCount(a.swarmNotificationCount)
+	a.setSwarmNotificationCount(a.swarmNotificationCount)
 	a.applyThemeToChat()
 	a.home.ClearPrompt()
 	a.startSessionEventStream()
@@ -6787,6 +6797,7 @@ func (a *App) syncChatAgentRuntime() {
 func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
+	a.home.SetSwarmNotificationCount(a.swarmNotificationCount)
 	a.syncChatAgentRuntime()
 	a.applyEffectiveTheme()
 }
@@ -6805,6 +6816,36 @@ func (a *App) backgroundSessionMatchesOpenModal(item ui.ChatSessionPaletteItem) 
 		}
 	}
 	return false
+}
+
+func (a *App) setSwarmNotificationCount(count int) {
+	if a == nil {
+		return
+	}
+	if count < 0 {
+		count = 0
+	}
+	a.swarmNotificationCount = count
+	if a.home != nil {
+		a.home.SetSwarmNotificationCount(count)
+	}
+	if a.chat != nil {
+		a.chat.SetSwarmNotificationCount(count)
+	}
+}
+
+func (a *App) loadSwarmNotificationCount(ctx context.Context) (int, error) {
+	if a == nil || a.api == nil {
+		return 0, errors.New("api client unavailable")
+	}
+	summary, err := a.api.GetNotificationSummary(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	if summary.UnreadCount < 0 {
+		return 0, nil
+	}
+	return summary.UnreadCount, nil
 }
 
 func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {

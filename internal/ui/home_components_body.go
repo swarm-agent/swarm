@@ -442,6 +442,9 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 
 func (p *HomePage) homeFooterTokens() []footerToken {
 	swarmLabel := emptyValue(strings.TrimSpace(p.swarmName), displayRuntimeMode(p.model.ServerMode))
+	if p.swarmNotificationCount > 0 {
+		swarmLabel = fmt.Sprintf("%s !%d", swarmLabel, p.swarmNotificationCount)
+	}
 	primaryStyle := styleForCurrentCellBackground(p.theme.Accent.Bold(true))
 	modeStyle := styleForCurrentCellBackground(p.theme.Secondary.Bold(true))
 	metaStyle := styleForCurrentCellBackground(p.theme.Text)
