@@ -160,6 +160,19 @@ swarmdev info
 - `swarm` and `swarmdev` refuse to launch when the installed runtime is missing (no silent fallback to source builds).
 - Lane occupancy/port records are written to user state (`${XDG_STATE_HOME:-~/.local/state}/swarm/ports/swarmd-main.env`, `${XDG_STATE_HOME:-~/.local/state}/swarm/ports/swarmd-dev.env`).
 
+## Git branch flow
+
+- `dev` is the day-to-day working branch.
+- `main` is the protected release/build branch.
+- Merge or cherry-pick from `dev` into `main` only when you want the canonical GitHub build to run.
+- GitHub Actions now builds artifacts only for pushes to `main` (and manual dispatch), and the workflow is gated so only the `swarm-agent` account can run the build job.
+- Protect `main` in GitHub so only your account can push to it; leave `dev` available for normal collaborative work.
+- Recommended GitHub rule setup:
+  - branch rule / ruleset for `main`
+  - block force pushes
+  - block deletions
+  - restrict direct pushes to your account
+  - optionally require pull requests for everyone except your admin bypass
 
 `swarmtui` now persists UI settings through the daemon-backed `/v1/ui/settings` API backed by Pebble.
 There is no local `swarmtui.json` file anymore.
