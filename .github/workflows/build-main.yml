@@ -1,0 +1,79 @@
+name: build-main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-main-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: ${{ github.actor == 'swarm-agent' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Prepare artifact directories
+        run: mkdir -p dist/linux-amd64/root dist/linux-amd64/swarmd dist/web
+
+      - name: Build launcher and TUI binaries
+        run: |
+          go build -trimpath -o dist/linux-amd64/root/swarmtui ./cmd/swarmtui
+          go build -trimpath -o dist/linux-amd64/root/swarm ./cmd/swarm
+          go build -trimpath -ldflags "-X main.defaultInvokedName=swarmdev" -o dist/linux-amd64/root/swarmdev ./cmd/swarm
+          go build -trimpath -o dist/linux-amd64/root/rebuild ./cmd/rebuild
+          go build -trimpath -o dist/linux-amd64/root/swarmsetup ./cmd/swarmsetup
+
+      - name: Build swarmd binaries
+        run: |
+          cd swarmd
+          go build -trimpath -o ../dist/linux-amd64/swarmd/swarmd ./cmd/swarmd
+          go build -trimpath -o ../dist/linux-amd64/swarmd/swarmctl ./cmd/swarmctl
+
+      - name: Build desktop assets
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Stage build metadata
+        run: |
+          cp -R web/dist/. dist/web/
+          {
+            printf 'commit=%s\n' "${GITHUB_SHA}"
+            printf 'actor=%s\n' "${GITHUB_ACTOR}"
+            printf 'ref=%s\n' "${GITHUB_REF}"
+            printf 'built_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > dist/build-info.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-build-${{ github.sha }}
+          path: |
+            dist/linux-amd64
+            dist/web
+            dist/build-info.txt
+          if-no-files-found: error
