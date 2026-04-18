@@ -371,7 +371,7 @@ function renderWorkspaceGitBar(args: {
   const branch = workspace.gitBranch?.trim() || 'git'
   const ahead = Math.max(0, Number(workspace.gitAheadCount ?? 0))
   const behind = Math.max(0, Number(workspace.gitBehindCount ?? 0))
-  const syncLabel = ahead > 0 || behind > 0 ? `↑${ahead} ↓${behind}` : '—'
+  const syncLabel = `↑${ahead} ↓${behind}`
   const modified = Math.max(0, Number(workspace.gitModifiedCount ?? 0))
   const untracked = Math.max(0, Number(workspace.gitUntrackedCount ?? 0))
   const dirtyDetailParts: string[] = []
