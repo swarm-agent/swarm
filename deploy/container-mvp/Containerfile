@@ -1,0 +1,39 @@
+FROM docker.io/tailscale/tailscale:stable AS tailscale
+
+FROM docker.io/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl file git jq less openssh-client procps psmisc python3 ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
+COPY --from=tailscale /usr/local/bin/tailscaled /usr/local/bin/tailscaled
+
+COPY .tools/go /usr/local/go
+COPY .bin/main/swarmd /usr/local/bin/swarmd
+COPY .bin/main/swarmctl /usr/local/bin/swarmctl
+COPY swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so /usr/local/lib/libfff_c.so
+COPY web/dist /opt/swarm/web/dist
+COPY deploy/container-mvp/entrypoint.sh /usr/local/bin/swarm-container-entrypoint
+
+RUN chmod -R a+rX /usr/local/go \
+    && chmod 0755 /usr/local/bin/swarmd /usr/local/bin/swarmctl /usr/local/bin/swarm-container-entrypoint
+
+ENV GOROOT=/usr/local/go
+ENV GOTOOLCHAIN=local
+ENV PATH=/usr/local/go/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/lib
+ENV SWARM_WEB_DIST_DIR=/opt/swarm/web/dist
+ENV TS_SOCKET=/var/run/tailscale/tailscaled.sock
+ENV TS_STATE_DIR=/var/lib/tailscale
+ENV SWARMD_DATA_DIR=/var/lib/swarmd
+ENV SWARMD_LOCK_PATH=/var/run/swarmd/swarmd.lock
+ENV SWARMD_LISTEN=127.0.0.1:7781
+ENV SWARM_DESKTOP_PORT=5555
+ENV TS_HOSTNAME=swarm-box
+
+VOLUME ["/var/lib/tailscale", "/var/lib/swarmd", "/workspaces"]
+
+ENTRYPOINT ["/usr/local/bin/swarm-container-entrypoint"]

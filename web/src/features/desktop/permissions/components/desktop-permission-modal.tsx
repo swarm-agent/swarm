@@ -1,0 +1,1090 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Copy, Check, AlertCircle } from 'lucide-react'
+import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
+import { Button } from '../../../../components/ui/button'
+import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
+import { Textarea } from '../../../../components/ui/textarea'
+import { cn } from '../../../../lib/cn'
+import { ChatMarkdown } from '../../chat/components/chat-markdown'
+import type { DesktopPermissionRecord } from '../../types/realtime'
+import {
+  buildAskUserResolutionReason,
+  buildWorkspaceScopeResolutionReason,
+  buildGenericPermissionMarkdown,
+  parseAgentChangePermission,
+  parseAskUserPermission,
+  parseExitPlanPermission,
+  parseManageTodosPermission,
+  parsePlanUpdatePermission,
+  parseTaskLaunchPermission,
+  parseWorkspaceScopePermission,
+  permissionDisplayToolName,
+  permissionRequirementLabel,
+  permissionKind,
+} from '../services/permission-payload'
+
+interface DesktopPermissionModalProps {
+  open: boolean
+  permission: DesktopPermissionRecord | null
+  pendingCount: number
+  sessionMode: string
+  onOpenChange: (open: boolean) => void
+  onResolve: (
+    action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',
+    reason: string,
+    approvedArguments?: Record<string, unknown>,
+  ) => Promise<void>
+}
+
+function useEscapeToClose(open: boolean, onClose: () => void) {
+  useEffect(() => {
+    if (!open) {
+      return undefined
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [open, onClose])
+}
+
+function ModalShell({
+  open,
+  title,
+  subtitle,
+  pendingCount,
+  sessionMode,
+  widthClassName,
+  bodyClassName,
+  footer,
+  children,
+  onOpenChange,
+}: {
+  open: boolean
+  title: string
+  subtitle: string
+  pendingCount: number
+  sessionMode: string
+  widthClassName: string
+  bodyClassName?: string
+  footer?: React.ReactNode
+  children: React.ReactNode
+  onOpenChange: (open: boolean) => void
+}) {
+  useEscapeToClose(open, () => onOpenChange(false))
+
+  if (!open) {
+    return null
+  }
+
+  return (
+    <Dialog role="dialog" aria-modal="true" aria-label={title} className="z-[80] p-4 sm:p-6">
+      <DialogBackdrop onClick={() => onOpenChange(false)} />
+      <DialogPanel className={cn('flex min-h-0 max-h-[calc(100vh-24px)] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100vh-48px)]', widthClassName)}>
+        <div className="shrink-0 flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-6 py-5">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">{title}</h2>
+            <p className="mt-1 text-sm text-[var(--app-text-muted)]">{subtitle}</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
+              <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium uppercase tracking-[0.08em]">mode {sessionMode.trim() || 'plan'}</span>
+              {pendingCount > 1 ? <span>{pendingCount} requests pending in this session</span> : null}
+            </div>
+          </div>
+          <ModalCloseButton onClick={() => onOpenChange(false)} aria-label="Close permission modal" />
+        </div>
+        <div className={cn('min-h-0 flex-1 overflow-auto px-6 py-5', bodyClassName)}>{children}</div>
+        {footer}
+      </DialogPanel>
+    </Dialog>
+  )
+}
+
+function PermissionActionBar({
+  onApprove,
+  onDeny,
+  onAlwaysAllow,
+  onAlwaysDeny,
+  alwaysAllowLabel = 'Always Allow',
+  alwaysDenyLabel = 'Always Deny',
+  showPersistentActions = false,
+  loading,
+  approveLabel = 'Approve',
+  denyLabel = 'Deny',
+  children,
+}: {
+  onApprove: () => void
+  onDeny: () => void
+  onAlwaysAllow?: () => void
+  onAlwaysDeny?: () => void
+  alwaysAllowLabel?: string
+  alwaysDenyLabel?: string
+  showPersistentActions?: boolean
+  loading: boolean
+  approveLabel?: string
+  denyLabel?: string
+  children?: React.ReactNode
+}) {
+  return (
+    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-6 py-4">
+      {children ? <div className="mb-4">{children}</div> : null}
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button type="button" variant="ghost" onClick={onDeny} disabled={loading}>
+          {denyLabel}
+        </Button>
+        {showPersistentActions && onAlwaysDeny ? (
+          <Button type="button" variant="outline" onClick={onAlwaysDeny} disabled={loading}>
+            {alwaysDenyLabel}
+          </Button>
+        ) : null}
+        {showPersistentActions && onAlwaysAllow ? (
+          <Button type="button" variant="outline" onClick={onAlwaysAllow} disabled={loading}>
+            {alwaysAllowLabel}
+          </Button>
+        ) : null}
+        <Button type="button" variant="primary" onClick={onApprove} disabled={loading}>
+          {approveLabel}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function GenericPermissionModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [alwaysPreview, setAlwaysPreview] = useState('')
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+      setAlwaysPreview('')
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const body = buildGenericPermissionMarkdown(permission)
+
+  const resolve = async (
+    action: 'approve' | 'deny' | 'approve_always' | 'always_allow' | 'always_deny',
+    approvedArguments?: Record<string, unknown>,
+  ) => {
+    setLoading(true)
+    try {
+      await onResolve(action, note.trim(), approvedArguments)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const persistentAllowed = genericPermissionSupportsPersistentActions(permission)
+  const persistentRulePreview = alwaysPreview || genericPermissionPersistentRulePreview(permission)
+
+  return (
+    <ModalShell
+      open={open}
+      title="Permission request"
+      subtitle={`${permissionRequirementLabel(permission.requirement)} · ${permissionDisplayToolName(permission.toolName)}`}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(980px,calc(100vw-24px))] sm:w-[min(1040px,calc(100vw-48px))]"
+      onOpenChange={onOpenChange}
+    >
+      <div className="grid gap-5">
+        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+          <ChatMarkdown content={body} />
+        </div>
+        {persistentAllowed ? (
+          <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Always allow prefix</div>
+            <div className="mt-2 text-sm text-[var(--app-text-muted)]">
+              {persistentRulePreview || 'This approval can be saved as a reusable policy rule.'}
+            </div>
+          </div>
+        ) : null}
+        <label className="grid gap-2">
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Response note</span>
+          <Textarea
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="Optional note to send with this decision…"
+            className="min-h-[120px] resize-y bg-[var(--app-bg-alt)]"
+            rows={4}
+          />
+        </label>
+      </div>
+      <PermissionActionBar
+        loading={loading}
+        onApprove={() => void resolve('approve')}
+        onDeny={() => void resolve('deny')}
+        onAlwaysAllow={persistentAllowed ? () => void resolve('approve_always') : undefined}
+        onAlwaysDeny={persistentAllowed ? () => void resolve('always_deny') : undefined}
+        showPersistentActions={persistentAllowed}
+      />
+    </ModalShell>
+  )
+}
+
+function ExitPlanModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+      setCopyState('idle')
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const payload = parseExitPlanPermission(permission)
+
+  const handleCopy = async () => {
+    try {
+      if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+        throw new Error('Clipboard unavailable')
+      }
+      await navigator.clipboard.writeText(payload.body)
+      setCopyState('copied')
+    } catch {
+      setCopyState('error')
+    }
+  }
+
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(action, note.trim())
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Exit Plan Mode'}
+      subtitle={payload.planId ? `Plan ${payload.planId}` : 'Approve this request to leave plan mode and continue execution'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1120px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={
+        <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')}>
+          <Textarea
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="Optional note to send back with this action…"
+            className="min-h-[3.5rem] resize-none bg-[var(--app-bg-alt)]"
+            rows={2}
+          />
+        </PermissionActionBar>
+      }
+      onOpenChange={onOpenChange}
+    >
+      <div className="flex h-full min-h-0 flex-col gap-4">
+        <section className="flex min-h-0 flex-1 flex-col gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Plan</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
+              {copyState === 'copied' ? (
+                <Check className="size-4" />
+              ) : copyState === 'error' ? (
+                <AlertCircle className="size-4" />
+              ) : (
+                <Copy className="size-4" />
+              )}
+              {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <ChatMarkdown content={payload.body} className="text-base leading-7" />
+          </div>
+        </section>
+      </div>
+    </ModalShell>
+  )
+}
+
+function PlanUpdateModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const payload = parsePlanUpdatePermission(permission)
+
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      const reason =
+        action === 'approve'
+          ? JSON.stringify({
+              action: 'save',
+              approved_arguments:
+                Object.keys(payload.approvedArguments).length > 0
+                  ? payload.approvedArguments
+                  : {
+                      action: 'save',
+                      plan_id: payload.planId,
+                      title: payload.title,
+                      plan: payload.plan,
+                    },
+              note: note.trim(),
+            })
+          : note.trim()
+      await onResolve(action, reason)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review Plan Update'}
+      subtitle={payload.planId ? `Plan ${payload.planId}` : 'Approve this request to revise an existing plan'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1120px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={
+        <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Approve update">
+          <label className="grid gap-2">
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Message to agent</span>
+            <Textarea
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder="Optional note to send back with this action…"
+              className="min-h-[3.5rem] resize-none bg-[var(--app-bg-alt)]"
+              rows={2}
+            />
+          </label>
+        </PermissionActionBar>
+      }
+      onOpenChange={onOpenChange}
+    >
+      <div className="grid gap-5">
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Diff preview</div>
+          <div className="mt-3 overflow-x-auto rounded-xl bg-[var(--app-bg-alt)] p-3 font-mono text-sm leading-6 text-[var(--app-text)]">
+            {payload.diffLines.length > 0 ? (
+              <div className="space-y-1">
+                {payload.diffLines.map((line, index) => (
+                  <div
+                    key={`${index}:${line}`}
+                    className={cn(
+                      line.startsWith('+') && !line.startsWith('+++') && 'text-[var(--app-success)]',
+                      line.startsWith('-') && !line.startsWith('---') && 'text-[var(--app-danger)]',
+                      line.startsWith('@@') && 'text-[var(--app-primary)]',
+                    )}
+                  >
+                    {line || ' '}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[var(--app-text-muted)]">No diff lines were provided.</div>
+            )}
+          </div>
+        </section>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Previous plan</div>
+            <div className="mt-2 text-sm font-medium text-[var(--app-text)]">{payload.priorTitle || payload.title || 'Plan'}</div>
+            <div className="mt-3 rounded-xl bg-[var(--app-bg-alt)] p-3">
+              <ChatMarkdown content={payload.priorPlan || 'No prior plan text was provided.'} />
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Updated plan</div>
+            <div className="mt-2 text-sm font-medium text-[var(--app-text)]">{payload.title || 'Plan'}</div>
+            <div className="mt-3 rounded-xl bg-[var(--app-bg-alt)] p-3">
+              <ChatMarkdown content={payload.plan || 'No updated plan text was provided.'} />
+            </div>
+          </section>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+function ManageTodosModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const payload = parseManageTodosPermission(permission)
+
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(
+        action,
+        note.trim(),
+        action === 'approve' && Object.keys(payload.approvedArguments).length > 0
+          ? payload.approvedArguments
+          : undefined,
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review Todo Changes'}
+      subtitle="Approve this request to update workspace todos"
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1120px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={
+        <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')}>
+          <label className="grid gap-2">
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Message to agent</span>
+            <Textarea
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder="Type a note to send back with this action…"
+              className="min-h-[3.5rem] resize-none bg-[var(--app-bg-alt)]"
+              rows={2}
+            />
+          </label>
+        </PermissionActionBar>
+      }
+      onOpenChange={onOpenChange}
+    >
+      <div className="flex h-full min-h-0 flex-col gap-4">
+        <section className="flex min-h-0 flex-1 flex-col gap-3">
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task preview</span>
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4 pr-5">
+            {payload.isBatch ? (
+              <div className="grid gap-4">
+                <div className="text-sm font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Atomic batch preview</div>
+                {payload.batchRows.length === 0 ? (
+                  <div className="text-sm text-[var(--app-text-muted)]">No operations were provided.</div>
+                ) : (
+                  <div className="grid gap-3">
+                    {payload.batchRows.map((row, index) => (
+                      <div key={`${index}-${row.text}`} className="grid gap-1">
+                        <div className="text-base leading-7 text-[var(--app-text)]">{row.text}</div>
+                        {row.metadata.map((entry) => (
+                          <div key={`${index}-${entry}`} className="pl-6 text-sm leading-6 text-[var(--app-text-muted)]">
+                            meta: {entry}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {payload.summaryLine ? <div className="text-sm text-[var(--app-text-muted)]">{payload.summaryLine}</div> : null}
+              </div>
+            ) : (
+              <ChatMarkdown content={payload.body} className="text-base leading-7" />
+            )}
+          </div>
+        </section>
+      </div>
+    </ModalShell>
+  )
+}
+
+function AskUserModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const payload = useMemo(() => (permission ? parseAskUserPermission(permission) : null), [permission])
+  const [answers, setAnswers] = useState<Record<string, string>>({})
+  const [customInputs, setCustomInputs] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open || !payload) {
+      return
+    }
+    const nextAnswers: Record<string, string> = {}
+    const nextCustomInputs: Record<string, string> = {}
+    for (const question of payload.questions) {
+      const first = question.options[0]
+      nextAnswers[question.id] = first?.allowCustom ? '' : (first?.value ?? '')
+      nextCustomInputs[question.id] = ''
+    }
+    setAnswers(nextAnswers)
+    setCustomInputs(nextCustomInputs)
+    setError(null)
+    setLoading(false)
+  }, [open, payload, permission?.id])
+
+  if (!permission || !payload) {
+    return null
+  }
+
+  const updateAnswer = (questionId: string, value: string, isCustom: boolean) => {
+    setAnswers((current) => ({ ...current, [questionId]: isCustom ? '__custom__' : value }))
+    if (!isCustom) {
+      setCustomInputs((current) => ({ ...current, [questionId]: '' }))
+    }
+  }
+
+  const submit = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    setError(null)
+    try {
+      if (action === 'deny') {
+        await onResolve('deny', '')
+        return
+      }
+
+      const resolvedAnswers: Record<string, string> = {}
+      for (const question of payload.questions) {
+        const selected = (answers[question.id] ?? '').trim()
+        if (selected === '__custom__') {
+          resolvedAnswers[question.id] = (customInputs[question.id] ?? '').trim()
+        } else {
+          resolvedAnswers[question.id] = selected
+        }
+      }
+
+      const reason = buildAskUserResolutionReason(payload, resolvedAnswers)
+      if (reason === null) {
+        setError('Answer each required question before submitting.')
+        return
+      }
+      await onResolve('approve', reason)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Ask User'}
+      subtitle="Answer the questions below, then submit your response"
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1140px,calc(100vw-48px))]"
+      onOpenChange={onOpenChange}
+    >
+      <div className="grid gap-5">
+        {payload.context.trim() ? (
+          <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+            <ChatMarkdown content={payload.context} />
+          </div>
+        ) : null}
+
+        <div className="grid gap-4">
+          {payload.questions.map((question, index) => {
+            const selected = answers[question.id] ?? ''
+            const selectedIsCustom = selected === '__custom__'
+            return (
+              <section key={question.id} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                <div className="mb-3">
+                  <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+                    {question.header || `Question ${index + 1}`}
+                    {question.required ? ' · required' : ''}
+                  </div>
+                  <div className="mt-2 rounded-xl bg-[var(--app-bg-alt)] p-3">
+                    <ChatMarkdown content={question.question} />
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  {question.options.map((option) => {
+                    const isSelected = option.allowCustom ? selectedIsCustom : selected === option.value
+                    return (
+                      <button
+                        key={`${question.id}:${option.value}:${option.label}`}
+                        type="button"
+                        className={cn(
+                          'grid gap-1 rounded-2xl border px-4 py-3 text-left transition',
+                          isSelected
+                            ? 'border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]'
+                            : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-bg-alt)]',
+                        )}
+                        onClick={() => updateAnswer(question.id, option.value, option.allowCustom)}
+                      >
+                        <span className="text-sm font-medium text-[var(--app-text)]">{option.label}</span>
+                        {option.description ? <span className="text-xs text-[var(--app-text-muted)]">{option.description}</span> : null}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {selectedIsCustom ? (
+                  <label className="mt-3 grid gap-2">
+                    <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Custom response</span>
+                    <Textarea
+                      value={customInputs[question.id] ?? ''}
+                      onChange={(event) => setCustomInputs((current) => ({ ...current, [question.id]: event.target.value }))}
+                      placeholder="Type your response…"
+                      className="min-h-[110px] resize-y bg-[var(--app-bg-alt)]"
+                      rows={3}
+                    />
+                  </label>
+                ) : null}
+              </section>
+            )
+          })}
+        </div>
+
+        {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
+      </div>
+      <PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} approveLabel="Submit response" />
+    </ModalShell>
+  )
+}
+
+function WorkspaceScopeModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const payload = parseWorkspaceScopePermission(permission)
+  const workspaceLabel = payload.workspaceName || payload.workspacePath || 'saved workspace'
+
+  const resolve = async (action: 'approve' | 'deny', reason: string) => {
+    setLoading(true)
+    try {
+      await onResolve(action, reason)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Allow read access?'}
+      subtitle={`${payload.accessLabel} · ${permissionDisplayToolName(payload.toolName || permission.toolName)}`}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1120px,calc(100vw-48px))]"
+      onOpenChange={onOpenChange}
+    >
+      <div className="grid gap-5">
+        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+          <p className="text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Requested path</div>
+            <div className="mt-2 break-all font-mono text-sm text-[var(--app-text)]">{payload.requestedPath || 'Unavailable'}</div>
+          </section>
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Session scope root</div>
+            <div className="mt-2 break-all font-mono text-sm text-[var(--app-text)]">{payload.directoryPath || payload.resolvedPath || payload.requestedPath || 'Unavailable'}</div>
+          </section>
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Resolved target</div>
+            <div className="mt-2 break-all font-mono text-sm text-[var(--app-text)]">{payload.resolvedPath || payload.requestedPath || 'Unavailable'}</div>
+          </section>
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Workspace</div>
+            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.workspaceExists ? workspaceLabel : 'No saved workspace is active for this session.'}</div>
+          </section>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <section className="flex h-full flex-col rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Temporary access</div>
+            <h3 className="mt-2 text-base font-semibold text-[var(--app-text)]">{payload.sessionAllow.label}</h3>
+            <p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{payload.sessionAllow.description || payload.temporaryBehavior}</p>
+            <Button
+              type="button"
+              variant="primary"
+              className="mt-4"
+              onClick={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.sessionAllow.decision))}
+              disabled={loading}
+            >
+              {payload.sessionAllow.label}
+            </Button>
+          </section>
+
+          <section
+            className={cn(
+              'flex h-full flex-col rounded-2xl border p-4',
+              payload.addToWorkspace.available
+                ? 'border-[var(--app-border)] bg-[var(--app-surface)]'
+                : 'border-[var(--app-border)] bg-[var(--app-bg-alt)] opacity-75',
+            )}
+          >
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Persistent access</div>
+            <h3 className="mt-2 text-base font-semibold text-[var(--app-text)]">{payload.addToWorkspace.label}</h3>
+            <p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{payload.addToWorkspace.description || payload.persistentBehavior}</p>
+            <Button
+              type="button"
+              variant="ghost"
+              className="mt-4"
+              onClick={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.addToWorkspace.decision))}
+              disabled={loading || !payload.addToWorkspace.available}
+            >
+              {payload.addToWorkspace.label}
+            </Button>
+          </section>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--app-border)] px-6 py-4">
+        <Button type="button" variant="ghost" onClick={() => void resolve('deny', '')} disabled={loading}>
+          Deny
+        </Button>
+      </div>
+    </ModalShell>
+  )
+}
+
+function TaskLaunchModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const payload = parseTaskLaunchPermission(permission)
+
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(action, '')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title}
+      subtitle={payload.subtitle || 'Review the delegated task before spawning subagents'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1140px,calc(100vw-48px))]"
+      onOpenChange={onOpenChange}
+    >
+      <div className="grid gap-5">
+        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+          <p className="text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Launches</div>
+            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.launchCount}</div>
+          </section>
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Action</div>
+            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.action || 'spawn'}</div>
+          </section>
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Child mode</div>
+            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.effectiveChildMode || 'auto'}</div>
+          </section>
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Allow bash</div>
+            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.allowBash ? 'yes' : 'no'}</div>
+          </section>
+        </div>
+
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task</div>
+          <div className="mt-2 rounded-xl bg-[var(--app-bg-alt)] p-3">
+            <ChatMarkdown content={payload.description || 'Delegated task'} />
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Prompt</div>
+          <div className="mt-2 rounded-xl bg-[var(--app-bg-alt)] p-3">
+            <ChatMarkdown content={payload.prompt || 'No prompt provided.'} />
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Launch assignments</div>
+            {payload.reportMaxChars > 0 ? <div className="text-xs text-[var(--app-text-subtle)]">report excerpt {payload.reportMaxChars} chars</div> : null}
+          </div>
+          <div className="mt-3 grid gap-3">
+            {payload.launches.length > 0 ? (
+              payload.launches.map((launch) => (
+                <section key={`${launch.index}:${launch.requestedSubagentType}:${launch.resolvedAgentName}`} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
+                    <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium uppercase tracking-[0.08em]">#{launch.index}</span>
+                    <span>{launch.resolvedAgentName || launch.requestedSubagentType}</span>
+                    {launch.childMode ? <span>· mode {launch.childMode}</span> : null}
+                    <span>· bash {launch.allowBash ? 'yes' : 'no'}</span>
+                  </div>
+                  {launch.resolvedAgentError ? (
+                    <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">
+                      {launch.resolvedAgentError}
+                    </div>
+                  ) : null}
+                  {launch.childTitlePreview ? <div className="mt-3 text-sm font-medium text-[var(--app-text)]">{launch.childTitlePreview}</div> : null}
+                  <div className="mt-3 rounded-xl bg-[var(--app-bg-alt)] p-3">
+                    <ChatMarkdown content={launch.assignment || 'No launch-specific instructions.'} />
+                  </div>
+                  {launch.disabledTools.length > 0 ? (
+                    <div className="mt-3 text-xs text-[var(--app-text-subtle)]">Disabled tools: {launch.disabledTools.join(', ')}</div>
+                  ) : null}
+                </section>
+              ))
+            ) : (
+              <div className="rounded-xl bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No launches were included in the manifest.</div>
+            )}
+          </div>
+        </section>
+
+        {(payload.resolvedAgentName || payload.subagentType || payload.disabledTools.length > 0 || payload.resolvedAgentError) ? (
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Delegation context</div>
+            <div className="mt-3 grid gap-2 text-sm text-[var(--app-text)]">
+              {payload.subagentType ? <div>Requested subagent: {payload.subagentType}</div> : null}
+              {payload.resolvedAgentName ? <div>Router: {payload.resolvedAgentName}</div> : null}
+              {payload.parentMode ? <div>Parent mode: {payload.parentMode}</div> : null}
+              {payload.resolvedAgentError ? <div className="text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
+              {payload.disabledTools.length > 0 ? <div>Disabled tools: {payload.disabledTools.join(', ')}</div> : null}
+            </div>
+          </section>
+        ) : null}
+      </div>
+      <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Launch subagents" />
+    </ModalShell>
+  )
+}
+
+function AgentChangeModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const payload = parseAgentChangePermission(permission)
+
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(action, '')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title}
+      subtitle={payload.subtitle || 'Review this manage-agent change before it is applied'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(980px,calc(100vw-24px))] sm:w-[min(1040px,calc(100vw-48px))]"
+      onOpenChange={onOpenChange}
+    >
+      <div className="grid gap-5">
+        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+          <p className="text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Agent</div>
+            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.agentName ? `@${payload.agentName}` : 'n/a'}</div>
+          </section>
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Mode</div>
+            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.mode || 'n/a'}</div>
+          </section>
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Execution</div>
+            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.execution || 'n/a'}</div>
+          </section>
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tools</div>
+            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.tools || 'n/a'}</div>
+          </section>
+        </div>
+
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">What changes</div>
+          <div className="mt-3 grid gap-2 text-sm text-[var(--app-text)]">
+            {payload.changes.length > 0 ? (
+              payload.changes.map((change) => (
+                <div key={`${change.label}:${change.value}`} className="flex flex-col gap-1 sm:flex-row sm:items-start sm:gap-3">
+                  <div className="min-w-[112px] text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{change.label}</div>
+                  <div className="text-sm text-[var(--app-text)]">{change.value}</div>
+                </div>
+              ))
+            ) : (
+              <div className="text-sm text-[var(--app-text-muted)]">No visible settings change.</div>
+            )}
+          </div>
+        </section>
+
+        {(payload.status || payload.model || payload.descriptionPreview || payload.promptPreview || payload.purpose) ? (
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Details</div>
+            <div className="mt-3 grid gap-2 text-sm text-[var(--app-text)]">
+              {payload.purpose ? <div>Purpose: {payload.purpose}</div> : null}
+              {payload.status ? <div>Status: {payload.status}</div> : null}
+              {payload.model ? <div>Model: {payload.model}</div> : null}
+              {payload.descriptionPreview ? <div>Description: {payload.descriptionPreview}</div> : null}
+              {payload.promptPreview ? <div>Prompt: updated</div> : null}
+            </div>
+          </section>
+        ) : null}
+      </div>
+      <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Apply change" />
+    </ModalShell>
+  )
+}
+
+function genericPermissionSupportsPersistentActions(permission: DesktopPermissionRecord): boolean {
+  const toolName = permissionDisplayToolName(permission.toolName)
+  return toolName !== 'ask-user' && toolName !== 'exit_plan_mode'
+}
+
+function genericPermissionPersistentRulePreview(permission: DesktopPermissionRecord): string {
+  const toolName = permissionDisplayToolName(permission.toolName)
+  if (toolName === 'bash') {
+    return 'bash'
+  }
+  return `allow tool: ${toolName}`
+}
+
+export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
+  const kind = props.permission ? permissionKind(props.permission) : 'generic'
+
+  if (kind === 'workspace-scope') {
+    return <WorkspaceScopeModal {...props} />
+  }
+  if (kind === 'exit-plan') {
+    return <ExitPlanModal {...props} />
+  }
+  if (kind === 'plan-update') {
+    return <PlanUpdateModal {...props} />
+  }
+  if (kind === 'manage-todos') {
+    return <ManageTodosModal {...props} />
+  }
+  if (kind === 'ask-user') {
+    return <AskUserModal {...props} />
+  }
+  if (kind === 'task-launch') {
+    return <TaskLaunchModal {...props} />
+  }
+  if (kind === 'agent-change') {
+    return <AgentChangeModal {...props} />
+  }
+  return <GenericPermissionModal {...props} />
+}

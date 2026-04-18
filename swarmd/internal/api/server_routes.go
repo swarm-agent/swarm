@@ -1,0 +1,183 @@
+package api
+
+import "net/http"
+
+func (s *Server) registerCoreRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/readyz", s.handleReady)
+	mux.HandleFunc("/ws", s.handleDesktopStream)
+}
+
+func (s *Server) registerAuthVaultRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/auth/codex", s.handleCodexAuth)
+	mux.HandleFunc("/v1/auth/codex/oauth/start", s.handleCodexOAuthStart)
+	mux.HandleFunc("/v1/auth/codex/oauth/status", s.handleCodexOAuthStatus)
+	mux.HandleFunc("/v1/auth/codex/oauth/complete", s.handleCodexOAuthComplete)
+	mux.HandleFunc("/v1/auth/credentials", s.handleAuthCredentials)
+	mux.HandleFunc("/v1/auth/credentials/verify", s.handleAuthCredentialVerify)
+	mux.HandleFunc("/v1/auth/credentials/active", s.handleAuthCredentialActive)
+	mux.HandleFunc("/v1/auth/credentials/delete", s.handleAuthCredentialDelete)
+	mux.HandleFunc("/v1/auth/desktop/session", s.handleDesktopLocalSessionBootstrap)
+	mux.HandleFunc("/v1/auth/attach/rotate", s.handleAttachRotate)
+	mux.HandleFunc("/v1/vault", s.handleVaultStatus)
+	mux.HandleFunc("/v1/vault/enable", s.handleVaultEnable)
+	mux.HandleFunc("/v1/vault/unlock", s.handleVaultUnlock)
+	mux.HandleFunc("/v1/vault/lock", s.handleVaultLock)
+	mux.HandleFunc("/v1/vault/disable", s.handleVaultDisable)
+	mux.HandleFunc("/v1/vault/export", s.handleVaultExport)
+	mux.HandleFunc("/v1/vault/import", s.handleVaultImport)
+}
+
+func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/onboarding", s.handleOnboarding)
+}
+
+func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/swarm/discovery", s.handleSwarmDiscovery)
+	mux.HandleFunc("/v1/swarm/invites", s.handleSwarmInvites)
+	mux.HandleFunc("/v1/swarm/remote-pairing/start", s.handleSwarmRemotePairingStart)
+	mux.HandleFunc("/v1/swarm/remote-pairing/request", s.handleSwarmRemotePairingRequest)
+	mux.HandleFunc("/v1/swarm/remote-pairing/finalize", s.handleSwarmRemotePairingFinalize)
+	mux.HandleFunc("/v1/swarm/enroll", s.handleSwarmEnroll)
+	mux.HandleFunc("/v1/swarm/pending-children", s.handleSwarmPendingChildren)
+	mux.HandleFunc("/v1/swarm/enrollment/", s.handleSwarmEnrollmentDecision)
+	mux.HandleFunc("/v1/swarm/state", s.handleSwarmState)
+	mux.HandleFunc("/v1/swarm/targets", s.handleSwarmTargets)
+	mux.HandleFunc("/v1/swarm/target/current", s.handleSwarmCurrentTarget)
+	mux.HandleFunc("/v1/swarm/target/select", s.handleSwarmSelectTarget)
+	mux.HandleFunc("/v1/swarm/groups", s.handleSwarmGroups)
+	mux.HandleFunc("/v1/swarm/groups/upsert", s.handleSwarmGroupUpsert)
+	mux.HandleFunc("/v1/swarm/groups/current", s.handleSwarmCurrentGroup)
+	mux.HandleFunc("/v1/swarm/groups/members/delete", s.handleSwarmGroupMemberDelete)
+	mux.HandleFunc("/v1/swarm/containers/profiles", s.handleSwarmContainerProfiles)
+	mux.HandleFunc("/v1/swarm/containers/profiles/upsert", s.handleSwarmContainerProfileUpsert)
+	mux.HandleFunc("/v1/swarm/containers/profiles/delete", s.handleSwarmContainerProfileDelete)
+	mux.HandleFunc("/v1/swarm/containers/local/runtime", s.handleSwarmLocalContainerRuntime)
+	mux.HandleFunc("/v1/swarm/containers/local", s.handleSwarmLocalContainers)
+	mux.HandleFunc("/v1/swarm/containers/local/create", s.handleSwarmLocalContainerCreate)
+	mux.HandleFunc("/v1/swarm/containers/local/action", s.handleSwarmLocalContainerAction)
+	mux.HandleFunc("/v1/swarm/containers/local/delete", s.handleSwarmLocalContainerDelete)
+	mux.HandleFunc("/v1/swarm/containers/local/prune-missing", s.handleSwarmLocalContainerPruneMissing)
+	mux.HandleFunc("/v1/swarm/replicate", s.handleSwarmReplicate)
+}
+
+func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/deploy/container/runtime", s.handleDeployContainerRuntime)
+	mux.HandleFunc("/v1/deploy/container", s.handleDeployContainers)
+	mux.HandleFunc("/v1/deploy/container/create", s.handleDeployContainerCreate)
+	mux.HandleFunc("/v1/deploy/container/package/validate", s.handleDeployContainerPackageValidate)
+	mux.HandleFunc("/v1/deploy/container/package/suggest", s.handleDeployContainerPackageSuggest)
+	mux.HandleFunc("/v1/deploy/container/action", s.handleDeployContainerAction)
+	mux.HandleFunc("/v1/deploy/container/delete", s.handleDeployContainerDelete)
+	mux.HandleFunc("/v1/deploy/container/attach/child-state", s.handleDeployContainerAttachChildState)
+	mux.HandleFunc("/v1/deploy/container/attach/request", s.handleDeployContainerAttachRequest)
+	mux.HandleFunc("/v1/deploy/container/attach/approve", s.handleDeployContainerAttachApprove)
+	mux.HandleFunc("/v1/deploy/container/attach/finalize", s.handleDeployContainerAttachFinalize)
+	mux.HandleFunc("/v1/deploy/container/sync/credentials", s.handleDeployContainerSyncCredentials)
+	mux.HandleFunc("/v1/deploy/container/sync/agents", s.handleDeployContainerSyncAgents)
+	mux.HandleFunc("/v1/deploy/container/workspaces/bootstrap", s.handleDeployContainerWorkspaceBootstrap)
+	mux.HandleFunc("/v1/deploy/remote/session", s.handleRemoteDeploySessions)
+	mux.HandleFunc("/v1/deploy/remote/session/create", s.handleRemoteDeploySessionCreate)
+	mux.HandleFunc("/v1/deploy/remote/session/delete", s.handleRemoteDeploySessionDelete)
+	mux.HandleFunc("/v1/deploy/remote/session/start", s.handleRemoteDeploySessionStart)
+	mux.HandleFunc("/v1/deploy/remote/session/sync/credentials", s.handleRemoteDeploySessionSyncCredentials)
+	mux.HandleFunc("/v1/deploy/remote/session/", s.handleRemoteDeploySessionApprove)
+}
+
+func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v2/custom-tools", s.handleCustomToolsV2)
+	mux.HandleFunc("/v2/custom-tools/", s.handleCustomToolByNameV2)
+	mux.HandleFunc("/v2/agents", s.handleAgentsV2)
+	mux.HandleFunc("/v2/agents/defaults/restore", s.handleAgentDefaultsRestoreV2)
+	mux.HandleFunc("/v2/agents/defaults/reset", s.handleAgentDefaultsResetV2)
+	mux.HandleFunc("/v2/agents/", s.handleAgentByNameV2)
+}
+
+func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/model", s.handleModelPreference)
+	mux.HandleFunc("/v1/model/catalog", s.handleModelCatalog)
+	mux.HandleFunc("/v1/models/favorites", s.handleModelFavorites)
+	mux.HandleFunc("/v1/models/favorites/delete", s.handleModelFavoriteDelete)
+	mux.HandleFunc("/v1/providers", s.handleProviders)
+	mux.HandleFunc("/v1/stt/transcribe", s.handleSTTTranscribe)
+	mux.HandleFunc("/v1/voice/status", s.handleVoiceStatus)
+	mux.HandleFunc("/v1/voice/profiles", s.handleVoiceProfiles)
+	mux.HandleFunc("/v1/voice/profiles/upsert", s.handleVoiceProfileUpsert)
+	mux.HandleFunc("/v1/voice/profiles/delete", s.handleVoiceProfileDelete)
+	mux.HandleFunc("/v1/voice/config", s.handleVoiceConfig)
+	mux.HandleFunc("/v1/voice/devices", s.handleVoiceDevices)
+	mux.HandleFunc("/v1/voice/test-stt", s.handleVoiceTestSTT)
+}
+
+func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/ui/settings", s.handleUISettings)
+	mux.HandleFunc("/v1/workspace/resolve", s.handleWorkspaceResolve)
+	mux.HandleFunc("/v1/workspace/select", s.handleWorkspaceSelect)
+	mux.HandleFunc("/v1/workspace/current", s.handleWorkspaceCurrent)
+	mux.HandleFunc("/v1/workspace/list", s.handleWorkspaceList)
+	mux.HandleFunc("/v1/workspace/overview", s.handleWorkspaceOverview)
+	mux.HandleFunc("/v1/workspace/discover", s.handleWorkspaceDiscover)
+	mux.HandleFunc("/v1/workspace/browse", s.handleWorkspaceBrowse)
+	mux.HandleFunc("/v1/workspace/add", s.handleWorkspaceAdd)
+	mux.HandleFunc("/v1/workspace/directories/add", s.handleWorkspaceDirectoryAdd)
+	mux.HandleFunc("/v1/workspace/directories/remove", s.handleWorkspaceDirectoryRemove)
+	mux.HandleFunc("/v1/workspace/theme", s.handleWorkspaceTheme)
+	mux.HandleFunc("/v1/workspace/rename", s.handleWorkspaceRename)
+	mux.HandleFunc("/v1/workspace/move", s.handleWorkspaceMove)
+	mux.HandleFunc("/v1/workspace/todos", s.handleWorkspaceTodos)
+	mux.HandleFunc("/v1/workspace/delete", s.handleWorkspaceDelete)
+	mux.HandleFunc("/v1/sandbox", s.handleSandbox)
+	mux.HandleFunc("/v1/sandbox/preflight", s.handleSandboxPreflight)
+	mux.HandleFunc("/v1/worktrees", s.handleWorktrees)
+	mux.HandleFunc("/v1/manage-worktree", s.handleManageWorktree)
+}
+
+func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/mcp/servers", s.handleMCPServers)
+	mux.HandleFunc("/v1/mcp/servers/upsert", s.handleMCPServerUpsert)
+	mux.HandleFunc("/v1/mcp/servers/delete", s.handleMCPServerDelete)
+	mux.HandleFunc("/v1/mcp/servers/enabled", s.handleMCPServerEnabled)
+	mux.HandleFunc("/v1/context/sources", s.handleContextSources)
+	mux.HandleFunc("/v1/system/shutdown", s.handleSystemShutdown)
+	mux.HandleFunc("/v1/permissions", s.handlePermissions)
+	mux.HandleFunc("/v1/permissions/", s.handlePermissions)
+	mux.HandleFunc("/v1/sessions", s.handleSessions)
+	mux.HandleFunc("/v1/sessions/", s.handleSessionByID)
+}
+
+func (s *Server) registerPeerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/swarm/peer/sessions/open", s.handlePeerSessionOpen)
+	mux.HandleFunc("/v1/swarm/peer/sessions/append_message", s.handlePeerSessionAppendMessage)
+	mux.HandleFunc("/v1/swarm/peer/sessions/mode", s.handlePeerSessionMode)
+	mux.HandleFunc("/v1/swarm/peer/sessions/title", s.handlePeerSessionTitle)
+	mux.HandleFunc("/v1/swarm/peer/sessions/metadata", s.handlePeerSessionMetadata)
+	mux.HandleFunc("/v1/swarm/peer/sessions/lifecycle", s.handlePeerSessionLifecycle)
+	mux.HandleFunc("/v1/swarm/peer/permissions/create", s.handlePeerPermissionCreate)
+	mux.HandleFunc("/v1/swarm/peer/permissions/wait", s.handlePeerPermissionWait)
+	mux.HandleFunc("/v1/swarm/peer/permissions/cancel_run", s.handlePeerPermissionCancelRun)
+	mux.HandleFunc("/v1/swarm/peer/permissions/mark_started", s.handlePeerPermissionMarkStarted)
+	mux.HandleFunc("/v1/swarm/peer/permissions/mark_completed", s.handlePeerPermissionMarkCompleted)
+}
+
+func (s *Server) registerLocalTransportRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/readyz", s.handleReady)
+	mux.HandleFunc("/v1/deploy/container/package/validate", s.handleDeployContainerPackageValidate)
+	mux.HandleFunc("/v1/deploy/container/package/suggest", s.handleDeployContainerPackageSuggest)
+	mux.HandleFunc("/v1/deploy/container/attach/request", s.handleDeployContainerAttachRequest)
+	mux.HandleFunc("/v1/deploy/container/attach/approve", s.handleDeployContainerAttachApprove)
+	mux.HandleFunc("/v1/deploy/container/sync/credentials", s.handleDeployContainerSyncCredentials)
+	mux.HandleFunc("/v1/deploy/container/sync/agents", s.handleDeployContainerSyncAgents)
+	mux.HandleFunc("/v1/deploy/container/workspaces/bootstrap", s.handleDeployContainerWorkspaceBootstrap)
+	mux.HandleFunc("/v1/swarm/peer/sessions/open", s.handlePeerSessionOpen)
+	mux.HandleFunc("/v1/swarm/peer/sessions/append_message", s.handlePeerSessionAppendMessage)
+	mux.HandleFunc("/v1/swarm/peer/sessions/mode", s.handlePeerSessionMode)
+	mux.HandleFunc("/v1/swarm/peer/sessions/title", s.handlePeerSessionTitle)
+	mux.HandleFunc("/v1/swarm/peer/sessions/metadata", s.handlePeerSessionMetadata)
+	mux.HandleFunc("/v1/swarm/peer/sessions/lifecycle", s.handlePeerSessionLifecycle)
+	mux.HandleFunc("/v1/swarm/peer/permissions/create", s.handlePeerPermissionCreate)
+	mux.HandleFunc("/v1/swarm/peer/permissions/wait", s.handlePeerPermissionWait)
+	mux.HandleFunc("/v1/swarm/peer/permissions/cancel_run", s.handlePeerPermissionCancelRun)
+	mux.HandleFunc("/v1/swarm/peer/permissions/mark_started", s.handlePeerPermissionMarkStarted)
+	mux.HandleFunc("/v1/swarm/peer/permissions/mark_completed", s.handlePeerPermissionMarkCompleted)
+}
