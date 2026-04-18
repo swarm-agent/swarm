@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, Folder, HardDrive, Home, RefreshCw } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
+import { Badge } from '../../../../components/ui/badge'
 import { Card } from '../../../../components/ui/card'
 import { cn } from '../../../../lib/cn'
 import { WorkspaceStatus } from './workspace-status'
@@ -167,12 +168,12 @@ export function WorkspaceFolderTree({
       const meta = [isCurrent ? 'current' : null, isSaved ? 'saved' : null, ...entrySignals].filter(Boolean).join(' · ')
 
       return (
-        <li key={entry.path} className="grid gap-1">
+        <li key={entry.path} className="min-w-0 grid gap-1">
           <div className={cn('relative', depth > 0 && 'pl-4')}>
-            {depth > 0 ? <span className="absolute left-0 top-4 h-px w-3 bg-[var(--app-border)]" aria-hidden="true" /> : null}
+            {depth > 0 ? <span className="absolute left-0 top-5 h-px w-3 bg-[var(--app-border)]" aria-hidden="true" /> : null}
             <div
               className={cn(
-                'flex min-h-8 items-center gap-1 rounded-md border px-1.5 py-0.5 text-sm transition',
+                'flex min-h-11 items-start gap-2 rounded-xl border px-2 py-2 text-sm transition sm:min-h-8 sm:items-center sm:gap-1 sm:rounded-md sm:px-1.5 sm:py-1',
                 isSelected
                   ? 'border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-[var(--shadow-soft)]'
                   : 'border-transparent text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
@@ -180,23 +181,25 @@ export function WorkspaceFolderTree({
             >
               <button
                 type="button"
-                className="inline-flex size-5 shrink-0 items-center justify-center rounded text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)]"
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] sm:size-5 sm:rounded"
                 onClick={() => {
                   void toggleExpanded(entry.path)
                 }}
                 aria-label={isExpanded ? `Collapse ${entry.name}` : `Expand ${entry.name}`}
               >
-                {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                {isExpanded ? <ChevronDown size={16} className="sm:size-3.5" /> : <ChevronRight size={16} className="sm:size-3.5" />}
               </button>
               <button
                 type="button"
-                className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-left"
+                className="min-w-0 max-w-full flex flex-1 flex-col items-start gap-1 overflow-hidden text-left sm:flex-row sm:items-center sm:gap-2"
                 onClick={() => setSelectedPath(entry.path)}
                 title={entry.path}
               >
-                <Folder size={15} className="shrink-0 text-[var(--app-text-muted)]" />
-                <span className="truncate font-medium">{entry.name}</span>
-                {meta ? <span className="truncate text-[11px] text-[var(--app-text-subtle)]">{meta}</span> : null}
+                <div className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden">
+                  <Folder size={16} className="shrink-0 text-[var(--app-text-muted)]" />
+                  <span className="min-w-0 truncate font-medium text-[var(--app-text)]">{entry.name}</span>
+                </div>
+                {meta ? <span className="block w-full overflow-hidden break-all text-xs text-[var(--app-text-subtle)] sm:w-auto sm:max-w-[14rem] sm:truncate sm:text-[11px]">{meta}</span> : null}
               </button>
             </div>
           </div>
@@ -218,118 +221,125 @@ export function WorkspaceFolderTree({
   )
 
   return (
-    <Card className="grid gap-4 px-5 py-5 sm:px-6">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+    <Card className="min-w-0 overflow-hidden grid gap-4 px-4 py-4 sm:px-6 sm:py-5">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="grid gap-1">
           <h2 className="text-lg font-semibold text-[var(--app-text)]">Folders on this computer</h2>
-          <p className="text-sm text-[var(--app-text-muted)]">Compact explorer view. Expand folders, select one, then open or save it.</p>
+          <p className="text-sm text-[var(--app-text-muted)]">Expand folders, select one, then open it or save it as a workspace.</p>
         </div>
 
-        <div className="grid gap-3 xl:min-w-[360px] xl:max-w-[560px] xl:justify-items-end">
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {selectedPath ? (
-              selectedWorkspace ? (
-                <Button type="button" onClick={() => onOpenWorkspace(selectedPath)} disabled={selectingPath === selectedPath}>
-                  {selectingPath === selectedPath ? 'Opening…' : 'Open workspace'}
-                </Button>
-              ) : selectedRoot ? null : (
-                <>
-                  <Button type="button" variant="ghost" onClick={() => onUseFolderTemporarily(selectedPath)} disabled={selectingPath === selectedPath}>
-                    {selectingPath === selectedPath ? 'Opening…' : 'Use temporarily'}
-                  </Button>
-                  <Button type="button" onClick={() => onCreateWorkspace(selectedPath, selectedName)} disabled={savingPath === selectedPath}>
-                    {savingPath === selectedPath ? 'Saving…' : 'Create workspace'}
-                  </Button>
-                </>
-              )
-            ) : null}
-            <Button
-              type="button"
-              onClick={() => {
-                void loadPath('').catch((error) => {
-                  setTreeError(error instanceof Error ? error.message : 'Failed to load folder tree')
-                })
-              }}
-              disabled={loadingPaths[''] === true}
-            >
-              <RefreshCw size={14} className={loadingPaths[''] === true ? 'animate-spin' : undefined} />
-              Refresh
-            </Button>
-          </div>
-
+        <div className="min-w-0 flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
           {selectedPath ? (
-            <div className="w-full rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-4 shadow-[var(--shadow-soft)]">
-              <div className="grid gap-1">
-                <div className="text-xs uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Selected folder</div>
-                <div className="break-all text-sm font-medium text-[var(--app-text)]">{selectedPath}</div>
-                <div className="text-sm text-[var(--app-text-muted)]">{selectedSummary}</div>
-              </div>
-            </div>
+            selectedWorkspace ? (
+              <Button className="w-full sm:w-auto" type="button" onClick={() => onOpenWorkspace(selectedPath)} disabled={selectingPath === selectedPath}>
+                {selectingPath === selectedPath ? 'Opening…' : 'Open workspace'}
+              </Button>
+            ) : selectedRoot ? null : (
+              <>
+                <Button className="flex-1 sm:flex-none" type="button" variant="ghost" onClick={() => onUseFolderTemporarily(selectedPath)} disabled={selectingPath === selectedPath}>
+                  {selectingPath === selectedPath ? 'Opening…' : 'Use temporarily'}
+                </Button>
+                <Button className="flex-1 sm:flex-none" type="button" onClick={() => onCreateWorkspace(selectedPath, selectedName)} disabled={savingPath === selectedPath}>
+                  {savingPath === selectedPath ? 'Saving…' : 'Create workspace'}
+                </Button>
+              </>
+            )
           ) : null}
+          <Button
+            className="w-full sm:w-auto"
+            type="button"
+            onClick={() => {
+              void loadPath('').catch((error) => {
+                setTreeError(error instanceof Error ? error.message : 'Failed to load folder tree')
+              })
+            }}
+            disabled={loadingPaths[''] === true}
+          >
+            <RefreshCw size={14} className={loadingPaths[''] === true ? 'animate-spin' : undefined} />
+            Refresh
+          </Button>
         </div>
       </div>
+
+      {selectedPath ? (
+        <div className="min-w-0 grid gap-3 overflow-hidden rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-3 sm:p-4 shadow-[var(--shadow-soft)] lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div className="min-w-0 grid gap-1">
+            <div className="text-xs uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Selected folder</div>
+            <div className="min-w-0 overflow-hidden break-words text-sm font-medium text-[var(--app-text)]">{selectedPath}</div>
+            <div className="text-sm text-[var(--app-text-muted)]">{selectedSummary}</div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {selectedWorkspace ? <Badge tone="live">Saved workspace</Badge> : null}
+            {currentWorkspacePath === selectedPath ? <Badge tone="warning">Current</Badge> : null}
+          </div>
+        </div>
+      ) : null}
 
       {treeError ? <WorkspaceStatus kind="error" title="Could not load folder tree" message={treeError} /> : null}
 
       {rootState ? (
-        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] p-3 font-mono text-[13px]">
+        <div className="min-w-0 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] p-2 sm:p-3">
           <div className="mb-2 px-1 text-[11px] uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Explorer</div>
-          <ul className="grid gap-1">
-            {roots.map((root) => {
-              const isExpanded = expandedPaths.has(root.path)
-              const isSelected = selectedPath === root.path
-              const rootBrowser = browserByPath[root.path]
-              const rootLoading = loadingPaths[root.path] === true
-              return (
-                <li key={root.id} className="grid gap-1">
-                  <div
-                    className={cn(
-                      'flex min-h-8 items-center gap-1 rounded-md border px-1.5 py-0.5 text-sm transition',
-                      isSelected
-                        ? 'border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-[var(--shadow-soft)]'
-                        : 'border-transparent text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
-                    )}
-                  >
-                    <button
-                      type="button"
-                      className="inline-flex size-5 shrink-0 items-center justify-center rounded text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)]"
-                      onClick={() => {
-                        void toggleExpanded(root.path)
-                      }}
-                      aria-label={isExpanded ? `Collapse ${root.label}` : `Expand ${root.label}`}
-                    >
-                      {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </button>
-                    <button
-                      type="button"
-                      className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-left"
-                      onClick={() => setSelectedPath(root.path)}
-                      title={root.path}
-                    >
-                      {root.id === 'home' ? (
-                        <Home size={15} className="shrink-0 text-[var(--app-text-muted)]" />
-                      ) : (
-                        <HardDrive size={15} className="shrink-0 text-[var(--app-text-muted)]" />
+          <div className="min-w-0 max-w-full max-h-[70vh] overflow-x-hidden overflow-y-auto overscroll-contain pr-1 sm:max-h-[60vh]">
+            <ul className="grid gap-1 font-mono text-[13px]">
+              {roots.map((root) => {
+                const isExpanded = expandedPaths.has(root.path)
+                const isSelected = selectedPath === root.path
+                const rootBrowser = browserByPath[root.path]
+                const rootLoading = loadingPaths[root.path] === true
+                return (
+                  <li key={root.id} className="min-w-0 grid gap-1">
+                    <div
+                      className={cn(
+                        'min-w-0 max-w-full flex min-h-11 items-start gap-2 rounded-xl border px-2 py-2 text-sm transition sm:min-h-8 sm:items-center sm:gap-1 sm:rounded-md sm:px-1.5 sm:py-1',
+                        isSelected
+                          ? 'border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] text-[var(--app-text)] shadow-[var(--shadow-soft)]'
+                          : 'border-transparent text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
                       )}
-                      <span className="font-medium text-[var(--app-text)]">{root.label}</span>
-                      <span className="truncate text-[11px] text-[var(--app-text-subtle)]">{root.path}</span>
-                    </button>
-                  </div>
-                  {isExpanded ? (
-                    rootLoading ? (
-                      <div className="ml-7 text-xs text-[var(--app-text-muted)]">Loading…</div>
-                    ) : rootBrowser && rootBrowser.entries.length > 0 ? (
-                      <ul className="ml-3 grid gap-1 border-l border-[var(--app-border)] pl-3">
-                        {rootBrowser.entries.map((entry) => renderNode(entry, 1))}
-                      </ul>
-                    ) : (
-                      <div className="ml-7 text-xs text-[var(--app-text-subtle)]">empty</div>
-                    )
-                  ) : null}
-                </li>
-              )
-            })}
-          </ul>
+                    >
+                      <button
+                        type="button"
+                        className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] sm:size-5 sm:rounded"
+                        onClick={() => {
+                          void toggleExpanded(root.path)
+                        }}
+                        aria-label={isExpanded ? `Collapse ${root.label}` : `Expand ${root.label}`}
+                      >
+                        {isExpanded ? <ChevronDown size={16} className="sm:size-3.5" /> : <ChevronRight size={16} className="sm:size-3.5" />}
+                      </button>
+                      <button
+                        type="button"
+                        className="min-w-0 max-w-full flex flex-1 flex-col items-start gap-1 overflow-hidden text-left sm:flex-row sm:items-center sm:gap-2"
+                        onClick={() => setSelectedPath(root.path)}
+                        title={root.path}
+                      >
+                        <div className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden">
+                          {root.id === 'home' ? (
+                            <Home size={16} className="shrink-0 text-[var(--app-text-muted)]" />
+                          ) : (
+                            <HardDrive size={16} className="shrink-0 text-[var(--app-text-muted)]" />
+                          )}
+                          <span className="min-w-0 truncate font-medium text-[var(--app-text)]">{root.label}</span>
+                        </div>
+                        <span className="block w-full overflow-hidden break-all text-xs text-[var(--app-text-subtle)] sm:w-auto sm:max-w-[18rem] sm:truncate sm:text-[11px]">{root.path}</span>
+                      </button>
+                    </div>
+                    {isExpanded ? (
+                      rootLoading ? (
+                        <div className="ml-7 text-xs text-[var(--app-text-muted)]">Loading…</div>
+                      ) : rootBrowser && rootBrowser.entries.length > 0 ? (
+                        <ul className="ml-3 grid gap-1 border-l border-[var(--app-border)] pl-3">
+                          {rootBrowser.entries.map((entry) => renderNode(entry, 1))}
+                        </ul>
+                      ) : (
+                        <div className="ml-7 text-xs text-[var(--app-text-subtle)]">empty</div>
+                      )
+                    ) : null}
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
         </div>
       ) : loadingPaths[''] === true ? (
         <div className="text-sm text-[var(--app-text-muted)]">Loading folder tree…</div>

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { HardDrive, ListChecks, RefreshCw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -288,32 +288,10 @@ export function WorkspaceHomePage() {
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-[1440px] flex-col gap-6 px-4 py-8 sm:px-6 lg:px-8">
-      <Card className="px-5 py-5 sm:px-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex items-start gap-4">
-            <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text)]">
-              <HardDrive size={18} />
-            </div>
-            <div className="grid gap-1.5">
-              <h1 className="text-2xl font-semibold tracking-tight text-[var(--app-text)]">
-                {hasSavedWorkspaces ? 'Workspace Launcher' : 'Welcome to Swarm'}
-              </h1>
-              <p className="max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">
-                {hasSavedWorkspaces
-                  ? 'Browse folders on this computer, use one temporarily, or save it as a workspace.'
-                  : 'Create a saved workspace to keep sessions attached to a project, or use any folder temporarily to start right away.'}
-              </p>
-              {hasSavedWorkspaces ? (
-                <div className="inline-flex w-fit items-center gap-2 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1 text-xs font-medium text-[var(--app-text-muted)]">
-                  <ListChecks size={12} />
-                  <span>{workspaces.reduce((sum, workspace) => sum + (workspace.todoSummary?.user.taskCount ?? 0), 0)} user todos • {workspaces.reduce((sum, workspace) => sum + (workspace.todoSummary?.agent.taskCount ?? 0), 0)} agent steps</span>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      </Card>
+    <main className="mx-auto flex w-full max-w-[1440px] flex-col gap-4 px-4 py-6 sm:px-6 lg:px-8">
+      <div className="border-b border-[var(--app-border)] pb-3">
+        <h1 className="text-xl font-semibold tracking-tight text-[var(--app-text)] sm:text-2xl">Workspace Launcher</h1>
+      </div>
 
       {loading ? (
         <Card className="flex items-center gap-3 px-5 py-4 text-sm text-[var(--app-text-muted)] sm:px-6">
