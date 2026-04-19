@@ -389,6 +389,7 @@ type ChatPage struct {
 
 	taskLaunchPermission  string
 	taskLaunchScroll      int
+	taskLaunchInput       string
 	taskLaunchApproveRect Rect
 	taskLaunchDenyRect    Rect
 

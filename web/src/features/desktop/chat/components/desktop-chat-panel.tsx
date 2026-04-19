@@ -2411,7 +2411,12 @@ export function DesktopChatPanel({
         permission={activePermission}
         pendingCount={pendingPermissionCount}
         sessionMode={sessionMode}
-        onOpenChange={() => {}}
+        onOpenChange={(open) => {
+          if (open || !activePermission || resolvingPermissionIds.has(activePermission.id)) {
+            return
+          }
+          void handleResolvePermission('deny', '')
+        }}
         onResolve={handleResolvePermission}
       />
       <DesktopPlanModal

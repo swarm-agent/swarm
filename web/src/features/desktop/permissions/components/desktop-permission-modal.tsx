@@ -63,6 +63,7 @@ function ModalShell({
   footer,
   children,
   onOpenChange,
+  onRequestClose,
 }: {
   open: boolean
   title: string
@@ -74,8 +75,17 @@ function ModalShell({
   footer?: React.ReactNode
   children: React.ReactNode
   onOpenChange: (open: boolean) => void
+  onRequestClose?: () => void
 }) {
-  useEscapeToClose(open, () => onOpenChange(false))
+  const handleRequestClose = () => {
+    if (onRequestClose) {
+      onRequestClose()
+      return
+    }
+    onOpenChange(false)
+  }
+
+  useEscapeToClose(open, handleRequestClose)
 
   if (!open) {
     return null
@@ -83,7 +93,7 @@ function ModalShell({
 
   return (
     <Dialog role="dialog" aria-modal="true" aria-label={title} className="z-[80] p-4 sm:p-6">
-      <DialogBackdrop onClick={() => onOpenChange(false)} />
+      <DialogBackdrop onClick={handleRequestClose} />
       <DialogPanel className={cn('flex min-h-0 max-h-[calc(100vh-24px)] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100vh-48px)]', widthClassName)}>
         <div className="shrink-0 flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-6 py-5">
           <div className="min-w-0 flex-1">
@@ -94,7 +104,7 @@ function ModalShell({
               {pendingCount > 1 ? <span>{pendingCount} requests pending in this session</span> : null}
             </div>
           </div>
-          <ModalCloseButton onClick={() => onOpenChange(false)} aria-label="Close permission modal" />
+          <ModalCloseButton onClick={handleRequestClose} aria-label="Close permission modal" />
         </div>
         <div className={cn('min-h-0 flex-1 overflow-auto px-6 py-5', bodyClassName)}>{children}</div>
         {footer}
@@ -826,10 +836,12 @@ function TaskLaunchModal({
   onOpenChange,
   onResolve,
 }: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (open) {
+      setNote('')
       setLoading(false)
     }
   }, [open, permission?.id])
@@ -843,7 +855,7 @@ function TaskLaunchModal({
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
     try {
-      await onResolve(action, '')
+      await onResolve(action, note.trim())
     } finally {
       setLoading(false)
     }
@@ -857,7 +869,27 @@ function TaskLaunchModal({
       pendingCount={pendingCount}
       sessionMode={sessionMode}
       widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1140px,calc(100vw-48px))]"
+      footer={
+        <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Launch subagents">
+          <label className="grid gap-2">
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Message to agent</span>
+            <Textarea
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder="Optional note to send back with this action…"
+              className="min-h-[3.5rem] resize-none bg-[var(--app-bg-alt)]"
+              rows={2}
+            />
+          </label>
+        </PermissionActionBar>
+      }
       onOpenChange={onOpenChange}
+      onRequestClose={() => {
+        if (loading) {
+          return
+        }
+        void resolve('deny')
+      }}
     >
       <div className="grid gap-5">
         <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
@@ -945,7 +977,6 @@ function TaskLaunchModal({
           </section>
         ) : null}
       </div>
-      <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Launch subagents" />
     </ModalShell>
   )
 }

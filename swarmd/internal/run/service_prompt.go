@@ -94,6 +94,8 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- Searching, reading, and codebase discovery do not count as checklist progress by themselves; only mark progress when a concrete implementation step starts or completes.",
 		"- If the task is short and can be completed in one concrete step, skip checklist churn; otherwise keep the persistent agent checklist updated.",
 		"- If a branch of investigation is not required to complete the user request, stop and list it as optional follow-up instead of exploring it now.",
+		"- If the user explicitly instructs you to change settings, make the settings change directly via the appropriate settings/config tool or file path instead of only suggesting it.",
+		"- If the user is only making a suggestion or preference statement rather than an explicit change request, do not silently mutate settings; either note the suggestion as follow-up guidance or redirect them to the relevant settings surface.",
 		"- In plan mode, once the plan is actionable, submit it with exit_plan_mode for approval so the session can leave plan mode and continue execution; do not continue irrelevant exploration.",
 		fmt.Sprintf("- In auto mode, never call exit_plan_mode. To update the active plan instead, use plan_manage with exactly: %s", autoModePlanManageSaveSnippet),
 		"Harness tool usage examples:",
