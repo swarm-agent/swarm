@@ -35,14 +35,20 @@ Options:
   --sync-modules <csv>                Explicit sync modules. Default when enabled: credentials
   --sync-vault-password <value>       Vault password to send in the replicate request
   --sync-vault-password-env <name>    Read the vault password from an environment variable
+  --sync-vault-password-file <path>   Read the vault password from a local file
+  --host-vault-password <value>       Enable or unlock the host vault before replicate
+  --host-vault-password-env <name>    Read the host vault password from an environment variable
+  --host-vault-password-file <path>   Read the host vault password from a local file
   --verify-sync-state                 After attach, create a host credential plus a custom agent/tool and wait for the child to read them
   --verify-sync-crud-flow             After attach, prove real Fireworks credential CRUD plus synced agent/tool routed execution on the child
   --sync-verify-timeout <seconds>     Managed sync propagation wait timeout. Default: 45
   --proof-provider <id>               Provider for the routed proof. Default: fireworks
   --proof-model <id>                  Model for the routed proof. Default: accounts/fireworks/models/minimax-m2p5
   --proof-thinking <level>            Thinking level for the routed proof. Default: medium
-  --proof-provider-key-env <name>     Read the routed proof provider key from an environment variable
-  --proof-provider-key-file <path>    Read the routed proof provider key from a local file
+  --proof-provider-key-env <name>     Read the primary routed proof provider key from an environment variable
+  --proof-provider-key-file <path>    Read the primary routed proof provider key from a local file
+  --proof-provider-key2-env <name>    Read the secondary routed proof provider key from an environment variable
+  --proof-provider-key2-file <path>   Read the secondary routed proof provider key from a local file
   --proof-timeout <seconds>           Routed proof wait timeout. Default: 90
   --group-id <id>                     Existing target group id
   --group-name <name>                 Existing target group name, or name to create
@@ -117,6 +123,9 @@ set_step() {
 cleanup_ephemeral_secrets() {
   if [[ -n "${PROOF_PROVIDER_KEY_TMP_FILE:-}" && -f "${PROOF_PROVIDER_KEY_TMP_FILE}" ]]; then
     rm -f -- "${PROOF_PROVIDER_KEY_TMP_FILE}"
+  fi
+  if [[ -n "${PROOF_PROVIDER_KEY2_TMP_FILE:-}" && -f "${PROOF_PROVIDER_KEY2_TMP_FILE}" ]]; then
+    rm -f -- "${PROOF_PROVIDER_KEY2_TMP_FILE}"
   fi
   if [[ -n "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" && -f "${HOST_DESKTOP_SESSION_COOKIE_FILE}" ]]; then
     rm -f -- "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
@@ -304,22 +313,91 @@ child_api_get() {
 }
 
 prepare_proof_provider_key_file() {
-  if [[ -n "${PROOF_PROVIDER_KEY_FILE:-}" ]]; then
-    [[ -f "${PROOF_PROVIDER_KEY_FILE}" ]] || fail "proof provider key file does not exist: ${PROOF_PROVIDER_KEY_FILE}"
-    [[ -s "${PROOF_PROVIDER_KEY_FILE}" ]] || fail "proof provider key file is empty: ${PROOF_PROVIDER_KEY_FILE}"
+  local file_var="${1:-}"
+  local env_var="${2:-}"
+  local tmp_var="${3:-}"
+  local display_name="${4:-proof provider key}"
+  local required="${5:-true}"
+  local file_value env_name tmp_value key_value
+
+  file_value="${!file_var:-}"
+  env_name="${!env_var:-}"
+
+  if [[ -n "${file_value}" ]]; then
+    [[ -f "${file_value}" ]] || fail "${display_name} file does not exist: ${file_value}"
+    [[ -s "${file_value}" ]] || fail "${display_name} file is empty: ${file_value}"
     return 0
   fi
-  if [[ -n "${PROOF_PROVIDER_KEY_ENV:-}" ]]; then
-    local key_value
-    key_value="${!PROOF_PROVIDER_KEY_ENV:-}"
-    [[ -n "${key_value}" ]] || fail "environment variable ${PROOF_PROVIDER_KEY_ENV} is empty or unset"
-    PROOF_PROVIDER_KEY_TMP_FILE="$(mktemp)"
-    chmod 0600 "${PROOF_PROVIDER_KEY_TMP_FILE}"
-    printf '%s' "${key_value}" >"${PROOF_PROVIDER_KEY_TMP_FILE}"
-    PROOF_PROVIDER_KEY_FILE="${PROOF_PROVIDER_KEY_TMP_FILE}"
+  if [[ -n "${env_name}" ]]; then
+    key_value="${!env_name:-}"
+    [[ -n "${key_value}" ]] || fail "environment variable ${env_name} is empty or unset"
+    tmp_value="$(mktemp)"
+    chmod 0600 "${tmp_value}"
+    printf '%s' "${key_value}" >"${tmp_value}"
+    printf -v "${tmp_var}" '%s' "${tmp_value}"
+    printf -v "${file_var}" '%s' "${tmp_value}"
     return 0
   fi
-  fail "--verify-sync-crud-flow requires --proof-provider-key-file or --proof-provider-key-env"
+  if [[ "${required}" == "true" ]]; then
+    fail "--verify-sync-crud-flow requires --proof-provider-key-file or --proof-provider-key-env"
+  fi
+}
+
+resolve_secret_value() {
+  local value_var="${1:-}"
+  local env_var="${2:-}"
+  local file_var="${3:-}"
+  local display_name="${4:-secret}"
+  local required="${5:-false}"
+  local value env_name file_path resolved
+
+  value="${!value_var:-}"
+  env_name="${!env_var:-}"
+  file_path="${!file_var:-}"
+
+  if [[ -n "${file_path}" ]]; then
+    [[ -f "${file_path}" ]] || fail "${display_name} file does not exist: ${file_path}"
+    [[ -s "${file_path}" ]] || fail "${display_name} file is empty: ${file_path}"
+    resolved="$(cat -- "${file_path}")"
+    printf -v "${value_var}" '%s' "${resolved}"
+    value="${resolved}"
+  elif [[ -n "${env_name}" ]]; then
+    resolved="${!env_name:-}"
+    [[ -n "${resolved}" ]] || fail "environment variable ${env_name} is empty or unset"
+    printf -v "${value_var}" '%s' "${resolved}"
+    value="${resolved}"
+  fi
+
+  if [[ "${required}" == "true" && -z "${value}" ]]; then
+    fail "${display_name} is required"
+  fi
+}
+
+ensure_host_vault_ready() {
+  local vault_password="${1:-}"
+  [[ -n "${vault_password}" ]] || fail "host vault password is required"
+  local status_json enabled unlocked payload response
+  status_json="$(api_get '/v1/vault')"
+  write_artifact "host-vault-status-before.json" "${status_json}"
+  enabled="$(printf '%s' "${status_json}" | jq -r '.enabled // false')"
+  unlocked="$(printf '%s' "${status_json}" | jq -r '.unlocked // false')"
+  case "${enabled}:${unlocked}" in
+    false:*)
+      payload="$(jq -nc --arg password "${vault_password}" '{password:$password}')"
+      response="$(api_post '/v1/vault/enable' "${payload}")"
+      write_artifact "host-vault-enable.json" "${response}"
+      ;;
+    true:false)
+      payload="$(jq -nc --arg password "${vault_password}" '{password:$password}')"
+      response="$(api_post '/v1/vault/unlock' "${payload}")"
+      write_artifact "host-vault-unlock.json" "${response}"
+      ;;
+  esac
+  status_json="$(api_get '/v1/vault')"
+  write_artifact "host-vault-status-after.json" "${status_json}"
+  enabled="$(printf '%s' "${status_json}" | jq -r '.enabled // false')"
+  unlocked="$(printf '%s' "${status_json}" | jq -r '.unlocked // false')"
+  [[ "${enabled}" == "true" && "${unlocked}" == "true" ]] || fail "host vault is not enabled and unlocked"
 }
 
 normalize_sync_modules() {
@@ -1328,7 +1406,11 @@ exercise_sync_crud_flow() {
   [[ -n "${TARGET_WORKSPACE_PATH:-}" ]] || fail "--verify-sync-crud-flow requires a replicated target workspace path"
 
   ensure_child_attach_token
-  prepare_proof_provider_key_file
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY_FILE" "PROOF_PROVIDER_KEY_ENV" "PROOF_PROVIDER_KEY_TMP_FILE" "primary proof provider key" "true"
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY2_FILE" "PROOF_PROVIDER_KEY2_ENV" "PROOF_PROVIDER_KEY2_TMP_FILE" "secondary proof provider key" "false"
+  if [[ -z "${PROOF_PROVIDER_KEY2_FILE:-}" ]]; then
+    PROOF_PROVIDER_KEY2_FILE="${PROOF_PROVIDER_KEY_FILE}"
+  fi
 
   local probe_suffix
   probe_suffix="$(printf '%s' "${DEPLOYMENT_ID}" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
@@ -1396,7 +1478,7 @@ exercise_sync_crud_flow() {
     --arg provider "${PROOF_PROVIDER}" \
     --arg label "fw-sync-proof-secondary" \
     --argjson active false \
-    --rawfile api_key "${PROOF_PROVIDER_KEY_FILE}" \
+    --rawfile api_key "${PROOF_PROVIDER_KEY2_FILE}" \
     '{id:$id,provider:$provider,type:"api",label:$label,api_key:($api_key | sub("\r?\n$";"")),active:$active}')"
   credential_secondary_response="$(api_post '/v1/auth/credentials' "${credential_secondary_payload}")"
   write_artifact "host-proof-credential-secondary.json" "${credential_secondary_response}"
@@ -1680,6 +1762,10 @@ SYNC_MODULES_RAW=""
 SYNC_MODULES=()
 SYNC_VAULT_PASSWORD=""
 SYNC_VAULT_PASSWORD_ENV=""
+SYNC_VAULT_PASSWORD_FILE=""
+HOST_VAULT_PASSWORD=""
+HOST_VAULT_PASSWORD_ENV=""
+HOST_VAULT_PASSWORD_FILE=""
 VERIFY_SYNC_STATE="false"
 VERIFY_SYNC_CRUD_FLOW="false"
 SYNC_VERIFY_TIMEOUT_SECONDS="45"
@@ -1689,6 +1775,9 @@ PROOF_THINKING="medium"
 PROOF_PROVIDER_KEY_ENV=""
 PROOF_PROVIDER_KEY_FILE=""
 PROOF_PROVIDER_KEY_TMP_FILE=""
+PROOF_PROVIDER_KEY2_ENV=""
+PROOF_PROVIDER_KEY2_FILE=""
+PROOF_PROVIDER_KEY2_TMP_FILE=""
 PROOF_TIMEOUT_SECONDS="90"
 GROUP_ID=""
 GROUP_NAME=""
@@ -1776,6 +1865,22 @@ while [[ $# -gt 0 ]]; do
       SYNC_VAULT_PASSWORD_ENV="${2:-}"
       shift 2
       ;;
+    --sync-vault-password-file)
+      SYNC_VAULT_PASSWORD_FILE="${2:-}"
+      shift 2
+      ;;
+    --host-vault-password)
+      HOST_VAULT_PASSWORD="${2:-}"
+      shift 2
+      ;;
+    --host-vault-password-env)
+      HOST_VAULT_PASSWORD_ENV="${2:-}"
+      shift 2
+      ;;
+    --host-vault-password-file)
+      HOST_VAULT_PASSWORD_FILE="${2:-}"
+      shift 2
+      ;;
     --verify-sync-state)
       VERIFY_SYNC_STATE="true"
       shift
@@ -1806,6 +1911,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --proof-provider-key-file)
       PROOF_PROVIDER_KEY_FILE="${2:-}"
+      shift 2
+      ;;
+    --proof-provider-key2-env)
+      PROOF_PROVIDER_KEY2_ENV="${2:-}"
+      shift 2
+      ;;
+    --proof-provider-key2-file)
+      PROOF_PROVIDER_KEY2_FILE="${2:-}"
       shift 2
       ;;
     --proof-timeout)
@@ -1925,13 +2038,20 @@ if [[ "${WORKSPACE_WRITABLE}" != "true" && "${WORKSPACE_WRITABLE}" != "false" ]]
   fail "workspace writable flag resolved to unexpected value: ${WORKSPACE_WRITABLE}"
 fi
 
-if [[ -n "${SYNC_VAULT_PASSWORD}" && -n "${SYNC_VAULT_PASSWORD_ENV}" ]]; then
-  fail "only one of --sync-vault-password or --sync-vault-password-env may be provided"
+if [[ -n "${SYNC_VAULT_PASSWORD}" && ( -n "${SYNC_VAULT_PASSWORD_ENV}" || -n "${SYNC_VAULT_PASSWORD_FILE}" ) ]]; then
+  fail "only one of --sync-vault-password, --sync-vault-password-env, or --sync-vault-password-file may be provided"
 fi
-if [[ -n "${SYNC_VAULT_PASSWORD_ENV}" ]]; then
-  SYNC_VAULT_PASSWORD="${!SYNC_VAULT_PASSWORD_ENV:-}"
-  [[ -n "${SYNC_VAULT_PASSWORD}" ]] || fail "environment variable ${SYNC_VAULT_PASSWORD_ENV} is empty or unset"
+if [[ -n "${SYNC_VAULT_PASSWORD_ENV}" && -n "${SYNC_VAULT_PASSWORD_FILE}" ]]; then
+  fail "only one of --sync-vault-password-env or --sync-vault-password-file may be provided"
 fi
+resolve_secret_value "SYNC_VAULT_PASSWORD" "SYNC_VAULT_PASSWORD_ENV" "SYNC_VAULT_PASSWORD_FILE" "sync vault password" "false"
+if [[ -n "${HOST_VAULT_PASSWORD}" && ( -n "${HOST_VAULT_PASSWORD_ENV}" || -n "${HOST_VAULT_PASSWORD_FILE}" ) ]]; then
+  fail "only one of --host-vault-password, --host-vault-password-env, or --host-vault-password-file may be provided"
+fi
+if [[ -n "${HOST_VAULT_PASSWORD_ENV}" && -n "${HOST_VAULT_PASSWORD_FILE}" ]]; then
+  fail "only one of --host-vault-password-env or --host-vault-password-file may be provided"
+fi
+resolve_secret_value "HOST_VAULT_PASSWORD" "HOST_VAULT_PASSWORD_ENV" "HOST_VAULT_PASSWORD_FILE" "host vault password" "false"
 if [[ "${SYNC_ENABLED}" == "true" && -z "${SYNC_MODE}" ]]; then
   SYNC_MODE="managed"
 fi
@@ -1961,8 +2081,15 @@ fi
 if [[ -n "${PROOF_PROVIDER_KEY_ENV}" && -n "${PROOF_PROVIDER_KEY_FILE}" ]]; then
   fail "only one of --proof-provider-key-env or --proof-provider-key-file may be provided"
 fi
+if [[ -n "${PROOF_PROVIDER_KEY2_ENV}" && -n "${PROOF_PROVIDER_KEY2_FILE}" ]]; then
+  fail "only one of --proof-provider-key2-env or --proof-provider-key2-file may be provided"
+fi
 if [[ "${VERIFY_SYNC_CRUD_FLOW}" == "true" ]]; then
-  prepare_proof_provider_key_file
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY_FILE" "PROOF_PROVIDER_KEY_ENV" "PROOF_PROVIDER_KEY_TMP_FILE" "primary proof provider key" "true"
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY2_FILE" "PROOF_PROVIDER_KEY2_ENV" "PROOF_PROVIDER_KEY2_TMP_FILE" "secondary proof provider key" "false"
+  if [[ -z "${PROOF_PROVIDER_KEY2_FILE}" ]]; then
+    PROOF_PROVIDER_KEY2_FILE="${PROOF_PROVIDER_KEY_FILE}"
+  fi
 fi
 
 require_command curl
@@ -1972,6 +2099,9 @@ prepare_isolated_host
 maybe_rebuild_host
 ensure_host_running
 fetch_attach_token
+if [[ -n "${HOST_VAULT_PASSWORD}" ]]; then
+  ensure_host_vault_ready "${HOST_VAULT_PASSWORD}"
+fi
 
 HOST_STATE_INITIAL="$(api_get '/v1/swarm/state')"
 write_artifact "host-state-initial.json" "${HOST_STATE_INITIAL}"

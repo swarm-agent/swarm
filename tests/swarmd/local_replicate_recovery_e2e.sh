@@ -34,6 +34,12 @@ Options:
   --replication-mode <bundle|copy>          Replication mode for bootstrap
   --readonly                                Bootstrap the child workspace read-only
   --sync-enabled                            Enable managed sync during bootstrap
+  --sync-vault-password <value>             Vault password to send in the bootstrap replicate request
+  --sync-vault-password-env <name>          Read the child vault password from an environment variable
+  --sync-vault-password-file <path>         Read the child vault password from a local file
+  --host-vault-password <value>             Enable or unlock the host vault during bootstrap/restart
+  --host-vault-password-env <name>          Read the host vault password from an environment variable
+  --host-vault-password-file <path>         Read the host vault password from a local file
   --bypass-permissions <true|false>         Host bypass_permissions for bootstrap. Default: true
   --skip-host-rebuild                       Reuse the current host binaries during bootstrap
   --skip-image-rebuild                      Reuse the current canonical child image during bootstrap
@@ -104,6 +110,63 @@ trim() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "${value}"
+}
+
+resolve_secret_value() {
+  local value_var="${1:-}"
+  local env_var="${2:-}"
+  local file_var="${3:-}"
+  local display_name="${4:-secret}"
+  local required="${5:-false}"
+  local value env_name file_path resolved
+
+  value="${!value_var:-}"
+  env_name="${!env_var:-}"
+  file_path="${!file_var:-}"
+
+  if [[ -n "${file_path}" ]]; then
+    [[ -f "${file_path}" ]] || fail "${display_name} file does not exist: ${file_path}"
+    [[ -s "${file_path}" ]] || fail "${display_name} file is empty: ${file_path}"
+    resolved="$(cat -- "${file_path}")"
+    printf -v "${value_var}" '%s' "${resolved}"
+    value="${resolved}"
+  elif [[ -n "${env_name}" ]]; then
+    resolved="${!env_name:-}"
+    [[ -n "${resolved}" ]] || fail "environment variable ${env_name} is empty or unset"
+    printf -v "${value_var}" '%s' "${resolved}"
+    value="${resolved}"
+  fi
+
+  if [[ "${required}" == "true" && -z "${value}" ]]; then
+    fail "${display_name} is required"
+  fi
+}
+
+ensure_host_vault_ready() {
+  local vault_password="${1:-}"
+  [[ -n "${vault_password}" ]] || fail "host vault password is required"
+  local status_json enabled unlocked payload response
+  status_json="$(api_get '/v1/vault')"
+  write_artifact "host-vault-status-before.json" "${status_json}"
+  enabled="$(printf '%s' "${status_json}" | jq -r '.enabled // false')"
+  unlocked="$(printf '%s' "${status_json}" | jq -r '.unlocked // false')"
+  case "${enabled}:${unlocked}" in
+    false:*)
+      payload="$(jq -nc --arg password "${vault_password}" '{password:$password}')"
+      response="$(api_post '/v1/vault/enable' "${payload}")"
+      write_artifact "host-vault-enable.json" "${response}"
+      ;;
+    true:false)
+      payload="$(jq -nc --arg password "${vault_password}" '{password:$password}')"
+      response="$(api_post '/v1/vault/unlock' "${payload}")"
+      write_artifact "host-vault-unlock.json" "${response}"
+      ;;
+  esac
+  status_json="$(api_get '/v1/vault')"
+  write_artifact "host-vault-status-after.json" "${status_json}"
+  enabled="$(printf '%s' "${status_json}" | jq -r '.enabled // false')"
+  unlocked="$(printf '%s' "${status_json}" | jq -r '.unlocked // false')"
+  [[ "${enabled}" == "true" && "${unlocked}" == "true" ]] || fail "host vault is not enabled and unlocked"
 }
 
 write_artifact() {
@@ -213,6 +276,141 @@ api_post() {
   api_request POST "$1" "${2:-}"
 }
 
+child_api_request_capture() {
+  local method="${1:-GET}"
+  local path="${2:-}"
+  local body="${3:-}"
+  local max_time="${4:-30}"
+  local response
+  [[ -n "${CONTAINER_NAME:-}" ]] || fail "child container name is not set"
+
+  if [[ -n "${body}" ]]; then
+    response="$(printf '%s' "${body}" | "${RUNTIME}" exec -i \
+      --env SWARM_CHILD_API_METHOD="${method}" \
+      --env SWARM_CHILD_API_PATH="${path}" \
+      --env SWARM_CHILD_API_TIMEOUT="${max_time}" \
+      "${CONTAINER_NAME}" sh -lc '
+        cookie_file="$(mktemp)"
+        response_file="$(mktemp)"
+        request_body_file="$(mktemp)"
+        trap "rm -f -- \"${cookie_file}\" \"${response_file}\" \"${request_body_file}\"" EXIT
+        cat >"${request_body_file}"
+        curl -fsS -c "${cookie_file}" -b "${cookie_file}" \
+          -H "Origin: http://127.0.0.1:5555" \
+          -H "Referer: http://127.0.0.1:5555/" \
+          -H "Sec-Fetch-Site: same-origin" \
+          "http://127.0.0.1:5555/v1/auth/desktop/session" >/dev/null
+        http_code="$(curl -sS --connect-timeout 3 --max-time "${SWARM_CHILD_API_TIMEOUT}" \
+          -c "${cookie_file}" -b "${cookie_file}" \
+          -H "Origin: http://127.0.0.1:7781" \
+          -H "Referer: http://127.0.0.1:7781/" \
+          -H "Sec-Fetch-Site: same-origin" \
+          -H "Accept: application/json" \
+          -H "Content-Type: application/json" \
+          -o "${response_file}" -w "%{http_code}" \
+          -X "${SWARM_CHILD_API_METHOD}" \
+          --data-binary "@${request_body_file}" \
+          "http://127.0.0.1:7781${SWARM_CHILD_API_PATH}")"
+        cat "${response_file}"
+        printf "\n__SWARM_HTTP_CODE__=%s\n" "${http_code}"
+      ')"
+  else
+    response="$("${RUNTIME}" exec \
+      --env SWARM_CHILD_API_METHOD="${method}" \
+      --env SWARM_CHILD_API_PATH="${path}" \
+      --env SWARM_CHILD_API_TIMEOUT="${max_time}" \
+      "${CONTAINER_NAME}" sh -lc '
+        cookie_file="$(mktemp)"
+        response_file="$(mktemp)"
+        trap "rm -f -- \"${cookie_file}\" \"${response_file}\"" EXIT
+        curl -fsS -c "${cookie_file}" -b "${cookie_file}" \
+          -H "Origin: http://127.0.0.1:5555" \
+          -H "Referer: http://127.0.0.1:5555/" \
+          -H "Sec-Fetch-Site: same-origin" \
+          "http://127.0.0.1:5555/v1/auth/desktop/session" >/dev/null
+        http_code="$(curl -sS --connect-timeout 3 --max-time "${SWARM_CHILD_API_TIMEOUT}" \
+          -c "${cookie_file}" -b "${cookie_file}" \
+          -H "Origin: http://127.0.0.1:7781" \
+          -H "Referer: http://127.0.0.1:7781/" \
+          -H "Sec-Fetch-Site: same-origin" \
+          -H "Accept: application/json" \
+          -o "${response_file}" -w "%{http_code}" \
+          -X "${SWARM_CHILD_API_METHOD}" \
+          "http://127.0.0.1:7781${SWARM_CHILD_API_PATH}")"
+        cat "${response_file}"
+        printf "\n__SWARM_HTTP_CODE__=%s\n" "${http_code}"
+      ')"
+  fi
+  JSON_REQUEST_STATUS="$(printf '%s' "${response}" | sed -n 's/^__SWARM_HTTP_CODE__=//p' | tail -n 1)"
+  JSON_REQUEST_BODY="$(printf '%s' "${response}" | sed '/^__SWARM_HTTP_CODE__=/d')"
+}
+
+child_api_request() {
+  local method="${1:-GET}"
+  local path="${2:-}"
+  local body="${3:-}"
+  local max_time="${4:-30}"
+  child_api_request_capture "${method}" "${path}" "${body}" "${max_time}" || return 1
+  if [[ "${JSON_REQUEST_STATUS}" != 2* ]]; then
+    fail "${method} child:${path} failed with status ${JSON_REQUEST_STATUS}: ${JSON_REQUEST_BODY}"
+  fi
+  printf '%s' "${JSON_REQUEST_BODY}"
+}
+
+child_api_get() {
+  child_api_request GET "$1" "" "${2:-30}"
+}
+
+child_api_post() {
+  child_api_request POST "$1" "${2:-}" "${3:-30}"
+}
+
+wait_for_child_vault_locked() {
+  local start_ts status_json enabled unlocked unlock_required
+  start_ts="$(date +%s)"
+  while :; do
+    child_api_request_capture GET '/v1/vault' '' 30 || true
+    if [[ "${JSON_REQUEST_STATUS}" == 2* ]]; then
+      status_json="${JSON_REQUEST_BODY}"
+      enabled="$(printf '%s' "${status_json}" | jq -r '.enabled // false')"
+      unlocked="$(printf '%s' "${status_json}" | jq -r '.unlocked // false')"
+      unlock_required="$(printf '%s' "${status_json}" | jq -r '.unlock_required // false')"
+      if [[ "${enabled}" == "true" && "${unlocked}" == "false" && "${unlock_required}" == "true" ]]; then
+        printf '%s' "${status_json}"
+        return 0
+      fi
+    fi
+    if (( "$(date +%s)" - start_ts >= ATTACH_TIMEOUT_SECONDS )); then
+      return 1
+    fi
+    sleep "${POLL_INTERVAL_SECONDS}"
+  done
+}
+
+verify_vaulted_child_locked_and_unlock() {
+  local label="${1:-vaulted-child}"
+  local status_json payload unlock_json credentials_json
+  status_json="$(wait_for_child_vault_locked)" || fail "timed out waiting for child vault to lock after restart"
+  write_artifact "${label}-vault-status-locked.json" "${status_json}"
+
+  child_api_request_capture GET '/v1/auth/credentials?provider=fireworks&limit=50' '' 30 || true
+  write_artifact "${label}-credentials-while-locked.json" "${JSON_REQUEST_BODY}"
+  [[ "${JSON_REQUEST_STATUS}" == "423" ]] || fail "expected child credentials API to return 423 while locked, got ${JSON_REQUEST_STATUS}"
+
+  payload="$(jq -nc --arg password "${SYNC_VAULT_PASSWORD}" '{password:$password}')"
+  unlock_json="$(child_api_post '/v1/vault/unlock' "${payload}" 30)"
+  write_artifact "${label}-vault-unlock.json" "${unlock_json}"
+
+  status_json="$(child_api_get '/v1/vault' 30)"
+  write_artifact "${label}-vault-status-unlocked.json" "${status_json}"
+  [[ "$(printf '%s' "${status_json}" | jq -r '.enabled // false')" == "true" ]] || fail "child vault did not remain enabled after unlock"
+  [[ "$(printf '%s' "${status_json}" | jq -r '.unlocked // false')" == "true" ]] || fail "child vault did not unlock"
+
+  credentials_json="$(child_api_get '/v1/auth/credentials?provider=fireworks&limit=50' 30)"
+  write_artifact "${label}-credentials-after-unlock.json" "${credentials_json}"
+  printf '%s' "${credentials_json}" | jq -e '.records | arrays' >/dev/null || fail "child credentials response after unlock was malformed"
+}
+
 fetch_attach_token() {
   if [[ -z "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" ]]; then
     HOST_DESKTOP_SESSION_COOKIE_FILE="$(mktemp)"
@@ -231,6 +429,9 @@ fetch_attach_token() {
 ensure_host_running() {
   if host_ready; then
     fetch_attach_token
+    if [[ -n "${HOST_VAULT_PASSWORD}" ]]; then
+      ensure_host_vault_ready "${HOST_VAULT_PASSWORD}"
+    fi
     return
   fi
   log "Starting isolated host at ${HOST_ADMIN_API_URL}"
@@ -249,6 +450,9 @@ ensure_host_running() {
   fi
   wait_for_host_ready || return 1
   fetch_attach_token
+  if [[ -n "${HOST_VAULT_PASSWORD}" ]]; then
+    ensure_host_vault_ready "${HOST_VAULT_PASSWORD}"
+  fi
 }
 
 stop_host() {
@@ -410,9 +614,16 @@ scenario_s402() {
   api_post '/v1/deploy/container/action' "$(jq -nc --arg id "${DEPLOYMENT_ID}" --arg action "start" '{id:$id,action:$action}')" >/dev/null || return 1
   wait_for_runtime_state "running" || return 1
   wait_for_deployment_attached || return 1
+  if [[ -n "${SYNC_VAULT_PASSWORD}" ]]; then
+    verify_vaulted_child_locked_and_unlock "s4-02"
+  fi
   verify_session_state "s4-02-after" || return 1
   append_message_and_verify "s4-02-follow-up" "s4-02 child restart follow-up ${RUN_ID}" || return 1
-  SCENARIO_NOTE="child restarted under the running host, reattached, and the same routed session still accepted a follow-up child write"
+  if [[ -n "${SYNC_VAULT_PASSWORD}" ]]; then
+    SCENARIO_NOTE="vaulted child restarted under the running host, came back attached but 423-locked, local unlock restored synced credentials, and the same routed session still accepted a follow-up child write"
+  else
+    SCENARIO_NOTE="child restarted under the running host, reattached, and the same routed session still accepted a follow-up child write"
+  fi
 }
 
 scenario_s403() {
@@ -525,6 +736,12 @@ bootstrap_if_needed() {
   if [[ "${SYNC_ENABLED}" == "true" ]]; then
     args+=("--sync-enabled")
   fi
+  if [[ -n "${SYNC_VAULT_PASSWORD}" ]]; then
+    args+=("--sync-vault-password" "${SYNC_VAULT_PASSWORD}")
+  fi
+  if [[ -n "${HOST_VAULT_PASSWORD}" ]]; then
+    args+=("--host-vault-password" "${HOST_VAULT_PASSWORD}")
+  fi
   if [[ "${REBUILD_HOST}" != "true" ]]; then
     args+=("--skip-host-rebuild")
   fi
@@ -574,6 +791,9 @@ cleanup() {
   if [[ -n "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" && -f "${HOST_DESKTOP_SESSION_COOKIE_FILE}" ]]; then
     rm -f -- "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
   fi
+  if [[ -n "${CHILD_DESKTOP_SESSION_COOKIE_FILE:-}" && -f "${CHILD_DESKTOP_SESSION_COOKIE_FILE}" ]]; then
+    rm -f -- "${CHILD_DESKTOP_SESSION_COOKIE_FILE}"
+  fi
   cleanup_owned_bootstrap
 }
 
@@ -594,12 +814,15 @@ load_context() {
   CONTAINER_NAME="$(jq -r '.container_name // empty' "${REPLICATE_SUMMARY_FILE}")"
   CHILD_SWARM_ID="$(jq -r '.child_swarm_id // empty' "${REPLICATE_SUMMARY_FILE}")"
   CHILD_BACKEND_URL="$(jq -r '.child_backend_url // empty' "${REPLICATE_SUMMARY_FILE}")"
+  CHILD_DESKTOP_URL="$(jq -r '.child_desktop_url // empty' "${REPLICATE_SUMMARY_FILE}")"
   [[ -n "${HOST_ADMIN_API_URL}" ]] || fail "host api url missing from ${HOST_SUMMARY_FILE}"
   [[ -n "${RUNTIME}" ]] || fail "runtime missing from ${REPLICATE_SUMMARY_FILE}"
   [[ -n "${DEPLOYMENT_ID}" ]] || fail "deployment_id missing from ${REPLICATE_SUMMARY_FILE}"
   [[ -n "${CONTAINER_NAME}" ]] || fail "container_name missing from ${REPLICATE_SUMMARY_FILE}"
   [[ -n "${CHILD_SWARM_ID}" ]] || fail "child_swarm_id missing from ${REPLICATE_SUMMARY_FILE}"
   [[ -n "${SOURCE_WORKSPACE_PATH}" ]] || fail "source_workspace_path missing from ${REPLICATE_SUMMARY_FILE}"
+  [[ -n "${CHILD_BACKEND_URL}" ]] || fail "child_backend_url missing from ${REPLICATE_SUMMARY_FILE}"
+  [[ -n "${CHILD_DESKTOP_URL}" ]] || fail "child_desktop_url missing from ${REPLICATE_SUMMARY_FILE}"
 
   HOST_XDG_CONFIG_HOME="${HOST_ROOT}/xdg/config"
   HOST_XDG_DATA_HOME="${HOST_ROOT}/xdg/data"
@@ -642,6 +865,12 @@ GROUP_NAME=""
 REPLICATION_MODE=""
 WORKSPACE_WRITABLE="true"
 SYNC_ENABLED="false"
+SYNC_VAULT_PASSWORD=""
+SYNC_VAULT_PASSWORD_ENV=""
+SYNC_VAULT_PASSWORD_FILE=""
+HOST_VAULT_PASSWORD=""
+HOST_VAULT_PASSWORD_ENV=""
+HOST_VAULT_PASSWORD_FILE=""
 BYPASS_PERMISSIONS="true"
 REBUILD_HOST="true"
 REBUILD_IMAGE="true"
@@ -653,6 +882,9 @@ BOOTSTRAP_HOST_BACKEND_PORT="7781"
 BOOTSTRAP_HOST_DESKTOP_PORT="5555"
 ATTACH_TOKEN=""
 HOST_DESKTOP_SESSION_COOKIE_FILE=""
+CHILD_DESKTOP_SESSION_COOKIE_FILE=""
+JSON_REQUEST_STATUS=""
+JSON_REQUEST_BODY=""
 SESSION_ID=""
 SEED_MESSAGE_CONTENT=""
 RUN_ID=""
@@ -674,6 +906,7 @@ DEPLOYMENT_ID=""
 CONTAINER_NAME=""
 CHILD_SWARM_ID=""
 CHILD_BACKEND_URL=""
+CHILD_DESKTOP_URL=""
 LAST_DEPLOYMENTS_JSON=""
 LAST_DEPLOYMENT_JSON=""
 SCENARIO_NOTE=""
@@ -717,6 +950,30 @@ while [[ $# -gt 0 ]]; do
       SYNC_ENABLED="true"
       shift
       ;;
+    --sync-vault-password)
+      SYNC_VAULT_PASSWORD="${2:-}"
+      shift 2
+      ;;
+    --sync-vault-password-env)
+      SYNC_VAULT_PASSWORD_ENV="${2:-}"
+      shift 2
+      ;;
+    --sync-vault-password-file)
+      SYNC_VAULT_PASSWORD_FILE="${2:-}"
+      shift 2
+      ;;
+    --host-vault-password)
+      HOST_VAULT_PASSWORD="${2:-}"
+      shift 2
+      ;;
+    --host-vault-password-env)
+      HOST_VAULT_PASSWORD_ENV="${2:-}"
+      shift 2
+      ;;
+    --host-vault-password-file)
+      HOST_VAULT_PASSWORD_FILE="${2:-}"
+      shift 2
+      ;;
     --bypass-permissions)
       BYPASS_PERMISSIONS="${2:-}"
       shift 2
@@ -756,6 +1013,20 @@ done
 [[ "${LOG_TAIL}" =~ ^[0-9]+$ ]] || fail "--log-tail must be a positive integer"
 [[ "${BYPASS_PERMISSIONS}" == "true" || "${BYPASS_PERMISSIONS}" == "false" ]] || fail "--bypass-permissions must be true or false"
 [[ "${SCENARIO}" == "all" || "${SCENARIO}" == "s4-01" || "${SCENARIO}" == "s4-02" || "${SCENARIO}" == "s4-03" || "${SCENARIO}" == "s4-04" ]] || fail "--scenario must be one of s4-01, s4-02, s4-03, s4-04, all"
+if [[ -n "${SYNC_VAULT_PASSWORD}" && ( -n "${SYNC_VAULT_PASSWORD_ENV}" || -n "${SYNC_VAULT_PASSWORD_FILE}" ) ]]; then
+  fail "only one of --sync-vault-password, --sync-vault-password-env, or --sync-vault-password-file may be provided"
+fi
+if [[ -n "${SYNC_VAULT_PASSWORD_ENV}" && -n "${SYNC_VAULT_PASSWORD_FILE}" ]]; then
+  fail "only one of --sync-vault-password-env or --sync-vault-password-file may be provided"
+fi
+resolve_secret_value "SYNC_VAULT_PASSWORD" "SYNC_VAULT_PASSWORD_ENV" "SYNC_VAULT_PASSWORD_FILE" "sync vault password" "false"
+if [[ -n "${HOST_VAULT_PASSWORD}" && ( -n "${HOST_VAULT_PASSWORD_ENV}" || -n "${HOST_VAULT_PASSWORD_FILE}" ) ]]; then
+  fail "only one of --host-vault-password, --host-vault-password-env, or --host-vault-password-file may be provided"
+fi
+if [[ -n "${HOST_VAULT_PASSWORD_ENV}" && -n "${HOST_VAULT_PASSWORD_FILE}" ]]; then
+  fail "only one of --host-vault-password-env or --host-vault-password-file may be provided"
+fi
+resolve_secret_value "HOST_VAULT_PASSWORD" "HOST_VAULT_PASSWORD_ENV" "HOST_VAULT_PASSWORD_FILE" "host vault password" "false"
 
 WORKSPACE_PATH="$(cd "${WORKSPACE_PATH}" && pwd)"
 [[ -d "${WORKSPACE_PATH}" ]] || fail "--workspace-path must point to an existing directory"
