@@ -61,15 +61,6 @@ if [[ -n "${oversized_files}" ]]; then
 fi
 
 echo "[policy-check] scanning test file placement (target: tests/)"
-legacy_colocated_tests="$(
-  {
-    git ls-files '*_test.go' || true
-  } | rg -v '^tests/' | sort -u || true
-)"
-if [[ -n "${legacy_colocated_tests}" ]]; then
-  legacy_count="$(printf '%s\n' "${legacy_colocated_tests}" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
-  echo "[policy-check] WARN: legacy colocated _test.go files remain outside tests/ (${legacy_count} files)"
-fi
 
 new_colocated_tests="$(
   {
