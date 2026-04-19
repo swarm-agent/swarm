@@ -117,7 +117,7 @@ func TestRepoGitWatcherEmitsOnHeadChange(t *testing.T) {
 	}
 	defer watcher.stopWatching()
 
-	triggered := make(chan struct{}, 4)
+	triggered := make(chan struct{}, 8)
 	go watcher.run(func() {
 		select {
 		case triggered <- struct{}{}:
@@ -125,19 +125,37 @@ func TestRepoGitWatcherEmitsOnHeadChange(t *testing.T) {
 		}
 	})
 
-	select {
-	case <-triggered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("initial refresh not received")
-	}
+	awaitWatcherRefresh(t, triggered, "initial refresh")
 
 	runGit(t, repo, "checkout", "-b", "feature/watch")
 
-	select {
-	case <-triggered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("watcher did not refresh after HEAD change")
+	awaitWatcherRefresh(t, triggered, "HEAD change")
+}
+
+func TestRepoGitWatcherEmitsOnWorkingTreeChange(t *testing.T) {
+	repo := initGitRepo(t)
+	tracked := filepath.Join(repo, "tracked.txt")
+	writeFile(t, tracked, "hello\n")
+	runGit(t, repo, "add", "tracked.txt")
+	runGit(t, repo, "commit", "-m", "init")
+
+	watcher, err := newRepoGitWatcher(repo)
+	if err != nil {
+		t.Fatalf("newRepoGitWatcher: %v", err)
 	}
+	defer watcher.stopWatching()
+
+	triggered := make(chan struct{}, 8)
+	go watcher.run(func() {
+		select {
+		case triggered <- struct{}{}:
+		default:
+		}
+	})
+
+	awaitWatcherRefresh(t, triggered, "initial refresh")
+	writeFile(t, tracked, "changed\n")
+	awaitWatcherRefresh(t, triggered, "working tree change")
 }
 
 func initGitRepo(t *testing.T) string {
@@ -171,4 +189,13 @@ func containsLine(text, want string) bool {
 		}
 	}
 	return false
+}
+
+func awaitWatcherRefresh(t *testing.T, triggered <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-triggered:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("watcher did not refresh after %s", label)
+	}
 }

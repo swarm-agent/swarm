@@ -23,30 +23,35 @@ func newRepoGitWatcher(path string) (*repoGitWatcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	gitDir, commonDir, err := resolveGitWatchPaths(target)
+	repoRoot, gitDir, commonDir, err := resolveGitWatchPaths(target)
 	if err != nil {
 		_ = watcher.Close()
 		return nil, err
 	}
-	watchPaths := []string{gitDir}
-	if commonDir != "" && !pathsEqual(commonDir, gitDir) {
-		watchPaths = append(watchPaths, commonDir)
+	w := &repoGitWatcher{
+		path:      target,
+		repoRoot:  repoRoot,
+		gitDir:    gitDir,
+		commonDir: commonDir,
+		watched:   make(map[string]struct{}, 64),
+		stop:      make(chan struct{}),
+		stopped:   make(chan struct{}),
+		debounce:  make(chan struct{}, 1),
+		watcher:   watcher,
 	}
-	for _, root := range watchPaths {
+	if err := w.addRecursiveWorktreeWatches(); err != nil {
+		_ = watcher.Close()
+		return nil, err
+	}
+	for _, root := range watchRootsForGitPaths(gitDir, commonDir) {
 		for _, candidate := range candidateGitWatchPaths(root) {
-			if err := addWatchIfExists(watcher, candidate); err != nil {
+			if err := w.addWatchIfExists(candidate); err != nil {
 				_ = watcher.Close()
 				return nil, err
 			}
 		}
 	}
-	return &repoGitWatcher{
-		path:     target,
-		stop:     make(chan struct{}),
-		stopped:  make(chan struct{}),
-		debounce: make(chan struct{}, 1),
-		watcher:  watcher,
-	}, nil
+	return w, nil
 }
 
 func (w *repoGitWatcher) run(refresh func()) {
@@ -96,11 +101,11 @@ func (w *repoGitWatcher) run(refresh func()) {
 		case <-timerC:
 			refresh()
 			timerC = nil
-		case _, ok := <-w.watcher.Events:
+		case event, ok := <-w.watcher.Events:
 			if !ok {
 				return
 			}
-			w.signalRefresh()
+			w.handleEvent(event)
 		case _, ok := <-w.watcher.Errors:
 			if !ok {
 				return
@@ -133,24 +138,192 @@ func (w *repoGitWatcher) stopWatching() {
 	<-w.stopped
 }
 
-func resolveGitWatchPaths(path string) (string, string, error) {
+func (w *repoGitWatcher) handleEvent(event fsnotify.Event) {
+	if w == nil {
+		return
+	}
+	name := normalizePath(event.Name)
+	if name == "" {
+		w.signalRefresh()
+		return
+	}
+	if event.Op&(fsnotify.Create|fsnotify.Rename) != 0 {
+		_ = w.addRecursiveFromPath(name)
+	}
+	if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+		w.removeWatchPath(name)
+	}
+	w.signalRefresh()
+}
+
+func (w *repoGitWatcher) addRecursiveWorktreeWatches() error {
+	if w == nil {
+		return nil
+	}
+	return filepath.WalkDir(w.repoRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		clean := normalizePath(path)
+		if clean == "" {
+			return nil
+		}
+		if w.shouldSkipDir(clean) {
+			return filepath.SkipDir
+		}
+		return w.addWatchPath(clean)
+	})
+}
+
+func (w *repoGitWatcher) addRecursiveFromPath(path string) error {
+	if w == nil {
+		return nil
+	}
+	clean := normalizePath(path)
+	if clean == "" {
+		return nil
+	}
+	info, err := os.Stat(clean)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	if w.shouldSkipDir(clean) {
+		return nil
+	}
+	return filepath.WalkDir(clean, func(child string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		normalized := normalizePath(child)
+		if normalized == "" {
+			return nil
+		}
+		if w.shouldSkipDir(normalized) {
+			return filepath.SkipDir
+		}
+		return w.addWatchPath(normalized)
+	})
+}
+
+func (w *repoGitWatcher) addWatchIfExists(path string) error {
+	if w == nil {
+		return nil
+	}
+	clean := normalizePath(path)
+	if clean == "" {
+		return nil
+	}
+	info, err := os.Stat(clean)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return w.addWatchPath(clean)
+}
+
+func (w *repoGitWatcher) addWatchPath(path string) error {
+	if w == nil || w.watcher == nil {
+		return nil
+	}
+	clean := normalizePath(path)
+	if clean == "" {
+		return nil
+	}
+	if _, ok := w.watched[clean]; ok {
+		return nil
+	}
+	if err := w.watcher.Add(clean); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	w.watched[clean] = struct{}{}
+	return nil
+}
+
+func (w *repoGitWatcher) removeWatchPath(path string) {
+	if w == nil || w.watcher == nil {
+		return
+	}
+	clean := normalizePath(path)
+	if clean == "" {
+		return
+	}
+	for watched := range w.watched {
+		if watched == clean || strings.HasPrefix(watched, clean+string(filepath.Separator)) {
+			_ = w.watcher.Remove(watched)
+			delete(w.watched, watched)
+		}
+	}
+}
+
+func (w *repoGitWatcher) shouldSkipDir(path string) bool {
+	if w == nil {
+		return false
+	}
+	clean := normalizePath(path)
+	if clean == "" {
+		return true
+	}
+	for _, root := range watchRootsForGitPaths(w.gitDir, w.commonDir) {
+		if root != "" && (clean == root || strings.HasPrefix(clean, root+string(filepath.Separator))) {
+			return true
+		}
+	}
+	base := strings.ToLower(filepath.Base(clean))
+	switch base {
+	case ".git":
+		return true
+	case ".swarm", "node_modules":
+		return true
+	}
+	return false
+}
+
+func resolveGitWatchPaths(path string) (string, string, string, error) {
+	repoRootRaw, err := runGitPathQuery(path, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", "", "", err
+	}
+	repoRoot, err := resolveReportedGitPath(path, repoRootRaw)
+	if err != nil {
+		return "", "", "", err
+	}
 	gitDirRaw, err := runGitPathQuery(path, "rev-parse", "--git-dir")
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	gitDir, err := resolveReportedGitPath(path, gitDirRaw)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	commonDirRaw, err := runGitPathQuery(path, "rev-parse", "--git-common-dir")
 	if err != nil {
-		return gitDir, "", nil
+		return repoRoot, gitDir, "", nil
 	}
 	commonDir, err := resolveReportedGitPath(path, commonDirRaw)
 	if err != nil {
-		return gitDir, "", nil
+		return repoRoot, gitDir, "", nil
 	}
-	return gitDir, commonDir, nil
+	return repoRoot, gitDir, commonDir, nil
 }
 
 func resolveReportedGitPath(basePath, reportedPath string) (string, error) {
@@ -186,6 +359,15 @@ func runGitPathQuery(path string, args ...string) (string, error) {
 	return strings.TrimSpace(string(raw)), nil
 }
 
+func watchRootsForGitPaths(gitDir, commonDir string) []string {
+	roots := []string{normalizePath(gitDir)}
+	common := normalizePath(commonDir)
+	if common != "" && common != roots[0] {
+		roots = append(roots, common)
+	}
+	return roots
+}
+
 func candidateGitWatchPaths(gitDir string) []string {
 	candidates := []string{
 		gitDir,
@@ -212,21 +394,4 @@ func candidateGitWatchPaths(gitDir string) []string {
 		out = append(out, clean)
 	}
 	return out
-}
-
-func addWatchIfExists(watcher *fsnotify.Watcher, path string) error {
-	if watcher == nil {
-		return nil
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if !info.IsDir() {
-		return nil
-	}
-	return watcher.Add(path)
 }

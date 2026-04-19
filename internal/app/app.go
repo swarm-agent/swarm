@@ -137,11 +137,15 @@ type gitStatusRefreshResult struct {
 }
 
 type repoGitWatcher struct {
-	path     string
-	stop     chan struct{}
-	stopped  chan struct{}
-	debounce chan struct{}
-	watcher  *fsnotify.Watcher
+	path      string
+	repoRoot  string
+	gitDir    string
+	commonDir string
+	watched   map[string]struct{}
+	stop      chan struct{}
+	stopped   chan struct{}
+	debounce  chan struct{}
+	watcher   *fsnotify.Watcher
 }
 
 type authLoginResult struct {
