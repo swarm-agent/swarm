@@ -322,7 +322,7 @@ func mapRemoteDeployTarget(item remotedeploy.Session) (swarmTarget, bool) {
 		return swarmTarget{}, false
 	}
 	status := strings.TrimSpace(item.Status)
-	backendURL := strings.TrimSpace(item.RemoteTailnetURL)
+	backendURL := firstNonEmpty(strings.TrimSpace(item.RemoteEndpoint), strings.TrimSpace(item.RemoteTailnetURL))
 	online := strings.EqualFold(status, "attached") && backendURL != ""
 	name := firstNonEmpty(strings.TrimSpace(item.Name), swarmID)
 	return swarmTarget{

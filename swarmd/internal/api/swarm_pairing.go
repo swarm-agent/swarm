@@ -224,16 +224,6 @@ func (s *Server) handleSwarmEnroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	updatedCfg := cfg
-	updatedCfg.Child = true
-	if err := startupconfig.Write(updatedCfg); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if _, err := s.swarm.UpdateLocalPairingFromConfig(updatedCfg, onboardingTransportsToSwarm(detectedOnboardingTransports(updatedCfg))); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enrollment": enrollment})
 }
 

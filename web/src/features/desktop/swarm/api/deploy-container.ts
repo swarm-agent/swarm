@@ -111,6 +111,7 @@ export interface RemoteDeployPreflight {
   systemd_available: boolean
   systemd_unit?: string
   remote_root?: string
+  remote_network_candidates?: string[]
   files_to_copy?: string[]
   payloads?: RemoteDeployPayload[]
   summary?: string
@@ -122,6 +123,10 @@ export interface RemoteDeploySession {
   name: string
   status: string
   ssh_session_target?: string
+  transport_mode?: 'lan' | 'tailscale'
+  master_endpoint?: string
+  remote_endpoint?: string
+  remote_advertise_host?: string
   group_id?: string
   group_name?: string
   builder_runtime?: string
@@ -275,6 +280,8 @@ export interface RemoteDeployPreflightError {
 export async function createRemoteDeploySession(input: {
   name: string
   sshSessionTarget: string
+  transportMode?: 'lan' | 'tailscale'
+  remoteAdvertiseHost?: string
   groupID: string
   groupName?: string
   remoteRuntime?: 'docker' | 'podman'
@@ -297,6 +304,8 @@ export async function createRemoteDeploySession(input: {
     body: JSON.stringify({
       name: input.name,
       ssh_session_target: input.sshSessionTarget,
+      transport_mode: input.transportMode,
+      remote_advertise_host: input.remoteAdvertiseHost,
       group_id: input.groupID,
       group_name: input.groupName,
       remote_runtime: input.remoteRuntime,

@@ -9,7 +9,7 @@ import { Select } from '../../../../components/ui/select'
 import { buildQuickContainerProfileDraft, suggestQuickContainerProfileName } from '../../containers/services/quick-container-recommendation'
 import type { ContainerProfile, ContainerProfileMount } from '../../containers/types/container-profiles'
 import { listContainerProfiles } from '../../containers/queries/list-container-profiles'
-import { fetchDesktopOnboardingStatus, fetchSwarmLocalRuntimeStatus, type SwarmLocalRuntimeStatus } from '../../onboarding/api'
+import { fetchDesktopOnboardingStatus, fetchSwarmLocalRuntimeStatus, saveDesktopOnboarding, type SwarmLocalRuntimeStatus } from '../../onboarding/api'
 import { getUISettings, saveRemoteSSHTarget } from '../../settings/swarm/queries/get-ui-settings'
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
 import {
@@ -54,6 +54,7 @@ interface AddSwarmModalProps {
 }
 
 type LaunchTarget = 'local' | 'remote'
+type RemoteDeployMethod = 'lan' | 'tailscale'
 type RemoteTailscaleAuthMode = 'manual' | 'key'
 type ReplicationMode = 'bundle' | 'copy'
 
@@ -225,6 +226,42 @@ function firstHostnameLabel(value: string | null | undefined): string {
   return hostname.split('.')[0]?.trim() ?? ''
 }
 
+function remoteReachableHostCandidate(target: string): string {
+  const trimmed = String(target ?? '').trim()
+  if (!trimmed) {
+    return ''
+  }
+  let value = trimmed
+  const atIndex = value.lastIndexOf('@')
+  if (atIndex >= 0) {
+    value = value.slice(atIndex + 1).trim()
+  }
+  if (value.startsWith('[')) {
+    const end = value.indexOf(']')
+    if (end > 0) {
+      return value.slice(1, end).trim()
+    }
+  }
+  const colonIndex = value.lastIndexOf(':')
+  if (colonIndex > 0 && value.indexOf(':') === colonIndex) {
+    value = value.slice(0, colonIndex).trim()
+  }
+  const candidate = value.trim()
+  if (!candidate) {
+    return ''
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(candidate)) {
+    return candidate
+  }
+  if (candidate.includes(':')) {
+    return candidate
+  }
+  if (candidate.includes('.')) {
+    return candidate
+  }
+  return ''
+}
+
 function mountDeliveryLabel(launchTarget: LaunchTarget, count: number): string {
   const label = `${count} ${count === 1 ? 'folder' : 'folders'}`
   return launchTarget === 'remote' ? `${label} sent` : `${label} mounted`
@@ -257,6 +294,149 @@ type RemotePreflightGuidance = {
   title: string
   details: string[]
   commands: string[]
+}
+
+type MasterLANCallbackGuidance = {
+  blocking: boolean
+  title: string
+  details: string[]
+  suggestedHost: string
+  suggestedPort: number
+  canAutofill: boolean
+}
+
+function formatEndpointLabel(host: string, port: number): string {
+  const normalizedHost = String(host ?? '').trim() || 'unset'
+  return port > 0 ? `${normalizedHost}:${port}` : normalizedHost
+}
+
+function usableLANCallbackHost(value: string): string {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) {
+    return ''
+  }
+  const lower = normalized.toLowerCase()
+  if (
+    lower === 'localhost'
+    || lower === '0.0.0.0'
+    || lower === '::'
+    || lower === '::1'
+    || lower === '[::1]'
+    || lower.startsWith('127.')
+  ) {
+    return ''
+  }
+  return normalized
+}
+
+function isLocalOnlyBindHost(value: string): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (!normalized) {
+    return false
+  }
+  return normalized === 'localhost'
+    || normalized === '::1'
+    || normalized === '[::1]'
+    || normalized.startsWith('127.')
+}
+
+function preferredLANCallbackCandidate(onboardingStatus: DesktopOnboardingStatus | null): string {
+  const config = onboardingStatus?.config
+  const configHost = usableLANCallbackHost(config?.host ?? '')
+  const tailscaleIPs = new Set((onboardingStatus?.network.tailscale.ips ?? []).map((value) => String(value).trim()))
+  if (configHost && !tailscaleIPs.has(configHost)) {
+    return configHost
+  }
+  const lanCandidates = onboardingStatus?.network.lanAddresses ?? []
+  for (const candidate of lanCandidates) {
+    const host = usableLANCallbackHost(candidate)
+    if (!host || tailscaleIPs.has(host)) {
+      continue
+    }
+    return host
+  }
+  return ''
+}
+
+function buildMasterLANCallbackGuidance(onboardingStatus: DesktopOnboardingStatus | null): MasterLANCallbackGuidance {
+  const config = onboardingStatus?.config
+  const bindHost = String(config?.host ?? '').trim()
+  const bindPort = typeof config?.port === 'number' ? config.port : 0
+  const advertiseHost = String(config?.advertiseHost ?? '').trim()
+  const advertisePort = typeof config?.advertisePort === 'number' ? config.advertisePort : bindPort
+  const effectiveHost = advertiseHost || usableLANCallbackHost(bindHost)
+  const effectivePort = advertisePort > 0 ? advertisePort : bindPort
+  const tailscaleURL = String(onboardingStatus?.network.tailscale.tailnetURL || config?.tailscaleURL || '').trim()
+  const suggestedHost = preferredLANCallbackCandidate(onboardingStatus)
+  const suggestedPort = effectivePort
+  const bindIsLocalOnly = isLocalOnlyBindHost(bindHost)
+
+  if (bindIsLocalOnly) {
+    const details = [
+      `This machine is still listening only on ${formatEndpointLabel(bindHost || '127.0.0.1', bindPort)}.`,
+      advertiseHost
+        ? `Advertise host is set to ${formatEndpointLabel(advertiseHost, effectivePort)}, but that only changes what children try to call. It does not move the master listener.`
+        : 'No reachable LAN / VPN bind host is active on this machine yet.',
+      'LAN / WireGuard remote deploy requires the master backend itself to listen on a reachable LAN, WireGuard, or tunnel address.',
+      'Update host in the master swarm.conf to a reachable address, keep advertise_host aligned unless you have a separate forwarded endpoint, then restart Swarm.',
+    ]
+    if (suggestedHost) {
+      details.push(`Detected LAN / VPN candidate on this machine: ${formatEndpointLabel(suggestedHost, suggestedPort)}.`)
+    }
+    if (tailscaleURL) {
+      details.push(`If both machines are already on Tailscale, switch this deploy method to Tailscale and use ${tailscaleURL}.`)
+    }
+    return {
+      blocking: true,
+      title: 'Restart this machine with a LAN / VPN bind address first',
+      details,
+      suggestedHost,
+      suggestedPort,
+      canAutofill: false,
+    }
+  }
+
+  if (effectiveHost) {
+    return {
+      blocking: false,
+      title: 'This machine will accept LAN / WireGuard callbacks',
+      details: advertiseHost
+        ? [
+            `Remote children will call back to ${formatEndpointLabel(effectiveHost, effectivePort)} over your LAN, WireGuard, or tunnel path.`,
+            'Source: Advertise host on this machine.',
+          ]
+        : [
+            `Remote children will call back to ${formatEndpointLabel(effectiveHost, effectivePort)} over your LAN, WireGuard, or tunnel path.`,
+            'Source: Advertise host is blank, so Swarm will reuse this machine’s current host bind.',
+          ],
+      suggestedHost: '',
+      suggestedPort,
+      canAutofill: false,
+    }
+  }
+
+  const details = [
+    'LAN / WireGuard uses SSH only to install the child.',
+    'After launch, the child must connect back to this machine over your LAN, WireGuard, or another VPN/tunnel path.',
+    `Right now this machine is bound to ${formatEndpointLabel(bindHost, bindPort)}, which is still local-only for this flow.`,
+    'Open Settings -> Swarm, then set Advertise host to the LAN or VPN address other machines should use to reach this machine.',
+    'Examples: 10.0.0.12, 192.168.1.40, wg-box.internal.',
+    'Leave Advertise port as the API port unless the child should call back on a different port.',
+  ]
+  if (suggestedHost) {
+    details.push(`Swarm can fill this in now with ${formatEndpointLabel(suggestedHost, suggestedPort)}.`)
+  }
+  if (tailscaleURL) {
+    details.push(`If both machines are already on Tailscale, switch this deploy method to Tailscale and use ${tailscaleURL}.`)
+  }
+  return {
+    blocking: true,
+    title: 'Set a LAN / VPN address for this machine first',
+    details,
+    suggestedHost,
+    suggestedPort,
+    canAutofill: suggestedHost !== '',
+  }
 }
 
 function parseRemotePreflightGuidance(message: string): RemotePreflightGuidance | null {
@@ -325,10 +505,13 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [savedRemoteSSHTargets, setSavedRemoteSSHTargets] = useState<string[]>([])
   const [remoteSSHTarget, setRemoteSSHTarget] = useState('')
   const [remoteRuntimeChoice, setRemoteRuntimeChoice] = useState<'docker' | 'podman'>('docker')
+  const [remoteDeployMethod, setRemoteDeployMethod] = useState<RemoteDeployMethod>('tailscale')
+  const [remoteReachableHost, setRemoteReachableHost] = useState('')
   const [remotePreflightSession, setRemotePreflightSession] = useState<RemoteDeploySession | null>(null)
   const [remotePreflightError, setRemotePreflightError] = useState<string | null>(null)
   const [remotePreflightLoading, setRemotePreflightLoading] = useState(false)
   const [remotePreflightGuidance, setRemotePreflightGuidance] = useState<RemotePreflightGuidance | null>(null)
+  const [configuringMasterLANCallback, setConfiguringMasterLANCallback] = useState(false)
   const [remoteTailscaleAuthMode, setRemoteTailscaleAuthMode] = useState<RemoteTailscaleAuthMode>('manual')
   const [remoteTailscaleAuthKey, setRemoteTailscaleAuthKey] = useState('')
   const [launchTarget, setLaunchTarget] = useState<LaunchTarget>('local')
@@ -352,10 +535,38 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     () => (selectedRuntime && runtimeStatus.available.includes(selectedRuntime) ? selectedRuntime : runtimeStatus.recommended || ''),
     [runtimeStatus, selectedRuntime],
   ) as 'podman' | 'docker' | ''
+  const activeRuntimeLabel = launchTarget === 'remote' ? remoteRuntimeChoice : runtimeChoice
 
   const group = useMemo(() => currentGroup(currentOnboardingStatus), [currentOnboardingStatus])
   const hostSwarmID = group?.group.hostSwarmID || ''
   const hostVaultEnabled = Boolean(vault.enabled)
+  const masterLANCallbackGuidance = useMemo(
+    () => (remoteDeployMethod === 'lan' ? buildMasterLANCallbackGuidance(currentOnboardingStatus) : null),
+    [currentOnboardingStatus, remoteDeployMethod],
+  )
+  const remotePreflightBlocked = remoteDeployMethod === 'lan' && Boolean(masterLANCallbackGuidance?.blocking)
+  const remotePreflightCanAutofill = remoteDeployMethod === 'lan' && Boolean(masterLANCallbackGuidance?.canAutofill)
+  const remoteReachableHostSuggestions = useMemo(() => {
+    if (remoteDeployMethod !== 'lan') {
+      return []
+    }
+    const values = remotePreflightSession?.preflight.remote_network_candidates ?? []
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const value of values) {
+      const trimmed = String(value ?? '').trim()
+      if (!trimmed) {
+        continue
+      }
+      const key = trimmed.toLowerCase()
+      if (seen.has(key)) {
+        continue
+      }
+      seen.add(key)
+      out.push(trimmed)
+    }
+    return out
+  }, [remoteDeployMethod, remotePreflightSession])
   const masterName = useMemo(
     () => group?.members.find((member) => member.swarmID === hostSwarmID)?.name || 'Current master',
     [group, hostSwarmID],
@@ -530,6 +741,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         setRemotePreflightError(null)
         setRemotePreflightGuidance(null)
         setRemoteRuntimeChoice('docker')
+        setRemoteDeployMethod('tailscale')
+        setRemoteReachableHost('')
         setRemoteTailscaleAuthMode('manual')
         setRemoteTailscaleAuthKey('')
         const nextSuggestedSwarmName = preferredChildSwarmName(
@@ -571,11 +784,50 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     onOpenChange(false)
   }
 
+  useEffect(() => {
+    if (remoteDeployMethod !== 'lan' || remoteReachableHost.trim()) {
+      return
+    }
+    const candidate = remoteReachableHostCandidate(remoteSSHTarget)
+    if (candidate) {
+      setRemoteReachableHost(candidate)
+    }
+  }, [remoteDeployMethod, remoteReachableHost, remoteSSHTarget])
+
   const refreshRemoteSessions = async (): Promise<RemoteDeploySession[]> => {
     const nextSessions = await fetchRemoteDeploySessions({ refresh: true })
     setRemoteSessions(nextSessions)
     logAddSwarm('refreshed remote session list', { sessions: nextSessions.length })
     return nextSessions
+  }
+
+  const ensureMasterLANCallbackConfigured = async (): Promise<DesktopOnboardingStatus | null> => {
+    if (remoteDeployMethod !== 'lan') {
+      return currentOnboardingStatus
+    }
+    if (!masterLANCallbackGuidance?.blocking) {
+      return currentOnboardingStatus
+    }
+    const suggestedHost = masterLANCallbackGuidance?.suggestedHost.trim() || ''
+    if (!suggestedHost) {
+      throw new Error('Swarm could not detect a LAN / VPN address for this machine. Open Settings -> Swarm and set Advertise host manually.')
+    }
+    const suggestedPort = masterLANCallbackGuidance.suggestedPort > 0 ? masterLANCallbackGuidance.suggestedPort : (currentOnboardingStatus?.config.port || 0)
+    setConfiguringMasterLANCallback(true)
+    setStatus(`Using ${formatEndpointLabel(suggestedHost, suggestedPort)} for this machine’s LAN / WireGuard callback…`)
+    try {
+      const nextOnboarding = await saveDesktopOnboarding({
+        advertiseHost: suggestedHost,
+        advertisePort: suggestedPort,
+      })
+      setCurrentOnboardingStatus(nextOnboarding)
+      if (nextOnboarding.config.restartRequired) {
+        throw new Error(`Saved this machine’s LAN / VPN address, but Swarm must be restarted before remote preflight can continue: ${nextOnboarding.config.restartReason || 'transport settings changed'}.`)
+      }
+      return nextOnboarding
+    } finally {
+      setConfiguringMasterLANCallback(false)
+    }
   }
 
   const runRemotePreflight = async (): Promise<RemoteDeploySession> => {
@@ -595,9 +847,12 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     setRemotePreflightError(null)
     setRemotePreflightGuidance(null)
     try {
+      await ensureMasterLANCallbackConfigured()
       const session = await createRemoteDeploySession({
         name: swarmName.trim(),
         sshSessionTarget: remoteSSHTarget.trim(),
+        transportMode: remoteDeployMethod,
+        remoteAdvertiseHost: remoteDeployMethod === 'lan' ? remoteReachableHost.trim() : '',
         groupID: group.group.id,
         groupName: group.group.name,
         remoteRuntime: remoteRuntimeChoice,
@@ -613,6 +868,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         })),
       })
       setRemotePreflightSession(session)
+      if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim() && session.remote_advertise_host?.trim()) {
+        setRemoteReachableHost(session.remote_advertise_host.trim())
+      }
       setRemoteSessions((current) => [session, ...current.filter((item) => item.id !== session.id)])
       const currentSettings = await getUISettings().catch(() => null)
       if (currentSettings) {
@@ -753,6 +1011,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('SSH alias or target is required.')
       return
     }
+    if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()) {
+      setError('Remote reachable host is required for LAN / WireGuard deploy.')
+      return
+    }
     if (!remotePreflightSession || remotePreflightSession.ssh_session_target?.trim() !== remoteSSHTarget.trim()) {
       setError('Run the remote preflight check and fix any errors before launching.')
       return
@@ -761,7 +1023,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('Vault password is required to sync from a vaulted host.')
       return
     }
-    if (remoteTailscaleAuthMode === 'key' && !remoteTailscaleAuthKey.trim()) {
+    if (remoteDeployMethod === 'tailscale' && remoteTailscaleAuthMode === 'key' && !remoteTailscaleAuthKey.trim()) {
       setError('Tailscale auth key is required for auth-key launch mode.')
       return
     }
@@ -775,14 +1037,17 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         `Remote host: ${remoteSSHTarget.trim()}`,
         `Builder runtime: ${session.preflight.builder_runtime || 'unknown'}`,
         `Remote runtime: ${session.preflight.remote_runtime || 'unknown'}`,
+        `Deploy method: ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim()}`}`,
         `Systemd: ${session.preflight.systemd_available ? `install/update ${session.preflight.systemd_unit || 'service unit'}` : 'not available'}`,
         `Files copied: ${(session.preflight.files_to_copy || []).join(', ') || 'none'}`,
         `Payloads: ${(session.preflight.payloads || []).map((payload) => `${payload.workspace_name || payload.source_path} (${payload.included_files} tracked files)`).join('; ') || 'none'}`,
-        `Tailscale login: ${remoteTailscaleAuthMode === 'key' ? 'Auth key (launch only, not saved)' : 'Manual browser approval'}`,
+        ...(remoteDeployMethod === 'tailscale'
+          ? [`Tailscale login: ${remoteTailscaleAuthMode === 'key' ? 'Auth key (launch only, not saved)' : 'Manual browser approval'}`]
+          : []),
         '',
         'This will send only Git-tracked workspace files from the selected folders to the remote server.',
         'This will also send a built Swarm container image, a rendered swarm.conf, and the installer script.',
-        'The remote child will be launched there and configured to connect back to this master over the master\'s Tailscale/base URL.',
+        `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
         '',
         'Continue with managed SSH deploy?'
       ].join('\n'))
@@ -793,14 +1058,16 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
       setStatus('Building local artifacts and shipping to the remote host…')
       let currentSession = await startRemoteDeploySession(session.id, {
-        tailscaleAuthKey: remoteTailscaleAuthMode === 'key' ? remoteTailscaleAuthKey.trim() : '',
+        tailscaleAuthKey: remoteDeployMethod === 'tailscale' && remoteTailscaleAuthMode === 'key' ? remoteTailscaleAuthKey.trim() : '',
         syncVaultPassword: syncEnabled && hostVaultEnabled ? syncVaultPassword.trim() : '',
       })
       await refreshRemoteSessions()
       if (currentSession.remote_auth_url) {
         setStatus(`Remote child started. Approve Tailscale login: ${currentSession.remote_auth_url}`)
+      } else if (currentSession.remote_endpoint) {
+        setStatus(`Remote child started. Waiting for the child to enroll back over ${currentSession.transport_mode === 'lan' ? 'LAN / WireGuard' : 'the selected transport'} at ${currentSession.remote_endpoint}…`)
       } else {
-        setStatus('Remote child started. Waiting for the child to enroll back over Tailscale…')
+        setStatus(`Remote child started. Waiting for the child to enroll back over ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`)
       }
 
       const startedAt = Date.now()
@@ -863,8 +1130,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 Choose where it runs, pick the workspace shape, then name the swarm you want to add.
               </p>
             </div>
-            <Badge tone={runtimeChoice ? 'live' : 'warning'}>
-              {runtimeChoice ? `${runtimeChoice} ready` : 'runtime required'}
+            <Badge tone={activeRuntimeLabel ? 'live' : 'warning'}>
+              {activeRuntimeLabel ? `${activeRuntimeLabel} ready` : 'runtime required'}
             </Badge>
           </div>
         </div>
@@ -1317,9 +1584,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             <>
               <Card className="grid gap-4 p-5">
                 <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">2. Remote deploy path</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">2. Remote deploy method</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
-                    Add or pick an SSH alias/target, run the required preflight check, then continue once the host is green.
+                    Choose how the remote child should connect back, then run preflight against the SSH target you want to use.
                   </div>
                 </div>
 
@@ -1369,11 +1636,61 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                           setError(err instanceof Error ? err.message : 'Remote preflight failed')
                         })
                     }}
-                    disabled={submitting || remotePreflightLoading || !remoteSSHTarget.trim() || !swarmName.trim()}
+                    disabled={submitting || remotePreflightLoading || configuringMasterLANCallback || (remotePreflightBlocked && !remotePreflightCanAutofill) || !remoteSSHTarget.trim() || !swarmName.trim()}
                   >
-                    {remotePreflightLoading ? <Loader2 size={14} className="animate-spin" /> : null}
-                    {remotePreflightLoading ? 'Checking…' : 'Run preflight'}
+                    {(remotePreflightLoading || configuringMasterLANCallback) ? <Loader2 size={14} className="animate-spin" /> : null}
+                    {remotePreflightLoading
+                      ? 'Checking…'
+                      : configuringMasterLANCallback
+                        ? 'Saving this machine’s address…'
+                        : remotePreflightBlocked
+                          ? (remotePreflightCanAutofill
+                              ? 'Use detected address and run preflight'
+                              : (masterLANCallbackGuidance?.title === 'Restart this machine with a LAN / VPN bind address first'
+                                  ? 'Restart this machine with a LAN / VPN bind address first'
+                                  : 'Set this machine’s LAN / VPN address first'))
+                          : 'Run preflight'}
                   </Button>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {[
+                    {
+                      id: 'tailscale' as const,
+                      title: 'Tailscale',
+                      text: 'SSH for install, then the child calls back over the master tailnet URL.',
+                    },
+                    {
+                      id: 'lan' as const,
+                      title: 'LAN / WireGuard',
+                      text: 'SSH for install, then the child calls back over a reachable host or private IP.',
+                    },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => {
+                        setRemoteDeployMethod(option.id)
+                        setRemotePreflightSession(null)
+                        setRemotePreflightError(null)
+                        setRemotePreflightGuidance(null)
+                      }}
+                      className={`rounded-2xl border p-4 text-left transition ${
+                        remoteDeployMethod === option.id
+                          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]'
+                          : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'
+                      }`}
+                      disabled={submitting || remotePreflightLoading}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold text-[var(--app-text)]">{option.title}</div>
+                          <div className="mt-1 text-xs text-[var(--app-text-muted)]">{option.text}</div>
+                        </div>
+                        {remoteDeployMethod === option.id ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                      </div>
+                    </button>
+                  ))}
                 </div>
 
                 {savedRemoteSSHTargets.length > 0 ? (
@@ -1397,15 +1714,122 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   </div>
                 ) : null}
 
+                {remoteDeployMethod === 'tailscale' ? (
+                  <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                    <div className="grid gap-1">
+                      <div className="text-sm font-semibold text-[var(--app-text)]">Tailscale login</div>
+                      <div className="text-xs text-[var(--app-text-muted)]">
+                        Choose manual browser approval or a launch-only auth key. The raw key is used only for this launch and is not saved by Swarm.
+                      </div>
+                    </div>
+                    <div className="grid gap-2 sm:max-w-xs">
+                      <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Login mode</label>
+                      <Select
+                        value={remoteTailscaleAuthMode}
+                        onChange={(event) => setRemoteTailscaleAuthMode(event.target.value === 'key' ? 'key' : 'manual')}
+                        disabled={submitting || remotePreflightLoading}
+                      >
+                        <option value="manual">Manual URL</option>
+                        <option value="key">Tailscale auth key</option>
+                      </Select>
+                    </div>
+                    {remoteTailscaleAuthMode === 'key' ? (
+                      <div className="grid gap-2">
+                        <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Launch-only auth key</label>
+                        <Input
+                          type="password"
+                          value={remoteTailscaleAuthKey}
+                          onChange={(event) => setRemoteTailscaleAuthKey(event.target.value)}
+                          disabled={submitting || remotePreflightLoading}
+                          placeholder="tskey-..."
+                        />
+                        <div className="text-xs text-[var(--app-text-muted)]">
+                          Use a reusable short-lived Tailscale key for multi-launch testing. Swarm does not store the raw key in Pebble, startup config, or artifacts.
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-[var(--app-text-muted)]">
+                        Manual mode will show the child&apos;s Tailscale login URL after launch so you can approve it in the browser.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Remote reachable host</label>
+                    <Input
+                      value={remoteReachableHost}
+                      onChange={(event) => {
+                        setRemoteReachableHost(event.target.value)
+                        setRemotePreflightSession(null)
+                        setRemotePreflightError(null)
+                        setRemotePreflightGuidance(null)
+                      }}
+                      disabled={submitting || remotePreflightLoading}
+                      placeholder={remoteReachableHostCandidate(remoteSSHTarget) || '10.0.0.12'}
+                    />
+                    <div className="text-xs text-[var(--app-text-muted)]">
+                      Enter the remote machine&apos;s LAN, WireGuard, or tunnel host/IP that this master should use after SSH install. Do not use an SSH alias unless other machines can resolve it too.
+                    </div>
+                    {remoteReachableHostSuggestions.length > 0 ? (
+                      <div className="grid gap-2">
+                        <div className="text-xs text-[var(--app-text-muted)]">Detected on the remote host during preflight:</div>
+                        <div className="flex flex-wrap gap-2">
+                          {remoteReachableHostSuggestions.map((candidate) => {
+                            const selected = candidate === remoteReachableHost.trim()
+                            return (
+                              <button
+                                key={candidate}
+                                type="button"
+                                className={`rounded-md border px-2 py-1 text-xs transition ${
+                                  selected
+                                    ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]'
+                                    : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                                }`}
+                                onClick={() => {
+                                  setRemoteReachableHost(candidate)
+                                  if (remotePreflightSession?.remote_advertise_host?.trim() !== candidate) {
+                                    setRemotePreflightSession(null)
+                                  }
+                                  setRemotePreflightError(null)
+                                  setRemotePreflightGuidance(null)
+                                }}
+                                disabled={submitting || remotePreflightLoading}
+                              >
+                                {candidate}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                    {masterLANCallbackGuidance ? (
+                      <div
+                        className={`rounded-2xl border p-4 text-sm ${
+                          masterLANCallbackGuidance.blocking
+                            ? 'border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] text-[var(--app-warning-text)]'
+                            : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'
+                        }`}
+                      >
+                        <div className="font-medium text-[var(--app-text)]">{masterLANCallbackGuidance.title}</div>
+                        <ul className="mt-3 list-disc space-y-2 pl-5">
+                          {masterLANCallbackGuidance.details.map((detail) => (
+                            <li key={detail}>{detail}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+
                 <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                   <div className="font-medium text-[var(--app-text)]">Preflight summary shown before execution</div>
                   <ul className="mt-3 list-disc space-y-2 pl-5">
                     <li>This will send only Git-tracked workspace files from the selected folders to the remote server as payload archives.</li>
                     <li>This will also build the Swarm container locally, export it as an image archive, copy it to the remote server, and start it there.</li>
                     <li>The remote install path copies: image archive, rendered <code>swarm.conf</code>, installer script, and Git-tracked workspace payload archives only.</li>
-                    <li>The launched remote child is configured to call back to this master over this master&apos;s Tailscale transport/base URL.</li>
+                    <li>The launched remote child is configured to call back to this master over the selected transport endpoint.</li>
                     <li>Persistence: install or update a dedicated systemd unit when available.</li>
-                    <li>Attach flow: remote child must come back over Tailscale, then you explicitly approve it here.</li>
+                    <li>Attach flow: remote child must come back over the selected transport, then you explicitly approve it here.</li>
                   </ul>
                 </div>
               </Card>
@@ -1456,45 +1880,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 ) : null}
               </Card>
 
-              <Card className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-5">
-                <div className="grid gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">4. Tailscale login</div>
-                  <div className="text-xs text-[var(--app-text-muted)]">
-                    Choose manual browser approval or paste a launch-only Tailscale auth key. The raw key is used only for this launch and is not saved by Swarm.
-                  </div>
-                </div>
-                <div className="grid gap-2 sm:max-w-xs">
-                  <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Login mode</label>
-                  <Select
-                    value={remoteTailscaleAuthMode}
-                    onChange={(event) => setRemoteTailscaleAuthMode(event.target.value === 'key' ? 'key' : 'manual')}
-                    disabled={submitting || remotePreflightLoading}
-                  >
-                    <option value="manual">Manual URL</option>
-                    <option value="key">Tailscale auth key</option>
-                  </Select>
-                </div>
-                {remoteTailscaleAuthMode === 'key' ? (
-                  <div className="grid gap-2">
-                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Launch-only auth key</label>
-                    <Input
-                      type="password"
-                      value={remoteTailscaleAuthKey}
-                      onChange={(event) => setRemoteTailscaleAuthKey(event.target.value)}
-                      disabled={submitting || remotePreflightLoading}
-                      placeholder="tskey-..."
-                    />
-                    <div className="text-xs text-[var(--app-text-muted)]">
-                      Use a reusable short-lived Tailscale key for multi-launch testing. Swarm does not store the raw key in Pebble, startup config, or artifacts.
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-xs text-[var(--app-text-muted)]">
-                    Manual mode will show the child&apos;s Tailscale login URL after launch so you can approve it in the browser.
-                  </div>
-                )}
-              </Card>
-
               {remotePreflightError ? (
                 <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">
                   <div className="font-medium">{remotePreflightGuidance?.title || 'Remote preflight failed'}</div>
@@ -1524,6 +1909,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   </div>
                   <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-2">
                     <div><span className="font-medium text-[var(--app-text)]">Host:</span> {remotePreflightSession.ssh_session_target || remoteSSHTarget.trim()}</div>
+                    <div><span className="font-medium text-[var(--app-text)]">Deploy method:</span> {remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim() || 'required'}`}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Builder runtime:</span> {remotePreflightSession.preflight.builder_runtime || 'unknown'}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession.preflight.remote_runtime || 'unknown'}</div>
@@ -1534,7 +1920,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
               <Card className="grid gap-4 p-5">
                 <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">5. Name this swarm</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">4. Name this swarm</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
                     This names the swarm that will appear in the group after launch.
                   </div>
@@ -1554,11 +1940,12 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           ) : null}
 
           <Card className="grid gap-4 p-5">
-            <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'local' ? '6. Ready to add?' : '6. Ready to add?'}</div>
+            <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'local' ? '6. Ready to add?' : '5. Ready to add?'}</div>
             {launchTarget === 'remote' ? (
               <div className="grid gap-2 text-sm text-[var(--app-text-muted)]">
                 <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote container</div>
                 <div><span className="font-medium text-[var(--app-text)]">SSH target:</span> {remoteSSHTarget.trim() || 'Required'}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Deploy method:</span> {remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim() || 'Required'}`}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Preflight:</span> {remotePreflightSession ? 'Passed' : (remotePreflightLoading ? 'Running…' : 'Required before launch')}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession?.preflight.remote_runtime || 'Unknown until preflight'}</div>
@@ -1597,7 +1984,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 || !group?.group.id.trim()
                 || (launchTarget === 'local'
                   ? !runtimeChoice || !swarmName.trim() || selectedWorkspaceCountValue === 0
-                  : !swarmName.trim() || !remoteSSHTarget.trim() || !remotePreflightSession || remotePreflightLoading)
+                  : !swarmName.trim() || !remoteSSHTarget.trim() || !remotePreflightSession || remotePreflightLoading || (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()))
               }
             >
               {submitting ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}

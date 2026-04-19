@@ -373,6 +373,11 @@ export function SwarmSettingsPage() {
             <p className="max-w-xl text-sm text-[var(--app-text-muted)]">
               Swarm auto-detects a LAN host for normal setups. Local Add Swarm containers also use this advertised host when they call back to the master, but the master backend must also be bound to a non-loopback `host` in `swarm.conf`. Change this only when you need to override the advertised LAN endpoint for containers or advanced networking. It is saved as `advertise_host` in `swarm.conf`.
             </p>
+            {localOnlyBind ? (
+              <div className="max-w-2xl rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning-text)]">
+                Remote LAN / WireGuard children cannot call back while the master backend is still bound to localhost. `advertise_host` only changes the announced endpoint. It does not move the listener. Update `host` in `swarm.conf` to a reachable LAN / VPN address, then restart Swarm before using LAN / WireGuard remote deploy.
+              </div>
+            ) : null}
             <label className="text-sm font-medium text-[var(--app-text)]">Backend API port</label>
             <Input
               type="text"

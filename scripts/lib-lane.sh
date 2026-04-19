@@ -99,8 +99,10 @@ deploy_container_enabled = false
 deploy_container_host_driven = false
 deploy_container_sync_enabled = false
 deploy_container_sync_mode =
+deploy_container_sync_modules =
 deploy_container_sync_owner_swarm_id =
 deploy_container_sync_credential_url =
+deploy_container_sync_agent_url =
 deploy_container_deployment_id =
 deploy_container_host_api_base_url =
 deploy_container_host_desktop_url =
@@ -363,11 +365,14 @@ deploy_container_enabled = false
 deploy_container_host_driven = false
 deploy_container_sync_enabled = false
 deploy_container_sync_mode =
+deploy_container_sync_modules =
 deploy_container_sync_owner_swarm_id =
 deploy_container_sync_credential_url =
+deploy_container_sync_agent_url =
 deploy_container_deployment_id =
 deploy_container_host_api_base_url =
 deploy_container_host_desktop_url =
+deploy_container_local_transport_socket_path =
 deploy_container_bootstrap_secret =
 deploy_container_verification_code =
 EOF
@@ -391,6 +396,12 @@ deploy_container_sync_mode =
 EOF
   fi
 
+  if ! swarm_startup_config_has_key deploy_container_sync_modules; then
+    cat >>"${config_path}" <<'EOF'
+deploy_container_sync_modules =
+EOF
+  fi
+
   if ! swarm_startup_config_has_key deploy_container_sync_owner_swarm_id; then
     cat >>"${config_path}" <<'EOF'
 deploy_container_sync_owner_swarm_id =
@@ -400,6 +411,18 @@ EOF
   if ! swarm_startup_config_has_key deploy_container_sync_credential_url; then
     cat >>"${config_path}" <<'EOF'
 deploy_container_sync_credential_url =
+EOF
+  fi
+
+  if ! swarm_startup_config_has_key deploy_container_sync_agent_url; then
+    cat >>"${config_path}" <<'EOF'
+deploy_container_sync_agent_url =
+EOF
+  fi
+
+  if ! swarm_startup_config_has_key deploy_container_local_transport_socket_path; then
+    cat >>"${config_path}" <<'EOF'
+deploy_container_local_transport_socket_path =
 EOF
   fi
 
@@ -484,8 +507,10 @@ swarm_startup_config_validate() {
       valid["deploy_container_host_driven"] = 1
       valid["deploy_container_sync_enabled"] = 1
       valid["deploy_container_sync_mode"] = 1
+      valid["deploy_container_sync_modules"] = 1
       valid["deploy_container_sync_owner_swarm_id"] = 1
       valid["deploy_container_sync_credential_url"] = 1
+      valid["deploy_container_sync_agent_url"] = 1
       valid["deploy_container_deployment_id"] = 1
       valid["deploy_container_host_api_base_url"] = 1
       valid["deploy_container_host_desktop_url"] = 1
@@ -508,8 +533,10 @@ swarm_startup_config_validate() {
       allow_empty["parent_swarm_id"] = 1
       allow_empty["pairing_state"] = 1
       allow_empty["deploy_container_sync_mode"] = 1
+      allow_empty["deploy_container_sync_modules"] = 1
       allow_empty["deploy_container_sync_owner_swarm_id"] = 1
       allow_empty["deploy_container_sync_credential_url"] = 1
+      allow_empty["deploy_container_sync_agent_url"] = 1
       allow_empty["deploy_container_deployment_id"] = 1
       allow_empty["deploy_container_host_api_base_url"] = 1
       allow_empty["deploy_container_host_desktop_url"] = 1
@@ -615,11 +642,17 @@ swarm_startup_config_validate() {
       if (!("deploy_container_sync_mode" in seen)) {
         fail(sprintf("invalid startup config %s: missing deploy_container_sync_mode", config_path))
       }
+      if (!("deploy_container_sync_modules" in seen)) {
+        fail(sprintf("invalid startup config %s: missing deploy_container_sync_modules", config_path))
+      }
       if (!("deploy_container_sync_owner_swarm_id" in seen)) {
         fail(sprintf("invalid startup config %s: missing deploy_container_sync_owner_swarm_id", config_path))
       }
       if (!("deploy_container_sync_credential_url" in seen)) {
         fail(sprintf("invalid startup config %s: missing deploy_container_sync_credential_url", config_path))
+      }
+      if (!("deploy_container_sync_agent_url" in seen)) {
+        fail(sprintf("invalid startup config %s: missing deploy_container_sync_agent_url", config_path))
       }
       if (!("deploy_container_deployment_id" in seen)) {
         fail(sprintf("invalid startup config %s: missing deploy_container_deployment_id", config_path))

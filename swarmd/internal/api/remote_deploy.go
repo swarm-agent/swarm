@@ -50,14 +50,16 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		return
 	}
 	var req struct {
-		Name              string `json:"name"`
-		SSHSessionTarget  string `json:"ssh_session_target"`
-		GroupID           string `json:"group_id"`
-		GroupName         string `json:"group_name"`
-		RemoteRuntime     string `json:"remote_runtime"`
-		SyncEnabled       bool   `json:"sync_enabled"`
-		BypassPermissions bool   `json:"bypass_permissions,omitempty"`
-		ContainerPackages struct {
+		Name                string `json:"name"`
+		SSHSessionTarget    string `json:"ssh_session_target"`
+		TransportMode       string `json:"transport_mode,omitempty"`
+		RemoteAdvertiseHost string `json:"remote_advertise_host,omitempty"`
+		GroupID             string `json:"group_id"`
+		GroupName           string `json:"group_name"`
+		RemoteRuntime       string `json:"remote_runtime"`
+		SyncEnabled         bool   `json:"sync_enabled"`
+		BypassPermissions   bool   `json:"bypass_permissions,omitempty"`
+		ContainerPackages   struct {
 			BaseImage      string `json:"base_image,omitempty"`
 			PackageManager string `json:"package_manager,omitempty"`
 			Packages       []struct {
@@ -97,13 +99,15 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		})
 	}
 	session, err := s.remoteDeploys.Create(context.Background(), remotedeploy.CreateSessionInput{
-		Name:              req.Name,
-		SSHSessionTarget:  req.SSHSessionTarget,
-		GroupID:           req.GroupID,
-		GroupName:         req.GroupName,
-		RemoteRuntime:     req.RemoteRuntime,
-		SyncEnabled:       req.SyncEnabled,
-		BypassPermissions: req.BypassPermissions,
+		Name:                req.Name,
+		SSHSessionTarget:    req.SSHSessionTarget,
+		TransportMode:       req.TransportMode,
+		RemoteAdvertiseHost: req.RemoteAdvertiseHost,
+		GroupID:             req.GroupID,
+		GroupName:           req.GroupName,
+		RemoteRuntime:       req.RemoteRuntime,
+		SyncEnabled:         req.SyncEnabled,
+		BypassPermissions:   req.BypassPermissions,
 		ContainerPackages: remotedeploy.ContainerPackageManifest{
 			BaseImage:      req.ContainerPackages.BaseImage,
 			PackageManager: req.ContainerPackages.PackageManager,
