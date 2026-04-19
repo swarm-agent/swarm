@@ -19,7 +19,7 @@ func openAuthStore(t *testing.T, name string) *pebblestore.AuthStore {
 	return pebblestore.NewAuthStore(store)
 }
 
-func TestImportManagedCredentialsKeepsPlainStorageAndReplacesSnapshot(t *testing.T) {
+func TestImportManagedCredentialsKeepsEncryptedStorageAndReplacesSnapshot(t *testing.T) {
 	const ownerSwarmID = "swarm_host"
 	const bundlePassword = "bundle-password"
 
@@ -72,10 +72,10 @@ func TestImportManagedCredentialsKeepsPlainStorageAndReplacesSnapshot(t *testing
 		t.Fatalf("child vault status: %v", err)
 	}
 	if childVault.Enabled {
-		t.Fatalf("child vault enabled = true, want false for plain-stage import")
+		t.Fatalf("child vault enabled = true, want false for default encrypted import")
 	}
-	if childVault.StorageMode != "pebble/plain" {
-		t.Fatalf("child storage mode = %q, want pebble/plain", childVault.StorageMode)
+	if childVault.StorageMode != "pebble/encrypted" {
+		t.Fatalf("child storage mode = %q, want pebble/encrypted", childVault.StorageMode)
 	}
 	childRecords, err := childStore.ListCredentials("fireworks", 10)
 	if err != nil {

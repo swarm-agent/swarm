@@ -12,7 +12,8 @@ import (
 )
 
 type Store struct {
-	db *pebble.DB
+	db   *pebble.DB
+	path string
 }
 
 func Open(path string) (*Store, error) {
@@ -23,7 +24,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open pebble db: %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, path: path}, nil
 }
 
 func (s *Store) Close() error {
@@ -31,6 +32,13 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func (s *Store) Path() string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.path)
 }
 
 func (s *Store) PutBytes(key string, value []byte) error {

@@ -225,7 +225,10 @@ func TestSyncManagedCredentialsOncePullsUpdatedSnapshot(t *testing.T) {
 		t.Fatalf("child vault status after initial sync: %v", err)
 	}
 	if childVault.Enabled {
-		t.Fatalf("child vault enabled after initial sync = true, want false for stage-1 plain sync")
+		t.Fatalf("child vault enabled after initial sync = true, want false for default encrypted sync")
+	}
+	if childVault.StorageMode != "pebble/encrypted" {
+		t.Fatalf("child vault storage mode after initial sync = %q, want pebble/encrypted", childVault.StorageMode)
 	}
 
 	initialHash := pairing.ManagedAuthSnapshotHash

@@ -142,7 +142,7 @@ func NewService(authStore *pebblestore.AuthStore, events *pebblestore.EventLog) 
 
 func (s *Service) VaultStatus() (VaultStatus, error) {
 	if s == nil || s.authStore == nil {
-		return VaultStatus{Enabled: false, Unlocked: true, StorageMode: "pebble/plain"}, nil
+		return VaultStatus{Enabled: false, Unlocked: true, StorageMode: "pebble/encrypted"}, nil
 	}
 	return s.authStore.VaultStatus()
 }
@@ -245,7 +245,7 @@ func (s *Service) CodexStatus() (CodexStatus, error) {
 		return CodexStatus{}, fmt.Errorf("read codex auth: %w", err)
 	}
 	if !ok {
-		storageMode := "pebble/plain"
+		storageMode := "pebble/encrypted"
 		if s.authStore != nil {
 			storageMode = s.authStore.StorageMode()
 		}
@@ -397,7 +397,7 @@ func (s *Service) GetCredentialRecord(provider, credentialID string) (pebblestor
 }
 
 func (s *Service) statusFromRecord(record pebblestore.CodexAuthRecord) CodexStatus {
-	storageMode := "pebble/plain"
+	storageMode := "pebble/encrypted"
 	if s != nil && s.authStore != nil {
 		storageMode = s.authStore.StorageMode()
 	}
@@ -421,7 +421,7 @@ func (s *Service) statusFromRecord(record pebblestore.CodexAuthRecord) CodexStat
 }
 
 func (s *Service) credentialStatusFromRecord(record pebblestore.AuthCredentialRecord, active bool) CredentialStatus {
-	storageMode := "pebble/plain"
+	storageMode := "pebble/encrypted"
 	if s != nil && s.authStore != nil {
 		storageMode = s.authStore.StorageMode()
 	}

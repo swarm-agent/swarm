@@ -58,6 +58,7 @@ type Daemon struct {
 	cfg                       config.Config
 	lock                      *lock.FileLock
 	store                     *pebblestore.Store
+	secretStore               *pebblestore.Store
 	events                    *pebblestore.EventLog
 	hub                       *stream.Hub
 	apiServer                 *api.Server
@@ -118,16 +119,23 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, err
 	}
-
-	events, err := pebblestore.NewEventLog(store)
+	secretStore, err := pebblestore.Open(filepath.Join(cfg.DataDir, "swarmd-secrets.pebble"))
 	if err != nil {
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, err
 	}
 
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, err
+	}
+
 	hub := stream.NewHub(events)
-	authStore := pebblestore.NewAuthStore(store)
+	authStore := pebblestore.NewAuthStoreWithSecretStore(store, secretStore)
 	authSvc := auth.NewService(authStore, events)
 	codexClient := codex.NewClient(authStore)
 	toolRuntime := tool.NewRuntime(8)
@@ -197,6 +205,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed ui swarm name: %w", err)
@@ -272,11 +281,13 @@ func New(cfg config.Config) (*Daemon, error) {
 	runSvc.SetEventPublisher(hub.Publish)
 
 	if err := agentSvc.EnsureDefaults(); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed default agents: %w", err)
 	}
 	if err := modelSvc.EnsureBootDefaults(); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("load default model stack: %w", err)
@@ -285,11 +296,13 @@ func New(cfg config.Config) (*Daemon, error) {
 		log.Printf("warning: refresh model catalog: %v", err)
 	}
 	if _, err := securitySvc.EnsureAttachAuth(); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("ensure attach auth token: %w", err)
 	}
 	if err := mcpSvc.EnsureDefaults(); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed mcp defaults: %w", err)
@@ -333,6 +346,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		cfg:                       cfg,
 		lock:                      lk,
 		store:                     store,
+		secretStore:               secretStore,
 		events:                    events,
 		hub:                       hub,
 		apiServer:                 apiServer,
@@ -464,6 +478,12 @@ func (d *Daemon) cleanup() error {
 				errs = append(errs, fmt.Errorf("close store: %w", err))
 			}
 			d.store = nil
+		}
+		if d.secretStore != nil {
+			if err := d.secretStore.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close secret store: %w", err))
+			}
+			d.secretStore = nil
 		}
 		if d.lock != nil {
 			if err := d.lock.Release(); err != nil {
