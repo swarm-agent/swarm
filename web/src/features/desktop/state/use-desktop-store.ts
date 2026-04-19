@@ -559,17 +559,24 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
   if (!session) {
     return null
   }
-  if (session.lifecycle && !session.lifecycle.active) {
-    return null
-  }
   if (session.live.status === 'idle' || session.live.status === 'error') {
-    return null
-  }
-  if (session.live.summary?.trim() === 'Reconnecting…' && !session.lifecycle?.active && !session.live.runId?.trim()) {
     return null
   }
   const runId = resolveRunStreamId(session, fallbackRunId)
   if (!runId) {
+    return null
+  }
+  if (session.lifecycle && !session.lifecycle.active) {
+    const liveStatus = session.live.status
+    const canResumeNewlyAcceptedRun = session.live.awaitingAck
+      || liveStatus === 'starting'
+      || liveStatus === 'running'
+      || liveStatus === 'blocked'
+    if (!canResumeNewlyAcceptedRun) {
+      return null
+    }
+  }
+  if (session.live.summary?.trim() === 'Reconnecting…' && !session.lifecycle?.active && !session.live.runId?.trim()) {
     return null
   }
   return {
