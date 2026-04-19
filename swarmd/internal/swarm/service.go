@@ -144,6 +144,16 @@ type CreateInviteInput struct {
 	TTL                  time.Duration
 }
 
+type EnsureInviteInput struct {
+	Token                string
+	PrimarySwarmID       string
+	PrimaryName          string
+	GroupID              string
+	TransportMode        string
+	RendezvousTransports []TransportSummary
+	TTL                  time.Duration
+}
+
 type SubmitEnrollmentInput struct {
 	InviteToken          string
 	PrimarySwarmID       string
@@ -446,65 +456,9 @@ func (s *Service) CreateInvite(input CreateInviteInput) (Invite, error) {
 	if s == nil || s.store == nil {
 		return Invite{}, errors.New("swarm service is not configured")
 	}
-	primarySwarmID := strings.TrimSpace(input.PrimarySwarmID)
-	if primarySwarmID == "" {
-		return Invite{}, errors.New("primary swarm id is required")
-	}
-	groupID := strings.TrimSpace(input.GroupID)
-	if localNode, ok, err := s.store.GetLocalNode(); err != nil {
-		return Invite{}, err
-	} else if ok && strings.EqualFold(strings.TrimSpace(localNode.SwarmID), primarySwarmID) {
-		if groupID == "" {
-			currentGroupID, currentOK, err := s.store.GetCurrentGroupID()
-			if err != nil {
-				return Invite{}, err
-			}
-			if currentOK {
-				groupID = currentGroupID
-			}
-		}
-		if groupID == "" {
-			group, err := s.ensureLocalHostGroup(localNode, firstNonEmpty(strings.TrimSpace(input.PrimaryName), localNode.Name))
-			if err != nil {
-				return Invite{}, err
-			}
-			groupID = group.ID
-		}
-	}
-	if groupID != "" {
-		group, ok, err := s.store.GetGroup(groupID)
-		if err != nil {
-			return Invite{}, err
-		}
-		if !ok {
-			return Invite{}, errors.New("group not found")
-		}
-		if !strings.EqualFold(group.HostSwarmID, primarySwarmID) {
-			return Invite{}, errors.New("invite group must be hosted by the primary swarm")
-		}
-	}
-	inviteID, err := GenerateSwarmID()
+	record, err := s.buildInviteRecord(strings.TrimSpace(input.PrimarySwarmID), strings.TrimSpace(input.PrimaryName), strings.TrimSpace(input.GroupID), strings.TrimSpace(input.TransportMode), input.RendezvousTransports, input.TTL, "")
 	if err != nil {
 		return Invite{}, err
-	}
-	token, err := randomHex(24)
-	if err != nil {
-		return Invite{}, err
-	}
-	ttl := input.TTL
-	if ttl <= 0 {
-		ttl = 15 * time.Minute
-	}
-	now := time.Now().UnixMilli()
-	record := pebblestore.SwarmInviteRecord{
-		ID:                   inviteID,
-		Token:                token,
-		PrimarySwarmID:       primarySwarmID,
-		PrimaryName:          strings.TrimSpace(input.PrimaryName),
-		GroupID:              groupID,
-		TransportMode:        strings.ToLower(strings.TrimSpace(input.TransportMode)),
-		RendezvousTransports: toStoreTransports(input.RendezvousTransports),
-		ExpiresAt:            now + ttl.Milliseconds(),
 	}
 	record, err = s.store.PutInvite(record)
 	if err != nil {
@@ -512,6 +466,119 @@ func (s *Service) CreateInvite(input CreateInviteInput) (Invite, error) {
 	}
 	_, _ = s.appendEvent("swarm:pairing", "swarm.invite.created", record.ID, record)
 	return toInvite(record), nil
+}
+
+func (s *Service) EnsureInvite(input EnsureInviteInput) (Invite, error) {
+	if s == nil || s.store == nil {
+		return Invite{}, errors.New("swarm service is not configured")
+	}
+	token := strings.TrimSpace(input.Token)
+	if token == "" {
+		return Invite{}, errors.New("invite token is required")
+	}
+	existing, ok, err := s.store.FindInviteByToken(token)
+	if err != nil {
+		return Invite{}, err
+	}
+	if ok {
+		if err := s.validateInviteRecord(existing, strings.TrimSpace(input.PrimarySwarmID), strings.TrimSpace(input.GroupID)); err != nil {
+			return Invite{}, err
+		}
+		ttl := input.TTL
+		if ttl <= 0 {
+			ttl = 15 * time.Minute
+		}
+		if existing.ConsumedAt == 0 && existing.ExpiresAt > 0 && existing.ExpiresAt < time.Now().UnixMilli() {
+			existing.ExpiresAt = time.Now().Add(ttl).UnixMilli()
+			existing, err = s.store.PutInvite(existing)
+			if err != nil {
+				return Invite{}, err
+			}
+		}
+		return toInvite(existing), nil
+	}
+	record, err := s.buildInviteRecord(strings.TrimSpace(input.PrimarySwarmID), strings.TrimSpace(input.PrimaryName), strings.TrimSpace(input.GroupID), strings.TrimSpace(input.TransportMode), input.RendezvousTransports, input.TTL, token)
+	if err != nil {
+		return Invite{}, err
+	}
+	record, err = s.store.PutInvite(record)
+	if err != nil {
+		return Invite{}, err
+	}
+	_, _ = s.appendEvent("swarm:pairing", "swarm.invite.restored", record.ID, record)
+	return toInvite(record), nil
+}
+
+func (s *Service) buildInviteRecord(primarySwarmID, primaryName, groupID, transportMode string, rendezvous []TransportSummary, ttl time.Duration, token string) (pebblestore.SwarmInviteRecord, error) {
+	if primarySwarmID == "" {
+		return pebblestore.SwarmInviteRecord{}, errors.New("primary swarm id is required")
+	}
+	if localNode, ok, err := s.store.GetLocalNode(); err != nil {
+		return pebblestore.SwarmInviteRecord{}, err
+	} else if ok && strings.EqualFold(strings.TrimSpace(localNode.SwarmID), primarySwarmID) {
+		if groupID == "" {
+			currentGroupID, currentOK, err := s.store.GetCurrentGroupID()
+			if err != nil {
+				return pebblestore.SwarmInviteRecord{}, err
+			}
+			if currentOK {
+				groupID = currentGroupID
+			}
+		}
+		if groupID == "" {
+			group, err := s.ensureLocalHostGroup(localNode, firstNonEmpty(primaryName, localNode.Name))
+			if err != nil {
+				return pebblestore.SwarmInviteRecord{}, err
+			}
+			groupID = group.ID
+		}
+	}
+	if groupID != "" {
+		group, ok, err := s.store.GetGroup(groupID)
+		if err != nil {
+			return pebblestore.SwarmInviteRecord{}, err
+		}
+		if !ok {
+			return pebblestore.SwarmInviteRecord{}, errors.New("group not found")
+		}
+		if !strings.EqualFold(group.HostSwarmID, primarySwarmID) {
+			return pebblestore.SwarmInviteRecord{}, errors.New("invite group must be hosted by the primary swarm")
+		}
+	}
+	inviteID, err := GenerateSwarmID()
+	if err != nil {
+		return pebblestore.SwarmInviteRecord{}, err
+	}
+	if token == "" {
+		token, err = randomHex(24)
+		if err != nil {
+			return pebblestore.SwarmInviteRecord{}, err
+		}
+	}
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	now := time.Now().UnixMilli()
+	return pebblestore.SwarmInviteRecord{
+		ID:                   inviteID,
+		Token:                token,
+		PrimarySwarmID:       primarySwarmID,
+		PrimaryName:          primaryName,
+		GroupID:              groupID,
+		TransportMode:        strings.ToLower(strings.TrimSpace(transportMode)),
+		RendezvousTransports: toStoreTransports(rendezvous),
+		ExpiresAt:            now + ttl.Milliseconds(),
+	}, nil
+}
+
+func (s *Service) validateInviteRecord(record pebblestore.SwarmInviteRecord, primarySwarmID, groupID string) error {
+	if primarySwarmID != "" && !strings.EqualFold(strings.TrimSpace(record.PrimarySwarmID), primarySwarmID) {
+		return errors.New("invite token belongs to a different primary swarm")
+	}
+	if groupID != "" && !strings.EqualFold(strings.TrimSpace(record.GroupID), groupID) {
+		return errors.New("invite token belongs to a different group")
+	}
+	return nil
 }
 
 func (s *Service) SubmitEnrollment(input SubmitEnrollmentInput) (Enrollment, error) {

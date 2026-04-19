@@ -13,6 +13,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tailscalehttp"
 )
 
 const (
@@ -182,7 +183,11 @@ func (c *HostedSyncClient) resolveEndpoint(descriptor HostedSessionDescriptor, p
 	if baseURL == "" {
 		return "", nil, false, errors.New("hosted session host backend url is not configured")
 	}
-	return strings.TrimRight(baseURL, "/") + path, c.httpClient, false, nil
+	client, err := tailscalehttp.ClientForEndpoint(baseURL, c.httpClient)
+	if err != nil {
+		return "", nil, false, err
+	}
+	return strings.TrimRight(baseURL, "/") + path, client, false, nil
 }
 
 func (c *HostedSyncClient) addPeerAuthHeaders(req *http.Request, hostSwarmID string) error {

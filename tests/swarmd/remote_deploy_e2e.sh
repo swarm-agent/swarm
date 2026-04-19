@@ -135,10 +135,21 @@ api_request() {
     --max-time "${max_time_seconds}"
     -o "${body_file}"
     -w '%{http_code}'
-    -H "Authorization: Bearer ${ATTACH_TOKEN}"
     -H 'Accept: application/json'
     -X "${method}"
   )
+  if [[ -n "${ATTACH_TOKEN:-}" ]]; then
+    args+=(-H "Authorization: Bearer ${ATTACH_TOKEN}")
+  fi
+  if [[ -n "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" ]]; then
+    args+=(
+      -c "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
+      -b "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
+      -H "Origin: ${HOST_ADMIN_API_URL%/}"
+      -H "Referer: ${HOST_ADMIN_API_URL%/}/"
+      -H 'Sec-Fetch-Site: same-origin'
+    )
+  fi
   if [[ -n "${body}" ]]; then
     request_body_file="$(mktemp)"
     printf '%s' "${body}" >"${request_body_file}"
@@ -520,14 +531,17 @@ stop_host() {
 }
 
 fetch_attach_token() {
-  local response
-  response="$(curl -fsS \
+  if [[ -z "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" ]]; then
+    HOST_DESKTOP_SESSION_COOKIE_FILE="$(mktemp)"
+  fi
+  curl -fsS \
+    -c "${HOST_DESKTOP_SESSION_COOKIE_FILE}" \
+    -b "${HOST_DESKTOP_SESSION_COOKIE_FILE}" \
     -H "Origin: ${HOST_ADMIN_API_URL%/}" \
     -H "Referer: ${HOST_ADMIN_API_URL%/}/" \
     -H 'Sec-Fetch-Site: same-origin' \
-    "${HOST_ADMIN_API_URL%/}/v1/auth/attach/token")"
-  ATTACH_TOKEN="$(printf '%s' "${response}" | jq -r '.token // empty')"
-  [[ -n "${ATTACH_TOKEN}" ]] || fail "failed to fetch attach token from ${HOST_ADMIN_API_URL%/}/v1/auth/attach/token"
+    "${HOST_ADMIN_API_URL%/}/v1/auth/desktop/session" >/dev/null
+  ATTACH_TOKEN=""
 }
 
 maybe_rebuild_host() {
@@ -943,7 +957,7 @@ cleanup_remote_sessions() {
   if (( ${#SESSION_IDS[@]} == 0 )); then
     populate_session_arrays_from_remote_sessions
   fi
-  local idx session_id target session_json remote_root systemd_unit remote_runtime image_ref
+  local idx session_id target session_json remote_root systemd_unit
   for idx in "${!SESSION_IDS[@]}"; do
     session_id="${SESSION_IDS[$idx]}"
     target="${SESSION_TARGETS[$idx]}"
@@ -951,8 +965,6 @@ cleanup_remote_sessions() {
     [[ -n "${session_json}" ]] || continue
     remote_root="$(printf '%s' "${session_json}" | jq -r '.preflight.remote_root // empty')"
     systemd_unit="$(printf '%s' "${session_json}" | jq -r '.preflight.systemd_unit // empty')"
-    remote_runtime="$(printf '%s' "${session_json}" | jq -r '.remote_runtime // "docker"')"
-    image_ref="$(printf '%s' "${session_json}" | jq -r '.image_ref // empty')"
     log "Cleaning remote session ${session_id} on ${target}"
     ssh "${target}" "bash -lc $(printf '%q' "set -euo pipefail
 if [ -n '${systemd_unit}' ]; then
@@ -962,17 +974,6 @@ if [ -n '${systemd_unit}' ]; then
     sudo rm -f \"\${unit_path}\" >/dev/null 2>&1 || true
   fi
   sudo systemctl daemon-reload >/dev/null 2>&1 || true
-fi
-if [ '${remote_runtime}' = 'podman' ]; then
-  podman rm -f swarm-remote-child >/dev/null 2>&1 || true
-  if [ -n '${image_ref}' ]; then
-    podman image rm '${image_ref}' >/dev/null 2>&1 || true
-  fi
-else
-  sudo docker rm -f swarm-remote-child >/dev/null 2>&1 || true
-  if [ -n '${image_ref}' ]; then
-    sudo docker image rm '${image_ref}' >/dev/null 2>&1 || true
-  fi
 fi
 if [ -n '${remote_root}' ]; then
   rm -rf '${remote_root}'

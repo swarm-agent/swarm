@@ -26,6 +26,7 @@ import (
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	"swarm/packages/swarmd/internal/tailscalehttp"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
@@ -1997,6 +1998,14 @@ func (s *Service) bootstrapHTTPClient(socketPath string) *http.Client {
 	return newUnixSocketBootstrapClient(socketPath)
 }
 
+func (s *Service) bootstrapHTTPClientForEndpoint(socketPath, endpoint string) (*http.Client, error) {
+	client := s.bootstrapHTTPClient(socketPath)
+	if strings.TrimSpace(socketPath) != "" {
+		return client, nil
+	}
+	return tailscalehttp.ClientForEndpoint(endpoint, client)
+}
+
 func (s *Service) postLocalAttachRequest(ctx context.Context, endpoint, socketPath string, payload map[string]any) (ContainerAttachState, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -2008,7 +2017,11 @@ func (s *Service) postLocalAttachRequest(ctx context.Context, endpoint, socketPa
 		return ContainerAttachState{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.bootstrapHTTPClient(socketPath).Do(req)
+	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
+	if err != nil {
+		return ContainerAttachState{}, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ContainerAttachState{}, err
 	}
@@ -2071,7 +2084,11 @@ func (s *Service) postLocalAttachApprove(ctx context.Context, endpoint, socketPa
 		return ContainerAttachState{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.bootstrapHTTPClient(socketPath).Do(req)
+	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
+	if err != nil {
+		return ContainerAttachState{}, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ContainerAttachState{}, err
 	}
@@ -2293,7 +2310,11 @@ func (s *Service) fetchSyncAgentBundle(ctx context.Context, cfg startupconfig.Fi
 	}
 	req.Header.Set("Content-Type", "application/json")
 	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
-	resp, err := s.bootstrapHTTPClient(socketPath).Do(req)
+	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
+	if err != nil {
+		return ContainerSyncAgentBundle{}, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ContainerSyncAgentBundle{}, err
 	}
@@ -2612,7 +2633,11 @@ func (s *Service) fetchSyncCredentialBundle(ctx context.Context, cfg startupconf
 	}
 	req.Header.Set("Content-Type", "application/json")
 	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
-	resp, err := s.bootstrapHTTPClient(socketPath).Do(req)
+	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
+	if err != nil {
+		return ContainerSyncCredentialBundle{}, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
@@ -2663,7 +2688,11 @@ func (s *Service) fetchRemoteDeploySyncCredentialBundle(ctx context.Context, cfg
 	}
 	req.Header.Set("Content-Type", "application/json")
 	s.addPeerAuthHeaders(req, ownerSwarmID)
-	resp, err := s.bootstrapHTTPClient("").Do(req)
+	client, err := s.bootstrapHTTPClientForEndpoint("", endpoint)
+	if err != nil {
+		return ContainerSyncCredentialBundle{}, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
@@ -2907,7 +2936,11 @@ func (s *Service) fetchWorkspaceBootstrap(ctx context.Context, cfg startupconfig
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.bootstrapHTTPClient(socketPath).Do(req)
+	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

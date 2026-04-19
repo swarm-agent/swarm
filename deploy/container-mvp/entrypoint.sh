@@ -5,6 +5,7 @@ TS_SOCKET="${TS_SOCKET:?TS_SOCKET must be set}"
 TS_STATE_DIR="${TS_STATE_DIR:?TS_STATE_DIR must be set}"
 TS_STATE_FILE="${TS_STATE_FILE:-${TS_STATE_DIR}/tailscaled.state}"
 TS_HOSTNAME="${TS_HOSTNAME:-swarm-box}"
+TS_OUTBOUND_HTTP_PROXY_LISTEN="${TS_OUTBOUND_HTTP_PROXY_LISTEN:-}"
 SWARM_STARTUP_MODE="${SWARM_STARTUP_MODE:-}"
 SWARM_CONTAINER_OFFLINE="${SWARM_CONTAINER_OFFLINE:-}"
 SWARMD_DATA_DIR="${SWARMD_DATA_DIR:?SWARMD_DATA_DIR must be set}"
@@ -108,6 +109,7 @@ fi
 
 echo "[swarm-container] starting tailscaled"
 ts_tun_mode="${TS_TUN_MODE:-auto}"
+userspace_networking=0
 set -- \
   --state="${TS_STATE_FILE}" \
   --socket="${TS_SOCKET}"
@@ -115,6 +117,7 @@ case "${ts_tun_mode}" in
   ""|auto)
     if [ ! -c /dev/net/tun ]; then
       set -- --tun=userspace-networking "$@"
+      userspace_networking=1
       echo "[swarm-container] tailscaled using userspace networking"
     else
       echo "[swarm-container] tailscaled using kernel tun"
@@ -122,6 +125,7 @@ case "${ts_tun_mode}" in
     ;;
   userspace-networking)
     set -- --tun=userspace-networking "$@"
+    userspace_networking=1
     echo "[swarm-container] tailscaled using userspace networking"
     ;;
   *)
@@ -129,6 +133,9 @@ case "${ts_tun_mode}" in
     echo "[swarm-container] tailscaled using tun mode ${ts_tun_mode}"
     ;;
 esac
+if [ "${userspace_networking}" = "1" ] && [ -n "${TS_OUTBOUND_HTTP_PROXY_LISTEN}" ]; then
+  set -- --outbound-http-proxy-listen="${TS_OUTBOUND_HTTP_PROXY_LISTEN}" "$@"
+fi
 tailscaled "$@" &
 TAILSCALED_PID=$!
 

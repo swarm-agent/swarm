@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -726,6 +727,15 @@ func remoteSwarmJSONRequestWithTransportFallback(method, endpoint, requestPath s
 	} else {
 		canonicalErr := err
 		var lastErr error
+		if client, clientErr := httpClientForTailscaleOutboundProxy(endpoint, transports); clientErr != nil {
+			lastErr = clientErr
+		} else if client != nil {
+			if err := remoteSwarmJSONRequestWithClient(method, requestURL, payload, out, client); err == nil {
+				return nil
+			} else {
+				lastErr = err
+			}
+		}
 		for _, dialIP := range transportDialIPs(transports) {
 			client, clientErr := httpClientForPinnedRemoteIP(endpoint, dialIP)
 			if clientErr != nil {
@@ -743,6 +753,51 @@ func remoteSwarmJSONRequestWithTransportFallback(method, endpoint, requestPath s
 		}
 		return canonicalErr
 	}
+}
+
+func httpClientForTailscaleOutboundProxy(endpoint string, transports []onboardingTransportPayload) (*http.Client, error) {
+	proxyAddr := strings.TrimSpace(os.Getenv("SWARM_TAILSCALE_OUTBOUND_PROXY"))
+	if proxyAddr == "" {
+		return nil, nil
+	}
+	if !endpointLooksLikeTailscale(endpoint) && !transportsContainKind(transports, startupconfig.NetworkModeTailscale) {
+		return nil, nil
+	}
+	proxyURL, err := url.Parse(proxyAddr)
+	if err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyURL(proxyURL),
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	return &http.Client{Timeout: 12 * time.Second, Transport: transport}, nil
+}
+
+func endpointLooksLikeTailscale(endpoint string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(parsed.Hostname())), ".")
+	return strings.HasSuffix(host, ".ts.net")
+}
+
+func transportsContainKind(transports []onboardingTransportPayload, kind string) bool {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return false
+	}
+	for _, transport := range transports {
+		if strings.EqualFold(strings.TrimSpace(transport.Kind), kind) {
+			return true
+		}
+	}
+	return false
 }
 
 func remoteSwarmJSONRequestWithClient(method, endpoint string, payload any, out any, client *http.Client) error {

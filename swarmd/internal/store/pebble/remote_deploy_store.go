@@ -185,7 +185,7 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 	record.SSHSessionTarget = strings.TrimSpace(record.SSHSessionTarget)
 	record.GroupID = strings.TrimSpace(record.GroupID)
 	record.GroupName = strings.TrimSpace(record.GroupName)
-	record.BuilderRuntime = normalizeSwarmLocalContainerRuntime(record.BuilderRuntime)
+	record.BuilderRuntime = strings.TrimSpace(record.BuilderRuntime)
 	record.RemoteRuntime = normalizeSwarmLocalContainerRuntime(record.RemoteRuntime)
 	record.SystemdUnit = strings.TrimSpace(record.SystemdUnit)
 	record.RemoteRoot = strings.TrimSpace(record.RemoteRoot)
