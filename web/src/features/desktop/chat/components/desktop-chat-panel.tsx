@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { LoaderCircle, Menu, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
+import { ListChecks, LoaderCircle, Menu, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -82,6 +82,41 @@ function metadataRecord(value: unknown): Record<string, unknown> | null {
 function metadataString(metadata: Record<string, unknown> | null, key: string): string {
   const value = metadata?.[key]
   return typeof value === 'string' ? value.trim() : ''
+}
+
+export function metadataTodoSummary(metadata: Record<string, unknown> | null): { openCount: number; inProgressCount: number; taskCount: number } | null {
+  const raw = metadata?.agent_todo_summary
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null
+  }
+  const summary = raw as Record<string, unknown>
+  const agent = summary.agent && typeof summary.agent === 'object' && !Array.isArray(summary.agent)
+    ? summary.agent as Record<string, unknown>
+    : summary
+  const taskCount = typeof agent.task_count === 'number' ? agent.task_count : 0
+  const openCount = typeof agent.open_count === 'number' ? agent.open_count : 0
+  const inProgressCount = typeof agent.in_progress_count === 'number' ? agent.in_progress_count : 0
+  if (taskCount <= 0 && openCount <= 0 && inProgressCount <= 0) {
+    return null
+  }
+  return { taskCount, openCount, inProgressCount }
+}
+
+export function formatAgentTodoBadge(summary: { openCount: number; inProgressCount: number; taskCount: number } | null): string {
+  if (!summary || summary.taskCount <= 0) {
+    return ''
+  }
+  const total = Math.max(0, summary.taskCount)
+  const open = Math.max(0, summary.openCount)
+  const active = Math.max(0, summary.inProgressCount)
+  const completed = Math.min(total, Math.max(0, total - open))
+  if (open === 0) {
+    return `Complete · ${completed}/${total}`
+  }
+  if (active > 0) {
+    return `${completed}/${total} complete • ${active} active`
+  }
+  return `${completed}/${total} complete`
 }
 
 function lineageAgentName(label: string): string {
@@ -796,6 +831,8 @@ export function DesktopChatPanel({
   const composerDisabled = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
   const contextBadgeLabel = formatContextUsageBadgeLabel(liveSession?.usage ?? null)
   const contextBadgeTooltip = formatContextUsageTooltip(liveSession?.usage ?? null)
+  const agentTodoSummary = metadataTodoSummary(metadataRecord(liveSession?.metadata))
+  const agentTodoBadgeLabel = formatAgentTodoBadge(agentTodoSummary)
   const renderItems = useMemo(() => {
     const items: RenderItem[] = displayedMessages.map((message) => ({ type: 'message', message }))
     if (shouldRenderLiveToolMessage && liveToolMessage) {
@@ -2004,12 +2041,26 @@ export function DesktopChatPanel({
             <h1 className="truncate text-sm font-semibold text-[var(--app-text)]" title={liveSession?.title || 'New conversation'}>
               {liveSession?.title || 'New conversation'}
             </h1>
+            {agentTodoBadgeLabel ? (
+              <div className="mt-1 inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]" title="Agent checklist for this session">
+                <ListChecks size={12} />
+                <span className="truncate">{agentTodoBadgeLabel}</span>
+              </div>
+            ) : null}
           </div>
-          <h1 className="hidden items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)] sm:flex">
-            <span className="truncate" title={liveSession?.title || 'New conversation'}>{liveSession?.title || 'New conversation'}</span>
-            <span className="shrink-0 text-[var(--app-text-subtle)] font-normal">/</span>
-            <span className="truncate text-[var(--app-text-muted)] font-normal" title={workspaceName}>{workspaceName}</span>
-          </h1>
+          <div className="hidden min-w-0 sm:block">
+            <h1 className="flex items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)]">
+              <span className="truncate" title={liveSession?.title || 'New conversation'}>{liveSession?.title || 'New conversation'}</span>
+              <span className="shrink-0 text-[var(--app-text-subtle)] font-normal">/</span>
+              <span className="truncate text-[var(--app-text-muted)] font-normal" title={workspaceName}>{workspaceName}</span>
+            </h1>
+            {agentTodoBadgeLabel ? (
+              <div className="mt-1 inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]" title="Agent checklist for this session">
+                <ListChecks size={12} />
+                <span className="truncate">{agentTodoBadgeLabel}</span>
+              </div>
+            ) : null}
+          </div>
         </div>
         <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5 sm:gap-2">
           {activePermission ? (

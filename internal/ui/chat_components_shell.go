@@ -40,7 +40,15 @@ func (p *ChatPage) drawHeader(s tcell.Screen, rect Rect) {
 		statusStyle = p.theme.Primary
 	}
 
-	right := status
+	todoBadge := formatAgentTodoBadge(p.meta)
+	rightParts := make([]string, 0, 2)
+	if todoBadge != "" {
+		rightParts = append(rightParts, todoBadge)
+	}
+	if status != "" {
+		rightParts = append(rightParts, status)
+	}
+	right := strings.Join(rightParts, "  ·  ")
 	rightW := utf8.RuneCountInString(right)
 	leftW := textW
 	if rightW > 0 && leftW > rightW+2 {
@@ -51,6 +59,30 @@ func (p *ChatPage) drawHeader(s tcell.Screen, rect Rect) {
 	if rightW > 0 && textW > rightW+2 {
 		DrawTextRight(s, textX+textW-1, rect.Y, rightW, statusStyle, right)
 	}
+}
+
+func formatAgentTodoBadge(meta ChatSessionMeta) string {
+	if meta.AgentTodoTaskCount <= 0 {
+		return ""
+	}
+	total := maxInt(0, meta.AgentTodoTaskCount)
+	open := maxInt(0, meta.AgentTodoOpenCount)
+	active := maxInt(0, meta.AgentTodoInProgress)
+	completed := total - open
+	if completed < 0 {
+		completed = 0
+	}
+	if completed > total {
+		completed = total
+	}
+	parts := []string{fmt.Sprintf("%d/%d complete", completed, total)}
+	if active > 0 && open > 0 {
+		parts = append(parts, fmt.Sprintf("%d active", active))
+	}
+	if open == 0 {
+		parts[0] = fmt.Sprintf("Complete · %d/%d", completed, total)
+	}
+	return clampEllipsis(strings.Join(parts, " • "), 32)
 }
 
 func (p *ChatPage) drawComposer(s tcell.Screen, rect Rect) {

@@ -203,7 +203,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
-	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish)
+	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish, sessionSvc)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()

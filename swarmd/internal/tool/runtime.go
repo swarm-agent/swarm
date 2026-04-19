@@ -203,13 +203,13 @@ type manageAgentService interface {
 type manageTodoService interface {
 	List(workspacePath string, options ...todoruntime.ListOptions) ([]pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, error)
 	Create(input todoruntime.CreateInput) (pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
-	Update(input todoruntime.UpdateInput) (pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
-	Delete(workspacePath, itemID string) (pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
+	Update(input todoruntime.UpdateInput, options ...todoruntime.ListOptions) (pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
+	Delete(workspacePath, itemID string, options ...todoruntime.ListOptions) (pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
 	DeleteDone(workspacePath string, options ...todoruntime.ListOptions) ([]pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
 	DeleteAll(workspacePath string, options ...todoruntime.ListOptions) ([]pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
-	Reorder(input todoruntime.ReorderInput) ([]pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
-	SetInProgress(workspacePath, itemID string) (pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
-	ApplyBatch(workspacePath string, operations []todoruntime.BatchOperation) ([]todoruntime.BatchResult, []pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
+	Reorder(input todoruntime.ReorderInput, options ...todoruntime.ListOptions) ([]pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
+	SetInProgress(workspacePath, itemID string, options ...todoruntime.ListOptions) (pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
+	ApplyBatch(workspacePath string, operations []todoruntime.BatchOperation, options ...todoruntime.ListOptions) ([]todoruntime.BatchResult, []pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
 }
 
 type manageThemeUISettingsService interface {
@@ -4582,6 +4582,18 @@ func normalizeManageTodoOwnerKind(raw string) (string, error) {
 	return normalized, nil
 }
 
+func manageTodoListScope(ownerKind, sessionID string) todoruntime.ListOptions {
+	ownerKind = strings.TrimSpace(ownerKind)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return todoruntime.ListOptions{OwnerKind: ownerKind}
+	}
+	if ownerKind == "" || ownerKind == pebblestore.WorkspaceTodoOwnerKindAgent {
+		return todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: sessionID}
+	}
+	return todoruntime.ListOptions{OwnerKind: ownerKind}
+}
+
 func parseManageTodoBatchOperations(value any, defaultOwnerKind, defaultSessionID string) ([]todoruntime.BatchOperation, error) {
 	rawOps, ok := value.([]any)
 	if !ok || len(rawOps) == 0 {
@@ -5263,14 +5275,16 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 
 	switch action {
 	case "list":
-		items, summary, err := r.todos.List(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind})
+		listOptions := manageTodoListScope(ownerKind, scope.SessionID)
+		items, summary, err := r.todos.List(workspacePath, listOptions)
 		if err != nil {
 			return "", err
 		}
 		response["items"] = items
 		response["summary"] = summary
 	case "summary":
-		_, summary, err := r.todos.List(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind})
+		listOptions := manageTodoListScope(ownerKind, scope.SessionID)
+		_, summary, err := r.todos.List(workspacePath, listOptions)
 		if err != nil {
 			return "", err
 		}
@@ -5344,6 +5358,12 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 			value := strings.TrimSpace(asString(raw))
 			parentID = &value
 		}
+		updateSessionID := ""
+		if sessionID != nil {
+			updateSessionID = strings.TrimSpace(*sessionID)
+		} else if ownerKind == pebblestore.WorkspaceTodoOwnerKindAgent {
+			updateSessionID = strings.TrimSpace(scope.SessionID)
+		}
 		item, summary, _, err := r.todos.Update(todoruntime.UpdateInput{
 			WorkspacePath: workspacePath,
 			ID:            id,
@@ -5355,7 +5375,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 			InProgress:    inProgress,
 			SessionID:     sessionID,
 			ParentID:      parentID,
-		})
+		}, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: updateSessionID})
 		if err != nil {
 			return "", err
 		}
@@ -5366,21 +5386,21 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if id == "" {
 			return "", errors.New("id is required")
 		}
-		summary, _, err := r.todos.Delete(workspacePath, id)
+		summary, _, err := r.todos.Delete(workspacePath, id, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
 		response["id"] = id
 		response["summary"] = summary
 	case "delete_done":
-		items, summary, _, err := r.todos.DeleteDone(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind})
+		items, summary, _, err := r.todos.DeleteDone(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
 		response["items"] = items
 		response["summary"] = summary
 	case "delete_all":
-		items, summary, _, err := r.todos.DeleteAll(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind})
+		items, summary, _, err := r.todos.DeleteAll(workspacePath, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -5391,7 +5411,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if len(orderedIDs) == 0 {
 			return "", errors.New("ordered_ids is required")
 		}
-		items, summary, _, err := r.todos.Reorder(todoruntime.ReorderInput{WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: orderedIDs})
+		items, summary, _, err := r.todos.Reorder(todoruntime.ReorderInput{WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: orderedIDs}, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -5402,7 +5422,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if id == "" {
 			return "", errors.New("id is required")
 		}
-		item, summary, _, err := r.todos.SetInProgress(workspacePath, id)
+		item, summary, _, err := r.todos.SetInProgress(workspacePath, id, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}
@@ -5413,7 +5433,7 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 		if err != nil {
 			return "", err
 		}
-		results, items, summary, _, err := r.todos.ApplyBatch(workspacePath, operations)
+		results, items, summary, _, err := r.todos.ApplyBatch(workspacePath, operations, todoruntime.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(scope.SessionID)})
 		if err != nil {
 			return "", err
 		}

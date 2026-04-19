@@ -127,11 +127,6 @@ export function WorkspaceCard({
               {workspace.todoSummary.user.openCount} user open
             </div>
           ) : null}
-          {typeof workspace.todoSummary?.agent?.openCount === 'number' ? (
-            <div className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1 text-xs font-medium text-[var(--app-text-muted)]">
-              {workspace.todoSummary.agent.openCount} agent open
-            </div>
-          ) : null}
         </div>
         {previewDirectories.map((directory) => (
           <div key={directory} className="flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">

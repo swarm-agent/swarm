@@ -155,10 +155,13 @@ export function mapWorkspaceTodoSummary(summary: WorkspaceTodoSummaryWire | unde
   }
 }
 
-export async function fetchWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
+export async function fetchWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
   const search = new URLSearchParams({ workspace_path: workspacePath })
   if (ownerKind) {
     search.set('owner_kind', ownerKind)
+  }
+  if (sessionId?.trim()) {
+    search.set('session_id', sessionId.trim())
   }
   const response = await requestJson<WorkspaceTodosResponseWire>(`/v1/workspace/todos?${search.toString()}`)
   return {
@@ -237,20 +240,20 @@ export async function updateWorkspaceTodo(input: {
   return { item: mapWorkspaceTodoItem(response.item), summary: mapWorkspaceTodoSummary(response.summary) }
 }
 
-export async function deleteWorkspaceTodo(workspacePath: string, id: string, ownerKind?: WorkspaceTodoOwnerKind): Promise<WorkspaceTodoSummary> {
+export async function deleteWorkspaceTodo(workspacePath: string, id: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<WorkspaceTodoSummary> {
   const response = await requestJson<WorkspaceTodoMutationResponseWire>('/v1/workspace/todos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'delete', workspace_path: workspacePath, owner_kind: ownerKind, id }),
+    body: JSON.stringify({ action: 'delete', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId, id }),
   })
   return mapWorkspaceTodoSummary(response.summary)
 }
 
-export async function deleteDoneWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
+export async function deleteDoneWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
   const response = await requestJson<WorkspaceTodoMutationResponseWire>('/v1/workspace/todos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'delete_done', workspace_path: workspacePath, owner_kind: ownerKind }),
+    body: JSON.stringify({ action: 'delete_done', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId }),
   })
   return {
     items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [],
@@ -258,11 +261,11 @@ export async function deleteDoneWorkspaceTodos(workspacePath: string, ownerKind?
   }
 }
 
-export async function deleteAllWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
+export async function deleteAllWorkspaceTodos(workspacePath: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
   const response = await requestJson<WorkspaceTodoMutationResponseWire>('/v1/workspace/todos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'delete_all', workspace_path: workspacePath, owner_kind: ownerKind }),
+    body: JSON.stringify({ action: 'delete_all', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId }),
   })
   return {
     items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [],
@@ -270,11 +273,11 @@ export async function deleteAllWorkspaceTodos(workspacePath: string, ownerKind?:
   }
 }
 
-export async function reorderWorkspaceTodos(workspacePath: string, orderedIDs: string[], ownerKind?: WorkspaceTodoOwnerKind): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
+export async function reorderWorkspaceTodos(workspacePath: string, orderedIDs: string[], ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ items: WorkspaceTodoItem[]; summary: WorkspaceTodoSummary }> {
   const response = await requestJson<WorkspaceTodoMutationResponseWire>('/v1/workspace/todos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'reorder', workspace_path: workspacePath, owner_kind: ownerKind, ordered_ids: orderedIDs }),
+    body: JSON.stringify({ action: 'reorder', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId, ordered_ids: orderedIDs }),
   })
   return {
     items: Array.isArray(response.items) ? response.items.map(mapWorkspaceTodoItem) : [],
@@ -282,11 +285,11 @@ export async function reorderWorkspaceTodos(workspacePath: string, orderedIDs: s
   }
 }
 
-export async function setWorkspaceTodoInProgress(workspacePath: string, id: string, ownerKind?: WorkspaceTodoOwnerKind): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary }> {
+export async function setWorkspaceTodoInProgress(workspacePath: string, id: string, ownerKind?: WorkspaceTodoOwnerKind, sessionId?: string): Promise<{ item: WorkspaceTodoItem; summary: WorkspaceTodoSummary }> {
   const response = await requestJson<WorkspaceTodoMutationResponseWire>('/v1/workspace/todos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'in_progress', workspace_path: workspacePath, owner_kind: ownerKind, id }),
+    body: JSON.stringify({ action: 'in_progress', workspace_path: workspacePath, owner_kind: ownerKind, session_id: sessionId, id }),
   })
   if (!response.item) {
     throw new Error('todo in-progress returned no item')

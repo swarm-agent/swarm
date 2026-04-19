@@ -120,6 +120,24 @@ func (p *ChatPage) SetSessionPath(path string) {
 	p.meta.Path = path
 }
 
+func (p *ChatPage) SetAgentTodoSummary(taskCount, openCount, inProgressCount int) {
+	if p == nil {
+		return
+	}
+	if taskCount < 0 {
+		taskCount = 0
+	}
+	if openCount < 0 {
+		openCount = 0
+	}
+	if inProgressCount < 0 {
+		inProgressCount = 0
+	}
+	p.meta.AgentTodoTaskCount = taskCount
+	p.meta.AgentTodoOpenCount = openCount
+	p.meta.AgentTodoInProgress = inProgressCount
+}
+
 func (p *ChatPage) SetSessionTabs(tabs []ChatSessionTab) {
 	if p == nil {
 		return
@@ -166,6 +184,13 @@ func (p *ChatPage) SetSessionMode(mode string) {
 		return
 	}
 	p.applySessionMode(mode, false)
+}
+
+func (p *ChatPage) Meta() ChatSessionMeta {
+	if p == nil {
+		return ChatSessionMeta{}
+	}
+	return p.meta
 }
 
 func (p *ChatPage) SessionMode() string {

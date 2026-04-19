@@ -75,9 +75,9 @@ interface SwarmTargetMenuState {
 function normalizeWorkspaceTodoSummary(summary: WorkspaceTodoSummary): WorkspaceTodoSummary {
   return {
     ...summary,
-    taskCount: summary.user.taskCount + summary.agent.taskCount,
-    openCount: summary.user.openCount + summary.agent.openCount,
-    inProgressCount: summary.user.inProgressCount + summary.agent.inProgressCount,
+    taskCount: summary.user.taskCount,
+    openCount: summary.user.openCount,
+    inProgressCount: summary.user.inProgressCount,
   }
 }
 
@@ -983,7 +983,7 @@ export function DesktopAppPage() {
           ...current,
           [normalizedPath]: [...userResult.items, ...agentResult.items],
         }))
-        setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(agentResult.summary) }))
+        setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(userResult.summary) }))
       })
       .catch(() => {
         setTodoItems((current) => ({ ...current, [normalizedPath]: [] }))
@@ -1137,26 +1137,6 @@ export function DesktopAppPage() {
     () => new Map(allSessions.map((session) => [session.id, session] as const)),
     [allSessions],
   )
-
-  const workspaceSessionOptions = useMemo<Map<string, { id: string; title: string; summary: string | null; isActive: boolean; updatedAt: number }[]>>(() => {
-    const grouped = new Map<string, { id: string; title: string; summary: string | null; isActive: boolean; updatedAt: number }[]>()
-    for (const workspace of mergedSidebarWorkspaceEntries) {
-      const sessions = sessionsByWorkspace.get(workspace.path) ?? []
-      grouped.set(
-        workspace.path,
-        sessions
-          .filter((session) => session.id.trim() !== '')
-          .map((session) => ({
-            id: session.id,
-            title: session.title.trim() || 'Untitled conversation',
-            summary: session.live.summary?.trim() || session.metadata?.summary?.toString().trim() || null,
-            isActive: activeSessionId === session.id,
-            updatedAt: session.updatedAt,
-          })),
-      )
-    }
-    return grouped
-  }, [activeSessionId, mergedSidebarWorkspaceEntries, sessionsByWorkspace])
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(mergedSidebarWorkspaceEntries), [mergedSidebarWorkspaceEntries])
 
@@ -1791,8 +1771,6 @@ export function DesktopAppPage() {
         <WorkspaceTodoModal
           open={Boolean(todoModal)}
           workspaceName={todoModal.workspaceName}
-          agentSessions={workspaceSessionOptions.get(todoModal.workspacePath) ?? []}
-          defaultAgentSessionId={activeSessionId ?? ''}
           userSection={{
             ownerKind: 'user',
             title: 'User Todos',
@@ -1804,19 +1782,6 @@ export function DesktopAppPage() {
               taskCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).user.taskCount,
               openCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).user.openCount,
               inProgressCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).user.inProgressCount,
-            },
-          }}
-          agentSection={{
-            ownerKind: 'agent',
-            title: 'Agent Checklist',
-            description: 'Execution checklist grouped by conversation and nested by parent/child steps.',
-            emptyText: 'Drop agent checklist steps here',
-            items: (todoItems[todoModal.workspacePath] ?? []).filter((item) => item.ownerKind === 'agent'),
-            summary: {
-              ...(todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()),
-              taskCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).agent.taskCount,
-              openCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).agent.openCount,
-              inProgressCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).agent.inProgressCount,
             },
           }}
           saving={todoSavingWorkspacePath === todoModal.workspacePath}
@@ -1845,8 +1810,8 @@ export function DesktopAppPage() {
             const result = await mutateTodoState(
               todoModal.workspacePath,
               () => (inProgress
-                ? setWorkspaceTodoInProgress(todoModal.workspacePath, item.id, item.ownerKind)
-                : updateWorkspaceTodo({ workspacePath: todoModal.workspacePath, ownerKind: item.ownerKind, id: item.id, inProgress: false })),
+                ? setWorkspaceTodoInProgress(todoModal.workspacePath, item.id, item.ownerKind, item.sessionId)
+                : updateWorkspaceTodo({ workspacePath: todoModal.workspacePath, ownerKind: item.ownerKind, id: item.id, inProgress: false, sessionId: item.sessionId })),
             )
             setTodoItems((current) => ({
               ...current,
@@ -1855,7 +1820,7 @@ export function DesktopAppPage() {
             setTodoSummaries((current) => ({ ...current, [todoModal.workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
           }}
           onUpdate={async (item, patch) => {
-            const result = await mutateTodoState(todoModal.workspacePath, () => updateWorkspaceTodo({ workspacePath: todoModal.workspacePath, ownerKind: item.ownerKind, id: item.id, ...patch }))
+            const result = await mutateTodoState(todoModal.workspacePath, () => updateWorkspaceTodo({ workspacePath: todoModal.workspacePath, ownerKind: item.ownerKind, id: item.id, sessionId: item.sessionId, ...patch }))
             setTodoItems((current) => ({
               ...current,
               [todoModal.workspacePath]: upsertWorkspaceTodoItem(current[todoModal.workspacePath] ?? [], result.item),
@@ -1863,7 +1828,7 @@ export function DesktopAppPage() {
             setTodoSummaries((current) => ({ ...current, [todoModal.workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
           }}
           onDelete={async (item) => {
-            const summary = await mutateTodoState(todoModal.workspacePath, () => deleteWorkspaceTodo(todoModal.workspacePath, item.id, item.ownerKind))
+            const summary = await mutateTodoState(todoModal.workspacePath, () => deleteWorkspaceTodo(todoModal.workspacePath, item.id, item.ownerKind, item.sessionId))
             setTodoItems((current) => ({
               ...current,
               [todoModal.workspacePath]: (current[todoModal.workspacePath] ?? []).filter((entry) => entry.id !== item.id),

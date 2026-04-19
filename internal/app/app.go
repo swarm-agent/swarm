@@ -722,6 +722,42 @@ func (a *App) applySessionStreamEvent(event client.StreamEventEnvelope) bool {
 			return true
 		}
 		return false
+	case "session.metadata.updated":
+		var payload struct {
+			SessionID string         `json:"session_id"`
+			Metadata  map[string]any `json:"metadata"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return false
+		}
+		sessionID := strings.TrimSpace(payload.SessionID)
+		if sessionID == "" {
+			return false
+		}
+		metadata := cloneMetadataMap(payload.Metadata)
+		changed := false
+		next := a.homeModel
+		for i := range next.RecentSessions {
+			if strings.TrimSpace(next.RecentSessions[i].ID) != sessionID {
+				continue
+			}
+			if len(metadata) > 0 {
+				next.RecentSessions[i].Metadata = metadata
+			} else {
+				next.RecentSessions[i].Metadata = nil
+			}
+			changed = true
+			break
+		}
+		if changed {
+			a.applyHomeModel(next)
+		}
+		if a.chat != nil && strings.TrimSpace(a.chat.SessionID()) == sessionID {
+			taskCount, openCount, inProgressCount := agentTodoCountsFromMetadata(metadata)
+			a.chat.SetAgentTodoSummary(taskCount, openCount, inProgressCount)
+			changed = true
+		}
+		return changed
 	case "session.mode.updated":
 		var payload struct {
 			SessionID string `json:"session_id"`
@@ -2665,6 +2701,9 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 			Plan:                  a.home.ActivePlanName(),
 			WorktreeEnabled:       worktreeEnabled,
 			BypassPermissions:     a.homeModel.BypassPermissions,
+			AgentTodoTaskCount:    0,
+			AgentTodoOpenCount:    0,
+			AgentTodoInProgress:   0,
 		},
 		KeyBindings: a.keybinds,
 		CopyText:    copyTextToClipboard,
@@ -2693,6 +2732,8 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 			a.homeModel.ActiveAgentRuntimeKnown,
 		)
 		a.chat.SetAgentRuntime(resolvedAgent, resolvedExecution, resolvedExitPlanMode, resolvedRuntimeKnown)
+		taskCount, openCount, inProgressCount := agentTodoCountsFromMetadata(summary.Metadata)
+		a.chat.SetAgentTodoSummary(taskCount, openCount, inProgressCount)
 	}
 	if summary, ok := a.sessionSummaryByID(strings.TrimSpace(sessionID)); ok && summary.Lifecycle != nil {
 		a.chat.ApplySessionLifecycle(ui.ChatSessionLifecycle{
@@ -2835,6 +2876,55 @@ func cloneMetadataMap(input map[string]any) map[string]any {
 		out[key] = cloneMetadataValue(value)
 	}
 	return out
+}
+
+func metadataIntValue(payload map[string]any, key string) int {
+	if len(payload) == 0 {
+		return 0
+	}
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
+func agentTodoCountsFromMetadata(metadata map[string]any) (int, int, int) {
+	summary := cloneMetadataMap(metadataObject(metadata, "agent_todo_summary"))
+	if len(summary) == 0 {
+		return 0, 0, 0
+	}
+	agent := metadataObject(summary, "agent")
+	if len(agent) == 0 {
+		agent = summary
+	}
+	return metadataIntValue(agent, "task_count"), metadataIntValue(agent, "open_count"), metadataIntValue(agent, "in_progress_count")
+}
+
+func metadataObject(metadata map[string]any, key string) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return nil
+	}
+	typed, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return typed
 }
 
 func mergeMetadataMaps(base, extra map[string]any) map[string]any {

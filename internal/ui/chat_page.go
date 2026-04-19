@@ -68,6 +68,9 @@ type ChatSessionMeta struct {
 	Plan                  string
 	WorktreeEnabled       bool
 	BypassPermissions     bool
+	AgentTodoTaskCount    int
+	AgentTodoOpenCount    int
+	AgentTodoInProgress   int
 }
 
 type ChatSessionTab struct {
