@@ -690,6 +690,59 @@ func InstallLaunchers(root string) (InstallReport, error) {
 	return InstallReport{BinHome: binHome, Links: links}, nil
 }
 
+func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
+	artifactRoot = filepath.Clean(strings.TrimSpace(artifactRoot))
+	if artifactRoot == "" {
+		return InstallReport{}, errors.New("artifact root must not be empty")
+	}
+	dataHome, err := xdgDataHome()
+	if err != nil {
+		return InstallReport{}, err
+	}
+	platformRoot := filepath.Join(artifactRoot, runtime.GOOS+"-"+runtime.GOARCH)
+	rootArtifactDir := filepath.Join(platformRoot, "root")
+	swarmdArtifactDir := filepath.Join(platformRoot, "swarmd")
+	toolDir := swarmToolBinDir(dataHome)
+	binDir := swarmBinaryRoot(dataHome)
+	requiredFiles := []struct {
+		name   string
+		source string
+		target string
+	}{
+		{name: "swarm", source: filepath.Join(rootArtifactDir, "swarm"), target: filepath.Join(toolDir, "swarm")},
+		{name: "swarmdev", source: filepath.Join(rootArtifactDir, "swarmdev"), target: filepath.Join(toolDir, "swarmdev")},
+		{name: "rebuild", source: filepath.Join(rootArtifactDir, "rebuild"), target: filepath.Join(toolDir, "rebuild")},
+		{name: "swarmsetup", source: filepath.Join(rootArtifactDir, "swarmsetup"), target: filepath.Join(toolDir, "swarmsetup")},
+		{name: "swarmtui", source: filepath.Join(rootArtifactDir, "swarmtui"), target: filepath.Join(binDir, "swarmtui")},
+		{name: "swarmd", source: filepath.Join(swarmdArtifactDir, "swarmd"), target: filepath.Join(binDir, "swarmd")},
+		{name: "swarmctl", source: filepath.Join(swarmdArtifactDir, "swarmctl"), target: filepath.Join(binDir, "swarmctl")},
+	}
+	for _, item := range requiredFiles {
+		if !isExecutable(item.source) {
+			return InstallReport{}, fmt.Errorf("missing executable artifact for %s: %s", item.name, item.source)
+		}
+		if err := copyFile(item.source, item.target); err != nil {
+			return InstallReport{}, err
+		}
+	}
+	webArtifactDir := filepath.Join(artifactRoot, "web")
+	if _, err := os.Stat(filepath.Join(webArtifactDir, "index.html")); err == nil {
+		webTargetDir := swarmDesktopDistDir(dataHome)
+		if err := os.RemoveAll(webTargetDir); err != nil {
+			return InstallReport{}, err
+		}
+		if err := copyDir(webArtifactDir, webTargetDir); err != nil {
+			return InstallReport{}, err
+		}
+		if err := writeCompressedDesktopAssets(webTargetDir); err != nil {
+			return InstallReport{}, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return InstallReport{}, err
+	}
+	return InstallLaunchers("")
+}
+
 func isExecutable(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
@@ -1419,6 +1472,33 @@ func copyDir(sourceDir, targetDir string) error {
 		}
 		return targetFile.Close()
 	})
+}
+
+func copyFile(sourcePath, targetPath string) error {
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("copy file %s: source is a directory", sourcePath)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	targetFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
+		_ = targetFile.Close()
+		return err
+	}
+	return targetFile.Close()
 }
 
 func writeCompressedDesktopAssets(distDir string) error {

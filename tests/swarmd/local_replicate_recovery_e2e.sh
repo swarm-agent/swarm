@@ -27,6 +27,7 @@ Each scenario verifies:
 Options:
   --scenario <s4-01|s4-02|s4-03|s4-04|all>  Scenario to run. Default: all
   --host-root <path>                         Reuse an existing isolated host root
+  --host-install-artifact-root <path>       Install the bootstrap host runtime from a release-style dist tree
   --runtime <docker|podman>                 Runtime for bootstrap. Default: docker
   --workspace-path <path>                   Workspace path for bootstrap. Default: repo root
   --group-name <name>                       Group name for bootstrap. Default: s4-recovery-<timestamp>
@@ -171,10 +172,21 @@ api_request() {
     --max-time 30
     -o "${body_file}"
     -w '%{http_code}'
-    -H "Authorization: Bearer ${ATTACH_TOKEN}"
     -H 'Accept: application/json'
     -X "${method}"
   )
+  if [[ -n "${ATTACH_TOKEN:-}" ]]; then
+    args+=(-H "Authorization: Bearer ${ATTACH_TOKEN}")
+  fi
+  if [[ -n "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" ]]; then
+    args+=(
+      -c "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
+      -b "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
+      -H "Origin: ${HOST_ADMIN_API_URL%/}"
+      -H "Referer: ${HOST_ADMIN_API_URL%/}/"
+      -H 'Sec-Fetch-Site: same-origin'
+    )
+  fi
   if [[ -n "${body}" ]]; then
     args+=(-H 'Content-Type: application/json' --data "${body}")
   fi
@@ -202,14 +214,18 @@ api_post() {
 }
 
 fetch_attach_token() {
-  local response
-  response="$(curl -fsS \
+  if [[ -z "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" ]]; then
+    HOST_DESKTOP_SESSION_COOKIE_FILE="$(mktemp)"
+  fi
+  curl -fsS \
+    -c "${HOST_DESKTOP_SESSION_COOKIE_FILE}" \
+    -b "${HOST_DESKTOP_SESSION_COOKIE_FILE}" \
     -H "Origin: ${HOST_ADMIN_API_URL%/}" \
     -H "Referer: ${HOST_ADMIN_API_URL%/}/" \
     -H 'Sec-Fetch-Site: same-origin' \
-    "${HOST_ADMIN_API_URL%/}/v1/auth/attach/token")" || return 1
-  ATTACH_TOKEN="$(printf '%s' "${response}" | jq -r '.token // empty')"
-  [[ -n "${ATTACH_TOKEN}" ]]
+    "${HOST_ADMIN_API_URL%/}/v1/auth/desktop/session" >/dev/null || return 1
+  ATTACH_TOKEN=""
+  return 0
 }
 
 ensure_host_running() {
@@ -497,6 +513,9 @@ bootstrap_if_needed() {
     "--poll-interval" "${POLL_INTERVAL_SECONDS}"
     "--log-tail" "${LOG_TAIL}"
   )
+  if [[ -n "${HOST_INSTALL_ARTIFACT_ROOT}" ]]; then
+    args+=("--host-install-artifact-root" "${HOST_INSTALL_ARTIFACT_ROOT}")
+  fi
   if [[ -n "${REPLICATION_MODE}" ]]; then
     args+=("--replication-mode" "${REPLICATION_MODE}")
   fi
@@ -552,6 +571,9 @@ cleanup_owned_bootstrap() {
 }
 
 cleanup() {
+  if [[ -n "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" && -f "${HOST_DESKTOP_SESSION_COOKIE_FILE}" ]]; then
+    rm -f -- "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
+  fi
   cleanup_owned_bootstrap
 }
 
@@ -613,6 +635,7 @@ write_final_summary() {
 }
 
 HOST_ROOT=""
+HOST_INSTALL_ARTIFACT_ROOT=""
 RUNTIME="docker"
 WORKSPACE_PATH="${ROOT_DIR}"
 GROUP_NAME=""
@@ -629,6 +652,7 @@ SCENARIO="all"
 BOOTSTRAP_HOST_BACKEND_PORT="7781"
 BOOTSTRAP_HOST_DESKTOP_PORT="5555"
 ATTACH_TOKEN=""
+HOST_DESKTOP_SESSION_COOKIE_FILE=""
 SESSION_ID=""
 SEED_MESSAGE_CONTENT=""
 RUN_ID=""
@@ -663,6 +687,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --host-root)
       HOST_ROOT="${2:-}"
+      shift 2
+      ;;
+    --host-install-artifact-root)
+      HOST_INSTALL_ARTIFACT_ROOT="${2:-}"
       shift 2
       ;;
     --runtime)
@@ -731,6 +759,11 @@ done
 
 WORKSPACE_PATH="$(cd "${WORKSPACE_PATH}" && pwd)"
 [[ -d "${WORKSPACE_PATH}" ]] || fail "--workspace-path must point to an existing directory"
+
+if [[ -n "${HOST_INSTALL_ARTIFACT_ROOT}" ]]; then
+  HOST_INSTALL_ARTIFACT_ROOT="$(cd "${HOST_INSTALL_ARTIFACT_ROOT}" && pwd)"
+  [[ -d "${HOST_INSTALL_ARTIFACT_ROOT}" ]] || fail "--host-install-artifact-root must point to an existing directory"
+fi
 
 require_command curl
 require_command jq
