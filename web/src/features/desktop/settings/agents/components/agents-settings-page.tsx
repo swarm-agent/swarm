@@ -749,7 +749,7 @@ export function AgentsSettingsPage() {
                     disabled={busy}
                     className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                   >
-                    <option value="">Default Provider</option>
+                    <option value="">Inherit</option>
                     {providerOptions.map((provider) => (
                       <option key={provider} value={provider}>{provider}</option>
                     ))}
@@ -767,7 +767,7 @@ export function AgentsSettingsPage() {
                     disabled={busy || !form.provider.trim()}
                     className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1.5 pr-8 text-sm font-medium text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
                   >
-                    <option value="">Default Model</option>
+                    <option value="">Inherit</option>
                     {modelChoices.map((model) => (
                       <option key={model} value={model}>{model}</option>
                     ))}

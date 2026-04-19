@@ -133,6 +133,20 @@ type AuthCredentialList struct {
 	Providers []string         `json:"providers"`
 }
 
+type AuthCredentialDeleteCleanup struct {
+	ProviderUnavailable     bool     `json:"provider_unavailable"`
+	ClearedGlobalPreference bool     `json:"cleared_global_preference"`
+	ResetAgents             []string `json:"reset_agents,omitempty"`
+}
+
+type AuthCredentialDeleteResult struct {
+	OK       bool                        `json:"ok"`
+	Deleted  bool                        `json:"deleted"`
+	Provider string                      `json:"provider"`
+	ID       string                      `json:"id"`
+	Cleanup  AuthCredentialDeleteCleanup `json:"cleanup"`
+}
+
 type AuthCredentialUpsertRequest struct {
 	ID           string   `json:"id,omitempty"`
 	Provider     string   `json:"provider"`
@@ -1348,12 +1362,16 @@ func (c *API) SetActiveAuthCredential(ctx context.Context, provider, credentialI
 	return out, nil
 }
 
-func (c *API) DeleteAuthCredential(ctx context.Context, provider, credentialID string) error {
+func (c *API) DeleteAuthCredential(ctx context.Context, provider, credentialID string) (AuthCredentialDeleteResult, error) {
 	payload := map[string]string{
 		"provider": strings.TrimSpace(provider),
 		"id":       strings.TrimSpace(credentialID),
 	}
-	return c.postJSON(ctx, "/v1/auth/credentials/delete", payload, nil, true)
+	var out AuthCredentialDeleteResult
+	if err := c.postJSON(ctx, "/v1/auth/credentials/delete", payload, &out, true); err != nil {
+		return AuthCredentialDeleteResult{}, err
+	}
+	return out, nil
 }
 
 func (c *API) VerifyAuthCredential(ctx context.Context, provider, credentialID string) (AuthConnectionStatus, error) {

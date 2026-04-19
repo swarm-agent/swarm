@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { ChangeEvent } from 'react'
+import { queryClient } from '../../../../../app/query-client'
+import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions } from '../../../../queries/query-options'
+import type { AgentProfileRecord } from '../../../../desktop/chat/types/chat'
 import { Badge } from '../../../../../components/ui/badge'
 import { Button } from '../../../../../components/ui/button'
 import { Input } from '../../../../../components/ui/input'
@@ -62,6 +66,28 @@ function confirmMakeActive(credential: AuthCredential): boolean {
   return window.confirm(`Make "${formatLabel(credential)}" the active credential for ${credential.provider}?`)
 }
 
+function buildDeleteCredentialWarning(credential: AuthCredential, agentProfiles: AgentProfileRecord[]): string {
+  const affectedAgents = agentProfiles
+    .filter((profile) => String(profile.provider ?? '').trim().toLowerCase() === credential.provider.trim().toLowerCase())
+    .map((profile) => profile.name.trim())
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right))
+
+  const lines = [`Delete "${formatLabel(credential)}" for ${credential.provider}?`]
+  if (affectedAgents.length > 0) {
+    lines.push('')
+    lines.push(`This will reset these agents to Inherit:`)
+    for (const name of affectedAgents) {
+      lines.push(`- ${name}`)
+    }
+    lines.push('')
+    lines.push('To reassign them, go to /agents.')
+  }
+  lines.push('')
+  lines.push('If this was the last usable auth for that provider, the default model may also be cleared.')
+  return lines.join('\n')
+}
+
 function sortProviders(records: ProviderStatus[]): ProviderStatus[] {
   return [...records].sort((a, b) => a.id.localeCompare(b.id))
 }
@@ -86,6 +112,14 @@ interface ModernSelectProps {
   options: { id: string; label?: string }[]
   onChange: (value: string) => void
   placeholder?: string
+}
+
+async function refreshAuthDependentQueries(): Promise<void> {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: draftModelQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: modelOptionsQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey }),
+  ])
 }
 
 function ModernSelect({ value, options, onChange, placeholder }: ModernSelectProps) {
@@ -169,6 +203,7 @@ export function AuthSettingsPage() {
   const [oauthIntent, setOAuthIntent] = useState<OAuthIntent>('browser')
   const [oauthSession, setOAuthSession] = useState<CodexOAuthSession | null>(null)
   const [callbackInput, setCallbackInput] = useState('')
+  const { data: agentState } = useQuery(agentStateQueryOptions())
 
   const load = async () => {
     setLoading(true)
@@ -246,6 +281,7 @@ export function AuthSettingsPage() {
             setAPIKey('')
             setLabel('')
             await load()
+            await refreshAuthDependentQueries()
           }
         })
         .catch((err) => {
@@ -275,14 +311,15 @@ export function AuthSettingsPage() {
     setProviderID((current) => current || providerOptions[0]?.id || '')
   }
 
-  const runRowAction = async (credential: AuthCredential, action: () => Promise<unknown>, doneMessage: string) => {
+  const runRowAction = async (credential: AuthCredential, action: () => Promise<string>, doneMessage: string) => {
     setBusyCredentialID(credential.id)
     setError(null)
     setStatus(null)
     try {
-      await action()
+      const nextMessage = await action()
       await load()
-      setStatus(doneMessage)
+      await refreshAuthDependentQueries()
+      setStatus(nextMessage || doneMessage)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Auth action failed')
     } finally {
@@ -322,6 +359,7 @@ export function AuthSettingsPage() {
         setFormError(verification.message || 'Credential saved, but verification failed.')
         return
       }
+      await refreshAuthDependentQueries()
       resetComposer()
       setStatus(hasCustomLabel(saved) ? `Credential "${saved.label.trim()}" is active.` : 'Credential is active.')
     } catch (err) {
@@ -384,6 +422,7 @@ export function AuthSettingsPage() {
         return
       }
       await load()
+      await refreshAuthDependentQueries()
       resetComposer()
       setStatus('Credential added and selected.')
     } catch (err) {
@@ -554,7 +593,6 @@ export function AuthSettingsPage() {
                 {sortedCredentials.map((credential) => {
                   const isBusy = busyCredentialID === credential.id
                   const statusLabel = credential.active ? 'Active' : 'Inactive'
-                  const isOnlyOne = sortedCredentials.length === 1
                   const title = formatCredentialTitle(credential)
                   const showProviderInMeta = hasCustomLabel(credential)
 
@@ -588,7 +626,10 @@ export function AuthSettingsPage() {
                         
                         <div className="flex items-center gap-1">
                           <button
-                            onClick={() => !credential.active && confirmMakeActive(credential) && runRowAction(credential, () => setActiveAuthCredential({ provider: credential.provider, id: credential.id }), 'Active.')}
+                            onClick={() => !credential.active && confirmMakeActive(credential) && runRowAction(credential, async () => {
+                              await setActiveAuthCredential({ provider: credential.provider, id: credential.id })
+                              return 'Active.'
+                            }, 'Active.')}
                             disabled={isBusy || credential.active}
                             className={cn(
                               "h-7 w-7 flex items-center justify-center rounded-md transition-all", 
@@ -599,11 +640,28 @@ export function AuthSettingsPage() {
                             <Check size={14} strokeWidth={3} />
                           </button>
                           <button
-                            onClick={() => !isOnlyOne && runRowAction(credential, () => deleteAuthCredential({ provider: credential.provider, id: credential.id }), 'Deleted.')}
-                            disabled={isBusy || isOnlyOne}
+                            onClick={() => {
+                              const agentProfiles = (agentState?.profiles ?? []) as AgentProfileRecord[]
+                              if (typeof window !== 'undefined' && !window.confirm(buildDeleteCredentialWarning(credential, agentProfiles))) {
+                                return
+                              }
+                              void runRowAction(credential, async () => {
+                                const result = await deleteAuthCredential({ provider: credential.provider, id: credential.id })
+                                const extras: string[] = []
+                                if (result.cleanup.clearedGlobalPreference) {
+                                  extras.push('default model cleared')
+                                }
+                                if (result.cleanup.resetAgents.length > 0) {
+                                  extras.push(`agents reset to inherit: ${result.cleanup.resetAgents.join(', ')}; reassign in /agents`)
+                                }
+                                return extras.length > 0 ? `Deleted. ${extras.join('. ')}.` : 'Deleted.'
+                              }, 'Deleted.')
+                            }}
+                            disabled={isBusy}
                             className={cn(
-                              "h-7 w-7 flex items-center justify-center rounded-md transition-all", 
-                              isOnlyOne ? "opacity-10 cursor-not-allowed text-[var(--app-text-muted)]" : "text-[var(--app-text-muted)] hover:text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]"
+                              "h-7 w-7 flex items-center justify-center rounded-md transition-all",
+                              "text-[var(--app-text-muted)] hover:text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]",
+                              isBusy && "opacity-50 cursor-not-allowed"
                             )}
                             title="Delete"
                           >

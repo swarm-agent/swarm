@@ -461,7 +461,7 @@ func (p *HomePage) handleAuthModalRune(ev *tcell.EventKey) {
 		}
 		if !p.authModal.ConfirmDelete {
 			p.authModal.ConfirmDelete = true
-			p.authModal.Status = fmt.Sprintf("Press d again to delete %s/%s", credential.Provider, credential.ID)
+			p.authModal.Status = fmt.Sprintf("Press d again to delete %s/%s. If this removes the provider auth, affected agents reset to inherit; reassign them in /agents. The default model may also clear.", credential.Provider, credential.ID)
 			return
 		}
 		p.enqueueAuthModalAction(AuthModalAction{

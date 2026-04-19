@@ -4153,14 +4153,27 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 	case ui.AuthModalActionDelete:
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		if err := a.api.DeleteAuthCredential(ctx, action.Provider, action.ID); err != nil {
+		result, err := a.api.DeleteAuthCredential(ctx, action.Provider, action.ID)
+		if err != nil {
 			a.home.SetAuthModalLoading(false)
 			a.home.SetAuthModalError(fmt.Sprintf("delete credential failed: %v", err))
 			a.showToast(ui.ToastError, fmt.Sprintf("delete credential failed: %v", err))
 			return
 		}
-		a.showToast(ui.ToastSuccess, fmt.Sprintf("credential deleted: %s/%s", action.Provider, action.ID))
+		statusParts := []string{fmt.Sprintf("credential deleted: %s/%s", action.Provider, action.ID)}
+		if result.Cleanup.ClearedGlobalPreference {
+			statusParts = append(statusParts, "cleared default model")
+		}
+		if count := len(result.Cleanup.ResetAgents); count > 0 {
+			label := "agents"
+			if count == 1 {
+				label = "agent"
+			}
+			statusParts = append(statusParts, fmt.Sprintf("reset %d %s to inherit; reassign in /agents", count, label))
+		}
+		a.showToast(ui.ToastSuccess, strings.Join(statusParts, " • "))
 		a.refreshAuthModalData("")
+		a.queueReload(true)
 	case ui.AuthModalActionLogin:
 		a.startProviderLogin(action.Login)
 	case ui.AuthModalActionLoginCallback:

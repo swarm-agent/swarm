@@ -1257,6 +1257,11 @@ func (s *Server) handleAuthCredentialDelete(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, errors.New("credential not found"))
 		return
 	}
+	cleanup, err := s.cleanupProviderAfterCredentialDeletion(r.Context(), provider)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if event != nil {
 		s.hub.Publish(*event)
 	}
@@ -1265,6 +1270,7 @@ func (s *Server) handleAuthCredentialDelete(w http.ResponseWriter, r *http.Reque
 		"deleted":  true,
 		"provider": provider,
 		"id":       strings.ToLower(strings.TrimSpace(req.ID)),
+		"cleanup":  cleanup,
 	})
 }
 

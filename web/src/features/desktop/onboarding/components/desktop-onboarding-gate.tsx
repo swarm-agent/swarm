@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { queryClient } from '../../../../app/query-client'
+import { draftModelQueryOptions, modelOptionsQueryOptions, agentStateQueryOptions } from '../../../queries/query-options'
 import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
@@ -142,6 +144,14 @@ function currentGroupNetworkName(status: DesktopOnboardingStatus): string {
     }
   }
   return status.groups[0]?.group.networkName?.trim() || ''
+}
+
+async function refreshAuthDependentQueries(): Promise<void> {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: draftModelQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: modelOptionsQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey }),
+  ])
 }
 
 function suggestedGroupName(status: DesktopOnboardingStatus, swarmName: string): string {
@@ -316,6 +326,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const finalizeOnboarding = async () => {
     const next = await reloadStatus()
+    await refreshAuthDependentQueries()
     setStatus(next)
     onComplete(next)
   }
