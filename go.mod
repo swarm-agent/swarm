@@ -2,7 +2,10 @@ module swarm-refactor/swarmtui
 
 go 1.25
 
-require github.com/gdamore/tcell/v2 v2.9.0
+require (
+	github.com/fsnotify/fsnotify v1.8.0
+	github.com/gdamore/tcell/v2 v2.9.0
+)
 
 require (
 	github.com/alecthomas/chroma/v2 v2.23.1 // indirect

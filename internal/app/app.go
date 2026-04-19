@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/gdamore/tcell/v2"
 	"golang.org/x/term"
 
@@ -26,17 +27,18 @@ import (
 )
 
 const (
-	interruptTick        = "tick"
-	interruptChatAsync   = "chat-async"
-	interruptReloadReady = "reload-ready"
-	interruptAuthReady   = "auth-ready"
-	interruptVoiceReady  = "voice-ready"
-	interruptStreamReady = "stream-ready"
-	interruptQuit        = "quit"
-	defaultDaemonURL     = "http://127.0.0.1:7781"
-	reloadInterval       = 3 * time.Second
-	vaultExportDirName   = "Swarm"
-	vaultExportFileExt   = ".swarmvault"
+	interruptTick           = "tick"
+	interruptChatAsync      = "chat-async"
+	interruptReloadReady    = "reload-ready"
+	interruptAuthReady      = "auth-ready"
+	interruptVoiceReady     = "voice-ready"
+	interruptStreamReady    = "stream-ready"
+	interruptGitStatusReady = "git-status-ready"
+	interruptQuit           = "quit"
+	defaultDaemonURL        = "http://127.0.0.1:7781"
+	reloadInterval          = 3 * time.Second
+	vaultExportDirName      = "Swarm"
+	vaultExportFileExt      = ".swarmvault"
 )
 
 var (
@@ -125,6 +127,21 @@ type homeReloadResult struct {
 	model  model.HomeModel
 	err    error
 	silent bool
+}
+
+type gitStatusRefreshResult struct {
+	generation uint64
+	path       string
+	status     gitRepoStatus
+	ok         bool
+}
+
+type repoGitWatcher struct {
+	path     string
+	stop     chan struct{}
+	stopped  chan struct{}
+	debounce chan struct{}
+	watcher  *fsnotify.Watcher
 }
 
 type authLoginResult struct {
@@ -225,6 +242,10 @@ type App struct {
 	streamCancel context.CancelFunc
 	streamSeq    atomic.Uint64
 
+	gitStatusCh        chan gitStatusRefreshResult
+	gitWatcher         *repoGitWatcher
+	gitWatchGeneration atomic.Uint64
+
 	swarmNotificationCount int
 
 	pendingChatRender chan struct{}
@@ -293,6 +314,7 @@ func New() (*App, error) {
 		authLoginCh:         make(chan authLoginResult, 1),
 		voiceCaptureCh:      make(chan voiceCaptureEvent, 4),
 		streamEvents:        make(chan client.StreamEventEnvelope, 256),
+		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
 		pendingChatRender:   make(chan struct{}, 1),
 		workspaceCandidates: make([]workspaceCandidate, 0, 128),
 	}
@@ -333,6 +355,7 @@ func New() (*App, error) {
 		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v (settings warning: %v)", loadErr, cfgErr))
 	}
 	app.startSessionEventStream()
+	app.refreshGitRealtimeWatcher()
 	return app, nil
 }
 
@@ -341,6 +364,7 @@ func (a *App) Close() {
 		a.streamCancel()
 		a.streamCancel = nil
 	}
+	a.stopGitRealtimeWatcher()
 	if a.voiceCapture.cancel != nil {
 		a.voiceCapture.cancel()
 		a.voiceCapture.cancel = nil
@@ -415,6 +439,10 @@ func (a *App) Run() error {
 				dirty = true
 			case interruptStreamReady:
 				if a.consumeSessionStreamEvents() {
+					dirty = true
+				}
+			case interruptGitStatusReady:
+				if a.consumeGitStatusRefreshResults() {
 					dirty = true
 				}
 			case interruptQuit:
@@ -6867,6 +6895,27 @@ func (a *App) consumeReloadResult() {
 	}
 }
 
+func (a *App) consumeGitStatusRefreshResults() bool {
+	if a == nil {
+		return false
+	}
+	changed := false
+	for {
+		select {
+		case result := <-a.gitStatusCh:
+			if result.generation != a.gitWatchGeneration.Load() {
+				continue
+			}
+			if !a.applyGitStatusRefresh(result) {
+				continue
+			}
+			changed = true
+		default:
+			return changed
+		}
+	}
+}
+
 func activeAgentRuntime(state client.AgentState) (string, string, bool, bool) {
 	active := strings.TrimSpace(state.ActivePrimary)
 	if active == "" {
@@ -6903,6 +6952,7 @@ func (a *App) applyHomeModel(next model.HomeModel) {
 	a.home.SetModel(next)
 	a.home.SetSwarmNotificationCount(a.swarmNotificationCount)
 	a.syncChatAgentRuntime()
+	a.refreshGitRealtimeWatcher()
 	a.applyEffectiveTheme()
 }
 
@@ -7085,7 +7135,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "workspace overview unavailable")
 	}
 
-	gitStatus := gitStatusForPath(activePath)
+	gitStatus, _ := gitStatusForPath(activePath)
 	if activeIsWorkspace {
 		matched := false
 		for i := range next.Directories {
@@ -7301,6 +7351,7 @@ func (a *App) syncActiveContextFromHomeModel(next model.HomeModel) {
 			break
 		}
 	}
+	a.refreshGitRealtimeWatcher()
 }
 
 func workspacePathMatchDepth(root, target string) int {
@@ -7407,6 +7458,7 @@ func (a *App) syncKnownWorkspaceSelectionForPath(path string) {
 	if a.home != nil {
 		a.home.SetModel(a.homeModel)
 	}
+	a.refreshGitRealtimeWatcher()
 	a.applyEffectiveTheme()
 }
 
@@ -7415,6 +7467,97 @@ func (a *App) activeWorkspacePath() string {
 		return normalizePath(path)
 	}
 	return ""
+}
+
+func (a *App) refreshGitRealtimeWatcher() {
+	if a == nil {
+		return
+	}
+	target := normalizePath(a.activeContextPath())
+	if target == "" {
+		a.stopGitRealtimeWatcher()
+		return
+	}
+	if a.gitWatcher != nil && pathsEqual(a.gitWatcher.path, target) {
+		return
+	}
+	a.stopGitRealtimeWatcher()
+	a.startGitRealtimeWatcher(target)
+}
+
+func (a *App) startGitRealtimeWatcher(path string) {
+	if a == nil {
+		return
+	}
+	target := normalizePath(path)
+	if target == "" {
+		return
+	}
+	watcher, err := newRepoGitWatcher(target)
+	if err != nil {
+		return
+	}
+	generation := a.gitWatchGeneration.Add(1)
+	a.gitWatcher = watcher
+	go watcher.run(func() {
+		status, ok := gitStatusForPath(target)
+		result := gitStatusRefreshResult{generation: generation, path: target, status: status, ok: ok}
+		select {
+		case a.gitStatusCh <- result:
+		default:
+			select {
+			case <-a.gitStatusCh:
+			default:
+			}
+			select {
+			case a.gitStatusCh <- result:
+			default:
+			}
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptGitStatusReady))
+		}
+	})
+}
+
+func (a *App) stopGitRealtimeWatcher() {
+	if a == nil || a.gitWatcher == nil {
+		return
+	}
+	a.gitWatcher.stopWatching()
+	a.gitWatcher = nil
+}
+
+func (a *App) applyGitStatusRefresh(result gitStatusRefreshResult) bool {
+	if a == nil || !result.ok {
+		return false
+	}
+	target := normalizePath(result.path)
+	if target == "" {
+		return false
+	}
+	changed := false
+	for i := range a.homeModel.Directories {
+		if !pathsEqual(a.homeModel.Directories[i].ResolvedPath, target) {
+			continue
+		}
+		before := a.homeModel.Directories[i]
+		applyGitStatusToDirectory(&a.homeModel.Directories[i], result.status)
+		if a.homeModel.Directories[i] != before {
+			changed = true
+		}
+		break
+	}
+	if !changed {
+		return false
+	}
+	if a.home != nil {
+		a.home.SetModel(a.homeModel)
+	}
+	if a.chat != nil && pathsEqual(a.activePath, target) {
+		a.chat.SetSessionBranch(result.status.Branch)
+	}
+	return true
 }
 
 func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution) {
@@ -7464,6 +7607,7 @@ func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution
 		}
 	}
 	a.home.SetModel(a.homeModel)
+	a.refreshGitRealtimeWatcher()
 	a.applyEffectiveTheme()
 }
 
@@ -7730,8 +7874,8 @@ func newDirectoryItemWithGitStatus(path string, isWorkspace bool, status gitRepo
 }
 
 func branchForPath(path string) string {
-	status := gitStatusForPath(path)
-	if !status.HasGit {
+	status, ok := gitStatusForPath(path)
+	if !ok || !status.HasGit {
 		return "-"
 	}
 	branch := strings.TrimSpace(status.Branch)
@@ -7741,20 +7885,20 @@ func branchForPath(path string) string {
 	return branch
 }
 
-func gitStatusForPath(path string) gitRepoStatus {
+func gitStatusForPath(path string) (gitRepoStatus, bool) {
 	target := strings.TrimSpace(path)
 	if target == "" {
-		return gitRepoStatus{Branch: "-"}
+		return gitRepoStatus{Branch: "-"}, false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", target, "status", "--porcelain=v2", "--branch")
+	cmd := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", target, "status", "--porcelain=v2", "--branch")
 	raw, err := cmd.Output()
 	if err != nil {
-		return gitRepoStatus{Branch: "-"}
+		return gitRepoStatus{Branch: "-"}, false
 	}
-	return parseGitStatusPorcelainV2(string(raw))
+	return parseGitStatusPorcelainV2(string(raw)), true
 }
 
 func parseGitStatusPorcelainV2(raw string) gitRepoStatus {
