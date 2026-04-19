@@ -3590,21 +3590,11 @@ func cloneClientSessionLifecycle(lifecycle *client.SessionLifecycleSnapshot) *cl
 
 func mergeClientModelPreference(current, incoming client.ModelPreference) client.ModelPreference {
 	merged := current
-	if value := strings.TrimSpace(incoming.Provider); value != "" {
-		merged.Provider = value
-	}
-	if value := strings.TrimSpace(incoming.Model); value != "" {
-		merged.Model = value
-	}
-	if value := strings.TrimSpace(incoming.Thinking); value != "" {
-		merged.Thinking = value
-	}
-	if value := strings.TrimSpace(incoming.ServiceTier); value != "" {
-		merged.ServiceTier = value
-	}
-	if value := strings.TrimSpace(incoming.ContextMode); value != "" {
-		merged.ContextMode = value
-	}
+	merged.Provider = strings.TrimSpace(incoming.Provider)
+	merged.Model = strings.TrimSpace(incoming.Model)
+	merged.Thinking = strings.TrimSpace(incoming.Thinking)
+	merged.ServiceTier = strings.TrimSpace(incoming.ServiceTier)
+	merged.ContextMode = strings.TrimSpace(incoming.ContextMode)
 	return merged
 }
 
@@ -5423,6 +5413,7 @@ func (a *App) refreshAuthModalData(statusHint string) {
 	if !a.home.AuthModalVisible() {
 		return
 	}
+	a.home.ClearAuthModalSnapshot()
 	if strings.TrimSpace(statusHint) != "" {
 		a.home.SetAuthModalStatus(statusHint)
 	}
@@ -5441,7 +5432,17 @@ func (a *App) refreshAuthModalData(statusHint string) {
 
 	modalProviders := mergeAuthModalProviders(providerStatuses, credentials)
 	modalCredentials := mapAuthModalCredentials(credentials.Records)
+	agentProfiles := make([]ui.AgentModalProfile, 0)
+	if agentState, err := a.api.ListAgents(ctx, 500); err == nil {
+		for _, profile := range agentState.Profiles {
+			agentProfiles = append(agentProfiles, ui.AgentModalProfile{
+				Name:     strings.TrimSpace(profile.Name),
+				Provider: normalizeModelProviderID(profile.Provider),
+			})
+		}
+	}
 	a.home.SetAuthModalData(modalProviders, modalCredentials)
+	a.home.SetAuthModalAgentProfiles(agentProfiles)
 	a.home.SetAuthModalLoading(false)
 
 	switch {

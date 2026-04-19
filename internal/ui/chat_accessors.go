@@ -198,15 +198,12 @@ func (p *ChatPage) SessionPaletteItems() []ChatSessionPaletteItem {
 }
 
 func (p *ChatPage) SetModelState(modelProvider, modelName, thinkingLevel, serviceTier, contextMode string) {
-	if value := strings.TrimSpace(modelProvider); value != "" {
-		p.modelProvider = value
+	if p == nil {
+		return
 	}
-	if value := strings.TrimSpace(modelName); value != "" {
-		p.modelName = value
-	}
-	if value := strings.TrimSpace(thinkingLevel); value != "" {
-		p.thinkingLevel = value
-	}
+	p.modelProvider = strings.TrimSpace(modelProvider)
+	p.modelName = strings.TrimSpace(modelName)
+	p.thinkingLevel = strings.TrimSpace(thinkingLevel)
 	p.serviceTier = strings.TrimSpace(serviceTier)
 	p.contextMode = strings.TrimSpace(contextMode)
 }

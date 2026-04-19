@@ -7,11 +7,14 @@ import (
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
 type authCredentialDeleteCleanup struct {
 	ProviderUnavailable     bool     `json:"provider_unavailable"`
 	ClearedGlobalPreference bool     `json:"cleared_global_preference"`
+	ClearedSessionCount     int      `json:"cleared_session_count,omitempty"`
+	ClearedSessionIDs       []string `json:"cleared_session_ids,omitempty"`
 	ResetAgents             []string `json:"reset_agents,omitempty"`
 }
 
@@ -60,6 +63,36 @@ func (s *Server) cleanupProviderAfterCredentialDeletion(ctx context.Context, pro
 		}
 	}
 
+	if s.sessions != nil {
+		sessions, err := s.sessions.ListSessions(10000)
+		if err != nil {
+			return cleanup, fmt.Errorf("list sessions after credential delete: %w", err)
+		}
+		for _, session := range sessions {
+			if !strings.EqualFold(strings.TrimSpace(session.Preference.Provider), provider) {
+				continue
+			}
+			pref, event, err := s.sessions.SetSessionPreference(strings.TrimSpace(session.ID), sessionruntime.SessionPreferenceUpdate{
+				Provider:    stringPtr(""),
+				Model:       stringPtr(""),
+				Thinking:    stringPtr(""),
+				ServiceTier: stringPtr(""),
+				ContextMode: stringPtr(""),
+			})
+			if err != nil {
+				return cleanup, fmt.Errorf("clear session preference for %s after credential delete: %w", session.ID, err)
+			}
+			if strings.TrimSpace(pref.Provider) == "" && strings.TrimSpace(pref.Model) == "" {
+				cleanup.ClearedSessionIDs = append(cleanup.ClearedSessionIDs, strings.TrimSpace(session.ID))
+			}
+			if event != nil && s.hub != nil {
+				s.hub.Publish(*event)
+			}
+		}
+		sort.Strings(cleanup.ClearedSessionIDs)
+		cleanup.ClearedSessionCount = len(cleanup.ClearedSessionIDs)
+	}
+
 	if s.agents != nil {
 		state, err := s.agents.ListState(2000)
 		if err != nil {
@@ -90,4 +123,8 @@ func (s *Server) cleanupProviderAfterCredentialDeletion(ctx context.Context, pro
 	}
 
 	return cleanup, nil
+}
+
+func stringPtr(value string) *string {
+	return &value
 }

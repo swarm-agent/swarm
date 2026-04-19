@@ -136,6 +136,8 @@ type AuthCredentialList struct {
 type AuthCredentialDeleteCleanup struct {
 	ProviderUnavailable     bool     `json:"provider_unavailable"`
 	ClearedGlobalPreference bool     `json:"cleared_global_preference"`
+	ClearedSessionCount     int      `json:"cleared_session_count,omitempty"`
+	ClearedSessionIDs       []string `json:"cleared_session_ids,omitempty"`
 	ResetAgents             []string `json:"reset_agents,omitempty"`
 }
 
