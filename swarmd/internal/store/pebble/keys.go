@@ -13,6 +13,7 @@ const (
 	KeyAuthCredentialPrefix            = "auth/credential/"
 	KeyAuthCredentialActivePrefix      = "auth/credential_active/"
 	KeyAuthCredentialTagPrefix         = "auth/index/auth_tag/"
+	KeyAuthManagedVaultKeyPrefix       = "auth/managed_vault_key/"
 	KeyUISettingsDefault               = "ui/settings/default"
 	KeyUIChatSettingsDefault           = "ui/chat_settings/default"
 	KeyVoiceConfigDefault              = "voice/config/default"
@@ -213,6 +214,10 @@ func AuthCredentialTagPrefix(tag string) string {
 		return KeyAuthCredentialTagPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyAuthCredentialTagPrefix, part)
+}
+
+func KeyAuthManagedVaultKey(scopeID string) string {
+	return KeyAuthManagedVaultKeyPrefix + keyPart(scopeID)
 }
 
 func KeyMessage(sessionID string, globalSeq uint64) string {

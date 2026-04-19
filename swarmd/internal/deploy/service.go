@@ -51,6 +51,7 @@ const (
 	peerAuthSwarmIDHeader             = "X-Swarm-Peer-ID"
 	peerAuthTokenHeader               = "X-Swarm-Peer-Token"
 	remoteSyncVaultPasswordEnvKey     = "SWARM_REMOTE_SYNC_VAULT_PASSWORD"
+	syncManagedVaultKeyHeader         = "X-Swarm-Sync-Managed-Vault-Key"
 )
 
 type ContainerRuntimeStatus struct {
@@ -182,6 +183,7 @@ type ContainerAttachFinalizeInput struct {
 	SyncBundlePassword       string                        `json:"sync_bundle_password,omitempty"`
 	SyncBundle               []byte                        `json:"sync_bundle,omitempty"`
 	SyncVaultPassword        string                        `json:"sync_vault_password,omitempty"`
+	SyncManagedVaultKey      string                        `json:"-"`
 	WorkspaceBootstrap       []ContainerWorkspaceBootstrap `json:"workspace_bootstrap,omitempty"`
 }
 
@@ -230,6 +232,7 @@ type ContainerAttachState struct {
 	HostToChildPeerAuthToken string `json:"host_to_child_peer_auth_token,omitempty"`
 	ChildToHostPeerAuthToken string `json:"child_to_host_peer_auth_token,omitempty"`
 	SyncVaultPassword        string `json:"sync_vault_password,omitempty"`
+	SyncManagedVaultKey      string `json:"sync_managed_vault_key,omitempty"`
 	BootstrapSecretExpires   int64  `json:"bootstrap_secret_expires_at,omitempty"`
 	LastError                string `json:"last_error,omitempty"`
 	DecidedAt                int64  `json:"decided_at,omitempty"`
@@ -602,6 +605,11 @@ func (s *Service) Act(ctx context.Context, input ContainerActionInput) (Containe
 	if saveErr != nil {
 		return ContainerDeployment{}, saveErr
 	}
+	if strings.EqualFold(strings.TrimSpace(input.Action), "start") {
+		if err := s.unlockManagedLocalChildVaultIfNeeded(ctx, saved); err != nil {
+			return mapContainerRecord(saved), err
+		}
+	}
 	return mapContainerRecord(saved), nil
 }
 
@@ -752,6 +760,12 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 		return item
 	}
 	s.clearPendingSyncVaultPassword(record.ID)
+	if s.auth != nil {
+		if err := s.auth.DeleteManagedVaultKey(record.ID); err != nil && !errors.Is(err, pebblestore.ErrVaultLocked) {
+			item.Error = err.Error()
+			return item
+		}
+	}
 	item.Deleted = true
 	item.RemovedDeployment = true
 
@@ -905,6 +919,12 @@ func (s *Service) AttachApprove(ctx context.Context, input ContainerAttachApprov
 	state.HostToChildPeerAuthToken = hostToChildPeerAuthToken
 	state.ChildToHostPeerAuthToken = childToHostPeerAuthToken
 	state.SyncVaultPassword = syncVaultPassword
+	if managedKey, ok, err := s.managedLocalChildVaultKey(record.ID); err == nil && ok {
+		state.SyncManagedVaultKey = managedKey
+	} else if err != nil {
+		return state, err
+	}
+	log.Printf("deploy service attach approve managed vault key deployment_id=%q present=%t", saved.ID, strings.TrimSpace(state.SyncManagedVaultKey) != "")
 	return state, nil
 }
 
@@ -1115,6 +1135,7 @@ func (s *Service) AutoAttachChild(ctx context.Context) error {
 		HostToChildPeerAuthToken: strings.TrimSpace(attachState.HostToChildPeerAuthToken),
 		ChildToHostPeerAuthToken: strings.TrimSpace(attachState.ChildToHostPeerAuthToken),
 		SyncVaultPassword:        strings.TrimSpace(attachState.SyncVaultPassword),
+		SyncManagedVaultKey:      strings.TrimSpace(attachState.SyncManagedVaultKey),
 	})
 }
 
@@ -1289,6 +1310,13 @@ func (s *Service) finalizeApprovedAttach(record *pebblestore.DeployContainerReco
 			_, exported, err := s.auth.ExportCredentials(record.SyncBundlePassword, strings.TrimSpace(syncVaultPassword))
 			if err != nil {
 				return err
+			}
+			if vaultStatus, err := s.auth.VaultStatus(); err != nil {
+				return err
+			} else if vaultStatus.Enabled {
+				if _, err := s.ensureManagedLocalChildVaultKey(record.ID); err != nil {
+					return err
+				}
 			}
 			record.SyncBundleExportCount = exported
 			record.SyncBundleExportedAt = time.Now().UnixMilli()
@@ -1743,6 +1771,11 @@ func (s *Service) completeHostDrivenLocalAttach(ctx context.Context, startupCfg 
 		SyncVaultPassword: strings.TrimSpace(syncVaultPassword),
 	}
 	if currentRecord.SyncEnabled && workspaceruntime.ReplicationSyncModuleEnabled(currentRecord.SyncModules, workspaceruntime.ReplicationSyncModuleCredentials) {
+		if vaultStatus, err := s.auth.VaultStatus(); err != nil {
+			return s.failDeploymentAttach(record.ID, err)
+		} else if vaultStatus.Enabled && strings.TrimSpace(attachState.SyncManagedVaultKey) == "" {
+			return s.failDeploymentAttach(record.ID, fmt.Errorf("managed child vault key was not attached to host-driven finalize"))
+		}
 		bundle, err := s.SyncCredentialBundle(ctx, ContainerSyncCredentialRequestInput{
 			DeploymentID:    currentRecord.ID,
 			BootstrapSecret: currentRecord.BootstrapSecret,
@@ -1758,6 +1791,7 @@ func (s *Service) completeHostDrivenLocalAttach(ctx context.Context, startupCfg 
 	finalizeInput.WorkspaceBootstrap = append([]ContainerWorkspaceBootstrap(nil), currentRecord.WorkspaceBootstrap...)
 	finalizeInput.HostToChildPeerAuthToken = strings.TrimSpace(attachState.HostToChildPeerAuthToken)
 	finalizeInput.ChildToHostPeerAuthToken = strings.TrimSpace(attachState.ChildToHostPeerAuthToken)
+	finalizeInput.SyncManagedVaultKey = strings.TrimSpace(attachState.SyncManagedVaultKey)
 	if err := s.postLocalAttachFinalize(ctx, strings.TrimRight(childBackendURL, "/")+"/v1/deploy/container/attach/finalize", "", finalizeInput); err != nil {
 		return s.failDeploymentAttach(record.ID, err)
 	}
@@ -1824,6 +1858,7 @@ func (s *Service) postLocalAttachFinalize(ctx context.Context, endpoint, token s
 	if err != nil {
 		return err
 	}
+	log.Printf("deploy post local attach finalize endpoint=%q managed_vault_key_present=%t payload_bytes=%d", endpoint, strings.TrimSpace(payload.SyncManagedVaultKey) != "", len(body))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -1831,6 +1866,9 @@ func (s *Service) postLocalAttachFinalize(ctx context.Context, endpoint, token s
 	req.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(token) != "" {
 		req.Header.Set("X-Swarm-Token", strings.TrimSpace(token))
+	}
+	if strings.TrimSpace(payload.SyncManagedVaultKey) != "" {
+		req.Header.Set(syncManagedVaultKeyHeader, strings.TrimSpace(payload.SyncManagedVaultKey))
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -2178,7 +2216,7 @@ func (s *Service) finalizeChildAttach(cfg startupconfig.FileConfig, state swarmr
 				}
 			}
 			ownerSwarmID := firstNonEmpty(bundle.OwnerSwarmID, strings.TrimSpace(cfg.DeployContainer.SyncOwnerSwarmID), hostSwarmID)
-			updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, strings.TrimSpace(finalizeInput.SyncVaultPassword))
+			updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, strings.TrimSpace(finalizeInput.SyncVaultPassword), strings.TrimSpace(finalizeInput.SyncManagedVaultKey))
 			if err != nil {
 				return err
 			}
@@ -2355,7 +2393,7 @@ func (s *Service) SyncManagedCredentialsOnce(ctx context.Context) error {
 			if err != nil {
 				return s.recordManagedCredentialSyncFailure(pairing, err)
 			}
-			updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, "")
+			updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, "", "")
 			if err != nil {
 				return s.recordManagedCredentialSyncFailure(pairing, err)
 			}
@@ -2381,7 +2419,7 @@ func (s *Service) SyncManagedCredentialsOnce(ctx context.Context) error {
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
-		updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, vaultPassword)
+		updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, vaultPassword, "")
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
@@ -2394,7 +2432,7 @@ func (s *Service) SyncManagedCredentialsOnce(ctx context.Context) error {
 	}
 }
 
-func (s *Service) applyManagedCredentialBundle(pairing pebblestore.SwarmLocalPairingRecord, ownerSwarmID string, bundle ContainerSyncCredentialBundle, vaultPassword string) (pebblestore.SwarmLocalPairingRecord, error) {
+func (s *Service) applyManagedCredentialBundle(pairing pebblestore.SwarmLocalPairingRecord, ownerSwarmID string, bundle ContainerSyncCredentialBundle, vaultPassword, managedVaultKey string) (pebblestore.SwarmLocalPairingRecord, error) {
 	if s == nil || s.auth == nil || s.swarmStore == nil {
 		return pairing, fmt.Errorf("deploy container service is not configured")
 	}
@@ -2416,7 +2454,7 @@ func (s *Service) applyManagedCredentialBundle(pairing pebblestore.SwarmLocalPai
 		}
 		return saved, nil
 	}
-	result, err := s.auth.ImportManagedCredentials(ownerSwarmID, bundle.BundlePassword, strings.TrimSpace(vaultPassword), bundle.Bundle)
+	result, err := s.auth.ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundle.BundlePassword, strings.TrimSpace(vaultPassword), strings.TrimSpace(managedVaultKey), bundle.Bundle)
 	if err != nil {
 		return pairing, err
 	}
@@ -2677,6 +2715,175 @@ func (s *Service) addPeerAuthHeaders(req *http.Request, peerSwarmID string) {
 	}
 	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(node.SwarmID))
 	req.Header.Set(peerAuthTokenHeader, peerToken)
+}
+
+func (s *Service) managedLocalChildVaultKey(deploymentID string) (string, bool, error) {
+	if s == nil || s.auth == nil {
+		return "", false, nil
+	}
+	return s.auth.ManagedVaultKey(strings.TrimSpace(deploymentID))
+}
+
+func (s *Service) ensureManagedLocalChildVaultKey(deploymentID string) (string, error) {
+	if s == nil || s.auth == nil {
+		return "", fmt.Errorf("auth service is not configured")
+	}
+	deploymentID = strings.TrimSpace(deploymentID)
+	if deploymentID == "" {
+		return "", fmt.Errorf("deployment id is required")
+	}
+	if managedKey, ok, err := s.auth.ManagedVaultKey(deploymentID); err != nil {
+		return "", err
+	} else if ok {
+		return managedKey, nil
+	}
+	managedKey, err := generateSecretToken(32)
+	if err != nil {
+		return "", err
+	}
+	if err := s.auth.PutManagedVaultKey(deploymentID, managedKey); err != nil {
+		return "", err
+	}
+	return managedKey, nil
+}
+
+func (s *Service) UnlockManagedLocalChildVaults(ctx context.Context) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	vaultStatus, err := s.auth.VaultStatus()
+	if err != nil {
+		return err
+	}
+	if !vaultStatus.Enabled || !vaultStatus.Unlocked {
+		return nil
+	}
+	records, err := s.store.List(500)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, record := range records {
+		if err := s.unlockManagedLocalChildVaultIfNeeded(ctx, record); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", record.ID, err))
+		}
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Service) unlockManagedLocalChildVaultIfNeeded(ctx context.Context, record pebblestore.DeployContainerRecord) error {
+	if s == nil || s.auth == nil {
+		return nil
+	}
+	if strings.TrimSpace(record.AttachStatus) != "attached" {
+		return nil
+	}
+	if strings.TrimSpace(record.Status) != "running" {
+		return nil
+	}
+	if strings.TrimSpace(record.ChildSwarmID) == "" || strings.TrimSpace(record.ChildBackendURL) == "" {
+		return nil
+	}
+	vaultStatus, err := s.auth.VaultStatus()
+	if err != nil {
+		return err
+	}
+	if !vaultStatus.Enabled || !vaultStatus.Unlocked {
+		return nil
+	}
+	managedKey, ok, err := s.managedLocalChildVaultKey(record.ID)
+	if err != nil || !ok {
+		return err
+	}
+	if err := s.waitForChildReady(ctx, record.ChildBackendURL, 20*time.Second); err != nil {
+		return err
+	}
+	childVaultStatus, err := s.fetchChildVaultStatus(ctx, record)
+	if err != nil {
+		return err
+	}
+	if !childVaultStatus.Enabled || childVaultStatus.Unlocked {
+		if !childVaultStatus.Enabled {
+			return fmt.Errorf("child vault is not enabled")
+		}
+		return nil
+	}
+	return s.unlockChildVault(ctx, record, managedKey)
+}
+
+func (s *Service) waitForChildReady(ctx context.Context, childBackendURL string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	endpoint := strings.TrimRight(strings.TrimSpace(childBackendURL), "/") + "/readyz"
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err == nil {
+			resp, err := s.bootstrapHTTPClient("").Do(req)
+			if err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return nil
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for child readiness")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func (s *Service) fetchChildVaultStatus(ctx context.Context, record pebblestore.DeployContainerRecord) (auth.VaultStatus, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(record.ChildBackendURL), "/") + "/v1/vault"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return auth.VaultStatus{}, err
+	}
+	s.addPeerAuthHeaders(req, record.ChildSwarmID)
+	resp, err := s.bootstrapHTTPClient("").Do(req)
+	if err != nil {
+		return auth.VaultStatus{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return auth.VaultStatus{}, fmt.Errorf("child vault status failed with status %d", resp.StatusCode)
+	}
+	var status auth.VaultStatus
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return auth.VaultStatus{}, err
+	}
+	return status, nil
+}
+
+func (s *Service) unlockChildVault(ctx context.Context, record pebblestore.DeployContainerRecord, managedKey string) error {
+	endpoint := strings.TrimRight(strings.TrimSpace(record.ChildBackendURL), "/") + "/v1/vault/unlock"
+	payload, err := json.Marshal(map[string]string{"password": strings.TrimSpace(managedKey)})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	s.addPeerAuthHeaders(req, record.ChildSwarmID)
+	resp, err := s.bootstrapHTTPClient("").Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var decoded struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			return fmt.Errorf("child vault unlock failed with status %d", resp.StatusCode)
+		}
+		return errors.New(firstNonEmpty(strings.TrimSpace(decoded.Error), fmt.Sprintf("child vault unlock failed with status %d", resp.StatusCode)))
+	}
+	return nil
 }
 
 func (s *Service) fetchWorkspaceBootstrap(ctx context.Context, cfg startupconfig.FileConfig, status ContainerAttachState) ([]ContainerWorkspaceBootstrap, error) {

@@ -157,10 +157,11 @@ func TestImportManagedCredentialsKeepsEncryptedStorageAndReplacesSnapshot(t *tes
 	}
 }
 
-func TestImportManagedCredentialsEnablesChildVaultWhenPasswordProvided(t *testing.T) {
+func TestImportManagedCredentialsConfiguresManagedChildVaultAccess(t *testing.T) {
 	const ownerSwarmID = "swarm_host"
 	const bundlePassword = "bundle-password"
 	const vaultPassword = "vault-password"
+	const managedVaultKey = "managed-vault-key"
 
 	hostStore := openAuthStore(t, "host-auth.pebble")
 	if _, err := hostStore.UpsertCredential(pebblestore.AuthCredentialInput{
@@ -186,7 +187,7 @@ func TestImportManagedCredentialsEnablesChildVaultWhenPasswordProvided(t *testin
 	}
 
 	childStore := openAuthStore(t, "child-auth.pebble")
-	result, err := childStore.ImportManagedCredentials(ownerSwarmID, bundlePassword, vaultPassword, bundle)
+	result, err := childStore.ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey, bundle)
 	if err != nil {
 		t.Fatalf("import managed credentials into vaulted child: %v", err)
 	}
@@ -212,5 +213,17 @@ func TestImportManagedCredentialsEnablesChildVaultWhenPasswordProvided(t *testin
 	}
 	if !ok || active.ID != "fw-primary" {
 		t.Fatalf("child active credential = %#v, want fw-primary", active)
+	}
+	if _, err := childStore.LockVault(); err != nil {
+		t.Fatalf("lock child vault with managed access: %v", err)
+	}
+	if _, err := childStore.UnlockVault(managedVaultKey); err != nil {
+		t.Fatalf("unlock child vault with managed key: %v", err)
+	}
+	if _, err := childStore.LockVault(); err != nil {
+		t.Fatalf("lock child vault before password unlock: %v", err)
+	}
+	if _, err := childStore.UnlockVault(vaultPassword); err != nil {
+		t.Fatalf("unlock child vault with human password: %v", err)
 	}
 }

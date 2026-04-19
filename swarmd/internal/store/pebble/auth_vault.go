@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -33,18 +34,19 @@ const (
 var ErrVaultLocked = errors.New(vaultUnlockRequiredMessage)
 
 type VaultMetadata struct {
-	Version         int    `json:"version"`
-	KDF             string `json:"kdf,omitempty"`
-	SaltBase64      string `json:"salt_base64,omitempty"`
-	MemoryKiB       uint32 `json:"memory_kib,omitempty"`
-	TimeCost        uint32 `json:"time_cost,omitempty"`
-	Parallelism     uint8  `json:"parallelism,omitempty"`
-	WrappedDEK      string `json:"wrapped_dek,omitempty"`
-	LocalWrappedDEK string `json:"local_wrapped_dek,omitempty"`
-	UpdatedAt       int64  `json:"updated_at"`
-	Enabled         bool   `json:"enabled"`
-	StorageMode     string `json:"storage_mode"`
-	UnlockWarning   string `json:"unlock_warning,omitempty"`
+	Version           int    `json:"version"`
+	KDF               string `json:"kdf,omitempty"`
+	SaltBase64        string `json:"salt_base64,omitempty"`
+	MemoryKiB         uint32 `json:"memory_kib,omitempty"`
+	TimeCost          uint32 `json:"time_cost,omitempty"`
+	Parallelism       uint8  `json:"parallelism,omitempty"`
+	WrappedDEK        string `json:"wrapped_dek,omitempty"`
+	ManagedWrappedDEK string `json:"managed_wrapped_dek,omitempty"`
+	LocalWrappedDEK   string `json:"local_wrapped_dek,omitempty"`
+	UpdatedAt         int64  `json:"updated_at"`
+	Enabled           bool   `json:"enabled"`
+	StorageMode       string `json:"storage_mode"`
+	UnlockWarning     string `json:"unlock_warning,omitempty"`
 }
 
 type VaultStatus struct {
@@ -79,7 +81,12 @@ func (s *AuthStore) VaultStatus() (VaultStatus, error) {
 }
 
 func (s *AuthStore) EnableVault(password string) (VaultStatus, error) {
+	return s.enableVaultWithManagedKey(password, "")
+}
+
+func (s *AuthStore) enableVaultWithManagedKey(password, managedKey string) (VaultStatus, error) {
 	password = strings.TrimSpace(password)
+	managedKey = strings.TrimSpace(managedKey)
 	if password == "" {
 		return VaultStatus{}, errors.New(vaultPasswordRequiredMessage)
 	}
@@ -112,20 +119,29 @@ func (s *AuthStore) EnableVault(password string) (VaultStatus, error) {
 	if err != nil {
 		return VaultStatus{}, err
 	}
+	managedWrappedDEK := ""
+	if managedKey != "" {
+		wrapped, err := encryptVaultBlob(managedVaultKEK(managedKey), dek)
+		if err != nil {
+			return VaultStatus{}, err
+		}
+		managedWrappedDEK = base64.StdEncoding.EncodeToString(wrapped)
+	}
 
 	now := time.Now().UnixMilli()
 	nextMeta := &VaultMetadata{
-		Version:       vaultVersion,
-		KDF:           "argon2id",
-		SaltBase64:    base64.StdEncoding.EncodeToString(salt),
-		MemoryKiB:     vaultArgon2MemoryKiB,
-		TimeCost:      vaultArgon2Time,
-		Parallelism:   vaultArgon2Parallelism,
-		WrappedDEK:    base64.StdEncoding.EncodeToString(wrappedDEK),
-		UpdatedAt:     now,
-		Enabled:       true,
-		StorageMode:   storageModePebbleVault,
-		UnlockWarning: vaultEnableWarning,
+		Version:           vaultVersion,
+		KDF:               "argon2id",
+		SaltBase64:        base64.StdEncoding.EncodeToString(salt),
+		MemoryKiB:         vaultArgon2MemoryKiB,
+		TimeCost:          vaultArgon2Time,
+		Parallelism:       vaultArgon2Parallelism,
+		WrappedDEK:        base64.StdEncoding.EncodeToString(wrappedDEK),
+		ManagedWrappedDEK: managedWrappedDEK,
+		UpdatedAt:         now,
+		Enabled:           true,
+		StorageMode:       storageModePebbleVault,
+		UnlockWarning:     vaultEnableWarning,
 	}
 
 	batch := s.secretStore.NewBatch()
@@ -174,6 +190,58 @@ func (s *AuthStore) UnlockVault(password string) (VaultStatus, error) {
 	}
 	s.cacheVaultState(meta, dek, nil)
 	return vaultStatusFromState(meta, true), nil
+}
+
+func (s *AuthStore) ConfigureManagedVaultAccess(password, managedKey string) (VaultStatus, error) {
+	password = strings.TrimSpace(password)
+	managedKey = strings.TrimSpace(managedKey)
+	if managedKey == "" {
+		return VaultStatus{}, errors.New("managed vault key is required")
+	}
+
+	meta, _, err := s.snapshotVaultState()
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	if meta == nil || !meta.Enabled {
+		return s.enableVaultWithManagedKey(password, managedKey)
+	}
+
+	dek, err := s.readableDEK()
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	nextMeta := *meta
+	if password != "" {
+		salt, err := randomBytes(16)
+		if err != nil {
+			return VaultStatus{}, err
+		}
+		kek := deriveVaultKey(password, salt)
+		wrappedDEK, err := encryptVaultBlob(kek, dek)
+		if err != nil {
+			return VaultStatus{}, err
+		}
+		nextMeta.KDF = "argon2id"
+		nextMeta.SaltBase64 = base64.StdEncoding.EncodeToString(salt)
+		nextMeta.MemoryKiB = vaultArgon2MemoryKiB
+		nextMeta.TimeCost = vaultArgon2Time
+		nextMeta.Parallelism = vaultArgon2Parallelism
+		nextMeta.WrappedDEK = base64.StdEncoding.EncodeToString(wrappedDEK)
+	}
+	managedWrappedDEK, err := encryptVaultBlob(managedVaultKEK(managedKey), dek)
+	if err != nil {
+		return VaultStatus{}, err
+	}
+	nextMeta.ManagedWrappedDEK = base64.StdEncoding.EncodeToString(managedWrappedDEK)
+	nextMeta.UpdatedAt = time.Now().UnixMilli()
+	nextMeta.Enabled = true
+	nextMeta.StorageMode = storageModePebbleVault
+	if err := s.persistVaultMetadata(&nextMeta); err != nil {
+		return VaultStatus{}, err
+	}
+	s.cacheVaultState(&nextMeta, dek, nil)
+	return vaultStatusFromState(&nextMeta, true), nil
 }
 
 func (s *AuthStore) LockVault() (VaultStatus, error) {
@@ -466,6 +534,22 @@ func unlockVaultDEK(password string, meta *VaultMetadata) ([]byte, error) {
 	if meta == nil || !meta.Enabled {
 		return nil, nil
 	}
+	if strings.TrimSpace(password) == "" {
+		return nil, errors.New(vaultPasswordRequiredMessage)
+	}
+	if dek, err := unlockVaultDEKWithPassword(password, meta); err == nil {
+		return dek, nil
+	}
+	if dek, err := unlockVaultDEKWithManagedKey(password, meta); err == nil {
+		return dek, nil
+	}
+	return nil, errors.New("invalid vault password")
+}
+
+func unlockVaultDEKWithPassword(password string, meta *VaultMetadata) ([]byte, error) {
+	if meta == nil || !meta.Enabled {
+		return nil, nil
+	}
 	salt, err := base64.StdEncoding.DecodeString(meta.SaltBase64)
 	if err != nil {
 		return nil, fmt.Errorf("decode vault salt: %w", err)
@@ -477,9 +561,32 @@ func unlockVaultDEK(password string, meta *VaultMetadata) ([]byte, error) {
 	kek := deriveVaultKey(password, salt)
 	dek, err := decryptVaultBlob(kek, wrappedDEK)
 	if err != nil {
-		return nil, errors.New("invalid vault password")
+		return nil, err
 	}
 	return dek, nil
+}
+
+func unlockVaultDEKWithManagedKey(managedKey string, meta *VaultMetadata) ([]byte, error) {
+	if meta == nil || !meta.Enabled {
+		return nil, nil
+	}
+	if strings.TrimSpace(meta.ManagedWrappedDEK) == "" {
+		return nil, errors.New("managed vault key wrapper is missing")
+	}
+	wrappedDEK, err := base64.StdEncoding.DecodeString(meta.ManagedWrappedDEK)
+	if err != nil {
+		return nil, fmt.Errorf("decode managed wrapped key: %w", err)
+	}
+	dek, err := decryptVaultBlob(managedVaultKEK(managedKey), wrappedDEK)
+	if err != nil {
+		return nil, err
+	}
+	return dek, nil
+}
+
+func managedVaultKEK(managedKey string) []byte {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(managedKey)))
+	return append([]byte(nil), sum[:]...)
 }
 
 func unlockLocalDEK(localRootKey []byte, meta *VaultMetadata) ([]byte, error) {

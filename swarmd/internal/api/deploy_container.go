@@ -12,6 +12,8 @@ import (
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 )
 
+const syncManagedVaultKeyHeader = "X-Swarm-Sync-Managed-Vault-Key"
+
 func (s *Server) handleDeployContainerRuntime(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -321,6 +323,7 @@ func (s *Server) handleDeployContainerAttachApprove(w http.ResponseWriter, r *ht
 		GroupName                string `json:"group_name"`
 		GroupNetworkName         string `json:"group_network_name"`
 		SyncVaultPassword        string `json:"sync_vault_password,omitempty"`
+		SyncManagedVaultKey      string `json:"sync_managed_vault_key,omitempty"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -399,7 +402,8 @@ func (s *Server) handleDeployContainerAttachFinalize(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	log.Printf("deploy attach finalize deployment_id=%q host_swarm_id=%q group_id=%q group_network_name=%q remote_addr=%s", strings.TrimSpace(req.DeploymentID), strings.TrimSpace(req.HostSwarmID), strings.TrimSpace(req.GroupID), strings.TrimSpace(req.GroupNetworkName), strings.TrimSpace(r.RemoteAddr))
+	managedVaultKey := strings.TrimSpace(r.Header.Get(syncManagedVaultKeyHeader))
+	log.Printf("deploy attach finalize deployment_id=%q host_swarm_id=%q group_id=%q group_network_name=%q managed_vault_key_present=%t remote_addr=%s", strings.TrimSpace(req.DeploymentID), strings.TrimSpace(req.HostSwarmID), strings.TrimSpace(req.GroupID), strings.TrimSpace(req.GroupNetworkName), managedVaultKey != "", strings.TrimSpace(r.RemoteAddr))
 	if err := s.deployContainers.FinalizeAttachFromHost(context.Background(), deployruntime.ContainerAttachFinalizeInput{
 		DeploymentID:             req.DeploymentID,
 		BootstrapSecret:          req.BootstrapSecret,
@@ -419,6 +423,7 @@ func (s *Server) handleDeployContainerAttachFinalize(w http.ResponseWriter, r *h
 		SyncOwnerSwarmID:         req.SyncOwnerSwarmID,
 		SyncBundlePassword:       req.SyncBundlePassword,
 		SyncVaultPassword:        req.SyncVaultPassword,
+		SyncManagedVaultKey:      managedVaultKey,
 		SyncBundle:               req.SyncBundle,
 		WorkspaceBootstrap:       req.WorkspaceBootstrap,
 	}); err != nil {

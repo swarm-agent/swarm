@@ -103,6 +103,13 @@ func (s *Service) ImportManagedCredentials(ownerSwarmID, bundlePassword, vaultPa
 	return s.authStore.ImportManagedCredentials(ownerSwarmID, bundlePassword, vaultPassword, payload)
 }
 
+func (s *Service) ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey string, payload []byte) (CredentialImportResult, error) {
+	if s == nil || s.authStore == nil {
+		return CredentialImportResult{}, errors.New("auth store is not configured")
+	}
+	return s.authStore.ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey, payload)
+}
+
 func (s *Service) DeleteManagedCredentialsByOwnerSwarmID(ownerSwarmID string) (int, error) {
 	if s == nil || s.authStore == nil {
 		return 0, errors.New("auth store is not configured")
@@ -159,6 +166,34 @@ func (s *Service) UnlockVault(password string) (VaultStatus, error) {
 		return VaultStatus{}, errors.New("auth store is not configured")
 	}
 	return s.authStore.UnlockVault(password)
+}
+
+func (s *Service) ConfigureManagedVaultAccess(password, managedVaultKey string) (VaultStatus, error) {
+	if s == nil || s.authStore == nil {
+		return VaultStatus{}, errors.New("auth store is not configured")
+	}
+	return s.authStore.ConfigureManagedVaultAccess(password, managedVaultKey)
+}
+
+func (s *Service) PutManagedVaultKey(scopeID, managedVaultKey string) error {
+	if s == nil || s.authStore == nil {
+		return errors.New("auth store is not configured")
+	}
+	return s.authStore.PutManagedVaultKey(scopeID, managedVaultKey)
+}
+
+func (s *Service) ManagedVaultKey(scopeID string) (string, bool, error) {
+	if s == nil || s.authStore == nil {
+		return "", false, errors.New("auth store is not configured")
+	}
+	return s.authStore.ManagedVaultKey(scopeID)
+}
+
+func (s *Service) DeleteManagedVaultKey(scopeID string) error {
+	if s == nil || s.authStore == nil {
+		return errors.New("auth store is not configured")
+	}
+	return s.authStore.DeleteManagedVaultKey(scopeID)
 }
 
 func (s *Service) LockVault() (VaultStatus, error) {

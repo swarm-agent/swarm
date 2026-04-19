@@ -365,7 +365,7 @@ child_api_post() {
   child_api_request POST "$1" "${2:-}" "${3:-30}"
 }
 
-wait_for_child_vault_locked() {
+wait_for_child_vault_unlocked() {
   local start_ts status_json enabled unlocked unlock_required
   start_ts="$(date +%s)"
   while :; do
@@ -375,7 +375,7 @@ wait_for_child_vault_locked() {
       enabled="$(printf '%s' "${status_json}" | jq -r '.enabled // false')"
       unlocked="$(printf '%s' "${status_json}" | jq -r '.unlocked // false')"
       unlock_required="$(printf '%s' "${status_json}" | jq -r '.unlock_required // false')"
-      if [[ "${enabled}" == "true" && "${unlocked}" == "false" && "${unlock_required}" == "true" ]]; then
+      if [[ "${enabled}" == "true" && "${unlocked}" == "true" && "${unlock_required}" == "false" ]]; then
         printf '%s' "${status_json}"
         return 0
       fi
@@ -387,27 +387,13 @@ wait_for_child_vault_locked() {
   done
 }
 
-verify_vaulted_child_locked_and_unlock() {
+verify_vaulted_child_unlocked() {
   local label="${1:-vaulted-child}"
-  local status_json payload unlock_json credentials_json
-  status_json="$(wait_for_child_vault_locked)" || fail "timed out waiting for child vault to lock after restart"
-  write_artifact "${label}-vault-status-locked.json" "${status_json}"
-
-  child_api_request_capture GET '/v1/auth/credentials?provider=fireworks&limit=50' '' 30 || true
-  write_artifact "${label}-credentials-while-locked.json" "${JSON_REQUEST_BODY}"
-  [[ "${JSON_REQUEST_STATUS}" == "423" ]] || fail "expected child credentials API to return 423 while locked, got ${JSON_REQUEST_STATUS}"
-
-  payload="$(jq -nc --arg password "${SYNC_VAULT_PASSWORD}" '{password:$password}')"
-  unlock_json="$(child_api_post '/v1/vault/unlock' "${payload}" 30)"
-  write_artifact "${label}-vault-unlock.json" "${unlock_json}"
-
-  status_json="$(child_api_get '/v1/vault' 30)"
+  local status_json credentials_json
+  status_json="$(wait_for_child_vault_unlocked)" || fail "timed out waiting for host-driven child vault unlock"
   write_artifact "${label}-vault-status-unlocked.json" "${status_json}"
-  [[ "$(printf '%s' "${status_json}" | jq -r '.enabled // false')" == "true" ]] || fail "child vault did not remain enabled after unlock"
-  [[ "$(printf '%s' "${status_json}" | jq -r '.unlocked // false')" == "true" ]] || fail "child vault did not unlock"
-
   credentials_json="$(child_api_get '/v1/auth/credentials?provider=fireworks&limit=50' 30)"
-  write_artifact "${label}-credentials-after-unlock.json" "${credentials_json}"
+  write_artifact "${label}-credentials-after-host-unlock.json" "${credentials_json}"
   printf '%s' "${credentials_json}" | jq -e '.records | arrays' >/dev/null || fail "child credentials response after unlock was malformed"
 }
 
@@ -615,12 +601,12 @@ scenario_s402() {
   wait_for_runtime_state "running" || return 1
   wait_for_deployment_attached || return 1
   if [[ -n "${SYNC_VAULT_PASSWORD}" ]]; then
-    verify_vaulted_child_locked_and_unlock "s4-02"
+    verify_vaulted_child_unlocked "s4-02"
   fi
   verify_session_state "s4-02-after" || return 1
   append_message_and_verify "s4-02-follow-up" "s4-02 child restart follow-up ${RUN_ID}" || return 1
   if [[ -n "${SYNC_VAULT_PASSWORD}" ]]; then
-    SCENARIO_NOTE="vaulted child restarted under the running host, came back attached but 423-locked, local unlock restored synced credentials, and the same routed session still accepted a follow-up child write"
+    SCENARIO_NOTE="vaulted child restarted under the running host, the host re-unlocked it automatically, synced credentials stayed readable, and the same routed session still accepted a follow-up child write"
   else
     SCENARIO_NOTE="child restarted under the running host, reattached, and the same routed session still accepted a follow-up child write"
   fi
@@ -634,6 +620,9 @@ scenario_s403() {
   ensure_host_running || return 1
   verify_session_state "s4-03-host-only" || return 1
   if wait_for_deployment_attached; then
+    if [[ -n "${SYNC_VAULT_PASSWORD}" ]]; then
+      verify_vaulted_child_unlocked "s4-03"
+    fi
     append_message_and_verify "s4-03-follow-up" "s4-03 host-first recovery follow-up ${RUN_ID}" || return 1
     SCENARIO_NOTE="with both sides down, bringing the host back first auto-recovered the local child and restored routed writes"
     return 0
@@ -660,6 +649,9 @@ scenario_s404() {
     write_artifact "s4-04-deployment-after-host-return.json" "${LAST_DEPLOYMENT_JSON:-}"
     SCENARIO_NOTE="child was started before the host returned, but the host did not reconnect to it within the reconnect timeout"
     return 1
+  fi
+  if [[ -n "${SYNC_VAULT_PASSWORD}" ]]; then
+    verify_vaulted_child_unlocked "s4-04"
   fi
   verify_session_state "s4-04-after" || return 1
   append_message_and_verify "s4-04-follow-up" "s4-04 child-first recovery follow-up ${RUN_ID}" || return 1

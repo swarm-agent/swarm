@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -68,6 +69,11 @@ func (s *Server) handleVaultUnlock(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err)
 		return
+	}
+	if s.deployContainers != nil {
+		if childErr := s.deployContainers.UnlockManagedLocalChildVaults(context.Background()); childErr != nil {
+			status.Warning = strings.TrimSpace(childErr.Error())
+		}
 	}
 	writeJSON(w, http.StatusOK, status)
 }

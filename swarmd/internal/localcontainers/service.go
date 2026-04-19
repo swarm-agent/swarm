@@ -1501,6 +1501,19 @@ func CurrentRuntimeMount() *RuntimeMount {
 			fffLibPath = filepath.Join(repoRoot, fffLibPath)
 		}
 	}
+	if repoRoot, _, err := resolveCanonicalRebuildScript(); err == nil {
+		repoMount := normalizeRuntimeMount(&RuntimeMount{
+			BinDir:     filepath.Join(repoRoot, ".bin", "main"),
+			WebDistDir: filepath.Join(repoRoot, "web", "dist"),
+			FFFLibPath: fffLibPath,
+		})
+		if repoMount != nil && isReadableFile(filepath.Join(repoMount.BinDir, "swarmd")) {
+			if !isReadableFile(filepath.Join(repoMount.WebDistDir, "index.html")) {
+				repoMount.WebDistDir = ""
+			}
+			return repoMount
+		}
+	}
 	roots := make([]string, 0, 3)
 	appendRoot := func(root string) {
 		root = strings.TrimSpace(root)

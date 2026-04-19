@@ -168,6 +168,7 @@ type deployContainerService interface {
 	SyncAgentBundle(ctx context.Context, input deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncAgentBundle, error)
 	WorkspaceBootstrap(ctx context.Context, input deployruntime.ContainerWorkspaceBootstrapRequestInput) ([]deployruntime.ContainerWorkspaceBootstrap, error)
 	AutoAttachChild(ctx context.Context) error
+	UnlockManagedLocalChildVaults(ctx context.Context) error
 }
 
 type remoteDeployService interface {
