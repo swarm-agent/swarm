@@ -246,6 +246,15 @@ function resolveDesktopWorkspaceThemeId(workspacePath: string | null): string {
   return ''
 }
 
+function themeCustomOptionsSignature(settings?: UISettingsWire | null): string {
+  return JSON.stringify(Array.isArray(settings?.theme?.custom_themes) ? settings.theme.custom_themes : [])
+}
+
+function themeSettingsChanged(previous?: UISettingsWire | null, next?: UISettingsWire | null): boolean {
+  return normalizeGlobalThemeSettings(previous).activeId !== normalizeGlobalThemeSettings(next).activeId
+    || themeCustomOptionsSignature(previous) !== themeCustomOptionsSignature(next)
+}
+
 function applyDesktopEffectiveTheme(activeWorkspacePath: string | null): void {
   const workspaceThemeId = resolveDesktopWorkspaceThemeId(activeWorkspacePath)
   const globalThemeId = resolveDesktopGlobalThemeId()
@@ -1496,10 +1505,13 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
   }
   if (eventType === 'ui.settings.updated') {
     const nextSettings = payload as UISettingsWire
+    const previousSettings = queryClient.getQueryData<UISettingsWire>(uiSettingsQueryKey())
     queryClient.setQueryData(uiSettingsQueryKey(), nextSettings)
     queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(nextSettings))
-    setWorkspaceThemeCustomOptions(nextSettings.theme?.custom_themes ?? [])
-    applyDesktopEffectiveTheme(state.activeWorkspacePath)
+    if (themeSettingsChanged(previousSettings, nextSettings)) {
+      setWorkspaceThemeCustomOptions(nextSettings.theme?.custom_themes ?? [])
+      applyDesktopEffectiveTheme(state.activeWorkspacePath)
+    }
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }
   if (eventType === 'workspace.theme.updated') {
