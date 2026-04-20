@@ -90,8 +90,18 @@ type Daemon struct {
 }
 
 const (
-	lingerPollInterval = 250 * time.Millisecond
+	lingerPollInterval           = 250 * time.Millisecond
+	localTransportSocketDirMode  = 0o711
+	localTransportSocketFileMode = 0o666
 )
+
+func localTransportSocketDirPerm() os.FileMode {
+	return localTransportSocketDirMode
+}
+
+func localTransportSocketPerm() os.FileMode {
+	return localTransportSocketFileMode
+}
 
 func New(cfg config.Config) (*Daemon, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
@@ -377,7 +387,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	d.httpServer = httpServer
 	if shouldEnableLocalTransport(cfg.ListenAddr) {
 		localTransportSocketPath := filepath.Join(cfg.DataDir, "local-transport", "api.sock")
-		if err := os.MkdirAll(filepath.Dir(localTransportSocketPath), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(localTransportSocketPath), localTransportSocketDirPerm()); err != nil {
 			return nil, fmt.Errorf("create local transport directory: %w", err)
 		}
 		d.localTransportSocketPath = localTransportSocketPath
@@ -563,7 +573,7 @@ func (d *Daemon) Run() error {
 		if socketPath == "" {
 			return fmt.Errorf("local transport socket path is not configured")
 		}
-		if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(socketPath), localTransportSocketDirPerm()); err != nil {
 			return fmt.Errorf("create local transport directory: %w", err)
 		}
 		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -573,7 +583,15 @@ func (d *Daemon) Run() error {
 		if err != nil {
 			return fmt.Errorf("listen on local transport socket %q: %w", socketPath, err)
 		}
-		if err := os.Chmod(socketPath, 0o600); err != nil {
+		// The bind-mounted parent transport must be traversable by the non-root
+		// container child, but only the socket node needs read/write access.
+		// Keep the directory execute-only for others and the socket world rw.
+		if err := os.Chmod(filepath.Dir(socketPath), localTransportSocketDirPerm()); err != nil {
+			_ = localTransportLn.Close()
+			_ = os.Remove(socketPath)
+			return fmt.Errorf("chmod local transport directory %q: %w", filepath.Dir(socketPath), err)
+		}
+		if err := os.Chmod(socketPath, localTransportSocketPerm()); err != nil {
 			_ = localTransportLn.Close()
 			_ = os.Remove(socketPath)
 			return fmt.Errorf("chmod local transport socket %q: %w", socketPath, err)
