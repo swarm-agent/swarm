@@ -530,6 +530,10 @@ function buildTaskToolRow(
   if (!payload) return null;
   const status = jsonStr(payload, "status") || "pending";
   const launchIndex = Math.max(0, jsonNum(payload, "launch_index") || fallbackLaunchIndex);
+  const childSessionId = firstNonEmpty(
+    jsonStr(payload, "session_id"),
+    jsonStr(payload, "child_session_id"),
+  );
   const agent = firstNonEmpty(
     jsonStr(payload, "resolved_agent_name"),
     jsonStr(payload, "requested_subagent_type"),
@@ -554,6 +558,7 @@ function buildTaskToolRow(
   if (!agent && normalized.tool === "-" && !time && !status && !normalized.previewText) return null;
   return {
     launchIndex,
+    childSessionId,
     status,
     agent,
     tool: normalized.tool || "-",

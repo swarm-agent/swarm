@@ -145,8 +145,9 @@ function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
         const previewLabel = row.previewKind.trim().toLowerCase() === 'reasoning'
           ? 'thinking'
           : row.previewKind.trim() || 'live';
+        const rowKey = row.childSessionId.trim() || `launch-index:${row.launchIndex || index + 1}`;
         return (
-          <div key={`launch:${row.launchIndex || index + 1}`} className="grid gap-1 text-[var(--app-text-muted)]">
+          <div key={`launch:${rowKey}`} className="grid gap-1 text-[var(--app-text-muted)]">
             <div className="flex items-center gap-3">
               <div
                 className={`w-6 font-bold ${statusLabel === 'OK' ? 'text-[var(--app-success)]' : statusLabel === 'ER' ? 'text-[var(--app-danger)]' : 'text-[var(--app-primary)]'}`}

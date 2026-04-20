@@ -184,7 +184,7 @@ func publicTaskPreview(kind, text string) (string, string) {
 	}
 }
 
-func buildTaskStreamPayload(action, description string, launchCount int, launch taskLaunchOutcome, phase, summary string) map[string]any {
+func buildTaskStreamPayload(parentSessionID, action, description string, launchCount int, launch taskLaunchOutcome, phase, summary string) map[string]any {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		summary = fmt.Sprintf("subagent %s running", launch.ResolvedSubagent)
@@ -197,39 +197,17 @@ func buildTaskStreamPayload(action, description string, launchCount int, launch 
 	previewKind, previewText := publicTaskPreview(launch.CurrentPreviewKind, launch.CurrentPreviewText)
 	reasoningSummary := strings.TrimSpace(launch.ReasoningSummary)
 	return map[string]any{
-		"tool":                       "task",
-		"action":                     action,
-		"status":                     status,
-		"phase":                      strings.TrimSpace(phase),
-		"launch_index":               launch.LaunchIndex,
-		"launch_count":               launchCount,
-		"subagent":                   strings.TrimSpace(launch.ResolvedSubagent),
-		"requested_subagent":         strings.TrimSpace(launch.RequestedSubagent),
-		"meta_prompt":                strings.TrimSpace(launch.MetaPrompt),
-		"agent_type":                 strings.TrimSpace(launch.ResolvedSubagent),
-		"description":                description,
-		"goal":                       description,
-		"session_id":                 strings.TrimSpace(launch.ChildSessionID),
-		"mode":                       strings.TrimSpace(launch.ChildMode),
-		"launch_started_at_ms":       launch.LaunchStartedAtMS,
-		"current_tool":               strings.TrimSpace(launch.CurrentTool),
-		"current_tool_started_at_ms": launch.CurrentToolStarted,
-		"current_tool_ms":            currentToolMS,
-		"current_preview_kind":       previewKind,
-		"current_preview_text":       previewText,
-		"reasoning_summary":          reasoningSummary,
-		"elapsed_ms":                 elapsedMS,
-		"tool_started":               launch.ToolStarted,
-		"tool_completed":             launch.ToolCompleted,
-		"tool_failed":                launch.ToolFailed,
-		"tool_order":                 append([]string(nil), launch.ToolOrder...),
-		"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
-		"worktree_enabled":           launch.WorktreeEnabled,
-		"worktree_root_path":         strings.TrimSpace(launch.WorktreeRootPath),
-		"worktree_branch":            strings.TrimSpace(launch.WorktreeBranch),
-		"path_id":                    "tool.task.stream.v1",
-		"summary":                    summary,
-		"details_truncated":          false,
+		"tool":              "task",
+		"action":            action,
+		"status":            status,
+		"phase":             strings.TrimSpace(phase),
+		"launch_count":      launchCount,
+		"description":       description,
+		"goal":              description,
+		"parent_session_id": strings.TrimSpace(parentSessionID),
+		"path_id":           "tool.task.stream.v1",
+		"summary":           summary,
+		"details_truncated": false,
 		"launches": []map[string]any{{
 			"launch_index":               launch.LaunchIndex,
 			"status":                     status,
@@ -237,8 +215,8 @@ func buildTaskStreamPayload(action, description string, launchCount int, launch 
 			"subagent":                   strings.TrimSpace(launch.ResolvedSubagent),
 			"agent_type":                 strings.TrimSpace(launch.ResolvedSubagent),
 			"meta_prompt":                strings.TrimSpace(launch.MetaPrompt),
-			"session_id":                 strings.TrimSpace(launch.ChildSessionID),
-			"mode":                       strings.TrimSpace(launch.ChildMode),
+			"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
+			"child_mode":                 strings.TrimSpace(launch.ChildMode),
 			"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
 			"workspace_name":             strings.TrimSpace(launch.WorkspaceName),
 			"worktree_enabled":           launch.WorktreeEnabled,
@@ -261,14 +239,14 @@ func buildTaskStreamPayload(action, description string, launchCount int, launch 
 	}
 }
 
-func emitTaskStreamDelta(emit StreamHandler, step int, toolName, callID, action, description string, launchCount int, launch taskLaunchOutcome, phase, summary string) {
+func emitTaskStreamDelta(parentSessionID string, emit StreamHandler, step int, toolName, callID, action, description string, launchCount int, launch taskLaunchOutcome, phase, summary string) {
 	if emit == nil {
 		return
 	}
 	if strings.TrimSpace(toolName) == "" {
 		toolName = "task"
 	}
-	payload := buildTaskStreamPayload(action, description, launchCount, launch, phase, summary)
+	payload := buildTaskStreamPayload(parentSessionID, action, description, launchCount, launch, phase, summary)
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return
@@ -1661,7 +1639,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 	emitTaskDelta := func(phase, summary string, launch taskLaunchOutcome) {
-		emitTaskStreamDelta(emit, step, taskToolName, taskCallID, action, description, len(prepared), launch, phase, summary)
+		emitTaskStreamDelta(parentSession.ID, emit, step, taskToolName, taskCallID, action, description, len(prepared), launch, phase, summary)
 	}
 
 	spawned := make([]taskLaunchOutcome, 0, len(prepared))

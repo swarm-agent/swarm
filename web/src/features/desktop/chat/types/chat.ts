@@ -20,6 +20,7 @@ export type ToolMessageState = "done" | "running" | "error";
 
 export interface TaskToolRow {
   launchIndex: number;
+  childSessionId: string;
   status: string;
   agent: string;
   tool: string;
