@@ -324,6 +324,50 @@ func TestSyncCredentialBundleUnlocksVaultedHostWhenPasswordProvided(t *testing.T
 	}
 }
 
+func TestSyncCredentialBundleUsesUnlockedVaultedHostWithoutPassword(t *testing.T) {
+	store := openSharedStore(t, "host-store.pebble")
+	authStore := pebblestore.NewAuthStore(store)
+	if _, err := authStore.UpsertCredential(pebblestore.AuthCredentialInput{
+		ID:        "fw-primary",
+		Provider:  "fireworks",
+		Type:      pebblestore.AuthTypeAPI,
+		Label:     "primary",
+		APIKey:    "fw-primary-key",
+		SetActive: true,
+	}); err != nil {
+		t.Fatalf("upsert host credential: %v", err)
+	}
+	if _, err := authStore.EnableVault("vault-password"); err != nil {
+		t.Fatalf("enable vault: %v", err)
+	}
+
+	deployStore := pebblestore.NewDeployContainerStore(store)
+	if _, err := deployStore.Put(pebblestore.DeployContainerRecord{
+		ID:                 "deploy-sync-child",
+		Name:               "deploy-sync-child",
+		SyncEnabled:        true,
+		SyncMode:           "managed",
+		SyncModules:        []string{"credentials"},
+		SyncOwnerSwarmID:   "swarm_host",
+		SyncBundlePassword: "bundle-password",
+		BootstrapSecret:    "bootstrap-secret",
+	}); err != nil {
+		t.Fatalf("put deployment record: %v", err)
+	}
+
+	deploySvc := deployruntime.NewService(deployStore, nil, nil, nil, authruntime.NewService(authStore, nil), nil, nil, "")
+	bundle, err := deploySvc.SyncCredentialBundle(context.Background(), deployruntime.ContainerSyncCredentialRequestInput{
+		DeploymentID:    "deploy-sync-child",
+		BootstrapSecret: "bootstrap-secret",
+	})
+	if err != nil {
+		t.Fatalf("SyncCredentialBundle() error = %v, want nil", err)
+	}
+	if len(bundle.Bundle) == 0 {
+		t.Fatalf("sync bundle payload was empty")
+	}
+}
+
 func TestSyncCredentialBundleRequiresUnlockForLockedVaultedHost(t *testing.T) {
 	store := openSharedStore(t, "host-store.pebble")
 	authStore := pebblestore.NewAuthStore(store)

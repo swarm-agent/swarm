@@ -110,13 +110,14 @@ func TestRemoteRuntimeSignatureChangesWithInputs(t *testing.T) {
 	}
 }
 
-func TestRemoteInstallerScriptStagesNativeRuntimeAndStartsSystemdService(t *testing.T) {
+func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testing.T) {
 	record := pebblestore.RemoteDeploySessionRecord{
+		ID:            "remote-child-test",
 		Name:          "remote-child",
 		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
 		RemoteRuntime: "docker",
+		ImageRef:      "localhost/swarm-remote-child:test1234",
 		SudoMode:      "sudo",
-		SystemdUnit:   "swarm-remote-child-test.service",
 		Payloads: []pebblestore.RemoteDeployPayloadRecord{{
 			ArchiveName: "payload-01.tar.gz",
 			TargetPath:  "/workspaces",
@@ -125,27 +126,28 @@ func TestRemoteInstallerScriptStagesNativeRuntimeAndStartsSystemdService(t *test
 	script := remoteInstallerScript(record)
 	for _, needle := range []string{
 		`remote_root='/var/lib/swarm/remote-deploy/test'`,
-		`runtime_root='/var/lib/swarm/remote-deploy/test/runtime'`,
 		`config_home='/var/lib/swarm/remote-deploy/test/config'`,
 		`tailscale_state_dir='/var/lib/swarm/remote-deploy/test/state/tailscale'`,
 		`swarmd_state_dir='/var/lib/swarm/remote-deploy/test/state/swarmd'`,
-		`curl -fsSL https://tailscale.com/install.sh -o "$tmp_script"`,
-		`tar -xzf swarm-runtime.tar.gz -C "$remote_root"`,
+		`runtime='docker'`,
+		`image_ref='localhost/swarm-remote-child:test1234'`,
+		`image_archive='swarm-remote-tailscale-image.tar'`,
+		`use_archive_image='1'`,
+		`container_name='swarm-remote-child-remote-child-test'`,
+		`if runtime_cmd image inspect "$image_ref" >/dev/null 2>&1; then`,
+		`runtime_cmd load -i "$image_archive" >/dev/null`,
 		`as_root mkdir -p '/workspaces'`,
 		`cat > "$start_script" <<'SCRIPT'`,
 		`export XDG_CONFIG_HOME="$config_home"`,
-		`export SWARM_RUNTIME_BIN="$runtime_root/bin/swarmd"`,
-		`export SWARM_WEB_DIST_DIR="$runtime_root/web/dist"`,
 		`export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"`,
 		`export TS_OUTBOUND_HTTP_PROXY_LISTEN="127.0.0.1:1055"`,
 		`export SWARM_TAILSCALE_OUTBOUND_PROXY="http://127.0.0.1:1055"`,
-		`exec "$runtime_root/bin/swarm-container-entrypoint"`,
-		`WorkingDirectory=/var/lib/swarm/remote-deploy/test`,
-		`ExecStart=/bin/bash /var/lib/swarm/remote-deploy/test/run-remote-child.sh`,
-		`User=$remote_user`,
-		`Group=$remote_group`,
-		`as_root systemctl set-environment "TAILSCALE_AUTHKEY=${TAILSCALE_AUTHKEY:-}" "SWARM_REMOTE_SYNC_VAULT_PASSWORD=${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}"`,
-		`as_root systemctl start "$systemd_unit"`,
+		`run_args+=(--volume '/workspaces:/workspaces')`,
+		`run_args+=(-e "TS_AUTHKEY=${TAILSCALE_AUTHKEY}")`,
+		`exec "$runtime_bin" "${run_args[@]}"`,
+		`nohup sudo -E env TAILSCALE_AUTHKEY="${TAILSCALE_AUTHKEY:-}" SWARM_REMOTE_SYNC_VAULT_PASSWORD="${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &`,
+		`log_timer_step "start_remote_container" "$step_started_ms"`,
+		`runtime_cmd inspect -f '{{.State.Running}}' "$container_name"`,
 		`tail -n 200 "$log_file"`,
 		`deadline=$((SECONDS + 90))`,
 	} {
@@ -154,7 +156,45 @@ func TestRemoteInstallerScriptStagesNativeRuntimeAndStartsSystemdService(t *test
 		}
 	}
 	if strings.Contains(script, `$HOME/.config`) {
-		t.Fatalf("installer script should not depend on host HOME under systemd\n%s", script)
+		t.Fatalf("installer script should not depend on host HOME\n%s", script)
+	}
+	for _, unexpected := range []string{
+		`systemctl`,
+		`journalctl`,
+		`WorkingDirectory=`,
+		`ExecStart=`,
+	} {
+		if strings.Contains(script, unexpected) {
+			t.Fatalf("installer script should not include %q\n%s", unexpected, script)
+		}
+	}
+}
+
+func TestRemoteInstallerScriptPullsRegistryImageWithoutArchive(t *testing.T) {
+	t.Setenv(remoteImagePrefixEnv, "ghcr.io/swarm-agent/swarm-remote-child")
+
+	record := pebblestore.RemoteDeploySessionRecord{
+		ID:            "remote-child-test",
+		Name:          "remote-child",
+		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
+		RemoteRuntime: "docker",
+		ImageRef:      "ghcr.io/swarm-agent/swarm-remote-child:test1234",
+		SudoMode:      "sudo",
+	}
+	script := remoteInstallerScript(record)
+	for _, needle := range []string{
+		`image_ref='ghcr.io/swarm-agent/swarm-remote-child:test1234'`,
+		`image_archive='swarm-remote-tailscale-image.tar'`,
+		`use_archive_image='0'`,
+		`elif [ "$use_archive_image" != "1" ]; then`,
+		`runtime_cmd pull "$image_ref" >/dev/null`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("installer script missing %q\n%s", needle, script)
+		}
+	}
+	if !strings.Contains(script, `elif [ -f "$image_archive" ]; then`) {
+		t.Fatalf("installer script should keep archive fallback branch for archive-based refs\n%s", script)
 	}
 }
 

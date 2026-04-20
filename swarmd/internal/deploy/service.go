@@ -569,7 +569,7 @@ func (s *Service) requireManagedSyncVaultPassword(syncVaultPassword string) erro
 	if err != nil {
 		return err
 	}
-	if vaultStatus.Enabled && strings.TrimSpace(syncVaultPassword) == "" {
+	if vaultStatus.Enabled && !vaultStatus.Unlocked && strings.TrimSpace(syncVaultPassword) == "" {
 		return fmt.Errorf("vault password is required to sync from a vaulted host")
 	}
 	return nil

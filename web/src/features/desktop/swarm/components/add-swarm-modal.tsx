@@ -1083,7 +1083,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         `Builder runtime: ${session.preflight.builder_runtime || 'unknown'}`,
         `Remote runtime: ${session.preflight.remote_runtime || 'unknown'}`,
         `Deploy method: ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim()}`}`,
-        `Systemd: ${session.preflight.systemd_available ? `install/update ${session.preflight.systemd_unit || 'service unit'}` : 'not available'}`,
+        'Persistence: user-managed after launch',
         `Files copied: ${(session.preflight.files_to_copy || []).join(', ') || 'none'}`,
         `Payloads: ${(session.preflight.payloads || []).map((payload) => `${payload.workspace_name || payload.source_path} (${payload.included_files} tracked files)`).join('; ') || 'none'}`,
         ...(remoteDeployMethod === 'tailscale'
@@ -1091,10 +1091,11 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           : []),
         '',
         'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.',
-        'This will also send a built Swarm container image, a rendered swarm.conf, and the installer script.',
+        `This will also send the prepackaged ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when the remote host does not already have it, plus a rendered swarm.conf and the installer script.`,
         `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
+        'Swarm will not install persistence on the remote machine in this path.',
         '',
-        'Continue with managed SSH deploy?'
+        'Continue with SSH launch?'
       ].join('\n'))
       if (!confirmed) {
         setStatus('Remote deploy cancelled after preflight review.')
@@ -1454,8 +1455,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       <Cloud size={18} />
                     </div>
                     <div>
-                      <div className="text-sm font-semibold text-[var(--app-text)]">Remote container</div>
-                      <div className="mt-1 text-xs text-[var(--app-text-muted)]">Build here, copy over SSH/SCP, install or update systemd, then attach back through Tailscale.</div>
+                      <div className="text-sm font-semibold text-[var(--app-text)]">Remote over SSH</div>
+                      <div className="mt-1 text-xs text-[var(--app-text-muted)]">Prepare the remote image here, ship only the selected workspaces plus config over SSH/SCP, then attach back through the selected transport.</div>
                     </div>
                   </div>
                   {launchTarget === 'remote' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
@@ -1733,13 +1734,13 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   {[
                     {
                       id: 'tailscale' as const,
-                      title: 'Tailscale',
-                      text: 'SSH for install, then the child calls back over the master tailnet URL.',
+                      title: 'SSH + Tailscale',
+                      text: 'Prepare the SSH/Tailscale remote image here, then the child calls back over the master tailnet URL.',
                     },
                     {
                       id: 'lan' as const,
-                      title: 'LAN / WireGuard',
-                      text: 'SSH for install, then the child calls back over a reachable host or private IP.',
+                      title: 'SSH + LAN / WireGuard',
+                      text: 'Prepare the SSH/LAN remote image here, then the child calls back over a reachable host or private IP.',
                     },
                   ].map((option) => (
                     <button
@@ -1901,10 +1902,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <div className="font-medium text-[var(--app-text)]">Preflight summary shown before execution</div>
                   <ul className="mt-3 list-disc space-y-2 pl-5">
                     <li>This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server as payload archives.</li>
-                    <li>This will also build the Swarm container locally, export it as an image archive, copy it to the remote server, and start it there.</li>
-                    <li>The remote install path copies: image archive, rendered <code>swarm.conf</code>, installer script, and Git-tracked workspace payload archives only.</li>
+                    <li>This will also prepare the prepackaged Swarm remote image for the selected SSH transport, reuse the remote image when it already matches, and only copy the image archive when needed.</li>
+                    <li>The remote install path copies: rendered <code>swarm.conf</code>, installer script, Git-tracked workspace payload archives, and the selected remote image archive only when the remote host does not already have that image.</li>
                     <li>The launched remote child is configured to call back to this master over the selected transport endpoint.</li>
-                    <li>Persistence: install or update a dedicated systemd unit when available.</li>
+                    <li>Persistence is not installed by Swarm in this path. Reboot survival is up to the remote machine owner.</li>
                     <li>Attach flow: remote child must come back over the selected transport, then you explicitly approve it here.</li>
                   </ul>
                 </div>
@@ -1984,7 +1985,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div className="rounded-2xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">
                   <div className="font-medium">Preflight passed</div>
                   <div className="mt-2 text-[var(--app-text)]">
-                    {remotePreflightSession.preflight.summary || 'Remote host is ready for managed SSH deploy.'}
+                    {remotePreflightSession.preflight.summary || 'Remote host is ready for SSH launch.'}
                   </div>
                   <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-2">
                     <div><span className="font-medium text-[var(--app-text)]">Host:</span> {remotePreflightSession.ssh_session_target || remoteSSHTarget.trim()}</div>
@@ -1992,7 +1993,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     <div><span className="font-medium text-[var(--app-text)]">Builder runtime:</span> {remotePreflightSession.preflight.builder_runtime || 'unknown'}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession.preflight.remote_runtime || 'unknown'}</div>
-                    <div><span className="font-medium text-[var(--app-text)]">Systemd:</span> {remotePreflightSession.preflight.systemd_available ? (remotePreflightSession.preflight.systemd_unit || 'available') : 'not available'}</div>
+                    <div><span className="font-medium text-[var(--app-text)]">Persistence:</span> User-managed after launch</div>
                   </div>
                 </div>
               ) : null}
@@ -2025,13 +2026,13 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'local' ? '6. Ready to add?' : '6. Ready to add?'}</div>
             {launchTarget === 'remote' ? (
               <div className="grid gap-2 text-sm text-[var(--app-text-muted)]">
-                <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote container</div>
+                <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote over SSH</div>
                 <div><span className="font-medium text-[var(--app-text)]">SSH target:</span> {remoteSSHTarget.trim() || 'Required'}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Deploy method:</span> {remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim() || 'Required'}`}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Preflight:</span> {remotePreflightSession ? 'Passed' : (remotePreflightLoading ? 'Running…' : 'Required before launch')}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession?.preflight.remote_runtime || 'Unknown until preflight'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Systemd:</span> {remotePreflightSession ? (remotePreflightSession.preflight.systemd_available ? (remotePreflightSession.preflight.systemd_unit || 'Available') : 'Not available') : 'Unknown until preflight'}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Persistence:</span> User-managed after launch</div>
                 <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Payload archives:</span> {remotePreflightSession ? remotePreflightArchiveCount : selectedRemoteArchiveCount}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Ubuntu packages:</span> {containerPackages.length}</div>

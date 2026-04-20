@@ -35,9 +35,27 @@ If a rule below conflicts with convenience, the rule wins.
 ./scripts/check-precommit.sh
 ```
 
+- Immediately before any GitHub container/package publish or remote-deploy image push, run:
+
+```bash
+./scripts/check-container-publish.sh --runtime docker -- \
+  --ssh-target <target> \
+  --transport-mode <tailscale|lan>
+```
+
 - `./scripts/check-precommit.sh` includes path, secrets, policy, and vulnerability scans.
 - Vulnerability scanning includes Go module scans and npm advisory checks for the web lockfile.
 - `./scripts/check-precommit.sh` must skip tests by default.
+- `./scripts/check-container-publish.sh` is the container publish gate.
+  - It runs `./scripts/check-launch-readiness.sh --require-clean`, which in turn runs `./scripts/check-precommit.sh` and the CVE checks.
+  - It verifies `.dockerignore` excludes local-only build-context paths.
+  - It builds the image through `scripts/rebuild-container.sh --image-only`.
+  - It inspects the built image for forbidden local-only paths such as `.git`, `.cache`, `.env`, `.docker`, and `.ssh`.
+  - It then runs the checked-in `tests/swarmd/remote_deploy_e2e.sh` harness with routed proof and teardown.
+  - Do not publish containers or GitHub packages until this script passes.
+- For the container publish gate, raw secrets must come from env-name flags consumed by the checked-in harnesses.
+  - Never put real auth keys, provider keys, cookies, or tokens directly on the command line.
+  - Never store those values in committed files, startup configs, screenshots, or docs.
 - Only run tests in precommit when the user explicitly asks for tests.
 - If tests or validation were not requested, say so explicitly.
 
