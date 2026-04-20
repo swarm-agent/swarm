@@ -115,6 +115,9 @@ func run(argv0 string, args []string) error {
 		if err := launcher.BuildSwarmdBinaries(buildProfile); err != nil {
 			return err
 		}
+		if err := launcher.SyncDevContainerImages(buildProfile, "swarm-backend-rebuild", true); err != nil {
+			return err
+		}
 		if err := launcher.StopBackend(profile); err != nil {
 			return err
 		}
@@ -124,7 +127,10 @@ func run(argv0 string, args []string) error {
 		if err != nil {
 			return err
 		}
-		return launcher.BuildSwarmdBinaries(buildProfile)
+		if err := launcher.BuildSwarmdBinaries(buildProfile); err != nil {
+			return err
+		}
+		return launcher.SyncDevContainerImages(buildProfile, "swarm-backend-build", true)
 	case "info":
 		if err := launcher.RecordPortFile(profile); err != nil {
 			return err
@@ -299,7 +305,7 @@ func consumeInlineFlag(arg, prefix string) (string, bool) {
 }
 
 func usage() {
-	fmt.Println(`swarm launcher
+	fmt.Print(`swarm launcher
 
 Usage:
   swarm [main|dev] [run] [--swarm-name NAME] [--child] [--mode lan|tailscale] [--advertise-host HOST] [--advertise-port PORT] [--tailscale-url URL] [tui-args...]

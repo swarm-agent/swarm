@@ -73,6 +73,7 @@ interface ContainerPackageDraft {
 
 const CONTAINER_PACKAGE_BASE_IMAGE = 'ubuntu:24.04'
 const CONTAINER_PACKAGE_MANAGER = 'apt'
+const REMOTE_IMAGE_DELIVERY_MODE: 'registry' = 'registry'
 
 const DEFAULT_CONTAINER_PACKAGES: ContainerPackageDraft[] = [
   'bash',
@@ -903,6 +904,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         groupID: group.group.id,
         groupName: group.group.name,
         remoteRuntime: remoteRuntimeChoice,
+        imageDeliveryMode: REMOTE_IMAGE_DELIVERY_MODE,
         syncEnabled,
         bypassPermissions,
         containerPackages: buildContainerPackageManifest(containerPackages),
@@ -1091,7 +1093,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           : []),
         '',
         'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.',
-        `This will also send the prepackaged ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when the remote host does not already have it, plus a rendered swarm.conf and the installer script.`,
+        `This will also send the rendered swarm.conf, installer script, and selected payload archives over SSH, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
         `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
         'Swarm will not install persistence on the remote machine in this path.',
         '',
@@ -1102,7 +1104,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         return
       }
 
-      setStatus('Building local artifacts and shipping to the remote host…')
+      setStatus('Preparing payloads locally and shipping the minimum needed over SSH…')
       let currentSession = await startRemoteDeploySession(session.id, {
         tailscaleAuthKey: remoteDeployMethod === 'tailscale' && remoteTailscaleAuthMode === 'key' ? remoteTailscaleAuthKey.trim() : '',
         syncVaultPassword: syncEnabled && hostVaultEnabled ? syncVaultPassword.trim() : '',
@@ -1902,8 +1904,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <div className="font-medium text-[var(--app-text)]">Preflight summary shown before execution</div>
                   <ul className="mt-3 list-disc space-y-2 pl-5">
                     <li>This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server as payload archives.</li>
-                    <li>This will also prepare the prepackaged Swarm remote image for the selected SSH transport, reuse the remote image when it already matches, and only copy the image archive when needed.</li>
-                    <li>The remote install path copies: rendered <code>swarm.conf</code>, installer script, Git-tracked workspace payload archives, and the selected remote image archive only when the remote host does not already have that image.</li>
+                    <li>This will also have the remote host pull the published Swarm remote image for the selected SSH transport when that image is not already present there.</li>
+                    <li>The remote install path copies: rendered <code>swarm.conf</code>, installer script, and Git-tracked workspace payload archives.</li>
                     <li>The launched remote child is configured to call back to this master over the selected transport endpoint.</li>
                     <li>Persistence is not installed by Swarm in this path. Reboot survival is up to the remote machine owner.</li>
                     <li>Attach flow: remote child must come back over the selected transport, then you explicitly approve it here.</li>

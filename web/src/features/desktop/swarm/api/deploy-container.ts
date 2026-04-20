@@ -112,6 +112,8 @@ export interface RemoteDeployPreflight {
   path_id: string
   builder_runtime?: string
   remote_runtime?: string
+  image_delivery_mode?: 'archive' | 'registry'
+  image_prefix?: string
   requested_remote_runtime?: 'docker' | 'podman'
   ssh_reachable: boolean
   systemd_available: boolean
@@ -137,6 +139,8 @@ export interface RemoteDeploySession {
   group_name?: string
   builder_runtime?: string
   remote_runtime?: string
+  image_delivery_mode?: 'archive' | 'registry'
+  image_prefix?: string
   master_tailscale_url?: string
   remote_auth_url?: string
   remote_tailnet_url?: string
@@ -291,6 +295,7 @@ export async function createRemoteDeploySession(input: {
   groupID: string
   groupName?: string
   remoteRuntime?: 'docker' | 'podman'
+  imageDeliveryMode?: 'archive' | 'registry'
   syncEnabled?: boolean
   bypassPermissions?: boolean
   containerPackages?: DeployContainerPackageManifest
@@ -319,6 +324,7 @@ export async function createRemoteDeploySession(input: {
       group_id: input.groupID,
       group_name: input.groupName,
       remote_runtime: input.remoteRuntime,
+      image_delivery_mode: input.imageDeliveryMode,
       sync_enabled: input.syncEnabled,
       bypass_permissions: input.bypassPermissions,
       container_packages: input.containerPackages ? {

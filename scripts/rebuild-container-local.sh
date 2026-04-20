@@ -25,6 +25,8 @@ CONTAINER_CONFIG_HOME="${CONTAINER_CONFIG_HOME:-/${CONTAINER_HOME_USER}/.config}
 SWARM_CONFIG_MOUNT="${SWARM_CONFIG_MOUNT:-${CONTAINER_CONFIG_HOME}/swarm}"
 SHUTDOWN_REASON="${SWARM_REBUILD_REASON:-swarm-container-rebuild}"
 IMAGE_ONLY=0
+SKIP_LOCAL_ARTIFACT_REBUILD="${SWARM_SKIP_LOCAL_ARTIFACT_REBUILD:-0}"
+DEV_IMAGE_FINGERPRINT="${SWARM_CONTAINER_DEV_FINGERPRINT:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -254,8 +256,12 @@ do
   fi
 done
 
-echo "[rebuild-container] rebuilding binaries and desktop assets"
-build_local_artifacts_without_restart
+if [[ "${SKIP_LOCAL_ARTIFACT_REBUILD}" == "1" ]]; then
+  echo "[rebuild-container] skipping local artifact rebuild; using current staged build inputs"
+else
+  echo "[rebuild-container] rebuilding binaries and desktop assets"
+  build_local_artifacts_without_restart
+fi
 
 echo "[rebuild-container] staging lane binaries for container image"
 stage_container_binaries
@@ -263,7 +269,14 @@ stage_container_binaries
 echo "[rebuild-container] rebuilding image ${IMAGE_NAME}"
 (
   cd "${ROOT_DIR}"
-  "${BUILD_RUNTIME}" build -f deploy/container-mvp/Containerfile -t "${IMAGE_NAME}" .
+  build_args=()
+  if [[ -n "${DEV_IMAGE_FINGERPRINT}" ]]; then
+    build_args+=(
+      --label "io.swarm.dev-mode=true"
+      --label "io.swarm.dev-fingerprint=${DEV_IMAGE_FINGERPRINT}"
+    )
+  fi
+  "${BUILD_RUNTIME}" build "${build_args[@]}" -f deploy/container-mvp/Containerfile -t "${IMAGE_NAME}" .
 )
 
 if [[ "${IMAGE_ONLY}" == "1" ]]; then

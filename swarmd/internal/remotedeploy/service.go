@@ -34,18 +34,20 @@ import (
 )
 
 const (
-	PathSessionList        = "deploy.remote.list.v1"
-	PathSessionCreate      = "deploy.remote.create.v1"
-	PathSessionDelete      = "deploy.remote.delete.v1"
-	PathSessionStart       = "deploy.remote.start.v1"
-	PathSessionApprove     = "deploy.remote.approve.v1"
-	PathSessionChildStatus = "deploy.remote.child_status.v1"
-	PathSessionPreflight   = "deploy.remote.preflight.v1"
-	remoteImageNamePrefix  = "localhost/swarm-remote-child"
-	remoteContainerPrefix  = "swarm-remote-child"
-	remoteImagePrefixEnv   = "SWARM_REMOTE_DEPLOY_IMAGE_PREFIX"
-	remotePackageManager   = "apt"
-	remotePackageBaseImage = "ubuntu:24.04"
+	PathSessionList             = "deploy.remote.list.v1"
+	PathSessionCreate           = "deploy.remote.create.v1"
+	PathSessionDelete           = "deploy.remote.delete.v1"
+	PathSessionStart            = "deploy.remote.start.v1"
+	PathSessionApprove          = "deploy.remote.approve.v1"
+	PathSessionChildStatus      = "deploy.remote.child_status.v1"
+	PathSessionPreflight        = "deploy.remote.preflight.v1"
+	remoteImageNamePrefix       = "localhost/swarm-remote-child"
+	remoteContainerPrefix       = "swarm-remote-child"
+	remoteImagePrefixEnv        = "SWARM_REMOTE_DEPLOY_IMAGE_PREFIX"
+	remotePackageManager        = "apt"
+	remotePackageBaseImage      = "ubuntu:24.04"
+	remoteImageDeliveryArchive  = "archive"
+	remoteImageDeliveryRegistry = "registry"
 )
 
 type ContainerPackageSelection struct {
@@ -82,6 +84,7 @@ type CreateSessionInput struct {
 	GroupID             string
 	GroupName           string
 	RemoteRuntime       string
+	ImageDeliveryMode   string
 	SyncEnabled         bool
 	BypassPermissions   bool
 	ContainerPackages   ContainerPackageManifest
@@ -138,6 +141,8 @@ type SessionPreflight struct {
 	PathID                  string           `json:"path_id"`
 	BuilderRuntime          string           `json:"builder_runtime,omitempty"`
 	RemoteRuntime           string           `json:"remote_runtime,omitempty"`
+	ImageDeliveryMode       string           `json:"image_delivery_mode,omitempty"`
+	ImagePrefix             string           `json:"image_prefix,omitempty"`
 	SSHReachable            bool             `json:"ssh_reachable"`
 	SystemdAvailable        bool             `json:"systemd_available"`
 	SystemdUnit             string           `json:"systemd_unit,omitempty"`
@@ -162,6 +167,8 @@ type Session struct {
 	GroupName           string                   `json:"group_name,omitempty"`
 	BuilderRuntime      string                   `json:"builder_runtime,omitempty"`
 	RemoteRuntime       string                   `json:"remote_runtime,omitempty"`
+	ImageDeliveryMode   string                   `json:"image_delivery_mode,omitempty"`
+	ImagePrefix         string                   `json:"image_prefix,omitempty"`
 	MasterTailscaleURL  string                   `json:"master_tailscale_url,omitempty"`
 	RemoteAuthURL       string                   `json:"remote_auth_url,omitempty"`
 	RemoteTailnetURL    string                   `json:"remote_tailnet_url,omitempty"`
@@ -265,6 +272,33 @@ func remoteDeployImagePrefix() string {
 	return strings.TrimRight(prefix, "/")
 }
 
+func normalizeRemoteImageDeliveryMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case remoteImageDeliveryArchive:
+		return remoteImageDeliveryArchive
+	case remoteImageDeliveryRegistry:
+		return remoteImageDeliveryRegistry
+	default:
+		return remoteImageDeliveryArchive
+	}
+}
+
+func resolveRemoteImagePrefix(mode string) (string, error) {
+	switch normalizeRemoteImageDeliveryMode(mode) {
+	case remoteImageDeliveryRegistry:
+		prefix := strings.TrimRight(strings.TrimSpace(os.Getenv(remoteImagePrefixEnv)), "/")
+		if prefix == "" {
+			return "", fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- Published remote image download is enabled, but %s is not configured.\n\nWhat to do\n- Set %s to the pullable published remote image prefix.\n- Then rerun preflight.", remoteImagePrefixEnv, remoteImagePrefixEnv)
+		}
+		if strings.HasPrefix(prefix, "localhost/") {
+			return "", fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- Published remote image download is enabled, but %s points at a non-pullable local image prefix: %s\n\nWhat to do\n- Set %s to the pullable published remote image prefix.\n- Then rerun preflight.", remoteImagePrefixEnv, prefix, remoteImagePrefixEnv)
+		}
+		return prefix, nil
+	default:
+		return remoteImageNamePrefix, nil
+	}
+}
+
 func remoteImageUsesArchive(imageRef string) bool {
 	imageRef = strings.TrimSpace(imageRef)
 	return imageRef == "" || strings.HasPrefix(imageRef, "localhost/")
@@ -313,6 +347,11 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 		return Session{}, fmt.Errorf("ssh_session_target is required")
 	}
 	transportMode := normalizeRemoteTransportMode(input.TransportMode)
+	imageDeliveryMode := normalizeRemoteImageDeliveryMode(input.ImageDeliveryMode)
+	imagePrefix, err := resolveRemoteImagePrefix(imageDeliveryMode)
+	if err != nil {
+		return Session{}, err
+	}
 	stepStartedAt := time.Now()
 	startupCfg, hostState, err := s.resolveBootstrapContext()
 	logRemoteDeployTiming("create.resolve_bootstrap_context", stepStartedAt, err)
@@ -392,7 +431,7 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 		"remote/config/swarm/swarm.conf",
 		"remote/install-remote-child.sh",
 	}
-	if remoteImageUsesArchive(remoteImageRef("preflight")) {
+	if remoteImageUsesArchive(remoteImageRef(imagePrefix, "preflight")) {
 		filesToCopy = append(filesToCopy, filepath.ToSlash(filepath.Join("remote", remoteImageArchiveName(transportMode))))
 	}
 	for _, payload := range payloads {
@@ -418,6 +457,8 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 		GroupName:               firstNonEmpty(group.Name, input.GroupName, group.ID),
 		BuilderRuntime:          builderRuntime,
 		RemoteRuntime:           remoteRuntime,
+		ImageDeliveryMode:       imageDeliveryMode,
+		ImagePrefix:             imagePrefix,
 		RemoteRoot:              remoteRoot,
 		MasterTailscaleURL:      firstNonEmpty(map[bool]string{true: masterEndpoint}[transportMode == startupconfig.NetworkModeTailscale]),
 		MasterSwarmID:           strings.TrimSpace(hostState.Node.SwarmID),
@@ -649,7 +690,7 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	}
 	defer os.RemoveAll(workDir)
 	stepStartedAt = time.Now()
-	runtimeArtifact, err := s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, mapRemoteStoredContainerPackageManifest(record.ContainerPackages))
+	runtimeArtifact, err := s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, record.ImagePrefix, mapRemoteStoredContainerPackageManifest(record.ContainerPackages))
 	logRemoteDeployTiming(
 		"start.prepare_runtime_artifact",
 		stepStartedAt,
@@ -2042,6 +2083,8 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 		PathID:                  PathSessionPreflight,
 		BuilderRuntime:          record.BuilderRuntime,
 		RemoteRuntime:           record.RemoteRuntime,
+		ImageDeliveryMode:       record.ImageDeliveryMode,
+		ImagePrefix:             record.ImagePrefix,
 		SSHReachable:            record.SSHReachable,
 		SystemdAvailable:        record.SystemdAvailable,
 		SystemdUnit:             record.SystemdUnit,
@@ -2049,7 +2092,7 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 		RemoteNetworkCandidates: append([]string(nil), record.RemoteNetworkCandidates...),
 		FilesToCopy:             append([]string(nil), record.FilesToCopy...),
 		Payloads:                payloads,
-		Summary:                 fmt.Sprintf("Prepare the prepackaged Swarm remote image locally, copy it over SSH to %s when needed, launch the remote child container there now, and wait for child approval over %s.", firstNonEmpty(record.SSHSessionTarget, "remote host"), firstNonEmpty(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale)),
+		Summary:                 remotePreflightSummary(record),
 		Checks: []string{
 			"local runtime bundle assets available",
 			"remote SSH reachable",
@@ -2071,6 +2114,8 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 		GroupName:           record.GroupName,
 		BuilderRuntime:      record.BuilderRuntime,
 		RemoteRuntime:       record.RemoteRuntime,
+		ImageDeliveryMode:   record.ImageDeliveryMode,
+		ImagePrefix:         record.ImagePrefix,
 		MasterTailscaleURL:  record.MasterTailscaleURL,
 		RemoteAuthURL:       record.RemoteAuthURL,
 		RemoteTailnetURL:    record.RemoteTailnetURL,
@@ -2100,6 +2145,16 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 		ApprovedAt:          record.ApprovedAt,
 		AttachedAt:          record.AttachedAt,
 	}
+}
+
+func remotePreflightSummary(record pebblestore.RemoteDeploySessionRecord) string {
+	target := firstNonEmpty(record.SSHSessionTarget, "remote host")
+	transport := firstNonEmpty(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale)
+	if normalizeRemoteImageDeliveryMode(record.ImageDeliveryMode) == remoteImageDeliveryRegistry {
+		imageRef := firstNonEmpty(strings.TrimSpace(record.ImageRef), remoteImageRef(record.ImagePrefix, "published"))
+		return fmt.Sprintf("Prepare the selected workspace payloads locally, copy only those payloads plus config/install files over SSH to %s, have the remote host pull %s there, launch the remote child container, and wait for child approval over %s.", target, imageRef, transport)
+	}
+	return fmt.Sprintf("Prepare the prepackaged Swarm remote image locally, copy it over SSH to %s when needed, launch the remote child container there now, and wait for child approval over %s.", target, transport)
 }
 
 func (s *Service) cleanupRemoteChildState(childSwarmID string, item *localcontainers.DeleteItemResult) error {
@@ -2564,7 +2619,7 @@ func requireHostedGroupForLocalSwarm(state swarmruntime.LocalState, groupID stri
 	return fmt.Errorf("group %q is not part of the current local swarm state", groupID)
 }
 
-func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRuntime, transportMode string, manifest ContainerPackageManifest) (remoteRuntimeArtifact, error) {
+func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRuntime, transportMode, imagePrefix string, manifest ContainerPackageManifest) (remoteRuntimeArtifact, error) {
 	buildRoot, err := resolveRemoteDeployBuildRoot(s.startupCWD)
 	if err != nil {
 		return remoteRuntimeArtifact{}, err
@@ -2575,7 +2630,7 @@ func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRunti
 	if err != nil {
 		return remoteRuntimeArtifact{}, err
 	}
-	imageRef := remoteImageRef(signature)
+	imageRef := remoteImageRef(imagePrefix, signature)
 	if !remoteImageUsesArchive(imageRef) {
 		return remoteRuntimeArtifact{
 			Signature: signature,
@@ -2593,7 +2648,7 @@ func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRunti
 		builderRuntime = "docker"
 	}
 	stepStartedAt = time.Now()
-	imageRef, err = ensureRemoteDeployImageCurrent(ctx, buildRoot, builderRuntime, signature, manifest)
+	imageRef, err = ensureRemoteDeployImageCurrent(ctx, buildRoot, builderRuntime, imagePrefix, signature, manifest)
 	logRemoteDeployTiming("start.prepare_runtime.ensure_image", stepStartedAt, err, "builder_runtime", builderRuntime, "image_ref", imageRef, "signature", signature)
 	if err != nil {
 		return remoteRuntimeArtifact{}, err
@@ -2768,7 +2823,7 @@ func validateTarGzArchive(path string) error {
 	}
 }
 
-func ensureRemoteDeployImageCurrent(ctx context.Context, buildRoot, builderRuntime, signature string, manifest ContainerPackageManifest) (string, error) {
+func ensureRemoteDeployImageCurrent(ctx context.Context, buildRoot, builderRuntime, imagePrefix, signature string, manifest ContainerPackageManifest) (string, error) {
 	builderRuntime = normalizeRemoteDeployRuntime(builderRuntime)
 	if builderRuntime == "" {
 		return "", fmt.Errorf("builder runtime is required")
@@ -2778,7 +2833,7 @@ func ensureRemoteDeployImageCurrent(ctx context.Context, buildRoot, builderRunti
 		return "", fmt.Errorf("remote image signature is required")
 	}
 	manifest = normalizeRemoteContainerPackageManifest(manifest)
-	imageRef := remoteImageRef(signature)
+	imageRef := remoteImageRef(imagePrefix, signature)
 	exists, err := runtimeImageExistsLocal(ctx, builderRuntime, imageRef)
 	if err != nil {
 		return "", fmt.Errorf("check local remote image %q: %w", imageRef, err)
@@ -2796,7 +2851,7 @@ func ensureRemoteDeployImageCurrent(ctx context.Context, buildRoot, builderRunti
 	if err != nil {
 		return "", err
 	}
-	baseImageRef := remoteImageRef(baseSignature)
+	baseImageRef := remoteImageRef(imagePrefix, baseSignature)
 	baseExists, err := runtimeImageExistsLocal(ctx, builderRuntime, baseImageRef)
 	if err != nil {
 		return "", fmt.Errorf("check local base remote image %q: %w", baseImageRef, err)
@@ -2992,8 +3047,12 @@ func remoteImageArchiveName(transportMode string) string {
 	}
 }
 
-func remoteImageRef(signature string) string {
-	return fmt.Sprintf("%s:%s", remoteDeployImagePrefix(), strings.TrimSpace(signature))
+func remoteImageRef(imagePrefix, signature string) string {
+	prefix := strings.TrimRight(strings.TrimSpace(imagePrefix), "/")
+	if prefix == "" {
+		prefix = remoteDeployImagePrefix()
+	}
+	return fmt.Sprintf("%s:%s", prefix, strings.TrimSpace(signature))
 }
 
 func hashDirWithPath(h io.Writer, rootPath, buildRoot string) error {

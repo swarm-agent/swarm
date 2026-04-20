@@ -59,6 +59,7 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		GroupID             string `json:"group_id"`
 		GroupName           string `json:"group_name"`
 		RemoteRuntime       string `json:"remote_runtime"`
+		ImageDeliveryMode   string `json:"image_delivery_mode,omitempty"`
 		SyncEnabled         bool   `json:"sync_enabled"`
 		BypassPermissions   bool   `json:"bypass_permissions,omitempty"`
 		ContainerPackages   struct {
@@ -121,6 +122,7 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		GroupID:             req.GroupID,
 		GroupName:           req.GroupName,
 		RemoteRuntime:       req.RemoteRuntime,
+		ImageDeliveryMode:   req.ImageDeliveryMode,
 		SyncEnabled:         req.SyncEnabled,
 		BypassPermissions:   req.BypassPermissions,
 		ContainerPackages: remotedeploy.ContainerPackageManifest{

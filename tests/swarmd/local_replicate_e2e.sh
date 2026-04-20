@@ -60,6 +60,7 @@ Options:
   --host-root <path>                  Reuse a specific isolated host root instead of mktemp
   --host-install-artifact-root <path> Install the isolated host runtime from a release-style dist tree
   --bypass-permissions <true|false>   Host startup bypass_permissions value. Default: true
+  --dev-mode                          Enable dev_mode in the isolated host startup config
   --skip-host-rebuild                 Reuse the current host binaries instead of rebuilding first
   --skip-image-rebuild                Reuse the current canonical child image instead of rebuilding first
   --poll-timeout <seconds>            Attach wait timeout. Default: 120
@@ -672,9 +673,17 @@ port_is_available() {
 }
 
 write_host_startup_config() {
+  local dev_mode_value="false"
+  local dev_root_value=""
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    dev_mode_value="true"
+    dev_root_value="${ROOT_DIR}"
+  fi
   mkdir -p "$(dirname -- "${HOST_STARTUP_CONFIG}")"
   cat >"${HOST_STARTUP_CONFIG}" <<EOF
 startup_mode = box
+dev_mode = ${dev_mode_value}
+dev_root = ${dev_root_value}
 host = ${HOST_BIND_HOST}
 port = ${HOST_BACKEND_PORT}
 advertise_host = ${HOST_ADVERTISE_HOST}
@@ -1791,6 +1800,7 @@ HOST_INSTALL_ARTIFACT_ROOT=""
 BYPASS_PERMISSIONS="true"
 REBUILD_HOST="true"
 REBUILD_IMAGE="true"
+DEV_MODE="false"
 POLL_TIMEOUT_SECONDS="120"
 POLL_INTERVAL_SECONDS="2"
 LOG_TAIL="200"
@@ -1964,6 +1974,10 @@ while [[ $# -gt 0 ]]; do
     --bypass-permissions)
       BYPASS_PERMISSIONS="${2:-}"
       shift 2
+      ;;
+    --dev-mode)
+      DEV_MODE="true"
+      shift
       ;;
     --skip-image-rebuild)
       REBUILD_IMAGE="false"

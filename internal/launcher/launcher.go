@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
@@ -545,6 +546,108 @@ func BuildSwarmdBinaries(profile Profile) error {
 		return err
 	}
 	return runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmctl"), "./cmd/swarmctl")
+}
+
+func SyncDevContainerImages(profile Profile, reason string, skipLocalArtifactRebuild bool) error {
+	startupCfg, err := syncDevModeStartupConfig(profile)
+	if err != nil {
+		return err
+	}
+	if !startupCfg.DevMode {
+		return nil
+	}
+	devRoot, err := devmode.ResolveRoot(startupCfg.DevRoot)
+	if err != nil {
+		return fmt.Errorf("resolve dev container build root: %w", err)
+	}
+	fingerprint, err := devmode.ContainerImageFingerprint(devRoot)
+	if err != nil {
+		return fmt.Errorf("compute dev container image fingerprint: %w", err)
+	}
+	runtimes := availableDevContainerBuildRuntimes()
+	if len(runtimes) == 0 {
+		return errors.New("dev_mode is enabled but no local container runtime is available to build the canonical child image")
+	}
+	for _, runtimeName := range runtimes {
+		if err := rebuildDevContainerImage(devRoot, runtimeName, fingerprint, reason, skipLocalArtifactRebuild); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syncDevModeStartupConfig(profile Profile) (startupconfig.FileConfig, error) {
+	cfg := profile.Startup
+	if !cfg.DevMode {
+		return cfg, nil
+	}
+	if strings.TrimSpace(profile.Root) == "" {
+		return startupconfig.FileConfig{}, errors.New("dev_mode requires a source checkout; run rebuild from the repo root so the dev child image can be tracked")
+	}
+	devRoot, err := devmode.ResolveRoot(profile.Root)
+	if err != nil {
+		return startupconfig.FileConfig{}, err
+	}
+	if cfg.DevRoot == devRoot {
+		return cfg, nil
+	}
+	cfg.DevRoot = devRoot
+	if err := startupconfig.Write(cfg); err != nil {
+		return startupconfig.FileConfig{}, fmt.Errorf("record dev_root in startup config: %w", err)
+	}
+	return cfg, nil
+}
+
+func availableDevContainerBuildRuntimes() []string {
+	out := make([]string, 0, 2)
+	for _, runtimeName := range []string{"docker", "podman"} {
+		if _, err := exec.LookPath(runtimeName); err != nil {
+			continue
+		}
+		if !runtimeAvailable(runtimeName) {
+			continue
+		}
+		out = append(out, runtimeName)
+	}
+	return out
+}
+
+func runtimeAvailable(runtimeName string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	args := []string{"info", "--format", "{{.ServerVersion}}"}
+	if runtimeName == "podman" {
+		args = []string{"info", "--format", "{{.Version.Version}}"}
+	}
+	cmd := exec.CommandContext(ctx, runtimeName, args...)
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+func rebuildDevContainerImage(devRoot, runtimeName, fingerprint, reason string, skipLocalArtifactRebuild bool) error {
+	scriptPath, err := devmode.RebuildScriptPath(devRoot)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("bash", scriptPath, "--image-only")
+	cmd.Dir = devRoot
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(),
+		"BUILD_RUNTIME="+runtimeName,
+		"IMAGE_NAME="+devmode.DefaultContainerImageRef,
+		"SWARM_REBUILD_REASON="+strings.TrimSpace(reason),
+		"SWARM_CONTAINER_DEV_FINGERPRINT="+strings.TrimSpace(fingerprint),
+	)
+	if skipLocalArtifactRebuild {
+		cmd.Env = append(cmd.Env, "SWARM_SKIP_LOCAL_ARTIFACT_REBUILD=1")
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("rebuild dev child image for %s: %w", runtimeName, err)
+	}
+	return nil
 }
 
 func runGoBuild(projectRoot, workDir, goBin, outPath, pkg string) error {
@@ -1300,6 +1403,9 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 		if err := InstallDesktopAssets(profile); err != nil {
 			return err
 		}
+	}
+	if err := SyncDevContainerImages(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-rebuild"), true); err != nil {
+		return err
 	}
 	if _, err := InstallLaunchers(profile.Root); err != nil {
 		return err

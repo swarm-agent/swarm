@@ -48,6 +48,8 @@ type RemoteDeploySessionRecord struct {
 	GroupName               string                         `json:"group_name,omitempty"`
 	BuilderRuntime          string                         `json:"builder_runtime,omitempty"`
 	RemoteRuntime           string                         `json:"remote_runtime,omitempty"`
+	ImageDeliveryMode       string                         `json:"image_delivery_mode,omitempty"`
+	ImagePrefix             string                         `json:"image_prefix,omitempty"`
 	SystemdUnit             string                         `json:"systemd_unit,omitempty"`
 	RemoteRoot              string                         `json:"remote_root,omitempty"`
 	MasterTailscaleURL      string                         `json:"master_tailscale_url,omitempty"`
@@ -210,6 +212,8 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 	record.GroupName = strings.TrimSpace(record.GroupName)
 	record.BuilderRuntime = strings.TrimSpace(record.BuilderRuntime)
 	record.RemoteRuntime = normalizeSwarmLocalContainerRuntime(record.RemoteRuntime)
+	record.ImageDeliveryMode = strings.ToLower(strings.TrimSpace(record.ImageDeliveryMode))
+	record.ImagePrefix = strings.TrimRight(strings.TrimSpace(record.ImagePrefix), "/")
 	record.SystemdUnit = strings.TrimSpace(record.SystemdUnit)
 	record.RemoteRoot = strings.TrimSpace(record.RemoteRoot)
 	record.MasterTailscaleURL = strings.TrimSpace(record.MasterTailscaleURL)
