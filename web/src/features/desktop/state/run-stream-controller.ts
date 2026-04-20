@@ -9,6 +9,8 @@ import {
 const RECONNECT_BASE_DELAY_MS = 1500
 const RECONNECT_MAX_DELAY_MS = 15_000
 const RECONNECT_JITTER_RATIO = 0.2
+const RUN_STREAM_LIVENESS_TIMEOUT_MS = 45_000
+const RUN_STREAM_BROWSER_RESUME_STALE_MS = 20_000
 
 export type RunStreamEventMessage = {
   type?: string
@@ -79,6 +81,8 @@ type SessionControllerEntry = {
   reconnectAttempt: number
   generation: number
   closingSocket: WebSocket | null
+  livenessTimer: number | null
+  lastActivityAt: number
 }
 
 type DesktopRunStreamControllerOptions = {
@@ -111,7 +115,29 @@ function isTerminalSessionStatus(payload: RunStreamEventMessage): boolean {
 export class DesktopRunStreamController {
   private readonly entries = new Map<string, SessionControllerEntry>()
 
-  constructor(private readonly options: DesktopRunStreamControllerOptions) {}
+  private readonly handleBrowserOnline = (): void => {
+    this.refreshActiveEntries('browser online')
+  }
+
+  private readonly handleBrowserFocus = (): void => {
+    this.refreshActiveEntries('window focus')
+  }
+
+  private readonly handleVisibilityChange = (): void => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      this.refreshActiveEntries('visibility restored')
+    }
+  }
+
+  constructor(private readonly options: DesktopRunStreamControllerOptions) {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', this.handleBrowserOnline)
+      window.addEventListener('focus', this.handleBrowserFocus)
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.handleVisibilityChange)
+    }
+  }
 
   async start(options: DesktopBackgroundRunStartOptions): Promise<DesktopRunAccepted> {
     const accepted = await startSessionRun(options)
@@ -142,9 +168,9 @@ export class DesktopRunStreamController {
     entry.desiredRunId = resumeRequest.runId
 
     if (
-      entry.socket &&
-      entry.socketRunId === resumeRequest.runId &&
-      (entry.socket.readyState === WebSocket.OPEN || entry.socket.readyState === WebSocket.CONNECTING)
+      entry.socket
+      && entry.socketRunId === resumeRequest.runId
+      && (entry.socket.readyState === WebSocket.OPEN || entry.socket.readyState === WebSocket.CONNECTING)
     ) {
       return
     }
@@ -165,6 +191,7 @@ export class DesktopRunStreamController {
     }
     entry.desiredRunId = null
     this.cancelReconnect(entry)
+    this.clearLiveness(entry)
     this.closeSocket(entry, true)
     this.maybeDeleteEntry(entry)
   }
@@ -191,6 +218,8 @@ export class DesktopRunStreamController {
       reconnectAttempt: 0,
       generation: 0,
       closingSocket: null,
+      livenessTimer: null,
+      lastActivityAt: 0,
     }
     this.entries.set(sessionId, created)
     return created
@@ -209,6 +238,7 @@ export class DesktopRunStreamController {
       entry.socket = socket
       entry.socketRunId = resumeRequest.runId
       this.attachSocket(entry, socket, generation)
+      this.noteActivity(entry, generation)
       if (socket.readyState === WebSocket.OPEN) {
         this.sendResume(entry, socket)
       }
@@ -229,6 +259,7 @@ export class DesktopRunStreamController {
         socket.close()
         return
       }
+      this.noteActivity(entry, generation)
       this.cancelReconnect(entry)
       this.sendResume(entry, socket)
     })
@@ -237,6 +268,7 @@ export class DesktopRunStreamController {
       if (entry.generation !== generation || entry.socket !== socket) {
         return
       }
+      this.noteActivity(entry, generation)
       try {
         const payload = JSON.parse(String(event.data)) as RunStreamEventMessage
         const type = String(payload.type ?? '').trim()
@@ -270,10 +302,10 @@ export class DesktopRunStreamController {
         }
 
         if (
-          type === 'turn.completed' ||
-          type === 'turn.error' ||
-          normalizeLifecycleInactive(payload) ||
-          (type === 'session.status' && isTerminalSessionStatus(payload))
+          type === 'turn.completed'
+          || type === 'turn.error'
+          || normalizeLifecycleInactive(payload)
+          || (type === 'session.status' && isTerminalSessionStatus(payload))
         ) {
           entry.desiredRunId = null
           this.cancelReconnect(entry)
@@ -285,7 +317,17 @@ export class DesktopRunStreamController {
       }
     })
 
+    socket.addEventListener('error', () => {
+      if (entry.generation !== generation || entry.socket !== socket || !entry.desiredRunId) {
+        return
+      }
+      const ts = Date.now()
+      this.options.onReconnectPending(entry.sessionId, 'socket error', ts)
+      this.refreshEntry(entry, 'socket error')
+    })
+
     socket.addEventListener('close', () => {
+      this.clearLiveness(entry)
       if (entry.closingSocket === socket) {
         entry.closingSocket = null
         this.maybeDeleteEntry(entry)
@@ -329,6 +371,7 @@ export class DesktopRunStreamController {
     if (!entry.desiredRunId || entry.reconnectTimer !== null) {
       return
     }
+    this.clearLiveness(entry)
     const attempt = entry.reconnectAttempt
     const delay = reconnectDelayMs(attempt)
     entry.reconnectAttempt += 1
@@ -352,13 +395,79 @@ export class DesktopRunStreamController {
     }
   }
 
+  private noteActivity(entry: SessionControllerEntry, generation: number): void {
+    entry.lastActivityAt = Date.now()
+    this.armLiveness(entry, generation)
+  }
+
+  private armLiveness(entry: SessionControllerEntry, generation: number): void {
+    this.clearLiveness(entry)
+    if (!entry.desiredRunId) {
+      return
+    }
+    const timer = window.setTimeout(() => {
+      if (entry.generation !== generation || entry.livenessTimer !== timer || !entry.desiredRunId) {
+        return
+      }
+      const ts = Date.now()
+      this.options.onReconnectPending(entry.sessionId, 'stream inactivity timeout', ts)
+      this.refreshEntry(entry, 'stream inactivity timeout')
+    }, RUN_STREAM_LIVENESS_TIMEOUT_MS)
+    entry.livenessTimer = timer
+  }
+
+  private clearLiveness(entry: SessionControllerEntry): void {
+    if (entry.livenessTimer !== null) {
+      window.clearTimeout(entry.livenessTimer)
+      entry.livenessTimer = null
+    }
+  }
+
+  private refreshActiveEntries(reason: string): void {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return
+    }
+    const now = Date.now()
+    for (const entry of this.entries.values()) {
+      if (!entry.desiredRunId) {
+        continue
+      }
+      const socketState = entry.socket?.readyState ?? WebSocket.CLOSED
+      const activityStale = now - entry.lastActivityAt >= RUN_STREAM_BROWSER_RESUME_STALE_MS
+      if (entry.reconnectTimer === null && socketState === WebSocket.OPEN && !activityStale) {
+        continue
+      }
+      this.options.onReconnectPending(entry.sessionId, reason, now)
+      this.refreshEntry(entry, reason)
+    }
+  }
+
+  private refreshEntry(entry: SessionControllerEntry, reason: string): void {
+    const request = this.options.getResumeRequest(entry.sessionId, entry.desiredRunId)
+    if (!request) {
+      entry.desiredRunId = null
+      this.cancelReconnect(entry)
+      this.clearLiveness(entry)
+      this.closeSocket(entry, true)
+      this.maybeDeleteEntry(entry)
+      return
+    }
+    entry.desiredRunId = request.runId
+    this.cancelReconnect(entry)
+    this.clearLiveness(entry)
+    this.closeSocket(entry, false)
+    console.warn(`[desktop-run-controller] forcing run stream reconnect for session=${entry.sessionId} after ${reason}`)
+    void this.open(entry, request)
+  }
+
   private closeSocket(entry: SessionControllerEntry, clearActiveSocket: boolean): void {
+    this.clearLiveness(entry)
     const socket = entry.socket
     if (!socket) {
       return
     }
     this.markSocketClosing(entry, socket)
-    if (clearActiveSocket) {
+    if (clearActiveSocket || entry.socket === socket) {
       entry.socket = null
       entry.socketRunId = null
     }
@@ -370,7 +479,7 @@ export class DesktopRunStreamController {
   }
 
   private maybeDeleteEntry(entry: SessionControllerEntry): void {
-    if (entry.desiredRunId || entry.socket || entry.reconnectTimer !== null || entry.closingSocket) {
+    if (entry.desiredRunId || entry.socket || entry.reconnectTimer !== null || entry.closingSocket || entry.livenessTimer !== null) {
       return
     }
     this.entries.delete(entry.sessionId)
