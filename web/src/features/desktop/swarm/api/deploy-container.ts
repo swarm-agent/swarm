@@ -34,6 +34,11 @@ export interface DeployContainerPackageManifest {
   packages?: DeployContainerPackageSelection[]
 }
 
+export interface RemoteDeployPayloadDirectory {
+  source_path?: string
+  target_path?: string
+}
+
 export interface DeployContainerDeployment {
   id: string
   kind: string
@@ -95,6 +100,7 @@ export interface RemoteDeployPayload {
   workspace_name?: string
   target_path?: string
   mode?: string
+  directories?: RemoteDeployPayloadDirectory[]
   git_root?: string
   archive_name?: string
   included_files: number
@@ -294,6 +300,10 @@ export async function createRemoteDeploySession(input: {
     workspaceName?: string
     targetPath?: string
     mode?: 'ro' | 'rw'
+    directories?: Array<{
+      sourcePath: string
+      targetPath?: string
+    }>
   }>
 }): Promise<RemoteDeploySession> {
   const response = await apiFetch('/v1/deploy/remote/session/create', {
@@ -317,6 +327,7 @@ export async function createRemoteDeploySession(input: {
         packages: (input.containerPackages.packages ?? []).map((pkg) => ({
           name: pkg.name,
           source: pkg.source,
+          reason: pkg.reason,
         })),
       } : undefined,
       payloads: input.payloads.map((payload) => ({
@@ -325,6 +336,10 @@ export async function createRemoteDeploySession(input: {
         workspace_name: payload.workspaceName,
         target_path: payload.targetPath,
         mode: payload.mode,
+        directories: (payload.directories ?? []).map((directory) => ({
+          source_path: directory.sourcePath,
+          target_path: directory.targetPath,
+        })),
       })),
     }),
   })

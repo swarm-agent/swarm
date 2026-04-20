@@ -74,6 +74,10 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 			WorkspaceName string `json:"workspace_name"`
 			TargetPath    string `json:"target_path"`
 			Mode          string `json:"mode"`
+			Directories   []struct {
+				SourcePath string `json:"source_path"`
+				TargetPath string `json:"target_path"`
+			} `json:"directories,omitempty"`
 		} `json:"payloads"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
@@ -82,12 +86,20 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 	}
 	payloads := make([]remotedeploy.PayloadSelection, 0, len(req.Payloads))
 	for _, payload := range req.Payloads {
+		directories := make([]remotedeploy.PayloadDirectorySelection, 0, len(payload.Directories))
+		for _, directory := range payload.Directories {
+			directories = append(directories, remotedeploy.PayloadDirectorySelection{
+				SourcePath: directory.SourcePath,
+				TargetPath: directory.TargetPath,
+			})
+		}
 		payloads = append(payloads, remotedeploy.PayloadSelection{
 			SourcePath:    payload.SourcePath,
 			WorkspacePath: payload.WorkspacePath,
 			WorkspaceName: payload.WorkspaceName,
 			TargetPath:    payload.TargetPath,
 			Mode:          payload.Mode,
+			Directories:   directories,
 		})
 	}
 	packages := make([]remotedeploy.ContainerPackageSelection, 0, len(req.ContainerPackages.Packages))

@@ -6,9 +6,6 @@ import { Card } from '../../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
 import { Select } from '../../../../components/ui/select'
-import { buildQuickContainerProfileDraft, suggestQuickContainerProfileName } from '../../containers/services/quick-container-recommendation'
-import type { ContainerProfile, ContainerProfileMount } from '../../containers/types/container-profiles'
-import { listContainerProfiles } from '../../containers/queries/list-container-profiles'
 import { fetchDesktopOnboardingStatus, fetchSwarmLocalRuntimeStatus, saveDesktopOnboarding, type SwarmLocalRuntimeStatus } from '../../onboarding/api'
 import { getUISettings, saveRemoteSSHTarget } from '../../settings/swarm/queries/get-ui-settings'
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
@@ -177,10 +174,6 @@ function currentGroup(status: DesktopOnboardingStatus | null) {
   return status.groups[0] ?? null
 }
 
-function cloneMounts(mounts: ContainerProfileMount[]): ContainerProfileMount[] {
-  return mounts.map((mount) => ({ ...mount }))
-}
-
 function preferredChildSwarmName(
   onboardingStatus: DesktopOnboardingStatus | null,
   groupNames: string[],
@@ -262,11 +255,6 @@ function remoteReachableHostCandidate(target: string): string {
   return ''
 }
 
-function mountDeliveryLabel(launchTarget: LaunchTarget, count: number): string {
-  const label = `${count} ${count === 1 ? 'folder' : 'folders'}`
-  return launchTarget === 'remote' ? `${label} sent` : `${label} mounted`
-}
-
 function inferReplicationMode(workspace: WorkspaceEntry): ReplicationMode {
   return workspace.isGitRepo ? 'bundle' : 'copy'
 }
@@ -288,6 +276,68 @@ function buildWorkspaceDrafts(workspaces: WorkspaceEntry[]): ReplicateWorkspaceD
 
 function selectedWorkspaceCount(items: ReplicateWorkspaceDraft[]): number {
   return items.filter((item) => item.selected).length
+}
+
+const REMOTE_WORKSPACE_ROOT = '/workspaces'
+
+function fallbackWorkspaceName(workspacePath: string, index: number): string {
+  const segments = String(workspacePath ?? '').trim().split(/[\\/]/).filter(Boolean)
+  return segments[segments.length - 1] || `workspace-${index + 1}`
+}
+
+function sanitizeRemoteWorkspaceTargetSegment(value: string): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+function nextRemoteWorkspaceTargetPath(baseName: string, usedTargets: Map<string, number>): string {
+  const normalizedBase = sanitizeRemoteWorkspaceTargetSegment(baseName) || 'workspace'
+  const basePath = `${REMOTE_WORKSPACE_ROOT}/${normalizedBase}`
+  const count = (usedTargets.get(basePath) ?? 0) + 1
+  usedTargets.set(basePath, count)
+  return count === 1 ? basePath : `${basePath}-${count}`
+}
+
+function buildRemoteWorkspacePayloads(workspaces: ReplicateWorkspaceDraft[]) {
+  const usedTargets = new Map<string, number>()
+  return workspaces
+    .filter((workspace) => workspace.selected)
+    .map((workspace, index) => {
+      const sourcePath = workspace.workspacePath.trim()
+      const workspaceName = workspace.workspaceName.trim() || fallbackWorkspaceName(sourcePath, index)
+      const baseName = sanitizeRemoteWorkspaceTargetSegment(workspaceName)
+        || sanitizeRemoteWorkspaceTargetSegment(fallbackWorkspaceName(sourcePath, index))
+        || `workspace-${index + 1}`
+      const targetPath = nextRemoteWorkspaceTargetPath(baseName, usedTargets)
+      const linkedDirectories = workspace.directories
+        .map((directory) => directory.trim())
+        .filter((directory) => directory.length > 0 && directory !== sourcePath)
+        .map((directory, directoryIndex) => {
+          const directoryBaseName = sanitizeRemoteWorkspaceTargetSegment(
+            `${baseName}-dir-${fallbackWorkspaceName(directory, directoryIndex)}`,
+          ) || `${baseName}-dir-${directoryIndex + 1}`
+          return {
+            sourcePath: directory,
+            targetPath: nextRemoteWorkspaceTargetPath(directoryBaseName, usedTargets),
+          }
+        })
+      return {
+        sourcePath,
+        workspacePath: sourcePath,
+        workspaceName,
+        targetPath,
+        mode: workspace.writable ? 'rw' as const : 'ro' as const,
+        directories: linkedDirectories,
+      }
+    })
+}
+
+function countRemotePayloadArchives(payloads: Array<{ directories?: Array<unknown> }>): number {
+  return payloads.reduce((total, payload) => total + 1 + (payload.directories?.length ?? 0), 0)
 }
 
 type RemotePreflightGuidance = {
@@ -497,8 +547,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [currentOnboardingStatus, setCurrentOnboardingStatus] = useState<DesktopOnboardingStatus | null>(onboardingStatus)
-  const [profiles, setProfiles] = useState<ContainerProfile[]>([])
-  const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([])
   const [workspaceDrafts, setWorkspaceDrafts] = useState<ReplicateWorkspaceDraft[]>([])
   const [runtimeStatus, setRuntimeStatus] = useState<SwarmLocalRuntimeStatus>(FALLBACK_RUNTIME_STATUS)
   const [, setRemoteSessions] = useState<RemoteDeploySession[]>([])
@@ -516,7 +564,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [remoteTailscaleAuthKey, setRemoteTailscaleAuthKey] = useState('')
   const [launchTarget, setLaunchTarget] = useState<LaunchTarget>('local')
   const [selectedRuntime, setSelectedRuntime] = useState<'podman' | 'docker' | ''>('')
-  const [selectedProfileID, setSelectedProfileID] = useState('')
   const [swarmName, setSwarmName] = useState('')
   const [syncEnabled, setSyncEnabled] = useState(true)
   const [syncAgentsEnabled, setSyncAgentsEnabled] = useState(true)
@@ -572,16 +619,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     [group, hostSwarmID],
   )
 
-  const selectedProfile = useMemo(
-    () => profiles.find((profile) => profile.id === selectedProfileID) ?? null,
-    [profiles, selectedProfileID],
-  )
-
-  const suggestedProfileName = useMemo(
-    () => suggestQuickContainerProfileName(profiles, currentOnboardingStatus),
-    [currentOnboardingStatus, profiles],
-  )
-
   const suggestedSwarmName = useMemo(
     () => preferredChildSwarmName(
       currentOnboardingStatus,
@@ -589,28 +626,35 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     ),
     [currentOnboardingStatus],
   )
-
-  const recommendedDraft = useMemo(
-    () => buildQuickContainerProfileDraft({
-      name: suggestedProfileName,
-      onboardingStatus: currentOnboardingStatus,
-      workspaces,
-    }),
-    [currentOnboardingStatus, suggestedProfileName, workspaces],
-  )
-
-  const selectedProfilePreview = useMemo(
-    () => selectedProfile ?? recommendedDraft,
-    [recommendedDraft, selectedProfile],
-  )
-  const selectedProfileMounts = selectedProfilePreview.mounts
-  const selectedProfileLabel = selectedProfile?.name || 'Quick recommendation'
-  const selectedMountCount = selectedProfileMounts.length
   const selectedWorkspaceCountValue = useMemo(() => selectedWorkspaceCount(workspaceDrafts), [workspaceDrafts])
   const selectedWorkspacePaths = useMemo(
     () => workspaceDrafts.filter((item) => item.selected).map((item) => item.workspacePath),
     [workspaceDrafts],
   )
+  const selectedRemotePayloads = useMemo(() => buildRemoteWorkspacePayloads(workspaceDrafts), [workspaceDrafts])
+  const selectedRemoteArchiveCount = useMemo(() => countRemotePayloadArchives(selectedRemotePayloads), [selectedRemotePayloads])
+  const remotePreflightArchiveCount = useMemo(
+    () => countRemotePayloadArchives(remotePreflightSession?.preflight.payloads ?? []),
+    [remotePreflightSession],
+  )
+
+  const invalidateRemotePreflight = () => {
+    setRemotePreflightSession(null)
+    setRemotePreflightError(null)
+    setRemotePreflightGuidance(null)
+  }
+
+  const updateWorkspaceDraft = (
+    workspacePath: string,
+    transform: (draft: ReplicateWorkspaceDraft) => ReplicateWorkspaceDraft,
+  ) => {
+    invalidateRemotePreflight()
+    setWorkspaceDrafts((current) => current.map((item) => (
+      item.workspacePath === workspacePath
+        ? transform(item)
+        : item
+    )))
+  }
 
   const addPackage = async () => {
     const normalized = packageInput.trim().toLowerCase()
@@ -629,6 +673,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       if (!result.valid) {
         throw new Error(`apt package ${normalized} was not found on this host`)
       }
+      invalidateRemotePreflight()
       setContainerPackages((current) => mergeContainerPackages([...current, { name: normalized, source: 'user_added' }]))
       setPackageInput('')
     } catch (err) {
@@ -639,6 +684,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   }
 
   const removePackage = (name: string) => {
+    invalidateRemotePreflight()
     setContainerPackages((current) => current.filter((pkg) => pkg.name !== name))
     setPackageValidationError(null)
   }
@@ -646,6 +692,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   useEffect(() => {
     let cancelled = false
     if (selectedWorkspacePaths.length === 0) {
+      invalidateRemotePreflight()
       setContainerPackages((current) => mergeContainerPackages(current.filter((pkg) => pkg.source !== 'workspace_scan')))
       setPackageSuggestionError(null)
       setSuggestingPackages(false)
@@ -661,6 +708,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           return
         }
         const suggestions = mapSuggestedPackages(packages)
+        invalidateRemotePreflight()
         setContainerPackages((current) => mergeContainerPackages([
           ...current.filter((pkg) => pkg.source !== 'workspace_scan'),
           ...suggestions,
@@ -671,6 +719,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           return
         }
         setPackageSuggestionError(err instanceof Error ? err.message : 'Failed to suggest packages from workspace contents')
+        invalidateRemotePreflight()
         setContainerPackages((current) => mergeContainerPackages(current.filter((pkg) => pkg.source !== 'workspace_scan')))
       })
       .finally(() => {
@@ -716,18 +765,15 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     })
 
     void Promise.all([
-      listContainerProfiles().catch(() => []),
       listWorkspaces().catch(() => []),
       fetchSwarmLocalRuntimeStatus().catch(() => FALLBACK_RUNTIME_STATUS),
       getUISettings().catch(() => null),
       onboardingStatus ? Promise.resolve(onboardingStatus) : fetchDesktopOnboardingStatus().catch(() => null),
     ])
-      .then(([nextProfiles, nextWorkspaces, nextRuntimeStatus, nextUISettings, nextOnboardingStatus]) => {
+      .then(([nextWorkspaces, nextRuntimeStatus, nextUISettings, nextOnboardingStatus]) => {
         if (cancelled) {
           return
         }
-        setProfiles(nextProfiles)
-        setWorkspaces(nextWorkspaces)
         setWorkspaceDrafts(buildWorkspaceDrafts(nextWorkspaces))
         setRuntimeStatus(nextRuntimeStatus)
         setRemoteSessions([])
@@ -749,11 +795,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           nextOnboardingStatus,
           nextOnboardingStatus?.groups.flatMap((entry) => entry.members.map((member) => member.name)) ?? [],
         )
-        setSelectedProfileID('')
         setSwarmName(nextSuggestedSwarmName)
         setSelectedRuntime((nextRuntimeStatus.recommended || '') as 'podman' | 'docker' | '')
         logAddSwarm('modal options loaded', {
-          profiles: nextProfiles.length,
           workspaces: nextWorkspaces.length,
           recommended_runtime: nextRuntimeStatus.recommended,
           available_runtimes: nextRuntimeStatus.available,
@@ -843,6 +887,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
       throw new Error('Vault password is required to sync from a vaulted host.')
     }
+    if (selectedRemotePayloads.length === 0) {
+      throw new Error('Select at least one workspace to stage for the remote child.')
+    }
     setRemotePreflightLoading(true)
     setRemotePreflightError(null)
     setRemotePreflightGuidance(null)
@@ -859,13 +906,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         syncEnabled,
         bypassPermissions,
         containerPackages: buildContainerPackageManifest(containerPackages),
-        payloads: cloneMounts(selectedProfile?.mounts ?? recommendedDraft.mounts).map((mount) => ({
-          sourcePath: mount.sourcePath,
-          workspacePath: mount.workspacePath,
-          workspaceName: mount.workspaceName,
-          targetPath: mount.targetPath || '/workspaces',
-          mode: mount.mode,
-        })),
+        payloads: selectedRemotePayloads,
       })
       setRemotePreflightSession(session)
       if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim() && session.remote_advertise_host?.trim()) {
@@ -1011,6 +1052,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('SSH alias or target is required.')
       return
     }
+    if (selectedRemotePayloads.length === 0) {
+      setError('Select at least one workspace to stage for the remote child.')
+      return
+    }
     if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()) {
       setError('Remote reachable host is required for LAN / WireGuard deploy.')
       return
@@ -1045,7 +1090,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           ? [`Tailscale login: ${remoteTailscaleAuthMode === 'key' ? 'Auth key (launch only, not saved)' : 'Manual browser approval'}`]
           : []),
         '',
-        'This will send only Git-tracked workspace files from the selected folders to the remote server.',
+        'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.',
         'This will also send a built Swarm container image, a rendered swarm.conf, and the installer script.',
         `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
         '',
@@ -1117,6 +1162,224 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   if (!open) {
     return null
   }
+
+  const workspaceSelectionCard = (
+    <Card className="grid gap-4 p-5">
+      <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'remote' ? '3. Which workspaces should we send?' : '4. What should we add?'}</div>
+      <div className="grid gap-4">
+        <div className="rounded-2xl border-2 border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,var(--app-surface))] p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-base font-semibold text-[var(--app-text)]">Workspace selection</div>
+              <div className="mt-1 text-sm text-[var(--app-text-muted)]">
+                {launchTarget === 'remote'
+                  ? 'Pick the workspaces to stage for the remote child. The SSH path sends Git-tracked files from each selected workspace root and any linked directories, and it uses that same selection for package suggestions.'
+                  : 'Pick the workspace first. Swarm scans the selected workspace contents and suggests Ubuntu packages based on what it finds.'}
+              </div>
+            </div>
+            <Badge tone={selectedWorkspaceCountValue > 0 ? 'live' : 'neutral'}>{selectedWorkspaceCountValue} selected</Badge>
+          </div>
+
+          {workspaceDrafts.length === 0 ? (
+            <div className="mt-4 rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-4 text-sm text-[var(--app-text-muted)]">
+              No workspaces available yet.
+            </div>
+          ) : (
+            <div className="mt-4 grid gap-3">
+              {workspaceDrafts.map((workspace) => {
+                const checked = workspace.selected
+                const linkedDirectoryCount = Math.max(0, workspace.directories.length - 1)
+                return (
+                  <label
+                    key={workspace.workspacePath}
+                    className={`block rounded-2xl border p-4 transition ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]'}`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-[var(--app-border)]"
+                        checked={checked}
+                        onChange={(event) => {
+                          updateWorkspaceDraft(workspace.workspacePath, (item) => ({
+                            ...item,
+                            selected: event.target.checked,
+                          }))
+                        }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="truncate text-sm font-semibold text-[var(--app-text)]">{workspace.workspaceName}</div>
+                          {launchTarget === 'local' ? (
+                            <Badge tone={workspace.defaultReplicationMode === 'bundle' ? 'live' : 'neutral'}>
+                              default {workspace.defaultReplicationMode}
+                            </Badge>
+                          ) : (
+                            <Badge tone="neutral">
+                              {linkedDirectoryCount > 0 ? `${linkedDirectoryCount + 1} tracked archives` : 'tracked archive'}
+                            </Badge>
+                          )}
+                          {checked ? (
+                            <Badge tone="live">
+                              <Check size={12} />
+                              selected
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 break-all text-xs text-[var(--app-text-muted)]">{workspace.workspacePath}</div>
+                        {workspace.directories.length > 1 ? (
+                          <div className="mt-2 text-xs text-[var(--app-text-muted)]">
+                            {launchTarget === 'remote'
+                              ? `Includes ${linkedDirectoryCount} linked director${linkedDirectoryCount === 1 ? 'y' : 'ies'}. Remote SSH deploy stages each selected directory into its own runtime path for this workspace.`
+                              : `Includes ${workspace.directories.length} linked directories.`}
+                          </div>
+                        ) : null}
+
+                        {checked ? (
+                          <div className="mt-4 grid gap-3 md:grid-cols-2">
+                            {launchTarget === 'local' ? (
+                              <div>
+                                <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Replication mode</div>
+                                <Select
+                                  value={workspace.replicationMode}
+                                  onChange={(event) => {
+                                    const nextMode = event.target.value as ReplicationMode
+                                    updateWorkspaceDraft(workspace.workspacePath, (item) => ({
+                                      ...item,
+                                      replicationMode: nextMode,
+                                    }))
+                                  }}
+                                  className="mt-2"
+                                >
+                                  <option value="bundle">Git bundle</option>
+                                  <option value="copy">Full workspace copy</option>
+                                </Select>
+                              </div>
+                            ) : (
+                              <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-xs text-[var(--app-text-muted)] md:col-span-2">
+                                Remote SSH deploy stages Git-tracked files from this workspace root and any linked directories into dedicated runtime paths.
+                              </div>
+                            )}
+                            <div>
+                              <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Workspace access</div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateWorkspaceDraft(workspace.workspacePath, (item) => ({
+                                    ...item,
+                                    writable: !item.writable,
+                                  }))
+                                }}
+                                className={`mt-2 inline-flex h-10 items-center rounded-xl border px-4 text-sm font-medium transition ${workspace.writable ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'}`}
+                              >
+                                {workspace.writable ? 'Read / Write' : 'Read only'}
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-[var(--app-text)]">Ubuntu packages</div>
+              <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                Recommended base packages are always included. Extra suggestions appear after workspace selection, and you can still add your own apt packages manually.
+              </div>
+            </div>
+            <Badge tone={containerPackages.length > 0 ? 'live' : 'neutral'}>{containerPackages.length} packages</Badge>
+          </div>
+          <div className="mt-3 text-xs text-[var(--app-text-muted)]">
+            Base image: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_BASE_IMAGE}</span> · Package manager: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_MANAGER}</span>
+          </div>
+          <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)]">
+            <div>
+              {suggestingPackages
+                ? 'Scanning selected workspace contents for package suggestions…'
+                : selectedWorkspaceCountValue > 0
+                  ? 'Workspace-aware package suggestions are included below.'
+                  : 'Select a workspace above to get package suggestions based on its contents.'}
+            </div>
+            {packageSuggestionError ? (
+              <div className="text-[var(--app-danger)]">{packageSuggestionError}</div>
+            ) : null}
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {containerPackages.map((pkg) => (
+              <Badge
+                key={pkg.name}
+                tone={pkg.source === 'user_added' ? 'live' : pkg.source === 'workspace_scan' ? 'warning' : 'neutral'}
+                className="gap-2 pr-1"
+                title={describePackageSource(pkg)}
+              >
+                <span>{pkg.name}</span>
+                <span className="text-[10px] uppercase tracking-[0.12em] opacity-75">
+                  {pkg.source === 'recommended' ? 'base' : pkg.source === 'workspace_scan' ? 'suggested' : 'manual'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removePackage(pkg.name)}
+                  className="inline-flex h-5 w-5 items-center justify-center rounded-md text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)]"
+                  disabled={submitting || validatingPackage || suggestingPackages}
+                  aria-label={`Remove package ${pkg.name}`}
+                >
+                  <X size={12} />
+                </button>
+              </Badge>
+            ))}
+          </div>
+          <div className="mt-3 grid gap-2">
+            {containerPackages.filter((pkg) => pkg.source === 'workspace_scan' && pkg.reason?.trim()).map((pkg) => (
+              <div key={`${pkg.name}-reason`} className="text-xs text-[var(--app-text-muted)]">
+                <span className="font-medium text-[var(--app-text)]">{pkg.name}:</span> {pkg.reason}
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Input
+              value={packageInput}
+              onChange={(event) => {
+                setPackageInput(event.target.value)
+                if (packageValidationError) {
+                  setPackageValidationError(null)
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void addPackage()
+                }
+              }}
+              placeholder="Add apt package and press Enter"
+              disabled={submitting || validatingPackage}
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => void addPackage()}
+              disabled={submitting || validatingPackage}
+            >
+              {validatingPackage ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              Add
+            </Button>
+          </div>
+          {packageValidationError ? (
+            <div className="mt-2 text-xs text-[var(--app-danger)]">{packageValidationError}</div>
+          ) : (
+            <div className="mt-2 text-xs text-[var(--app-text-muted)]">
+              Manual packages are validated against the host apt package database before they are added.
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
 
   return (
     <Dialog>
@@ -1278,6 +1541,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                           className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${syncEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
                           onClick={() => {
                             if (!submitting) {
+                              invalidateRemotePreflight()
                               setSyncEnabled((current) => !current)
                             }
                           }}
@@ -1306,6 +1570,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                           className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${bypassPermissions ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
                           onClick={() => {
                             if (!submitting) {
+                              invalidateRemotePreflight()
                               setBypassPermissions((current) => !current)
                             }
                           }}
@@ -1356,208 +1621,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 ) : null}
               </Card>
 
-              <Card className="grid gap-4 p-5">
-                <div className="text-sm font-semibold text-[var(--app-text)]">4. What should we add?</div>
-                <div className="grid gap-4">
-                  <div className="rounded-2xl border-2 border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,var(--app-surface))] p-5 shadow-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-base font-semibold text-[var(--app-text)]">Workspace selection</div>
-                        <div className="mt-1 text-sm text-[var(--app-text-muted)]">
-                          Pick the workspace first. Swarm scans the selected workspace contents and suggests Ubuntu packages based on what it finds.
-                        </div>
-                      </div>
-                      <Badge tone={selectedWorkspaceCountValue > 0 ? 'live' : 'neutral'}>{selectedWorkspaceCountValue} selected</Badge>
-                    </div>
-
-                    {workspaceDrafts.length === 0 ? (
-                      <div className="mt-4 rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-4 text-sm text-[var(--app-text-muted)]">
-                        No workspaces available yet.
-                      </div>
-                    ) : (
-                      <div className="mt-4 grid gap-3">
-                        {workspaceDrafts.map((workspace) => {
-                          const checked = workspace.selected
-                          return (
-                            <label
-                              key={workspace.workspacePath}
-                              className={`block rounded-2xl border p-4 transition ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]'}`}
-                            >
-                              <div className="flex items-start gap-3">
-                                <input
-                                  type="checkbox"
-                                  className="mt-1 h-4 w-4 rounded border-[var(--app-border)]"
-                                  checked={checked}
-                                  onChange={(event) => {
-                                    const nextChecked = event.target.checked
-                                    setWorkspaceDrafts((current) => current.map((item) => (
-                                      item.workspacePath === workspace.workspacePath
-                                        ? { ...item, selected: nextChecked }
-                                        : item
-                                    )))
-                                  }}
-                                />
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <div className="truncate text-sm font-semibold text-[var(--app-text)]">{workspace.workspaceName}</div>
-                                    <Badge tone={workspace.defaultReplicationMode === 'bundle' ? 'live' : 'neutral'}>
-                                      default {workspace.defaultReplicationMode}
-                                    </Badge>
-                                    {checked ? (
-                                      <Badge tone="live">
-                                        <Check size={12} />
-                                        selected
-                                      </Badge>
-                                    ) : null}
-                                  </div>
-                                  <div className="mt-1 break-all text-xs text-[var(--app-text-muted)]">{workspace.workspacePath}</div>
-                                  {workspace.directories.length > 1 ? (
-                                    <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-                                      Includes {workspace.directories.length} linked directories.
-                                    </div>
-                                  ) : null}
-
-                                  {checked ? (
-                                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                                      <div>
-                                        <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Replication mode</div>
-                                        <Select
-                                          value={workspace.replicationMode}
-                                          onChange={(event) => {
-                                            const nextMode = event.target.value as ReplicationMode
-                                            setWorkspaceDrafts((current) => current.map((item) => (
-                                              item.workspacePath === workspace.workspacePath
-                                                ? { ...item, replicationMode: nextMode }
-                                                : item
-                                            )))
-                                          }}
-                                          className="mt-2"
-                                        >
-                                          <option value="bundle">Git bundle</option>
-                                          <option value="copy">Full workspace copy</option>
-                                        </Select>
-                                      </div>
-                                      <div>
-                                        <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Workspace access</div>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setWorkspaceDrafts((current) => current.map((item) => (
-                                              item.workspacePath === workspace.workspacePath
-                                                ? { ...item, writable: !item.writable }
-                                                : item
-                                            )))
-                                          }}
-                                          className={`mt-2 inline-flex h-10 items-center rounded-xl border px-4 text-sm font-medium transition ${workspace.writable ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'}`}
-                                        >
-                                          {workspace.writable ? 'Read / Write' : 'Read only'}
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-                            </label>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold text-[var(--app-text)]">Ubuntu packages</div>
-                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                          Recommended base packages are always included. Extra suggestions appear after workspace selection, and you can still add your own apt packages manually.
-                        </div>
-                      </div>
-                      <Badge tone={containerPackages.length > 0 ? 'live' : 'neutral'}>{containerPackages.length} packages</Badge>
-                    </div>
-                    <div className="mt-3 text-xs text-[var(--app-text-muted)]">
-                      Base image: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_BASE_IMAGE}</span> · Package manager: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_MANAGER}</span>
-                    </div>
-                    <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)]">
-                      <div>
-                        {suggestingPackages
-                          ? 'Scanning selected workspace contents for package suggestions…'
-                          : selectedWorkspaceCountValue > 0
-                            ? 'Workspace-aware package suggestions are included below.'
-                            : 'Select a workspace above to get package suggestions based on its contents.'}
-                      </div>
-                      {packageSuggestionError ? (
-                        <div className="text-[var(--app-danger)]">{packageSuggestionError}</div>
-                      ) : null}
-                    </div>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {containerPackages.map((pkg) => (
-                        <Badge
-                          key={pkg.name}
-                          tone={pkg.source === 'user_added' ? 'live' : pkg.source === 'workspace_scan' ? 'warning' : 'neutral'}
-                          className="gap-2 pr-1"
-                          title={describePackageSource(pkg)}
-                        >
-                          <span>{pkg.name}</span>
-                          <span className="text-[10px] uppercase tracking-[0.12em] opacity-75">
-                            {pkg.source === 'recommended' ? 'base' : pkg.source === 'workspace_scan' ? 'suggested' : 'manual'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removePackage(pkg.name)}
-                            className="inline-flex h-5 w-5 items-center justify-center rounded-md text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)]"
-                            disabled={submitting || validatingPackage || suggestingPackages}
-                            aria-label={`Remove package ${pkg.name}`}
-                          >
-                            <X size={12} />
-                          </button>
-                        </Badge>
-                      ))}
-                    </div>
-                    <div className="mt-3 grid gap-2">
-                      {containerPackages.filter((pkg) => pkg.source === 'workspace_scan' && pkg.reason?.trim()).map((pkg) => (
-                        <div key={`${pkg.name}-reason`} className="text-xs text-[var(--app-text-muted)]">
-                          <span className="font-medium text-[var(--app-text)]">{pkg.name}:</span> {pkg.reason}
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-4 flex gap-2">
-                      <Input
-                        value={packageInput}
-                        onChange={(event) => {
-                          setPackageInput(event.target.value)
-                          if (packageValidationError) {
-                            setPackageValidationError(null)
-                          }
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            void addPackage()
-                          }
-                        }}
-                        placeholder="Add apt package and press Enter"
-                        disabled={submitting || validatingPackage}
-                      />
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => void addPackage()}
-                        disabled={submitting || validatingPackage}
-                      >
-                        {validatingPackage ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-                        Add
-                      </Button>
-                    </div>
-                    {packageValidationError ? (
-                      <div className="mt-2 text-xs text-[var(--app-danger)]">{packageValidationError}</div>
-                    ) : (
-                      <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-                        Manual packages are validated against the host apt package database before they are added.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </Card>
+              {workspaceSelectionCard}
 
               <Card className="grid gap-4 p-5">
                 <div className="flex flex-col gap-1">
@@ -1571,7 +1635,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Child swarm name</label>
                   <Input
                     value={swarmName}
-                    onChange={(event) => setSwarmName(event.target.value)}
+                    onChange={(event) => {
+                      invalidateRemotePreflight()
+                      setSwarmName(event.target.value)
+                    }}
                     disabled={submitting}
                     placeholder={suggestedSwarmName}
                   />
@@ -1636,7 +1703,16 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                           setError(err instanceof Error ? err.message : 'Remote preflight failed')
                         })
                     }}
-                    disabled={submitting || remotePreflightLoading || configuringMasterLANCallback || (remotePreflightBlocked && !remotePreflightCanAutofill) || !remoteSSHTarget.trim() || !swarmName.trim()}
+                    disabled={
+                      submitting
+                      || remotePreflightLoading
+                      || configuringMasterLANCallback
+                      || (remotePreflightBlocked && !remotePreflightCanAutofill)
+                      || !remoteSSHTarget.trim()
+                      || !swarmName.trim()
+                      || selectedWorkspaceCountValue === 0
+                      || suggestingPackages
+                    }
                   >
                     {(remotePreflightLoading || configuringMasterLANCallback) ? <Loader2 size={14} className="animate-spin" /> : null}
                     {remotePreflightLoading
@@ -1824,7 +1900,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                   <div className="font-medium text-[var(--app-text)]">Preflight summary shown before execution</div>
                   <ul className="mt-3 list-disc space-y-2 pl-5">
-                    <li>This will send only Git-tracked workspace files from the selected folders to the remote server as payload archives.</li>
+                    <li>This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server as payload archives.</li>
                     <li>This will also build the Swarm container locally, export it as an image archive, copy it to the remote server, and start it there.</li>
                     <li>The remote install path copies: image archive, rendered <code>swarm.conf</code>, installer script, and Git-tracked workspace payload archives only.</li>
                     <li>The launched remote child is configured to call back to this master over the selected transport endpoint.</li>
@@ -1834,10 +1910,12 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 </div>
               </Card>
 
+              {workspaceSelectionCard}
+
               <Card className="grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-5">
                 <div className="flex items-start justify-between gap-4">
                   <div className="grid gap-1">
-                    <div className="text-sm font-semibold text-[var(--app-text)]">3. Remote Swarm Sync</div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">4. Remote Swarm Sync</div>
                     <div className="text-xs text-[var(--app-text-muted)]">
                       Keep this remote child managed by the current master. The master remains the source of truth for synced auth state.
                     </div>
@@ -1849,6 +1927,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${syncEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
                     onClick={() => {
                       if (!submitting) {
+                        invalidateRemotePreflight()
                         setSyncEnabled((current) => !current)
                       }
                     }}
@@ -1920,7 +1999,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
               <Card className="grid gap-4 p-5">
                 <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">4. Name this swarm</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">5. Name this swarm</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
                     This names the swarm that will appear in the group after launch.
                   </div>
@@ -1930,7 +2009,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Child swarm name</label>
                   <Input
                     value={swarmName}
-                    onChange={(event) => setSwarmName(event.target.value)}
+                    onChange={(event) => {
+                      invalidateRemotePreflight()
+                      setSwarmName(event.target.value)
+                    }}
                     disabled={submitting}
                     placeholder={suggestedSwarmName}
                   />
@@ -1940,7 +2022,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           ) : null}
 
           <Card className="grid gap-4 p-5">
-            <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'local' ? '6. Ready to add?' : '5. Ready to add?'}</div>
+            <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'local' ? '6. Ready to add?' : '6. Ready to add?'}</div>
             {launchTarget === 'remote' ? (
               <div className="grid gap-2 text-sm text-[var(--app-text-muted)]">
                 <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote container</div>
@@ -1950,7 +2032,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession?.preflight.remote_runtime || 'Unknown until preflight'}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Systemd:</span> {remotePreflightSession ? (remotePreflightSession.preflight.systemd_available ? (remotePreflightSession.preflight.systemd_unit || 'Available') : 'Not available') : 'Unknown until preflight'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Folders:</span> {selectedMountCount}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Payload archives:</span> {remotePreflightSession ? remotePreflightArchiveCount : selectedRemoteArchiveCount}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Ubuntu packages:</span> {containerPackages.length}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Swarm name:</span> {swarmName.trim() || 'Required'}</div>
               </div>
             ) : (
@@ -1970,7 +2054,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         <div className="flex flex-col gap-3 border-t border-[var(--app-border)] px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-[var(--app-text-muted)]">
             {launchTarget === 'remote'
-              ? `${mountDeliveryLabel(launchTarget, selectedMountCount)} from ${selectedProfileLabel} will be used for the remote deploy.`
+              ? `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} and ${containerPackages.length} package${containerPackages.length === 1 ? '' : 's'} will be staged for the remote deploy.`
               : `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be replicated using ${runtimeChoice || 'the selected runtime'} with Swarm Sync ${syncEnabled ? 'enabled' : 'disabled'}.`}
           </div>
           <div className="flex gap-3">
@@ -1984,7 +2068,12 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 || !group?.group.id.trim()
                 || (launchTarget === 'local'
                   ? !runtimeChoice || !swarmName.trim() || selectedWorkspaceCountValue === 0
-                  : !swarmName.trim() || !remoteSSHTarget.trim() || !remotePreflightSession || remotePreflightLoading || (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()))
+                  : !swarmName.trim()
+                    || !remoteSSHTarget.trim()
+                    || !remotePreflightSession
+                    || remotePreflightLoading
+                    || selectedWorkspaceCountValue === 0
+                    || (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()))
               }
             >
               {submitting ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}

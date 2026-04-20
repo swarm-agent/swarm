@@ -60,6 +60,12 @@ type PayloadSelection struct {
 	WorkspaceName string
 	TargetPath    string
 	Mode          string
+	Directories   []PayloadDirectorySelection
+}
+
+type PayloadDirectorySelection struct {
+	SourcePath string
+	TargetPath string
 }
 
 type CreateSessionInput struct {
@@ -98,12 +104,23 @@ type DeleteSessionInput struct {
 }
 
 type SessionPayload struct {
-	ID            string `json:"id"`
+	ID            string                    `json:"id"`
+	SourcePath    string                    `json:"source_path,omitempty"`
+	WorkspacePath string                    `json:"workspace_path,omitempty"`
+	WorkspaceName string                    `json:"workspace_name,omitempty"`
+	TargetPath    string                    `json:"target_path,omitempty"`
+	Mode          string                    `json:"mode,omitempty"`
+	Directories   []SessionPayloadDirectory `json:"directories,omitempty"`
+	GitRoot       string                    `json:"git_root,omitempty"`
+	ArchiveName   string                    `json:"archive_name,omitempty"`
+	IncludedFiles int                       `json:"included_files"`
+	IncludedBytes int64                     `json:"included_bytes"`
+	ExcludedNote  string                    `json:"excluded_note,omitempty"`
+}
+
+type SessionPayloadDirectory struct {
 	SourcePath    string `json:"source_path,omitempty"`
-	WorkspacePath string `json:"workspace_path,omitempty"`
-	WorkspaceName string `json:"workspace_name,omitempty"`
 	TargetPath    string `json:"target_path,omitempty"`
-	Mode          string `json:"mode,omitempty"`
 	GitRoot       string `json:"git_root,omitempty"`
 	ArchiveName   string `json:"archive_name,omitempty"`
 	IncludedFiles int    `json:"included_files"`
@@ -327,6 +344,12 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 	for _, payload := range payloads {
 		if payload.ArchiveName != "" {
 			filesToCopy = append(filesToCopy, filepath.ToSlash(filepath.Join("remote", payload.ArchiveName)))
+		}
+		for _, directory := range payload.Directories {
+			if directory.ArchiveName == "" {
+				continue
+			}
+			filesToCopy = append(filesToCopy, filepath.ToSlash(filepath.Join("remote", directory.ArchiveName)))
 		}
 	}
 	record := pebblestore.RemoteDeploySessionRecord{
@@ -1591,30 +1614,97 @@ func (s *Service) resolveTargetGroupForSession(hostState swarmruntime.LocalState
 func (s *Service) buildPayloads(payloads []PayloadSelection) ([]pebblestore.RemoteDeployPayloadRecord, error) {
 	out := make([]pebblestore.RemoteDeployPayloadRecord, 0, len(payloads))
 	for idx, payload := range payloads {
-		sourcePath := strings.TrimSpace(payload.SourcePath)
-		if sourcePath == "" {
-			continue
-		}
-		archiveName := fmt.Sprintf("payload-%02d-%s.tar.gz", idx+1, sanitizeSlug(filepath.Base(sourcePath)))
-		includedFiles, includedBytes, gitRoot, err := gitTrackedStats(sourcePath)
+		record, err := buildPayloadRecord(idx, payload)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, pebblestore.RemoteDeployPayloadRecord{
-			ID:            fmt.Sprintf("payload-%02d", idx+1),
-			SourcePath:    sourcePath,
-			WorkspacePath: strings.TrimSpace(payload.WorkspacePath),
-			WorkspaceName: strings.TrimSpace(payload.WorkspaceName),
-			TargetPath:    firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces"),
-			Mode:          firstNonEmpty(strings.TrimSpace(payload.Mode), "rw"),
-			GitRoot:       gitRoot,
-			ArchiveName:   archiveName,
-			IncludedFiles: includedFiles,
-			IncludedBytes: includedBytes,
-			ExcludedNote:  "Only Git-tracked files are included in remote payload archives.",
-		})
+		if record.SourcePath == "" {
+			continue
+		}
+		out = append(out, record)
 	}
 	return out, nil
+}
+
+func buildPayloadRecord(index int, payload PayloadSelection) (pebblestore.RemoteDeployPayloadRecord, error) {
+	sourcePath := strings.TrimSpace(payload.SourcePath)
+	if sourcePath == "" {
+		return pebblestore.RemoteDeployPayloadRecord{}, nil
+	}
+	rootRecord, err := buildPayloadDirectoryRecord(
+		sourcePath,
+		firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces"),
+		fmt.Sprintf("payload-%02d", index+1),
+	)
+	if err != nil {
+		return pebblestore.RemoteDeployPayloadRecord{}, err
+	}
+	directories := make([]pebblestore.RemoteDeployPayloadDirectoryRecord, 0, len(payload.Directories))
+	totalFiles := rootRecord.IncludedFiles
+	totalBytes := rootRecord.IncludedBytes
+	seenDirectories := map[string]struct{}{
+		sourcePath: {},
+	}
+	for directoryIndex, directory := range payload.Directories {
+		sourcePath := strings.TrimSpace(directory.SourcePath)
+		if sourcePath == "" {
+			continue
+		}
+		if _, ok := seenDirectories[sourcePath]; ok {
+			continue
+		}
+		seenDirectories[sourcePath] = struct{}{}
+		directoryRecord, err := buildPayloadDirectoryRecord(
+			sourcePath,
+			firstNonEmpty(strings.TrimSpace(directory.TargetPath), firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces")),
+			fmt.Sprintf("payload-%02d-dir-%02d", index+1, directoryIndex+1),
+		)
+		if err != nil {
+			return pebblestore.RemoteDeployPayloadRecord{}, err
+		}
+		directories = append(directories, directoryRecord)
+		totalFiles += directoryRecord.IncludedFiles
+		totalBytes += directoryRecord.IncludedBytes
+	}
+	record := pebblestore.RemoteDeployPayloadRecord{
+		ID:            fmt.Sprintf("payload-%02d", index+1),
+		SourcePath:    rootRecord.SourcePath,
+		WorkspacePath: strings.TrimSpace(payload.WorkspacePath),
+		WorkspaceName: strings.TrimSpace(payload.WorkspaceName),
+		TargetPath:    rootRecord.TargetPath,
+		Mode:          firstNonEmpty(strings.TrimSpace(payload.Mode), "rw"),
+		Directories:   directories,
+		GitRoot:       rootRecord.GitRoot,
+		ArchiveName:   rootRecord.ArchiveName,
+		IncludedFiles: totalFiles,
+		IncludedBytes: totalBytes,
+		ExcludedNote:  rootRecord.ExcludedNote,
+	}
+	return record, nil
+}
+
+func buildPayloadDirectoryRecord(sourcePath, targetPath, archivePrefix string) (pebblestore.RemoteDeployPayloadDirectoryRecord, error) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return pebblestore.RemoteDeployPayloadDirectoryRecord{}, nil
+	}
+	includedFiles, includedBytes, gitRoot, err := gitTrackedStats(sourcePath)
+	if err != nil {
+		return pebblestore.RemoteDeployPayloadDirectoryRecord{}, err
+	}
+	archiveBase := sanitizeSlug(filepath.Base(sourcePath))
+	if archiveBase == "" {
+		archiveBase = "workspace"
+	}
+	return pebblestore.RemoteDeployPayloadDirectoryRecord{
+		SourcePath:    sourcePath,
+		TargetPath:    firstNonEmpty(strings.TrimSpace(targetPath), "/workspaces"),
+		GitRoot:       gitRoot,
+		ArchiveName:   fmt.Sprintf("%s-%s.tar.gz", archivePrefix, archiveBase),
+		IncludedFiles: includedFiles,
+		IncludedBytes: includedBytes,
+		ExcludedNote:  "Only Git-tracked files are included in remote payload archives.",
+	}, nil
 }
 
 func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessionRecord, startupCfg startupconfig.FileConfig, hostState swarmruntime.LocalState, inviteToken string) string {
@@ -1680,6 +1770,15 @@ func (s *Service) prepareRemoteBundle(ctx context.Context, workDir string, recor
 		archivePath := filepath.Join(bundleDir, "remote", payload.ArchiveName)
 		if err := createGitTrackedArchive(payload.SourcePath, archivePath); err != nil {
 			return err
+		}
+		for _, directory := range payload.Directories {
+			if directory.ArchiveName == "" || directory.SourcePath == "" {
+				continue
+			}
+			archivePath := filepath.Join(bundleDir, "remote", directory.ArchiveName)
+			if err := createGitTrackedArchive(directory.SourcePath, archivePath); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1778,6 +1877,18 @@ func mapRemoteStoredContainerPackageManifest(input pebblestore.ContainerPackageM
 func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 	payloads := make([]SessionPayload, 0, len(record.Payloads))
 	for _, payload := range record.Payloads {
+		directories := make([]SessionPayloadDirectory, 0, len(payload.Directories))
+		for _, directory := range payload.Directories {
+			directories = append(directories, SessionPayloadDirectory{
+				SourcePath:    directory.SourcePath,
+				TargetPath:    directory.TargetPath,
+				GitRoot:       directory.GitRoot,
+				ArchiveName:   directory.ArchiveName,
+				IncludedFiles: directory.IncludedFiles,
+				IncludedBytes: directory.IncludedBytes,
+				ExcludedNote:  directory.ExcludedNote,
+			})
+		}
 		payloads = append(payloads, SessionPayload{
 			ID:            payload.ID,
 			SourcePath:    payload.SourcePath,
@@ -1785,6 +1896,7 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 			WorkspaceName: payload.WorkspaceName,
 			TargetPath:    payload.TargetPath,
 			Mode:          payload.Mode,
+			Directories:   directories,
 			GitRoot:       payload.GitRoot,
 			ArchiveName:   payload.ArchiveName,
 			IncludedFiles: payload.IncludedFiles,
@@ -2874,6 +2986,13 @@ func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string 
 		}
 		targetPath := firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces")
 		payloadExtract += fmt.Sprintf("as_root mkdir -p %s\nas_root chown \"${remote_user}:${remote_group}\" %s >/dev/null 2>&1 || true\ntar -xzf %s -C %s\n", shellQuote(targetPath), shellQuote(targetPath), shellQuote(payload.ArchiveName), shellQuote(targetPath))
+		for _, directory := range payload.Directories {
+			if directory.ArchiveName == "" {
+				continue
+			}
+			directoryTargetPath := firstNonEmpty(strings.TrimSpace(directory.TargetPath), targetPath)
+			payloadExtract += fmt.Sprintf("as_root mkdir -p %s\nas_root chown \"${remote_user}:${remote_group}\" %s >/dev/null 2>&1 || true\ntar -xzf %s -C %s\n", shellQuote(directoryTargetPath), shellQuote(directoryTargetPath), shellQuote(directory.ArchiveName), shellQuote(directoryTargetPath))
+		}
 	}
 	unitPath := string(os.PathSeparator) + filepath.ToSlash(filepath.Join("etc", "systemd", "system", strings.TrimSpace(record.SystemdUnit)))
 	return fmt.Sprintf(`#!/usr/bin/env bash

@@ -11,12 +11,23 @@ import (
 )
 
 type RemoteDeployPayloadRecord struct {
-	ID            string `json:"id"`
+	ID            string                               `json:"id"`
+	SourcePath    string                               `json:"source_path,omitempty"`
+	WorkspacePath string                               `json:"workspace_path,omitempty"`
+	WorkspaceName string                               `json:"workspace_name,omitempty"`
+	TargetPath    string                               `json:"target_path,omitempty"`
+	Mode          string                               `json:"mode,omitempty"`
+	Directories   []RemoteDeployPayloadDirectoryRecord `json:"directories,omitempty"`
+	GitRoot       string                               `json:"git_root,omitempty"`
+	ArchiveName   string                               `json:"archive_name,omitempty"`
+	IncludedFiles int                                  `json:"included_files,omitempty"`
+	IncludedBytes int64                                `json:"included_bytes,omitempty"`
+	ExcludedNote  string                               `json:"excluded_note,omitempty"`
+}
+
+type RemoteDeployPayloadDirectoryRecord struct {
 	SourcePath    string `json:"source_path,omitempty"`
-	WorkspacePath string `json:"workspace_path,omitempty"`
-	WorkspaceName string `json:"workspace_name,omitempty"`
 	TargetPath    string `json:"target_path,omitempty"`
-	Mode          string `json:"mode,omitempty"`
 	GitRoot       string `json:"git_root,omitempty"`
 	ArchiveName   string `json:"archive_name,omitempty"`
 	IncludedFiles int    `json:"included_files,omitempty"`
@@ -253,6 +264,19 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 		record.Payloads[i].WorkspaceName = strings.TrimSpace(record.Payloads[i].WorkspaceName)
 		record.Payloads[i].TargetPath = strings.TrimSpace(record.Payloads[i].TargetPath)
 		record.Payloads[i].Mode = strings.TrimSpace(record.Payloads[i].Mode)
+		for j := range record.Payloads[i].Directories {
+			record.Payloads[i].Directories[j].SourcePath = strings.TrimSpace(record.Payloads[i].Directories[j].SourcePath)
+			record.Payloads[i].Directories[j].TargetPath = strings.TrimSpace(record.Payloads[i].Directories[j].TargetPath)
+			record.Payloads[i].Directories[j].GitRoot = strings.TrimSpace(record.Payloads[i].Directories[j].GitRoot)
+			record.Payloads[i].Directories[j].ArchiveName = strings.TrimSpace(record.Payloads[i].Directories[j].ArchiveName)
+			record.Payloads[i].Directories[j].ExcludedNote = strings.TrimSpace(record.Payloads[i].Directories[j].ExcludedNote)
+			if record.Payloads[i].Directories[j].IncludedFiles < 0 {
+				record.Payloads[i].Directories[j].IncludedFiles = 0
+			}
+			if record.Payloads[i].Directories[j].IncludedBytes < 0 {
+				record.Payloads[i].Directories[j].IncludedBytes = 0
+			}
+		}
 		record.Payloads[i].GitRoot = strings.TrimSpace(record.Payloads[i].GitRoot)
 		record.Payloads[i].ArchiveName = strings.TrimSpace(record.Payloads[i].ArchiveName)
 		record.Payloads[i].ExcludedNote = strings.TrimSpace(record.Payloads[i].ExcludedNote)
