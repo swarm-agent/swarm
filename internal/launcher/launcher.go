@@ -50,6 +50,7 @@ type Profile struct {
 	PortRecord  string
 	BinDir      string
 	ToolBinDir  string
+	LibDir      string
 	WebDir      string
 	WebDistDir  string
 	StartupCWD  string
@@ -71,6 +72,19 @@ func swarmToolBinDir(dataHome string) string {
 func swarmLaneBinDir(dataHome, lane string) string {
 	_ = lane
 	return swarmBinaryRoot(dataHome)
+}
+
+func swarmLibDir(dataHome string) string {
+	return filepath.Join(swarmInstallRoot(dataHome), "lib")
+}
+
+func fffLibraryPlatformDir() string {
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "linux/amd64":
+		return "linux-amd64-gnu"
+	default:
+		return "linux-amd64-gnu"
+	}
 }
 
 func swarmDesktopDistDir(dataHome string) string {
@@ -257,6 +271,7 @@ func LoadProfile(root, lane string, bypassOverride *bool) (Profile, error) {
 		PortRecord:  filepath.Join(swarmState, "ports", fmt.Sprintf("swarmd-%s.env", lane)),
 		BinDir:      swarmLaneBinDir(dataHome, lane),
 		ToolBinDir:  swarmToolBinDir(dataHome),
+		LibDir:      swarmLibDir(dataHome),
 		WebDir:      webDir,
 		WebDistDir:  swarmDesktopDistDir(dataHome),
 		StartupCWD:  startupCWD,
@@ -545,7 +560,13 @@ func BuildSwarmdBinaries(profile Profile) error {
 	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmd"), "./cmd/swarmd"); err != nil {
 		return err
 	}
-	return runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmctl"), "./cmd/swarmctl")
+	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmctl"), "./cmd/swarmctl"); err != nil {
+		return err
+	}
+	if err := copyFile(filepath.Join(swarmdRoot, "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so"), filepath.Join(profile.LibDir, "libfff_c.so")); err != nil {
+		return err
+	}
+	return nil
 }
 
 func SyncDevContainerImages(profile Profile, reason string, skipLocalArtifactRebuild bool) error {
@@ -807,22 +828,29 @@ func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
 	swarmdArtifactDir := filepath.Join(platformRoot, "swarmd")
 	toolDir := swarmToolBinDir(dataHome)
 	binDir := swarmBinaryRoot(dataHome)
+	libDir := swarmLibDir(dataHome)
 	requiredFiles := []struct {
-		name   string
-		source string
-		target string
+		name       string
+		source     string
+		target     string
+		executable bool
 	}{
-		{name: "swarm", source: filepath.Join(rootArtifactDir, "swarm"), target: filepath.Join(toolDir, "swarm")},
-		{name: "swarmdev", source: filepath.Join(rootArtifactDir, "swarmdev"), target: filepath.Join(toolDir, "swarmdev")},
-		{name: "rebuild", source: filepath.Join(rootArtifactDir, "rebuild"), target: filepath.Join(toolDir, "rebuild")},
-		{name: "swarmsetup", source: filepath.Join(rootArtifactDir, "swarmsetup"), target: filepath.Join(toolDir, "swarmsetup")},
-		{name: "swarmtui", source: filepath.Join(rootArtifactDir, "swarmtui"), target: filepath.Join(binDir, "swarmtui")},
-		{name: "swarmd", source: filepath.Join(swarmdArtifactDir, "swarmd"), target: filepath.Join(binDir, "swarmd")},
-		{name: "swarmctl", source: filepath.Join(swarmdArtifactDir, "swarmctl"), target: filepath.Join(binDir, "swarmctl")},
+		{name: "swarm", source: filepath.Join(rootArtifactDir, "swarm"), target: filepath.Join(toolDir, "swarm"), executable: true},
+		{name: "swarmdev", source: filepath.Join(rootArtifactDir, "swarmdev"), target: filepath.Join(toolDir, "swarmdev"), executable: true},
+		{name: "rebuild", source: filepath.Join(rootArtifactDir, "rebuild"), target: filepath.Join(toolDir, "rebuild"), executable: true},
+		{name: "swarmsetup", source: filepath.Join(rootArtifactDir, "swarmsetup"), target: filepath.Join(toolDir, "swarmsetup"), executable: true},
+		{name: "swarmtui", source: filepath.Join(rootArtifactDir, "swarmtui"), target: filepath.Join(binDir, "swarmtui"), executable: true},
+		{name: "swarmd", source: filepath.Join(swarmdArtifactDir, "swarmd"), target: filepath.Join(binDir, "swarmd"), executable: true},
+		{name: "swarmctl", source: filepath.Join(swarmdArtifactDir, "swarmctl"), target: filepath.Join(binDir, "swarmctl"), executable: true},
+		{name: "libfff_c.so", source: filepath.Join(swarmdArtifactDir, "libfff_c.so"), target: filepath.Join(libDir, "libfff_c.so"), executable: false},
 	}
 	for _, item := range requiredFiles {
-		if !isExecutable(item.source) {
-			return InstallReport{}, fmt.Errorf("missing executable artifact for %s: %s", item.name, item.source)
+		if item.executable {
+			if !isExecutable(item.source) {
+				return InstallReport{}, fmt.Errorf("missing executable artifact for %s: %s", item.name, item.source)
+			}
+		} else if !isReadableFile(item.source) {
+			return InstallReport{}, fmt.Errorf("missing runtime artifact for %s: %s", item.name, item.source)
 		}
 		if err := copyFile(item.source, item.target); err != nil {
 			return InstallReport{}, err
@@ -844,6 +872,14 @@ func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
 		return InstallReport{}, err
 	}
 	return InstallLaunchers("")
+}
+
+func isReadableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return true
 }
 
 func isExecutable(path string) bool {

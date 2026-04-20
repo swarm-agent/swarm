@@ -82,6 +82,11 @@ func TestInstallRuntimeFromArtifactCopiesReleaseLayout(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(xdgRoot, "data"))
 	t.Setenv("XDG_BIN_HOME", filepath.Join(xdgRoot, "bin"))
 
+	fffLib := filepath.Join(platformRoot, "swarmd", "libfff_c.so")
+	if err := os.WriteFile(fffLib, []byte("fff"), 0o644); err != nil {
+		t.Fatalf("write %s: %v", fffLib, err)
+	}
+
 	report, err := InstallRuntimeFromArtifact(artifactRoot)
 	if err != nil {
 		t.Fatalf("InstallRuntimeFromArtifact: %v", err)
@@ -95,6 +100,7 @@ func TestInstallRuntimeFromArtifactCopiesReleaseLayout(t *testing.T) {
 		filepath.Join("swarm", "bin", "swarmtui"),
 		filepath.Join("swarm", "bin", "swarmd"),
 		filepath.Join("swarm", "bin", "swarmctl"),
+		filepath.Join("swarm", "lib", "libfff_c.so"),
 		filepath.Join("swarm", "share", "index.html"),
 		filepath.Join("swarm", "share", "assets", "app.js"),
 		filepath.Join("swarm", "share", "assets", "app.js.gz"),

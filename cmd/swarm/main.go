@@ -115,9 +115,6 @@ func run(argv0 string, args []string) error {
 		if err := launcher.BuildSwarmdBinaries(buildProfile); err != nil {
 			return err
 		}
-		if err := launcher.SyncDevContainerImages(buildProfile, "swarm-backend-rebuild", true); err != nil {
-			return err
-		}
 		if err := launcher.StopBackend(profile); err != nil {
 			return err
 		}
@@ -130,7 +127,7 @@ func run(argv0 string, args []string) error {
 		if err := launcher.BuildSwarmdBinaries(buildProfile); err != nil {
 			return err
 		}
-		return launcher.SyncDevContainerImages(buildProfile, "swarm-backend-build", true)
+		return nil
 	case "info":
 		if err := launcher.RecordPortFile(profile); err != nil {
 			return err

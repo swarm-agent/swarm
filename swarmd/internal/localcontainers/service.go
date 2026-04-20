@@ -1579,29 +1579,17 @@ func containerRuntimeMountResources(runtimeMount *RuntimeMount) ([]Mount, []stri
 }
 
 func CurrentRuntimeMount() *RuntimeMount {
-	fffLibPath := filepath.Join("swarmd", "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so")
+	repoFFFLibPath := filepath.Join("swarmd", "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so")
+	installedFFFLibRelPath := filepath.Join("lib", "libfff_c.so")
 	if wd, err := os.Getwd(); err == nil && strings.TrimSpace(wd) != "" {
-		candidate := filepath.Join(wd, fffLibPath)
+		candidate := filepath.Join(wd, repoFFFLibPath)
 		if _, statErr := os.Stat(candidate); statErr == nil {
-			fffLibPath = candidate
+			repoFFFLibPath = candidate
 		}
 	}
-	if !filepath.IsAbs(fffLibPath) {
+	if !filepath.IsAbs(repoFFFLibPath) {
 		if repoRoot, _, err := resolveCanonicalRebuildScript(); err == nil {
-			fffLibPath = filepath.Join(repoRoot, fffLibPath)
-		}
-	}
-	if repoRoot, _, err := resolveCanonicalRebuildScript(); err == nil {
-		repoMount := normalizeRuntimeMount(&RuntimeMount{
-			BinDir:     filepath.Join(repoRoot, ".bin", "main"),
-			WebDistDir: filepath.Join(repoRoot, "web", "dist"),
-			FFFLibPath: fffLibPath,
-		})
-		if repoMount != nil && isReadableFile(filepath.Join(repoMount.BinDir, "swarmd")) {
-			if !isReadableFile(filepath.Join(repoMount.WebDistDir, "index.html")) {
-				repoMount.WebDistDir = ""
-			}
-			return repoMount
+			repoFFFLibPath = filepath.Join(repoRoot, repoFFFLibPath)
 		}
 	}
 	roots := make([]string, 0, 3)
@@ -1626,6 +1614,22 @@ func CurrentRuntimeMount() *RuntimeMount {
 	if dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dataHome != "" {
 		appendRoot(filepath.Join(dataHome, "swarm"))
 	}
+	if repoRoot, _, err := resolveCanonicalRebuildScript(); err == nil {
+		repoMount := normalizeRuntimeMount(&RuntimeMount{
+			BinDir:     filepath.Join(repoRoot, ".bin", "main"),
+			WebDistDir: filepath.Join(repoRoot, "web", "dist"),
+			FFFLibPath: repoFFFLibPath,
+		})
+		if repoMount != nil && isReadableFile(filepath.Join(repoMount.BinDir, "swarmd")) {
+			if !isReadableFile(filepath.Join(repoMount.WebDistDir, "index.html")) {
+				repoMount.WebDistDir = ""
+			}
+			if !isReadableFile(repoMount.FFFLibPath) {
+				repoMount.FFFLibPath = ""
+			}
+			return repoMount
+		}
+	}
 	var best *RuntimeMount
 	bestScore := -1
 	for _, root := range roots {
@@ -1633,7 +1637,7 @@ func CurrentRuntimeMount() *RuntimeMount {
 			BinDir:     filepath.Join(root, "bin"),
 			ToolBinDir: filepath.Join(root, "libexec"),
 			WebDistDir: filepath.Join(root, "share"),
-			FFFLibPath: fffLibPath,
+			FFFLibPath: filepath.Join(root, installedFFFLibRelPath),
 		})
 		if candidate == nil {
 			continue
@@ -1656,7 +1660,13 @@ func CurrentRuntimeMount() *RuntimeMount {
 	if best != nil {
 		return best
 	}
-	return normalizeRuntimeMount(&RuntimeMount{FFFLibPath: fffLibPath})
+	for _, root := range roots {
+		installedLib := filepath.Join(root, installedFFFLibRelPath)
+		if isReadableFile(installedLib) {
+			return normalizeRuntimeMount(&RuntimeMount{FFFLibPath: installedLib})
+		}
+	}
+	return normalizeRuntimeMount(&RuntimeMount{FFFLibPath: repoFFFLibPath})
 }
 
 func fffLibraryPlatformDir() string {

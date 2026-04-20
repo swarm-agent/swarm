@@ -91,6 +91,7 @@ echo "building swarmd binaries into ${SWARMD_ARTIFACT_DIR}"
   "${GO_BIN}" build -trimpath -o "${SWARMD_ARTIFACT_DIR}/swarmd" ./cmd/swarmd
   "${GO_BIN}" build -trimpath -o "${SWARMD_ARTIFACT_DIR}/swarmctl" ./cmd/swarmctl
 )
+cp "${ROOT_DIR}/swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so" "${SWARMD_ARTIFACT_DIR}/libfff_c.so"
 
 if [[ "${BUILD_WEB}" == "true" ]]; then
   require_cmd node
