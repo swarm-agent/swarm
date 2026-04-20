@@ -127,6 +127,7 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 	for _, needle := range []string{
 		`remote_root='/var/lib/swarm/remote-deploy/test'`,
 		`config_home='/var/lib/swarm/remote-deploy/test/config'`,
+		`bootstrap_secret_file='/var/lib/swarm/remote-deploy/test/config/swarm/remote-deploy-bootstrap.secret'`,
 		`tailscale_state_dir='/var/lib/swarm/remote-deploy/test/state/tailscale'`,
 		`swarmd_state_dir='/var/lib/swarm/remote-deploy/test/state/swarmd'`,
 		`runtime='docker'`,
@@ -143,9 +144,10 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`export TS_OUTBOUND_HTTP_PROXY_LISTEN="127.0.0.1:1055"`,
 		`export SWARM_TAILSCALE_OUTBOUND_PROXY="http://127.0.0.1:1055"`,
 		`run_args+=(--volume '/workspaces:/workspaces')`,
-		`run_args+=(-e "TS_AUTHKEY=${TAILSCALE_AUTHKEY}")`,
+		`if [ -s "$credentials_file" ]; then`,
+		`run_args+=(--env-file "$credentials_file")`,
 		`exec "$runtime_bin" "${run_args[@]}"`,
-		`nohup sudo -E env TAILSCALE_AUTHKEY="${TAILSCALE_AUTHKEY:-}" SWARM_REMOTE_SYNC_VAULT_PASSWORD="${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &`,
+		`nohup sudo -E /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &`,
 		`log_timer_step "start_remote_container" "$step_started_ms"`,
 		`runtime_cmd inspect -f '{{.State.Running}}' "$container_name"`,
 		`tail -n 200 "$log_file"`,
@@ -163,9 +165,47 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`journalctl`,
 		`WorkingDirectory=`,
 		`ExecStart=`,
+		`TAILSCALE_AUTHKEY=`,
+		`SWARM_REMOTE_SYNC_VAULT_PASSWORD=`,
+		`remote_deploy_session_token =`,
+		`remote_deploy_invite_token =`,
 	} {
 		if strings.Contains(script, unexpected) {
 			t.Fatalf("installer script should not include %q\n%s", unexpected, script)
+		}
+	}
+}
+
+func TestRemoteBundleStartScriptWritesCredentialsFileWithoutInlineSecrets(t *testing.T) {
+	record := &pebblestore.RemoteDeploySessionRecord{
+		ID:           "remote-child-test",
+		RemoteRoot:   "/var/lib/swarm/remote-deploy/test",
+		SessionToken: "session-secret",
+		InviteToken:  "invite-secret",
+	}
+	script, err := remoteBundleStartScript(record, "ts-auth-key", "vault-pass")
+	if err != nil {
+		t.Fatalf("remoteBundleStartScript error = %v", err)
+	}
+	for _, needle := range []string{
+		`cd '/var/lib/swarm/remote-deploy/test'`,
+		`credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
+		`umask 077`,
+		`cat > "$credentials_file" <<'EOF'`,
+		"TS_AUTHKEY=ts-auth-key",
+		"SWARM_REMOTE_SYNC_VAULT_PASSWORD=vault-pass",
+		`chmod 0600 "$credentials_file"`,
+		`./install-remote-child.sh`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("start script missing %q\n%s", needle, script)
+		}
+	}
+	for _, unexpected := range []string{
+		`TAILSCALE_AUTHKEY=`,
+	} {
+		if strings.Contains(script, unexpected) {
+			t.Fatalf("start script should not include %q\n%s", unexpected, script)
 		}
 	}
 }
@@ -458,4 +498,68 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestPrepareRemoteBundleWritesSecretConfigWithRestrictedPermissions(t *testing.T) {
+	workDir := t.TempDir()
+	service := &Service{}
+	record := &pebblestore.RemoteDeploySessionRecord{ID: "remote-test-1", SessionToken: "secret", InviteToken: "invite", RemoteRoot: "/var/lib/swarm/remote-deploy/test"}
+	childCfgText := "remote_deploy_enabled = true\nremote_deploy_session_id = remote-test-1\nremote_deploy_host_api_base_url = https://host.example\nremote_deploy_host_desktop_url = https://host.example\nremote_deploy_sync_enabled = false\nremote_deploy_sync_mode = \nremote_deploy_sync_owner_swarm_id = \nremote_deploy_sync_credential_url = \n"
+
+	if err := service.prepareRemoteBundle(context.Background(), workDir, record, childCfgText); err != nil {
+		t.Fatalf("prepareRemoteBundle() error = %v", err)
+	}
+
+	cfgPath := filepath.Join(workDir, "bundle", "remote", "config", "swarm", "swarm.conf")
+	info, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", cfgPath, err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("remote child startup config mode = %#o, want 0o600", got)
+	}
+
+	secretPath := filepath.Join(workDir, "bundle", "remote", "config", "swarm", "remote-deploy-bootstrap.secret")
+	secretInfo, err := os.Stat(secretPath)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", secretPath, err)
+	}
+	if got := secretInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("remote bootstrap secret mode = %#o, want 0o600", got)
+	}
+	secretData, err := os.ReadFile(secretPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", secretPath, err)
+	}
+	secretText := string(secretData)
+	if !strings.Contains(secretText, "remote_deploy_session_token = secret") {
+		t.Fatalf("remote bootstrap secret missing session token: %q", secretText)
+	}
+	if !strings.Contains(secretText, "remote_deploy_invite_token = invite") {
+		t.Fatalf("remote bootstrap secret missing invite token: %q", secretText)
+	}
+	cfgData, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", cfgPath, err)
+	}
+	cfgText := string(cfgData)
+	if strings.Contains(cfgText, "remote_deploy_session_token") || strings.Contains(cfgText, "remote_deploy_invite_token") {
+		t.Fatalf("remote child startup config should not include bootstrap secrets: %q", cfgText)
+	}
+
+	installerPath := filepath.Join(workDir, "bundle", "remote", "install-remote-child.sh")
+	installer, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", installerPath, err)
+	}
+	text := string(installer)
+	if !strings.Contains(text, "chmod 0700 \"$config_home\" \"$config_home/swarm\"") {
+		t.Fatalf("installer missing config dir hardening: %q", text)
+	}
+	if !strings.Contains(text, "chmod 0600 \"$config_home/swarm/swarm.conf\"") {
+		t.Fatalf("installer missing config file hardening: %q", text)
+	}
+	if !strings.Contains(text, "chmod 0600 \"$bootstrap_secret_file\"") {
+		t.Fatalf("installer missing bootstrap secret hardening: %q", text)
+	}
 }

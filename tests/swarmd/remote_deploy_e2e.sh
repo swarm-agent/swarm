@@ -436,10 +436,8 @@ deploy_container_bootstrap_secret =
 deploy_container_verification_code =
 remote_deploy_enabled = false
 remote_deploy_session_id =
-remote_deploy_session_token =
 remote_deploy_host_api_base_url =
 remote_deploy_host_desktop_url =
-remote_deploy_invite_token =
 EOF
 }
 

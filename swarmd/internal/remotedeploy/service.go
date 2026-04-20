@@ -48,6 +48,7 @@ const (
 	remotePackageBaseImage      = "ubuntu:24.04"
 	remoteImageDeliveryArchive  = "archive"
 	remoteImageDeliveryRegistry = "registry"
+	remoteCredentialsFileName   = "remote-child.credentials.env"
 )
 
 type ContainerPackageSelection struct {
@@ -683,7 +684,8 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	if err != nil {
 		return Session{}, err
 	}
-	childCfgText := s.renderChildStartupConfig(record, startupCfg, hostState, invite.Token)
+	record.InviteToken = invite.Token
+	childCfgText := s.renderChildStartupConfig(record, startupCfg, hostState)
 	workDir, err := os.MkdirTemp("", "swarm-remote-deploy-")
 	if err != nil {
 		return Session{}, err
@@ -1878,7 +1880,7 @@ func buildPayloadDirectoryRecord(sourcePath, targetPath, archivePrefix string) (
 	}, nil
 }
 
-func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessionRecord, startupCfg startupconfig.FileConfig, hostState swarmruntime.LocalState, inviteToken string) string {
+func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessionRecord, startupCfg startupconfig.FileConfig, hostState swarmruntime.LocalState) string {
 	transportMode := normalizeRemoteTransportMode(record.TransportMode)
 	remoteAdvertiseHost := strings.TrimSpace(record.RemoteAdvertiseHost)
 	cfg := startupconfig.Default(remoteStartupConfigPath(record))
@@ -1899,10 +1901,8 @@ func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessio
 	cfg.RemoteDeploy = startupconfig.RemoteDeployBootstrap{
 		Enabled:           true,
 		SessionID:         strings.TrimSpace(record.ID),
-		SessionToken:      strings.TrimSpace(record.SessionToken),
 		HostAPIBaseURL:    strings.TrimSpace(record.MasterEndpoint),
 		HostDesktopURL:    strings.TrimSpace(record.MasterEndpoint),
-		InviteToken:       strings.TrimSpace(inviteToken),
 		SyncEnabled:       record.SyncEnabled,
 		SyncMode:          strings.TrimSpace(record.SyncMode),
 		SyncOwnerSwarmID:  strings.TrimSpace(record.SyncOwnerSwarmID),
@@ -1927,7 +1927,14 @@ func (s *Service) prepareRemoteBundle(ctx context.Context, workDir string, recor
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(cfgPath, []byte(childCfgText), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(childCfgText), 0o600); err != nil {
+		return err
+	}
+	secretCfg := startupconfig.Default(cfgPath)
+	secretCfg.RemoteDeploy.Enabled = true
+	secretCfg.RemoteDeploy.SessionToken = strings.TrimSpace(record.SessionToken)
+	secretCfg.RemoteDeploy.InviteToken = strings.TrimSpace(record.InviteToken)
+	if err := startupconfig.WriteRemoteDeployBootstrapSecret(cfgPath, secretCfg); err != nil {
 		return err
 	}
 	installerPath := filepath.Join(bundleDir, "remote", "install-remote-child.sh")
@@ -1990,17 +1997,9 @@ func (s *Service) startRemoteBundle(ctx context.Context, record *pebblestore.Rem
 	if record == nil {
 		return "", "", "", fmt.Errorf("remote deploy record is required")
 	}
-	remoteDir := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
-	cmd := fmt.Sprintf("cd %s && ./install-remote-child.sh", shellQuote(remoteDir))
-	envVars := make([]string, 0, 2)
-	if strings.TrimSpace(tailscaleAuthKey) != "" {
-		envVars = append(envVars, fmt.Sprintf("TAILSCALE_AUTHKEY=%s", shellQuote(strings.TrimSpace(tailscaleAuthKey))))
-	}
-	if strings.TrimSpace(syncVaultPassword) != "" {
-		envVars = append(envVars, fmt.Sprintf("SWARM_REMOTE_SYNC_VAULT_PASSWORD=%s", shellQuote(strings.TrimSpace(syncVaultPassword))))
-	}
-	if len(envVars) > 0 {
-		cmd = fmt.Sprintf("cd %s && %s ./install-remote-child.sh", shellQuote(remoteDir), strings.Join(envVars, " "))
+	cmd, err := remoteBundleStartScript(record, tailscaleAuthKey, syncVaultPassword)
+	if err != nil {
+		return "", "", "", err
 	}
 	output, err = runSSHCommand(ctx, record.SSHSessionTarget, cmd)
 	for _, line := range strings.Split(output, "\n") {
@@ -2279,6 +2278,10 @@ func remoteRootForHome(homeDir, sessionID string) string {
 
 func remoteStartupConfigPath(record pebblestore.RemoteDeploySessionRecord) string {
 	return filepath.ToSlash(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "config", "swarm", "swarm.conf"))
+}
+
+func remoteBootstrapSecretPath(record pebblestore.RemoteDeploySessionRecord) string {
+	return filepath.ToSlash(startupconfig.RemoteDeployBootstrapSecretPath(remoteStartupConfigPath(record)))
 }
 
 func remoteServiceLogPath(record pebblestore.RemoteDeploySessionRecord) string {
@@ -3415,6 +3418,8 @@ func shortToken(size int) string {
 
 func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string {
 	remoteRoot := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
+	credentialsFile := filepath.ToSlash(filepath.Join(remoteRoot, remoteCredentialsFileName))
+	bootstrapSecretFile := remoteBootstrapSecretPath(record)
 	remoteStateRoot := filepath.ToSlash(filepath.Join(remoteRoot, "state"))
 	transportMode := normalizeRemoteTransportMode(record.TransportMode)
 	runtimeName := normalizeRemoteDeployRuntime(record.RemoteRuntime)
@@ -3485,6 +3490,8 @@ set -euo pipefail
 
 remote_root=%s
 config_home=%s
+credentials_file=%s
+bootstrap_secret_file=%s
 state_root=%s
 tailscale_state_dir=%s
 swarmd_state_dir=%s
@@ -3539,6 +3546,15 @@ log_timer_step() {
 
 step_started_ms="$(now_ms)"
 mkdir -p "$remote_root" "$config_home/swarm" "$state_root" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
+chmod 0700 "$config_home" "$config_home/swarm"
+if [ ! -f "$config_home/swarm/swarm.conf" ]; then
+  echo "remote startup config missing: $config_home/swarm/swarm.conf" >&2
+  exit 1
+fi
+chmod 0600 "$config_home/swarm/swarm.conf"
+if [ -f "$bootstrap_secret_file" ]; then
+  chmod 0600 "$bootstrap_secret_file"
+fi
 : > "$log_file"
 log_timer_step "prepare_remote_root" "$step_started_ms"
 step_started_ms="$(now_ms)"
@@ -3563,6 +3579,7 @@ cat > "$start_script" <<'SCRIPT'
 set -euo pipefail
 remote_root=%s
 config_home=%s
+credentials_file=%s
 tailscale_state_dir=%s
 swarmd_state_dir=%s
 runtime=%s
@@ -3612,11 +3629,8 @@ run_args=(
   -e "SWARM_CONTAINER_OFFLINE=$offline_mode"
   -e "TS_HOSTNAME=$ts_hostname"
 )
-if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
-  run_args+=(-e "TS_AUTHKEY=${TAILSCALE_AUTHKEY}")
-fi
-if [ -n "${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" ]; then
-  run_args+=(-e "SWARM_REMOTE_SYNC_VAULT_PASSWORD=${SWARM_REMOTE_SYNC_VAULT_PASSWORD}")
+if [ -s "$credentials_file" ]; then
+  run_args+=(--env-file "$credentials_file")
 fi
 run_args+=(--volume "$remote_root:$remote_root")
 %s
@@ -3628,18 +3642,10 @@ log_timer_step "write_start_script" "$step_started_ms"
 
 step_started_ms="$(now_ms)"
 rm -f "$pid_file"
-if [ -n "${TAILSCALE_AUTHKEY:-}" ] || [ -n "${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" ]; then
-  if [ "$use_sudo" = "1" ]; then
-    nohup sudo -E env TAILSCALE_AUTHKEY="${TAILSCALE_AUTHKEY:-}" SWARM_REMOTE_SYNC_VAULT_PASSWORD="${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
-  else
-    nohup env TAILSCALE_AUTHKEY="${TAILSCALE_AUTHKEY:-}" SWARM_REMOTE_SYNC_VAULT_PASSWORD="${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
-  fi
+if [ "$use_sudo" = "1" ]; then
+  nohup sudo -E /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
 else
-  if [ "$use_sudo" = "1" ]; then
-    nohup sudo -E /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
-  else
-    nohup /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
-  fi
+  nohup /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
 fi
 echo $! >"$pid_file"
 log_timer_step "start_remote_container" "$step_started_ms"
@@ -3698,7 +3704,34 @@ log_timer_step "wait_for_bootstrap_signal" "$step_started_ms"
 printf '%%s\n' "$log_output"
 printf 'TAILSCALE_AUTH_URL=%%s\n' "$auth_url"
 printf '%s=%%s\n' "$remote_url"
-`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(offlineMode), payloadExtract, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), mountArgs, bootstrapOutputPrefix)
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(credentialsFile), shellQuote(bootstrapSecretFile), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(offlineMode), payloadExtract, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(credentialsFile), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), mountArgs, bootstrapOutputPrefix)
+}
+
+func remoteBundleStartScript(record *pebblestore.RemoteDeploySessionRecord, tailscaleAuthKey string, syncVaultPassword string) (string, error) {
+	if record == nil {
+		return "", fmt.Errorf("remote deploy record is required")
+	}
+	remoteDir := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
+	credentials := make([]string, 0, 2)
+	if value := strings.TrimSpace(tailscaleAuthKey); value != "" {
+		credentials = append(credentials, fmt.Sprintf("TS_AUTHKEY=%s", value))
+	}
+	if value := strings.TrimSpace(syncVaultPassword); value != "" {
+		credentials = append(credentials, fmt.Sprintf("SWARM_REMOTE_SYNC_VAULT_PASSWORD=%s", value))
+	}
+	var builder strings.Builder
+	builder.WriteString("set -euo pipefail\n")
+	builder.WriteString(fmt.Sprintf("cd %s\n", shellQuote(remoteDir)))
+	if len(credentials) > 0 {
+		builder.WriteString(fmt.Sprintf("credentials_file=%s\n", shellQuote(filepath.ToSlash(filepath.Join(remoteDir, remoteCredentialsFileName)))))
+		builder.WriteString("umask 077\n")
+		builder.WriteString("cat > \"$credentials_file\" <<'EOF'\n")
+		builder.WriteString(strings.Join(credentials, "\n"))
+		builder.WriteString("\nEOF\n")
+		builder.WriteString("chmod 0600 \"$credentials_file\"\n")
+	}
+	builder.WriteString("./install-remote-child.sh\n")
+	return builder.String(), nil
 }
 
 func shellQuote(value string) string {

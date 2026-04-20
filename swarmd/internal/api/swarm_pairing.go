@@ -572,29 +572,40 @@ func (s *Server) handleSwarmDiscovery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+
+	response := swarmDiscoveryResponse{
+		OK:      true,
+		SwarmID: strings.TrimSpace(state.Node.SwarmID),
+		Name:    firstNonEmpty(strings.TrimSpace(cfg.SwarmName), strings.TrimSpace(state.Node.Name), "Unnamed swarm"),
+	}
 	if !swarmModeEnabled(cfg) {
-		writeJSON(w, http.StatusOK, swarmDiscoveryResponse{
-			OK:            true,
-			SwarmID:       strings.TrimSpace(state.Node.SwarmID),
-			Name:          firstNonEmpty(strings.TrimSpace(cfg.SwarmName), strings.TrimSpace(state.Node.Name), "Unnamed swarm"),
-			Role:          bootstrapRoleStandalone,
-			Endpoint:      "",
-			TransportMode: "",
-		})
+		response.Role = bootstrapRoleStandalone
+		response = redactSensitiveSwarmDiscoveryResponse(response, s.allowSensitiveOnboardingMetadata(r))
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
 	transports := detectedOnboardingTransports(cfg)
 	tailscale := detectTailscale()
 	status := onboardingResponse{Tailscale: tailscale}
-	writeJSON(w, http.StatusOK, swarmDiscoveryResponse{
-		OK:                   true,
-		SwarmID:              strings.TrimSpace(state.Node.SwarmID),
-		Name:                 firstNonEmpty(strings.TrimSpace(cfg.SwarmName), strings.TrimSpace(state.Node.Name), "Unnamed swarm"),
-		Role:                 localSwarmRole(cfg),
-		Endpoint:             canonicalRemoteSwarmEndpoint(cfg, status),
-		TransportMode:        bootstrapNetworkMode(cfg),
-		RendezvousTransports: transports,
-	})
+	response.Role = localSwarmRole(cfg)
+	response.Endpoint = canonicalRemoteSwarmEndpoint(cfg, status)
+	response.TransportMode = bootstrapNetworkMode(cfg)
+	response.RendezvousTransports = transports
+	response = redactSensitiveSwarmDiscoveryResponse(response, s.allowSensitiveOnboardingMetadata(r))
+	writeJSON(w, http.StatusOK, response)
+}
+
+func redactSensitiveSwarmDiscoveryResponse(response swarmDiscoveryResponse, allowSensitive bool) swarmDiscoveryResponse {
+	if allowSensitive {
+		return response
+	}
+	response.SwarmID = ""
+	response.Name = ""
+	response.Role = ""
+	response.Endpoint = ""
+	response.TransportMode = ""
+	response.RendezvousTransports = nil
+	return response
 }
 
 func (s *Server) handleSwarmPendingChildren(w http.ResponseWriter, r *http.Request) {

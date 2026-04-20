@@ -113,10 +113,8 @@ deploy_container_bootstrap_secret =
 deploy_container_verification_code =
 remote_deploy_enabled = false
 remote_deploy_session_id =
-remote_deploy_session_token =
 remote_deploy_host_api_base_url =
 remote_deploy_host_desktop_url =
-remote_deploy_invite_token =
 remote_deploy_sync_enabled = false
 remote_deploy_sync_mode =
 remote_deploy_sync_owner_swarm_id =
@@ -457,10 +455,8 @@ EOF
 # Remote deploy child bootstrap payload.
 remote_deploy_enabled = false
 remote_deploy_session_id =
-remote_deploy_session_token =
 remote_deploy_host_api_base_url =
 remote_deploy_host_desktop_url =
-remote_deploy_invite_token =
 remote_deploy_sync_enabled = false
 remote_deploy_sync_mode =
 remote_deploy_sync_owner_swarm_id =
@@ -546,10 +542,8 @@ swarm_startup_config_validate() {
       valid["deploy_container_verification_code"] = 1
       valid["remote_deploy_enabled"] = 1
       valid["remote_deploy_session_id"] = 1
-      valid["remote_deploy_session_token"] = 1
       valid["remote_deploy_host_api_base_url"] = 1
       valid["remote_deploy_host_desktop_url"] = 1
-      valid["remote_deploy_invite_token"] = 1
       valid["remote_deploy_sync_enabled"] = 1
       valid["remote_deploy_sync_mode"] = 1
       valid["remote_deploy_sync_owner_swarm_id"] = 1
@@ -572,10 +566,8 @@ swarm_startup_config_validate() {
       allow_empty["deploy_container_bootstrap_secret"] = 1
       allow_empty["deploy_container_verification_code"] = 1
       allow_empty["remote_deploy_session_id"] = 1
-      allow_empty["remote_deploy_session_token"] = 1
       allow_empty["remote_deploy_host_api_base_url"] = 1
       allow_empty["remote_deploy_host_desktop_url"] = 1
-      allow_empty["remote_deploy_invite_token"] = 1
       allow_empty["remote_deploy_sync_mode"] = 1
       allow_empty["remote_deploy_sync_owner_swarm_id"] = 1
       allow_empty["remote_deploy_sync_credential_url"] = 1
@@ -712,17 +704,11 @@ swarm_startup_config_validate() {
       if (!("remote_deploy_session_id" in seen)) {
         fail(sprintf("invalid startup config %s: missing remote_deploy_session_id", config_path))
       }
-      if (!("remote_deploy_session_token" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_session_token", config_path))
-      }
       if (!("remote_deploy_host_api_base_url" in seen)) {
         fail(sprintf("invalid startup config %s: missing remote_deploy_host_api_base_url", config_path))
       }
       if (!("remote_deploy_host_desktop_url" in seen)) {
         fail(sprintf("invalid startup config %s: missing remote_deploy_host_desktop_url", config_path))
-      }
-      if (!("remote_deploy_invite_token" in seen)) {
-        fail(sprintf("invalid startup config %s: missing remote_deploy_invite_token", config_path))
       }
       if (!("remote_deploy_sync_enabled" in seen)) {
         fail(sprintf("invalid startup config %s: missing remote_deploy_sync_enabled", config_path))
