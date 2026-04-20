@@ -54,7 +54,7 @@ That will:
 2. create the `swarm-harness` VM assets
 3. boot the guest with loopback-only SSH
 4. install guest prerequisites (`podman`, `docker.io`, `git`, `jq`, `rsync`, `npm`, build tools)
-5. rsync the current repo checkout into `~/swarm-go` inside the guest
+5. rsync the current repo checkout, including `web/node_modules` when present, into `~/swarm-go` inside the guest
 
 ## Common commands
 
@@ -106,6 +106,7 @@ Stop the VM:
 - prefer `swarm-harness` for `tests/swarmd/local_replicate_recovery_e2e.sh`
 - use the workstation directly only when the test does not depend on local container networking, attach, or fixed-port isolation
 - rerun `sync` before harness work if the checkout changed
+- if the host checkout already has `web/node_modules`, the sync step carries it into the guest so desktop builds do not need a separate guest-side `npm ci`
 
 ## Relevant filepaths
 
