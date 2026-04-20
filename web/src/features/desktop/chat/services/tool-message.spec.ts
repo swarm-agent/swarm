@@ -358,6 +358,71 @@ function testTaskRowsHideAssistantPreviewText(): void {
   assert(message?.taskRows[0]?.previewText === '', `assistant preview should be hidden: ${message?.taskRows[0]?.previewText}`)
 }
 
+function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): void {
+  const deltaPayload = JSON.stringify({
+    tool: 'task',
+    path_id: 'tool.task.stream.v1',
+    status: 'running',
+    launches: [
+      {
+        launch_index: 1,
+        child_session_id: 'child-1',
+        subagent: 'explorer',
+        status: 'ok',
+        current_tool: '',
+        elapsed_ms: 1200,
+      },
+      {
+        launch_index: 2,
+        child_session_id: 'child-2',
+        subagent: 'clone',
+        status: 'running',
+        current_tool: 'read',
+        elapsed_ms: 800,
+      },
+    ],
+  })
+  const finalPayload = JSON.stringify({
+    tool: 'task',
+    path_id: 'tool.task.v1',
+    status: 'ok',
+    launches: [
+      {
+        launch_index: 1,
+        child_session_id: 'child-1',
+        subagent: 'explorer',
+        status: 'ok',
+        elapsed_ms: 1400,
+      },
+      {
+        launch_index: 2,
+        child_session_id: 'child-2',
+        subagent: 'clone',
+        status: 'ok',
+        elapsed_ms: 1300,
+      },
+    ],
+  })
+
+  const deltaMessage = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_rows_1',
+    outputText: deltaPayload,
+  })
+  const finalMessage = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_rows_1',
+    outputText: finalPayload,
+  })
+
+  assert(Boolean(deltaMessage), 'expected delta task tool message')
+  assert(Boolean(finalMessage), 'expected final task tool message')
+  assert(deltaMessage?.taskRows.length === 2, `expected 2 delta task rows, got ${deltaMessage?.taskRows.length}`)
+  assert(finalMessage?.taskRows.length === 2, `expected 2 final task rows, got ${finalMessage?.taskRows.length}`)
+  assert(finalMessage?.taskRows[0]?.childSessionId === 'child-1', 'expected first child session id to persist')
+  assert(finalMessage?.taskRows[1]?.childSessionId === 'child-2', 'expected second child session id to persist')
+}
+
 function main(): void {
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
@@ -369,6 +434,7 @@ function main(): void {
   testEditToolPreservesFullExpandedDiff();
   testTaskRowsMapReasoningToThinkingWithoutPreviewLeak();
   testTaskRowsHideAssistantPreviewText();
+  testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   console.log("tool-message tests passed");
 }
 

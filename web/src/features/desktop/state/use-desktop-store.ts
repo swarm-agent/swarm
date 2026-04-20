@@ -83,6 +83,15 @@ const HEARTBEAT_INTERVAL_MS = 15_000
 const LIVENESS_TIMEOUT_MS = 45_000
 const NEW_SESSION_DRAFT_KEY_PREFIX = '__workspace__:'
 const MAX_LIVE_TOOL_OUTPUT_CHARS = 4000
+
+function isTaskToolPayload(record: Record<string, unknown> | null): boolean {
+  if (!record) {
+    return false
+  }
+  const tool = typeof record.tool === 'string' ? record.tool.trim().toLowerCase() : ''
+  const pathId = typeof record.path_id === 'string' ? record.path_id.trim().toLowerCase() : ''
+  return tool === 'task' || pathId === 'tool.task.stream.v1' || pathId === 'tool.task.v1'
+}
 const draftFlushTimers = new Map<string, number>()
 const pendingDraftFlush = new Map<string, DraftFlushState>()
 const pendingSessionSnapshotHydrations = new Set<string>()
@@ -474,6 +483,10 @@ function replaceLiveToolOutput(value: string): string {
   if (!normalized) {
     return ''
   }
+  const parsed = parseToolDeltaOutputRecord(normalized)
+  if (isTaskToolPayload(parsed)) {
+    return JSON.stringify(parsed)
+  }
   return retainTail(normalized, MAX_LIVE_TOOL_OUTPUT_CHARS)
 }
 
@@ -528,7 +541,7 @@ function mergedTaskToolDelta(current: string, next: string): string {
       .sort((left, right) => left[0] - right[0])
       .map(([, launch]) => launch)
   }
-  return retainTail(JSON.stringify(merged), MAX_LIVE_TOOL_OUTPUT_CHARS)
+  return JSON.stringify(merged)
 }
 
 function isDisplayableAgentLabel(value: unknown): value is string {
