@@ -134,11 +134,25 @@ export interface AgentProfileRecord {
   updatedAt: number;
 }
 
+export interface ProviderDefaultsPreviewRecord {
+  provider: string;
+  primaryAgent: string;
+  primaryModel: string;
+  primaryThinking: string;
+  utilityModel: string;
+  utilityThinking: string;
+  utilityAgents: string[];
+  affectedAgents: string[];
+  outOfSyncAgents: string[];
+  inheritingAgents: string[];
+}
+
 export interface AgentStateRecord {
   profiles: AgentProfileRecord[];
   activePrimary: string;
   activeSubagent: Record<string, string>;
   version: number;
+  providerDefaultsPreview: ProviderDefaultsPreviewRecord | null;
 }
 
 export interface ModelOptionRecord {

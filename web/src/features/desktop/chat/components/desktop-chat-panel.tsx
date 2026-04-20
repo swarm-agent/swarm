@@ -70,7 +70,13 @@ import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/type
 const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 const FAST_ON_OFF_OPTIONS = ['off', 'on']
 const TODO_DRAG_MIME = 'application/x-swarm-workspace-todo'
-const EMPTY_AGENT_STATE: AgentStateRecord = { profiles: [], activePrimary: 'swarm', activeSubagent: {}, version: 0 }
+const EMPTY_AGENT_STATE: AgentStateRecord = {
+  profiles: [],
+  activePrimary: 'swarm',
+  activeSubagent: {},
+  version: 0,
+  providerDefaultsPreview: null,
+}
 
 function metadataRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
