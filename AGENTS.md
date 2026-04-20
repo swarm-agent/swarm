@@ -219,6 +219,15 @@ If a rule below conflicts with convenience, the rule wins.
   - Refresh/reopen and host-restart proof for that same fresh routed session still need a separate rerun before claiming the reload blocker is fully closed.
 - In this Codex environment, `tests/swarmd/local_replicate_e2e.sh` can finish successfully while the isolated host dies when the shell exits.
   - For post-harness live API work, relaunch the same host root in a persistent PTY using the XDG paths from `host-summary.json`.
+- Dedicated VM lane for local container/replicate testing:
+  - Keep one reusable Linux VM profile named `swarm-harness` for local harness work.
+  - Treat that VM as the default place to run local container networking, attach, managed-sync, and replicate harnesses whenever the main workstation swarm or fixed local ports would conflict.
+  - The goal is a real Linux guest on KVM/QEMU, not container-in-container.
+  - The guest should run its own `swarmd`, container runtime, ports, and worktree so host-side Swarm usage does not block harness execution.
+  - Preferred use: keep the workstation Swarm running for normal use; run `tests/swarmd/local_replicate_e2e.sh` and `tests/swarmd/local_replicate_recovery_e2e.sh` inside `swarm-harness`.
+  - Canonical entrypoint: `./scripts/swarm-harness-vm.sh` (`doctor`, `install-host-deps`, `provision`, `sync`, `local-replicate`, `local-replicate-recovery`).
+  - The VM lane uses explicit `rsync` into the guest instead of host bind mounts so harness testing does not mutate host workspace ownership.
+  - If a local harness result depends on container networking or host/child attach behavior, prefer the VM lane over trying to fight host-port collisions on the main machine.
 - Current completed rows:
   - `P0-01` Podman, `127.0.0.1`, default/lane, single child: `PASS`
   - `P0-02` Docker, `127.0.0.1`, default/lane, single child: `PASS`

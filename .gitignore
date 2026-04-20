@@ -56,7 +56,8 @@ coverage.out
 /.tools/
 /.tmp-tools/
 /audit/
-/docs/
+/docs/*
+!/docs/swarm-harness-vm.md
 /REPO_SHIP_READINESS_CHECKLIST.md
 /tests/swarmd/*_plan.md
 /scripts/benchmark-*.sh

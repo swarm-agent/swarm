@@ -36,6 +36,8 @@ This verifies required host tools, including the vendored FFF runtime used by Sw
 Use `bash /path/to/swarm/setup --with-web --start-main` if you also want to install `web/` npm dependencies, build the desktop bundle, and place the built desktop assets into the installed runtime layout during first-run setup.
 After the first launcher install, use `rebuild` from the checkout to refresh the installed runtime artifacts, then launch the installed `swarm` binary to test the same runtime a downloaded install would use.
 
+For isolated local container/replicate harness work, provision the dedicated `swarm-harness` VM lane with `./scripts/swarm-harness-vm.sh provision`, then run `./scripts/swarm-harness-vm.sh local-replicate` or `./scripts/swarm-harness-vm.sh local-replicate-recovery`.
+
 ## Run
 
 Or run through the launcher:

@@ -1565,6 +1565,7 @@ func containerRuntimeMountResources(runtimeMount *RuntimeMount) ([]Mount, []stri
 	env = append(env,
 		"SWARM_BIN_DIR=/mnt/swarm/bin",
 		"SWARM_RUNTIME_BIN=/mnt/swarm/bin/swarmd",
+		"SWARM_RUNTIME_HOME=/var/lib/swarmd/home",
 	)
 	if runtimeMount.WebDistDir != "" {
 		env = append(env, "SWARM_WEB_DIST_DIR=/mnt/swarm/share")

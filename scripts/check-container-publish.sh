@@ -234,6 +234,7 @@ required_files=(
 
 required_dirs=(
   "$(join_path opt swarm web dist)"
+  /var/lib/swarmd/home
 )
 
 for path in "${required_execs[@]}"; do
@@ -256,6 +257,20 @@ for path in "${required_dirs[@]}"; do
     exit 1
   }
 done
+
+owner_check="$(stat -c '%U:%G' /var/lib/swarmd /var/run/swarmd /var/lib/swarmd/home | sort -u)"
+if [[ "${owner_check}" != "nobody:nogroup" ]]; then
+  echo "unexpected internal runtime directory ownership: ${owner_check}" >&2
+  exit 1
+fi
+
+workspace_owner="$(stat -c '%U:%G' /workspaces)"
+echo "[container-publish] workspace mount root intentionally left shared-host owned: ${workspace_owner}"
+
+grep -F 'ts_tun_mode="${TS_TUN_MODE:-userspace-networking}"' /usr/local/bin/swarm-container-entrypoint >/dev/null || {
+  echo "entrypoint no longer defaults TS_TUN_MODE to userspace-networking" >&2
+  exit 1
+}
 
 scan_roots=()
 opt_swarm_root="$(join_path opt swarm)"
