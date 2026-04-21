@@ -337,6 +337,10 @@ func (f *fakeReplicateDeployService) AutoAttachChild(context.Context) error {
 	return nil
 }
 
+func (f *fakeReplicateDeployService) UnlockManagedLocalChildVaults(context.Context) error {
+	return nil
+}
+
 type fakeReplicateSwarmService struct {
 	state swarmruntime.LocalState
 }

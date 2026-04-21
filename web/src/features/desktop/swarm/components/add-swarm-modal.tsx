@@ -6,10 +6,7 @@ import { Card } from '../../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
 import { Select } from '../../../../components/ui/select'
-import { buildQuickContainerProfileDraft, suggestQuickContainerProfileName } from '../../containers/services/quick-container-recommendation'
-import type { ContainerProfile, ContainerProfileMount } from '../../containers/types/container-profiles'
-import { listContainerProfiles } from '../../containers/queries/list-container-profiles'
-import { fetchDesktopOnboardingStatus, fetchSwarmLocalRuntimeStatus, type SwarmLocalRuntimeStatus } from '../../onboarding/api'
+import { fetchDesktopOnboardingStatus, fetchSwarmLocalRuntimeStatus, saveDesktopOnboarding, type SwarmLocalRuntimeStatus } from '../../onboarding/api'
 import { getUISettings, saveRemoteSSHTarget } from '../../settings/swarm/queries/get-ui-settings'
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
 import {
@@ -54,6 +51,7 @@ interface AddSwarmModalProps {
 }
 
 type LaunchTarget = 'local' | 'remote'
+type RemoteDeployMethod = 'lan' | 'tailscale'
 type RemoteTailscaleAuthMode = 'manual' | 'key'
 type ReplicationMode = 'bundle' | 'copy'
 
@@ -75,6 +73,7 @@ interface ContainerPackageDraft {
 
 const CONTAINER_PACKAGE_BASE_IMAGE = 'ubuntu:24.04'
 const CONTAINER_PACKAGE_MANAGER = 'apt'
+const REMOTE_IMAGE_DELIVERY_MODE: 'registry' = 'registry'
 
 const DEFAULT_CONTAINER_PACKAGES: ContainerPackageDraft[] = [
   'bash',
@@ -176,10 +175,6 @@ function currentGroup(status: DesktopOnboardingStatus | null) {
   return status.groups[0] ?? null
 }
 
-function cloneMounts(mounts: ContainerProfileMount[]): ContainerProfileMount[] {
-  return mounts.map((mount) => ({ ...mount }))
-}
-
 function preferredChildSwarmName(
   onboardingStatus: DesktopOnboardingStatus | null,
   groupNames: string[],
@@ -225,9 +220,40 @@ function firstHostnameLabel(value: string | null | undefined): string {
   return hostname.split('.')[0]?.trim() ?? ''
 }
 
-function mountDeliveryLabel(launchTarget: LaunchTarget, count: number): string {
-  const label = `${count} ${count === 1 ? 'folder' : 'folders'}`
-  return launchTarget === 'remote' ? `${label} sent` : `${label} mounted`
+function remoteReachableHostCandidate(target: string): string {
+  const trimmed = String(target ?? '').trim()
+  if (!trimmed) {
+    return ''
+  }
+  let value = trimmed
+  const atIndex = value.lastIndexOf('@')
+  if (atIndex >= 0) {
+    value = value.slice(atIndex + 1).trim()
+  }
+  if (value.startsWith('[')) {
+    const end = value.indexOf(']')
+    if (end > 0) {
+      return value.slice(1, end).trim()
+    }
+  }
+  const colonIndex = value.lastIndexOf(':')
+  if (colonIndex > 0 && value.indexOf(':') === colonIndex) {
+    value = value.slice(0, colonIndex).trim()
+  }
+  const candidate = value.trim()
+  if (!candidate) {
+    return ''
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(candidate)) {
+    return candidate
+  }
+  if (candidate.includes(':')) {
+    return candidate
+  }
+  if (candidate.includes('.')) {
+    return candidate
+  }
+  return ''
 }
 
 function inferReplicationMode(workspace: WorkspaceEntry): ReplicationMode {
@@ -253,10 +279,215 @@ function selectedWorkspaceCount(items: ReplicateWorkspaceDraft[]): number {
   return items.filter((item) => item.selected).length
 }
 
+const REMOTE_WORKSPACE_ROOT = '/workspaces'
+
+function fallbackWorkspaceName(workspacePath: string, index: number): string {
+  const segments = String(workspacePath ?? '').trim().split(/[\\/]/).filter(Boolean)
+  return segments[segments.length - 1] || `workspace-${index + 1}`
+}
+
+function sanitizeRemoteWorkspaceTargetSegment(value: string): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+}
+
+function nextRemoteWorkspaceTargetPath(baseName: string, usedTargets: Map<string, number>): string {
+  const normalizedBase = sanitizeRemoteWorkspaceTargetSegment(baseName) || 'workspace'
+  const basePath = `${REMOTE_WORKSPACE_ROOT}/${normalizedBase}`
+  const count = (usedTargets.get(basePath) ?? 0) + 1
+  usedTargets.set(basePath, count)
+  return count === 1 ? basePath : `${basePath}-${count}`
+}
+
+function buildRemoteWorkspacePayloads(workspaces: ReplicateWorkspaceDraft[]) {
+  const usedTargets = new Map<string, number>()
+  return workspaces
+    .filter((workspace) => workspace.selected)
+    .map((workspace, index) => {
+      const sourcePath = workspace.workspacePath.trim()
+      const workspaceName = workspace.workspaceName.trim() || fallbackWorkspaceName(sourcePath, index)
+      const baseName = sanitizeRemoteWorkspaceTargetSegment(workspaceName)
+        || sanitizeRemoteWorkspaceTargetSegment(fallbackWorkspaceName(sourcePath, index))
+        || `workspace-${index + 1}`
+      const targetPath = nextRemoteWorkspaceTargetPath(baseName, usedTargets)
+      const linkedDirectories = workspace.directories
+        .map((directory) => directory.trim())
+        .filter((directory) => directory.length > 0 && directory !== sourcePath)
+        .map((directory, directoryIndex) => {
+          const directoryBaseName = sanitizeRemoteWorkspaceTargetSegment(
+            `${baseName}-dir-${fallbackWorkspaceName(directory, directoryIndex)}`,
+          ) || `${baseName}-dir-${directoryIndex + 1}`
+          return {
+            sourcePath: directory,
+            targetPath: nextRemoteWorkspaceTargetPath(directoryBaseName, usedTargets),
+          }
+        })
+      return {
+        sourcePath,
+        workspacePath: sourcePath,
+        workspaceName,
+        targetPath,
+        mode: workspace.writable ? 'rw' as const : 'ro' as const,
+        directories: linkedDirectories,
+      }
+    })
+}
+
+function countRemotePayloadArchives(payloads: Array<{ directories?: Array<unknown> }>): number {
+  return payloads.reduce((total, payload) => total + 1 + (payload.directories?.length ?? 0), 0)
+}
+
 type RemotePreflightGuidance = {
   title: string
   details: string[]
   commands: string[]
+}
+
+type MasterLANCallbackGuidance = {
+  blocking: boolean
+  title: string
+  details: string[]
+  suggestedHost: string
+  suggestedPort: number
+  canAutofill: boolean
+}
+
+function formatEndpointLabel(host: string, port: number): string {
+  const normalizedHost = String(host ?? '').trim() || 'unset'
+  return port > 0 ? `${normalizedHost}:${port}` : normalizedHost
+}
+
+function usableLANCallbackHost(value: string): string {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) {
+    return ''
+  }
+  const lower = normalized.toLowerCase()
+  if (
+    lower === 'localhost'
+    || lower === '0.0.0.0'
+    || lower === '::'
+    || lower === '::1'
+    || lower === '[::1]'
+    || lower.startsWith('127.')
+  ) {
+    return ''
+  }
+  return normalized
+}
+
+function isLocalOnlyBindHost(value: string): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (!normalized) {
+    return false
+  }
+  return normalized === 'localhost'
+    || normalized === '::1'
+    || normalized === '[::1]'
+    || normalized.startsWith('127.')
+}
+
+function preferredLANCallbackCandidate(onboardingStatus: DesktopOnboardingStatus | null): string {
+  const config = onboardingStatus?.config
+  const configHost = usableLANCallbackHost(config?.host ?? '')
+  const tailscaleIPs = new Set((onboardingStatus?.network.tailscale.ips ?? []).map((value) => String(value).trim()))
+  if (configHost && !tailscaleIPs.has(configHost)) {
+    return configHost
+  }
+  const lanCandidates = onboardingStatus?.network.lanAddresses ?? []
+  for (const candidate of lanCandidates) {
+    const host = usableLANCallbackHost(candidate)
+    if (!host || tailscaleIPs.has(host)) {
+      continue
+    }
+    return host
+  }
+  return ''
+}
+
+function buildMasterLANCallbackGuidance(onboardingStatus: DesktopOnboardingStatus | null): MasterLANCallbackGuidance {
+  const config = onboardingStatus?.config
+  const bindHost = String(config?.host ?? '').trim()
+  const bindPort = typeof config?.port === 'number' ? config.port : 0
+  const advertiseHost = String(config?.advertiseHost ?? '').trim()
+  const advertisePort = typeof config?.advertisePort === 'number' ? config.advertisePort : bindPort
+  const effectiveHost = advertiseHost || usableLANCallbackHost(bindHost)
+  const effectivePort = advertisePort > 0 ? advertisePort : bindPort
+  const tailscaleURL = String(onboardingStatus?.network.tailscale.tailnetURL || config?.tailscaleURL || '').trim()
+  const suggestedHost = preferredLANCallbackCandidate(onboardingStatus)
+  const suggestedPort = effectivePort
+  const bindIsLocalOnly = isLocalOnlyBindHost(bindHost)
+
+  if (bindIsLocalOnly) {
+    const details = [
+      `This machine is still listening only on ${formatEndpointLabel(bindHost || '127.0.0.1', bindPort)}.`,
+      advertiseHost
+        ? `Advertise host is set to ${formatEndpointLabel(advertiseHost, effectivePort)}, but that only changes what children try to call. It does not move the master listener.`
+        : 'No reachable LAN / VPN bind host is active on this machine yet.',
+      'LAN / WireGuard remote deploy requires the master backend itself to listen on a reachable LAN, WireGuard, or tunnel address.',
+      'Update host in the master swarm.conf to a reachable address, keep advertise_host aligned unless you have a separate forwarded endpoint, then restart Swarm.',
+    ]
+    if (suggestedHost) {
+      details.push(`Detected LAN / VPN candidate on this machine: ${formatEndpointLabel(suggestedHost, suggestedPort)}.`)
+    }
+    if (tailscaleURL) {
+      details.push(`If both machines are already on Tailscale, switch this deploy method to Tailscale and use ${tailscaleURL}.`)
+    }
+    return {
+      blocking: true,
+      title: 'Restart this machine with a LAN / VPN bind address first',
+      details,
+      suggestedHost,
+      suggestedPort,
+      canAutofill: false,
+    }
+  }
+
+  if (effectiveHost) {
+    return {
+      blocking: false,
+      title: 'This machine will accept LAN / WireGuard callbacks',
+      details: advertiseHost
+        ? [
+            `Remote children will call back to ${formatEndpointLabel(effectiveHost, effectivePort)} over your LAN, WireGuard, or tunnel path.`,
+            'Source: Advertise host on this machine.',
+          ]
+        : [
+            `Remote children will call back to ${formatEndpointLabel(effectiveHost, effectivePort)} over your LAN, WireGuard, or tunnel path.`,
+            'Source: Advertise host is blank, so Swarm will reuse this machine’s current host bind.',
+          ],
+      suggestedHost: '',
+      suggestedPort,
+      canAutofill: false,
+    }
+  }
+
+  const details = [
+    'LAN / WireGuard uses SSH only to install the child.',
+    'After launch, the child must connect back to this machine over your LAN, WireGuard, or another VPN/tunnel path.',
+    `Right now this machine is bound to ${formatEndpointLabel(bindHost, bindPort)}, which is still local-only for this flow.`,
+    'Open Settings -> Swarm, then set Advertise host to the LAN or VPN address other machines should use to reach this machine.',
+    'Examples: 10.0.0.12, 192.168.1.40, wg-box.internal.',
+    'Leave Advertise port as the API port unless the child should call back on a different port.',
+  ]
+  if (suggestedHost) {
+    details.push(`Swarm can fill this in now with ${formatEndpointLabel(suggestedHost, suggestedPort)}.`)
+  }
+  if (tailscaleURL) {
+    details.push(`If both machines are already on Tailscale, switch this deploy method to Tailscale and use ${tailscaleURL}.`)
+  }
+  return {
+    blocking: true,
+    title: 'Set a LAN / VPN address for this machine first',
+    details,
+    suggestedHost,
+    suggestedPort,
+    canAutofill: suggestedHost !== '',
+  }
 }
 
 function parseRemotePreflightGuidance(message: string): RemotePreflightGuidance | null {
@@ -317,23 +548,23 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [currentOnboardingStatus, setCurrentOnboardingStatus] = useState<DesktopOnboardingStatus | null>(onboardingStatus)
-  const [profiles, setProfiles] = useState<ContainerProfile[]>([])
-  const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([])
   const [workspaceDrafts, setWorkspaceDrafts] = useState<ReplicateWorkspaceDraft[]>([])
   const [runtimeStatus, setRuntimeStatus] = useState<SwarmLocalRuntimeStatus>(FALLBACK_RUNTIME_STATUS)
   const [, setRemoteSessions] = useState<RemoteDeploySession[]>([])
   const [savedRemoteSSHTargets, setSavedRemoteSSHTargets] = useState<string[]>([])
   const [remoteSSHTarget, setRemoteSSHTarget] = useState('')
   const [remoteRuntimeChoice, setRemoteRuntimeChoice] = useState<'docker' | 'podman'>('docker')
+  const [remoteDeployMethod, setRemoteDeployMethod] = useState<RemoteDeployMethod>('tailscale')
+  const [remoteReachableHost, setRemoteReachableHost] = useState('')
   const [remotePreflightSession, setRemotePreflightSession] = useState<RemoteDeploySession | null>(null)
   const [remotePreflightError, setRemotePreflightError] = useState<string | null>(null)
   const [remotePreflightLoading, setRemotePreflightLoading] = useState(false)
   const [remotePreflightGuidance, setRemotePreflightGuidance] = useState<RemotePreflightGuidance | null>(null)
+  const [configuringMasterLANCallback, setConfiguringMasterLANCallback] = useState(false)
   const [remoteTailscaleAuthMode, setRemoteTailscaleAuthMode] = useState<RemoteTailscaleAuthMode>('manual')
   const [remoteTailscaleAuthKey, setRemoteTailscaleAuthKey] = useState('')
   const [launchTarget, setLaunchTarget] = useState<LaunchTarget>('local')
   const [selectedRuntime, setSelectedRuntime] = useState<'podman' | 'docker' | ''>('')
-  const [selectedProfileID, setSelectedProfileID] = useState('')
   const [swarmName, setSwarmName] = useState('')
   const [syncEnabled, setSyncEnabled] = useState(true)
   const [syncAgentsEnabled, setSyncAgentsEnabled] = useState(true)
@@ -352,23 +583,41 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     () => (selectedRuntime && runtimeStatus.available.includes(selectedRuntime) ? selectedRuntime : runtimeStatus.recommended || ''),
     [runtimeStatus, selectedRuntime],
   ) as 'podman' | 'docker' | ''
+  const activeRuntimeLabel = launchTarget === 'remote' ? remoteRuntimeChoice : runtimeChoice
 
   const group = useMemo(() => currentGroup(currentOnboardingStatus), [currentOnboardingStatus])
   const hostSwarmID = group?.group.hostSwarmID || ''
   const hostVaultEnabled = Boolean(vault.enabled)
+  const masterLANCallbackGuidance = useMemo(
+    () => (remoteDeployMethod === 'lan' ? buildMasterLANCallbackGuidance(currentOnboardingStatus) : null),
+    [currentOnboardingStatus, remoteDeployMethod],
+  )
+  const remotePreflightBlocked = remoteDeployMethod === 'lan' && Boolean(masterLANCallbackGuidance?.blocking)
+  const remotePreflightCanAutofill = remoteDeployMethod === 'lan' && Boolean(masterLANCallbackGuidance?.canAutofill)
+  const remoteReachableHostSuggestions = useMemo(() => {
+    if (remoteDeployMethod !== 'lan') {
+      return []
+    }
+    const values = remotePreflightSession?.preflight.remote_network_candidates ?? []
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const value of values) {
+      const trimmed = String(value ?? '').trim()
+      if (!trimmed) {
+        continue
+      }
+      const key = trimmed.toLowerCase()
+      if (seen.has(key)) {
+        continue
+      }
+      seen.add(key)
+      out.push(trimmed)
+    }
+    return out
+  }, [remoteDeployMethod, remotePreflightSession])
   const masterName = useMemo(
     () => group?.members.find((member) => member.swarmID === hostSwarmID)?.name || 'Current master',
     [group, hostSwarmID],
-  )
-
-  const selectedProfile = useMemo(
-    () => profiles.find((profile) => profile.id === selectedProfileID) ?? null,
-    [profiles, selectedProfileID],
-  )
-
-  const suggestedProfileName = useMemo(
-    () => suggestQuickContainerProfileName(profiles, currentOnboardingStatus),
-    [currentOnboardingStatus, profiles],
   )
 
   const suggestedSwarmName = useMemo(
@@ -378,28 +627,35 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     ),
     [currentOnboardingStatus],
   )
-
-  const recommendedDraft = useMemo(
-    () => buildQuickContainerProfileDraft({
-      name: suggestedProfileName,
-      onboardingStatus: currentOnboardingStatus,
-      workspaces,
-    }),
-    [currentOnboardingStatus, suggestedProfileName, workspaces],
-  )
-
-  const selectedProfilePreview = useMemo(
-    () => selectedProfile ?? recommendedDraft,
-    [recommendedDraft, selectedProfile],
-  )
-  const selectedProfileMounts = selectedProfilePreview.mounts
-  const selectedProfileLabel = selectedProfile?.name || 'Quick recommendation'
-  const selectedMountCount = selectedProfileMounts.length
   const selectedWorkspaceCountValue = useMemo(() => selectedWorkspaceCount(workspaceDrafts), [workspaceDrafts])
   const selectedWorkspacePaths = useMemo(
     () => workspaceDrafts.filter((item) => item.selected).map((item) => item.workspacePath),
     [workspaceDrafts],
   )
+  const selectedRemotePayloads = useMemo(() => buildRemoteWorkspacePayloads(workspaceDrafts), [workspaceDrafts])
+  const selectedRemoteArchiveCount = useMemo(() => countRemotePayloadArchives(selectedRemotePayloads), [selectedRemotePayloads])
+  const remotePreflightArchiveCount = useMemo(
+    () => countRemotePayloadArchives(remotePreflightSession?.preflight.payloads ?? []),
+    [remotePreflightSession],
+  )
+
+  const invalidateRemotePreflight = () => {
+    setRemotePreflightSession(null)
+    setRemotePreflightError(null)
+    setRemotePreflightGuidance(null)
+  }
+
+  const updateWorkspaceDraft = (
+    workspacePath: string,
+    transform: (draft: ReplicateWorkspaceDraft) => ReplicateWorkspaceDraft,
+  ) => {
+    invalidateRemotePreflight()
+    setWorkspaceDrafts((current) => current.map((item) => (
+      item.workspacePath === workspacePath
+        ? transform(item)
+        : item
+    )))
+  }
 
   const addPackage = async () => {
     const normalized = packageInput.trim().toLowerCase()
@@ -418,6 +674,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       if (!result.valid) {
         throw new Error(`apt package ${normalized} was not found on this host`)
       }
+      invalidateRemotePreflight()
       setContainerPackages((current) => mergeContainerPackages([...current, { name: normalized, source: 'user_added' }]))
       setPackageInput('')
     } catch (err) {
@@ -428,6 +685,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   }
 
   const removePackage = (name: string) => {
+    invalidateRemotePreflight()
     setContainerPackages((current) => current.filter((pkg) => pkg.name !== name))
     setPackageValidationError(null)
   }
@@ -435,6 +693,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   useEffect(() => {
     let cancelled = false
     if (selectedWorkspacePaths.length === 0) {
+      invalidateRemotePreflight()
       setContainerPackages((current) => mergeContainerPackages(current.filter((pkg) => pkg.source !== 'workspace_scan')))
       setPackageSuggestionError(null)
       setSuggestingPackages(false)
@@ -450,6 +709,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           return
         }
         const suggestions = mapSuggestedPackages(packages)
+        invalidateRemotePreflight()
         setContainerPackages((current) => mergeContainerPackages([
           ...current.filter((pkg) => pkg.source !== 'workspace_scan'),
           ...suggestions,
@@ -460,6 +720,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           return
         }
         setPackageSuggestionError(err instanceof Error ? err.message : 'Failed to suggest packages from workspace contents')
+        invalidateRemotePreflight()
         setContainerPackages((current) => mergeContainerPackages(current.filter((pkg) => pkg.source !== 'workspace_scan')))
       })
       .finally(() => {
@@ -505,18 +766,15 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     })
 
     void Promise.all([
-      listContainerProfiles().catch(() => []),
       listWorkspaces().catch(() => []),
       fetchSwarmLocalRuntimeStatus().catch(() => FALLBACK_RUNTIME_STATUS),
       getUISettings().catch(() => null),
       onboardingStatus ? Promise.resolve(onboardingStatus) : fetchDesktopOnboardingStatus().catch(() => null),
     ])
-      .then(([nextProfiles, nextWorkspaces, nextRuntimeStatus, nextUISettings, nextOnboardingStatus]) => {
+      .then(([nextWorkspaces, nextRuntimeStatus, nextUISettings, nextOnboardingStatus]) => {
         if (cancelled) {
           return
         }
-        setProfiles(nextProfiles)
-        setWorkspaces(nextWorkspaces)
         setWorkspaceDrafts(buildWorkspaceDrafts(nextWorkspaces))
         setRuntimeStatus(nextRuntimeStatus)
         setRemoteSessions([])
@@ -530,17 +788,17 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         setRemotePreflightError(null)
         setRemotePreflightGuidance(null)
         setRemoteRuntimeChoice('docker')
+        setRemoteDeployMethod('tailscale')
+        setRemoteReachableHost('')
         setRemoteTailscaleAuthMode('manual')
         setRemoteTailscaleAuthKey('')
         const nextSuggestedSwarmName = preferredChildSwarmName(
           nextOnboardingStatus,
           nextOnboardingStatus?.groups.flatMap((entry) => entry.members.map((member) => member.name)) ?? [],
         )
-        setSelectedProfileID('')
         setSwarmName(nextSuggestedSwarmName)
         setSelectedRuntime((nextRuntimeStatus.recommended || '') as 'podman' | 'docker' | '')
         logAddSwarm('modal options loaded', {
-          profiles: nextProfiles.length,
           workspaces: nextWorkspaces.length,
           recommended_runtime: nextRuntimeStatus.recommended,
           available_runtimes: nextRuntimeStatus.available,
@@ -571,11 +829,50 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     onOpenChange(false)
   }
 
+  useEffect(() => {
+    if (remoteDeployMethod !== 'lan' || remoteReachableHost.trim()) {
+      return
+    }
+    const candidate = remoteReachableHostCandidate(remoteSSHTarget)
+    if (candidate) {
+      setRemoteReachableHost(candidate)
+    }
+  }, [remoteDeployMethod, remoteReachableHost, remoteSSHTarget])
+
   const refreshRemoteSessions = async (): Promise<RemoteDeploySession[]> => {
     const nextSessions = await fetchRemoteDeploySessions({ refresh: true })
     setRemoteSessions(nextSessions)
     logAddSwarm('refreshed remote session list', { sessions: nextSessions.length })
     return nextSessions
+  }
+
+  const ensureMasterLANCallbackConfigured = async (): Promise<DesktopOnboardingStatus | null> => {
+    if (remoteDeployMethod !== 'lan') {
+      return currentOnboardingStatus
+    }
+    if (!masterLANCallbackGuidance?.blocking) {
+      return currentOnboardingStatus
+    }
+    const suggestedHost = masterLANCallbackGuidance?.suggestedHost.trim() || ''
+    if (!suggestedHost) {
+      throw new Error('Swarm could not detect a LAN / VPN address for this machine. Open Settings -> Swarm and set Advertise host manually.')
+    }
+    const suggestedPort = masterLANCallbackGuidance.suggestedPort > 0 ? masterLANCallbackGuidance.suggestedPort : (currentOnboardingStatus?.config.port || 0)
+    setConfiguringMasterLANCallback(true)
+    setStatus(`Using ${formatEndpointLabel(suggestedHost, suggestedPort)} for this machine’s LAN / WireGuard callback…`)
+    try {
+      const nextOnboarding = await saveDesktopOnboarding({
+        advertiseHost: suggestedHost,
+        advertisePort: suggestedPort,
+      })
+      setCurrentOnboardingStatus(nextOnboarding)
+      if (nextOnboarding.config.restartRequired) {
+        throw new Error(`Saved this machine’s LAN / VPN address, but Swarm must be restarted before remote preflight can continue: ${nextOnboarding.config.restartReason || 'transport settings changed'}.`)
+      }
+      return nextOnboarding
+    } finally {
+      setConfiguringMasterLANCallback(false)
+    }
   }
 
   const runRemotePreflight = async (): Promise<RemoteDeploySession> => {
@@ -591,28 +888,32 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
       throw new Error('Vault password is required to sync from a vaulted host.')
     }
+    if (selectedRemotePayloads.length === 0) {
+      throw new Error('Select at least one workspace to stage for the remote child.')
+    }
     setRemotePreflightLoading(true)
     setRemotePreflightError(null)
     setRemotePreflightGuidance(null)
     try {
+      await ensureMasterLANCallbackConfigured()
       const session = await createRemoteDeploySession({
         name: swarmName.trim(),
         sshSessionTarget: remoteSSHTarget.trim(),
+        transportMode: remoteDeployMethod,
+        remoteAdvertiseHost: remoteDeployMethod === 'lan' ? remoteReachableHost.trim() : '',
         groupID: group.group.id,
         groupName: group.group.name,
         remoteRuntime: remoteRuntimeChoice,
+        imageDeliveryMode: REMOTE_IMAGE_DELIVERY_MODE,
         syncEnabled,
         bypassPermissions,
         containerPackages: buildContainerPackageManifest(containerPackages),
-        payloads: cloneMounts(selectedProfile?.mounts ?? recommendedDraft.mounts).map((mount) => ({
-          sourcePath: mount.sourcePath,
-          workspacePath: mount.workspacePath,
-          workspaceName: mount.workspaceName,
-          targetPath: mount.targetPath || '/workspaces',
-          mode: mount.mode,
-        })),
+        payloads: selectedRemotePayloads,
       })
       setRemotePreflightSession(session)
+      if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim() && session.remote_advertise_host?.trim()) {
+        setRemoteReachableHost(session.remote_advertise_host.trim())
+      }
       setRemoteSessions((current) => [session, ...current.filter((item) => item.id !== session.id)])
       const currentSettings = await getUISettings().catch(() => null)
       if (currentSettings) {
@@ -753,6 +1054,14 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('SSH alias or target is required.')
       return
     }
+    if (selectedRemotePayloads.length === 0) {
+      setError('Select at least one workspace to stage for the remote child.')
+      return
+    }
+    if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()) {
+      setError('Remote reachable host is required for LAN / WireGuard deploy.')
+      return
+    }
     if (!remotePreflightSession || remotePreflightSession.ssh_session_target?.trim() !== remoteSSHTarget.trim()) {
       setError('Run the remote preflight check and fix any errors before launching.')
       return
@@ -761,7 +1070,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('Vault password is required to sync from a vaulted host.')
       return
     }
-    if (remoteTailscaleAuthMode === 'key' && !remoteTailscaleAuthKey.trim()) {
+    if (remoteDeployMethod === 'tailscale' && remoteTailscaleAuthMode === 'key' && !remoteTailscaleAuthKey.trim()) {
       setError('Tailscale auth key is required for auth-key launch mode.')
       return
     }
@@ -775,32 +1084,38 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         `Remote host: ${remoteSSHTarget.trim()}`,
         `Builder runtime: ${session.preflight.builder_runtime || 'unknown'}`,
         `Remote runtime: ${session.preflight.remote_runtime || 'unknown'}`,
-        `Systemd: ${session.preflight.systemd_available ? `install/update ${session.preflight.systemd_unit || 'service unit'}` : 'not available'}`,
+        `Deploy method: ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim()}`}`,
+        'Persistence: user-managed after launch',
         `Files copied: ${(session.preflight.files_to_copy || []).join(', ') || 'none'}`,
         `Payloads: ${(session.preflight.payloads || []).map((payload) => `${payload.workspace_name || payload.source_path} (${payload.included_files} tracked files)`).join('; ') || 'none'}`,
-        `Tailscale login: ${remoteTailscaleAuthMode === 'key' ? 'Auth key (launch only, not saved)' : 'Manual browser approval'}`,
+        ...(remoteDeployMethod === 'tailscale'
+          ? [`Tailscale login: ${remoteTailscaleAuthMode === 'key' ? 'Auth key (launch only, not saved)' : 'Manual browser approval'}`]
+          : []),
         '',
-        'This will send only Git-tracked workspace files from the selected folders to the remote server.',
-        'This will also send a built Swarm container image, a rendered swarm.conf, and the installer script.',
-        'The remote child will be launched there and configured to connect back to this master over the master\'s Tailscale/base URL.',
+        'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.',
+        `This will also send the rendered swarm.conf, installer script, and selected payload archives over SSH, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
+        `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
+        'Swarm will not install persistence on the remote machine in this path.',
         '',
-        'Continue with managed SSH deploy?'
+        'Continue with SSH launch?'
       ].join('\n'))
       if (!confirmed) {
         setStatus('Remote deploy cancelled after preflight review.')
         return
       }
 
-      setStatus('Building local artifacts and shipping to the remote host…')
+      setStatus('Preparing payloads locally and shipping the minimum needed over SSH…')
       let currentSession = await startRemoteDeploySession(session.id, {
-        tailscaleAuthKey: remoteTailscaleAuthMode === 'key' ? remoteTailscaleAuthKey.trim() : '',
+        tailscaleAuthKey: remoteDeployMethod === 'tailscale' && remoteTailscaleAuthMode === 'key' ? remoteTailscaleAuthKey.trim() : '',
         syncVaultPassword: syncEnabled && hostVaultEnabled ? syncVaultPassword.trim() : '',
       })
       await refreshRemoteSessions()
       if (currentSession.remote_auth_url) {
         setStatus(`Remote child started. Approve Tailscale login: ${currentSession.remote_auth_url}`)
+      } else if (currentSession.remote_endpoint) {
+        setStatus(`Remote child started. Waiting for the child to enroll back over ${currentSession.transport_mode === 'lan' ? 'LAN / WireGuard' : 'the selected transport'} at ${currentSession.remote_endpoint}…`)
       } else {
-        setStatus('Remote child started. Waiting for the child to enroll back over Tailscale…')
+        setStatus(`Remote child started. Waiting for the child to enroll back over ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`)
       }
 
       const startedAt = Date.now()
@@ -851,6 +1166,224 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     return null
   }
 
+  const workspaceSelectionCard = (
+    <Card className="grid gap-4 p-5">
+      <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'remote' ? '3. Which workspaces should we send?' : '4. What should we add?'}</div>
+      <div className="grid gap-4">
+        <div className="rounded-2xl border-2 border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,var(--app-surface))] p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-base font-semibold text-[var(--app-text)]">Workspace selection</div>
+              <div className="mt-1 text-sm text-[var(--app-text-muted)]">
+                {launchTarget === 'remote'
+                  ? 'Pick the workspaces to stage for the remote child. The SSH path sends Git-tracked files from each selected workspace root and any linked directories, and it uses that same selection for package suggestions.'
+                  : 'Pick the workspace first. Swarm scans the selected workspace contents and suggests Ubuntu packages based on what it finds.'}
+              </div>
+            </div>
+            <Badge tone={selectedWorkspaceCountValue > 0 ? 'live' : 'neutral'}>{selectedWorkspaceCountValue} selected</Badge>
+          </div>
+
+          {workspaceDrafts.length === 0 ? (
+            <div className="mt-4 rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-4 text-sm text-[var(--app-text-muted)]">
+              No workspaces available yet.
+            </div>
+          ) : (
+            <div className="mt-4 grid gap-3">
+              {workspaceDrafts.map((workspace) => {
+                const checked = workspace.selected
+                const linkedDirectoryCount = Math.max(0, workspace.directories.length - 1)
+                return (
+                  <label
+                    key={workspace.workspacePath}
+                    className={`block rounded-2xl border p-4 transition ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]'}`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 rounded border-[var(--app-border)]"
+                        checked={checked}
+                        onChange={(event) => {
+                          updateWorkspaceDraft(workspace.workspacePath, (item) => ({
+                            ...item,
+                            selected: event.target.checked,
+                          }))
+                        }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="truncate text-sm font-semibold text-[var(--app-text)]">{workspace.workspaceName}</div>
+                          {launchTarget === 'local' ? (
+                            <Badge tone={workspace.defaultReplicationMode === 'bundle' ? 'live' : 'neutral'}>
+                              default {workspace.defaultReplicationMode}
+                            </Badge>
+                          ) : (
+                            <Badge tone="neutral">
+                              {linkedDirectoryCount > 0 ? `${linkedDirectoryCount + 1} tracked archives` : 'tracked archive'}
+                            </Badge>
+                          )}
+                          {checked ? (
+                            <Badge tone="live">
+                              <Check size={12} />
+                              selected
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 break-all text-xs text-[var(--app-text-muted)]">{workspace.workspacePath}</div>
+                        {workspace.directories.length > 1 ? (
+                          <div className="mt-2 text-xs text-[var(--app-text-muted)]">
+                            {launchTarget === 'remote'
+                              ? `Includes ${linkedDirectoryCount} linked director${linkedDirectoryCount === 1 ? 'y' : 'ies'}. Remote SSH deploy stages each selected directory into its own runtime path for this workspace.`
+                              : `Includes ${workspace.directories.length} linked directories.`}
+                          </div>
+                        ) : null}
+
+                        {checked ? (
+                          <div className="mt-4 grid gap-3 md:grid-cols-2">
+                            {launchTarget === 'local' ? (
+                              <div>
+                                <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Replication mode</div>
+                                <Select
+                                  value={workspace.replicationMode}
+                                  onChange={(event) => {
+                                    const nextMode = event.target.value as ReplicationMode
+                                    updateWorkspaceDraft(workspace.workspacePath, (item) => ({
+                                      ...item,
+                                      replicationMode: nextMode,
+                                    }))
+                                  }}
+                                  className="mt-2"
+                                >
+                                  <option value="bundle">Git bundle</option>
+                                  <option value="copy">Full workspace copy</option>
+                                </Select>
+                              </div>
+                            ) : (
+                              <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-xs text-[var(--app-text-muted)] md:col-span-2">
+                                Remote SSH deploy stages Git-tracked files from this workspace root and any linked directories into dedicated runtime paths.
+                              </div>
+                            )}
+                            <div>
+                              <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Workspace access</div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  updateWorkspaceDraft(workspace.workspacePath, (item) => ({
+                                    ...item,
+                                    writable: !item.writable,
+                                  }))
+                                }}
+                                className={`mt-2 inline-flex h-10 items-center rounded-xl border px-4 text-sm font-medium transition ${workspace.writable ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'}`}
+                              >
+                                {workspace.writable ? 'Read / Write' : 'Read only'}
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-[var(--app-text)]">Ubuntu packages</div>
+              <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                Recommended base packages are always included. Extra suggestions appear after workspace selection, and you can still add your own apt packages manually.
+              </div>
+            </div>
+            <Badge tone={containerPackages.length > 0 ? 'live' : 'neutral'}>{containerPackages.length} packages</Badge>
+          </div>
+          <div className="mt-3 text-xs text-[var(--app-text-muted)]">
+            Base image: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_BASE_IMAGE}</span> · Package manager: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_MANAGER}</span>
+          </div>
+          <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)]">
+            <div>
+              {suggestingPackages
+                ? 'Scanning selected workspace contents for package suggestions…'
+                : selectedWorkspaceCountValue > 0
+                  ? 'Workspace-aware package suggestions are included below.'
+                  : 'Select a workspace above to get package suggestions based on its contents.'}
+            </div>
+            {packageSuggestionError ? (
+              <div className="text-[var(--app-danger)]">{packageSuggestionError}</div>
+            ) : null}
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {containerPackages.map((pkg) => (
+              <Badge
+                key={pkg.name}
+                tone={pkg.source === 'user_added' ? 'live' : pkg.source === 'workspace_scan' ? 'warning' : 'neutral'}
+                className="gap-2 pr-1"
+                title={describePackageSource(pkg)}
+              >
+                <span>{pkg.name}</span>
+                <span className="text-[10px] uppercase tracking-[0.12em] opacity-75">
+                  {pkg.source === 'recommended' ? 'base' : pkg.source === 'workspace_scan' ? 'suggested' : 'manual'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removePackage(pkg.name)}
+                  className="inline-flex h-5 w-5 items-center justify-center rounded-md text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)]"
+                  disabled={submitting || validatingPackage || suggestingPackages}
+                  aria-label={`Remove package ${pkg.name}`}
+                >
+                  <X size={12} />
+                </button>
+              </Badge>
+            ))}
+          </div>
+          <div className="mt-3 grid gap-2">
+            {containerPackages.filter((pkg) => pkg.source === 'workspace_scan' && pkg.reason?.trim()).map((pkg) => (
+              <div key={`${pkg.name}-reason`} className="text-xs text-[var(--app-text-muted)]">
+                <span className="font-medium text-[var(--app-text)]">{pkg.name}:</span> {pkg.reason}
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Input
+              value={packageInput}
+              onChange={(event) => {
+                setPackageInput(event.target.value)
+                if (packageValidationError) {
+                  setPackageValidationError(null)
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void addPackage()
+                }
+              }}
+              placeholder="Add apt package and press Enter"
+              disabled={submitting || validatingPackage}
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => void addPackage()}
+              disabled={submitting || validatingPackage}
+            >
+              {validatingPackage ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              Add
+            </Button>
+          </div>
+          {packageValidationError ? (
+            <div className="mt-2 text-xs text-[var(--app-danger)]">{packageValidationError}</div>
+          ) : (
+            <div className="mt-2 text-xs text-[var(--app-text-muted)]">
+              Manual packages are validated against the host apt package database before they are added.
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
+
   return (
     <Dialog>
       <DialogBackdrop onClick={closeModal} />
@@ -863,8 +1396,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 Choose where it runs, pick the workspace shape, then name the swarm you want to add.
               </p>
             </div>
-            <Badge tone={runtimeChoice ? 'live' : 'warning'}>
-              {runtimeChoice ? `${runtimeChoice} ready` : 'runtime required'}
+            <Badge tone={activeRuntimeLabel ? 'live' : 'warning'}>
+              {activeRuntimeLabel ? `${activeRuntimeLabel} ready` : 'runtime required'}
             </Badge>
           </div>
         </div>
@@ -924,8 +1457,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       <Cloud size={18} />
                     </div>
                     <div>
-                      <div className="text-sm font-semibold text-[var(--app-text)]">Remote container</div>
-                      <div className="mt-1 text-xs text-[var(--app-text-muted)]">Build here, copy over SSH/SCP, install or update systemd, then attach back through Tailscale.</div>
+                      <div className="text-sm font-semibold text-[var(--app-text)]">Remote over SSH</div>
+                      <div className="mt-1 text-xs text-[var(--app-text-muted)]">Prepare the remote image here, ship only the selected workspaces plus config over SSH/SCP, then attach back through the selected transport.</div>
                     </div>
                   </div>
                   {launchTarget === 'remote' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
@@ -1011,6 +1544,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                           className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${syncEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
                           onClick={() => {
                             if (!submitting) {
+                              invalidateRemotePreflight()
                               setSyncEnabled((current) => !current)
                             }
                           }}
@@ -1039,6 +1573,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                           className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${bypassPermissions ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
                           onClick={() => {
                             if (!submitting) {
+                              invalidateRemotePreflight()
                               setBypassPermissions((current) => !current)
                             }
                           }}
@@ -1089,208 +1624,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 ) : null}
               </Card>
 
-              <Card className="grid gap-4 p-5">
-                <div className="text-sm font-semibold text-[var(--app-text)]">4. What should we add?</div>
-                <div className="grid gap-4">
-                  <div className="rounded-2xl border-2 border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,var(--app-surface))] p-5 shadow-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-base font-semibold text-[var(--app-text)]">Workspace selection</div>
-                        <div className="mt-1 text-sm text-[var(--app-text-muted)]">
-                          Pick the workspace first. Swarm scans the selected workspace contents and suggests Ubuntu packages based on what it finds.
-                        </div>
-                      </div>
-                      <Badge tone={selectedWorkspaceCountValue > 0 ? 'live' : 'neutral'}>{selectedWorkspaceCountValue} selected</Badge>
-                    </div>
-
-                    {workspaceDrafts.length === 0 ? (
-                      <div className="mt-4 rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-4 text-sm text-[var(--app-text-muted)]">
-                        No workspaces available yet.
-                      </div>
-                    ) : (
-                      <div className="mt-4 grid gap-3">
-                        {workspaceDrafts.map((workspace) => {
-                          const checked = workspace.selected
-                          return (
-                            <label
-                              key={workspace.workspacePath}
-                              className={`block rounded-2xl border p-4 transition ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]'}`}
-                            >
-                              <div className="flex items-start gap-3">
-                                <input
-                                  type="checkbox"
-                                  className="mt-1 h-4 w-4 rounded border-[var(--app-border)]"
-                                  checked={checked}
-                                  onChange={(event) => {
-                                    const nextChecked = event.target.checked
-                                    setWorkspaceDrafts((current) => current.map((item) => (
-                                      item.workspacePath === workspace.workspacePath
-                                        ? { ...item, selected: nextChecked }
-                                        : item
-                                    )))
-                                  }}
-                                />
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <div className="truncate text-sm font-semibold text-[var(--app-text)]">{workspace.workspaceName}</div>
-                                    <Badge tone={workspace.defaultReplicationMode === 'bundle' ? 'live' : 'neutral'}>
-                                      default {workspace.defaultReplicationMode}
-                                    </Badge>
-                                    {checked ? (
-                                      <Badge tone="live">
-                                        <Check size={12} />
-                                        selected
-                                      </Badge>
-                                    ) : null}
-                                  </div>
-                                  <div className="mt-1 break-all text-xs text-[var(--app-text-muted)]">{workspace.workspacePath}</div>
-                                  {workspace.directories.length > 1 ? (
-                                    <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-                                      Includes {workspace.directories.length} linked directories.
-                                    </div>
-                                  ) : null}
-
-                                  {checked ? (
-                                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                                      <div>
-                                        <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Replication mode</div>
-                                        <Select
-                                          value={workspace.replicationMode}
-                                          onChange={(event) => {
-                                            const nextMode = event.target.value as ReplicationMode
-                                            setWorkspaceDrafts((current) => current.map((item) => (
-                                              item.workspacePath === workspace.workspacePath
-                                                ? { ...item, replicationMode: nextMode }
-                                                : item
-                                            )))
-                                          }}
-                                          className="mt-2"
-                                        >
-                                          <option value="bundle">Git bundle</option>
-                                          <option value="copy">Full workspace copy</option>
-                                        </Select>
-                                      </div>
-                                      <div>
-                                        <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Workspace access</div>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setWorkspaceDrafts((current) => current.map((item) => (
-                                              item.workspacePath === workspace.workspacePath
-                                                ? { ...item, writable: !item.writable }
-                                                : item
-                                            )))
-                                          }}
-                                          className={`mt-2 inline-flex h-10 items-center rounded-xl border px-4 text-sm font-medium transition ${workspace.writable ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'}`}
-                                        >
-                                          {workspace.writable ? 'Read / Write' : 'Read only'}
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-                            </label>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold text-[var(--app-text)]">Ubuntu packages</div>
-                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                          Recommended base packages are always included. Extra suggestions appear after workspace selection, and you can still add your own apt packages manually.
-                        </div>
-                      </div>
-                      <Badge tone={containerPackages.length > 0 ? 'live' : 'neutral'}>{containerPackages.length} packages</Badge>
-                    </div>
-                    <div className="mt-3 text-xs text-[var(--app-text-muted)]">
-                      Base image: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_BASE_IMAGE}</span> · Package manager: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_MANAGER}</span>
-                    </div>
-                    <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)]">
-                      <div>
-                        {suggestingPackages
-                          ? 'Scanning selected workspace contents for package suggestions…'
-                          : selectedWorkspaceCountValue > 0
-                            ? 'Workspace-aware package suggestions are included below.'
-                            : 'Select a workspace above to get package suggestions based on its contents.'}
-                      </div>
-                      {packageSuggestionError ? (
-                        <div className="text-[var(--app-danger)]">{packageSuggestionError}</div>
-                      ) : null}
-                    </div>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {containerPackages.map((pkg) => (
-                        <Badge
-                          key={pkg.name}
-                          tone={pkg.source === 'user_added' ? 'live' : pkg.source === 'workspace_scan' ? 'warning' : 'neutral'}
-                          className="gap-2 pr-1"
-                          title={describePackageSource(pkg)}
-                        >
-                          <span>{pkg.name}</span>
-                          <span className="text-[10px] uppercase tracking-[0.12em] opacity-75">
-                            {pkg.source === 'recommended' ? 'base' : pkg.source === 'workspace_scan' ? 'suggested' : 'manual'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removePackage(pkg.name)}
-                            className="inline-flex h-5 w-5 items-center justify-center rounded-md text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)]"
-                            disabled={submitting || validatingPackage || suggestingPackages}
-                            aria-label={`Remove package ${pkg.name}`}
-                          >
-                            <X size={12} />
-                          </button>
-                        </Badge>
-                      ))}
-                    </div>
-                    <div className="mt-3 grid gap-2">
-                      {containerPackages.filter((pkg) => pkg.source === 'workspace_scan' && pkg.reason?.trim()).map((pkg) => (
-                        <div key={`${pkg.name}-reason`} className="text-xs text-[var(--app-text-muted)]">
-                          <span className="font-medium text-[var(--app-text)]">{pkg.name}:</span> {pkg.reason}
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-4 flex gap-2">
-                      <Input
-                        value={packageInput}
-                        onChange={(event) => {
-                          setPackageInput(event.target.value)
-                          if (packageValidationError) {
-                            setPackageValidationError(null)
-                          }
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            void addPackage()
-                          }
-                        }}
-                        placeholder="Add apt package and press Enter"
-                        disabled={submitting || validatingPackage}
-                      />
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => void addPackage()}
-                        disabled={submitting || validatingPackage}
-                      >
-                        {validatingPackage ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-                        Add
-                      </Button>
-                    </div>
-                    {packageValidationError ? (
-                      <div className="mt-2 text-xs text-[var(--app-danger)]">{packageValidationError}</div>
-                    ) : (
-                      <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-                        Manual packages are validated against the host apt package database before they are added.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </Card>
+              {workspaceSelectionCard}
 
               <Card className="grid gap-4 p-5">
                 <div className="flex flex-col gap-1">
@@ -1304,7 +1638,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Child swarm name</label>
                   <Input
                     value={swarmName}
-                    onChange={(event) => setSwarmName(event.target.value)}
+                    onChange={(event) => {
+                      invalidateRemotePreflight()
+                      setSwarmName(event.target.value)
+                    }}
                     disabled={submitting}
                     placeholder={suggestedSwarmName}
                   />
@@ -1317,9 +1654,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             <>
               <Card className="grid gap-4 p-5">
                 <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">2. Remote deploy path</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">2. Remote deploy method</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
-                    Add or pick an SSH alias/target, run the required preflight check, then continue once the host is green.
+                    Choose how the remote child should connect back, then run preflight against the SSH target you want to use.
                   </div>
                 </div>
 
@@ -1369,11 +1706,70 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                           setError(err instanceof Error ? err.message : 'Remote preflight failed')
                         })
                     }}
-                    disabled={submitting || remotePreflightLoading || !remoteSSHTarget.trim() || !swarmName.trim()}
+                    disabled={
+                      submitting
+                      || remotePreflightLoading
+                      || configuringMasterLANCallback
+                      || (remotePreflightBlocked && !remotePreflightCanAutofill)
+                      || !remoteSSHTarget.trim()
+                      || !swarmName.trim()
+                      || selectedWorkspaceCountValue === 0
+                      || suggestingPackages
+                    }
                   >
-                    {remotePreflightLoading ? <Loader2 size={14} className="animate-spin" /> : null}
-                    {remotePreflightLoading ? 'Checking…' : 'Run preflight'}
+                    {(remotePreflightLoading || configuringMasterLANCallback) ? <Loader2 size={14} className="animate-spin" /> : null}
+                    {remotePreflightLoading
+                      ? 'Checking…'
+                      : configuringMasterLANCallback
+                        ? 'Saving this machine’s address…'
+                        : remotePreflightBlocked
+                          ? (remotePreflightCanAutofill
+                              ? 'Use detected address and run preflight'
+                              : (masterLANCallbackGuidance?.title === 'Restart this machine with a LAN / VPN bind address first'
+                                  ? 'Restart this machine with a LAN / VPN bind address first'
+                                  : 'Set this machine’s LAN / VPN address first'))
+                          : 'Run preflight'}
                   </Button>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {[
+                    {
+                      id: 'tailscale' as const,
+                      title: 'SSH + Tailscale',
+                      text: 'Prepare the SSH/Tailscale remote image here, then the child calls back over the master tailnet URL.',
+                    },
+                    {
+                      id: 'lan' as const,
+                      title: 'SSH + LAN / WireGuard',
+                      text: 'Prepare the SSH/LAN remote image here, then the child calls back over a reachable host or private IP.',
+                    },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => {
+                        setRemoteDeployMethod(option.id)
+                        setRemotePreflightSession(null)
+                        setRemotePreflightError(null)
+                        setRemotePreflightGuidance(null)
+                      }}
+                      className={`rounded-2xl border p-4 text-left transition ${
+                        remoteDeployMethod === option.id
+                          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]'
+                          : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'
+                      }`}
+                      disabled={submitting || remotePreflightLoading}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold text-[var(--app-text)]">{option.title}</div>
+                          <div className="mt-1 text-xs text-[var(--app-text-muted)]">{option.text}</div>
+                        </div>
+                        {remoteDeployMethod === option.id ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                      </div>
+                    </button>
+                  ))}
                 </div>
 
                 {savedRemoteSSHTargets.length > 0 ? (
@@ -1397,23 +1793,132 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   </div>
                 ) : null}
 
+                {remoteDeployMethod === 'tailscale' ? (
+                  <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                    <div className="grid gap-1">
+                      <div className="text-sm font-semibold text-[var(--app-text)]">Tailscale login</div>
+                      <div className="text-xs text-[var(--app-text-muted)]">
+                        Choose manual browser approval or a launch-only auth key. The raw key is used only for this launch and is not saved by Swarm.
+                      </div>
+                    </div>
+                    <div className="grid gap-2 sm:max-w-xs">
+                      <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Login mode</label>
+                      <Select
+                        value={remoteTailscaleAuthMode}
+                        onChange={(event) => setRemoteTailscaleAuthMode(event.target.value === 'key' ? 'key' : 'manual')}
+                        disabled={submitting || remotePreflightLoading}
+                      >
+                        <option value="manual">Manual URL</option>
+                        <option value="key">Tailscale auth key</option>
+                      </Select>
+                    </div>
+                    {remoteTailscaleAuthMode === 'key' ? (
+                      <div className="grid gap-2">
+                        <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Launch-only auth key</label>
+                        <Input
+                          type="password"
+                          value={remoteTailscaleAuthKey}
+                          onChange={(event) => setRemoteTailscaleAuthKey(event.target.value)}
+                          disabled={submitting || remotePreflightLoading}
+                          placeholder="tskey-..."
+                        />
+                        <div className="text-xs text-[var(--app-text-muted)]">
+                          Use a reusable short-lived Tailscale key for multi-launch testing. Swarm does not store the raw key in Pebble, startup config, or artifacts.
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-[var(--app-text-muted)]">
+                        Manual mode will show the child&apos;s Tailscale login URL after launch so you can approve it in the browser.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Remote reachable host</label>
+                    <Input
+                      value={remoteReachableHost}
+                      onChange={(event) => {
+                        setRemoteReachableHost(event.target.value)
+                        setRemotePreflightSession(null)
+                        setRemotePreflightError(null)
+                        setRemotePreflightGuidance(null)
+                      }}
+                      disabled={submitting || remotePreflightLoading}
+                      placeholder={remoteReachableHostCandidate(remoteSSHTarget) || '10.0.0.12'}
+                    />
+                    <div className="text-xs text-[var(--app-text-muted)]">
+                      Enter the remote machine&apos;s LAN, WireGuard, or tunnel host/IP that this master should use after SSH install. Do not use an SSH alias unless other machines can resolve it too.
+                    </div>
+                    {remoteReachableHostSuggestions.length > 0 ? (
+                      <div className="grid gap-2">
+                        <div className="text-xs text-[var(--app-text-muted)]">Detected on the remote host during preflight:</div>
+                        <div className="flex flex-wrap gap-2">
+                          {remoteReachableHostSuggestions.map((candidate) => {
+                            const selected = candidate === remoteReachableHost.trim()
+                            return (
+                              <button
+                                key={candidate}
+                                type="button"
+                                className={`rounded-md border px-2 py-1 text-xs transition ${
+                                  selected
+                                    ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]'
+                                    : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                                }`}
+                                onClick={() => {
+                                  setRemoteReachableHost(candidate)
+                                  if (remotePreflightSession?.remote_advertise_host?.trim() !== candidate) {
+                                    setRemotePreflightSession(null)
+                                  }
+                                  setRemotePreflightError(null)
+                                  setRemotePreflightGuidance(null)
+                                }}
+                                disabled={submitting || remotePreflightLoading}
+                              >
+                                {candidate}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                    {masterLANCallbackGuidance ? (
+                      <div
+                        className={`rounded-2xl border p-4 text-sm ${
+                          masterLANCallbackGuidance.blocking
+                            ? 'border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] text-[var(--app-warning-text)]'
+                            : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'
+                        }`}
+                      >
+                        <div className="font-medium text-[var(--app-text)]">{masterLANCallbackGuidance.title}</div>
+                        <ul className="mt-3 list-disc space-y-2 pl-5">
+                          {masterLANCallbackGuidance.details.map((detail) => (
+                            <li key={detail}>{detail}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+
                 <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                   <div className="font-medium text-[var(--app-text)]">Preflight summary shown before execution</div>
                   <ul className="mt-3 list-disc space-y-2 pl-5">
-                    <li>This will send only Git-tracked workspace files from the selected folders to the remote server as payload archives.</li>
-                    <li>This will also build the Swarm container locally, export it as an image archive, copy it to the remote server, and start it there.</li>
-                    <li>The remote install path copies: image archive, rendered <code>swarm.conf</code>, installer script, and Git-tracked workspace payload archives only.</li>
-                    <li>The launched remote child is configured to call back to this master over this master&apos;s Tailscale transport/base URL.</li>
-                    <li>Persistence: install or update a dedicated systemd unit when available.</li>
-                    <li>Attach flow: remote child must come back over Tailscale, then you explicitly approve it here.</li>
+                    <li>This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server as payload archives.</li>
+                    <li>This will also have the remote host pull the published Swarm remote image for the selected SSH transport when that image is not already present there.</li>
+                    <li>The remote install path copies: rendered <code>swarm.conf</code>, installer script, and Git-tracked workspace payload archives.</li>
+                    <li>The launched remote child is configured to call back to this master over the selected transport endpoint.</li>
+                    <li>Persistence is not installed by Swarm in this path. Reboot survival is up to the remote machine owner.</li>
+                    <li>Attach flow: remote child must come back over the selected transport, then you explicitly approve it here.</li>
                   </ul>
                 </div>
               </Card>
 
+              {workspaceSelectionCard}
+
               <Card className="grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-5">
                 <div className="flex items-start justify-between gap-4">
                   <div className="grid gap-1">
-                    <div className="text-sm font-semibold text-[var(--app-text)]">3. Remote Swarm Sync</div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">4. Remote Swarm Sync</div>
                     <div className="text-xs text-[var(--app-text-muted)]">
                       Keep this remote child managed by the current master. The master remains the source of truth for synced auth state.
                     </div>
@@ -1425,6 +1930,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${syncEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
                     onClick={() => {
                       if (!submitting) {
+                        invalidateRemotePreflight()
                         setSyncEnabled((current) => !current)
                       }
                     }}
@@ -1456,45 +1962,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 ) : null}
               </Card>
 
-              <Card className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-5">
-                <div className="grid gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">4. Tailscale login</div>
-                  <div className="text-xs text-[var(--app-text-muted)]">
-                    Choose manual browser approval or paste a launch-only Tailscale auth key. The raw key is used only for this launch and is not saved by Swarm.
-                  </div>
-                </div>
-                <div className="grid gap-2 sm:max-w-xs">
-                  <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Login mode</label>
-                  <Select
-                    value={remoteTailscaleAuthMode}
-                    onChange={(event) => setRemoteTailscaleAuthMode(event.target.value === 'key' ? 'key' : 'manual')}
-                    disabled={submitting || remotePreflightLoading}
-                  >
-                    <option value="manual">Manual URL</option>
-                    <option value="key">Tailscale auth key</option>
-                  </Select>
-                </div>
-                {remoteTailscaleAuthMode === 'key' ? (
-                  <div className="grid gap-2">
-                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Launch-only auth key</label>
-                    <Input
-                      type="password"
-                      value={remoteTailscaleAuthKey}
-                      onChange={(event) => setRemoteTailscaleAuthKey(event.target.value)}
-                      disabled={submitting || remotePreflightLoading}
-                      placeholder="tskey-..."
-                    />
-                    <div className="text-xs text-[var(--app-text-muted)]">
-                      Use a reusable short-lived Tailscale key for multi-launch testing. Swarm does not store the raw key in Pebble, startup config, or artifacts.
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-xs text-[var(--app-text-muted)]">
-                    Manual mode will show the child&apos;s Tailscale login URL after launch so you can approve it in the browser.
-                  </div>
-                )}
-              </Card>
-
               {remotePreflightError ? (
                 <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">
                   <div className="font-medium">{remotePreflightGuidance?.title || 'Remote preflight failed'}</div>
@@ -1520,14 +1987,15 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div className="rounded-2xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">
                   <div className="font-medium">Preflight passed</div>
                   <div className="mt-2 text-[var(--app-text)]">
-                    {remotePreflightSession.preflight.summary || 'Remote host is ready for managed SSH deploy.'}
+                    {remotePreflightSession.preflight.summary || 'Remote host is ready for SSH launch.'}
                   </div>
                   <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-2">
                     <div><span className="font-medium text-[var(--app-text)]">Host:</span> {remotePreflightSession.ssh_session_target || remoteSSHTarget.trim()}</div>
+                    <div><span className="font-medium text-[var(--app-text)]">Deploy method:</span> {remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim() || 'required'}`}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Builder runtime:</span> {remotePreflightSession.preflight.builder_runtime || 'unknown'}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession.preflight.remote_runtime || 'unknown'}</div>
-                    <div><span className="font-medium text-[var(--app-text)]">Systemd:</span> {remotePreflightSession.preflight.systemd_available ? (remotePreflightSession.preflight.systemd_unit || 'available') : 'not available'}</div>
+                    <div><span className="font-medium text-[var(--app-text)]">Persistence:</span> User-managed after launch</div>
                   </div>
                 </div>
               ) : null}
@@ -1544,7 +2012,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Child swarm name</label>
                   <Input
                     value={swarmName}
-                    onChange={(event) => setSwarmName(event.target.value)}
+                    onChange={(event) => {
+                      invalidateRemotePreflight()
+                      setSwarmName(event.target.value)
+                    }}
                     disabled={submitting}
                     placeholder={suggestedSwarmName}
                   />
@@ -1557,13 +2028,16 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'local' ? '6. Ready to add?' : '6. Ready to add?'}</div>
             {launchTarget === 'remote' ? (
               <div className="grid gap-2 text-sm text-[var(--app-text-muted)]">
-                <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote container</div>
+                <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote over SSH</div>
                 <div><span className="font-medium text-[var(--app-text)]">SSH target:</span> {remoteSSHTarget.trim() || 'Required'}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Deploy method:</span> {remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim() || 'Required'}`}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Preflight:</span> {remotePreflightSession ? 'Passed' : (remotePreflightLoading ? 'Running…' : 'Required before launch')}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession?.preflight.remote_runtime || 'Unknown until preflight'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Systemd:</span> {remotePreflightSession ? (remotePreflightSession.preflight.systemd_available ? (remotePreflightSession.preflight.systemd_unit || 'Available') : 'Not available') : 'Unknown until preflight'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Folders:</span> {selectedMountCount}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Persistence:</span> User-managed after launch</div>
+                <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Payload archives:</span> {remotePreflightSession ? remotePreflightArchiveCount : selectedRemoteArchiveCount}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Ubuntu packages:</span> {containerPackages.length}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Swarm name:</span> {swarmName.trim() || 'Required'}</div>
               </div>
             ) : (
@@ -1583,7 +2057,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         <div className="flex flex-col gap-3 border-t border-[var(--app-border)] px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-[var(--app-text-muted)]">
             {launchTarget === 'remote'
-              ? `${mountDeliveryLabel(launchTarget, selectedMountCount)} from ${selectedProfileLabel} will be used for the remote deploy.`
+              ? `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} and ${containerPackages.length} package${containerPackages.length === 1 ? '' : 's'} will be staged for the remote deploy.`
               : `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be replicated using ${runtimeChoice || 'the selected runtime'} with Swarm Sync ${syncEnabled ? 'enabled' : 'disabled'}.`}
           </div>
           <div className="flex gap-3">
@@ -1597,7 +2071,12 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 || !group?.group.id.trim()
                 || (launchTarget === 'local'
                   ? !runtimeChoice || !swarmName.trim() || selectedWorkspaceCountValue === 0
-                  : !swarmName.trim() || !remoteSSHTarget.trim() || !remotePreflightSession || remotePreflightLoading)
+                  : !swarmName.trim()
+                    || !remoteSSHTarget.trim()
+                    || !remotePreflightSession
+                    || remotePreflightLoading
+                    || selectedWorkspaceCountValue === 0
+                    || (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()))
               }
             >
               {submitting ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}

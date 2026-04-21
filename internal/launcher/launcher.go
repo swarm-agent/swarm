@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
@@ -49,6 +50,7 @@ type Profile struct {
 	PortRecord  string
 	BinDir      string
 	ToolBinDir  string
+	LibDir      string
 	WebDir      string
 	WebDistDir  string
 	StartupCWD  string
@@ -70,6 +72,19 @@ func swarmToolBinDir(dataHome string) string {
 func swarmLaneBinDir(dataHome, lane string) string {
 	_ = lane
 	return swarmBinaryRoot(dataHome)
+}
+
+func swarmLibDir(dataHome string) string {
+	return filepath.Join(swarmInstallRoot(dataHome), "lib")
+}
+
+func fffLibraryPlatformDir() string {
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "linux/amd64":
+		return "linux-amd64-gnu"
+	default:
+		return "linux-amd64-gnu"
+	}
 }
 
 func swarmDesktopDistDir(dataHome string) string {
@@ -256,6 +271,7 @@ func LoadProfile(root, lane string, bypassOverride *bool) (Profile, error) {
 		PortRecord:  filepath.Join(swarmState, "ports", fmt.Sprintf("swarmd-%s.env", lane)),
 		BinDir:      swarmLaneBinDir(dataHome, lane),
 		ToolBinDir:  swarmToolBinDir(dataHome),
+		LibDir:      swarmLibDir(dataHome),
 		WebDir:      webDir,
 		WebDistDir:  swarmDesktopDistDir(dataHome),
 		StartupCWD:  startupCWD,
@@ -544,7 +560,115 @@ func BuildSwarmdBinaries(profile Profile) error {
 	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmd"), "./cmd/swarmd"); err != nil {
 		return err
 	}
-	return runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmctl"), "./cmd/swarmctl")
+	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmctl"), "./cmd/swarmctl"); err != nil {
+		return err
+	}
+	if err := copyFile(filepath.Join(swarmdRoot, "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so"), filepath.Join(profile.LibDir, "libfff_c.so")); err != nil {
+		return err
+	}
+	return nil
+}
+
+func SyncDevContainerImages(profile Profile, reason string, skipLocalArtifactRebuild bool) error {
+	startupCfg, err := syncDevModeStartupConfig(profile)
+	if err != nil {
+		return err
+	}
+	if !startupCfg.DevMode {
+		return nil
+	}
+	devRoot, err := devmode.ResolveRoot(startupCfg.DevRoot)
+	if err != nil {
+		return fmt.Errorf("resolve dev container build root: %w", err)
+	}
+	fingerprint, err := devmode.ContainerImageFingerprint(devRoot)
+	if err != nil {
+		return fmt.Errorf("compute dev container image fingerprint: %w", err)
+	}
+	runtimes := availableDevContainerBuildRuntimes()
+	if len(runtimes) == 0 {
+		return errors.New("dev_mode is enabled but no local container runtime is available to build the canonical child image")
+	}
+	for _, runtimeName := range runtimes {
+		if err := rebuildDevContainerImage(devRoot, runtimeName, fingerprint, reason, skipLocalArtifactRebuild); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syncDevModeStartupConfig(profile Profile) (startupconfig.FileConfig, error) {
+	cfg := profile.Startup
+	if !cfg.DevMode {
+		return cfg, nil
+	}
+	if strings.TrimSpace(profile.Root) == "" {
+		return startupconfig.FileConfig{}, errors.New("dev_mode requires a source checkout; run rebuild from the repo root so the dev child image can be tracked")
+	}
+	devRoot, err := devmode.ResolveRoot(profile.Root)
+	if err != nil {
+		return startupconfig.FileConfig{}, err
+	}
+	if cfg.DevRoot == devRoot {
+		return cfg, nil
+	}
+	cfg.DevRoot = devRoot
+	if err := startupconfig.Write(cfg); err != nil {
+		return startupconfig.FileConfig{}, fmt.Errorf("record dev_root in startup config: %w", err)
+	}
+	return cfg, nil
+}
+
+func availableDevContainerBuildRuntimes() []string {
+	out := make([]string, 0, 2)
+	for _, runtimeName := range []string{"docker", "podman"} {
+		if _, err := exec.LookPath(runtimeName); err != nil {
+			continue
+		}
+		if !runtimeAvailable(runtimeName) {
+			continue
+		}
+		out = append(out, runtimeName)
+	}
+	return out
+}
+
+func runtimeAvailable(runtimeName string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	args := []string{"info", "--format", "{{.ServerVersion}}"}
+	if runtimeName == "podman" {
+		args = []string{"info", "--format", "{{.Version.Version}}"}
+	}
+	cmd := exec.CommandContext(ctx, runtimeName, args...)
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+func rebuildDevContainerImage(devRoot, runtimeName, fingerprint, reason string, skipLocalArtifactRebuild bool) error {
+	scriptPath, err := devmode.RebuildScriptPath(devRoot)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("bash", scriptPath, "--image-only")
+	cmd.Dir = devRoot
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(),
+		"BUILD_RUNTIME="+runtimeName,
+		"IMAGE_NAME="+devmode.DefaultContainerImageRef,
+		"SWARM_REBUILD_REASON="+strings.TrimSpace(reason),
+		"SWARM_CONTAINER_DEV_FINGERPRINT="+strings.TrimSpace(fingerprint),
+	)
+	if skipLocalArtifactRebuild {
+		cmd.Env = append(cmd.Env, "SWARM_SKIP_LOCAL_ARTIFACT_REBUILD=1")
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("rebuild dev child image for %s: %w", runtimeName, err)
+	}
+	return nil
 }
 
 func runGoBuild(projectRoot, workDir, goBin, outPath, pkg string) error {
@@ -688,6 +812,74 @@ func InstallLaunchers(root string) (InstallReport, error) {
 		}
 	}
 	return InstallReport{BinHome: binHome, Links: links}, nil
+}
+
+func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
+	artifactRoot = filepath.Clean(strings.TrimSpace(artifactRoot))
+	if artifactRoot == "" {
+		return InstallReport{}, errors.New("artifact root must not be empty")
+	}
+	dataHome, err := xdgDataHome()
+	if err != nil {
+		return InstallReport{}, err
+	}
+	platformRoot := filepath.Join(artifactRoot, runtime.GOOS+"-"+runtime.GOARCH)
+	rootArtifactDir := filepath.Join(platformRoot, "root")
+	swarmdArtifactDir := filepath.Join(platformRoot, "swarmd")
+	toolDir := swarmToolBinDir(dataHome)
+	binDir := swarmBinaryRoot(dataHome)
+	libDir := swarmLibDir(dataHome)
+	requiredFiles := []struct {
+		name       string
+		source     string
+		target     string
+		executable bool
+	}{
+		{name: "swarm", source: filepath.Join(rootArtifactDir, "swarm"), target: filepath.Join(toolDir, "swarm"), executable: true},
+		{name: "swarmdev", source: filepath.Join(rootArtifactDir, "swarmdev"), target: filepath.Join(toolDir, "swarmdev"), executable: true},
+		{name: "rebuild", source: filepath.Join(rootArtifactDir, "rebuild"), target: filepath.Join(toolDir, "rebuild"), executable: true},
+		{name: "swarmsetup", source: filepath.Join(rootArtifactDir, "swarmsetup"), target: filepath.Join(toolDir, "swarmsetup"), executable: true},
+		{name: "swarmtui", source: filepath.Join(rootArtifactDir, "swarmtui"), target: filepath.Join(binDir, "swarmtui"), executable: true},
+		{name: "swarmd", source: filepath.Join(swarmdArtifactDir, "swarmd"), target: filepath.Join(binDir, "swarmd"), executable: true},
+		{name: "swarmctl", source: filepath.Join(swarmdArtifactDir, "swarmctl"), target: filepath.Join(binDir, "swarmctl"), executable: true},
+		{name: "libfff_c.so", source: filepath.Join(swarmdArtifactDir, "libfff_c.so"), target: filepath.Join(libDir, "libfff_c.so"), executable: false},
+	}
+	for _, item := range requiredFiles {
+		if item.executable {
+			if !isExecutable(item.source) {
+				return InstallReport{}, fmt.Errorf("missing executable artifact for %s: %s", item.name, item.source)
+			}
+		} else if !isReadableFile(item.source) {
+			return InstallReport{}, fmt.Errorf("missing runtime artifact for %s: %s", item.name, item.source)
+		}
+		if err := copyFile(item.source, item.target); err != nil {
+			return InstallReport{}, err
+		}
+	}
+	webArtifactDir := filepath.Join(artifactRoot, "web")
+	if _, err := os.Stat(filepath.Join(webArtifactDir, "index.html")); err == nil {
+		webTargetDir := swarmDesktopDistDir(dataHome)
+		if err := os.RemoveAll(webTargetDir); err != nil {
+			return InstallReport{}, err
+		}
+		if err := copyDir(webArtifactDir, webTargetDir); err != nil {
+			return InstallReport{}, err
+		}
+		if err := writeCompressedDesktopAssets(webTargetDir); err != nil {
+			return InstallReport{}, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return InstallReport{}, err
+	}
+	return InstallLaunchers("")
+}
+
+func isReadableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return true
 }
 
 func isExecutable(path string) bool {
@@ -1248,6 +1440,12 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 			return err
 		}
 	}
+	if err := SyncDevContainerImages(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-rebuild"), true); err != nil {
+		return err
+	}
+	if _, err := InstallLaunchers(profile.Root); err != nil {
+		return err
+	}
 	if serviceScope != "" && serviceUnit != "" {
 		return restartSystemdService(serviceScope, serviceUnit, serviceActive)
 	}
@@ -1416,6 +1614,33 @@ func copyDir(sourceDir, targetDir string) error {
 		}
 		return targetFile.Close()
 	})
+}
+
+func copyFile(sourcePath, targetPath string) error {
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("copy file %s: source is a directory", sourcePath)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	targetFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
+		_ = targetFile.Close()
+		return err
+	}
+	return targetFile.Close()
 }
 
 func writeCompressedDesktopAssets(distDir string) error {

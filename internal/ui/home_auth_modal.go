@@ -134,6 +134,7 @@ type authModalState struct {
 	CredentialSearch   string
 	Providers          []AuthModalProvider
 	Credentials        []AuthModalCredential
+	AgentProfiles      []AgentModalProfile
 	SelectedProvider   int
 	SelectedCredential int
 	ConfirmDelete      bool
@@ -271,6 +272,15 @@ func (p *HomePage) SetAuthModalLoading(loading bool) {
 	p.authModal.Loading = loading
 }
 
+func (p *HomePage) ClearAuthModalSnapshot() {
+	p.authModal.Providers = nil
+	p.authModal.Credentials = nil
+	p.authModal.AgentProfiles = nil
+	p.authModal.SelectedProvider = -1
+	p.authModal.SelectedCredential = -1
+	p.authModal.ConfirmDelete = false
+}
+
 func (p *HomePage) SetAuthModalStatus(status string) {
 	p.authModal.Status = strings.TrimSpace(status)
 	if p.authModal.Status != "" {
@@ -320,6 +330,10 @@ func (p *HomePage) SetAuthModalData(providers []AuthModalProvider, credentials [
 	}
 	p.authModal.SelectedCredential = p.findAuthCredentialIndex(selectedCredential)
 	p.authModal.reconcileSelections()
+}
+
+func (p *HomePage) SetAuthModalAgentProfiles(profiles []AgentModalProfile) {
+	p.authModal.AgentProfiles = append([]AgentModalProfile(nil), profiles...)
 }
 
 func (p *HomePage) PopAuthModalAction() (AuthModalAction, bool) {
@@ -461,7 +475,7 @@ func (p *HomePage) handleAuthModalRune(ev *tcell.EventKey) {
 		}
 		if !p.authModal.ConfirmDelete {
 			p.authModal.ConfirmDelete = true
-			p.authModal.Status = fmt.Sprintf("Press d again to delete %s/%s", credential.Provider, credential.ID)
+			p.authModal.Status = fmt.Sprintf("Press d again to delete %s/%s. If this removes the provider auth, affected agents reset to inherit; reassign them in /agents. The default model may also clear.", credential.Provider, credential.ID)
 			return
 		}
 		p.enqueueAuthModalAction(AuthModalAction{
@@ -594,7 +608,7 @@ func (p *HomePage) triggerProviderLogin(providerID string) {
 		return
 	}
 	p.openAuthModalEditor("codex_login")
-	p.authModal.Status = "Choose login method (use [1mleft/right[0m to switch): browser opens the local callback flow automatically; remote lets you copy the full auth URL here or leave the TUI and run swarm auth codex remote. Then set optional name and active state, and press Enter."
+	p.authModal.Status = "Choose login method (use left/right to switch): browser opens the local callback flow automatically; remote lets you copy the full auth URL here or leave the TUI and run swarm auth codex remote. Then set optional name and active state, and press Enter."
 	p.authModal.Error = ""
 }
 
@@ -1571,7 +1585,90 @@ func (p *HomePage) drawAuthModal(s tcell.Screen) {
 
 	if p.authModal.Editor != nil {
 		p.drawAuthModalEditor(s, rect)
+	} else if p.authModal.ConfirmDelete {
+		p.drawAuthModalDeleteConfirm(s, rect)
 	}
+}
+
+func (p *HomePage) drawAuthModalDeleteConfirm(s tcell.Screen, modal Rect) {
+	credential, ok := p.selectedAuthCredential()
+	if !ok {
+		return
+	}
+	boxW := minInt(76, modal.W-6)
+	if boxW < 48 {
+		boxW = modal.W - 2
+	}
+	message := fmt.Sprintf("Press d again to delete %s/%s", credential.Provider, credential.ID)
+	affectedAgents := p.authModalAffectedAgentsForProvider(credential.Provider)
+	warningLines := []string{message, ""}
+	if len(affectedAgents) > 0 {
+		warningLines = append(warningLines, "These agents will reset to Inherit:")
+		for _, name := range affectedAgents {
+			warningLines = append(warningLines, "- "+name)
+		}
+		warningLines = append(warningLines, "", "Reassign them in /agents.")
+	} else {
+		warningLines = append(warningLines, "If this removes the provider auth, affected agents reset to Inherit.", "Reassign them in /agents.")
+	}
+	warningLines = append(warningLines, "The default model may also clear.")
+	wrapped := make([]string, 0, len(warningLines)+2)
+	for _, line := range warningLines {
+		wrapped = append(wrapped, Wrap(line, maxInt(1, boxW-4))...)
+	}
+	if len(wrapped) == 0 {
+		wrapped = []string{""}
+	}
+	boxH := len(wrapped) + 4
+	if boxH < 8 {
+		boxH = 8
+	}
+	if boxH > modal.H-2 {
+		boxH = modal.H - 2
+	}
+	if boxW <= 6 || boxH <= 4 {
+		return
+	}
+	rect := Rect{
+		X: modal.X + (modal.W-boxW)/2,
+		Y: modal.Y + (modal.H-boxH)/2,
+		W: boxW,
+		H: boxH,
+	}
+
+	FillRect(s, rect, p.theme.Panel)
+	DrawBox(s, rect, p.theme.BorderActive)
+	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Warning, "Delete Credential?")
+	bodyY := rect.Y + 1
+	for i := 0; i < len(wrapped) && bodyY+i < rect.Y+rect.H-2; i++ {
+		style := p.theme.Text
+		if i == 0 {
+			style = p.theme.Warning.Bold(true)
+		}
+		DrawCenteredText(s, rect.X+2, bodyY+i, rect.W-4, style, wrapped[i])
+	}
+	hint := "Press d again to confirm • Esc or move to cancel"
+	DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, clampEllipsis(hint, rect.W-4))
+}
+
+func (p *HomePage) authModalAffectedAgentsForProvider(provider string) []string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return nil
+	}
+	names := make([]string, 0, len(p.authModal.AgentProfiles))
+	for _, profile := range p.authModal.AgentProfiles {
+		if !strings.EqualFold(strings.TrimSpace(profile.Provider), provider) {
+			continue
+		}
+		name := strings.TrimSpace(profile.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (p *HomePage) drawAuthProviderPane(s tcell.Screen, rect Rect) {

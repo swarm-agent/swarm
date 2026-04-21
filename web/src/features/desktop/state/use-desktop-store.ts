@@ -30,12 +30,20 @@ import {
   saveDesktopActiveSessionId,
   saveDesktopActiveWorkspacePath,
 } from './desktop-selection-storage'
-import type { DesktopNotificationRecord, DesktopSessionRecord, DesktopStoreState } from '../types/realtime'
+import type {
+  DesktopNotificationCenterRecord,
+  DesktopNotificationRecord,
+  DesktopNotificationSummary,
+  DesktopSessionRecord,
+  DesktopStoreState,
+} from '../types/realtime'
 import type { ChatMessageRecord } from '../chat/types/chat'
 import type { VaultStatus } from '../vault/types'
 import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/workspace-overview'
 import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
+import { fetchNotifications, fetchNotificationSummary, updateNotification } from '../notifications/api'
+import type { DurableNotificationRecord } from '../notifications/types'
 
 interface EventEnvelope<T = Record<string, unknown>> {
   global_seq?: number
@@ -61,6 +69,13 @@ type DraftFlushState = {
 }
 
 const MAX_NOTIFICATIONS = 200
+const EMPTY_NOTIFICATION_SUMMARY: DesktopNotificationSummary = {
+  swarmID: '',
+  totalCount: 0,
+  unreadCount: 0,
+  activeCount: 0,
+  updatedAt: 0,
+}
 const RECONNECT_BASE_DELAY_MS = 1500
 const RECONNECT_MAX_DELAY_MS = 15_000
 const RECONNECT_JITTER_RATIO = 0.2
@@ -68,6 +83,15 @@ const HEARTBEAT_INTERVAL_MS = 15_000
 const LIVENESS_TIMEOUT_MS = 45_000
 const NEW_SESSION_DRAFT_KEY_PREFIX = '__workspace__:'
 const MAX_LIVE_TOOL_OUTPUT_CHARS = 4000
+
+function isTaskToolPayload(record: Record<string, unknown> | null): boolean {
+  if (!record) {
+    return false
+  }
+  const tool = typeof record.tool === 'string' ? record.tool.trim().toLowerCase() : ''
+  const pathId = typeof record.path_id === 'string' ? record.path_id.trim().toLowerCase() : ''
+  return tool === 'task' || pathId === 'tool.task.stream.v1' || pathId === 'tool.task.v1'
+}
 const draftFlushTimers = new Map<string, number>()
 const pendingDraftFlush = new Map<string, DraftFlushState>()
 const pendingSessionSnapshotHydrations = new Set<string>()
@@ -79,6 +103,61 @@ function requireRunStreamController(): DesktopRunStreamController {
     throw new Error('run stream controller is not initialized')
   }
   return runStreamController
+}
+
+function mapDurableNotification(record: DurableNotificationRecord): DesktopNotificationCenterRecord {
+  return {
+    id: record.id,
+    swarmID: record.swarm_id,
+    originSwarmID: record.origin_swarm_id?.trim() || null,
+    sessionId: record.session_id?.trim() || null,
+    runId: record.run_id?.trim() || null,
+    category: record.category,
+    severity: record.severity,
+    title: record.title,
+    body: record.body,
+    status: record.status,
+    sourceEventType: record.source_event_type?.trim() || null,
+    permissionId: record.permission_id?.trim() || null,
+    toolName: record.tool_name?.trim() || null,
+    requirement: record.requirement?.trim() || null,
+    readAt: typeof record.read_at === 'number' && record.read_at > 0 ? record.read_at : null,
+    ackedAt: typeof record.acked_at === 'number' && record.acked_at > 0 ? record.acked_at : null,
+    mutedAt: typeof record.muted_at === 'number' && record.muted_at > 0 ? record.muted_at : null,
+    createdAt: typeof record.created_at === 'number' ? record.created_at : 0,
+    updatedAt: typeof record.updated_at === 'number' ? record.updated_at : 0,
+  }
+}
+
+function mapNotificationSummary(summary: Awaited<ReturnType<typeof fetchNotificationSummary>>): DesktopNotificationSummary {
+  return {
+    swarmID: summary.swarm_id,
+    totalCount: summary.total_count,
+    unreadCount: summary.unread_count,
+    activeCount: summary.active_count,
+    updatedAt: summary.updated_at,
+  }
+}
+
+function updateBrowserNotificationSignals(summary: DesktopNotificationSummary): void {
+  if (typeof document !== 'undefined') {
+    const baseTitle = document.title.replace(/^\(\d+\)\s*/, '').trim() || 'Swarm'
+    document.title = summary.unreadCount > 0 ? `(${summary.unreadCount}) ${baseTitle}` : baseTitle
+  }
+  const navigatorWithBadge = typeof navigator !== 'undefined' ? navigator as Navigator & {
+    setAppBadge?: (count?: number) => Promise<void>
+    clearAppBadge?: () => Promise<void>
+  } : null
+  if (!navigatorWithBadge) {
+    return
+  }
+  if (summary.unreadCount > 0 && typeof navigatorWithBadge.setAppBadge === 'function') {
+    void navigatorWithBadge.setAppBadge(summary.unreadCount).catch(() => {})
+    return
+  }
+  if (summary.unreadCount === 0 && typeof navigatorWithBadge.clearAppBadge === 'function') {
+    void navigatorWithBadge.clearAppBadge().catch(() => {})
+  }
 }
 
 function emptyVaultState(): DesktopStoreState['vault'] {
@@ -125,6 +204,12 @@ function clearDesktopRuntimeState(state: DesktopStoreState): Partial<DesktopStor
   return {
     sessions: {},
     notifications: [],
+    notificationCenter: {
+      items: [],
+      summary: EMPTY_NOTIFICATION_SUMMARY,
+      loading: false,
+      hydrated: false,
+    },
     activeSessionId: null,
     activeWorkspacePath: null,
     reconnectTimer: null,
@@ -168,6 +253,15 @@ function resolveDesktopWorkspaceThemeId(workspacePath: string | null): string {
     }
   }
   return ''
+}
+
+function themeCustomOptionsSignature(settings?: UISettingsWire | null): string {
+  return JSON.stringify(Array.isArray(settings?.theme?.custom_themes) ? settings.theme.custom_themes : [])
+}
+
+function themeSettingsChanged(previous?: UISettingsWire | null, next?: UISettingsWire | null): boolean {
+  return normalizeGlobalThemeSettings(previous).activeId !== normalizeGlobalThemeSettings(next).activeId
+    || themeCustomOptionsSignature(previous) !== themeCustomOptionsSignature(next)
 }
 
 function applyDesktopEffectiveTheme(activeWorkspacePath: string | null): void {
@@ -389,6 +483,10 @@ function replaceLiveToolOutput(value: string): string {
   if (!normalized) {
     return ''
   }
+  const parsed = parseToolDeltaOutputRecord(normalized)
+  if (isTaskToolPayload(parsed)) {
+    return JSON.stringify(parsed)
+  }
   return retainTail(normalized, MAX_LIVE_TOOL_OUTPUT_CHARS)
 }
 
@@ -443,7 +541,7 @@ function mergedTaskToolDelta(current: string, next: string): string {
       .sort((left, right) => left[0] - right[0])
       .map(([, launch]) => launch)
   }
-  return retainTail(JSON.stringify(merged), MAX_LIVE_TOOL_OUTPUT_CHARS)
+  return JSON.stringify(merged)
 }
 
 function isDisplayableAgentLabel(value: unknown): value is string {
@@ -483,17 +581,24 @@ function resolveRunStreamResumeRequest(sessionId: string, fallbackRunId?: string
   if (!session) {
     return null
   }
-  if (session.lifecycle && !session.lifecycle.active) {
-    return null
-  }
   if (session.live.status === 'idle' || session.live.status === 'error') {
-    return null
-  }
-  if (session.live.summary?.trim() === 'Reconnecting…' && !session.lifecycle?.active && !session.live.runId?.trim()) {
     return null
   }
   const runId = resolveRunStreamId(session, fallbackRunId)
   if (!runId) {
+    return null
+  }
+  if (session.lifecycle && !session.lifecycle.active) {
+    const liveStatus = session.live.status
+    const canResumeNewlyAcceptedRun = session.live.awaitingAck
+      || liveStatus === 'starting'
+      || liveStatus === 'running'
+      || liveStatus === 'blocked'
+    if (!canResumeNewlyAcceptedRun) {
+      return null
+    }
+  }
+  if (session.live.summary?.trim() === 'Reconnecting…' && !session.lifecycle?.active && !session.live.runId?.trim()) {
     return null
   }
   return {
@@ -1413,10 +1518,13 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
   }
   if (eventType === 'ui.settings.updated') {
     const nextSettings = payload as UISettingsWire
+    const previousSettings = queryClient.getQueryData<UISettingsWire>(uiSettingsQueryKey())
     queryClient.setQueryData(uiSettingsQueryKey(), nextSettings)
     queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(nextSettings))
-    setWorkspaceThemeCustomOptions(nextSettings.theme?.custom_themes ?? [])
-    applyDesktopEffectiveTheme(state.activeWorkspacePath)
+    if (themeSettingsChanged(previousSettings, nextSettings)) {
+      setWorkspaceThemeCustomOptions(nextSettings.theme?.custom_themes ?? [])
+      applyDesktopEffectiveTheme(state.activeWorkspacePath)
+    }
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }
   if (eventType === 'workspace.theme.updated') {
@@ -1435,6 +1543,12 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }
   const sessionId = typeof payloadRecord.session_id === 'string' ? payloadRecord.session_id : typeof envelope.entity_id === 'string' ? envelope.entity_id : ''
+  if (eventType === 'notification.created' || eventType === 'notification.updated') {
+    deferDesktopCacheMutation('notification refresh', () => {
+      void useDesktopStore.getState().refreshNotifications()
+    })
+    return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
+  }
   if (eventType.startsWith('swarm.')) {
     const notifications = [...state.notifications]
     const enrollmentId = typeof payloadRecord.id === 'string'
@@ -1917,6 +2031,12 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
   activeWorkspacePath: initialActiveWorkspacePath,
   sessions: {},
   notifications: [],
+  notificationCenter: {
+    items: [],
+    summary: EMPTY_NOTIFICATION_SUMMARY,
+    loading: false,
+    hydrated: false,
+  },
   reconnectTimer: null,
   heartbeatTimer: null,
   livenessTimer: null,
@@ -2024,6 +2144,72 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     } catch (error) {
       console.error('[desktop-store] pending permission refresh failed', error)
     }
+  },
+  refreshNotifications: async () => {
+    set((state) => ({
+      notificationCenter: {
+        ...state.notificationCenter,
+        loading: true,
+      },
+    }))
+    try {
+      const [notifications, summary] = await Promise.all([
+        fetchNotifications(),
+        fetchNotificationSummary(),
+      ])
+      const mappedNotifications = notifications.map(mapDurableNotification)
+      const mappedSummary = mapNotificationSummary(summary)
+      updateBrowserNotificationSignals(mappedSummary)
+      set((state) => ({
+        notificationCenter: {
+          ...state.notificationCenter,
+          items: mappedNotifications,
+          summary: mappedSummary,
+          loading: false,
+          hydrated: true,
+        },
+      }))
+    } catch (error) {
+      console.error('[desktop-store] notification refresh failed', error)
+      set((state) => ({
+        notificationCenter: {
+          ...state.notificationCenter,
+          loading: false,
+        },
+      }))
+    }
+  },
+  updateNotificationRecord: async (id, patch) => {
+    const normalizedID = id.trim()
+    if (!normalizedID) {
+      return
+    }
+    const record = await updateNotification(normalizedID, patch)
+    const mappedRecord = mapDurableNotification(record)
+    set((state) => {
+      const existingIndex = state.notificationCenter.items.findIndex((item) => item.id === mappedRecord.id)
+      const items = existingIndex >= 0
+        ? state.notificationCenter.items.map((item, index) => index === existingIndex ? mappedRecord : item)
+        : [mappedRecord, ...state.notificationCenter.items]
+      const unreadCount = items.filter((item) => !item.readAt).length
+      const activeCount = items.filter((item) => item.status === 'active').length
+      const summary: DesktopNotificationSummary = {
+        swarmID: mappedRecord.swarmID,
+        totalCount: items.length,
+        unreadCount,
+        activeCount,
+        updatedAt: mappedRecord.updatedAt,
+      }
+      updateBrowserNotificationSignals(summary)
+      return {
+        notificationCenter: {
+          ...state.notificationCenter,
+          items,
+          summary,
+          hydrated: true,
+        },
+      }
+    })
   },
   setSessionDraft: (sessionId, draft) => {
     const key = sessionId.trim()

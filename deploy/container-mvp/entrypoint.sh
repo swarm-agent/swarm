@@ -5,6 +5,7 @@ TS_SOCKET="${TS_SOCKET:?TS_SOCKET must be set}"
 TS_STATE_DIR="${TS_STATE_DIR:?TS_STATE_DIR must be set}"
 TS_STATE_FILE="${TS_STATE_FILE:-${TS_STATE_DIR}/tailscaled.state}"
 TS_HOSTNAME="${TS_HOSTNAME:-swarm-box}"
+TS_OUTBOUND_HTTP_PROXY_LISTEN="${TS_OUTBOUND_HTTP_PROXY_LISTEN:-}"
 SWARM_STARTUP_MODE="${SWARM_STARTUP_MODE:-}"
 SWARM_CONTAINER_OFFLINE="${SWARM_CONTAINER_OFFLINE:-}"
 SWARMD_DATA_DIR="${SWARMD_DATA_DIR:?SWARMD_DATA_DIR must be set}"
@@ -12,6 +13,7 @@ SWARMD_LOCK_PATH="${SWARMD_LOCK_PATH:?SWARMD_LOCK_PATH must be set}"
 SWARMD_LISTEN="${SWARMD_LISTEN:?SWARMD_LISTEN must be set}"
 SWARM_DESKTOP_PORT="${SWARM_DESKTOP_PORT:?SWARM_DESKTOP_PORT must be set}"
 SWARM_WEB_DIST_DIR="${SWARM_WEB_DIST_DIR:?SWARM_WEB_DIST_DIR must be set}"
+SWARM_RUNTIME_HOME="${SWARM_RUNTIME_HOME:-/var/lib/swarmd/home}"
 TS_UP_LOG="$(mktemp)"
 TS_SERVE_LOG="$(mktemp)"
 
@@ -50,6 +52,20 @@ is_true() {
   esac
 }
 
+ensure_runtime_permissions() {
+  mkdir -p "${SWARM_RUNTIME_HOME}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")" /workspaces
+  # /workspaces is an intentional host-shared mount boundary; do not rewrite ownership.
+  chown -R nobody:nogroup "${SWARM_RUNTIME_HOME}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")"
+}
+
+run_as_swarm_user() {
+  HOME="${SWARM_RUNTIME_HOME}" \
+  XDG_CONFIG_HOME="${SWARM_RUNTIME_HOME}/.config" \
+  XDG_DATA_HOME="${SWARM_RUNTIME_HOME}/.local/share" \
+  XDG_STATE_HOME="${SWARM_RUNTIME_HOME}/.local/state" \
+  setpriv --reuid=nobody --regid=nogroup --clear-groups "$@"
+}
+
 start_swarmd() {
   offline_state="no"
   if is_true "${SWARM_CONTAINER_OFFLINE}"; then
@@ -79,7 +95,7 @@ start_swarmd() {
     set -- "$@" --mode="${SWARM_STARTUP_MODE}"
   fi
 
-  SWARM_WEB_DIST_DIR="${SWARM_WEB_DIST_DIR}" "$@" &
+  run_as_swarm_user env SWARM_WEB_DIST_DIR="${SWARM_WEB_DIST_DIR}" "$@" &
   SWARMD_PID=$!
 }
 
@@ -98,6 +114,7 @@ ts_cleanup() {
 
 trap ts_cleanup INT TERM EXIT
 
+ensure_runtime_permissions
 start_swarmd
 
 if is_true "${SWARM_CONTAINER_OFFLINE}"; then
@@ -107,14 +124,21 @@ if is_true "${SWARM_CONTAINER_OFFLINE}"; then
 fi
 
 echo "[swarm-container] starting tailscaled"
-ts_tun_mode="${TS_TUN_MODE:-auto}"
+ts_tun_mode="${TS_TUN_MODE:-userspace-networking}"
+userspace_networking=0
 set -- \
   --state="${TS_STATE_FILE}" \
   --socket="${TS_SOCKET}"
 case "${ts_tun_mode}" in
-  ""|auto)
+  "")
+    set -- --tun=userspace-networking "$@"
+    userspace_networking=1
+    echo "[swarm-container] tailscaled using userspace networking"
+    ;;
+  auto)
     if [ ! -c /dev/net/tun ]; then
       set -- --tun=userspace-networking "$@"
+      userspace_networking=1
       echo "[swarm-container] tailscaled using userspace networking"
     else
       echo "[swarm-container] tailscaled using kernel tun"
@@ -122,6 +146,7 @@ case "${ts_tun_mode}" in
     ;;
   userspace-networking)
     set -- --tun=userspace-networking "$@"
+    userspace_networking=1
     echo "[swarm-container] tailscaled using userspace networking"
     ;;
   *)
@@ -129,6 +154,9 @@ case "${ts_tun_mode}" in
     echo "[swarm-container] tailscaled using tun mode ${ts_tun_mode}"
     ;;
 esac
+if [ "${userspace_networking}" = "1" ] && [ -n "${TS_OUTBOUND_HTTP_PROXY_LISTEN}" ]; then
+  set -- --outbound-http-proxy-listen="${TS_OUTBOUND_HTTP_PROXY_LISTEN}" "$@"
+fi
 tailscaled "$@" &
 TAILSCALED_PID=$!
 

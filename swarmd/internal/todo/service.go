@@ -9,12 +9,21 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-const streamPrefix = "workspace_todo:"
+const (
+	streamPrefix                = "workspace_todo:"
+	agentTodoSummaryMetadataKey = "agent_todo_summary"
+)
+
+type SessionMetadataStore interface {
+	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
+	UpdateMetadata(sessionID string, metadata map[string]any) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error)
+}
 
 type Service struct {
-	store   *pebblestore.WorkspaceTodoStore
-	events  *pebblestore.EventLog
-	publish func(pebblestore.EventEnvelope)
+	store    *pebblestore.WorkspaceTodoStore
+	events   *pebblestore.EventLog
+	publish  func(pebblestore.EventEnvelope)
+	sessions SessionMetadataStore
 }
 
 type TodoItem = pebblestore.WorkspaceTodoItem
@@ -54,6 +63,7 @@ type ReorderInput struct {
 
 type ListOptions struct {
 	OwnerKind string
+	SessionID string
 }
 
 type BatchOperation struct {
@@ -79,8 +89,8 @@ type BatchResult struct {
 	Items  []TodoItem `json:"items,omitempty"`
 }
 
-func NewService(store *pebblestore.WorkspaceTodoStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) *Service {
-	return &Service{store: store, events: events, publish: publish}
+func NewService(store *pebblestore.WorkspaceTodoStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope), sessions SessionMetadataStore) *Service {
+	return &Service{store: store, events: events, publish: publish, sessions: sessions}
 }
 
 func (s *Service) List(workspacePath string, options ...ListOptions) ([]TodoItem, TodoSummary, error) {
@@ -88,12 +98,12 @@ func (s *Service) List(workspacePath string, options ...ListOptions) ([]TodoItem
 	if err != nil {
 		return nil, TodoSummary{}, err
 	}
-	ownerKind := listOwnerKind(options)
-	if ownerKind == "" {
-		return items, pebblestore.SummarizeWorkspaceTodos(items), nil
+	resolved := firstListOptions(options)
+	filtered := filterItemsByOptions(items, resolved)
+	if hasListOptionsFilter(resolved) {
+		return filtered, summarizeForOptions(items, resolved), nil
 	}
-	filtered := filterItemsByOwnerKind(items, ownerKind)
-	return filtered, summarizeForOwner(items, ownerKind), nil
+	return filtered, pebblestore.SummarizeWorkspaceTodos(items), nil
 }
 
 func (s *Service) Summaries(workspacePaths []string) (map[string]TodoSummary, error) {
@@ -110,8 +120,9 @@ func (s *Service) Create(input CreateInput) (TodoItem, TodoSummary, *pebblestore
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
+	originalItems := append([]TodoItem(nil), items...)
 	if input.InProgress {
-		clearInProgressForOwner(items, ownerKind, "")
+		clearInProgressForScope(items, ownerKind, strings.TrimSpace(input.SessionID), "")
 	}
 	now := time.Now().UnixMilli()
 	item := TodoItem{
@@ -134,6 +145,9 @@ func (s *Service) Create(input CreateInput) (TodoItem, TodoSummary, *pebblestore
 	if err := s.persistItems(items); err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
+	if err := s.syncAgentTodoSessionMetadata(originalItems, items); err != nil {
+		return TodoItem{}, TodoSummary{}, nil, err
+	}
 	created, ok := findItem(items, item.ID)
 	if !ok {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("created todo not found")
@@ -150,7 +164,7 @@ func (s *Service) Create(input CreateInput) (TodoItem, TodoSummary, *pebblestore
 	return created, summary, event, nil
 }
 
-func (s *Service) Update(input UpdateInput) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
+func (s *Service) Update(input UpdateInput, options ...ListOptions) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
 	workspacePath := strings.TrimSpace(input.WorkspacePath)
 	itemID := strings.TrimSpace(input.ID)
 	if workspacePath == "" {
@@ -163,7 +177,9 @@ func (s *Service) Update(input UpdateInput) (TodoItem, TodoSummary, *pebblestore
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
-	index := indexOfItem(items, itemID)
+	originalItems := append([]TodoItem(nil), items...)
+	resolved := firstListOptions(options)
+	index := indexOfItemWithOptions(items, itemID, resolved)
 	if index < 0 {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("todo %q not found", itemID)
 	}
@@ -193,7 +209,7 @@ func (s *Service) Update(input UpdateInput) (TodoItem, TodoSummary, *pebblestore
 	if input.InProgress != nil {
 		item.InProgress = *input.InProgress
 		if item.InProgress {
-			clearInProgressForOwner(items, item.OwnerKind, item.ID)
+			clearInProgressForScope(items, item.OwnerKind, item.SessionID, item.ID)
 		}
 	}
 	if input.SessionID != nil {
@@ -208,23 +224,33 @@ func (s *Service) Update(input UpdateInput) (TodoItem, TodoSummary, *pebblestore
 	if err := s.persistItems(items); err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
+	if err := s.syncAgentTodoSessionMetadata(originalItems, items); err != nil {
+		return TodoItem{}, TodoSummary{}, nil, err
+	}
 	updated, ok := findItem(items, item.ID)
 	if !ok {
 		return TodoItem{}, TodoSummary{}, nil, fmt.Errorf("updated todo not found")
 	}
-	summary := pebblestore.SummarizeWorkspaceTodos(items)
-	event, err := s.appendEvent(workspacePath, "workspace.todo.updated", updated.ID, map[string]any{
+	summary := summarizeForOptions(items, resolved)
+	fullSummary := pebblestore.SummarizeWorkspaceTodos(items)
+	eventPayload := map[string]any{
 		"workspace_path": workspacePath,
 		"item":           updated,
-		"summary":        summary,
-	})
+		"summary":        fullSummary,
+	}
+	if hasListOptionsFilter(resolved) {
+		eventPayload["owner_kind"] = resolved.OwnerKind
+		eventPayload["session_id"] = resolved.SessionID
+		eventPayload["filtered_summary"] = summary
+	}
+	event, err := s.appendEvent(workspacePath, "workspace.todo.updated", updated.ID, eventPayload)
 	if err != nil {
 		return TodoItem{}, TodoSummary{}, nil, err
 	}
 	return updated, summary, event, nil
 }
 
-func (s *Service) Delete(workspacePath, itemID string) (TodoSummary, *pebblestore.EventEnvelope, error) {
+func (s *Service) Delete(workspacePath, itemID string, options ...ListOptions) (TodoSummary, *pebblestore.EventEnvelope, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	itemID = strings.TrimSpace(itemID)
 	if workspacePath == "" {
@@ -237,7 +263,9 @@ func (s *Service) Delete(workspacePath, itemID string) (TodoSummary, *pebblestor
 	if err != nil {
 		return TodoSummary{}, nil, err
 	}
-	index := indexOfItem(items, itemID)
+	originalItems := append([]TodoItem(nil), items...)
+	resolved := firstListOptions(options)
+	index := indexOfItemWithOptions(items, itemID, resolved)
 	if index < 0 {
 		return TodoSummary{}, nil, fmt.Errorf("todo %q not found", itemID)
 	}
@@ -249,12 +277,22 @@ func (s *Service) Delete(workspacePath, itemID string) (TodoSummary, *pebblestor
 	if err := s.store.Delete(workspacePath, itemID); err != nil {
 		return TodoSummary{}, nil, err
 	}
-	summary := pebblestore.SummarizeWorkspaceTodos(items)
-	event, err := s.appendEvent(workspacePath, "workspace.todo.deleted", itemID, map[string]any{
+	if err := s.syncAgentTodoSessionMetadata(originalItems, items); err != nil {
+		return TodoSummary{}, nil, err
+	}
+	summary := summarizeForOptions(items, resolved)
+	fullSummary := pebblestore.SummarizeWorkspaceTodos(items)
+	eventPayload := map[string]any{
 		"workspace_path": workspacePath,
 		"item_id":        itemID,
-		"summary":        summary,
-	})
+		"summary":        fullSummary,
+	}
+	if hasListOptionsFilter(resolved) {
+		eventPayload["owner_kind"] = resolved.OwnerKind
+		eventPayload["session_id"] = resolved.SessionID
+		eventPayload["filtered_summary"] = summary
+	}
+	event, err := s.appendEvent(workspacePath, "workspace.todo.deleted", itemID, eventPayload)
 	if err != nil {
 		return TodoSummary{}, nil, err
 	}
@@ -262,16 +300,16 @@ func (s *Service) Delete(workspacePath, itemID string) (TodoSummary, *pebblestor
 }
 
 func (s *Service) DeleteDone(workspacePath string, options ...ListOptions) ([]TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
-	ownerKind := listOwnerKind(options)
+	resolved := firstListOptions(options)
 	return s.deleteMatching(workspacePath, "workspace.todo.deleted_done", func(item TodoItem) bool {
-		return item.Done && (ownerKind == "" || item.OwnerKind == ownerKind)
+		return item.Done && itemMatchesListOptions(item, resolved)
 	}, options...)
 }
 
 func (s *Service) DeleteAll(workspacePath string, options ...ListOptions) ([]TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
-	ownerKind := listOwnerKind(options)
+	resolved := firstListOptions(options)
 	return s.deleteMatching(workspacePath, "workspace.todo.deleted_all", func(item TodoItem) bool {
-		return ownerKind == "" || item.OwnerKind == ownerKind
+		return itemMatchesListOptions(item, resolved)
 	}, options...)
 }
 
@@ -284,7 +322,8 @@ func (s *Service) deleteMatching(workspacePath, eventType string, shouldDelete f
 	if err != nil {
 		return nil, TodoSummary{}, nil, err
 	}
-	ownerKind := listOwnerKind(options)
+	originalItems := append([]TodoItem(nil), items...)
+	resolved := firstListOptions(options)
 	remaining := make([]TodoItem, 0, len(items))
 	deletedIDs := make([]string, 0)
 	for _, item := range items {
@@ -295,30 +334,37 @@ func (s *Service) deleteMatching(workspacePath, eventType string, shouldDelete f
 		remaining = append(remaining, item)
 	}
 	remaining = normalizeSortOrder(remaining)
-	summary := summarizeForOwner(remaining, ownerKind)
+	summary := summarizeForOptions(remaining, resolved)
 	fullSummary := pebblestore.SummarizeWorkspaceTodos(remaining)
 	if len(deletedIDs) == 0 {
-		return filteredItemsForOwner(remaining, ownerKind), summary, nil, nil
+		return filterItemsByOptions(remaining, resolved), summary, nil, nil
 	}
 	if err := s.store.ReplaceWorkspaceItems(workspacePath, remaining); err != nil {
 		return nil, TodoSummary{}, nil, err
 	}
-	event, err := s.appendEvent(workspacePath, eventType, workspacePath, map[string]any{
+	if err := s.syncAgentTodoSessionMetadata(originalItems, remaining); err != nil {
+		return nil, TodoSummary{}, nil, err
+	}
+	eventPayload := map[string]any{
 		"workspace_path":   workspacePath,
-		"owner_kind":       ownerKind,
+		"owner_kind":       resolved.OwnerKind,
 		"deleted_ids":      deletedIDs,
 		"deleted_count":    len(deletedIDs),
-		"items":            filteredItemsForOwner(remaining, ownerKind),
+		"items":            filterItemsByOptions(remaining, resolved),
 		"summary":          fullSummary,
 		"filtered_summary": summary,
-	})
+	}
+	if strings.TrimSpace(resolved.SessionID) != "" {
+		eventPayload["session_id"] = resolved.SessionID
+	}
+	event, err := s.appendEvent(workspacePath, eventType, workspacePath, eventPayload)
 	if err != nil {
 		return nil, TodoSummary{}, nil, err
 	}
-	return filteredItemsForOwner(remaining, ownerKind), summary, event, nil
+	return filterItemsByOptions(remaining, resolved), summary, event, nil
 }
 
-func (s *Service) Reorder(input ReorderInput) ([]TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
+func (s *Service) Reorder(input ReorderInput, options ...ListOptions) ([]TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
 	workspacePath := strings.TrimSpace(input.WorkspacePath)
 	if workspacePath == "" {
 		return nil, TodoSummary{}, nil, fmt.Errorf("workspace path is required")
@@ -327,33 +373,41 @@ func (s *Service) Reorder(input ReorderInput) ([]TodoItem, TodoSummary, *pebbles
 	if err != nil {
 		return nil, TodoSummary{}, nil, err
 	}
-	ownerKind := normalizeOptionalOwnerKind(input.OwnerKind)
-	ordered := reorderItemsForOwner(items, ownerKind, input.OrderedIDs)
+	originalItems := append([]TodoItem(nil), items...)
+	resolved := mergeListOptions(firstListOptions(options), ListOptions{OwnerKind: input.OwnerKind})
+	ordered := reorderItemsForOptions(items, resolved, input.OrderedIDs)
 	ordered = normalizeSortOrder(ordered)
 	if err := s.persistItems(ordered); err != nil {
 		return nil, TodoSummary{}, nil, err
 	}
-	summary := summarizeForOwner(ordered, ownerKind)
+	if err := s.syncAgentTodoSessionMetadata(originalItems, ordered); err != nil {
+		return nil, TodoSummary{}, nil, err
+	}
+	summary := summarizeForOptions(ordered, resolved)
 	fullSummary := pebblestore.SummarizeWorkspaceTodos(ordered)
-	event, err := s.appendEvent(workspacePath, "workspace.todo.reordered", workspacePath, map[string]any{
+	eventPayload := map[string]any{
 		"workspace_path":   workspacePath,
-		"owner_kind":       ownerKind,
-		"items":            filteredItemsForOwner(ordered, ownerKind),
+		"owner_kind":       resolved.OwnerKind,
+		"items":            filterItemsByOptions(ordered, resolved),
 		"summary":          fullSummary,
 		"filtered_summary": summary,
-	})
+	}
+	if strings.TrimSpace(resolved.SessionID) != "" {
+		eventPayload["session_id"] = resolved.SessionID
+	}
+	event, err := s.appendEvent(workspacePath, "workspace.todo.reordered", workspacePath, eventPayload)
 	if err != nil {
 		return nil, TodoSummary{}, nil, err
 	}
-	return filteredItemsForOwner(ordered, ownerKind), summary, event, nil
+	return filterItemsByOptions(ordered, resolved), summary, event, nil
 }
 
-func (s *Service) SetInProgress(workspacePath, itemID string) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
+func (s *Service) SetInProgress(workspacePath, itemID string, options ...ListOptions) (TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
 	inProgress := true
-	return s.Update(UpdateInput{WorkspacePath: workspacePath, ID: itemID, InProgress: &inProgress})
+	return s.Update(UpdateInput{WorkspacePath: workspacePath, ID: itemID, InProgress: &inProgress}, options...)
 }
 
-func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) ([]BatchResult, []TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
+func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation, options ...ListOptions) ([]BatchResult, []TodoItem, TodoSummary, *pebblestore.EventEnvelope, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return nil, nil, TodoSummary{}, nil, fmt.Errorf("workspace path is required")
@@ -365,6 +419,8 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 	if err != nil {
 		return nil, nil, TodoSummary{}, nil, err
 	}
+	originalItems := append([]TodoItem(nil), items...)
+	resolved := firstListOptions(options)
 	working := append([]TodoItem(nil), items...)
 	results := make([]BatchResult, 0, len(operations))
 	ownerKindsUsed := make(map[string]struct{})
@@ -387,6 +443,11 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 			if text == "" {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("operation %d text is required", idx)
 			}
+			effectiveOptions := mergeListOptions(resolved, ListOptions{OwnerKind: op.OwnerKind, SessionID: derefString(op.SessionID)})
+			candidate := TodoItem{OwnerKind: pebblestore.NormalizeWorkspaceTodoOwnerKind(op.OwnerKind), SessionID: derefString(op.SessionID)}
+			if hasListOptionsFilter(effectiveOptions) && !itemMatchesListOptions(candidate, effectiveOptions) {
+				return nil, nil, TodoSummary{}, nil, fmt.Errorf("operation %d does not match list scope", idx)
+			}
 			now := time.Now().UnixMilli()
 			ownerKind := pebblestore.NormalizeWorkspaceTodoOwnerKind(op.OwnerKind)
 			item := TodoItem{
@@ -405,7 +466,7 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 				UpdatedAt:     now,
 			}
 			if item.InProgress {
-				clearInProgressForOwner(working, ownerKind, "")
+				clearInProgressForScope(working, ownerKind, item.SessionID, "")
 			}
 			working = append(working, item)
 			working = normalizeSortOrder(working)
@@ -420,7 +481,8 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 			if itemID == "" {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("operation %d id is required", idx)
 			}
-			itemIndex := indexOfItem(working, itemID)
+			effectiveOptions := mergeListOptions(resolved, ListOptions{OwnerKind: op.OwnerKind, SessionID: derefString(op.SessionID)})
+			itemIndex := indexOfItemWithOptions(working, itemID, effectiveOptions)
 			if itemIndex < 0 {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("todo %q not found", itemID)
 			}
@@ -450,7 +512,7 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 			if op.InProgress != nil {
 				item.InProgress = *op.InProgress
 				if item.InProgress {
-					clearInProgressForOwner(working, item.OwnerKind, item.ID)
+					clearInProgressForScope(working, item.OwnerKind, item.SessionID, item.ID)
 				}
 			}
 			if op.SessionID != nil {
@@ -469,11 +531,11 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 			result.ID = updated.ID
 			result.Item = updated
 		case "delete_done":
-			ownerKind := normalizedOwnerKind
+			effectiveOptions := mergeListOptions(resolved, ListOptions{OwnerKind: normalizedOwnerKind, SessionID: derefString(op.SessionID)})
 			remaining := make([]TodoItem, 0, len(working))
 			deletedCount := 0
 			for _, item := range working {
-				if item.Done && (ownerKind == "" || item.OwnerKind == ownerKind) {
+				if item.Done && itemMatchesListOptions(item, effectiveOptions) {
 					deletedCount++
 					continue
 				}
@@ -481,13 +543,13 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 			}
 			working = normalizeSortOrder(remaining)
 			result.ID = fmt.Sprintf("deleted:%d", deletedCount)
-			result.Items = filteredItemsForOwner(working, ownerKind)
+			result.Items = filterItemsByOptions(working, effectiveOptions)
 		case "delete_all":
-			ownerKind := normalizedOwnerKind
+			effectiveOptions := mergeListOptions(resolved, ListOptions{OwnerKind: normalizedOwnerKind, SessionID: derefString(op.SessionID)})
 			remaining := make([]TodoItem, 0, len(working))
 			deletedCount := 0
 			for _, item := range working {
-				if ownerKind == "" || item.OwnerKind == ownerKind {
+				if itemMatchesListOptions(item, effectiveOptions) {
 					deletedCount++
 					continue
 				}
@@ -495,13 +557,14 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 			}
 			working = normalizeSortOrder(remaining)
 			result.ID = fmt.Sprintf("deleted:%d", deletedCount)
-			result.Items = filteredItemsForOwner(working, ownerKind)
+			result.Items = filterItemsByOptions(working, effectiveOptions)
 		case "delete":
 			itemID := strings.TrimSpace(op.ID)
 			if itemID == "" {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("operation %d id is required", idx)
 			}
-			itemIndex := indexOfItem(working, itemID)
+			effectiveOptions := mergeListOptions(resolved, ListOptions{OwnerKind: op.OwnerKind, SessionID: derefString(op.SessionID)})
+			itemIndex := indexOfItemWithOptions(working, itemID, effectiveOptions)
 			if itemIndex < 0 {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("todo %q not found", itemID)
 			}
@@ -512,19 +575,21 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 			if len(op.OrderedIDs) == 0 {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("operation %d ordered_ids is required", idx)
 			}
-			working = reorderItemsForOwner(working, normalizedOwnerKind, op.OrderedIDs)
+			effectiveOptions := mergeListOptions(resolved, ListOptions{OwnerKind: normalizedOwnerKind, SessionID: derefString(op.SessionID)})
+			working = reorderItemsForOptions(working, effectiveOptions, op.OrderedIDs)
 			working = normalizeSortOrder(working)
-			result.Items = filteredItemsForOwner(working, normalizedOwnerKind)
+			result.Items = filterItemsByOptions(working, effectiveOptions)
 		case "in_progress":
 			itemID := strings.TrimSpace(op.ID)
 			if itemID == "" {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("operation %d id is required", idx)
 			}
-			itemIndex := indexOfItem(working, itemID)
+			effectiveOptions := mergeListOptions(resolved, ListOptions{OwnerKind: op.OwnerKind, SessionID: derefString(op.SessionID)})
+			itemIndex := indexOfItemWithOptions(working, itemID, effectiveOptions)
 			if itemIndex < 0 {
 				return nil, nil, TodoSummary{}, nil, fmt.Errorf("todo %q not found", itemID)
 			}
-			clearInProgressForOwner(working, working[itemIndex].OwnerKind, itemID)
+			clearInProgressForScope(working, working[itemIndex].OwnerKind, working[itemIndex].SessionID, itemID)
 			working[itemIndex].InProgress = true
 			working[itemIndex].UpdatedAt = time.Now().UnixMilli()
 			working = normalizeSortOrder(working)
@@ -542,19 +607,32 @@ func (s *Service) ApplyBatch(workspacePath string, operations []BatchOperation) 
 	if err := s.store.ReplaceWorkspaceItems(workspacePath, working); err != nil {
 		return nil, nil, TodoSummary{}, nil, err
 	}
-	summary := pebblestore.SummarizeWorkspaceTodos(working)
-	event, err := s.appendEvent(workspacePath, "workspace.todo.batch_applied", workspacePath, map[string]any{
+	if err := s.syncAgentTodoSessionMetadata(originalItems, working); err != nil {
+		return nil, nil, TodoSummary{}, nil, err
+	}
+	summary := summarizeForOptions(working, resolved)
+	fullSummary := pebblestore.SummarizeWorkspaceTodos(working)
+	eventPayload := map[string]any{
 		"workspace_path": workspacePath,
 		"operations":     operations,
 		"results":        results,
-		"items":          working,
-		"summary":        summary,
-	})
+		"items":          filterItemsByOptions(working, resolved),
+		"summary":        fullSummary,
+	}
+	if hasListOptionsFilter(resolved) {
+		eventPayload["owner_kind"] = resolved.OwnerKind
+		eventPayload["session_id"] = resolved.SessionID
+		eventPayload["filtered_summary"] = summary
+	}
+	event, err := s.appendEvent(workspacePath, "workspace.todo.batch_applied", workspacePath, eventPayload)
 	if err != nil {
 		return nil, nil, TodoSummary{}, nil, err
 	}
-	returnOwnerKind := batchReturnOwnerKind(ownerKindsUsed)
-	return results, filteredItemsForOwner(working, returnOwnerKind), summarizeForOwner(working, returnOwnerKind), event, nil
+	returnOptions := resolved
+	if strings.TrimSpace(returnOptions.OwnerKind) == "" {
+		returnOptions.OwnerKind = batchReturnOwnerKind(ownerKindsUsed)
+	}
+	return results, filterItemsByOptions(working, returnOptions), summarizeForOptions(working, returnOptions), event, nil
 }
 
 func (s *Service) persistItems(items []TodoItem) error {
@@ -597,6 +675,19 @@ func indexOfItem(items []TodoItem, itemID string) int {
 	return -1
 }
 
+func indexOfItemWithOptions(items []TodoItem, itemID string, options ListOptions) int {
+	for i, item := range items {
+		if strings.TrimSpace(item.ID) != strings.TrimSpace(itemID) {
+			continue
+		}
+		if !itemMatchesListOptions(item, options) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
 func findItem(items []TodoItem, itemID string) (TodoItem, bool) {
 	index := indexOfItem(items, itemID)
 	if index < 0 {
@@ -612,17 +703,16 @@ func normalizeSortOrder(items []TodoItem) []TodoItem {
 	return items
 }
 
-func reorderItemsForOwner(items []TodoItem, ownerKind string, orderedIDs []string) []TodoItem {
-	ownerKind = normalizeOptionalOwnerKind(ownerKind)
+func reorderItemsForOptions(items []TodoItem, options ListOptions, orderedIDs []string) []TodoItem {
 	if len(items) == 0 || len(orderedIDs) == 0 {
 		return items
 	}
-	if ownerKind == "" {
+	if !hasListOptionsFilter(options) {
 		return reorderItems(items, orderedIDs)
 	}
 	selected := make([]TodoItem, 0)
 	for _, item := range items {
-		if item.OwnerKind == ownerKind {
+		if itemMatchesListOptions(item, options) {
 			selected = append(selected, item)
 		}
 	}
@@ -630,7 +720,7 @@ func reorderItemsForOwner(items []TodoItem, ownerKind string, orderedIDs []strin
 	merged := make([]TodoItem, 0, len(items))
 	selectedIndex := 0
 	for _, item := range items {
-		if item.OwnerKind == ownerKind {
+		if itemMatchesListOptions(item, options) {
 			if selectedIndex < len(reorderedSelected) {
 				merged = append(merged, reorderedSelected[selectedIndex])
 				selectedIndex++
@@ -681,11 +771,39 @@ func derefString(value *string) string {
 	return strings.TrimSpace(*value)
 }
 
-func listOwnerKind(options []ListOptions) string {
+func firstListOptions(options []ListOptions) ListOptions {
 	if len(options) == 0 {
-		return ""
+		return ListOptions{}
 	}
-	return normalizeOptionalOwnerKind(options[0].OwnerKind)
+	return ListOptions{
+		OwnerKind: normalizeOptionalOwnerKind(options[0].OwnerKind),
+		SessionID: strings.TrimSpace(options[0].SessionID),
+	}
+}
+
+func mergeListOptions(base, override ListOptions) ListOptions {
+	merged := base
+	if ownerKind := normalizeOptionalOwnerKind(override.OwnerKind); ownerKind != "" {
+		merged.OwnerKind = ownerKind
+	}
+	if sessionID := strings.TrimSpace(override.SessionID); sessionID != "" {
+		merged.SessionID = sessionID
+	}
+	return merged
+}
+
+func hasListOptionsFilter(options ListOptions) bool {
+	return strings.TrimSpace(options.OwnerKind) != "" || strings.TrimSpace(options.SessionID) != ""
+}
+
+func itemMatchesListOptions(item TodoItem, options ListOptions) bool {
+	if ownerKind := normalizeOptionalOwnerKind(options.OwnerKind); ownerKind != "" && item.OwnerKind != ownerKind {
+		return false
+	}
+	if sessionID := strings.TrimSpace(options.SessionID); sessionID != "" && strings.TrimSpace(item.SessionID) != sessionID {
+		return false
+	}
+	return true
 }
 
 func normalizeOptionalOwnerKind(raw string) string {
@@ -695,14 +813,10 @@ func normalizeOptionalOwnerKind(raw string) string {
 	return pebblestore.NormalizeWorkspaceTodoOwnerKind(raw)
 }
 
-func filterItemsByOwnerKind(items []TodoItem, ownerKind string) []TodoItem {
-	ownerKind = normalizeOptionalOwnerKind(ownerKind)
-	if ownerKind == "" {
-		return append([]TodoItem(nil), items...)
-	}
+func filterItemsByOptions(items []TodoItem, options ListOptions) []TodoItem {
 	filtered := make([]TodoItem, 0, len(items))
 	for _, item := range items {
-		if item.OwnerKind == ownerKind {
+		if itemMatchesListOptions(item, options) {
 			filtered = append(filtered, item)
 		}
 	}
@@ -710,12 +824,13 @@ func filterItemsByOwnerKind(items []TodoItem, ownerKind string) []TodoItem {
 }
 
 func filteredItemsForOwner(items []TodoItem, ownerKind string) []TodoItem {
-	return filterItemsByOwnerKind(items, ownerKind)
+	return filterItemsByOptions(items, ListOptions{OwnerKind: ownerKind})
 }
 
-func summarizeForOwner(items []TodoItem, ownerKind string) TodoSummary {
-	ownerKind = normalizeOptionalOwnerKind(ownerKind)
-	summary := pebblestore.SummarizeWorkspaceTodos(items)
+func summarizeForOptions(items []TodoItem, options ListOptions) TodoSummary {
+	filtered := filterItemsByOptions(items, options)
+	summary := pebblestore.SummarizeWorkspaceTodos(filtered)
+	ownerKind := normalizeOptionalOwnerKind(options.OwnerKind)
 	if ownerKind == "" {
 		return summary
 	}
@@ -729,14 +844,22 @@ func summarizeForOwner(items []TodoItem, ownerKind string) TodoSummary {
 	}
 }
 
-func clearInProgressForOwner(items []TodoItem, ownerKind, exceptID string) {
+func summarizeForOwner(items []TodoItem, ownerKind string) TodoSummary {
+	return summarizeForOptions(items, ListOptions{OwnerKind: ownerKind})
+}
+
+func clearInProgressForScope(items []TodoItem, ownerKind, sessionID, exceptID string) {
 	ownerKind = pebblestore.NormalizeWorkspaceTodoOwnerKind(ownerKind)
 	if ownerKind != pebblestore.WorkspaceTodoOwnerKindAgent {
 		return
 	}
+	sessionID = strings.TrimSpace(sessionID)
 	exceptID = strings.TrimSpace(exceptID)
 	for i := range items {
 		if items[i].OwnerKind != ownerKind {
+			continue
+		}
+		if sessionID != "" && strings.TrimSpace(items[i].SessionID) != sessionID {
 			continue
 		}
 		if exceptID != "" && strings.TrimSpace(items[i].ID) == exceptID {
@@ -748,6 +871,142 @@ func clearInProgressForOwner(items []TodoItem, ownerKind, exceptID string) {
 		items[i].InProgress = false
 		items[i].UpdatedAt = time.Now().UnixMilli()
 	}
+}
+
+func syncAgentSummaryMetadataMap(current map[string]any, summary TodoSummary) (map[string]any, bool) {
+	next := cloneMetadataMap(current)
+	if next == nil {
+		next = make(map[string]any, 1)
+	}
+	serialized := map[string]any{
+		"task_count":        summary.TaskCount,
+		"open_count":        summary.OpenCount,
+		"in_progress_count": summary.InProgressCount,
+		"user": map[string]any{
+			"task_count":        summary.User.TaskCount,
+			"open_count":        summary.User.OpenCount,
+			"in_progress_count": summary.User.InProgressCount,
+		},
+		"agent": map[string]any{
+			"task_count":        summary.Agent.TaskCount,
+			"open_count":        summary.Agent.OpenCount,
+			"in_progress_count": summary.Agent.InProgressCount,
+		},
+	}
+	if metadataEqual(next[agentTodoSummaryMetadataKey], serialized) {
+		return next, false
+	}
+	next[agentTodoSummaryMetadataKey] = serialized
+	return next, true
+}
+
+func clearAgentSummaryMetadataMap(current map[string]any) (map[string]any, bool) {
+	if current == nil {
+		return nil, false
+	}
+	if _, ok := current[agentTodoSummaryMetadataKey]; !ok {
+		return cloneMetadataMap(current), false
+	}
+	next := cloneMetadataMap(current)
+	delete(next, agentTodoSummaryMetadataKey)
+	return next, true
+}
+
+func cloneMetadataMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(input))
+	for key, value := range input {
+		cloned[key] = cloneMetadataValue(value)
+	}
+	return cloned
+}
+
+func cloneMetadataValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneMetadataMap(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for i, entry := range typed {
+			cloned[i] = cloneMetadataValue(entry)
+		}
+		return cloned
+	default:
+		return typed
+	}
+}
+
+func metadataEqual(left, right any) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return string(leftJSON) == string(rightJSON)
+}
+
+func affectedAgentSessionIDs(before, after []TodoItem) []string {
+	seen := make(map[string]struct{})
+	for _, item := range before {
+		if item.OwnerKind != pebblestore.WorkspaceTodoOwnerKindAgent {
+			continue
+		}
+		sessionID := strings.TrimSpace(item.SessionID)
+		if sessionID != "" {
+			seen[sessionID] = struct{}{}
+		}
+	}
+	for _, item := range after {
+		if item.OwnerKind != pebblestore.WorkspaceTodoOwnerKindAgent {
+			continue
+		}
+		sessionID := strings.TrimSpace(item.SessionID)
+		if sessionID != "" {
+			seen[sessionID] = struct{}{}
+		}
+	}
+	ids := make([]string, 0, len(seen))
+	for sessionID := range seen {
+		ids = append(ids, sessionID)
+	}
+	return ids
+}
+
+func (s *Service) syncAgentTodoSessionMetadata(before, after []TodoItem) error {
+	if s == nil || s.sessions == nil {
+		return nil
+	}
+	for _, sessionID := range affectedAgentSessionIDs(before, after) {
+		summary := summarizeForOptions(after, ListOptions{OwnerKind: pebblestore.WorkspaceTodoOwnerKindAgent, SessionID: sessionID})
+		session, ok, err := s.sessions.GetSession(sessionID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		metadata := cloneMetadataMap(session.Metadata)
+		var nextMetadata map[string]any
+		var changed bool
+		if summary.Agent.TaskCount > 0 {
+			nextMetadata, changed = syncAgentSummaryMetadataMap(metadata, summary)
+		} else {
+			nextMetadata, changed = clearAgentSummaryMetadataMap(metadata)
+		}
+		if !changed {
+			continue
+		}
+		_, event, err := s.sessions.UpdateMetadata(sessionID, nextMetadata)
+		if err != nil {
+			return err
+		}
+		if event != nil && s.publish != nil {
+			s.publish(*event)
+		}
+	}
+	return nil
 }
 
 func batchReturnOwnerKind(ownerKinds map[string]struct{}) string {

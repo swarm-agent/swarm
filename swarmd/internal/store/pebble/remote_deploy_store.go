@@ -11,12 +11,23 @@ import (
 )
 
 type RemoteDeployPayloadRecord struct {
-	ID            string `json:"id"`
+	ID            string                               `json:"id"`
+	SourcePath    string                               `json:"source_path,omitempty"`
+	WorkspacePath string                               `json:"workspace_path,omitempty"`
+	WorkspaceName string                               `json:"workspace_name,omitempty"`
+	TargetPath    string                               `json:"target_path,omitempty"`
+	Mode          string                               `json:"mode,omitempty"`
+	Directories   []RemoteDeployPayloadDirectoryRecord `json:"directories,omitempty"`
+	GitRoot       string                               `json:"git_root,omitempty"`
+	ArchiveName   string                               `json:"archive_name,omitempty"`
+	IncludedFiles int                                  `json:"included_files,omitempty"`
+	IncludedBytes int64                                `json:"included_bytes,omitempty"`
+	ExcludedNote  string                               `json:"excluded_note,omitempty"`
+}
+
+type RemoteDeployPayloadDirectoryRecord struct {
 	SourcePath    string `json:"source_path,omitempty"`
-	WorkspacePath string `json:"workspace_path,omitempty"`
-	WorkspaceName string `json:"workspace_name,omitempty"`
 	TargetPath    string `json:"target_path,omitempty"`
-	Mode          string `json:"mode,omitempty"`
 	GitRoot       string `json:"git_root,omitempty"`
 	ArchiveName   string `json:"archive_name,omitempty"`
 	IncludedFiles int    `json:"included_files,omitempty"`
@@ -25,58 +36,65 @@ type RemoteDeployPayloadRecord struct {
 }
 
 type RemoteDeploySessionRecord struct {
-	ID                    string                         `json:"id"`
-	Name                  string                         `json:"name"`
-	Status                string                         `json:"status"`
-	SSHSessionTarget      string                         `json:"ssh_session_target,omitempty"`
-	GroupID               string                         `json:"group_id,omitempty"`
-	GroupName             string                         `json:"group_name,omitempty"`
-	BuilderRuntime        string                         `json:"builder_runtime,omitempty"`
-	RemoteRuntime         string                         `json:"remote_runtime,omitempty"`
-	SystemdUnit           string                         `json:"systemd_unit,omitempty"`
-	RemoteRoot            string                         `json:"remote_root,omitempty"`
-	MasterTailscaleURL    string                         `json:"master_tailscale_url,omitempty"`
-	MasterSwarmID         string                         `json:"master_swarm_id,omitempty"`
-	SessionToken          string                         `json:"session_token,omitempty"`
-	InviteToken           string                         `json:"invite_token,omitempty"`
-	EnrollmentID          string                         `json:"enrollment_id,omitempty"`
-	EnrollmentStatus      string                         `json:"enrollment_status,omitempty"`
-	ChildSwarmID          string                         `json:"child_swarm_id,omitempty"`
-	ChildName             string                         `json:"child_name,omitempty"`
-	ChildPublicKey        string                         `json:"child_public_key,omitempty"`
-	ChildFingerprint      string                         `json:"child_fingerprint,omitempty"`
-	HostSwarmID           string                         `json:"host_swarm_id,omitempty"`
-	HostName              string                         `json:"host_name,omitempty"`
-	HostPublicKey         string                         `json:"host_public_key,omitempty"`
-	HostFingerprint       string                         `json:"host_fingerprint,omitempty"`
-	HostAPIBaseURL        string                         `json:"host_api_base_url,omitempty"`
-	HostDesktopURL        string                         `json:"host_desktop_url,omitempty"`
-	RemoteAuthURL         string                         `json:"remote_auth_url,omitempty"`
-	RemoteTailnetURL      string                         `json:"remote_tailnet_url,omitempty"`
-	LastPairingURL        string                         `json:"last_pairing_url,omitempty"`
-	ImageRef              string                         `json:"image_ref,omitempty"`
-	ImageSignature        string                         `json:"image_signature,omitempty"`
-	ImageArchiveBytes     int64                          `json:"image_archive_bytes,omitempty"`
-	LastRemoteOutput      string                         `json:"last_remote_output,omitempty"`
-	LastError             string                         `json:"last_error,omitempty"`
-	SSHReachable          bool                           `json:"ssh_reachable,omitempty"`
-	SystemdAvailable      bool                           `json:"systemd_available,omitempty"`
-	SudoMode              string                         `json:"sudo_mode,omitempty"`
-	SyncEnabled           bool                           `json:"sync_enabled,omitempty"`
-	SyncMode              string                         `json:"sync_mode,omitempty"`
-	SyncOwnerSwarmID      string                         `json:"sync_owner_swarm_id,omitempty"`
-	BypassPermissions     bool                           `json:"bypass_permissions,omitempty"`
-	ContainerPackages     ContainerPackageManifestRecord `json:"container_packages,omitempty"`
-	SyncCredentialURL     string                         `json:"sync_credential_url,omitempty"`
-	SyncBundlePassword    string                         `json:"sync_bundle_password,omitempty"`
-	SyncBundleExportedAt  int64                          `json:"sync_bundle_exported_at,omitempty"`
-	SyncBundleExportCount int                            `json:"sync_bundle_export_count,omitempty"`
-	FilesToCopy           []string                       `json:"files_to_copy,omitempty"`
-	Payloads              []RemoteDeployPayloadRecord    `json:"payloads,omitempty"`
-	ApprovedAt            int64                          `json:"approved_at,omitempty"`
-	AttachedAt            int64                          `json:"attached_at,omitempty"`
-	CreatedAt             int64                          `json:"created_at"`
-	UpdatedAt             int64                          `json:"updated_at"`
+	ID                      string                         `json:"id"`
+	Name                    string                         `json:"name"`
+	Status                  string                         `json:"status"`
+	SSHSessionTarget        string                         `json:"ssh_session_target,omitempty"`
+	TransportMode           string                         `json:"transport_mode,omitempty"`
+	MasterEndpoint          string                         `json:"master_endpoint,omitempty"`
+	RemoteEndpoint          string                         `json:"remote_endpoint,omitempty"`
+	RemoteAdvertiseHost     string                         `json:"remote_advertise_host,omitempty"`
+	GroupID                 string                         `json:"group_id,omitempty"`
+	GroupName               string                         `json:"group_name,omitempty"`
+	BuilderRuntime          string                         `json:"builder_runtime,omitempty"`
+	RemoteRuntime           string                         `json:"remote_runtime,omitempty"`
+	ImageDeliveryMode       string                         `json:"image_delivery_mode,omitempty"`
+	ImagePrefix             string                         `json:"image_prefix,omitempty"`
+	SystemdUnit             string                         `json:"systemd_unit,omitempty"`
+	RemoteRoot              string                         `json:"remote_root,omitempty"`
+	MasterTailscaleURL      string                         `json:"master_tailscale_url,omitempty"`
+	MasterSwarmID           string                         `json:"master_swarm_id,omitempty"`
+	SessionToken            string                         `json:"session_token,omitempty"`
+	InviteToken             string                         `json:"invite_token,omitempty"`
+	EnrollmentID            string                         `json:"enrollment_id,omitempty"`
+	EnrollmentStatus        string                         `json:"enrollment_status,omitempty"`
+	ChildSwarmID            string                         `json:"child_swarm_id,omitempty"`
+	ChildName               string                         `json:"child_name,omitempty"`
+	ChildPublicKey          string                         `json:"child_public_key,omitempty"`
+	ChildFingerprint        string                         `json:"child_fingerprint,omitempty"`
+	HostSwarmID             string                         `json:"host_swarm_id,omitempty"`
+	HostName                string                         `json:"host_name,omitempty"`
+	HostPublicKey           string                         `json:"host_public_key,omitempty"`
+	HostFingerprint         string                         `json:"host_fingerprint,omitempty"`
+	HostAPIBaseURL          string                         `json:"host_api_base_url,omitempty"`
+	HostDesktopURL          string                         `json:"host_desktop_url,omitempty"`
+	RemoteAuthURL           string                         `json:"remote_auth_url,omitempty"`
+	RemoteTailnetURL        string                         `json:"remote_tailnet_url,omitempty"`
+	LastPairingURL          string                         `json:"last_pairing_url,omitempty"`
+	ImageRef                string                         `json:"image_ref,omitempty"`
+	ImageSignature          string                         `json:"image_signature,omitempty"`
+	ImageArchiveBytes       int64                          `json:"image_archive_bytes,omitempty"`
+	LastRemoteOutput        string                         `json:"last_remote_output,omitempty"`
+	LastError               string                         `json:"last_error,omitempty"`
+	SSHReachable            bool                           `json:"ssh_reachable,omitempty"`
+	SystemdAvailable        bool                           `json:"systemd_available,omitempty"`
+	SudoMode                string                         `json:"sudo_mode,omitempty"`
+	SyncEnabled             bool                           `json:"sync_enabled,omitempty"`
+	SyncMode                string                         `json:"sync_mode,omitempty"`
+	SyncOwnerSwarmID        string                         `json:"sync_owner_swarm_id,omitempty"`
+	BypassPermissions       bool                           `json:"bypass_permissions,omitempty"`
+	ContainerPackages       ContainerPackageManifestRecord `json:"container_packages,omitempty"`
+	SyncCredentialURL       string                         `json:"sync_credential_url,omitempty"`
+	SyncBundlePassword      string                         `json:"sync_bundle_password,omitempty"`
+	SyncBundleExportedAt    int64                          `json:"sync_bundle_exported_at,omitempty"`
+	SyncBundleExportCount   int                            `json:"sync_bundle_export_count,omitempty"`
+	RemoteNetworkCandidates []string                       `json:"remote_network_candidates,omitempty"`
+	FilesToCopy             []string                       `json:"files_to_copy,omitempty"`
+	Payloads                []RemoteDeployPayloadRecord    `json:"payloads,omitempty"`
+	ApprovedAt              int64                          `json:"approved_at,omitempty"`
+	AttachedAt              int64                          `json:"attached_at,omitempty"`
+	CreatedAt               int64                          `json:"created_at"`
+	UpdatedAt               int64                          `json:"updated_at"`
 }
 
 type RemoteDeploySessionStore struct {
@@ -183,13 +201,25 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 	record.Name = strings.TrimSpace(record.Name)
 	record.Status = normalizeRemoteDeploySessionStatus(record.Status)
 	record.SSHSessionTarget = strings.TrimSpace(record.SSHSessionTarget)
+	record.TransportMode = strings.ToLower(strings.TrimSpace(record.TransportMode))
+	if record.TransportMode == "" {
+		record.TransportMode = "tailscale"
+	}
+	record.MasterEndpoint = strings.TrimSpace(record.MasterEndpoint)
+	record.RemoteEndpoint = strings.TrimSpace(record.RemoteEndpoint)
+	record.RemoteAdvertiseHost = strings.TrimSpace(record.RemoteAdvertiseHost)
 	record.GroupID = strings.TrimSpace(record.GroupID)
 	record.GroupName = strings.TrimSpace(record.GroupName)
-	record.BuilderRuntime = normalizeSwarmLocalContainerRuntime(record.BuilderRuntime)
+	record.BuilderRuntime = strings.TrimSpace(record.BuilderRuntime)
 	record.RemoteRuntime = normalizeSwarmLocalContainerRuntime(record.RemoteRuntime)
+	record.ImageDeliveryMode = strings.ToLower(strings.TrimSpace(record.ImageDeliveryMode))
+	record.ImagePrefix = strings.TrimRight(strings.TrimSpace(record.ImagePrefix), "/")
 	record.SystemdUnit = strings.TrimSpace(record.SystemdUnit)
 	record.RemoteRoot = strings.TrimSpace(record.RemoteRoot)
 	record.MasterTailscaleURL = strings.TrimSpace(record.MasterTailscaleURL)
+	if record.MasterEndpoint == "" {
+		record.MasterEndpoint = record.MasterTailscaleURL
+	}
 	record.MasterSwarmID = strings.TrimSpace(record.MasterSwarmID)
 	record.SessionToken = strings.TrimSpace(record.SessionToken)
 	record.InviteToken = strings.TrimSpace(record.InviteToken)
@@ -207,6 +237,9 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 	record.HostDesktopURL = strings.TrimSpace(record.HostDesktopURL)
 	record.RemoteAuthURL = strings.TrimSpace(record.RemoteAuthURL)
 	record.RemoteTailnetURL = strings.TrimSpace(record.RemoteTailnetURL)
+	if record.RemoteEndpoint == "" {
+		record.RemoteEndpoint = record.RemoteTailnetURL
+	}
 	record.LastPairingURL = strings.TrimSpace(record.LastPairingURL)
 	record.ImageRef = strings.TrimSpace(record.ImageRef)
 	record.ImageSignature = strings.TrimSpace(record.ImageSignature)
@@ -224,6 +257,7 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 	if record.SyncBundleExportCount < 0 {
 		record.SyncBundleExportCount = 0
 	}
+	record.RemoteNetworkCandidates = normalizeRemoteDeployCandidateList(record.RemoteNetworkCandidates)
 	for i := range record.FilesToCopy {
 		record.FilesToCopy[i] = strings.TrimSpace(record.FilesToCopy[i])
 	}
@@ -234,6 +268,19 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 		record.Payloads[i].WorkspaceName = strings.TrimSpace(record.Payloads[i].WorkspaceName)
 		record.Payloads[i].TargetPath = strings.TrimSpace(record.Payloads[i].TargetPath)
 		record.Payloads[i].Mode = strings.TrimSpace(record.Payloads[i].Mode)
+		for j := range record.Payloads[i].Directories {
+			record.Payloads[i].Directories[j].SourcePath = strings.TrimSpace(record.Payloads[i].Directories[j].SourcePath)
+			record.Payloads[i].Directories[j].TargetPath = strings.TrimSpace(record.Payloads[i].Directories[j].TargetPath)
+			record.Payloads[i].Directories[j].GitRoot = strings.TrimSpace(record.Payloads[i].Directories[j].GitRoot)
+			record.Payloads[i].Directories[j].ArchiveName = strings.TrimSpace(record.Payloads[i].Directories[j].ArchiveName)
+			record.Payloads[i].Directories[j].ExcludedNote = strings.TrimSpace(record.Payloads[i].Directories[j].ExcludedNote)
+			if record.Payloads[i].Directories[j].IncludedFiles < 0 {
+				record.Payloads[i].Directories[j].IncludedFiles = 0
+			}
+			if record.Payloads[i].Directories[j].IncludedBytes < 0 {
+				record.Payloads[i].Directories[j].IncludedBytes = 0
+			}
+		}
 		record.Payloads[i].GitRoot = strings.TrimSpace(record.Payloads[i].GitRoot)
 		record.Payloads[i].ArchiveName = strings.TrimSpace(record.Payloads[i].ArchiveName)
 		record.Payloads[i].ExcludedNote = strings.TrimSpace(record.Payloads[i].ExcludedNote)
@@ -260,6 +307,30 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 		record.UpdatedAt = 0
 	}
 	return record
+}
+
+func normalizeRemoteDeployCandidateList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func normalizeRemoteDeploySessionID(value string) string {

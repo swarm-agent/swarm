@@ -36,5 +36,5 @@ func (p *ChatPage) renderLiveAssistantEmergencyLines(message chatMessageItem, wi
 	if body == "" {
 		body = " "
 	}
-	return styledWrapped("□ ", "", body, width, p.theme.Accent)
+	return styledWrapped("▢ ", "", body, width, p.theme.Accent)
 }

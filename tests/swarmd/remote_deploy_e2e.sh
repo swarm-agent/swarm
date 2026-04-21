@@ -13,25 +13,26 @@ Usage: ./tests/swarmd/remote_deploy_e2e.sh [options]
 
 Run the real remote SSH deploy path against one or more SSH targets with an isolated host:
   1. create or reuse an isolated temp XDG root for the host swarm
-  2. write a swarm-enabled tailscale startup config for that isolated host
+  2. write a swarm-enabled startup config for that isolated host
   3. optionally rebuild the host binaries
-  4. start the isolated host swarm and ensure a Tailscale callback URL exists
+  4. start the isolated host swarm and ensure a callback URL exists
   5. seed the source workspace with /v1/workspace/add
   6. create or select the current swarm group
   7. create and start remote deploy sessions for one or more SSH targets
-  8. print and poll the remote Tailscale auth URLs
+  8. print and poll the remote transport/auth state
   9. auto-approve attach once each child enrolls back to the host
 
-This harness covers the current supported remote path:
+This harness covers the current supported remote paths:
   - SSH is bootstrap only
-  - Tailscale is the live child<->host transport
+  - Tailscale or LAN/WireGuard is the live child<->host transport
 
-It does not automate the child Tailscale browser login in manual-auth mode.
+In Tailscale manual-auth mode it does not automate the child browser login.
 It prints the auth URLs and waits for the user to complete them.
 
 Options:
   --ssh-target <target>                 SSH alias/host to deploy to. Repeatable. Required.
   --launches-per-target <count>         Number of sessions to launch per SSH target. Default: 1
+  --transport-mode <tailscale|lan>      Remote child transport after SSH bootstrap. Default: tailscale
   --remote-runtime <docker|podman>      Remote runtime. Default: docker
   --session-prefix <prefix>             Remote child/session name prefix. Default: ssh-remote-e2e
   --workspace-path <path>               Source workspace path. Default: repo root
@@ -40,6 +41,9 @@ Options:
   --group-name <name>                   Existing target group name, or name to create
   --host-swarm-name <name>              Host swarm name. Default: Remote Deploy Test Host
   --host-root <path>                    Reuse a specific isolated host root instead of mktemp
+  --host-bind-host <host>               Host bind address for the isolated master. LAN mode defaults to the first private non-container address.
+  --host-advertise-host <host>          Host advertised callback address. Default: host bind address for LAN mode.
+  --remote-advertise-host <host>        Remote child advertised callback host/IP. LAN mode may infer this from the SSH target if omitted.
   --host-backend-port <port>            Host backend/API port. Default: 17781
   --host-desktop-port <port>            Host desktop port. Default: 15555
   --host-peer-port <port>               Host peer transport port. Default: 17791
@@ -82,6 +86,10 @@ log() {
   printf '%s\n' "$*"
 }
 
+now_ms() {
+  date +%s%3N
+}
+
 fail() {
   printf 'error: %s\n' "$*" >&2
   exit 1
@@ -103,6 +111,17 @@ write_artifact() {
   local name="${1:-}"
   local content="${2-}"
   printf '%s' "${content}" >"${ARTIFACT_DIR}/${name}"
+}
+
+write_timing_artifact() {
+  local name="${1:-}"
+  local phase="${2:-}"
+  local duration_ms="${3:-0}"
+  local extra_json="${4:-{}}"
+  local payload
+  payload="$(jq -nc --arg phase "${phase}" --arg duration_ms "${duration_ms}" --arg extra_json "${extra_json}" '($extra_json | fromjson? // {}) + {phase:$phase,duration_ms:($duration_ms | tonumber? // 0)}')"
+  write_artifact "${name}" "${payload}"
+  log "timing ${phase}: ${duration_ms}ms"
 }
 
 curl_http_code() {
@@ -135,10 +154,21 @@ api_request() {
     --max-time "${max_time_seconds}"
     -o "${body_file}"
     -w '%{http_code}'
-    -H "Authorization: Bearer ${ATTACH_TOKEN}"
     -H 'Accept: application/json'
     -X "${method}"
   )
+  if [[ -n "${ATTACH_TOKEN:-}" ]]; then
+    args+=(-H "Authorization: Bearer ${ATTACH_TOKEN}")
+  fi
+  if [[ -n "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" ]]; then
+    args+=(
+      -c "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
+      -b "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
+      -H "Origin: ${HOST_ADMIN_API_URL%/}"
+      -H "Referer: ${HOST_ADMIN_API_URL%/}/"
+      -H 'Sec-Fetch-Site: same-origin'
+    )
+  fi
   if [[ -n "${body}" ]]; then
     request_body_file="$(mktemp)"
     printf '%s' "${body}" >"${request_body_file}"
@@ -325,6 +355,32 @@ port_is_available() {
   fail "unable to check local port availability because neither ss nor lsof is installed"
 }
 
+is_private_ipv4() {
+  local value="${1:-}"
+  [[ "${value}" =~ ^10\. ]] && return 0
+  [[ "${value}" =~ ^192\.168\. ]] && return 0
+  [[ "${value}" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && return 0
+  return 1
+}
+
+detect_lan_bind_host() {
+  local candidate iface cidr
+  while read -r _ iface _ cidr _; do
+    [[ -n "${iface:-}" && -n "${cidr:-}" ]] || continue
+    case "${iface}" in
+      lo|tailscale0|docker0|br-*|veth*|cni*|flannel*|virbr*|zt*|podman*)
+        continue
+        ;;
+    esac
+    candidate="${cidr%%/*}"
+    if is_private_ipv4 "${candidate}"; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done < <(ip -o -4 addr show scope global)
+  return 1
+}
+
 reserve_isolated_ports() {
   local backend_port="${HOST_BACKEND_PORT}"
   local desktop_port="${HOST_DESKTOP_PORT}"
@@ -351,9 +407,9 @@ write_host_startup_config() {
   mkdir -p "$(dirname -- "${HOST_STARTUP_CONFIG}")"
   cat >"${HOST_STARTUP_CONFIG}" <<EOF
 startup_mode = box
-host = 127.0.0.1
+host = ${HOST_BIND_HOST}
 port = ${HOST_BACKEND_PORT}
-advertise_host =
+advertise_host = ${HOST_ADVERTISE_HOST}
 advertise_port = ${HOST_BACKEND_PORT}
 desktop_port = ${HOST_DESKTOP_PORT}
 bypass_permissions = false
@@ -361,7 +417,7 @@ retain_tool_output_history = false
 swarm_name = ${HOST_SWARM_NAME}
 swarm_mode = true
 child = false
-mode = tailscale
+mode = ${TRANSPORT_MODE}
 tailscale_url = ${HOST_TAILSCALE_URL}
 peer_transport_port = ${HOST_PEER_PORT}
 parent_swarm_id =
@@ -380,10 +436,8 @@ deploy_container_bootstrap_secret =
 deploy_container_verification_code =
 remote_deploy_enabled = false
 remote_deploy_session_id =
-remote_deploy_session_token =
 remote_deploy_host_api_base_url =
 remote_deploy_host_desktop_url =
-remote_deploy_invite_token =
 EOF
 }
 
@@ -437,14 +491,42 @@ prepare_isolated_host() {
   reserve_isolated_ports || fail "unable to reserve isolated host ports"
 
   HOST_STARTUP_CONFIG="${HOST_XDG_CONFIG_HOME}/swarm/swarm.conf"
-  HOST_ADMIN_API_URL="http://127.0.0.1:${HOST_BACKEND_PORT}"
-  HOST_DESKTOP_URL="http://127.0.0.1:${HOST_DESKTOP_PORT}"
+  HOST_ADMIN_API_URL="http://${HOST_BIND_HOST}:${HOST_BACKEND_PORT}"
+  HOST_DESKTOP_URL="http://${HOST_BIND_HOST}:${HOST_DESKTOP_PORT}"
+  if [[ "${TRANSPORT_MODE}" == "lan" ]]; then
+    HOST_CALLBACK_URL="http://${HOST_ADVERTISE_HOST}:${HOST_BACKEND_PORT}"
+  fi
   ARTIFACT_DIR="${HOST_ROOT}/artifacts"
   mkdir -p "${ARTIFACT_DIR}"
 
   write_host_startup_config
   write_host_control_files
   write_artifact "host-startup-config.txt" "$(cat -- "${HOST_STARTUP_CONFIG}")"
+}
+
+resolve_host_transport() {
+  case "${TRANSPORT_MODE}" in
+    tailscale)
+      HOST_BIND_HOST="127.0.0.1"
+      HOST_ADVERTISE_HOST=""
+      resolve_host_tailscale_url
+      HOST_CALLBACK_URL="${HOST_TAILSCALE_URL}"
+      ;;
+    lan)
+      HOST_BIND_HOST="$(trim "${HOST_BIND_HOST_OVERRIDE}")"
+      if [[ -z "${HOST_BIND_HOST}" ]]; then
+        HOST_BIND_HOST="$(detect_lan_bind_host || true)"
+      fi
+      [[ -n "${HOST_BIND_HOST}" ]] || fail "could not determine a LAN/WireGuard host bind address; pass --host-bind-host"
+      HOST_ADVERTISE_HOST="$(trim "${HOST_ADVERTISE_HOST_OVERRIDE}")"
+      [[ -n "${HOST_ADVERTISE_HOST}" ]] || HOST_ADVERTISE_HOST="${HOST_BIND_HOST}"
+      HOST_TAILSCALE_URL=""
+      HOST_CALLBACK_URL="http://${HOST_ADVERTISE_HOST}:${HOST_BACKEND_PORT}"
+      ;;
+    *)
+      fail "unsupported transport mode: ${TRANSPORT_MODE}"
+      ;;
+  esac
 }
 
 resolve_host_tailscale_url() {
@@ -460,6 +542,9 @@ resolve_host_tailscale_url() {
 }
 
 ensure_tailscale_serve() {
+  if [[ "${TRANSPORT_MODE}" != "tailscale" ]]; then
+    return 0
+  fi
   if [[ "${MANAGE_TAILSCALE_SERVE}" != "true" ]]; then
     return 0
   fi
@@ -520,14 +605,17 @@ stop_host() {
 }
 
 fetch_attach_token() {
-  local response
-  response="$(curl -fsS \
+  if [[ -z "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" ]]; then
+    HOST_DESKTOP_SESSION_COOKIE_FILE="$(mktemp)"
+  fi
+  curl -fsS \
+    -c "${HOST_DESKTOP_SESSION_COOKIE_FILE}" \
+    -b "${HOST_DESKTOP_SESSION_COOKIE_FILE}" \
     -H "Origin: ${HOST_ADMIN_API_URL%/}" \
     -H "Referer: ${HOST_ADMIN_API_URL%/}/" \
     -H 'Sec-Fetch-Site: same-origin' \
-    "${HOST_ADMIN_API_URL%/}/v1/auth/attach/token")"
-  ATTACH_TOKEN="$(printf '%s' "${response}" | jq -r '.token // empty')"
-  [[ -n "${ATTACH_TOKEN}" ]] || fail "failed to fetch attach token from ${HOST_ADMIN_API_URL%/}/v1/auth/attach/token"
+    "${HOST_ADMIN_API_URL%/}/v1/auth/desktop/session" >/dev/null
+  ATTACH_TOKEN=""
 }
 
 maybe_rebuild_host() {
@@ -616,9 +704,10 @@ create_remote_sessions() {
   SESSION_TARGETS=()
   local idx=0
   local target session_name create_payload create_response session_id start_payload start_response tailscale_auth_key sync_vault_password
+  local create_started_ms create_duration_ms start_started_ms start_duration_ms timing_extra_json
   tailscale_auth_key=""
   sync_vault_password=""
-  if [[ "${TAILSCALE_AUTH_MODE}" == "key" ]]; then
+  if [[ "${TRANSPORT_MODE}" == "tailscale" && "${TAILSCALE_AUTH_MODE}" == "key" ]]; then
     tailscale_auth_key="${!TAILSCALE_AUTH_KEY_ENV:-}"
   fi
   if [[ -n "${SYNC_VAULT_PASSWORD_ENV}" ]]; then
@@ -630,6 +719,8 @@ create_remote_sessions() {
     create_payload="$(jq -nc \
       --arg name "${session_name}" \
       --arg ssh_session_target "${target}" \
+      --arg transport_mode "${TRANSPORT_MODE}" \
+      --arg remote_advertise_host "${REMOTE_ADVERTISE_HOST}" \
       --arg group_id "${TARGET_GROUP_ID}" \
       --arg group_name "${TARGET_GROUP_NAME}" \
       --arg remote_runtime "${REMOTE_RUNTIME}" \
@@ -638,28 +729,37 @@ create_remote_sessions() {
       --arg workspace_path "${SOURCE_WORKSPACE_PATH}" \
       --arg workspace_name "${WORKSPACE_NAME}" \
       --arg target_path "/workspaces" \
-      '{name:$name,ssh_session_target:$ssh_session_target,group_id:$group_id,group_name:$group_name,remote_runtime:$remote_runtime,sync_enabled:$sync_enabled,payloads:[{source_path:$source_path,workspace_path:$workspace_path,workspace_name:$workspace_name,target_path:$target_path,mode:"rw"}]}')"
+      '{name:$name,ssh_session_target:$ssh_session_target,transport_mode:$transport_mode,group_id:$group_id,group_name:$group_name,remote_runtime:$remote_runtime,sync_enabled:$sync_enabled,payloads:[{source_path:$source_path,workspace_path:$workspace_path,workspace_name:$workspace_name,target_path:$target_path,mode:"rw"}]} + (if $remote_advertise_host != "" then {remote_advertise_host:$remote_advertise_host} else {} end)')"
+    create_started_ms="$(now_ms)"
     create_response="$(api_post '/v1/deploy/remote/session/create' "${create_payload}")"
+    create_duration_ms=$(( $(now_ms) - create_started_ms ))
     write_artifact "remote-session-$(printf '%02d' "${idx}")-create.json" "${create_response}"
+    timing_extra_json="$(jq -nc --arg session_name "${session_name}" --arg ssh_target "${target}" '{session_name:$session_name,ssh_target:$ssh_target}')"
+    write_timing_artifact "remote-session-$(printf '%02d' "${idx}")-create-timing.json" "remote_session_create" "${create_duration_ms}" "${timing_extra_json}"
     session_id="$(printf '%s' "${create_response}" | jq -r '.session.id // empty')"
     [[ -n "${session_id}" ]] || fail "remote session create for ${target} returned no session id"
 
-    if [[ "${TAILSCALE_AUTH_MODE}" == "key" ]]; then
+    if [[ "${TRANSPORT_MODE}" == "tailscale" && "${TAILSCALE_AUTH_MODE}" == "key" ]]; then
       start_payload="$(jq -nc --arg session_id "${session_id}" --arg tailscale_auth_key "${tailscale_auth_key}" --arg sync_vault_password "${sync_vault_password}" '{session_id:$session_id,tailscale_auth_key:$tailscale_auth_key} + (if $sync_vault_password != "" then {sync_vault_password:$sync_vault_password} else {} end)')"
     else
       start_payload="$(jq -nc --arg session_id "${session_id}" --arg sync_vault_password "${sync_vault_password}" '{session_id:$session_id} + (if $sync_vault_password != "" then {sync_vault_password:$sync_vault_password} else {} end)')"
     fi
+    start_started_ms="$(now_ms)"
     start_response="$(api_post_with_timeout '/v1/deploy/remote/session/start' "${start_payload}" "${REMOTE_START_MAX_TIME_SECONDS}")"
+    start_duration_ms=$(( $(now_ms) - start_started_ms ))
     write_artifact "remote-session-$(printf '%02d' "${idx}")-start.json" "${start_response}"
+    timing_extra_json="$(jq -nc --arg session_id "${session_id}" --arg session_name "${session_name}" --arg ssh_target "${target}" '{session_id:$session_id,session_name:$session_name,ssh_target:$ssh_target}')"
+    write_timing_artifact "remote-session-${session_id}-start-timing.json" "remote_session_start" "${start_duration_ms}" "${timing_extra_json}"
 
     SESSION_IDS+=("${session_id}")
     SESSION_NAMES+=("${session_name}")
     SESSION_TARGETS+=("${target}")
+    SESSION_WAIT_START_MS["${session_id}"]="$(now_ms)"
   done
 }
 
 refresh_remote_sessions() {
-  REMOTE_SESSIONS_JSON="$(api_get '/v1/deploy/remote/session')"
+  REMOTE_SESSIONS_JSON="$(api_get '/v1/deploy/remote/session?refresh=1')"
   write_artifact "remote-sessions-latest.json" "${REMOTE_SESSIONS_JSON}"
 }
 
@@ -801,8 +901,9 @@ run_routed_ai_proof_for_session() {
   [[ -n "${session_id}" ]] || fail "remote deploy session id is required for routed AI proof"
 
   local child_swarm_id child_base_url runtime_workspace_path provider_key want_storage_mode
+  local started_ms duration_ms timing_extra_json
   child_swarm_id="$(printf '%s' "${remote_session_json}" | jq -r '.child_swarm_id // empty')"
-  child_base_url="$(printf '%s' "${remote_session_json}" | jq -r '.remote_tailnet_url // empty')"
+  child_base_url="$(printf '%s' "${remote_session_json}" | jq -r '.remote_endpoint // .remote_tailnet_url // empty')"
   runtime_workspace_path="$(printf '%s' "${remote_session_json}" | jq -r '.preflight.payloads[0].target_path // empty')"
   if [[ -z "${runtime_workspace_path}" || "${runtime_workspace_path}" == "null" ]]; then
     runtime_workspace_path="/workspaces/${WORKSPACE_NAME}"
@@ -830,36 +931,75 @@ run_routed_ai_proof_for_session() {
   esac
 
   local routed_create_json routed_session_id
+  started_ms="$(now_ms)"
   routed_create_json="$(create_routed_host_session "${child_swarm_id}" "${runtime_workspace_path}")"
+  duration_ms=$(( $(now_ms) - started_ms ))
   write_artifact "remote-session-${session_id}-routed-session-create.json" "${routed_create_json}"
+  timing_extra_json="$(jq -nc --arg session_id "${session_id}" --arg child_swarm_id "${child_swarm_id}" '{session_id:$session_id,child_swarm_id:$child_swarm_id}')"
+  write_timing_artifact "remote-session-${session_id}-routed-session-create-timing.json" "routed_session_create" "${duration_ms}" "${timing_extra_json}"
   routed_session_id="$(printf '%s' "${routed_create_json}" | jq -r '.session.id // empty')"
   [[ -n "${routed_session_id}" ]] || fail "routed session create for remote session ${session_id} returned no session id"
 
+  started_ms="$(now_ms)"
   write_artifact "remote-session-${session_id}-run-exit-plan-start.json" "$(start_routed_session_run "${routed_session_id}" "Exit plan mode. After approval, reply with exactly: I got out.")"
+  duration_ms=$(( $(now_ms) - started_ms ))
+  timing_extra_json="$(jq -nc --arg session_id "${session_id}" --arg routed_session_id "${routed_session_id}" '{session_id:$session_id,routed_session_id:$routed_session_id}')"
+  write_timing_artifact "remote-session-${session_id}-run-exit-plan-start-timing.json" "routed_run_start_exit_plan" "${duration_ms}" "${timing_extra_json}"
   local exit_permission_json exit_permission_id
+  started_ms="$(now_ms)"
   exit_permission_json="$(wait_for_pending_permission "${routed_session_id}" "exit_plan_mode")"
+  duration_ms=$(( $(now_ms) - started_ms ))
   write_artifact "remote-session-${session_id}-permission-exit-plan-pending.json" "${exit_permission_json}"
+  write_timing_artifact "remote-session-${session_id}-permission-exit-plan-pending-timing.json" "routed_wait_exit_plan_permission" "${duration_ms}" "${timing_extra_json}"
   exit_permission_id="$(printf '%s' "${exit_permission_json}" | jq -r '.id // empty')"
   [[ -n "${exit_permission_id}" ]] || fail "pending exit_plan_mode permission for session ${routed_session_id} returned no id"
+  started_ms="$(now_ms)"
   write_artifact "remote-session-${session_id}-permission-exit-plan-resolve.json" "$(resolve_session_permission "${routed_session_id}" "${exit_permission_id}" "approve" "ok")"
+  duration_ms=$(( $(now_ms) - started_ms ))
+  write_timing_artifact "remote-session-${session_id}-permission-exit-plan-resolve-timing.json" "routed_resolve_exit_plan_permission" "${duration_ms}" "${timing_extra_json}"
+  started_ms="$(now_ms)"
   write_artifact "remote-session-${session_id}-session-auto.json" "$(wait_for_session_mode "${routed_session_id}" "auto")"
+  duration_ms=$(( $(now_ms) - started_ms ))
+  write_timing_artifact "remote-session-${session_id}-session-auto-timing.json" "routed_wait_session_auto" "${duration_ms}" "${timing_extra_json}"
+  started_ms="$(now_ms)"
   write_artifact "remote-session-${session_id}-message-i-got-out.json" "$(wait_for_message_content "${routed_session_id}" "I got out.")"
+  duration_ms=$(( $(now_ms) - started_ms ))
+  write_timing_artifact "remote-session-${session_id}-message-i-got-out-timing.json" "routed_wait_exit_plan_message" "${duration_ms}" "${timing_extra_json}"
 
+  started_ms="$(now_ms)"
   write_artifact "remote-session-${session_id}-run-bash-start.json" "$(start_routed_session_run "${routed_session_id}" "Run exactly this bash command and return only its output: ${PROOF_BASH_COMMAND}")"
+  duration_ms=$(( $(now_ms) - started_ms ))
+  write_timing_artifact "remote-session-${session_id}-run-bash-start-timing.json" "routed_run_start_bash" "${duration_ms}" "${timing_extra_json}"
   local bash_permission_json bash_permission_id
+  started_ms="$(now_ms)"
   bash_permission_json="$(wait_for_pending_permission "${routed_session_id}" "bash")"
+  duration_ms=$(( $(now_ms) - started_ms ))
   write_artifact "remote-session-${session_id}-permission-bash-pending.json" "${bash_permission_json}"
+  write_timing_artifact "remote-session-${session_id}-permission-bash-pending-timing.json" "routed_wait_bash_permission" "${duration_ms}" "${timing_extra_json}"
   bash_permission_id="$(printf '%s' "${bash_permission_json}" | jq -r '.id // empty')"
   [[ -n "${bash_permission_id}" ]] || fail "pending bash permission for session ${routed_session_id} returned no id"
+  started_ms="$(now_ms)"
   write_artifact "remote-session-${session_id}-permission-bash-resolve.json" "$(resolve_session_permission "${routed_session_id}" "${bash_permission_id}" "approve" "ok")"
+  duration_ms=$(( $(now_ms) - started_ms ))
+  write_timing_artifact "remote-session-${session_id}-permission-bash-resolve-timing.json" "routed_resolve_bash_permission" "${duration_ms}" "${timing_extra_json}"
+  started_ms="$(now_ms)"
   write_artifact "remote-session-${session_id}-message-bash-output.json" "$(wait_for_message_content "${routed_session_id}" "${runtime_workspace_path}")"
+  duration_ms=$(( $(now_ms) - started_ms ))
+  write_timing_artifact "remote-session-${session_id}-message-bash-output-timing.json" "routed_wait_bash_message" "${duration_ms}" "${timing_extra_json}"
 }
 
 approve_remote_session() {
   local session_id="${1:-}"
+  local session_name="${2:-}"
+  local ssh_target="${3:-}"
   local response
+  local started_ms duration_ms timing_extra_json
+  started_ms="$(now_ms)"
   response="$(api_post "/v1/deploy/remote/session/${session_id}/approve")"
+  duration_ms=$(( $(now_ms) - started_ms ))
   write_artifact "remote-session-${session_id}-approve.json" "${response}"
+  timing_extra_json="$(jq -nc --arg session_id "${session_id}" --arg session_name "${session_name}" --arg ssh_target "${ssh_target}" '{session_id:$session_id,session_name:$session_name,ssh_target:$ssh_target}')"
+  write_timing_artifact "remote-session-${session_id}-approve-timing.json" "remote_session_approve" "${duration_ms}" "${timing_extra_json}"
 }
 
 wait_for_remote_attach() {
@@ -884,10 +1024,26 @@ wait_for_remote_attach() {
       if [[ -n "${auth_url}" && "${LAST_PRINTED_AUTH_URLS[${session_id}]:-}" != "${auth_url}" ]]; then
         LAST_PRINTED_AUTH_URLS["${session_id}"]="${auth_url}"
         log "Remote auth required for ${session_name} (${target}): ${auth_url}"
+        if [[ -n "${SESSION_WAIT_START_MS[${session_id}]:-}" && -z "${SESSION_AUTH_TIMING_RECORDED[${session_id}]:-}" ]]; then
+          local wait_started_ms auth_wait_duration_ms timing_extra_json
+          wait_started_ms="${SESSION_WAIT_START_MS[${session_id}]}"
+          auth_wait_duration_ms=$(( $(now_ms) - wait_started_ms ))
+          timing_extra_json="$(jq -nc --arg session_id "${session_id}" --arg session_name "${session_name}" --arg ssh_target "${target}" '{session_id:$session_id,session_name:$session_name,ssh_target:$ssh_target}')"
+          write_timing_artifact "remote-session-${session_id}-auth-url-timing.json" "remote_session_wait_for_auth_url" "${auth_wait_duration_ms}" "${timing_extra_json}"
+          SESSION_AUTH_TIMING_RECORDED["${session_id}"]="1"
+        fi
       fi
 
       case "${status}" in
         attached)
+          if [[ -n "${SESSION_WAIT_START_MS[${session_id}]:-}" && -z "${SESSION_ATTACHED_TIMING_RECORDED[${session_id}]:-}" ]]; then
+            local wait_started_ms attach_wait_duration_ms timing_extra_json
+            wait_started_ms="${SESSION_WAIT_START_MS[${session_id}]}"
+            attach_wait_duration_ms=$(( $(now_ms) - wait_started_ms ))
+            timing_extra_json="$(jq -nc --arg session_id "${session_id}" --arg session_name "${session_name}" --arg ssh_target "${target}" '{session_id:$session_id,session_name:$session_name,ssh_target:$ssh_target}')"
+            write_timing_artifact "remote-session-${session_id}-attached-timing.json" "remote_session_wait_for_attached" "${attach_wait_duration_ms}" "${timing_extra_json}"
+            SESSION_ATTACHED_TIMING_RECORDED["${session_id}"]="1"
+          fi
           ;;
         failed)
           fail "remote session ${session_name} (${target}) failed: ${last_error:-unknown error}"
@@ -896,7 +1052,7 @@ wait_for_remote_attach() {
           pending_count=$((pending_count + 1))
           if [[ -n "${enrollment_id}" && "${AUTO_APPROVE}" == "true" ]]; then
             log "Approving remote session ${session_name} (${target}) enrollment ${enrollment_id}"
-            approve_remote_session "${session_id}"
+            approve_remote_session "${session_id}" "${session_name}" "${target}"
             refresh_remote_sessions
             session_json="$(session_json_by_id "${session_id}")"
             [[ -n "${session_json}" ]] || fail "remote session ${session_id} disappeared after approve"
@@ -926,13 +1082,15 @@ write_summary() {
     --arg host_root "${HOST_ROOT}" \
     --arg host_api_url "${HOST_ADMIN_API_URL}" \
     --arg host_desktop_url "${HOST_DESKTOP_URL}" \
+    --arg host_callback_url "${HOST_CALLBACK_URL}" \
+    --arg transport_mode "${TRANSPORT_MODE}" \
     --arg host_tailscale_url "${HOST_TAILSCALE_URL}" \
     --arg group_id "${TARGET_GROUP_ID}" \
     --arg group_name "${TARGET_GROUP_NAME}" \
     --arg workspace_path "${SOURCE_WORKSPACE_PATH}" \
     --arg workspace_name "${WORKSPACE_NAME}" \
     --argjson sessions "${REMOTE_SESSIONS_JSON}" \
-    '{host_root:$host_root,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_tailscale_url:$host_tailscale_url,group_id:$group_id,group_name:$group_name,workspace_path:$workspace_path,workspace_name:$workspace_name,sessions:($sessions.sessions // [])}')"
+    '{host_root:$host_root,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_callback_url:$host_callback_url,transport_mode:$transport_mode,host_tailscale_url:$host_tailscale_url,group_id:$group_id,group_name:$group_name,workspace_path:$workspace_path,workspace_name:$workspace_name,sessions:($sessions.sessions // [])}')"
   write_artifact "summary.json" "${summary_json}"
 }
 
@@ -943,36 +1101,22 @@ cleanup_remote_sessions() {
   if (( ${#SESSION_IDS[@]} == 0 )); then
     populate_session_arrays_from_remote_sessions
   fi
-  local idx session_id target session_json remote_root systemd_unit remote_runtime image_ref
+  local idx session_id target session_json remote_root remote_runtime container_name
   for idx in "${!SESSION_IDS[@]}"; do
     session_id="${SESSION_IDS[$idx]}"
     target="${SESSION_TARGETS[$idx]}"
     session_json="$(session_json_by_id "${session_id}")"
     [[ -n "${session_json}" ]] || continue
     remote_root="$(printf '%s' "${session_json}" | jq -r '.preflight.remote_root // empty')"
-    systemd_unit="$(printf '%s' "${session_json}" | jq -r '.preflight.systemd_unit // empty')"
-    remote_runtime="$(printf '%s' "${session_json}" | jq -r '.remote_runtime // "docker"')"
-    image_ref="$(printf '%s' "${session_json}" | jq -r '.image_ref // empty')"
+    remote_runtime="$(printf '%s' "${session_json}" | jq -r '.preflight.remote_runtime // empty')"
+    [[ -n "${remote_runtime}" ]] || remote_runtime="docker"
+    container_name="swarm-remote-child-${session_id}"
     log "Cleaning remote session ${session_id} on ${target}"
     ssh "${target}" "bash -lc $(printf '%q' "set -euo pipefail
-if [ -n '${systemd_unit}' ]; then
-  unit_path=\$(systemctl show -p FragmentPath --value '${systemd_unit}' 2>/dev/null || true)
-  sudo systemctl disable --now '${systemd_unit}' >/dev/null 2>&1 || true
-  if [ -n \"\${unit_path}\" ]; then
-    sudo rm -f \"\${unit_path}\" >/dev/null 2>&1 || true
-  fi
-  sudo systemctl daemon-reload >/dev/null 2>&1 || true
-fi
 if [ '${remote_runtime}' = 'podman' ]; then
-  podman rm -f swarm-remote-child >/dev/null 2>&1 || true
-  if [ -n '${image_ref}' ]; then
-    podman image rm '${image_ref}' >/dev/null 2>&1 || true
-  fi
+  sudo podman rm -f '${container_name}' >/dev/null 2>&1 || true
 else
-  sudo docker rm -f swarm-remote-child >/dev/null 2>&1 || true
-  if [ -n '${image_ref}' ]; then
-    sudo docker image rm '${image_ref}' >/dev/null 2>&1 || true
-  fi
+  sudo docker rm -f '${container_name}' >/dev/null 2>&1 || true
 fi
 if [ -n '${remote_root}' ]; then
   rm -rf '${remote_root}'
@@ -982,7 +1126,7 @@ fi
 }
 
 print_next_steps() {
-  local idx session_id session_name target session_json status auth_url tailnet_url child_swarm_id
+  local idx session_id session_name target session_json status auth_url remote_endpoint tailnet_url child_swarm_id transport_mode
   refresh_remote_sessions
   log ""
   log "Remote deploy harness summary:"
@@ -990,7 +1134,9 @@ print_next_steps() {
   log "  artifacts: ${ARTIFACT_DIR}"
   log "  host api: ${HOST_ADMIN_API_URL}"
   log "  host desktop: ${HOST_DESKTOP_URL}"
-  log "  host tailscale url: ${HOST_TAILSCALE_URL}"
+  log "  transport mode: ${TRANSPORT_MODE}"
+  log "  host callback: ${HOST_CALLBACK_URL}"
+  [[ -n "${HOST_TAILSCALE_URL}" ]] && log "  host tailscale url: ${HOST_TAILSCALE_URL}"
   for idx in "${!SESSION_IDS[@]}"; do
     session_id="${SESSION_IDS[$idx]}"
     session_name="${SESSION_NAMES[$idx]}"
@@ -998,13 +1144,17 @@ print_next_steps() {
     session_json="$(session_json_by_id "${session_id}")"
     [[ -n "${session_json}" ]] || continue
     status="$(printf '%s' "${session_json}" | jq -r '.status // empty')"
+    transport_mode="$(printf '%s' "${session_json}" | jq -r '.transport_mode // empty')"
     auth_url="$(printf '%s' "${session_json}" | jq -r '.remote_auth_url // empty')"
+    remote_endpoint="$(printf '%s' "${session_json}" | jq -r '.remote_endpoint // empty')"
     tailnet_url="$(printf '%s' "${session_json}" | jq -r '.remote_tailnet_url // empty')"
     child_swarm_id="$(printf '%s' "${session_json}" | jq -r '.child_swarm_id // empty')"
     log "  - ${session_name} (${target})"
     log "    session_id: ${session_id}"
+    [[ -n "${transport_mode}" ]] && log "    transport_mode: ${transport_mode}"
     log "    status: ${status:-<empty>}"
     [[ -n "${child_swarm_id}" ]] && log "    child_swarm_id: ${child_swarm_id}"
+    [[ -n "${remote_endpoint}" ]] && log "    remote_endpoint: ${remote_endpoint}"
     [[ -n "${tailnet_url}" ]] && log "    remote_tailnet_url: ${tailnet_url}"
     [[ -n "${auth_url}" ]] && log "    remote_auth_url: ${auth_url}"
   done
@@ -1027,6 +1177,12 @@ PROVE_ROUTED_AI="false"
 
 HOST_ROOT_OVERRIDE=""
 HOST_SWARM_NAME="Remote Deploy Test Host"
+HOST_BIND_HOST_OVERRIDE=""
+HOST_BIND_HOST="127.0.0.1"
+HOST_ADVERTISE_HOST_OVERRIDE=""
+HOST_ADVERTISE_HOST=""
+HOST_CALLBACK_URL=""
+REMOTE_ADVERTISE_HOST=""
 HOST_BACKEND_PORT=17781
 HOST_DESKTOP_PORT=15555
 HOST_PEER_PORT=17791
@@ -1038,6 +1194,7 @@ WORKSPACE_NAME="$(basename "${SOURCE_WORKSPACE_PATH}")"
 GROUP_ID=""
 GROUP_NAME=""
 REMOTE_RUNTIME="docker"
+TRANSPORT_MODE="tailscale"
 SESSION_PREFIX="ssh-remote-e2e"
 LAUNCHES_PER_TARGET=1
 POLL_TIMEOUT_SECONDS=600
@@ -1055,6 +1212,9 @@ SESSION_IDS=()
 SESSION_NAMES=()
 SESSION_TARGETS=()
 EXPANDED_TARGETS=()
+declare -A SESSION_WAIT_START_MS=()
+declare -A SESSION_AUTH_TIMING_RECORDED=()
+declare -A SESSION_ATTACHED_TIMING_RECORDED=()
 
 while (($# > 0)); do
   case "$1" in
@@ -1067,6 +1227,11 @@ while (($# > 0)); do
       shift
       [[ $# -gt 0 ]] || fail "--launches-per-target requires a value"
       LAUNCHES_PER_TARGET="$1"
+      ;;
+    --transport-mode)
+      shift
+      [[ $# -gt 0 ]] || fail "--transport-mode requires a value"
+      TRANSPORT_MODE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
       ;;
     --remote-runtime)
       shift
@@ -1107,6 +1272,21 @@ while (($# > 0)); do
       shift
       [[ $# -gt 0 ]] || fail "--host-root requires a value"
       HOST_ROOT_OVERRIDE="$1"
+      ;;
+    --host-bind-host)
+      shift
+      [[ $# -gt 0 ]] || fail "--host-bind-host requires a value"
+      HOST_BIND_HOST_OVERRIDE="$1"
+      ;;
+    --host-advertise-host)
+      shift
+      [[ $# -gt 0 ]] || fail "--host-advertise-host requires a value"
+      HOST_ADVERTISE_HOST_OVERRIDE="$1"
+      ;;
+    --remote-advertise-host)
+      shift
+      [[ $# -gt 0 ]] || fail "--remote-advertise-host requires a value"
+      REMOTE_ADVERTISE_HOST="$1"
       ;;
     --host-backend-port)
       shift
@@ -1237,7 +1417,6 @@ done
 require_command jq
 require_command curl
 require_command ssh
-require_command tailscale
 
 (( ${#SSH_TARGETS[@]} > 0 )) || fail "at least one --ssh-target is required"
 [[ "${LAUNCHES_PER_TARGET}" =~ ^[0-9]+$ ]] || fail "--launches-per-target must be a positive integer"
@@ -1254,6 +1433,11 @@ require_command tailscale
 case "${REMOTE_RUNTIME}" in
   docker|podman) ;;
   *) fail "--remote-runtime must be docker or podman" ;;
+esac
+
+case "${TRANSPORT_MODE}" in
+  tailscale|lan) ;;
+  *) fail "--transport-mode must be tailscale or lan" ;;
 esac
 
 case "${TAILSCALE_AUTH_MODE}" in
@@ -1275,7 +1459,7 @@ if [[ -n "${HOST_VAULT_PASSWORD_ENV}" ]]; then
   [[ -n "${!HOST_VAULT_PASSWORD_ENV:-}" ]] || fail "environment variable ${HOST_VAULT_PASSWORD_ENV} is required for --host-vault-password-env"
 fi
 
-if [[ "${TAILSCALE_AUTH_MODE}" == "key" ]]; then
+if [[ "${TRANSPORT_MODE}" == "tailscale" && "${TAILSCALE_AUTH_MODE}" == "key" ]]; then
   [[ -n "${TAILSCALE_AUTH_KEY_ENV}" ]] || fail "--tailscale-auth-key-env is required with --tailscale-auth-mode key"
   [[ -n "${!TAILSCALE_AUTH_KEY_ENV:-}" ]] || fail "environment variable ${TAILSCALE_AUTH_KEY_ENV} is required for --tailscale-auth-mode key"
 fi
@@ -1284,6 +1468,10 @@ case "${MANAGE_TAILSCALE_SERVE}" in
   true|false) ;;
   *) fail "--manage-tailscale-serve must be true or false" ;;
 esac
+
+if [[ "${TRANSPORT_MODE}" == "tailscale" ]]; then
+  require_command tailscale
+fi
 
 case "${AUTO_APPROVE}" in
   true|false) ;;
@@ -1323,8 +1511,8 @@ if [[ "${TEARDOWN_ONLY}" == "true" && -z "${HOST_ROOT_OVERRIDE}" ]]; then
   fail "--teardown-only requires --host-root"
 fi
 
+resolve_host_transport
 prepare_isolated_host
-resolve_host_tailscale_url
 write_host_startup_config
 write_artifact "host-startup-config.txt" "$(cat -- "${HOST_STARTUP_CONFIG}")"
 

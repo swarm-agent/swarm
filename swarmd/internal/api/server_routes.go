@@ -141,6 +141,9 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/system/shutdown", s.handleSystemShutdown)
 	mux.HandleFunc("/v1/permissions", s.handlePermissions)
 	mux.HandleFunc("/v1/permissions/", s.handlePermissions)
+	mux.HandleFunc("/v1/notifications", s.handleNotifications)
+	mux.HandleFunc("/v1/notifications/", s.handleNotifications)
+	mux.HandleFunc("/v1/notifications/summary", s.handleNotifications)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/sessions/", s.handleSessionByID)
 }

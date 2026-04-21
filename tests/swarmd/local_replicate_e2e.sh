@@ -35,14 +35,20 @@ Options:
   --sync-modules <csv>                Explicit sync modules. Default when enabled: credentials
   --sync-vault-password <value>       Vault password to send in the replicate request
   --sync-vault-password-env <name>    Read the vault password from an environment variable
+  --sync-vault-password-file <path>   Read the vault password from a local file
+  --host-vault-password <value>       Enable or unlock the host vault before replicate
+  --host-vault-password-env <name>    Read the host vault password from an environment variable
+  --host-vault-password-file <path>   Read the host vault password from a local file
   --verify-sync-state                 After attach, create a host credential plus a custom agent/tool and wait for the child to read them
   --verify-sync-crud-flow             After attach, prove real Fireworks credential CRUD plus synced agent/tool routed execution on the child
   --sync-verify-timeout <seconds>     Managed sync propagation wait timeout. Default: 45
   --proof-provider <id>               Provider for the routed proof. Default: fireworks
   --proof-model <id>                  Model for the routed proof. Default: accounts/fireworks/models/minimax-m2p5
   --proof-thinking <level>            Thinking level for the routed proof. Default: medium
-  --proof-provider-key-env <name>     Read the routed proof provider key from an environment variable
-  --proof-provider-key-file <path>    Read the routed proof provider key from a local file
+  --proof-provider-key-env <name>     Read the primary routed proof provider key from an environment variable
+  --proof-provider-key-file <path>    Read the primary routed proof provider key from a local file
+  --proof-provider-key2-env <name>    Read the secondary routed proof provider key from an environment variable
+  --proof-provider-key2-file <path>   Read the secondary routed proof provider key from a local file
   --proof-timeout <seconds>           Routed proof wait timeout. Default: 90
   --group-id <id>                     Existing target group id
   --group-name <name>                 Existing target group name, or name to create
@@ -52,7 +58,9 @@ Options:
   --host-port <port>                  Host backend/API port. Default: 7781
   --host-desktop-port <port>          Host desktop port. Default: 5555
   --host-root <path>                  Reuse a specific isolated host root instead of mktemp
+  --host-install-artifact-root <path> Install the isolated host runtime from a release-style dist tree
   --bypass-permissions <true|false>   Host startup bypass_permissions value. Default: true
+  --dev-mode                          Enable dev_mode in the isolated host startup config
   --skip-host-rebuild                 Reuse the current host binaries instead of rebuilding first
   --skip-image-rebuild                Reuse the current canonical child image instead of rebuilding first
   --poll-timeout <seconds>            Attach wait timeout. Default: 120
@@ -117,12 +125,21 @@ cleanup_ephemeral_secrets() {
   if [[ -n "${PROOF_PROVIDER_KEY_TMP_FILE:-}" && -f "${PROOF_PROVIDER_KEY_TMP_FILE}" ]]; then
     rm -f -- "${PROOF_PROVIDER_KEY_TMP_FILE}"
   fi
+  if [[ -n "${PROOF_PROVIDER_KEY2_TMP_FILE:-}" && -f "${PROOF_PROVIDER_KEY2_TMP_FILE}" ]]; then
+    rm -f -- "${PROOF_PROVIDER_KEY2_TMP_FILE}"
+  fi
+  if [[ -n "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" && -f "${HOST_DESKTOP_SESSION_COOKIE_FILE}" ]]; then
+    rm -f -- "${HOST_DESKTOP_SESSION_COOKIE_FILE}"
+  fi
+  if [[ -n "${CHILD_DESKTOP_SESSION_COOKIE_FILE:-}" && -f "${CHILD_DESKTOP_SESSION_COOKIE_FILE}" ]]; then
+    rm -f -- "${CHILD_DESKTOP_SESSION_COOKIE_FILE}"
+  fi
 }
 
 trap cleanup_ephemeral_secrets EXIT
 
 json_request() {
-  json_request_capture "${1:-}" "${2:-}" "${3:-GET}" "${4:-}" "${5:-}" "${6:-30}"
+  json_request_capture "${1:-}" "${2:-}" "${3:-GET}" "${4:-}" "${5:-}" "${6:-30}" "${7:-}"
   if [[ "${JSON_REQUEST_STATUS}" != 2* ]]; then
     fail "${3:-GET} ${1:-}${4:-} failed with status ${JSON_REQUEST_STATUS}: ${JSON_REQUEST_BODY}"
   fi
@@ -136,6 +153,7 @@ json_request_capture() {
   local path="${4:-}"
   local body="${5:-}"
   local max_time="${6:-30}"
+  local cookie_file="${7:-}"
   local url="${base_url%/}${path}"
   local response_file payload_file http_code
   response_file="$(mktemp)"
@@ -151,6 +169,15 @@ json_request_capture() {
   )
   if [[ -n "${token}" ]]; then
     args+=(-H "Authorization: Bearer ${token}")
+  fi
+  if [[ -n "${cookie_file}" ]]; then
+    args+=(
+      -c "${cookie_file}"
+      -b "${cookie_file}"
+      -H "Origin: ${base_url%/}"
+      -H "Referer: ${base_url%/}/"
+      -H 'Sec-Fetch-Site: same-origin'
+    )
   fi
   if [[ -n "${body}" ]]; then
     payload_file="$(mktemp)"
@@ -206,7 +233,7 @@ api_request() {
   local method="${1:-GET}"
   local path="${2:-}"
   local body="${3:-}"
-  json_request "${HOST_ADMIN_API_URL}" "${ATTACH_TOKEN}" "${method}" "${path}" "${body}"
+  json_request "${HOST_ADMIN_API_URL}" "${ATTACH_TOKEN}" "${method}" "${path}" "${body}" "30" "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}"
 }
 
 api_request_capture() {
@@ -214,7 +241,7 @@ api_request_capture() {
   local path="${2:-}"
   local body="${3:-}"
   local max_time="${4:-30}"
-  json_request_capture "${HOST_ADMIN_API_URL}" "${ATTACH_TOKEN}" "${method}" "${path}" "${body}" "${max_time}"
+  json_request_capture "${HOST_ADMIN_API_URL}" "${ATTACH_TOKEN}" "${method}" "${path}" "${body}" "${max_time}" "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}"
 }
 
 api_get() {
@@ -237,7 +264,11 @@ child_api_request() {
   local method="${1:-GET}"
   local path="${2:-}"
   local body="${3:-}"
-  json_request "${CHILD_API_URL}" "${CHILD_ATTACH_TOKEN}" "${method}" "${path}" "${body}"
+  child_api_request_capture "${method}" "${path}" "${body}" "30"
+  if [[ "${JSON_REQUEST_STATUS}" != 2* ]]; then
+    fail "${method} child:${path} failed with status ${JSON_REQUEST_STATUS}: ${JSON_REQUEST_BODY}"
+  fi
+  printf '%s' "${JSON_REQUEST_BODY}"
 }
 
 child_api_request_capture() {
@@ -245,7 +276,37 @@ child_api_request_capture() {
   local path="${2:-}"
   local body="${3:-}"
   local max_time="${4:-30}"
-  json_request_capture "${CHILD_API_URL}" "${CHILD_ATTACH_TOKEN}" "${method}" "${path}" "${body}" "${max_time}"
+  [[ "${method}" == "GET" ]] || fail "child_api_request only supports GET in the local replicate harness"
+  [[ -z "${body}" ]] || fail "child_api_request does not support a request body in the local replicate harness"
+  [[ -n "${CONTAINER_NAME:-}" ]] || fail "child container name is not set"
+
+  local response payload_file http_code
+  payload_file="$(mktemp)"
+  response="$("${RUNTIME}" exec --env SWARM_CHILD_API_PATH="${path}" --env SWARM_CHILD_API_TIMEOUT="${max_time}" "${CONTAINER_NAME}" sh -lc '
+    cookie_file="$(mktemp)"
+    response_file="$(mktemp)"
+    trap "rm -f -- \"${cookie_file}\" \"${response_file}\"" EXIT
+    curl -fsS -c "${cookie_file}" -b "${cookie_file}" \
+      -H "Origin: http://127.0.0.1:5555" \
+      -H "Referer: http://127.0.0.1:5555/" \
+      -H "Sec-Fetch-Site: same-origin" \
+      "http://127.0.0.1:5555/v1/auth/desktop/session" >/dev/null
+    http_code="$(curl -sS --connect-timeout 3 --max-time "${SWARM_CHILD_API_TIMEOUT}" \
+      -c "${cookie_file}" -b "${cookie_file}" \
+      -H "Origin: http://127.0.0.1:7781" \
+      -H "Referer: http://127.0.0.1:7781/" \
+      -H "Sec-Fetch-Site: same-origin" \
+      -H "Accept: application/json" \
+      -o "${response_file}" -w "%{http_code}" \
+      "http://127.0.0.1:7781${SWARM_CHILD_API_PATH}")"
+    cat "${response_file}"
+    printf "\n__SWARM_HTTP_CODE__=%s\n" "${http_code}"
+  ')"
+  http_code="$(printf '%s' "${response}" | sed -n 's/^__SWARM_HTTP_CODE__=//p' | tail -n 1)"
+  printf '%s' "${response}" | sed '/^__SWARM_HTTP_CODE__=/d' > "${payload_file}"
+  JSON_REQUEST_STATUS="${http_code:-000}"
+  JSON_REQUEST_BODY="$(cat -- "${payload_file}")"
+  rm -f -- "${payload_file}"
 }
 
 child_api_get() {
@@ -253,22 +314,91 @@ child_api_get() {
 }
 
 prepare_proof_provider_key_file() {
-  if [[ -n "${PROOF_PROVIDER_KEY_FILE:-}" ]]; then
-    [[ -f "${PROOF_PROVIDER_KEY_FILE}" ]] || fail "proof provider key file does not exist: ${PROOF_PROVIDER_KEY_FILE}"
-    [[ -s "${PROOF_PROVIDER_KEY_FILE}" ]] || fail "proof provider key file is empty: ${PROOF_PROVIDER_KEY_FILE}"
+  local file_var="${1:-}"
+  local env_var="${2:-}"
+  local tmp_var="${3:-}"
+  local display_name="${4:-proof provider key}"
+  local required="${5:-true}"
+  local file_value env_name tmp_value key_value
+
+  file_value="${!file_var:-}"
+  env_name="${!env_var:-}"
+
+  if [[ -n "${file_value}" ]]; then
+    [[ -f "${file_value}" ]] || fail "${display_name} file does not exist: ${file_value}"
+    [[ -s "${file_value}" ]] || fail "${display_name} file is empty: ${file_value}"
     return 0
   fi
-  if [[ -n "${PROOF_PROVIDER_KEY_ENV:-}" ]]; then
-    local key_value
-    key_value="${!PROOF_PROVIDER_KEY_ENV:-}"
-    [[ -n "${key_value}" ]] || fail "environment variable ${PROOF_PROVIDER_KEY_ENV} is empty or unset"
-    PROOF_PROVIDER_KEY_TMP_FILE="$(mktemp)"
-    chmod 0600 "${PROOF_PROVIDER_KEY_TMP_FILE}"
-    printf '%s' "${key_value}" >"${PROOF_PROVIDER_KEY_TMP_FILE}"
-    PROOF_PROVIDER_KEY_FILE="${PROOF_PROVIDER_KEY_TMP_FILE}"
+  if [[ -n "${env_name}" ]]; then
+    key_value="${!env_name:-}"
+    [[ -n "${key_value}" ]] || fail "environment variable ${env_name} is empty or unset"
+    tmp_value="$(mktemp)"
+    chmod 0600 "${tmp_value}"
+    printf '%s' "${key_value}" >"${tmp_value}"
+    printf -v "${tmp_var}" '%s' "${tmp_value}"
+    printf -v "${file_var}" '%s' "${tmp_value}"
     return 0
   fi
-  fail "--verify-sync-crud-flow requires --proof-provider-key-file or --proof-provider-key-env"
+  if [[ "${required}" == "true" ]]; then
+    fail "--verify-sync-crud-flow requires --proof-provider-key-file or --proof-provider-key-env"
+  fi
+}
+
+resolve_secret_value() {
+  local value_var="${1:-}"
+  local env_var="${2:-}"
+  local file_var="${3:-}"
+  local display_name="${4:-secret}"
+  local required="${5:-false}"
+  local value env_name file_path resolved
+
+  value="${!value_var:-}"
+  env_name="${!env_var:-}"
+  file_path="${!file_var:-}"
+
+  if [[ -n "${file_path}" ]]; then
+    [[ -f "${file_path}" ]] || fail "${display_name} file does not exist: ${file_path}"
+    [[ -s "${file_path}" ]] || fail "${display_name} file is empty: ${file_path}"
+    resolved="$(cat -- "${file_path}")"
+    printf -v "${value_var}" '%s' "${resolved}"
+    value="${resolved}"
+  elif [[ -n "${env_name}" ]]; then
+    resolved="${!env_name:-}"
+    [[ -n "${resolved}" ]] || fail "environment variable ${env_name} is empty or unset"
+    printf -v "${value_var}" '%s' "${resolved}"
+    value="${resolved}"
+  fi
+
+  if [[ "${required}" == "true" && -z "${value}" ]]; then
+    fail "${display_name} is required"
+  fi
+}
+
+ensure_host_vault_ready() {
+  local vault_password="${1:-}"
+  [[ -n "${vault_password}" ]] || fail "host vault password is required"
+  local status_json enabled unlocked payload response
+  status_json="$(api_get '/v1/vault')"
+  write_artifact "host-vault-status-before.json" "${status_json}"
+  enabled="$(printf '%s' "${status_json}" | jq -r '.enabled // false')"
+  unlocked="$(printf '%s' "${status_json}" | jq -r '.unlocked // false')"
+  case "${enabled}:${unlocked}" in
+    false:*)
+      payload="$(jq -nc --arg password "${vault_password}" '{password:$password}')"
+      response="$(api_post '/v1/vault/enable' "${payload}")"
+      write_artifact "host-vault-enable.json" "${response}"
+      ;;
+    true:false)
+      payload="$(jq -nc --arg password "${vault_password}" '{password:$password}')"
+      response="$(api_post '/v1/vault/unlock' "${payload}")"
+      write_artifact "host-vault-unlock.json" "${response}"
+      ;;
+  esac
+  status_json="$(api_get '/v1/vault')"
+  write_artifact "host-vault-status-after.json" "${status_json}"
+  enabled="$(printf '%s' "${status_json}" | jq -r '.enabled // false')"
+  unlocked="$(printf '%s' "${status_json}" | jq -r '.unlocked // false')"
+  [[ "${enabled}" == "true" && "${unlocked}" == "true" ]] || fail "host vault is not enabled and unlocked"
 }
 
 normalize_sync_modules() {
@@ -543,9 +673,17 @@ port_is_available() {
 }
 
 write_host_startup_config() {
+  local dev_mode_value="false"
+  local dev_root_value=""
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    dev_mode_value="true"
+    dev_root_value="${ROOT_DIR}"
+  fi
   mkdir -p "$(dirname -- "${HOST_STARTUP_CONFIG}")"
   cat >"${HOST_STARTUP_CONFIG}" <<EOF
 startup_mode = box
+dev_mode = ${dev_mode_value}
+dev_root = ${dev_root_value}
 host = ${HOST_BIND_HOST}
 port = ${HOST_BACKEND_PORT}
 advertise_host = ${HOST_ADVERTISE_HOST}
@@ -576,15 +714,26 @@ deploy_container_bootstrap_secret =
 deploy_container_verification_code =
 remote_deploy_enabled = false
 remote_deploy_session_id =
-remote_deploy_session_token =
 remote_deploy_host_api_base_url =
 remote_deploy_host_desktop_url =
-remote_deploy_invite_token =
 EOF
 }
 
 write_host_control_files() {
-  cat >"${HOST_ROOT}/start-host.sh" <<EOF
+  if [[ -n "${HOST_INSTALL_ARTIFACT_ROOT}" ]]; then
+    cat >"${HOST_ROOT}/start-host.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${ROOT_DIR}"
+XDG_BIN_HOME="${HOST_XDG_BIN_HOME}" \\
+XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \\
+XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \\
+XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \\
+XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \\
+"${HOST_XDG_BIN_HOME}/swarm" main server on
+EOF
+  else
+    cat >"${HOST_ROOT}/start-host.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${ROOT_DIR}"
@@ -595,9 +744,23 @@ XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \\
 SWARM_LANE=main \\
 ./swarmd/scripts/dev-up.sh
 EOF
+  fi
   chmod 0755 "${HOST_ROOT}/start-host.sh"
 
-  cat >"${HOST_ROOT}/stop-host.sh" <<EOF
+  if [[ -n "${HOST_INSTALL_ARTIFACT_ROOT}" ]]; then
+    cat >"${HOST_ROOT}/stop-host.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${ROOT_DIR}"
+XDG_BIN_HOME="${HOST_XDG_BIN_HOME}" \\
+XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \\
+XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \\
+XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \\
+XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \\
+"${HOST_XDG_BIN_HOME}/swarm" main server off
+EOF
+  else
+    cat >"${HOST_ROOT}/stop-host.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${ROOT_DIR}"
@@ -608,6 +771,7 @@ XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \\
 SWARM_LANE=main \\
 ./swarmd/scripts/dev-down.sh
 EOF
+  fi
   chmod 0755 "${HOST_ROOT}/stop-host.sh"
 
   jq -nc \
@@ -619,9 +783,11 @@ EOF
     --arg log_file "${LOG_FILE}" \
     --arg api_url "${SWARMD_URL}" \
     --arg desktop_url "${HOST_DESKTOP_URL}" \
+    --arg install_mode "$( [[ -n "${HOST_INSTALL_ARTIFACT_ROOT}" ]] && printf '%s' artifact || printf '%s' source )" \
+    --arg artifact_root "${HOST_INSTALL_ARTIFACT_ROOT}" \
     --arg start_script "${HOST_ROOT}/start-host.sh" \
     --arg stop_script "${HOST_ROOT}/stop-host.sh" \
-    '{host_root:$host_root,host_swarm_name:$host_swarm_name,config_path:$config_path,state_root:$state_root,data_dir:$data_dir,log_file:$log_file,api_url:$api_url,desktop_url:$desktop_url,start_script:$start_script,stop_script:$stop_script}' \
+    '{host_root:$host_root,host_swarm_name:$host_swarm_name,config_path:$config_path,state_root:$state_root,data_dir:$data_dir,log_file:$log_file,api_url:$api_url,desktop_url:$desktop_url,install_mode:$install_mode,artifact_root:$artifact_root,start_script:$start_script,stop_script:$stop_script}' \
     >"${HOST_ROOT}/host-summary.json"
 }
 
@@ -638,13 +804,15 @@ install_host_desktop_assets() {
 
 prepare_isolated_host() {
   HOST_ROOT="${HOST_ROOT_OVERRIDE:-$(mktemp -d "${TMPDIR:-/tmp}/swarm-replicate-XXXXXX")}"
+  HOST_XDG_BIN_HOME="${HOST_ROOT}/xdg/bin"
   HOST_XDG_CONFIG_HOME="${HOST_ROOT}/xdg/config"
   HOST_XDG_DATA_HOME="${HOST_ROOT}/xdg/data"
   HOST_XDG_STATE_HOME="${HOST_ROOT}/xdg/state"
   HOST_XDG_CACHE_HOME="${HOST_ROOT}/xdg/cache"
 
-  mkdir -p "${HOST_XDG_CONFIG_HOME}" "${HOST_XDG_DATA_HOME}" "${HOST_XDG_STATE_HOME}" "${HOST_XDG_CACHE_HOME}"
+  mkdir -p "${HOST_XDG_BIN_HOME}" "${HOST_XDG_CONFIG_HOME}" "${HOST_XDG_DATA_HOME}" "${HOST_XDG_STATE_HOME}" "${HOST_XDG_CACHE_HOME}"
 
+  export XDG_BIN_HOME="${HOST_XDG_BIN_HOME}"
   export XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}"
   export XDG_DATA_HOME="${HOST_XDG_DATA_HOME}"
   export XDG_STATE_HOME="${HOST_XDG_STATE_HOME}"
@@ -667,7 +835,9 @@ prepare_isolated_host() {
   mkdir -p "${ARTIFACT_DIR}"
 
   write_host_control_files
-  install_host_desktop_assets
+  if [[ -z "${HOST_INSTALL_ARTIFACT_ROOT}" ]]; then
+    install_host_desktop_assets
+  fi
   write_artifact "host-startup-config.txt" "$(cat -- "${HOST_STARTUP_CONFIG}")"
 }
 
@@ -678,28 +848,24 @@ ensure_host_running() {
     return 0
   fi
   log "Starting isolated replicate host ${HOST_SWARM_NAME} at ${HOST_ADMIN_API_URL}"
-  (
-    cd "${ROOT_DIR}"
-    XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \
-    XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \
-    XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \
-    XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \
-    SWARM_LANE=main \
-    ./swarmd/scripts/dev-up.sh
-  )
+  [[ -x "${HOST_ROOT}/start-host.sh" ]] || fail "missing host start script: ${HOST_ROOT}/start-host.sh"
+  "${HOST_ROOT}/start-host.sh"
   ready_code="$(curl_http_code "${HOST_ADMIN_API_URL%/}/readyz")"
   [[ "${ready_code}" == "200" ]] || fail "isolated replicate host did not become ready at ${HOST_ADMIN_API_URL}"
 }
 
 fetch_attach_token() {
-  local response
-  response="$(curl -fsS \
+  if [[ -z "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" ]]; then
+    HOST_DESKTOP_SESSION_COOKIE_FILE="$(mktemp)"
+  fi
+  curl -fsS \
+    -c "${HOST_DESKTOP_SESSION_COOKIE_FILE}" \
+    -b "${HOST_DESKTOP_SESSION_COOKIE_FILE}" \
     -H "Origin: ${HOST_ADMIN_API_URL%/}" \
     -H "Referer: ${HOST_ADMIN_API_URL%/}/" \
     -H 'Sec-Fetch-Site: same-origin' \
-    "${HOST_ADMIN_API_URL%/}/v1/auth/attach/token")"
-  ATTACH_TOKEN="$(printf '%s' "${response}" | jq -r '.token // empty')"
-  [[ -n "${ATTACH_TOKEN}" ]] || fail "failed to fetch attach token from ${HOST_ADMIN_API_URL%/}/v1/auth/attach/token"
+    "${HOST_ADMIN_API_URL%/}/v1/auth/desktop/session" >/dev/null
+  ATTACH_TOKEN=""
 }
 
 resolve_runtime() {
@@ -734,6 +900,22 @@ maybe_rebuild_image() {
 }
 
 maybe_rebuild_host() {
+  if [[ -n "${HOST_INSTALL_ARTIFACT_ROOT}" ]]; then
+    local installer_path
+    installer_path="$(find "${HOST_INSTALL_ARTIFACT_ROOT}" -name 'swarmsetup' -type f -perm -u+x | awk -F/ '$(NF-1) == "root" { print; exit }')"
+    [[ -n "${installer_path}" ]] || fail "host install artifact root does not contain an executable swarmsetup under the root artifact directory: ${HOST_INSTALL_ARTIFACT_ROOT}"
+    log "Installing isolated host runtime from artifact ${HOST_INSTALL_ARTIFACT_ROOT}"
+    (
+      cd "${ROOT_DIR}"
+      XDG_BIN_HOME="${HOST_XDG_BIN_HOME}" \
+      XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \
+      XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \
+      XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \
+      XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \
+      "${installer_path}" --artifact-root "${HOST_INSTALL_ARTIFACT_ROOT}"
+    )
+    return 0
+  fi
   if [[ "${REBUILD_HOST}" != "true" ]]; then
     return 0
   fi
@@ -1131,14 +1313,7 @@ capture_failure_context() {
 }
 
 ensure_child_attach_token() {
-  if [[ -n "${CHILD_ATTACH_TOKEN:-}" ]]; then
-    return 0
-  fi
   [[ -n "${CONTAINER_NAME:-}" ]] || fail "child container name is not set"
-  local child_token_response
-  child_token_response="$("${RUNTIME}" exec "${CONTAINER_NAME}" curl -fsS 'http://127.0.0.1:7781/v1/auth/attach/token')"
-  CHILD_ATTACH_TOKEN="$(printf '%s' "${child_token_response}" | jq -r '.token // empty')"
-  [[ -n "${CHILD_ATTACH_TOKEN}" ]] || fail "failed to fetch child attach token from inside container ${CONTAINER_NAME}"
 }
 
 exercise_sync_state() {
@@ -1238,7 +1413,11 @@ exercise_sync_crud_flow() {
   [[ -n "${TARGET_WORKSPACE_PATH:-}" ]] || fail "--verify-sync-crud-flow requires a replicated target workspace path"
 
   ensure_child_attach_token
-  prepare_proof_provider_key_file
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY_FILE" "PROOF_PROVIDER_KEY_ENV" "PROOF_PROVIDER_KEY_TMP_FILE" "primary proof provider key" "true"
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY2_FILE" "PROOF_PROVIDER_KEY2_ENV" "PROOF_PROVIDER_KEY2_TMP_FILE" "secondary proof provider key" "false"
+  if [[ -z "${PROOF_PROVIDER_KEY2_FILE:-}" ]]; then
+    PROOF_PROVIDER_KEY2_FILE="${PROOF_PROVIDER_KEY_FILE}"
+  fi
 
   local probe_suffix
   probe_suffix="$(printf '%s' "${DEPLOYMENT_ID}" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
@@ -1306,7 +1485,7 @@ exercise_sync_crud_flow() {
     --arg provider "${PROOF_PROVIDER}" \
     --arg label "fw-sync-proof-secondary" \
     --argjson active false \
-    --rawfile api_key "${PROOF_PROVIDER_KEY_FILE}" \
+    --rawfile api_key "${PROOF_PROVIDER_KEY2_FILE}" \
     '{id:$id,provider:$provider,type:"api",label:$label,api_key:($api_key | sub("\r?\n$";"")),active:$active}')"
   credential_secondary_response="$(api_post '/v1/auth/credentials' "${credential_secondary_payload}")"
   write_artifact "host-proof-credential-secondary.json" "${credential_secondary_response}"
@@ -1516,6 +1695,8 @@ verify_final_state() {
   SUMMARY_JSON="$(jq -nc \
     --arg runtime "${RUNTIME}" \
     --arg host_root "${HOST_ROOT}" \
+    --arg host_install_mode "$( [[ -n "${HOST_INSTALL_ARTIFACT_ROOT}" ]] && printf '%s' artifact || printf '%s' source )" \
+    --arg host_install_artifact_root "${HOST_INSTALL_ARTIFACT_ROOT}" \
     --arg host_swarm_name "${HOST_SWARM_NAME}" \
     --arg host_api_url "${HOST_ADMIN_API_URL}" \
     --arg host_desktop_url "${HOST_DESKTOP_URL}" \
@@ -1551,7 +1732,7 @@ verify_final_state() {
     --arg sync_probe_agent_name "${SYNC_PROBE_AGENT_NAME:-}" \
     --argjson backend_probe "${BACKEND_PROBE_JSON}" \
     --argjson desktop_probe "${DESKTOP_PROBE_JSON}" \
-    '{runtime:$runtime,host_root:$host_root,host_swarm_name:$host_swarm_name,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_log_file:$host_log_file,source_workspace_path:$source_workspace_path,workspace_name:$workspace_name,replication_mode:$replication_mode,writable:$writable,sync_enabled:$sync_enabled,sync_mode:$sync_mode,sync_modules:$sync_modules,verify_sync_state:$verify_sync_state,verify_sync_crud_flow:$verify_sync_crud_flow,group_id:$group_id,group_name:$group_name,group_network_name:$group_network_name,deployment_id:$deployment_id,container_name:$container_name,child_swarm_id:$child_swarm_id,child_backend_url:$child_backend_url,child_desktop_url:$child_desktop_url,target_workspace_path:$target_workspace_path,proof:{provider:$proof_provider,model:$proof_model,thinking:$proof_thinking,primary_credential_id:$proof_primary_credential_id,secondary_credential_id:$proof_secondary_credential_id,session_id:$proof_session_id,success_token:$proof_success_token},sync_probe:{credential_provider:$sync_probe_credential_provider,credential_id:$sync_probe_credential_id,tool_name:$sync_probe_tool_name,agent_name:$sync_probe_agent_name},backend_probe:$backend_probe,desktop_probe:$desktop_probe}')"
+    '{runtime:$runtime,host_root:$host_root,host_install_mode:$host_install_mode,host_install_artifact_root:$host_install_artifact_root,host_swarm_name:$host_swarm_name,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_log_file:$host_log_file,source_workspace_path:$source_workspace_path,workspace_name:$workspace_name,replication_mode:$replication_mode,writable:$writable,sync_enabled:$sync_enabled,sync_mode:$sync_mode,sync_modules:$sync_modules,verify_sync_state:$verify_sync_state,verify_sync_crud_flow:$verify_sync_crud_flow,group_id:$group_id,group_name:$group_name,group_network_name:$group_network_name,deployment_id:$deployment_id,container_name:$container_name,child_swarm_id:$child_swarm_id,child_backend_url:$child_backend_url,child_desktop_url:$child_desktop_url,target_workspace_path:$target_workspace_path,proof:{provider:$proof_provider,model:$proof_model,thinking:$proof_thinking,primary_credential_id:$proof_primary_credential_id,secondary_credential_id:$proof_secondary_credential_id,session_id:$proof_session_id,success_token:$proof_success_token},sync_probe:{credential_provider:$sync_probe_credential_provider,credential_id:$sync_probe_credential_id,tool_name:$sync_probe_tool_name,agent_name:$sync_probe_agent_name},backend_probe:$backend_probe,desktop_probe:$desktop_probe}')"
   write_artifact "summary.json" "${SUMMARY_JSON}"
 
   log ""
@@ -1588,6 +1769,10 @@ SYNC_MODULES_RAW=""
 SYNC_MODULES=()
 SYNC_VAULT_PASSWORD=""
 SYNC_VAULT_PASSWORD_ENV=""
+SYNC_VAULT_PASSWORD_FILE=""
+HOST_VAULT_PASSWORD=""
+HOST_VAULT_PASSWORD_ENV=""
+HOST_VAULT_PASSWORD_FILE=""
 VERIFY_SYNC_STATE="false"
 VERIFY_SYNC_CRUD_FLOW="false"
 SYNC_VERIFY_TIMEOUT_SECONDS="45"
@@ -1597,6 +1782,9 @@ PROOF_THINKING="medium"
 PROOF_PROVIDER_KEY_ENV=""
 PROOF_PROVIDER_KEY_FILE=""
 PROOF_PROVIDER_KEY_TMP_FILE=""
+PROOF_PROVIDER_KEY2_ENV=""
+PROOF_PROVIDER_KEY2_FILE=""
+PROOF_PROVIDER_KEY2_TMP_FILE=""
 PROOF_TIMEOUT_SECONDS="90"
 GROUP_ID=""
 GROUP_NAME=""
@@ -1606,12 +1794,16 @@ HOST_ADVERTISE_HOST_OVERRIDE="${HOST_ADVERTISE_HOST:-}"
 HOST_BACKEND_PORT="7781"
 HOST_DESKTOP_PORT="5555"
 HOST_ROOT_OVERRIDE="${HOST_ROOT:-}"
+HOST_INSTALL_ARTIFACT_ROOT=""
 BYPASS_PERMISSIONS="true"
 REBUILD_HOST="true"
 REBUILD_IMAGE="true"
+DEV_MODE="false"
 POLL_TIMEOUT_SECONDS="120"
 POLL_INTERVAL_SECONDS="2"
 LOG_TAIL="200"
+HOST_DESKTOP_SESSION_COOKIE_FILE=""
+CHILD_DESKTOP_SESSION_COOKIE_FILE=""
 CHILD_API_URL=""
 CHILD_ATTACH_TOKEN=""
 JSON_REQUEST_STATUS=""
@@ -1681,6 +1873,22 @@ while [[ $# -gt 0 ]]; do
       SYNC_VAULT_PASSWORD_ENV="${2:-}"
       shift 2
       ;;
+    --sync-vault-password-file)
+      SYNC_VAULT_PASSWORD_FILE="${2:-}"
+      shift 2
+      ;;
+    --host-vault-password)
+      HOST_VAULT_PASSWORD="${2:-}"
+      shift 2
+      ;;
+    --host-vault-password-env)
+      HOST_VAULT_PASSWORD_ENV="${2:-}"
+      shift 2
+      ;;
+    --host-vault-password-file)
+      HOST_VAULT_PASSWORD_FILE="${2:-}"
+      shift 2
+      ;;
     --verify-sync-state)
       VERIFY_SYNC_STATE="true"
       shift
@@ -1711,6 +1919,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --proof-provider-key-file)
       PROOF_PROVIDER_KEY_FILE="${2:-}"
+      shift 2
+      ;;
+    --proof-provider-key2-env)
+      PROOF_PROVIDER_KEY2_ENV="${2:-}"
+      shift 2
+      ;;
+    --proof-provider-key2-file)
+      PROOF_PROVIDER_KEY2_FILE="${2:-}"
       shift 2
       ;;
     --proof-timeout)
@@ -1749,9 +1965,17 @@ while [[ $# -gt 0 ]]; do
       HOST_ROOT_OVERRIDE="${2:-}"
       shift 2
       ;;
+    --host-install-artifact-root)
+      HOST_INSTALL_ARTIFACT_ROOT="${2:-}"
+      shift 2
+      ;;
     --bypass-permissions)
       BYPASS_PERMISSIONS="${2:-}"
       shift 2
+      ;;
+    --dev-mode)
+      DEV_MODE="true"
+      shift
       ;;
     --skip-image-rebuild)
       REBUILD_IMAGE="false"
@@ -1797,6 +2021,11 @@ fi
 SOURCE_WORKSPACE_PATH="$(cd "${SOURCE_WORKSPACE_PATH}" && pwd)"
 [[ -d "${SOURCE_WORKSPACE_PATH}" ]] || fail "--workspace-path must point to an existing directory"
 
+if [[ -n "${HOST_INSTALL_ARTIFACT_ROOT}" ]]; then
+  HOST_INSTALL_ARTIFACT_ROOT="$(cd "${HOST_INSTALL_ARTIFACT_ROOT}" && pwd)"
+  [[ -d "${HOST_INSTALL_ARTIFACT_ROOT}" ]] || fail "--host-install-artifact-root must point to an existing directory"
+fi
+
 if [[ -z "${WORKSPACE_NAME}" ]]; then
   WORKSPACE_NAME="$(basename "${SOURCE_WORKSPACE_PATH}")"
 fi
@@ -1821,13 +2050,20 @@ if [[ "${WORKSPACE_WRITABLE}" != "true" && "${WORKSPACE_WRITABLE}" != "false" ]]
   fail "workspace writable flag resolved to unexpected value: ${WORKSPACE_WRITABLE}"
 fi
 
-if [[ -n "${SYNC_VAULT_PASSWORD}" && -n "${SYNC_VAULT_PASSWORD_ENV}" ]]; then
-  fail "only one of --sync-vault-password or --sync-vault-password-env may be provided"
+if [[ -n "${SYNC_VAULT_PASSWORD}" && ( -n "${SYNC_VAULT_PASSWORD_ENV}" || -n "${SYNC_VAULT_PASSWORD_FILE}" ) ]]; then
+  fail "only one of --sync-vault-password, --sync-vault-password-env, or --sync-vault-password-file may be provided"
 fi
-if [[ -n "${SYNC_VAULT_PASSWORD_ENV}" ]]; then
-  SYNC_VAULT_PASSWORD="${!SYNC_VAULT_PASSWORD_ENV:-}"
-  [[ -n "${SYNC_VAULT_PASSWORD}" ]] || fail "environment variable ${SYNC_VAULT_PASSWORD_ENV} is empty or unset"
+if [[ -n "${SYNC_VAULT_PASSWORD_ENV}" && -n "${SYNC_VAULT_PASSWORD_FILE}" ]]; then
+  fail "only one of --sync-vault-password-env or --sync-vault-password-file may be provided"
 fi
+resolve_secret_value "SYNC_VAULT_PASSWORD" "SYNC_VAULT_PASSWORD_ENV" "SYNC_VAULT_PASSWORD_FILE" "sync vault password" "false"
+if [[ -n "${HOST_VAULT_PASSWORD}" && ( -n "${HOST_VAULT_PASSWORD_ENV}" || -n "${HOST_VAULT_PASSWORD_FILE}" ) ]]; then
+  fail "only one of --host-vault-password, --host-vault-password-env, or --host-vault-password-file may be provided"
+fi
+if [[ -n "${HOST_VAULT_PASSWORD_ENV}" && -n "${HOST_VAULT_PASSWORD_FILE}" ]]; then
+  fail "only one of --host-vault-password-env or --host-vault-password-file may be provided"
+fi
+resolve_secret_value "HOST_VAULT_PASSWORD" "HOST_VAULT_PASSWORD_ENV" "HOST_VAULT_PASSWORD_FILE" "host vault password" "false"
 if [[ "${SYNC_ENABLED}" == "true" && -z "${SYNC_MODE}" ]]; then
   SYNC_MODE="managed"
 fi
@@ -1857,8 +2093,15 @@ fi
 if [[ -n "${PROOF_PROVIDER_KEY_ENV}" && -n "${PROOF_PROVIDER_KEY_FILE}" ]]; then
   fail "only one of --proof-provider-key-env or --proof-provider-key-file may be provided"
 fi
+if [[ -n "${PROOF_PROVIDER_KEY2_ENV}" && -n "${PROOF_PROVIDER_KEY2_FILE}" ]]; then
+  fail "only one of --proof-provider-key2-env or --proof-provider-key2-file may be provided"
+fi
 if [[ "${VERIFY_SYNC_CRUD_FLOW}" == "true" ]]; then
-  prepare_proof_provider_key_file
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY_FILE" "PROOF_PROVIDER_KEY_ENV" "PROOF_PROVIDER_KEY_TMP_FILE" "primary proof provider key" "true"
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY2_FILE" "PROOF_PROVIDER_KEY2_ENV" "PROOF_PROVIDER_KEY2_TMP_FILE" "secondary proof provider key" "false"
+  if [[ -z "${PROOF_PROVIDER_KEY2_FILE}" ]]; then
+    PROOF_PROVIDER_KEY2_FILE="${PROOF_PROVIDER_KEY_FILE}"
+  fi
 fi
 
 require_command curl
@@ -1868,6 +2111,9 @@ prepare_isolated_host
 maybe_rebuild_host
 ensure_host_running
 fetch_attach_token
+if [[ -n "${HOST_VAULT_PASSWORD}" ]]; then
+  ensure_host_vault_ready "${HOST_VAULT_PASSWORD}"
+fi
 
 HOST_STATE_INITIAL="$(api_get '/v1/swarm/state')"
 write_artifact "host-state-initial.json" "${HOST_STATE_INITIAL}"

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/gdamore/tcell/v2"
 	"golang.org/x/term"
 
@@ -26,17 +27,18 @@ import (
 )
 
 const (
-	interruptTick        = "tick"
-	interruptChatAsync   = "chat-async"
-	interruptReloadReady = "reload-ready"
-	interruptAuthReady   = "auth-ready"
-	interruptVoiceReady  = "voice-ready"
-	interruptStreamReady = "stream-ready"
-	interruptQuit        = "quit"
-	defaultDaemonURL     = "http://127.0.0.1:7781"
-	reloadInterval       = 3 * time.Second
-	vaultExportDirName   = "Swarm"
-	vaultExportFileExt   = ".swarmvault"
+	interruptTick           = "tick"
+	interruptChatAsync      = "chat-async"
+	interruptReloadReady    = "reload-ready"
+	interruptAuthReady      = "auth-ready"
+	interruptVoiceReady     = "voice-ready"
+	interruptStreamReady    = "stream-ready"
+	interruptGitStatusReady = "git-status-ready"
+	interruptQuit           = "quit"
+	defaultDaemonURL        = "http://127.0.0.1:7781"
+	reloadInterval          = 3 * time.Second
+	vaultExportDirName      = "Swarm"
+	vaultExportFileExt      = ".swarmvault"
 )
 
 var (
@@ -125,6 +127,25 @@ type homeReloadResult struct {
 	model  model.HomeModel
 	err    error
 	silent bool
+}
+
+type gitStatusRefreshResult struct {
+	generation uint64
+	path       string
+	status     gitRepoStatus
+	ok         bool
+}
+
+type repoGitWatcher struct {
+	path      string
+	repoRoot  string
+	gitDir    string
+	commonDir string
+	watched   map[string]struct{}
+	stop      chan struct{}
+	stopped   chan struct{}
+	debounce  chan struct{}
+	watcher   *fsnotify.Watcher
 }
 
 type authLoginResult struct {
@@ -225,6 +246,10 @@ type App struct {
 	streamCancel context.CancelFunc
 	streamSeq    atomic.Uint64
 
+	gitStatusCh        chan gitStatusRefreshResult
+	gitWatcher         *repoGitWatcher
+	gitWatchGeneration atomic.Uint64
+
 	swarmNotificationCount int
 
 	pendingChatRender chan struct{}
@@ -293,6 +318,7 @@ func New() (*App, error) {
 		authLoginCh:         make(chan authLoginResult, 1),
 		voiceCaptureCh:      make(chan voiceCaptureEvent, 4),
 		streamEvents:        make(chan client.StreamEventEnvelope, 256),
+		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
 		pendingChatRender:   make(chan struct{}, 1),
 		workspaceCandidates: make([]workspaceCandidate, 0, 128),
 	}
@@ -314,6 +340,9 @@ func New() (*App, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
+	if count, err := app.loadSwarmNotificationCount(ctx); err == nil {
+		app.setSwarmNotificationCount(count)
+	}
 	next, loadErr := app.refreshHomeModel(ctx)
 	if loadErr != nil {
 		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v", loadErr))
@@ -330,6 +359,7 @@ func New() (*App, error) {
 		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v (settings warning: %v)", loadErr, cfgErr))
 	}
 	app.startSessionEventStream()
+	app.refreshGitRealtimeWatcher()
 	return app, nil
 }
 
@@ -338,6 +368,7 @@ func (a *App) Close() {
 		a.streamCancel()
 		a.streamCancel = nil
 	}
+	a.stopGitRealtimeWatcher()
 	if a.voiceCapture.cancel != nil {
 		a.voiceCapture.cancel()
 		a.voiceCapture.cancel = nil
@@ -412,6 +443,10 @@ func (a *App) Run() error {
 				dirty = true
 			case interruptStreamReady:
 				if a.consumeSessionStreamEvents() {
+					dirty = true
+				}
+			case interruptGitStatusReady:
+				if a.consumeGitStatusRefreshResults() {
 					dirty = true
 				}
 			case interruptQuit:
@@ -680,7 +715,7 @@ func (a *App) consumeSessionStreamEvents() bool {
 func (a *App) applySessionStreamEvent(event client.StreamEventEnvelope) bool {
 	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
 	switch eventType {
-	case "swarm.enrollment.pending", "swarm.enrollment.approved", "swarm.enrollment.rejected":
+	case "swarm.enrollment.pending", "swarm.enrollment.approved", "swarm.enrollment.rejected", "notification.created", "notification.updated":
 		return a.applySwarmStreamEvent(event)
 	case "session.title.updated":
 		var payload struct {
@@ -719,6 +754,42 @@ func (a *App) applySessionStreamEvent(event client.StreamEventEnvelope) bool {
 			return true
 		}
 		return false
+	case "session.metadata.updated":
+		var payload struct {
+			SessionID string         `json:"session_id"`
+			Metadata  map[string]any `json:"metadata"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return false
+		}
+		sessionID := strings.TrimSpace(payload.SessionID)
+		if sessionID == "" {
+			return false
+		}
+		metadata := cloneMetadataMap(payload.Metadata)
+		changed := false
+		next := a.homeModel
+		for i := range next.RecentSessions {
+			if strings.TrimSpace(next.RecentSessions[i].ID) != sessionID {
+				continue
+			}
+			if len(metadata) > 0 {
+				next.RecentSessions[i].Metadata = metadata
+			} else {
+				next.RecentSessions[i].Metadata = nil
+			}
+			changed = true
+			break
+		}
+		if changed {
+			a.applyHomeModel(next)
+		}
+		if a.chat != nil && strings.TrimSpace(a.chat.SessionID()) == sessionID {
+			taskCount, openCount, inProgressCount := agentTodoCountsFromMetadata(metadata)
+			a.chat.SetAgentTodoSummary(taskCount, openCount, inProgressCount)
+			changed = true
+		}
+		return changed
 	case "session.mode.updated":
 		var payload struct {
 			SessionID string `json:"session_id"`
@@ -954,17 +1025,24 @@ func (a *App) applySwarmStreamEvent(event client.StreamEventEnvelope) bool {
 	switch eventType {
 	case "swarm.enrollment.pending":
 		a.swarmNotificationCount++
+		a.setSwarmNotificationCount(a.swarmNotificationCount)
+		return true
 	case "swarm.enrollment.approved", "swarm.enrollment.rejected":
 		if a.swarmNotificationCount > 0 {
 			a.swarmNotificationCount--
 		}
+		a.setSwarmNotificationCount(a.swarmNotificationCount)
+		return true
+	case "notification.created", "notification.updated":
+		count, err := a.loadSwarmNotificationCount(context.Background())
+		if err != nil {
+			return false
+		}
+		a.setSwarmNotificationCount(count)
+		return true
 	default:
 		return false
 	}
-	if a.chat != nil {
-		a.chat.SetSwarmNotificationCount(a.swarmNotificationCount)
-	}
-	return true
 }
 
 func (a *App) applySharedChatRuntimeEvent(event client.StreamEventEnvelope) bool {
@@ -2655,6 +2733,9 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 			Plan:                  a.home.ActivePlanName(),
 			WorktreeEnabled:       worktreeEnabled,
 			BypassPermissions:     a.homeModel.BypassPermissions,
+			AgentTodoTaskCount:    0,
+			AgentTodoOpenCount:    0,
+			AgentTodoInProgress:   0,
 		},
 		KeyBindings: a.keybinds,
 		CopyText:    copyTextToClipboard,
@@ -2683,6 +2764,8 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 			a.homeModel.ActiveAgentRuntimeKnown,
 		)
 		a.chat.SetAgentRuntime(resolvedAgent, resolvedExecution, resolvedExitPlanMode, resolvedRuntimeKnown)
+		taskCount, openCount, inProgressCount := agentTodoCountsFromMetadata(summary.Metadata)
+		a.chat.SetAgentTodoSummary(taskCount, openCount, inProgressCount)
 	}
 	if summary, ok := a.sessionSummaryByID(strings.TrimSpace(sessionID)); ok && summary.Lifecycle != nil {
 		a.chat.ApplySessionLifecycle(ui.ChatSessionLifecycle{
@@ -2700,7 +2783,7 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		})
 	}
 	a.chat.SetPasteActive(a.pasteActive)
-	a.chat.SetSwarmNotificationCount(a.swarmNotificationCount)
+	a.setSwarmNotificationCount(a.swarmNotificationCount)
 	a.applyThemeToChat()
 	a.home.ClearPrompt()
 	a.startSessionEventStream()
@@ -2825,6 +2908,55 @@ func cloneMetadataMap(input map[string]any) map[string]any {
 		out[key] = cloneMetadataValue(value)
 	}
 	return out
+}
+
+func metadataIntValue(payload map[string]any, key string) int {
+	if len(payload) == 0 {
+		return 0
+	}
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
+func agentTodoCountsFromMetadata(metadata map[string]any) (int, int, int) {
+	summary := cloneMetadataMap(metadataObject(metadata, "agent_todo_summary"))
+	if len(summary) == 0 {
+		return 0, 0, 0
+	}
+	agent := metadataObject(summary, "agent")
+	if len(agent) == 0 {
+		agent = summary
+	}
+	return metadataIntValue(agent, "task_count"), metadataIntValue(agent, "open_count"), metadataIntValue(agent, "in_progress_count")
+}
+
+func metadataObject(metadata map[string]any, key string) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return nil
+	}
+	typed, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return typed
 }
 
 func mergeMetadataMaps(base, extra map[string]any) map[string]any {
@@ -3580,21 +3712,11 @@ func cloneClientSessionLifecycle(lifecycle *client.SessionLifecycleSnapshot) *cl
 
 func mergeClientModelPreference(current, incoming client.ModelPreference) client.ModelPreference {
 	merged := current
-	if value := strings.TrimSpace(incoming.Provider); value != "" {
-		merged.Provider = value
-	}
-	if value := strings.TrimSpace(incoming.Model); value != "" {
-		merged.Model = value
-	}
-	if value := strings.TrimSpace(incoming.Thinking); value != "" {
-		merged.Thinking = value
-	}
-	if value := strings.TrimSpace(incoming.ServiceTier); value != "" {
-		merged.ServiceTier = value
-	}
-	if value := strings.TrimSpace(incoming.ContextMode); value != "" {
-		merged.ContextMode = value
-	}
+	merged.Provider = strings.TrimSpace(incoming.Provider)
+	merged.Model = strings.TrimSpace(incoming.Model)
+	merged.Thinking = strings.TrimSpace(incoming.Thinking)
+	merged.ServiceTier = strings.TrimSpace(incoming.ServiceTier)
+	merged.ContextMode = strings.TrimSpace(incoming.ContextMode)
 	return merged
 }
 
@@ -4143,14 +4265,27 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 	case ui.AuthModalActionDelete:
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		if err := a.api.DeleteAuthCredential(ctx, action.Provider, action.ID); err != nil {
+		result, err := a.api.DeleteAuthCredential(ctx, action.Provider, action.ID)
+		if err != nil {
 			a.home.SetAuthModalLoading(false)
 			a.home.SetAuthModalError(fmt.Sprintf("delete credential failed: %v", err))
 			a.showToast(ui.ToastError, fmt.Sprintf("delete credential failed: %v", err))
 			return
 		}
-		a.showToast(ui.ToastSuccess, fmt.Sprintf("credential deleted: %s/%s", action.Provider, action.ID))
+		statusParts := []string{fmt.Sprintf("credential deleted: %s/%s", action.Provider, action.ID)}
+		if result.Cleanup.ClearedGlobalPreference {
+			statusParts = append(statusParts, "cleared default model")
+		}
+		if count := len(result.Cleanup.ResetAgents); count > 0 {
+			label := "agents"
+			if count == 1 {
+				label = "agent"
+			}
+			statusParts = append(statusParts, fmt.Sprintf("reset %d %s to inherit; reassign in /agents", count, label))
+		}
+		a.showToast(ui.ToastSuccess, strings.Join(statusParts, " • "))
 		a.refreshAuthModalData("")
+		a.queueReload(true)
 	case ui.AuthModalActionLogin:
 		a.startProviderLogin(action.Login)
 	case ui.AuthModalActionLoginCallback:
@@ -5400,6 +5535,7 @@ func (a *App) refreshAuthModalData(statusHint string) {
 	if !a.home.AuthModalVisible() {
 		return
 	}
+	a.home.ClearAuthModalSnapshot()
 	if strings.TrimSpace(statusHint) != "" {
 		a.home.SetAuthModalStatus(statusHint)
 	}
@@ -5418,7 +5554,17 @@ func (a *App) refreshAuthModalData(statusHint string) {
 
 	modalProviders := mergeAuthModalProviders(providerStatuses, credentials)
 	modalCredentials := mapAuthModalCredentials(credentials.Records)
+	agentProfiles := make([]ui.AgentModalProfile, 0)
+	if agentState, err := a.api.ListAgents(ctx, 500); err == nil {
+		for _, profile := range agentState.Profiles {
+			agentProfiles = append(agentProfiles, ui.AgentModalProfile{
+				Name:     strings.TrimSpace(profile.Name),
+				Provider: normalizeModelProviderID(profile.Provider),
+			})
+		}
+	}
 	a.home.SetAuthModalData(modalProviders, modalCredentials)
+	a.home.SetAuthModalAgentProfiles(agentProfiles)
 	a.home.SetAuthModalLoading(false)
 
 	switch {
@@ -6753,6 +6899,27 @@ func (a *App) consumeReloadResult() {
 	}
 }
 
+func (a *App) consumeGitStatusRefreshResults() bool {
+	if a == nil {
+		return false
+	}
+	changed := false
+	for {
+		select {
+		case result := <-a.gitStatusCh:
+			if result.generation != a.gitWatchGeneration.Load() {
+				continue
+			}
+			if !a.applyGitStatusRefresh(result) {
+				continue
+			}
+			changed = true
+		default:
+			return changed
+		}
+	}
+}
+
 func activeAgentRuntime(state client.AgentState) (string, string, bool, bool) {
 	active := strings.TrimSpace(state.ActivePrimary)
 	if active == "" {
@@ -6787,7 +6954,9 @@ func (a *App) syncChatAgentRuntime() {
 func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
+	a.home.SetSwarmNotificationCount(a.swarmNotificationCount)
 	a.syncChatAgentRuntime()
+	a.refreshGitRealtimeWatcher()
 	a.applyEffectiveTheme()
 }
 
@@ -6805,6 +6974,36 @@ func (a *App) backgroundSessionMatchesOpenModal(item ui.ChatSessionPaletteItem) 
 		}
 	}
 	return false
+}
+
+func (a *App) setSwarmNotificationCount(count int) {
+	if a == nil {
+		return
+	}
+	if count < 0 {
+		count = 0
+	}
+	a.swarmNotificationCount = count
+	if a.home != nil {
+		a.home.SetSwarmNotificationCount(count)
+	}
+	if a.chat != nil {
+		a.chat.SetSwarmNotificationCount(count)
+	}
+}
+
+func (a *App) loadSwarmNotificationCount(ctx context.Context) (int, error) {
+	if a == nil || a.api == nil {
+		return 0, errors.New("api client unavailable")
+	}
+	summary, err := a.api.GetNotificationSummary(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	if summary.UnreadCount < 0 {
+		return 0, nil
+	}
+	return summary.UnreadCount, nil
 }
 
 func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
@@ -6940,7 +7139,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "workspace overview unavailable")
 	}
 
-	gitStatus := gitStatusForPath(activePath)
+	gitStatus, _ := gitStatusForPath(activePath)
 	if activeIsWorkspace {
 		matched := false
 		for i := range next.Directories {
@@ -7156,6 +7355,7 @@ func (a *App) syncActiveContextFromHomeModel(next model.HomeModel) {
 			break
 		}
 	}
+	a.refreshGitRealtimeWatcher()
 }
 
 func workspacePathMatchDepth(root, target string) int {
@@ -7262,6 +7462,7 @@ func (a *App) syncKnownWorkspaceSelectionForPath(path string) {
 	if a.home != nil {
 		a.home.SetModel(a.homeModel)
 	}
+	a.refreshGitRealtimeWatcher()
 	a.applyEffectiveTheme()
 }
 
@@ -7270,6 +7471,97 @@ func (a *App) activeWorkspacePath() string {
 		return normalizePath(path)
 	}
 	return ""
+}
+
+func (a *App) refreshGitRealtimeWatcher() {
+	if a == nil {
+		return
+	}
+	target := normalizePath(a.activeContextPath())
+	if target == "" {
+		a.stopGitRealtimeWatcher()
+		return
+	}
+	if a.gitWatcher != nil && pathsEqual(a.gitWatcher.path, target) {
+		return
+	}
+	a.stopGitRealtimeWatcher()
+	a.startGitRealtimeWatcher(target)
+}
+
+func (a *App) startGitRealtimeWatcher(path string) {
+	if a == nil {
+		return
+	}
+	target := normalizePath(path)
+	if target == "" {
+		return
+	}
+	watcher, err := newRepoGitWatcher(target)
+	if err != nil {
+		return
+	}
+	generation := a.gitWatchGeneration.Add(1)
+	a.gitWatcher = watcher
+	go watcher.run(func() {
+		status, ok := gitStatusForPath(target)
+		result := gitStatusRefreshResult{generation: generation, path: target, status: status, ok: ok}
+		select {
+		case a.gitStatusCh <- result:
+		default:
+			select {
+			case <-a.gitStatusCh:
+			default:
+			}
+			select {
+			case a.gitStatusCh <- result:
+			default:
+			}
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptGitStatusReady))
+		}
+	})
+}
+
+func (a *App) stopGitRealtimeWatcher() {
+	if a == nil || a.gitWatcher == nil {
+		return
+	}
+	a.gitWatcher.stopWatching()
+	a.gitWatcher = nil
+}
+
+func (a *App) applyGitStatusRefresh(result gitStatusRefreshResult) bool {
+	if a == nil || !result.ok {
+		return false
+	}
+	target := normalizePath(result.path)
+	if target == "" {
+		return false
+	}
+	changed := false
+	for i := range a.homeModel.Directories {
+		if !pathsEqual(a.homeModel.Directories[i].ResolvedPath, target) {
+			continue
+		}
+		before := a.homeModel.Directories[i]
+		applyGitStatusToDirectory(&a.homeModel.Directories[i], result.status)
+		if a.homeModel.Directories[i] != before {
+			changed = true
+		}
+		break
+	}
+	if !changed {
+		return false
+	}
+	if a.home != nil {
+		a.home.SetModel(a.homeModel)
+	}
+	if a.chat != nil && pathsEqual(a.activePath, target) {
+		a.chat.SetSessionBranch(result.status.Branch)
+	}
+	return true
 }
 
 func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution) {
@@ -7319,6 +7611,7 @@ func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution
 		}
 	}
 	a.home.SetModel(a.homeModel)
+	a.refreshGitRealtimeWatcher()
 	a.applyEffectiveTheme()
 }
 
@@ -7585,8 +7878,8 @@ func newDirectoryItemWithGitStatus(path string, isWorkspace bool, status gitRepo
 }
 
 func branchForPath(path string) string {
-	status := gitStatusForPath(path)
-	if !status.HasGit {
+	status, ok := gitStatusForPath(path)
+	if !ok || !status.HasGit {
 		return "-"
 	}
 	branch := strings.TrimSpace(status.Branch)
@@ -7596,20 +7889,20 @@ func branchForPath(path string) string {
 	return branch
 }
 
-func gitStatusForPath(path string) gitRepoStatus {
+func gitStatusForPath(path string) (gitRepoStatus, bool) {
 	target := strings.TrimSpace(path)
 	if target == "" {
-		return gitRepoStatus{Branch: "-"}
+		return gitRepoStatus{Branch: "-"}, false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", target, "status", "--porcelain=v2", "--branch")
+	cmd := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", target, "status", "--porcelain=v2", "--branch")
 	raw, err := cmd.Output()
 	if err != nil {
-		return gitRepoStatus{Branch: "-"}
+		return gitRepoStatus{Branch: "-"}, false
 	}
-	return parseGitStatusPorcelainV2(string(raw))
+	return parseGitStatusPorcelainV2(string(raw)), true
 }
 
 func parseGitStatusPorcelainV2(raw string) gitRepoStatus {

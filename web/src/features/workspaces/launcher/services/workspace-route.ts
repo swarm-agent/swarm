@@ -1,5 +1,9 @@
 import type { WorkspaceEntry } from '../types/workspace'
 
+const RESERVED_WORKSPACE_SLUGS = new Set([
+  'swarm',
+])
+
 function slugifySegment(value: string): string {
   const normalized = value
     .trim()
@@ -30,8 +34,16 @@ function pathHash(path: string): string {
   return (hash >>> 0).toString(36)
 }
 
+function normalizeWorkspaceRouteBase(workspace: Pick<WorkspaceEntry, 'path' | 'workspaceName'>): string {
+  const base = slugifySegment(fallbackWorkspaceName(workspace))
+  if (RESERVED_WORKSPACE_SLUGS.has(base)) {
+    return `${base}-workspace`
+  }
+  return base
+}
+
 export function workspaceRouteSlugBase(workspace: Pick<WorkspaceEntry, 'path' | 'workspaceName'>): string {
-  return slugifySegment(fallbackWorkspaceName(workspace))
+  return normalizeWorkspaceRouteBase(workspace)
 }
 
 export function buildWorkspaceRouteSlugMap(workspaces: readonly Pick<WorkspaceEntry, 'path' | 'workspaceName'>[]): Map<string, string> {

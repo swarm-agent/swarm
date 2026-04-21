@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"swarm-refactor/swarmtui/internal/buildinfo"
 	"swarm-refactor/swarmtui/internal/client"
 )
 
@@ -115,7 +116,7 @@ type HomeModel struct {
 func EmptyHome() HomeModel {
 	return HomeModel{
 		Title:        "Swarm",
-		Version:      "v0.1.0-refactor",
+		Version:      buildinfo.DisplayVersion(),
 		ActivePlan:   "",
 		ServerMode:   "local",
 		PromptHint:   "",
@@ -136,7 +137,7 @@ func MockHome() HomeModel {
 
 	return HomeModel{
 		Title:                       "Swarm",
-		Version:                     "v0.1.0-refactor",
+		Version:                     buildinfo.DisplayVersion(),
 		ActivePlan:                  "Core Platform",
 		ServerURL:                   "http://127.0.0.1:7781",
 		ServerMode:                  "local",

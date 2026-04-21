@@ -2,10 +2,11 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, GitBranch, GitCommitHorizontal, Home, ListChecks, Plus, Settings } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
+import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { cn } from '../../../lib/cn'
 import { useDesktopStore } from '../state/use-desktop-store'
 import {
@@ -74,9 +75,9 @@ interface SwarmTargetMenuState {
 function normalizeWorkspaceTodoSummary(summary: WorkspaceTodoSummary): WorkspaceTodoSummary {
   return {
     ...summary,
-    taskCount: summary.user.taskCount + summary.agent.taskCount,
-    openCount: summary.user.openCount + summary.agent.openCount,
-    inProgressCount: summary.user.inProgressCount + summary.agent.inProgressCount,
+    taskCount: summary.user.taskCount,
+    openCount: summary.user.openCount,
+    inProgressCount: summary.user.inProgressCount,
   }
 }
 
@@ -109,6 +110,41 @@ function normalizeRatio(value: number | undefined): number {
     return 1
   }
   return value
+}
+
+function fallbackWorkspaceNameFromPath(path: string): string {
+  const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || path.trim() || 'Temporary folder'
+}
+
+function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): WorkspaceEntry {
+  return {
+    path,
+    workspaceName,
+    themeId: '',
+    directories: [path],
+    isGitRepo: false,
+    replicationLinks: [],
+    sortIndex: -1,
+    addedAt: 0,
+    updatedAt: 0,
+    lastSelectedAt: 0,
+    active: true,
+    worktreeEnabled: false,
+    gitBranch: '',
+    gitHasGit: false,
+    gitClean: false,
+    gitDirtyCount: 0,
+    gitStagedCount: 0,
+    gitModifiedCount: 0,
+    gitUntrackedCount: 0,
+    gitConflictCount: 0,
+    gitAheadCount: 0,
+    gitBehindCount: 0,
+    gitCommittedFileCount: 0,
+    gitCommittedAdditions: 0,
+    gitCommittedDeletions: 0,
+  }
 }
 
 function connectionTone(connectionState: 'idle' | 'connecting' | 'open' | 'closed' | 'error'): 'muted' | 'success' | 'warning' | 'danger' {
@@ -371,7 +407,7 @@ function renderWorkspaceGitBar(args: {
   const branch = workspace.gitBranch?.trim() || 'git'
   const ahead = Math.max(0, Number(workspace.gitAheadCount ?? 0))
   const behind = Math.max(0, Number(workspace.gitBehindCount ?? 0))
-  const syncLabel = ahead > 0 || behind > 0 ? `↑${ahead} ↓${behind}` : '—'
+  const syncLabel = `↑${ahead} ↓${behind}`
   const modified = Math.max(0, Number(workspace.gitModifiedCount ?? 0))
   const untracked = Math.max(0, Number(workspace.gitUntrackedCount ?? 0))
   const dirtyDetailParts: string[] = []
@@ -791,11 +827,15 @@ export function DesktopAppPage() {
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
   const notifications = useDesktopStore((state) => state.notifications)
+  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
+  const updateNotificationRecord = useDesktopStore((state) => state.updateNotificationRecord)
   const setActiveSession = useDesktopStore((state) => state.setActiveSession)
   const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
   const upsertSession = useDesktopStore((state) => state.upsertSession)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTabID>('agents')
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
@@ -815,6 +855,17 @@ export function DesktopAppPage() {
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
   )
+  const temporaryRouteWorkspace = useMemo<WorkspaceEntry | null>(() => {
+    const candidatePath = activeWorkspacePath?.trim() ?? ''
+    if (!routeWorkspaceSlug || routeSessionId || routeWorkspace || !candidatePath || workspaceByPath.has(candidatePath)) {
+      return null
+    }
+    const workspaceName = fallbackWorkspaceNameFromPath(candidatePath)
+    if (workspaceRouteSlugBase({ path: candidatePath, workspaceName }) !== routeWorkspaceSlug) {
+      return null
+    }
+    return buildTemporaryWorkspaceEntry(candidatePath, workspaceName)
+  }, [activeWorkspacePath, routeSessionId, routeWorkspace, routeWorkspaceSlug, workspaceByPath])
   const selectedWorkspacePath = useMemo<string | null>(() => {
     const routeSession = routeSessionId ? liveSessions[routeSessionId] ?? null : null
     if (routeSession?.workspacePath) {
@@ -823,41 +874,21 @@ export function DesktopAppPage() {
     if (routeWorkspace?.path) {
       return routeWorkspace.path
     }
+    if (temporaryRouteWorkspace?.path) {
+      return temporaryRouteWorkspace.path
+    }
     return null
-  }, [liveSessions, routeSessionId, routeWorkspace?.path])
-  const selectedWorkspace = selectedWorkspacePath ? workspaceByPath.get(selectedWorkspacePath) ?? null : null
+  }, [liveSessions, routeSessionId, routeWorkspace?.path, temporaryRouteWorkspace])
+  const savedSelectedWorkspace = selectedWorkspacePath ? workspaceByPath.get(selectedWorkspacePath) ?? null : null
+  const selectedWorkspace = savedSelectedWorkspace ?? (temporaryRouteWorkspace?.path === selectedWorkspacePath ? temporaryRouteWorkspace : null)
   const sidebarWorkspaceEntries = useMemo<WorkspaceEntry[]>(() => {
-    if (!selectedWorkspacePath || selectedWorkspace) {
+    if (!selectedWorkspacePath || savedSelectedWorkspace) {
       return workspaces
     }
-    return [{
-      path: selectedWorkspacePath,
-      workspaceName: routeWorkspace?.workspaceName || 'Temporary folder',
-      themeId: '',
-      directories: [selectedWorkspacePath],
-      isGitRepo: false,
-      replicationLinks: [],
-      sortIndex: -1,
-      addedAt: 0,
-      updatedAt: 0,
-      lastSelectedAt: 0,
-      active: true,
-      worktreeEnabled: false,
-      gitBranch: '',
-      gitHasGit: false,
-      gitClean: false,
-      gitDirtyCount: 0,
-      gitStagedCount: 0,
-      gitModifiedCount: 0,
-      gitUntrackedCount: 0,
-      gitConflictCount: 0,
-      gitAheadCount: 0,
-      gitBehindCount: 0,
-      gitCommittedFileCount: 0,
-      gitCommittedAdditions: 0,
-      gitCommittedDeletions: 0,
-    }, ...workspaces]
-  }, [routeWorkspace?.workspaceName, selectedWorkspace, selectedWorkspacePath, workspaces])
+    const temporaryWorkspace = temporaryRouteWorkspace
+      ?? buildTemporaryWorkspaceEntry(selectedWorkspacePath, fallbackWorkspaceNameFromPath(selectedWorkspacePath))
+    return [temporaryWorkspace, ...workspaces]
+  }, [savedSelectedWorkspace, selectedWorkspacePath, temporaryRouteWorkspace, workspaces])
   const mergedSidebarWorkspaceEntries = useMemo(() => sidebarWorkspaceEntries.map((workspace) => ({
     ...workspace,
     todoSummary: todoSummaries[workspace.path] ?? workspace.todoSummary,
@@ -901,8 +932,8 @@ export function DesktopAppPage() {
     () => notifications.filter((notification) => notification.source === 'swarm'),
     [notifications],
   )
-  const swarmNotificationCount = swarmNotifications.length
-  const latestSwarmNotification = swarmNotifications[0] ?? null
+  const swarmNotificationCount = notificationCenter.summary.unreadCount
+  const latestSwarmNotification = notificationCenter.items[0] ?? swarmNotifications[0] ?? null
   const swarmTargetSubtitle = currentSwarmTarget
     ? `${currentSwarmTarget.relationship}${currentSwarmTarget.online ? '' : ' · offline'}`
     : (latestSwarmNotification?.title ?? null)
@@ -952,7 +983,7 @@ export function DesktopAppPage() {
           ...current,
           [normalizedPath]: [...userResult.items, ...agentResult.items],
         }))
-        setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(agentResult.summary) }))
+        setTodoSummaries((current) => ({ ...current, [normalizedPath]: normalizeWorkspaceTodoSummary(userResult.summary) }))
       })
       .catch(() => {
         setTodoItems((current) => ({ ...current, [normalizedPath]: [] }))
@@ -984,10 +1015,23 @@ export function DesktopAppPage() {
         activeSessionId: null,
         activeWorkspacePath: null,
         notifications: state.notifications.filter((notification) => notification.source !== 'swarm'),
+        notificationCenter: {
+          items: [],
+          summary: {
+            swarmID: '',
+            totalCount: 0,
+            unreadCount: 0,
+            activeCount: 0,
+            updatedAt: 0,
+          },
+          loading: false,
+          hydrated: false,
+        },
       }))
       await queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
       await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
       void useDesktopStore.getState().hydrate()
+      void useDesktopStore.getState().refreshNotifications()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to switch swarm target'
       setSwarmSwitchError(message)
@@ -1093,26 +1137,6 @@ export function DesktopAppPage() {
     () => new Map(allSessions.map((session) => [session.id, session] as const)),
     [allSessions],
   )
-
-  const workspaceSessionOptions = useMemo<Map<string, { id: string; title: string; summary: string | null; isActive: boolean; updatedAt: number }[]>>(() => {
-    const grouped = new Map<string, { id: string; title: string; summary: string | null; isActive: boolean; updatedAt: number }[]>()
-    for (const workspace of mergedSidebarWorkspaceEntries) {
-      const sessions = sessionsByWorkspace.get(workspace.path) ?? []
-      grouped.set(
-        workspace.path,
-        sessions
-          .filter((session) => session.id.trim() !== '')
-          .map((session) => ({
-            id: session.id,
-            title: session.title.trim() || 'Untitled conversation',
-            summary: session.live.summary?.trim() || session.metadata?.summary?.toString().trim() || null,
-            isActive: activeSessionId === session.id,
-            updatedAt: session.updatedAt,
-          })),
-      )
-    }
-    return grouped
-  }, [activeSessionId, mergedSidebarWorkspaceEntries, sessionsByWorkspace])
 
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(mergedSidebarWorkspaceEntries), [mergedSidebarWorkspaceEntries])
 
@@ -1328,6 +1352,7 @@ export function DesktopAppPage() {
     if (!session?.workspacePath) {
       return
     }
+    setMobileSidebarOpen(false)
     const workspaceSlug = workspaceSlugByPath.get(session.workspacePath)
       ?? workspaceRouteSlugBase({ path: session.workspacePath, workspaceName: session.workspaceName })
     void navigate({
@@ -1362,6 +1387,7 @@ export function DesktopAppPage() {
   const chatWorkspaceName = selectedSession?.workspaceName || selectedWorkspace?.workspaceName || ''
 
   const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
+    setMobileSidebarOpen(false)
     setActiveSession(null)
     setActiveWorkspacePath(wsPath)
     const workspaceSlug = workspaceSlugByPath.get(wsPath)
@@ -1404,14 +1430,28 @@ export function DesktopAppPage() {
     void navigate({ to: '/swarm' })
   }, [navigate, routeWorkspaceSlug])
 
+  const handleOpenNotifications = useCallback(() => {
+    setNotificationsOpen(true)
+  }, [])
+
   const handleOpenWorkspaceLauncher = useCallback(() => {
+    setMobileSidebarOpen(false)
     setActiveSession(null)
     void navigate({ to: '/' })
   }, [navigate, setActiveSession])
 
+  const handleOpenMobileSidebar = useCallback(() => {
+    setSidebarCollapsed(false)
+    setMobileSidebarOpen(true)
+  }, [])
+
   const handlePrefetchSession = useCallback((sessionId: string) => {
     void prefetchSessionRuntimeData(queryClient, sessionId)
   }, [queryClient])
+
+  useEffect(() => {
+    setMobileSidebarOpen(false)
+  }, [routeSessionId, routeWorkspaceSlug])
 
   const totalVisibleRatio = useMemo(
     () => mergedSidebarWorkspaceEntries.reduce((sum, workspace) => {
@@ -1422,227 +1462,255 @@ export function DesktopAppPage() {
     [mergedSidebarWorkspaceEntries, workspaceLayout],
   )
 
+  const sidebarContent = (
+    <>
+      {sidebarCollapsed ? (
+        <div className="flex h-full flex-col items-center gap-1 py-3">
+          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(false)} aria-label="Expand sidebar">
+            <ChevronRight size={28} className="shrink-0" />
+          </Button>
+          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
+            <Home size={24} className="shrink-0" />
+          </Button>
+          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={handleOpenSwarmDashboard} aria-label="Open swarm dashboard">
+            <Settings size={24} className="shrink-0" />
+          </Button>
+          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (selectedWorkspacePath) { openTodoModal(selectedWorkspacePath, selectedWorkspace?.workspaceName ?? 'Workspace') } }} aria-label="Open tasks" disabled={!selectedWorkspacePath}>
+            <ListChecks size={24} className="shrink-0" />
+          </Button>
+          <div className="mt-2 flex flex-col items-center">
+            <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
+          </div>
+        </div>
+      ) : (
+        <div className="flex h-full flex-col min-h-0">
+          <div className="flex h-[60px] items-center border-b border-[var(--app-border)] px-4">
+            <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
+                <Button
+                  variant="ghost"
+                  className="h-12 min-w-0 flex-1 justify-start gap-2 px-3 text-left"
+                  onClick={() => setSwarmMenu((current) => ({ open: !current.open }))}
+                  aria-label="Choose swarm target"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">{swarmName}{swarmNotificationCount > 0 ? ` !${swarmNotificationCount}` : ''}</div>
+                    {swarmTargetSubtitle ? <div className="truncate text-xs text-[var(--app-text-muted)]">{swarmTargetSubtitle}</div> : null}
+                  </div>
+                  <ChevronsUpDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />
+                </Button>
+              </div>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  className="relative h-12 w-12 min-w-12 p-0"
+                  onClick={handleOpenNotifications}
+                  aria-label="Open notifications"
+                  title={swarmNotificationCount > 0 ? `${swarmNotificationCount} unread notification${swarmNotificationCount === 1 ? '' : 's'}` : 'No unread notifications'}
+                >
+                  <Bell size={22} className="shrink-0" />
+                  {swarmNotificationCount > 0 ? (
+                    <span className="absolute right-2 top-2 min-w-[18px] rounded-full bg-[var(--app-primary)] px-1 text-center text-[10px] font-semibold leading-[18px] text-white">
+                      {swarmNotificationCount > 9 ? '9+' : swarmNotificationCount}
+                    </span>
+                  ) : null}
+                </Button>
+                <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(true)} aria-label="Collapse sidebar">
+                  <ChevronLeft size={28} className="shrink-0" />
+                </Button>
+              </div>
+            </div>
+          </div>
+          {swarmMenu.open ? (
+            <div className="border-b border-[var(--app-border)] px-3 py-2">
+              <div className="space-y-1">
+                {swarmTargets.map((target) => (
+                  <button
+                    key={target.swarm_id}
+                    type="button"
+                    onClick={() => { void handleSelectSwarmTarget(target) }}
+                    disabled={!target.selectable}
+                    className={cn(
+                      'flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition-colors',
+                      target.current ? 'bg-[var(--app-primary)]/10 text-[var(--app-text)]' : 'hover:bg-[var(--app-surface-hover)]',
+                      !target.selectable && 'cursor-not-allowed opacity-50',
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{target.name}</div>
+                      <div className="truncate text-xs text-[var(--app-text-muted)]">{target.relationship} · {target.role} · {target.online ? 'online' : (target.attach_status || 'offline')}</div>
+                      {target.last_error ? <div className="truncate text-[11px] text-[var(--app-warning)]">{target.last_error}</div> : null}
+                    </div>
+                    {target.current ? <span className="text-xs font-semibold text-[var(--app-primary)]">current</span> : null}
+                  </button>
+                ))}
+                {swarmSwitchError ? <div className="rounded-md border border-[var(--app-warning)]/40 bg-[var(--app-warning)]/10 px-3 py-2 text-xs text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
+              </div>
+              <div className="mt-3 border-t border-[var(--app-border)] pt-3">
+                <Button
+                  variant="outline"
+                  className="h-10 w-full justify-center rounded-xl"
+                  onClick={handleOpenSwarmDashboardFromMenu}
+                  aria-label="Open swarm dashboard"
+                >
+                  <Settings size={16} className="shrink-0" />
+                  <span>Swarm dashboard</span>
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div ref={sidebarBodyRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
+              {mergedSidebarWorkspaceEntries.map((workspace, index) => {
+                const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
+                const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
+                const flattenedSessionNodes = flattenSidebarSessionNodes(sessionNodes)
+                const layout = workspaceLayout[workspace.path]
+                const collapsed = layout?.collapsed ?? false
+                const worktreeBusy = savingPath === workspace.path
+                const handleToggleWorkspaceWorktree = () => {
+                  if (worktreeBusy) {
+                    return
+                  }
+                  void setWorktreeEnabled(workspace.path, !workspace.worktreeEnabled)
+                }
+                return (
+                  <Fragment key={workspace.path}>
+                    <section style={workspaceSectionHeightStyle(layout?.ratio ?? 1, totalVisibleRatio, collapsed)} className="flex min-h-0 flex-col overflow-hidden">
+                      <div className="flex items-center justify-between gap-2 px-1 py-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            toggleWorkspaceCollapse(workspace.path)
+                          }}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-[var(--app-text)]"
+                          aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${workspace.workspaceName}`}
+                        >
+                          {collapsed ? <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" /> : <ChevronDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />}
+                          <div className="truncate text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">{workspace.workspaceName}</div>
+                        </button>
+                        <div className="flex items-center gap-1">
+                          {!workspaceByPath.has(workspace.path) ? (
+                            <Button
+                              variant="ghost"
+                              className="h-12 min-h-12 shrink-0 rounded-xl px-3 text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-warning)]"
+                              onClick={() => {
+                                void saveWorkspace({
+                                  path: workspace.path,
+                                  name: workspace.workspaceName,
+                                  themeId: workspace.themeId,
+                                  makeCurrent: true,
+                                  linkedDirectories: [],
+                                })
+                              }}
+                              title="Save this temporary folder as a workspace"
+                            >
+                              ! Save
+                            </Button>
+                          ) : null}
+                          {selectingPath === workspace.path ? <span className="text-xs text-[var(--app-text-muted)]">opening…</span> : null}
+                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.taskCount ?? 0} tasks`}>
+                            <ListChecks size={17} strokeWidth={2.25} className="shrink-0" />
+                          </Button>
+                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">
+                            <Plus size={17} strokeWidth={2.25} className="shrink-0" />
+                          </Button>
+                        </div>
+                      </div>
+                      {!collapsed && renderWorkspaceGitBar({
+                        workspace,
+                        worktreeBusy,
+                        onToggle: handleToggleWorkspaceWorktree,
+                      })}
+                      {!collapsed && (
+                        <div className="grid min-h-0 flex-1 content-start gap-0.5 overflow-y-auto">
+                          {flattenedSessionNodes.length === 0 ? null : flattenedSessionNodes.map((node) => (
+                            <SessionRow
+                              key={node.session.id}
+                              active={selectedSession?.id === node.session.id}
+                              now={sidebarNow}
+                              session={node.session}
+                              fallbackSwarmName={swarmName}
+                              depth={node.depth}
+                              childLabel={node.label}
+                              childKind={node.kind}
+                              onSelect={handleSelectSession}
+                              onPrefetch={handlePrefetchSession}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                    {index < mergedSidebarWorkspaceEntries.length - 1 && !collapsed && !workspaceLayout[mergedSidebarWorkspaceEntries[index + 1].path]?.collapsed ? (
+                      <div
+                        role="separator"
+                        aria-orientation="horizontal"
+                        className="relative my-2 h-4 cursor-row-resize group px-1"
+                        onPointerDown={(event) => handleResizeStart(event, workspace.path, mergedSidebarWorkspaceEntries[index + 1].path)}
+                      >
+                        <div className="absolute inset-x-1 top-1/2 h-px bg-[var(--app-border)] group-hover:bg-[var(--app-border-strong)] transition-colors" />
+                      </div>
+                    ) : index < mergedSidebarWorkspaceEntries.length - 1 ? (
+                      <div className="h-2" />
+                    ) : null}
+                  </Fragment>
+                )
+              })}
+            </div>
+            <div className="grid grid-cols-2 gap-2 border-t border-[var(--app-border)] px-4 py-3">
+              <Button
+                variant="outline"
+                className="h-11 min-h-11 w-full justify-center rounded-xl"
+                onClick={handleOpenWorkspaceLauncher}
+                aria-label="Open workspaces"
+              >
+                <Home size={18} className="shrink-0" />
+                <span>Workspaces</span>
+              </Button>
+              <Button
+                variant="outline"
+                className="h-11 min-h-11 w-full justify-center rounded-xl"
+                onClick={() => { setSettingsTab('agents'); setSettingsOpen(true) }}
+                aria-label="Open settings"
+              >
+                <Settings size={18} className="shrink-0" />
+                <span>Settings</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+
   return (
     <div className="flex absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
-      <aside className={cn('flex flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] shrink-0', sidebarCollapsed ? 'w-[56px]' : 'w-[320px]')}>
-        {sidebarCollapsed ? (
-          <div className="flex h-full flex-col items-center gap-1 py-3">
-            <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(false)} aria-label="Expand sidebar">
-              <ChevronRight size={28} className="shrink-0" />
-            </Button>
-            <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => void navigate({ to: '/' })} aria-label="Back to launcher">
-              <Home size={24} className="shrink-0" />
-            </Button>
-            <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={handleOpenSwarmDashboard} aria-label="Open swarm dashboard">
-              <Settings size={24} className="shrink-0" />
-            </Button>
-            <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (selectedWorkspacePath) { openTodoModal(selectedWorkspacePath, selectedWorkspace?.workspaceName ?? 'Workspace') } }} aria-label="Open tasks" disabled={!selectedWorkspacePath}>
-              <ListChecks size={24} className="shrink-0" />
-            </Button>
-            <div className="mt-2 flex flex-col items-center">
-              <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
-            </div>
-          </div>
-        ) : (
-          <div className="flex h-full flex-col min-h-0">
-            <div className="flex h-[60px] items-center border-b border-[var(--app-border)] px-4">
-              <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                <div className="flex min-w-0 flex-1 items-center gap-3">
-                  <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
-                  <Button
-                    variant="ghost"
-                    className="h-12 min-w-0 flex-1 justify-start gap-2 px-3 text-left"
-                    onClick={() => setSwarmMenu((current) => ({ open: !current.open }))}
-                    aria-label="Choose swarm target"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-semibold">{swarmName}{swarmNotificationCount > 0 ? ` !${swarmNotificationCount}` : ''}</div>
-                      {swarmTargetSubtitle ? <div className="truncate text-xs text-[var(--app-text-muted)]">{swarmTargetSubtitle}</div> : null}
-                    </div>
-                    <ChevronsUpDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />
-                  </Button>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    className="relative h-12 w-12 min-w-12 p-0"
-                    onClick={handleOpenSwarmDashboard}
-                    aria-label="Open swarm dashboard"
-                    title={swarmNotificationCount > 0 ? `${swarmNotificationCount} swarm notification${swarmNotificationCount === 1 ? '' : 's'}` : 'No swarm notifications'}
-                  >
-                    <Bell size={22} className="shrink-0" />
-                    {swarmNotificationCount > 0 ? (
-                      <span className="absolute right-2 top-2 min-w-[18px] rounded-full bg-[var(--app-primary)] px-1 text-center text-[10px] font-semibold leading-[18px] text-white">
-                        {swarmNotificationCount > 9 ? '9+' : swarmNotificationCount}
-                      </span>
-                    ) : null}
-                  </Button>
-                  <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(true)} aria-label="Collapse sidebar">
-                    <ChevronLeft size={28} className="shrink-0" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-            {swarmMenu.open ? (
-              <div className="border-b border-[var(--app-border)] px-3 py-2">
-                <div className="space-y-1">
-                  {swarmTargets.map((target) => (
-                    <button
-                      key={target.swarm_id}
-                      type="button"
-                      onClick={() => { void handleSelectSwarmTarget(target) }}
-                      disabled={!target.selectable}
-                      className={cn(
-                        'flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition-colors',
-                        target.current ? 'bg-[var(--app-primary)]/10 text-[var(--app-text)]' : 'hover:bg-[var(--app-surface-hover)]',
-                        !target.selectable && 'cursor-not-allowed opacity-50',
-                      )}
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate font-medium">{target.name}</div>
-                        <div className="truncate text-xs text-[var(--app-text-muted)]">{target.relationship} · {target.role} · {target.online ? 'online' : (target.attach_status || 'offline')}</div>
-                        {target.last_error ? <div className="truncate text-[11px] text-[var(--app-warning)]">{target.last_error}</div> : null}
-                      </div>
-                      {target.current ? <span className="text-xs font-semibold text-[var(--app-primary)]">current</span> : null}
-                    </button>
-                  ))}
-                  {swarmSwitchError ? <div className="rounded-md border border-[var(--app-warning)]/40 bg-[var(--app-warning)]/10 px-3 py-2 text-xs text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
-                </div>
-                <div className="mt-3 border-t border-[var(--app-border)] pt-3">
-                  <Button
-                    variant="outline"
-                    className="h-10 w-full justify-center rounded-xl"
-                    onClick={handleOpenSwarmDashboardFromMenu}
-                    aria-label="Open swarm dashboard"
-                  >
-                    <Settings size={16} className="shrink-0" />
-                    <span>Swarm dashboard</span>
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div ref={sidebarBodyRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
-                {mergedSidebarWorkspaceEntries.map((workspace, index) => {
-                  const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
-                  const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
-                  const flattenedSessionNodes = flattenSidebarSessionNodes(sessionNodes)
-                  const layout = workspaceLayout[workspace.path]
-                  const collapsed = layout?.collapsed ?? false
-                  const worktreeBusy = savingPath === workspace.path
-                  const handleToggleWorkspaceWorktree = () => {
-                    if (worktreeBusy) {
-                      return
-                    }
-                    void setWorktreeEnabled(workspace.path, !workspace.worktreeEnabled)
-                  }
-                  return (
-                    <Fragment key={workspace.path}>
-                      <section style={workspaceSectionHeightStyle(layout?.ratio ?? 1, totalVisibleRatio, collapsed)} className="flex min-h-0 flex-col overflow-hidden">
-                        <div className="flex items-center justify-between gap-2 px-1 py-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              toggleWorkspaceCollapse(workspace.path)
-                            }}
-                            className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-[var(--app-text)]"
-                            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${workspace.workspaceName}`}
-                          >
-                            {collapsed ? <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" /> : <ChevronDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />}
-                            <div className="truncate text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">{workspace.workspaceName}</div>
-                          </button>
-                          <div className="flex items-center gap-1">
-                            {!workspaceByPath.has(workspace.path) ? (
-                              <Button
-                                variant="ghost"
-                                className="h-12 min-h-12 shrink-0 rounded-xl px-3 text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-warning)]"
-                                onClick={() => {
-                                  void saveWorkspace({
-                                    path: workspace.path,
-                                    name: workspace.workspaceName,
-                                    themeId: workspace.themeId,
-                                    makeCurrent: true,
-                                    linkedDirectories: [],
-                                  })
-                                }}
-                                title="Save this temporary folder as a workspace"
-                              >
-                                ! Save
-                              </Button>
-                            ) : null}
-                            {selectingPath === workspace.path ? <span className="text-xs text-[var(--app-text-muted)]">opening…</span> : null}
-                            <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.taskCount ?? 0} tasks`}>
-                              <ListChecks size={17} strokeWidth={2.25} className="shrink-0" />
-                            </Button>
-                            <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">
-                              <Plus size={17} strokeWidth={2.25} className="shrink-0" />
-                            </Button>
-                          </div>
-                        </div>
-                        {!collapsed && renderWorkspaceGitBar({
-                          workspace,
-                          worktreeBusy,
-                          onToggle: handleToggleWorkspaceWorktree,
-                        })}
-                        {!collapsed && (
-                          <div className="grid min-h-0 flex-1 content-start gap-0.5 overflow-y-auto">
-                            {flattenedSessionNodes.length === 0 ? null : flattenedSessionNodes.map((node) => (
-                              <SessionRow
-                                key={node.session.id}
-                                active={selectedSession?.id === node.session.id}
-                                now={sidebarNow}
-                                session={node.session}
-                                fallbackSwarmName={swarmName}
-                                depth={node.depth}
-                                childLabel={node.label}
-                                childKind={node.kind}
-                                onSelect={handleSelectSession}
-                                onPrefetch={handlePrefetchSession}
-                              />
-                            ))}
-                          </div>
-                        )}
-                      </section>
-                      {index < mergedSidebarWorkspaceEntries.length - 1 && !collapsed && !workspaceLayout[mergedSidebarWorkspaceEntries[index + 1].path]?.collapsed ? (
-                        <div
-                          role="separator"
-                          aria-orientation="horizontal"
-                          className="relative my-2 h-4 cursor-row-resize group px-1"
-                          onPointerDown={(event) => handleResizeStart(event, workspace.path, mergedSidebarWorkspaceEntries[index + 1].path)}
-                        >
-                          <div className="absolute inset-x-1 top-1/2 h-px bg-[var(--app-border)] group-hover:bg-[var(--app-border-strong)] transition-colors" />
-                        </div>
-                      ) : index < mergedSidebarWorkspaceEntries.length - 1 ? (
-                        <div className="h-2" />
-                      ) : null}
-                    </Fragment>
-                  )
-                })}
-              </div>
-              <div className="grid grid-cols-2 gap-2 border-t border-[var(--app-border)] px-4 py-3">
-                <Button
-                  variant="outline"
-                  className="h-11 min-h-11 w-full justify-center rounded-xl"
-                  onClick={handleOpenWorkspaceLauncher}
-                  aria-label="Open workspaces"
-                >
-                  <Home size={18} className="shrink-0" />
-                  <span>Workspaces</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-11 min-h-11 w-full justify-center rounded-xl"
-                  onClick={() => { setSettingsTab('agents'); setSettingsOpen(true) }}
-                  aria-label="Open settings"
-                >
-                  <Settings size={18} className="shrink-0" />
-                  <span>Settings</span>
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
+      <aside className={cn('hidden shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] sm:flex', sidebarCollapsed ? 'sm:w-[56px]' : 'sm:w-[320px]')}>
+        {sidebarContent}
       </aside>
+      {mobileSidebarOpen ? (
+        <div className="absolute inset-0 z-40 flex sm:hidden" aria-modal="true" role="dialog">
+          <button
+            type="button"
+            className="absolute inset-0 bg-[var(--app-backdrop)]"
+            aria-label="Close sidebar"
+            onClick={() => setMobileSidebarOpen(false)}
+          />
+          <div className="relative flex h-full w-[min(360px,92vw)] max-w-full flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl">
+            <div className="flex h-[60px] items-center justify-between border-b border-[var(--app-border)] px-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <Menu size={18} className="shrink-0 text-[var(--app-text-muted)]" />
+                <span className="truncate text-sm font-semibold text-[var(--app-text)]">Chats</span>
+              </div>
+              <Button variant="ghost" className="h-10 w-10 p-0" onClick={() => setMobileSidebarOpen(false)} aria-label="Close sidebar">
+                <X size={18} />
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1">{sidebarContent}</div>
+          </div>
+        </div>
+      ) : null}
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden">
         {routeSessionId && routeSessionPending && !selectedSession ? (
@@ -1684,6 +1752,7 @@ export function DesktopAppPage() {
             onOpenSettingsTab={handleOpenSettingsTab}
             onOpenPermissions={handleOpenPermissions}
             onOpenWorkspaceLauncher={handleOpenWorkspaceLauncher}
+            onOpenSidebarMenu={handleOpenMobileSidebar}
             onStartNewSession={handleStartNewSessionInWorkspace}
           />
         ) : (
@@ -1702,8 +1771,6 @@ export function DesktopAppPage() {
         <WorkspaceTodoModal
           open={Boolean(todoModal)}
           workspaceName={todoModal.workspaceName}
-          agentSessions={workspaceSessionOptions.get(todoModal.workspacePath) ?? []}
-          defaultAgentSessionId={activeSessionId ?? ''}
           userSection={{
             ownerKind: 'user',
             title: 'User Todos',
@@ -1715,19 +1782,6 @@ export function DesktopAppPage() {
               taskCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).user.taskCount,
               openCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).user.openCount,
               inProgressCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).user.inProgressCount,
-            },
-          }}
-          agentSection={{
-            ownerKind: 'agent',
-            title: 'Agent Checklist',
-            description: 'Execution checklist grouped by conversation and nested by parent/child steps.',
-            emptyText: 'Drop agent checklist steps here',
-            items: (todoItems[todoModal.workspacePath] ?? []).filter((item) => item.ownerKind === 'agent'),
-            summary: {
-              ...(todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()),
-              taskCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).agent.taskCount,
-              openCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).agent.openCount,
-              inProgressCount: (todoSummaries[todoModal.workspacePath] ?? createEmptyWorkspaceTodoSummary()).agent.inProgressCount,
             },
           }}
           saving={todoSavingWorkspacePath === todoModal.workspacePath}
@@ -1756,8 +1810,8 @@ export function DesktopAppPage() {
             const result = await mutateTodoState(
               todoModal.workspacePath,
               () => (inProgress
-                ? setWorkspaceTodoInProgress(todoModal.workspacePath, item.id, item.ownerKind)
-                : updateWorkspaceTodo({ workspacePath: todoModal.workspacePath, ownerKind: item.ownerKind, id: item.id, inProgress: false })),
+                ? setWorkspaceTodoInProgress(todoModal.workspacePath, item.id, item.ownerKind, item.sessionId)
+                : updateWorkspaceTodo({ workspacePath: todoModal.workspacePath, ownerKind: item.ownerKind, id: item.id, inProgress: false, sessionId: item.sessionId })),
             )
             setTodoItems((current) => ({
               ...current,
@@ -1766,7 +1820,7 @@ export function DesktopAppPage() {
             setTodoSummaries((current) => ({ ...current, [todoModal.workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
           }}
           onUpdate={async (item, patch) => {
-            const result = await mutateTodoState(todoModal.workspacePath, () => updateWorkspaceTodo({ workspacePath: todoModal.workspacePath, ownerKind: item.ownerKind, id: item.id, ...patch }))
+            const result = await mutateTodoState(todoModal.workspacePath, () => updateWorkspaceTodo({ workspacePath: todoModal.workspacePath, ownerKind: item.ownerKind, id: item.id, sessionId: item.sessionId, ...patch }))
             setTodoItems((current) => ({
               ...current,
               [todoModal.workspacePath]: upsertWorkspaceTodoItem(current[todoModal.workspacePath] ?? [], result.item),
@@ -1774,7 +1828,7 @@ export function DesktopAppPage() {
             setTodoSummaries((current) => ({ ...current, [todoModal.workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
           }}
           onDelete={async (item) => {
-            const summary = await mutateTodoState(todoModal.workspacePath, () => deleteWorkspaceTodo(todoModal.workspacePath, item.id, item.ownerKind))
+            const summary = await mutateTodoState(todoModal.workspacePath, () => deleteWorkspaceTodo(todoModal.workspacePath, item.id, item.ownerKind, item.sessionId))
             setTodoItems((current) => ({
               ...current,
               [todoModal.workspacePath]: (current[todoModal.workspacePath] ?? []).filter((entry) => entry.id !== item.id),
@@ -1807,6 +1861,24 @@ export function DesktopAppPage() {
           }}
         />
       ) : null}
+
+      <DesktopNotificationsModal
+        open={notificationsOpen}
+        onOpenChange={setNotificationsOpen}
+        notifications={notificationCenter.items}
+        summary={notificationCenter.summary}
+        loading={notificationCenter.loading}
+        connectionState={connectionState}
+        onMarkRead={async (record) => {
+          await updateNotificationRecord(record.id, { read: true })
+        }}
+        onAcknowledge={async (record) => {
+          await updateNotificationRecord(record.id, { acked: true, status: 'resolved' })
+        }}
+        onMute={async (record) => {
+          await updateNotificationRecord(record.id, { muted: true })
+        }}
+      />
 
       <DesktopSettingsModal
         open={settingsOpen}

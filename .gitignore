@@ -34,6 +34,9 @@ coverage.out
 /web/node_modules/
 /web/dist/
 /web/*.tsbuildinfo
+/web/test-results/
+/web/playwright-report/
+/web/blob-report/
 
 # Editor/OS noise
 .DS_Store
@@ -56,7 +59,8 @@ coverage.out
 /.tools/
 /.tmp-tools/
 /audit/
-/docs/
+/docs/*
+!/docs/swarm-harness-vm.md
 /REPO_SHIP_READINESS_CHECKLIST.md
 /tests/swarmd/*_plan.md
 /scripts/benchmark-*.sh

@@ -35,9 +35,27 @@ If a rule below conflicts with convenience, the rule wins.
 ./scripts/check-precommit.sh
 ```
 
+- Immediately before any GitHub container/package publish or remote-deploy image push, run:
+
+```bash
+./scripts/check-container-publish.sh --runtime docker -- \
+  --ssh-target <target> \
+  --transport-mode <tailscale|lan>
+```
+
 - `./scripts/check-precommit.sh` includes path, secrets, policy, and vulnerability scans.
 - Vulnerability scanning includes Go module scans and npm advisory checks for the web lockfile.
 - `./scripts/check-precommit.sh` must skip tests by default.
+- `./scripts/check-container-publish.sh` is the container publish gate.
+  - It runs `./scripts/check-launch-readiness.sh --require-clean`, which in turn runs `./scripts/check-precommit.sh` and the CVE checks.
+  - It verifies `.dockerignore` excludes local-only build-context paths.
+  - It builds the image through `scripts/rebuild-container.sh --image-only`.
+  - It inspects the built image for forbidden local-only paths such as `.git`, `.cache`, `.env`, `.docker`, and `.ssh`.
+  - It then runs the checked-in `tests/swarmd/remote_deploy_e2e.sh` harness with routed proof and teardown.
+  - Do not publish containers or GitHub packages until this script passes.
+- For the container publish gate, raw secrets must come from env-name flags consumed by the checked-in harnesses.
+  - Never put real auth keys, provider keys, cookies, or tokens directly on the command line.
+  - Never store those values in committed files, startup configs, screenshots, or docs.
 - Only run tests in precommit when the user explicitly asks for tests.
 - If tests or validation were not requested, say so explicitly.
 
@@ -186,9 +204,10 @@ If a rule below conflicts with convenience, the rule wins.
     - generic means the user provides a reachable host/child path over IP
     - if the user uses WireGuard, a VPN, or a tunnel, they manage that networking themselves; Swarm does not set it up for them in this track
     - the modal copy should say this plainly instead of implying Swarm manages non-Tailscale remote networking
-- Current task is Stage S3 routed child conversation authority on the real local `/v1/swarm/replicate` path.
-- Immediate next recovery path is Stage S4 on the same real local `/v1/swarm/replicate` path.
-  - Use `tests/swarmd/local_replicate_recovery_e2e.sh` for host/child restart checks instead of replaying them by hand.
+- Current local `/v1/swarm/replicate` status:
+  - Stage 2 vaulted local sync/recovery is now green on the checked-in harnesses.
+  - Stage 4 local recovery is now green on the checked-in harnesses.
+  - Use `tests/swarmd/local_replicate_e2e.sh` and `tests/swarmd/local_replicate_recovery_e2e.sh` as the source of truth instead of replaying the flow by hand.
 - Current routed-child truth:
   - Fresh Docker loopback replicate attach/finalize is green again on the checked-in harness after fixing the host `/v1/deploy/container/attach/approve` JSON field mismatch for peer-auth tokens.
   - A real routed child session on the fresh Docker replicate path now has live host-side approval proof:
@@ -200,6 +219,15 @@ If a rule below conflicts with convenience, the rule wins.
   - Refresh/reopen and host-restart proof for that same fresh routed session still need a separate rerun before claiming the reload blocker is fully closed.
 - In this Codex environment, `tests/swarmd/local_replicate_e2e.sh` can finish successfully while the isolated host dies when the shell exits.
   - For post-harness live API work, relaunch the same host root in a persistent PTY using the XDG paths from `host-summary.json`.
+- Dedicated VM lane for local container/replicate testing:
+  - Keep one reusable Linux VM profile named `swarm-harness` for local harness work.
+  - Treat that VM as the default place to run local container networking, attach, managed-sync, and replicate harnesses whenever the main workstation swarm or fixed local ports would conflict.
+  - The goal is a real Linux guest on KVM/QEMU, not container-in-container.
+  - The guest should run its own `swarmd`, container runtime, ports, and worktree so host-side Swarm usage does not block harness execution.
+  - Preferred use: keep the workstation Swarm running for normal use; run `tests/swarmd/local_replicate_e2e.sh` and `tests/swarmd/local_replicate_recovery_e2e.sh` inside `swarm-harness`.
+  - Canonical entrypoint: `./scripts/swarm-harness-vm.sh` (`doctor`, `install-host-deps`, `provision`, `sync`, `local-replicate`, `local-replicate-recovery`).
+  - The VM lane uses explicit `rsync` into the guest instead of host bind mounts so harness testing does not mutate host workspace ownership.
+  - If a local harness result depends on container networking or host/child attach behavior, prefer the VM lane over trying to fight host-port collisions on the main machine.
 - Current completed rows:
   - `P0-01` Podman, `127.0.0.1`, default/lane, single child: `PASS`
   - `P0-02` Docker, `127.0.0.1`, default/lane, single child: `PASS`
@@ -229,9 +257,9 @@ If a rule below conflicts with convenience, the rule wins.
   - `S1-05` Docker, plain host, loopback, one host with 3 sync-enabled children: `PASS`
 - Current Stage 2 rows:
   - `S2-01` Docker, vaulted host, loopback, host already unlocked, sync-enabled replicate: `PASS`
-  - `S2-02` Docker, vaulted host, loopback, host locked, replicate entry behavior: `TODO`
-  - `S2-03` Podman, vaulted host, loopback, host already unlocked, sync-enabled replicate: `TODO`
-  - `S2-04` vaulted child restart/local unlock behavior: `TODO`
+  - `S2-02` Docker, vaulted host, loopback, host locked, replicate entry behavior: `PASS`
+  - `S2-03` Podman, vaulted host, loopback, host already unlocked, sync-enabled replicate: `PASS`
+  - `S2-04` vaulted child restart/local unlock behavior: `PASS`
 - Current Stage 3 routed rows:
   - `S3-03` Docker, fresh loopback replicate, real routed child approvals/transcript on host: `PASS`
 - Current Stage 4 recovery rows:
@@ -260,7 +288,7 @@ If a rule below conflicts with convenience, the rule wins.
 - Current sync truth:
   - initial managed credential bootstrap into a new child works
   - ongoing add/update/delete/activate propagation is proven on the Docker and Podman loopback plain-host paths
-  - the Stage 1 Docker pass kept both host and child in `pebble/plain`; the child did not auto-vault
+  - the forward non-vault path now stores auth state as `pebble/encrypted`; new installs no longer rely on the old plain-at-rest credential path
   - a real child Fireworks run succeeded before and after switching the active key
   - Podman offline-child auth catch-up is proven on restart
   - one host pushing auth add/activate/delete to 3 sync-enabled Docker children is proven
@@ -282,9 +310,11 @@ If a rule below conflicts with convenience, the rule wins.
     - add/activate/delete propagated
     - real child Fireworks `hello` runs succeeded before and after the switch
   - the vaulted bootstrap handoff now uses the user-supplied vault password transiently for export/import on the local path; it is not stored in child startup config or Pebble as durable sync state
-  - locked-host replicate is still blocked by the global vault gate before `/v1/swarm/replicate` runs
-  - vaulted Podman coverage is still unproven
-  - vaulted child restart/local unlock behavior is still unproven
+  - locked-host replicate behavior is now proven: a locked vaulted host returns `423` and requires host-local unlock before `/v1/swarm/replicate`
+  - vaulted Podman coverage is now proven on the checked-in local replicate harness
+  - vaulted child restart/local unlock behavior is now proven on the checked-in local recovery harness
+  - host unlock now re-unlocks managed local vaulted children on the same root; a child that restarts while the host remains down stays locked until host return or manual child unlock
+  - the pre-fix plain -> vault WAL-residue issue is legacy-only; for forward installs the product path is default `pebble/encrypted` or fresh `pebble/vault`, and that old migration path is not a current launch blocker
 - Stay on the sync path until the matrix says otherwise.
 - Do not jump ahead to SSH while the active vaulted-host sync work is unresolved.
 - Normal workstation testing must stay loopback-only unless the matrix row explicitly says otherwise.

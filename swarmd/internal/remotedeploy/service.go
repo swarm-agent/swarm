@@ -13,11 +13,14 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,13 +34,21 @@ import (
 )
 
 const (
-	PathSessionList        = "deploy.remote.list.v1"
-	PathSessionCreate      = "deploy.remote.create.v1"
-	PathSessionDelete      = "deploy.remote.delete.v1"
-	PathSessionStart       = "deploy.remote.start.v1"
-	PathSessionApprove     = "deploy.remote.approve.v1"
-	PathSessionChildStatus = "deploy.remote.child_status.v1"
-	PathSessionPreflight   = "deploy.remote.preflight.v1"
+	PathSessionList             = "deploy.remote.list.v1"
+	PathSessionCreate           = "deploy.remote.create.v1"
+	PathSessionDelete           = "deploy.remote.delete.v1"
+	PathSessionStart            = "deploy.remote.start.v1"
+	PathSessionApprove          = "deploy.remote.approve.v1"
+	PathSessionChildStatus      = "deploy.remote.child_status.v1"
+	PathSessionPreflight        = "deploy.remote.preflight.v1"
+	remoteImageNamePrefix       = "localhost/swarm-remote-child"
+	remoteContainerPrefix       = "swarm-remote-child"
+	remoteImagePrefixEnv        = "SWARM_REMOTE_DEPLOY_IMAGE_PREFIX"
+	remotePackageManager        = "apt"
+	remotePackageBaseImage      = "ubuntu:24.04"
+	remoteImageDeliveryArchive  = "archive"
+	remoteImageDeliveryRegistry = "registry"
+	remoteCredentialsFileName   = "remote-child.credentials.env"
 )
 
 type ContainerPackageSelection struct {
@@ -58,18 +69,27 @@ type PayloadSelection struct {
 	WorkspaceName string
 	TargetPath    string
 	Mode          string
+	Directories   []PayloadDirectorySelection
+}
+
+type PayloadDirectorySelection struct {
+	SourcePath string
+	TargetPath string
 }
 
 type CreateSessionInput struct {
-	Name              string
-	SSHSessionTarget  string
-	GroupID           string
-	GroupName         string
-	RemoteRuntime     string
-	SyncEnabled       bool
-	BypassPermissions bool
-	ContainerPackages ContainerPackageManifest
-	Payloads          []PayloadSelection
+	Name                string
+	SSHSessionTarget    string
+	TransportMode       string
+	RemoteAdvertiseHost string
+	GroupID             string
+	GroupName           string
+	RemoteRuntime       string
+	ImageDeliveryMode   string
+	SyncEnabled         bool
+	BypassPermissions   bool
+	ContainerPackages   ContainerPackageManifest
+	Payloads            []PayloadSelection
 }
 
 type StartSessionInput struct {
@@ -94,12 +114,23 @@ type DeleteSessionInput struct {
 }
 
 type SessionPayload struct {
-	ID            string `json:"id"`
+	ID            string                    `json:"id"`
+	SourcePath    string                    `json:"source_path,omitempty"`
+	WorkspacePath string                    `json:"workspace_path,omitempty"`
+	WorkspaceName string                    `json:"workspace_name,omitempty"`
+	TargetPath    string                    `json:"target_path,omitempty"`
+	Mode          string                    `json:"mode,omitempty"`
+	Directories   []SessionPayloadDirectory `json:"directories,omitempty"`
+	GitRoot       string                    `json:"git_root,omitempty"`
+	ArchiveName   string                    `json:"archive_name,omitempty"`
+	IncludedFiles int                       `json:"included_files"`
+	IncludedBytes int64                     `json:"included_bytes"`
+	ExcludedNote  string                    `json:"excluded_note,omitempty"`
+}
+
+type SessionPayloadDirectory struct {
 	SourcePath    string `json:"source_path,omitempty"`
-	WorkspacePath string `json:"workspace_path,omitempty"`
-	WorkspaceName string `json:"workspace_name,omitempty"`
 	TargetPath    string `json:"target_path,omitempty"`
-	Mode          string `json:"mode,omitempty"`
 	GitRoot       string `json:"git_root,omitempty"`
 	ArchiveName   string `json:"archive_name,omitempty"`
 	IncludedFiles int    `json:"included_files"`
@@ -108,56 +139,65 @@ type SessionPayload struct {
 }
 
 type SessionPreflight struct {
-	PathID           string           `json:"path_id"`
-	BuilderRuntime   string           `json:"builder_runtime,omitempty"`
-	RemoteRuntime    string           `json:"remote_runtime,omitempty"`
-	SSHReachable     bool             `json:"ssh_reachable"`
-	SystemdAvailable bool             `json:"systemd_available"`
-	SystemdUnit      string           `json:"systemd_unit,omitempty"`
-	RemoteRoot       string           `json:"remote_root,omitempty"`
-	FilesToCopy      []string         `json:"files_to_copy,omitempty"`
-	Payloads         []SessionPayload `json:"payloads,omitempty"`
-	Summary          string           `json:"summary,omitempty"`
-	Checks           []string         `json:"checks,omitempty"`
+	PathID                  string           `json:"path_id"`
+	BuilderRuntime          string           `json:"builder_runtime,omitempty"`
+	RemoteRuntime           string           `json:"remote_runtime,omitempty"`
+	ImageDeliveryMode       string           `json:"image_delivery_mode,omitempty"`
+	ImagePrefix             string           `json:"image_prefix,omitempty"`
+	SSHReachable            bool             `json:"ssh_reachable"`
+	SystemdAvailable        bool             `json:"systemd_available"`
+	SystemdUnit             string           `json:"systemd_unit,omitempty"`
+	RemoteRoot              string           `json:"remote_root,omitempty"`
+	RemoteNetworkCandidates []string         `json:"remote_network_candidates,omitempty"`
+	FilesToCopy             []string         `json:"files_to_copy,omitempty"`
+	Payloads                []SessionPayload `json:"payloads,omitempty"`
+	Summary                 string           `json:"summary,omitempty"`
+	Checks                  []string         `json:"checks,omitempty"`
 }
 
 type Session struct {
-	ID                 string                   `json:"id"`
-	Name               string                   `json:"name"`
-	Status             string                   `json:"status"`
-	SSHSessionTarget   string                   `json:"ssh_session_target,omitempty"`
-	GroupID            string                   `json:"group_id,omitempty"`
-	GroupName          string                   `json:"group_name,omitempty"`
-	BuilderRuntime     string                   `json:"builder_runtime,omitempty"`
-	RemoteRuntime      string                   `json:"remote_runtime,omitempty"`
-	MasterTailscaleURL string                   `json:"master_tailscale_url,omitempty"`
-	RemoteAuthURL      string                   `json:"remote_auth_url,omitempty"`
-	RemoteTailnetURL   string                   `json:"remote_tailnet_url,omitempty"`
-	ImageRef           string                   `json:"image_ref,omitempty"`
-	ImageSignature     string                   `json:"image_signature,omitempty"`
-	ImageArchiveBytes  int64                    `json:"image_archive_bytes,omitempty"`
-	EnrollmentID       string                   `json:"enrollment_id,omitempty"`
-	EnrollmentStatus   string                   `json:"enrollment_status,omitempty"`
-	ChildSwarmID       string                   `json:"child_swarm_id,omitempty"`
-	ChildName          string                   `json:"child_name,omitempty"`
-	HostSwarmID        string                   `json:"host_swarm_id,omitempty"`
-	HostName           string                   `json:"host_name,omitempty"`
-	HostPublicKey      string                   `json:"host_public_key,omitempty"`
-	HostFingerprint    string                   `json:"host_fingerprint,omitempty"`
-	HostAPIBaseURL     string                   `json:"host_api_base_url,omitempty"`
-	HostDesktopURL     string                   `json:"host_desktop_url,omitempty"`
-	BypassPermissions  bool                     `json:"bypass_permissions,omitempty"`
-	ContainerPackages  ContainerPackageManifest `json:"container_packages,omitempty"`
-	LastError          string                   `json:"last_error,omitempty"`
-	LastRemoteOutput   string                   `json:"last_remote_output,omitempty"`
-	SyncEnabled        bool                     `json:"sync_enabled,omitempty"`
-	SyncMode           string                   `json:"sync_mode,omitempty"`
-	SyncOwnerSwarmID   string                   `json:"sync_owner_swarm_id,omitempty"`
-	Preflight          SessionPreflight         `json:"preflight"`
-	CreatedAt          int64                    `json:"created_at"`
-	UpdatedAt          int64                    `json:"updated_at"`
-	ApprovedAt         int64                    `json:"approved_at,omitempty"`
-	AttachedAt         int64                    `json:"attached_at,omitempty"`
+	ID                  string                   `json:"id"`
+	Name                string                   `json:"name"`
+	Status              string                   `json:"status"`
+	SSHSessionTarget    string                   `json:"ssh_session_target,omitempty"`
+	TransportMode       string                   `json:"transport_mode,omitempty"`
+	MasterEndpoint      string                   `json:"master_endpoint,omitempty"`
+	RemoteEndpoint      string                   `json:"remote_endpoint,omitempty"`
+	RemoteAdvertiseHost string                   `json:"remote_advertise_host,omitempty"`
+	GroupID             string                   `json:"group_id,omitempty"`
+	GroupName           string                   `json:"group_name,omitempty"`
+	BuilderRuntime      string                   `json:"builder_runtime,omitempty"`
+	RemoteRuntime       string                   `json:"remote_runtime,omitempty"`
+	ImageDeliveryMode   string                   `json:"image_delivery_mode,omitempty"`
+	ImagePrefix         string                   `json:"image_prefix,omitempty"`
+	MasterTailscaleURL  string                   `json:"master_tailscale_url,omitempty"`
+	RemoteAuthURL       string                   `json:"remote_auth_url,omitempty"`
+	RemoteTailnetURL    string                   `json:"remote_tailnet_url,omitempty"`
+	ImageRef            string                   `json:"image_ref,omitempty"`
+	ImageSignature      string                   `json:"image_signature,omitempty"`
+	ImageArchiveBytes   int64                    `json:"image_archive_bytes,omitempty"`
+	EnrollmentID        string                   `json:"enrollment_id,omitempty"`
+	EnrollmentStatus    string                   `json:"enrollment_status,omitempty"`
+	ChildSwarmID        string                   `json:"child_swarm_id,omitempty"`
+	ChildName           string                   `json:"child_name,omitempty"`
+	HostSwarmID         string                   `json:"host_swarm_id,omitempty"`
+	HostName            string                   `json:"host_name,omitempty"`
+	HostPublicKey       string                   `json:"host_public_key,omitempty"`
+	HostFingerprint     string                   `json:"host_fingerprint,omitempty"`
+	HostAPIBaseURL      string                   `json:"host_api_base_url,omitempty"`
+	HostDesktopURL      string                   `json:"host_desktop_url,omitempty"`
+	BypassPermissions   bool                     `json:"bypass_permissions,omitempty"`
+	ContainerPackages   ContainerPackageManifest `json:"container_packages,omitempty"`
+	LastError           string                   `json:"last_error,omitempty"`
+	LastRemoteOutput    string                   `json:"last_remote_output,omitempty"`
+	SyncEnabled         bool                     `json:"sync_enabled,omitempty"`
+	SyncMode            string                   `json:"sync_mode,omitempty"`
+	SyncOwnerSwarmID    string                   `json:"sync_owner_swarm_id,omitempty"`
+	Preflight           SessionPreflight         `json:"preflight"`
+	CreatedAt           int64                    `json:"created_at"`
+	UpdatedAt           int64                    `json:"updated_at"`
+	ApprovedAt          int64                    `json:"approved_at,omitempty"`
+	AttachedAt          int64                    `json:"attached_at,omitempty"`
 }
 
 type Service struct {
@@ -171,13 +211,14 @@ type Service struct {
 	startupCWD  string
 }
 
-type remoteImageArtifact struct {
-	ImageRef      string
-	Signature     string
-	ArchivePath   string
-	ArchiveBytes  int64
-	LocalImageHit bool
-	ArchiveHit    bool
+type remoteRuntimeArtifact struct {
+	Signature          string
+	ImageRef           string
+	ArchiveName        string
+	ArchivePath        string
+	ArchiveBytes       int64
+	ArchiveHit         bool
+	RemoteImagePresent bool
 }
 
 type remotePairingTransport struct {
@@ -224,6 +265,46 @@ func NewService(store *pebblestore.RemoteDeploySessionStore, swarms *swarmruntim
 	}
 }
 
+func remoteDeployImagePrefix() string {
+	prefix := strings.TrimSpace(os.Getenv(remoteImagePrefixEnv))
+	if prefix == "" {
+		prefix = remoteImageNamePrefix
+	}
+	return strings.TrimRight(prefix, "/")
+}
+
+func normalizeRemoteImageDeliveryMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case remoteImageDeliveryArchive:
+		return remoteImageDeliveryArchive
+	case remoteImageDeliveryRegistry:
+		return remoteImageDeliveryRegistry
+	default:
+		return remoteImageDeliveryArchive
+	}
+}
+
+func resolveRemoteImagePrefix(mode string) (string, error) {
+	switch normalizeRemoteImageDeliveryMode(mode) {
+	case remoteImageDeliveryRegistry:
+		prefix := strings.TrimRight(strings.TrimSpace(os.Getenv(remoteImagePrefixEnv)), "/")
+		if prefix == "" {
+			return "", fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- Published remote image download is enabled, but %s is not configured.\n\nWhat to do\n- Set %s to the pullable published remote image prefix.\n- Then rerun preflight.", remoteImagePrefixEnv, remoteImagePrefixEnv)
+		}
+		if strings.HasPrefix(prefix, "localhost/") {
+			return "", fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- Published remote image download is enabled, but %s points at a non-pullable local image prefix: %s\n\nWhat to do\n- Set %s to the pullable published remote image prefix.\n- Then rerun preflight.", remoteImagePrefixEnv, prefix, remoteImagePrefixEnv)
+		}
+		return prefix, nil
+	default:
+		return remoteImageNamePrefix, nil
+	}
+}
+
+func remoteImageUsesArchive(imageRef string) bool {
+	imageRef = strings.TrimSpace(imageRef)
+	return imageRef == "" || strings.HasPrefix(imageRef, "localhost/")
+}
+
 func (s *Service) List(ctx context.Context) ([]Session, error) {
 	return s.list(ctx, true)
 }
@@ -266,81 +347,139 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 	if sshTarget == "" {
 		return Session{}, fmt.Errorf("ssh_session_target is required")
 	}
+	transportMode := normalizeRemoteTransportMode(input.TransportMode)
+	imageDeliveryMode := normalizeRemoteImageDeliveryMode(input.ImageDeliveryMode)
+	imagePrefix, err := resolveRemoteImagePrefix(imageDeliveryMode)
+	if err != nil {
+		return Session{}, err
+	}
+	stepStartedAt := time.Now()
 	startupCfg, hostState, err := s.resolveBootstrapContext()
+	logRemoteDeployTiming("create.resolve_bootstrap_context", stepStartedAt, err)
 	if err != nil {
 		return Session{}, err
 	}
+	stepStartedAt = time.Now()
 	group, err := s.resolveTargetGroupForSession(hostState, strings.TrimSpace(input.GroupID), strings.TrimSpace(input.GroupName))
+	logRemoteDeployTiming("create.resolve_target_group", stepStartedAt, err, "group_id", strings.TrimSpace(input.GroupID))
 	if err != nil {
 		return Session{}, err
-	}
-	builderRuntime, err := s.detectBuilderRuntime(ctx)
-	if err != nil {
-		return Session{}, formatCreatePreflightError(sshTarget, err)
 	}
 	sessionID := suggestedSessionID(name)
 	if sessionID == "" {
 		sessionID = "remote-child"
 	}
 	sessionID = sessionID + "-" + shortToken(4)
-	systemdUnit := systemdUnitName(sessionID)
-	remoteRuntime, systemdAvailable, sudoMode, remoteHome, err := s.inspectRemoteHost(ctx, sshTarget, input.RemoteRuntime)
+	stepStartedAt = time.Now()
+	remoteRuntime, systemdAvailable, sudoMode, remoteHome, remoteNetworkCandidates, err := s.inspectRemoteHost(ctx, sshTarget, input.RemoteRuntime)
+	logRemoteDeployTiming("create.inspect_remote_host", stepStartedAt, err, "session_id", sessionID, "ssh_target", sshTarget, "systemd", strconv.FormatBool(systemdAvailable), "sudo_mode", sudoMode)
 	if err != nil {
 		return Session{}, formatCreatePreflightError(sshTarget, err)
 	}
 	remoteRoot := remoteRootForHome(remoteHome, sessionID)
-	if err := s.checkRemoteInstallCollision(ctx, sshTarget, remoteRoot, systemdUnit); err != nil {
+	stepStartedAt = time.Now()
+	if err := s.checkRemoteInstallCollision(ctx, sshTarget, remoteRoot); err != nil {
+		logRemoteDeployTiming("create.check_remote_install_collision", stepStartedAt, err, "session_id", sessionID, "ssh_target", sshTarget)
 		return Session{}, formatCreatePreflightError(sshTarget, err)
 	}
-	masterTailscaleURL := strings.TrimSpace(startupCfg.TailscaleURL)
-	if masterTailscaleURL == "" {
-		return Session{}, formatCreatePreflightError(sshTarget, fmt.Errorf("master swarm.conf tailscale_url is required for remote child deploy"))
+	logRemoteDeployTiming("create.check_remote_install_collision", stepStartedAt, nil, "session_id", sessionID, "ssh_target", sshTarget)
+	stepStartedAt = time.Now()
+	masterEndpoint, err := resolveMasterRemoteDeployEndpoint(startupCfg, transportMode)
+	logRemoteDeployTiming("create.resolve_master_endpoint", stepStartedAt, err, "session_id", sessionID, "transport_mode", transportMode)
+	if err != nil {
+		return Session{}, formatCreatePreflightError(sshTarget, err)
+	}
+	remoteAdvertiseHost, err := normalizeRemoteAdvertiseHost(firstNonEmpty(
+		strings.TrimSpace(input.RemoteAdvertiseHost),
+		firstRemoteNetworkCandidate(remoteNetworkCandidates),
+		defaultReachableSSHHostCandidate(sshTarget),
+	))
+	if err != nil {
+		return Session{}, formatCreatePreflightError(sshTarget, err)
+	}
+	if transportMode == startupconfig.NetworkModeLAN && remoteAdvertiseHost == "" {
+		return Session{}, formatCreatePreflightError(sshTarget, fmt.Errorf("remote reachable host is required for LAN/WireGuard deploy"))
 	}
 	sessionToken, err := generateSecretToken(16)
 	if err != nil {
 		return Session{}, err
 	}
+	stepStartedAt = time.Now()
+	builderRuntime, err := s.detectBuilderRuntime(ctx, remoteRuntime)
+	logRemoteDeployTiming("create.detect_builder_runtime", stepStartedAt, err, "session_id", sessionID, "builder_runtime", builderRuntime, "requested_remote_runtime", remoteRuntime)
+	if err != nil {
+		return Session{}, formatCreatePreflightError(sshTarget, err)
+	}
+	stepStartedAt = time.Now()
 	payloads, err := s.buildPayloads(input.Payloads)
+	logRemoteDeployTiming(
+		"create.build_payloads",
+		stepStartedAt,
+		err,
+		"session_id",
+		sessionID,
+		"payloads",
+		strconv.Itoa(len(payloads)),
+		"payload_archives",
+		strconv.Itoa(remotePayloadArchiveCount(payloads)),
+		"payload_bytes",
+		strconv.FormatInt(remotePayloadIncludedBytes(payloads), 10),
+	)
 	if err != nil {
 		return Session{}, err
 	}
 	filesToCopy := []string{
-		"remote/swarm.conf",
+		"remote/config/swarm/swarm.conf",
 		"remote/install-remote-child.sh",
-		"remote/swarm-container-mvp.tar.gz",
+	}
+	if remoteImageUsesArchive(remoteImageRef(imagePrefix, "preflight")) {
+		filesToCopy = append(filesToCopy, filepath.ToSlash(filepath.Join("remote", remoteImageArchiveName(transportMode))))
 	}
 	for _, payload := range payloads {
 		if payload.ArchiveName != "" {
 			filesToCopy = append(filesToCopy, filepath.ToSlash(filepath.Join("remote", payload.ArchiveName)))
 		}
+		for _, directory := range payload.Directories {
+			if directory.ArchiveName == "" {
+				continue
+			}
+			filesToCopy = append(filesToCopy, filepath.ToSlash(filepath.Join("remote", directory.ArchiveName)))
+		}
 	}
 	record := pebblestore.RemoteDeploySessionRecord{
-		ID:                 sessionID,
-		Name:               name,
-		Status:             "preflight_ready",
-		SSHSessionTarget:   sshTarget,
-		GroupID:            group.ID,
-		GroupName:          firstNonEmpty(group.Name, input.GroupName, group.ID),
-		BuilderRuntime:     builderRuntime,
-		RemoteRuntime:      remoteRuntime,
-		SystemdUnit:        systemdUnit,
-		RemoteRoot:         remoteRoot,
-		MasterTailscaleURL: masterTailscaleURL,
-		MasterSwarmID:      strings.TrimSpace(hostState.Node.SwarmID),
-		SyncEnabled:        input.SyncEnabled,
-		SyncMode:           firstNonEmpty(map[bool]string{true: "managed"}[input.SyncEnabled]),
-		SyncOwnerSwarmID:   firstNonEmpty(map[bool]string{true: strings.TrimSpace(hostState.Node.SwarmID)}[input.SyncEnabled]),
-		BypassPermissions:  input.BypassPermissions,
-		ContainerPackages:  mapRemoteContainerPackageManifest(input.ContainerPackages),
-		SyncCredentialURL:  firstNonEmpty(map[bool]string{true: buildRemoteSyncCredentialURL(strings.TrimSpace(masterTailscaleURL), sessionID)}[input.SyncEnabled]),
-		SessionToken:       sessionToken,
-		SSHReachable:       true,
-		SystemdAvailable:   systemdAvailable,
-		SudoMode:           sudoMode,
-		FilesToCopy:        filesToCopy,
-		Payloads:           payloads,
+		ID:                      sessionID,
+		Name:                    name,
+		Status:                  "preflight_ready",
+		SSHSessionTarget:        sshTarget,
+		TransportMode:           transportMode,
+		MasterEndpoint:          masterEndpoint,
+		RemoteAdvertiseHost:     remoteAdvertiseHost,
+		GroupID:                 group.ID,
+		GroupName:               firstNonEmpty(group.Name, input.GroupName, group.ID),
+		BuilderRuntime:          builderRuntime,
+		RemoteRuntime:           remoteRuntime,
+		ImageDeliveryMode:       imageDeliveryMode,
+		ImagePrefix:             imagePrefix,
+		RemoteRoot:              remoteRoot,
+		MasterTailscaleURL:      firstNonEmpty(map[bool]string{true: masterEndpoint}[transportMode == startupconfig.NetworkModeTailscale]),
+		MasterSwarmID:           strings.TrimSpace(hostState.Node.SwarmID),
+		SyncEnabled:             input.SyncEnabled,
+		SyncMode:                firstNonEmpty(map[bool]string{true: "managed"}[input.SyncEnabled]),
+		SyncOwnerSwarmID:        firstNonEmpty(map[bool]string{true: strings.TrimSpace(hostState.Node.SwarmID)}[input.SyncEnabled]),
+		BypassPermissions:       input.BypassPermissions,
+		ContainerPackages:       mapRemoteContainerPackageManifest(input.ContainerPackages),
+		SyncCredentialURL:       firstNonEmpty(map[bool]string{true: buildRemoteSyncCredentialURL(masterEndpoint, sessionID)}[input.SyncEnabled]),
+		SessionToken:            sessionToken,
+		SSHReachable:            true,
+		SystemdAvailable:        systemdAvailable,
+		SudoMode:                sudoMode,
+		RemoteNetworkCandidates: remoteNetworkCandidates,
+		FilesToCopy:             filesToCopy,
+		Payloads:                payloads,
 	}
+	stepStartedAt = time.Now()
 	saved, err := s.store.Put(record)
+	logRemoteDeployTiming("create.store_put", stepStartedAt, err, "session_id", sessionID)
 	if err != nil {
 		return Session{}, err
 	}
@@ -503,9 +642,12 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		return Session{}, err
 	}
 	if record.SyncEnabled {
+		stepStartedAt := time.Now()
 		if err := s.requireManagedSyncVaultPassword(strings.TrimSpace(input.SyncVaultPassword)); err != nil {
+			logRemoteDeployTiming("start.require_sync_vault_password", stepStartedAt, err, "session_id", strings.TrimSpace(input.SessionID))
 			return Session{}, err
 		}
+		logRemoteDeployTiming("start.require_sync_vault_password", stepStartedAt, nil, "session_id", strings.TrimSpace(input.SessionID))
 		if strings.TrimSpace(record.SyncBundlePassword) == "" {
 			bundlePassword, err := generateSecretToken(32)
 			if err != nil {
@@ -516,7 +658,9 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		if s.auth == nil {
 			return Session{}, fmt.Errorf("auth service is not configured")
 		}
+		stepStartedAt = time.Now()
 		_, exported, err := s.auth.ExportCredentials(record.SyncBundlePassword, strings.TrimSpace(input.SyncVaultPassword))
+		logRemoteDeployTiming("start.export_sync_credentials", stepStartedAt, err, "session_id", strings.TrimSpace(input.SessionID), "exported", strconv.Itoa(exported))
 		if err != nil {
 			return Session{}, err
 		}
@@ -524,26 +668,46 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		record.SyncBundleExportedAt = time.Now().UnixMilli()
 		record.SyncMode = firstNonEmpty(record.SyncMode, "managed")
 		record.SyncOwnerSwarmID = firstNonEmpty(record.SyncOwnerSwarmID, strings.TrimSpace(hostState.Node.SwarmID))
-		record.SyncCredentialURL = firstNonEmpty(record.SyncCredentialURL, buildRemoteSyncCredentialURL(strings.TrimSpace(record.MasterTailscaleURL), record.ID))
+		record.SyncCredentialURL = firstNonEmpty(record.SyncCredentialURL, buildRemoteSyncCredentialURL(strings.TrimSpace(record.MasterEndpoint), record.ID))
 	}
+	record.TransportMode = normalizeRemoteTransportMode(record.TransportMode)
+	stepStartedAt := time.Now()
 	invite, err := s.swarms.CreateInvite(swarmruntime.CreateInviteInput{
 		PrimarySwarmID:       strings.TrimSpace(hostState.Node.SwarmID),
 		PrimaryName:          firstNonEmpty(strings.TrimSpace(startupCfg.SwarmName), hostState.Node.Name, "Primary"),
 		GroupID:              strings.TrimSpace(record.GroupID),
-		TransportMode:        startupconfig.NetworkModeTailscale,
-		RendezvousTransports: []swarmruntime.TransportSummary{{Kind: startupconfig.NetworkModeTailscale, Primary: strings.TrimSpace(record.MasterTailscaleURL), All: []string{strings.TrimSpace(record.MasterTailscaleURL)}}},
+		TransportMode:        record.TransportMode,
+		RendezvousTransports: []swarmruntime.TransportSummary{{Kind: record.TransportMode, Primary: strings.TrimSpace(record.MasterEndpoint), All: []string{strings.TrimSpace(record.MasterEndpoint)}}},
 		TTL:                  30 * time.Minute,
 	})
+	logRemoteDeployTiming("start.create_invite", stepStartedAt, err, "session_id", record.ID, "transport_mode", record.TransportMode)
 	if err != nil {
 		return Session{}, err
 	}
-	childCfgText := s.renderChildStartupConfig(record, startupCfg, hostState, invite.Token)
+	record.InviteToken = invite.Token
+	childCfgText := s.renderChildStartupConfig(record, startupCfg, hostState)
 	workDir, err := os.MkdirTemp("", "swarm-remote-deploy-")
 	if err != nil {
 		return Session{}, err
 	}
 	defer os.RemoveAll(workDir)
-	imageArtifact, err := s.prepareRemoteImageArtifact(ctx, record.BuilderRuntime)
+	stepStartedAt = time.Now()
+	runtimeArtifact, err := s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, record.ImagePrefix, mapRemoteStoredContainerPackageManifest(record.ContainerPackages))
+	logRemoteDeployTiming(
+		"start.prepare_runtime_artifact",
+		stepStartedAt,
+		err,
+		"session_id",
+		record.ID,
+		"archive_hit",
+		strconv.FormatBool(runtimeArtifact.ArchiveHit),
+		"archive_bytes",
+		strconv.FormatInt(runtimeArtifact.ArchiveBytes, 10),
+		"image_ref",
+		runtimeArtifact.ImageRef,
+		"signature",
+		runtimeArtifact.Signature,
+	)
 	if err != nil {
 		record.Status = "failed"
 		record.LastError = err.Error()
@@ -553,10 +717,25 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		}
 		return mapSession(saved), err
 	}
-	record.ImageRef = imageArtifact.ImageRef
-	record.ImageSignature = imageArtifact.Signature
-	record.ImageArchiveBytes = imageArtifact.ArchiveBytes
+	record.ImageRef = runtimeArtifact.ImageRef
+	record.ImageSignature = runtimeArtifact.Signature
+	record.ImageArchiveBytes = runtimeArtifact.ArchiveBytes
+	stepStartedAt = time.Now()
+	remoteImagePresent, err := remoteImageExists(ctx, record.SSHSessionTarget, record.RemoteRuntime, runtimeArtifact.ImageRef, record.SudoMode)
+	logRemoteDeployTiming("start.check_remote_image", stepStartedAt, err, "session_id", record.ID, "image_ref", runtimeArtifact.ImageRef, "remote_image_present", strconv.FormatBool(remoteImagePresent))
+	if err != nil {
+		record.Status = "failed"
+		record.LastError = err.Error()
+		saved, saveErr := s.store.Put(record)
+		if saveErr != nil {
+			return Session{}, saveErr
+		}
+		return mapSession(saved), err
+	}
+	runtimeArtifact.RemoteImagePresent = remoteImagePresent
+	stepStartedAt = time.Now()
 	if err := s.prepareRemoteBundle(ctx, workDir, &record, childCfgText); err != nil {
+		logRemoteDeployTiming("start.prepare_remote_bundle", stepStartedAt, err, "session_id", record.ID, "payload_archives", strconv.Itoa(remotePayloadArchiveCount(record.Payloads)))
 		record.Status = "failed"
 		record.LastError = err.Error()
 		saved, saveErr := s.store.Put(record)
@@ -565,7 +744,10 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		}
 		return mapSession(saved), err
 	}
-	if err := s.copyRemoteBundle(ctx, workDir, imageArtifact, &record); err != nil {
+	logRemoteDeployTiming("start.prepare_remote_bundle", stepStartedAt, nil, "session_id", record.ID, "payload_archives", strconv.Itoa(remotePayloadArchiveCount(record.Payloads)))
+	stepStartedAt = time.Now()
+	if err := s.copyRemoteBundle(ctx, workDir, runtimeArtifact, &record); err != nil {
+		logRemoteDeployTiming("start.copy_remote_bundle", stepStartedAt, err, "session_id", record.ID, "ssh_target", record.SSHSessionTarget, "image_archive_bytes", strconv.FormatInt(runtimeArtifact.ArchiveBytes, 10))
 		record.Status = "failed"
 		record.LastError = err.Error()
 		saved, saveErr := s.store.Put(record)
@@ -574,11 +756,15 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		}
 		return mapSession(saved), err
 	}
-	output, authURL, tailnetURL, err := s.startRemoteBundle(ctx, &record, strings.TrimSpace(input.TailscaleAuthKey), strings.TrimSpace(input.SyncVaultPassword))
+	logRemoteDeployTiming("start.copy_remote_bundle", stepStartedAt, nil, "session_id", record.ID, "ssh_target", record.SSHSessionTarget, "image_archive_bytes", strconv.FormatInt(runtimeArtifact.ArchiveBytes, 10))
+	stepStartedAt = time.Now()
+	output, authURL, remoteEndpoint, err := s.startRemoteBundle(ctx, &record, strings.TrimSpace(input.TailscaleAuthKey), strings.TrimSpace(input.SyncVaultPassword))
+	logRemoteDeployTiming("start.start_remote_bundle", stepStartedAt, err, "session_id", record.ID, "ssh_target", record.SSHSessionTarget, "auth_required", strconv.FormatBool(strings.TrimSpace(authURL) != ""), "remote_endpoint_present", strconv.FormatBool(strings.TrimSpace(remoteEndpoint) != ""))
 	record.InviteToken = invite.Token
 	record.LastRemoteOutput = strings.TrimSpace(output)
 	record.RemoteAuthURL = strings.TrimSpace(authURL)
-	record.RemoteTailnetURL = strings.TrimSpace(tailnetURL)
+	record.RemoteEndpoint = strings.TrimSpace(remoteEndpoint)
+	record.RemoteTailnetURL = firstNonEmpty(map[bool]string{true: strings.TrimSpace(remoteEndpoint)}[strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale)])
 	if err != nil {
 		record.Status = "failed"
 		record.LastError = err.Error()
@@ -591,7 +777,9 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	record.Status = "waiting_for_approval"
 	record.EnrollmentStatus = "pending"
 	record.LastError = ""
+	stepStartedAt = time.Now()
 	saved, err := s.store.Put(record)
+	logRemoteDeployTiming("start.store_waiting_for_approval", stepStartedAt, err, "session_id", record.ID)
 	if err != nil {
 		return Session{}, err
 	}
@@ -681,8 +869,8 @@ func (s *Service) Approve(ctx context.Context, input ApproveSessionInput) (Sessi
 	record.HostName = firstNonEmpty(hostState.Node.Name, strings.TrimSpace(startupCfg.SwarmName), "Primary")
 	record.HostPublicKey = strings.TrimSpace(hostState.Node.PublicKey)
 	record.HostFingerprint = strings.TrimSpace(hostState.Node.Fingerprint)
-	record.HostAPIBaseURL = strings.TrimSpace(record.MasterTailscaleURL)
-	record.HostDesktopURL = strings.TrimSpace(record.MasterTailscaleURL)
+	record.HostAPIBaseURL = strings.TrimSpace(record.MasterEndpoint)
+	record.HostDesktopURL = strings.TrimSpace(record.MasterEndpoint)
 	record.AttachedAt = time.Now().UnixMilli()
 	record.Status = "approved"
 	record.LastError = ""
@@ -842,13 +1030,16 @@ func upsertWorkspaceReplicationLink(links []pebblestore.WorkspaceReplicationLink
 }
 
 func (s *Service) finalizeApprovedRemotePairing(ctx context.Context, record pebblestore.RemoteDeploySessionRecord, hostState swarmruntime.LocalState) error {
-	remoteEndpoint := strings.TrimSpace(record.RemoteTailnetURL)
+	remoteEndpoint := remoteSessionEndpoint(record)
 	if remoteEndpoint == "" {
-		return fmt.Errorf("remote child tailnet url is not available yet")
+		return fmt.Errorf("remote child endpoint is not available yet")
 	}
+	stepStartedAt := time.Now()
 	if err := waitForRemoteSwarmReady(ctx, remoteEndpoint, 45*time.Second); err != nil {
+		logRemoteDeployTiming("approve.wait_for_remote_ready", stepStartedAt, err, "session_id", record.ID)
 		return err
 	}
+	logRemoteDeployTiming("approve.wait_for_remote_ready", stepStartedAt, nil, "session_id", record.ID)
 	peerSwarmID := strings.TrimSpace(record.HostSwarmID)
 	if peerSwarmID == "" {
 		return fmt.Errorf("host swarm id is not available yet")
@@ -857,13 +1048,13 @@ func (s *Service) finalizeApprovedRemotePairing(ctx context.Context, record pebb
 	if peerToken == "" {
 		return fmt.Errorf("remote deploy invite token is not available yet")
 	}
-	transports := remotePairingTransportsForMode(startupconfig.NetworkModeTailscale, hostState.Node.Transports, strings.TrimSpace(record.MasterTailscaleURL))
+	transports := remotePairingTransportsForMode(strings.TrimSpace(record.TransportMode), hostState.Node.Transports, strings.TrimSpace(record.MasterEndpoint))
 	payload := remotePairingFinalizeRequest{
 		PrimarySwarmID:       peerSwarmID,
 		PrimaryName:          strings.TrimSpace(record.HostName),
 		PrimaryPublicKey:     strings.TrimSpace(record.HostPublicKey),
 		PrimaryFingerprint:   strings.TrimSpace(record.HostFingerprint),
-		TransportMode:        startupconfig.NetworkModeTailscale,
+		TransportMode:        strings.TrimSpace(record.TransportMode),
 		RendezvousTransports: transports,
 	}
 	body, err := json.Marshal(payload)
@@ -879,7 +1070,9 @@ func (s *Service) finalizeApprovedRemotePairing(ctx context.Context, record pebb
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Swarm-Peer-ID", peerSwarmID)
 	req.Header.Set("X-Swarm-Peer-Token", peerToken)
-	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	stepStartedAt = time.Now()
+	resp, err := (&http.Client{Timeout: remotePairingHTTPTimeout}).Do(req)
+	logRemoteDeployTiming("approve.remote_pairing_finalize_request", stepStartedAt, err, "session_id", record.ID, "endpoint", requestURL)
 	if err != nil {
 		return err
 	}
@@ -911,11 +1104,11 @@ func (s *Service) applyApprovedRemotePeerAuth(record pebblestore.RemoteDeploySes
 		return err
 	}
 	transports := existing.RendezvousTransports
-	if len(transports) == 0 && strings.TrimSpace(record.RemoteTailnetURL) != "" {
+	if len(transports) == 0 && remoteSessionEndpoint(record) != "" {
 		transports = []pebblestore.SwarmTransportRecord{{
-			Kind:    startupconfig.NetworkModeTailscale,
-			Primary: strings.TrimSpace(record.RemoteTailnetURL),
-			All:     []string{strings.TrimSpace(record.RemoteTailnetURL)},
+			Kind:    firstNonEmpty(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale),
+			Primary: remoteSessionEndpoint(record),
+			All:     []string{remoteSessionEndpoint(record)},
 		}}
 	}
 	approvedAt := existing.ApprovedAt
@@ -930,7 +1123,7 @@ func (s *Service) applyApprovedRemotePeerAuth(record pebblestore.RemoteDeploySes
 		Fingerprint:           firstNonEmpty(strings.TrimSpace(record.ChildFingerprint), existing.Fingerprint),
 		Relationship:          swarmruntime.RelationshipChild,
 		ParentSwarmID:         firstNonEmpty(strings.TrimSpace(record.HostSwarmID), existing.ParentSwarmID),
-		TransportMode:         firstNonEmpty(existing.TransportMode, startupconfig.NetworkModeTailscale),
+		TransportMode:         firstNonEmpty(existing.TransportMode, strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale),
 		RendezvousTransports:  transports,
 		OutgoingPeerAuthToken: strings.TrimSpace(record.InviteToken),
 		IncomingPeerAuthHash:  swarmruntime.HashPeerAuthToken(strings.TrimSpace(record.SessionToken)),
@@ -999,6 +1192,13 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 				changed = true
 			}
 		}
+		if inviteChanged, err := s.ensurePendingInvite(&record); err != nil {
+			if refreshErr == nil {
+				refreshErr = err
+			}
+		} else if inviteChanged {
+			changed = true
+		}
 		if enrollmentChanged, err := s.syncPendingEnrollment(&record); err != nil {
 			if refreshErr == nil {
 				refreshErr = err
@@ -1050,20 +1250,22 @@ func (s *Service) refreshRemoteRuntimeSignals(ctx context.Context, record *pebbl
 	if strings.TrimSpace(record.SSHSessionTarget) == "" {
 		return false, fmt.Errorf("remote ssh target is required")
 	}
-	runtimeName := normalizeRemoteDeployRuntime(record.RemoteRuntime)
 	sudoPrefix := ""
 	if strings.TrimSpace(record.SudoMode) == "sudo" {
 		sudoPrefix = "sudo "
 	}
 	cmd := fmt.Sprintf(`set -eu
+log_file=%s
 runtime=%s
-if [ "$runtime" = "podman" ]; then
-  logs="$(%spodman logs --tail 200 swarm-remote-child 2>&1 || true)"
+if [ -s "$log_file" ]; then
+  logs="$(tail -n 200 "$log_file" 2>&1 || true)"
+elif [ "$runtime" = "podman" ]; then
+  logs="$(%spodman logs --tail 200 %s 2>&1 || true)"
 else
-  logs="$(%sdocker logs --tail 200 swarm-remote-child 2>&1 || true)"
+  logs="$(%sdocker logs --tail 200 %s 2>&1 || true)"
 fi
 printf '%%s\n' "$logs"
-`, shellQuote(runtimeName), sudoPrefix, sudoPrefix)
+`, shellQuote(remoteServiceLogPath(*record)), shellQuote(normalizeRemoteDeployRuntime(record.RemoteRuntime)), sudoPrefix, shellQuote(remoteContainerNameForSession(record.ID)), sudoPrefix, shellQuote(remoteContainerNameForSession(record.ID)))
 	output, err := runSSHCommand(ctx, record.SSHSessionTarget, cmd)
 	if err != nil {
 		return false, err
@@ -1074,13 +1276,65 @@ printf '%%s\n' "$logs"
 		record.LastRemoteOutput = trimmedOutput
 		changed = true
 	}
-	authURL, tailnetURL := parseRemoteBootstrapURLs(output)
+	authURL, remoteEndpoint := parseRemoteBootstrapURLs(output)
 	if authURL != "" && authURL != strings.TrimSpace(record.RemoteAuthURL) {
 		record.RemoteAuthURL = authURL
 		changed = true
 	}
-	if tailnetURL != "" && tailnetURL != strings.TrimSpace(record.RemoteTailnetURL) {
-		record.RemoteTailnetURL = tailnetURL
+	if remoteEndpoint != "" && remoteEndpoint != remoteSessionEndpoint(*record) {
+		record.RemoteEndpoint = remoteEndpoint
+		if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) {
+			record.RemoteTailnetURL = remoteEndpoint
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+func (s *Service) ensurePendingInvite(record *pebblestore.RemoteDeploySessionRecord) (bool, error) {
+	if s == nil || s.swarms == nil || record == nil {
+		return false, nil
+	}
+	if strings.TrimSpace(record.InviteToken) == "" || strings.TrimSpace(record.EnrollmentID) != "" {
+		return false, nil
+	}
+	startupCfg, hostState, err := s.resolveBootstrapContext()
+	if err != nil {
+		return false, err
+	}
+	hostName := firstNonEmpty(strings.TrimSpace(startupCfg.SwarmName), strings.TrimSpace(hostState.Node.Name), "Primary")
+	transports := remotePairingTransportsForMode(strings.TrimSpace(record.TransportMode), hostState.Node.Transports, strings.TrimSpace(record.MasterEndpoint))
+	rendezvous := make([]swarmruntime.TransportSummary, 0, len(transports))
+	for _, item := range transports {
+		rendezvous = append(rendezvous, swarmruntime.TransportSummary{
+			Kind:    strings.TrimSpace(item.Kind),
+			Primary: strings.TrimSpace(item.Primary),
+			All:     append([]string(nil), item.All...),
+		})
+	}
+	invite, err := s.swarms.EnsureInvite(swarmruntime.EnsureInviteInput{
+		Token:                strings.TrimSpace(record.InviteToken),
+		PrimarySwarmID:       strings.TrimSpace(hostState.Node.SwarmID),
+		PrimaryName:          hostName,
+		GroupID:              strings.TrimSpace(record.GroupID),
+		TransportMode:        strings.TrimSpace(record.TransportMode),
+		RendezvousTransports: rendezvous,
+		TTL:                  30 * time.Minute,
+	})
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	if strings.TrimSpace(record.GroupID) == "" && strings.TrimSpace(invite.GroupID) != "" {
+		record.GroupID = strings.TrimSpace(invite.GroupID)
+		changed = true
+	}
+	if strings.TrimSpace(record.HostSwarmID) != strings.TrimSpace(hostState.Node.SwarmID) {
+		record.HostSwarmID = strings.TrimSpace(hostState.Node.SwarmID)
+		changed = true
+	}
+	if strings.TrimSpace(record.HostName) != hostName {
+		record.HostName = hostName
 		changed = true
 	}
 	return changed, nil
@@ -1136,20 +1390,23 @@ func (s *Service) requestRemotePairing(ctx context.Context, record *pebblestore.
 	if s == nil || s.swarms == nil || record == nil {
 		return false, fmt.Errorf("remote deploy service is not configured")
 	}
-	remoteEndpoint := strings.TrimSpace(record.RemoteTailnetURL)
+	remoteEndpoint := remoteSessionEndpoint(*record)
 	if remoteEndpoint == "" {
-		return false, fmt.Errorf("remote child tailnet url is not available yet")
+		return false, fmt.Errorf("remote child endpoint is not available yet")
 	}
+	stepStartedAt := time.Now()
 	if err := waitForRemoteSwarmReady(ctx, remoteEndpoint, 45*time.Second); err != nil {
+		logRemoteDeployTiming("refresh.wait_for_remote_ready", stepStartedAt, err, "session_id", record.ID)
 		return false, err
 	}
+	logRemoteDeployTiming("refresh.wait_for_remote_ready", stepStartedAt, nil, "session_id", record.ID)
 	startupCfg, hostState, err := s.resolveBootstrapContext()
 	if err != nil {
 		return false, err
 	}
-	transports := remotePairingTransportsForMode(startupconfig.NetworkModeTailscale, hostState.Node.Transports, strings.TrimSpace(record.MasterTailscaleURL))
+	transports := remotePairingTransportsForMode(strings.TrimSpace(record.TransportMode), hostState.Node.Transports, strings.TrimSpace(record.MasterEndpoint))
 	primaryEndpoint := firstNonEmpty(
-		strings.TrimSpace(record.MasterTailscaleURL),
+		strings.TrimSpace(record.MasterEndpoint),
 		firstTransportPrimary(transports),
 	)
 	payload := remotePairingRequest{
@@ -1157,13 +1414,18 @@ func (s *Service) requestRemotePairing(ctx context.Context, record *pebblestore.
 		PrimarySwarmID:       strings.TrimSpace(hostState.Node.SwarmID),
 		PrimaryName:          firstNonEmpty(strings.TrimSpace(startupCfg.SwarmName), strings.TrimSpace(hostState.Node.Name), "Primary"),
 		PrimaryEndpoint:      primaryEndpoint,
-		TransportMode:        startupconfig.NetworkModeTailscale,
+		TransportMode:        strings.TrimSpace(record.TransportMode),
 		RendezvousTransports: transports,
 	}
 	var response remotePairingResponse
-	if err := remoteSwarmJSONRequestWithClient(http.MethodPost, strings.TrimRight(remoteEndpoint, "/")+"/v1/swarm/remote-pairing/request", payload, &response, nil); err != nil {
+	requestURL := strings.TrimRight(remoteEndpoint, "/") + "/v1/swarm/remote-pairing/request"
+	stepStartedAt = time.Now()
+	client := &http.Client{Timeout: remotePairingHTTPTimeout}
+	if err := remoteSwarmJSONRequestWithClient(http.MethodPost, requestURL, payload, &response, client); err != nil {
+		logRemoteDeployTiming("refresh.remote_pairing_request", stepStartedAt, err, "session_id", record.ID, "endpoint", requestURL)
 		return false, err
 	}
+	logRemoteDeployTiming("refresh.remote_pairing_request", stepStartedAt, nil, "session_id", record.ID, "endpoint", requestURL)
 	changed := false
 	if strings.TrimSpace(record.LastPairingURL) != remoteEndpoint {
 		record.LastPairingURL = remoteEndpoint
@@ -1188,15 +1450,17 @@ func shouldRequestRemotePairing(record pebblestore.RemoteDeploySessionRecord) bo
 	if strings.TrimSpace(record.EnrollmentID) != "" {
 		return false
 	}
-	remoteTailnetURL := strings.TrimSpace(record.RemoteTailnetURL)
-	if remoteTailnetURL == "" || strings.TrimSpace(record.InviteToken) == "" {
+	remoteEndpoint := remoteSessionEndpoint(record)
+	if remoteEndpoint == "" || strings.TrimSpace(record.InviteToken) == "" {
 		return false
 	}
 	if !strings.EqualFold(strings.TrimSpace(record.EnrollmentStatus), "pairing_requested") {
 		return true
 	}
-	return !strings.EqualFold(strings.TrimSpace(record.LastPairingURL), remoteTailnetURL)
+	return !strings.EqualFold(strings.TrimSpace(record.LastPairingURL), remoteEndpoint)
 }
+
+const remotePairingHTTPTimeout = 30 * time.Second
 
 func waitForRemoteSwarmReady(ctx context.Context, endpoint string, timeout time.Duration) error {
 	return waitForRemoteSwarmReadyWithClient(ctx, endpoint, nil, timeout, 2*time.Second)
@@ -1219,25 +1483,33 @@ func waitForRemoteSwarmReadyWithClient(ctx context.Context, endpoint string, cli
 	readyEndpoint := strings.TrimRight(endpoint, "/") + "/readyz"
 	healthEndpoint := strings.TrimRight(endpoint, "/") + "/healthz"
 	deadline := time.Now().Add(timeout)
+	startedAt := time.Now()
+	probes := 0
 	var lastErr error
 	for {
+		probes++
 		if err := probeRemoteSwarmReady(ctx, readyEndpoint, client); err == nil {
+			logRemoteDeployTiming("remote.wait_ready", startedAt, nil, "endpoint", endpoint, "probes", strconv.Itoa(probes))
 			return nil
 		} else {
 			lastErr = err
 		}
+		probes++
 		if err := probeRemoteSwarmReady(ctx, healthEndpoint, client); err == nil {
+			logRemoteDeployTiming("remote.wait_ready", startedAt, nil, "endpoint", endpoint, "probes", strconv.Itoa(probes))
 			return nil
 		} else {
 			lastErr = err
 		}
 		if err := ctx.Err(); err != nil {
+			logRemoteDeployTiming("remote.wait_ready", startedAt, err, "endpoint", endpoint, "probes", strconv.Itoa(probes))
 			if lastErr != nil {
 				return fmt.Errorf("remote child at %s was not ready before context ended: %w", endpoint, lastErr)
 			}
 			return err
 		}
 		if time.Now().After(deadline) {
+			logRemoteDeployTiming("remote.wait_ready", startedAt, lastErr, "endpoint", endpoint, "probes", strconv.Itoa(probes))
 			if lastErr == nil {
 				lastErr = fmt.Errorf("timed out waiting for readyz")
 			}
@@ -1280,17 +1552,19 @@ func probeRemoteSwarmReady(ctx context.Context, endpoint string, client *http.Cl
 	return fmt.Errorf("%s returned %s: %s", endpoint, resp.Status, message)
 }
 
-func parseRemoteBootstrapURLs(output string) (authURL, tailnetURL string) {
+func parseRemoteBootstrapURLs(output string) (authURL, remoteEndpoint string) {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "TAILSCALE_AUTH_URL="):
 			authURL = strings.TrimSpace(strings.TrimPrefix(line, "TAILSCALE_AUTH_URL="))
+		case strings.HasPrefix(line, "SWARM_REMOTE_URL="):
+			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_REMOTE_URL="))
 		case strings.HasPrefix(line, "SWARM_TAILNET_URL="):
-			tailnetURL = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_URL="))
+			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_URL="))
 		}
 	}
-	return authURL, tailnetURL
+	return authURL, remoteEndpoint
 }
 
 func (s *Service) resolveBootstrapContext() (startupconfig.FileConfig, swarmruntime.LocalState, error) {
@@ -1323,14 +1597,37 @@ func (s *Service) loadStartupConfig() (startupconfig.FileConfig, error) {
 	return startupconfig.Load(path)
 }
 
-func (s *Service) detectBuilderRuntime(ctx context.Context) (string, error) {
+func (s *Service) detectBuilderRuntime(ctx context.Context, preferredRuntime string) (string, error) {
+	preferredRuntime = normalizeRemoteDeployRuntime(preferredRuntime)
 	if s.containers != nil {
 		status, err := s.containers.RuntimeStatus(ctx)
-		if err == nil && strings.TrimSpace(status.Recommended) != "" {
-			return strings.TrimSpace(status.Recommended), nil
+		if err == nil {
+			if preferredRuntime != "" {
+				for _, available := range status.Available {
+					if normalizeRemoteDeployRuntime(available) == preferredRuntime {
+						return preferredRuntime, nil
+					}
+				}
+			}
+			if strings.TrimSpace(status.Recommended) != "" {
+				return strings.TrimSpace(status.Recommended), nil
+			}
 		}
 	}
-	for _, candidate := range []string{"podman", "docker"} {
+	candidates := []string{"podman", "docker"}
+	if preferredRuntime != "" {
+		candidates = append([]string{preferredRuntime}, candidates...)
+	}
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		candidate = normalizeRemoteDeployRuntime(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
 		if _, err := exec.LookPath(candidate); err == nil {
 			return candidate, nil
 		}
@@ -1338,12 +1635,9 @@ func (s *Service) detectBuilderRuntime(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("install Podman or Docker to build remote child artifacts")
 }
 
-func (s *Service) inspectRemoteHost(ctx context.Context, sshTarget, preferredRuntime string) (runtimeName string, systemdAvailable bool, sudoMode string, remoteHome string, err error) {
+func (s *Service) inspectRemoteHost(ctx context.Context, sshTarget, preferredRuntime string) (runtimeName string, systemdAvailable bool, sudoMode string, remoteHome string, remoteNetworkCandidates []string, err error) {
 	checkCmd := fmt.Sprintf(`set -eu
-preferred_runtime=%s
-runtime=""
-if command -v "$preferred_runtime" >/dev/null 2>&1; then runtime="$preferred_runtime"; fi
-if [ -z "$runtime" ]; then echo "remote runtime missing:$preferred_runtime" >&2; exit 40; fi
+runtime=%s
 if command -v systemctl >/dev/null 2>&1; then systemd=1; else systemd=0; fi
 sudo_mode="none"
 if command -v sudo >/dev/null 2>&1; then sudo_mode="sudo"; fi
@@ -1354,10 +1648,23 @@ printf 'REMOTE_RUNTIME=%%s\n' "$runtime"
 printf 'SYSTEMD_AVAILABLE=%%s\n' "$systemd"
 printf 'SUDO_MODE=%%s\n' "$sudo_mode"
 printf 'REMOTE_HOME=%%s\n' "$remote_home"
-`, shellQuote(normalizeRemoteDeployRuntime(preferredRuntime)))
+if command -v ip >/dev/null 2>&1; then
+  ip -o -4 addr show up 2>/dev/null | while read -r _ iface _ addr _; do
+    case "$iface" in
+      lo|docker*|br-*|veth*|cni*|flannel*|tailscale*|zt*)
+        continue
+        ;;
+    esac
+    addr="${addr%%/*}"
+    if [ -n "$addr" ]; then
+      printf 'REMOTE_NETWORK_CANDIDATE=%%s\n' "$addr"
+    fi
+  done
+fi
+`, shellQuote(firstNonEmpty(strings.TrimSpace(preferredRuntime), "native")))
 	out, err := runSSHCommand(ctx, sshTarget, checkCmd)
 	if err != nil {
-		return "", false, "", "", err
+		return "", false, "", "", nil, err
 	}
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -1370,35 +1677,29 @@ printf 'REMOTE_HOME=%%s\n' "$remote_home"
 			sudoMode = strings.TrimSpace(strings.TrimPrefix(line, "SUDO_MODE="))
 		case strings.HasPrefix(line, "REMOTE_HOME="):
 			remoteHome = strings.TrimSpace(strings.TrimPrefix(line, "REMOTE_HOME="))
+		case strings.HasPrefix(line, "REMOTE_NETWORK_CANDIDATE="):
+			remoteNetworkCandidates = append(remoteNetworkCandidates, strings.TrimSpace(strings.TrimPrefix(line, "REMOTE_NETWORK_CANDIDATE=")))
 		}
 	}
 	if runtimeName == "" {
-		return "", false, "", "", fmt.Errorf("remote runtime detection failed")
+		return "", false, "", "", nil, fmt.Errorf("remote runtime detection failed")
 	}
 	if remoteHome == "" || !strings.HasPrefix(remoteHome, "/") {
-		return "", false, "", "", fmt.Errorf("remote home directory detection failed")
+		return "", false, "", "", nil, fmt.Errorf("remote home directory detection failed")
 	}
-	return runtimeName, systemdAvailable, sudoMode, remoteHome, nil
+	return runtimeName, systemdAvailable, sudoMode, remoteHome, sortRemoteNetworkCandidates(remoteNetworkCandidates), nil
 }
 
-func (s *Service) checkRemoteInstallCollision(ctx context.Context, sshTarget, remoteRoot, systemdUnit string) error {
+func (s *Service) checkRemoteInstallCollision(ctx context.Context, sshTarget, remoteRoot string) error {
 	remoteRoot = strings.TrimSpace(remoteRoot)
-	systemdUnit = strings.TrimSpace(systemdUnit)
 	checkCmd := fmt.Sprintf(`set -eu
 remote_root=%s
-systemd_unit=%s
 if [ -e "$remote_root" ]; then
   echo "REMOTE_ROOT_EXISTS=$remote_root"
   exit 42
 fi
-if command -v systemctl >/dev/null 2>&1 && [ -n "$systemd_unit" ]; then
-  if systemctl cat "$systemd_unit" >/dev/null 2>&1 || systemctl status "$systemd_unit" >/dev/null 2>&1; then
-    echo "SYSTEMD_UNIT_EXISTS=$systemd_unit"
-    exit 43
-  fi
-fi
 printf 'REMOTE_INSTALL_PATH_CLEAR=1\n'
-`, shellQuote(remoteRoot), shellQuote(systemdUnit))
+`, shellQuote(remoteRoot))
 	out, err := runSSHCommand(ctx, sshTarget, checkCmd)
 	if err != nil {
 		trimmed := strings.TrimSpace(out)
@@ -1409,12 +1710,6 @@ printf 'REMOTE_INSTALL_PATH_CLEAR=1\n'
 				path = remoteRoot
 			}
 			return fmt.Errorf("remote preflight failed: target remote path already exists: %s", path)
-		case strings.Contains(trimmed, "SYSTEMD_UNIT_EXISTS="):
-			unit := strings.TrimSpace(strings.TrimPrefix(lastMatchingLine(trimmed, "SYSTEMD_UNIT_EXISTS="), "SYSTEMD_UNIT_EXISTS="))
-			if unit == "" {
-				unit = systemdUnit
-			}
-			return fmt.Errorf("remote preflight failed: systemd unit already exists: %s", unit)
 		default:
 			return err
 		}
@@ -1450,6 +1745,16 @@ func formatCreatePreflightError(sshTarget string, err error) error {
 		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- The target systemd unit already exists: %s\n\nWhat to do\n- Remove or rename the old unit, or choose a different swarm name and rerun preflight.\n\nSuggested commands\n- ssh %s\n- systemctl status %s\n- systemctl disable --now %s   # if it is an old test unit you want to replace\n- unit_path=$(systemctl show -p FragmentPath --value %s)\n- rm -f \"$unit_path\"\n- systemctl daemon-reload", target, unit, target, unit, unit, unit)
 	case strings.Contains(lower, "master swarm.conf tailscale_url is required"):
 		return fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- The master startup config is missing tailscale_url.\n\nWhat to do\n- Set tailscale_url in the master swarm.conf so remote children know where to call back.\n- Then rerun preflight.")
+	case strings.Contains(lower, "master swarm.conf host is still loopback-only for lan/wireguard"):
+		return fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- LAN/WireGuard remote deploy cannot use this master while swarmd is still bound to localhost.\n\nWhy this matters\n- SSH is only used to install the child.\n- After launch, the child calls back to the master over the master's real listener.\n- advertise_host only changes the announced endpoint. It does not move the master listener off 127.0.0.1.\n\nWhat to do\n- Set host in the master swarm.conf to a reachable LAN, WireGuard, or tunnel address.\n- Keep advertise_host aligned to the same reachable address unless you have a separate forwarded endpoint.\n- Restart Swarm so the master actually listens there.\n- Then rerun preflight.\n\nAlternative\n- Switch this deploy to Tailscale if both machines are already on the tailnet.")
+	case strings.Contains(lower, "advertise_host is required for lan/wireguard"):
+		return fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- LAN/WireGuard remote deploy needs a master callback endpoint, but this master is not advertising one.\n\nWhy this matters\n- SSH is only used to install the child.\n- After launch, the child calls back to the master over advertise_host:advertise_port.\n\nWhat to do\n- Set advertise_host and advertise_port in the master swarm.conf to a host and port the remote child can reach.\n- Or switch this deploy to Tailscale if both machines are already on the tailnet.\n- Then rerun preflight.")
+	case strings.Contains(lower, "remote reachable host is required for lan/wireguard"):
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- LAN/WireGuard remote deploy needs a reachable host or IP for the remote child.\n\nWhat to do\n- Enter the remote machine's reachable LAN, WireGuard, or tunnel IP/hostname.\n- Then rerun preflight.", target)
+	case strings.Contains(lower, "remote reachable host must not include a url scheme"):
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- The remote reachable host must be a host or IP only.\n\nWhat to do\n- Remove http:// or https:// and enter just the host or IP.\n- Then rerun preflight.", target)
+	case strings.Contains(lower, "remote reachable host must not contain path separators"):
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- The remote reachable host must not contain a path.\n\nWhat to do\n- Enter only the host or IP for the remote child endpoint.\n- Then rerun preflight.", target)
 	default:
 		return err
 	}
@@ -1482,44 +1787,113 @@ func (s *Service) resolveTargetGroupForSession(hostState swarmruntime.LocalState
 func (s *Service) buildPayloads(payloads []PayloadSelection) ([]pebblestore.RemoteDeployPayloadRecord, error) {
 	out := make([]pebblestore.RemoteDeployPayloadRecord, 0, len(payloads))
 	for idx, payload := range payloads {
-		sourcePath := strings.TrimSpace(payload.SourcePath)
-		if sourcePath == "" {
-			continue
-		}
-		archiveName := fmt.Sprintf("payload-%02d-%s.tar.gz", idx+1, sanitizeSlug(filepath.Base(sourcePath)))
-		includedFiles, includedBytes, gitRoot, err := gitTrackedStats(sourcePath)
+		record, err := buildPayloadRecord(idx, payload)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, pebblestore.RemoteDeployPayloadRecord{
-			ID:            fmt.Sprintf("payload-%02d", idx+1),
-			SourcePath:    sourcePath,
-			WorkspacePath: strings.TrimSpace(payload.WorkspacePath),
-			WorkspaceName: strings.TrimSpace(payload.WorkspaceName),
-			TargetPath:    firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces"),
-			Mode:          firstNonEmpty(strings.TrimSpace(payload.Mode), "rw"),
-			GitRoot:       gitRoot,
-			ArchiveName:   archiveName,
-			IncludedFiles: includedFiles,
-			IncludedBytes: includedBytes,
-			ExcludedNote:  "Only Git-tracked files are included in remote payload archives.",
-		})
+		if record.SourcePath == "" {
+			continue
+		}
+		out = append(out, record)
 	}
 	return out, nil
 }
 
-func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessionRecord, startupCfg startupconfig.FileConfig, hostState swarmruntime.LocalState, inviteToken string) string {
-	cfg := startupconfig.Default(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "swarm.conf"))
+func buildPayloadRecord(index int, payload PayloadSelection) (pebblestore.RemoteDeployPayloadRecord, error) {
+	sourcePath := strings.TrimSpace(payload.SourcePath)
+	if sourcePath == "" {
+		return pebblestore.RemoteDeployPayloadRecord{}, nil
+	}
+	rootRecord, err := buildPayloadDirectoryRecord(
+		sourcePath,
+		firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces"),
+		fmt.Sprintf("payload-%02d", index+1),
+	)
+	if err != nil {
+		return pebblestore.RemoteDeployPayloadRecord{}, err
+	}
+	directories := make([]pebblestore.RemoteDeployPayloadDirectoryRecord, 0, len(payload.Directories))
+	totalFiles := rootRecord.IncludedFiles
+	totalBytes := rootRecord.IncludedBytes
+	seenDirectories := map[string]struct{}{
+		sourcePath: {},
+	}
+	for directoryIndex, directory := range payload.Directories {
+		sourcePath := strings.TrimSpace(directory.SourcePath)
+		if sourcePath == "" {
+			continue
+		}
+		if _, ok := seenDirectories[sourcePath]; ok {
+			continue
+		}
+		seenDirectories[sourcePath] = struct{}{}
+		directoryRecord, err := buildPayloadDirectoryRecord(
+			sourcePath,
+			firstNonEmpty(strings.TrimSpace(directory.TargetPath), firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces")),
+			fmt.Sprintf("payload-%02d-dir-%02d", index+1, directoryIndex+1),
+		)
+		if err != nil {
+			return pebblestore.RemoteDeployPayloadRecord{}, err
+		}
+		directories = append(directories, directoryRecord)
+		totalFiles += directoryRecord.IncludedFiles
+		totalBytes += directoryRecord.IncludedBytes
+	}
+	record := pebblestore.RemoteDeployPayloadRecord{
+		ID:            fmt.Sprintf("payload-%02d", index+1),
+		SourcePath:    rootRecord.SourcePath,
+		WorkspacePath: strings.TrimSpace(payload.WorkspacePath),
+		WorkspaceName: strings.TrimSpace(payload.WorkspaceName),
+		TargetPath:    rootRecord.TargetPath,
+		Mode:          firstNonEmpty(strings.TrimSpace(payload.Mode), "rw"),
+		Directories:   directories,
+		GitRoot:       rootRecord.GitRoot,
+		ArchiveName:   rootRecord.ArchiveName,
+		IncludedFiles: totalFiles,
+		IncludedBytes: totalBytes,
+		ExcludedNote:  rootRecord.ExcludedNote,
+	}
+	return record, nil
+}
+
+func buildPayloadDirectoryRecord(sourcePath, targetPath, archivePrefix string) (pebblestore.RemoteDeployPayloadDirectoryRecord, error) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return pebblestore.RemoteDeployPayloadDirectoryRecord{}, nil
+	}
+	includedFiles, includedBytes, gitRoot, err := gitTrackedStats(sourcePath)
+	if err != nil {
+		return pebblestore.RemoteDeployPayloadDirectoryRecord{}, err
+	}
+	archiveBase := sanitizeSlug(filepath.Base(sourcePath))
+	if archiveBase == "" {
+		archiveBase = "workspace"
+	}
+	return pebblestore.RemoteDeployPayloadDirectoryRecord{
+		SourcePath:    sourcePath,
+		TargetPath:    firstNonEmpty(strings.TrimSpace(targetPath), "/workspaces"),
+		GitRoot:       gitRoot,
+		ArchiveName:   fmt.Sprintf("%s-%s.tar.gz", archivePrefix, archiveBase),
+		IncludedFiles: includedFiles,
+		IncludedBytes: includedBytes,
+		ExcludedNote:  "Only Git-tracked files are included in remote payload archives.",
+	}, nil
+}
+
+func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessionRecord, startupCfg startupconfig.FileConfig, hostState swarmruntime.LocalState) string {
+	transportMode := normalizeRemoteTransportMode(record.TransportMode)
+	remoteAdvertiseHost := strings.TrimSpace(record.RemoteAdvertiseHost)
+	cfg := startupconfig.Default(remoteStartupConfigPath(record))
 	cfg.Mode = startupconfig.ModeBox
-	cfg.Host = startupconfig.DefaultHost
+	cfg.Host = firstNonEmpty(remoteAdvertiseHost, startupconfig.DefaultHost)
 	cfg.Port = startupconfig.DefaultPort
-	cfg.AdvertiseHost = startupconfig.DefaultHost
+	cfg.AdvertiseHost = firstNonEmpty(remoteAdvertiseHost, startupconfig.DefaultHost)
 	cfg.AdvertisePort = startupconfig.DefaultPort
 	cfg.DesktopPort = startupconfig.DefaultDesktopPort
 	cfg.SwarmMode = true
 	cfg.Child = true
-	cfg.NetworkMode = startupconfig.NetworkModeTailscale
-	cfg.TailscaleURL = strings.TrimSpace(record.MasterTailscaleURL)
+	cfg.NetworkMode = transportMode
+	cfg.TailscaleURL = firstNonEmpty(map[bool]string{true: strings.TrimSpace(record.MasterEndpoint)}[transportMode == startupconfig.NetworkModeTailscale])
 	cfg.BypassPermissions = record.BypassPermissions
 	cfg.SwarmName = strings.TrimSpace(record.Name)
 	cfg.ParentSwarmID = strings.TrimSpace(hostState.Node.SwarmID)
@@ -1527,14 +1901,12 @@ func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessio
 	cfg.RemoteDeploy = startupconfig.RemoteDeployBootstrap{
 		Enabled:           true,
 		SessionID:         strings.TrimSpace(record.ID),
-		SessionToken:      strings.TrimSpace(record.SessionToken),
-		HostAPIBaseURL:    strings.TrimSpace(record.MasterTailscaleURL),
-		HostDesktopURL:    strings.TrimSpace(startupCfg.TailscaleURL),
-		InviteToken:       strings.TrimSpace(inviteToken),
+		HostAPIBaseURL:    strings.TrimSpace(record.MasterEndpoint),
+		HostDesktopURL:    strings.TrimSpace(record.MasterEndpoint),
 		SyncEnabled:       record.SyncEnabled,
 		SyncMode:          strings.TrimSpace(record.SyncMode),
 		SyncOwnerSwarmID:  strings.TrimSpace(record.SyncOwnerSwarmID),
-		SyncCredentialURL: firstNonEmpty(strings.TrimSpace(record.SyncCredentialURL), buildRemoteSyncCredentialURL(strings.TrimSpace(record.MasterTailscaleURL), strings.TrimSpace(record.ID))),
+		SyncCredentialURL: firstNonEmpty(strings.TrimSpace(record.SyncCredentialURL), buildRemoteSyncCredentialURL(strings.TrimSpace(record.MasterEndpoint), strings.TrimSpace(record.ID))),
 	}
 	return startupconfig.Format(cfg)
 }
@@ -1551,8 +1923,18 @@ func (s *Service) prepareRemoteBundle(ctx context.Context, workDir string, recor
 	if err := os.MkdirAll(filepath.Join(bundleDir, "remote"), 0o755); err != nil {
 		return err
 	}
-	cfgPath := filepath.Join(bundleDir, "remote", "swarm.conf")
-	if err := os.WriteFile(cfgPath, []byte(childCfgText), 0o644); err != nil {
+	cfgPath := filepath.Join(bundleDir, "remote", "config", "swarm", "swarm.conf")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(cfgPath, []byte(childCfgText), 0o600); err != nil {
+		return err
+	}
+	secretCfg := startupconfig.Default(cfgPath)
+	secretCfg.RemoteDeploy.Enabled = true
+	secretCfg.RemoteDeploy.SessionToken = strings.TrimSpace(record.SessionToken)
+	secretCfg.RemoteDeploy.InviteToken = strings.TrimSpace(record.InviteToken)
+	if err := startupconfig.WriteRemoteDeployBootstrapSecret(cfgPath, secretCfg); err != nil {
 		return err
 	}
 	installerPath := filepath.Join(bundleDir, "remote", "install-remote-child.sh")
@@ -1567,20 +1949,25 @@ func (s *Service) prepareRemoteBundle(ctx context.Context, workDir string, recor
 		if err := createGitTrackedArchive(payload.SourcePath, archivePath); err != nil {
 			return err
 		}
+		for _, directory := range payload.Directories {
+			if directory.ArchiveName == "" || directory.SourcePath == "" {
+				continue
+			}
+			archivePath := filepath.Join(bundleDir, "remote", directory.ArchiveName)
+			if err := createGitTrackedArchive(directory.SourcePath, archivePath); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
-func (s *Service) copyRemoteBundle(ctx context.Context, workDir string, imageArtifact remoteImageArtifact, record *pebblestore.RemoteDeploySessionRecord) error {
+func (s *Service) copyRemoteBundle(ctx context.Context, workDir string, runtimeArtifact remoteRuntimeArtifact, record *pebblestore.RemoteDeploySessionRecord) error {
 	if record == nil {
 		return fmt.Errorf("remote deploy record is required")
 	}
 	remoteDir := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
 	if _, err := runSSHCommand(ctx, record.SSHSessionTarget, fmt.Sprintf("mkdir -p %s", shellQuote(remoteDir))); err != nil {
-		return err
-	}
-	remoteHasImage, err := remoteImageExists(ctx, record.SSHSessionTarget, record.RemoteRuntime, firstNonEmpty(record.ImageRef, imageArtifact.ImageRef), record.SudoMode)
-	if err != nil {
 		return err
 	}
 	sourceDir := filepath.Join(workDir, "bundle", "remote") + string(filepath.Separator) + "."
@@ -1590,14 +1977,15 @@ func (s *Service) copyRemoteBundle(ctx context.Context, workDir string, imageArt
 	if err != nil {
 		return fmt.Errorf("scp remote bundle: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	if remoteHasImage {
+	if runtimeArtifact.RemoteImagePresent || !remoteImageUsesArchive(runtimeArtifact.ImageRef) {
 		return nil
 	}
-	if strings.TrimSpace(imageArtifact.ArchivePath) == "" {
+	if strings.TrimSpace(runtimeArtifact.ArchivePath) == "" {
 		return fmt.Errorf("remote image archive path is required")
 	}
-	imageDest := fmt.Sprintf("%s:%s", record.SSHSessionTarget, filepath.ToSlash(filepath.Join(remoteDir, "swarm-container-mvp.tar.gz")))
-	cmd = exec.CommandContext(ctx, "scp", imageArtifact.ArchivePath, imageDest)
+	archiveName := firstNonEmpty(strings.TrimSpace(runtimeArtifact.ArchiveName), remoteImageArchiveName(record.TransportMode))
+	archiveDest := fmt.Sprintf("%s:%s", record.SSHSessionTarget, filepath.ToSlash(filepath.Join(remoteDir, archiveName)))
+	cmd = exec.CommandContext(ctx, "scp", runtimeArtifact.ArchivePath, archiveDest)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("scp remote image archive: %w: %s", err, strings.TrimSpace(string(output)))
@@ -1605,21 +1993,13 @@ func (s *Service) copyRemoteBundle(ctx context.Context, workDir string, imageArt
 	return nil
 }
 
-func (s *Service) startRemoteBundle(ctx context.Context, record *pebblestore.RemoteDeploySessionRecord, tailscaleAuthKey string, syncVaultPassword string) (output, authURL, tailnetURL string, err error) {
+func (s *Service) startRemoteBundle(ctx context.Context, record *pebblestore.RemoteDeploySessionRecord, tailscaleAuthKey string, syncVaultPassword string) (output, authURL, remoteEndpoint string, err error) {
 	if record == nil {
 		return "", "", "", fmt.Errorf("remote deploy record is required")
 	}
-	remoteDir := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
-	cmd := fmt.Sprintf("cd %s && ./install-remote-child.sh", shellQuote(remoteDir))
-	envVars := make([]string, 0, 2)
-	if strings.TrimSpace(tailscaleAuthKey) != "" {
-		envVars = append(envVars, fmt.Sprintf("TAILSCALE_AUTHKEY=%s", shellQuote(strings.TrimSpace(tailscaleAuthKey))))
-	}
-	if strings.TrimSpace(syncVaultPassword) != "" {
-		envVars = append(envVars, fmt.Sprintf("SWARM_REMOTE_SYNC_VAULT_PASSWORD=%s", shellQuote(strings.TrimSpace(syncVaultPassword))))
-	}
-	if len(envVars) > 0 {
-		cmd = fmt.Sprintf("cd %s && %s ./install-remote-child.sh", shellQuote(remoteDir), strings.Join(envVars, " "))
+	cmd, err := remoteBundleStartScript(record, tailscaleAuthKey, syncVaultPassword)
+	if err != nil {
+		return "", "", "", err
 	}
 	output, err = runSSHCommand(ctx, record.SSHSessionTarget, cmd)
 	for _, line := range strings.Split(output, "\n") {
@@ -1627,11 +2007,13 @@ func (s *Service) startRemoteBundle(ctx context.Context, record *pebblestore.Rem
 		switch {
 		case strings.HasPrefix(line, "TAILSCALE_AUTH_URL="):
 			authURL = strings.TrimSpace(strings.TrimPrefix(line, "TAILSCALE_AUTH_URL="))
+		case strings.HasPrefix(line, "SWARM_REMOTE_URL="):
+			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_REMOTE_URL="))
 		case strings.HasPrefix(line, "SWARM_TAILNET_URL="):
-			tailnetURL = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_URL="))
+			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_URL="))
 		}
 	}
-	return output, authURL, tailnetURL, err
+	return output, authURL, remoteEndpoint, err
 }
 
 func mapRemoteContainerPackageManifest(input ContainerPackageManifest) pebblestore.ContainerPackageManifestRecord {
@@ -1669,6 +2051,18 @@ func mapRemoteStoredContainerPackageManifest(input pebblestore.ContainerPackageM
 func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 	payloads := make([]SessionPayload, 0, len(record.Payloads))
 	for _, payload := range record.Payloads {
+		directories := make([]SessionPayloadDirectory, 0, len(payload.Directories))
+		for _, directory := range payload.Directories {
+			directories = append(directories, SessionPayloadDirectory{
+				SourcePath:    directory.SourcePath,
+				TargetPath:    directory.TargetPath,
+				GitRoot:       directory.GitRoot,
+				ArchiveName:   directory.ArchiveName,
+				IncludedFiles: directory.IncludedFiles,
+				IncludedBytes: directory.IncludedBytes,
+				ExcludedNote:  directory.ExcludedNote,
+			})
+		}
 		payloads = append(payloads, SessionPayload{
 			ID:            payload.ID,
 			SourcePath:    payload.SourcePath,
@@ -1676,6 +2070,7 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 			WorkspaceName: payload.WorkspaceName,
 			TargetPath:    payload.TargetPath,
 			Mode:          payload.Mode,
+			Directories:   directories,
 			GitRoot:       payload.GitRoot,
 			ArchiveName:   payload.ArchiveName,
 			IncludedFiles: payload.IncludedFiles,
@@ -1684,63 +2079,81 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 		})
 	}
 	preflight := SessionPreflight{
-		PathID:           PathSessionPreflight,
-		BuilderRuntime:   record.BuilderRuntime,
-		RemoteRuntime:    record.RemoteRuntime,
-		SSHReachable:     record.SSHReachable,
-		SystemdAvailable: record.SystemdAvailable,
-		SystemdUnit:      record.SystemdUnit,
-		RemoteRoot:       record.RemoteRoot,
-		FilesToCopy:      append([]string(nil), record.FilesToCopy...),
-		Payloads:         payloads,
-		Summary:          fmt.Sprintf("Build locally with %s, copy bundle over SSH to %s, install %s systemd unit, and wait for child approval.", firstNonEmpty(record.BuilderRuntime, "container runtime"), firstNonEmpty(record.SSHSessionTarget, "remote host"), firstNonEmpty(record.RemoteRuntime, "container runtime")),
+		PathID:                  PathSessionPreflight,
+		BuilderRuntime:          record.BuilderRuntime,
+		RemoteRuntime:           record.RemoteRuntime,
+		ImageDeliveryMode:       record.ImageDeliveryMode,
+		ImagePrefix:             record.ImagePrefix,
+		SSHReachable:            record.SSHReachable,
+		SystemdAvailable:        record.SystemdAvailable,
+		SystemdUnit:             record.SystemdUnit,
+		RemoteRoot:              record.RemoteRoot,
+		RemoteNetworkCandidates: append([]string(nil), record.RemoteNetworkCandidates...),
+		FilesToCopy:             append([]string(nil), record.FilesToCopy...),
+		Payloads:                payloads,
+		Summary:                 remotePreflightSummary(record),
 		Checks: []string{
-			"local builder runtime available",
+			"local runtime bundle assets available",
 			"remote SSH reachable",
-			"remote container runtime available",
 			"remote home directory resolved",
 			"target remote install path does not already exist",
-			"target systemd unit name does not already exist",
+			"remote container runtime is available",
 		},
 	}
 	return Session{
-		ID:                 record.ID,
-		Name:               record.Name,
-		Status:             record.Status,
-		SSHSessionTarget:   record.SSHSessionTarget,
-		GroupID:            record.GroupID,
-		GroupName:          record.GroupName,
-		BuilderRuntime:     record.BuilderRuntime,
-		RemoteRuntime:      record.RemoteRuntime,
-		MasterTailscaleURL: record.MasterTailscaleURL,
-		RemoteAuthURL:      record.RemoteAuthURL,
-		RemoteTailnetURL:   record.RemoteTailnetURL,
-		ImageRef:           record.ImageRef,
-		ImageSignature:     record.ImageSignature,
-		ImageArchiveBytes:  record.ImageArchiveBytes,
-		EnrollmentID:       record.EnrollmentID,
-		EnrollmentStatus:   record.EnrollmentStatus,
-		ChildSwarmID:       record.ChildSwarmID,
-		ChildName:          record.ChildName,
-		HostSwarmID:        record.HostSwarmID,
-		HostName:           record.HostName,
-		HostPublicKey:      record.HostPublicKey,
-		HostFingerprint:    record.HostFingerprint,
-		HostAPIBaseURL:     record.HostAPIBaseURL,
-		HostDesktopURL:     record.HostDesktopURL,
-		BypassPermissions:  record.BypassPermissions,
-		ContainerPackages:  mapRemoteStoredContainerPackageManifest(record.ContainerPackages),
-		LastError:          record.LastError,
-		LastRemoteOutput:   record.LastRemoteOutput,
-		SyncEnabled:        record.SyncEnabled,
-		SyncMode:           record.SyncMode,
-		SyncOwnerSwarmID:   record.SyncOwnerSwarmID,
-		Preflight:          preflight,
-		CreatedAt:          record.CreatedAt,
-		UpdatedAt:          record.UpdatedAt,
-		ApprovedAt:         record.ApprovedAt,
-		AttachedAt:         record.AttachedAt,
+		ID:                  record.ID,
+		Name:                record.Name,
+		Status:              record.Status,
+		SSHSessionTarget:    record.SSHSessionTarget,
+		TransportMode:       record.TransportMode,
+		MasterEndpoint:      record.MasterEndpoint,
+		RemoteEndpoint:      remoteSessionEndpoint(record),
+		RemoteAdvertiseHost: record.RemoteAdvertiseHost,
+		GroupID:             record.GroupID,
+		GroupName:           record.GroupName,
+		BuilderRuntime:      record.BuilderRuntime,
+		RemoteRuntime:       record.RemoteRuntime,
+		ImageDeliveryMode:   record.ImageDeliveryMode,
+		ImagePrefix:         record.ImagePrefix,
+		MasterTailscaleURL:  record.MasterTailscaleURL,
+		RemoteAuthURL:       record.RemoteAuthURL,
+		RemoteTailnetURL:    record.RemoteTailnetURL,
+		ImageRef:            record.ImageRef,
+		ImageSignature:      record.ImageSignature,
+		ImageArchiveBytes:   record.ImageArchiveBytes,
+		EnrollmentID:        record.EnrollmentID,
+		EnrollmentStatus:    record.EnrollmentStatus,
+		ChildSwarmID:        record.ChildSwarmID,
+		ChildName:           record.ChildName,
+		HostSwarmID:         record.HostSwarmID,
+		HostName:            record.HostName,
+		HostPublicKey:       record.HostPublicKey,
+		HostFingerprint:     record.HostFingerprint,
+		HostAPIBaseURL:      record.HostAPIBaseURL,
+		HostDesktopURL:      record.HostDesktopURL,
+		BypassPermissions:   record.BypassPermissions,
+		ContainerPackages:   mapRemoteStoredContainerPackageManifest(record.ContainerPackages),
+		LastError:           record.LastError,
+		LastRemoteOutput:    record.LastRemoteOutput,
+		SyncEnabled:         record.SyncEnabled,
+		SyncMode:            record.SyncMode,
+		SyncOwnerSwarmID:    record.SyncOwnerSwarmID,
+		Preflight:           preflight,
+		CreatedAt:           record.CreatedAt,
+		UpdatedAt:           record.UpdatedAt,
+		ApprovedAt:          record.ApprovedAt,
+		AttachedAt:          record.AttachedAt,
 	}
+}
+
+func remotePreflightSummary(record pebblestore.RemoteDeploySessionRecord) string {
+	target := firstNonEmpty(record.SSHSessionTarget, "remote host")
+	transport := firstNonEmpty(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale)
+	if normalizeRemoteImageDeliveryMode(record.ImageDeliveryMode) == remoteImageDeliveryRegistry {
+		imageRef := firstNonEmpty(strings.TrimSpace(record.ImageRef), remoteImageRef(record.ImagePrefix, "published"))
+		return fmt.Sprintf("Prepare the selected workspace payloads locally, copy only those payloads plus config/install files over SSH to %s, have the remote host pull %s there, launch the remote child container, and wait for child approval over %s.", target, imageRef, transport)
+	}
+	return fmt.Sprintf("Prepare the prepackaged Swarm remote image locally, copy it over SSH to %s when needed, launch the remote child container there now, and wait for child approval over %s.", target, transport)
 }
 
 func (s *Service) cleanupRemoteChildState(childSwarmID string, item *localcontainers.DeleteItemResult) error {
@@ -1786,37 +2199,25 @@ func (s *Service) teardownRemoteChildInstall(ctx context.Context, record pebbles
 	if runtimeName == "" {
 		runtimeName = "docker"
 	}
-	systemdUnit := strings.TrimSpace(record.SystemdUnit)
-	if systemdUnit == "" {
-		systemdUnit = systemdUnitName(record.ID)
-	}
 	remoteRoot := strings.TrimSpace(record.RemoteRoot)
+	containerName := remoteContainerNameForSession(record.ID)
 	sudoPrefix := ""
 	if strings.TrimSpace(record.SudoMode) == "sudo" {
 		sudoPrefix = "sudo "
 	}
 	cmd := fmt.Sprintf(`set -eu
-systemd_unit=%s
 remote_root=%s
 runtime=%s
-if command -v systemctl >/dev/null 2>&1 && [ -n "$systemd_unit" ]; then
-  unit_path="$(%ssystemctl show -p FragmentPath --value "$systemd_unit" 2>/dev/null || true)"
-  %ssystemctl disable --now "$systemd_unit" >/dev/null 2>&1 || true
-  if [ -n "$unit_path" ]; then
-    %srm -f "$unit_path" >/dev/null 2>&1 || true
-  fi
-  %ssystemctl daemon-reload >/dev/null 2>&1 || true
-fi
 if [ "$runtime" = "podman" ]; then
-  %spodman rm -f swarm-remote-child >/dev/null 2>&1 || true
+  %spodman rm -f %s >/dev/null 2>&1 || true
 else
-  %sdocker rm -f swarm-remote-child >/dev/null 2>&1 || true
+  %sdocker rm -f %s >/dev/null 2>&1 || true
 fi
 if [ -n "$remote_root" ]; then
   %srm -rf "$remote_root" >/dev/null 2>&1 || true
 fi
 printf 'REMOTE_DELETE_OK=1\n'
-`, shellQuote(systemdUnit), shellQuote(remoteRoot), shellQuote(runtimeName), sudoPrefix, sudoPrefix, sudoPrefix, sudoPrefix, sudoPrefix, sudoPrefix, sudoPrefix)
+`, shellQuote(remoteRoot), shellQuote(runtimeName), sudoPrefix, shellQuote(containerName), sudoPrefix, shellQuote(containerName), sudoPrefix)
 	output, err := runSSHCommand(ctx, target, cmd)
 	if err != nil {
 		return err
@@ -1854,8 +2255,17 @@ func systemdUnitName(sessionID string) string {
 	return fmt.Sprintf("swarm-remote-child-%s.service", sanitizeSlug(sessionID))
 }
 
+func remoteContainerNameForSession(sessionID string) string {
+	slug := sanitizeSlug(sessionID)
+	if slug == "" {
+		return remoteContainerPrefix
+	}
+	return fmt.Sprintf("%s-%s", remoteContainerPrefix, slug)
+}
+
 func remoteRoot(sessionID string) string {
-	return filepath.ToSlash(filepath.Join("~/.local/share/swarm/remote-deploy", sanitizeSlug(sessionID)))
+	// Keep the managed remote root short enough for swarmd's Unix socket paths.
+	return filepath.ToSlash(filepath.Join("~/.local/share/swarm/rd", sanitizeSlug(sessionID)))
 }
 
 func remoteRootForHome(homeDir, sessionID string) string {
@@ -1863,7 +2273,19 @@ func remoteRootForHome(homeDir, sessionID string) string {
 	if homeDir == "" {
 		return remoteRoot(sessionID)
 	}
-	return filepath.ToSlash(filepath.Join(homeDir, ".local", "share", "swarm", "remote-deploy", sanitizeSlug(sessionID)))
+	return filepath.ToSlash(filepath.Join(homeDir, ".local", "share", "swarm", "rd", sanitizeSlug(sessionID)))
+}
+
+func remoteStartupConfigPath(record pebblestore.RemoteDeploySessionRecord) string {
+	return filepath.ToSlash(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "config", "swarm", "swarm.conf"))
+}
+
+func remoteBootstrapSecretPath(record pebblestore.RemoteDeploySessionRecord) string {
+	return filepath.ToSlash(startupconfig.RemoteDeployBootstrapSecretPath(remoteStartupConfigPath(record)))
+}
+
+func remoteServiceLogPath(record pebblestore.RemoteDeploySessionRecord) string {
+	return filepath.ToSlash(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "logs", "remote-child.log"))
 }
 
 func normalizeRemoteDeployRuntime(value string) string {
@@ -1873,6 +2295,180 @@ func normalizeRemoteDeployRuntime(value string) string {
 	default:
 		return "docker"
 	}
+}
+
+func normalizeRemoteTransportMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case startupconfig.NetworkModeLAN:
+		return startupconfig.NetworkModeLAN
+	default:
+		return startupconfig.NetworkModeTailscale
+	}
+}
+
+func resolveMasterRemoteDeployEndpoint(cfg startupconfig.FileConfig, transportMode string) (string, error) {
+	switch normalizeRemoteTransportMode(transportMode) {
+	case startupconfig.NetworkModeLAN:
+		if isRemoteDeployLocalOnlyHost(cfg.Host) {
+			return "", fmt.Errorf("master swarm.conf host is still loopback-only for LAN/WireGuard remote child deploy")
+		}
+		host := firstNonEmpty(strings.TrimSpace(cfg.AdvertiseHost), usableLANHost(strings.TrimSpace(cfg.Host)))
+		if host == "" {
+			return "", fmt.Errorf("master swarm.conf advertise_host is required for LAN/WireGuard remote child deploy")
+		}
+		port := cfg.AdvertisePort
+		if port < 1 || port > 65535 {
+			port = cfg.Port
+		}
+		return "http://" + net.JoinHostPort(host, strconv.Itoa(port)), nil
+	default:
+		endpoint := strings.TrimSpace(cfg.TailscaleURL)
+		if endpoint == "" {
+			return "", fmt.Errorf("master swarm.conf tailscale_url is required for remote child deploy")
+		}
+		return normalizeRemoteSwarmURL(endpoint, "https"), nil
+	}
+}
+
+func usableLANHost(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if lower == "127.0.0.1" || lower == "localhost" || lower == "0.0.0.0" || lower == "::1" {
+		return ""
+	}
+	return value
+}
+
+func isRemoteDeployLocalOnlyHost(value string) bool {
+	value = strings.TrimSpace(strings.Trim(value, "[]"))
+	if value == "" {
+		return false
+	}
+	if strings.EqualFold(value, "localhost") {
+		return true
+	}
+	if parsed := net.ParseIP(value); parsed != nil {
+		return parsed.IsLoopback()
+	}
+	return false
+}
+
+func normalizeRemoteAdvertiseHost(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if strings.Contains(value, "://") {
+		return "", fmt.Errorf("remote reachable host must not include a URL scheme")
+	}
+	if strings.Contains(value, "/") {
+		return "", fmt.Errorf("remote reachable host must not contain path separators")
+	}
+	return value, nil
+}
+
+func defaultReachableSSHHostCandidate(target string) string {
+	candidate := strings.TrimSpace(sshTargetHostCandidate(target))
+	if candidate == "" {
+		return ""
+	}
+	if strings.Contains(candidate, ":") || strings.Contains(candidate, ".") {
+		return candidate
+	}
+	return ""
+}
+
+func sshTargetHostCandidate(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if at := strings.LastIndex(target, "@"); at >= 0 {
+		target = strings.TrimSpace(target[at+1:])
+	}
+	if strings.HasPrefix(target, "[") {
+		if end := strings.Index(target, "]"); end > 0 {
+			return strings.TrimSpace(target[1:end])
+		}
+	}
+	if colon := strings.LastIndex(target, ":"); colon > 0 && strings.Count(target, ":") == 1 {
+		target = strings.TrimSpace(target[:colon])
+	}
+	return strings.TrimSpace(target)
+}
+
+func firstRemoteNetworkCandidate(values []string) string {
+	for _, value := range sortRemoteNetworkCandidates(values) {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func sortRemoteNetworkCandidates(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	sort.SliceStable(normalized, func(i, j int) bool {
+		return remoteNetworkCandidateRank(normalized[i]) < remoteNetworkCandidateRank(normalized[j])
+	})
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func remoteNetworkCandidateRank(value string) int {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return 3
+	}
+	if ip.IsPrivate() {
+		return 0
+	}
+	if ip.IsLoopback() {
+		return 4
+	}
+	return 1
+}
+
+func normalizeRemoteSwarmURL(value, defaultScheme string) string {
+	value = strings.TrimSpace(strings.TrimSuffix(value, "/"))
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "http://") {
+		return value
+	}
+	if defaultScheme == "" {
+		defaultScheme = "https"
+	}
+	return defaultScheme + "://" + value
+}
+
+func remoteSessionEndpoint(record pebblestore.RemoteDeploySessionRecord) string {
+	if endpoint := strings.TrimSpace(record.RemoteEndpoint); endpoint != "" {
+		return endpoint
+	}
+	if endpoint := strings.TrimSpace(record.RemoteTailnetURL); endpoint != "" {
+		return endpoint
+	}
+	return ""
 }
 
 func suggestedSessionID(name string) string {
@@ -2026,61 +2622,80 @@ func requireHostedGroupForLocalSwarm(state swarmruntime.LocalState, groupID stri
 	return fmt.Errorf("group %q is not part of the current local swarm state", groupID)
 }
 
-func (s *Service) prepareRemoteImageArtifact(ctx context.Context, runtimeName string) (remoteImageArtifact, error) {
+func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRuntime, transportMode, imagePrefix string, manifest ContainerPackageManifest) (remoteRuntimeArtifact, error) {
 	buildRoot, err := resolveRemoteDeployBuildRoot(s.startupCWD)
 	if err != nil {
-		return remoteImageArtifact{}, err
+		return remoteRuntimeArtifact{}, err
 	}
+	stepStartedAt := time.Now()
+	signature, err := remoteImageSignature(buildRoot, transportMode, manifest)
+	logRemoteDeployTiming("start.prepare_runtime.signature", stepStartedAt, err, "signature", signature)
+	if err != nil {
+		return remoteRuntimeArtifact{}, err
+	}
+	imageRef := remoteImageRef(imagePrefix, signature)
+	if !remoteImageUsesArchive(imageRef) {
+		return remoteRuntimeArtifact{
+			Signature: signature,
+			ImageRef:  imageRef,
+		}, nil
+	}
+	stepStartedAt = time.Now()
 	if err := ensureRemoteDeployBackendBinaries(ctx, buildRoot); err != nil {
-		return remoteImageArtifact{}, err
+		logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, err)
+		return remoteRuntimeArtifact{}, err
 	}
-	signature, err := remoteImageSignature(buildRoot)
+	logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, nil)
+	builderRuntime = normalizeRemoteDeployRuntime(builderRuntime)
+	if builderRuntime == "" {
+		builderRuntime = "docker"
+	}
+	stepStartedAt = time.Now()
+	imageRef, err = ensureRemoteDeployImageCurrent(ctx, buildRoot, builderRuntime, imagePrefix, signature, manifest)
+	logRemoteDeployTiming("start.prepare_runtime.ensure_image", stepStartedAt, err, "builder_runtime", builderRuntime, "image_ref", imageRef, "signature", signature)
 	if err != nil {
-		return remoteImageArtifact{}, err
-	}
-	imageRef := remoteDeployImageRef(signature)
-	imageExists, err := runtimeImageExists(ctx, runtimeName, imageRef)
-	if err != nil {
-		return remoteImageArtifact{}, err
-	}
-	if !imageExists {
-		if err := buildRemoteImage(ctx, runtimeName, imageRef, buildRoot); err != nil {
-			return remoteImageArtifact{}, err
-		}
+		return remoteRuntimeArtifact{}, err
 	}
 	cacheRoot, err := remoteDeployCacheRoot()
 	if err != nil {
-		return remoteImageArtifact{}, err
+		return remoteRuntimeArtifact{}, err
 	}
 	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
-		return remoteImageArtifact{}, err
+		return remoteRuntimeArtifact{}, err
 	}
-	archivePath := filepath.Join(cacheRoot, fmt.Sprintf("swarm-container-mvp-%s.tar.gz", signature))
+	archiveName := remoteImageArchiveName(transportMode)
+	archivePath := filepath.Join(cacheRoot, fmt.Sprintf("swarm-image-%s-%s.tar", normalizeRemoteTransportMode(transportMode), signature))
 	archiveHit := false
 	if _, err := os.Stat(archivePath); err == nil {
-		if err := validateImageArchive(archivePath); err == nil {
+		stepStartedAt = time.Now()
+		if err := validateTarArchive(archivePath); err == nil {
 			archiveHit = true
+			logRemoteDeployTiming("start.prepare_runtime.validate_cached_archive", stepStartedAt, nil, "signature", signature)
 		} else {
+			logRemoteDeployTiming("start.prepare_runtime.validate_cached_archive", stepStartedAt, err, "signature", signature)
 			_ = os.Remove(archivePath)
 		}
 	} else if !os.IsNotExist(err) {
-		return remoteImageArtifact{}, err
+		return remoteRuntimeArtifact{}, err
 	} else {
-		if err := exportImageArchive(ctx, runtimeName, imageRef, archivePath); err != nil {
-			return remoteImageArtifact{}, err
+		stepStartedAt = time.Now()
+		if err := exportRemoteImageArchive(ctx, builderRuntime, imageRef, archivePath); err != nil {
+			logRemoteDeployTiming("start.prepare_runtime.export_archive", stepStartedAt, err, "signature", signature, "image_ref", imageRef)
+			return remoteRuntimeArtifact{}, err
 		}
+		logRemoteDeployTiming("start.prepare_runtime.export_archive", stepStartedAt, nil, "signature", signature, "image_ref", imageRef)
 	}
 	info, err := os.Stat(archivePath)
 	if err != nil {
-		return remoteImageArtifact{}, err
+		return remoteRuntimeArtifact{}, err
 	}
-	return remoteImageArtifact{
-		ImageRef:      imageRef,
-		Signature:     signature,
-		ArchivePath:   archivePath,
-		ArchiveBytes:  info.Size(),
-		LocalImageHit: imageExists,
-		ArchiveHit:    archiveHit,
+	return remoteRuntimeArtifact{
+		Signature:    signature,
+		ImageRef:     imageRef,
+		ArchiveName:  archiveName,
+		ArchivePath:  archivePath,
+		ArchiveBytes: info.Size(),
+		ArchiveHit:   archiveHit,
 	}, nil
 }
 
@@ -2112,48 +2727,17 @@ func remoteDeployCacheRoot() (string, error) {
 	return filepath.Join(cacheRoot, "swarm", "remote-deploy"), nil
 }
 
-func remoteDeployImageRef(signature string) string {
-	signature = strings.TrimSpace(strings.ToLower(signature))
-	if signature == "" {
-		signature = "latest"
-	}
-	return fmt.Sprintf("localhost/swarm-container-mvp:remote-%s", signature)
-}
-
-func exportImageArchive(ctx context.Context, runtimeName, imageRef, destPath string) error {
-	runtimeName = strings.TrimSpace(runtimeName)
-	imageRef = strings.TrimSpace(imageRef)
-	if runtimeName == "" {
-		return fmt.Errorf("builder runtime is required")
-	}
-	if imageRef == "" {
-		return fmt.Errorf("image ref is required")
-	}
+func exportRemoteImageArchive(ctx context.Context, runtimeName, imageRef, destPath string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return err
 	}
 	tempPath := fmt.Sprintf("%s.%d.tmp", destPath, os.Getpid())
-	plainTarPath := fmt.Sprintf("%s.%d.tar", destPath, os.Getpid())
 	_ = os.Remove(tempPath)
-	_ = os.Remove(plainTarPath)
-	var saveCmd *exec.Cmd
-	if runtimeName == "podman" {
-		saveCmd = exec.CommandContext(ctx, "podman", "save", "--format", "docker-archive", "-o", plainTarPath, imageRef)
-	} else {
-		saveCmd = exec.CommandContext(ctx, "docker", "save", "-o", plainTarPath, imageRef)
-	}
-	if output, err := saveCmd.CombinedOutput(); err != nil {
-		_ = os.Remove(plainTarPath)
+	if err := createRemoteImageArchive(ctx, runtimeName, imageRef, tempPath); err != nil {
 		_ = os.Remove(tempPath)
-		return fmt.Errorf("export image archive: %w: %s", err, strings.TrimSpace(string(output)))
+		return err
 	}
-	if err := gzipFile(tempPath, plainTarPath); err != nil {
-		_ = os.Remove(plainTarPath)
-		_ = os.Remove(tempPath)
-		return fmt.Errorf("compress image archive: %w", err)
-	}
-	_ = os.Remove(plainTarPath)
-	if err := validateImageArchive(tempPath); err != nil {
+	if err := validateTarArchive(tempPath); err != nil {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("validate image archive: %w", err)
 	}
@@ -2168,30 +2752,52 @@ func exportImageArchive(ctx context.Context, runtimeName, imageRef, destPath str
 	return nil
 }
 
-func gzipFile(destPath, sourcePath string) error {
-	source, err := os.Open(sourcePath)
+func createRemoteImageArchive(ctx context.Context, runtimeName, imageRef, destPath string) error {
+	runtimeName = normalizeRemoteDeployRuntime(runtimeName)
+	if runtimeName == "" {
+		return fmt.Errorf("container runtime is required to export remote image")
+	}
+	imageRef = strings.TrimSpace(imageRef)
+	if imageRef == "" {
+		return fmt.Errorf("image ref is required to export remote image")
+	}
+	cmd := exec.CommandContext(ctx, runtimeName, "save", "-o", destPath, imageRef)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return err
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("export remote image archive %q with %s: %s", imageRef, runtimeName, message)
 	}
-	defer source.Close()
-	dest, err := os.Create(destPath)
-	if err != nil {
-		return err
-	}
-	gz := gzip.NewWriter(dest)
-	if _, err := io.Copy(gz, source); err != nil {
-		_ = gz.Close()
-		_ = dest.Close()
-		return err
-	}
-	if err := gz.Close(); err != nil {
-		_ = dest.Close()
-		return err
-	}
-	return dest.Close()
+	return nil
 }
 
-func validateImageArchive(path string) error {
+func validateTarArchive(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	reader := tar.NewReader(file)
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if header == nil || header.Size <= 0 {
+			continue
+		}
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			return err
+		}
+	}
+}
+
+func validateTarGzArchive(path string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -2220,6 +2826,125 @@ func validateImageArchive(path string) error {
 	}
 }
 
+func ensureRemoteDeployImageCurrent(ctx context.Context, buildRoot, builderRuntime, imagePrefix, signature string, manifest ContainerPackageManifest) (string, error) {
+	builderRuntime = normalizeRemoteDeployRuntime(builderRuntime)
+	if builderRuntime == "" {
+		return "", fmt.Errorf("builder runtime is required")
+	}
+	signature = strings.TrimSpace(signature)
+	if signature == "" {
+		return "", fmt.Errorf("remote image signature is required")
+	}
+	manifest = normalizeRemoteContainerPackageManifest(manifest)
+	imageRef := remoteImageRef(imagePrefix, signature)
+	exists, err := runtimeImageExistsLocal(ctx, builderRuntime, imageRef)
+	if err != nil {
+		return "", fmt.Errorf("check local remote image %q: %w", imageRef, err)
+	}
+	if exists {
+		return imageRef, nil
+	}
+	if len(manifest.Packages) == 0 {
+		if err := rebuildRemoteBaseImage(ctx, buildRoot, builderRuntime, imageRef); err != nil {
+			return "", err
+		}
+		return imageRef, nil
+	}
+	baseSignature, err := remoteRuntimeSignature(buildRoot)
+	if err != nil {
+		return "", err
+	}
+	baseImageRef := remoteImageRef(imagePrefix, baseSignature)
+	baseExists, err := runtimeImageExistsLocal(ctx, builderRuntime, baseImageRef)
+	if err != nil {
+		return "", fmt.Errorf("check local base remote image %q: %w", baseImageRef, err)
+	}
+	if !baseExists {
+		if err := rebuildRemoteBaseImage(ctx, buildRoot, builderRuntime, baseImageRef); err != nil {
+			return "", err
+		}
+	}
+	if err := buildRemotePackageAwareImage(ctx, builderRuntime, buildRoot, imageRef, baseImageRef, manifest); err != nil {
+		return "", err
+	}
+	return imageRef, nil
+}
+
+func rebuildRemoteBaseImage(ctx context.Context, buildRoot, builderRuntime, imageRef string) error {
+	cmd := exec.CommandContext(ctx, "bash", filepath.Join("scripts", "rebuild-container.sh"), "--image-only")
+	cmd.Dir = buildRoot
+	cmd.Env = append(os.Environ(),
+		"BUILD_RUNTIME="+builderRuntime,
+		"IMAGE_NAME="+strings.TrimSpace(imageRef),
+		"SWARM_REBUILD_REASON=remote-deploy-image-build",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("rebuild remote base image %q with %s: %s", imageRef, builderRuntime, message)
+	}
+	return nil
+}
+
+func buildRemotePackageAwareImage(ctx context.Context, runtimeName, buildRoot, imageRef, baseImageRef string, manifest ContainerPackageManifest) error {
+	runtimeName = normalizeRemoteDeployRuntime(runtimeName)
+	if runtimeName == "" {
+		return fmt.Errorf("builder runtime is required")
+	}
+	manifest = normalizeRemoteContainerPackageManifest(manifest)
+	if len(manifest.Packages) == 0 {
+		return fmt.Errorf("package-aware image build requires at least one package")
+	}
+	packageNames := make([]string, 0, len(manifest.Packages))
+	for _, pkg := range manifest.Packages {
+		packageNames = append(packageNames, pkg.Name)
+	}
+	containerfile := fmt.Sprintf("FROM %s\nRUN apt-get update && apt-get install -y --no-install-recommends %s && rm -rf /var/lib/apt/lists/*\n", strings.TrimSpace(baseImageRef), strings.Join(packageNames, " "))
+	cmd := exec.CommandContext(ctx, runtimeName, "build", "-t", strings.TrimSpace(imageRef), "-")
+	cmd.Dir = buildRoot
+	cmd.Stdin = strings.NewReader(containerfile)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("build remote package image %q: %s", imageRef, message)
+	}
+	return nil
+}
+
+func runtimeImageExistsLocal(parent context.Context, runtimeName, imageRef string) (bool, error) {
+	runtimeName = normalizeRemoteDeployRuntime(runtimeName)
+	imageRef = strings.TrimSpace(imageRef)
+	if runtimeName == "" || imageRef == "" {
+		return false, fmt.Errorf("runtime and image ref are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	args := []string{"image", "inspect", imageRef}
+	if runtimeName == "podman" {
+		args = []string{"image", "exists", imageRef}
+	}
+	cmd := exec.CommandContext(ctx, runtimeName, args...)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		message = err.Error()
+	}
+	return false, errors.New(message)
+}
+
 func ensureRemoteDeployBackendBinaries(ctx context.Context, buildRoot string) error {
 	buildRoot = strings.TrimSpace(buildRoot)
 	if buildRoot == "" {
@@ -2241,51 +2966,9 @@ func ensureRemoteDeployBackendBinaries(ctx context.Context, buildRoot string) er
 	return nil
 }
 
-func buildRemoteImage(ctx context.Context, runtimeName, imageRef, buildRoot string) error {
-	runtimeName = strings.TrimSpace(runtimeName)
-	imageRef = strings.TrimSpace(imageRef)
-	if runtimeName == "" {
-		return fmt.Errorf("builder runtime is required")
-	}
-	if imageRef == "" {
-		return fmt.Errorf("image ref is required")
-	}
-	buildCmd := exec.CommandContext(ctx, runtimeName, "build", "-f", "deploy/container-mvp/Containerfile", "-t", imageRef, ".")
-	buildCmd.Dir = buildRoot
-	if output, err := buildCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("build remote image: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-func runtimeImageExists(ctx context.Context, runtimeName, imageRef string) (bool, error) {
-	runtimeName = strings.TrimSpace(runtimeName)
-	imageRef = strings.TrimSpace(imageRef)
-	if runtimeName == "" || imageRef == "" {
-		return false, nil
-	}
-	cmd := exec.CommandContext(ctx, runtimeName, "image", "inspect", imageRef)
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		return true, nil
-	}
-	if ctx.Err() != nil {
-		return false, ctx.Err()
-	}
-	if _, ok := err.(*exec.ExitError); ok {
-		return false, nil
-	}
-	message := strings.TrimSpace(string(output))
-	if message == "" {
-		message = err.Error()
-	}
-	return false, fmt.Errorf("inspect remote deploy image %q: %s", imageRef, message)
-}
-
-func remoteImageSignature(buildRoot string) (string, error) {
+func remoteRuntimeSignature(buildRoot string) (string, error) {
 	h := sha256.New()
 	inputs := []string{
-		filepath.Join(buildRoot, "deploy", "container-mvp", "Containerfile"),
 		filepath.Join(buildRoot, "deploy", "container-mvp", "entrypoint.sh"),
 		filepath.Join(buildRoot, ".bin", "main", "swarmd"),
 		filepath.Join(buildRoot, ".bin", "main", "swarmctl"),
@@ -2302,6 +2985,77 @@ func remoteImageSignature(buildRoot string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16], nil
+}
+
+func remoteImageSignature(buildRoot, transportMode string, manifest ContainerPackageManifest) (string, error) {
+	baseSignature, err := remoteRuntimeSignature(buildRoot)
+	if err != nil {
+		return "", err
+	}
+	payload := baseSignature + "\n" + normalizeRemoteTransportMode(transportMode) + "\n" + remoteContainerPackageSignaturePayload(manifest)
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])[:16], nil
+}
+
+func remoteContainerPackageSignaturePayload(manifest ContainerPackageManifest) string {
+	manifest = normalizeRemoteContainerPackageManifest(manifest)
+	parts := []string{
+		strings.TrimSpace(manifest.BaseImage),
+		strings.TrimSpace(manifest.PackageManager),
+	}
+	for _, pkg := range manifest.Packages {
+		parts = append(parts, pkg.Name)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func normalizeRemoteContainerPackageManifest(manifest ContainerPackageManifest) ContainerPackageManifest {
+	normalized := ContainerPackageManifest{
+		BaseImage:      firstNonEmpty(strings.TrimSpace(manifest.BaseImage), remotePackageBaseImage),
+		PackageManager: firstNonEmpty(strings.TrimSpace(manifest.PackageManager), remotePackageManager),
+	}
+	if len(manifest.Packages) == 0 {
+		return normalized
+	}
+	seen := map[string]struct{}{}
+	packages := make([]ContainerPackageSelection, 0, len(manifest.Packages))
+	for _, pkg := range manifest.Packages {
+		name := strings.ToLower(strings.TrimSpace(pkg.Name))
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		packages = append(packages, ContainerPackageSelection{
+			Name:   name,
+			Source: strings.TrimSpace(pkg.Source),
+			Reason: strings.TrimSpace(pkg.Reason),
+		})
+	}
+	sort.Slice(packages, func(i, j int) bool {
+		return packages[i].Name < packages[j].Name
+	})
+	normalized.Packages = packages
+	return normalized
+}
+
+func remoteImageArchiveName(transportMode string) string {
+	switch normalizeRemoteTransportMode(transportMode) {
+	case startupconfig.NetworkModeLAN:
+		return "swarm-remote-lan-wireguard-image.tar"
+	default:
+		return "swarm-remote-tailscale-image.tar"
+	}
+}
+
+func remoteImageRef(imagePrefix, signature string) string {
+	prefix := strings.TrimRight(strings.TrimSpace(imagePrefix), "/")
+	if prefix == "" {
+		prefix = remoteDeployImagePrefix()
+	}
+	return fmt.Sprintf("%s:%s", prefix, strings.TrimSpace(signature))
 }
 
 func hashDirWithPath(h io.Writer, rootPath, buildRoot string) error {
@@ -2361,9 +3115,58 @@ func hashFileWithPath(h io.Writer, path, buildRoot string) error {
 	return nil
 }
 
+func addPathToArchive(tw *tar.Writer, sourcePath, archivePath string) error {
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(sourcePath)
+		if err != nil {
+			return err
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, entry := range entries {
+			if err := addPathToArchive(tw, filepath.Join(sourcePath, entry.Name()), filepath.ToSlash(filepath.Join(archivePath, entry.Name()))); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	linkTarget := ""
+	if info.Mode()&os.ModeSymlink != 0 {
+		linkTarget, err = os.Readlink(sourcePath)
+		if err != nil {
+			return err
+		}
+	}
+	header, err := tar.FileInfoHeader(info, linkTarget)
+	if err != nil {
+		return err
+	}
+	header.Name = filepath.ToSlash(archivePath)
+	if err := tw.WriteHeader(header); err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := io.Copy(tw, file); err != nil {
+		return err
+	}
+	return nil
+}
+
 func createGitTrackedArchive(sourcePath, destArchive string) error {
+	startedAt := time.Now()
 	gitRoot, files, err := gitTrackedFiles(sourcePath)
 	if err != nil {
+		logRemoteDeployTiming("start.prepare_bundle.git_tracked_archive", startedAt, err, "archive", filepath.Base(destArchive))
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(destArchive), 0o755); err != nil {
@@ -2402,7 +3205,52 @@ func createGitTrackedArchive(sourcePath, destArchive string) error {
 		}
 		f.Close()
 	}
+	logRemoteDeployTiming("start.prepare_bundle.git_tracked_archive", startedAt, nil, "archive", filepath.Base(destArchive), "files", strconv.Itoa(len(files)))
 	return nil
+}
+
+func remotePayloadArchiveCount(payloads []pebblestore.RemoteDeployPayloadRecord) int {
+	count := 0
+	for _, payload := range payloads {
+		if strings.TrimSpace(payload.ArchiveName) != "" {
+			count++
+		}
+		for _, directory := range payload.Directories {
+			if strings.TrimSpace(directory.ArchiveName) != "" {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func remotePayloadIncludedBytes(payloads []pebblestore.RemoteDeployPayloadRecord) int64 {
+	var total int64
+	for _, payload := range payloads {
+		total += payload.IncludedBytes
+	}
+	return total
+}
+
+func logRemoteDeployTiming(step string, startedAt time.Time, err error, fields ...string) {
+	parts := []string{
+		fmt.Sprintf("remote deploy timing step=%q", strings.TrimSpace(step)),
+		fmt.Sprintf("elapsed_ms=%d", time.Since(startedAt).Milliseconds()),
+	}
+	if err != nil {
+		parts = append(parts, fmt.Sprintf("status=%q", "error"), fmt.Sprintf("err=%q", strings.TrimSpace(err.Error())))
+	} else {
+		parts = append(parts, fmt.Sprintf("status=%q", "ok"))
+	}
+	for idx := 0; idx+1 < len(fields); idx += 2 {
+		key := strings.TrimSpace(fields[idx])
+		value := strings.TrimSpace(fields[idx+1])
+		if key == "" || value == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%q", key, value))
+	}
+	log.Print(strings.Join(parts, " "))
 }
 
 func gitTrackedStats(sourcePath string) (int, int64, string, error) {
@@ -2569,215 +3417,282 @@ func shortToken(size int) string {
 }
 
 func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string {
-	sudoPrefix := ""
-	if strings.TrimSpace(record.SudoMode) == "sudo" {
-		sudoPrefix = "sudo "
+	remoteRoot := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
+	credentialsFile := filepath.ToSlash(filepath.Join(remoteRoot, remoteCredentialsFileName))
+	bootstrapSecretFile := remoteBootstrapSecretPath(record)
+	remoteStateRoot := filepath.ToSlash(filepath.Join(remoteRoot, "state"))
+	transportMode := normalizeRemoteTransportMode(record.TransportMode)
+	runtimeName := normalizeRemoteDeployRuntime(record.RemoteRuntime)
+	if runtimeName == "" {
+		runtimeName = "docker"
 	}
-	imageRef := firstNonEmpty(strings.TrimSpace(record.ImageRef), "localhost/swarm-container-mvp:latest")
-	remoteStateRoot := filepath.ToSlash(filepath.Join(record.RemoteRoot, "state"))
+	remoteAdvertiseHost := firstNonEmpty(strings.TrimSpace(record.RemoteAdvertiseHost), "127.0.0.1")
+	listenAddr := firstNonEmpty(map[bool]string{true: net.JoinHostPort(remoteAdvertiseHost, strconv.Itoa(startupconfig.DefaultPort))}[transportMode == startupconfig.NetworkModeLAN], "127.0.0.1:7781")
+	offlineMode := "0"
+	bootstrapOutputPrefix := "SWARM_TAILNET_URL"
+	if transportMode == startupconfig.NetworkModeLAN {
+		offlineMode = "1"
+		bootstrapOutputPrefix = "SWARM_REMOTE_URL"
+	}
 	tailscaleStateDir := filepath.ToSlash(filepath.Join(remoteStateRoot, "tailscale"))
 	swarmdStateDir := filepath.ToSlash(filepath.Join(remoteStateRoot, "swarmd"))
-	stateDirs := fmt.Sprintf(`%smkdir -p %s
-%smkdir -p %s
-`, sudoPrefix, shellQuote(tailscaleStateDir), sudoPrefix, shellQuote(swarmdStateDir))
+	configHome := filepath.ToSlash(filepath.Join(remoteRoot, "config"))
+	logDir := filepath.ToSlash(filepath.Join(remoteRoot, "logs"))
+	logFile := filepath.ToSlash(filepath.Join(logDir, "remote-child.log"))
+	startScriptPath := filepath.ToSlash(filepath.Join(remoteRoot, "run-remote-child.sh"))
+	pidFile := filepath.ToSlash(filepath.Join(remoteRoot, "run-remote-child.pid"))
+	imageArchiveName := remoteImageArchiveName(transportMode)
+	useArchiveImage := "0"
+	if remoteImageUsesArchive(record.ImageRef) {
+		useArchiveImage = "1"
+	}
+	containerName := remoteContainerNameForSession(record.ID)
+	useSudo := "0"
+	if strings.TrimSpace(record.SudoMode) == "sudo" {
+		useSudo = "1"
+	}
 	payloadExtract := ""
+	mountTargets := []string{remoteRoot}
+	mountSeen := map[string]struct{}{remoteRoot: {}}
+	appendMountTarget := func(path string) {
+		path = firstNonEmpty(strings.TrimSpace(path), "/workspaces")
+		if path == "" {
+			return
+		}
+		if _, ok := mountSeen[path]; ok {
+			return
+		}
+		mountSeen[path] = struct{}{}
+		mountTargets = append(mountTargets, path)
+	}
 	for _, payload := range record.Payloads {
 		if payload.ArchiveName == "" {
 			continue
 		}
-		payloadExtract += fmt.Sprintf("%smkdir -p %s\n%star -xzf %s -C %s\n", sudoPrefix, shellQuote(payload.TargetPath), sudoPrefix, shellQuote(payload.ArchiveName), shellQuote(payload.TargetPath))
+		targetPath := firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces")
+		appendMountTarget(targetPath)
+		payloadExtract += fmt.Sprintf("as_root mkdir -p %s\nas_root chown \"${remote_user}:${remote_group}\" %s >/dev/null 2>&1 || true\ntar -xzf %s -C %s\n", shellQuote(targetPath), shellQuote(targetPath), shellQuote(payload.ArchiveName), shellQuote(targetPath))
+		for _, directory := range payload.Directories {
+			if directory.ArchiveName == "" {
+				continue
+			}
+			directoryTargetPath := firstNonEmpty(strings.TrimSpace(directory.TargetPath), targetPath)
+			appendMountTarget(directoryTargetPath)
+			payloadExtract += fmt.Sprintf("as_root mkdir -p %s\nas_root chown \"${remote_user}:${remote_group}\" %s >/dev/null 2>&1 || true\ntar -xzf %s -C %s\n", shellQuote(directoryTargetPath), shellQuote(directoryTargetPath), shellQuote(directory.ArchiveName), shellQuote(directoryTargetPath))
+		}
 	}
-	podmanPayloadVolumes := remotePayloadVolumeFlags(record.Payloads, "podman")
-	dockerPayloadVolumes := remotePayloadVolumeFlags(record.Payloads, "docker")
-	runtimeLoad := fmt.Sprintf(`image_ref=%s
-if [ "$runtime" = "podman" ]; then
-  if %spodman image inspect "$image_ref" >/dev/null 2>&1; then
-    :
-  elif [ -f swarm-container-mvp.tar.gz ]; then
-    gunzip -c swarm-container-mvp.tar.gz | %spodman load
-  else
-    echo "[swarm-remote-child] required image archive missing for $image_ref" >&2
-    exit 1
-  fi
-else
-  if %sdocker image inspect "$image_ref" >/dev/null 2>&1; then
-    :
-  elif [ -f swarm-container-mvp.tar.gz ]; then
-    gunzip -c swarm-container-mvp.tar.gz | %sdocker load
-  else
-    echo "[swarm-remote-child] required image archive missing for $image_ref" >&2
-    exit 1
-  fi
-fi`, shellQuote(imageRef), sudoPrefix, sudoPrefix, sudoPrefix, sudoPrefix)
-	containerConfigHome := "/var/lib/swarm-config"
-	runCmd := fmt.Sprintf(`remote_root=%s
-runtime=%s
-container_config_home=%s
-config_mount_target="$container_config_home/swarm/swarm.conf"
-tailscale_state_dir=%s
-swarmd_state_dir=%s
-  if [ "$runtime" = "podman" ]; then
-  podman rm -f swarm-remote-child > /dev/null 2>&1 || true
-  if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
-    podman run -d --name swarm-remote-child --restart=always \
-      --cap-add=NET_ADMIN \
-      --device=/dev/net/tun \
-      -e XDG_CONFIG_HOME="$container_config_home" \
-      -e TS_TUN_MODE=auto \
-      -e TS_AUTHKEY="${TAILSCALE_AUTHKEY}" \
-      -e SWARM_REMOTE_SYNC_VAULT_PASSWORD="${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" \
-      -v "$remote_root/swarm.conf:$config_mount_target:Z" \
-      -v "$tailscale_state_dir:/var/lib/tailscale:Z" \
-      -v "$swarmd_state_dir:/var/lib/swarmd:Z" \
-%s      %s
-  else
-    podman run -d --name swarm-remote-child --restart=always \
-      --cap-add=NET_ADMIN \
-      --device=/dev/net/tun \
-      -e XDG_CONFIG_HOME="$container_config_home" \
-      -e TS_TUN_MODE=auto \
-      -e SWARM_REMOTE_SYNC_VAULT_PASSWORD="${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" \
-      -v "$remote_root/swarm.conf:$config_mount_target:Z" \
-      -v "$tailscale_state_dir:/var/lib/tailscale:Z" \
-      -v "$swarmd_state_dir:/var/lib/swarmd:Z" \
-%s      %s
-  fi
-else
-  docker rm -f swarm-remote-child > /dev/null 2>&1 || true
-  if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
-    docker run -d --name swarm-remote-child --restart=always \
-      --cap-add=NET_ADMIN \
-      --device=/dev/net/tun \
-      -e XDG_CONFIG_HOME="$container_config_home" \
-      -e TS_TUN_MODE=auto \
-      -e TS_AUTHKEY="${TAILSCALE_AUTHKEY}" \
-      -e SWARM_REMOTE_SYNC_VAULT_PASSWORD="${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" \
-      -v "$remote_root/swarm.conf:$config_mount_target" \
-      -v "$tailscale_state_dir:/var/lib/tailscale" \
-      -v "$swarmd_state_dir:/var/lib/swarmd" \
-%s      %s
-  else
-    docker run -d --name swarm-remote-child --restart=always \
-      --cap-add=NET_ADMIN \
-      --device=/dev/net/tun \
-      -e XDG_CONFIG_HOME="$container_config_home" \
-      -e TS_TUN_MODE=auto \
-      -e SWARM_REMOTE_SYNC_VAULT_PASSWORD="${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" \
-      -v "$remote_root/swarm.conf:$config_mount_target" \
-      -v "$tailscale_state_dir:/var/lib/tailscale" \
-      -v "$swarmd_state_dir:/var/lib/swarmd" \
-%s      %s
-  fi
-fi`, shellQuote(record.RemoteRoot), shellQuote(record.RemoteRuntime), shellQuote(containerConfigHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), podmanPayloadVolumes, shellQuote(imageRef), podmanPayloadVolumes, shellQuote(imageRef), dockerPayloadVolumes, shellQuote(imageRef), dockerPayloadVolumes, shellQuote(imageRef))
-	startScriptPath := filepath.ToSlash(filepath.Join(record.RemoteRoot, "run-remote-child.sh"))
-	startScriptWrite := fmt.Sprintf(`cat > %s <<'SCRIPT'
-#!/usr/bin/env bash
-set -euo pipefail
-%s
-SCRIPT
-chmod 0755 %s
-`, shellQuote(startScriptPath), runCmd, shellQuote(startScriptPath))
-	unitPath := string(os.PathSeparator) + filepath.ToSlash(filepath.Join("etc", "systemd", "system", strings.TrimSpace(record.SystemdUnit)))
-	execStopCmd := `docker stop swarm-remote-child`
-	if strings.TrimSpace(record.RemoteRuntime) == "podman" {
-		execStopCmd = `podman stop swarm-remote-child`
-	}
-	unitWrite := fmt.Sprintf(`cat > %s <<'UNIT'
-[Unit]
-Description=Swarm remote child %s
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=%s
-ExecStart=/bin/bash %s
-ExecStop=/bin/sh -lc '%s'
-
-[Install]
-WantedBy=multi-user.target
-UNIT`, shellQuote(unitPath), record.Name, record.RemoteRoot, startScriptPath, strings.ReplaceAll(execStopCmd, "'", `'"'"'`))
-	if sudoPrefix != "" {
-		unitWrite = fmt.Sprintf(`cat <<'UNIT' | sudo tee %s >/dev/null
-[Unit]
-Description=Swarm remote child %s
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=%s
-ExecStart=/bin/bash %s
-ExecStop=/bin/sh -lc '%s'
-
-[Install]
-WantedBy=multi-user.target
-UNIT`, shellQuote(unitPath), record.Name, record.RemoteRoot, startScriptPath, strings.ReplaceAll(execStopCmd, "'", `'"'"'`))
-	}
-	unitInstall := fmt.Sprintf(`%s
-%ssystemctl daemon-reload
-if [ -n "${TAILSCALE_AUTHKEY:-}" ] || [ -n "${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" ]; then
-  %ssystemctl enable %s
-else
-  %ssystemctl enable --now %s
-fi
-`, unitWrite, sudoPrefix, sudoPrefix, shellQuote(record.SystemdUnit), sudoPrefix, shellQuote(record.SystemdUnit))
-	fallbackRunCmd := fmt.Sprintf(`/bin/bash %s`, shellQuote(startScriptPath))
-	if sudoPrefix != "" {
-		fallbackRunCmd = fmt.Sprintf(`sudo --preserve-env=TAILSCALE_AUTHKEY,SWARM_REMOTE_SYNC_VAULT_PASSWORD /bin/bash %s`, shellQuote(startScriptPath))
-	}
-	authStartCmd := fmt.Sprintf("systemctl set-environment \"TAILSCALE_AUTHKEY=${TAILSCALE_AUTHKEY:-}\" \"SWARM_REMOTE_SYNC_VAULT_PASSWORD=${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}\"\nsystemctl start %s\nsystemctl unset-environment TAILSCALE_AUTHKEY SWARM_REMOTE_SYNC_VAULT_PASSWORD", shellQuote(record.SystemdUnit))
-	if sudoPrefix != "" {
-		authStartCmd = fmt.Sprintf("sudo systemctl set-environment \"TAILSCALE_AUTHKEY=${TAILSCALE_AUTHKEY:-}\" \"SWARM_REMOTE_SYNC_VAULT_PASSWORD=${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}\"\nsudo systemctl start %s\nsudo systemctl unset-environment TAILSCALE_AUTHKEY SWARM_REMOTE_SYNC_VAULT_PASSWORD", shellQuote(record.SystemdUnit))
-	}
-	logCmd := `docker logs --tail 200 swarm-remote-child 2>&1 || true`
-	containerRunningCmd := `docker inspect -f '{{.State.Running}}' swarm-remote-child 2>/dev/null || true`
-	if strings.TrimSpace(record.RemoteRuntime) == "podman" {
-		logCmd = `podman logs --tail 200 swarm-remote-child 2>&1 || true`
-		containerRunningCmd = `podman inspect -f '{{.State.Running}}' swarm-remote-child 2>/dev/null || true`
-	}
-	if sudoPrefix != "" {
-		logCmd = sudoPrefix + logCmd
-		containerRunningCmd = sudoPrefix + containerRunningCmd
+	mountArgs := ""
+	for _, targetPath := range mountTargets {
+		mountArgs += fmt.Sprintf("run_args+=(--volume %s)\n", shellQuote(targetPath+":"+targetPath))
 	}
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
+
 remote_root=%s
-cd "$remote_root"
+config_home=%s
+credentials_file=%s
+bootstrap_secret_file=%s
+state_root=%s
+tailscale_state_dir=%s
+swarmd_state_dir=%s
+log_dir=%s
+log_file=%s
+start_script=%s
+pid_file=%s
+use_sudo=%s
 runtime=%s
-%s
-%s
-%s
-%s
-if command -v systemctl > /dev/null 2>&1; then
-  %s
-  if [ -n "${TAILSCALE_AUTHKEY:-}" ] || [ -n "${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" ]; then
-    %s
+image_ref=%s
+image_archive=%s
+use_archive_image=%s
+container_name=%s
+transport_mode=%s
+remote_advertise_host=%s
+listen_addr=%s
+offline_mode=%s
+remote_user="$(id -un)"
+remote_group="$(id -gn)"
+
+as_root() {
+  if [ "$use_sudo" = "1" ]; then
+    sudo "$@"
+  else
+    "$@"
   fi
-else
-  %s
+}
+
+runtime_cmd() {
+  if [ "$runtime" = "podman" ]; then
+    as_root podman "$@"
+  else
+    as_root docker "$@"
+  fi
+}
+
+now_ms() {
+  date +%%s%%3N
+}
+
+log_timer_step() {
+  local step="${1:-}"
+  local started_ms="${2:-0}"
+  local ended_ms elapsed_ms
+  ended_ms="$(now_ms)"
+  elapsed_ms=0
+  if [[ "$started_ms" =~ ^[0-9]+$ ]] && [[ "$ended_ms" =~ ^[0-9]+$ ]]; then
+    elapsed_ms=$((ended_ms - started_ms))
+  fi
+  printf 'SWARM_REMOTE_TIMER step=%%s elapsed_ms=%%s\n' "$step" "$elapsed_ms"
+}
+
+step_started_ms="$(now_ms)"
+mkdir -p "$remote_root" "$config_home/swarm" "$state_root" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
+chmod 0700 "$config_home" "$config_home/swarm"
+if [ ! -f "$config_home/swarm/swarm.conf" ]; then
+  echo "remote startup config missing: $config_home/swarm/swarm.conf" >&2
+  exit 1
 fi
+chmod 0600 "$config_home/swarm/swarm.conf"
+if [ -f "$bootstrap_secret_file" ]; then
+  chmod 0600 "$bootstrap_secret_file"
+fi
+: > "$log_file"
+log_timer_step "prepare_remote_root" "$step_started_ms"
+step_started_ms="$(now_ms)"
+if runtime_cmd image inspect "$image_ref" >/dev/null 2>&1; then
+  :
+elif [ "$use_archive_image" != "1" ]; then
+  runtime_cmd pull "$image_ref" >/dev/null
+elif [ -f "$image_archive" ]; then
+  runtime_cmd load -i "$image_archive" >/dev/null
+else
+  echo "remote image archive missing and image is not present: $image_ref" >&2
+  exit 1
+fi
+log_timer_step "ensure_remote_image" "$step_started_ms"
+step_started_ms="$(now_ms)"
+%s
+log_timer_step "extract_payloads" "$step_started_ms"
+
+step_started_ms="$(now_ms)"
+cat > "$start_script" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+remote_root=%s
+config_home=%s
+credentials_file=%s
+tailscale_state_dir=%s
+swarmd_state_dir=%s
+runtime=%s
+image_ref=%s
+container_name=%s
+listen_addr=%s
+offline_mode=%s
+ts_hostname=%s
+mkdir -p "$tailscale_state_dir" "$swarmd_state_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
+export XDG_CONFIG_HOME="$config_home"
+export XDG_DATA_HOME="$remote_root/xdg/data"
+export XDG_STATE_HOME="$remote_root/xdg/state"
+export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"
+export TS_STATE_DIR="$tailscale_state_dir"
+export TS_OUTBOUND_HTTP_PROXY_LISTEN="127.0.0.1:1055"
+export TS_TUN_MODE=userspace-networking
+export SWARM_TAILSCALE_OUTBOUND_PROXY="http://127.0.0.1:1055"
+export SWARMD_DATA_DIR="$swarmd_state_dir"
+export SWARMD_LOCK_PATH="$swarmd_state_dir/swarmd.lock"
+export SWARMD_LISTEN="$listen_addr"
+export SWARM_DESKTOP_PORT="5555"
+export SWARM_CONTAINER_OFFLINE="$offline_mode"
+export TS_HOSTNAME="$ts_hostname"
+if [ "$runtime" = "podman" ]; then
+  runtime_bin=podman
+else
+  runtime_bin=docker
+fi
+"$runtime_bin" rm -f "$container_name" >/dev/null 2>&1 || true
+run_args=(
+  run
+  --rm
+  --name "$container_name"
+  --network host
+  -e "XDG_CONFIG_HOME=$config_home"
+  -e "XDG_DATA_HOME=$remote_root/xdg/data"
+  -e "XDG_STATE_HOME=$remote_root/xdg/state"
+  -e "TS_SOCKET=$tailscale_state_dir/tailscaled.sock"
+  -e "TS_STATE_DIR=$tailscale_state_dir"
+  -e "TS_OUTBOUND_HTTP_PROXY_LISTEN=127.0.0.1:1055"
+  -e "TS_TUN_MODE=userspace-networking"
+  -e "SWARM_TAILSCALE_OUTBOUND_PROXY=http://127.0.0.1:1055"
+  -e "SWARMD_DATA_DIR=$swarmd_state_dir"
+  -e "SWARMD_LOCK_PATH=$swarmd_state_dir/swarmd.lock"
+  -e "SWARMD_LISTEN=$listen_addr"
+  -e "SWARM_DESKTOP_PORT=5555"
+  -e "SWARM_CONTAINER_OFFLINE=$offline_mode"
+  -e "TS_HOSTNAME=$ts_hostname"
+)
+if [ -s "$credentials_file" ]; then
+  run_args+=(--env-file "$credentials_file")
+fi
+run_args+=(--volume "$remote_root:$remote_root")
+%s
+run_args+=("$image_ref")
+exec "$runtime_bin" "${run_args[@]}"
+SCRIPT
+chmod 0755 "$start_script"
+log_timer_step "write_start_script" "$step_started_ms"
+
+step_started_ms="$(now_ms)"
+rm -f "$pid_file"
+if [ "$use_sudo" = "1" ]; then
+  nohup sudo -E /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
+else
+  nohup /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
+fi
+echo $! >"$pid_file"
+log_timer_step "start_remote_container" "$step_started_ms"
+
 log_output=""
 auth_url=""
-tailnet_url=""
-container_running=""
-deadline=$((SECONDS + 30))
+remote_url=""
+service_state=""
+deadline=$((SECONDS + 90))
+step_started_ms="$(now_ms)"
 while :; do
-  if [ "$runtime" = "podman" ]; then
-    log_output="$(%s)"
-    container_running="$(%s)"
+  if [ -s "$log_file" ]; then
+    log_output="$(tail -n 200 "$log_file" 2>&1 || true)"
+  elif runtime_cmd logs --tail 200 "$container_name" >/dev/null 2>&1; then
+    log_output="$(runtime_cmd logs --tail 200 "$container_name" 2>&1 || true)"
   else
-    log_output="$(%s)"
-    container_running="$(%s)"
+    log_output=""
   fi
   auth_url="$(printf '%%s\n' "$log_output" | sed -n 's/^TAILSCALE_AUTH_URL=//p' | tail -n 1)"
-  tailnet_url="$(printf '%%s\n' "$log_output" | sed -n 's/^SWARM_TAILNET_URL=//p' | tail -n 1)"
-  if [ -n "$auth_url" ] || [ -n "$tailnet_url" ]; then
+  if [ "$transport_mode" = "lan" ]; then
+    if runtime_cmd exec "$container_name" sh -lc "curl -fsS http://${remote_advertise_host}:7781/readyz >/dev/null 2>&1 || curl -fsS http://${remote_advertise_host}:7781/healthz >/dev/null 2>&1" >/dev/null 2>&1; then
+      remote_url="http://${remote_advertise_host}:7781"
+    fi
+  else
+    remote_url="$(printf '%%s\n' "$log_output" | sed -n 's/^SWARM_TAILNET_URL=//p' | tail -n 1)"
+  fi
+  if [ -n "$auth_url" ] || [ -n "$remote_url" ]; then
     break
   fi
-  if [ "${container_running}" != "true" ] && [ "${SECONDS}" -ge "${deadline}" ]; then
+  if runtime_cmd inspect -f '{{.State.Running}}' "$container_name" >/dev/null 2>&1; then
+    service_state="$(runtime_cmd inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null || true)"
+    if [ "$service_state" = "true" ]; then
+      service_state="active"
+    else
+      service_state="inactive"
+    fi
+  elif [ -f "$pid_file" ]; then
+    child_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+      service_state="active"
+    else
+      service_state="inactive"
+    fi
+  else
+    service_state="inactive"
+  fi
+  if [ "$service_state" != "active" ] && [ "${SECONDS}" -ge "${deadline}" ]; then
     break
   fi
   if [ "${SECONDS}" -ge "${deadline}" ]; then
@@ -2785,41 +3700,38 @@ while :; do
   fi
   sleep 1
 done
+log_timer_step "wait_for_bootstrap_signal" "$step_started_ms"
 printf '%%s\n' "$log_output"
 printf 'TAILSCALE_AUTH_URL=%%s\n' "$auth_url"
-printf 'SWARM_TAILNET_URL=%%s\n' "$tailnet_url"
-`, shellQuote(record.RemoteRoot), shellQuote(record.RemoteRuntime), runtimeLoad, stateDirs, payloadExtract, startScriptWrite, unitInstall, authStartCmd, fallbackRunCmd, logCmd, containerRunningCmd, logCmd, containerRunningCmd)
+printf '%s=%%s\n' "$remote_url"
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(credentialsFile), shellQuote(bootstrapSecretFile), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(offlineMode), payloadExtract, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(credentialsFile), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), mountArgs, bootstrapOutputPrefix)
 }
 
-func remotePayloadVolumeFlags(payloads []pebblestore.RemoteDeployPayloadRecord, runtimeName string) string {
-	seen := make(map[string]struct{}, len(payloads))
-	lines := make([]string, 0, len(payloads))
-	for _, payload := range payloads {
-		targetPath := strings.TrimSpace(payload.TargetPath)
-		if targetPath == "" {
-			continue
-		}
-		volumeSpec := targetPath + ":" + targetPath
-		if strings.EqualFold(strings.TrimSpace(payload.Mode), "ro") {
-			volumeSpec += ":ro"
-		}
-		if runtimeName == "podman" {
-			if strings.Contains(volumeSpec, ":ro") {
-				volumeSpec += ",Z"
-			} else {
-				volumeSpec += ":Z"
-			}
-		}
-		if _, ok := seen[volumeSpec]; ok {
-			continue
-		}
-		seen[volumeSpec] = struct{}{}
-		lines = append(lines, fmt.Sprintf("    -v %s \\", shellQuote(volumeSpec)))
+func remoteBundleStartScript(record *pebblestore.RemoteDeploySessionRecord, tailscaleAuthKey string, syncVaultPassword string) (string, error) {
+	if record == nil {
+		return "", fmt.Errorf("remote deploy record is required")
 	}
-	if len(lines) == 0 {
-		return ""
+	remoteDir := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
+	credentials := make([]string, 0, 2)
+	if value := strings.TrimSpace(tailscaleAuthKey); value != "" {
+		credentials = append(credentials, fmt.Sprintf("TS_AUTHKEY=%s", value))
 	}
-	return strings.Join(lines, "\n") + "\n"
+	if value := strings.TrimSpace(syncVaultPassword); value != "" {
+		credentials = append(credentials, fmt.Sprintf("SWARM_REMOTE_SYNC_VAULT_PASSWORD=%s", value))
+	}
+	var builder strings.Builder
+	builder.WriteString("set -euo pipefail\n")
+	builder.WriteString(fmt.Sprintf("cd %s\n", shellQuote(remoteDir)))
+	if len(credentials) > 0 {
+		builder.WriteString(fmt.Sprintf("credentials_file=%s\n", shellQuote(filepath.ToSlash(filepath.Join(remoteDir, remoteCredentialsFileName)))))
+		builder.WriteString("umask 077\n")
+		builder.WriteString("cat > \"$credentials_file\" <<'EOF'\n")
+		builder.WriteString(strings.Join(credentials, "\n"))
+		builder.WriteString("\nEOF\n")
+		builder.WriteString("chmod 0600 \"$credentials_file\"\n")
+	}
+	builder.WriteString("./install-remote-child.sh\n")
+	return builder.String(), nil
 }
 
 func shellQuote(value string) string {

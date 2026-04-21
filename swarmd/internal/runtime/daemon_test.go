@@ -1,6 +1,20 @@
 package runtime
 
-import "testing"
+import (
+	"testing"
+)
+
+func TestLocalTransportSocketPerm(t *testing.T) {
+	if got := localTransportSocketPerm(); got != 0o666 {
+		t.Fatalf("localTransportSocketPerm() = %04o, want %04o", got, 0o666)
+	}
+}
+
+func TestLocalTransportSocketDirPerm(t *testing.T) {
+	if got := localTransportSocketDirPerm(); got != 0o711 {
+		t.Fatalf("localTransportSocketDirPerm() = %04o, want %04o", got, 0o711)
+	}
+}
 
 func TestShouldEnableLocalTransport(t *testing.T) {
 	tests := []struct {

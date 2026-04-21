@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 )
@@ -50,14 +52,17 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		return
 	}
 	var req struct {
-		Name              string `json:"name"`
-		SSHSessionTarget  string `json:"ssh_session_target"`
-		GroupID           string `json:"group_id"`
-		GroupName         string `json:"group_name"`
-		RemoteRuntime     string `json:"remote_runtime"`
-		SyncEnabled       bool   `json:"sync_enabled"`
-		BypassPermissions bool   `json:"bypass_permissions,omitempty"`
-		ContainerPackages struct {
+		Name                string `json:"name"`
+		SSHSessionTarget    string `json:"ssh_session_target"`
+		TransportMode       string `json:"transport_mode,omitempty"`
+		RemoteAdvertiseHost string `json:"remote_advertise_host,omitempty"`
+		GroupID             string `json:"group_id"`
+		GroupName           string `json:"group_name"`
+		RemoteRuntime       string `json:"remote_runtime"`
+		ImageDeliveryMode   string `json:"image_delivery_mode,omitempty"`
+		SyncEnabled         bool   `json:"sync_enabled"`
+		BypassPermissions   bool   `json:"bypass_permissions,omitempty"`
+		ContainerPackages   struct {
 			BaseImage      string `json:"base_image,omitempty"`
 			PackageManager string `json:"package_manager,omitempty"`
 			Packages       []struct {
@@ -72,20 +77,33 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 			WorkspaceName string `json:"workspace_name"`
 			TargetPath    string `json:"target_path"`
 			Mode          string `json:"mode"`
+			Directories   []struct {
+				SourcePath string `json:"source_path"`
+				TargetPath string `json:"target_path"`
+			} `json:"directories,omitempty"`
 		} `json:"payloads"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	startedAt := time.Now()
 	payloads := make([]remotedeploy.PayloadSelection, 0, len(req.Payloads))
 	for _, payload := range req.Payloads {
+		directories := make([]remotedeploy.PayloadDirectorySelection, 0, len(payload.Directories))
+		for _, directory := range payload.Directories {
+			directories = append(directories, remotedeploy.PayloadDirectorySelection{
+				SourcePath: directory.SourcePath,
+				TargetPath: directory.TargetPath,
+			})
+		}
 		payloads = append(payloads, remotedeploy.PayloadSelection{
 			SourcePath:    payload.SourcePath,
 			WorkspacePath: payload.WorkspacePath,
 			WorkspaceName: payload.WorkspaceName,
 			TargetPath:    payload.TargetPath,
 			Mode:          payload.Mode,
+			Directories:   directories,
 		})
 	}
 	packages := make([]remotedeploy.ContainerPackageSelection, 0, len(req.ContainerPackages.Packages))
@@ -97,13 +115,16 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		})
 	}
 	session, err := s.remoteDeploys.Create(context.Background(), remotedeploy.CreateSessionInput{
-		Name:              req.Name,
-		SSHSessionTarget:  req.SSHSessionTarget,
-		GroupID:           req.GroupID,
-		GroupName:         req.GroupName,
-		RemoteRuntime:     req.RemoteRuntime,
-		SyncEnabled:       req.SyncEnabled,
-		BypassPermissions: req.BypassPermissions,
+		Name:                req.Name,
+		SSHSessionTarget:    req.SSHSessionTarget,
+		TransportMode:       req.TransportMode,
+		RemoteAdvertiseHost: req.RemoteAdvertiseHost,
+		GroupID:             req.GroupID,
+		GroupName:           req.GroupName,
+		RemoteRuntime:       req.RemoteRuntime,
+		ImageDeliveryMode:   req.ImageDeliveryMode,
+		SyncEnabled:         req.SyncEnabled,
+		BypassPermissions:   req.BypassPermissions,
 		ContainerPackages: remotedeploy.ContainerPackageManifest{
 			BaseImage:      req.ContainerPackages.BaseImage,
 			PackageManager: req.ContainerPackages.PackageManager,
@@ -112,6 +133,7 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		Payloads: payloads,
 	})
 	if err != nil {
+		log.Printf("remote deploy create failed name=%q ssh_target=%q payloads=%d sync_enabled=%t elapsed_ms=%d err=%v", strings.TrimSpace(req.Name), strings.TrimSpace(req.SSHSessionTarget), len(req.Payloads), req.SyncEnabled, time.Since(startedAt).Milliseconds(), err)
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":      false,
 			"path_id": remotedeploy.PathSessionCreate,
@@ -120,6 +142,7 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		})
 		return
 	}
+	log.Printf("remote deploy create success session_id=%q ssh_target=%q payloads=%d sync_enabled=%t elapsed_ms=%d", session.ID, strings.TrimSpace(req.SSHSessionTarget), len(req.Payloads), req.SyncEnabled, time.Since(startedAt).Milliseconds())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"path_id": remotedeploy.PathSessionCreate,
@@ -184,12 +207,14 @@ func (s *Server) handleRemoteDeploySessionStart(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	startedAt := time.Now()
 	session, err := s.remoteDeploys.Start(context.Background(), remotedeploy.StartSessionInput{
 		SessionID:         req.SessionID,
 		TailscaleAuthKey:  req.TailscaleAuthKey,
 		SyncVaultPassword: req.SyncVaultPassword,
 	})
 	if err != nil {
+		log.Printf("remote deploy start failed session_id=%q elapsed_ms=%d err=%v", strings.TrimSpace(req.SessionID), time.Since(startedAt).Milliseconds(), err)
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":      false,
 			"path_id": remotedeploy.PathSessionStart,
@@ -198,6 +223,7 @@ func (s *Server) handleRemoteDeploySessionStart(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
+	log.Printf("remote deploy start success session_id=%q status=%q elapsed_ms=%d", session.ID, session.Status, time.Since(startedAt).Milliseconds())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"path_id": remotedeploy.PathSessionStart,
@@ -262,8 +288,10 @@ func (s *Server) handleRemoteDeploySessionApprove(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, errors.New("expected /v1/deploy/remote/session/{id}/approve"))
 		return
 	}
+	startedAt := time.Now()
 	session, err := s.remoteDeploys.Approve(context.Background(), remotedeploy.ApproveSessionInput{SessionID: parts[0]})
 	if err != nil {
+		log.Printf("remote deploy approve failed session_id=%q elapsed_ms=%d err=%v", strings.TrimSpace(parts[0]), time.Since(startedAt).Milliseconds(), err)
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":      false,
 			"path_id": remotedeploy.PathSessionApprove,
@@ -272,6 +300,7 @@ func (s *Server) handleRemoteDeploySessionApprove(w http.ResponseWriter, r *http
 		})
 		return
 	}
+	log.Printf("remote deploy approve success session_id=%q status=%q elapsed_ms=%d", session.ID, session.Status, time.Since(startedAt).Milliseconds())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"path_id": remotedeploy.PathSessionApprove,

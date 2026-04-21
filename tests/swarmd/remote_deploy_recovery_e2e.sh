@@ -437,10 +437,12 @@ capture_remote_logs() {
   local cmd
   cmd="$(cat <<EOF
 set -euo pipefail
-if [ "${REMOTE_RUNTIME}" = "podman" ]; then
-  podman logs --tail ${LOG_TAIL} swarm-remote-child 2>&1 || true
+if [[ -n "${REMOTE_ROOT}" && -f "${REMOTE_ROOT}/logs/remote-child.log" ]]; then
+  tail -n ${LOG_TAIL} "${REMOTE_ROOT}/logs/remote-child.log" 2>&1 || true
+elif [[ -n "${REMOTE_SYSTEMD_UNIT}" ]]; then
+  ${REMOTE_SUDO_PREFIX}journalctl -u "${REMOTE_SYSTEMD_UNIT}" -n ${LOG_TAIL} --no-pager 2>&1 || true
 else
-  ${REMOTE_SUDO_PREFIX}docker logs --tail ${LOG_TAIL} swarm-remote-child 2>&1 || true
+  true
 fi
 EOF
 )"

@@ -1,6 +1,11 @@
 package api
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+
+	"swarm-refactor/swarmtui/pkg/startupconfig"
+)
 
 func TestClassifyTailscaleServeMode(t *testing.T) {
 	desktopProxy := "http://127.0.0.1:5555"
@@ -54,5 +59,46 @@ func TestHTTPProxyTargetUsesConfiguredHost(t *testing.T) {
 	got := httpProxyTarget("127.0.0.2", 5555)
 	if got != "http://127.0.0.2:5555" {
 		t.Fatalf("httpProxyTarget() = %q, want %q", got, "http://127.0.0.2:5555")
+	}
+}
+
+func TestHTTPClientForTailscaleOutboundProxyUsesConfiguredProxy(t *testing.T) {
+	t.Setenv("SWARM_TAILSCALE_OUTBOUND_PROXY", "http://127.0.0.1:1055")
+
+	client, err := httpClientForTailscaleOutboundProxy("https://dev-hel1.tail617a4d.ts.net", []onboardingTransportPayload{{
+		Kind: startupconfig.NetworkModeTailscale,
+	}})
+	if err != nil {
+		t.Fatalf("httpClientForTailscaleOutboundProxy returned error: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected proxy client")
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://dev-hel1.tail617a4d.ts.net/readyz", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	proxyURL, err := transport.Proxy(req)
+	if err != nil {
+		t.Fatalf("proxy lookup: %v", err)
+	}
+	if proxyURL == nil || proxyURL.String() != "http://127.0.0.1:1055" {
+		t.Fatalf("proxy url = %#v, want http://127.0.0.1:1055", proxyURL)
+	}
+}
+
+func TestHTTPClientForTailscaleOutboundProxySkipsNonTailscaleEndpoints(t *testing.T) {
+	t.Setenv("SWARM_TAILSCALE_OUTBOUND_PROXY", "http://127.0.0.1:1055")
+
+	client, err := httpClientForTailscaleOutboundProxy("https://api.openai.com", nil)
+	if err != nil {
+		t.Fatalf("httpClientForTailscaleOutboundProxy returned error: %v", err)
+	}
+	if client != nil {
+		t.Fatalf("expected no proxy client for non-tailscale endpoint, got %#v", client)
 	}
 }

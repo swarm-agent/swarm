@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -91,7 +92,39 @@ func (s *Server) withDesktopLocalSession(next http.Handler) http.Handler {
 }
 
 func shouldUseDesktopLocalSessionAuth(r *http.Request) bool {
-	return isLoopbackRequest(r) && isSameOriginBrowserRequest(r)
+	return isLocalDesktopBrowserRequest(r) && isSameOriginBrowserRequest(r)
+}
+
+func isLocalDesktopBrowserRequest(r *http.Request) bool {
+	ip := remoteRequestIP(r)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	if ip.To4() != nil {
+		for _, candidate := range detectLANAddresses() {
+			candidateIP := net.ParseIP(strings.TrimSpace(candidate))
+			if candidateIP == nil {
+				continue
+			}
+			if candidateIP.Equal(ip) {
+				return true
+			}
+		}
+	}
+	tailscale := detectTailscale()
+	for _, candidate := range tailscale.IPs {
+		candidateIP := net.ParseIP(strings.TrimSpace(candidate))
+		if candidateIP == nil {
+			continue
+		}
+		if candidateIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func markLocalTransportRequest(r *http.Request) *http.Request {
@@ -161,7 +194,7 @@ func (s *Server) handleDesktopLocalSessionBootstrap(w http.ResponseWriter, r *ht
 		return
 	}
 	if !shouldUseDesktopLocalSessionAuth(r) {
-		writeError(w, http.StatusForbidden, errors.New("desktop local session bootstrap requires a same-origin loopback browser request"))
+		writeError(w, http.StatusForbidden, errors.New("desktop local session bootstrap requires a same-origin browser request from this machine"))
 		return
 	}
 	var err error

@@ -13,6 +13,7 @@ import type {
   AgentStateRecord,
   ChatMessageRecord,
   ModelOptionRecord,
+  ProviderDefaultsPreviewRecord,
   ResolvedSessionPreference,
   DesktopSessionPlanRecord,
 } from "../types/chat";
@@ -183,6 +184,19 @@ interface SaveSessionPlanResponseWire {
   plan?: SessionPlanWire | null;
 }
 
+type ProviderDefaultsPreviewWire = {
+  provider?: string;
+  primary_agent?: string;
+  primary_model?: string;
+  primary_thinking?: string;
+  utility_model?: string;
+  utility_thinking?: string;
+  utility_agents?: string[];
+  affected_agents?: string[];
+  out_of_sync_agents?: string[];
+  inheriting_agents?: string[];
+};
+
 type AgentStateWire = {
   state?: {
     profiles?: Array<{
@@ -221,10 +235,12 @@ type AgentStateWire = {
     active_subagent?: Record<string, string>;
     version?: number;
   };
+  provider_defaults_preview?: ProviderDefaultsPreviewWire | null;
 };
 
 type RestoreAgentDefaultsWire = {
   ok?: boolean;
+  provider_defaults_preview?: ProviderDefaultsPreviewWire | null;
   profiles?: Array<{
     name?: string;
     mode?: string;
@@ -494,12 +510,13 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
       lastEventAt: lifecycle?.updatedAt ? lifecycle.updatedAt : null,
       summary: lifecycle?.active
         ? null
-        : normalizedLifecyclePhase === 'errored'
+        : normalizedLifecyclePhase === "errored"
           ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
           : (lifecycle?.stopReason ?? null),
-      error: normalizedLifecyclePhase === 'errored'
-        ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
-        : null,
+      error:
+        normalizedLifecyclePhase === "errored"
+          ? (lifecycle?.error ?? lifecycle?.stopReason ?? null)
+          : null,
     },
     pendingPermissions: [],
     pendingPermissionCount: 0,
@@ -529,7 +546,7 @@ export async function fetchSession(
 
 function mapResolvedPermission(
   permission: ResolvePermissionResponseWire["permission"],
-  savedRule?: ResolvePermissionResponseWire['saved_rule'],
+  savedRule?: ResolvePermissionResponseWire["saved_rule"],
 ): DesktopPermissionRecord {
   return {
     id: String(permission?.id ?? "").trim(),
@@ -538,16 +555,32 @@ function mapResolvedPermission(
     callId: String(permission?.call_id ?? "").trim(),
     toolName: String(permission?.tool_name ?? "").trim(),
     toolArguments: String(permission?.tool_arguments ?? "").trim(),
-    approvedArguments: String((permission as { approved_arguments?: unknown } | undefined)?.approved_arguments ?? "").trim() || undefined,
+    approvedArguments:
+      String(
+        (permission as { approved_arguments?: unknown } | undefined)
+          ?.approved_arguments ?? "",
+      ).trim() || undefined,
     savedRule: savedRule
       ? {
-          id: String(savedRule.id ?? '').trim(),
-          kind: String(savedRule.kind ?? '').trim(),
-          decision: String(savedRule.decision ?? '').trim(),
-          tool: typeof savedRule.tool === 'string' ? savedRule.tool.trim() : undefined,
-          pattern: typeof savedRule.pattern === 'string' ? savedRule.pattern.trim() : undefined,
-          createdAt: typeof savedRule.created_at === 'number' ? savedRule.created_at : undefined,
-          updatedAt: typeof savedRule.updated_at === 'number' ? savedRule.updated_at : undefined,
+          id: String(savedRule.id ?? "").trim(),
+          kind: String(savedRule.kind ?? "").trim(),
+          decision: String(savedRule.decision ?? "").trim(),
+          tool:
+            typeof savedRule.tool === "string"
+              ? savedRule.tool.trim()
+              : undefined,
+          pattern:
+            typeof savedRule.pattern === "string"
+              ? savedRule.pattern.trim()
+              : undefined,
+          createdAt:
+            typeof savedRule.created_at === "number"
+              ? savedRule.created_at
+              : undefined,
+          updatedAt:
+            typeof savedRule.updated_at === "number"
+              ? savedRule.updated_at
+              : undefined,
         }
       : undefined,
     status: String(permission?.status ?? "").trim(),
@@ -864,10 +897,51 @@ export async function fetchAgentState(
     activeSubagent: response.state?.active_subagent ?? {},
     version:
       typeof response.state?.version === "number" ? response.state.version : 0,
+    providerDefaultsPreview: mapProviderDefaultsPreview(
+      response.provider_defaults_preview,
+    ),
   };
 }
 
-function mapAgentDefaultsState(response: RestoreAgentDefaultsWire): AgentStateRecord {
+function mapProviderDefaultsPreview(
+  preview?: ProviderDefaultsPreviewWire | null,
+): ProviderDefaultsPreviewRecord | null {
+  if (!preview || typeof preview !== "object") {
+    return null;
+  }
+  return {
+    provider: String(preview.provider ?? "").trim(),
+    primaryAgent: String(preview.primary_agent ?? "").trim(),
+    primaryModel: String(preview.primary_model ?? "").trim(),
+    primaryThinking: String(preview.primary_thinking ?? "").trim(),
+    utilityModel: String(preview.utility_model ?? "").trim(),
+    utilityThinking: String(preview.utility_thinking ?? "").trim(),
+    utilityAgents: Array.isArray(preview.utility_agents)
+      ? preview.utility_agents
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+      : [],
+    affectedAgents: Array.isArray(preview.affected_agents)
+      ? preview.affected_agents
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+      : [],
+    outOfSyncAgents: Array.isArray(preview.out_of_sync_agents)
+      ? preview.out_of_sync_agents
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+      : [],
+    inheritingAgents: Array.isArray(preview.inheriting_agents)
+      ? preview.inheriting_agents
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+      : [],
+  };
+}
+
+function mapAgentDefaultsState(
+  response: RestoreAgentDefaultsWire,
+): AgentStateRecord {
   const state = {
     profiles: response.profiles,
     active_primary: response.active_primary,
@@ -901,6 +975,9 @@ function mapAgentDefaultsState(response: RestoreAgentDefaultsWire): AgentStateRe
     activePrimary: String(state?.active_primary ?? "").trim(),
     activeSubagent: state?.active_subagent ?? {},
     version: typeof state?.version === "number" ? state.version : 0,
+    providerDefaultsPreview: mapProviderDefaultsPreview(
+      response.provider_defaults_preview,
+    ),
   };
 }
 
@@ -963,8 +1040,10 @@ export async function createSession(input: {
       body: JSON.stringify({
         title: input.title ?? "",
         workspace_path: input.workspacePath,
-        host_workspace_path: input.route?.hostWorkspacePath ?? input.workspacePath,
-        runtime_workspace_path: input.route?.runtimeWorkspacePath ?? input.workspacePath,
+        host_workspace_path:
+          input.route?.hostWorkspacePath ?? input.workspacePath,
+        runtime_workspace_path:
+          input.route?.runtimeWorkspacePath ?? input.workspacePath,
         workspace_name: input.workspaceName,
         mode: input.mode,
         agent_name: input.agentName?.trim() ?? "",
@@ -1108,7 +1187,12 @@ export async function stopSessionRun(
 export async function resolveSessionPermission(
   sessionId: string,
   permissionId: string,
-  action: "approve" | "deny" | "approve_always" | "always_allow" | "always_deny",
+  action:
+    | "approve"
+    | "deny"
+    | "approve_always"
+    | "always_allow"
+    | "always_deny",
   reason: string,
   approvedArguments?: Record<string, unknown>,
 ): Promise<DesktopPermissionRecord> {
@@ -1119,7 +1203,11 @@ export async function resolveSessionPermission(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ action, reason, approved_arguments: approvedArguments }),
+      body: JSON.stringify({
+        action,
+        reason,
+        approved_arguments: approvedArguments,
+      }),
     },
   );
   return mapResolvedPermission(response.permission, response.saved_rule);
@@ -1200,7 +1288,11 @@ export async function fetchSessionPendingPermissions(
     : [];
 }
 
-function modelOptionKey(provider: string, model: string, contextMode = ''): string {
+function modelOptionKey(
+  provider: string,
+  model: string,
+  contextMode = "",
+): string {
   return `${provider}:${model}:${contextMode.trim().toLowerCase()}`;
 }
 
@@ -1260,7 +1352,7 @@ export async function fetchModelOptions(
         key,
         provider,
         model,
-        contextMode: '',
+        contextMode: "",
         label: String(record.label ?? `${provider}/${model}`).trim(),
         thinking: String(record.thinking ?? "").trim(),
         favorite: true,
@@ -1282,7 +1374,7 @@ export async function fetchModelOptions(
           key,
           provider,
           model,
-          contextMode: '',
+          contextMode: "",
           label: `${provider}/${model}`,
           thinking: "",
           favorite: false,
@@ -1307,7 +1399,7 @@ export async function fetchModelOptions(
     if (!supportsCodex1MMode(option.provider, option.model)) {
       continue;
     }
-    const contextMode = '1m';
+    const contextMode = "1m";
     const key = modelOptionKey(option.provider, option.model, contextMode);
     if (options.has(key)) {
       continue;

@@ -97,6 +97,7 @@ type HomePage struct {
 	pressedTopFrames          int
 	commandOverlay            []string
 	swarmName                 string
+	swarmNotificationCount    int
 	sessionsModal             sessionsModalState
 	commandSuggestions        []CommandSuggestion
 	commandPaletteIndex       int

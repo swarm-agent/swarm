@@ -7,14 +7,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-main-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-release:
     if: ${{ github.actor == 'swarm-agent' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -35,45 +37,44 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Prepare artifact directories
-        run: mkdir -p dist/linux-amd64/root dist/linux-amd64/swarmd dist/web
-
-      - name: Build launcher and TUI binaries
+      - name: Derive release version
+        id: version
+        shell: bash
         run: |
-          go build -trimpath -o dist/linux-amd64/root/swarmtui ./cmd/swarmtui
-          go build -trimpath -o dist/linux-amd64/root/swarm ./cmd/swarm
-          go build -trimpath -ldflags "-X main.defaultInvokedName=swarmdev" -o dist/linux-amd64/root/swarmdev ./cmd/swarm
-          go build -trimpath -o dist/linux-amd64/root/rebuild ./cmd/rebuild
-          go build -trimpath -o dist/linux-amd64/root/swarmsetup ./cmd/swarmsetup
+          set -euo pipefail
+          tag="$(git describe --tags --exact-match 2>/dev/null || true)"
+          if [[ -n "${tag}" ]]; then
+            version="${tag}"
+            prerelease=false
+          else
+            short_sha="$(git rev-parse --short HEAD)"
+            version="0.0.0-dev+${short_sha}"
+            prerelease=true
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
 
-      - name: Build swarmd binaries
-        run: |
-          cd swarmd
-          go build -trimpath -o ../dist/linux-amd64/swarmd/swarmd ./cmd/swarmd
-          go build -trimpath -o ../dist/linux-amd64/swarmd/swarmctl ./cmd/swarmctl
-
-      - name: Build desktop assets
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-
-      - name: Stage build metadata
-        run: |
-          cp -R web/dist/. dist/web/
-          {
-            printf 'commit=%s\n' "${GITHUB_SHA}"
-            printf 'actor=%s\n' "${GITHUB_ACTOR}"
-            printf 'ref=%s\n' "${GITHUB_REF}"
-            printf 'built_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } > dist/build-info.txt
+      - name: Build release bundle
+        run: ./scripts/build-main-dist.sh --output-dir dist --version "${{ steps.version.outputs.version }}"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: main-build-${{ github.sha }}
+          name: main-build-${{ steps.version.outputs.version }}
           path: |
             dist/linux-amd64
             dist/web
             dist/build-info.txt
+            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
           if-no-files-found: error
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+            dist/build-info.txt

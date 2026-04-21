@@ -28,6 +28,7 @@ import (
 	"swarm/packages/swarmd/internal/lock"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/anthropic"
 	"swarm/packages/swarmd/internal/provider/codex"
@@ -57,6 +58,7 @@ type Daemon struct {
 	cfg                       config.Config
 	lock                      *lock.FileLock
 	store                     *pebblestore.Store
+	secretStore               *pebblestore.Store
 	events                    *pebblestore.EventLog
 	hub                       *stream.Hub
 	apiServer                 *api.Server
@@ -88,8 +90,18 @@ type Daemon struct {
 }
 
 const (
-	lingerPollInterval = 250 * time.Millisecond
+	lingerPollInterval           = 250 * time.Millisecond
+	localTransportSocketDirMode  = 0o711
+	localTransportSocketFileMode = 0o666
 )
+
+func localTransportSocketDirPerm() os.FileMode {
+	return localTransportSocketDirMode
+}
+
+func localTransportSocketPerm() os.FileMode {
+	return localTransportSocketFileMode
+}
 
 func New(cfg config.Config) (*Daemon, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
@@ -117,16 +129,23 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, err
 	}
-
-	events, err := pebblestore.NewEventLog(store)
+	secretStore, err := pebblestore.Open(filepath.Join(cfg.DataDir, "swarmd-secrets.pebble"))
 	if err != nil {
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, err
 	}
 
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, err
+	}
+
 	hub := stream.NewHub(events)
-	authStore := pebblestore.NewAuthStore(store)
+	authStore := pebblestore.NewAuthStoreWithSecretStore(store, secretStore)
 	authSvc := auth.NewService(authStore, events)
 	codexClient := codex.NewClient(authStore)
 	toolRuntime := tool.NewRuntime(8)
@@ -149,6 +168,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		return strings.TrimSpace(localNode.SwarmID)
 	})
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), events, hub.Publish)
+	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), events, hub.Publish)
 	permissionSvc.SetSessionResolver(sessionSvc)
 	permissionSvc.SetHostedSync(permission.NewHostedSyncClient(cfg.ConfigPath, swarmStore))
 	permissionSvc.SetLocalSwarmIDResolver(func() string {
@@ -159,6 +179,14 @@ func New(cfg config.Config) (*Daemon, error) {
 		return strings.TrimSpace(localNode.SwarmID)
 	})
 	permissionSvc.SetRetainToolOutputHistory(cfg.RetainToolOutputHistory)
+	notificationSvc.SetLocalSwarmIDResolver(func() string {
+		localNode, ok, err := swarmStore.GetLocalNode()
+		if err != nil || !ok {
+			return ""
+		}
+		return strings.TrimSpace(localNode.SwarmID)
+	})
+	permissionSvc.SetNotificationService(notificationSvc)
 	discoverySvc := discovery.NewService()
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
 	containerProfileSvc := containerprofiles.NewService(pebblestore.NewSwarmContainerProfileStore(store))
@@ -185,8 +213,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
-	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish)
+	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish, sessionSvc)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed ui swarm name: %w", err)
@@ -262,11 +291,13 @@ func New(cfg config.Config) (*Daemon, error) {
 	runSvc.SetEventPublisher(hub.Publish)
 
 	if err := agentSvc.EnsureDefaults(); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed default agents: %w", err)
 	}
 	if err := modelSvc.EnsureBootDefaults(); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("load default model stack: %w", err)
@@ -275,11 +306,13 @@ func New(cfg config.Config) (*Daemon, error) {
 		log.Printf("warning: refresh model catalog: %v", err)
 	}
 	if _, err := securitySvc.EnsureAttachAuth(); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("ensure attach auth token: %w", err)
 	}
 	if err := mcpSvc.EnsureDefaults(); err != nil {
+		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed mcp defaults: %w", err)
@@ -293,7 +326,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 
-	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, events, hub)
+	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)
 	apiServer.SetSandboxService(sandboxSvc)
@@ -323,6 +356,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		cfg:                       cfg,
 		lock:                      lk,
 		store:                     store,
+		secretStore:               secretStore,
 		events:                    events,
 		hub:                       hub,
 		apiServer:                 apiServer,
@@ -353,7 +387,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	d.httpServer = httpServer
 	if shouldEnableLocalTransport(cfg.ListenAddr) {
 		localTransportSocketPath := filepath.Join(cfg.DataDir, "local-transport", "api.sock")
-		if err := os.MkdirAll(filepath.Dir(localTransportSocketPath), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(localTransportSocketPath), localTransportSocketDirPerm()); err != nil {
 			return nil, fmt.Errorf("create local transport directory: %w", err)
 		}
 		d.localTransportSocketPath = localTransportSocketPath
@@ -455,6 +489,12 @@ func (d *Daemon) cleanup() error {
 			}
 			d.store = nil
 		}
+		if d.secretStore != nil {
+			if err := d.secretStore.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close secret store: %w", err))
+			}
+			d.secretStore = nil
+		}
 		if d.lock != nil {
 			if err := d.lock.Release(); err != nil {
 				errs = append(errs, fmt.Errorf("release lock: %w", err))
@@ -533,7 +573,7 @@ func (d *Daemon) Run() error {
 		if socketPath == "" {
 			return fmt.Errorf("local transport socket path is not configured")
 		}
-		if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(socketPath), localTransportSocketDirPerm()); err != nil {
 			return fmt.Errorf("create local transport directory: %w", err)
 		}
 		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -543,7 +583,15 @@ func (d *Daemon) Run() error {
 		if err != nil {
 			return fmt.Errorf("listen on local transport socket %q: %w", socketPath, err)
 		}
-		if err := os.Chmod(socketPath, 0o600); err != nil {
+		// The bind-mounted parent transport must be traversable by the non-root
+		// container child, but only the socket node needs read/write access.
+		// Keep the directory execute-only for others and the socket world rw.
+		if err := os.Chmod(filepath.Dir(socketPath), localTransportSocketDirPerm()); err != nil {
+			_ = localTransportLn.Close()
+			_ = os.Remove(socketPath)
+			return fmt.Errorf("chmod local transport directory %q: %w", filepath.Dir(socketPath), err)
+		}
+		if err := os.Chmod(socketPath, localTransportSocketPerm()); err != nil {
 			_ = localTransportLn.Close()
 			_ = os.Remove(socketPath)
 			return fmt.Errorf("chmod local transport socket %q: %w", socketPath, err)

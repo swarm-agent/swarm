@@ -119,7 +119,7 @@ func (p *ChatPage) renderAssistantMessageLines(message chatMessageItem, width in
 	case 9:
 		return p.renderAssistantMarkdownMessageLines("▣ assistant ", "▣ ", body, width, p.theme.Accent.Bold(true))
 	default:
-		return p.renderAssistantMarkdownMessageLines("□ ", "", body, width, p.theme.Accent)
+		return p.renderAssistantMarkdownMessageLines("▢ ", "", body, width, p.theme.Accent)
 	}
 }
 

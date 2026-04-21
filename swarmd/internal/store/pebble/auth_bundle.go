@@ -129,16 +129,25 @@ func (s *AuthStore) ImportCredentials(bundlePassword, vaultPassword string, payl
 }
 
 func (s *AuthStore) ImportManagedCredentials(ownerSwarmID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
+	return s.ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, "", payload)
+}
+
+func (s *AuthStore) ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey string, payload []byte) (CredentialImportResult, error) {
 	ownerSwarmID = strings.TrimSpace(ownerSwarmID)
 	if ownerSwarmID == "" {
 		return CredentialImportResult{}, errors.New("owner swarm id is required")
 	}
-	return s.importCredentialBundle(bundlePassword, vaultPassword, ownerSwarmID, true, payload)
+	return s.importCredentialBundleWithManagedVault(bundlePassword, vaultPassword, managedVaultKey, ownerSwarmID, true, payload)
 }
 
 func (s *AuthStore) importCredentialBundle(bundlePassword, vaultPassword, ownerSwarmID string, managed bool, payload []byte) (CredentialImportResult, error) {
+	return s.importCredentialBundleWithManagedVault(bundlePassword, vaultPassword, "", ownerSwarmID, managed, payload)
+}
+
+func (s *AuthStore) importCredentialBundleWithManagedVault(bundlePassword, vaultPassword, managedVaultKey, ownerSwarmID string, managed bool, payload []byte) (CredentialImportResult, error) {
 	bundlePassword = strings.TrimSpace(bundlePassword)
 	vaultPassword = strings.TrimSpace(vaultPassword)
+	managedVaultKey = strings.TrimSpace(managedVaultKey)
 	if bundlePassword == "" {
 		return CredentialImportResult{}, errors.New("bundle password is required")
 	}
@@ -156,11 +165,21 @@ func (s *AuthStore) importCredentialBundle(bundlePassword, vaultPassword, ownerS
 		return CredentialImportResult{}, err
 	}
 	if !status.Enabled {
-		if vaultPassword != "" {
+		if managedVaultKey != "" {
+			status, err = s.ConfigureManagedVaultAccess(vaultPassword, managedVaultKey)
+			if err != nil {
+				return CredentialImportResult{}, err
+			}
+		} else if vaultPassword != "" {
 			status, err = s.EnableVault(vaultPassword)
 			if err != nil {
 				return CredentialImportResult{}, err
 			}
+		}
+	} else if managedVaultKey != "" {
+		status, err = s.ConfigureManagedVaultAccess(vaultPassword, managedVaultKey)
+		if err != nil {
+			return CredentialImportResult{}, err
 		}
 	} else if !status.Unlocked {
 		if vaultPassword == "" {

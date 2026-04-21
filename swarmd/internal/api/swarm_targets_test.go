@@ -35,6 +35,28 @@ func TestMapRemoteDeployTargetAttachedSession(t *testing.T) {
 	}
 }
 
+func TestMapRemoteDeployTargetAttachedLANSessionUsesRemoteEndpoint(t *testing.T) {
+	target, ok := mapRemoteDeployTarget(remotedeploy.Session{
+		ID:             "remote-session-1",
+		Name:           "remote-child",
+		Status:         "attached",
+		ChildSwarmID:   "swarm-child-1",
+		RemoteEndpoint: "http://10.44.1.10:7781",
+	})
+	if !ok {
+		t.Fatal("expected remote deploy session to map to a swarm target")
+	}
+	if !target.Online || !target.Selectable {
+		t.Fatalf("target should be online and selectable: %+v", target)
+	}
+	if target.BackendURL != "http://10.44.1.10:7781" {
+		t.Fatalf("backend_url = %q", target.BackendURL)
+	}
+	if target.DesktopURL != "http://10.44.1.10:7781" {
+		t.Fatalf("desktop_url = %q", target.DesktopURL)
+	}
+}
+
 func TestMapRemoteDeployTargetRequiresChildSwarmID(t *testing.T) {
 	if _, ok := mapRemoteDeployTarget(remotedeploy.Session{
 		ID:               "remote-session-1",

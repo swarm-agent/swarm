@@ -70,14 +70,37 @@ type authCredentialActiveRecord struct {
 }
 
 type AuthStore struct {
-	store     *Store
-	mu        sync.RWMutex
-	vaultMeta *VaultMetadata
-	vaultDEK  []byte
+	store        *Store
+	secretStore  *Store
+	localKeyPath string
+	mu           sync.RWMutex
+	vaultMeta    *VaultMetadata
+	vaultDEK     []byte
+	localRootKey []byte
 }
 
 func NewAuthStore(store *Store) *AuthStore {
-	return &AuthStore{store: store}
+	return NewAuthStoreWithSecretStore(store, store)
+}
+
+func NewAuthStoreWithSecretStore(store, secretStore *Store) *AuthStore {
+	if store == nil {
+		store = secretStore
+	}
+	if secretStore == nil {
+		secretStore = store
+	}
+	localKeyPath := ""
+	if secretStore != nil {
+		if path := strings.TrimSpace(secretStore.Path()); path != "" {
+			localKeyPath = path + ".key"
+		}
+	}
+	return &AuthStore{
+		store:        store,
+		secretStore:  secretStore,
+		localKeyPath: localKeyPath,
+	}
 }
 
 func (s *AuthStore) SetCodexAPIKey(apiKey string) (CodexAuthRecord, error) {
@@ -265,7 +288,7 @@ func (s *AuthStore) GetCredential(provider, credentialID string) (AuthCredential
 	if provider == "" || credentialID == "" {
 		return AuthCredentialRecord{}, false, nil
 	}
-	payload, ok, err := s.store.GetBytes(KeyAuthCredential(provider, credentialID))
+	payload, ok, err := s.secretStore.GetBytes(KeyAuthCredential(provider, credentialID))
 	if err != nil {
 		return AuthCredentialRecord{}, false, err
 	}
@@ -394,7 +417,7 @@ func (s *AuthStore) deleteCredentialRecord(record AuthCredentialRecord) (bool, e
 	if err := s.deleteTagIndexes(record); err != nil {
 		return false, err
 	}
-	if err := s.store.Delete(KeyAuthCredential(record.Provider, record.ID)); err != nil {
+	if err := s.secretStore.Delete(KeyAuthCredential(record.Provider, record.ID)); err != nil {
 		return false, err
 	}
 
@@ -440,7 +463,7 @@ func (s *AuthStore) ListCredentials(provider string, limit int) ([]AuthCredentia
 	}
 
 	records := make([]AuthCredentialRecord, 0, minInt(scanLimit, 256))
-	err := s.store.IteratePrefix(prefix, scanLimit, func(_ string, value []byte) error {
+	err := s.secretStore.IteratePrefix(prefix, scanLimit, func(_ string, value []byte) error {
 		record, err := s.decodeStoredCredential(value)
 		if err != nil {
 			return err
@@ -505,7 +528,7 @@ func (s *AuthStore) saveCredential(next AuthCredentialRecord, setActive bool) (A
 	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
-	if err := s.store.PutBytes(KeyAuthCredential(next.Provider, next.ID), payload); err != nil {
+	if err := s.secretStore.PutBytes(KeyAuthCredential(next.Provider, next.ID), payload); err != nil {
 		return AuthCredentialRecord{}, err
 	}
 	if err := s.writeTagIndexes(next); err != nil {

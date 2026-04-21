@@ -495,6 +495,7 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		CallID:   taskCallID,
 	})
 	emitTaskStreamDelta(
+		parentSession.ID,
 		emit,
 		taskStep,
 		taskToolName,
@@ -537,7 +538,7 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 			if outcome.ElapsedMS <= 0 && outcome.LaunchStartedAtMS > 0 {
 				outcome.ElapsedMS = maxInt64(0, time.Now().UnixMilli()-outcome.LaunchStartedAtMS)
 			}
-			emitTaskStreamDelta(emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "running", "")
+			emitTaskStreamDelta(parentSession.ID, emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "running", "")
 		case StreamEventToolStarted:
 			nowMS := time.Now().UnixMilli()
 			taskStep = maxInt(taskStep, maxInt(1, event.Step))
@@ -554,6 +555,7 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 			}
 			outcome.ElapsedMS = maxInt64(0, nowMS-outcome.LaunchStartedAtMS)
 			emitTaskStreamDelta(
+				parentSession.ID,
 				emit,
 				taskStep,
 				taskToolName,
@@ -585,7 +587,7 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 				outcome.ToolFailed++
 				summary = fmt.Sprintf("launch %d failed %s: %s", outcome.LaunchIndex, completedTool, strings.TrimSpace(event.Error))
 			}
-			emitTaskStreamDelta(emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "tool.completed", summary)
+			emitTaskStreamDelta(parentSession.ID, emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "tool.completed", summary)
 			if strings.TrimSpace(event.Error) == "" {
 				outcome.CurrentTool = ""
 				outcome.CurrentToolStarted = 0
@@ -612,8 +614,8 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		if outcome.Error != "" {
 			outcome.Summary += ": " + outcome.Error
 		}
-		emitTaskStreamDelta(emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "failed", outcome.Summary)
-		if finalPayload, marshalErr := json.Marshal(buildTaskStreamPayload(taskAction, description, 1, outcome, "failed", outcome.Summary)); marshalErr == nil {
+		emitTaskStreamDelta(parentSession.ID, emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "failed", outcome.Summary)
+		if finalPayload, marshalErr := json.Marshal(buildTaskStreamPayload(parentSession.ID, taskAction, description, 1, outcome, "failed", outcome.Summary)); marshalErr == nil {
 			emit(StreamEvent{
 				Type:       StreamEventToolCompleted,
 				Step:       taskStep,
@@ -646,8 +648,8 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 	if outcome.Summary == "" {
 		outcome.Summary = fmt.Sprintf("launch %d subagent %s completed", outcome.LaunchIndex, outcome.ResolvedSubagent)
 	}
-	emitTaskStreamDelta(emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "completed", outcome.Summary)
-	if finalPayload, marshalErr := json.Marshal(buildTaskStreamPayload(taskAction, description, 1, outcome, "completed", outcome.Summary)); marshalErr == nil {
+	emitTaskStreamDelta(parentSession.ID, emit, taskStep, taskToolName, taskCallID, taskAction, description, 1, outcome, "completed", outcome.Summary)
+	if finalPayload, marshalErr := json.Marshal(buildTaskStreamPayload(parentSession.ID, taskAction, description, 1, outcome, "completed", outcome.Summary)); marshalErr == nil {
 		emit(StreamEvent{
 			Type:       StreamEventToolCompleted,
 			Step:       taskStep,

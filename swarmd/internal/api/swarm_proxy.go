@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	gorillaws "github.com/gorilla/websocket"
 	transportws "swarm/packages/swarmd/internal/transport/ws"
@@ -36,6 +38,7 @@ func (s *Server) proxyRequestToSwarmTarget(w http.ResponseWriter, r *http.Reques
 	if isWebsocketUpgradeRequest(r) {
 		return s.proxyWebsocketToSwarmTarget(w, r, target)
 	}
+	startedAt := time.Now()
 	if s.swarm == nil {
 		return errors.New("swarm service not configured")
 	}
@@ -67,12 +70,14 @@ func (s *Server) proxyRequestToSwarmTarget(w http.ResponseWriter, r *http.Reques
 	req.Header.Set(peerAuthTokenHeader, peerToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		logSwarmProxyTiming(r, target, 0, startedAt, err)
 		return err
 	}
 	defer resp.Body.Close()
 	copyProxyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, err = io.Copy(w, resp.Body)
+	logSwarmProxyTiming(r, target, resp.StatusCode, startedAt, err)
 	return err
 }
 
@@ -246,4 +251,23 @@ func cloneHeaderForUpstreamWebsocket(src http.Header) http.Header {
 		dst.Del(key)
 	}
 	return dst
+}
+
+func logSwarmProxyTiming(r *http.Request, target swarmTarget, statusCode int, startedAt time.Time, err error) {
+	if r == nil || !shouldLogSwarmProxyTiming(r.URL.Path) {
+		return
+	}
+	if err != nil {
+		log.Printf("swarm proxy timing method=%s path=%q swarm_id=%q status=%d elapsed_ms=%d err=%v", r.Method, strings.TrimSpace(r.URL.Path), strings.TrimSpace(target.SwarmID), statusCode, time.Since(startedAt).Milliseconds(), err)
+		return
+	}
+	log.Printf("swarm proxy timing method=%s path=%q swarm_id=%q status=%d elapsed_ms=%d", r.Method, strings.TrimSpace(r.URL.Path), strings.TrimSpace(target.SwarmID), statusCode, time.Since(startedAt).Milliseconds())
+}
+
+func shouldLogSwarmProxyTiming(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	return strings.HasPrefix(path, "/v1/sessions/")
 }

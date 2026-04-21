@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -33,7 +34,7 @@ const (
 	PathContainerAction       = "swarm.containers.local.action.v1"
 	PathContainerDelete       = "swarm.containers.local.delete.v1"
 	PathContainerPrune        = "swarm.containers.local.prune-missing.v1"
-	defaultImageName          = "localhost/swarm-container-mvp:latest"
+	defaultImageName          = devmode.DefaultContainerImageRef
 	defaultContainerPath      = "/workspaces"
 	containerBackendPort      = startupconfig.DefaultPort
 	containerDesktopPort      = startupconfig.DefaultDesktopPort
@@ -231,9 +232,13 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Container, err
 		}
 		return Container{}, fmt.Errorf("runtime %q is not available", runtimeName)
 	}
+	startupCfg, err := s.loadStartupConfig()
+	if err != nil {
+		return Container{}, err
+	}
 	hostAPIBaseURL := strings.TrimSpace(input.HostAPIBaseURL)
 	if hostAPIBaseURL == "" {
-		hostAPIBaseURL, err = s.defaultHostAPIBaseURL(runtimeName)
+		hostAPIBaseURL, err = s.defaultHostAPIBaseURLFromConfig(runtimeName, startupCfg)
 		if err != nil {
 			return Container{}, err
 		}
@@ -242,7 +247,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Container, err
 	if err != nil {
 		return Container{}, err
 	}
-	image, err := resolveLocalContainerImage(ctx, runtimeName, strings.TrimSpace(input.Image), input.ContainerPackages)
+	image, err := resolveLocalContainerImage(ctx, runtimeName, strings.TrimSpace(input.Image), input.ContainerPackages, startupCfg)
 	if err != nil {
 		return Container{}, err
 	}
@@ -751,6 +756,38 @@ func runtimeImageExistsArgs(runtimeName, image string) []string {
 	}
 }
 
+func runtimeImageLabel(parent context.Context, runtimeName, image, label string) (string, bool, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	image = strings.TrimSpace(image)
+	label = strings.TrimSpace(label)
+	if runtimeName == "" || image == "" || label == "" {
+		return "", false, fmt.Errorf("runtime, image, and label are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	args := []string{"image", "inspect", image, "--format", fmt.Sprintf("{{ index .Config.Labels %q }}", label)}
+	cmd := exec.CommandContext(ctx, runtimeName, args...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", false, fmt.Errorf("image inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return "", false, errors.New(message)
+	}
+	value := strings.TrimSpace(string(output))
+	if value == "" || value == "<no value>" {
+		return "", false, nil
+	}
+	return value, true, nil
+}
+
 func runtimeDisplayName(runtimeName string) string {
 	switch normalizeRuntimeSelection(runtimeName) {
 	case "podman":
@@ -840,6 +877,10 @@ func (s *Service) defaultHostAPIBaseURL(runtimeName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return s.defaultHostAPIBaseURLFromConfig(runtimeName, cfg)
+}
+
+func (s *Service) defaultHostAPIBaseURLFromConfig(runtimeName string, cfg startupconfig.FileConfig) (string, error) {
 	callbackPort := cfg.Port
 	if cfg.AdvertisePort >= 1 && cfg.AdvertisePort <= 65535 {
 		callbackPort = cfg.AdvertisePort
@@ -943,7 +984,7 @@ func isLoopbackHostLiteral(host string) bool {
 	return false
 }
 
-func resolveLocalContainerImage(ctx context.Context, runtimeName, requestedImage string, manifest ContainerPackageManifest) (string, error) {
+func resolveLocalContainerImage(ctx context.Context, runtimeName, requestedImage string, manifest ContainerPackageManifest, startupCfg startupconfig.FileConfig) (string, error) {
 	runtimeName = normalizeRuntimeSelection(runtimeName)
 	image := strings.TrimSpace(requestedImage)
 	if image == "" {
@@ -954,7 +995,7 @@ func resolveLocalContainerImage(ctx context.Context, runtimeName, requestedImage
 		return "", err
 	}
 	if len(normalizedManifest.Packages) == 0 {
-		if err := ensureCanonicalImageCurrent(ctx, runtimeName, image); err != nil {
+		if _, err := ensureCanonicalImageCurrent(ctx, runtimeName, image, startupCfg); err != nil {
 			return "", err
 		}
 		return image, nil
@@ -962,7 +1003,7 @@ func resolveLocalContainerImage(ctx context.Context, runtimeName, requestedImage
 	if image != defaultImageName {
 		return "", fmt.Errorf("local Add Swarm only supports package installation with the default image %q; remove the custom image or clear package selections", defaultImageName)
 	}
-	derivedImage, err := ensurePackageAwareImageCurrent(ctx, runtimeName, normalizedManifest)
+	derivedImage, err := ensurePackageAwareImageCurrent(ctx, runtimeName, normalizedManifest, startupCfg)
 	if err != nil {
 		return "", err
 	}
@@ -1015,7 +1056,7 @@ func normalizeContainerPackageManifest(manifest ContainerPackageManifest) (Conta
 	return manifest, nil
 }
 
-func ensurePackageAwareImageCurrent(ctx context.Context, runtimeName string, manifest ContainerPackageManifest) (string, error) {
+func ensurePackageAwareImageCurrent(ctx context.Context, runtimeName string, manifest ContainerPackageManifest, startupCfg startupconfig.FileConfig) (string, error) {
 	runtimeName = normalizeRuntimeSelection(runtimeName)
 	if runtimeName == "" {
 		return "", fmt.Errorf("runtime name is required")
@@ -1025,16 +1066,23 @@ func ensurePackageAwareImageCurrent(ctx context.Context, runtimeName string, man
 		return "", err
 	}
 	if len(manifest.Packages) == 0 {
-		if err := ensureCanonicalImageCurrent(ctx, runtimeName, defaultImageName); err != nil {
+		if _, err := ensureCanonicalImageCurrent(ctx, runtimeName, defaultImageName, startupCfg); err != nil {
 			return "", err
 		}
 		return defaultImageName, nil
 	}
-	repoRoot, _, err := resolveCanonicalRebuildScript()
-	if err != nil {
-		return "", fmt.Errorf("local Add Swarm packages require a source checkout with deploy/container-mvp assets available: %w", err)
+	if !startupCfg.DevMode {
+		return "", fmt.Errorf("local Add Swarm package installation requires dev_mode = true in swarm.conf; production mode only supports the prepared canonical image %q", defaultImageName)
 	}
-	signature := packageAwareImageSignature(manifest)
+	repoRoot, err := resolveConfiguredDevRoot(startupCfg)
+	if err != nil {
+		return "", err
+	}
+	baseSignature, err := ensureCanonicalImageCurrent(ctx, runtimeName, defaultImageName, startupCfg)
+	if err != nil {
+		return "", err
+	}
+	signature := packageAwareImageSignature(manifest, baseSignature)
 	image := fmt.Sprintf("localhost/swarm-container-mvp:pkg-%s", signature)
 	exists, err := runtimeImageExists(ctx, runtimeName, image)
 	if err != nil {
@@ -1043,38 +1091,43 @@ func ensurePackageAwareImageCurrent(ctx context.Context, runtimeName string, man
 	if exists {
 		return image, nil
 	}
-	if err := ensureCanonicalImageCurrent(ctx, runtimeName, defaultImageName); err != nil {
-		return "", err
-	}
 	log.Printf("local container create building package-aware image runtime=%q image=%q packages=%d", runtimeName, image, len(manifest.Packages))
-	if err := buildPackageAwareImage(ctx, runtimeName, repoRoot, image, manifest); err != nil {
+	if err := buildPackageAwareImage(ctx, runtimeName, repoRoot, image, manifest, baseSignature); err != nil {
 		return "", err
 	}
 	return image, nil
 }
 
-func packageAwareImageSignature(manifest ContainerPackageManifest) string {
-	hash := sha256.Sum256([]byte(packageAwareImageSignaturePayload(manifest)))
+func packageAwareImageSignature(manifest ContainerPackageManifest, baseSignature string) string {
+	hash := sha256.Sum256([]byte(packageAwareImageSignaturePayload(manifest, baseSignature)))
 	return hex.EncodeToString(hash[:])[:16]
 }
 
-func packageAwareImageSignaturePayload(manifest ContainerPackageManifest) string {
-	parts := make([]string, 0, len(manifest.Packages)+2)
-	parts = append(parts, manifest.BaseImage, manifest.PackageManager)
+func packageAwareImageSignaturePayload(manifest ContainerPackageManifest, baseSignature string) string {
+	parts := make([]string, 0, len(manifest.Packages)+3)
+	parts = append(parts, strings.TrimSpace(baseSignature), manifest.BaseImage, manifest.PackageManager)
 	for _, pkg := range manifest.Packages {
 		parts = append(parts, pkg.Name)
 	}
 	return strings.Join(parts, "\n")
 }
 
-func buildPackageAwareImage(ctx context.Context, runtimeName, repoRoot, image string, manifest ContainerPackageManifest) error {
+func buildPackageAwareImage(ctx context.Context, runtimeName, repoRoot, image string, manifest ContainerPackageManifest, baseSignature string) error {
 	packageNames := make([]string, 0, len(manifest.Packages))
 	for _, pkg := range manifest.Packages {
 		packageNames = append(packageNames, pkg.Name)
 	}
 	installCommand := fmt.Sprintf("apt-get update && apt-get install -y --no-install-recommends %s && rm -rf /var/lib/apt/lists/*", strings.Join(packageNames, " "))
 	containerfile := fmt.Sprintf("FROM %s\nRUN %s\n", defaultImageName, installCommand)
-	cmd := exec.CommandContext(ctx, runtimeName, "build", "-t", image, "-")
+	args := []string{"build", "-t", image}
+	if strings.TrimSpace(baseSignature) != "" {
+		args = append(args,
+			"--label", devmode.ContainerImageDevModeLabel+"=true",
+			"--label", "io.swarm.dev-base-fingerprint="+strings.TrimSpace(baseSignature),
+		)
+	}
+	args = append(args, "-")
+	cmd := exec.CommandContext(ctx, runtimeName, args...)
 	cmd.Dir = repoRoot
 	cmd.Stdin = strings.NewReader(containerfile)
 	output, err := cmd.CombinedOutput()
@@ -1088,22 +1141,43 @@ func buildPackageAwareImage(ctx context.Context, runtimeName, repoRoot, image st
 	return nil
 }
 
-func ensureCanonicalImageCurrent(ctx context.Context, runtimeName, image string) error {
+func ensureCanonicalImageCurrent(ctx context.Context, runtimeName, image string, startupCfg startupconfig.FileConfig) (string, error) {
 	runtimeName = normalizeRuntimeSelection(runtimeName)
 	image = strings.TrimSpace(image)
 	if runtimeName == "" || image == "" || image != defaultImageName {
-		return nil
+		return "", nil
 	}
 	exists, err := runtimeImageExists(ctx, runtimeName, image)
 	if err != nil {
-		return fmt.Errorf("check local container image %q: %w", image, err)
+		return "", fmt.Errorf("check local container image %q: %w", image, err)
+	}
+	if !startupCfg.DevMode {
+		if exists {
+			return "", nil
+		}
+		return "", fmt.Errorf("default local container image %q is not installed; production mode will not rebuild from source, so prebuild or install the canonical image first", image)
+	}
+	repoRoot, err := resolveConfiguredDevRoot(startupCfg)
+	if err != nil {
+		return "", err
+	}
+	expectedFingerprint, err := devmode.ContainerImageFingerprint(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("compute dev local container image fingerprint: %w", err)
 	}
 	if exists {
-		return nil
+		currentFingerprint, found, err := runtimeImageLabel(ctx, runtimeName, image, devmode.ContainerImageFingerprintLabel)
+		if err != nil {
+			return "", fmt.Errorf("inspect local container image %q: %w", image, err)
+		}
+		if found && strings.TrimSpace(currentFingerprint) == expectedFingerprint {
+			return expectedFingerprint, nil
+		}
+		log.Printf("local container create rebuilding stale dev image runtime=%q image=%q expected_fingerprint=%q current_fingerprint=%q found_label=%t", runtimeName, image, expectedFingerprint, currentFingerprint, found)
 	}
-	repoRoot, scriptPath, err := resolveCanonicalRebuildScript()
+	scriptPath, err := devmode.RebuildScriptPath(repoRoot)
 	if err != nil {
-		return fmt.Errorf("default local container image %q is not installed and no source checkout is available to build it; run scripts/rebuild-container.sh from a source checkout or set a custom image", image)
+		return "", err
 	}
 	log.Printf("local container create rebuilding canonical image runtime=%q image=%q script=%q", runtimeName, image, scriptPath)
 	cmd := exec.CommandContext(ctx, "bash", scriptPath, "--image-only")
@@ -1112,6 +1186,7 @@ func ensureCanonicalImageCurrent(ctx context.Context, runtimeName, image string)
 		"BUILD_RUNTIME="+runtimeName,
 		"IMAGE_NAME="+image,
 		"SWARM_REBUILD_REASON=local-container-create",
+		"SWARM_CONTAINER_DEV_FINGERPRINT="+expectedFingerprint,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1119,10 +1194,25 @@ func ensureCanonicalImageCurrent(ctx context.Context, runtimeName, image string)
 		if message == "" {
 			message = err.Error()
 		}
-		return fmt.Errorf("rebuild canonical local swarm image %q: %s", image, message)
+		return "", fmt.Errorf("rebuild canonical local swarm image %q: %s", image, message)
 	}
 	log.Printf("local container create rebuilt canonical image runtime=%q image=%q", runtimeName, image)
-	return nil
+	return expectedFingerprint, nil
+}
+
+func resolveConfiguredDevRoot(startupCfg startupconfig.FileConfig) (string, error) {
+	if !startupCfg.DevMode {
+		return "", fmt.Errorf("dev_mode is disabled")
+	}
+	devRoot := strings.TrimSpace(startupCfg.DevRoot)
+	if devRoot == "" {
+		return "", fmt.Errorf("dev_mode is enabled but dev_root is empty; run a rebuild from the source checkout once so the dev container path can use that checkout explicitly")
+	}
+	resolvedRoot, err := devmode.ResolveRoot(devRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve dev_root %q: %w", devRoot, err)
+	}
+	return resolvedRoot, nil
 }
 
 func resolveCanonicalRebuildScript() (string, string, error) {
@@ -1475,6 +1565,7 @@ func containerRuntimeMountResources(runtimeMount *RuntimeMount) ([]Mount, []stri
 	env = append(env,
 		"SWARM_BIN_DIR=/mnt/swarm/bin",
 		"SWARM_RUNTIME_BIN=/mnt/swarm/bin/swarmd",
+		"SWARM_RUNTIME_HOME=/var/lib/swarmd/home",
 	)
 	if runtimeMount.WebDistDir != "" {
 		env = append(env, "SWARM_WEB_DIST_DIR=/mnt/swarm/share")
@@ -1489,16 +1580,17 @@ func containerRuntimeMountResources(runtimeMount *RuntimeMount) ([]Mount, []stri
 }
 
 func CurrentRuntimeMount() *RuntimeMount {
-	fffLibPath := filepath.Join("swarmd", "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so")
+	repoFFFLibPath := filepath.Join("swarmd", "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so")
+	installedFFFLibRelPath := filepath.Join("lib", "libfff_c.so")
 	if wd, err := os.Getwd(); err == nil && strings.TrimSpace(wd) != "" {
-		candidate := filepath.Join(wd, fffLibPath)
+		candidate := filepath.Join(wd, repoFFFLibPath)
 		if _, statErr := os.Stat(candidate); statErr == nil {
-			fffLibPath = candidate
+			repoFFFLibPath = candidate
 		}
 	}
-	if !filepath.IsAbs(fffLibPath) {
+	if !filepath.IsAbs(repoFFFLibPath) {
 		if repoRoot, _, err := resolveCanonicalRebuildScript(); err == nil {
-			fffLibPath = filepath.Join(repoRoot, fffLibPath)
+			repoFFFLibPath = filepath.Join(repoRoot, repoFFFLibPath)
 		}
 	}
 	roots := make([]string, 0, 3)
@@ -1523,6 +1615,22 @@ func CurrentRuntimeMount() *RuntimeMount {
 	if dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dataHome != "" {
 		appendRoot(filepath.Join(dataHome, "swarm"))
 	}
+	if repoRoot, _, err := resolveCanonicalRebuildScript(); err == nil {
+		repoMount := normalizeRuntimeMount(&RuntimeMount{
+			BinDir:     filepath.Join(repoRoot, ".bin", "main"),
+			WebDistDir: filepath.Join(repoRoot, "web", "dist"),
+			FFFLibPath: repoFFFLibPath,
+		})
+		if repoMount != nil && isReadableFile(filepath.Join(repoMount.BinDir, "swarmd")) {
+			if !isReadableFile(filepath.Join(repoMount.WebDistDir, "index.html")) {
+				repoMount.WebDistDir = ""
+			}
+			if !isReadableFile(repoMount.FFFLibPath) {
+				repoMount.FFFLibPath = ""
+			}
+			return repoMount
+		}
+	}
 	var best *RuntimeMount
 	bestScore := -1
 	for _, root := range roots {
@@ -1530,7 +1638,7 @@ func CurrentRuntimeMount() *RuntimeMount {
 			BinDir:     filepath.Join(root, "bin"),
 			ToolBinDir: filepath.Join(root, "libexec"),
 			WebDistDir: filepath.Join(root, "share"),
-			FFFLibPath: fffLibPath,
+			FFFLibPath: filepath.Join(root, installedFFFLibRelPath),
 		})
 		if candidate == nil {
 			continue
@@ -1553,7 +1661,13 @@ func CurrentRuntimeMount() *RuntimeMount {
 	if best != nil {
 		return best
 	}
-	return normalizeRuntimeMount(&RuntimeMount{FFFLibPath: fffLibPath})
+	for _, root := range roots {
+		installedLib := filepath.Join(root, installedFFFLibRelPath)
+		if isReadableFile(installedLib) {
+			return normalizeRuntimeMount(&RuntimeMount{FFFLibPath: installedLib})
+		}
+	}
+	return normalizeRuntimeMount(&RuntimeMount{FFFLibPath: repoFFFLibPath})
 }
 
 func fffLibraryPlatformDir() string {

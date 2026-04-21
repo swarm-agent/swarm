@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -185,6 +186,7 @@ func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarget, path string, payload any, out any) error {
+	startedAt := time.Now()
 	if s.swarm == nil {
 		return errors.New("swarm service not configured")
 	}
@@ -214,6 +216,7 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 	req.Header.Set(peerAuthTokenHeader, peerToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("routed peer request failed swarm_id=%q path=%q elapsed_ms=%d err=%v", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), time.Since(startedAt).Milliseconds(), err)
 		return err
 	}
 	defer resp.Body.Close()
@@ -223,10 +226,13 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&failure)
 		if strings.TrimSpace(failure.Error) != "" {
+			log.Printf("routed peer request failed swarm_id=%q path=%q status=%d elapsed_ms=%d err=%q", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), resp.StatusCode, time.Since(startedAt).Milliseconds(), strings.TrimSpace(failure.Error))
 			return errors.New(strings.TrimSpace(failure.Error))
 		}
+		log.Printf("routed peer request failed swarm_id=%q path=%q status=%d elapsed_ms=%d err=%q", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), resp.StatusCode, time.Since(startedAt).Milliseconds(), resp.Status)
 		return errors.New(resp.Status)
 	}
+	log.Printf("routed peer request success swarm_id=%q path=%q status=%d elapsed_ms=%d", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), resp.StatusCode, time.Since(startedAt).Milliseconds())
 	if out == nil {
 		return nil
 	}

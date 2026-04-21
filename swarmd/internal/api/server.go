@@ -28,6 +28,7 @@ import (
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/registry"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
@@ -76,6 +77,7 @@ type Server struct {
 	security                    *security.Service
 	providers                   *registry.Registry
 	perm                        permissionService
+	notifications               notificationService
 	hub                         *stream.Hub
 	events                      *pebblestore.EventLog
 	voice                       *voice.Service
@@ -166,6 +168,7 @@ type deployContainerService interface {
 	SyncAgentBundle(ctx context.Context, input deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncAgentBundle, error)
 	WorkspaceBootstrap(ctx context.Context, input deployruntime.ContainerWorkspaceBootstrapRequestInput) ([]deployruntime.ContainerWorkspaceBootstrap, error)
 	AutoAttachChild(ctx context.Context) error
+	UnlockManagedLocalChildVaults(ctx context.Context) error
 }
 
 type remoteDeployService interface {
@@ -202,6 +205,12 @@ type permissionService interface {
 	BypassPermissions() bool
 }
 
+type notificationService interface {
+	ListNotifications(swarmID string, limit int) ([]pebblestore.NotificationRecord, error)
+	Summary(swarmID string) (pebblestore.NotificationSummary, error)
+	UpdateNotification(input notification.UpdateInput) (pebblestore.NotificationRecord, bool, error)
+}
+
 type sandboxService interface {
 	GetStatus() (sandboxruntime.Status, error)
 	Preflight() (sandboxruntime.Status, error)
@@ -224,7 +233,7 @@ type mcpService interface {
 	SetEnabled(id string, enabled bool) (mcpruntime.Server, *pebblestore.EventEnvelope, error)
 }
 
-func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
+func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
 	runCtx, runCancel := context.WithCancel(context.Background())
 	return &Server{
 		auth:                 authSvc,
@@ -238,6 +247,7 @@ func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Servic
 		security:             securitySvc,
 		providers:            providers,
 		perm:                 permSvc,
+		notifications:        notificationSvc,
 		hub:                  hub,
 		events:               events,
 		mode:                 mode,
@@ -1247,6 +1257,11 @@ func (s *Server) handleAuthCredentialDelete(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, errors.New("credential not found"))
 		return
 	}
+	cleanup, err := s.cleanupProviderAfterCredentialDeletion(r.Context(), provider)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if event != nil {
 		s.hub.Publish(*event)
 	}
@@ -1255,6 +1270,7 @@ func (s *Server) handleAuthCredentialDelete(w http.ResponseWriter, r *http.Reque
 		"deleted":  true,
 		"provider": provider,
 		"id":       strings.ToLower(strings.TrimSpace(req.ID)),
+		"cleanup":  cleanup,
 	})
 }
 
@@ -1825,7 +1841,8 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		items, summary, err := s.todos.List(workspacePath, todo.ListOptions{OwnerKind: ownerKind})
+		sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+		items, summary, err := s.todos.List(workspacePath, todo.ListOptions{OwnerKind: ownerKind, SessionID: sessionID})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -1834,6 +1851,7 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 			"ok":             true,
 			"workspace_path": workspacePath,
 			"owner_kind":     ownerKind,
+			"session_id":     sessionID,
 			"items":          items,
 			"summary":        summary,
 		})
@@ -1906,6 +1924,10 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 		case "update", "upsert":
 			priority := req.Priority
 			group := req.Group
+			sessionID := req.SessionID
+			if ownerKind == pebblestore.WorkspaceTodoOwnerKindAgent && strings.TrimSpace(sessionID) == "" {
+				sessionID = req.SessionID
+			}
 			item, summary, _, err := s.todos.Update(todo.UpdateInput{
 				WorkspacePath: workspacePath,
 				ID:            req.ID,
@@ -1915,44 +1937,44 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 				Group:         stringPointerIfPresent(group),
 				Tags:          req.Tags,
 				InProgress:    req.InProgress,
-				SessionID:     stringPointerIfPresent(req.SessionID),
+				SessionID:     stringPointerIfPresent(sessionID),
 				ParentID:      stringPointerIfPresent(req.ParentID),
-			})
+			}, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(sessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item, "summary": summary})
 		case "delete":
-			summary, _, err := s.todos.Delete(workspacePath, req.ID)
+			summary, _, err := s.todos.Delete(workspacePath, req.ID, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": strings.TrimSpace(req.ID), "summary": summary})
 		case "delete_done":
-			items, summary, _, err := s.todos.DeleteDone(workspacePath, todo.ListOptions{OwnerKind: ownerKind})
+			items, summary, _, err := s.todos.DeleteDone(workspacePath, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "summary": summary})
 		case "delete_all":
-			items, summary, _, err := s.todos.DeleteAll(workspacePath, todo.ListOptions{OwnerKind: ownerKind})
+			items, summary, _, err := s.todos.DeleteAll(workspacePath, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "summary": summary})
 		case "reorder":
-			items, summary, _, err := s.todos.Reorder(todo.ReorderInput{WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: req.OrderedIDs})
+			items, summary, _, err := s.todos.Reorder(todo.ReorderInput{WorkspacePath: workspacePath, OwnerKind: ownerKind, OrderedIDs: req.OrderedIDs}, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items, "summary": summary})
 		case "in_progress":
-			item, summary, _, err := s.todos.SetInProgress(workspacePath, req.ID)
+			item, summary, _, err := s.todos.SetInProgress(workspacePath, req.ID, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -1980,7 +2002,7 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 					OrderedIDs: rawOp.OrderedIDs,
 				})
 			}
-			results, items, summary, _, err := s.todos.ApplyBatch(workspacePath, operations)
+			results, items, summary, _, err := s.todos.ApplyBatch(workspacePath, operations, todo.ListOptions{OwnerKind: ownerKind, SessionID: strings.TrimSpace(req.SessionID)})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return

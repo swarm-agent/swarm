@@ -130,8 +130,9 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":    true,
-		"state": state,
+		"ok":                        true,
+		"state":                     state,
+		"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
 	})
 }
 
@@ -144,7 +145,7 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 		methodNotAllowed(w)
 		return
 	}
-	state, version, event, err := s.agents.RestoreDefaults()
+	state, _, event, err := s.agents.RestoreDefaults()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -152,12 +153,18 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 	if event != nil && s.hub != nil {
 		s.hub.Publish(*event)
 	}
+	state, err = s.applyProviderDefaultsToBuiltIns(state)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"profiles":        state.Profiles,
-		"active_primary":  state.ActivePrimary,
-		"active_subagent": state.ActiveSubagent,
-		"version":         version,
+		"ok":                        true,
+		"profiles":                  state.Profiles,
+		"active_primary":            state.ActivePrimary,
+		"active_subagent":           state.ActiveSubagent,
+		"version":                   state.Version,
+		"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
 	})
 }
 
@@ -179,11 +186,12 @@ func (s *Server) handleAgentDefaultsResetV2(w http.ResponseWriter, r *http.Reque
 		s.hub.Publish(*event)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"profiles":        state.Profiles,
-		"active_primary":  state.ActivePrimary,
-		"active_subagent": state.ActiveSubagent,
-		"version":         version,
+		"ok":                        true,
+		"profiles":                  state.Profiles,
+		"active_primary":            state.ActivePrimary,
+		"active_subagent":           state.ActiveSubagent,
+		"version":                   version,
+		"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
 	})
 }
 

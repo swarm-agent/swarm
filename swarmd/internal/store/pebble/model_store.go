@@ -66,3 +66,7 @@ func (s *ModelStore) GetGlobalPreference() (ModelPreference, bool, error) {
 	}
 	return pref, true, nil
 }
+
+func (s *ModelStore) ClearGlobalPreference() error {
+	return s.store.Delete(KeyModelPrefGlobal)
+}

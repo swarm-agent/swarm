@@ -7,48 +7,53 @@ import (
 )
 
 const (
-	KeyAuthCodexDefault            = "auth/codex/default" // legacy single-record key; retained for migration.
-	KeyAuthAttachDefault           = "auth/attach/default"
-	KeyAuthVaultMeta               = "auth/vault/meta"
-	KeyAuthCredentialPrefix        = "auth/credential/"
-	KeyAuthCredentialActivePrefix  = "auth/credential_active/"
-	KeyAuthCredentialTagPrefix     = "auth/index/auth_tag/"
-	KeyUISettingsDefault           = "ui/settings/default"
-	KeyUIChatSettingsDefault       = "ui/chat_settings/default"
-	KeyVoiceConfigDefault          = "voice/config/default"
-	KeyVoiceProfilePrefix          = "voice/profile/"
-	KeyVoiceProfileActiveSTT       = "voice/profile_active/stt"
-	KeyModelPrefGlobal             = "model_pref/global/default"
-	KeyModelFavoritePrefix         = "model_favorite/"
-	KeySandboxGlobalState          = "sandbox/global/state"
-	KeyWorktreeGlobalConfig        = "worktree/global/config"
-	KeyWorktreeConfigPrefix        = "worktree/config/"
-	KeyMCPServerPrefix             = "mcp/server/"
-	KeyWorkspaceCurrent            = "workspace/current"
-	KeyWorkspaceEntryPrefix        = "workspace/entry/"
-	KeyWorkspaceTodoItemPrefix     = "workspace_todo/item/"
-	KeyModelCatalogMeta            = "model_catalog/meta"
-	KeyAgentProfilePrefix          = "agent/profile/"
-	KeyAgentCustomToolPrefix       = "agent/custom_tool/"
-	KeyAgentActivePrimary          = "agent/active/primary"
-	KeyAgentActiveSubagentPrefix   = "agent/active/subagent/"
-	KeyAgentVersion                = "agent/version"
-	KeySwarmLocalNodeDefault       = "swarm/local_node/default"
-	KeySwarmLocalPairingDefault    = "swarm/local_pairing/default"
-	KeySwarmCurrentGroupDefault    = "swarm/current_group/default"
-	KeySwarmGroupPrefix            = "swarm/group/"
-	KeySwarmGroupMembershipPrefix  = "swarm/group_membership/"
-	KeySwarmGroupBySwarmPrefix     = "swarm/group_membership_by_swarm/"
-	KeySwarmContainerProfilePrefix = "swarm/container_profile/"
-	KeySwarmLocalContainerPrefix   = "swarm/local_container/"
-	KeyDeployContainerPrefix       = "deploy/container/"
-	KeyRemoteDeploySessionPrefix   = "deploy/remote_session/"
-	KeySwarmInvitePrefix           = "swarm/invite/"
-	KeySwarmInviteTokenPrefix      = "swarm/invite_token/"
-	KeySwarmEnrollmentPrefix       = "swarm/enrollment/"
-	KeySwarmTrustedPeerPrefix      = "swarm/trusted_peer/"
-	KeySwarmDesktopTargetCurrent   = "swarm/desktop_target/current"
-	keyGlobalSequenceCounter       = "meta/global_seq"
+	KeyAuthCodexDefault                = "auth/codex/default" // legacy single-record key; retained for migration.
+	KeyAuthAttachDefault               = "auth/attach/default"
+	KeyAuthVaultMeta                   = "auth/vault/meta"
+	KeyAuthCredentialPrefix            = "auth/credential/"
+	KeyAuthCredentialActivePrefix      = "auth/credential_active/"
+	KeyAuthCredentialTagPrefix         = "auth/index/auth_tag/"
+	KeyAuthManagedVaultKeyPrefix       = "auth/managed_vault_key/"
+	KeyUISettingsDefault               = "ui/settings/default"
+	KeyUIChatSettingsDefault           = "ui/chat_settings/default"
+	KeyVoiceConfigDefault              = "voice/config/default"
+	KeyVoiceProfilePrefix              = "voice/profile/"
+	KeyVoiceProfileActiveSTT           = "voice/profile_active/stt"
+	KeyModelPrefGlobal                 = "model_pref/global/default"
+	KeyModelFavoritePrefix             = "model_favorite/"
+	KeySandboxGlobalState              = "sandbox/global/state"
+	KeyWorktreeGlobalConfig            = "worktree/global/config"
+	KeyWorktreeConfigPrefix            = "worktree/config/"
+	KeyMCPServerPrefix                 = "mcp/server/"
+	KeyWorkspaceCurrent                = "workspace/current"
+	KeyWorkspaceEntryPrefix            = "workspace/entry/"
+	KeyWorkspaceTodoItemPrefix         = "workspace_todo/item/"
+	KeyModelCatalogMeta                = "model_catalog/meta"
+	KeyAgentProfilePrefix              = "agent/profile/"
+	KeyAgentCustomToolPrefix           = "agent/custom_tool/"
+	KeyAgentActivePrimary              = "agent/active/primary"
+	KeyAgentActiveSubagentPrefix       = "agent/active/subagent/"
+	KeyAgentVersion                    = "agent/version"
+	KeySwarmLocalNodeDefault           = "swarm/local_node/default"
+	KeySwarmLocalPairingDefault        = "swarm/local_pairing/default"
+	KeySwarmCurrentGroupDefault        = "swarm/current_group/default"
+	KeySwarmGroupPrefix                = "swarm/group/"
+	KeySwarmGroupMembershipPrefix      = "swarm/group_membership/"
+	KeySwarmGroupBySwarmPrefix         = "swarm/group_membership_by_swarm/"
+	KeySwarmContainerProfilePrefix     = "swarm/container_profile/"
+	KeySwarmLocalContainerPrefix       = "swarm/local_container/"
+	KeyDeployContainerPrefix           = "deploy/container/"
+	KeyRemoteDeploySessionPrefix       = "deploy/remote_session/"
+	KeySwarmInvitePrefix               = "swarm/invite/"
+	KeySwarmInviteTokenPrefix          = "swarm/invite_token/"
+	KeySwarmEnrollmentPrefix           = "swarm/enrollment/"
+	KeySwarmTrustedPeerPrefix          = "swarm/trusted_peer/"
+	KeySwarmDesktopTargetCurrent       = "swarm/desktop_target/current"
+	KeyNotificationPrefix              = "notification/"
+	KeyNotificationBySwarmPrefix       = "notification_by_swarm/"
+	KeyNotificationPermissionRefPrefix = "notification_permission_ref/"
+	KeyNotificationSummaryPrefix       = "notification_summary/"
+	keyGlobalSequenceCounter           = "meta/global_seq"
 )
 
 func EventKey(sequence uint64) string {
@@ -211,6 +216,10 @@ func AuthCredentialTagPrefix(tag string) string {
 	return fmt.Sprintf("%s%s/", KeyAuthCredentialTagPrefix, part)
 }
 
+func KeyAuthManagedVaultKey(scopeID string) string {
+	return KeyAuthManagedVaultKeyPrefix + keyPart(scopeID)
+}
+
 func KeyMessage(sessionID string, globalSeq uint64) string {
 	return fmt.Sprintf("msg/%s/%020d", keyPart(sessionID), globalSeq)
 }
@@ -325,6 +334,38 @@ func RunPermissionPrefix(sessionID, runID string) string {
 
 func KeyClientCursor(clientID, streamID string) string {
 	return fmt.Sprintf("client_cursor/%s/%s", keyPart(clientID), keyPart(streamID))
+}
+
+func KeyNotification(swarmID, notificationID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyNotificationPrefix, keyPart(swarmID), keyPart(notificationID))
+}
+
+func NotificationPrefix(swarmID string) string {
+	part := keyPart(swarmID)
+	if part == "" {
+		return KeyNotificationPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyNotificationPrefix, part)
+}
+
+func KeyNotificationBySwarm(swarmID string, createdAt int64, notificationID string) string {
+	return fmt.Sprintf("%s%s/%020d/%s", KeyNotificationBySwarmPrefix, keyPart(swarmID), createdAt, keyPart(notificationID))
+}
+
+func NotificationBySwarmPrefix(swarmID string) string {
+	part := keyPart(swarmID)
+	if part == "" {
+		return KeyNotificationBySwarmPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyNotificationBySwarmPrefix, part)
+}
+
+func KeyNotificationPermissionRef(sessionID, permissionID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyNotificationPermissionRefPrefix, keyPart(sessionID), keyPart(permissionID))
+}
+
+func KeyNotificationSummary(swarmID string) string {
+	return KeyNotificationSummaryPrefix + keyPart(swarmID)
 }
 
 func KeyAgentProfile(name string) string {

@@ -96,6 +96,42 @@ func TestMainHandlerDesktopSessionBootstrapAllowsProtectedAPIWithoutAttachToken(
 	}
 }
 
+func TestMainHandlerDesktopSessionBootstrapAllowsSameMachineLANOriginWithoutAttachToken(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	lanAddrs := detectLANAddresses()
+	if len(lanAddrs) == 0 {
+		t.Skip("no LAN addresses available on this machine")
+	}
+	lanIP := strings.TrimSpace(lanAddrs[0])
+	if lanIP == "" {
+		t.Skip("empty LAN address")
+	}
+
+	bootstrapReq := httptest.NewRequest(http.MethodGet, "http://"+lanIP+":5555/v1/auth/desktop/session", nil)
+	bootstrapReq.RemoteAddr = lanIP + ":43210"
+	bootstrapReq.Header.Set("Origin", "http://"+lanIP+":5555")
+	bootstrapReq.Header.Set("Referer", "http://"+lanIP+":5555/app")
+	bootstrapReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	bootstrapRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(bootstrapRec, bootstrapReq)
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("desktop LAN session bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusOK, bootstrapRec.Body.String())
+	}
+	sessionCookie := sessionCookieFromRecorder(t, bootstrapRec)
+
+	vaultReq := httptest.NewRequest(http.MethodGet, "http://"+lanIP+":5555/v1/vault", nil)
+	vaultReq.RemoteAddr = lanIP + ":43210"
+	vaultReq.Header.Set("Origin", "http://"+lanIP+":5555")
+	vaultReq.Header.Set("Referer", "http://"+lanIP+":5555/app")
+	vaultReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	vaultReq.AddCookie(sessionCookie)
+	vaultRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(vaultRec, vaultReq)
+	if vaultRec.Code != http.StatusOK {
+		t.Fatalf("proxied desktop LAN vault status with session = %d, want %d, body=%s", vaultRec.Code, http.StatusOK, vaultRec.Body.String())
+	}
+}
+
 func TestLocalTransportHandlerAllowsProtectedAPIWithoutAttachToken(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 

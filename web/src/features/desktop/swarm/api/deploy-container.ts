@@ -34,6 +34,11 @@ export interface DeployContainerPackageManifest {
   packages?: DeployContainerPackageSelection[]
 }
 
+export interface RemoteDeployPayloadDirectory {
+  source_path?: string
+  target_path?: string
+}
+
 export interface DeployContainerDeployment {
   id: string
   kind: string
@@ -95,6 +100,7 @@ export interface RemoteDeployPayload {
   workspace_name?: string
   target_path?: string
   mode?: string
+  directories?: RemoteDeployPayloadDirectory[]
   git_root?: string
   archive_name?: string
   included_files: number
@@ -106,11 +112,14 @@ export interface RemoteDeployPreflight {
   path_id: string
   builder_runtime?: string
   remote_runtime?: string
+  image_delivery_mode?: 'archive' | 'registry'
+  image_prefix?: string
   requested_remote_runtime?: 'docker' | 'podman'
   ssh_reachable: boolean
   systemd_available: boolean
   systemd_unit?: string
   remote_root?: string
+  remote_network_candidates?: string[]
   files_to_copy?: string[]
   payloads?: RemoteDeployPayload[]
   summary?: string
@@ -122,10 +131,16 @@ export interface RemoteDeploySession {
   name: string
   status: string
   ssh_session_target?: string
+  transport_mode?: 'lan' | 'tailscale'
+  master_endpoint?: string
+  remote_endpoint?: string
+  remote_advertise_host?: string
   group_id?: string
   group_name?: string
   builder_runtime?: string
   remote_runtime?: string
+  image_delivery_mode?: 'archive' | 'registry'
+  image_prefix?: string
   master_tailscale_url?: string
   remote_auth_url?: string
   remote_tailnet_url?: string
@@ -275,9 +290,12 @@ export interface RemoteDeployPreflightError {
 export async function createRemoteDeploySession(input: {
   name: string
   sshSessionTarget: string
+  transportMode?: 'lan' | 'tailscale'
+  remoteAdvertiseHost?: string
   groupID: string
   groupName?: string
   remoteRuntime?: 'docker' | 'podman'
+  imageDeliveryMode?: 'archive' | 'registry'
   syncEnabled?: boolean
   bypassPermissions?: boolean
   containerPackages?: DeployContainerPackageManifest
@@ -287,6 +305,10 @@ export async function createRemoteDeploySession(input: {
     workspaceName?: string
     targetPath?: string
     mode?: 'ro' | 'rw'
+    directories?: Array<{
+      sourcePath: string
+      targetPath?: string
+    }>
   }>
 }): Promise<RemoteDeploySession> {
   const response = await apiFetch('/v1/deploy/remote/session/create', {
@@ -297,9 +319,12 @@ export async function createRemoteDeploySession(input: {
     body: JSON.stringify({
       name: input.name,
       ssh_session_target: input.sshSessionTarget,
+      transport_mode: input.transportMode,
+      remote_advertise_host: input.remoteAdvertiseHost,
       group_id: input.groupID,
       group_name: input.groupName,
       remote_runtime: input.remoteRuntime,
+      image_delivery_mode: input.imageDeliveryMode,
       sync_enabled: input.syncEnabled,
       bypass_permissions: input.bypassPermissions,
       container_packages: input.containerPackages ? {
@@ -308,6 +333,7 @@ export async function createRemoteDeploySession(input: {
         packages: (input.containerPackages.packages ?? []).map((pkg) => ({
           name: pkg.name,
           source: pkg.source,
+          reason: pkg.reason,
         })),
       } : undefined,
       payloads: input.payloads.map((payload) => ({
@@ -316,6 +342,10 @@ export async function createRemoteDeploySession(input: {
         workspace_name: payload.workspaceName,
         target_path: payload.targetPath,
         mode: payload.mode,
+        directories: (payload.directories ?? []).map((directory) => ({
+          source_path: directory.sourcePath,
+          target_path: directory.targetPath,
+        })),
       })),
     }),
   })

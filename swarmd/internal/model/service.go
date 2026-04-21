@@ -139,6 +139,29 @@ func (s *Service) SetGlobalPreference(provider, modelName, thinking string, code
 	return resolved, &env, nil
 }
 
+func (s *Service) ClearGlobalPreference() (ResolvedPreference, *pebblestore.EventEnvelope, error) {
+	if err := s.store.ClearGlobalPreference(); err != nil {
+		return ResolvedPreference{}, nil, fmt.Errorf("clear model preference: %w", err)
+	}
+	pref, err := s.GetGlobalPreference()
+	if err != nil {
+		return ResolvedPreference{}, nil, err
+	}
+	payload, err := json.Marshal(pref)
+	if err != nil {
+		return ResolvedPreference{}, nil, fmt.Errorf("marshal cleared model event payload: %w", err)
+	}
+	env, err := s.events.Append("system:model", "model.preference.updated", "global", payload, "", "")
+	if err != nil {
+		return ResolvedPreference{}, nil, err
+	}
+	resolved, err := s.ResolvePreference(pref)
+	if err != nil {
+		return ResolvedPreference{}, nil, err
+	}
+	return resolved, &env, nil
+}
+
 func normalizeRuntimePreference(pref pebblestore.ModelPreference) pebblestore.ModelPreference {
 	pref.Provider = normalizeProviderID(pref.Provider)
 	pref.Model = strings.TrimSpace(pref.Model)

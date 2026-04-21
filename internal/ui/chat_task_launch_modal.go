@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
@@ -23,6 +24,7 @@ func (p *ChatPage) OpenTaskLaunchPermissionModal(record ChatPermissionRecord) bo
 	}
 	p.taskLaunchPermission = strings.TrimSpace(record.ID)
 	p.taskLaunchScroll = 0
+	p.taskLaunchInput = ""
 	p.taskLaunchApproveRect = Rect{}
 	p.taskLaunchDenyRect = Rect{}
 	p.statusLine = "task launch permission active"
@@ -32,6 +34,7 @@ func (p *ChatPage) OpenTaskLaunchPermissionModal(record ChatPermissionRecord) bo
 func (p *ChatPage) closeTaskLaunchModal() {
 	p.taskLaunchPermission = ""
 	p.taskLaunchScroll = 0
+	p.taskLaunchInput = ""
 	p.taskLaunchApproveRect = Rect{}
 	p.taskLaunchDenyRect = Rect{}
 }
@@ -96,6 +99,23 @@ func (p *ChatPage) handleTaskLaunchModalKey(ev *tcell.EventKey) bool {
 	case p.keybinds.Match(ev, KeybindChatJumpEnd):
 		p.taskLaunchScroll = 1 << 30
 		return true
+	case ev.Key() == tcell.KeyBackspace || ev.Key() == tcell.KeyBackspace2:
+		if len(p.taskLaunchInput) > 0 {
+			_, sz := utf8.DecodeLastRuneInString(p.taskLaunchInput)
+			if sz > 0 {
+				p.taskLaunchInput = p.taskLaunchInput[:len(p.taskLaunchInput)-sz]
+			}
+		}
+		return true
+	case ev.Key() == tcell.KeyCtrlU:
+		p.taskLaunchInput = ""
+		return true
+	case ev.Key() == tcell.KeyRune:
+		r := ev.Rune()
+		if unicode.IsPrint(r) && utf8.RuneCountInString(p.taskLaunchInput) < chatMaxInputRunes {
+			p.taskLaunchInput += string(r)
+		}
+		return true
 	default:
 		return true
 	}
@@ -113,17 +133,18 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	bodyWidth := maxInt(16, minInt(104, screen.W-6))
 	lines := p.taskLaunchModalLines(record, bodyWidth-4)
 	modalW := minInt(108, screen.W-8)
+	inputRows := p.taskLaunchInputRows(maxInt(1, modalW-6))
 	if modalW < 52 {
 		modalW = screen.W - 2
 	}
 	if modalW < 38 {
 		return
 	}
-	bodyH := minInt(len(lines), screen.H-8)
+	bodyH := minInt(len(lines), screen.H-(inputRows+8))
 	if bodyH < 4 {
 		bodyH = 4
 	}
-	modalH := bodyH + 6
+	modalH := bodyH + inputRows + 7
 	if modalH > screen.H-2 {
 		modalH = screen.H - 2
 	}
@@ -144,7 +165,7 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	subtitle := "Review the task, prompt, and per-launch assignments before allowing delegation."
 	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(subtitle, modal.W-4))
 
-	bodyRect := Rect{X: modal.X + 2, Y: modal.Y + 3, W: modal.W - 4, H: modal.H - 6}
+	bodyRect := Rect{X: modal.X + 2, Y: modal.Y + 3, W: modal.W - 4, H: modal.H - (inputRows + 6)}
 	maxScroll := maxInt(0, len(lines)-bodyRect.H)
 	if p.taskLaunchScroll > maxScroll {
 		p.taskLaunchScroll = maxScroll
@@ -163,6 +184,69 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 		scrollLabel := fmt.Sprintf("scroll %d/%d", p.taskLaunchScroll+1, maxScroll+1)
 		DrawTextRight(s, modal.X+modal.W-2, modal.Y+2, 18, onPanel(p.theme.TextMuted), scrollLabel)
 	}
+
+	inputY := modal.Y + modal.H - (inputRows + 3)
+	textX := modal.X + 2
+	textW := modal.W - 4
+	if textW > 0 {
+		inputLabel := "Message to agent (optional):"
+		DrawText(s, modal.X+2, inputY-1, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(inputLabel, modal.W-4))
+		visibleLines := p.taskLaunchInputVisibleLines(maxInt(1, textW), inputRows)
+		if strings.TrimSpace(p.taskLaunchInput) == "" {
+			DrawText(s, textX, inputY, textW, onPanel(p.theme.TextMuted), clampEllipsis("Type a note to send back with this action...", textW))
+		} else {
+			for i := 0; i < len(visibleLines) && i < inputRows; i++ {
+				DrawText(s, textX, inputY+i, textW, onPanel(p.theme.Text), visibleLines[i])
+			}
+		}
+		if (p.frameTick/chatCursorBlinkOn)%2 == 0 {
+			cursorLine := 0
+			if len(visibleLines) > 0 {
+				cursorLine = len(visibleLines) - 1
+			}
+			if cursorLine < 0 {
+				cursorLine = 0
+			}
+			if cursorLine >= inputRows {
+				cursorLine = inputRows - 1
+			}
+			cursorText := ""
+			if len(visibleLines) > 0 && cursorLine >= 0 && cursorLine < len(visibleLines) {
+				cursorText = visibleLines[cursorLine]
+			}
+			cursorX := textX + utf8.RuneCountInString(cursorText)
+			maxX := modal.X + modal.W - 3
+			if cursorX > maxX {
+				cursorX = maxX
+			}
+			if cursorX < textX {
+				cursorX = textX
+			}
+			cursorY := inputY + cursorLine
+			maxY := inputY + inputRows - 1
+			if cursorY > maxY {
+				cursorY = maxY
+			}
+			if cursorY < inputY {
+				cursorY = inputY
+			}
+			s.SetContent(cursorX, cursorY, chatCursorRune, nil, onPanel(p.theme.Primary))
+		}
+	}
+
+	helpY := modal.Y + modal.H - 3
+	help := "↑/↓ scroll • Enter approve • Esc deny"
+	helpWidth := modal.W - 4
+	if maxScroll > 0 {
+		scrollLabel := fmt.Sprintf("scroll %d/%d", p.taskLaunchScroll+1, maxScroll+1)
+		scrollWidth := utf8.RuneCountInString(scrollLabel)
+		DrawTextRight(s, modal.X+modal.W-2, helpY, maxInt(scrollWidth, modal.W/2), onPanel(p.theme.TextMuted), clampEllipsis(scrollLabel, modal.W/2))
+		remaining := modal.W - 4 - scrollWidth - 2
+		if remaining > 12 {
+			helpWidth = remaining
+		}
+	}
+	DrawText(s, modal.X+2, helpY, helpWidth, onPanel(p.theme.TextMuted), clampEllipsis(help, helpWidth))
 
 	actionY := modal.Y + modal.H - 2
 	actionX := modal.X + 2
@@ -501,15 +585,54 @@ func (p *ChatPage) taskLaunchSectionContentLine(line chatRenderLine, innerWidth 
 	return chatRenderLine{Text: chatRenderSpansText(spans), Style: padStyle, Spans: spans}
 }
 
+func (p *ChatPage) taskLaunchInputRows(textWidth int) int {
+	lines := p.taskLaunchInputWrappedLines(textWidth)
+	height := len(lines)
+	if height < 1 {
+		height = 1
+	}
+	if height > chatPlanExitInputMaxLines {
+		height = chatPlanExitInputMaxLines
+	}
+	return height
+}
+
+func (p *ChatPage) taskLaunchInputVisibleLines(textWidth, inputRows int) []string {
+	lines := p.taskLaunchInputWrappedLines(textWidth)
+	if inputRows < 1 {
+		inputRows = 1
+	}
+	if len(lines) <= inputRows {
+		return lines
+	}
+	return lines[len(lines)-inputRows:]
+}
+
+func (p *ChatPage) taskLaunchInputWrappedLines(textWidth int) []string {
+	if textWidth <= 0 {
+		return []string{""}
+	}
+	text := p.taskLaunchInput
+	if text == "" {
+		return []string{""}
+	}
+	lines := wrapWithCustomPrefixes("", "", text, textWidth)
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
 func (p *ChatPage) resolveTaskLaunchModal(approve bool) {
 	permissionID := strings.TrimSpace(p.taskLaunchPermission)
+	note := strings.TrimSpace(p.taskLaunchInput)
 	p.closeTaskLaunchModal()
 	if permissionID == "" {
 		return
 	}
 	if approve {
-		p.queueResolvePermissionByID(permissionID, "approve", "")
+		p.queueResolvePermissionByID(permissionID, "approve", note)
 		return
 	}
-	p.queueResolvePermissionByID(permissionID, "deny", "")
+	p.queueResolvePermissionByID(permissionID, "deny", note)
 }

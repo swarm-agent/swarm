@@ -120,6 +120,24 @@ func (p *ChatPage) SetSessionPath(path string) {
 	p.meta.Path = path
 }
 
+func (p *ChatPage) SetAgentTodoSummary(taskCount, openCount, inProgressCount int) {
+	if p == nil {
+		return
+	}
+	if taskCount < 0 {
+		taskCount = 0
+	}
+	if openCount < 0 {
+		openCount = 0
+	}
+	if inProgressCount < 0 {
+		inProgressCount = 0
+	}
+	p.meta.AgentTodoTaskCount = taskCount
+	p.meta.AgentTodoOpenCount = openCount
+	p.meta.AgentTodoInProgress = inProgressCount
+}
+
 func (p *ChatPage) SetSessionTabs(tabs []ChatSessionTab) {
 	if p == nil {
 		return
@@ -168,6 +186,13 @@ func (p *ChatPage) SetSessionMode(mode string) {
 	p.applySessionMode(mode, false)
 }
 
+func (p *ChatPage) Meta() ChatSessionMeta {
+	if p == nil {
+		return ChatSessionMeta{}
+	}
+	return p.meta
+}
+
 func (p *ChatPage) SessionMode() string {
 	return normalizeSessionMode(p.sessionMode)
 }
@@ -198,15 +223,12 @@ func (p *ChatPage) SessionPaletteItems() []ChatSessionPaletteItem {
 }
 
 func (p *ChatPage) SetModelState(modelProvider, modelName, thinkingLevel, serviceTier, contextMode string) {
-	if value := strings.TrimSpace(modelProvider); value != "" {
-		p.modelProvider = value
+	if p == nil {
+		return
 	}
-	if value := strings.TrimSpace(modelName); value != "" {
-		p.modelName = value
-	}
-	if value := strings.TrimSpace(thinkingLevel); value != "" {
-		p.thinkingLevel = value
-	}
+	p.modelProvider = strings.TrimSpace(modelProvider)
+	p.modelName = strings.TrimSpace(modelName)
+	p.thinkingLevel = strings.TrimSpace(thinkingLevel)
 	p.serviceTier = strings.TrimSpace(serviceTier)
 	p.contextMode = strings.TrimSpace(contextMode)
 }

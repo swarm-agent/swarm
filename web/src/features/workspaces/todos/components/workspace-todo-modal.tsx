@@ -1,4 +1,4 @@
-import { useMemo, useState, type DragEvent, useRef, useEffect, useLayoutEffect, type FocusEvent, type ReactNode } from 'react'
+import { useMemo, useState, type DragEvent, useRef, useEffect, useLayoutEffect, type FocusEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, Copy, GripVertical, ListChecks, Play, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
@@ -17,21 +17,10 @@ interface WorkspaceTodoModalSection {
   summary: WorkspaceTodoSummary
 }
 
-interface WorkspaceTodoSessionInfo {
-  id: string
-  title: string
-  summary?: string | null
-  isActive?: boolean
-  updatedAt?: number
-}
-
 interface WorkspaceTodoModalProps {
   open: boolean
   workspaceName: string
   userSection: WorkspaceTodoModalSection
-  agentSection: WorkspaceTodoModalSection
-  agentSessions?: WorkspaceTodoSessionInfo[]
-  defaultAgentSessionId?: string
   saving: boolean
   onOpenChange: (open: boolean) => void
   onCreate: (ownerKind: WorkspaceTodoOwnerKind, input: { text: string; priority: WorkspaceTodoPriority; group: string; tags: string[]; sessionId?: string; parentId?: string }) => Promise<void> | void
@@ -44,23 +33,6 @@ interface WorkspaceTodoModalProps {
   onReorder: (ownerKind: WorkspaceTodoOwnerKind, orderedIDs: string[]) => Promise<void> | void
 }
 
-interface AgentTodoTreeNode {
-  item: WorkspaceTodoItem
-  children: AgentTodoTreeNode[]
-}
-
-interface AgentTodoConversationGroup {
-  sessionId: string
-  label: string
-  description: string
-  isActive: boolean
-  updatedAt: number
-  taskCount: number
-  openCount: number
-  inProgressCount: number
-  nodes: AgentTodoTreeNode[]
-}
-
 const PRIORITY_GROUPS: WorkspaceTodoPriority[] = ['urgent', 'high', 'medium', 'low']
 const TODO_DRAG_MIME = 'application/x-swarm-workspace-todo'
 const BULK_MENU_WIDTH = 180
@@ -68,11 +40,6 @@ const BULK_MENU_WIDTH = 180
 function formatSummary(summary: WorkspaceTodoSummary): string {
   if (summary.taskCount <= 0) return 'No tasks'
   return `${summary.openCount} open • ${summary.inProgressCount} in progress • ${summary.taskCount} total`
-}
-
-function formatCounts(taskCount: number, openCount: number, inProgressCount: number): string {
-  if (taskCount <= 0) return 'No tasks'
-  return `${openCount} open • ${inProgressCount} in progress • ${taskCount} total`
 }
 
 function formatPriorityLabel(priority: WorkspaceTodoPriority): string {
@@ -88,106 +55,10 @@ function createPriorityBuckets(): Record<WorkspaceTodoPriority, WorkspaceTodoIte
   }
 }
 
-function compareTodoOrder(left: WorkspaceTodoItem, right: WorkspaceTodoItem): number {
-  if (left.sortIndex !== right.sortIndex) {
-    return left.sortIndex - right.sortIndex
-  }
-  if (left.updatedAt !== right.updatedAt) {
-    return right.updatedAt - left.updatedAt
-  }
-  return left.id.localeCompare(right.id)
-}
-
-function buildAgentTodoTree(items: WorkspaceTodoItem[]): AgentTodoTreeNode[] {
-  const sorted = [...items].sort(compareTodoOrder)
-  const nodes = new Map(sorted.map((item) => [item.id, { item, children: [] as AgentTodoTreeNode[] }]))
-  const roots: AgentTodoTreeNode[] = []
-
-  for (const item of sorted) {
-    const node = nodes.get(item.id)
-    if (!node) continue
-    const parentId = item.parentId.trim()
-    const parent = parentId ? nodes.get(parentId) : undefined
-    if (parent && parent.item.id !== item.id) {
-      parent.children.push(node)
-      continue
-    }
-    roots.push(node)
-  }
-
-  if (roots.length === 0) {
-    return sorted.map((item) => nodes.get(item.id)!).filter(Boolean)
-  }
-  return roots
-}
-
-function buildAgentConversationGroups(items: WorkspaceTodoItem[], sessions: WorkspaceTodoSessionInfo[]): AgentTodoConversationGroup[] {
-  if (items.length === 0) {
-    return []
-  }
-
-  const sessionMap = new Map(sessions.map((session, index) => [session.id.trim(), { ...session, order: index }]))
-  const grouped = new Map<string, WorkspaceTodoItem[]>()
-
-  for (const item of items) {
-    const sessionId = item.sessionId.trim()
-    const existing = grouped.get(sessionId) ?? []
-    existing.push(item)
-    grouped.set(sessionId, existing)
-  }
-
-  const groups = Array.from(grouped.entries()).map(([sessionId, sessionItems]) => {
-    const session = sessionMap.get(sessionId)
-    const taskCount = sessionItems.length
-    const openCount = sessionItems.filter((item) => !item.done).length
-    const inProgressCount = sessionItems.filter((item) => item.inProgress).length
-    const updatedAt = sessionItems.reduce((max, item) => Math.max(max, item.updatedAt), session?.updatedAt ?? 0)
-
-    return {
-      sessionId,
-      label: sessionId
-        ? (session?.title?.trim() || `Session ${sessionId.slice(0, 8)}`)
-        : 'Unlinked agent tasks',
-      description: sessionId
-        ? (session?.summary?.trim() || `Conversation ${sessionId.slice(0, 8)}`)
-        : 'Agent checklist steps without a linked conversation.',
-      isActive: Boolean(session?.isActive),
-      updatedAt,
-      taskCount,
-      openCount,
-      inProgressCount,
-      nodes: buildAgentTodoTree(sessionItems),
-    }
-  })
-
-  groups.sort((left, right) => {
-    if (left.isActive !== right.isActive) {
-      return left.isActive ? -1 : 1
-    }
-    if (left.sessionId === '' || right.sessionId === '') {
-      return left.sessionId === '' ? 1 : -1
-    }
-    const leftOrder = sessionMap.get(left.sessionId)?.order ?? Number.MAX_SAFE_INTEGER
-    const rightOrder = sessionMap.get(right.sessionId)?.order ?? Number.MAX_SAFE_INTEGER
-    if (leftOrder !== rightOrder) {
-      return leftOrder - rightOrder
-    }
-    if (left.updatedAt !== right.updatedAt) {
-      return right.updatedAt - left.updatedAt
-    }
-    return left.label.localeCompare(right.label)
-  })
-
-  return groups
-}
-
 export function WorkspaceTodoModal({
   open,
   workspaceName,
   userSection,
-  agentSection,
-  agentSessions = [],
-  defaultAgentSessionId = '',
   saving,
   onOpenChange,
   onCreate,
@@ -214,19 +85,9 @@ export function WorkspaceTodoModal({
   const copyFeedbackTimeoutRef = useRef<number | null>(null)
   const [bulkMenuPosition, setBulkMenuPosition] = useState<{ top: number; left: number } | null>(null)
 
-  const items = useMemo(() => [...userSection.items, ...agentSection.items], [agentSection.items, userSection.items])
-  const summary = useMemo(() => ({
-    taskCount: userSection.summary.taskCount + agentSection.summary.taskCount,
-    openCount: userSection.summary.openCount + agentSection.summary.openCount,
-    inProgressCount: userSection.summary.inProgressCount + agentSection.summary.inProgressCount,
-    user: userSection.summary.user,
-    agent: agentSection.summary.agent,
-  }), [agentSection.summary, userSection.summary])
+  const items = useMemo(() => [...userSection.items], [userSection.items])
+  const summary = userSection.summary
   const userCompletedCount = useMemo(() => userSection.items.filter((item) => item.done).length, [userSection.items])
-  const agentConversationGroups = useMemo(
-    () => buildAgentConversationGroups(agentSection.items, agentSessions),
-    [agentSection.items, agentSessions],
-  )
 
   const clearFocusedTodo = () => {
     setFocusedTodoID(null)
@@ -376,10 +237,9 @@ export function WorkspaceTodoModal({
     if (!text) return
     void onCreate(ownerKind, {
       text,
-      priority: ownerKind === 'user' ? draftPriority : 'medium',
+      priority: draftPriority,
       group: '',
       tags: [],
-      sessionId: ownerKind === 'agent' ? defaultAgentSessionId.trim() || undefined : undefined,
     })
     setDraftText('')
   }
@@ -596,19 +456,6 @@ export function WorkspaceTodoModal({
     )
   }
 
-  const renderAgentTree = (node: AgentTodoTreeNode): ReactNode => (
-    <div key={node.item.id} className="space-y-2">
-      {renderTodoRow(node.item, { allowDrag: false, childCount: node.children.length })}
-      {node.children.length > 0 ? (
-        <div className="ml-4 border-l border-[var(--app-border)] pl-3">
-          <div className="space-y-2">
-            {node.children.map((child) => renderAgentTree(child))}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  )
-
   const bulkMenu = bulkMenuOpen && bulkMenuPosition
     ? createPortal(
         <div
@@ -753,12 +600,9 @@ export function WorkspaceTodoModal({
               <Button type="button" onClick={() => handleCreate('user')} disabled={saving || draftText.trim() === ''} size="sm" className="h-8">
                 Add User Todo
               </Button>
-              <Button type="button" onClick={() => handleCreate('agent')} disabled={saving || draftText.trim() === ''} size="sm" className="h-8" variant="outline">
-                Add Agent Step
-              </Button>
             </div>
             <p className="mt-2 text-xs text-[var(--app-text-subtle)]">
-              Priority applies to user todos only. Agent steps link to the current conversation when available.
+              Priority controls how user todos are grouped in this workspace.
             </p>
           </div>
         ) : null}
@@ -839,61 +683,6 @@ export function WorkspaceTodoModal({
                 </div>
               </section>
 
-              <section className="space-y-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]/40 px-4 py-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-[var(--app-text)]">{agentSection.title}</h3>
-                    <p className="text-xs text-[var(--app-text-muted)]">{agentSection.description}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--app-text-muted)]">
-                      {formatSummary(agentSection.summary)}
-                    </span>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleCreate('agent')}
-                      disabled={saving || draftText.trim() === ''}
-                      className="h-7 px-2 text-xs"
-                    >
-                      Add from draft as step
-                    </Button>
-                  </div>
-                </div>
-
-                {agentConversationGroups.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-6 text-sm text-[var(--app-text-muted)]">
-                    {agentSection.emptyText}
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {agentConversationGroups.map((group) => (
-                      <section key={group.sessionId || '__unlinked__'} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-4">
-                        <div className="flex items-start justify-between gap-3 pb-3">
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h4 className="truncate text-sm font-semibold text-[var(--app-text)]">{group.label}</h4>
-                              {group.isActive ? (
-                                <span className="rounded-full border border-[var(--app-primary)]/40 bg-[var(--app-primary)]/10 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--app-primary)]">
-                                  current
-                                </span>
-                              ) : null}
-                            </div>
-                            <p className="pt-1 text-xs text-[var(--app-text-muted)]">{group.description}</p>
-                          </div>
-                          <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--app-text-muted)]">
-                            {formatCounts(group.taskCount, group.openCount, group.inProgressCount)}
-                          </span>
-                        </div>
-                        <div className="space-y-2">
-                          {group.nodes.map((node) => renderAgentTree(node))}
-                        </div>
-                      </section>
-                    ))}
-                  </div>
-                )}
-              </section>
             </div>
           )}
         </div>

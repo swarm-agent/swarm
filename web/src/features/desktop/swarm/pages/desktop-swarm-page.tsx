@@ -594,7 +594,7 @@ function DeleteSwarmsModal({
                             <div>Remote runtime: {candidate.remoteSession?.remote_runtime || 'unknown'}</div>
                             <div>Swarm sync: {candidate.remoteSession?.sync_enabled ? (candidate.remoteSession.sync_mode || 'managed') : 'off'}</div>
                             <div>Permissions: {candidate.remoteSession?.bypass_permissions ? 'Bypassed' : 'Enforced'}</div>
-                            <div>Remote tailnet URL: {candidate.remoteSession?.remote_tailnet_url || 'not recorded'}</div>
+                            <div>Remote endpoint: {candidate.remoteSession?.remote_endpoint || candidate.remoteSession?.remote_tailnet_url || 'not recorded'}</div>
                             <div>Delete mode: {effectiveRemoteDeleteMode === 'teardown' && remoteDeleteCandidateSupportsSSHDelete(candidate) ? 'SSH remote delete' : 'Remove from this master only'}</div>
                           </>
                         ) : (
@@ -1572,7 +1572,7 @@ export function DesktopSwarmPage() {
                           || urlForHostPort(browserProtocol, browserHost, attachedDeployment?.backend_host_port || 0)
                         const childDesktopURL = attachedDeployment?.child_desktop_url
                           || urlForHostPort(browserProtocol, browserHost, attachedDeployment?.desktop_host_port || 0)
-                        const remoteTailnetURL = attachedRemoteSession?.remote_tailnet_url || ''
+                        const remoteTailnetURL = attachedRemoteSession?.remote_endpoint || attachedRemoteSession?.remote_tailnet_url || ''
                         const attachStatus = String(attachedDeployment?.attach_status ?? '').trim()
                         const attachFailed = attachStatus === 'failed'
                         const deploymentRunning = attachedDeployment?.status === 'running' || attachedDeployment?.status === 'attached'
@@ -1864,7 +1864,7 @@ export function DesktopSwarmPage() {
                                       </div>
                                     ) : null}
 
-                                    <AccessURLRow label="Remote Tailnet" url={remoteTailnetURL} />
+                                    <AccessURLRow label="Remote Endpoint" url={remoteTailnetURL} />
 
                                     {attachedRemoteSession?.last_error ? (
                                       <div className="mt-2 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-[var(--app-warning-text)] text-xs">
