@@ -16,6 +16,7 @@ Build the same local artifact layout used by .github/workflows/build-main.yml:
   daemon binaries in <output>/linux-amd64/swarmd
   desktop assets in <output>/web
   metadata in <output>/build-info.txt
+  installer script at <output>/release-stage/swarm-<version>-linux-amd64/install.sh
   release archive at <output>/swarm-<version>-linux-amd64.tar.gz
 
 Options:
@@ -148,6 +149,8 @@ if [[ -d "${WEB_ARTIFACT_DIR}" ]]; then
   cp -R "${WEB_ARTIFACT_DIR}" "${RELEASE_STAGE_DIR}/${archive_basename}/web"
 fi
 cp "${OUTPUT_DIR}/build-info.txt" "${RELEASE_STAGE_DIR}/${archive_basename}/build-info.txt"
+cp "${ROOT_DIR}/install.sh" "${RELEASE_STAGE_DIR}/${archive_basename}/install.sh"
+chmod 755 "${RELEASE_STAGE_DIR}/${archive_basename}/install.sh"
 (
   cd "${RELEASE_STAGE_DIR}"
   tar -czf "${archive_path}" "${archive_basename}"
