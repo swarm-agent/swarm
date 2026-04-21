@@ -10,6 +10,9 @@ usage() {
   cat <<'EOF'
 Usage:
   sh install.sh [--version <tag>] [--artifact-root <path>]
+
+Environment:
+  SWARM_INSTALL_NO_RUN=1  install only; do not launch swarm automatically
 EOF
 }
 
@@ -121,13 +124,22 @@ warn_if_bin_home_missing_from_path() {
   printf 'add it to your shell startup file, then open a new shell:\n  export PATH="%s:$PATH"\n' "$target" >&2
 }
 
-print_run_hint() {
-  target="$(bin_home)"
-  if bin_home_on_path; then
-    printf '\nrun: swarm\n'
-    return 0
+auto_run_requested() {
+  [ "${SWARM_INSTALL_NO_RUN:-}" != "1" ]
+}
+
+controlling_tty_available() {
+  ( : </dev/tty >/dev/tty 2>/dev/tty ) >/dev/null 2>&1
+}
+
+finish_install() {
+  launcher="$(bin_home)/swarm"
+  if auto_run_requested && controlling_tty_available; then
+    printf '\nlaunching swarm...\n'
+    exec "$launcher" </dev/tty >/dev/tty 2>/dev/tty
   fi
-  printf '\nrun now: %s/swarm\n' "$target"
+  printf '\nrun now: %s\n' "$launcher"
+  warn_if_bin_home_missing_from_path
 }
 
 run_bundle_install() {
@@ -169,8 +181,7 @@ if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ];
   print_ok
   printf 'linking launcher... '
   print_ok
-  print_run_hint
-  warn_if_bin_home_missing_from_path
+  finish_install
   exit 0
 fi
 
@@ -226,5 +237,4 @@ fi
 print_ok
 printf 'linking launcher... '
 print_ok
-print_run_hint
-warn_if_bin_home_missing_from_path
+finish_install
