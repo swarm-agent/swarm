@@ -45,6 +45,23 @@ func TestWriteCompressedDesktopAssetsCreatesGzipFiles(t *testing.T) {
 	}
 }
 
+func TestEnvMapIncludesInstalledLibDirInLDLibraryPath(t *testing.T) {
+	xdgRoot := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(xdgRoot, "data"))
+	t.Setenv("LD_LIBRARY_PATH", "/opt/existing/lib")
+
+	profile, err := LoadRuntimeProfile("main", nil)
+	if err != nil {
+		t.Fatalf("LoadRuntimeProfile: %v", err)
+	}
+
+	got := profile.EnvMap()["LD_LIBRARY_PATH"]
+	want := filepath.Join(xdgRoot, "data", "swarm", "lib") + string(os.PathListSeparator) + "/opt/existing/lib"
+	if got != want {
+		t.Fatalf("LD_LIBRARY_PATH = %q, want %q", got, want)
+	}
+}
+
 func TestInstallRuntimeFromArtifactCopiesReleaseLayout(t *testing.T) {
 	artifactRoot := t.TempDir()
 	platformRoot := filepath.Join(artifactRoot, runtime.GOOS+"-"+runtime.GOARCH)

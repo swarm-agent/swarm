@@ -359,6 +359,7 @@ func (p Profile) EnvMap() map[string]string {
 		"LOG_FILE":                 p.LogFile,
 		"SWARM_BIN_DIR":            p.BinDir,
 		"SWARM_TOOL_BIN_DIR":       p.ToolBinDir,
+		"LD_LIBRARY_PATH":          prependPathEntry(os.Getenv("LD_LIBRARY_PATH"), p.LibDir),
 		"SWARM_WEB_DIR":            p.WebDir,
 		"SWARM_WEB_DIST_DIR":       p.WebDistDir,
 		"SWARM_PORTS_DIR":          p.PortsDir,
