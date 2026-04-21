@@ -87,6 +87,14 @@ type InstallReport struct {
 	Links   map[string]string
 }
 
+type ReleaseBundle struct {
+	ArtifactRoot string
+	ToolDir      string
+	RuntimeDir   string
+	WebDir       string
+	BuildInfo    string
+}
+
 type StartBackendOptions struct {
 	DesktopPort    int
 	ForceRestart   bool
@@ -688,6 +696,113 @@ func InstallLaunchers(root string) (InstallReport, error) {
 		}
 	}
 	return InstallReport{BinHome: binHome, Links: links}, nil
+}
+
+func ResolveReleaseBundle(artifactRoot string) (ReleaseBundle, error) {
+	artifactRoot = strings.TrimSpace(artifactRoot)
+	if artifactRoot == "" {
+		return ReleaseBundle{}, errors.New("artifact root is required")
+	}
+	absRoot, err := filepath.Abs(artifactRoot)
+	if err != nil {
+		return ReleaseBundle{}, err
+	}
+	bundle := ReleaseBundle{
+		ArtifactRoot: filepath.Clean(absRoot),
+		ToolDir:      filepath.Join(absRoot, "linux-amd64", "root"),
+		RuntimeDir:   filepath.Join(absRoot, "linux-amd64", "swarmd"),
+		WebDir:       filepath.Join(absRoot, "web"),
+		BuildInfo:    filepath.Join(absRoot, "build-info.txt"),
+	}
+	checks := []struct {
+		path string
+		kind string
+	}{
+		{path: filepath.Join(bundle.ToolDir, "swarm"), kind: "file"},
+		{path: filepath.Join(bundle.ToolDir, "swarmdev"), kind: "file"},
+		{path: filepath.Join(bundle.ToolDir, "rebuild"), kind: "file"},
+		{path: filepath.Join(bundle.ToolDir, "swarmsetup"), kind: "file"},
+		{path: filepath.Join(bundle.ToolDir, "swarmtui"), kind: "file"},
+		{path: filepath.Join(bundle.RuntimeDir, "swarmd"), kind: "file"},
+		{path: filepath.Join(bundle.RuntimeDir, "swarmctl"), kind: "file"},
+		{path: filepath.Join(bundle.RuntimeDir, "libfff_c.so"), kind: "file"},
+		{path: filepath.Join(bundle.WebDir, "index.html"), kind: "file"},
+	}
+	for _, check := range checks {
+		info, err := os.Stat(check.path)
+		if err != nil {
+			return ReleaseBundle{}, fmt.Errorf("invalid release bundle %s: missing %s", bundle.ArtifactRoot, check.path)
+		}
+		if check.kind == "file" && info.IsDir() {
+			return ReleaseBundle{}, fmt.Errorf("invalid release bundle %s: expected file at %s", bundle.ArtifactRoot, check.path)
+		}
+	}
+	if info, err := os.Stat(bundle.BuildInfo); err == nil && info.IsDir() {
+		return ReleaseBundle{}, fmt.Errorf("invalid release bundle %s: expected file at %s", bundle.ArtifactRoot, bundle.BuildInfo)
+	}
+	return bundle, nil
+}
+
+func InstallReleaseBundle(artifactRoot string) (InstallReport, error) {
+	bundle, err := ResolveReleaseBundle(artifactRoot)
+	if err != nil {
+		return InstallReport{}, err
+	}
+	dataHome, err := xdgDataHome()
+	if err != nil {
+		return InstallReport{}, err
+	}
+	installRoot := swarmInstallRoot(dataHome)
+	binDir := swarmBinaryRoot(dataHome)
+	toolDir := swarmToolBinDir(dataHome)
+	webDir := swarmDesktopDistDir(dataHome)
+	if err := os.MkdirAll(installRoot, 0o755); err != nil {
+		return InstallReport{}, err
+	}
+	for _, target := range []string{binDir, toolDir, webDir} {
+		if err := os.RemoveAll(target); err != nil {
+			return InstallReport{}, err
+		}
+	}
+	if err := os.Remove(filepath.Join(installRoot, "build-info.txt")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return InstallReport{}, err
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return InstallReport{}, err
+	}
+	if err := os.MkdirAll(toolDir, 0o755); err != nil {
+		return InstallReport{}, err
+	}
+	toolNames := []string{"swarm", "swarmdev", "rebuild", "swarmsetup"}
+	for _, name := range toolNames {
+		if err := copyFile(filepath.Join(bundle.ToolDir, name), filepath.Join(toolDir, name)); err != nil {
+			return InstallReport{}, err
+		}
+	}
+	for _, name := range []string{"swarmtui"} {
+		if err := copyFile(filepath.Join(bundle.ToolDir, name), filepath.Join(binDir, name)); err != nil {
+			return InstallReport{}, err
+		}
+	}
+	for _, name := range []string{"swarmd", "swarmctl", "libfff_c.so"} {
+		if err := copyFile(filepath.Join(bundle.RuntimeDir, name), filepath.Join(binDir, name)); err != nil {
+			return InstallReport{}, err
+		}
+	}
+	if err := copyDir(bundle.WebDir, webDir); err != nil {
+		return InstallReport{}, err
+	}
+	if err := writeCompressedDesktopAssets(webDir); err != nil {
+		return InstallReport{}, err
+	}
+	if _, err := os.Stat(bundle.BuildInfo); err == nil {
+		if err := copyFile(bundle.BuildInfo, filepath.Join(installRoot, "build-info.txt")); err != nil {
+			return InstallReport{}, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return InstallReport{}, err
+	}
+	return InstallLaunchers("")
 }
 
 func isExecutable(path string) bool {
@@ -1380,6 +1495,36 @@ func envOrString(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func copyFile(sourcePath, targetPath string) error {
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("copy file %s: source is a directory", sourcePath)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	targetFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
+		_ = targetFile.Close()
+		return err
+	}
+	if err := targetFile.Close(); err != nil {
+		return err
+	}
+	return os.Chtimes(targetPath, info.ModTime(), info.ModTime())
 }
 
 func copyDir(sourceDir, targetDir string) error {

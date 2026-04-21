@@ -26,87 +26,85 @@ Press `Enter` on a non-empty home prompt to open a dedicated **Chat demo page** 
 
 Default theme is **Nord** (mapped from Swarm's `nord.json`) with 20 built-in themes including `crimson`.
 
-First-run local setup from a fresh machine:
+Install from a GitHub release:
 
 ```bash
-bash /path/to/swarm/setup --start-main
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh
 ```
 
-This verifies required host tools, including the vendored FFF runtime used by Swarm's canonical in-app `search` tool, builds both `main` and `dev` lane binaries plus the compiled launcher tools, installs `swarm` / `swarmdev` / `rebuild` / `swarmsetup` into `${XDG_BIN_HOME:-$HOME/.local/bin}`, and starts the local `main` backend when `--start-main` is used.
-Use `bash /path/to/swarm/setup --with-web --start-main` if you also want to install `web/` npm dependencies, build the desktop bundle, and place the built desktop assets into the installed runtime layout during first-run setup.
-After the first launcher install, use `rebuild` from the checkout to refresh the installed runtime artifacts, then launch the installed `swarm` binary to test the same runtime a downloaded install would use.
-
-## Run
-
-Or run through the launcher:
+If you host the same script at `https://swarmagent.dev/install.sh`, this becomes:
 
 ```bash
-cd /path/to/swarm
-bash ./scripts/install-launchers.sh
-swarm                     # main lane TUI (127.0.0.1:7781)
-swarm dev                 # dev lane  TUI (127.0.0.1:7782)
-swarm --desktop           # main lane desktop web app (built assets via swarmd)
-swarm dev --desktop       # dev lane desktop web app (built assets via swarmd)
+curl -fsSL https://swarmagent.dev/install.sh | sh
+```
+
+Current installer scope:
+- Linux x86_64 only
+- downloads the latest GitHub release bundle
+- installs the Swarm runtime and launchers into the XDG user paths
+
+Manual fallback:
+
+1. Download the versioned `swarm-<version>-linux-amd64.tar.gz` release asset from GitHub Releases.
+2. Extract it.
+3. Install it with:
+
+```bash
+./swarmsetup --artifact-root /path/to/extracted/swarm-<version>-linux-amd64
+```
+
+That installs the real Swarm runtime layout and launchers so the user can type `swarm` and open the installed app.
+
+After install, launch Swarm with:
+
+```bash
+swarm
+```
+
+Other common commands:
+
+```bash
+swarm --desktop
 swarm server on
 swarm server status
 swarm server off
-swarmdev                  # dev alias
+swarm dev
+swarmdev
 ```
-
-Launchers never auto-build on launch; use `rebuild` to refresh the installed runtime artifacts from source.
-Use `rebuild f` when you also want fresh installed desktop assets.
-Use `./scripts/rebuild-container.sh` for the container MVP rebuild path; it rebuilds local binaries and `web/dist` for the image without shutting down the local lane daemon first.
 
 Launchers are installed into `${XDG_BIN_HOME:-$HOME/.local/bin}` and point at installed runtime artifacts under `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}`.
 
-To repoint `swarm` (main-default launcher) and install `swarmdev` plus `rebuild` into `${XDG_BIN_HOME:-$HOME/.local/bin}`:
+## Run
 
 ```bash
-cd /path/to/swarm
-bash ./scripts/install-launchers.sh
+swarm                     # open the main app
+swarm --desktop           # open the desktop app
+swarm server on           # start backend without opening UI
+swarm server status       # show backend status
+swarm server off          # stop backend
+swarm dev                 # open the dev lane
+swarmdev                  # dev alias
 ```
 
-The TUI talks to `swarmd` at `http://127.0.0.1:7781` on the `main` lane by default.
-Use `swarm dev` (or `swarmdev`) for the isolated `dev` lane (`http://127.0.0.1:7782`).
-Use `swarm --desktop` to open the main-lane desktop served by `swarmd` on `http://127.0.0.1:5555` by default.
-Use `swarm dev --desktop` (or `swarmdev --desktop`) to open the dev-lane desktop served by `swarmd` on `http://127.0.0.1:5556` by default.
-Use `swarm server on|off|status` for detached backend lifecycle without opening the desktop.
-The barebones React+Vite web placeholder lives under `web/`; for local web-only work, run `cd web && npm install && npm run dev`.
+By default:
+- `swarm` uses the main lane backend at `http://127.0.0.1:7781`
+- `swarm dev` / `swarmdev` use the dev lane backend at `http://127.0.0.1:7782`
+- `swarm --desktop` uses desktop port `5555`
+- `swarm dev --desktop` uses desktop port `5556`
 
-Override with:
+You can also override the backend target directly:
 
 ```bash
 SWARMD_URL=http://127.0.0.1:7782 SWARMD_TOKEN=<token> swarm dev
 ```
 
-Use `swarm dev info` to print the dev lane URL/port/log metadata for AI-driven E2E sessions.
+Installed files live under:
+- `${XDG_BIN_HOME:-$HOME/.local/bin}` for launchers
+- `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}` for runtime files
+- `${XDG_STATE_HOME:-$HOME/.local/state}/swarm/...` for runtime state
 
-Use `/mouse on` and `/mouse off` at runtime to toggle without restarting.
+Use `/mouse on` and `/mouse off` at runtime to toggle mouse capture without restarting.
 When mouse capture is enabled, use your terminal's selection modifier (typically `Shift+drag`) to select/copy text.
-
-
-## Dual-lane launcher (main/dev)
-
-Use the launcher for isolated lanes:
-
-```bash
-cd /path/to/swarm
-swarm main server on
-swarm dev server on
-swarm --desktop
-swarm dev --desktop --port 5556
-swarm dev info
-swarmdev info
-```
-
-- `main` uses the configured startup backend port; `dev` uses the next backend port by default so the lanes stay isolated (`7781`/`7782` with the default config).
-- `swarm.conf` now also carries `desktop_port`, which `swarm --desktop` uses as the main-lane default; `dev` uses the next port by default unless overridden with `--port` or `SWARM_DESKTOP_PORT`
-- `swarm --desktop` opens the built desktop served by `swarmd`
-- `swarm dev --desktop` opens the same built desktop runtime against the dev lane backend
-- `swarm server on|off|status` manages the detached backend only
-- installed bundle paths are lane-agnostic under user storage (`${XDG_DATA_HOME:-~/.local/share}/swarm/bin`, `${XDG_DATA_HOME:-~/.local/share}/swarm/libexec`, `${XDG_DATA_HOME:-~/.local/share}/swarm/share`)
-- launcher/runtime state and data remain lane-scoped under user storage (`${XDG_STATE_HOME:-~/.local/state}/swarm/swarmd/main`, `${XDG_STATE_HOME:-~/.local/state}/swarm/swarmd/dev`, `${XDG_DATA_HOME:-~/.local/share}/swarmd/main`, `${XDG_DATA_HOME:-~/.local/share}/swarmd/dev`)
-
 
 - `Ctrl+C`: quit
 - `Enter` on Home with prompt text: open Chat demo page
@@ -159,20 +157,6 @@ swarmdev info
 - `swarm dev` and `swarmdev` launch the installed dev-lane runtime; use `rebuild dev` to refresh it from the current branch.
 - `swarm` and `swarmdev` refuse to launch when the installed runtime is missing (no silent fallback to source builds).
 - Lane occupancy/port records are written to user state (`${XDG_STATE_HOME:-~/.local/state}/swarm/ports/swarmd-main.env`, `${XDG_STATE_HOME:-~/.local/state}/swarm/ports/swarmd-dev.env`).
-
-## Git branch flow
-
-- `dev` is the day-to-day working branch.
-- `main` is the protected release/build branch.
-- Merge or cherry-pick from `dev` into `main` only when you want the canonical GitHub build to run.
-- GitHub Actions now builds artifacts only for pushes to `main` (and manual dispatch), and the workflow is gated so only the `swarm-agent` account can run the build job.
-- Protect `main` in GitHub so only your account can push to it; leave `dev` available for normal collaborative work.
-- Recommended GitHub rule setup:
-  - branch rule / ruleset for `main`
-  - block force pushes
-  - block deletions
-  - restrict direct pushes to your account
-  - optionally require pull requests for everyone except your admin bypass
 
 `swarmtui` now persists UI settings through the daemon-backed `/v1/ui/settings` API backed by Pebble.
 There is no local `swarmtui.json` file anymore.
