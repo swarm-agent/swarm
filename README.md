@@ -36,12 +36,18 @@ Install from a GitHub release:
 ./swarmsetup --artifact-root /path/to/extracted/swarm-<version>-linux-amd64
 ```
 
-That installs the real Swarm runtime layout and launchers so the user can type `swarm` and open the installed app.
+That installs the real Swarm runtime layout and launchers so the user can open the installed app.
 
-After install, launch Swarm with:
+After install, launch Swarm with either:
 
 ```bash
 swarm
+```
+
+or, if your current shell does not have `${XDG_BIN_HOME:-$HOME/.local/bin}` on `PATH` yet:
+
+```bash
+${XDG_BIN_HOME:-$HOME/.local/bin}/swarm
 ```
 
 Other common commands:

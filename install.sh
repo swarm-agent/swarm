@@ -100,15 +100,34 @@ bin_home() {
   fi
 }
 
-warn_if_bin_home_missing_from_path() {
+bin_home_on_path() {
   target="$(bin_home)"
   case ":${PATH:-}:" in
     *":$target:"*)
+      return 0
       ;;
     *)
-      printf 'warning: %s is not on PATH\n' "$target" >&2
+      return 1
       ;;
   esac
+}
+
+warn_if_bin_home_missing_from_path() {
+  target="$(bin_home)"
+  if bin_home_on_path; then
+    return 0
+  fi
+  printf 'warning: %s is not on PATH\n' "$target" >&2
+  printf 'add it to your shell startup file, then open a new shell:\n  export PATH="%s:$PATH"\n' "$target" >&2
+}
+
+print_run_hint() {
+  target="$(bin_home)"
+  if bin_home_on_path; then
+    printf '\nrun: swarm\n'
+    return 0
+  fi
+  printf '\nrun now: %s/swarm\n' "$target"
 }
 
 run_bundle_install() {
@@ -150,7 +169,7 @@ if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ];
   print_ok
   printf 'linking launcher... '
   print_ok
-  printf '\nrun: swarm\n'
+  print_run_hint
   warn_if_bin_home_missing_from_path
   exit 0
 fi
@@ -207,5 +226,5 @@ fi
 print_ok
 printf 'linking launcher... '
 print_ok
-printf '\nrun: swarm\n'
+print_run_hint
 warn_if_bin_home_missing_from_path
