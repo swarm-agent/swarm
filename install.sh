@@ -11,8 +11,6 @@ usage() {
 Usage:
   sh install.sh [--version <tag>] [--artifact-root <path>]
 
-Environment:
-  SWARM_INSTALL_NO_RUN=1  install only; do not launch swarm automatically
 EOF
 }
 
@@ -115,31 +113,47 @@ bin_home_on_path() {
   esac
 }
 
-warn_if_bin_home_missing_from_path() {
+current_shell_name() {
+  shell_path="${SHELL:-}"
+  shell_name="${shell_path##*/}"
+  if [ -n "$shell_name" ]; then
+    printf '%s\n' "$shell_name"
+  else
+    printf 'sh\n'
+  fi
+}
+
+print_path_refresh_instructions() {
   target="$(bin_home)"
+
   if bin_home_on_path; then
+    printf '\nStart Swarm:\n  swarm\n'
     return 0
   fi
-  printf 'warning: %s is not on PATH\n' "$target" >&2
-  printf 'add it to your shell startup file, then open a new shell:\n  export PATH="%s:$PATH"\n' "$target" >&2
-}
 
-auto_run_requested() {
-  [ "${SWARM_INSTALL_NO_RUN:-}" != "1" ]
-}
+  printf '\nSwarm installed.\n'
+  printf '\nThis shell does not have %s on PATH yet.\n' "$target"
 
-controlling_tty_available() {
-  ( : </dev/tty >/dev/tty 2>/dev/tty ) >/dev/null 2>&1
+  if [ "$(current_shell_name)" = "fish" ]; then
+    printf '\nIf you are using fish, copy/paste this now:\n'
+    printf '  set -gx PATH "%s" $PATH\n' "$target"
+    printf '\nIf new fish shells still cannot find swarm, copy/paste this once:\n'
+    printf '  fish_add_path "%s"\n' "$target"
+  else
+    printf '\nCopy/paste this now:\n'
+    printf '  export PATH="%s:$PATH"\n' "$target"
+    printf '\nOr reload your shell:\n'
+    printf '  exec "$SHELL" -l\n'
+  fi
+
+  printf '\nThen start Swarm:\n'
+  printf '  swarm\n'
+  printf '\nIf that still fails, run it directly:\n'
+  printf '  %s\n' "$target/swarm"
 }
 
 finish_install() {
-  launcher="$(bin_home)/swarm"
-  if auto_run_requested && controlling_tty_available; then
-    printf '\nlaunching swarm...\n'
-    exec "$launcher" </dev/tty >/dev/tty 2>/dev/tty
-  fi
-  printf '\nrun now: %s\n' "$launcher"
-  warn_if_bin_home_missing_from_path
+  print_path_refresh_instructions
 }
 
 run_bundle_install() {
