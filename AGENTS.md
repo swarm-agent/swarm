@@ -26,6 +26,22 @@ If a rule below conflicts with convenience, the rule wins.
 ## 2. Task Execution Policy
 
 - If the user asks for a task, do the task directly.
+- Branch workflow is mandatory:
+  - Stay on `dev` for all normal work.
+  - Make changes on `dev`, commit on `dev`, and push `dev`.
+  - Open pull requests from `dev` into `main`.
+  - Do not create ad-hoc PR branches such as `pr/*`, `probe/*`, or other workaround branches unless the user explicitly asks for that exact branch.
+  - Do not cherry-pick `dev` work onto another branch as a workaround for PR creation.
+  - Do not switch the working tree away from `dev` just to prepare, test, or open a PR.
+  - Do not commit directly on `main`, merge into `main`, or push `main` unless the user explicitly asks for that exact action.
+  - If branch history or PR state is broken, stop and explain the exact issue before creating branches, cherry-picking, merging, rebasing, or deleting anything.
+  - Prefer read-only inspection commands such as `git status`, `git branch -vv`, `git log`, `git show`, and `git diff` before any branch mutation.
+  - When the user asks to "make a PR for main", the default action is: verify `dev`, push `dev`, and open one PR from `dev` into `main`.
+  - Treat that PR as a promotion/release PR, not as a signal to create a stable semver automatically.
+  - Stable release versions are explicit. Use an annotated tag such as `v0.x.y` only when the user asks for a stable release or explicitly approves the target version.
+  - If `main` is promoted without an exact tag on the promoted commit, the release flow should publish the existing prerelease form `0.0.0-dev+<shortsha>`.
+  - For a stable release, the canonical sequence is: merge the approved `dev` → `main` PR, create the annotated tag on the promoted `main` commit, then run `build-main` from `workflow_dispatch` so the workflow resolves the exact tag.
+  - If the user has not asked for a stable version yet, stop after opening or merging the PR and report that the next result will be a prerelease build unless a tag is chosen.
 - Do not run `go test` or other test suites unless the user explicitly asks for tests.
 - For non-commit work, do not run validation unless the user explicitly asks for it.
 - Vulnerability/CVE scanning is mandatory before every commit.
