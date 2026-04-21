@@ -56,6 +56,29 @@ read_build_info_version() {
   sed -n 's/^version=//p' "$build_info" | head -n 1
 }
 
+parse_first_tag_name() {
+  sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+resolve_release_version() {
+  latest_api="https://api.github.com/repos/${REPO}/releases/latest"
+  releases_api="https://api.github.com/repos/${REPO}/releases"
+
+  version="$(curl -fsSL "$latest_api" 2>/dev/null | parse_first_tag_name || true)"
+  if [ -n "$version" ]; then
+    printf '%s\n' "$version"
+    return 0
+  fi
+
+  version="$(curl -fsSL "$releases_api" 2>/dev/null | parse_first_tag_name || true)"
+  if [ -n "$version" ]; then
+    printf '%s\n' "$version"
+    return 0
+  fi
+
+  return 1
+}
+
 print_installing() {
   version="$1"
   if [ -n "$version" ]; then
@@ -149,11 +172,10 @@ if [ -z "$release_version" ]; then
   release_version="$DEFAULT_VERSION"
 fi
 if [ -z "$release_version" ]; then
-  api_url="https://api.github.com/repos/${REPO}/releases/latest"
-  release_version="$({ curl -fsSL "$api_url" | sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1; } || true)"
+  release_version="$(resolve_release_version || true)"
 fi
 if [ -z "$release_version" ]; then
-  echo "failed to resolve latest GitHub release for ${REPO}" >&2
+  echo "failed to resolve a GitHub release for ${REPO}" >&2
   exit 1
 fi
 

@@ -30,6 +30,7 @@ If a rule below conflicts with convenience, the rule wins.
   - Stay on `dev` for all normal work.
   - Make changes on `dev`, commit on `dev`, and push `dev`.
   - Open pull requests from `dev` into `main`.
+  - Pull requests targeting `main` from any head branch other than `dev` are forbidden and should fail the repository gate.
   - Do not create ad-hoc PR branches such as `pr/*`, `probe/*`, or other workaround branches unless the user explicitly asks for that exact branch.
   - Do not cherry-pick `dev` work onto another branch as a workaround for PR creation.
   - Do not switch the working tree away from `dev` just to prepare, test, or open a PR.

@@ -1,0 +1,35 @@
+name: guard-main-pr-source
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  require-dev-head:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce dev -> main only
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${BASE_REF}" != "main" ]]; then
+            echo "unexpected base branch: ${BASE_REF}" >&2
+            exit 1
+          fi
+          if [[ "${HEAD_REF}" != "dev" ]]; then
+            echo "pull requests into main must come from dev; got ${HEAD_REF}" >&2
+            exit 1
+          fi
+          echo "validated dev -> main PR source"
