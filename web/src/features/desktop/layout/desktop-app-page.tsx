@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
+import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -679,10 +679,67 @@ function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number):
   return uniqueRoots
 }
 
-function flattenSidebarSessionNodes(nodes: SidebarSessionNode[]): SidebarSessionNode[] {
+interface SessionAgentSummary {
+  total: number
+  running: number
+}
+
+function summarizeSubagentDescendants(node: SidebarSessionNode): SessionAgentSummary {
+  let total = 0
+  let running = 0
+  const visit = (nodes: SidebarSessionNode[]) => {
+    for (const child of nodes) {
+      if (child.kind === 'subagent') {
+        total += 1
+        if (sessionIsActive(child.session)) {
+          running += 1
+        }
+      }
+      if (child.children.length > 0) {
+        visit(child.children)
+      }
+    }
+  }
+  visit(node.children)
+  return { total, running }
+}
+
+function nodeHasSubagentDescendants(node: SidebarSessionNode): boolean {
+  for (const child of node.children) {
+    if (child.kind === 'subagent' || nodeHasSubagentDescendants(child)) {
+      return true
+    }
+  }
+  return false
+}
+
+function nodeContainsDescendantSession(node: SidebarSessionNode, sessionID: string | null | undefined): boolean {
+  const normalizedID = sessionID?.trim() ?? ''
+  if (!normalizedID) {
+    return false
+  }
+  for (const child of node.children) {
+    if (child.session.id === normalizedID || nodeContainsDescendantSession(child, normalizedID)) {
+      return true
+    }
+  }
+  return false
+}
+
+function flattenVisibleSidebarSessionNodes(
+  nodes: SidebarSessionNode[],
+  expandedSessionIDs: Record<string, boolean>,
+  forcedVisibleSessionID: string | null | undefined,
+): SidebarSessionNode[] {
   const output: SidebarSessionNode[] = []
   const visit = (node: SidebarSessionNode) => {
     output.push(node)
+    const shouldExpand = !nodeHasSubagentDescendants(node)
+      || Boolean(expandedSessionIDs[node.session.id])
+      || nodeContainsDescendantSession(node, forcedVisibleSessionID)
+    if (!shouldExpand) {
+      return
+    }
     for (const child of node.children) {
       visit(child)
     }
@@ -693,6 +750,15 @@ function flattenSidebarSessionNodes(nodes: SidebarSessionNode[]): SidebarSession
   return output
 }
 
+function agentSummaryDescriptor(summary: SessionAgentSummary): { primary: string; secondary: string; secondaryRunning: boolean } {
+  const total = summary.total
+  const running = summary.running
+  if (running > 0) {
+    return { primary: `${running} live`, secondary: `${total} agents`, secondaryRunning: false }
+  }
+  return { primary: `${total} agents`, secondary: '', secondaryRunning: false }
+}
+
 interface SessionRowProps {
   active: boolean
   now: number
@@ -701,11 +767,14 @@ interface SessionRowProps {
   depth?: number
   childLabel?: string | null
   childKind?: SidebarSessionNode['kind']
+  agentSummary: SessionAgentSummary
+  agentsExpanded: boolean
   onSelect: (sessionId: string) => void
   onPrefetch: (sessionId: string) => void
+  onToggleAgents: (sessionId: string) => void
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, depth = 0, childLabel = null, childKind = 'root', onSelect, onPrefetch }: SessionRowProps) {
+function SessionRow({ active, now, session: initialSession, fallbackSwarmName, depth = 0, childLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
   const session = useDesktopStore((state) => state.sessions[initialSession.id] ?? initialSession)
   const activeSession = sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, fallbackSwarmName)
@@ -719,18 +788,29 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, d
   const commitMetaLabel = [commitSummary, committedFileSummary, committedDeltaSummary].filter(Boolean).join(' · ')
   const tooltip = sessionStatusTooltip(session)
   const indentStyle = depth > 0 ? { paddingLeft: `${Math.min(depth, 5) * 16}px` } : undefined
+  const hasAgentChildren = agentSummary.total > 0
+  const agentDescriptor = agentSummaryDescriptor(agentSummary)
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(session.id)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect(session.id)
+        }
+      }}
       onMouseEnter={() => onPrefetch(session.id)}
       onFocus={() => onPrefetch(session.id)}
       className={cn(
-        'grid w-full min-w-0 gap-1 rounded-lg px-3 py-2 text-left transition-colors',
+        'grid w-full min-w-0 gap-1 rounded-lg px-3 py-2 text-left transition-colors outline-none',
         active
           ? 'bg-[var(--app-surface-subtle)]'
           : 'bg-transparent hover:bg-[var(--app-surface-subtle)]',
+        depth > 0 && childKind === 'subagent' ? 'border-l border-sky-400/25' : null,
+        hasAgentChildren && agentsExpanded ? 'ring-1 ring-sky-400/20' : null,
       )}
       style={indentStyle}
     >
@@ -786,7 +866,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, d
           </>
         )}
       </div>
-      {session.worktreeEnabled || commitMetaLabel ? (
+      {session.worktreeEnabled || commitMetaLabel || hasAgentChildren ? (
         <div className="flex items-center justify-between gap-3 text-[10px] leading-4 text-[var(--app-text-subtle)] min-w-0 w-full">
           {commitMetaLabel ? (
             <span
@@ -797,17 +877,46 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, d
               <span className="truncate">{commitMetaLabel}</span>
             </span>
           ) : <span className="min-w-0 flex-1" />}
-          {session.worktreeEnabled ? (
-            <span
-              className="inline-flex shrink-0 items-center justify-center text-[var(--app-text-subtle)] opacity-80"
-              title={tooltip || 'Worktree enabled'}
-            >
-              <GitBranch size={12} />
-            </span>
-          ) : null}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {hasAgentChildren ? (
+              <button
+                type="button"
+                className={cn(
+                  'inline-flex h-5 shrink-0 items-center gap-1 rounded-md border px-1.5 transition-colors',
+                  agentsExpanded
+                    ? 'border-[var(--app-border-strong)] text-[var(--app-text)]'
+                    : 'border-transparent text-[var(--app-text-subtle)] hover:text-[var(--app-text)]',
+                )}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onToggleAgents(session.id)
+                }}
+                aria-label={`${agentSummary.running} running of ${agentSummary.total} subagents`}
+                aria-pressed={agentsExpanded}
+                title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
+              >
+                <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse' : null)} />
+                <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-emerald-300' : null)}>{agentDescriptor.primary}</span>
+                {agentDescriptor.secondary ? (
+                  <span className={cn(
+                    'font-mono tabular-nums text-[10px] leading-none',
+                    agentSummary.running > 0 ? 'text-[var(--app-text-subtle)]' : 'text-[var(--app-text)]',
+                  )}>{agentDescriptor.secondary}</span>
+                ) : null}
+              </button>
+            ) : null}
+            {session.worktreeEnabled ? (
+              <span
+                className="inline-flex shrink-0 items-center justify-center text-[var(--app-text-subtle)] opacity-80"
+                title={tooltip || 'Worktree enabled'}
+              >
+                <GitBranch size={12} />
+              </span>
+            ) : null}
+          </div>
         </div>
       ) : null}
-    </button>
+    </div>
   )
 }
 
@@ -834,6 +943,7 @@ export function DesktopAppPage() {
   const upsertSession = useDesktopStore((state) => state.upsertSession)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTabID>('agents')
@@ -1449,6 +1559,13 @@ export function DesktopAppPage() {
     void prefetchSessionRuntimeData(queryClient, sessionId)
   }, [queryClient])
 
+  const handleToggleAgentSessions = useCallback((sessionId: string) => {
+    setExpandedAgentSessions((current) => ({
+      ...current,
+      [sessionId]: !current[sessionId],
+    }))
+  }, [])
+
   useEffect(() => {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
@@ -1565,7 +1682,7 @@ export function DesktopAppPage() {
               {mergedSidebarWorkspaceEntries.map((workspace, index) => {
                 const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
                 const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
-                const flattenedSessionNodes = flattenSidebarSessionNodes(sessionNodes)
+                const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, selectedSession?.id)
                 const layout = workspaceLayout[workspace.path]
                 const collapsed = layout?.collapsed ?? false
                 const worktreeBusy = savingPath === workspace.path
@@ -1635,8 +1752,11 @@ export function DesktopAppPage() {
                               depth={node.depth}
                               childLabel={node.label}
                               childKind={node.kind}
+                              agentSummary={summarizeSubagentDescendants(node)}
+                              agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, selectedSession?.id)}
                               onSelect={handleSelectSession}
                               onPrefetch={handlePrefetchSession}
+                              onToggleAgents={handleToggleAgentSessions}
                             />
                           ))}
                         </div>
@@ -1658,25 +1778,27 @@ export function DesktopAppPage() {
                 )
               })}
             </div>
-            <div className="grid grid-cols-2 gap-2 border-t border-[var(--app-border)] px-4 py-3">
-              <Button
-                variant="outline"
-                className="h-11 min-h-11 w-full justify-center rounded-xl"
-                onClick={handleOpenWorkspaceLauncher}
-                aria-label="Open workspaces"
-              >
-                <Home size={18} className="shrink-0" />
-                <span>Workspaces</span>
-              </Button>
-              <Button
-                variant="outline"
-                className="h-11 min-h-11 w-full justify-center rounded-xl"
-                onClick={() => { setSettingsTab('agents'); setSettingsOpen(true) }}
-                aria-label="Open settings"
-              >
-                <Settings size={18} className="shrink-0" />
-                <span>Settings</span>
-              </Button>
+            <div className="border-t border-[var(--app-border)] px-4 py-3">
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  className="h-11 min-h-11 w-full justify-center rounded-xl"
+                  onClick={handleOpenWorkspaceLauncher}
+                  aria-label="Open workspaces"
+                >
+                  <Home size={18} className="shrink-0" />
+                  <span>Workspaces</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-11 min-h-11 w-full justify-center rounded-xl"
+                  onClick={() => { setSettingsTab('agents'); setSettingsOpen(true) }}
+                  aria-label="Open settings"
+                >
+                  <Settings size={18} className="shrink-0" />
+                  <span>Settings</span>
+                </Button>
+              </div>
             </div>
           </div>
         </div>
