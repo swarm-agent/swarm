@@ -36,6 +36,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 ```
 
 - That install path provides the real installed runtime and the user-facing `swarm` launcher.
+- Fresh shells that do not yet include `${XDG_BIN_HOME:-$HOME/.local/bin}` on `PATH` must use `${XDG_BIN_HOME:-$HOME/.local/bin}/swarm` until the shell startup files are updated and a new shell is opened.
 
 ## Canonical version reference
 
