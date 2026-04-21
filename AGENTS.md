@@ -26,6 +26,16 @@ If a rule below conflicts with convenience, the rule wins.
 ## 2. Task Execution Policy
 
 - If the user asks for a task, do the task directly.
+- Branch workflow is mandatory:
+  - Stay on `dev` for all normal work.
+  - Make changes on `dev`, commit on `dev`, and push `dev`.
+  - Open pull requests from `dev` into `main`.
+  - Do not create ad-hoc PR branches such as `pr/*`, `probe/*`, or other workaround branches unless the user explicitly asks for that exact branch.
+  - Do not cherry-pick `dev` work onto another branch as a workaround for PR creation.
+  - Do not switch the working tree away from `dev` just to prepare, test, or open a PR.
+  - Do not commit directly on `main`, merge into `main`, or push `main` unless the user explicitly asks for that exact action.
+  - If branch history or PR state is broken, stop and explain the exact issue before creating branches, cherry-picking, merging, rebasing, or deleting anything.
+  - Prefer read-only inspection commands such as `git status`, `git branch -vv`, `git log`, `git show`, and `git diff` before any branch mutation.
 - Do not run `go test` or other test suites unless the user explicitly asks for tests.
 - For non-commit work, do not run validation unless the user explicitly asks for it.
 - Vulnerability/CVE scanning is mandatory before every commit.
