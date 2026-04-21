@@ -252,7 +252,8 @@ type App struct {
 
 	swarmNotificationCount int
 
-	pendingChatRender chan struct{}
+	pendingChatRender  chan struct{}
+	pendingStreamReady chan struct{}
 
 	workspaceCandidates []workspaceCandidate
 	mouseHintShown      bool
@@ -320,6 +321,7 @@ func New() (*App, error) {
 		streamEvents:        make(chan client.StreamEventEnvelope, 256),
 		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
 		pendingChatRender:   make(chan struct{}, 1),
+		pendingStreamReady:  make(chan struct{}, 1),
 		workspaceCandidates: make([]workspaceCandidate, 0, 128),
 	}
 	app.keybinds.ApplyOverrides(cfg.Input.Keybinds)
@@ -442,6 +444,7 @@ func (a *App) Run() error {
 				a.consumeVoiceCaptureEvents()
 				dirty = true
 			case interruptStreamReady:
+				a.consumePendingStreamReady()
 				if a.consumeSessionStreamEvents() {
 					dirty = true
 				}
@@ -625,6 +628,27 @@ func (a *App) consumePendingChatRender() {
 	}
 }
 
+func (a *App) requestStreamReadyInterrupt() {
+	if a == nil || a.screen == nil {
+		return
+	}
+	select {
+	case a.pendingStreamReady <- struct{}{}:
+		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptStreamReady))
+	default:
+	}
+}
+
+func (a *App) consumePendingStreamReady() {
+	if a == nil {
+		return
+	}
+	select {
+	case <-a.pendingStreamReady:
+	default:
+	}
+}
+
 func (a *App) startSessionEventStream() {
 	if a == nil || a.api == nil {
 		return
@@ -663,9 +687,7 @@ func (a *App) runSessionEventStream(ctx context.Context) {
 			if !a.enqueueSessionStreamEvent(ctx, event) {
 				return
 			}
-			if a.screen != nil {
-				a.screen.PostEventWait(tcell.NewEventInterrupt(interruptStreamReady))
-			}
+			a.requestStreamReadyInterrupt()
 		})
 		if ctx.Err() != nil {
 			return
@@ -687,9 +709,7 @@ func (a *App) enqueueSessionStreamEvent(ctx context.Context, event client.Stream
 		return true
 	default:
 	}
-	if a.screen != nil {
-		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptStreamReady))
-	}
+	a.requestStreamReadyInterrupt()
 	select {
 	case a.streamEvents <- event:
 		return true

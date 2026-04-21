@@ -35,7 +35,7 @@ type chatLiveAssistantCacheEntry struct {
 	LastAttemptVariant    int
 }
 
-var chatLiveAssistantParseMinInterval = 100 * time.Millisecond
+var chatLiveAssistantParseMinInterval = 33 * time.Millisecond
 
 func (p *ChatPage) bumpTimelineRenderGeneration() {
 	p.timelineRenderGeneration++
