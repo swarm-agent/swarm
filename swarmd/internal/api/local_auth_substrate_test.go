@@ -18,6 +18,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	"swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/workspace"
 )
 
@@ -142,6 +143,34 @@ func TestLocalTransportHandlerAllowsProtectedAPIWithoutAttachToken(t *testing.T)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("local transport vault status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestMainHandlerUpdateStatusAllowsLoopbackWithoutAttachToken(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	server.SetUpdateService(newStaticUpdateService(t, true))
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/update/status", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("loopback update status without attach token = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestMainHandlerUpdateStatusRejectsNonLoopbackWithoutAttachToken(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	server.SetUpdateService(newStaticUpdateService(t, true))
+
+	req := httptest.NewRequest(http.MethodGet, "http://192.0.2.10:5555/v1/update/status", nil)
+	req.RemoteAddr = "192.0.2.10:43210"
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("non-loopback update status without attach token = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
 }
 
@@ -316,7 +345,7 @@ func newLocalAuthTestServer(t *testing.T) *Server {
 		t.Fatalf("ensure attach auth: %v", err)
 	}
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
-	server := NewServer("test", authSvc, nil, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, eventLog, stream.NewHub(eventLog))
+	server := NewServer("test", authSvc, nil, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, nil, eventLog, stream.NewHub(eventLog))
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "local-auth-test", Name: "Local Auth Test", Role: "standalone", PublicKey: "local-auth-public-key", Fingerprint: "local-auth-fingerprint"}}}
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
@@ -343,6 +372,12 @@ func setLocalAuthTestStartupConfig(t *testing.T, server *Server, mutate func(*st
 	if err := startupconfig.Write(cfg); err != nil {
 		t.Fatalf("write startup config: %v", err)
 	}
+}
+
+func newStaticUpdateService(t *testing.T, updateAvailable bool) *update.Service {
+	t.Helper()
+	_ = updateAvailable
+	return update.NewService("dev", true)
 }
 
 type fakeLocalAuthSwarmService struct {
