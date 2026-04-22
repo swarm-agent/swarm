@@ -81,6 +81,7 @@ type BackgroundSessionSummary struct {
 type HomeModel struct {
 	Title                       string
 	Version                     string
+	UpdateStatus                *client.UpdateStatus
 	ActivePlan                  string
 	ServerURL                   string
 	ServerMode                  string
@@ -117,6 +118,7 @@ func EmptyHome() HomeModel {
 	return HomeModel{
 		Title:        "Swarm",
 		Version:      buildinfo.DisplayVersion(),
+		UpdateStatus: nil,
 		ActivePlan:   "",
 		ServerMode:   "local",
 		PromptHint:   "",
@@ -138,6 +140,7 @@ func MockHome() HomeModel {
 	return HomeModel{
 		Title:                       "Swarm",
 		Version:                     buildinfo.DisplayVersion(),
+		UpdateStatus:                &client.UpdateStatus{CurrentVersion: buildinfo.DisplayVersion(), LatestVersion: "v0.2.0", UpdateAvailable: true, CheckedAtUnixMS: 1735689600000},
 		ActivePlan:                  "Core Platform",
 		ServerURL:                   "http://127.0.0.1:7781",
 		ServerMode:                  "local",

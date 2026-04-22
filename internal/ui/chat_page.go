@@ -60,6 +60,8 @@ type ChatSessionMeta struct {
 	Path                  string
 	Branch                string
 	Dirty                 int
+	Version               string
+	UpdateVersionHint     string
 	Agent                 string
 	AgentExecutionSetting string
 	AgentExitPlanMode     bool
@@ -2186,13 +2188,16 @@ func (p *ChatPage) ApplySessionLifecycle(lifecycle ChatSessionLifecycle) {
 	p.runStarted = time.Time{}
 	p.runCancel = nil
 	p.streamingRun = false
-	p.liveAssistant = ""
+	preserveLiveAssistant := strings.EqualFold(lifecycle.Phase, "completed")
+	if !preserveLiveAssistant {
+		p.liveAssistant = ""
+		p.ownedRunID = ""
+	}
 	p.liveThinking = ""
 	p.thinkingCompletedAt = time.Time{}
 	p.reasoningActive = false
 	p.reasoningStartedAt = time.Time{}
 	p.activeReasoningMessageID = ""
-	p.ownedRunID = ""
 	switch strings.ToLower(lifecycle.Phase) {
 	case "errored":
 		if lifecycle.Error != "" {
@@ -2213,6 +2218,11 @@ func (p *ChatPage) ApplySessionLifecycle(lifecycle ChatSessionLifecycle) {
 			p.statusLine = "run interrupted"
 		}
 		p.errorLine = ""
+	case "completed":
+		p.errorLine = ""
+		if strings.TrimSpace(p.statusLine) == "" {
+			p.statusLine = "finalizing response"
+		}
 	default:
 		p.statusLine = "ready"
 		p.errorLine = ""
@@ -2837,6 +2847,9 @@ func (p *ChatPage) applyHistory(messages []ChatMessageRecord) {
 }
 
 func (p *ChatPage) applyRunSuccess(resp ChatRunResponse) {
+	defer func() {
+		p.ownedRunID = ""
+	}()
 	p.applyContextUsageSummary(resp.UsageSummary)
 
 	if strings.TrimSpace(resp.Model) != "" {

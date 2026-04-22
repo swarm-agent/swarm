@@ -21,6 +21,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"golang.org/x/term"
 
+	"swarm-refactor/swarmtui/internal/buildinfo"
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
@@ -110,6 +111,7 @@ func buildHomeCommandSuggestions() []ui.CommandSuggestion {
 		// {Command: "/sandbox", Hint: "Open sandbox setup modal (global ON/OFF)", QuickTips: []string{"/sandbox on", "/sandbox off", "/sandbox status"}},
 		{Command: "/sessions", Hint: "Open recent sessions modal"},
 		{Command: "/swarm", Hint: "Show swarm dashboard, pairing state, and approvals", QuickTips: []string{"/swarm status", "/swarm pending", "/swarm approve <id>", "/swarm reject <id>", "/swarm role master", "/swarm set <name>"}},
+		{Command: "/update", Hint: "Check for or apply a released update", QuickTips: []string{"/update status", "/update apply"}},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
 		{Command: "/vault", Hint: "Vault status, export, or import guidance"},
@@ -224,6 +226,7 @@ type App struct {
 	activePath     string
 	workspacePath  string
 	homeModel      model.HomeModel
+	updateStatus   client.UpdateStatus
 	config         AppConfig
 	themePreviewID string
 	settingsLabel  string
@@ -252,7 +255,8 @@ type App struct {
 
 	swarmNotificationCount int
 
-	pendingChatRender chan struct{}
+	pendingChatRender  chan struct{}
+	pendingStreamReady chan struct{}
 
 	workspaceCandidates []workspaceCandidate
 	mouseHintShown      bool
@@ -320,6 +324,7 @@ func New() (*App, error) {
 		streamEvents:        make(chan client.StreamEventEnvelope, 256),
 		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
 		pendingChatRender:   make(chan struct{}, 1),
+		pendingStreamReady:  make(chan struct{}, 1),
 		workspaceCandidates: make([]workspaceCandidate, 0, 128),
 	}
 	app.keybinds.ApplyOverrides(cfg.Input.Keybinds)
@@ -354,6 +359,7 @@ func New() (*App, error) {
 		if cfgErr != nil {
 			app.home.SetStatus(fmt.Sprintf("settings warning: %v", cfgErr))
 		}
+		app.announceStartupUpdate(next)
 	}
 	if loadErr != nil && cfgErr != nil {
 		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v (settings warning: %v)", loadErr, cfgErr))
@@ -442,6 +448,7 @@ func (a *App) Run() error {
 				a.consumeVoiceCaptureEvents()
 				dirty = true
 			case interruptStreamReady:
+				a.consumePendingStreamReady()
 				if a.consumeSessionStreamEvents() {
 					dirty = true
 				}
@@ -625,6 +632,27 @@ func (a *App) consumePendingChatRender() {
 	}
 }
 
+func (a *App) requestStreamReadyInterrupt() {
+	if a == nil || a.screen == nil {
+		return
+	}
+	select {
+	case a.pendingStreamReady <- struct{}{}:
+		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptStreamReady))
+	default:
+	}
+}
+
+func (a *App) consumePendingStreamReady() {
+	if a == nil {
+		return
+	}
+	select {
+	case <-a.pendingStreamReady:
+	default:
+	}
+}
+
 func (a *App) startSessionEventStream() {
 	if a == nil || a.api == nil {
 		return
@@ -663,9 +691,7 @@ func (a *App) runSessionEventStream(ctx context.Context) {
 			if !a.enqueueSessionStreamEvent(ctx, event) {
 				return
 			}
-			if a.screen != nil {
-				a.screen.PostEventWait(tcell.NewEventInterrupt(interruptStreamReady))
-			}
+			a.requestStreamReadyInterrupt()
 		})
 		if ctx.Err() != nil {
 			return
@@ -687,9 +713,7 @@ func (a *App) enqueueSessionStreamEvent(ctx context.Context, event client.Stream
 		return true
 	default:
 	}
-	if a.screen != nil {
-		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptStreamReady))
-	}
+	a.requestStreamReadyInterrupt()
 	select {
 	case a.streamEvents <- event:
 		return true
@@ -1810,6 +1834,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleVoiceCommand(args)
 	case "swarm":
 		a.handleSwarmCommand(args)
+	case "update":
+		a.handleUpdateCommand(args)
 	case "keybinds", "keys":
 		a.handleKeybindsCommand(args)
 	case "copy":
@@ -1893,6 +1919,7 @@ func (a *App) showHelp() {
 		"/themes delete <id>",
 		"/header [on|off|toggle|status]   (chat header visibility)",
 		"/swarm [status|pending|approve <id>|reject <id>|set <name>|<name>]   (show dashboard, review pending children, or change device identity)",
+		"/update [status|apply]   (check for or install a released update)",
 		"/thinking [on|off|toggle|status]   (show or hide reasoning/thinking tags)",
 		"/mouse [on|off|toggle|status]   (mouse click capture)",
 		fmt.Sprintf("%s   (toggle mouse click capture)", keybinds.Label(ui.KeybindGlobalToggleMouse)),
@@ -2725,6 +2752,8 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 			Path:                  chatDisplayPath,
 			Branch:                chatBranch,
 			Dirty:                 chatDirty,
+			Version:               strings.TrimSpace(a.homeModel.Version),
+			UpdateVersionHint:     homeUpdateVersionHint(a.homeModel.UpdateStatus),
 			Agent:                 emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
 			AgentExecutionSetting: strings.TrimSpace(a.homeModel.ActiveAgentExecutionSetting),
 			AgentExitPlanMode:     a.homeModel.ActiveAgentExitPlanMode,
@@ -6949,12 +6978,21 @@ func (a *App) syncChatAgentRuntime() {
 		exitPlanModeEnabled,
 		runtimeKnown,
 	)
+	meta := a.chat.Meta()
+	meta.Version = strings.TrimSpace(a.homeModel.Version)
+	meta.UpdateVersionHint = homeUpdateVersionHint(a.homeModel.UpdateStatus)
+	a.chat.SetMeta(meta)
 }
 
 func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
 	a.home.SetSwarmNotificationCount(a.swarmNotificationCount)
+	if next.UpdateStatus != nil {
+		a.updateStatus = *next.UpdateStatus
+	} else {
+		a.updateStatus = client.UpdateStatus{}
+	}
 	a.syncChatAgentRuntime()
 	a.refreshGitRealtimeWatcher()
 	a.applyEffectiveTheme()
@@ -7185,6 +7223,17 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "model preference unavailable")
 	}
 
+	updateStatus, updateErr := a.api.GetUpdateStatus(ctx)
+	if updateErr == nil {
+		next.UpdateStatus = &updateStatus
+		if current := strings.TrimSpace(updateStatus.CurrentVersion); current != "" {
+			next.Version = current
+		}
+		a.updateStatus = updateStatus
+	} else if strings.TrimSpace(buildinfo.DisplayVersion()) != "dev" {
+		errorsSeen = append(errorsSeen, "update status unavailable")
+	}
+
 	if providerID := strings.ToLower(strings.TrimSpace(next.ModelProvider)); providerID != "" {
 		credentials, credErr := a.api.ListAuthCredentials(ctx, providerID, "", 50)
 		if credErr == nil {
@@ -7292,6 +7341,33 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		return next, errors.New(strings.Join(errorsSeen, "; "))
 	}
 	return next, nil
+}
+
+func homeUpdateVersionHint(status *client.UpdateStatus) string {
+	if status == nil || !status.UpdateAvailable {
+		return ""
+	}
+	return strings.TrimSpace(status.LatestVersion)
+}
+
+func (a *App) announceStartupUpdate(next model.HomeModel) {
+	if a == nil {
+		return
+	}
+	status := next.UpdateStatus
+	if status == nil || !status.UpdateAvailable {
+		return
+	}
+	latest := strings.TrimSpace(status.LatestVersion)
+	current := strings.TrimSpace(next.Version)
+	if latest == "" {
+		latest = "new release"
+	}
+	if current == "" {
+		current = buildinfo.DisplayVersion()
+	}
+	message := fmt.Sprintf("update available: %s → %s", current, latest)
+	a.showToast(ui.ToastInfo, message)
 }
 
 func (a *App) activeContextPath() string {

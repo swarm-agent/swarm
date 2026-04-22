@@ -458,9 +458,21 @@ func (p *HomePage) homeFooterTokens() []footerToken {
 }
 
 func (p *HomePage) homeFooterRightLine(maxWidth int) string {
-	segments := make([]string, 0, 1)
+	segments := make([]string, 0, 3)
 	if p.model.WorktreesEnabled {
 		segments = append(segments, "wt on")
+	}
+	version := strings.TrimSpace(p.model.Version)
+	if version != "" {
+		segments = append(segments, "v "+version)
+	}
+	if status := p.model.UpdateStatus; status != nil && status.UpdateAvailable {
+		latest := strings.TrimSpace(status.LatestVersion)
+		if latest != "" {
+			segments = append(segments, "update "+latest)
+		} else {
+			segments = append(segments, "update available")
+		}
 	}
 	return clampEllipsis(strings.Join(segments, "  "), maxWidth)
 }

@@ -42,6 +42,7 @@ import (
 	"swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/uisettings"
+	"swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/voice"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -88,6 +89,7 @@ type Server struct {
 	localContainers             localContainerService
 	deployContainers            deployContainerService
 	remoteDeploys               remoteDeployService
+	update                      *update.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	sessionRoutes               *pebblestore.SessionRouteStore
 	mode                        string

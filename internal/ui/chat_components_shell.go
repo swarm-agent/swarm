@@ -458,9 +458,15 @@ func (p *ChatPage) footerContextUsageLabel() string {
 }
 
 func (p *ChatPage) footerRightLine(maxWidth int) string {
-	segments := make([]string, 0, 2)
+	segments := make([]string, 0, 4)
 	if p.meta.WorktreeEnabled {
 		segments = append(segments, "wt on")
+	}
+	if version := strings.TrimSpace(p.meta.Version); version != "" {
+		segments = append(segments, "v "+version)
+	}
+	if latest := strings.TrimSpace(p.meta.UpdateVersionHint); latest != "" {
+		segments = append(segments, "update "+latest)
 	}
 	if usage := strings.TrimSpace(p.footerContextUsageLabel()); usage != "" {
 		segments = append(segments, usage)

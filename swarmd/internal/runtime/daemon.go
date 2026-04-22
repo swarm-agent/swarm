@@ -49,6 +49,7 @@ import (
 	"swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/uisettings"
+	update "swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/voice"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -214,6 +215,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish, sessionSvc)
+	startupCfg, startupCfgErr := startupconfig.Load(cfg.ConfigPath)
+	if startupCfgErr != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("load startup config: %w", startupCfgErr)
+	}
+	updateSvc := update.NewService(strings.TrimSpace(os.Getenv("SWARM_LANE")), startupCfg.DevMode)
 	if err := seedUISwarmName(cfg.ConfigPath, uiSettingsSvc); err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()
@@ -343,6 +352,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	deployContainerSvc.SetHostCallbackURLResolver(localContainerSvc.HostCallbackURL)
 	apiServer.SetDeployContainerService(deployContainerSvc)
 	apiServer.SetRemoteDeployService(remoteDeploySvc)
+	apiServer.SetUpdateService(updateSvc)
 
 	runtimeStatus, runtimeStatusErr := localContainerSvc.RuntimeStatus(context.Background())
 	localTransportRuntimeName := ""

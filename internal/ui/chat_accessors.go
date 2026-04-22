@@ -193,6 +193,13 @@ func (p *ChatPage) Meta() ChatSessionMeta {
 	return p.meta
 }
 
+func (p *ChatPage) SetMeta(meta ChatSessionMeta) {
+	if p == nil {
+		return
+	}
+	p.meta = meta
+}
+
 func (p *ChatPage) SessionMode() string {
 	return normalizeSessionMode(p.sessionMode)
 }

@@ -19,12 +19,12 @@ Usage:
   ./scripts/swarm-harness-vm.sh restart
   ./scripts/swarm-harness-vm.sh status
   ./scripts/swarm-harness-vm.sh ssh [ssh-args...]
-  ./scripts/swarm-harness-vm.sh bootstrap
+  ./scripts/swarm-harness-vm.sh bootstrap [--rebootstrap]
   ./scripts/swarm-harness-vm.sh sync [--repo-root PATH]
-  ./scripts/swarm-harness-vm.sh provision [--repo-root PATH]
-  ./scripts/swarm-harness-vm.sh run [--repo-root PATH] -- <command...>
-  ./scripts/swarm-harness-vm.sh local-replicate [--repo-root PATH] -- [harness-args...]
-  ./scripts/swarm-harness-vm.sh local-replicate-recovery [--repo-root PATH] -- [harness-args...]
+  ./scripts/swarm-harness-vm.sh provision [--repo-root PATH] [--no-sync] [--rebootstrap]
+  ./scripts/swarm-harness-vm.sh run [--repo-root PATH] [--no-sync] -- <command...>
+  ./scripts/swarm-harness-vm.sh local-replicate [--repo-root PATH] [--no-sync] -- [harness-args...]
+  ./scripts/swarm-harness-vm.sh local-replicate-recovery [--repo-root PATH] [--no-sync] -- [harness-args...]
 
 Environment overrides:
   SWARM_HARNESS_VM_NAME            VM name. Default: swarm-harness
@@ -42,7 +42,8 @@ Behavior:
   - uses a dedicated Ubuntu cloud-image guest with loopback-only SSH forwarding
   - keeps repo sync explicit via rsync; no host bind mounts are used
   - refuses to boot without writable /dev/kvm unless SWARM_HARNESS_VM_ALLOW_TCG=true
-  - installs guest-side test prerequisites with apt during bootstrap
+  - installs guest-side test prerequisites with apt during bootstrap, then skips repeat bootstrap when the stamp exists unless --rebootstrap is passed
+  - run/local-replicate/local-replicate-recovery sync by default; pass --no-sync only when the existing guest checkout is already current
   - can install required Ubuntu host packages with install-host-deps
 EOF
 }
@@ -105,6 +106,8 @@ VM_IMAGE_URL="${SWARM_HARNESS_VM_IMAGE_URL:-https://cloud-images.ubuntu.com/nobl
 GUEST_REPO_DIR="${SWARM_HARNESS_VM_REPO_DIR:-~/${ROOT_DIR##*/}}"
 ALLOW_TCG="${SWARM_HARNESS_VM_ALLOW_TCG:-false}"
 FORCE_CREATE="${SWARM_HARNESS_VM_FORCE_CREATE:-false}"
+FORCE_REBOOTSTRAP="false"
+NO_SYNC="false"
 REPO_ROOT_OVERRIDE=""
 
 VM_STATE_ROOT="$(state_home)/harness-vm/${VM_NAME}"
@@ -414,7 +417,15 @@ wait_for_ssh() {
 
 bootstrap_vm() {
   start_vm
-  log "Installing guest prerequisites"
+  if [[ -f "${BOOTSTRAP_STAMP_FILE}" && "${FORCE_REBOOTSTRAP}" != "true" ]]; then
+    log "Guest bootstrap already complete; skipping package install (pass --rebootstrap to force)"
+    return 0
+  fi
+  if [[ -f "${BOOTSTRAP_STAMP_FILE}" && "${FORCE_REBOOTSTRAP}" == "true" ]]; then
+    log "Reinstalling guest prerequisites (--rebootstrap)"
+  else
+    log "Installing guest prerequisites"
+  fi
   remote_ssh bash -se <<'EOF'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -468,10 +479,18 @@ sync_repo() {
   date -u +%Y-%m-%dT%H:%M:%SZ >"${SYNC_STAMP_FILE}"
 }
 
+maybe_sync_repo() {
+  if [[ "${NO_SYNC}" == "true" ]]; then
+    log "Skipping repo sync (--no-sync); using existing guest checkout at ${GUEST_REPO_DIR}"
+    return 0
+  fi
+  sync_repo
+}
+
 provision_vm() {
   create_vm
   bootstrap_vm
-  sync_repo
+  maybe_sync_repo
   log "Provisioned ${VM_NAME}"
 }
 
@@ -479,7 +498,7 @@ run_in_guest_repo() {
   local repo_root
   repo_root="$(resolve_repo_root)"
   : "${repo_root}"
-  sync_repo
+  maybe_sync_repo
   local command_string
   command_string="cd $(shell_quote "${GUEST_REPO_DIR}") && $(join_quoted "$@")"
   log "[swarm-harness run] ${command_string}"
@@ -587,6 +606,12 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || fail "--repo-root requires a value"
       REPO_ROOT_OVERRIDE="$1"
       ;;
+    --rebootstrap)
+      FORCE_REBOOTSTRAP="true"
+      ;;
+    --no-sync)
+      NO_SYNC="true"
+      ;;
     --)
       shift
       break
@@ -600,6 +625,25 @@ done
 if [[ $# -gt 0 ]]; then
   ARGS+=("$@")
 fi
+
+case "${COMMAND}" in
+  bootstrap)
+    [[ "${NO_SYNC}" != "true" ]] || fail "--no-sync is not supported for bootstrap"
+    ;;
+  sync)
+    [[ "${NO_SYNC}" != "true" ]] || fail "--no-sync is not supported for sync"
+    [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for sync"
+    ;;
+  run|local-replicate|local-replicate-recovery)
+    [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for ${COMMAND}; run bootstrap/provision --rebootstrap first"
+    ;;
+  create|start|stop|restart|status|doctor|install-host-deps|ssh)
+    [[ "${NO_SYNC}" != "true" ]] || fail "--no-sync is not supported for ${COMMAND}"
+    [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for ${COMMAND}"
+    ;;
+  provision)
+    ;;
+esac
 
 case "${COMMAND}" in
   doctor)

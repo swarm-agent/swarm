@@ -1,7 +1,6 @@
 import type { CSSProperties, DragEvent } from 'react'
-import { Folder, FolderOpen, ListChecks, Pencil, Trash2 } from 'lucide-react'
+import { Folder, ListChecks, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
-import { Card } from '../../../../components/ui/card'
 import { cn } from '../../../../lib/cn'
 import { formatWorkspaceDirectories } from '../services/workspace-format'
 import { createWorkspaceAccentStyle } from '../services/workspace-theme'
@@ -38,7 +37,6 @@ export function WorkspaceCard({
   density = 'comfortable',
 }: WorkspaceCardProps) {
   const directories = formatWorkspaceDirectories(workspace.directories)
-  const previewDirectories = directories.slice(0, density === 'compact' ? 2 : 3)
   const cardThemeStyle = createWorkspaceAccentStyle(workspace.themeId, '--workspace-card-theme') as CSSProperties
 
   const handleDragStart = (event: DragEvent<HTMLElement>) => {
@@ -75,14 +73,14 @@ export function WorkspaceCard({
   }
 
   return (
-    <Card
+    <div
       className={cn(
-        'grid gap-4 border p-4 transition sm:p-5',
+        'group flex flex-col rounded-lg border bg-[var(--app-surface)] shadow-sm transition-all',
+        density === 'compact' ? 'gap-3 p-3.5' : 'gap-4 p-4',
         current
-          ? 'border-[var(--workspace-card-theme-border-strong,var(--app-border-strong))] bg-[color-mix(in_oklab,var(--workspace-card-theme-selection,var(--app-selection))_16%,var(--app-surface))]'
-          : 'border-[color-mix(in_oklab,var(--workspace-card-theme-border-accent,var(--app-border-accent))_52%,var(--app-border))] bg-[color-mix(in_oklab,var(--workspace-card-theme-selection,var(--app-selection))_6%,var(--app-surface))] hover:border-[color-mix(in_oklab,var(--workspace-card-theme-border-strong,var(--app-border-strong))_72%,var(--app-border))] hover:bg-[color-mix(in_oklab,var(--workspace-card-theme-selection,var(--app-selection))_10%,var(--app-surface))]',
-        dragging && 'scale-[1.01] opacity-80 shadow-[var(--shadow-card)]',
-        density === 'compact' && 'gap-3 p-4',
+          ? 'border-[var(--workspace-card-theme-border-strong,var(--app-border-strong))] bg-[color-mix(in_oklab,var(--workspace-card-theme-selection,var(--app-primary))_8%,var(--app-surface))]'
+          : 'border-[var(--app-border)] hover:border-[var(--workspace-card-theme-border-accent,var(--app-border-accent))]',
+        dragging && 'opacity-50',
       )}
       style={cardThemeStyle}
       draggable={Boolean(onMoveToIndex)}
@@ -92,23 +90,22 @@ export function WorkspaceCard({
       onDragEnd={handleDragEnd}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-elevated)] text-[var(--app-text)]">
-            {position}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate font-medium text-[var(--app-text)]">{workspace.workspaceName}</h3>
+            {current ? (
+              <span className="rounded bg-[var(--app-surface-elevated)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                Active
+              </span>
+            ) : null}
           </div>
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text)]">
-            <Folder size={18} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="truncate text-base font-semibold text-[var(--app-text)]">{workspace.workspaceName}</h2>
-            <p className="truncate text-sm text-[var(--app-text-muted)]" title={previewDirectories[0] ?? workspace.path}>
-              {previewDirectories[0] ?? workspace.path}
-            </p>
-          </div>
+          <span className="truncate text-xs text-[var(--app-text-subtle)]" title={directories[0] ?? workspace.path}>
+            {directories[0] ?? workspace.path}
+          </span>
         </div>
         {onToggleWorktree ? (
           <WorkspaceWorktreeToggle
-            className="shrink-0 self-start"
+            className="shrink-0"
             enabled={workspace.worktreeEnabled}
             busy={busy}
             onToggle={() => onToggleWorktree(workspace.path, !workspace.worktreeEnabled)}
@@ -116,53 +113,46 @@ export function WorkspaceCard({
         ) : null}
       </div>
 
-      <div className="grid gap-2">
-        <div className="flex flex-wrap gap-2">
-          <div className="inline-flex items-center gap-2 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1 text-xs font-medium text-[var(--app-text-muted)]">
-            <ListChecks size={12} />
-            <span>{workspace.todoSummary?.taskCount ?? 0} tasks</span>
-          </div>
-          {typeof workspace.todoSummary?.user?.openCount === 'number' ? (
-            <div className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1 text-xs font-medium text-[var(--app-text-muted)]">
-              {workspace.todoSummary.user.openCount} user open
-            </div>
-          ) : null}
+      <div className="flex flex-wrap gap-2">
+        <div className="flex items-center gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1 text-xs text-[var(--app-text-muted)]">
+          <ListChecks size={14} />
+          {workspace.todoSummary?.taskCount ?? 0}
         </div>
-        {previewDirectories.map((directory) => (
-          <div key={directory} className="flex items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
-            <FolderOpen size={14} className="shrink-0" />
-            <span className="truncate" title={directory}>{directory}</span>
-          </div>
-        ))}
-        {directories.length > previewDirectories.length ? (
-          <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-sm text-[var(--app-text-subtle)]">
-            +{directories.length - previewDirectories.length} more
-          </div>
-        ) : null}
         {directories.length > 1 ? (
-          <div className="inline-flex w-fit items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1 text-xs font-medium text-[var(--app-text-muted)]">
-            {directories.length - 1} linked {directories.length === 2 ? 'folder' : 'folders'}
+          <div className="flex items-center gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1 text-xs text-[var(--app-text-muted)]">
+            <Folder size={14} />
+            {directories.length}
           </div>
         ) : null}
       </div>
 
-      <div className="flex flex-wrap gap-3">
-        <Button type="button" onClick={() => onOpen(workspace.path)} disabled={busy}>
-          {busy ? 'Opening…' : 'Open'}
+      <div className="mt-auto flex items-center justify-between gap-2 border-t border-[var(--app-border)] pt-3">
+        <div className="flex gap-1">
+          {onEdit ? (
+            <button
+              type="button"
+              onClick={() => onEdit(workspace.path)}
+              disabled={busy}
+              className="rounded p-1.5 text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+            >
+              <Pencil size={14} />
+            </button>
+          ) : null}
+          {onDelete ? (
+            <button
+              type="button"
+              onClick={() => onDelete(workspace.path)}
+              disabled={busy}
+              className="rounded p-1.5 text-[var(--app-text-muted)] transition-colors hover:bg-[color-mix(in_oklab,var(--app-danger)_10%,transparent)] hover:text-[var(--app-danger)]"
+            >
+              <Trash2 size={14} />
+            </button>
+          ) : null}
+        </div>
+        <Button size="sm" onClick={() => onOpen(workspace.path)} disabled={busy} className="rounded-md">
+          {busy ? 'Opening...' : 'Open'}
         </Button>
-        {onEdit ? (
-          <Button type="button" onClick={() => onEdit(workspace.path)} disabled={busy}>
-            <Pencil size={14} />
-            Edit
-          </Button>
-        ) : null}
-        {onDelete ? (
-          <Button type="button" variant="ghost" onClick={() => onDelete(workspace.path)} disabled={busy}>
-            <Trash2 size={14} />
-            Remove from Swarm
-          </Button>
-        ) : null}
       </div>
-    </Card>
+    </div>
   )
 }

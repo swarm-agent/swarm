@@ -793,12 +793,11 @@ func InstallLaunchers(root string) (InstallReport, error) {
 	if err != nil {
 		return InstallReport{}, err
 	}
-	toolDir := swarmToolBinDir(dataHome)
 	links := map[string]string{
-		"swarm":      filepath.Join(toolDir, "swarm"),
-		"swarmdev":   filepath.Join(toolDir, "swarmdev"),
-		"rebuild":    filepath.Join(toolDir, "rebuild"),
-		"swarmsetup": filepath.Join(toolDir, "swarmsetup"),
+		"swarm":      filepath.Join(dataHome, "swarm", "libexec", "swarm"),
+		"swarmdev":   filepath.Join(dataHome, "swarm", "libexec", "swarmdev"),
+		"rebuild":    filepath.Join(dataHome, "swarm", "libexec", "rebuild"),
+		"swarmsetup": filepath.Join(dataHome, "swarm", "libexec", "swarmsetup"),
 	}
 	for _, target := range links {
 		if !isExecutable(target) {
@@ -807,8 +806,7 @@ func InstallLaunchers(root string) (InstallReport, error) {
 	}
 	for name, target := range links {
 		linkPath := filepath.Join(binHome, name)
-		_ = os.Remove(linkPath)
-		if err := os.Symlink(target, linkPath); err != nil {
+		if err := replaceSymlink(linkPath, target); err != nil {
 			return InstallReport{}, fmt.Errorf("link %s -> %s: %w", linkPath, target, err)
 		}
 	}
@@ -824,52 +822,28 @@ func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
 	if err != nil {
 		return InstallReport{}, err
 	}
-	platformRoot := filepath.Join(artifactRoot, runtime.GOOS+"-"+runtime.GOARCH)
-	rootArtifactDir := filepath.Join(platformRoot, "root")
-	swarmdArtifactDir := filepath.Join(platformRoot, "swarmd")
-	toolDir := swarmToolBinDir(dataHome)
-	binDir := swarmBinaryRoot(dataHome)
-	libDir := swarmLibDir(dataHome)
-	requiredFiles := []struct {
-		name       string
-		source     string
-		target     string
-		executable bool
-	}{
-		{name: "swarm", source: filepath.Join(rootArtifactDir, "swarm"), target: filepath.Join(toolDir, "swarm"), executable: true},
-		{name: "swarmdev", source: filepath.Join(rootArtifactDir, "swarmdev"), target: filepath.Join(toolDir, "swarmdev"), executable: true},
-		{name: "rebuild", source: filepath.Join(rootArtifactDir, "rebuild"), target: filepath.Join(toolDir, "rebuild"), executable: true},
-		{name: "swarmsetup", source: filepath.Join(rootArtifactDir, "swarmsetup"), target: filepath.Join(toolDir, "swarmsetup"), executable: true},
-		{name: "swarmtui", source: filepath.Join(rootArtifactDir, "swarmtui"), target: filepath.Join(binDir, "swarmtui"), executable: true},
-		{name: "swarmd", source: filepath.Join(swarmdArtifactDir, "swarmd"), target: filepath.Join(binDir, "swarmd"), executable: true},
-		{name: "swarmctl", source: filepath.Join(swarmdArtifactDir, "swarmctl"), target: filepath.Join(binDir, "swarmctl"), executable: true},
-		{name: "libfff_c.so", source: filepath.Join(swarmdArtifactDir, "libfff_c.so"), target: filepath.Join(libDir, "libfff_c.so"), executable: false},
+	installRoot := swarmInstallRoot(dataHome)
+	if err := os.MkdirAll(filepath.Join(installRoot, "versions"), 0o755); err != nil {
+		return InstallReport{}, err
 	}
-	for _, item := range requiredFiles {
-		if item.executable {
-			if !isExecutable(item.source) {
-				return InstallReport{}, fmt.Errorf("missing executable artifact for %s: %s", item.name, item.source)
-			}
-		} else if !isReadableFile(item.source) {
-			return InstallReport{}, fmt.Errorf("missing runtime artifact for %s: %s", item.name, item.source)
-		}
-		if err := copyFile(item.source, item.target); err != nil {
-			return InstallReport{}, err
-		}
+	version, err := readBuildInfoVersion(filepath.Join(artifactRoot, "build-info.txt"))
+	if err != nil {
+		return InstallReport{}, err
 	}
-	webArtifactDir := filepath.Join(artifactRoot, "web")
-	if _, err := os.Stat(filepath.Join(webArtifactDir, "index.html")); err == nil {
-		webTargetDir := swarmDesktopDistDir(dataHome)
-		if err := os.RemoveAll(webTargetDir); err != nil {
-			return InstallReport{}, err
-		}
-		if err := copyDir(webArtifactDir, webTargetDir); err != nil {
-			return InstallReport{}, err
-		}
-		if err := writeCompressedDesktopAssets(webTargetDir); err != nil {
-			return InstallReport{}, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	targetRoot := filepath.Join(installRoot, "versions", version)
+	if err := os.RemoveAll(targetRoot); err != nil {
+		return InstallReport{}, err
+	}
+	if err := installRuntimeTreeFromArtifact(targetRoot, artifactRoot); err != nil {
+		return InstallReport{}, err
+	}
+	if err := os.WriteFile(filepath.Join(targetRoot, ".version"), []byte(version+"\n"), 0o644); err != nil {
+		return InstallReport{}, err
+	}
+	if err := switchRuntimeLinks(installRoot, targetRoot); err != nil {
+		return InstallReport{}, err
+	}
+	if err := installLauncherSymlinks(installRoot); err != nil {
 		return InstallReport{}, err
 	}
 	return InstallLaunchers("")
@@ -1006,6 +980,12 @@ func StartBackend(profile Profile, opts StartBackendOptions) error {
 		return err
 	}
 	if err := waitForHealth(profile, 100); err != nil {
+		_ = cmd.Process.Kill()
+		_ = os.Remove(profile.PIDFile)
+		ClearPortFile(profile)
+		return err
+	}
+	if err := markCurrentRuntimeBootSuccessful(profile.InstallRoot); err != nil {
 		_ = cmd.Process.Kill()
 		_ = os.Remove(profile.PIDFile)
 		ClearPortFile(profile)

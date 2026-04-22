@@ -42,6 +42,32 @@ type HealthStatus struct {
 	BypassPermissions bool   `json:"bypass_permissions,omitempty"`
 }
 
+type UpdateStatus struct {
+	CurrentVersion   string `json:"current_version"`
+	CurrentLane      string `json:"current_lane,omitempty"`
+	DevMode          bool   `json:"dev_mode"`
+	Suppressed       bool   `json:"suppressed"`
+	Reason           string `json:"reason,omitempty"`
+	CheckedAtUnixMS  int64  `json:"checked_at_unix_ms,omitempty"`
+	LatestVersion    string `json:"latest_version,omitempty"`
+	LatestURL        string `json:"latest_url,omitempty"`
+	UpdateAvailable  bool   `json:"update_available"`
+	ComparisonSource string `json:"comparison_source,omitempty"`
+	Error            string `json:"error,omitempty"`
+	Stale            bool   `json:"stale,omitempty"`
+}
+
+type UpdateApplyPlan struct {
+	CurrentVersion   string `json:"current_version"`
+	CurrentLane      string `json:"current_lane,omitempty"`
+	TargetVersion    string `json:"target_version"`
+	ReleaseURL       string `json:"release_url,omitempty"`
+	AssetName        string `json:"asset_name"`
+	AssetURL         string `json:"asset_url"`
+	SHA256           string `json:"sha256"`
+	ComparisonSource string `json:"comparison_source,omitempty"`
+}
+
 type CodexStatus struct {
 	Provider     string              `json:"provider"`
 	Configured   bool                `json:"configured"`
@@ -1036,6 +1062,22 @@ func (c *API) Shutdown(ctx context.Context, reason string) error {
 		payload["reason"] = strings.TrimSpace(reason)
 	}
 	return c.postJSON(ctx, "/v1/system/shutdown", payload, nil, true)
+}
+
+func (c *API) GetUpdateStatus(ctx context.Context) (UpdateStatus, error) {
+	var status UpdateStatus
+	if err := c.getJSON(ctx, "/v1/update/status", &status, true); err != nil {
+		return UpdateStatus{}, err
+	}
+	return status, nil
+}
+
+func (c *API) ApplyUpdate(ctx context.Context) (UpdateApplyPlan, error) {
+	var plan UpdateApplyPlan
+	if err := c.postJSON(ctx, "/v1/update/apply", map[string]any{}, &plan, true); err != nil {
+		return UpdateApplyPlan{}, err
+	}
+	return plan, nil
 }
 
 func (c *API) GetUISettings(ctx context.Context) (UISettings, error) {

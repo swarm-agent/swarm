@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/launcher"
 )
 
@@ -18,6 +20,11 @@ func main() {
 
 func run(args []string) error {
 	artifactRoot := ""
+	applyRelease := false
+	lane := "main"
+	plan := client.UpdateApplyPlan{}
+	parentPID := 0
+	var relaunchArgs []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
@@ -29,9 +36,65 @@ func run(args []string) error {
 			}
 			i++
 			artifactRoot = strings.TrimSpace(args[i])
+		case "--apply-release":
+			applyRelease = true
+		case "--lane":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", args[i])
+			}
+			i++
+			lane = strings.TrimSpace(args[i])
+		case "--target-version":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", args[i])
+			}
+			i++
+			plan.TargetVersion = strings.TrimSpace(args[i])
+		case "--asset-name":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", args[i])
+			}
+			i++
+			plan.AssetName = strings.TrimSpace(args[i])
+		case "--asset-url":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", args[i])
+			}
+			i++
+			plan.AssetURL = strings.TrimSpace(args[i])
+		case "--sha256":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", args[i])
+			}
+			i++
+			plan.SHA256 = strings.TrimSpace(args[i])
+		case "--parent-pid":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", args[i])
+			}
+			i++
+			parsed, err := strconv.Atoi(strings.TrimSpace(args[i]))
+			if err != nil || parsed < 0 {
+				return fmt.Errorf("invalid parent pid: %s", args[i])
+			}
+			parentPID = parsed
+		case "--relaunch-arg":
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for %s", args[i])
+			}
+			i++
+			relaunchArgs = append(relaunchArgs, args[i])
 		default:
 			return fmt.Errorf("unsupported argument: %s", args[i])
 		}
+	}
+
+	if applyRelease {
+		profile, err := launcher.LoadRuntimeProfile(lane, nil)
+		if err != nil {
+			return err
+		}
+		return launcher.RunUpdateHelper(profile, plan, parentPID, relaunchArgs)
 	}
 
 	var (
@@ -70,6 +133,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
   swarmsetup
   swarmsetup --artifact-root /path/to/dist
+  swarmsetup --apply-release --lane main --target-version <tag> --asset-name <name> --asset-url <url> --sha256 <digest> [--parent-pid <pid>] [--relaunch-arg <arg>...]
 `)
 }
 
