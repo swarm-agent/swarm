@@ -198,7 +198,7 @@ func newReplicateTestHandler(t *testing.T) (http.Handler, *fakeReplicateDeploySe
 		t.Fatalf("add workspace: %v", err)
 	}
 
-	server := NewServer("test", nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := NewServer("test", nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)

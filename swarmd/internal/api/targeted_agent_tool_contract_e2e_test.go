@@ -59,7 +59,7 @@ func TestTargetedScopedSubagentToolContractAPIEndToEnd(t *testing.T) {
 	providers.RegisterRunner(runner)
 
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, agentSvc, nil, eventLog)
-	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, eventLog, hub)
+	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
 	server.SetStartupConfigPath(writeLocalStartupConfig(t))
 	server.SetSwarmService(fakeAgentAPISwarmService{
 		state: swarmruntime.LocalState{
@@ -168,7 +168,7 @@ func TestTargetedBackgroundFullBashToolContractAPIEndToEnd(t *testing.T) {
 	providers.RegisterRunner(runner)
 
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, agentSvc, nil, eventLog)
-	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, eventLog, hub)
+	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
 	server.SetStartupConfigPath(writeLocalStartupConfig(t))
 	server.SetSwarmService(fakeAgentAPISwarmService{
 		state: swarmruntime.LocalState{
@@ -245,7 +245,7 @@ func TestAgentAndCustomToolsManageableViaV2API(t *testing.T) {
 	}
 	providers := registry.New()
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, agentSvc, nil, eventLog)
-	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, eventLog, hub)
+	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
 	handler := server.Handler()
 
 	putCustomToolV2(t, handler, "git_status_short", map[string]any{

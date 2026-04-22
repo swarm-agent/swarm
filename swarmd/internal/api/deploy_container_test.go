@@ -11,7 +11,7 @@ import (
 )
 
 func TestDeployContainerAttachApproveAcceptsPeerAuthTokens(t *testing.T) {
-	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
 	fakeDeploy := &fakeReplicateDeployService{}
 	server.SetDeployContainerService(fakeDeploy)
 

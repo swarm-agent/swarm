@@ -357,31 +357,39 @@ func normalizeSHA256Digest(value string) string {
 }
 
 func shouldSuppress(currentVersion, lane string, devMode bool) bool {
+	_ = currentVersion
 	if devMode {
 		return true
 	}
-	if strings.EqualFold(strings.TrimSpace(lane), "dev") {
-		return true
-	}
-	return sharedbuildinfo.IsDevVersionString(currentVersion)
+	return strings.EqualFold(strings.TrimSpace(lane), "dev")
 }
 
 func suppressionReason(currentVersion, lane string, devMode bool) string {
+	_ = currentVersion
 	switch {
 	case devMode:
 		return "dev_mode"
 	case strings.EqualFold(strings.TrimSpace(lane), "dev"):
 		return "dev_lane"
-	case sharedbuildinfo.IsDevVersionString(currentVersion):
-		return "dev_version"
 	default:
 		return ""
 	}
 }
 
 func isVersionNewer(latest, current string) bool {
-	latest = normalizeVersion(latest)
-	current = normalizeVersion(current)
+	latestRaw := strings.TrimSpace(latest)
+	currentRaw := strings.TrimSpace(current)
+	if latestRaw == "" || currentRaw == "" {
+		return false
+	}
+	if strings.EqualFold(latestRaw, currentRaw) {
+		return false
+	}
+	if sharedbuildinfo.IsDevVersionString(latestRaw) && sharedbuildinfo.IsDevVersionString(currentRaw) {
+		return true
+	}
+	latest = normalizeVersion(latestRaw)
+	current = normalizeVersion(currentRaw)
 	if latest == "" || current == "" {
 		return false
 	}

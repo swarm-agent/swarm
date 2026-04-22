@@ -394,7 +394,7 @@ func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service,
 		t.Fatalf("ensure agent defaults: %v", err)
 	}
 	routeStore := pebblestore.NewSessionRouteStore(store)
-	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, eventLog, stream.NewHub(eventLog))
+	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmService(fakeRoutedSwarmService{
 		state: swarmruntime.LocalState{
