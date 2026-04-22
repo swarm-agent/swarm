@@ -2,10 +2,13 @@ package update
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +23,8 @@ const (
 	defaultLookupTimeout   = 5 * time.Second
 	defaultUserAgent       = "swarmd-update-status"
 	latestReleaseAPIFormat = "https://api.github.com/repos/%s/%s/releases/latest"
+	linuxAMD64ArchiveFmt   = "swarm-%s-linux-amd64.tar.gz"
+	comparisonSource       = "github_releases"
 )
 
 type Service struct {
@@ -58,24 +63,42 @@ type Status struct {
 	Stale            bool   `json:"stale,omitempty"`
 }
 
+type ApplyPlan struct {
+	CurrentVersion   string `json:"current_version"`
+	CurrentLane      string `json:"current_lane,omitempty"`
+	TargetVersion    string `json:"target_version"`
+	ReleaseURL       string `json:"release_url,omitempty"`
+	AssetName        string `json:"asset_name"`
+	AssetURL         string `json:"asset_url"`
+	SHA256           string `json:"sha256"`
+	ComparisonSource string `json:"comparison_source,omitempty"`
+}
+
 type githubRelease struct {
-	TagName    string `json:"tag_name"`
-	HTMLURL    string `json:"html_url"`
-	Draft      bool   `json:"draft"`
-	Prerelease bool   `json:"prerelease"`
+	TagName    string               `json:"tag_name"`
+	HTMLURL    string               `json:"html_url"`
+	Draft      bool                 `json:"draft"`
+	Prerelease bool                 `json:"prerelease"`
+	Assets     []githubReleaseAsset `json:"assets"`
+}
+
+type githubReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Digest             string `json:"digest"`
 }
 
 func NewService(lane string, devMode bool) *Service {
 	return &Service{
-		client: &http.Client{Timeout: defaultLookupTimeout},
-		repoOwner: defaultRepoOwner,
-		repoName: defaultRepoName,
-		cacheTTL: defaultCacheTTL,
-		timeout: defaultLookupTimeout,
-		userAgent: defaultUserAgent,
-		lane: strings.ToLower(strings.TrimSpace(lane)),
-		devMode: devMode,
-		current: sharedbuildinfo.DisplayVersion(),
+		client:      &http.Client{Timeout: defaultLookupTimeout},
+		repoOwner:   defaultRepoOwner,
+		repoName:    defaultRepoName,
+		cacheTTL:    defaultCacheTTL,
+		timeout:     defaultLookupTimeout,
+		userAgent:   defaultUserAgent,
+		lane:        strings.ToLower(strings.TrimSpace(lane)),
+		devMode:     devMode,
+		current:     sharedbuildinfo.DisplayVersion(),
 		currentFunc: sharedbuildinfo.DisplayVersion,
 	}
 }
@@ -117,7 +140,7 @@ func (s *Service) Status(ctx context.Context, force bool) Status {
 	s.mu.Unlock()
 
 	status := base
-	status.ComparisonSource = "github_releases"
+	status.ComparisonSource = comparisonSource
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
@@ -157,6 +180,56 @@ func (s *Service) Status(ctx context.Context, force bool) Status {
 	return status
 }
 
+func (s *Service) Apply(ctx context.Context) (ApplyPlan, error) {
+	currentVersion := strings.TrimSpace(s.current)
+	if s.currentFunc != nil {
+		currentVersion = strings.TrimSpace(s.currentFunc())
+	}
+	plan := ApplyPlan{
+		CurrentVersion:   currentVersion,
+		CurrentLane:      strings.TrimSpace(s.lane),
+		ComparisonSource: comparisonSource,
+	}
+	if plan.CurrentVersion == "" {
+		plan.CurrentVersion = sharedbuildinfo.DisplayVersion()
+	}
+	if shouldSuppress(plan.CurrentVersion, plan.CurrentLane, s.devMode) {
+		return ApplyPlan{}, fmt.Errorf("update apply is suppressed: %s", suppressionReason(plan.CurrentVersion, plan.CurrentLane, s.devMode))
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	release, err := s.fetchLatestRelease(ctx)
+	if err != nil {
+		return ApplyPlan{}, err
+	}
+	if release.Draft {
+		return ApplyPlan{}, errors.New("latest release is marked draft")
+	}
+	plan.TargetVersion = strings.TrimSpace(release.TagName)
+	plan.ReleaseURL = strings.TrimSpace(release.HTMLURL)
+	if !isVersionNewer(plan.TargetVersion, plan.CurrentVersion) {
+		return ApplyPlan{}, errors.New("no update available")
+	}
+
+	plan.AssetName = fmt.Sprintf(linuxAMD64ArchiveFmt, plan.TargetVersion)
+	asset, ok := findReleaseAsset(release.Assets, plan.AssetName)
+	if !ok {
+		return ApplyPlan{}, fmt.Errorf("release %s is missing asset %s", plan.TargetVersion, plan.AssetName)
+	}
+	plan.AssetURL = strings.TrimSpace(asset.BrowserDownloadURL)
+	if plan.AssetURL == "" {
+		return ApplyPlan{}, fmt.Errorf("release asset %s is missing browser_download_url", plan.AssetName)
+	}
+	sha256, err := s.resolveAssetSHA256(ctx, asset, release.Assets, plan.AssetName)
+	if err != nil {
+		return ApplyPlan{}, err
+	}
+	plan.SHA256 = sha256
+	return plan, nil
+}
+
 func (s *Service) store(status Status) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -189,6 +262,98 @@ func (s *Service) fetchLatestRelease(ctx context.Context) (githubRelease, error)
 		return githubRelease{}, errors.New("latest release missing tag_name")
 	}
 	return release, nil
+}
+
+func (s *Service) resolveAssetSHA256(ctx context.Context, archiveAsset githubReleaseAsset, assets []githubReleaseAsset, assetName string) (string, error) {
+	if digest := normalizeSHA256Digest(archiveAsset.Digest); digest != "" {
+		return digest, nil
+	}
+	checksumName := assetName + ".sha256"
+	checksumAsset, ok := findReleaseAsset(assets, checksumName)
+	if !ok {
+		return "", fmt.Errorf("release asset %s is missing checksum asset %s", assetName, checksumName)
+	}
+	raw, err := s.fetchAssetText(ctx, checksumAsset.BrowserDownloadURL)
+	if err != nil {
+		return "", err
+	}
+	sha256, err := parseSHA256Asset(raw, assetName)
+	if err != nil {
+		return "", fmt.Errorf("parse checksum asset %s: %w", checksumName, err)
+	}
+	return sha256, nil
+}
+
+func (s *Service) fetchAssetText(ctx context.Context, rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", errors.New("asset url must not be empty")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build asset request: %w", err)
+	}
+	if ua := strings.TrimSpace(s.userAgent); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	req.Header.Set("Accept", "text/plain, application/octet-stream;q=0.9, application/vnd.github+json;q=0.8")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("download asset metadata: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download asset metadata: github returned %s", resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read asset metadata: %w", err)
+	}
+	return string(body), nil
+}
+
+func findReleaseAsset(assets []githubReleaseAsset, name string) (githubReleaseAsset, bool) {
+	name = strings.TrimSpace(name)
+	for _, asset := range assets {
+		if strings.TrimSpace(asset.Name) == name {
+			return asset, true
+		}
+	}
+	return githubReleaseAsset{}, false
+}
+
+func parseSHA256Asset(raw, assetName string) (string, error) {
+	assetBase := path.Base(strings.TrimSpace(assetName))
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 0 {
+			continue
+		}
+		digest := normalizeSHA256Digest(fields[0])
+		if digest == "" {
+			continue
+		}
+		if len(fields) == 1 {
+			return digest, nil
+		}
+		name := strings.TrimPrefix(fields[len(fields)-1], "*")
+		if path.Base(name) == assetBase {
+			return digest, nil
+		}
+	}
+	return "", errors.New("missing sha256 digest")
+}
+
+func normalizeSHA256Digest(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.TrimPrefix(value, "sha256:")
+	if len(value) != 64 {
+		return ""
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return ""
+	}
+	return value
 }
 
 func shouldSuppress(currentVersion, lane string, devMode bool) bool {

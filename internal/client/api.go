@@ -57,6 +57,17 @@ type UpdateStatus struct {
 	Stale            bool   `json:"stale,omitempty"`
 }
 
+type UpdateApplyPlan struct {
+	CurrentVersion   string `json:"current_version"`
+	CurrentLane      string `json:"current_lane,omitempty"`
+	TargetVersion    string `json:"target_version"`
+	ReleaseURL       string `json:"release_url,omitempty"`
+	AssetName        string `json:"asset_name"`
+	AssetURL         string `json:"asset_url"`
+	SHA256           string `json:"sha256"`
+	ComparisonSource string `json:"comparison_source,omitempty"`
+}
+
 type CodexStatus struct {
 	Provider     string              `json:"provider"`
 	Configured   bool                `json:"configured"`
@@ -1059,6 +1070,14 @@ func (c *API) GetUpdateStatus(ctx context.Context) (UpdateStatus, error) {
 		return UpdateStatus{}, err
 	}
 	return status, nil
+}
+
+func (c *API) ApplyUpdate(ctx context.Context) (UpdateApplyPlan, error) {
+	var plan UpdateApplyPlan
+	if err := c.postJSON(ctx, "/v1/update/apply", map[string]any{}, &plan, true); err != nil {
+		return UpdateApplyPlan{}, err
+	}
+	return plan, nil
 }
 
 func (c *API) GetUISettings(ctx context.Context) (UISettings, error) {

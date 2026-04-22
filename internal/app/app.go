@@ -111,6 +111,7 @@ func buildHomeCommandSuggestions() []ui.CommandSuggestion {
 		// {Command: "/sandbox", Hint: "Open sandbox setup modal (global ON/OFF)", QuickTips: []string{"/sandbox on", "/sandbox off", "/sandbox status"}},
 		{Command: "/sessions", Hint: "Open recent sessions modal"},
 		{Command: "/swarm", Hint: "Show swarm dashboard, pairing state, and approvals", QuickTips: []string{"/swarm status", "/swarm pending", "/swarm approve <id>", "/swarm reject <id>", "/swarm role master", "/swarm set <name>"}},
+		{Command: "/update", Hint: "Check for or apply a released update", QuickTips: []string{"/update status", "/update apply"}},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
 		{Command: "/vault", Hint: "Vault status, export, or import guidance"},
@@ -1833,6 +1834,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleVoiceCommand(args)
 	case "swarm":
 		a.handleSwarmCommand(args)
+	case "update":
+		a.handleUpdateCommand(args)
 	case "keybinds", "keys":
 		a.handleKeybindsCommand(args)
 	case "copy":
@@ -1916,6 +1919,7 @@ func (a *App) showHelp() {
 		"/themes delete <id>",
 		"/header [on|off|toggle|status]   (chat header visibility)",
 		"/swarm [status|pending|approve <id>|reject <id>|set <name>|<name>]   (show dashboard, review pending children, or change device identity)",
+		"/update [status|apply]   (check for or install a released update)",
 		"/thinking [on|off|toggle|status]   (show or hide reasoning/thinking tags)",
 		"/mouse [on|off|toggle|status]   (mouse click capture)",
 		fmt.Sprintf("%s   (toggle mouse click capture)", keybinds.Label(ui.KeybindGlobalToggleMouse)),
