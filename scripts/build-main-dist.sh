@@ -100,7 +100,14 @@ else
 fi
 build_actor="${GITHUB_ACTOR:-local}"
 built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-ldflags=(-X "${MODULE_PATH}/internal/buildinfo.Version=${release_version}" -X "${MODULE_PATH}/internal/buildinfo.Commit=${git_sha}" -X "${MODULE_PATH}/internal/buildinfo.BuiltAt=${built_at}")
+ldflags=(
+  -X "${MODULE_PATH}/internal/buildinfo.Version=${release_version}"
+  -X "${MODULE_PATH}/internal/buildinfo.Commit=${git_sha}"
+  -X "${MODULE_PATH}/internal/buildinfo.BuiltAt=${built_at}"
+  -X "${MODULE_PATH}/pkg/buildinfo.Version=${release_version}"
+  -X "${MODULE_PATH}/pkg/buildinfo.Commit=${git_sha}"
+  -X "${MODULE_PATH}/pkg/buildinfo.BuiltAt=${built_at}"
+)
 
 echo "building launcher and TUI binaries into ${ROOT_ARTIFACT_DIR}"
 (
@@ -115,8 +122,8 @@ echo "building launcher and TUI binaries into ${ROOT_ARTIFACT_DIR}"
 echo "building swarmd binaries into ${SWARMD_ARTIFACT_DIR}"
 (
   cd "${ROOT_DIR}/swarmd"
-  "${GO_BIN}" build -trimpath -o "${SWARMD_ARTIFACT_DIR}/swarmd" ./cmd/swarmd
-  "${GO_BIN}" build -trimpath -o "${SWARMD_ARTIFACT_DIR}/swarmctl" ./cmd/swarmctl
+  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmd" ./cmd/swarmd
+  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmctl" ./cmd/swarmctl
 )
 cp "${ROOT_DIR}/swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so" "${SWARMD_ARTIFACT_DIR}/libfff_c.so"
 
