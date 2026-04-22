@@ -60,6 +60,8 @@ type ChatSessionMeta struct {
 	Path                  string
 	Branch                string
 	Dirty                 int
+	Version               string
+	UpdateVersionHint     string
 	Agent                 string
 	AgentExecutionSetting string
 	AgentExitPlanMode     bool

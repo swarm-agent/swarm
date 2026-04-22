@@ -21,6 +21,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"golang.org/x/term"
 
+	"swarm-refactor/swarmtui/internal/buildinfo"
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
@@ -224,6 +225,7 @@ type App struct {
 	activePath     string
 	workspacePath  string
 	homeModel      model.HomeModel
+	updateStatus   client.UpdateStatus
 	config         AppConfig
 	themePreviewID string
 	settingsLabel  string
@@ -356,6 +358,7 @@ func New() (*App, error) {
 		if cfgErr != nil {
 			app.home.SetStatus(fmt.Sprintf("settings warning: %v", cfgErr))
 		}
+		app.announceStartupUpdate(next)
 	}
 	if loadErr != nil && cfgErr != nil {
 		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v (settings warning: %v)", loadErr, cfgErr))
@@ -2745,6 +2748,8 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 			Path:                  chatDisplayPath,
 			Branch:                chatBranch,
 			Dirty:                 chatDirty,
+			Version:               strings.TrimSpace(a.homeModel.Version),
+			UpdateVersionHint:     homeUpdateVersionHint(a.homeModel.UpdateStatus),
 			Agent:                 emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
 			AgentExecutionSetting: strings.TrimSpace(a.homeModel.ActiveAgentExecutionSetting),
 			AgentExitPlanMode:     a.homeModel.ActiveAgentExitPlanMode,
@@ -6969,12 +6974,21 @@ func (a *App) syncChatAgentRuntime() {
 		exitPlanModeEnabled,
 		runtimeKnown,
 	)
+	meta := a.chat.Meta()
+	meta.Version = strings.TrimSpace(a.homeModel.Version)
+	meta.UpdateVersionHint = homeUpdateVersionHint(a.homeModel.UpdateStatus)
+	a.chat.SetMeta(meta)
 }
 
 func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
 	a.home.SetSwarmNotificationCount(a.swarmNotificationCount)
+	if next.UpdateStatus != nil {
+		a.updateStatus = *next.UpdateStatus
+	} else {
+		a.updateStatus = client.UpdateStatus{}
+	}
 	a.syncChatAgentRuntime()
 	a.refreshGitRealtimeWatcher()
 	a.applyEffectiveTheme()
@@ -7205,6 +7219,17 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "model preference unavailable")
 	}
 
+	updateStatus, updateErr := a.api.GetUpdateStatus(ctx)
+	if updateErr == nil {
+		next.UpdateStatus = &updateStatus
+		if current := strings.TrimSpace(updateStatus.CurrentVersion); current != "" {
+			next.Version = current
+		}
+		a.updateStatus = updateStatus
+	} else if strings.TrimSpace(buildinfo.DisplayVersion()) != "dev" {
+		errorsSeen = append(errorsSeen, "update status unavailable")
+	}
+
 	if providerID := strings.ToLower(strings.TrimSpace(next.ModelProvider)); providerID != "" {
 		credentials, credErr := a.api.ListAuthCredentials(ctx, providerID, "", 50)
 		if credErr == nil {
@@ -7312,6 +7337,33 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		return next, errors.New(strings.Join(errorsSeen, "; "))
 	}
 	return next, nil
+}
+
+func homeUpdateVersionHint(status *client.UpdateStatus) string {
+	if status == nil || !status.UpdateAvailable {
+		return ""
+	}
+	return strings.TrimSpace(status.LatestVersion)
+}
+
+func (a *App) announceStartupUpdate(next model.HomeModel) {
+	if a == nil {
+		return
+	}
+	status := next.UpdateStatus
+	if status == nil || !status.UpdateAvailable {
+		return
+	}
+	latest := strings.TrimSpace(status.LatestVersion)
+	current := strings.TrimSpace(next.Version)
+	if latest == "" {
+		latest = "new release"
+	}
+	if current == "" {
+		current = buildinfo.DisplayVersion()
+	}
+	message := fmt.Sprintf("update available: %s → %s", current, latest)
+	a.showToast(ui.ToastInfo, message)
 }
 
 func (a *App) activeContextPath() string {
