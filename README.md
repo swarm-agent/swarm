@@ -38,7 +38,7 @@ Install from a GitHub release:
 
 That installs the real Swarm runtime layout and launchers so the user can open the installed app.
 
-Release bundles built by `./scripts/build-main-dist.sh --version <version>` embed the same version metadata into the launcher binaries and `swarmd`/`swarmctl`.
+Release bundles built by `./scripts/build-main-dist.sh --version <version>` embed the same version metadata into the launcher binaries and `swarmd`/`swarmctl`, so installed update status matches the shipped release version.
 
 After install, launch Swarm with either:
 
