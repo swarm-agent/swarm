@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,9 +24,20 @@ import (
 )
 
 const (
-	updateDownloadTimeout = 2 * time.Minute
-	updateParentWaitLimit = 30 * time.Second
+	updateDownloadTimeout     = 2 * time.Minute
+	updateParentWaitLimit     = 30 * time.Second
+	updateBootWaitLimit       = 30 * time.Second
+	updatePollInterval        = 200 * time.Millisecond
+	pendingUpdateBootstrapEnv = "SWARM_PENDING_UPDATE_BOOT"
 )
+
+type runtimeBootStatus struct {
+	Version     string `json:"version,omitempty"`
+	RuntimeRoot string `json:"runtime_root,omitempty"`
+	State       string `json:"state,omitempty"`
+	Failure     string `json:"failure,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+}
 
 type UpdateResult struct {
 	Version      string
@@ -57,12 +69,16 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 	targetRoot := filepath.Join(versionsDir, version)
 	currentLink := filepath.Join(profile.InstallRoot, "current")
 	previousLink := filepath.Join(profile.InstallRoot, "previous")
+	previousRoot, _ := resolveRuntimeLink(currentLink)
 
 	if err := os.MkdirAll(versionsDir, 0o755); err != nil {
 		return UpdateResult{}, err
 	}
 	if installedVersionMatches(targetRoot, version) {
 		if err := switchRuntimeLinks(profile.InstallRoot, targetRoot); err != nil {
+			return UpdateResult{}, err
+		}
+		if err := markPendingRuntimeUpdate(profile.InstallRoot, targetRoot, previousRoot, version); err != nil {
 			return UpdateResult{}, err
 		}
 		if err := installLauncherSymlinks(profile.InstallRoot); err != nil {
@@ -118,6 +134,9 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 	if err := switchRuntimeLinks(profile.InstallRoot, targetRoot); err != nil {
 		return UpdateResult{}, err
 	}
+	if err := markPendingRuntimeUpdate(profile.InstallRoot, targetRoot, previousRoot, version); err != nil {
+		return UpdateResult{}, err
+	}
 	if err := installLauncherSymlinks(profile.InstallRoot); err != nil {
 		return UpdateResult{}, err
 	}
@@ -125,16 +144,24 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 }
 
 func RestartThroughUpdatedRuntime(profile Profile, args []string) error {
+	cmd, err := startRuntimeCommand(profile, args, nil)
+	if err != nil {
+		return err
+	}
+	return cmd.Start()
+}
+
+func startRuntimeCommand(profile Profile, args []string, extraEnv map[string]string) (*exec.Cmd, error) {
 	swarmPath := filepath.Join(profile.ToolBinDir, "swarm")
 	if !isExecutable(swarmPath) {
-		return missingInstalledBinaryError("swarm", swarmPath)
+		return nil, missingInstalledBinaryError("swarm", swarmPath)
 	}
 	cmd := exec.Command(swarmPath, args...)
-	cmd.Env = profile.EnvList(nil)
+	cmd.Env = profile.EnvList(extraEnv)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Start()
+	return cmd, nil
 }
 
 func StartUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int, relaunchArgs []string) error {
@@ -176,10 +203,25 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err := StopBackend(profile); err != nil {
 		return err
 	}
-	if _, err := ApplyReleaseUpdate(context.Background(), profile, plan); err != nil {
+	result, err := ApplyReleaseUpdate(context.Background(), profile, plan)
+	if err != nil {
 		return err
 	}
-	return RestartThroughUpdatedRuntime(profile, relaunchArgs)
+	cmd, err := startRuntimeCommand(profile, relaunchArgs, map[string]string{pendingUpdateBootstrapEnv: "1"})
+	if err != nil {
+		return rollbackPendingUpdateAndRestart(profile, relaunchArgs, nil, err)
+	}
+	if err := cmd.Start(); err != nil {
+		return rollbackPendingUpdateAndRestart(profile, relaunchArgs, cmd.Process, err)
+	}
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+	if err := waitForRuntimeBootConfirmation(profile.InstallRoot, result.RuntimeRoot, waitCh, updateBootWaitLimit); err != nil {
+		return rollbackPendingUpdateAndRestart(profile, relaunchArgs, cmd.Process, err)
+	}
+	return nil
 }
 
 func CurrentRuntimeVersion(installRoot string) string {
@@ -487,6 +529,232 @@ func pathBaseOrDefault(value, fallback string) string {
 		return fallback
 	}
 	return base
+}
+
+func pendingRuntimeLink(installRoot string) string {
+	return filepath.Join(strings.TrimSpace(installRoot), "pending-target")
+}
+
+func lastKnownGoodRuntimeLink(installRoot string) string {
+	return filepath.Join(strings.TrimSpace(installRoot), "last-known-good")
+}
+
+func runtimeBootStatusPath(installRoot string) string {
+	return filepath.Join(strings.TrimSpace(installRoot), "boot-status.json")
+}
+
+func markPendingRuntimeUpdate(installRoot, targetRoot, previousRoot, version string) error {
+	installRoot = filepath.Clean(strings.TrimSpace(installRoot))
+	targetRoot = filepath.Clean(strings.TrimSpace(targetRoot))
+	previousRoot = strings.TrimSpace(previousRoot)
+	if installRoot == "" || targetRoot == "" {
+		return errors.New("install root and target root are required")
+	}
+	if previousRoot != "" {
+		previousRoot = filepath.Clean(previousRoot)
+		if previousRoot != targetRoot {
+			if err := replaceSymlink(lastKnownGoodRuntimeLink(installRoot), previousRoot); err != nil {
+				return fmt.Errorf("set last-known-good runtime link: %w", err)
+			}
+		}
+	}
+	if err := replaceSymlink(pendingRuntimeLink(installRoot), targetRoot); err != nil {
+		return fmt.Errorf("set pending-target runtime link: %w", err)
+	}
+	return writeRuntimeBootStatus(installRoot, runtimeBootStatus{
+		Version:     strings.TrimSpace(version),
+		RuntimeRoot: targetRoot,
+		State:       "pending",
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func markCurrentRuntimeBootSuccessful(installRoot string) error {
+	installRoot = filepath.Clean(strings.TrimSpace(installRoot))
+	if installRoot == "" {
+		return errors.New("install root is required")
+	}
+	pendingRoot, pending := resolveRuntimeLink(pendingRuntimeLink(installRoot))
+	if !pending {
+		return nil
+	}
+	currentRoot, ok := resolveRuntimeLink(filepath.Join(installRoot, "current"))
+	if !ok {
+		return errors.New("current runtime link is missing")
+	}
+	if currentRoot != pendingRoot {
+		return fmt.Errorf("pending runtime %s does not match current runtime %s", pendingRoot, currentRoot)
+	}
+	if err := replaceSymlink(lastKnownGoodRuntimeLink(installRoot), currentRoot); err != nil {
+		return fmt.Errorf("set last-known-good runtime link: %w", err)
+	}
+	if err := removeIfExists(pendingRuntimeLink(installRoot)); err != nil {
+		return err
+	}
+	return writeRuntimeBootStatus(installRoot, runtimeBootStatus{
+		Version:     runtimeVersionFromRoot(currentRoot),
+		RuntimeRoot: currentRoot,
+		State:       "success",
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func rollbackPendingRuntimeUpdate(installRoot string, cause error) (string, error) {
+	installRoot = filepath.Clean(strings.TrimSpace(installRoot))
+	if installRoot == "" {
+		return "", errors.New("install root is required")
+	}
+	pendingRoot, ok := resolveRuntimeLink(pendingRuntimeLink(installRoot))
+	if !ok {
+		return "", errors.New("pending runtime link is missing")
+	}
+	rollbackRoot := ""
+	if candidate, ok := resolveRuntimeLink(lastKnownGoodRuntimeLink(installRoot)); ok && filepath.Clean(candidate) != pendingRoot {
+		rollbackRoot = candidate
+	}
+	if rollbackRoot == "" {
+		if candidate, ok := resolveRuntimeLink(filepath.Join(installRoot, "previous")); ok && filepath.Clean(candidate) != pendingRoot {
+			rollbackRoot = candidate
+		}
+	}
+	if rollbackRoot == "" {
+		return "", errors.New("no rollback runtime is available")
+	}
+	if err := switchRuntimeLinks(installRoot, rollbackRoot); err != nil {
+		return "", err
+	}
+	if err := installLauncherSymlinks(installRoot); err != nil {
+		return "", err
+	}
+	if err := replaceSymlink(lastKnownGoodRuntimeLink(installRoot), rollbackRoot); err != nil {
+		return "", fmt.Errorf("set last-known-good runtime link: %w", err)
+	}
+	if err := removeIfExists(pendingRuntimeLink(installRoot)); err != nil {
+		return "", err
+	}
+	failure := "boot confirmation failed"
+	if cause != nil && strings.TrimSpace(cause.Error()) != "" {
+		failure = strings.TrimSpace(cause.Error())
+	}
+	if err := writeRuntimeBootStatus(installRoot, runtimeBootStatus{
+		Version:     runtimeVersionFromRoot(pendingRoot),
+		RuntimeRoot: pendingRoot,
+		State:       "rolled_back",
+		Failure:     failure,
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		return "", err
+	}
+	return rollbackRoot, nil
+}
+
+func rollbackPendingUpdateAndRestart(profile Profile, relaunchArgs []string, proc *os.Process, cause error) error {
+	terminateProcess(proc, 5*time.Second)
+	_ = StopBackend(profile)
+	if _, err := rollbackPendingRuntimeUpdate(profile.InstallRoot, cause); err != nil {
+		return err
+	}
+	cmd, err := startRuntimeCommand(profile, relaunchArgs, runtimeBootEnvironment())
+	if err != nil {
+		return err
+	}
+	return cmd.Start()
+}
+
+func waitForRuntimeBootConfirmation(installRoot, targetRoot string, waitCh <-chan error, timeout time.Duration) error {
+	installRoot = filepath.Clean(strings.TrimSpace(installRoot))
+	targetRoot = filepath.Clean(strings.TrimSpace(targetRoot))
+	deadline := time.Now().Add(timeout)
+	for {
+		currentRoot, _ := resolveRuntimeLink(filepath.Join(installRoot, "current"))
+		pendingRoot, pending := resolveRuntimeLink(pendingRuntimeLink(installRoot))
+		if !pending {
+			if currentRoot == targetRoot {
+				return nil
+			}
+			return fmt.Errorf("updated runtime %s lost pending confirmation before becoming healthy", targetRoot)
+		}
+		if currentRoot != "" && currentRoot != pendingRoot {
+			return fmt.Errorf("updated runtime %s was replaced before confirmation", targetRoot)
+		}
+		select {
+		case err := <-waitCh:
+			if err != nil {
+				return fmt.Errorf("updated runtime exited before becoming healthy: %w", err)
+			}
+		default:
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for updated runtime %s to become healthy", targetRoot)
+		}
+		time.Sleep(updatePollInterval)
+	}
+}
+
+func writeRuntimeBootStatus(installRoot string, status runtimeBootStatus) error {
+	installRoot = filepath.Clean(strings.TrimSpace(installRoot))
+	if installRoot == "" {
+		return errors.New("install root is required")
+	}
+	if err := os.MkdirAll(installRoot, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	path := runtimeBootStatusPath(installRoot)
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func runtimeVersionFromRoot(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	if version, err := readBuildInfoVersion(filepath.Join(root, "build-info.txt")); err == nil {
+		return strings.TrimSpace(version)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".version"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func removeIfExists(path string) error {
+	err := os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func runtimeBootEnvironment() map[string]string {
+	if value := strings.TrimSpace(os.Getenv(pendingUpdateBootstrapEnv)); value != "" {
+		return map[string]string{pendingUpdateBootstrapEnv: value}
+	}
+	return nil
+}
+
+func terminateProcess(proc *os.Process, timeout time.Duration) {
+	if proc == nil {
+		return
+	}
+	_ = proc.Signal(syscall.SIGTERM)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			return
+		}
+		time.Sleep(updatePollInterval)
+	}
+	_ = proc.Signal(syscall.SIGKILL)
 }
 
 func waitForPIDExit(pid int, timeout time.Duration) error {

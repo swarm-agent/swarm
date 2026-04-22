@@ -51,6 +51,12 @@ func run(argv0 string, args []string) error {
 	if err != nil {
 		return err
 	}
+	if os.Getenv("SWARM_PENDING_UPDATE_BOOT") != "" {
+		if err := launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, Bootstrap: bootstrap}); err != nil {
+			return err
+		}
+		return nil
+	}
 	if bootstrap.HasAny() {
 		if profile.Startup.Exists {
 			return startupconfig.BootstrapExistingConfigError(profile.Startup.Path)

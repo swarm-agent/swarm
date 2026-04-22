@@ -985,6 +985,12 @@ func StartBackend(profile Profile, opts StartBackendOptions) error {
 		ClearPortFile(profile)
 		return err
 	}
+	if err := markCurrentRuntimeBootSuccessful(profile.InstallRoot); err != nil {
+		_ = cmd.Process.Kill()
+		_ = os.Remove(profile.PIDFile)
+		ClearPortFile(profile)
+		return err
+	}
 	if err := recordCurrentLifecycleManager(profile); err != nil {
 		_ = cmd.Process.Kill()
 		_ = os.Remove(profile.PIDFile)

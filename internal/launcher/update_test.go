@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -93,5 +94,89 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 	}
 	if got := CurrentRuntimeVersion(filepath.Join(xdgRoot, "data", "swarm")); got != version {
 		t.Fatalf("CurrentRuntimeVersion = %q, want %q", got, version)
+	}
+}
+
+func TestMarkPendingRuntimeUpdateAndBootSuccess(t *testing.T) {
+	installRoot := t.TempDir()
+	previousRoot := filepath.Join(installRoot, "versions", "v1.0.0")
+	targetRoot := filepath.Join(installRoot, "versions", "v1.1.0")
+	for _, root := range []string{previousRoot, targetRoot} {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", root, err)
+		}
+		version := filepath.Base(root)
+		if err := os.WriteFile(filepath.Join(root, "build-info.txt"), []byte("version="+version+"\n"), 0o644); err != nil {
+			t.Fatalf("write build-info %s: %v", root, err)
+		}
+	}
+	if err := replaceSymlink(filepath.Join(installRoot, "current"), targetRoot); err != nil {
+		t.Fatalf("set current: %v", err)
+	}
+	if err := markPendingRuntimeUpdate(installRoot, targetRoot, previousRoot, "v1.1.0"); err != nil {
+		t.Fatalf("markPendingRuntimeUpdate: %v", err)
+	}
+	pending, ok := resolveRuntimeLink(filepath.Join(installRoot, "pending-target"))
+	if !ok || pending != targetRoot {
+		t.Fatalf("pending-target = %q ok=%v, want %q", pending, ok, targetRoot)
+	}
+	lastKnownGood, ok := resolveRuntimeLink(filepath.Join(installRoot, "last-known-good"))
+	if !ok || lastKnownGood != previousRoot {
+		t.Fatalf("last-known-good = %q ok=%v, want %q", lastKnownGood, ok, previousRoot)
+	}
+	if err := markCurrentRuntimeBootSuccessful(installRoot); err != nil {
+		t.Fatalf("markCurrentRuntimeBootSuccessful: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(installRoot, "pending-target")); !os.IsNotExist(err) {
+		t.Fatalf("pending-target should be removed after successful boot, err=%v", err)
+	}
+	lastKnownGood, ok = resolveRuntimeLink(filepath.Join(installRoot, "last-known-good"))
+	if !ok || lastKnownGood != targetRoot {
+		t.Fatalf("last-known-good after success = %q ok=%v, want %q", lastKnownGood, ok, targetRoot)
+	}
+}
+
+func TestRollbackPendingRuntimeUpdateRestoresPreviousRuntime(t *testing.T) {
+	installRoot := t.TempDir()
+	xdgRoot := t.TempDir()
+	t.Setenv("XDG_BIN_HOME", filepath.Join(xdgRoot, "bin"))
+	previousRoot := filepath.Join(installRoot, "versions", "v1.0.0")
+	targetRoot := filepath.Join(installRoot, "versions", "v1.1.0")
+	for _, root := range []string{previousRoot, targetRoot} {
+		for _, dir := range []string{"bin", "libexec", "lib", "share"} {
+			if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+				t.Fatalf("mkdir %s/%s: %v", root, dir, err)
+			}
+		}
+		for _, name := range []string{"swarm", "swarmdev", "rebuild", "swarmsetup"} {
+			path := filepath.Join(root, "libexec", name)
+			if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatalf("write %s: %v", path, err)
+			}
+		}
+		version := filepath.Base(root)
+		if err := os.WriteFile(filepath.Join(root, "build-info.txt"), []byte("version="+version+"\n"), 0o644); err != nil {
+			t.Fatalf("write build-info %s: %v", root, err)
+		}
+	}
+	if err := switchRuntimeLinks(installRoot, targetRoot); err != nil {
+		t.Fatalf("switchRuntimeLinks target: %v", err)
+	}
+	if err := markPendingRuntimeUpdate(installRoot, targetRoot, previousRoot, "v1.1.0"); err != nil {
+		t.Fatalf("markPendingRuntimeUpdate: %v", err)
+	}
+	rolledBackRoot, err := rollbackPendingRuntimeUpdate(installRoot, errors.New("boom"))
+	if err != nil {
+		t.Fatalf("rollbackPendingRuntimeUpdate: %v", err)
+	}
+	if rolledBackRoot != previousRoot {
+		t.Fatalf("rolledBackRoot = %q, want %q", rolledBackRoot, previousRoot)
+	}
+	currentRoot, ok := resolveRuntimeLink(filepath.Join(installRoot, "current"))
+	if !ok || currentRoot != previousRoot {
+		t.Fatalf("current after rollback = %q ok=%v, want %q", currentRoot, ok, previousRoot)
+	}
+	if _, err := os.Lstat(filepath.Join(installRoot, "pending-target")); !os.IsNotExist(err) {
+		t.Fatalf("pending-target should be removed after rollback, err=%v", err)
 	}
 }

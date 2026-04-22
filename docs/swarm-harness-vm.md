@@ -56,6 +56,12 @@ That will:
 4. install guest prerequisites (`podman`, `docker.io`, `git`, `jq`, `rsync`, `npm`, build tools)
 5. rsync the current repo checkout, including `web/node_modules` when present, into `~/swarm-go` inside the guest
 
+On later runs, `provision` reuses the existing bootstrap stamp and skips the apt/package step unless you explicitly force it:
+
+```bash
+./scripts/swarm-harness-vm.sh provision --rebootstrap
+```
+
 ## Common commands
 
 Check state:
@@ -76,10 +82,22 @@ Resync the repo:
 ./scripts/swarm-harness-vm.sh sync
 ```
 
+Force guest package bootstrap again:
+
+```bash
+./scripts/swarm-harness-vm.sh bootstrap --rebootstrap
+```
+
 Run an arbitrary guest-side command from the repo root:
 
 ```bash
 ./scripts/swarm-harness-vm.sh run -- git status --short
+```
+
+If you already know the guest checkout is current, skip rsync explicitly:
+
+```bash
+./scripts/swarm-harness-vm.sh run --no-sync -- git status --short
 ```
 
 Run the canonical local replicate harness inside the VM:
@@ -88,10 +106,22 @@ Run the canonical local replicate harness inside the VM:
 ./scripts/swarm-harness-vm.sh local-replicate -- --runtime podman
 ```
 
+Repeat runs can skip rsync the same way:
+
+```bash
+./scripts/swarm-harness-vm.sh local-replicate --no-sync -- --runtime podman
+```
+
 Run the recovery harness inside the VM:
 
 ```bash
 ./scripts/swarm-harness-vm.sh local-replicate-recovery
+```
+
+Or skip rsync when reusing the same guest checkout:
+
+```bash
+./scripts/swarm-harness-vm.sh local-replicate-recovery --no-sync
 ```
 
 Stop the VM:
@@ -106,6 +136,8 @@ Stop the VM:
 - prefer `swarm-harness` for `tests/swarmd/local_replicate_recovery_e2e.sh`
 - use the workstation directly only when the test does not depend on local container networking, attach, or fixed-port isolation
 - rerun `sync` before harness work if the checkout changed
+- `run`, `local-replicate`, and `local-replicate-recovery` still sync by default; use `--no-sync` only when you intentionally want to reuse the existing guest checkout
+- use `--rebootstrap` only when you want to refresh guest packages; normal repeat runs should reuse the existing bootstrap stamp
 - if the host checkout already has `web/node_modules`, the sync step carries it into the guest so desktop builds do not need a separate guest-side `npm ci`
 
 ## Relevant filepaths
