@@ -501,6 +501,52 @@ func TestExecuteCommand_ExitAliasRequestsQuit(t *testing.T) {
 	}
 }
 
+func TestApplyUpdateRequestsQuitAndStoresPendingUpdate(t *testing.T) {
+	shutdownCalls := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/update/apply":
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"target_version": "v1.2.3",
+				"current_lane":   "main",
+				"asset_name":     "swarm-v1.2.3-linux-amd64.tar.gz",
+				"asset_url":      "https://example.invalid/swarm-v1.2.3-linux-amd64.tar.gz",
+				"sha256":         strings.Repeat("a", 64),
+			})
+		case "/v1/system/shutdown":
+			shutdownCalls++
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "shutting_down": true})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	a := newCommandTestApp()
+	a.api = client.New(server.URL)
+
+	a.applyUpdate()
+
+	if !a.quitRequested {
+		t.Fatalf("quitRequested = false, want true")
+	}
+	if a.pendingUpdate == nil {
+		t.Fatalf("pendingUpdate = nil, want request")
+	}
+	if a.pendingUpdate.plan.TargetVersion != "v1.2.3" {
+		t.Fatalf("target version = %q, want v1.2.3", a.pendingUpdate.plan.TargetVersion)
+	}
+	if shutdownCalls != 0 {
+		t.Fatalf("shutdownCalls = %d before handoff, want 0", shutdownCalls)
+	}
+}
+
 func TestConsumeReloadResultPreservesDirectoryModeCWD(t *testing.T) {
 	var (
 		worktreeCWD string
