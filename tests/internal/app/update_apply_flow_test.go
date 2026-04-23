@@ -1,8 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,5 +141,53 @@ func TestRunPendingUpdateShutdownUsesTimeoutContext(t *testing.T) {
 
 	if err := a.runPendingUpdate(); err != nil {
 		t.Fatalf("runPendingUpdate: %v", err)
+	}
+}
+
+func TestRunPendingUpdatePrintsConditionalRestartMessage(t *testing.T) {
+	a := newCommandTestApp()
+	a.pendingUpdate = &pendingUpdateRequest{
+		plan: client.UpdateApplyPlan{TargetVersion: "v1.2.3"},
+		lane: "main",
+	}
+
+	originalLoadProfile := loadRuntimeProfileForUpdate
+	originalShutdown := updateShutdownFunc
+	originalHelper := runUpdateHelperForegroundFunc
+	originalStdout := os.Stdout
+	defer func() {
+		loadRuntimeProfileForUpdate = originalLoadProfile
+		updateShutdownFunc = originalShutdown
+		runUpdateHelperForegroundFunc = originalHelper
+		os.Stdout = originalStdout
+	}()
+
+	loadRuntimeProfileForUpdate = func(string) (launcher.Profile, error) { return launcher.Profile{}, nil }
+	updateShutdownFunc = func(_ *client.API, _ context.Context, _ string) error { return nil }
+	runUpdateHelperForegroundFunc = func(_ launcher.Profile, _ client.UpdateApplyPlan, _ []string) error { return nil }
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	runErr := a.runPendingUpdate()
+	_ = w.Close()
+	if runErr != nil {
+		t.Fatalf("runPendingUpdate: %v", runErr)
+	}
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("copy stdout: %v", err)
+	}
+	_ = r.Close()
+
+	output := buf.String()
+	if !strings.Contains(output, "Swarm will attempt to restart automatically when the update finishes.") {
+		t.Fatalf("stdout missing conditional restart line: %q", output)
+	}
+	if !strings.Contains(output, "If automatic restart is blocked, Swarm will tell you to restart it manually.") {
+		t.Fatalf("stdout missing blocked restart line: %q", output)
 	}
 }

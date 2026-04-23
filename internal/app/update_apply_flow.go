@@ -51,7 +51,8 @@ func (a *App) runPendingUpdate() error {
 	}
 	fmt.Fprintf(os.Stdout, "\nUpdating to %s...\n", version)
 	fmt.Fprintln(os.Stdout, "Swarm is shutting down cleanly before applying the update.")
-	fmt.Fprintln(os.Stdout, "Swarm will relaunch automatically when the update finishes.")
+	fmt.Fprintln(os.Stdout, "Swarm will attempt to restart automatically when the update finishes.")
+	fmt.Fprintln(os.Stdout, "If automatic restart is blocked, Swarm will tell you to restart it manually.")
 	return runUpdateHelperForegroundFunc(profile, request.plan, request.relaunchArgs)
 }
 

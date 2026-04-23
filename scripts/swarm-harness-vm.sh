@@ -13,12 +13,19 @@ usage() {
 Usage:
   ./scripts/swarm-harness-vm.sh doctor
   ./scripts/swarm-harness-vm.sh install-host-deps
+  ./scripts/swarm-harness-vm.sh setup [--repo-root PATH] [--no-sync] [--rebootstrap]
+  ./scripts/swarm-harness-vm.sh track
+  ./scripts/swarm-harness-vm.sh logs
   ./scripts/swarm-harness-vm.sh create
   ./scripts/swarm-harness-vm.sh start
   ./scripts/swarm-harness-vm.sh stop
   ./scripts/swarm-harness-vm.sh restart
+  ./scripts/swarm-harness-vm.sh reset
+  ./scripts/swarm-harness-vm.sh nuke
+  ./scripts/swarm-harness-vm.sh fast
   ./scripts/swarm-harness-vm.sh status
   ./scripts/swarm-harness-vm.sh ssh [ssh-args...]
+  ./scripts/swarm-harness-vm.sh shell [ssh-args...]
   ./scripts/swarm-harness-vm.sh bootstrap [--rebootstrap]
   ./scripts/swarm-harness-vm.sh sync [--repo-root PATH]
   ./scripts/swarm-harness-vm.sh provision [--repo-root PATH] [--no-sync] [--rebootstrap]
@@ -39,6 +46,12 @@ Environment overrides:
   SWARM_HARNESS_VM_FORCE_CREATE    true to recreate cloud-init seed/user data on create. Default: false
 
 Behavior:
+  - `setup` is the canonical one-command path for the singular reusable `swarm-harness` VM: doctor -> create/start -> bootstrap -> sync -> summary
+  - `fast` is the repeat-use path: start/reuse -> verify readiness -> optional sync -> ready summary
+  - `reset` restores a fresh guest from cached VM assets so you do not redownload Ubuntu or reinstall guest packages every time
+  - `nuke` destroys all persisted `swarm-harness` VM state, including cached images, so the next run is a true cold start
+  - `track` prints the current reusable VM summary, stamps, logs, and exact shell command so humans/agents do not need to rediscover it
+  - `logs` prints the latest QEMU and serial log lines for quick failure diagnosis
   - uses a dedicated Ubuntu cloud-image guest with loopback-only SSH forwarding
   - keeps repo sync explicit via rsync; no host bind mounts are used
   - refuses to boot without writable /dev/kvm unless SWARM_HARNESS_VM_ALLOW_TCG=true
@@ -59,7 +72,7 @@ fail() {
 
 require_command() {
   local name="${1:-}"
-  command -v "${name}" >/dev/null 2>&1 || fail "required command not found: ${name}"
+  command -v "${name}" > /dev/null 2>&1 || fail "required command not found: ${name}"
 }
 
 trim() {
@@ -103,7 +116,7 @@ VM_CPUS="${SWARM_HARNESS_VM_CPUS:-4}"
 VM_MEMORY_MB="${SWARM_HARNESS_VM_MEMORY_MB:-8192}"
 VM_DISK_SIZE="${SWARM_HARNESS_VM_DISK_SIZE:-80G}"
 VM_IMAGE_URL="${SWARM_HARNESS_VM_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}"
-GUEST_REPO_DIR="${SWARM_HARNESS_VM_REPO_DIR:-~/${ROOT_DIR##*/}}"
+GUEST_REPO_DIR="${SWARM_HARNESS_VM_REPO_DIR:-/home/${GUEST_USER}/${ROOT_DIR##*/}}"
 ALLOW_TCG="${SWARM_HARNESS_VM_ALLOW_TCG:-false}"
 FORCE_CREATE="${SWARM_HARNESS_VM_FORCE_CREATE:-false}"
 FORCE_REBOOTSTRAP="false"
@@ -124,8 +137,9 @@ USER_DATA_FILE="${VM_CONFIG_ROOT}/user-data"
 META_DATA_FILE="${VM_CONFIG_ROOT}/meta-data"
 SEED_IMAGE_FILE="${VM_DATA_ROOT}/seed.img"
 BASE_IMAGE_FILE="${VM_DATA_ROOT}/ubuntu-cloudimg-amd64.img"
+BOOTSTRAP_IMAGE_FILE="${VM_DATA_ROOT}/bootstrap.qcow2"
 OVERLAY_IMAGE_FILE="${VM_DATA_ROOT}/overlay.qcow2"
-BOOTSTRAP_STAMP_FILE="${VM_STATE_ROOT}/bootstrap-complete"
+BOOTSTRAP_STAMP_FILE="${VM_CONFIG_ROOT}/bootstrap-complete"
 SYNC_STAMP_FILE="${VM_STATE_ROOT}/last-sync.txt"
 
 mkdir -p "${VM_STATE_ROOT}" "${VM_DATA_ROOT}" "${VM_CONFIG_ROOT}"
@@ -163,6 +177,27 @@ load_vm_config() {
   return 0
 }
 
+stamp_value() {
+  local path="${1:-}"
+  if [[ -f "${path}" ]]; then
+    tr -d '\n' <"${path}"
+    return 0
+  fi
+  printf 'missing'
+}
+
+ssh_command_string() {
+  load_vm_config || fail "vm has not been created yet"
+  printf 'ssh -i %q -o %q -o %q -o %q -o %q -p %q %q' \
+    "${SSH_KEY_FILE}" \
+    'StrictHostKeyChecking=accept-new' \
+    "UserKnownHostsFile=${KNOWN_HOSTS_FILE}" \
+    'ServerAliveInterval=30' \
+    'ServerAliveCountMax=10' \
+    "${SSH_PORT}" \
+    "${GUEST_USER}@127.0.0.1"
+}
+
 port_in_use() {
   local port="${1:-}"
   require_command ss
@@ -186,7 +221,7 @@ ensure_ssh_keypair() {
     return 0
   fi
   mkdir -p "$(dirname -- "${SSH_KEY_FILE}")"
-  ssh-keygen -q -t ed25519 -N '' -f "${SSH_KEY_FILE}" >/dev/null
+  ssh-keygen -q -t ed25519 -N '' -f "${SSH_KEY_FILE}" > /dev/null
 }
 
 write_cloud_init() {
@@ -218,15 +253,15 @@ EOF
 }
 
 build_seed_image() {
-  if command -v cloud-localds >/dev/null 2>&1; then
+  if command -v cloud-localds > /dev/null 2>&1; then
     cloud-localds "${SEED_IMAGE_FILE}" "${USER_DATA_FILE}" "${META_DATA_FILE}"
     return 0
   fi
-  if command -v genisoimage >/dev/null 2>&1; then
+  if command -v genisoimage > /dev/null 2>&1; then
     genisoimage -quiet -output "${SEED_IMAGE_FILE}" -volid cidata -joliet -rock "${USER_DATA_FILE}" "${META_DATA_FILE}"
     return 0
   fi
-  if command -v mkisofs >/dev/null 2>&1; then
+  if command -v mkisofs > /dev/null 2>&1; then
     mkisofs -quiet -output "${SEED_IMAGE_FILE}" -volid cidata -joliet -rock "${USER_DATA_FILE}" "${META_DATA_FILE}"
     return 0
   fi
@@ -247,8 +282,12 @@ ensure_overlay_image() {
   if [[ -f "${OVERLAY_IMAGE_FILE}" && "${FORCE_CREATE}" != "true" ]]; then
     return 0
   fi
+  local backing_file="${BASE_IMAGE_FILE}"
+  if [[ -f "${BOOTSTRAP_IMAGE_FILE}" ]]; then
+    backing_file="${BOOTSTRAP_IMAGE_FILE}"
+  fi
   rm -f "${OVERLAY_IMAGE_FILE}"
-  qemu-img create -f qcow2 -F qcow2 -b "${BASE_IMAGE_FILE}" "${OVERLAY_IMAGE_FILE}" "${VM_DISK_SIZE}" >/dev/null
+  qemu-img create -f qcow2 -F qcow2 -b "${backing_file}" "${OVERLAY_IMAGE_FILE}" "${VM_DISK_SIZE}" > /dev/null
 }
 
 create_vm() {
@@ -279,7 +318,7 @@ is_running() {
   local pid
   pid="$(cat -- "${PID_FILE}")"
   [[ -n "${pid}" ]] || return 1
-  kill -0 "${pid}" >/dev/null 2>&1
+  kill -0 "${pid}" > /dev/null 2>&1
 }
 
 require_kvm_or_allow_tcg() {
@@ -340,15 +379,15 @@ stop_vm() {
     log "VM already stopped"
     return 0
   fi
-  remote_ssh true >/dev/null 2>&1 && remote_ssh sudo poweroff >/dev/null 2>&1 || true
+  remote_ssh true > /dev/null 2>&1 && remote_ssh sudo poweroff > /dev/null 2>&1 || true
   local pid
   pid="$(cat -- "${PID_FILE}")"
   local waited=0
-  while kill -0 "${pid}" >/dev/null 2>&1; do
+  while kill -0 "${pid}" > /dev/null 2>&1; do
     sleep 1
     waited=$((waited + 1))
     if (( waited >= 30 )); then
-      kill "${pid}" >/dev/null 2>&1 || true
+      kill "${pid}" > /dev/null 2>&1 || true
       break
     fi
   done
@@ -370,12 +409,54 @@ guest_user=${GUEST_USER}
 guest_repo_dir=${GUEST_REPO_DIR}
 config=${VM_CONFIG_FILE}
 base_image=${BASE_IMAGE_FILE}
+bootstrap_image=${BOOTSTRAP_IMAGE_FILE}
 overlay_image=${OVERLAY_IMAGE_FILE}
 serial_log=${SERIAL_LOG}
 qemu_log=${QEMU_LOG}
 bootstrap_stamp=${BOOTSTRAP_STAMP_FILE}
 last_sync_stamp=${SYNC_STAMP_FILE}
 EOF
+}
+
+track_vm() {
+  load_vm_config || fail "vm has not been created yet; run: ./scripts/swarm-harness-vm.sh setup"
+  local state="stopped"
+  if is_running; then
+    state="running"
+  fi
+  cat <<EOF
+name=${VM_NAME}
+state=${state}
+ssh_port=${SSH_PORT}
+guest_user=${GUEST_USER}
+guest_repo_dir=${GUEST_REPO_DIR}
+bootstrap_complete=$(stamp_value "${BOOTSTRAP_STAMP_FILE}")
+last_sync=$(stamp_value "${SYNC_STAMP_FILE}")
+config=${VM_CONFIG_FILE}
+bootstrap_image=${BOOTSTRAP_IMAGE_FILE}
+serial_log=${SERIAL_LOG}
+qemu_log=${QEMU_LOG}
+ssh_command=$(ssh_command_string)
+next_shell=./scripts/swarm-harness-vm.sh shell
+next_sync=./scripts/swarm-harness-vm.sh sync
+example_run=./scripts/swarm-harness-vm.sh run -- pwd
+EOF
+}
+
+show_logs() {
+  load_vm_config || fail "vm has not been created yet; run: ./scripts/swarm-harness-vm.sh setup"
+  printf '== serial log (%s) ==\n' "${SERIAL_LOG}"
+  if [[ -f "${SERIAL_LOG}" ]]; then
+    tail -n 40 "${SERIAL_LOG}"
+  else
+    printf '(missing)\n'
+  fi
+  printf '\n== qemu log (%s) ==\n' "${QEMU_LOG}"
+  if [[ -f "${QEMU_LOG}" ]]; then
+    tail -n 40 "${QEMU_LOG}"
+  else
+    printf '(missing)\n'
+  fi
 }
 
 ssh_base_args() {
@@ -401,12 +482,12 @@ remote_ssh() {
 remote_ssh_command() {
   local command_string="${1:-}"
   [[ -n "${command_string}" ]] || fail "remote_ssh_command requires a command string"
-  remote_ssh bash -lc "${command_string}"
+  remote_ssh "bash -lc $(shell_quote "${command_string}")"
 }
 
 wait_for_ssh() {
   local attempts=0
-  until remote_ssh true >/dev/null 2>&1; do
+  until remote_ssh true > /dev/null 2>&1; do
     attempts=$((attempts + 1))
     if (( attempts >= 90 )); then
       fail "VM SSH did not become ready; inspect ${SERIAL_LOG} and ${QEMU_LOG}"
@@ -444,9 +525,15 @@ sudo apt-get install -y \
   rsync \
   slirp4netns \
   uidmap
-sudo systemctl enable --now docker >/dev/null 2>&1 || true
+sudo systemctl enable --now docker > /dev/null 2>&1 || true
 sudo usermod -aG docker "$(id -un)" || true
 EOF
+  require_command qemu-img
+  local tmp_bootstrap_image="${BOOTSTRAP_IMAGE_FILE}.tmp"
+  stop_vm
+  rm -f "${tmp_bootstrap_image}"
+  qemu-img convert -f qcow2 -O qcow2 "${OVERLAY_IMAGE_FILE}" "${tmp_bootstrap_image}"
+  mv -f "${tmp_bootstrap_image}" "${BOOTSTRAP_IMAGE_FILE}"
   date -u +%Y-%m-%dT%H:%M:%SZ >"${BOOTSTRAP_STAMP_FILE}"
   log "Guest bootstrap complete"
 }
@@ -494,15 +581,65 @@ provision_vm() {
   log "Provisioned ${VM_NAME}"
 }
 
+verify_guest_ready() {
+  start_vm
+  local repo_dir_literal="${GUEST_REPO_DIR/#\~/$HOME}"
+  remote_ssh_command "test -d $(shell_quote "${repo_dir_literal}") && test -f $(shell_quote "${repo_dir_literal}/go.mod") && test -x $(shell_quote "${repo_dir_literal}/.tools/go/bin/go") && command -v bash > /dev/null && command -v git > /dev/null && command -v npm > /dev/null && command -v podman > /dev/null && command -v docker > /dev/null"
+}
+
+fast_vm() {
+  start_vm
+  if [[ ! -f "${BOOTSTRAP_STAMP_FILE}" ]]; then
+    bootstrap_vm
+  fi
+  maybe_sync_repo
+  verify_guest_ready
+  track_vm
+}
+
+reset_vm() {
+  require_command qemu-img
+  if load_vm_config && is_running; then
+    stop_vm || true
+  fi
+  rm -rf "${VM_STATE_ROOT}"
+  mkdir -p "${VM_STATE_ROOT}" "${VM_DATA_ROOT}" "${VM_CONFIG_ROOT}"
+  rm -f "${OVERLAY_IMAGE_FILE}" "${KNOWN_HOSTS_FILE}"
+  if [[ -f "${BOOTSTRAP_IMAGE_FILE}" ]]; then
+    qemu-img create -f qcow2 -F qcow2 -b "${BOOTSTRAP_IMAGE_FILE}" "${OVERLAY_IMAGE_FILE}" "${VM_DISK_SIZE}" > /dev/null
+    log "Reset ${VM_NAME} to a fresh reusable guest; next step: ./scripts/swarm-harness-vm.sh fast"
+    return 0
+  fi
+  log "No cached bootstrap image found for ${VM_NAME}; next step: ./scripts/swarm-harness-vm.sh setup"
+}
+
+nuke_vm() {
+  if load_vm_config && is_running; then
+    stop_vm || true
+  fi
+  rm -rf "${VM_STATE_ROOT}" "${VM_DATA_ROOT}" "${VM_CONFIG_ROOT}"
+  mkdir -p "${VM_STATE_ROOT}" "${VM_DATA_ROOT}" "${VM_CONFIG_ROOT}"
+  log "Nuked ${VM_NAME}; next step: ./scripts/swarm-harness-vm.sh setup"
+}
+
+setup_vm() {
+  doctor
+  provision_vm
+  verify_guest_ready
+  track_vm
+}
+
 run_in_guest_repo() {
   local repo_root
   repo_root="$(resolve_repo_root)"
   : "${repo_root}"
   maybe_sync_repo
+  local guest_repo_dir
+  guest_repo_dir="${GUEST_REPO_DIR/#\~/$HOME}"
   local command_string
-  command_string="cd $(shell_quote "${GUEST_REPO_DIR}") && $(join_quoted "$@")"
+  command_string="cd $(shell_quote "${guest_repo_dir}") && $(join_quoted "$@")"
   log "[swarm-harness run] ${command_string}"
-  remote_ssh "${command_string}"
+  remote_ssh_command "${command_string}"
 }
 
 ssh_in_guest() {
@@ -548,14 +685,14 @@ doctor() {
   local missing=0
   local cmd
   for cmd in curl qemu-img qemu-system-x86_64 rsync ssh ssh-keygen ss; do
-    if command -v "${cmd}" >/dev/null 2>&1; then
+    if command -v "${cmd}" > /dev/null 2>&1; then
       printf 'ok      %s -> %s\n' "${cmd}" "$(command -v "${cmd}")"
     else
       printf 'missing %s\n' "${cmd}"
       missing=1
     fi
   done
-  if command -v cloud-localds >/dev/null 2>&1 || command -v genisoimage >/dev/null 2>&1 || command -v mkisofs >/dev/null 2>&1; then
+  if command -v cloud-localds > /dev/null 2>&1 || command -v genisoimage > /dev/null 2>&1 || command -v mkisofs > /dev/null 2>&1; then
     printf 'ok      seed-image builder available\n'
   else
     printf 'missing cloud-localds or genisoimage/mkisofs\n'
@@ -587,7 +724,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "${COMMAND}" in
-  create|start|stop|restart|status|doctor|install-host-deps|bootstrap|sync|provision|ssh|run|local-replicate|local-replicate-recovery)
+  create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|setup|bootstrap|sync|provision|ssh|shell|run|local-replicate|local-replicate-recovery)
     ;;
   ""|help|-h|--help)
     usage
@@ -637,9 +774,11 @@ case "${COMMAND}" in
   run|local-replicate|local-replicate-recovery)
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for ${COMMAND}; run bootstrap/provision --rebootstrap first"
     ;;
-  create|start|stop|restart|status|doctor|install-host-deps|ssh)
+  create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|ssh|shell)
     [[ "${NO_SYNC}" != "true" ]] || fail "--no-sync is not supported for ${COMMAND}"
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for ${COMMAND}"
+    ;;
+  setup)
     ;;
   provision)
     ;;
@@ -651,6 +790,9 @@ case "${COMMAND}" in
     ;;
   install-host-deps)
     install_host_deps
+    ;;
+  setup)
+    setup_vm
     ;;
   create)
     create_vm
@@ -667,10 +809,26 @@ case "${COMMAND}" in
     load_vm_config || create_vm
     start_vm
     ;;
+  reset)
+    reset_vm
+    ;;
+  nuke)
+    nuke_vm
+    ;;
+  fast)
+    load_vm_config || create_vm
+    fast_vm
+    ;;
   status)
     status_vm
     ;;
-  ssh)
+  track)
+    track_vm
+    ;;
+  logs)
+    show_logs
+    ;;
+  ssh|shell)
     load_vm_config || fail "vm has not been created yet"
     ssh_in_guest
     ;;

@@ -21,12 +21,7 @@ EOF
 require_cmd() {
   local cmd="${1:-}"
   if ! command -v "${cmd}" >/dev/null 2>&1; then
-    if [[ "${cmd}" == "rg" ]]; then
-      echo "missing required command: rg (ripgrep)" >&2
-      echo "Swarm's in-app grep/glob search tools require ripgrep; install it and re-run setup." >&2
-    else
-      echo "missing required command: ${cmd}" >&2
-    fi
+    echo "missing required command: ${cmd}" >&2
     exit 1
   fi
 }
@@ -113,7 +108,6 @@ done
 require_cmd bash
 require_cmd git
 require_cmd curl
-require_cmd rg
 require_go
 
 cd "${ROOT_DIR}"
