@@ -7,7 +7,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
-func TestTaskLaunchPermissionModalDrawsOnNarrowScreen(t *testing.T) {
+func TestTaskLaunchPermissionModalShowsConciseReview(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{
 		SessionID:      "session-1",
 		ShowHeader:     true,
@@ -20,7 +20,7 @@ func TestTaskLaunchPermissionModalDrawsOnNarrowScreen(t *testing.T) {
 		SessionID:     "session-1",
 		ToolName:      "task",
 		Requirement:   "task_launch",
-		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings.","launch_count":1,"resolved_agent_name":"explorer","launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","meta_prompt":"map repository structure"}]}`,
+		ToolArguments: `{"goal":"Inspect repo","description":"Inspect repo","prompt":"Map files and summarize findings.","launch_count":1,"allow_bash":false,"report_max_chars":2400,"effective_child_mode":"auto","disabled_tools":["ask_user","ask-user","bash","exit_plan_mode","exit-plan-mode","task"],"resolved_agent_name":"explorer","launches":[{"launch_index":1,"requested_subagent_type":"explorer","resolved_agent_name":"explorer","meta_prompt":"map repository structure"}]}`,
 		Status:        "pending",
 	})
 
@@ -40,6 +40,16 @@ func TestTaskLaunchPermissionModalDrawsOnNarrowScreen(t *testing.T) {
 	text := dumpScreenText(screen, width, height)
 	if !strings.Contains(text, "Review Task Launch") {
 		t.Fatalf("expected task launch modal header on narrow screen, got:\n%s", text)
+	}
+	for _, want := range []string{"Review", "agent:", "permissions:", "base prompt:", "assigned roles:", "bash disabled", "Map files and summarize", "explorer", "map repository structure"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected task launch modal to show %q, got:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"↑/↓ scroll", "Base Prompt", "Agents + Assigned Roles", "Context", "Controls", "permission:", "requirement:"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("task launch modal should not show %q, got:\n%s", unwanted, text)
+		}
 	}
 	if !strings.Contains(text, "Enter approve") && !strings.Contains(text, "Enter Approve") {
 		t.Fatalf("expected task launch modal approval hint on narrow screen, got:\n%s", text)
