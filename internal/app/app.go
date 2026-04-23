@@ -388,11 +388,6 @@ func (a *App) Close() {
 }
 
 func (a *App) Run() error {
-	defer func() {
-		if a != nil && a.pendingUpdate != nil {
-			a.Close()
-		}
-	}()
 	stop := make(chan struct{})
 	tick := time.NewTicker(120 * time.Millisecond)
 	defer tick.Stop()
@@ -465,6 +460,7 @@ func (a *App) Run() error {
 				}
 			case interruptQuit:
 				if a.pendingUpdate != nil {
+					a.Close()
 					return a.runPendingUpdate()
 				}
 				return nil
