@@ -61,23 +61,24 @@ parse_first_tag_name() {
   sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
+is_stable_release_tag() {
+  tag="$1"
+  printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
 resolve_release_version() {
   latest_api="https://api.github.com/repos/${REPO}/releases/latest"
-  releases_api="https://api.github.com/repos/${REPO}/releases"
 
   version="$(curl -fsSL "$latest_api" 2>/dev/null | parse_first_tag_name || true)"
-  if [ -n "$version" ]; then
-    printf '%s\n' "$version"
-    return 0
+  if [ -z "$version" ]; then
+    return 1
   fi
-
-  version="$(curl -fsSL "$releases_api" 2>/dev/null | parse_first_tag_name || true)"
-  if [ -n "$version" ]; then
-    printf '%s\n' "$version"
-    return 0
+  if ! is_stable_release_tag "$version"; then
+    echo "latest stable release tag is not a stable semver tag: $version" >&2
+    return 1
   fi
-
-  return 1
+  printf '%s\n' "$version"
+  return 0
 }
 
 print_installing() {
@@ -168,6 +169,7 @@ need_cmd uname
 need_cmd curl
 need_cmd tar
 need_cmd sed
+need_cmd grep
 need_cmd mktemp
 
 script_dir=""
