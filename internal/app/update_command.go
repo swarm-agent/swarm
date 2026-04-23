@@ -11,9 +11,14 @@ import (
 	"github.com/gdamore/tcell/v2"
 
 	"swarm-refactor/swarmtui/internal/client"
-	"swarm-refactor/swarmtui/internal/launcher"
 	"swarm-refactor/swarmtui/internal/ui"
 )
+
+type pendingUpdateRequest struct {
+	plan         client.UpdateApplyPlan
+	lane         string
+	relaunchArgs []string
+}
 
 func (a *App) handleUpdateCommand(args []string) {
 	a.home.ClearCommandOverlay()
@@ -67,19 +72,13 @@ func (a *App) applyUpdate() {
 		a.showToast(ui.ToastError, fmt.Sprintf("update apply failed: %v", err))
 		return
 	}
-	profile, err := launcher.LoadRuntimeProfile(strings.TrimSpace(a.updateStatus.CurrentLane), nil)
-	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/update apply failed: %v", err))
-		return
+	lane := strings.TrimSpace(plan.CurrentLane)
+	if lane == "" {
+		lane = strings.TrimSpace(a.updateStatus.CurrentLane)
 	}
 	relaunchArgs := collectRelaunchArgs()
-	if err := launcher.StartUpdateHelper(profile, plan, os.Getpid(), relaunchArgs); err != nil {
-		a.home.SetStatus(fmt.Sprintf("/update apply failed: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("update apply failed: %v", err))
-		return
-	}
-	a.home.SetStatus(fmt.Sprintf("updating to %s; restarting", strings.TrimSpace(plan.TargetVersion)))
-	a.showToast(ui.ToastSuccess, fmt.Sprintf("updating to %s; restarting", strings.TrimSpace(plan.TargetVersion)))
+	a.pendingUpdate = &pendingUpdateRequest{plan: plan, lane: lane, relaunchArgs: relaunchArgs}
+	a.home.SetStatus(fmt.Sprintf("updating to %s; switching to terminal", strings.TrimSpace(plan.TargetVersion)))
 	a.quitRequested = true
 	if a.screen != nil {
 		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptQuit))

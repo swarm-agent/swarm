@@ -29,6 +29,7 @@ const (
 	updateBootWaitLimit       = 30 * time.Second
 	updatePollInterval        = 200 * time.Millisecond
 	pendingUpdateBootstrapEnv = "SWARM_PENDING_UPDATE_BOOT"
+	appliedUpdateToastEnv     = "SWARM_APPLIED_UPDATE_TOAST"
 )
 
 type runtimeBootStatus struct {
@@ -169,6 +170,33 @@ func StartUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID i
 	if !isExecutable(helperPath) {
 		return missingInstalledBinaryError("swarmsetup", helperPath)
 	}
+	args := updateHelperArgs(profile, plan, parentPID, relaunchArgs)
+	cmd := exec.Command(helperPath, args...)
+	cmd.Env = profile.EnvList(nil)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+func RunUpdateHelperForeground(profile Profile, plan client.UpdateApplyPlan, relaunchArgs []string) error {
+	helperPath := filepath.Join(profile.ToolBinDir, "swarmsetup")
+	if !isExecutable(helperPath) {
+		return missingInstalledBinaryError("swarmsetup", helperPath)
+	}
+	args := updateHelperArgs(profile, plan, 0, relaunchArgs)
+	cmd := exec.Command(helperPath, args...)
+	cmd.Env = profile.EnvList(nil)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func updateHelperArgs(profile Profile, plan client.UpdateApplyPlan, parentPID int, relaunchArgs []string) []string {
 	args := []string{
 		"--apply-release",
 		"--lane", strings.TrimSpace(profile.Lane),
@@ -183,15 +211,7 @@ func StartUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID i
 	for _, arg := range relaunchArgs {
 		args = append(args, "--relaunch-arg", arg)
 	}
-	cmd := exec.Command(helperPath, args...)
-	cmd.Env = profile.EnvList(nil)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	return cmd.Process.Release()
+	return args
 }
 
 func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int, relaunchArgs []string) error {
@@ -207,7 +227,10 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err != nil {
 		return err
 	}
-	cmd, err := startRuntimeCommand(profile, relaunchArgs, map[string]string{pendingUpdateBootstrapEnv: "1"})
+	cmd, err := startRuntimeCommand(profile, relaunchArgs, map[string]string{
+		pendingUpdateBootstrapEnv: "1",
+		appliedUpdateToastEnv:     fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
+	})
 	if err != nil {
 		return rollbackPendingUpdateAndRestart(profile, relaunchArgs, nil, err)
 	}

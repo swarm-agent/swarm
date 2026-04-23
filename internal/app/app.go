@@ -263,6 +263,7 @@ type App struct {
 	vault               client.VaultStatus
 
 	quitRequested bool
+	pendingUpdate *pendingUpdateRequest
 }
 
 func New() (*App, error) {
@@ -366,6 +367,7 @@ func New() (*App, error) {
 	}
 	app.startSessionEventStream()
 	app.refreshGitRealtimeWatcher()
+	app.announceAppliedUpdate()
 	return app, nil
 }
 
@@ -386,6 +388,11 @@ func (a *App) Close() {
 }
 
 func (a *App) Run() error {
+	defer func() {
+		if a != nil && a.pendingUpdate != nil {
+			a.Close()
+		}
+	}()
 	stop := make(chan struct{})
 	tick := time.NewTicker(120 * time.Millisecond)
 	defer tick.Stop()
@@ -457,6 +464,9 @@ func (a *App) Run() error {
 					dirty = true
 				}
 			case interruptQuit:
+				if a.pendingUpdate != nil {
+					return a.runPendingUpdate()
+				}
 				return nil
 			}
 		case *tcell.EventMouse:
