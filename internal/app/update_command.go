@@ -23,7 +23,7 @@ type pendingUpdateRequest struct {
 func (a *App) handleUpdateCommand(args []string) {
 	a.home.ClearCommandOverlay()
 	if len(args) == 0 {
-		a.home.SetStatus("usage: /update [status|apply]")
+		a.home.SetStatus("usage: /update [status|apply|dev]")
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(args[0])) {
@@ -31,8 +31,10 @@ func (a *App) handleUpdateCommand(args []string) {
 		a.refreshUpdateStatus(true)
 	case "apply":
 		a.applyUpdate()
+	case "dev":
+		a.applyDevUpdate()
 	default:
-		a.home.SetStatus("usage: /update [status|apply]")
+		a.home.SetStatus("usage: /update [status|apply|dev]")
 	}
 }
 
@@ -79,6 +81,29 @@ func (a *App) applyUpdate() {
 	relaunchArgs := collectRelaunchArgs()
 	a.pendingUpdate = &pendingUpdateRequest{plan: plan, lane: lane, relaunchArgs: relaunchArgs}
 	a.home.SetStatus(fmt.Sprintf("updating to %s; switching to terminal", strings.TrimSpace(plan.TargetVersion)))
+	a.quitRequested = true
+	if a.screen != nil {
+		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptQuit))
+	}
+}
+
+func (a *App) applyDevUpdate() {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	status, err := a.api.GetUpdateStatus(ctx)
+	if err != nil {
+		a.home.SetStatus(fmt.Sprintf("/update dev failed: %v", err))
+		a.showToast(ui.ToastError, fmt.Sprintf("update dev failed: %v", err))
+		return
+	}
+	a.updateStatus = status
+	if !status.DevMode {
+		a.home.SetStatus("/update dev requires dev_mode=true in swarm.conf")
+		a.showToast(ui.ToastError, "/update dev requires dev_mode=true in swarm.conf")
+		return
+	}
+	a.devUpdateRequested = true
+	a.home.SetStatus("rebuilding local dev checkout after TUI shutdown")
 	a.quitRequested = true
 	if a.screen != nil {
 		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptQuit))

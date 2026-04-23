@@ -25,6 +25,7 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
+	"swarm-refactor/swarmtui/internal/updatehandoff"
 )
 
 const (
@@ -111,7 +112,7 @@ func buildHomeCommandSuggestions() []ui.CommandSuggestion {
 		// {Command: "/sandbox", Hint: "Open sandbox setup modal (global ON/OFF)", QuickTips: []string{"/sandbox on", "/sandbox off", "/sandbox status"}},
 		{Command: "/sessions", Hint: "Open recent sessions modal"},
 		{Command: "/swarm", Hint: "Show swarm dashboard, pairing state, and approvals", QuickTips: []string{"/swarm status", "/swarm pending", "/swarm approve <id>", "/swarm reject <id>", "/swarm role master", "/swarm set <name>"}},
-		{Command: "/update", Hint: "Check for or apply a released update", QuickTips: []string{"/update status", "/update apply"}},
+		{Command: "/update", Hint: "Check/apply released updates or rebuild local dev checkout", QuickTips: []string{"/update status", "/update apply", "/update dev"}},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
 		{Command: "/vault", Hint: "Vault status, export, or import guidance"},
@@ -264,6 +265,8 @@ type App struct {
 
 	quitRequested bool
 	pendingUpdate *pendingUpdateRequest
+
+	devUpdateRequested bool
 }
 
 func New() (*App, error) {
@@ -459,6 +462,9 @@ func (a *App) Run() error {
 					dirty = true
 				}
 			case interruptQuit:
+				if a.devUpdateRequested {
+					return updatehandoff.ErrDevUpdateRequested
+				}
 				if a.pendingUpdate != nil {
 					a.Close()
 					return a.runPendingUpdate()
@@ -1925,7 +1931,7 @@ func (a *App) showHelp() {
 		"/themes delete <id>",
 		"/header [on|off|toggle|status]   (chat header visibility)",
 		"/swarm [status|pending|approve <id>|reject <id>|set <name>|<name>]   (show dashboard, review pending children, or change device identity)",
-		"/update [status|apply]   (check for or install a released update)",
+		"/update [status|apply|dev]   (check/apply released updates; dev rebuilds local checkout when dev_mode=true)",
 		"/thinking [on|off|toggle|status]   (show or hide reasoning/thinking tags)",
 		"/mouse [on|off|toggle|status]   (mouse click capture)",
 		fmt.Sprintf("%s   (toggle mouse click capture)", keybinds.Label(ui.KeybindGlobalToggleMouse)),

@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"swarm-refactor/swarmtui/internal/launcher"
+	"swarm-refactor/swarmtui/internal/updatehandoff"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
@@ -125,6 +127,15 @@ func run(argv0 string, args []string) error {
 			return err
 		}
 		return launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, Bootstrap: bootstrap})
+	case "update":
+		if len(args) < 2 || args[1] != "dev" {
+			return errors.New("usage: swarm [main|dev] update dev")
+		}
+		buildProfile, err := loadBuildProfile(lane, bypassOverride)
+		if err != nil {
+			return err
+		}
+		return launcher.RunDevUpdate(buildProfile, nil)
 	case "backend-build":
 		buildProfile, err := loadBuildProfile(lane, bypassOverride)
 		if err != nil {
@@ -166,7 +177,18 @@ func run(argv0 string, args []string) error {
 	if err := launcher.RecordPortFile(profile); err != nil {
 		return err
 	}
-	return launcher.RunTUI(profile, args)
+	if err := launcher.RunTUI(profile, args); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == updatehandoff.ExitCodeDevUpdateRequested {
+			buildProfile, err := loadBuildProfile(lane, bypassOverride)
+			if err != nil {
+				return err
+			}
+			return launcher.RunDevUpdate(buildProfile, args)
+		}
+		return err
+	}
+	return nil
 }
 
 func runDesktop(profile launcher.Profile, args []string) error {
@@ -321,6 +343,7 @@ Usage:
   swarm [main|dev] backend-restart
   swarm [main|dev] backend-rebuild
   swarm [main|dev] backend-build
+  swarm [main|dev] update dev
   swarm [main|dev] info
   swarm help
 
@@ -331,5 +354,6 @@ Alias:
   swarmdev ctl <swarmctl-args...>
   swarmdev auth <swarmctl-auth-args...>
   swarmdev backend-up|down|restart|rebuild|build|info
+  swarmdev update dev
 `)
 }
