@@ -45,7 +45,11 @@ jobs:
           tag="$(git describe --tags --exact-match 2>/dev/null || true)"
           if [[ -n "${tag}" ]]; then
             version="${tag}"
-            prerelease=false
+            if [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              prerelease=false
+            else
+              prerelease=true
+            fi
           else
             short_sha="$(git rev-parse --short HEAD)"
             version="0.0.0-dev+${short_sha}"

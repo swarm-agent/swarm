@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,14 +19,18 @@ import (
 )
 
 const (
-	defaultRepoOwner       = "swarm-agent"
-	defaultRepoName        = "swarm"
-	defaultCacheTTL        = 30 * time.Minute
-	defaultLookupTimeout   = 5 * time.Second
-	defaultUserAgent       = "swarmd-update-status"
-	latestReleaseAPIFormat = "https://api.github.com/repos/%s/%s/releases/latest"
-	linuxAMD64ArchiveFmt   = "swarm-%s-linux-amd64.tar.gz"
-	comparisonSource       = "github_releases"
+	defaultRepoOwner     = "swarm-agent"
+	defaultRepoName      = "swarm"
+	defaultCacheTTL      = 30 * time.Minute
+	defaultLookupTimeout = 5 * time.Second
+	defaultUserAgent     = "swarmd-update-status"
+	linuxAMD64ArchiveFmt = "swarm-%s-linux-amd64.tar.gz"
+	comparisonSource     = "github_releases"
+)
+
+var (
+	releasesAPIFormat = "https://api.github.com/repos/%s/%s/releases?per_page=100"
+	stableTagPattern  = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 )
 
 type Service struct {
@@ -75,11 +81,12 @@ type ApplyPlan struct {
 }
 
 type githubRelease struct {
-	TagName    string               `json:"tag_name"`
-	HTMLURL    string               `json:"html_url"`
-	Draft      bool                 `json:"draft"`
-	Prerelease bool                 `json:"prerelease"`
-	Assets     []githubReleaseAsset `json:"assets"`
+	TagName     string               `json:"tag_name"`
+	HTMLURL     string               `json:"html_url"`
+	Draft       bool                 `json:"draft"`
+	Prerelease  bool                 `json:"prerelease"`
+	PublishedAt string               `json:"published_at"`
+	Assets      []githubReleaseAsset `json:"assets"`
 }
 
 type githubReleaseAsset struct {
@@ -144,7 +151,7 @@ func (s *Service) Status(ctx context.Context, force bool) Status {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	release, err := s.fetchLatestRelease(ctx)
+	release, err := s.fetchLatestStableRelease(ctx)
 	status.CheckedAtUnixMS = time.Now().UnixMilli()
 	if err != nil {
 		status.CheckedAtUnixMS = 0
@@ -200,7 +207,7 @@ func (s *Service) Apply(ctx context.Context) (ApplyPlan, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
-	release, err := s.fetchLatestRelease(ctx)
+	release, err := s.fetchLatestStableRelease(ctx)
 	if err != nil {
 		return ApplyPlan{}, err
 	}
@@ -236,11 +243,11 @@ func (s *Service) store(status Status) {
 	s.cached = cachedStatus{status: status, expiresAt: time.Now().Add(s.cacheTTL)}
 }
 
-func (s *Service) fetchLatestRelease(ctx context.Context) (githubRelease, error) {
-	url := fmt.Sprintf(latestReleaseAPIFormat, s.repoOwner, s.repoName)
+func (s *Service) fetchLatestStableRelease(ctx context.Context) (githubRelease, error) {
+	url := fmt.Sprintf(releasesAPIFormat, s.repoOwner, s.repoName)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return githubRelease{}, fmt.Errorf("build github latest-release request: %w", err)
+		return githubRelease{}, fmt.Errorf("build github releases request: %w", err)
 	}
 	if ua := strings.TrimSpace(s.userAgent); ua != "" {
 		req.Header.Set("User-Agent", ua)
@@ -248,20 +255,40 @@ func (s *Service) fetchLatestRelease(ctx context.Context) (githubRelease, error)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return githubRelease{}, fmt.Errorf("lookup latest release: %w", err)
+		return githubRelease{}, fmt.Errorf("lookup releases: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return githubRelease{}, fmt.Errorf("lookup latest release: github returned %s", resp.Status)
+		return githubRelease{}, fmt.Errorf("lookup releases: github returned %s", resp.Status)
 	}
-	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return githubRelease{}, fmt.Errorf("decode latest release: %w", err)
+	var releases []githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return githubRelease{}, fmt.Errorf("decode releases: %w", err)
 	}
-	if strings.TrimSpace(release.TagName) == "" {
-		return githubRelease{}, errors.New("latest release missing tag_name")
+	eligible := make([]githubRelease, 0, len(releases))
+	for _, release := range releases {
+		if release.Draft || release.Prerelease {
+			continue
+		}
+		tagName := strings.TrimSpace(release.TagName)
+		if tagName == "" {
+			continue
+		}
+		if !stableTagPattern.MatchString(tagName) {
+			continue
+		}
+		if strings.TrimSpace(release.PublishedAt) == "" {
+			continue
+		}
+		eligible = append(eligible, release)
 	}
-	return release, nil
+	if len(eligible) == 0 {
+		return githubRelease{}, errors.New("no published stable release found")
+	}
+	sort.SliceStable(eligible, func(i, j int) bool {
+		return eligible[i].PublishedAt > eligible[j].PublishedAt
+	})
+	return eligible[0], nil
 }
 
 func (s *Service) resolveAssetSHA256(ctx context.Context, archiveAsset githubReleaseAsset, assets []githubReleaseAsset, assetName string) (string, error) {
