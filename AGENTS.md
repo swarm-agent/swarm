@@ -41,10 +41,12 @@ If a rule below conflicts with convenience, the rule wins.
   - Treat that PR as a real promotion/release PR, not a fake or placeholder step.
   - If the user asks for a PR, a release, or to ship to `main`, do not silently default to a prerelease/dev build when the user clearly means a production-style release.
   - In that case, stop only to confirm the exact stable version tag if it is missing; otherwise proceed with the real release flow.
-  - Stable release versions are explicit. Use an annotated tag such as `v0.x.y` when the user asks for a real release, asks to ship to `main`, or explicitly approves the target version.
-  - The canonical stable release sequence is: merge the approved `dev` → `main` PR, create the annotated tag on the promoted `main` commit, then run `build-main` from `workflow_dispatch` so the workflow resolves the exact tag.
-  - Only use the prerelease form `0.0.0-dev+<shortsha>` when the user explicitly wants a prerelease/dev build or has not asked to release/ship.
-  - If the user intent is ambiguous, ask once for the target stable version instead of assuming a dev/prerelease flow.
+  - Stable release versions are stable semver tags such as `v0.x.y`.
+  - The canonical stable release sequence is: merge the approved `dev` → `main` PR, then let `build-main` on `main` resolve the release version automatically.
+  - If the promoted `main` commit already has an exact stable tag, the release must publish that exact version.
+  - Otherwise the release must auto-create and push the next stable patch tag from the latest stable tag, starting at `v0.1.0` when no stable tags exist.
+  - Patch releases auto-increment. Minor or major bumps are manual and must be expressed by intentionally tagging the promoted `main` commit with the desired stable version.
+  - Never fall back to `0.0.0-dev+<shortsha>` for real `main` releases, and do not prompt for version input during the normal `main` release flow.
 - Do not run `go test` or other test suites unless the user explicitly asks for tests.
 - For non-commit work, do not run validation unless the user explicitly asks for it.
 - Vulnerability/CVE scanning is mandatory before every commit.

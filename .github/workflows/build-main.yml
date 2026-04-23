@@ -46,6 +46,24 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "prerelease=false" >> "${GITHUB_OUTPUT}"
 
+      - name: Create release tag when missing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git describe --tags --exact-match >/dev/null 2>&1; then
+            echo "exact tag already present on HEAD"
+            exit 0
+          fi
+          version="${{ steps.version.outputs.version }}"
+          if git rev-parse "${version}" >/dev/null 2>&1; then
+            echo "release tag already exists: ${version}" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${version}" -m "Release ${version}"
+          git push origin "refs/tags/${version}"
+
       - name: Build release bundle
         run: ./scripts/build-main-dist.sh --output-dir dist --version "${{ steps.version.outputs.version }}"
 
