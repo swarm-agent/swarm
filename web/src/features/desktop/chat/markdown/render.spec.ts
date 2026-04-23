@@ -4,6 +4,21 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MarkdownRenderer } from './render'
 
+test('MarkdownRenderer auto-links bare assistant URLs', () => {
+  const content = [
+    'Open https://example.com/path?q=1.',
+    'Email mailto:support@example.com for help.',
+    'Keep [explicit links](https://example.com/docs) clickable.',
+  ].join('\n')
+
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
+
+  assert.match(html, /<a[^>]*href="https:\/\/example\.com\/path\?q=1"[^>]*target="_blank"/)
+  assert.match(html, />https:\/\/example\.com\/path\?q=1<\/a>\./)
+  assert.match(html, /<a[^>]*href="mailto:support@example\.com"[^>]*target="_blank"/)
+  assert.match(html, /<a[^>]*href="https:\/\/example\.com\/docs"[^>]*target="_blank"[\s\S]*>explicit links<\/a>/)
+})
+
 test('MarkdownRenderer preserves nested list content for desktop session-origin steps', () => {
   const content = [
     '1. Add Playwright to `web/`',

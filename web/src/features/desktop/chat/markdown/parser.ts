@@ -58,6 +58,43 @@ function normalizeHref(raw: string): string | null {
   return null
 }
 
+function isAutolinkBoundary(source: string, index: number): boolean {
+  if (index <= 0) return true
+  return /\s|[([{"']/.test(source[index - 1])
+}
+
+function isAutolinkPrefix(source: string, index: number): boolean {
+  const lower = source.slice(index).toLowerCase()
+  return lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('mailto:')
+}
+
+function trimAutolinkTrailingPunctuation(value: string): string {
+  let end = value.length
+  while (end > 0 && /[.,!?;:'"\])}]/.test(value[end - 1])) {
+    end -= 1
+  }
+  return value.slice(0, end)
+}
+
+function parseAutolinkRun(source: string, start: number): { node: MarkdownInlineNode; nextIndex: number } | null {
+  if (!isAutolinkBoundary(source, start) || !isAutolinkPrefix(source, start)) return null
+
+  const match = source.slice(start).match(/^[^\s<]+/)
+  if (!match) return null
+
+  const href = normalizeHref(trimAutolinkTrailingPunctuation(match[0]))
+  if (!href) return null
+
+  return {
+    node: {
+      type: 'link',
+      href,
+      children: [{ type: 'text', text: href }],
+    },
+    nextIndex: start + href.length,
+  }
+}
+
 function mergeTextNodes(nodes: MarkdownInlineNode[]): MarkdownInlineNode[] {
   const merged: MarkdownInlineNode[] = []
   for (const node of nodes) {
@@ -76,13 +113,14 @@ function parseDelimitedRun(
   delimiter: string,
   start: number,
   build: (children: MarkdownInlineNode[]) => MarkdownInlineNode,
+  autolink = true,
 ): { node: MarkdownInlineNode; nextIndex: number } | null {
   if (!source.startsWith(delimiter, start)) return null
   const contentStart = start + delimiter.length
   const end = source.indexOf(delimiter, contentStart)
   if (end <= contentStart) return null
   const inner = source.slice(contentStart, end)
-  const children = parseInlineNodes(inner)
+  const children = parseInlineNodes(inner, autolink)
   if (children.length === 0) return null
   return {
     node: build(children),
@@ -90,13 +128,13 @@ function parseDelimitedRun(
   }
 }
 
-function parseInlineNodes(source: string): MarkdownInlineNode[] {
+function parseInlineNodes(source: string, autolink = true): MarkdownInlineNode[] {
   const nodes: MarkdownInlineNode[] = []
   let index = 0
 
   while (index < source.length) {
     if (source.startsWith('**', index)) {
-      const strong = parseDelimitedRun(source, '**', index, (children) => ({ type: 'strong', children }))
+      const strong = parseDelimitedRun(source, '**', index, (children) => ({ type: 'strong', children }), autolink)
       if (strong) {
         nodes.push(strong.node)
         index = strong.nextIndex
@@ -106,7 +144,7 @@ function parseInlineNodes(source: string): MarkdownInlineNode[] {
 
     if (source[index] === '*' || source[index] === '_') {
       const delimiter = source[index]
-      const emphasis = parseDelimitedRun(source, delimiter, index, (children) => ({ type: 'em', children }))
+      const emphasis = parseDelimitedRun(source, delimiter, index, (children) => ({ type: 'em', children }), autolink)
       if (emphasis) {
         nodes.push(emphasis.node)
         index = emphasis.nextIndex
@@ -123,6 +161,15 @@ function parseInlineNodes(source: string): MarkdownInlineNode[] {
       }
     }
 
+    if (autolink) {
+      const link = parseAutolinkRun(source, index)
+      if (link) {
+        nodes.push(link.node)
+        index = link.nextIndex
+        continue
+      }
+    }
+
     if (source[index] === '[') {
       const labelEnd = source.indexOf(']', index + 1)
       if (labelEnd > index + 1 && source[labelEnd + 1] === '(') {
@@ -133,7 +180,7 @@ function parseInlineNodes(source: string): MarkdownInlineNode[] {
             nodes.push({
               type: 'link',
               href,
-              children: parseInlineNodes(source.slice(index + 1, labelEnd)),
+              children: parseInlineNodes(source.slice(index + 1, labelEnd), false),
             })
             index = hrefEnd + 1
             continue
@@ -143,8 +190,9 @@ function parseInlineNodes(source: string): MarkdownInlineNode[] {
     }
 
     let nextSpecial = source.length
-    for (const token of ['**', '*', '_', '`', '[']) {
-      const found = source.indexOf(token, index + 1)
+    for (const token of ['**', '*', '_', '`', '[', 'http://', 'https://', 'mailto:']) {
+      const haystack = token.includes(':') ? source.toLowerCase() : source
+      const found = haystack.indexOf(token, index + 1)
       if (found !== -1 && found < nextSpecial) {
         nextSpecial = found
       }
