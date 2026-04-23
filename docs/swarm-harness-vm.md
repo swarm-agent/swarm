@@ -48,7 +48,29 @@ Use the singular reusable VM setup path:
 ./scripts/swarm-harness-vm.sh setup
 ```
 
-That is the canonical one-command path. It runs doctor, creates or reuses the `swarm-harness` VM, bootstraps guest packages, syncs the repo, and prints the exact tracked VM details at the end.
+That is the canonical cold-start 0→1 path. It runs doctor, creates or reuses the `swarm-harness` VM, bootstraps guest packages, verifies required guest tools, syncs the repo, and prints the exact tracked VM details at the end.
+
+If the VM is already created and you want the fastest repeat-use path, use:
+
+```bash
+./scripts/swarm-harness-vm.sh fast
+```
+
+If you want a fresh guest without paying the full cold-start cost again, use:
+
+```bash
+./scripts/swarm-harness-vm.sh reset
+./scripts/swarm-harness-vm.sh fast
+```
+
+That reuses the downloaded Ubuntu image and the cached post-bootstrap guest image, so the next boot starts from a clean guest state without re-running the giant package install.
+
+If you truly want to wipe every cached VM asset and start from absolute zero, use:
+
+```bash
+./scripts/swarm-harness-vm.sh nuke
+./scripts/swarm-harness-vm.sh setup
+```
 
 That will:
 
@@ -56,7 +78,8 @@ That will:
 2. create the `swarm-harness` VM assets
 3. boot the guest with loopback-only SSH
 4. install guest prerequisites (`podman`, `docker.io`, `git`, `jq`, `rsync`, `npm`, build tools)
-5. rsync the current repo checkout, including `web/node_modules` when present, into `~/swarm-go` inside the guest
+5. cache that post-bootstrap guest as the reusable fresh-reset baseline
+6. rsync the current repo checkout, including `web/node_modules` when present, into `~/swarm-go` inside the guest
 
 On later runs, `provision` reuses the existing bootstrap stamp and skips the apt/package step unless you explicitly force it:
 
@@ -151,8 +174,7 @@ For manual VM work, do not rediscover the environment each time.
 Use exactly this loop:
 
 ```bash
-./scripts/swarm-harness-vm.sh setup
-./scripts/swarm-harness-vm.sh track
+./scripts/swarm-harness-vm.sh fast
 ./scripts/swarm-harness-vm.sh shell
 ```
 
@@ -160,6 +182,7 @@ After code changes:
 
 ```bash
 ./scripts/swarm-harness-vm.sh sync
+./scripts/swarm-harness-vm.sh fast
 ./scripts/swarm-harness-vm.sh shell
 ```
 
@@ -168,6 +191,13 @@ If the VM behaves unexpectedly:
 ```bash
 ./scripts/swarm-harness-vm.sh logs
 ./scripts/swarm-harness-vm.sh track
+```
+
+If you want to throw away guest changes but keep the cached reusable baseline:
+
+```bash
+./scripts/swarm-harness-vm.sh reset
+./scripts/swarm-harness-vm.sh fast
 ```
 
 ## Recommended policy

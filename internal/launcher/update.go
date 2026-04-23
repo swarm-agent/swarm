@@ -32,6 +32,17 @@ const (
 	appliedUpdateToastEnv     = "SWARM_APPLIED_UPDATE_TOAST"
 )
 
+var (
+	stopBackendForUpdate                     = StopBackend
+	applyReleaseUpdateForUpdate              = ApplyReleaseUpdate
+	startRuntimeCommandForUpdate             = startRuntimeCommand
+	resolveLifecycleManagerForUpdate         = resolveLifecycleManager
+	serviceActiveForUpdate                   = serviceActiveForScope
+	restartSystemdServiceForUpdate           = restartSystemdService
+	waitForRuntimeBootConfirmationForUpdate  = waitForRuntimeBootConfirmation
+	rollbackPendingUpdateAndRestartForUpdate = rollbackPendingUpdateAndRestart
+)
+
 type runtimeBootStatus struct {
 	Version     string `json:"version,omitempty"`
 	RuntimeRoot string `json:"runtime_root,omitempty"`
@@ -45,6 +56,14 @@ type UpdateResult struct {
 	RuntimeRoot  string
 	CurrentLink  string
 	PreviousLink string
+}
+
+type updateRestartPlan struct {
+	managerKind   string
+	systemdScope  systemdServiceScope
+	systemdUnit   string
+	systemdActive bool
+	blockedErr    error
 }
 
 func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.UpdateApplyPlan) (UpdateResult, error) {
@@ -220,31 +239,97 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 			return err
 		}
 	}
-	if err := StopBackend(profile); err != nil {
-		return err
-	}
-	result, err := ApplyReleaseUpdate(context.Background(), profile, plan)
+	restartPlan, err := resolveUpdateRestartPlan(profile)
 	if err != nil {
 		return err
 	}
-	cmd, err := startRuntimeCommand(profile, relaunchArgs, map[string]string{
-		pendingUpdateBootstrapEnv: "1",
-		appliedUpdateToastEnv:     fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
+	if err := stopBackendForUpdate(profile); err != nil {
+		return err
+	}
+	result, err := applyReleaseUpdateForUpdate(context.Background(), profile, plan)
+	if err != nil {
+		return err
+	}
+	if restartPlan.managerKind == lifecycleKindSystemd {
+		return restartUpdatedRuntimeViaSystemd(profile, result, restartPlan)
+	}
+	cmd, err := startRuntimeCommandForUpdate(profile, relaunchArgs, map[string]string{
+		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
 	})
 	if err != nil {
-		return rollbackPendingUpdateAndRestart(profile, relaunchArgs, nil, err)
+		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
 	if err := cmd.Start(); err != nil {
-		return rollbackPendingUpdateAndRestart(profile, relaunchArgs, cmd.Process, err)
+		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, cmd.Process, err)
 	}
 	waitCh := make(chan error, 1)
 	go func() {
 		waitCh <- cmd.Wait()
 	}()
-	if err := waitForRuntimeBootConfirmation(profile.InstallRoot, result.RuntimeRoot, waitCh, updateBootWaitLimit); err != nil {
-		return rollbackPendingUpdateAndRestart(profile, relaunchArgs, cmd.Process, err)
+	if err := waitForRuntimeBootConfirmationForUpdate(profile.InstallRoot, result.RuntimeRoot, waitCh, updateBootWaitLimit); err != nil {
+		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, cmd.Process, err)
 	}
 	return nil
+}
+
+func resolveUpdateRestartPlan(profile Profile) (updateRestartPlan, error) {
+	manager, managerKnown, err := resolveLifecycleManagerForUpdate(profile)
+	if err != nil {
+		return updateRestartPlan{}, err
+	}
+	plan := updateRestartPlan{managerKind: manager.Kind}
+	if manager.Kind != lifecycleKindSystemd {
+		return plan, nil
+	}
+	plan.systemdScope = normalizeSystemdScope(manager.Scope)
+	plan.systemdUnit = strings.TrimSpace(manager.Unit)
+	if plan.systemdScope == "" || plan.systemdUnit == "" {
+		if managerKnown {
+			plan.blockedErr = errors.New("systemd lifecycle metadata is incomplete")
+			return plan, nil
+		}
+		plan.blockedErr = errors.New("automatic systemd restart requires recorded lifecycle metadata")
+		return plan, nil
+	}
+	active, installed, err := serviceActiveForUpdate(plan.systemdScope, plan.systemdUnit)
+	if err != nil {
+		plan.blockedErr = err
+		return plan, nil
+	}
+	if !installed {
+		plan.blockedErr = fmt.Errorf("systemd service %s is not installed", plan.systemdUnit)
+		return plan, nil
+	}
+	plan.systemdActive = active
+	return plan, nil
+}
+
+func restartUpdatedRuntimeViaSystemd(profile Profile, result UpdateResult, plan updateRestartPlan) error {
+	if plan.blockedErr != nil {
+		printManualRestartMessage(result.Version, plan.blockedErr)
+		return nil
+	}
+	if err := restartSystemdServiceForUpdate(plan.systemdScope, plan.systemdUnit, plan.systemdActive); err != nil {
+		printManualRestartMessage(result.Version, err)
+		return nil
+	}
+	if err := markCurrentRuntimeBootSuccessful(profile.InstallRoot); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "Swarm update applied to %s. Restarted via systemd service %s.\n", strings.TrimSpace(result.Version), plan.systemdUnit)
+	return nil
+}
+
+func printManualRestartMessage(version string, reason error) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = "the new version"
+	}
+	fmt.Fprintf(os.Stdout, "Swarm updated to %s, but automatic restart could not be completed.\n", version)
+	if reason != nil {
+		fmt.Fprintf(os.Stdout, "Automatic restart was blocked: %v\n", reason)
+	}
+	fmt.Fprintln(os.Stdout, "Please restart Swarm manually.")
 }
 
 func CurrentRuntimeVersion(installRoot string) string {
