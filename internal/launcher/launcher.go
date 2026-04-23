@@ -1217,6 +1217,53 @@ func RunTUI(profile Profile, args []string) error {
 	return RunForeground(tuiPath, args, profile.EnvList(extraEnv))
 }
 
+func RunDevUpdate(profile Profile, relaunchArgs []string) error {
+	if !profile.Startup.DevMode {
+		return errors.New("update dev requires dev_mode=true in swarm.conf")
+	}
+	if strings.TrimSpace(profile.Root) == "" {
+		return errors.New("update dev requires a source checkout")
+	}
+	fmt.Fprintln(os.Stdout, "\nRebuilding local dev checkout...")
+	fmt.Fprintln(os.Stdout, "Swarm is shut down before rebuilding and restarting.")
+	if err := StopBackend(profile); err != nil {
+		return err
+	}
+	if err := BuildSwarmdBinaries(profile); err != nil {
+		return err
+	}
+	if err := BuildToolBinaries(profile.Root, map[string]bool{"rebuild": true}); err != nil {
+		return err
+	}
+	if err := BuildSwarmTUI(profile); err != nil {
+		return err
+	}
+	if err := EnsureWebPrereqs(profile); err != nil {
+		return err
+	}
+	cmd := exec.Command("npm", "run", "build")
+	cmd.Dir = profile.WebDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	if err := InstallDesktopAssets(profile); err != nil {
+		return err
+	}
+	if err := SyncDevContainerImages(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true); err != nil {
+		return err
+	}
+	if _, err := InstallLaunchers(profile.Root); err != nil {
+		return err
+	}
+	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stdout, "Local dev rebuild completed. Restarting Swarm...")
+	return RunTUI(profile, relaunchArgs)
+}
+
 func EnsureWebPrereqs(profile Profile) error {
 	if strings.TrimSpace(profile.WebDir) == "" {
 		return errors.New("desktop asset build requires a source checkout")

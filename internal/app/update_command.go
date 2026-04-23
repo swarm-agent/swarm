@@ -3,8 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,16 +12,10 @@ import (
 	"swarm-refactor/swarmtui/internal/ui"
 )
 
-type pendingUpdateRequest struct {
-	plan         client.UpdateApplyPlan
-	lane         string
-	relaunchArgs []string
-}
-
 func (a *App) handleUpdateCommand(args []string) {
 	a.home.ClearCommandOverlay()
 	if len(args) == 0 {
-		a.home.SetStatus("usage: /update [status|apply]")
+		a.home.SetStatus("usage: /update [status|apply|dev]")
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(args[0])) {
@@ -31,8 +23,10 @@ func (a *App) handleUpdateCommand(args []string) {
 		a.refreshUpdateStatus(true)
 	case "apply":
 		a.applyUpdate()
+	case "dev":
+		a.applyDevUpdate()
 	default:
-		a.home.SetStatus("usage: /update [status|apply]")
+		a.home.SetStatus("usage: /update [status|apply|dev]")
 	}
 }
 
@@ -64,41 +58,35 @@ func (a *App) refreshUpdateStatus(force bool) {
 }
 
 func (a *App) applyUpdate() {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	plan, err := a.api.ApplyUpdate(ctx)
-	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/update apply failed: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("update apply failed: %v", err))
-		return
-	}
-	lane := strings.TrimSpace(plan.CurrentLane)
-	if lane == "" {
-		lane = strings.TrimSpace(a.updateStatus.CurrentLane)
-	}
-	relaunchArgs := collectRelaunchArgs()
-	a.pendingUpdate = &pendingUpdateRequest{plan: plan, lane: lane, relaunchArgs: relaunchArgs}
-	a.home.SetStatus(fmt.Sprintf("updating to %s; switching to terminal", strings.TrimSpace(plan.TargetVersion)))
+	a.releaseUpdateRequested = true
+	a.home.SetStatus("checking and applying release update after TUI shutdown")
 	a.quitRequested = true
 	if a.screen != nil {
 		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptQuit))
 	}
 }
 
-func collectRelaunchArgs() []string {
-	args := append([]string{}, os.Args[1:]...)
-	base := filepath.Base(strings.TrimSpace(os.Args[0]))
-	if strings.EqualFold(base, "swarmdev") {
-		return append([]string{"dev"}, args...)
+func (a *App) applyDevUpdate() {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	status, err := a.api.GetUpdateStatus(ctx)
+	if err != nil {
+		a.home.SetStatus(fmt.Sprintf("/update dev failed: %v", err))
+		a.showToast(ui.ToastError, fmt.Sprintf("update dev failed: %v", err))
+		return
 	}
-	if len(args) == 0 {
-		return args
+	a.updateStatus = status
+	if !status.DevMode {
+		a.home.SetStatus("/update dev requires dev_mode=true in swarm.conf")
+		a.showToast(ui.ToastError, "/update dev requires dev_mode=true in swarm.conf")
+		return
 	}
-	first := strings.ToLower(strings.TrimSpace(args[0]))
-	if first == "main" || first == "dev" {
-		return args
+	a.devUpdateRequested = true
+	a.home.SetStatus("rebuilding local dev checkout after TUI shutdown")
+	a.quitRequested = true
+	if a.screen != nil {
+		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptQuit))
 	}
-	return append([]string{"main"}, args...)
 }
 
 func updateCurrentVersionLabel(status client.UpdateStatus) string {

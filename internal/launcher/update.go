@@ -184,6 +184,42 @@ func startRuntimeCommand(profile Profile, args []string, extraEnv map[string]str
 	return cmd, nil
 }
 
+func RequestReleaseUpdatePlan(ctx context.Context, profile Profile) (client.UpdateApplyPlan, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	body, status, err := httpRequest(ctx, profile, http.MethodPost, profile.URL+"/v1/update/apply", map[string]string{
+		"Accept":       "application/json",
+		"Content-Type": "application/json",
+	}, map[string]any{})
+	if err != nil {
+		return client.UpdateApplyPlan{}, err
+	}
+	if status != http.StatusOK {
+		return client.UpdateApplyPlan{}, fmt.Errorf("update apply failed (%d): %s", status, responseErrorMessage(body))
+	}
+	var plan client.UpdateApplyPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		return client.UpdateApplyPlan{}, fmt.Errorf("decode update apply response: %w", err)
+	}
+	return plan, nil
+}
+
+func RunReleaseUpdate(profile Profile, relaunchArgs []string) error {
+	plan, err := RequestReleaseUpdatePlan(context.Background(), profile)
+	if err != nil {
+		return err
+	}
+	version := strings.TrimSpace(plan.TargetVersion)
+	if version == "" {
+		version = "new release"
+	}
+	fmt.Fprintf(os.Stdout, "\nUpdating to %s...\n", version)
+	fmt.Fprintln(os.Stdout, "Swarm is shut down before applying the update.")
+	fmt.Fprintln(os.Stdout, "Swarm will attempt to restart automatically when the update finishes.")
+	fmt.Fprintln(os.Stdout, "If automatic restart is blocked, Swarm will tell you to restart it manually.")
+	return RunUpdateHelper(profile, plan, 0, relaunchArgs)
+}
+
 func StartUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int, relaunchArgs []string) error {
 	helperPath := filepath.Join(profile.ToolBinDir, "swarmsetup")
 	if !isExecutable(helperPath) {
@@ -270,6 +306,20 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, cmd.Process, err)
 	}
 	return nil
+}
+
+func responseErrorMessage(body []byte) string {
+	message := strings.TrimSpace(string(body))
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil && strings.TrimSpace(payload.Error) != "" {
+		message = strings.TrimSpace(payload.Error)
+	}
+	if message == "" {
+		message = "empty response"
+	}
+	return message
 }
 
 func resolveUpdateRestartPlan(profile Profile) (updateRestartPlan, error) {
