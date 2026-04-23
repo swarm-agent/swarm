@@ -116,7 +116,7 @@ VM_CPUS="${SWARM_HARNESS_VM_CPUS:-4}"
 VM_MEMORY_MB="${SWARM_HARNESS_VM_MEMORY_MB:-8192}"
 VM_DISK_SIZE="${SWARM_HARNESS_VM_DISK_SIZE:-80G}"
 VM_IMAGE_URL="${SWARM_HARNESS_VM_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}"
-GUEST_REPO_DIR="${SWARM_HARNESS_VM_REPO_DIR:-~/${ROOT_DIR##*/}}"
+GUEST_REPO_DIR="${SWARM_HARNESS_VM_REPO_DIR:-/home/${GUEST_USER}/${ROOT_DIR##*/}}"
 ALLOW_TCG="${SWARM_HARNESS_VM_ALLOW_TCG:-false}"
 FORCE_CREATE="${SWARM_HARNESS_VM_FORCE_CREATE:-false}"
 FORCE_REBOOTSTRAP="false"
@@ -482,7 +482,7 @@ remote_ssh() {
 remote_ssh_command() {
   local command_string="${1:-}"
   [[ -n "${command_string}" ]] || fail "remote_ssh_command requires a command string"
-  remote_ssh bash -lc "${command_string}"
+  remote_ssh "bash -lc $(shell_quote "${command_string}")"
 }
 
 wait_for_ssh() {
@@ -583,7 +583,8 @@ provision_vm() {
 
 verify_guest_ready() {
   start_vm
-  remote_ssh_command "command -v bash > /dev/null && command -v git > /dev/null && command -v go > /dev/null && command -v npm > /dev/null && command -v podman > /dev/null && command -v docker > /dev/null"
+  local repo_dir_literal="${GUEST_REPO_DIR/#\~/$HOME}"
+  remote_ssh_command "test -d $(shell_quote "${repo_dir_literal}") && test -f $(shell_quote "${repo_dir_literal}/go.mod") && test -x $(shell_quote "${repo_dir_literal}/.tools/go/bin/go") && command -v bash > /dev/null && command -v git > /dev/null && command -v npm > /dev/null && command -v podman > /dev/null && command -v docker > /dev/null"
 }
 
 fast_vm() {
@@ -591,8 +592,8 @@ fast_vm() {
   if [[ ! -f "${BOOTSTRAP_STAMP_FILE}" ]]; then
     bootstrap_vm
   fi
-  verify_guest_ready
   maybe_sync_repo
+  verify_guest_ready
   track_vm
 }
 
@@ -633,10 +634,12 @@ run_in_guest_repo() {
   repo_root="$(resolve_repo_root)"
   : "${repo_root}"
   maybe_sync_repo
+  local guest_repo_dir
+  guest_repo_dir="${GUEST_REPO_DIR/#\~/$HOME}"
   local command_string
-  command_string="cd $(shell_quote "${GUEST_REPO_DIR}") && $(join_quoted "$@")"
+  command_string="cd $(shell_quote "${guest_repo_dir}") && $(join_quoted "$@")"
   log "[swarm-harness run] ${command_string}"
-  remote_ssh "${command_string}"
+  remote_ssh_command "${command_string}"
 }
 
 ssh_in_guest() {
