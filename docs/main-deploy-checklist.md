@@ -88,6 +88,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 - [ ] Verify the uploaded artifacts include the full Swarm runtime bundle and `build-info.txt`
 - [ ] Verify the GitHub release includes `swarm-<version>-linux-amd64.tar.gz`
 - [ ] Verify the install flow from the extracted release works with `swarmsetup --artifact-root ...`
+- [ ] Verify `/update apply` exits the TUI, shows terminal progress, relaunches, and shows the post-update success toast
 
 ## Relevant filepaths
 
