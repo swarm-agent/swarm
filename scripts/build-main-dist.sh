@@ -93,10 +93,15 @@ git_tag="$(git -C "${ROOT_DIR}" describe --tags --exact-match 2>/dev/null || tru
 if [[ -n "${REQUESTED_VERSION}" ]]; then
   release_version="${REQUESTED_VERSION}"
 elif [[ -n "${git_tag}" ]]; then
-  release_version="${git_tag}"
+  if [[ "${git_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    release_version="${git_tag}"
+  else
+    echo "release build requires a stable semver tag vX.Y.Z; found exact tag ${git_tag}" >&2
+    exit 1
+  fi
 else
-  short_sha="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
-  release_version="0.0.0-dev+${short_sha}"
+  echo "release build requires --version <vX.Y.Z> or an exact stable semver tag on HEAD" >&2
+  exit 1
 fi
 build_actor="${GITHUB_ACTOR:-local}"
 built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
