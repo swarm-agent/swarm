@@ -13,12 +13,16 @@ usage() {
 Usage:
   ./scripts/swarm-harness-vm.sh doctor
   ./scripts/swarm-harness-vm.sh install-host-deps
+  ./scripts/swarm-harness-vm.sh setup [--repo-root PATH] [--no-sync] [--rebootstrap]
+  ./scripts/swarm-harness-vm.sh track
+  ./scripts/swarm-harness-vm.sh logs
   ./scripts/swarm-harness-vm.sh create
   ./scripts/swarm-harness-vm.sh start
   ./scripts/swarm-harness-vm.sh stop
   ./scripts/swarm-harness-vm.sh restart
   ./scripts/swarm-harness-vm.sh status
   ./scripts/swarm-harness-vm.sh ssh [ssh-args...]
+  ./scripts/swarm-harness-vm.sh shell [ssh-args...]
   ./scripts/swarm-harness-vm.sh bootstrap [--rebootstrap]
   ./scripts/swarm-harness-vm.sh sync [--repo-root PATH]
   ./scripts/swarm-harness-vm.sh provision [--repo-root PATH] [--no-sync] [--rebootstrap]
@@ -39,6 +43,9 @@ Environment overrides:
   SWARM_HARNESS_VM_FORCE_CREATE    true to recreate cloud-init seed/user data on create. Default: false
 
 Behavior:
+  - `setup` is the canonical one-command path for the singular reusable `swarm-harness` VM: doctor -> create/start -> bootstrap -> sync -> summary
+  - `track` prints the current reusable VM summary, stamps, logs, and exact shell command so humans/agents do not need to rediscover it
+  - `logs` prints the latest QEMU and serial log lines for quick failure diagnosis
   - uses a dedicated Ubuntu cloud-image guest with loopback-only SSH forwarding
   - keeps repo sync explicit via rsync; no host bind mounts are used
   - refuses to boot without writable /dev/kvm unless SWARM_HARNESS_VM_ALLOW_TCG=true
@@ -161,6 +168,27 @@ load_vm_config() {
   : "${SSH_PORT:=}"
   [[ -n "${SSH_PORT}" ]] || fail "vm config is missing SSH_PORT: ${VM_CONFIG_FILE}"
   return 0
+}
+
+stamp_value() {
+  local path="${1:-}"
+  if [[ -f "${path}" ]]; then
+    tr -d '\n' <"${path}"
+    return 0
+  fi
+  printf 'missing'
+}
+
+ssh_command_string() {
+  load_vm_config || fail "vm has not been created yet"
+  printf 'ssh -i %q -o %q -o %q -o %q -o %q -p %q %q' \
+    "${SSH_KEY_FILE}" \
+    'StrictHostKeyChecking=accept-new' \
+    "UserKnownHostsFile=${KNOWN_HOSTS_FILE}" \
+    'ServerAliveInterval=30' \
+    'ServerAliveCountMax=10' \
+    "${SSH_PORT}" \
+    "${GUEST_USER}@127.0.0.1"
 }
 
 port_in_use() {
@@ -378,6 +406,46 @@ last_sync_stamp=${SYNC_STAMP_FILE}
 EOF
 }
 
+track_vm() {
+  load_vm_config || fail "vm has not been created yet; run: ./scripts/swarm-harness-vm.sh setup"
+  local state="stopped"
+  if is_running; then
+    state="running"
+  fi
+  cat <<EOF
+name=${VM_NAME}
+state=${state}
+ssh_port=${SSH_PORT}
+guest_user=${GUEST_USER}
+guest_repo_dir=${GUEST_REPO_DIR}
+bootstrap_complete=$(stamp_value "${BOOTSTRAP_STAMP_FILE}")
+last_sync=$(stamp_value "${SYNC_STAMP_FILE}")
+config=${VM_CONFIG_FILE}
+serial_log=${SERIAL_LOG}
+qemu_log=${QEMU_LOG}
+ssh_command=$(ssh_command_string)
+next_shell=./scripts/swarm-harness-vm.sh shell
+next_sync=./scripts/swarm-harness-vm.sh sync
+example_run=./scripts/swarm-harness-vm.sh run -- pwd
+EOF
+}
+
+show_logs() {
+  load_vm_config || fail "vm has not been created yet; run: ./scripts/swarm-harness-vm.sh setup"
+  printf '== serial log (%s) ==\n' "${SERIAL_LOG}"
+  if [[ -f "${SERIAL_LOG}" ]]; then
+    tail -n 40 "${SERIAL_LOG}"
+  else
+    printf '(missing)\n'
+  fi
+  printf '\n== qemu log (%s) ==\n' "${QEMU_LOG}"
+  if [[ -f "${QEMU_LOG}" ]]; then
+    tail -n 40 "${QEMU_LOG}"
+  else
+    printf '(missing)\n'
+  fi
+}
+
 ssh_base_args() {
   load_vm_config || fail "vm has not been created yet"
   printf '%s\n' \
@@ -494,6 +562,12 @@ provision_vm() {
   log "Provisioned ${VM_NAME}"
 }
 
+setup_vm() {
+  doctor
+  provision_vm
+  track_vm
+}
+
 run_in_guest_repo() {
   local repo_root
   repo_root="$(resolve_repo_root)"
@@ -587,7 +661,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "${COMMAND}" in
-  create|start|stop|restart|status|doctor|install-host-deps|bootstrap|sync|provision|ssh|run|local-replicate|local-replicate-recovery)
+  create|start|stop|restart|status|track|logs|doctor|install-host-deps|setup|bootstrap|sync|provision|ssh|shell|run|local-replicate|local-replicate-recovery)
     ;;
   ""|help|-h|--help)
     usage
@@ -637,9 +711,11 @@ case "${COMMAND}" in
   run|local-replicate|local-replicate-recovery)
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for ${COMMAND}; run bootstrap/provision --rebootstrap first"
     ;;
-  create|start|stop|restart|status|doctor|install-host-deps|ssh)
+  create|start|stop|restart|status|track|logs|doctor|install-host-deps|ssh|shell)
     [[ "${NO_SYNC}" != "true" ]] || fail "--no-sync is not supported for ${COMMAND}"
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for ${COMMAND}"
+    ;;
+  setup)
     ;;
   provision)
     ;;
@@ -651,6 +727,9 @@ case "${COMMAND}" in
     ;;
   install-host-deps)
     install_host_deps
+    ;;
+  setup)
+    setup_vm
     ;;
   create)
     create_vm
@@ -670,7 +749,13 @@ case "${COMMAND}" in
   status)
     status_vm
     ;;
-  ssh)
+  track)
+    track_vm
+    ;;
+  logs)
+    show_logs
+    ;;
+  ssh|shell)
     load_vm_config || fail "vm has not been created yet"
     ssh_in_guest
     ;;

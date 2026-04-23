@@ -42,11 +42,13 @@ You can verify readiness with:
 
 ## Canonical setup flow
 
-Create, bootstrap, and sync the VM:
+Use the singular reusable VM setup path:
 
 ```bash
-./scripts/swarm-harness-vm.sh provision
+./scripts/swarm-harness-vm.sh setup
 ```
+
+That is the canonical one-command path. It runs doctor, creates or reuses the `swarm-harness` VM, bootstraps guest packages, syncs the repo, and prints the exact tracked VM details at the end.
 
 That will:
 
@@ -64,6 +66,12 @@ On later runs, `provision` reuses the existing bootstrap stamp and skips the apt
 
 ## Common commands
 
+Print the tracked reusable VM details:
+
+```bash
+./scripts/swarm-harness-vm.sh track
+```
+
 Check state:
 
 ```bash
@@ -73,13 +81,19 @@ Check state:
 Open a shell:
 
 ```bash
-./scripts/swarm-harness-vm.sh ssh
+./scripts/swarm-harness-vm.sh shell
 ```
 
 Resync the repo:
 
 ```bash
 ./scripts/swarm-harness-vm.sh sync
+```
+
+Inspect recent VM logs quickly:
+
+```bash
+./scripts/swarm-harness-vm.sh logs
 ```
 
 Force guest package bootstrap again:
@@ -91,13 +105,13 @@ Force guest package bootstrap again:
 Run an arbitrary guest-side command from the repo root:
 
 ```bash
-./scripts/swarm-harness-vm.sh run -- git status --short
+./scripts/swarm-harness-vm.sh run -- pwd
 ```
 
 If you already know the guest checkout is current, skip rsync explicitly:
 
 ```bash
-./scripts/swarm-harness-vm.sh run --no-sync -- git status --short
+./scripts/swarm-harness-vm.sh run --no-sync -- pwd
 ```
 
 Run the canonical local replicate harness inside the VM:
@@ -128,6 +142,32 @@ Stop the VM:
 
 ```bash
 ./scripts/swarm-harness-vm.sh stop
+```
+
+## Fast manual testing policy
+
+For manual VM work, do not rediscover the environment each time.
+
+Use exactly this loop:
+
+```bash
+./scripts/swarm-harness-vm.sh setup
+./scripts/swarm-harness-vm.sh track
+./scripts/swarm-harness-vm.sh shell
+```
+
+After code changes:
+
+```bash
+./scripts/swarm-harness-vm.sh sync
+./scripts/swarm-harness-vm.sh shell
+```
+
+If the VM behaves unexpectedly:
+
+```bash
+./scripts/swarm-harness-vm.sh logs
+./scripts/swarm-harness-vm.sh track
 ```
 
 ## Recommended policy
