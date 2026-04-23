@@ -12,10 +12,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,7 +24,6 @@ import (
 const (
 	updateDownloadTimeout     = 2 * time.Minute
 	updateParentWaitLimit     = 30 * time.Second
-	updateBootWaitLimit       = 30 * time.Second
 	updatePollInterval        = 200 * time.Millisecond
 	pendingUpdateBootstrapEnv = "SWARM_PENDING_UPDATE_BOOT"
 	appliedUpdateToastEnv     = "SWARM_APPLIED_UPDATE_TOAST"
@@ -35,11 +32,11 @@ const (
 var (
 	stopBackendForUpdate                     = StopBackend
 	applyReleaseUpdateForUpdate              = ApplyReleaseUpdate
-	startRuntimeCommandForUpdate             = startRuntimeCommand
+	startBackendForUpdate                    = StartBackend
+	runTUIWithExtraEnvForUpdate              = RunTUIWithExtraEnv
 	resolveLifecycleManagerForUpdate         = resolveLifecycleManager
 	serviceActiveForUpdate                   = serviceActiveForScope
-	restartSystemdServiceForUpdate           = restartSystemdService
-	waitForRuntimeBootConfirmationForUpdate  = waitForRuntimeBootConfirmation
+	stopSystemdServiceForUpdate              = stopSystemdService
 	rollbackPendingUpdateAndRestartForUpdate = rollbackPendingUpdateAndRestart
 )
 
@@ -163,27 +160,6 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 	return UpdateResult{Version: version, RuntimeRoot: targetRoot, CurrentLink: currentLink, PreviousLink: previousLink}, nil
 }
 
-func RestartThroughUpdatedRuntime(profile Profile, args []string) error {
-	cmd, err := startRuntimeCommand(profile, args, nil)
-	if err != nil {
-		return err
-	}
-	return cmd.Start()
-}
-
-func startRuntimeCommand(profile Profile, args []string, extraEnv map[string]string) (*exec.Cmd, error) {
-	swarmPath := filepath.Join(profile.ToolBinDir, "swarm")
-	if !isExecutable(swarmPath) {
-		return nil, missingInstalledBinaryError("swarm", swarmPath)
-	}
-	cmd := exec.Command(swarmPath, args...)
-	cmd.Env = profile.EnvList(extraEnv)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd, nil
-}
-
 func RequestReleaseUpdatePlan(ctx context.Context, profile Profile) (client.UpdateApplyPlan, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -215,58 +191,8 @@ func RunReleaseUpdate(profile Profile, relaunchArgs []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "\nUpdating to %s...\n", version)
 	fmt.Fprintln(os.Stdout, "Swarm is shut down before applying the update.")
-	fmt.Fprintln(os.Stdout, "Swarm will attempt to restart automatically when the update finishes.")
-	fmt.Fprintln(os.Stdout, "If automatic restart is blocked, Swarm will tell you to restart it manually.")
+	fmt.Fprintln(os.Stdout, "Swarm will restart in this terminal when the update finishes.")
 	return RunUpdateHelper(profile, plan, 0, relaunchArgs)
-}
-
-func StartUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int, relaunchArgs []string) error {
-	helperPath := filepath.Join(profile.ToolBinDir, "swarmsetup")
-	if !isExecutable(helperPath) {
-		return missingInstalledBinaryError("swarmsetup", helperPath)
-	}
-	args := updateHelperArgs(profile, plan, parentPID, relaunchArgs)
-	cmd := exec.Command(helperPath, args...)
-	cmd.Env = profile.EnvList(nil)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	return cmd.Process.Release()
-}
-
-func RunUpdateHelperForeground(profile Profile, plan client.UpdateApplyPlan, relaunchArgs []string) error {
-	helperPath := filepath.Join(profile.ToolBinDir, "swarmsetup")
-	if !isExecutable(helperPath) {
-		return missingInstalledBinaryError("swarmsetup", helperPath)
-	}
-	args := updateHelperArgs(profile, plan, 0, relaunchArgs)
-	cmd := exec.Command(helperPath, args...)
-	cmd.Env = profile.EnvList(nil)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func updateHelperArgs(profile Profile, plan client.UpdateApplyPlan, parentPID int, relaunchArgs []string) []string {
-	args := []string{
-		"--apply-release",
-		"--lane", strings.TrimSpace(profile.Lane),
-		"--target-version", strings.TrimSpace(plan.TargetVersion),
-		"--asset-name", strings.TrimSpace(plan.AssetName),
-		"--asset-url", strings.TrimSpace(plan.AssetURL),
-		"--sha256", strings.TrimSpace(plan.SHA256),
-	}
-	if parentPID > 0 {
-		args = append(args, "--parent-pid", strconv.Itoa(parentPID))
-	}
-	for _, arg := range relaunchArgs {
-		args = append(args, "--relaunch-arg", arg)
-	}
-	return args
 }
 
 func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int, relaunchArgs []string) error {
@@ -279,33 +205,23 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err != nil {
 		return err
 	}
-	if err := stopBackendForUpdate(profile); err != nil {
+	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdActive {
+		if err := stopSystemdServiceForUpdate(restartPlan.systemdScope, restartPlan.systemdUnit); err != nil {
+			return err
+		}
+	} else if err := stopBackendForUpdate(profile); err != nil {
 		return err
 	}
 	result, err := applyReleaseUpdateForUpdate(context.Background(), profile, plan)
 	if err != nil {
 		return err
 	}
-	if restartPlan.managerKind == lifecycleKindSystemd {
-		return restartUpdatedRuntimeViaSystemd(profile, result, restartPlan)
-	}
-	cmd, err := startRuntimeCommandForUpdate(profile, relaunchArgs, map[string]string{
-		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
-	})
-	if err != nil {
+	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
-	if err := cmd.Start(); err != nil {
-		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, cmd.Process, err)
-	}
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
-	if err := waitForRuntimeBootConfirmationForUpdate(profile.InstallRoot, result.RuntimeRoot, waitCh, updateBootWaitLimit); err != nil {
-		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, cmd.Process, err)
-	}
-	return nil
+	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
+		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
+	})
 }
 
 func responseErrorMessage(body []byte) string {
@@ -352,34 +268,6 @@ func resolveUpdateRestartPlan(profile Profile) (updateRestartPlan, error) {
 	}
 	plan.systemdActive = active
 	return plan, nil
-}
-
-func restartUpdatedRuntimeViaSystemd(profile Profile, result UpdateResult, plan updateRestartPlan) error {
-	if plan.blockedErr != nil {
-		printManualRestartMessage(result.Version, plan.blockedErr)
-		return nil
-	}
-	if err := restartSystemdServiceForUpdate(plan.systemdScope, plan.systemdUnit, plan.systemdActive); err != nil {
-		printManualRestartMessage(result.Version, err)
-		return nil
-	}
-	if err := markCurrentRuntimeBootSuccessful(profile.InstallRoot); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stdout, "Swarm update applied to %s. Restarted via systemd service %s.\n", strings.TrimSpace(result.Version), plan.systemdUnit)
-	return nil
-}
-
-func printManualRestartMessage(version string, reason error) {
-	version = strings.TrimSpace(version)
-	if version == "" {
-		version = "the new version"
-	}
-	fmt.Fprintf(os.Stdout, "Swarm updated to %s, but automatic restart could not be completed.\n", version)
-	if reason != nil {
-		fmt.Fprintf(os.Stdout, "Automatic restart was blocked: %v\n", reason)
-	}
-	fmt.Fprintln(os.Stdout, "Please restart Swarm manually.")
 }
 
 func CurrentRuntimeVersion(installRoot string) string {
@@ -812,41 +700,10 @@ func rollbackPendingUpdateAndRestart(profile Profile, relaunchArgs []string, pro
 	if _, err := rollbackPendingRuntimeUpdate(profile.InstallRoot, cause); err != nil {
 		return err
 	}
-	cmd, err := startRuntimeCommand(profile, relaunchArgs, runtimeBootEnvironment())
-	if err != nil {
+	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return err
 	}
-	return cmd.Start()
-}
-
-func waitForRuntimeBootConfirmation(installRoot, targetRoot string, waitCh <-chan error, timeout time.Duration) error {
-	installRoot = filepath.Clean(strings.TrimSpace(installRoot))
-	targetRoot = filepath.Clean(strings.TrimSpace(targetRoot))
-	deadline := time.Now().Add(timeout)
-	for {
-		currentRoot, _ := resolveRuntimeLink(filepath.Join(installRoot, "current"))
-		pendingRoot, pending := resolveRuntimeLink(pendingRuntimeLink(installRoot))
-		if !pending {
-			if currentRoot == targetRoot {
-				return nil
-			}
-			return fmt.Errorf("updated runtime %s lost pending confirmation before becoming healthy", targetRoot)
-		}
-		if currentRoot != "" && currentRoot != pendingRoot {
-			return fmt.Errorf("updated runtime %s was replaced before confirmation", targetRoot)
-		}
-		select {
-		case err := <-waitCh:
-			if err != nil {
-				return fmt.Errorf("updated runtime exited before becoming healthy: %w", err)
-			}
-		default:
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out waiting for updated runtime %s to become healthy", targetRoot)
-		}
-		time.Sleep(updatePollInterval)
-	}
+	return RunTUIWithExtraEnv(profile, relaunchArgs, runtimeBootEnvironment())
 }
 
 func writeRuntimeBootStatus(installRoot string, status runtimeBootStatus) error {

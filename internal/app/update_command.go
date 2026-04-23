@@ -15,7 +15,7 @@ import (
 func (a *App) handleUpdateCommand(args []string) {
 	a.home.ClearCommandOverlay()
 	if len(args) == 0 {
-		a.home.SetStatus("usage: /update [status|apply|dev]")
+		a.home.SetStatus(updateUsage(a.startupDevMode()))
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(args[0])) {
@@ -26,8 +26,26 @@ func (a *App) handleUpdateCommand(args []string) {
 	case "dev":
 		a.applyDevUpdate()
 	default:
-		a.home.SetStatus("usage: /update [status|apply|dev]")
+		a.home.SetStatus(updateUsage(a.startupDevMode()))
 	}
+}
+
+func (a *App) startupDevMode() bool {
+	return a != nil && a.config.Startup.DevMode
+}
+
+func updateUsage(devMode bool) string {
+	if devMode {
+		return "usage: /update [status|apply|dev]"
+	}
+	return "usage: /update [status|apply]"
+}
+
+func updateHelpLine(devMode bool) string {
+	if devMode {
+		return "/update [status|apply|dev]   (check/apply released updates; dev rebuilds local checkout)"
+	}
+	return "/update [status|apply]   (check/apply released updates)"
 }
 
 func (a *App) refreshUpdateStatus(force bool) {
