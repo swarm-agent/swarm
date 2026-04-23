@@ -100,8 +100,7 @@ elif [[ -n "${git_tag}" ]]; then
     exit 1
   fi
 else
-  echo "release build requires --version <vX.Y.Z> or an exact stable semver tag on HEAD" >&2
-  exit 1
+  release_version="$("${SCRIPT_DIR}/resolve-release-version.sh")"
 fi
 build_actor="${GITHUB_ACTOR:-local}"
 built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

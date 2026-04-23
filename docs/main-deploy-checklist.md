@@ -40,8 +40,8 @@ This file is the canonical operator checklist for promoting `dev` to `main`, pub
 
 ## Canonical version reference
 
-- The preferred public release version is an annotated Git tag such as `v0.x.y` on the promoted `main` commit.
-- The `build-main` release workflow must resolve an exact stable semver tag on `HEAD`; if no exact stable tag exists, the workflow must fail instead of publishing any fallback version.
+- The preferred public release version is a stable semver tag such as `v0.x.y` on the promoted `main` commit.
+- The `build-main` release workflow auto-resolves the next stable patch version when `HEAD` is untagged, creates the annotated release tag, and publishes the matching release assets from that version.
 - `dist/build-info.txt` carries release metadata (`version`, `commit`, `actor`, `ref`, `built_at`) but is not itself the tag authority.
 
 ## Main release checklist
