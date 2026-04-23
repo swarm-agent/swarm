@@ -119,6 +119,8 @@ VM_IMAGE_URL="${SWARM_HARNESS_VM_IMAGE_URL:-https://cloud-images.ubuntu.com/nobl
 GUEST_REPO_DIR="${SWARM_HARNESS_VM_REPO_DIR:-/home/${GUEST_USER}/${ROOT_DIR##*/}}"
 ALLOW_TCG="${SWARM_HARNESS_VM_ALLOW_TCG:-false}"
 FORCE_CREATE="${SWARM_HARNESS_VM_FORCE_CREATE:-false}"
+SSH_CONNECT_TIMEOUT="${SWARM_HARNESS_VM_SSH_CONNECT_TIMEOUT:-5}"
+SSH_READY_TIMEOUT="${SWARM_HARNESS_VM_SSH_READY_TIMEOUT:-90}"
 FORCE_REBOOTSTRAP="false"
 NO_SYNC="false"
 REPO_ROOT_OVERRIDE=""
@@ -188,10 +190,13 @@ stamp_value() {
 
 ssh_command_string() {
   load_vm_config || fail "vm has not been created yet"
-  printf 'ssh -i %q -o %q -o %q -o %q -o %q -p %q %q' \
+  printf 'ssh -i %q -o %q -o %q -o %q -o %q -o %q -o %q -o %q -p %q %q' \
     "${SSH_KEY_FILE}" \
+    'BatchMode=yes' \
     'StrictHostKeyChecking=accept-new' \
     "UserKnownHostsFile=${KNOWN_HOSTS_FILE}" \
+    "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" \
+    'ConnectionAttempts=1' \
     'ServerAliveInterval=30' \
     'ServerAliveCountMax=10' \
     "${SSH_PORT}" \
@@ -338,6 +343,7 @@ start_vm() {
   require_kvm_or_allow_tcg
   if is_running; then
     log "VM already running"
+    wait_for_ssh
     return 0
   fi
 
@@ -463,8 +469,11 @@ ssh_base_args() {
   load_vm_config || fail "vm has not been created yet"
   printf '%s\n' \
     -i "${SSH_KEY_FILE}" \
+    -o "BatchMode=yes" \
     -o "StrictHostKeyChecking=accept-new" \
     -o "UserKnownHostsFile=${KNOWN_HOSTS_FILE}" \
+    -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" \
+    -o "ConnectionAttempts=1" \
     -o "ServerAliveInterval=30" \
     -o "ServerAliveCountMax=10" \
     -p "${SSH_PORT}" \
@@ -487,10 +496,11 @@ remote_ssh_command() {
 
 wait_for_ssh() {
   local attempts=0
+  local deadline=$((SECONDS + SSH_READY_TIMEOUT))
   until remote_ssh true > /dev/null 2>&1; do
     attempts=$((attempts + 1))
-    if (( attempts >= 90 )); then
-      fail "VM SSH did not become ready; inspect ${SERIAL_LOG} and ${QEMU_LOG}"
+    if (( SECONDS >= deadline )); then
+      fail "VM SSH did not become ready within ${SSH_READY_TIMEOUT}s on 127.0.0.1:${SSH_PORT}; try './scripts/swarm-harness-vm.sh restart' or './scripts/swarm-harness-vm.sh reset', then inspect ${SERIAL_LOG} and ${QEMU_LOG}"
     fi
     sleep 2
   done
@@ -539,10 +549,13 @@ EOF
 }
 
 rsync_ssh_command() {
-  printf 'ssh -i %q -o %q -o %q -o %q -o %q -p %q' \
+  printf 'ssh -i %q -o %q -o %q -o %q -o %q -o %q -o %q -o %q -p %q' \
     "${SSH_KEY_FILE}" \
+    'BatchMode=yes' \
     'StrictHostKeyChecking=accept-new' \
     "UserKnownHostsFile=${KNOWN_HOSTS_FILE}" \
+    "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" \
+    'ConnectionAttempts=1' \
     'ServerAliveInterval=30' \
     'ServerAliveCountMax=10' \
     "${SSH_PORT}"
