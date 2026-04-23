@@ -1783,7 +1783,7 @@ export function DesktopAppPage() {
                             </Button>
                           ) : null}
                           {selectingPath === workspace.path ? <span className="text-xs text-[var(--app-text-muted)]">opening…</span> : null}
-                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.taskCount ?? 0} tasks`}>
+                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.user.taskCount ?? 0} tasks`}>
                             <ListChecks size={17} strokeWidth={2.25} className="shrink-0" />
                           </Button>
                           <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">

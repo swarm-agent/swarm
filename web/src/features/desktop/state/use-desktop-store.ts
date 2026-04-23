@@ -1475,25 +1475,28 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
     const workspacePath = typeof payloadRecord.workspace_path === 'string' ? payloadRecord.workspace_path.trim() : ''
     const summaryRecord = payloadRecord.summary && typeof payloadRecord.summary === 'object' ? payloadRecord.summary as Record<string, unknown> : null
     if (workspacePath && summaryRecord) {
+      const emptySummary = createEmptyWorkspaceTodoSummary()
+      const userSummary = summaryRecord.user && typeof summaryRecord.user === 'object'
+        ? {
+            taskCount: typeof (summaryRecord.user as Record<string, unknown>).task_count === 'number' ? (summaryRecord.user as Record<string, unknown>).task_count as number : 0,
+            openCount: typeof (summaryRecord.user as Record<string, unknown>).open_count === 'number' ? (summaryRecord.user as Record<string, unknown>).open_count as number : 0,
+            inProgressCount: typeof (summaryRecord.user as Record<string, unknown>).in_progress_count === 'number' ? (summaryRecord.user as Record<string, unknown>).in_progress_count as number : 0,
+          }
+        : emptySummary.user
+      const agentSummary = summaryRecord.agent && typeof summaryRecord.agent === 'object'
+        ? {
+            taskCount: typeof (summaryRecord.agent as Record<string, unknown>).task_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).task_count as number : 0,
+            openCount: typeof (summaryRecord.agent as Record<string, unknown>).open_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).open_count as number : 0,
+            inProgressCount: typeof (summaryRecord.agent as Record<string, unknown>).in_progress_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).in_progress_count as number : 0,
+          }
+        : emptySummary.agent
       patchWorkspaceTodoSummary(workspacePath, {
-        ...createEmptyWorkspaceTodoSummary(),
-        taskCount: typeof summaryRecord.task_count === 'number' ? summaryRecord.task_count : 0,
-        openCount: typeof summaryRecord.open_count === 'number' ? summaryRecord.open_count : 0,
-        inProgressCount: typeof summaryRecord.in_progress_count === 'number' ? summaryRecord.in_progress_count : 0,
-        user: summaryRecord.user && typeof summaryRecord.user === 'object'
-          ? {
-              taskCount: typeof (summaryRecord.user as Record<string, unknown>).task_count === 'number' ? (summaryRecord.user as Record<string, unknown>).task_count as number : 0,
-              openCount: typeof (summaryRecord.user as Record<string, unknown>).open_count === 'number' ? (summaryRecord.user as Record<string, unknown>).open_count as number : 0,
-              inProgressCount: typeof (summaryRecord.user as Record<string, unknown>).in_progress_count === 'number' ? (summaryRecord.user as Record<string, unknown>).in_progress_count as number : 0,
-            }
-          : createEmptyWorkspaceTodoSummary().user,
-        agent: summaryRecord.agent && typeof summaryRecord.agent === 'object'
-          ? {
-              taskCount: typeof (summaryRecord.agent as Record<string, unknown>).task_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).task_count as number : 0,
-              openCount: typeof (summaryRecord.agent as Record<string, unknown>).open_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).open_count as number : 0,
-              inProgressCount: typeof (summaryRecord.agent as Record<string, unknown>).in_progress_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).in_progress_count as number : 0,
-            }
-          : createEmptyWorkspaceTodoSummary().agent,
+        ...emptySummary,
+        taskCount: userSummary.taskCount,
+        openCount: userSummary.openCount,
+        inProgressCount: userSummary.inProgressCount,
+        user: userSummary,
+        agent: agentSummary,
       })
       deferDesktopCacheMutation('workspace todo invalidate', () => {
         void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })

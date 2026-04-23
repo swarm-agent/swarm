@@ -116,7 +116,7 @@ export function WorkspaceCard({
       <div className="flex flex-wrap gap-2">
         <div className="flex items-center gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1 text-xs text-[var(--app-text-muted)]">
           <ListChecks size={14} />
-          {workspace.todoSummary?.taskCount ?? 0}
+          {workspace.todoSummary?.user.taskCount ?? 0}
         </div>
         {directories.length > 1 ? (
           <div className="flex items-center gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1 text-xs text-[var(--app-text-muted)]">

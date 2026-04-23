@@ -146,12 +146,14 @@ export function mapWorkspaceTodoSummary(summary: WorkspaceTodoSummaryWire | unde
   if (!summary) {
     return createEmptyWorkspaceTodoSummary()
   }
+  const user = mapWorkspaceTodoOwnerSummary(summary.user)
+  const agent = mapWorkspaceTodoOwnerSummary(summary.agent)
   return {
-    taskCount: typeof summary.task_count === 'number' ? summary.task_count : 0,
-    openCount: typeof summary.open_count === 'number' ? summary.open_count : 0,
-    inProgressCount: typeof summary.in_progress_count === 'number' ? summary.in_progress_count : 0,
-    user: mapWorkspaceTodoOwnerSummary(summary.user),
-    agent: mapWorkspaceTodoOwnerSummary(summary.agent),
+    taskCount: user.taskCount,
+    openCount: user.openCount,
+    inProgressCount: user.inProgressCount,
+    user,
+    agent,
   }
 }
 
