@@ -264,9 +264,9 @@ type App struct {
 	vault               client.VaultStatus
 
 	quitRequested bool
-	pendingUpdate *pendingUpdateRequest
 
-	devUpdateRequested bool
+	devUpdateRequested     bool
+	releaseUpdateRequested bool
 }
 
 func New() (*App, error) {
@@ -465,9 +465,8 @@ func (a *App) Run() error {
 				if a.devUpdateRequested {
 					return updatehandoff.ErrDevUpdateRequested
 				}
-				if a.pendingUpdate != nil {
-					a.Close()
-					return a.runPendingUpdate()
+				if a.releaseUpdateRequested {
+					return updatehandoff.ErrReleaseUpdateRequested
 				}
 				return nil
 			}

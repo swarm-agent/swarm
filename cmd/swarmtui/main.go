@@ -24,6 +24,9 @@ func main() {
 		if errors.Is(err, updatehandoff.ErrDevUpdateRequested) {
 			os.Exit(updatehandoff.ExitCodeDevUpdateRequested)
 		}
+		if errors.Is(err, updatehandoff.ErrReleaseUpdateRequested) {
+			os.Exit(updatehandoff.ExitCodeReleaseUpdateRequested)
+		}
 		fmt.Fprintf(os.Stderr, "swarmtui error: %v\n", err)
 		os.Exit(1)
 	}

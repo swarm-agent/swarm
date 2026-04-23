@@ -3,8 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,12 +11,6 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/ui"
 )
-
-type pendingUpdateRequest struct {
-	plan         client.UpdateApplyPlan
-	lane         string
-	relaunchArgs []string
-}
 
 func (a *App) handleUpdateCommand(args []string) {
 	a.home.ClearCommandOverlay()
@@ -66,21 +58,8 @@ func (a *App) refreshUpdateStatus(force bool) {
 }
 
 func (a *App) applyUpdate() {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	plan, err := a.api.ApplyUpdate(ctx)
-	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/update apply failed: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("update apply failed: %v", err))
-		return
-	}
-	lane := strings.TrimSpace(plan.CurrentLane)
-	if lane == "" {
-		lane = strings.TrimSpace(a.updateStatus.CurrentLane)
-	}
-	relaunchArgs := collectRelaunchArgs()
-	a.pendingUpdate = &pendingUpdateRequest{plan: plan, lane: lane, relaunchArgs: relaunchArgs}
-	a.home.SetStatus(fmt.Sprintf("updating to %s; switching to terminal", strings.TrimSpace(plan.TargetVersion)))
+	a.releaseUpdateRequested = true
+	a.home.SetStatus("checking and applying release update after TUI shutdown")
 	a.quitRequested = true
 	if a.screen != nil {
 		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptQuit))
@@ -108,22 +87,6 @@ func (a *App) applyDevUpdate() {
 	if a.screen != nil {
 		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptQuit))
 	}
-}
-
-func collectRelaunchArgs() []string {
-	args := append([]string{}, os.Args[1:]...)
-	base := filepath.Base(strings.TrimSpace(os.Args[0]))
-	if strings.EqualFold(base, "swarmdev") {
-		return append([]string{"dev"}, args...)
-	}
-	if len(args) == 0 {
-		return args
-	}
-	first := strings.ToLower(strings.TrimSpace(args[0]))
-	if first == "main" || first == "dev" {
-		return args
-	}
-	return append([]string{"main"}, args...)
 }
 
 func updateCurrentVersionLabel(status client.UpdateStatus) string {
