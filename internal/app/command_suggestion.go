@@ -2,7 +2,7 @@ package app
 
 import "strings"
 
-func suggestKnownCommand(raw string) string {
+func suggestKnownCommand(raw string, devMode bool) string {
 	query := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(raw, "/")))
 	if query == "" {
 		return ""
@@ -10,7 +10,7 @@ func suggestKnownCommand(raw string) string {
 
 	best := ""
 	bestScore := 0
-	for _, suggestion := range homeCommandSuggestions {
+	for _, suggestion := range buildHomeCommandSuggestions(devMode) {
 		command := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(suggestion.Command, "/")))
 		if command == "" {
 			continue

@@ -79,11 +79,16 @@ var (
 			"gemini-2.0-flash",
 		},
 	}
-	thinkingPresets        = []string{"off", "low", "medium", "high", "xhigh"}
-	homeCommandSuggestions = buildHomeCommandSuggestions()
+	thinkingPresets = []string{"off", "low", "medium", "high", "xhigh"}
 )
 
-func buildHomeCommandSuggestions() []ui.CommandSuggestion {
+func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
+	updateQuickTips := []string{"/update status", "/update apply"}
+	updateHint := "Check/apply released updates"
+	if devMode {
+		updateQuickTips = append(updateQuickTips, "/update dev")
+		updateHint = "Check/apply released updates or rebuild local dev checkout"
+	}
 	items := []ui.CommandSuggestion{
 		{Command: "/add-dir", Hint: "Open linked-directory flow in the workspace manager"},
 		{Command: "/agents", Hint: "Open agents manager modal", QuickTips: []string{"/agents reset", "/agents restore", "/agents use <name>", "/agents prompt <name> <text>", "/agents delete <name>"}},
@@ -112,7 +117,7 @@ func buildHomeCommandSuggestions() []ui.CommandSuggestion {
 		// {Command: "/sandbox", Hint: "Open sandbox setup modal (global ON/OFF)", QuickTips: []string{"/sandbox on", "/sandbox off", "/sandbox status"}},
 		{Command: "/sessions", Hint: "Open recent sessions modal"},
 		{Command: "/swarm", Hint: "Show swarm dashboard, pairing state, and approvals", QuickTips: []string{"/swarm status", "/swarm pending", "/swarm approve <id>", "/swarm reject <id>", "/swarm role master", "/swarm set <name>"}},
-		{Command: "/update", Hint: "Check/apply released updates or rebuild local dev checkout", QuickTips: []string{"/update status", "/update apply", "/update dev"}},
+		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
 		{Command: "/vault", Hint: "Vault status, export, or import guidance"},
@@ -345,7 +350,7 @@ func New() (*App, error) {
 	themeID := strings.TrimSpace(cfg.UI.Theme)
 	app.syncConfiguredCustomThemes()
 	app.bootstrapTheme(themeID)
-	app.home.SetCommandSuggestions(homeCommandSuggestions)
+	app.home.SetCommandSuggestions(buildHomeCommandSuggestions(cfg.Startup.DevMode))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
@@ -1853,7 +1858,7 @@ func (a *App) executeCommand(raw string) {
 		a.handleCopyCommand(args)
 	default:
 		a.home.ClearCommandOverlay()
-		if suggestion := suggestKnownCommand(cmd); suggestion != "" {
+		if suggestion := suggestKnownCommand(cmd, a.startupDevMode()); suggestion != "" {
 			a.home.SetStatus(fmt.Sprintf("unknown command: /%s (did you mean %s?)", cmd, suggestion))
 			return
 		}
@@ -1930,7 +1935,7 @@ func (a *App) showHelp() {
 		"/themes delete <id>",
 		"/header [on|off|toggle|status]   (chat header visibility)",
 		"/swarm [status|pending|approve <id>|reject <id>|set <name>|<name>]   (show dashboard, review pending children, or change device identity)",
-		"/update [status|apply|dev]   (check/apply released updates; dev rebuilds local checkout when dev_mode=true)",
+		updateHelpLine(a.startupDevMode()),
 		"/thinking [on|off|toggle|status]   (show or hide reasoning/thinking tags)",
 		"/mouse [on|off|toggle|status]   (mouse click capture)",
 		fmt.Sprintf("%s   (toggle mouse click capture)", keybinds.Label(ui.KeybindGlobalToggleMouse)),
@@ -2736,7 +2741,7 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		InitialPrompt:      strings.TrimSpace(initialPrompt),
 		Presets:            a.home.ModelPresets(),
 		SessionTabs:        chatSessionTabsFromSummaries(a.homeModel.RecentSessions),
-		CommandSuggestions: homeCommandSuggestions,
+		CommandSuggestions: buildHomeCommandSuggestions(a.startupDevMode()),
 		ShowHeader:         a.config.Chat.ShowHeader,
 		AuthConfigured:     a.homeModel.AuthConfigured,
 		ShowThinkingTags:   boolPtr(a.config.Chat.ThinkingTags),

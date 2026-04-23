@@ -3,14 +3,11 @@ package launcher
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"swarm-refactor/swarmtui/internal/client"
 )
@@ -188,62 +185,51 @@ func TestRollbackPendingRuntimeUpdateRestoresPreviousRuntime(t *testing.T) {
 	}
 }
 
-func TestRunUpdateHelperDirectRestartLaunchesFullApp(t *testing.T) {
+func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testing.T) {
 	profile := Profile{InstallRoot: t.TempDir()}
 	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
 	result := UpdateResult{Version: "v1.2.3", RuntimeRoot: filepath.Join(profile.InstallRoot, "versions", "v1.2.3")}
 
 	originalStopBackend := stopBackendForUpdate
 	originalApplyRelease := applyReleaseUpdateForUpdate
-	originalStartRuntime := startRuntimeCommandForUpdate
+	originalStartBackend := startBackendForUpdate
+	originalRunTUI := runTUIWithExtraEnvForUpdate
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
-	originalWaitForBoot := waitForRuntimeBootConfirmationForUpdate
 	originalRollbackRestart := rollbackPendingUpdateAndRestartForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		applyReleaseUpdateForUpdate = originalApplyRelease
-		startRuntimeCommandForUpdate = originalStartRuntime
+		startBackendForUpdate = originalStartBackend
+		runTUIWithExtraEnvForUpdate = originalRunTUI
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
-		waitForRuntimeBootConfirmationForUpdate = originalWaitForBoot
 		rollbackPendingUpdateAndRestartForUpdate = originalRollbackRestart
 	}()
 
-	stopBackendForUpdate = func(Profile) error { return nil }
+	calls := []string{}
+	stopBackendForUpdate = func(Profile) error {
+		calls = append(calls, "stop")
+		return nil
+	}
 	applyReleaseUpdateForUpdate = func(context.Context, Profile, client.UpdateApplyPlan) (UpdateResult, error) {
+		calls = append(calls, "apply")
 		return result, nil
 	}
-	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
-		return lifecycleManager{Kind: lifecycleKindDirect}, true, nil
+	startBackendForUpdate = func(Profile, StartBackendOptions) error {
+		calls = append(calls, "start-backend")
+		return nil
 	}
-	started := false
-	startRuntimeCommandForUpdate = func(_ Profile, args []string, extraEnv map[string]string) (*exec.Cmd, error) {
+	runTUIWithExtraEnvForUpdate = func(_ Profile, args []string, extraEnv map[string]string) error {
+		calls = append(calls, "run-tui")
 		if len(args) != 1 || args[0] != "main" {
 			t.Fatalf("relaunch args = %v, want [main]", args)
 		}
 		if got := strings.TrimSpace(extraEnv[appliedUpdateToastEnv]); got != "Updated to v1.2.3" {
 			t.Fatalf("toast env = %q", got)
 		}
-		if _, ok := extraEnv[pendingUpdateBootstrapEnv]; ok {
-			t.Fatalf("direct restart should not set %s", pendingUpdateBootstrapEnv)
-		}
-		cmd := exec.Command("/bin/sh", "-c", "exit 0")
-		started = true
-		return cmd, nil
-	}
-	waitForRuntimeBootConfirmationForUpdate = func(installRoot, targetRoot string, waitCh <-chan error, timeout time.Duration) error {
-		if installRoot != profile.InstallRoot {
-			t.Fatalf("installRoot = %q, want %q", installRoot, profile.InstallRoot)
-		}
-		if targetRoot != result.RuntimeRoot {
-			t.Fatalf("targetRoot = %q, want %q", targetRoot, result.RuntimeRoot)
-		}
-		if timeout != updateBootWaitLimit {
-			t.Fatalf("timeout = %v, want %v", timeout, updateBootWaitLimit)
-		}
-		if err := <-waitCh; err != nil {
-			t.Fatalf("waitCh err = %v", err)
-		}
 		return nil
+	}
+	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
+		return lifecycleManager{Kind: lifecycleKindDirect}, true, nil
 	}
 	rollbackPendingUpdateAndRestartForUpdate = func(Profile, []string, *os.Process, error) error {
 		t.Fatalf("rollback should not be called")
@@ -253,34 +239,57 @@ func TestRunUpdateHelperDirectRestartLaunchesFullApp(t *testing.T) {
 	if err := RunUpdateHelper(profile, plan, 0, []string{"main"}); err != nil {
 		t.Fatalf("RunUpdateHelper: %v", err)
 	}
-	if !started {
-		t.Fatalf("expected restart command to be started")
+	want := "stop,apply,start-backend,run-tui"
+	if got := strings.Join(calls, ","); got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
 	}
 }
 
-func TestRunUpdateHelperSystemdBlockedPrintsManualRestartMessage(t *testing.T) {
+func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *testing.T) {
 	profile := Profile{InstallRoot: t.TempDir()}
 	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
 	result := UpdateResult{Version: "v1.2.3", RuntimeRoot: filepath.Join(profile.InstallRoot, "versions", "v1.2.3")}
 
 	originalStopBackend := stopBackendForUpdate
+	originalStopSystemd := stopSystemdServiceForUpdate
 	originalApplyRelease := applyReleaseUpdateForUpdate
+	originalStartBackend := startBackendForUpdate
+	originalRunTUI := runTUIWithExtraEnvForUpdate
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
 	originalServiceActive := serviceActiveForUpdate
-	originalRestartSystemd := restartSystemdServiceForUpdate
-	originalStdout := os.Stdout
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
+		stopSystemdServiceForUpdate = originalStopSystemd
 		applyReleaseUpdateForUpdate = originalApplyRelease
+		startBackendForUpdate = originalStartBackend
+		runTUIWithExtraEnvForUpdate = originalRunTUI
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
 		serviceActiveForUpdate = originalServiceActive
-		restartSystemdServiceForUpdate = originalRestartSystemd
-		os.Stdout = originalStdout
 	}()
 
-	stopBackendForUpdate = func(Profile) error { return nil }
+	calls := []string{}
+	stopBackendForUpdate = func(Profile) error {
+		t.Fatalf("direct backend stop should not be used for active systemd service")
+		return nil
+	}
+	stopSystemdServiceForUpdate = func(scope systemdServiceScope, unit string) error {
+		calls = append(calls, "stop-systemd")
+		if scope != systemdServiceSystem || unit != "swarm.service" {
+			t.Fatalf("systemd stop = %s %s, want system swarm.service", scope, unit)
+		}
+		return nil
+	}
 	applyReleaseUpdateForUpdate = func(context.Context, Profile, client.UpdateApplyPlan) (UpdateResult, error) {
+		calls = append(calls, "apply")
 		return result, nil
+	}
+	startBackendForUpdate = func(Profile, StartBackendOptions) error {
+		calls = append(calls, "start-backend")
+		return nil
+	}
+	runTUIWithExtraEnvForUpdate = func(Profile, []string, map[string]string) error {
+		calls = append(calls, "run-tui")
+		return nil
 	}
 	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
 		return lifecycleManager{Kind: lifecycleKindSystemd, Scope: "system", Unit: "swarm.service"}, true, nil
@@ -288,39 +297,12 @@ func TestRunUpdateHelperSystemdBlockedPrintsManualRestartMessage(t *testing.T) {
 	serviceActiveForUpdate = func(scope systemdServiceScope, unit string) (bool, bool, error) {
 		return true, true, nil
 	}
-	restartCalled := false
-	restartSystemdServiceForUpdate = func(scope systemdServiceScope, unit string, restart bool) error {
-		restartCalled = true
-		return errors.New("sudo not found; cannot manage systemd system service")
-	}
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	os.Stdout = w
 
-	runErr := RunUpdateHelper(profile, plan, 0, []string{"main"})
-	_ = w.Close()
-	if runErr != nil {
-		t.Fatalf("RunUpdateHelper: %v", runErr)
+	if err := RunUpdateHelper(profile, plan, 0, []string{"main"}); err != nil {
+		t.Fatalf("RunUpdateHelper: %v", err)
 	}
-	data, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-	_ = r.Close()
-	output := string(data)
-
-	if !restartCalled {
-		t.Fatalf("expected systemd restart attempt")
-	}
-	if !strings.Contains(output, "Swarm updated to v1.2.3, but automatic restart could not be completed.") {
-		t.Fatalf("missing manual restart summary: %q", output)
-	}
-	if !strings.Contains(output, "Automatic restart was blocked: sudo not found; cannot manage systemd system service") {
-		t.Fatalf("missing blocked reason: %q", output)
-	}
-	if !strings.Contains(output, "Please restart Swarm manually.") {
-		t.Fatalf("missing manual restart instruction: %q", output)
+	want := "stop-systemd,apply,start-backend,run-tui"
+	if got := strings.Join(calls, ","); got != want {
+		t.Fatalf("calls = %s, want %s", got, want)
 	}
 }

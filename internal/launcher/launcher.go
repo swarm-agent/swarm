@@ -1206,15 +1206,22 @@ func RunCtl(profile Profile, rawArgs []string, auth bool) error {
 }
 
 func RunTUI(profile Profile, args []string) error {
+	return RunTUIWithExtraEnv(profile, args, nil)
+}
+
+func RunTUIWithExtraEnv(profile Profile, args []string, extraEnv map[string]string) error {
 	tuiPath := filepath.Join(profile.BinDir, "swarmtui")
 	if !isExecutable(tuiPath) {
 		return missingInstalledBinaryError("swarmtui", tuiPath)
 	}
-	extraEnv := map[string]string{}
-	if os.Getenv("SWARMD_TOKEN") == "" {
-		extraEnv[localTransportSocketEnv] = LocalTransportSocketPath(profile)
+	env := map[string]string{}
+	for key, value := range extraEnv {
+		env[key] = value
 	}
-	return RunForeground(tuiPath, args, profile.EnvList(extraEnv))
+	if os.Getenv("SWARMD_TOKEN") == "" {
+		env[localTransportSocketEnv] = LocalTransportSocketPath(profile)
+	}
+	return RunForeground(tuiPath, args, profile.EnvList(env))
 }
 
 func RunDevUpdate(profile Profile, relaunchArgs []string) error {
@@ -1533,18 +1540,26 @@ func serviceActiveForScope(scope systemdServiceScope, unit string) (bool, bool, 
 }
 
 func restartSystemdService(scope systemdServiceScope, unit string, restart bool) error {
+	commands := [][]string{{"daemon-reload"}}
+	if restart {
+		commands = append(commands, []string{"restart", strings.TrimSpace(unit)})
+	} else {
+		commands = append(commands, []string{"start", strings.TrimSpace(unit)})
+	}
+	return runSystemdServiceCommands(scope, unit, commands)
+}
+
+func stopSystemdService(scope systemdServiceScope, unit string) error {
+	return runSystemdServiceCommands(scope, unit, [][]string{{"stop", strings.TrimSpace(unit)}})
+}
+
+func runSystemdServiceCommands(scope systemdServiceScope, unit string, commands [][]string) error {
 	unit = strings.TrimSpace(unit)
 	if unit == "" {
 		return errors.New("systemd unit name must not be empty")
 	}
 	if scope == "" {
 		return errors.New("systemd service scope must not be empty")
-	}
-	commands := [][]string{{"daemon-reload"}}
-	if restart {
-		commands = append(commands, []string{"restart", unit})
-	} else {
-		commands = append(commands, []string{"start", unit})
 	}
 	for _, commandArgs := range commands {
 		args, err := systemctlManageArgs(scope, commandArgs...)

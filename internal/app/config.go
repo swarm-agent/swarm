@@ -28,6 +28,14 @@ type AppConfig struct {
 	UI       UIConfig
 	Swarming SwarmingConfig
 	Swarm    SwarmConfig
+	Startup  StartupConfig
+}
+
+// StartupConfig holds the subset of swarm.conf that the TUI needs for
+// feature visibility. Keep these values read-only here; mutations should go
+// through startupconfig helpers.
+type StartupConfig struct {
+	DevMode bool
 }
 
 type ChatConfig struct {
@@ -130,6 +138,7 @@ func loadAppConfig(api *client.API) (AppConfig, error) {
 	startupCfg, err := loadStartupConfigForApp()
 	if err == nil {
 		cfg.Swarm.Role = startupConfigRole(startupCfg)
+		cfg.Startup.DevMode = startupCfg.DevMode
 	}
 	return cfg, nil
 }
