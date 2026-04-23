@@ -40,8 +40,8 @@ That installs the real Swarm runtime layout and launchers so the user can open t
 
 Release bundles built by `./scripts/build-main-dist.sh --version <version>` embed the same version metadata into the launcher binaries and `swarmd`/`swarmctl`, so installed update status matches the shipped release version.
 
-For `main` releases, if the promoted commit is not already tagged with an exact stable version, `build-main` auto-creates the next patch tag from the latest stable release (for example `v0.1.0` -> `v0.1.1`).
-Consecutive untagged `dev` -> `main` promotions therefore keep advancing stable patch releases without any manual version prompt.
+For `main` releases, if the promoted commit is not already tagged with an exact stable version, `build-main` auto-creates and pushes the next patch tag from the latest stable release (for example `v0.1.0` -> `v0.1.1`).
+Consecutive untagged `dev` -> `main` promotions therefore keep advancing stable patch releases without any manual version prompt or workflow input.
 
 After install, launch Swarm with either:
 
