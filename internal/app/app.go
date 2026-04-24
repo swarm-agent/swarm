@@ -8581,7 +8581,7 @@ func (a *App) chatAvailableModelsFromResolved(resolved providerModelResolverResu
 				entry.ContextMode = contextModeForModelEntry(providerID, modelID, activeContextMode)
 			}
 			entries = append(entries, entry)
-			if model.SupportsCodexFastMode(providerID, modelID) {
+			if model.SupportsCodex1MMode(providerID, modelID) {
 				entry1M := entry
 				entry1M.ContextMode = model.CodexContextMode1M
 				entries = append(entries, entry1M)

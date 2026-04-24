@@ -376,8 +376,8 @@ func TestResolvePreferenceAppliesCodexRuntimeOverridesToSupportedModels(t *testi
 	if err != nil {
 		t.Fatalf("ResolvePreference(gpt-5.5) error = %v", err)
 	}
-	if resolved.Preference.ServiceTier != "fast" || resolved.Preference.ContextMode != "1m" {
-		t.Fatalf("resolved gpt-5.5 runtime = %#v, want fast/1m", resolved.Preference)
+	if resolved.Preference.ServiceTier != "fast" || resolved.Preference.ContextMode != "" {
+		t.Fatalf("resolved gpt-5.5 runtime = %#v, want fast only", resolved.Preference)
 	}
 
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
@@ -388,13 +388,13 @@ func TestResolvePreferenceAppliesCodexRuntimeOverridesToSupportedModels(t *testi
 		Preference:    &resolved.Preference,
 	})
 	if err != nil {
-		t.Fatalf("CreateSessionWithOptions(gpt-5.5 fast/1m) error = %v", err)
+		t.Fatalf("CreateSessionWithOptions(gpt-5.5 fast) error = %v", err)
 	}
-	if session.Preference.ServiceTier != "fast" || session.Preference.ContextMode != "1m" {
-		t.Fatalf("created session gpt-5.5 runtime = %#v, want fast/1m", session.Preference)
+	if session.Preference.ServiceTier != "fast" || session.Preference.ContextMode != "" {
+		t.Fatalf("created session gpt-5.5 runtime = %#v, want fast only", session.Preference)
 	}
-	if resolved.ContextWindow != 1050000 {
-		t.Fatalf("resolved gpt-5.5 context window = %d, want 1050000", resolved.ContextWindow)
+	if resolved.ContextWindow != 272000 {
+		t.Fatalf("resolved gpt-5.5 context window = %d, want 272000", resolved.ContextWindow)
 	}
 
 	resolved, err = modelSvc.ResolvePreference(pebblestore.ModelPreference{

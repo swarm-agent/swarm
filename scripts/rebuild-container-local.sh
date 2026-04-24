@@ -272,8 +272,8 @@ echo "[rebuild-container] rebuilding image ${IMAGE_NAME}"
   build_args=()
   if [[ -n "${DEV_IMAGE_FINGERPRINT}" ]]; then
     build_args+=(
-      --label "io.swarm.dev-mode=true"
-      --label "io.swarm.dev-fingerprint=${DEV_IMAGE_FINGERPRINT}"
+      --label "swarmagent.dev-mode=true"
+      --label "swarmagent.dev-fingerprint=${DEV_IMAGE_FINGERPRINT}"
     )
   fi
   "${BUILD_RUNTIME}" build "${build_args[@]}" -f deploy/container-mvp/Containerfile -t "${IMAGE_NAME}" .

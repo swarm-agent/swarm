@@ -8,8 +8,7 @@ const (
 	ContextMode1M             = "1m"
 	gpt54DefaultContextWindow = 272_000
 	gpt54LargeContextWindow   = 1_050_000
-	gpt55DefaultContextWindow = 400_000
-	gpt55LargeContextWindow   = 1_050_000
+	gpt55DefaultContextWindow = 272_000
 )
 
 func NormalizeServiceTier(value string) string {
@@ -42,9 +41,6 @@ func EffectiveContextWindow(modelName, contextMode string, baseContextWindow int
 		}
 		return gpt54DefaultContextWindow
 	case "gpt-5.5":
-		if NormalizeContextMode(contextMode) == ContextMode1M {
-			return gpt55LargeContextWindow
-		}
 		return gpt55DefaultContextWindow
 	}
 	if baseContextWindow < 0 {

@@ -180,11 +180,11 @@ func normalizeRuntimePreference(pref pebblestore.ModelPreference) pebblestore.Mo
 }
 
 func supportsCodexFastRuntime(provider, modelName string) bool {
-	return supportsCodexContextRuntime(provider, modelName)
+	return strings.EqualFold(provider, "codex") && (strings.EqualFold(modelName, "gpt-5.4") || strings.EqualFold(modelName, "gpt-5.5"))
 }
 
 func supportsCodexContextRuntime(provider, modelName string) bool {
-	return strings.EqualFold(provider, "codex") && (strings.EqualFold(modelName, "gpt-5.4") || strings.EqualFold(modelName, "gpt-5.5"))
+	return strings.EqualFold(provider, "codex") && strings.EqualFold(modelName, "gpt-5.4")
 }
 
 func applyResolvedRuntimePreference(resolved ResolvedPreference) ResolvedPreference {

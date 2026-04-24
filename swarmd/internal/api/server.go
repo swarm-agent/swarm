@@ -211,6 +211,7 @@ type notificationService interface {
 	LocalSwarmID() string
 	ListNotifications(swarmID string, limit int) ([]pebblestore.NotificationRecord, error)
 	Summary(swarmID string) (pebblestore.NotificationSummary, error)
+	ClearNotifications(swarmID string) (notification.ClearResult, error)
 	UpdateNotification(input notification.UpdateInput) (pebblestore.NotificationRecord, bool, error)
 	UpsertSystemNotification(record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error)
 }

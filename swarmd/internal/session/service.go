@@ -726,6 +726,8 @@ func normalizeSessionPreferenceValue(pref pebblestore.ModelPreference) (pebblest
 	pref.Thinking = modelruntime.NormalizeThinkingForProvider(pref.Provider, pref.Thinking)
 	if !supportsCodexRuntime(pref.Provider, pref.Model) {
 		pref.ServiceTier = ""
+	}
+	if !supportsCodexContextRuntime(pref.Provider, pref.Model) {
 		pref.ContextMode = ""
 	}
 	pref.UpdatedAt = time.Now().UnixMilli()
@@ -734,6 +736,10 @@ func normalizeSessionPreferenceValue(pref pebblestore.ModelPreference) (pebblest
 
 func supportsCodexRuntime(provider, modelName string) bool {
 	return strings.EqualFold(provider, "codex") && (strings.EqualFold(modelName, "gpt-5.4") || strings.EqualFold(modelName, "gpt-5.5"))
+}
+
+func supportsCodexContextRuntime(provider, modelName string) bool {
+	return strings.EqualFold(provider, "codex") && strings.EqualFold(modelName, "gpt-5.4")
 }
 
 func sessionPreferenceEqual(left, right pebblestore.ModelPreference) bool {

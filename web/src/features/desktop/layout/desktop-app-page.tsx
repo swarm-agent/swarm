@@ -73,6 +73,54 @@ interface SwarmTargetMenuState {
   open: boolean
 }
 
+function DesktopNotificationsLauncherButton({ onOpen }: { onOpen: () => void }) {
+  const unreadCount = useDesktopStore((state) => state.notificationCenter.summary.unreadCount)
+  return (
+    <Button
+      variant="ghost"
+      className="relative h-12 w-12 min-w-12 p-0"
+      onClick={onOpen}
+      aria-label="Open notifications"
+      title={unreadCount > 0 ? `${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}` : 'No unread notifications'}
+    >
+      <Bell size={22} className="shrink-0" />
+      {unreadCount > 0 ? (
+        <span className="absolute right-2 top-2 min-w-[18px] rounded-full bg-[var(--app-primary)] px-1 text-center text-[10px] font-semibold leading-[18px] text-white">
+          {unreadCount > 9 ? '9+' : unreadCount}
+        </span>
+      ) : null}
+    </Button>
+  )
+}
+
+function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const connectionState = useDesktopStore((state) => state.connectionState)
+  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
+  const updateNotificationRecord = useDesktopStore((state) => state.updateNotificationRecord)
+  return (
+    <DesktopNotificationsModal
+      open={open}
+      onOpenChange={onOpenChange}
+      notifications={notificationCenter.items}
+      summary={notificationCenter.summary}
+      loading={notificationCenter.loading}
+      connectionState={connectionState}
+      onMarkRead={async (record) => {
+        await updateNotificationRecord(record.id, { read: true })
+      }}
+      onAcknowledge={async (record) => {
+        await updateNotificationRecord(record.id, { acked: true, status: 'resolved' })
+      }}
+      onMute={async (record) => {
+        await updateNotificationRecord(record.id, { muted: true })
+      }}
+      onClearAll={async () => {
+        await useDesktopStore.getState().clearNotifications()
+      }}
+    />
+  )
+}
+
 function normalizeWorkspaceTodoSummary(summary: WorkspaceTodoSummary): WorkspaceTodoSummary {
   return {
     ...summary,
@@ -936,9 +984,6 @@ export function DesktopAppPage() {
   const liveSessions = useDesktopStore((state) => state.sessions)
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
-  const notifications = useDesktopStore((state) => state.notifications)
-  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
-  const updateNotificationRecord = useDesktopStore((state) => state.updateNotificationRecord)
   const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
   const setActiveSession = useDesktopStore((state) => state.setActiveSession)
   const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
@@ -1042,15 +1087,9 @@ export function DesktopAppPage() {
       .join('|'),
     [swarmTargets],
   )
-  const swarmNotifications = useMemo(
-    () => notifications.filter((notification) => notification.source === 'swarm'),
-    [notifications],
-  )
-  const swarmNotificationCount = notificationCenter.summary.unreadCount
-  const latestSwarmNotification = notificationCenter.items[0] ?? swarmNotifications[0] ?? null
   const swarmTargetSubtitle = currentSwarmTarget
     ? `${currentSwarmTarget.relationship}${currentSwarmTarget.online ? '' : ' · offline'}`
-    : (latestSwarmNotification?.title ?? null)
+    : 'Notifications'
   const [swarmSwitchError, setSwarmSwitchError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -1658,7 +1697,7 @@ export function DesktopAppPage() {
                   aria-label="Choose swarm target"
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold">{swarmName}{swarmNotificationCount > 0 ? ` !${swarmNotificationCount}` : ''}</div>
+                    <div className="truncate text-sm font-semibold">{swarmName}</div>
                     {swarmTargetSubtitle ? <div className="truncate text-xs text-[var(--app-text-muted)]">{swarmTargetSubtitle}</div> : null}
                   </div>
                   <ChevronsUpDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />
@@ -1675,20 +1714,7 @@ export function DesktopAppPage() {
                 >
                   <Download size={22} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
                 </Button>
-                <Button
-                  variant="ghost"
-                  className="relative h-12 w-12 min-w-12 p-0"
-                  onClick={handleOpenNotifications}
-                  aria-label="Open notifications"
-                  title={swarmNotificationCount > 0 ? `${swarmNotificationCount} unread notification${swarmNotificationCount === 1 ? '' : 's'}` : 'No unread notifications'}
-                >
-                  <Bell size={22} className="shrink-0" />
-                  {swarmNotificationCount > 0 ? (
-                    <span className="absolute right-2 top-2 min-w-[18px] rounded-full bg-[var(--app-primary)] px-1 text-center text-[10px] font-semibold leading-[18px] text-white">
-                      {swarmNotificationCount > 9 ? '9+' : swarmNotificationCount}
-                    </span>
-                  ) : null}
-                </Button>
+                <DesktopNotificationsLauncherButton onOpen={handleOpenNotifications} />
                 <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(true)} aria-label="Collapse sidebar">
                   <ChevronLeft size={28} className="shrink-0" />
                 </Button>
@@ -2040,23 +2066,7 @@ export function DesktopAppPage() {
         />
       ) : null}
 
-      <DesktopNotificationsModal
-        open={notificationsOpen}
-        onOpenChange={setNotificationsOpen}
-        notifications={notificationCenter.items}
-        summary={notificationCenter.summary}
-        loading={notificationCenter.loading}
-        connectionState={connectionState}
-        onMarkRead={async (record) => {
-          await updateNotificationRecord(record.id, { read: true })
-        }}
-        onAcknowledge={async (record) => {
-          await updateNotificationRecord(record.id, { acked: true, status: 'resolved' })
-        }}
-        onMute={async (record) => {
-          await updateNotificationRecord(record.id, { muted: true })
-        }}
-      />
+      <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
 
       <DesktopSettingsModal
         open={settingsOpen}

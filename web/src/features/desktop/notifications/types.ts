@@ -47,6 +47,15 @@ export interface NotificationSummaryResponse {
 export interface NotificationUpdateResponse {
   ok?: boolean
   notification?: DurableNotificationRecord
+  summary?: NotificationSummaryRecord
+}
+
+export interface NotificationClearResponse {
+  ok?: boolean
+  result?: {
+    swarm_id: string
+    deleted: number
+  }
 }
 
 export type {

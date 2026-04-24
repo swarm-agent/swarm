@@ -130,7 +130,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     aliases: [],
     hint: 'Toggle Codex Fast for the current chat or draft',
     actionLabel: 'Toggle Codex Fast',
-    tips: ['Available on Codex gpt-5.4/gpt-5.5', 'Alias tip: /codex fast', 'Use the model picker for 1m context'],
+    tips: ['Available on Codex gpt-5.4/gpt-5.5', 'Alias tip: /codex fast', 'Use the model picker for gpt-5.4 1m context'],
     state: 'ready',
     action: { kind: 'toggle-fast' },
   },

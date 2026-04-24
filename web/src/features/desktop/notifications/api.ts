@@ -1,6 +1,7 @@
 import { requestJson } from '../../../app/api'
 import type {
   DurableNotificationRecord,
+  NotificationClearResponse,
   NotificationSummaryRecord,
   NotificationSummaryResponse,
   NotificationsListResponse,
@@ -23,12 +24,19 @@ export async function fetchNotificationSummary(): Promise<NotificationSummaryRec
   }
 }
 
+export async function clearNotifications(): Promise<NotificationClearResponse['result']> {
+  const response = await requestJson<NotificationClearResponse>('/v1/notifications/clear', {
+    method: 'POST',
+  })
+  return response.result ?? { swarm_id: '', deleted: 0 }
+}
+
 export async function updateNotification(id: string, input: {
   read?: boolean
   acked?: boolean
   muted?: boolean
   status?: string
-}): Promise<DurableNotificationRecord> {
+}): Promise<{ notification: DurableNotificationRecord; summary?: NotificationSummaryRecord }> {
   const response = await requestJson<NotificationUpdateResponse>(`/v1/notifications/${encodeURIComponent(id)}`, {
     method: 'POST',
     headers: {
@@ -39,5 +47,5 @@ export async function updateNotification(id: string, input: {
   if (!response.notification) {
     throw new Error('Notification update response was missing notification payload')
   }
-  return response.notification
+  return { notification: response.notification, summary: response.summary }
 }

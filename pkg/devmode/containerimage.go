@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	DefaultContainerImageRef       = "localhost/swarm-container-mvp:latest"
-	ContainerImageDevModeLabel     = "io.swarm.dev-mode"
-	ContainerImageFingerprintLabel = "io.swarm.dev-fingerprint"
+	DefaultContainerImageRef           = "localhost/swarm-container-mvp:latest"
+	ContainerImageDevModeLabel         = "swarmagent.dev-mode"
+	ContainerImageFingerprintLabel     = "swarmagent.dev-fingerprint"
+	ContainerImageBaseFingerprintLabel = "swarmagent.dev-base-fingerprint"
 )
 
 func ResolveRoot(root string) (string, error) {

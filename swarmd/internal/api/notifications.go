@@ -22,6 +22,9 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	case "/v1/notifications/summary":
 		s.handleNotificationSummary(w, r)
 		return
+	case "/v1/notifications/clear":
+		s.handleNotificationClear(w, r)
+		return
 	default:
 		if strings.HasPrefix(path, "/v1/notifications/") {
 			s.handleNotificationUpdate(w, r)
@@ -61,6 +64,19 @@ func (s *Server) handleNotificationSummary(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "summary": summary})
 }
 
+func (s *Server) handleNotificationClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	result, err := s.notifications.ClearNotifications(r.URL.Query().Get("swarm_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
+}
+
 func (s *Server) handleNotificationUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -94,7 +110,12 @@ func (s *Server) handleNotificationUpdate(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "notification": record})
+	summary, err := s.notifications.Summary(record.SwarmID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "notification": record, "summary": summary})
 }
 
 func parseIntQuery(r *http.Request, key string, fallback int) int {

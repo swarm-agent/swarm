@@ -156,7 +156,7 @@ func (a *App) showCodexCommandStatus(sessionID string) {
 		fmt.Sprintf("effective context window: %d", contextWindow),
 		"usage: /codex [status|fast]",
 		"/codex fast toggles Fast on/off for Codex gpt-5.4/gpt-5.5",
-		"select gpt-5.4/gpt-5.5 (1m) in /models to use 1M context",
+		"select gpt-5.4 (1m) in /models to use 1M context",
 	}
 	a.home.SetCommandOverlay(lines)
 	a.home.SetStatus("codex runtime")

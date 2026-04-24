@@ -3,8 +3,7 @@ import type { ModelOptionRecord } from '../types/chat'
 const CODEX_CONTEXT_MODE_1M = '1m'
 const CODEX_GPT54_DEFAULT_CONTEXT_WINDOW = 272_000
 const CODEX_GPT54_1M_CONTEXT_WINDOW = 1_050_000
-const CODEX_GPT55_DEFAULT_CONTEXT_WINDOW = 400_000
-const CODEX_GPT55_1M_CONTEXT_WINDOW = 1_050_000
+const CODEX_GPT55_DEFAULT_CONTEXT_WINDOW = 272_000
 
 const MODEL_PRESETS_BY_PROVIDER: Record<string, string[]> = {
   codex: [
@@ -51,7 +50,7 @@ export function codexFastEnabled(provider: string, model: string, serviceTier: s
 }
 
 export function supportsCodex1MMode(provider: string, model: string): boolean {
-  return supportsCodexFastMode(provider, model)
+  return normalizeProviderID(provider) === 'codex' && model.trim().toLowerCase() === 'gpt-5.4'
 }
 
 export function codex1MEnabled(provider: string, model: string, contextMode: string): boolean {
@@ -67,12 +66,12 @@ export function displayModelName(provider: string, model: string, contextMode: s
 }
 
 export function effectiveContextWindow(provider: string, model: string, contextMode: string, fallback: number): number {
+  const normalizedModel = model.trim().toLowerCase()
+  if (normalizeProviderID(provider) === 'codex' && normalizedModel === 'gpt-5.5') {
+    return CODEX_GPT55_DEFAULT_CONTEXT_WINDOW
+  }
   if (!supportsCodex1MMode(provider, model)) {
     return fallback
-  }
-  const normalizedModel = model.trim().toLowerCase()
-  if (normalizedModel === 'gpt-5.5') {
-    return codex1MEnabled(provider, model, contextMode) ? CODEX_GPT55_1M_CONTEXT_WINDOW : CODEX_GPT55_DEFAULT_CONTEXT_WINDOW
   }
   return codex1MEnabled(provider, model, contextMode)
     ? CODEX_GPT54_1M_CONTEXT_WINDOW
