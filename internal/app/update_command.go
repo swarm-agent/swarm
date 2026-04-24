@@ -39,9 +39,9 @@ func updateUsage(devMode bool) string {
 
 func updateHelpLine(devMode bool) string {
 	if devMode {
-		return "/update [dev]   (apply released update; dev rebuilds local checkout)"
+		return "/update [dev]   (update Swarm)"
 	}
-	return "/update   (apply released update)"
+	return "/update   (update Swarm)"
 }
 
 func (a *App) refreshUpdateStatus(force bool) {
@@ -73,7 +73,7 @@ func (a *App) refreshUpdateStatus(force bool) {
 
 func (a *App) applyUpdate() {
 	a.releaseUpdateRequested = true
-	a.home.SetStatus("checking and applying release update after TUI shutdown")
+	a.home.SetStatus("updating Swarm after TUI shutdown")
 	a.quitRequested = true
 	if a.screen != nil {
 		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptQuit))
@@ -96,7 +96,7 @@ func (a *App) applyDevUpdate() {
 		return
 	}
 	a.devUpdateRequested = true
-	a.home.SetStatus("rebuilding local dev checkout after TUI shutdown")
+	a.home.SetStatus("updating Swarm after TUI shutdown")
 	a.quitRequested = true
 	if a.screen != nil {
 		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptQuit))

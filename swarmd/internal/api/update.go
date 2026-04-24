@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -159,16 +160,9 @@ func (r *updateJobRunner) finish(id, status, message, errorMessage string) deskt
 }
 
 func startDetachedUpdateCommand(kind string) error {
-	swarmBin := strings.TrimSpace(os.Getenv("SWARM_BIN_DIR"))
-	if swarmBin == "" {
-		return errors.New("SWARM_BIN_DIR is not configured")
-	}
-	swarmPath := filepath.Join(swarmBin, "swarm")
-	if info, err := os.Stat(swarmPath); err != nil || info.IsDir() {
-		if err != nil {
-			return fmt.Errorf("missing swarm launcher at %s: %w", swarmPath, err)
-		}
-		return fmt.Errorf("swarm launcher path is a directory: %s", swarmPath)
+	swarmPath, err := resolveSwarmLauncherPath()
+	if err != nil {
+		return err
 	}
 	lane := strings.TrimSpace(os.Getenv("SWARM_LANE"))
 	if lane == "" {
@@ -182,6 +176,7 @@ func startDetachedUpdateCommand(kind string) error {
 	}
 	cmd := exec.Command(swarmPath, args...)
 	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
 		defer devNull.Close()
 		cmd.Stdout = devNull
@@ -191,6 +186,47 @@ func startDetachedUpdateCommand(kind string) error {
 		return fmt.Errorf("start desktop update helper: %w", err)
 	}
 	return cmd.Process.Release()
+}
+
+func resolveSwarmLauncherPath() (string, error) {
+	var candidates []string
+	addCandidate := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		candidates = append(candidates, filepath.Clean(path))
+	}
+	if toolBin := strings.TrimSpace(os.Getenv("SWARM_TOOL_BIN_DIR")); toolBin != "" {
+		addCandidate(filepath.Join(toolBin, "swarm"))
+	}
+	if swarmBin := strings.TrimSpace(os.Getenv("SWARM_BIN_DIR")); swarmBin != "" {
+		addCandidate(filepath.Join(filepath.Dir(filepath.Clean(swarmBin)), "libexec", "swarm"))
+		addCandidate(filepath.Join(swarmBin, "swarm"))
+	}
+	if path, err := exec.LookPath("swarm"); err == nil {
+		addCandidate(path)
+	}
+	if len(candidates) == 0 {
+		return "", errors.New("swarm launcher path is not configured")
+	}
+	var checked []string
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+		if err != nil {
+			checked = append(checked, fmt.Sprintf("%s: %v", candidate, err))
+			continue
+		}
+		if info.IsDir() {
+			checked = append(checked, candidate+": is a directory")
+			continue
+		}
+		checked = append(checked, candidate+": not executable")
+	}
+	return "", fmt.Errorf("missing executable swarm launcher; checked %s", strings.Join(checked, "; "))
 }
 
 func (s *Server) emitUpdateNotification(job desktopUpdateJob, severity, title, body, eventType string) {
@@ -227,9 +263,9 @@ func newUpdateJobID(now int64, kind string) string {
 
 func updateStartMessage(kind string) string {
 	if kind == updateKindDev {
-		return "Rebuilding local dev checkout. The desktop will reconnect when Swarm restarts."
+		return "Updating Swarm. The desktop will reconnect when Swarm restarts."
 	}
-	return "Applying released update. The desktop will reconnect when Swarm restarts."
+	return "Updating Swarm. The desktop will reconnect when Swarm restarts."
 }
 
 func firstPositive(values ...int64) int64 {
