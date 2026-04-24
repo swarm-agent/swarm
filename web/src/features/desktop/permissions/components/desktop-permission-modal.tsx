@@ -899,9 +899,10 @@ function TaskLaunchModal({
               <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium uppercase tracking-[0.08em]">
                 {payload.launchCount} {payload.launchCount === 1 ? 'launch' : 'launches'}
               </span>
-              <span>action {payload.action || 'spawn'}</span>
-              <span>child mode {payload.effectiveChildMode || 'auto'}</span>
               <span>bash {payload.allowBash ? 'yes' : 'no'}</span>
+              {payload.reportMaxChars > 0 ? <span>report {payload.reportMaxChars} chars</span> : null}
+              {payload.resolvedAgentName ? <span>router {payload.resolvedAgentName}</span> : null}
+              {payload.disabledTools.length > 0 ? <span>disabled {payload.disabledTools.join(', ')}</span> : null}
             </div>
           </div>
           <p className="mt-3 text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
@@ -909,29 +910,11 @@ function TaskLaunchModal({
             <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task</div>
             <ChatMarkdown content={payload.description || 'Delegated task'} />
           </div>
-          <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
-              <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Permissions</div>
-              <div className="grid gap-1 text-sm text-[var(--app-text)]">
-                <div>Launches: {payload.launchCount}</div>
-                <div>Allow bash: {payload.allowBash ? 'yes' : 'no'}</div>
-                {payload.reportMaxChars > 0 ? <div>Report excerpt: {payload.reportMaxChars} chars</div> : null}
-                {payload.disabledTools.length > 0 ? <div>Disabled tools: {payload.disabledTools.join(', ')}</div> : null}
-              </div>
+          {payload.resolvedAgentError ? (
+            <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">
+              {payload.resolvedAgentError}
             </div>
-            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
-              <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Context</div>
-              <div className="grid gap-1 text-sm text-[var(--app-text)]">
-                <div>Permission: {permission.id}</div>
-                <div>Requirement: {permission.requirement || 'task_launch'}</div>
-                <div>Tool: {permission.toolName || 'task'}</div>
-                {payload.subagentType ? <div>Requested subagent: {payload.subagentType}</div> : null}
-                {payload.resolvedAgentName ? <div>Router: {payload.resolvedAgentName}</div> : null}
-                {payload.parentMode ? <div>Parent mode: {payload.parentMode}</div> : null}
-                {payload.resolvedAgentError ? <div className="text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
-              </div>
-            </div>
-          </div>
+          ) : null}
         </section>
 
         <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">

@@ -273,66 +273,29 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 	}
 
 	goal := strings.TrimSpace(firstNonEmptyToolValue(jsonString(manifest, "goal"), jsonString(manifest, "description")))
-	prompt := strings.TrimSpace(jsonString(manifest, "prompt"))
 	launches := p.taskLaunchOrderedLaunches(jsonObjectSlice(manifest, "launches"))
 	launchCount := maxInt(len(launches), jsonInt(manifest, "launch_count"))
 	resolvedAgent := strings.TrimSpace(jsonString(manifest, "resolved_agent_name"))
 
-	plural := "subagents"
-	if launchCount == 1 {
-		plural = "subagent"
-	}
-	review := []chatRenderLine{p.taskLaunchTextLine(fmt.Sprintf("This request will launch %d %s.", launchCount, plural), p.theme.Text)}
-	if resolvedAgent != "" {
-		review = append(review, p.taskLaunchKeyValueLine("router", resolvedAgent, p.theme.TextMuted))
-	}
-	review = append(review,
-		p.taskLaunchKeyValueLine("action", firstNonEmptyToolValue(jsonString(manifest, "action"), "spawn"), p.theme.Text),
-		chatRenderLine{Text: "", Style: p.theme.TextMuted},
-		p.taskLaunchTextLine("Task", p.theme.Primary.Bold(true)),
-	)
-	review = append(review, p.taskLaunchMarkdownSectionLines(goal, "No task summary provided.")...)
-	review = append(review,
-		chatRenderLine{Text: "", Style: p.theme.TextMuted},
-		p.taskLaunchTextLine("Prompt", p.theme.Accent.Bold(true)),
-	)
-	review = append(review, p.taskLaunchMarkdownSectionLines(prompt, "No prompt provided.")...)
-
-	permissions := make([]chatRenderLine, 0, 8)
-	permissions = append(permissions, p.taskLaunchKeyValueLine("launches", fmt.Sprintf("%d", launchCount), p.theme.Text))
+	metaParts := []string{fmt.Sprintf("launches %d", launchCount)}
 	if _, ok := manifest["allow_bash"]; ok {
 		value := "no"
 		if jsonBool(manifest, "allow_bash") {
 			value = "yes"
 		}
-		permissions = append(permissions, p.taskLaunchKeyValueLine("allow bash", value, p.theme.Text))
+		metaParts = append(metaParts, "bash "+value)
 	}
 	if reportMaxChars := jsonInt(manifest, "report_max_chars"); reportMaxChars > 0 {
-		permissions = append(permissions, p.taskLaunchKeyValueLine("report excerpt", fmt.Sprintf("%d chars", reportMaxChars), p.theme.Text))
+		metaParts = append(metaParts, fmt.Sprintf("report %d chars", reportMaxChars))
 	}
-	if len(permissions) == 0 {
-		permissions = append(permissions, p.taskLaunchTextLine("No additional task permissions were declared.", p.theme.TextMuted))
+	if resolvedAgent != "" {
+		metaParts = append(metaParts, "router "+resolvedAgent)
 	}
-
-	contextLines := []chatRenderLine{
-		p.taskLaunchKeyValueLine("permission", record.ID, p.theme.Text),
-		p.taskLaunchKeyValueLine("requirement", record.Requirement, p.theme.Text),
-		p.taskLaunchKeyValueLine("tool", record.ToolName, p.theme.Text),
-	}
-	review = append(review,
-		chatRenderLine{Text: "", Style: p.theme.TextMuted},
-		p.taskLaunchTextLine("Permissions", p.theme.Warning.Bold(true)),
-	)
-	review = append(review, permissions...)
-	review = append(review,
-		chatRenderLine{Text: "", Style: p.theme.TextMuted},
-		p.taskLaunchTextLine("Context", p.theme.TextMuted.Bold(true)),
-	)
-	review = append(review, contextLines...)
+	meta := []chatRenderLine{p.taskLaunchTextLine(strings.Join(metaParts, " · "), p.theme.TextMuted)}
 	sections := []taskLaunchModalSection{
 		{Title: "Task", BorderStyle: p.theme.BorderActive, TitleStyle: p.theme.Primary.Bold(true), Lines: p.taskLaunchMarkdownSectionLines(goal, "No task summary provided.")},
 		{Title: "Agent roles", BorderStyle: p.theme.Border, TitleStyle: p.theme.Secondary.Bold(true), Lines: p.taskLaunchLaunchTableLines(launches, maxInt(16, width-4))},
-		{Title: "Meta", BorderStyle: p.theme.Border, TitleStyle: p.theme.TextMuted.Bold(true), Lines: append(permissions, contextLines...)},
+		{Title: "Meta", BorderStyle: p.theme.Border, TitleStyle: p.theme.TextMuted.Bold(true), Lines: meta},
 	}
 
 	out := make([]chatRenderLine, 0, 96)

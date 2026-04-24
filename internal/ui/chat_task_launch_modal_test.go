@@ -73,8 +73,10 @@ func TestTaskLaunchPermissionModalUsesTaskRolesMetaLayout(t *testing.T) {
 			t.Fatalf("expected task launch layout to contain %q, got:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "Full prompt") || strings.Contains(text, "Readable prompt preview") {
-		t.Fatalf("expected fixed layout without prompt-specific iteration sections, got:\n%s", text)
+	for _, unwanted := range []string{"Full prompt", "Readable prompt preview", "Permission:", "Requirement:", "Tool:"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("expected compact task launch layout without %q, got:\n%s", unwanted, text)
+		}
 	}
 }
 
