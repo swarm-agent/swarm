@@ -206,6 +206,84 @@ func (s *Service) UpsertPermissionNotification(input PermissionUpsertInput) (peb
 	return record, true, nil
 }
 
+func (s *Service) UpsertSystemNotification(record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.NotificationRecord{}, false, errors.New("notification service is not configured")
+	}
+	swarmID := strings.TrimSpace(record.SwarmID)
+	if swarmID == "" {
+		swarmID = s.LocalSwarmID()
+	}
+	if swarmID == "" {
+		return pebblestore.NotificationRecord{}, false, errors.New("swarm id is required")
+	}
+	notificationID := strings.TrimSpace(record.ID)
+	if notificationID == "" {
+		return pebblestore.NotificationRecord{}, false, errors.New("notification id is required")
+	}
+	now := time.Now().UnixMilli()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var previous *pebblestore.NotificationRecord
+	existing, found, err := s.store.GetNotification(swarmID, notificationID)
+	if err != nil {
+		return pebblestore.NotificationRecord{}, false, err
+	}
+	if found {
+		previous = &existing
+	}
+	record.ID = notificationID
+	record.SwarmID = swarmID
+	if strings.TrimSpace(record.OriginSwarmID) == "" {
+		record.OriginSwarmID = swarmID
+	}
+	record.Category = pebblestore.NotificationCategorySystem
+	if strings.TrimSpace(record.Severity) == "" {
+		record.Severity = pebblestore.NotificationSeverityInfo
+	}
+	if strings.TrimSpace(record.Status) == "" {
+		record.Status = pebblestore.NotificationStatusActive
+	}
+	if record.CreatedAt <= 0 {
+		if previous != nil {
+			record.CreatedAt = previous.CreatedAt
+		} else {
+			record.CreatedAt = now
+		}
+	}
+	if record.UpdatedAt <= 0 {
+		record.UpdatedAt = now
+	}
+	if previous != nil {
+		if record.ReadAt <= 0 {
+			record.ReadAt = previous.ReadAt
+		}
+		if record.AckedAt <= 0 {
+			record.AckedAt = previous.AckedAt
+		}
+		if record.MutedAt <= 0 {
+			record.MutedAt = previous.MutedAt
+		}
+	}
+	changed := previous == nil || !notificationRecordsEqual(*previous, record)
+	if !changed {
+		return record, false, nil
+	}
+	if err := s.store.PutNotification(record, previous); err != nil {
+		return pebblestore.NotificationRecord{}, false, err
+	}
+	if _, err := s.refreshSummaryLocked(swarmID, record.UpdatedAt); err != nil {
+		return pebblestore.NotificationRecord{}, false, err
+	}
+	eventType := EventNotificationCreated
+	if previous != nil {
+		eventType = EventNotificationUpdated
+	}
+	_, _ = s.emitLocked("swarm:notifications", eventType, record.ID, map[string]any{"notification": record})
+	return record, true, nil
+}
+
 func (s *Service) UpdateNotification(input UpdateInput) (pebblestore.NotificationRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.NotificationRecord{}, false, errors.New("notification service is not configured")

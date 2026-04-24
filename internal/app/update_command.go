@@ -15,14 +15,10 @@ import (
 func (a *App) handleUpdateCommand(args []string) {
 	a.home.ClearCommandOverlay()
 	if len(args) == 0 {
-		a.home.SetStatus(updateUsage(a.startupDevMode()))
+		a.applyUpdate()
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(args[0])) {
-	case "status":
-		a.refreshUpdateStatus(true)
-	case "apply":
-		a.applyUpdate()
 	case "dev":
 		a.applyDevUpdate()
 	default:
@@ -36,16 +32,16 @@ func (a *App) startupDevMode() bool {
 
 func updateUsage(devMode bool) string {
 	if devMode {
-		return "usage: /update [status|apply|dev]"
+		return "usage: /update [dev]"
 	}
-	return "usage: /update [status|apply]"
+	return "usage: /update"
 }
 
 func updateHelpLine(devMode bool) string {
 	if devMode {
-		return "/update [status|apply|dev]   (check/apply released updates; dev rebuilds local checkout)"
+		return "/update [dev]   (apply released update; dev rebuilds local checkout)"
 	}
-	return "/update [status|apply]   (check/apply released updates)"
+	return "/update   (apply released update)"
 }
 
 func (a *App) refreshUpdateStatus(force bool) {
@@ -53,7 +49,7 @@ func (a *App) refreshUpdateStatus(force bool) {
 	defer cancel()
 	status, err := a.api.GetUpdateStatus(ctx)
 	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/update status failed: %v", err))
+		a.home.SetStatus(fmt.Sprintf("update status failed: %v", err))
 		return
 	}
 	a.updateStatus = status

@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
+import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, Download, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -39,6 +39,7 @@ import {
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchSession } from '../chat/queries/chat-queries'
+import { fetchDesktopUpdateJob, startDesktopUpdate } from '../update/api'
 import {
   sessionChildDescriptor,
   sessionParentSessionID,
@@ -938,6 +939,7 @@ export function DesktopAppPage() {
   const notifications = useDesktopStore((state) => state.notifications)
   const notificationCenter = useDesktopStore((state) => state.notificationCenter)
   const updateNotificationRecord = useDesktopStore((state) => state.updateNotificationRecord)
+  const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
   const setActiveSession = useDesktopStore((state) => state.setActiveSession)
   const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
   const upsertSession = useDesktopStore((state) => state.upsertSession)
@@ -951,6 +953,8 @@ export function DesktopAppPage() {
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
   const [swarmMenu, setSwarmMenu] = useState<SwarmTargetMenuState>({ open: false })
+  const [updateRunning, setUpdateRunning] = useState(false)
+  const [updateError, setUpdateError] = useState<string | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [routeSessionPending, setRouteSessionPending] = useState(false)
@@ -1544,6 +1548,45 @@ export function DesktopAppPage() {
     setNotificationsOpen(true)
   }, [])
 
+  const handleDesktopUpdate = useCallback(async () => {
+    if (updateRunning) {
+      return
+    }
+    setUpdateRunning(true)
+    setUpdateError(null)
+    try {
+      await startDesktopUpdate()
+      await refreshNotifications()
+      const startedAt = Date.now()
+      let sawBackendDrop = false
+      while (Date.now() - startedAt < 5 * 60_000) {
+        await new Promise((resolve) => window.setTimeout(resolve, sawBackendDrop ? 1500 : 800))
+        try {
+          const job = await fetchDesktopUpdateJob()
+          if (job.status === 'failed') {
+            throw new Error(job.error || job.message || 'Update failed')
+          }
+          await refreshNotifications()
+          window.location.reload()
+          return
+        } catch (error) {
+          sawBackendDrop = true
+          if (error instanceof Error && /update failed/i.test(error.message)) {
+            throw error
+          }
+        }
+      }
+      await refreshNotifications()
+      window.location.reload()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Update failed'
+      setUpdateError(message)
+      await refreshNotifications()
+    } finally {
+      setUpdateRunning(false)
+    }
+  }, [refreshNotifications, updateRunning])
+
   const handleOpenWorkspaceLauncher = useCallback(() => {
     setMobileSidebarOpen(false)
     setActiveSession(null)
@@ -1595,6 +1638,9 @@ export function DesktopAppPage() {
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (selectedWorkspacePath) { openTodoModal(selectedWorkspacePath, selectedWorkspace?.workspaceName ?? 'Workspace') } }} aria-label="Open tasks" disabled={!selectedWorkspacePath}>
             <ListChecks size={24} className="shrink-0" />
           </Button>
+          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label="Update Swarm" title={updateError || (updateRunning ? 'Updating Swarm…' : 'Update Swarm')} disabled={updateRunning}>
+            <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
+          </Button>
           <div className="mt-2 flex flex-col items-center">
             <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
           </div>
@@ -1619,6 +1665,16 @@ export function DesktopAppPage() {
                 </Button>
               </div>
               <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  className="h-12 w-12 min-w-12 p-0"
+                  onClick={() => { void handleDesktopUpdate() }}
+                  aria-label="Update Swarm"
+                  title={updateError || (updateRunning ? 'Updating Swarm…' : 'Update Swarm')}
+                  disabled={updateRunning}
+                >
+                  <Download size={22} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
+                </Button>
                 <Button
                   variant="ghost"
                   className="relative h-12 w-12 min-w-12 p-0"

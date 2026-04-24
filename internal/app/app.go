@@ -84,11 +84,11 @@ var (
 )
 
 func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
-	updateQuickTips := []string{"/update status", "/update apply"}
-	updateHint := "Check/apply released updates"
+	updateQuickTips := []string{"/update"}
+	updateHint := "Apply released update"
 	if devMode {
 		updateQuickTips = append(updateQuickTips, "/update dev")
-		updateHint = "Check/apply released updates or rebuild local dev checkout"
+		updateHint = "Apply released update or rebuild local dev checkout"
 	}
 	items := []ui.CommandSuggestion{
 		{Command: "/add-dir", Hint: "Open linked-directory flow in the workspace manager"},

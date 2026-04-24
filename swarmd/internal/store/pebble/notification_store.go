@@ -12,6 +12,7 @@ import (
 
 const (
 	NotificationCategoryPermission = "permission"
+	NotificationCategorySystem     = "system"
 
 	NotificationSeverityInfo    = "info"
 	NotificationSeverityWarning = "warning"
