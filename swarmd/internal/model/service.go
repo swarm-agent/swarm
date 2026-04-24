@@ -115,6 +115,8 @@ func (s *Service) SetGlobalPreference(provider, modelName, thinking string, code
 	thinking = normalizeThinkingForProvider(provider, thinking)
 	if !strings.EqualFold(provider, "codex") || !strings.EqualFold(modelName, "gpt-5.4") {
 		serviceTier = ""
+	}
+	if !strings.EqualFold(provider, "codex") || (!strings.EqualFold(modelName, "gpt-5.4") && !strings.EqualFold(modelName, "gpt-5.5")) {
 		contextMode = ""
 	}
 
@@ -170,6 +172,8 @@ func normalizeRuntimePreference(pref pebblestore.ModelPreference) pebblestore.Mo
 	pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
 	if !strings.EqualFold(pref.Provider, "codex") || !strings.EqualFold(pref.Model, "gpt-5.4") {
 		pref.ServiceTier = ""
+	}
+	if !strings.EqualFold(pref.Provider, "codex") || (!strings.EqualFold(pref.Model, "gpt-5.4") && !strings.EqualFold(pref.Model, "gpt-5.5")) {
 		pref.ContextMode = ""
 	}
 	return pref

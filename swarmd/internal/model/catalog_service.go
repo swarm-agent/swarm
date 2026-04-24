@@ -94,10 +94,14 @@ func (s *CatalogService) EnsureBootDefaults() error {
 	}
 
 	nowMs := s.now().UnixMilli()
+	defaultContextWindow := 200000
+	if providerID == "codex" && strings.EqualFold(modelID, "gpt-5.5") {
+		defaultContextWindow = codexruntime.EffectiveContextWindow(modelID, "", 0)
+	}
 	defaultRecord := pebblestore.ModelCatalogRecord{
 		Provider:        providerID,
 		Model:           modelID,
-		ContextWindow:   200000,
+		ContextWindow:   defaultContextWindow,
 		MaxOutputTokens: 32000,
 		Reasoning:       true,
 		Source:          "builtin",

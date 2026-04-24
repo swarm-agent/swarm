@@ -337,7 +337,7 @@ func TestRunTurnAgentOverrideClearsCodexRuntimeFlagsOnNonGPT54(t *testing.T) {
 	}
 }
 
-func TestResolvePreferenceAppliesCodex1MOnlyToGPT54(t *testing.T) {
+func TestResolvePreferenceAppliesCodexRuntimeOverridesToSupportedModels(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "resolve-pref.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -364,6 +364,23 @@ func TestResolvePreferenceAppliesCodex1MOnlyToGPT54(t *testing.T) {
 	}
 	if resolved.ContextWindow != 1050000 {
 		t.Fatalf("resolved gpt-5.4 context window = %d, want 1050000", resolved.ContextWindow)
+	}
+
+	resolved, err = modelSvc.ResolvePreference(pebblestore.ModelPreference{
+		Provider:    "codex",
+		Model:       "gpt-5.5",
+		Thinking:    "high",
+		ServiceTier: "fast",
+		ContextMode: "1m",
+	})
+	if err != nil {
+		t.Fatalf("ResolvePreference(gpt-5.5) error = %v", err)
+	}
+	if resolved.Preference.ServiceTier != "" || resolved.Preference.ContextMode != "1m" {
+		t.Fatalf("resolved gpt-5.5 runtime = %#v, want context-only 1m", resolved.Preference)
+	}
+	if resolved.ContextWindow != 400000 {
+		t.Fatalf("resolved gpt-5.5 context window = %d, want 400000", resolved.ContextWindow)
 	}
 
 	resolved, err = modelSvc.ResolvePreference(pebblestore.ModelPreference{
