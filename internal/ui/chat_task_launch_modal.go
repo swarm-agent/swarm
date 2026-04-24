@@ -162,7 +162,7 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	DrawText(s, modal.X+2, modal.Y+1, modal.W-4, onPanel(p.theme.Warning.Bold(true)), "Review Task Launch")
 	hint := "Enter approve · Esc deny"
 	DrawTextRight(s, modal.X+modal.W-2, modal.Y+1, modal.W/2, onPanel(p.theme.TextMuted), clampEllipsis(hint, modal.W/2))
-	subtitle := "Review the task, prompt, and per-launch assignments before allowing delegation."
+	subtitle := "Review the launch details and per-launch assignments before allowing delegation."
 	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(subtitle, modal.W-4))
 
 	bodyRect := Rect{X: modal.X + 2, Y: modal.Y + 3, W: modal.W - 4, H: modal.H - (inputRows + 6)}
@@ -235,7 +235,7 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	}
 
 	helpY := modal.Y + modal.H - 3
-	help := "↑/↓ scroll • Enter approve • Esc deny"
+	help := "PgUp/PgDn scroll • Enter approve • Esc deny"
 	helpWidth := modal.W - 4
 	if maxScroll > 0 {
 		scrollLabel := fmt.Sprintf("scroll %d/%d", p.taskLaunchScroll+1, maxScroll+1)
@@ -282,11 +282,21 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 	if launchCount == 1 {
 		plural = "subagent"
 	}
-	overview := []chatRenderLine{p.taskLaunchTextLine(fmt.Sprintf("This request will launch %d %s.", launchCount, plural), p.theme.Text)}
+	review := []chatRenderLine{p.taskLaunchTextLine(fmt.Sprintf("This request will launch %d %s.", launchCount, plural), p.theme.Text)}
 	if resolvedAgent != "" {
-		overview = append(overview, p.taskLaunchKeyValueLine("router", resolvedAgent, p.theme.TextMuted))
+		review = append(review, p.taskLaunchKeyValueLine("router", resolvedAgent, p.theme.TextMuted))
 	}
-	overview = append(overview, p.taskLaunchTextLine("Review the task, prompt, and launch assignments below before approving.", p.theme.TextMuted))
+	review = append(review,
+		p.taskLaunchKeyValueLine("action", firstNonEmptyToolValue(jsonString(manifest, "action"), "spawn"), p.theme.Text),
+		chatRenderLine{Text: "", Style: p.theme.TextMuted},
+		p.taskLaunchTextLine("Task", p.theme.Primary.Bold(true)),
+	)
+	review = append(review, p.taskLaunchMarkdownSectionLines(goal, "No task summary provided.")...)
+	review = append(review,
+		chatRenderLine{Text: "", Style: p.theme.TextMuted},
+		p.taskLaunchTextLine("Prompt", p.theme.Accent.Bold(true)),
+	)
+	review = append(review, p.taskLaunchMarkdownSectionLines(prompt, "No prompt provided.")...)
 
 	permissions := make([]chatRenderLine, 0, 8)
 	permissions = append(permissions, p.taskLaunchKeyValueLine("launches", fmt.Sprintf("%d", launchCount), p.theme.Text))
@@ -309,30 +319,12 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 		p.taskLaunchKeyValueLine("requirement", record.Requirement, p.theme.Text),
 		p.taskLaunchKeyValueLine("tool", record.ToolName, p.theme.Text),
 	}
-	controls := []chatRenderLine{
-		p.taskLaunchTextLine("Enter approves this delegation request.", p.theme.Success),
-		p.taskLaunchTextLine("Esc denies it.", p.theme.Error),
-		p.taskLaunchTextLine("PgUp/PgDn/Home/End or mouse wheel scroll the preview.", p.theme.TextMuted),
-	}
-
 	sections := []taskLaunchModalSection{
 		{
-			Title:       "Overview",
+			Title:       "Review",
 			BorderStyle: p.theme.BorderActive,
 			TitleStyle:  p.theme.Secondary.Bold(true),
-			Lines:       overview,
-		},
-		{
-			Title:       "Task",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.Primary.Bold(true),
-			Lines:       p.taskLaunchMarkdownSectionLines(goal, "No task summary provided."),
-		},
-		{
-			Title:       "Prompt",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.Accent.Bold(true),
-			Lines:       p.taskLaunchMarkdownSectionLines(prompt, "No prompt provided."),
+			Lines:       review,
 		},
 		{
 			Title:       "Launches",
@@ -351,12 +343,6 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 			BorderStyle: p.theme.Border,
 			TitleStyle:  p.theme.TextMuted.Bold(true),
 			Lines:       contextLines,
-		},
-		{
-			Title:       "Controls",
-			BorderStyle: p.theme.BorderActive,
-			TitleStyle:  p.theme.Success.Bold(true),
-			Lines:       controls,
 		},
 	}
 

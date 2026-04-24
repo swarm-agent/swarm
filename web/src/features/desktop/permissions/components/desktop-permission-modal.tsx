@@ -892,40 +892,28 @@ function TaskLaunchModal({
       }}
     >
       <div className="grid gap-5">
-        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
-          <p className="text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Launches</div>
-            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.launchCount}</div>
-          </section>
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Action</div>
-            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.action || 'spawn'}</div>
-          </section>
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Child mode</div>
-            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.effectiveChildMode || 'auto'}</div>
-          </section>
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Allow bash</div>
-            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.allowBash ? 'yes' : 'no'}</div>
-          </section>
-        </div>
-
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task</div>
-          <div className="mt-2 rounded-xl bg-[var(--app-bg-alt)] p-3">
-            <ChatMarkdown content={payload.description || 'Delegated task'} />
+        <section className="rounded-2xl border border-[var(--app-border-accent)] bg-[var(--app-surface-subtle)] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Review</div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
+              <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium uppercase tracking-[0.08em]">
+                {payload.launchCount} {payload.launchCount === 1 ? 'launch' : 'launches'}
+              </span>
+              <span>action {payload.action || 'spawn'}</span>
+              <span>child mode {payload.effectiveChildMode || 'auto'}</span>
+              <span>bash {payload.allowBash ? 'yes' : 'no'}</span>
+            </div>
           </div>
-        </section>
-
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Prompt</div>
-          <div className="mt-2 rounded-xl bg-[var(--app-bg-alt)] p-3">
-            <ChatMarkdown content={payload.prompt || 'No prompt provided.'} />
+          <p className="mt-3 text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <div className="rounded-xl bg-[var(--app-bg-alt)] p-3">
+              <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task</div>
+              <ChatMarkdown content={payload.description || 'Delegated task'} />
+            </div>
+            <div className="rounded-xl bg-[var(--app-bg-alt)] p-3">
+              <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Prompt</div>
+              <ChatMarkdown content={payload.prompt || 'No prompt provided.'} />
+            </div>
           </div>
         </section>
 
