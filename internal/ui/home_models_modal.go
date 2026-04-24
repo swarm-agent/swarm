@@ -41,6 +41,10 @@ func (e ModelsModalEntry) DisplayName() string {
 	return name
 }
 
+func supportsCodexFastRuntime(provider, modelName string) bool {
+	return model.SupportsCodexFastMode(provider, modelName)
+}
+
 type ModelsModalActionKind string
 
 const (
@@ -470,7 +474,7 @@ func (p *HomePage) enqueueModelsModalThinkingAction(thinking string, closeAfter 
 		Thinking:    thinking,
 		CloseAfter:  closeAfter,
 		StatusHint:  fmt.Sprintf("Setting thinking: %s (%s/%s) ...", thinking, model.Provider, model.Model),
-		FastOnly:    strings.EqualFold(strings.TrimSpace(model.Provider), "codex") && strings.EqualFold(strings.TrimSpace(model.Model), "gpt-5.4"),
+		FastOnly:    supportsCodexFastRuntime(model.Provider, model.Model),
 	})
 }
 
@@ -547,7 +551,7 @@ func (p *HomePage) handleModelsModalEnter() {
 			Thinking:    thinking,
 			CloseAfter:  true,
 			StatusHint:  fmt.Sprintf("Setting default model: %s/%s ...", model.Provider, model.Model),
-			FastOnly:    strings.EqualFold(strings.TrimSpace(model.Provider), "codex") && strings.EqualFold(strings.TrimSpace(model.Model), "gpt-5.4"),
+			FastOnly:    supportsCodexFastRuntime(model.Provider, model.Model),
 		})
 	}
 }
@@ -969,7 +973,7 @@ func (p *HomePage) drawModelsModal(s tcell.Screen) {
 		status = p.modelsModal.Error
 	}
 	if status == "" {
-		status = "Enter selects model. 1=off 2=low 3=medium 4=high 5=xhigh. Fast is on/off and only available on Codex gpt-5.4."
+		status = "Enter selects model. 1=off 2=low 3=medium 4=high 5=xhigh. Fast is on/off and only available on Codex gpt-5.4/gpt-5.5."
 	}
 	statusLines := Wrap(status, rect.W-4)
 	if len(statusLines) == 0 {
@@ -1016,7 +1020,7 @@ func (p *HomePage) drawModelsModal(s tcell.Screen) {
 		p.drawModelsModalModelPane(s, modelRect)
 	}
 
-	help := "Enter select/set default | 1..5 set thinking | Fast on/off shown only on Codex gpt-5.4 | a favorite | n add API key | f favorites-only | r refresh | / search | Tab focus | Esc close"
+	help := "Enter select/set default | 1..5 set thinking | Fast on/off shown only on Codex gpt-5.4/gpt-5.5 | a favorite | n add API key | f favorites-only | r refresh | / search | Tab focus | Esc close"
 	for _, line := range Wrap(help, rect.W-4) {
 		DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.TextMuted, clampEllipsis(line, rect.W-4))
 		break

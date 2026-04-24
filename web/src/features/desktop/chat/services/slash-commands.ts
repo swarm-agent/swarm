@@ -7,6 +7,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
+  | { kind: 'toggle-fast' }
   | { kind: 'open-commit-modal' }
   | { kind: 'open-plan-modal' }
   | { kind: 'compact-session' }
@@ -116,12 +117,22 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
   {
     id: 'codex',
     command: '/codex',
-    aliases: ['/fast'],
-    hint: 'Codex runtime controls are not available yet',
-    actionLabel: 'Coming soon',
-    tips: ['/codex status', '/codex fast', 'Coming later'],
-    state: 'coming-soon',
-    action: { kind: 'show-help' },
+    aliases: [],
+    hint: 'Open Codex runtime controls',
+    actionLabel: 'Open Model Picker',
+    tips: ['/codex status', '/codex fast', '/fast toggles Fast'],
+    state: 'ready',
+    action: { kind: 'open-model-picker' },
+  },
+  {
+    id: 'fast',
+    command: '/fast',
+    aliases: [],
+    hint: 'Toggle Codex Fast for the current chat or draft',
+    actionLabel: 'Toggle Codex Fast',
+    tips: ['Available on Codex gpt-5.4/gpt-5.5', 'Alias tip: /codex fast', 'Use the model picker for 1m context'],
+    state: 'ready',
+    action: { kind: 'toggle-fast' },
   },
   {
     id: 'mcp',

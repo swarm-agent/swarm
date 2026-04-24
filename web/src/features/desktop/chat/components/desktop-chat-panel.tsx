@@ -1492,6 +1492,15 @@ export function DesktopChatPanel({
         setModelPickerOpenSignal((current) => current + 1)
         setSessionDraft(sessionId ?? `__workspace__:${workspacePath}`, '')
         return
+      case 'toggle-fast':
+        if (supportsCodexFastMode(activePreferenceRecord.preference.provider, activePreferenceRecord.preference.model)) {
+          const nextFast = fastToggleFromPreference(activePreferenceRecord.preference) === 'on' ? 'off' : 'on'
+          void handlePreferenceChange(buildFastPreference(activePreferenceRecord.preference, nextFast))
+          setSessionDraft(sessionId ?? `__workspace__:${workspacePath}`, '')
+        } else {
+          setPanelError('/fast is available on Codex gpt-5.4/gpt-5.5')
+        }
+        return
       case 'open-commit-modal':
         openCommitModal()
         setSessionDraft(sessionId ?? `__workspace__:${workspacePath}`, '')
@@ -1516,7 +1525,7 @@ export function DesktopChatPanel({
       default:
         return
     }
-  }, [canStop, composer, handleCompact, onOpenPermissions, onOpenSettingsTab, onOpenWorkspaceLauncher, onStartNewSession, openCommitModal, openPlanModal, sessionId, setSessionDraft, submitting, workspaceName, workspacePath])
+  }, [activePreferenceRecord.preference, canStop, composer, handleCompact, handlePreferenceChange, onOpenPermissions, onOpenSettingsTab, onOpenWorkspaceLauncher, onStartNewSession, openCommitModal, openPlanModal, sessionId, setSessionDraft, submitting, workspaceName, workspacePath])
 
   const handleSlashInsert = useCallback((command: DesktopSlashCommand) => {
     setSessionDraft(sessionId ?? `__workspace__:${workspacePath}`, `${command.command} `)

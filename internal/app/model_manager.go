@@ -248,7 +248,7 @@ func (a *App) refreshModelsModalData(providerHint, statusHint string) {
 				}
 			}
 			entries = append(entries, entry)
-			if strings.EqualFold(providerID, "codex") && strings.EqualFold(modelID, "gpt-5.4") {
+			if model.SupportsCodexFastMode(providerID, modelID) {
 				entry1M := entry
 				entry1M.ContextMode = model.CodexContextMode1M
 				entry1M.ContextWindow = model.CodexContextWindow(providerID, modelID, entry1M.ContextMode, entry.ContextWindow)

@@ -233,26 +233,29 @@ func TestChatFooterFocusLine_UsesCompactSettingsOnly(t *testing.T) {
 	}
 }
 
-func TestChatFooterFocusLine_AppendsCodexRuntimeFlagsForGPT54(t *testing.T) {
-	p := NewChatPage(ChatPageOptions{
-		SessionID:      "session-test",
-		ShowHeader:     true,
-		AuthConfigured: true,
-		ModelProvider:  "codex",
-		ModelName:      "gpt-5.4",
-		ThinkingLevel:  "high",
-		ServiceTier:    "fast",
-		ContextMode:    "1m",
-		Meta:           ChatSessionMeta{Agent: "swarm"},
-	})
+func TestChatFooterFocusLine_AppendsCodexRuntimeFlagsForSupportedModels(t *testing.T) {
+	for _, modelName := range []string{"gpt-5.4", "gpt-5.5"} {
+		p := NewChatPage(ChatPageOptions{
+			SessionID:      "session-test",
+			ShowHeader:     true,
+			AuthConfigured: true,
+			ModelProvider:  "codex",
+			ModelName:      modelName,
+			ThinkingLevel:  "high",
+			ServiceTier:    "fast",
+			ContextMode:    "1m",
+			Meta:           ChatSessionMeta{Agent: "swarm"},
+		})
 
-	line := p.footerSettingsLine(1000)
-	if !strings.Contains(line, "m:gpt-5.4 (fast)") {
-		t.Fatalf("settings line missing model chip with fast suffix: %q", line)
+		line := p.footerSettingsLine(1000)
+		want := "m:" + modelName + " (fast,1m)"
+		if !strings.Contains(line, want) {
+			t.Fatalf("settings line missing model chip %q: %q", want, line)
+		}
 	}
 }
 
-func TestChatFooterFocusLine_HidesCodexRuntimeFlagsForNonGPT54(t *testing.T) {
+func TestChatFooterFocusLine_HidesCodexRuntimeFlagsForUnsupportedCodexModels(t *testing.T) {
 	p := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",
 		ShowHeader:     true,
@@ -267,7 +270,7 @@ func TestChatFooterFocusLine_HidesCodexRuntimeFlagsForNonGPT54(t *testing.T) {
 
 	line := p.footerSettingsLine(1000)
 	if strings.Contains(line, "(fast)") {
-		t.Fatalf("settings line should hide fast suffix for non-gpt-5.4 models: %q", line)
+		t.Fatalf("settings line should hide fast suffix for unsupported codex models: %q", line)
 	}
 }
 

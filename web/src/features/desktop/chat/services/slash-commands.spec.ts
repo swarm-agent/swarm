@@ -21,9 +21,21 @@ function testSlashPaletteMatchesPlan(): void {
   assert(palette.matches[0]?.id === 'plan', 'expected /plan to be the first match')
 }
 
+function testFastCommandIsReady(): void {
+  const fast = getDesktopSlashCommands().find((command) => command.command === '/fast')
+  assert(Boolean(fast), 'expected /fast command to exist')
+  assert(fast?.state === 'ready', 'expected /fast command to be ready')
+  assert((fast?.action as DesktopSlashCommandAction | undefined)?.kind === 'toggle-fast', 'expected /fast to toggle Fast')
+
+  const palette = buildDesktopSlashPaletteState('/fast')
+  assert(palette.exactMatch?.id === 'fast', 'expected /fast to match fast command')
+  assert(palette.exactMatch?.state === 'ready', 'expected /fast exact match to be ready')
+}
+
 function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
+  testFastCommandIsReady()
   console.log('slash-commands tests passed')
 }
 
