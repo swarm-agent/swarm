@@ -891,64 +891,50 @@ function TaskLaunchModal({
         void resolve('deny')
       }}
     >
-      <div className="grid gap-5">
+      <div className="grid gap-4">
         <section className="rounded-2xl border border-[var(--app-border-accent)] bg-[var(--app-surface-subtle)] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Review</div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
-              <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium uppercase tracking-[0.08em]">
-                {payload.launchCount} {payload.launchCount === 1 ? 'launch' : 'launches'}
-              </span>
-              <span>bash {payload.allowBash ? 'yes' : 'no'}</span>
-              {payload.reportMaxChars > 0 ? <span>report {payload.reportMaxChars} chars</span> : null}
-              {payload.resolvedAgentName ? <span>router {payload.resolvedAgentName}</span> : null}
-              {payload.disabledTools.length > 0 ? <span>disabled {payload.disabledTools.join(', ')}</span> : null}
-            </div>
-          </div>
-          <p className="mt-3 text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
-          <div className="mt-4 rounded-xl bg-[var(--app-bg-alt)] p-3">
-            <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task</div>
+          <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-primary)]">Task</div>
+          <div className="rounded-xl bg-[var(--app-bg-alt)] p-3 text-sm leading-6 text-[var(--app-text)]">
             <ChatMarkdown content={payload.description || 'Delegated task'} />
           </div>
-          {payload.resolvedAgentError ? (
-            <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">
-              {payload.resolvedAgentError}
-            </div>
-          ) : null}
         </section>
 
         <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Launch assignments</div>
-          <div className="mt-3 grid gap-3">
-            {payload.launches.length > 0 ? (
-              payload.launches.map((launch) => (
-                <section key={`${launch.index}:${launch.requestedSubagentType}:${launch.resolvedAgentName}`} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
-                    <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium uppercase tracking-[0.08em]">#{launch.index}</span>
-                    <span>{launch.resolvedAgentName || launch.requestedSubagentType}</span>
-                    {launch.childMode ? <span>· mode {launch.childMode}</span> : null}
-                    <span>· bash {launch.allowBash ? 'yes' : 'no'}</span>
-                  </div>
-                  {launch.resolvedAgentError ? (
-                    <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">
-                      {launch.resolvedAgentError}
-                    </div>
-                  ) : null}
-                  {launch.childTitlePreview ? <div className="mt-3 text-sm font-medium text-[var(--app-text)]">{launch.childTitlePreview}</div> : null}
-                  <div className="mt-3 rounded-xl bg-[var(--app-bg-alt)] p-3">
+          <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Agent roles</div>
+          {payload.launches.length > 0 ? (
+            <div className="overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+              <div className="grid grid-cols-[3.5rem_minmax(7rem,12rem)_1fr] gap-3 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+                <div>#</div>
+                <div>Agent</div>
+                <div>Assignment</div>
+              </div>
+              {payload.launches.map((launch) => (
+                <div key={`${launch.index}:${launch.requestedSubagentType}:${launch.resolvedAgentName}`} className="grid grid-cols-[3.5rem_minmax(7rem,12rem)_1fr] gap-3 border-b border-[var(--app-border)] px-3 py-3 text-sm last:border-b-0">
+                  <div className="font-medium text-[var(--app-text-subtle)]">#{launch.index}</div>
+                  <div className="break-words font-medium text-[var(--app-text)]">{launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'}</div>
+                  <div className="min-w-0 text-[var(--app-text)]">
                     <ChatMarkdown content={launch.assignment || 'No launch-specific instructions.'} />
+                    {launch.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{launch.resolvedAgentError}</div> : null}
                   </div>
-                  {launch.disabledTools.length > 0 ? (
-                    <div className="mt-3 text-xs text-[var(--app-text-subtle)]">Disabled tools: {launch.disabledTools.join(', ')}</div>
-                  ) : null}
-                </section>
-              ))
-            ) : (
-              <div className="rounded-xl bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No launches were included in the manifest.</div>
-            )}
-          </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No launches were included in the manifest.</div>
+          )}
         </section>
 
+        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+          <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Meta</div>
+          <div className="text-sm text-[var(--app-text-subtle)]">
+            launches {payload.launchCount}
+            <span className="px-2">·</span>
+            bash {payload.allowBash ? 'yes' : 'no'}
+            {payload.reportMaxChars > 0 ? <><span className="px-2">·</span>report {payload.reportMaxChars} chars</> : null}
+            {payload.resolvedAgentName ? <><span className="px-2">·</span>router {payload.resolvedAgentName}</> : null}
+          </div>
+          {payload.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
+        </section>
       </div>
     </ModalShell>
   )
