@@ -905,23 +905,37 @@ function TaskLaunchModal({
             </div>
           </div>
           <p className="mt-3 text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
+          <div className="mt-4 rounded-xl bg-[var(--app-bg-alt)] p-3">
+            <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task</div>
+            <ChatMarkdown content={payload.description || 'Delegated task'} />
+          </div>
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            <div className="rounded-xl bg-[var(--app-bg-alt)] p-3">
-              <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task</div>
-              <ChatMarkdown content={payload.description || 'Delegated task'} />
+            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
+              <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Permissions</div>
+              <div className="grid gap-1 text-sm text-[var(--app-text)]">
+                <div>Launches: {payload.launchCount}</div>
+                <div>Allow bash: {payload.allowBash ? 'yes' : 'no'}</div>
+                {payload.reportMaxChars > 0 ? <div>Report excerpt: {payload.reportMaxChars} chars</div> : null}
+                {payload.disabledTools.length > 0 ? <div>Disabled tools: {payload.disabledTools.join(', ')}</div> : null}
+              </div>
             </div>
-            <div className="rounded-xl bg-[var(--app-bg-alt)] p-3">
-              <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Prompt</div>
-              <ChatMarkdown content={payload.prompt || 'No prompt provided.'} />
+            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
+              <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Context</div>
+              <div className="grid gap-1 text-sm text-[var(--app-text)]">
+                <div>Permission: {permission.id}</div>
+                <div>Requirement: {permission.requirement || 'task_launch'}</div>
+                <div>Tool: {permission.toolName || 'task'}</div>
+                {payload.subagentType ? <div>Requested subagent: {payload.subagentType}</div> : null}
+                {payload.resolvedAgentName ? <div>Router: {payload.resolvedAgentName}</div> : null}
+                {payload.parentMode ? <div>Parent mode: {payload.parentMode}</div> : null}
+                {payload.resolvedAgentError ? <div className="text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
+              </div>
             </div>
           </div>
         </section>
 
         <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Launch assignments</div>
-            {payload.reportMaxChars > 0 ? <div className="text-xs text-[var(--app-text-subtle)]">report excerpt {payload.reportMaxChars} chars</div> : null}
-          </div>
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Launch assignments</div>
           <div className="mt-3 grid gap-3">
             {payload.launches.length > 0 ? (
               payload.launches.map((launch) => (
@@ -952,18 +966,6 @@ function TaskLaunchModal({
           </div>
         </section>
 
-        {(payload.resolvedAgentName || payload.subagentType || payload.disabledTools.length > 0 || payload.resolvedAgentError) ? (
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Delegation context</div>
-            <div className="mt-3 grid gap-2 text-sm text-[var(--app-text)]">
-              {payload.subagentType ? <div>Requested subagent: {payload.subagentType}</div> : null}
-              {payload.resolvedAgentName ? <div>Router: {payload.resolvedAgentName}</div> : null}
-              {payload.parentMode ? <div>Parent mode: {payload.parentMode}</div> : null}
-              {payload.resolvedAgentError ? <div className="text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
-              {payload.disabledTools.length > 0 ? <div>Disabled tools: {payload.disabledTools.join(', ')}</div> : null}
-            </div>
-          </section>
-        ) : null}
       </div>
     </ModalShell>
   )

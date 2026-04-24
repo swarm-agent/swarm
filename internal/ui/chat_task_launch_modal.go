@@ -319,31 +319,20 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 		p.taskLaunchKeyValueLine("requirement", record.Requirement, p.theme.Text),
 		p.taskLaunchKeyValueLine("tool", record.ToolName, p.theme.Text),
 	}
+	review = append(review,
+		chatRenderLine{Text: "", Style: p.theme.TextMuted},
+		p.taskLaunchTextLine("Permissions", p.theme.Warning.Bold(true)),
+	)
+	review = append(review, permissions...)
+	review = append(review,
+		chatRenderLine{Text: "", Style: p.theme.TextMuted},
+		p.taskLaunchTextLine("Context", p.theme.TextMuted.Bold(true)),
+	)
+	review = append(review, contextLines...)
 	sections := []taskLaunchModalSection{
-		{
-			Title:       "Review",
-			BorderStyle: p.theme.BorderActive,
-			TitleStyle:  p.theme.Secondary.Bold(true),
-			Lines:       review,
-		},
-		{
-			Title:       "Launches",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.Secondary.Bold(true),
-			Lines:       p.taskLaunchLaunchTableLines(launches, maxInt(16, width-4)),
-		},
-		{
-			Title:       "Permissions",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.Warning.Bold(true),
-			Lines:       permissions,
-		},
-		{
-			Title:       "Context",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.TextMuted.Bold(true),
-			Lines:       contextLines,
-		},
+		{Title: "Task", BorderStyle: p.theme.BorderActive, TitleStyle: p.theme.Primary.Bold(true), Lines: p.taskLaunchMarkdownSectionLines(goal, "No task summary provided.")},
+		{Title: "Agent roles", BorderStyle: p.theme.Border, TitleStyle: p.theme.Secondary.Bold(true), Lines: p.taskLaunchLaunchTableLines(launches, maxInt(16, width-4))},
+		{Title: "Meta", BorderStyle: p.theme.Border, TitleStyle: p.theme.TextMuted.Bold(true), Lines: append(permissions, contextLines...)},
 	}
 
 	out := make([]chatRenderLine, 0, 96)
