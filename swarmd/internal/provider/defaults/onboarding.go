@@ -26,7 +26,7 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 	},
 	"codex": {
 		ProviderID:       "codex",
-		PrimaryModel:     "gpt-5.4",
+		PrimaryModel:     "gpt-5.5",
 		PrimaryThinking:  "high",
 		UtilityModel:     "gpt-5.4-mini",
 		UtilityThinking:  "medium",

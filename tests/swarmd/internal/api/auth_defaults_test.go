@@ -357,8 +357,8 @@ func TestAuthCredentialUpsertCodexFirstProviderEnforcesSparkUtilityDefaults(t *t
 	if upsertResp.AutoDefaults == nil || !upsertResp.AutoDefaults.Applied {
 		t.Fatalf("expected auto defaults to apply, got %#v", upsertResp.AutoDefaults)
 	}
-	if upsertResp.AutoDefaults.Provider != "codex" || upsertResp.AutoDefaults.Model != "gpt-5.4" {
-		t.Fatalf("auto default target = %s/%s, want codex/gpt-5.4", upsertResp.AutoDefaults.Provider, upsertResp.AutoDefaults.Model)
+	if upsertResp.AutoDefaults.Provider != "codex" || upsertResp.AutoDefaults.Model != "gpt-5.5" {
+		t.Fatalf("auto default target = %s/%s, want codex/gpt-5.5", upsertResp.AutoDefaults.Provider, upsertResp.AutoDefaults.Model)
 	}
 	if !upsertResp.AutoDefaults.GlobalModel {
 		t.Fatalf("expected first provider onboarding to set global model")

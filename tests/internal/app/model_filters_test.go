@@ -13,7 +13,7 @@ func TestModelPresetListForProviderCodexKeepsNewestFirst(t *testing.T) {
 	if len(presets) < 4 {
 		t.Fatalf("expected codex presets, got %v", presets)
 	}
-	want := []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"}
+	want := []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"}
 	for i, model := range want {
 		if presets[i] != model {
 			t.Fatalf("codex preset[%d] = %q, want %q", i, presets[i], model)
@@ -31,6 +31,9 @@ func hasString(values []string, target string) bool {
 }
 
 func TestModelAllowedByProviderPresetCodex(t *testing.T) {
+	if !modelAllowedByProviderPreset("codex", "gpt-5.5") {
+		t.Fatalf("expected gpt-5.5 to be allowed for codex")
+	}
 	if !modelAllowedByProviderPreset("codex", "gpt-5.4") {
 		t.Fatalf("expected gpt-5.4 to be allowed for codex")
 	}
@@ -71,12 +74,13 @@ func TestMapAgentsModalDataFiltersCodexModelOptions(t *testing.T) {
 	resolved := providerModelResolverResult{
 		ProviderIDs: []string{"codex"},
 		ProviderStatuses: map[string]client.ProviderStatus{
-			"codex": {ID: "codex", DefaultModel: "gpt-5.4"},
+			"codex": {ID: "codex", DefaultModel: "gpt-5.5"},
 		},
 		ModelsByProvider: map[string][]string{
-			"codex": []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.1-codex-mini"},
+			"codex": []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.1-codex-mini"},
 		},
 		ReasoningByKey: map[string]bool{
+			"codex/gpt-5.5":            true,
 			"codex/gpt-5.4":            true,
 			"codex/gpt-5.4-mini":       true,
 			"codex/gpt-5.1-codex-mini": true,
@@ -88,6 +92,9 @@ func TestMapAgentsModalDataFiltersCodexModelOptions(t *testing.T) {
 	models := data.ModelsByProvider["codex"]
 	if hasString(models, "gpt-5-codex") {
 		t.Fatalf("disallowed codex model should not appear in available models: %v", models)
+	}
+	if !hasString(models, "gpt-5.5") {
+		t.Fatalf("expected allowed model in available models: %v", models)
 	}
 	if !hasString(models, "gpt-5.4") {
 		t.Fatalf("expected allowed model in available models: %v", models)
@@ -101,8 +108,8 @@ func TestMapAgentsModalDataFiltersCodexModelOptions(t *testing.T) {
 	if !hasString(models, "gpt-5.3-codex-spark") {
 		t.Fatalf("expected preset model in available models: %v", models)
 	}
-	if data.DefaultModel != "gpt-5.4" {
-		t.Fatalf("default model = %q, want %q", data.DefaultModel, "gpt-5.4")
+	if data.DefaultModel != "gpt-5.5" {
+		t.Fatalf("default model = %q, want %q", data.DefaultModel, "gpt-5.5")
 	}
 }
 
@@ -122,12 +129,13 @@ func TestMapAgentsModalDataPlacesProviderDefaultModelFirst(t *testing.T) {
 	resolved := providerModelResolverResult{
 		ProviderIDs: []string{"codex"},
 		ProviderStatuses: map[string]client.ProviderStatus{
-			"codex": {ID: "codex", DefaultModel: "gpt-5.4"},
+			"codex": {ID: "codex", DefaultModel: "gpt-5.5"},
 		},
 		ModelsByProvider: map[string][]string{
 			"codex": {
 				"gpt-5.1-codex-mini",
 				"gpt-5.4",
+				"gpt-5.5",
 				"gpt-5.3-codex",
 				"gpt-5.2",
 			},
@@ -139,8 +147,8 @@ func TestMapAgentsModalDataPlacesProviderDefaultModelFirst(t *testing.T) {
 	if len(models) == 0 {
 		t.Fatalf("expected codex models to be present")
 	}
-	if models[0] != "gpt-5.4" {
-		t.Fatalf("first codex model = %q, want gpt-5.4", models[0])
+	if models[0] != "gpt-5.5" {
+		t.Fatalf("first codex model = %q, want gpt-5.5", models[0])
 	}
 }
 
@@ -229,28 +237,34 @@ func TestChatAvailableModelsIncludesReasoningMetadata(t *testing.T) {
 	resolved := providerModelResolverResult{
 		ProviderIDs: []string{"codex"},
 		ProviderStatuses: map[string]client.ProviderStatus{
-			"codex": {ID: "codex", Ready: true, DefaultModel: "gpt-5.4"},
+			"codex": {ID: "codex", Ready: true, DefaultModel: "gpt-5.5"},
 		},
 		ModelsByProvider: map[string][]string{
-			"codex": {"gpt-5.4", "gpt-5.4-mini"},
+			"codex": {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"},
 		},
 		ReasoningByKey: map[string]bool{
+			"codex/gpt-5.5":      true,
 			"codex/gpt-5.4":      true,
 			"codex/gpt-5.4-mini": false,
 		},
 		CatalogByKey: map[string]client.ModelCatalogRecord{
-			"codex/gpt-5.4": {Provider: "codex", Model: "gpt-5.4", ContextMode: "default", Reasoning: true},
+			"codex/gpt-5.5": {Provider: "codex", Model: "gpt-5.5", ContextMode: "default", Reasoning: true},
 		},
 	}
 
 	app := &App{}
-	got := app.chatAvailableModelsFromResolved(resolved, "codex", "gpt-5.4", "default")
+	got := app.chatAvailableModelsFromResolved(resolved, "codex", "gpt-5.5", "default")
 	if len(got) == 0 {
 		t.Fatalf("expected models")
 	}
-	var foundDefault, foundMini bool
+	var found55, foundDefault, foundMini bool
 	for _, entry := range got {
 		switch entry.Model {
+		case "gpt-5.5":
+			found55 = true
+			if !entry.Reasoning {
+				t.Fatalf("expected gpt-5.5 reasoning=true")
+			}
 		case "gpt-5.4":
 			foundDefault = true
 			if !entry.Reasoning {
@@ -263,7 +277,7 @@ func TestChatAvailableModelsIncludesReasoningMetadata(t *testing.T) {
 			}
 		}
 	}
-	if !foundDefault || !foundMini {
+	if !found55 || !foundDefault || !foundMini {
 		t.Fatalf("missing expected models in %#v", got)
 	}
 }

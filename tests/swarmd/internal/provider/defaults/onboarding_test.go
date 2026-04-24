@@ -32,7 +32,7 @@ func TestLookupCodexDefaults(t *testing.T) {
 	if got.ProviderID != "codex" {
 		t.Fatalf("provider = %q, want codex", got.ProviderID)
 	}
-	if got.PrimaryModel != "gpt-5.4" {
+	if got.PrimaryModel != "gpt-5.5" {
 		t.Fatalf("primary model = %q", got.PrimaryModel)
 	}
 	if got.PrimaryThinking != "high" {
@@ -60,7 +60,7 @@ func TestLookupCopilotDefaults(t *testing.T) {
 	if !ok {
 		t.Fatalf("Lookup(copilot) ok = false")
 	}
-	if got.PrimaryModel != "gpt-5.4" {
+	if got.PrimaryModel != "gpt-5.5" {
 		t.Fatalf("primary model = %q", got.PrimaryModel)
 	}
 	if got.PrimaryThinking != "high" {
