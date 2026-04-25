@@ -84,21 +84,21 @@ var (
 )
 
 func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
-	updateQuickTips := []string{"/update status", "/update apply"}
-	updateHint := "Check/apply released updates"
+	updateQuickTips := []string{"/update"}
+	updateHint := "Update Swarm"
 	if devMode {
 		updateQuickTips = append(updateQuickTips, "/update dev")
-		updateHint = "Check/apply released updates or rebuild local dev checkout"
+		updateHint = "Update Swarm"
 	}
 	items := []ui.CommandSuggestion{
 		{Command: "/add-dir", Hint: "Open linked-directory flow in the workspace manager"},
 		{Command: "/agents", Hint: "Open agents manager modal", QuickTips: []string{"/agents reset", "/agents restore", "/agents use <name>", "/agents prompt <name> <text>", "/agents delete <name>"}},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
-		{Command: "/codex", Hint: "Show Codex gpt-5.4 runtime settings (Fast on/off)", QuickTips: []string{"/codex status", "/codex fast", "/fast"}},
+		{Command: "/codex", Hint: "Show Codex gpt-5.4/gpt-5.5 runtime settings (Fast on/off)", QuickTips: []string{"/codex status", "/codex fast", "/fast"}},
 		{Command: "/commit", Hint: "Launch the background commit agent to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
 		{Command: "/compact", Hint: "Compact current chat context via memory agent", QuickTips: []string{"/compact [threshold%] [notes]"}},
 		{Command: "/copy", Hint: "Copy chat snapshot to clipboard"},
-		{Command: "/fast", Hint: "Toggle Codex Fast for the current chat or home draft (gpt-5.4 only)", QuickTips: []string{"alias tip: /codex fast"}},
+		{Command: "/fast", Hint: "Toggle Codex Fast for the current chat or home draft (gpt-5.4/gpt-5.5)", QuickTips: []string{"alias tip: /codex fast"}},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
 		{Command: "/help", Hint: "Show command help"},
 		{Command: "/home", Hint: "Return to home without ending the chat session"},
@@ -1879,8 +1879,8 @@ func (a *App) showHelp() {
 		"/plan new [title]   (create and activate a new plan draft)",
 		"/compact [threshold%] [notes]   (compact now + optionally set auto-compact threshold)",
 		"/commit [instructions]   (launch background commit agent to review diffs and commit)",
-		"/fast   (toggle Codex Fast for current chat or home draft; gpt-5.4 only)",
-		"/codex [status|fast]   (Codex gpt-5.4 runtime settings; Fast on-off)",
+		"/fast   (toggle Codex Fast for current chat or home draft; gpt-5.4/gpt-5.5)",
+		"/codex [status|fast]   (Codex gpt-5.4/gpt-5.5 runtime settings; Fast on-off)",
 		"/workspace   (open workspace manager)",
 		"/workspaces   (alias for /workspace)",
 		"/workspace save [path|#n]   (open workspace setup)",
@@ -8581,7 +8581,7 @@ func (a *App) chatAvailableModelsFromResolved(resolved providerModelResolverResu
 				entry.ContextMode = contextModeForModelEntry(providerID, modelID, activeContextMode)
 			}
 			entries = append(entries, entry)
-			if strings.EqualFold(providerID, "codex") && strings.EqualFold(modelID, "gpt-5.4") {
+			if model.SupportsCodex1MMode(providerID, modelID) {
 				entry1M := entry
 				entry1M.ContextMode = model.CodexContextMode1M
 				entries = append(entries, entry1M)

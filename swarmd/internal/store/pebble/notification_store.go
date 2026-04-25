@@ -12,6 +12,7 @@ import (
 
 const (
 	NotificationCategoryPermission = "permission"
+	NotificationCategorySystem     = "system"
 
 	NotificationSeverityInfo    = "info"
 	NotificationSeverityWarning = "warning"
@@ -163,6 +164,73 @@ func (s *NotificationStore) PutNotification(record NotificationRecord, previous 
 		return fmt.Errorf("commit notification batch: %w", err)
 	}
 	return nil
+}
+
+func (s *NotificationStore) DeleteNotifications(swarmID string) (int, error) {
+	if s == nil || s.store == nil {
+		return 0, errors.New("notification store is not configured")
+	}
+	swarmID = strings.TrimSpace(swarmID)
+	if swarmID == "" {
+		return 0, errors.New("notification swarm_id is required")
+	}
+	type deleteTarget struct {
+		indexKey  string
+		recordKey string
+		record    NotificationRecord
+		found     bool
+	}
+	targets := make([]deleteTarget, 0)
+	if err := s.store.IteratePrefix(NotificationBySwarmPrefix(swarmID), 100000, func(indexKey string, value []byte) error {
+		recordKey := strings.TrimSpace(string(value))
+		if recordKey == "" {
+			return nil
+		}
+		target := deleteTarget{indexKey: indexKey, recordKey: recordKey}
+		var record NotificationRecord
+		ok, err := s.store.GetJSON(recordKey, &record)
+		if err != nil {
+			return err
+		}
+		if ok {
+			target.record = sanitizeNotificationRecord(record)
+			target.found = true
+		}
+		targets = append(targets, target)
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	if len(targets) == 0 {
+		return 0, nil
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	deleted := 0
+	for _, target := range targets {
+		if target.indexKey != "" {
+			if err := batch.Delete([]byte(target.indexKey), nil); err != nil {
+				return 0, fmt.Errorf("delete notification index: %w", err)
+			}
+		}
+		if target.recordKey != "" {
+			if err := batch.Delete([]byte(target.recordKey), nil); err != nil {
+				return 0, fmt.Errorf("delete notification record: %w", err)
+			}
+		}
+		if target.found {
+			deleted++
+			if target.record.PermissionID != "" && target.record.SessionID != "" {
+				if err := batch.Delete([]byte(KeyNotificationPermissionRef(target.record.SessionID, target.record.PermissionID)), nil); err != nil {
+					return 0, fmt.Errorf("delete notification permission ref: %w", err)
+				}
+			}
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return 0, fmt.Errorf("commit notification delete batch: %w", err)
+	}
+	return deleted, nil
 }
 
 func (s *NotificationStore) LookupPermissionNotificationID(sessionID, permissionID string) (string, bool, error) {

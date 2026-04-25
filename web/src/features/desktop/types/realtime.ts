@@ -204,6 +204,7 @@ export interface DesktopStoreState {
   upsertSession: (session: DesktopSessionRecord) => void
   refreshSessionPermissions: (sessionId: string) => Promise<void>
   refreshNotifications: () => Promise<void>
+  clearNotifications: () => Promise<void>
   updateNotificationRecord: (id: string, patch: { read?: boolean; acked?: boolean; muted?: boolean; status?: string }) => Promise<void>
   setSessionDraft: (sessionId: string, draft: string) => void
   setSessionDraftMode: (sessionId: string, mode: 'plan' | 'auto' | 'read' | 'readwrite') => void

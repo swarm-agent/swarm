@@ -1,5 +1,6 @@
-import { useMemo } from 'react'
-import { Bell, BellOff, CheckCheck, Clock3 } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
+import { Bell, BellOff, CheckCheck, Clock3, Trash2 } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
@@ -60,16 +61,24 @@ function statusLabel(record: DesktopNotificationCenterRecord): string {
 function connectionLabel(connectionState: DesktopConnectionState): string {
   switch (connectionState) {
     case 'open':
-      return 'Live updates connected'
+      return 'Connected'
     case 'connecting':
-      return 'Realtime reconnecting'
+      return 'Reconnecting'
     case 'error':
-      return 'Realtime error'
+      return 'Connection error'
     case 'closed':
-      return 'Realtime disconnected'
+      return 'Disconnected'
     default:
-      return 'Realtime idle'
+      return 'Idle'
   }
+}
+
+function NotificationActionSlot({ show, children }: { show: boolean; children: ReactNode }) {
+  return (
+    <span className="inline-flex min-h-9 min-w-[112px] justify-start">
+      {show ? children : <span aria-hidden="true" className="h-9 w-full" />}
+    </span>
+  )
 }
 
 export function DesktopNotificationsModal({
@@ -82,6 +91,7 @@ export function DesktopNotificationsModal({
   onMarkRead,
   onAcknowledge,
   onMute,
+  onClearAll,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -92,11 +102,34 @@ export function DesktopNotificationsModal({
   onMarkRead: (record: DesktopNotificationCenterRecord) => Promise<void>
   onAcknowledge: (record: DesktopNotificationCenterRecord) => Promise<void>
   onMute: (record: DesktopNotificationCenterRecord) => Promise<void>
+  onClearAll: () => Promise<void>
 }) {
+  const [clearing, setClearing] = useState(false)
   const activeNotifications = useMemo(
     () => notifications.filter((record) => record.status === 'active'),
     [notifications],
   )
+  const hasNotifications = notifications.length > 0
+  const summaryText = summary.unreadCount > 0
+    ? `${summary.unreadCount} unread notification${summary.unreadCount === 1 ? '' : 's'}`
+    : hasNotifications
+      ? 'No unread notifications'
+      : 'No notifications'
+  const detailText = hasNotifications
+    ? `${summary.activeCount} active · ${summary.totalCount} total · ${connectionLabel(connectionState).toLowerCase()}${summary.updatedAt > 0 ? ` · updated ${formatRelativeTime(summary.updatedAt)}` : ''}`
+    : `${connectionLabel(connectionState)}${summary.updatedAt > 0 ? ` · updated ${formatRelativeTime(summary.updatedAt)}` : ''}`
+
+  const handleClearAll = async () => {
+    if (!hasNotifications || clearing) {
+      return
+    }
+    setClearing(true)
+    try {
+      await onClearAll()
+    } finally {
+      setClearing(false)
+    }
+  }
 
   if (!open) {
     return null
@@ -105,39 +138,32 @@ export function DesktopNotificationsModal({
   return (
     <Dialog role="dialog" aria-modal="true" aria-label="Notifications" className="z-[80] p-4 sm:p-6">
       <DialogBackdrop onClick={() => onOpenChange(false)} />
-      <DialogPanel className="w-[min(980px,calc(100vw-24px))] gap-4 rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(1040px,calc(100vw-48px))]">
-        <div className="flex items-start justify-between border-b border-[var(--app-border)] px-6 py-5">
-          <div className="space-y-2">
+      <DialogPanel className="w-[min(980px,calc(100vw-24px))] gap-0 rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(1040px,calc(100vw-48px))]">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--app-border)] px-6 py-5">
+          <div className="min-w-0 space-y-2">
             <div className="flex items-center gap-2">
               <Bell size={18} className="text-[var(--app-text)]" />
               <h2 className="text-lg font-semibold text-[var(--app-text)]">Notifications</h2>
             </div>
             <p className="text-sm text-[var(--app-text-muted)]">
-              {summary.unreadCount} unread · {summary.activeCount} active · {connectionLabel(connectionState)}
+              {summaryText}
+            </p>
+            <p className="text-xs text-[var(--app-text-subtle)]">
+              {detailText}
             </p>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)} aria-label="Close notifications">
-            Close
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => void handleClearAll()} disabled={!hasNotifications || clearing}>
+              <Trash2 size={14} /> {clearing ? 'Clearing…' : 'Clear all'}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)} aria-label="Close notifications">
+              Close
+            </Button>
+          </div>
         </div>
 
-        <div className="grid gap-4 px-6 pb-6 lg:grid-cols-[240px,minmax(0,1fr)]">
-          <Card className="flex flex-col gap-3 p-4">
-            <Badge tone={summary.unreadCount > 0 ? 'warning' : 'neutral'}>
-              Unread {summary.unreadCount}
-            </Badge>
-            <Badge tone={summary.activeCount > 0 ? 'live' : 'neutral'}>
-              Active {summary.activeCount}
-            </Badge>
-            <Badge tone={connectionState === 'open' ? 'live' : connectionState === 'error' ? 'danger' : 'neutral'}>
-              {connectionLabel(connectionState)}
-            </Badge>
-            <div className="text-xs text-[var(--app-text-muted)]">
-              Updated {formatRelativeTime(summary.updatedAt) || 'not yet'}
-            </div>
-          </Card>
-
-          <div className="min-h-[360px] space-y-3 overflow-y-auto pr-1">
+        <div className="flex min-h-0 flex-1 flex-col px-6 pb-6 pt-4">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             {loading ? (
               <Card className="p-4 text-sm text-[var(--app-text-muted)]">Loading notifications…</Card>
             ) : notifications.length === 0 ? (
@@ -171,22 +197,22 @@ export function DesktopNotificationsModal({
                     {record.sessionId ? <span>Session: {record.sessionId}</span> : null}
                   </div>
 
-                  <div className="flex flex-wrap gap-2">
-                    {!record.readAt ? (
-                      <Button variant="secondary" size="sm" onClick={() => void onMarkRead(record)}>
+                  <div className="grid gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-[112px_112px_112px]">
+                    <NotificationActionSlot show={!record.readAt}>
+                      <Button variant="secondary" size="sm" className="w-full justify-center" onClick={() => void onMarkRead(record)}>
                         <CheckCheck size={14} /> Mark read
                       </Button>
-                    ) : null}
-                    {!record.ackedAt ? (
-                      <Button variant="secondary" size="sm" onClick={() => void onAcknowledge(record)}>
+                    </NotificationActionSlot>
+                    <NotificationActionSlot show={!record.ackedAt}>
+                      <Button variant="secondary" size="sm" className="w-full justify-center" onClick={() => void onAcknowledge(record)}>
                         Acknowledge
                       </Button>
-                    ) : null}
-                    {!record.mutedAt ? (
-                      <Button variant="ghost" size="sm" onClick={() => void onMute(record)}>
+                    </NotificationActionSlot>
+                    <NotificationActionSlot show={!record.mutedAt}>
+                      <Button variant="ghost" size="sm" className="w-full justify-center" onClick={() => void onMute(record)}>
                         Mute
                       </Button>
-                    ) : null}
+                    </NotificationActionSlot>
                   </div>
                 </Card>
               ))

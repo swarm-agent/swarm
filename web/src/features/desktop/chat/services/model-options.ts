@@ -3,9 +3,11 @@ import type { ModelOptionRecord } from '../types/chat'
 const CODEX_CONTEXT_MODE_1M = '1m'
 const CODEX_GPT54_DEFAULT_CONTEXT_WINDOW = 272_000
 const CODEX_GPT54_1M_CONTEXT_WINDOW = 1_050_000
+const CODEX_GPT55_DEFAULT_CONTEXT_WINDOW = 272_000
 
 const MODEL_PRESETS_BY_PROVIDER: Record<string, string[]> = {
   codex: [
+    'gpt-5.5',
     'gpt-5.4',
     'gpt-5.4-mini',
     'gpt-5.3-codex',
@@ -39,7 +41,8 @@ function modelPresetListForProvider(provider: string): string[] {
 }
 
 export function supportsCodexFastMode(provider: string, model: string): boolean {
-  return normalizeProviderID(provider) === 'codex' && model.trim().toLowerCase() === 'gpt-5.4'
+  const normalizedModel = model.trim().toLowerCase()
+  return normalizeProviderID(provider) === 'codex' && (normalizedModel === 'gpt-5.4' || normalizedModel === 'gpt-5.5')
 }
 
 export function codexFastEnabled(provider: string, model: string, serviceTier: string): boolean {
@@ -47,7 +50,7 @@ export function codexFastEnabled(provider: string, model: string, serviceTier: s
 }
 
 export function supportsCodex1MMode(provider: string, model: string): boolean {
-  return supportsCodexFastMode(provider, model)
+  return normalizeProviderID(provider) === 'codex' && model.trim().toLowerCase() === 'gpt-5.4'
 }
 
 export function codex1MEnabled(provider: string, model: string, contextMode: string): boolean {
@@ -63,12 +66,16 @@ export function displayModelName(provider: string, model: string, contextMode: s
 }
 
 export function effectiveContextWindow(provider: string, model: string, contextMode: string, fallback: number): number {
-  if (supportsCodex1MMode(provider, model)) {
-    return codex1MEnabled(provider, model, contextMode)
-      ? CODEX_GPT54_1M_CONTEXT_WINDOW
-      : (fallback > 0 ? fallback : CODEX_GPT54_DEFAULT_CONTEXT_WINDOW)
+  const normalizedModel = model.trim().toLowerCase()
+  if (normalizeProviderID(provider) === 'codex' && normalizedModel === 'gpt-5.5') {
+    return CODEX_GPT55_DEFAULT_CONTEXT_WINDOW
   }
-  return fallback
+  if (!supportsCodex1MMode(provider, model)) {
+    return fallback
+  }
+  return codex1MEnabled(provider, model, contextMode)
+    ? CODEX_GPT54_1M_CONTEXT_WINDOW
+    : (fallback > 0 ? fallback : CODEX_GPT54_DEFAULT_CONTEXT_WINDOW)
 }
 
 export function modelAllowedByProviderPreset(provider: string, model: string): boolean {

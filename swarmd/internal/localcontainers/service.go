@@ -1123,7 +1123,7 @@ func buildPackageAwareImage(ctx context.Context, runtimeName, repoRoot, image st
 	if strings.TrimSpace(baseSignature) != "" {
 		args = append(args,
 			"--label", devmode.ContainerImageDevModeLabel+"=true",
-			"--label", "io.swarm.dev-base-fingerprint="+strings.TrimSpace(baseSignature),
+			"--label", devmode.ContainerImageBaseFingerprintLabel+"="+strings.TrimSpace(baseSignature),
 		)
 	}
 	args = append(args, "-")

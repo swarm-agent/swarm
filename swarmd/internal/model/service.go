@@ -113,10 +113,10 @@ func (s *Service) SetGlobalPreference(provider, modelName, thinking string, code
 		return ResolvedPreference{}, nil, fmt.Errorf("invalid thinking level %q", thinking)
 	}
 	thinking = normalizeThinkingForProvider(provider, thinking)
-	if !strings.EqualFold(provider, "codex") || !strings.EqualFold(modelName, "gpt-5.4") {
+	if !supportsCodexFastRuntime(provider, modelName) {
 		serviceTier = ""
 	}
-	if !strings.EqualFold(provider, "codex") || (!strings.EqualFold(modelName, "gpt-5.4") && !strings.EqualFold(modelName, "gpt-5.5")) {
+	if !supportsCodexContextRuntime(provider, modelName) {
 		contextMode = ""
 	}
 
@@ -170,13 +170,21 @@ func normalizeRuntimePreference(pref pebblestore.ModelPreference) pebblestore.Mo
 	pref.Thinking = normalizeThinkingForProvider(pref.Provider, pref.Thinking)
 	pref.ServiceTier = codexruntime.NormalizeServiceTier(pref.ServiceTier)
 	pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
-	if !strings.EqualFold(pref.Provider, "codex") || !strings.EqualFold(pref.Model, "gpt-5.4") {
+	if !supportsCodexFastRuntime(pref.Provider, pref.Model) {
 		pref.ServiceTier = ""
 	}
-	if !strings.EqualFold(pref.Provider, "codex") || (!strings.EqualFold(pref.Model, "gpt-5.4") && !strings.EqualFold(pref.Model, "gpt-5.5")) {
+	if !supportsCodexContextRuntime(pref.Provider, pref.Model) {
 		pref.ContextMode = ""
 	}
 	return pref
+}
+
+func supportsCodexFastRuntime(provider, modelName string) bool {
+	return strings.EqualFold(provider, "codex") && (strings.EqualFold(modelName, "gpt-5.4") || strings.EqualFold(modelName, "gpt-5.5"))
+}
+
+func supportsCodexContextRuntime(provider, modelName string) bool {
+	return strings.EqualFold(provider, "codex") && strings.EqualFold(modelName, "gpt-5.4")
 }
 
 func applyResolvedRuntimePreference(resolved ResolvedPreference) ResolvedPreference {

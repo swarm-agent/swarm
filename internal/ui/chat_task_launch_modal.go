@@ -162,7 +162,7 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	DrawText(s, modal.X+2, modal.Y+1, modal.W-4, onPanel(p.theme.Warning.Bold(true)), "Review Task Launch")
 	hint := "Enter approve · Esc deny"
 	DrawTextRight(s, modal.X+modal.W-2, modal.Y+1, modal.W/2, onPanel(p.theme.TextMuted), clampEllipsis(hint, modal.W/2))
-	subtitle := "Review the task, prompt, and per-launch assignments before allowing delegation."
+	subtitle := "Review the launch details and per-launch assignments before allowing delegation."
 	DrawText(s, modal.X+2, modal.Y+2, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(subtitle, modal.W-4))
 
 	bodyRect := Rect{X: modal.X + 2, Y: modal.Y + 3, W: modal.W - 4, H: modal.H - (inputRows + 6)}
@@ -235,7 +235,7 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	}
 
 	helpY := modal.Y + modal.H - 3
-	help := "↑/↓ scroll • Enter approve • Esc deny"
+	help := "PgUp/PgDn scroll • Enter approve • Esc deny"
 	helpWidth := modal.W - 4
 	if maxScroll > 0 {
 		scrollLabel := fmt.Sprintf("scroll %d/%d", p.taskLaunchScroll+1, maxScroll+1)
@@ -273,91 +273,29 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 	}
 
 	goal := strings.TrimSpace(firstNonEmptyToolValue(jsonString(manifest, "goal"), jsonString(manifest, "description")))
-	prompt := strings.TrimSpace(jsonString(manifest, "prompt"))
 	launches := p.taskLaunchOrderedLaunches(jsonObjectSlice(manifest, "launches"))
 	launchCount := maxInt(len(launches), jsonInt(manifest, "launch_count"))
 	resolvedAgent := strings.TrimSpace(jsonString(manifest, "resolved_agent_name"))
 
-	plural := "subagents"
-	if launchCount == 1 {
-		plural = "subagent"
-	}
-	overview := []chatRenderLine{p.taskLaunchTextLine(fmt.Sprintf("This request will launch %d %s.", launchCount, plural), p.theme.Text)}
-	if resolvedAgent != "" {
-		overview = append(overview, p.taskLaunchKeyValueLine("router", resolvedAgent, p.theme.TextMuted))
-	}
-	overview = append(overview, p.taskLaunchTextLine("Review the task, prompt, and launch assignments below before approving.", p.theme.TextMuted))
-
-	permissions := make([]chatRenderLine, 0, 8)
-	permissions = append(permissions, p.taskLaunchKeyValueLine("launches", fmt.Sprintf("%d", launchCount), p.theme.Text))
+	metaParts := []string{fmt.Sprintf("launches %d", launchCount)}
 	if _, ok := manifest["allow_bash"]; ok {
 		value := "no"
 		if jsonBool(manifest, "allow_bash") {
 			value = "yes"
 		}
-		permissions = append(permissions, p.taskLaunchKeyValueLine("allow bash", value, p.theme.Text))
+		metaParts = append(metaParts, "bash "+value)
 	}
 	if reportMaxChars := jsonInt(manifest, "report_max_chars"); reportMaxChars > 0 {
-		permissions = append(permissions, p.taskLaunchKeyValueLine("report excerpt", fmt.Sprintf("%d chars", reportMaxChars), p.theme.Text))
+		metaParts = append(metaParts, fmt.Sprintf("report %d chars", reportMaxChars))
 	}
-	if len(permissions) == 0 {
-		permissions = append(permissions, p.taskLaunchTextLine("No additional task permissions were declared.", p.theme.TextMuted))
+	if resolvedAgent != "" {
+		metaParts = append(metaParts, "router "+resolvedAgent)
 	}
-
-	contextLines := []chatRenderLine{
-		p.taskLaunchKeyValueLine("permission", record.ID, p.theme.Text),
-		p.taskLaunchKeyValueLine("requirement", record.Requirement, p.theme.Text),
-		p.taskLaunchKeyValueLine("tool", record.ToolName, p.theme.Text),
-	}
-	controls := []chatRenderLine{
-		p.taskLaunchTextLine("Enter approves this delegation request.", p.theme.Success),
-		p.taskLaunchTextLine("Esc denies it.", p.theme.Error),
-		p.taskLaunchTextLine("PgUp/PgDn/Home/End or mouse wheel scroll the preview.", p.theme.TextMuted),
-	}
-
+	meta := []chatRenderLine{p.taskLaunchTextLine(strings.Join(metaParts, " · "), p.theme.TextMuted)}
 	sections := []taskLaunchModalSection{
-		{
-			Title:       "Overview",
-			BorderStyle: p.theme.BorderActive,
-			TitleStyle:  p.theme.Secondary.Bold(true),
-			Lines:       overview,
-		},
-		{
-			Title:       "Task",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.Primary.Bold(true),
-			Lines:       p.taskLaunchMarkdownSectionLines(goal, "No task summary provided."),
-		},
-		{
-			Title:       "Prompt",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.Accent.Bold(true),
-			Lines:       p.taskLaunchMarkdownSectionLines(prompt, "No prompt provided."),
-		},
-		{
-			Title:       "Launches",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.Secondary.Bold(true),
-			Lines:       p.taskLaunchLaunchTableLines(launches, maxInt(16, width-4)),
-		},
-		{
-			Title:       "Permissions",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.Warning.Bold(true),
-			Lines:       permissions,
-		},
-		{
-			Title:       "Context",
-			BorderStyle: p.theme.Border,
-			TitleStyle:  p.theme.TextMuted.Bold(true),
-			Lines:       contextLines,
-		},
-		{
-			Title:       "Controls",
-			BorderStyle: p.theme.BorderActive,
-			TitleStyle:  p.theme.Success.Bold(true),
-			Lines:       controls,
-		},
+		{Title: "Task", BorderStyle: p.theme.BorderActive, TitleStyle: p.theme.Primary.Bold(true), Lines: p.taskLaunchMarkdownSectionLines(goal, "No task summary provided.")},
+		{Title: "Agent roles", BorderStyle: p.theme.Border, TitleStyle: p.theme.Secondary.Bold(true), Lines: p.taskLaunchLaunchTableLines(launches, maxInt(16, width-4))},
+		{Title: "Meta", BorderStyle: p.theme.Border, TitleStyle: p.theme.TextMuted.Bold(true), Lines: meta},
 	}
 
 	out := make([]chatRenderLine, 0, 96)

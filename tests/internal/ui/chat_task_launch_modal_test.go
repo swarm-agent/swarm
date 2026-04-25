@@ -44,4 +44,7 @@ func TestTaskLaunchPermissionModalDrawsOnNarrowScreen(t *testing.T) {
 	if !strings.Contains(text, "Enter approve") && !strings.Contains(text, "Enter Approve") {
 		t.Fatalf("expected task launch modal approval hint on narrow screen, got:\n%s", text)
 	}
+	if !strings.Contains(text, "PgUp/PgDn") {
+		t.Fatalf("expected task launch modal to show PgUp/PgDn scroll hint, got:\n%s", text)
+	}
 }

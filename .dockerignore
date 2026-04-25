@@ -1,5 +1,6 @@
 .git
 .cache
+dist
 .runtime
 .swarm
 .tmp

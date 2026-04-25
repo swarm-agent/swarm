@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
+import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, Download, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -39,6 +39,7 @@ import {
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchSession } from '../chat/queries/chat-queries'
+import { fetchDesktopUpdateJob, startDesktopUpdate } from '../update/api'
 import {
   sessionChildDescriptor,
   sessionParentSessionID,
@@ -70,6 +71,54 @@ interface TodoModalState {
 
 interface SwarmTargetMenuState {
   open: boolean
+}
+
+function DesktopNotificationsLauncherButton({ onOpen }: { onOpen: () => void }) {
+  const unreadCount = useDesktopStore((state) => state.notificationCenter.summary.unreadCount)
+  return (
+    <Button
+      variant="ghost"
+      className="relative h-12 w-12 min-w-12 p-0"
+      onClick={onOpen}
+      aria-label="Open notifications"
+      title={unreadCount > 0 ? `${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}` : 'No unread notifications'}
+    >
+      <Bell size={22} className="shrink-0" />
+      {unreadCount > 0 ? (
+        <span className="absolute right-2 top-2 min-w-[18px] rounded-full bg-[var(--app-primary)] px-1 text-center text-[10px] font-semibold leading-[18px] text-white">
+          {unreadCount > 9 ? '9+' : unreadCount}
+        </span>
+      ) : null}
+    </Button>
+  )
+}
+
+function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const connectionState = useDesktopStore((state) => state.connectionState)
+  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
+  const updateNotificationRecord = useDesktopStore((state) => state.updateNotificationRecord)
+  return (
+    <DesktopNotificationsModal
+      open={open}
+      onOpenChange={onOpenChange}
+      notifications={notificationCenter.items}
+      summary={notificationCenter.summary}
+      loading={notificationCenter.loading}
+      connectionState={connectionState}
+      onMarkRead={async (record) => {
+        await updateNotificationRecord(record.id, { read: true })
+      }}
+      onAcknowledge={async (record) => {
+        await updateNotificationRecord(record.id, { acked: true, status: 'resolved' })
+      }}
+      onMute={async (record) => {
+        await updateNotificationRecord(record.id, { muted: true })
+      }}
+      onClearAll={async () => {
+        await useDesktopStore.getState().clearNotifications()
+      }}
+    />
+  )
 }
 
 function normalizeWorkspaceTodoSummary(summary: WorkspaceTodoSummary): WorkspaceTodoSummary {
@@ -935,9 +984,7 @@ export function DesktopAppPage() {
   const liveSessions = useDesktopStore((state) => state.sessions)
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
-  const notifications = useDesktopStore((state) => state.notifications)
-  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
-  const updateNotificationRecord = useDesktopStore((state) => state.updateNotificationRecord)
+  const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
   const setActiveSession = useDesktopStore((state) => state.setActiveSession)
   const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
   const upsertSession = useDesktopStore((state) => state.upsertSession)
@@ -951,6 +998,8 @@ export function DesktopAppPage() {
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
   const [swarmMenu, setSwarmMenu] = useState<SwarmTargetMenuState>({ open: false })
+  const [updateRunning, setUpdateRunning] = useState(false)
+  const [updateError, setUpdateError] = useState<string | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [routeSessionPending, setRouteSessionPending] = useState(false)
@@ -1038,15 +1087,9 @@ export function DesktopAppPage() {
       .join('|'),
     [swarmTargets],
   )
-  const swarmNotifications = useMemo(
-    () => notifications.filter((notification) => notification.source === 'swarm'),
-    [notifications],
-  )
-  const swarmNotificationCount = notificationCenter.summary.unreadCount
-  const latestSwarmNotification = notificationCenter.items[0] ?? swarmNotifications[0] ?? null
   const swarmTargetSubtitle = currentSwarmTarget
     ? `${currentSwarmTarget.relationship}${currentSwarmTarget.online ? '' : ' · offline'}`
-    : (latestSwarmNotification?.title ?? null)
+    : 'Notifications'
   const [swarmSwitchError, setSwarmSwitchError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -1544,6 +1587,45 @@ export function DesktopAppPage() {
     setNotificationsOpen(true)
   }, [])
 
+  const handleDesktopUpdate = useCallback(async () => {
+    if (updateRunning) {
+      return
+    }
+    setUpdateRunning(true)
+    setUpdateError(null)
+    try {
+      await startDesktopUpdate()
+      await refreshNotifications()
+      const startedAt = Date.now()
+      let sawBackendDrop = false
+      while (Date.now() - startedAt < 5 * 60_000) {
+        await new Promise((resolve) => window.setTimeout(resolve, sawBackendDrop ? 1500 : 800))
+        try {
+          const job = await fetchDesktopUpdateJob()
+          if (job.status === 'failed') {
+            throw new Error(job.error || job.message || 'Update failed')
+          }
+          await refreshNotifications()
+          window.location.reload()
+          return
+        } catch (error) {
+          sawBackendDrop = true
+          if (error instanceof Error && /update failed/i.test(error.message)) {
+            throw error
+          }
+        }
+      }
+      await refreshNotifications()
+      window.location.reload()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Update failed'
+      setUpdateError(message)
+      await refreshNotifications()
+    } finally {
+      setUpdateRunning(false)
+    }
+  }, [refreshNotifications, updateRunning])
+
   const handleOpenWorkspaceLauncher = useCallback(() => {
     setMobileSidebarOpen(false)
     setActiveSession(null)
@@ -1595,6 +1677,9 @@ export function DesktopAppPage() {
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (selectedWorkspacePath) { openTodoModal(selectedWorkspacePath, selectedWorkspace?.workspaceName ?? 'Workspace') } }} aria-label="Open tasks" disabled={!selectedWorkspacePath}>
             <ListChecks size={24} className="shrink-0" />
           </Button>
+          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label="Update Swarm" title={updateError || (updateRunning ? 'Updating Swarm…' : 'Update Swarm')} disabled={updateRunning}>
+            <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
+          </Button>
           <div className="mt-2 flex flex-col items-center">
             <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
           </div>
@@ -1612,7 +1697,7 @@ export function DesktopAppPage() {
                   aria-label="Choose swarm target"
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold">{swarmName}{swarmNotificationCount > 0 ? ` !${swarmNotificationCount}` : ''}</div>
+                    <div className="truncate text-sm font-semibold">{swarmName}</div>
                     {swarmTargetSubtitle ? <div className="truncate text-xs text-[var(--app-text-muted)]">{swarmTargetSubtitle}</div> : null}
                   </div>
                   <ChevronsUpDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />
@@ -1621,18 +1706,15 @@ export function DesktopAppPage() {
               <div className="flex items-center gap-1">
                 <Button
                   variant="ghost"
-                  className="relative h-12 w-12 min-w-12 p-0"
-                  onClick={handleOpenNotifications}
-                  aria-label="Open notifications"
-                  title={swarmNotificationCount > 0 ? `${swarmNotificationCount} unread notification${swarmNotificationCount === 1 ? '' : 's'}` : 'No unread notifications'}
+                  className="h-12 w-12 min-w-12 p-0"
+                  onClick={() => { void handleDesktopUpdate() }}
+                  aria-label="Update Swarm"
+                  title={updateError || (updateRunning ? 'Updating Swarm…' : 'Update Swarm')}
+                  disabled={updateRunning}
                 >
-                  <Bell size={22} className="shrink-0" />
-                  {swarmNotificationCount > 0 ? (
-                    <span className="absolute right-2 top-2 min-w-[18px] rounded-full bg-[var(--app-primary)] px-1 text-center text-[10px] font-semibold leading-[18px] text-white">
-                      {swarmNotificationCount > 9 ? '9+' : swarmNotificationCount}
-                    </span>
-                  ) : null}
+                  <Download size={22} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
                 </Button>
+                <DesktopNotificationsLauncherButton onOpen={handleOpenNotifications} />
                 <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(true)} aria-label="Collapse sidebar">
                   <ChevronLeft size={28} className="shrink-0" />
                 </Button>
@@ -1727,7 +1809,7 @@ export function DesktopAppPage() {
                             </Button>
                           ) : null}
                           {selectingPath === workspace.path ? <span className="text-xs text-[var(--app-text-muted)]">opening…</span> : null}
-                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.taskCount ?? 0} tasks`}>
+                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.user.taskCount ?? 0} tasks`}>
                             <ListChecks size={17} strokeWidth={2.25} className="shrink-0" />
                           </Button>
                           <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">
@@ -1984,23 +2066,7 @@ export function DesktopAppPage() {
         />
       ) : null}
 
-      <DesktopNotificationsModal
-        open={notificationsOpen}
-        onOpenChange={setNotificationsOpen}
-        notifications={notificationCenter.items}
-        summary={notificationCenter.summary}
-        loading={notificationCenter.loading}
-        connectionState={connectionState}
-        onMarkRead={async (record) => {
-          await updateNotificationRecord(record.id, { read: true })
-        }}
-        onAcknowledge={async (record) => {
-          await updateNotificationRecord(record.id, { acked: true, status: 'resolved' })
-        }}
-        onMute={async (record) => {
-          await updateNotificationRecord(record.id, { muted: true })
-        }}
-      />
+      <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
 
       <DesktopSettingsModal
         open={settingsOpen}

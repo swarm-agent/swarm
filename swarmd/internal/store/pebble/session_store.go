@@ -249,15 +249,80 @@ func (s *SessionStore) ListTopSessionsByWorkspace(workspacePaths []string, perWo
 			}
 			return sessions[i].UpdatedAt > sessions[j].UpdatedAt
 		})
-		if len(sessions) > perWorkspaceLimit {
-			sessions = sessions[:perWorkspaceLimit]
-		}
+		sessions = selectTopParentSessionsWithChildren(sessions, perWorkspaceLimit)
 		out = append(out, WorkspaceSessionList{
 			WorkspacePath: normalizedTargets[normalized],
 			Sessions:      sessions,
 		})
 	}
 	return out, nil
+}
+
+func selectTopParentSessionsWithChildren(sessions []SessionSnapshot, parentLimit int) []SessionSnapshot {
+	if parentLimit <= 0 || len(sessions) == 0 {
+		return sessions
+	}
+
+	selectedSessionIDs := make(map[string]struct{}, parentLimit)
+	selected := make([]SessionSnapshot, 0, parentLimit)
+	children := make([]SessionSnapshot, 0)
+	for _, session := range sessions {
+		sessionID := strings.TrimSpace(session.ID)
+		parentSessionID := sessionMetadataString(session.Metadata, "parent_session_id")
+		if parentSessionID == "" || parentSessionID == sessionID {
+			if len(selected) < parentLimit {
+				selected = append(selected, session)
+				selectedSessionIDs[sessionID] = struct{}{}
+			}
+			continue
+		}
+		children = append(children, session)
+	}
+
+	if len(children) == 0 {
+		return selected
+	}
+	for {
+		added := false
+		remaining := children[:0]
+		for _, session := range children {
+			sessionID := strings.TrimSpace(session.ID)
+			parentSessionID := sessionMetadataString(session.Metadata, "parent_session_id")
+			if _, ok := selectedSessionIDs[parentSessionID]; ok {
+				selected = append(selected, session)
+				selectedSessionIDs[sessionID] = struct{}{}
+				added = true
+				continue
+			}
+			remaining = append(remaining, session)
+		}
+		children = remaining
+		if !added || len(children) == 0 {
+			break
+		}
+	}
+	sort.Slice(selected, func(i, j int) bool {
+		if selected[i].UpdatedAt == selected[j].UpdatedAt {
+			return selected[i].ID < selected[j].ID
+		}
+		return selected[i].UpdatedAt > selected[j].UpdatedAt
+	})
+	return selected
+}
+
+func sessionMetadataString(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
 }
 
 func (s *SessionStore) listSessions(limit int, include func(SessionSnapshot) bool) ([]SessionSnapshot, error) {

@@ -257,16 +257,23 @@ func TestChatAvailableModelsIncludesReasoningMetadata(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatalf("expected models")
 	}
-	var found55, foundDefault, foundMini bool
+	var found55, found54OneM, foundDefault, foundMini bool
 	for _, entry := range got {
 		switch entry.Model {
 		case "gpt-5.5":
+			if entry.ContextMode == "1m" {
+				t.Fatalf("gpt-5.5 should not include a 1m entry")
+			}
 			found55 = true
 			if !entry.Reasoning {
 				t.Fatalf("expected gpt-5.5 reasoning=true")
 			}
 		case "gpt-5.4":
-			foundDefault = true
+			if entry.ContextMode == "1m" {
+				found54OneM = true
+			} else {
+				foundDefault = true
+			}
 			if !entry.Reasoning {
 				t.Fatalf("expected gpt-5.4 reasoning=true")
 			}
@@ -277,7 +284,7 @@ func TestChatAvailableModelsIncludesReasoningMetadata(t *testing.T) {
 			}
 		}
 	}
-	if !found55 || !foundDefault || !foundMini {
+	if !found55 || !found54OneM || !foundDefault || !foundMini {
 		t.Fatalf("missing expected models in %#v", got)
 	}
 }

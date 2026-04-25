@@ -184,6 +184,7 @@ check_build_context() {
   log_step "verifying .dockerignore excludes local-only build context paths"
   require_dockerignore_line ".git"
   require_dockerignore_line ".cache"
+  require_dockerignore_line "dist"
   require_dockerignore_line ".runtime"
   require_dockerignore_line ".swarm"
   require_dockerignore_line ".tmp"

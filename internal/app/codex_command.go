@@ -42,8 +42,8 @@ func (a *App) handleCodexCommand(args []string) {
 		a.home.SetStatus(fmt.Sprintf("/codex requires the current model provider to be codex (current: %s)", emptyFallback(providerID, "unset")))
 		return
 	}
-	if !strings.EqualFold(modelName, "gpt-5.4") {
-		a.home.SetStatus(fmt.Sprintf("/codex runtime settings are only supported on Codex gpt-5.4 (current model: %s)", emptyFallback(modelName, "unset")))
+	if !model.SupportsCodexFastMode(providerID, modelName) {
+		a.home.SetStatus(fmt.Sprintf("/codex runtime settings are only supported on Codex gpt-5.4/gpt-5.5 (current model: %s)", emptyFallback(modelName, "unset")))
 		return
 	}
 
@@ -155,7 +155,7 @@ func (a *App) showCodexCommandStatus(sessionID string) {
 		fmt.Sprintf("1m: %s", map[bool]string{true: "on", false: "off"}[model.Codex1MEnabled(provider, modelName, contextMode)]),
 		fmt.Sprintf("effective context window: %d", contextWindow),
 		"usage: /codex [status|fast]",
-		"/codex fast toggles Fast on/off for Codex gpt-5.4 only",
+		"/codex fast toggles Fast on/off for Codex gpt-5.4/gpt-5.5",
 		"select gpt-5.4 (1m) in /models to use 1M context",
 	}
 	a.home.SetCommandOverlay(lines)

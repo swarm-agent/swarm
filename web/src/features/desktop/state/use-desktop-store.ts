@@ -42,8 +42,8 @@ import type { VaultStatus } from '../vault/types'
 import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/workspace-overview'
 import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
-import { fetchNotifications, fetchNotificationSummary, updateNotification } from '../notifications/api'
-import type { DurableNotificationRecord } from '../notifications/types'
+import { clearNotifications as clearDurableNotifications, fetchNotifications, fetchNotificationSummary, updateNotification } from '../notifications/api'
+import type { DurableNotificationRecord, NotificationSummaryRecord } from '../notifications/types'
 
 interface EventEnvelope<T = Record<string, unknown>> {
   global_seq?: number
@@ -129,13 +129,135 @@ function mapDurableNotification(record: DurableNotificationRecord): DesktopNotif
   }
 }
 
-function mapNotificationSummary(summary: Awaited<ReturnType<typeof fetchNotificationSummary>>): DesktopNotificationSummary {
+function mapNotificationSummary(summary: NotificationSummaryRecord): DesktopNotificationSummary {
   return {
-    swarmID: summary.swarm_id,
-    totalCount: summary.total_count,
-    unreadCount: summary.unread_count,
-    activeCount: summary.active_count,
-    updatedAt: summary.updated_at,
+    swarmID: typeof summary.swarm_id === 'string' ? summary.swarm_id : '',
+    totalCount: typeof summary.total_count === 'number' && Number.isFinite(summary.total_count) ? Math.max(0, summary.total_count) : 0,
+    unreadCount: typeof summary.unread_count === 'number' && Number.isFinite(summary.unread_count) ? Math.max(0, summary.unread_count) : 0,
+    activeCount: typeof summary.active_count === 'number' && Number.isFinite(summary.active_count) ? Math.max(0, summary.active_count) : 0,
+    updatedAt: typeof summary.updated_at === 'number' && Number.isFinite(summary.updated_at) ? Math.max(0, summary.updated_at) : 0,
+  }
+}
+
+function notificationCenterRecordsEqual(left: DesktopNotificationCenterRecord, right: DesktopNotificationCenterRecord): boolean {
+  return left.id === right.id
+    && left.swarmID === right.swarmID
+    && left.originSwarmID === right.originSwarmID
+    && left.sessionId === right.sessionId
+    && left.runId === right.runId
+    && left.category === right.category
+    && left.severity === right.severity
+    && left.title === right.title
+    && left.body === right.body
+    && left.status === right.status
+    && left.sourceEventType === right.sourceEventType
+    && left.permissionId === right.permissionId
+    && left.toolName === right.toolName
+    && left.requirement === right.requirement
+    && left.readAt === right.readAt
+    && left.ackedAt === right.ackedAt
+    && left.mutedAt === right.mutedAt
+    && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt
+}
+
+function notificationSummariesEqual(left: DesktopNotificationSummary, right: DesktopNotificationSummary): boolean {
+  return left.swarmID === right.swarmID
+    && left.totalCount === right.totalCount
+    && left.unreadCount === right.unreadCount
+    && left.activeCount === right.activeCount
+    && left.updatedAt === right.updatedAt
+}
+
+function deriveNotificationSummary(
+  items: DesktopNotificationCenterRecord[],
+  fallbackSwarmID: string,
+  fallbackUpdatedAt: number,
+): DesktopNotificationSummary {
+  return {
+    swarmID: fallbackSwarmID,
+    totalCount: items.length,
+    unreadCount: items.filter((item) => !item.readAt).length,
+    activeCount: items.filter((item) => item.status === 'active').length,
+    updatedAt: fallbackUpdatedAt,
+  }
+}
+
+function notificationRecordFromRealtimePayload(payloadRecord: Record<string, unknown>): DurableNotificationRecord | null {
+  const rawNotification = payloadRecord.notification
+  if (!rawNotification || typeof rawNotification !== 'object') {
+    return null
+  }
+  const record = rawNotification as Partial<DurableNotificationRecord>
+  if (typeof record.id !== 'string' || record.id.trim() === '' || typeof record.swarm_id !== 'string' || record.swarm_id.trim() === '') {
+    return null
+  }
+  return record as DurableNotificationRecord
+}
+
+function notificationSummaryFromRealtimePayload(payloadRecord: Record<string, unknown>): DesktopNotificationSummary | null {
+  const rawSummary = payloadRecord.summary
+  if (!rawSummary || typeof rawSummary !== 'object') {
+    return null
+  }
+  return mapNotificationSummary(rawSummary as NotificationSummaryRecord)
+}
+
+function mergeNotificationCenterRecord(
+  center: DesktopStoreState['notificationCenter'],
+  record: DurableNotificationRecord,
+  suppliedSummary: DesktopNotificationSummary | null = null,
+): DesktopStoreState['notificationCenter'] {
+  const mappedRecord = mapDurableNotification(record)
+  const existingIndex = center.items.findIndex((item) => item.id === mappedRecord.id)
+  const items = existingIndex >= 0
+    ? notificationCenterRecordsEqual(center.items[existingIndex], mappedRecord)
+      ? center.items
+      : center.items.map((item, index) => index === existingIndex ? mappedRecord : item)
+    : [mappedRecord, ...center.items].slice(0, MAX_NOTIFICATIONS)
+  const incomingSummary = suppliedSummary ?? deriveNotificationSummary(
+    items,
+    mappedRecord.swarmID || center.summary.swarmID,
+    mappedRecord.updatedAt || Date.now(),
+  )
+  const summary = {
+    ...incomingSummary,
+    updatedAt: Math.max(incomingSummary.updatedAt, center.summary.updatedAt),
+  }
+  const hydrated = true
+  const loading = false
+  if (notificationSummariesEqual(center.summary, summary) && items === center.items && center.hydrated === hydrated && center.loading === loading) {
+    return center
+  }
+  updateBrowserNotificationSignals(summary)
+  return {
+    ...center,
+    items,
+    summary,
+    loading,
+    hydrated,
+  }
+}
+
+function clearNotificationCenter(
+  center: DesktopStoreState['notificationCenter'],
+  summary: DesktopNotificationSummary,
+): DesktopStoreState['notificationCenter'] {
+  const stableSummary = {
+    ...summary,
+    updatedAt: Math.max(summary.updatedAt, center.summary.updatedAt),
+  }
+  const loading = false
+  if (center.items.length === 0 && notificationSummariesEqual(center.summary, stableSummary) && center.hydrated && center.loading === loading) {
+    return center
+  }
+  updateBrowserNotificationSignals(stableSummary)
+  return {
+    ...center,
+    items: [],
+    summary: stableSummary,
+    loading,
+    hydrated: true,
   }
 }
 
@@ -1475,25 +1597,28 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
     const workspacePath = typeof payloadRecord.workspace_path === 'string' ? payloadRecord.workspace_path.trim() : ''
     const summaryRecord = payloadRecord.summary && typeof payloadRecord.summary === 'object' ? payloadRecord.summary as Record<string, unknown> : null
     if (workspacePath && summaryRecord) {
+      const emptySummary = createEmptyWorkspaceTodoSummary()
+      const userSummary = summaryRecord.user && typeof summaryRecord.user === 'object'
+        ? {
+            taskCount: typeof (summaryRecord.user as Record<string, unknown>).task_count === 'number' ? (summaryRecord.user as Record<string, unknown>).task_count as number : 0,
+            openCount: typeof (summaryRecord.user as Record<string, unknown>).open_count === 'number' ? (summaryRecord.user as Record<string, unknown>).open_count as number : 0,
+            inProgressCount: typeof (summaryRecord.user as Record<string, unknown>).in_progress_count === 'number' ? (summaryRecord.user as Record<string, unknown>).in_progress_count as number : 0,
+          }
+        : emptySummary.user
+      const agentSummary = summaryRecord.agent && typeof summaryRecord.agent === 'object'
+        ? {
+            taskCount: typeof (summaryRecord.agent as Record<string, unknown>).task_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).task_count as number : 0,
+            openCount: typeof (summaryRecord.agent as Record<string, unknown>).open_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).open_count as number : 0,
+            inProgressCount: typeof (summaryRecord.agent as Record<string, unknown>).in_progress_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).in_progress_count as number : 0,
+          }
+        : emptySummary.agent
       patchWorkspaceTodoSummary(workspacePath, {
-        ...createEmptyWorkspaceTodoSummary(),
-        taskCount: typeof summaryRecord.task_count === 'number' ? summaryRecord.task_count : 0,
-        openCount: typeof summaryRecord.open_count === 'number' ? summaryRecord.open_count : 0,
-        inProgressCount: typeof summaryRecord.in_progress_count === 'number' ? summaryRecord.in_progress_count : 0,
-        user: summaryRecord.user && typeof summaryRecord.user === 'object'
-          ? {
-              taskCount: typeof (summaryRecord.user as Record<string, unknown>).task_count === 'number' ? (summaryRecord.user as Record<string, unknown>).task_count as number : 0,
-              openCount: typeof (summaryRecord.user as Record<string, unknown>).open_count === 'number' ? (summaryRecord.user as Record<string, unknown>).open_count as number : 0,
-              inProgressCount: typeof (summaryRecord.user as Record<string, unknown>).in_progress_count === 'number' ? (summaryRecord.user as Record<string, unknown>).in_progress_count as number : 0,
-            }
-          : createEmptyWorkspaceTodoSummary().user,
-        agent: summaryRecord.agent && typeof summaryRecord.agent === 'object'
-          ? {
-              taskCount: typeof (summaryRecord.agent as Record<string, unknown>).task_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).task_count as number : 0,
-              openCount: typeof (summaryRecord.agent as Record<string, unknown>).open_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).open_count as number : 0,
-              inProgressCount: typeof (summaryRecord.agent as Record<string, unknown>).in_progress_count === 'number' ? (summaryRecord.agent as Record<string, unknown>).in_progress_count as number : 0,
-            }
-          : createEmptyWorkspaceTodoSummary().agent,
+        ...emptySummary,
+        taskCount: userSummary.taskCount,
+        openCount: userSummary.openCount,
+        inProgressCount: userSummary.inProgressCount,
+        user: userSummary,
+        agent: agentSummary,
       })
       deferDesktopCacheMutation('workspace todo invalidate', () => {
         void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
@@ -1544,10 +1669,34 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
   }
   const sessionId = typeof payloadRecord.session_id === 'string' ? payloadRecord.session_id : typeof envelope.entity_id === 'string' ? envelope.entity_id : ''
   if (eventType === 'notification.created' || eventType === 'notification.updated') {
+    const record = notificationRecordFromRealtimePayload(payloadRecord)
+    if (record) {
+      return {
+        notificationCenter: mergeNotificationCenterRecord(
+          state.notificationCenter,
+          record,
+          notificationSummaryFromRealtimePayload(payloadRecord),
+        ),
+        lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0),
+      }
+    }
     deferDesktopCacheMutation('notification refresh', () => {
       void useDesktopStore.getState().refreshNotifications()
     })
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
+  }
+  if (eventType === 'notification.cleared') {
+    const summary = notificationSummaryFromRealtimePayload(payloadRecord) ?? {
+      swarmID: typeof payloadRecord.swarm_id === 'string' ? payloadRecord.swarm_id : state.notificationCenter.summary.swarmID,
+      totalCount: 0,
+      unreadCount: 0,
+      activeCount: 0,
+      updatedAt: Date.now(),
+    }
+    return {
+      notificationCenter: clearNotificationCenter(state.notificationCenter, summary),
+      lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0),
+    }
   }
   if (eventType.startsWith('swarm.')) {
     const notifications = [...state.notifications]
@@ -2179,37 +2328,32 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       }))
     }
   },
+  clearNotifications: async () => {
+    const result = await clearDurableNotifications()
+    const summary: DesktopNotificationSummary = {
+      swarmID: result?.swarm_id ?? '',
+      totalCount: 0,
+      unreadCount: 0,
+      activeCount: 0,
+      updatedAt: Date.now(),
+    }
+    set((state) => ({
+      notificationCenter: clearNotificationCenter(state.notificationCenter, summary),
+    }))
+  },
   updateNotificationRecord: async (id, patch) => {
     const normalizedID = id.trim()
     if (!normalizedID) {
       return
     }
-    const record = await updateNotification(normalizedID, patch)
-    const mappedRecord = mapDurableNotification(record)
-    set((state) => {
-      const existingIndex = state.notificationCenter.items.findIndex((item) => item.id === mappedRecord.id)
-      const items = existingIndex >= 0
-        ? state.notificationCenter.items.map((item, index) => index === existingIndex ? mappedRecord : item)
-        : [mappedRecord, ...state.notificationCenter.items]
-      const unreadCount = items.filter((item) => !item.readAt).length
-      const activeCount = items.filter((item) => item.status === 'active').length
-      const summary: DesktopNotificationSummary = {
-        swarmID: mappedRecord.swarmID,
-        totalCount: items.length,
-        unreadCount,
-        activeCount,
-        updatedAt: mappedRecord.updatedAt,
-      }
-      updateBrowserNotificationSignals(summary)
-      return {
-        notificationCenter: {
-          ...state.notificationCenter,
-          items,
-          summary,
-          hydrated: true,
-        },
-      }
-    })
+    const { notification, summary } = await updateNotification(normalizedID, patch)
+    set((state) => ({
+      notificationCenter: mergeNotificationCenterRecord(
+        state.notificationCenter,
+        notification,
+        summary ? mapNotificationSummary(summary) : null,
+      ),
+    }))
   },
   setSessionDraft: (sessionId, draft) => {
     const key = sessionId.trim()

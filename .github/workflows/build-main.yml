@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+      - dev
   workflow_dispatch:
 
 permissions:
@@ -37,16 +41,24 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Resolve stable release version
+      - name: Resolve build version
         id: version
         shell: bash
         run: |
           set -euo pipefail
-          version="$(./scripts/resolve-release-version.sh)"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            short_sha="${GITHUB_SHA::12}"
+            version="pr-${{ github.event.pull_request.number }}-${short_sha}"
+            prerelease="true"
+          else
+            version="$(./scripts/resolve-release-version.sh)"
+            prerelease="false"
+          fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "prerelease=false" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
 
       - name: Create release tag when missing
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -67,6 +79,9 @@ jobs:
       - name: Build release bundle
         run: ./scripts/build-main-dist.sh --output-dir dist --version "${{ steps.version.outputs.version }}"
 
+      - name: Build and inspect container image artifact
+        run: ./scripts/build-container-artifact.sh --dist-dir dist --output-dir dist/container --runtime docker --image-name "localhost/swarm-child:${{ steps.version.outputs.version }}"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -76,9 +91,12 @@ jobs:
             dist/web
             dist/build-info.txt
             dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+            dist/container/swarm-container-image.tar
+            dist/container/container-image-info.txt
           if-no-files-found: error
 
       - name: Publish GitHub release
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
@@ -89,3 +107,5 @@ jobs:
           files: |
             dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
             dist/build-info.txt
+            dist/container/swarm-container-image.tar
+            dist/container/container-image-info.txt
