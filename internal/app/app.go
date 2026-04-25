@@ -39,6 +39,7 @@ const (
 	interruptQuit           = "quit"
 	defaultDaemonURL        = "http://127.0.0.1:7781"
 	reloadInterval          = 3 * time.Second
+	streamRenderMinInterval = 66 * time.Millisecond
 	vaultExportDirName      = "Swarm"
 	vaultExportFileExt      = ".swarmvault"
 )
@@ -252,9 +253,12 @@ type App struct {
 	pasteActive     bool
 	quitModal       quitModalState
 
-	streamEvents chan client.StreamEventEnvelope
-	streamCancel context.CancelFunc
-	streamSeq    atomic.Uint64
+	streamEvents            chan client.StreamEventEnvelope
+	streamCancel            context.CancelFunc
+	streamSeq               atomic.Uint64
+	streamRenderPending     bool
+	lastStreamRenderAt      time.Time
+	streamRenderWakePending atomic.Bool
 
 	gitStatusCh        chan gitStatusRefreshResult
 	gitWatcher         *repoGitWatcher
@@ -429,6 +433,7 @@ func (a *App) Run() error {
 				a.drawQuitModal()
 			}
 			a.screen.Show()
+			a.noteStreamRenderDrawn(time.Now())
 			dirty = false
 		}
 
@@ -459,8 +464,7 @@ func (a *App) Run() error {
 				a.consumeVoiceCaptureEvents()
 				dirty = true
 			case interruptStreamReady:
-				a.consumePendingStreamReady()
-				if a.consumeSessionStreamEvents() {
+				if a.consumeStreamReadyForRender(time.Now(), true) {
 					dirty = true
 				}
 			case interruptGitStatusReady:
@@ -668,6 +672,68 @@ func (a *App) consumePendingStreamReady() {
 	case <-a.pendingStreamReady:
 	default:
 	}
+}
+
+func (a *App) consumeStreamReadyForRender(now time.Time, scheduleWake bool) bool {
+	if a == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	a.consumePendingStreamReady()
+	if a.consumeSessionStreamEvents() {
+		a.streamRenderPending = true
+	}
+	if !a.streamRenderPending {
+		return false
+	}
+	if a.lastStreamRenderAt.IsZero() || !now.Before(a.lastStreamRenderAt.Add(streamRenderMinInterval)) {
+		return true
+	}
+	if scheduleWake {
+		a.scheduleStreamRenderWake(now)
+	}
+	return false
+}
+
+func (a *App) noteStreamRenderDrawn(now time.Time) {
+	if a == nil || !a.streamRenderPending {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	a.lastStreamRenderAt = now
+	a.streamRenderPending = false
+}
+
+func (a *App) scheduleStreamRenderWake(now time.Time) {
+	if a == nil || a.screen == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	wait := time.Duration(0)
+	if !a.lastStreamRenderAt.IsZero() {
+		wait = a.lastStreamRenderAt.Add(streamRenderMinInterval).Sub(now)
+		if wait < 0 {
+			wait = 0
+		}
+	}
+	if !a.streamRenderWakePending.CompareAndSwap(false, true) {
+		return
+	}
+	go func(delay time.Duration) {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		a.streamRenderWakePending.Store(false)
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptStreamReady))
+		}
+	}(wait)
 }
 
 func (a *App) startSessionEventStream() {

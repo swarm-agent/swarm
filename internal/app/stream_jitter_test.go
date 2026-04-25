@@ -65,6 +65,38 @@ func TestConsumeSessionStreamEventsDrainsBurst(t *testing.T) {
 	}
 }
 
+func TestConsumeStreamReadyForRenderThrottlesDenseBurst(t *testing.T) {
+	a := newStreamTestApp()
+	defer a.screen.Fini()
+	base := time.Unix(1_700_000_000, 0)
+	envelopes := realisticAppStreamEnvelopeBurst()
+
+	for _, envelope := range envelopes[:8] {
+		a.streamEvents <- envelope
+	}
+	if !a.consumeStreamReadyForRender(base, false) {
+		t.Fatal("expected first stream burst to request a draw")
+	}
+	a.noteStreamRenderDrawn(base)
+
+	for _, envelope := range envelopes[8:16] {
+		a.streamEvents <- envelope
+	}
+	if a.consumeStreamReadyForRender(base.Add(streamRenderMinInterval/2), false) {
+		t.Fatal("expected dense follow-up burst to be throttled")
+	}
+	if !a.streamRenderPending {
+		t.Fatal("expected throttled stream burst to leave render pending")
+	}
+	if got := len(a.streamEvents); got != 0 {
+		t.Fatalf("expected throttled path to still drain events, remaining=%d", got)
+	}
+
+	if !a.consumeStreamReadyForRender(base.Add(streamRenderMinInterval), false) {
+		t.Fatal("expected pending stream render after throttle interval")
+	}
+}
+
 func realisticAppStreamEnvelopeBurst() []client.StreamEventEnvelope {
 	chunks := realisticAppAssistantStreamChunks()
 	envelopes := make([]client.StreamEventEnvelope, 0, len(chunks)+10)
@@ -174,6 +206,51 @@ func BenchmarkAppQueuedRealisticSessionStreamBurstAndDrawCoalesced(b *testing.B)
 				a.chat.Draw(a.screen)
 				a.screen.Show()
 			}
+		}
+		a.screen.Fini()
+	}
+}
+
+func BenchmarkAppStreamRenderBaselineEveryEnvelope(b *testing.B) {
+	envelopes := realisticAppStreamEnvelopeBurst()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a := newStreamTestApp()
+		a.screen.SetSize(120, 36)
+		for _, envelope := range envelopes {
+			a.streamEvents <- envelope
+			if a.consumeSessionStreamEvents() {
+				a.chat.Draw(a.screen)
+				a.screen.Show()
+			}
+		}
+		a.screen.Fini()
+	}
+}
+
+func BenchmarkAppStreamRenderFixedThrottled(b *testing.B) {
+	envelopes := realisticAppStreamEnvelopeBurst()
+	base := time.Unix(1_700_000_000, 0)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a := newStreamTestApp()
+		a.screen.SetSize(120, 36)
+		for idx, envelope := range envelopes {
+			a.streamEvents <- envelope
+			now := base.Add(time.Duration(idx) * 20 * time.Millisecond)
+			if a.consumeStreamReadyForRender(now, false) {
+				a.chat.Draw(a.screen)
+				a.screen.Show()
+				a.noteStreamRenderDrawn(now)
+			}
+		}
+		finalNow := base.Add(time.Duration(len(envelopes))*20*time.Millisecond + streamRenderMinInterval)
+		if a.consumeStreamReadyForRender(finalNow, false) {
+			a.chat.Draw(a.screen)
+			a.screen.Show()
+			a.noteStreamRenderDrawn(finalNow)
 		}
 		a.screen.Fini()
 	}
