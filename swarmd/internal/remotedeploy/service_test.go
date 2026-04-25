@@ -4,15 +4,19 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -78,6 +82,38 @@ func TestValidateTarGzArchiveRejectsTruncatedArchive(t *testing.T) {
 	}
 }
 
+func TestRemoteRequiredDiskBytesIncludesPayloadStagingAndFallback(t *testing.T) {
+	payloads := []pebblestore.RemoteDeployPayloadRecord{
+		{IncludedBytes: 100},
+		{IncludedBytes: 50},
+	}
+	if got, want := remoteRequiredDiskBytes(1000, payloads), int64(1300); got != want {
+		t.Fatalf("remoteRequiredDiskBytes = %d, want %d", got, want)
+	}
+	if got := remoteRequiredDiskBytes(0, nil); got <= 0 {
+		t.Fatalf("remoteRequiredDiskBytes zero-payload fallback = %d, want positive", got)
+	}
+}
+
+func TestRemotePreflightSummaryReportsZeroPayloadAndDisk(t *testing.T) {
+	record := pebblestore.RemoteDeploySessionRecord{
+		SSHSessionTarget:  "remote.example",
+		TransportMode:     startupconfig.NetworkModeTailscale,
+		ImageDeliveryMode: remoteImageDeliveryRegistry,
+		ImagePrefix:       "ghcr.io/swarm-agent/swarm",
+		RemoteDisk: pebblestore.RemoteDeployDiskRecord{
+			AvailableBytes: 2 * 1024 * 1024 * 1024,
+			RequiredBytes:  512 * 1024 * 1024,
+		},
+	}
+	summary := remotePreflightSummary(record)
+	for _, needle := range []string{"no workspace payloads", "Remote disk check", "2.0 GiB available", "512.0 MiB required"} {
+		if !strings.Contains(summary, needle) {
+			t.Fatalf("summary missing %q: %s", needle, summary)
+		}
+	}
+}
+
 func TestRemoteRuntimeSignatureChangesWithInputs(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "deploy", "container-mvp", "entrypoint.sh"), "#!/bin/sh\n")
@@ -127,6 +163,7 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 	for _, needle := range []string{
 		`remote_root='/var/lib/swarm/remote-deploy/test'`,
 		`config_home='/var/lib/swarm/remote-deploy/test/config'`,
+		`legacy_credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
 		`bootstrap_secret_file='/var/lib/swarm/remote-deploy/test/config/swarm/remote-deploy-bootstrap.secret'`,
 		`tailscale_state_dir='/var/lib/swarm/remote-deploy/test/state/tailscale'`,
 		`swarmd_state_dir='/var/lib/swarm/remote-deploy/test/state/swarmd'`,
@@ -138,14 +175,15 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`if runtime_cmd image inspect "$image_ref" >/dev/null 2>&1; then`,
 		`runtime_cmd load -i "$image_archive" >/dev/null`,
 		`as_root mkdir -p '/workspaces'`,
+		`rm -f "$legacy_credentials_file"`,
 		`cat > "$start_script" <<'SCRIPT'`,
 		`export XDG_CONFIG_HOME="$config_home"`,
 		`export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"`,
 		`export TS_OUTBOUND_HTTP_PROXY_LISTEN="127.0.0.1:1055"`,
 		`export SWARM_TAILSCALE_OUTBOUND_PROXY="http://127.0.0.1:1055"`,
 		`run_args+=(--volume '/workspaces:/workspaces')`,
-		`if [ -s "$credentials_file" ]; then`,
-		`run_args+=(--env-file "$credentials_file")`,
+		`run_args+=(-e TS_AUTHKEY)`,
+		`run_args+=(-e SWARM_REMOTE_SYNC_VAULT_PASSWORD)`,
 		`exec "$runtime_bin" "${run_args[@]}"`,
 		`nohup sudo -E /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &`,
 		`log_timer_step "start_remote_container" "$step_started_ms"`,
@@ -169,6 +207,7 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`SWARM_REMOTE_SYNC_VAULT_PASSWORD=`,
 		`remote_deploy_session_token =`,
 		`remote_deploy_invite_token =`,
+		`--env-file`,
 	} {
 		if strings.Contains(script, unexpected) {
 			t.Fatalf("installer script should not include %q\n%s", unexpected, script)
@@ -176,26 +215,36 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 	}
 }
 
-func TestRemoteBundleStartScriptWritesCredentialsFileWithoutInlineSecrets(t *testing.T) {
+func TestRemoteBundleStartScriptDeliversSecretsViaSSHStdinWithoutCredentialsFile(t *testing.T) {
 	record := &pebblestore.RemoteDeploySessionRecord{
 		ID:           "remote-child-test",
 		RemoteRoot:   "/var/lib/swarm/remote-deploy/test",
 		SessionToken: "session-secret",
 		InviteToken:  "invite-secret",
 	}
-	script, err := remoteBundleStartScript(record, "ts-auth-key", "vault-pass")
+	childCfgText := "remote_deploy_enabled = true\nremote_deploy_session_id = remote-child-test\nremote_deploy_host_api_base_url = https://host.example\n"
+	script, err := remoteBundleStartScript(record, childCfgText, "ts-auth-key", "vault-pass")
 	if err != nil {
 		t.Fatalf("remoteBundleStartScript error = %v", err)
 	}
 	for _, needle := range []string{
-		`cd '/var/lib/swarm/remote-deploy/test'`,
-		`credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
 		`umask 077`,
-		`cat > "$credentials_file" <<'EOF'`,
-		"TS_AUTHKEY=ts-auth-key",
-		"SWARM_REMOTE_SYNC_VAULT_PASSWORD=vault-pass",
-		`chmod 0600 "$credentials_file"`,
-		`./install-remote-child.sh`,
+		`remote_dir='/var/lib/swarm/remote-deploy/test'`,
+		`config_path='/var/lib/swarm/remote-deploy/test/config/swarm/swarm.conf'`,
+		`bootstrap_secret_path='/var/lib/swarm/remote-deploy/test/config/swarm/remote-deploy-bootstrap.secret'`,
+		`installer_path='/var/lib/swarm/remote-deploy/test/install-remote-child.sh'`,
+		`legacy_credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
+		`trap 'rm -f "$installer_path" "$legacy_credentials_file"' EXIT`,
+		`cat > "$config_path" <<'SWARM_REMOTE_CONFIG_EOF'`,
+		childCfgText,
+		`chmod 0600 "$config_path"`,
+		`cat > "$bootstrap_secret_path" <<'SWARM_REMOTE_SECRET_EOF'`,
+		"remote_deploy_session_token = session-secret",
+		"remote_deploy_invite_token = invite-secret",
+		`chmod 0600 "$bootstrap_secret_path"`,
+		`cat > "$installer_path" <<'SWARM_REMOTE_INSTALL_EOF'`,
+		`chmod 0700 "$installer_path"`,
+		`TS_AUTHKEY='ts-auth-key' SWARM_REMOTE_SYNC_VAULT_PASSWORD='vault-pass' "$installer_path"`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("start script missing %q\n%s", needle, script)
@@ -203,6 +252,11 @@ func TestRemoteBundleStartScriptWritesCredentialsFileWithoutInlineSecrets(t *tes
 	}
 	for _, unexpected := range []string{
 		`TAILSCALE_AUTHKEY=`,
+		`cat > "$credentials_file"`,
+		`remote_deploy_session_token =` + "\n",
+		`remote_deploy_invite_token =` + "\n",
+		`--env-file`,
+		`chmod 0600 "$credentials_file"`,
 	} {
 		if strings.Contains(script, unexpected) {
 			t.Fatalf("start script should not include %q\n%s", unexpected, script)
@@ -210,24 +264,58 @@ func TestRemoteBundleStartScriptWritesCredentialsFileWithoutInlineSecrets(t *tes
 	}
 }
 
-func TestRemoteInstallerScriptPullsRegistryImageWithoutArchive(t *testing.T) {
+func TestResolveRemoteImagePrefixRegistryUsesOfficialProductionImage(t *testing.T) {
+	t.Setenv(remoteImagePrefixEnv, "")
+	prefix, err := resolveRemoteImagePrefix(remoteImageDeliveryRegistry)
+	if err != nil {
+		t.Fatalf("resolveRemoteImagePrefix error = %v", err)
+	}
+	if prefix != "ghcr.io/swarm-agent/swarm" {
+		t.Fatalf("expected official image prefix, got %q", prefix)
+	}
+
 	t.Setenv(remoteImagePrefixEnv, "ghcr.io/swarm-agent/swarm-remote-child")
+	if _, err := resolveRemoteImagePrefix(remoteImageDeliveryRegistry); err == nil {
+		t.Fatalf("expected custom remote image prefix to be rejected")
+	}
+}
+
+func TestRemoteInstallerScriptPullsAndVerifiesProductionRegistryDigestWithoutArchive(t *testing.T) {
+	oldVersion := buildinfo.Version
+	oldCommit := buildinfo.Commit
+	buildinfo.Version = "v9.8.7"
+	buildinfo.Commit = "0123456789abcdef"
+	t.Cleanup(func() {
+		buildinfo.Version = oldVersion
+		buildinfo.Commit = oldCommit
+	})
 
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:            "remote-child-test",
 		Name:          "remote-child",
 		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
 		RemoteRuntime: "docker",
-		ImageRef:      "ghcr.io/swarm-agent/swarm-remote-child:test1234",
+		ImageRef:      "ghcr.io/swarm-agent/swarm@sha256:abc123",
 		SudoMode:      "sudo",
 	}
 	script := remoteInstallerScript(record)
 	for _, needle := range []string{
-		`image_ref='ghcr.io/swarm-agent/swarm-remote-child:test1234'`,
+		`image_ref='ghcr.io/swarm-agent/swarm@sha256:abc123'`,
 		`image_archive='swarm-remote-tailscale-image.tar'`,
 		`use_archive_image='0'`,
 		`elif [ "$use_archive_image" != "1" ]; then`,
 		`runtime_cmd pull "$image_ref" >/dev/null`,
+		`expected_label='https://github.com/swarm-agent/swarm'`,
+		`expected_label='v9.8.7'`,
+		`expected_label='swarm.container.v1'`,
+		`expected_label='app'`,
+		`expected_label='0123456789abcdef'`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' 2>/dev/null || true)`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "swarmagent.image.contract" }}' 2>/dev/null || true)`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "swarmagent.image.role" }}' 2>/dev/null || true)`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)`,
+		`remote image label verification failed: %s=%s, expected %s`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("installer script missing %q\n%s", needle, script)
@@ -500,66 +588,89 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func TestPrepareRemoteBundleWritesSecretConfigWithRestrictedPermissions(t *testing.T) {
+func TestPrepareRemoteBundleExcludesGeneratedConfigSecretsAndScripts(t *testing.T) {
 	workDir := t.TempDir()
-	service := &Service{}
-	record := &pebblestore.RemoteDeploySessionRecord{ID: "remote-test-1", SessionToken: "secret", InviteToken: "invite", RemoteRoot: "/var/lib/swarm/remote-deploy/test"}
-	childCfgText := "remote_deploy_enabled = true\nremote_deploy_session_id = remote-test-1\nremote_deploy_host_api_base_url = https://host.example\nremote_deploy_host_desktop_url = https://host.example\nremote_deploy_sync_enabled = false\nremote_deploy_sync_mode = \nremote_deploy_sync_owner_swarm_id = \nremote_deploy_sync_credential_url = \n"
+	sourceDir := t.TempDir()
+	writeTestFile(t, filepath.Join(sourceDir, "tracked.txt"), "tracked payload")
+	gitCommand(t, sourceDir, "init")
+	gitCommand(t, sourceDir, "add", "tracked.txt")
+	gitCommand(t, sourceDir, "-c", "user.name=Swarm Test", "-c", "user.email=swarm-test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "add tracked payload")
 
-	if err := service.prepareRemoteBundle(context.Background(), workDir, record, childCfgText); err != nil {
+	service := &Service{}
+	record := &pebblestore.RemoteDeploySessionRecord{
+		ID:           "remote-test-1",
+		SessionToken: "secret",
+		InviteToken:  "invite",
+		RemoteRoot:   "/var/lib/swarm/remote-deploy/test",
+		Payloads: []pebblestore.RemoteDeployPayloadRecord{{
+			ArchiveName: "payload-01.tar.gz",
+			SourcePath:  sourceDir,
+		}},
+	}
+
+	if err := service.prepareRemoteBundle(context.Background(), workDir, record); err != nil {
 		t.Fatalf("prepareRemoteBundle() error = %v", err)
 	}
 
-	cfgPath := filepath.Join(workDir, "bundle", "remote", "config", "swarm", "swarm.conf")
-	info, err := os.Stat(cfgPath)
-	if err != nil {
-		t.Fatalf("Stat(%q) error = %v", cfgPath, err)
+	remoteBundleDir := filepath.Join(workDir, "bundle", "remote")
+	archivePath := filepath.Join(remoteBundleDir, "payload-01.tar.gz")
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("expected payload archive to be staged: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("remote child startup config mode = %#o, want 0o600", got)
-	}
+	assertTarGzContainsOnly(t, archivePath, "tracked.txt")
 
-	secretPath := filepath.Join(workDir, "bundle", "remote", "config", "swarm", "remote-deploy-bootstrap.secret")
-	secretInfo, err := os.Stat(secretPath)
-	if err != nil {
-		t.Fatalf("Stat(%q) error = %v", secretPath, err)
+	unexpectedPaths := []string{
+		filepath.Join(remoteBundleDir, "config", "swarm", "swarm.conf"),
+		filepath.Join(remoteBundleDir, "config", "swarm", "remote-deploy-bootstrap.secret"),
+		filepath.Join(remoteBundleDir, "install-remote-child.sh"),
+		filepath.Join(remoteBundleDir, "remote-child.credentials.env"),
 	}
-	if got := secretInfo.Mode().Perm(); got != 0o600 {
-		t.Fatalf("remote bootstrap secret mode = %#o, want 0o600", got)
+	for _, path := range unexpectedPaths {
+		if _, err := os.Stat(path); err == nil {
+			t.Fatalf("prepareRemoteBundle wrote secret/script path %q", path)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("Stat(%q) error = %v", path, err)
+		}
 	}
-	secretData, err := os.ReadFile(secretPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", secretPath, err)
-	}
-	secretText := string(secretData)
-	if !strings.Contains(secretText, "remote_deploy_session_token = secret") {
-		t.Fatalf("remote bootstrap secret missing session token: %q", secretText)
-	}
-	if !strings.Contains(secretText, "remote_deploy_invite_token = invite") {
-		t.Fatalf("remote bootstrap secret missing invite token: %q", secretText)
-	}
-	cfgData, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", cfgPath, err)
-	}
-	cfgText := string(cfgData)
-	if strings.Contains(cfgText, "remote_deploy_session_token") || strings.Contains(cfgText, "remote_deploy_invite_token") {
-		t.Fatalf("remote child startup config should not include bootstrap secrets: %q", cfgText)
-	}
+}
 
-	installerPath := filepath.Join(workDir, "bundle", "remote", "install-remote-child.sh")
-	installer, err := os.ReadFile(installerPath)
+func gitCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", installerPath, err)
+		t.Fatalf("git %v: %v: %s", args, err, strings.TrimSpace(string(output)))
 	}
-	text := string(installer)
-	if !strings.Contains(text, "chmod 0700 \"$config_home\" \"$config_home/swarm\"") {
-		t.Fatalf("installer missing config dir hardening: %q", text)
+}
+
+func assertTarGzContainsOnly(t *testing.T, archivePath string, want ...string) {
+	t.Helper()
+	file, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatalf("open archive: %v", err)
 	}
-	if !strings.Contains(text, "chmod 0600 \"$config_home/swarm/swarm.conf\"") {
-		t.Fatalf("installer missing config file hardening: %q", text)
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatalf("open gzip: %v", err)
 	}
-	if !strings.Contains(text, "chmod 0600 \"$bootstrap_secret_file\"") {
-		t.Fatalf("installer missing bootstrap secret hardening: %q", text)
+	defer gz.Close()
+	reader := tar.NewReader(gz)
+	var got []string
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read archive: %v", err)
+		}
+		if header == nil {
+			continue
+		}
+		got = append(got, header.Name)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("archive entries = %#v, want %#v", got, want)
 	}
 }

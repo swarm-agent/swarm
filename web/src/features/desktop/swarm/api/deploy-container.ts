@@ -108,6 +108,12 @@ export interface RemoteDeployPayload {
   excluded_note?: string
 }
 
+export interface RemoteDeployDiskInfo {
+  path?: string
+  available_bytes?: number
+  required_bytes?: number
+}
+
 export interface RemoteDeployPreflight {
   path_id: string
   builder_runtime?: string
@@ -120,6 +126,7 @@ export interface RemoteDeployPreflight {
   systemd_unit?: string
   remote_root?: string
   remote_network_candidates?: string[]
+  remote_disk?: RemoteDeployDiskInfo
   files_to_copy?: string[]
   payloads?: RemoteDeployPayload[]
   summary?: string

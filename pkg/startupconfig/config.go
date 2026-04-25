@@ -1155,6 +1155,10 @@ func formatRemoteDeployBootstrapSecrets(cfg FileConfig) string {
 	return fmt.Sprintf("remote_deploy_session_token = %s\nremote_deploy_invite_token = %s\n", cfg.RemoteDeploy.SessionToken, cfg.RemoteDeploy.InviteToken)
 }
 
+func FormatRemoteDeployBootstrapSecrets(cfg FileConfig) string {
+	return formatRemoteDeployBootstrapSecrets(cfg)
+}
+
 func WriteRemoteDeployBootstrapSecret(configPath string, cfg FileConfig) error {
 	secretPath := RemoteDeployBootstrapSecretPath(configPath)
 	if err := os.MkdirAll(filepath.Dir(secretPath), 0o755); err != nil {

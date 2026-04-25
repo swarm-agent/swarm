@@ -102,6 +102,21 @@ function buildContainerPackageManifest(packages: ContainerPackageDraft[]) {
   }
 }
 
+function formatBytes(bytes?: number): string {
+  const safeBytes = typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0 ? bytes : 0
+  if (safeBytes <= 0) {
+    return 'unknown'
+  }
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let value = safeBytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return unit === 0 ? `${safeBytes} ${units[unit]}` : `${value.toFixed(1)} ${units[unit]}`
+}
+
 function mergeContainerPackages(packages: ContainerPackageDraft[]): ContainerPackageDraft[] {
   const ordered = new Map<string, ContainerPackageDraft>()
   for (const pkg of packages) {
@@ -889,9 +904,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
       throw new Error('Vault password is required to sync from a vaulted host.')
     }
-    if (selectedRemotePayloads.length === 0) {
-      throw new Error('Select at least one workspace to stage for the remote child.')
-    }
     setRemotePreflightLoading(true)
     setRemotePreflightError(null)
     setRemotePreflightGuidance(null)
@@ -1055,10 +1067,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('SSH alias or target is required.')
       return
     }
-    if (selectedRemotePayloads.length === 0) {
-      setError('Select at least one workspace to stage for the remote child.')
-      return
-    }
     if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()) {
       setError('Remote reachable host is required for LAN / WireGuard deploy.')
       return
@@ -1093,8 +1101,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           ? [`Tailscale login: ${remoteTailscaleAuthMode === 'key' ? 'Auth key (launch only, not saved)' : 'Manual browser approval'}`]
           : []),
         '',
-        'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.',
-        `This will also send the rendered swarm.conf, installer script, and selected payload archives over SSH, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
+        selectedRemotePayloads.length > 0
+          ? 'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.'
+          : 'No workspace payloads will be staged; the remote child will start empty and connect back to this master.',
+        `This will deliver generated config/install/start content over SSH stdin${selectedRemotePayloads.length > 0 ? ' and copy selected payload archives over SSH' : ''}, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
         `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
         'Swarm will not install persistence on the remote machine in this path.',
         '',
@@ -1714,7 +1724,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       || (remotePreflightBlocked && !remotePreflightCanAutofill)
                       || !remoteSSHTarget.trim()
                       || !swarmName.trim()
-                      || selectedWorkspaceCountValue === 0
                       || suggestingPackages
                     }
                   >
@@ -1996,6 +2005,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     <div><span className="font-medium text-[var(--app-text)]">Builder runtime:</span> {remotePreflightSession.preflight.builder_runtime || 'unknown'}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession.preflight.remote_runtime || 'unknown'}</div>
+                    <div><span className="font-medium text-[var(--app-text)]">Disk available:</span> {formatBytes(remotePreflightSession.preflight.remote_disk?.available_bytes)}</div>
+                    <div><span className="font-medium text-[var(--app-text)]">Disk required:</span> {formatBytes(remotePreflightSession.preflight.remote_disk?.required_bytes)}</div>
                     <div><span className="font-medium text-[var(--app-text)]">Persistence:</span> User-managed after launch</div>
                   </div>
                 </div>
@@ -2035,6 +2046,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div><span className="font-medium text-[var(--app-text)]">Preflight:</span> {remotePreflightSession ? 'Passed' : (remotePreflightLoading ? 'Running…' : 'Required before launch')}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession?.preflight.remote_runtime || 'Unknown until preflight'}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Disk available:</span> {remotePreflightSession ? formatBytes(remotePreflightSession.preflight.remote_disk?.available_bytes) : 'Unknown until preflight'}</div>
+                <div><span className="font-medium text-[var(--app-text)]">Disk required:</span> {remotePreflightSession ? formatBytes(remotePreflightSession.preflight.remote_disk?.required_bytes) : 'Unknown until preflight'}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Persistence:</span> User-managed after launch</div>
                 <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
                 <div><span className="font-medium text-[var(--app-text)]">Payload archives:</span> {remotePreflightSession ? remotePreflightArchiveCount : selectedRemoteArchiveCount}</div>
@@ -2058,7 +2071,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         <div className="flex flex-col gap-3 border-t border-[var(--app-border)] px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-[var(--app-text-muted)]">
             {launchTarget === 'remote'
-              ? `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} and ${containerPackages.length} package${containerPackages.length === 1 ? '' : 's'} will be staged for the remote deploy.`
+              ? `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} and ${containerPackages.length} package${containerPackages.length === 1 ? '' : 's'} configured for the remote deploy.`
               : `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be replicated using ${runtimeChoice || 'the selected runtime'} with Swarm Sync ${syncEnabled ? 'enabled' : 'disabled'}.`}
           </div>
           <div className="flex gap-3">
@@ -2076,7 +2089,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     || !remoteSSHTarget.trim()
                     || !remotePreflightSession
                     || remotePreflightLoading
-                    || selectedWorkspaceCountValue === 0
                     || (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()))
               }
             >

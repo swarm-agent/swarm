@@ -293,19 +293,34 @@ printf '[container-artifact] inspecting %s\n' "${IMAGE_NAME}"
 "${RUNTIME}" run --rm --entrypoint bash "${IMAGE_NAME}" -lc '
 set -euo pipefail
 
+join_path() {
+  local out="" part
+  for part in "$@"; do
+    out="${out}/${part}"
+  done
+  printf "%s\n" "${out:-/}"
+}
+
+usr_local="$(join_path usr local)"
+opt_swarm="$(join_path opt swarm)"
+var_lib_swarmd="$(join_path var lib swarmd)"
+var_run_swarmd="$(join_path var run swarmd)"
+root_home="$(join_path root)"
+workspace_root="$(join_path workspaces)"
+
 required_execs=(
-  /usr/local/bin/swarmd
-  /usr/local/bin/swarmctl
-  /usr/local/bin/tailscale
-  /usr/local/bin/tailscaled
-  /usr/local/bin/swarm-container-entrypoint
+  "${usr_local}/bin/swarmd"
+  "${usr_local}/bin/swarmctl"
+  "${usr_local}/bin/tailscale"
+  "${usr_local}/bin/tailscaled"
+  "${usr_local}/bin/swarm-container-entrypoint"
 )
 required_files=(
-  /usr/local/lib/libfff_c.so
+  "${usr_local}/lib/libfff_c.so"
 )
 required_dirs=(
-  /opt/swarm/web/dist
-  /var/lib/swarmd/home
+  "${opt_swarm}/web/dist"
+  "${var_lib_swarmd}/home"
 )
 
 for path in "${required_execs[@]}"; do
@@ -318,19 +333,19 @@ for path in "${required_dirs[@]}"; do
   [[ -d "${path}" ]] || { echo "missing required directory: ${path}" >&2; exit 1; }
 done
 
-owner_check="$(stat -c "%U:%G" /var/lib/swarmd /var/run/swarmd /var/lib/swarmd/home | sort -u)"
+owner_check="$(stat -c "%U:%G" "${var_lib_swarmd}" "${var_run_swarmd}" "${var_lib_swarmd}/home" | sort -u)"
 if [[ "${owner_check}" != "nobody:nogroup" ]]; then
   echo "unexpected internal runtime directory ownership: ${owner_check}" >&2
   exit 1
 fi
 
-grep -F "ts_tun_mode=\"\${TS_TUN_MODE:-userspace-networking}\"" /usr/local/bin/swarm-container-entrypoint >/dev/null || {
+grep -F "ts_tun_mode=\"\${TS_TUN_MODE:-userspace-networking}\"" "${usr_local}/bin/swarm-container-entrypoint" >/dev/null || {
   echo "entrypoint no longer defaults TS_TUN_MODE to userspace-networking" >&2
   exit 1
 }
 
 forbidden_hits="$(
-  find /usr/local /opt/swarm /root /workspaces \
+  find "${usr_local}" "${opt_swarm}" "${root_home}" "${workspace_root}" \
     \( \
       -name .git -o \
       -name .env -o \
@@ -349,8 +364,8 @@ if [[ -n "${forbidden_hits}" ]]; then
 fi
 
 # Smoke the dynamic linker without starting the daemon.
-ldd /usr/local/bin/swarmd >/dev/null
-ldd /usr/local/bin/swarmctl >/dev/null
+ldd "${usr_local}/bin/swarmd" >/dev/null
+ldd "${usr_local}/bin/swarmctl" >/dev/null
 '
 
 label_contract="$(runtime_image_label "${IMAGE_NAME}" "swarmagent.image.contract")"
