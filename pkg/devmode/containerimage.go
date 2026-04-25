@@ -31,6 +31,7 @@ func ResolveRoot(root string) (string, error) {
 	absRoot = filepath.Clean(absRoot)
 	required := []string{
 		filepath.Join(absRoot, "scripts", "rebuild-container.sh"),
+		filepath.Join(absRoot, "deploy", "container-mvp", "Containerfile.base"),
 		filepath.Join(absRoot, "deploy", "container-mvp", "Containerfile"),
 		filepath.Join(absRoot, "deploy", "container-mvp", "entrypoint.sh"),
 	}
@@ -61,6 +62,7 @@ func ContainerImageFingerprint(root string) (string, error) {
 	}
 	h := sha256.New()
 	inputs := []string{
+		filepath.Join(resolvedRoot, "deploy", "container-mvp", "Containerfile.base"),
 		filepath.Join(resolvedRoot, "deploy", "container-mvp", "Containerfile"),
 		filepath.Join(resolvedRoot, "deploy", "container-mvp", "entrypoint.sh"),
 		filepath.Join(resolvedRoot, ".bin", "main", "swarmd"),

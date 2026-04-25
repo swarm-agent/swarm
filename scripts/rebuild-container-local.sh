@@ -248,6 +248,7 @@ print_container_access_details() {
 
 for required_path in \
   "${PRIMARY_REPO_HOST}" \
+  "${ROOT_DIR}/deploy/container-mvp/Containerfile.base" \
   "${ROOT_DIR}/deploy/container-mvp/Containerfile"
 do
   if [[ ! -e "${required_path}" ]]; then
@@ -269,14 +270,21 @@ stage_container_binaries
 echo "[rebuild-container] rebuilding image ${IMAGE_NAME}"
 (
   cd "${ROOT_DIR}"
+  base_image_name="${SWARM_BASE_IMAGE_NAME:-localhost/swarm-container-base:latest}"
   build_args=()
+  build_args+=(
+    --label "swarmagent.image.contract=swarm.container.v1"
+    --label "swarmagent.image.role=app"
+    --label "swarmagent.image.base.ref=${base_image_name}"
+  )
   if [[ -n "${DEV_IMAGE_FINGERPRINT}" ]]; then
     build_args+=(
       --label "swarmagent.dev-mode=true"
       --label "swarmagent.dev-fingerprint=${DEV_IMAGE_FINGERPRINT}"
     )
   fi
-  "${BUILD_RUNTIME}" build "${build_args[@]}" -f deploy/container-mvp/Containerfile -t "${IMAGE_NAME}" .
+  "${BUILD_RUNTIME}" build -f deploy/container-mvp/Containerfile.base -t "${base_image_name}" .
+  "${BUILD_RUNTIME}" build "${build_args[@]}" --build-arg "SWARM_BASE_IMAGE=${base_image_name}" -f deploy/container-mvp/Containerfile -t "${IMAGE_NAME}" .
 )
 
 if [[ "${IMAGE_ONLY}" == "1" ]]; then

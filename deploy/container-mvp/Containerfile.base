@@ -1,0 +1,28 @@
+FROM docker.io/tailscale/tailscale:stable AS tailscale
+
+FROM docker.io/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git jq openssh-client python3 ripgrep util-linux \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
+COPY --from=tailscale /usr/local/bin/tailscaled /usr/local/bin/tailscaled
+
+RUN mkdir -p /var/lib/tailscale /var/lib/swarmd /var/lib/swarmd/home /var/run/tailscale /var/run/swarmd /workspaces \
+    && chown -R nobody:nogroup /var/lib/swarmd /var/run/swarmd
+
+ENV LD_LIBRARY_PATH=/usr/local/lib
+ENV SWARM_WEB_DIST_DIR=/opt/swarm/web/dist
+ENV TS_SOCKET=/var/run/tailscale/tailscaled.sock
+ENV TS_STATE_DIR=/var/lib/tailscale
+ENV SWARMD_DATA_DIR=/var/lib/swarmd
+ENV SWARMD_LOCK_PATH=/var/run/swarmd/swarmd.lock
+ENV SWARMD_LISTEN=127.0.0.1:7781
+ENV SWARM_DESKTOP_PORT=5555
+ENV TS_HOSTNAME=swarm-box
+ENV SWARM_RUNTIME_HOME=/var/lib/swarmd/home
+
+VOLUME ["/var/lib/tailscale", "/var/lib/swarmd", "/workspaces"]

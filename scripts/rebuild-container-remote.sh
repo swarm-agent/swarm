@@ -209,6 +209,7 @@ print_container_access_details() {
 
 for required_path in \
   "${PRIMARY_REPO_HOST}" \
+  "${ROOT_DIR}/deploy/container-mvp/Containerfile.base" \
   "${ROOT_DIR}/deploy/container-mvp/Containerfile" \
   "${ROOT_DIR}/swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so" \
   "${ROOT_DIR}/web/package.json"
@@ -230,7 +231,16 @@ ensure_podman_volume "${CONFIG_VOLUME}"
 echo "[rebuild-container-remote] rebuilding image ${IMAGE_NAME}"
 (
   cd "${ROOT_DIR}"
-  podman build -f deploy/container-mvp/Containerfile -t "${IMAGE_NAME}" .
+  base_image_name="${SWARM_BASE_IMAGE_NAME:-localhost/swarm-container-base:latest}"
+  podman build -f deploy/container-mvp/Containerfile.base -t "${base_image_name}" .
+  podman build \
+    --build-arg "SWARM_BASE_IMAGE=${base_image_name}" \
+    --label "swarmagent.image.contract=swarm.container.v1" \
+    --label "swarmagent.image.role=app" \
+    --label "swarmagent.image.base.ref=${base_image_name}" \
+    -f deploy/container-mvp/Containerfile \
+    -t "${IMAGE_NAME}" \
+    .
 )
 
 request_container_shutdown
