@@ -18,8 +18,8 @@ Usage: ./scripts/check-container-publish.sh [options] -- [remote deploy harness 
 Mandatory pre-GitHub gate for remote deploy container changes:
   1. run launch-readiness + precommit + CVE scans
   2. verify .dockerignore excludes local-only build context paths
-  3. build the container image through scripts/rebuild-container.sh --image-only
-  4. inspect the built image for required runtime files and forbidden local-only paths
+  3. build the base + app container images through scripts/rebuild-container.sh --image-only
+  4. inspect the built image for required runtime files, trust labels, and forbidden local-only paths
   5. run the checked-in remote deploy E2E harness with routed proof and teardown
 
 Examples:
@@ -209,7 +209,16 @@ build_image() {
 }
 
 inspect_image() {
-  log_step "inspecting built image for required runtime files and forbidden local-only paths"
+  log_step "inspecting built image for required runtime files, trust labels, and forbidden local-only paths"
+  local contract role
+  contract="$(${RUNTIME} image inspect "${IMAGE_NAME}" --format '{{ index .Config.Labels "swarmagent.image.contract" }}' 2>/dev/null || true)"
+  role="$(${RUNTIME} image inspect "${IMAGE_NAME}" --format '{{ index .Config.Labels "swarmagent.image.role" }}' 2>/dev/null || true)"
+  if [[ "${contract}" != "swarm.container.v1" ]]; then
+    die "image ${IMAGE_NAME} is missing swarm.container.v1 contract label"
+  fi
+  if [[ "${role}" != "app" ]]; then
+    die "image ${IMAGE_NAME} is missing app role label"
+  fi
   "${RUNTIME}" run --rm --entrypoint bash "${IMAGE_NAME}" -lc '
 set -euo pipefail
 
