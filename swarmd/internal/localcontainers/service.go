@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -21,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -35,6 +38,10 @@ const (
 	PathContainerDelete       = "swarm.containers.local.delete.v1"
 	PathContainerPrune        = "swarm.containers.local.prune-missing.v1"
 	defaultImageName          = devmode.DefaultContainerImageRef
+	productionImagePrefix     = "ghcr.io/swarm-agent/swarm"
+	productionMetadataURLTmpl = "https://github.com/swarm-agent/swarm/releases/download/%s/container-image-info.txt"
+	officialSourceRepository  = "https://github.com/swarm-agent/swarm"
+	officialImageContract     = "swarm.container.v1"
 	defaultContainerPath      = "/workspaces"
 	containerBackendPort      = startupconfig.DefaultPort
 	containerDesktopPort      = startupconfig.DefaultDesktopPort
@@ -43,6 +50,8 @@ const (
 )
 
 var containerPackageNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]*$`)
+
+var productionImageMetadataClient = http.DefaultClient
 
 type Mount = pebblestore.SwarmLocalContainerMount
 
@@ -756,6 +765,29 @@ func runtimeImageExistsArgs(runtimeName, image string) []string {
 	}
 }
 
+func runtimePullImage(parent context.Context, runtimeName, image string) error {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	image = strings.TrimSpace(image)
+	if runtimeName == "" || image == "" {
+		return fmt.Errorf("runtime and image are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "pull", image)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("image pull timed out")
+	}
+	if err == nil {
+		return nil
+	}
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		message = err.Error()
+	}
+	return errors.New(message)
+}
+
 func runtimeImageLabel(parent context.Context, runtimeName, image, label string) (string, bool, error) {
 	runtimeName = normalizeRuntimeSelection(runtimeName)
 	image = strings.TrimSpace(image)
@@ -987,27 +1019,41 @@ func isLoopbackHostLiteral(host string) bool {
 func resolveLocalContainerImage(ctx context.Context, runtimeName, requestedImage string, manifest ContainerPackageManifest, startupCfg startupconfig.FileConfig) (string, error) {
 	runtimeName = normalizeRuntimeSelection(runtimeName)
 	image := strings.TrimSpace(requestedImage)
-	if image == "" {
-		image = defaultImageName
+	if startupCfg.DevMode {
+		if image == "" {
+			image = defaultImageName
+		}
+		normalizedManifest, err := normalizeContainerPackageManifest(manifest)
+		if err != nil {
+			return "", err
+		}
+		if len(normalizedManifest.Packages) == 0 {
+			if _, err := ensureCanonicalImageCurrent(ctx, runtimeName, image, startupCfg); err != nil {
+				return "", err
+			}
+			return image, nil
+		}
+		if image != defaultImageName {
+			return "", fmt.Errorf("local Add Swarm only supports package installation with the default image %q; remove the custom image or clear package selections", defaultImageName)
+		}
+		derivedImage, err := ensurePackageAwareImageCurrent(ctx, runtimeName, normalizedManifest, startupCfg)
+		if err != nil {
+			return "", err
+		}
+		return derivedImage, nil
 	}
-	normalizedManifest, err := normalizeContainerPackageManifest(manifest)
-	if err != nil {
-		return "", err
-	}
-	if len(normalizedManifest.Packages) == 0 {
+
+	if image != "" && image != defaultImageName {
 		if _, err := ensureCanonicalImageCurrent(ctx, runtimeName, image, startupCfg); err != nil {
 			return "", err
 		}
 		return image, nil
 	}
-	if image != defaultImageName {
-		return "", fmt.Errorf("local Add Swarm only supports package installation with the default image %q; remove the custom image or clear package selections", defaultImageName)
-	}
-	derivedImage, err := ensurePackageAwareImageCurrent(ctx, runtimeName, normalizedManifest, startupCfg)
+	prodImage, err := ensureProductionImageCurrent(ctx, runtimeName)
 	if err != nil {
 		return "", err
 	}
-	return derivedImage, nil
+	return prodImage, nil
 }
 
 func normalizeContainerPackageManifest(manifest ContainerPackageManifest) (ContainerPackageManifest, error) {
@@ -1054,6 +1100,159 @@ func normalizeContainerPackageManifest(manifest ContainerPackageManifest) (Conta
 	})
 	manifest.Packages = out
 	return manifest, nil
+}
+
+type productionImageMetadata struct {
+	ImageRef       string
+	ImageDigestRef string
+	Version        string
+	Commit         string
+	SourceRevision string
+}
+
+func productionImageRef() (string, error) {
+	version := strings.TrimSpace(buildinfo.DisplayVersion())
+	if buildinfo.IsDevVersionString(version) {
+		return "", fmt.Errorf("production local Add Swarm requires an installed release version, got %q", version)
+	}
+	return productionImagePrefix + ":" + version, nil
+}
+
+func productionImageMetadataURL(version string) string {
+	return fmt.Sprintf(productionMetadataURLTmpl, url.PathEscape(strings.TrimSpace(version)))
+}
+
+func fetchProductionImageMetadata(ctx context.Context) (productionImageMetadata, error) {
+	version := strings.TrimSpace(buildinfo.DisplayVersion())
+	if buildinfo.IsDevVersionString(version) {
+		return productionImageMetadata{}, fmt.Errorf("production local Add Swarm requires an installed release version, got %q", version)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, productionImageMetadataURL(version), nil)
+	if err != nil {
+		return productionImageMetadata{}, err
+	}
+	client := productionImageMetadataClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return productionImageMetadata{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return productionImageMetadata{}, fmt.Errorf("release image metadata returned HTTP %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	if err != nil {
+		return productionImageMetadata{}, err
+	}
+	fields := parseProductionImageMetadata(string(body))
+	metadata := productionImageMetadata{
+		ImageRef:       strings.TrimSpace(fields["image_ref"]),
+		ImageDigestRef: strings.TrimSpace(fields["image_digest_ref"]),
+		Version:        strings.TrimSpace(fields["version"]),
+		Commit:         strings.TrimSpace(fields["commit"]),
+		SourceRevision: strings.TrimSpace(fields["source_revision"]),
+	}
+	if metadata.Version != version {
+		return productionImageMetadata{}, fmt.Errorf("release image metadata version mismatch: %q, expected %q", metadata.Version, version)
+	}
+	expectedRef, err := productionImageRef()
+	if err != nil {
+		return productionImageMetadata{}, err
+	}
+	if metadata.ImageRef != expectedRef {
+		return productionImageMetadata{}, fmt.Errorf("release image metadata image_ref mismatch: %q, expected %q", metadata.ImageRef, expectedRef)
+	}
+	if !strings.HasPrefix(metadata.ImageDigestRef, productionImagePrefix+"@sha256:") {
+		return productionImageMetadata{}, fmt.Errorf("release image metadata missing official image digest for %q", productionImagePrefix)
+	}
+	return metadata, nil
+}
+
+func parseProductionImageMetadata(text string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(value)
+	}
+	return out
+}
+
+func ensureProductionImageCurrent(ctx context.Context, runtimeName string) (string, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	if runtimeName == "" {
+		return "", fmt.Errorf("runtime name is required")
+	}
+	metadata, err := fetchProductionImageMetadata(ctx)
+	if err != nil {
+		return "", fmt.Errorf("fetch production swarm image metadata: %w", err)
+	}
+	image := strings.TrimSpace(metadata.ImageDigestRef)
+	exists, err := runtimeImageExists(ctx, runtimeName, image)
+	if err != nil {
+		return "", fmt.Errorf("check production swarm image %q: %w", image, err)
+	}
+	if !exists {
+		log.Printf("local container create pulling production image runtime=%q image=%q", runtimeName, image)
+		if err := runtimePullImage(ctx, runtimeName, image); err != nil {
+			return "", fmt.Errorf("pull production swarm image %q: %w", image, err)
+		}
+	}
+	if err := verifyProductionImageLabels(ctx, runtimeName, image); err != nil {
+		return "", err
+	}
+	return image, nil
+}
+
+func verifyProductionImageLabels(ctx context.Context, runtimeName, image string) error {
+	expectedVersion := strings.TrimSpace(buildinfo.DisplayVersion())
+	expectedCommit := strings.TrimSpace(buildinfo.DisplayCommit())
+	checks := []struct {
+		label    string
+		expected string
+	}{
+		{label: "org.opencontainers.image.source", expected: officialSourceRepository},
+		{label: "org.opencontainers.image.version", expected: expectedVersion},
+		{label: "swarmagent.image.contract", expected: officialImageContract},
+		{label: "swarmagent.image.role", expected: "app"},
+		{label: "swarmagent.version", expected: expectedVersion},
+	}
+	if expectedCommit != "" && expectedCommit != "unknown" {
+		checks = append(checks,
+			struct {
+				label    string
+				expected string
+			}{label: "org.opencontainers.image.revision", expected: expectedCommit},
+			struct {
+				label    string
+				expected string
+			}{label: "swarmagent.commit", expected: expectedCommit},
+		)
+	}
+	for _, check := range checks {
+		value, found, err := runtimeImageLabel(ctx, runtimeName, image, check.label)
+		if err != nil {
+			return fmt.Errorf("inspect production swarm image %q label %s: %w", image, check.label, err)
+		}
+		if !found || strings.TrimSpace(value) != check.expected {
+			return fmt.Errorf("production swarm image %q failed verification: label %s=%q, expected %q", image, check.label, strings.TrimSpace(value), check.expected)
+		}
+	}
+	return nil
 }
 
 func ensurePackageAwareImageCurrent(ctx context.Context, runtimeName string, manifest ContainerPackageManifest, startupCfg startupconfig.FileConfig) (string, error) {

@@ -39,7 +39,7 @@ import {
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchSession } from '../chat/queries/chat-queries'
-import { fetchDesktopUpdateJob, startDesktopUpdate } from '../update/api'
+import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate } from '../update/api'
 import {
   sessionChildDescriptor,
   sessionParentSessionID,
@@ -49,6 +49,7 @@ import {
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
+const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
 
 interface SidebarWorkspaceLayout {
   collapsed: boolean
@@ -1068,6 +1069,30 @@ export function DesktopAppPage() {
     staleTime: 15_000,
     refetchInterval: 15_000,
   })
+  const updateStatusQuery = useQuery({
+    queryKey: ['desktop-update-status'] as const,
+    queryFn: () => fetchDesktopUpdateStatus(),
+    staleTime: UPDATE_STATUS_REFETCH_INTERVAL_MS,
+    refetchInterval: UPDATE_STATUS_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
+  })
+
+  const updateStatus = updateStatusQuery.data ?? null
+  const updateAvailable = updateStatus?.update_available === true
+  const updateLatestVersion = updateStatus?.latest_version?.trim() ?? ''
+  const updateStatusError = updateStatusQuery.error instanceof Error ? updateStatusQuery.error.message : null
+  const updateActionTitle = updateError
+    || (updateRunning
+      ? 'Updating Swarm…'
+      : updateAvailable
+        ? `Update Swarm${updateLatestVersion ? ` to ${updateLatestVersion}` : ''}`
+        : updateStatusQuery.isLoading
+          ? 'Checking for Swarm updates…'
+          : updateStatusError
+            ? `Update status unavailable: ${updateStatusError}`
+            : updateStatus?.suppressed
+              ? 'Updates are not available for this build'
+              : 'Swarm is up to date')
 
   const swarmTargets = swarmTargetsQuery.data?.targets ?? []
   const currentSwarmTarget = swarmTargets.find((target) => target.current) ?? null
@@ -1587,12 +1612,38 @@ export function DesktopAppPage() {
     setNotificationsOpen(true)
   }, [])
 
+  useEffect(() => {
+    if (!updateAvailable) {
+      return
+    }
+    void refreshNotifications()
+  }, [refreshNotifications, updateAvailable, updateLatestVersion])
+
   const handleDesktopUpdate = useCallback(async () => {
     if (updateRunning) {
       return
     }
-    setUpdateRunning(true)
     setUpdateError(null)
+    let status = updateStatus
+    try {
+      status = await updateStatusQuery.refetch().then((result) => result.data ?? status)
+    } catch {
+      // React Query stores the error; keep the current cached status if present.
+    }
+    if (status?.update_available !== true) {
+      const message = status?.suppressed
+        ? 'Updates are not available for this build.'
+        : status?.error?.trim()
+          ? `Update status unavailable: ${status.error}`
+          : updateStatusError
+            ? `Update status unavailable: ${updateStatusError}`
+            : status?.latest_version?.trim()
+              ? `Swarm is already up to date (${status.latest_version.trim()}).`
+              : 'No Swarm update is available yet.'
+      setUpdateError(message)
+      return
+    }
+    setUpdateRunning(true)
     try {
       await startDesktopUpdate()
       await refreshNotifications()
@@ -1624,7 +1675,7 @@ export function DesktopAppPage() {
     } finally {
       setUpdateRunning(false)
     }
-  }, [refreshNotifications, updateRunning])
+  }, [refreshNotifications, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
 
   const handleOpenWorkspaceLauncher = useCallback(() => {
     setMobileSidebarOpen(false)
@@ -1677,8 +1728,8 @@ export function DesktopAppPage() {
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (selectedWorkspacePath) { openTodoModal(selectedWorkspacePath, selectedWorkspace?.workspaceName ?? 'Workspace') } }} aria-label="Open tasks" disabled={!selectedWorkspacePath}>
             <ListChecks size={24} className="shrink-0" />
           </Button>
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label="Update Swarm" title={updateError || (updateRunning ? 'Updating Swarm…' : 'Update Swarm')} disabled={updateRunning}>
-            <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
+          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label="Update Swarm" title={updateActionTitle} disabled={updateRunning || !updateAvailable}>
+            <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateAvailable && 'text-[var(--app-primary)]')} />
           </Button>
           <div className="mt-2 flex flex-col items-center">
             <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
@@ -1709,10 +1760,10 @@ export function DesktopAppPage() {
                   className="h-12 w-12 min-w-12 p-0"
                   onClick={() => { void handleDesktopUpdate() }}
                   aria-label="Update Swarm"
-                  title={updateError || (updateRunning ? 'Updating Swarm…' : 'Update Swarm')}
-                  disabled={updateRunning}
+                  title={updateActionTitle}
+                  disabled={updateRunning || !updateAvailable}
                 >
-                  <Download size={22} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
+                  <Download size={22} className={cn('shrink-0', updateRunning && 'animate-pulse', updateAvailable && 'text-[var(--app-primary)]')} />
                 </Button>
                 <DesktopNotificationsLauncherButton onOpen={handleOpenNotifications} />
                 <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(true)} aria-label="Collapse sidebar">

@@ -7,6 +7,7 @@ import { linkWorkspaceDirectory } from '../mutations/link-workspace-directory'
 import { unlinkWorkspaceDirectory } from '../mutations/unlink-workspace-directory'
 import { moveWorkspace } from '../mutations/move-workspace'
 import { saveWorkspace as saveWorkspaceAPI } from '../mutations/save-workspace'
+import { createWorkspaceFolder as createWorkspaceFolderAPI } from '../mutations/create-workspace-folder'
 import { deleteWorkspace as deleteWorkspaceAPI } from '../mutations/delete-workspace'
 import { selectWorkspace } from '../mutations/select-workspace'
 import { setWorkspaceTheme as setWorkspaceThemeAPI } from '../mutations/set-workspace-theme'
@@ -53,6 +54,7 @@ interface UseWorkspaceLauncherState {
   unlinkWorkspaceDirectory: (workspacePath: string, directoryPath: string) => Promise<void>
   setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<void>
+  createFolder: (parentPath: string, name: string) => Promise<string>
   setWorkspaceTheme: (path: string, themeId: string) => Promise<void>
   moveWorkspaceToIndex: (path: string, targetIndex: number) => Promise<void>
   setDraggingWorkspacePath: (path: string | null) => void
@@ -447,6 +449,26 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
     }
   }, [browsePath, refresh])
 
+  const createFolder = useCallback(async (parentPath: string, name: string): Promise<string> => {
+    const trimmedParentPath = parentPath.trim()
+    const trimmedName = name.trim()
+    if (trimmedParentPath === '' || trimmedName === '') {
+      return ''
+    }
+    setSavingPath(trimmedParentPath)
+    setActionError(null)
+    try {
+      const folder = await createWorkspaceFolderAPI(trimmedParentPath, trimmedName)
+      await browsePath(folder.parentPath || trimmedParentPath)
+      return folder.path
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to create folder')
+      throw err
+    } finally {
+      setSavingPath(null)
+    }
+  }, [browsePath])
+
   const deleteWorkspace = useCallback(async (path: string) => {
     const trimmedPath = path.trim()
     if (trimmedPath === '') {
@@ -610,6 +632,7 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
     unlinkWorkspaceDirectory: removeWorkspaceDirectory,
     setWorktreeEnabled: updateWorkspaceWorktreeEnabled,
     saveWorkspace: persistWorkspace,
+    createFolder,
     setWorkspaceTheme: updateWorkspaceTheme,
     moveWorkspaceToIndex,
     setDraggingWorkspacePath,

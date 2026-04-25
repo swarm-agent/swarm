@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,6 +67,14 @@ type BrowseResult struct {
 	HomePath      string        `json:"home_path"`
 	RootPath      string        `json:"root_path"`
 	Entries       []BrowseEntry `json:"entries"`
+}
+
+type CreateFolderResult struct {
+	Path                   string `json:"path"`
+	Name                   string `json:"name"`
+	ParentPath             string `json:"parent_path"`
+	RequiresSudo           bool   `json:"requires_sudo"`
+	PermissionErrorMessage string `json:"permission_error_message,omitempty"`
 }
 
 func NewService(store *pebblestore.WorkspaceStore) *Service {
@@ -548,6 +557,42 @@ func (s *Service) Browse(path string) (BrowseResult, error) {
 	}, nil
 }
 
+func (s *Service) CreateFolder(parentPath, name string) (CreateFolderResult, error) {
+	parent, err := resolveBrowsePath(parentPath)
+	if err != nil {
+		return CreateFolderResult{}, err
+	}
+	if err := ensureWorkspaceDirectory(parent); err != nil {
+		return CreateFolderResult{}, err
+	}
+	folderName, err := sanitizeCreateFolderName(name)
+	if err != nil {
+		return CreateFolderResult{}, err
+	}
+	target := filepath.Join(parent, folderName)
+	if filepath.Dir(target) != parent {
+		return CreateFolderResult{}, fmt.Errorf("folder name must stay inside the current folder")
+	}
+	if err := os.Mkdir(target, 0o755); err != nil {
+		result := CreateFolderResult{
+			Path:                   target,
+			Name:                   folderName,
+			ParentPath:             parent,
+			RequiresSudo:           isPermissionError(err),
+			PermissionErrorMessage: permissionErrorMessage(err),
+		}
+		if result.RequiresSudo {
+			return result, fmt.Errorf("creating %q requires sudo or write permission for %q", folderName, parent)
+		}
+		return result, fmt.Errorf("create folder %q: %w", target, err)
+	}
+	return CreateFolderResult{
+		Path:       target,
+		Name:       folderName,
+		ParentPath: parent,
+	}, nil
+}
+
 func normalizeWorkspaceThemeID(raw string) string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	if value == "" {
@@ -636,6 +681,34 @@ func ensureWorkspaceDirectory(path string) error {
 		return fmt.Errorf("workspace path %q is not a directory", path)
 	}
 	return nil
+}
+
+func sanitizeCreateFolderName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("folder name is required")
+	}
+	if name == "." || name == ".." {
+		return "", fmt.Errorf("folder name cannot be %q", name)
+	}
+	if strings.ContainsAny(name, `/\\`) {
+		return "", fmt.Errorf("folder name cannot contain path separators")
+	}
+	if filepath.Clean(name) != name {
+		return "", fmt.Errorf("folder name must be a single folder name")
+	}
+	return name, nil
+}
+
+func isPermissionError(err error) bool {
+	return errors.Is(err, os.ErrPermission)
+}
+
+func permissionErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func expandHomePath(path string) string {

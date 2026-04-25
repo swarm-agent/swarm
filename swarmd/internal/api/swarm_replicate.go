@@ -176,6 +176,10 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mounts, childWorkspacePaths, bootstrap := buildReplicationPlan(normalizedWorkspaces, workspaceCatalog, syncConfig)
+	containerPackages := deployruntime.ContainerPackageManifest{}
+	if cfg.DevMode {
+		containerPackages = mapReplicateContainerPackagesInput(req.ContainerPackages)
+	}
 	deployment, err := s.deployContainers.Create(context.Background(), deployruntime.ContainerCreateInput{
 		Name:               swarmName,
 		Runtime:            strings.TrimSpace(req.Runtime),
@@ -189,7 +193,7 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		SyncVaultPassword:  strings.TrimSpace(req.Sync.VaultPassword),
 		Mounts:             mounts,
 		WorkspaceBootstrap: bootstrap,
-		ContainerPackages:  mapReplicateContainerPackagesInput(req.ContainerPackages),
+		ContainerPackages:  containerPackages,
 	})
 	if err != nil {
 		statusCode := http.StatusBadRequest

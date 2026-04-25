@@ -56,6 +56,7 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := s.update.Status(r.Context(), false)
+	s.emitUpdateAvailableNotification(status)
 	writeJSON(w, http.StatusOK, status)
 }
 
@@ -252,6 +253,42 @@ func (s *Server) emitUpdateNotification(job desktopUpdateJob, severity, title, b
 	}
 	if job.Status == updateJobStatusFailed {
 		record.Status = pebblestore.NotificationStatusResolved
+	}
+	_, _, _ = s.notifications.UpsertSystemNotification(record)
+}
+
+func (s *Server) emitUpdateAvailableNotification(status update.Status) {
+	if s == nil || s.notifications == nil || !status.UpdateAvailable {
+		return
+	}
+	latest := strings.TrimSpace(status.LatestVersion)
+	if latest == "" {
+		latest = "new release"
+	}
+	current := strings.TrimSpace(status.CurrentVersion)
+	body := fmt.Sprintf("Swarm %s is ready to install.", latest)
+	if current != "" {
+		body = fmt.Sprintf("Swarm %s is ready to install. Current version: %s.", latest, current)
+	}
+	if status.Stale {
+		body += " Latest check is using cached release data."
+	}
+	now := time.Now().UnixMilli()
+	record := pebblestore.NotificationRecord{
+		ID:              "update-available-" + strings.ToLower(latest),
+		SwarmID:         s.notifications.LocalSwarmID(),
+		OriginSwarmID:   s.notifications.LocalSwarmID(),
+		Category:        pebblestore.NotificationCategorySystem,
+		Severity:        pebblestore.NotificationSeverityInfo,
+		Title:           "Swarm update available",
+		Body:            body,
+		Status:          pebblestore.NotificationStatusActive,
+		SourceEventType: "update.available",
+		CreatedAt:       firstPositive(status.CheckedAtUnixMS, now),
+		UpdatedAt:       now,
+	}
+	if record.SwarmID == "" {
+		return
 	}
 	_, _, _ = s.notifications.UpsertSystemNotification(record)
 }

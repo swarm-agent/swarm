@@ -198,6 +198,7 @@ export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingS
     advertisePort: normalizeAPIPort(onboarding.config?.advertise_port ?? onboarding.config?.port),
     tailscaleURL: String(onboarding.config?.tailscale_url ?? '').trim(),
     bypassPermissions: Boolean(onboarding.config?.bypass_permissions),
+    devMode: Boolean(onboarding.config?.dev_mode),
     localTransportPort: normalizeAPIPort(onboarding.config?.local_transport_port ?? 7790),
     localTransportActive: Boolean(onboarding.config?.local_transport_active),
     localTransportWarning: String(onboarding.config?.local_transport_warning ?? '').trim(),

@@ -1,5 +1,20 @@
 import { requestJson } from '../../../app/api'
 
+export interface DesktopUpdateStatus {
+  current_version: string
+  current_lane?: string
+  dev_mode: boolean
+  suppressed: boolean
+  reason?: string
+  checked_at_unix_ms?: number
+  latest_version?: string
+  latest_url?: string
+  update_available: boolean
+  comparison_source?: string
+  error?: string
+  stale?: boolean
+}
+
 export interface DesktopUpdateJob {
   id: string
   kind: string
@@ -21,6 +36,10 @@ function requireJob(response: DesktopUpdateRunResponse): DesktopUpdateJob {
     throw new Error('Update response was missing job status')
   }
   return response.job
+}
+
+export async function fetchDesktopUpdateStatus(): Promise<DesktopUpdateStatus> {
+  return requestJson<DesktopUpdateStatus>('/v1/update/status')
 }
 
 export async function startDesktopUpdate(): Promise<DesktopUpdateJob> {

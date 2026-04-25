@@ -19,6 +19,7 @@ export interface DesktopOnboardingConfigWire {
   advertise_port?: number
   tailscale_url?: string
   bypass_permissions?: boolean
+  dev_mode?: boolean
   local_transport_port?: number
   local_transport_active?: boolean
   local_transport_warning?: string
@@ -136,6 +137,7 @@ export interface DesktopOnboardingConfig {
   advertisePort: number
   tailscaleURL: string
   bypassPermissions: boolean
+  devMode: boolean
   localTransportPort: number
   localTransportActive: boolean
   localTransportWarning: string
