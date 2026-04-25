@@ -43,6 +43,7 @@ type onboardingConfigPayload struct {
 	AdvertisePort     int    `json:"advertise_port"`
 	TailscaleURL      string `json:"tailscale_url,omitempty"`
 	BypassPermissions bool   `json:"bypass_permissions,omitempty"`
+	DevMode           bool   `json:"dev_mode,omitempty"`
 	PeerTransportPort int    `json:"peer_transport_port"`
 	RestartRequired   bool   `json:"restart_required,omitempty"`
 	RestartReason     string `json:"restart_reason,omitempty"`
@@ -503,6 +504,7 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 			AdvertisePort:     canonicalAdvertisePort(cfg),
 			TailscaleURL:      strings.TrimSpace(cfg.TailscaleURL),
 			BypassPermissions: cfg.BypassPermissions,
+			DevMode:           cfg.DevMode,
 			PeerTransportPort: cfg.PeerTransportPort,
 		},
 		Heuristics: onboardingHeuristicsPayload{

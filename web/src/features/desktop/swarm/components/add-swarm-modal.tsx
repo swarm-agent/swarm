@@ -584,6 +584,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     [runtimeStatus, selectedRuntime],
   ) as 'podman' | 'docker' | ''
   const activeRuntimeLabel = launchTarget === 'remote' ? remoteRuntimeChoice : runtimeChoice
+  const devMode = Boolean(currentOnboardingStatus?.config.devMode)
 
   const group = useMemo(() => currentGroup(currentOnboardingStatus), [currentOnboardingStatus])
   const hostSwarmID = group?.group.hostSwarmID || ''
@@ -995,7 +996,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           replicationMode: item.replicationMode,
           writable: item.writable,
         })),
-        containerPackages: buildContainerPackageManifest(containerPackages),
+        containerPackages: devMode ? buildContainerPackageManifest(containerPackages) : undefined,
       })
       await finishSuccess(`Added ${result.swarm.name || swarmName.trim()} to the swarm.`)
     } catch (err) {
