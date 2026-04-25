@@ -1637,6 +1637,38 @@ func (s *Server) handleWorkspaceBrowse(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleWorkspaceFolderCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req struct {
+		ParentPath string `json:"parent_path"`
+		Name       string `json:"name"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	folder, err := s.workspace.CreateFolder(req.ParentPath, req.Name)
+	if err != nil {
+		status := http.StatusBadRequest
+		if folder.RequiresSudo {
+			status = http.StatusForbidden
+		}
+		writeJSON(w, status, map[string]any{
+			"ok":     false,
+			"error":  err.Error(),
+			"folder": folder,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"folder": folder,
+	})
+}
+
 func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

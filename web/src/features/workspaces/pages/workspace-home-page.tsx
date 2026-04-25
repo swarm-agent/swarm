@@ -64,6 +64,7 @@ export function WorkspaceHomePage() {
     unlinkWorkspaceDirectory,
     setWorktreeEnabled,
     saveWorkspace,
+    createFolder,
     moveWorkspaceToIndex,
     setDraggingWorkspacePath,
     refresh,
@@ -436,6 +437,7 @@ export function WorkspaceHomePage() {
                 onOpenWorkspace={handleOpenWorkspace}
                 onUseFolderTemporarily={handleUseFolderTemporarily}
                 onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
+                onCreateFolder={createFolder}
               />
             </div>
 

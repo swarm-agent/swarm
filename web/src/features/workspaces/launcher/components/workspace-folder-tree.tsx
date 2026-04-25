@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { FolderOpen, Home, RefreshCw, Search } from 'lucide-react'
+import { FolderPlus, FolderOpen, Home, RefreshCw, Search } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
 import { formatWorkspacePath } from '../services/workspace-format'
@@ -17,6 +17,7 @@ interface WorkspaceFolderTreeProps {
   onOpenWorkspace: (path: string) => void
   onUseFolderTemporarily: (path: string) => void
   onCreateWorkspace: (entry: WorkspaceDiscoverEntry) => void
+  onCreateFolder: (parentPath: string, name: string) => Promise<string>
 }
 
 function formatExplorerMeta(entry: WorkspaceBrowseResult['entries'][number]) {
@@ -44,8 +45,11 @@ export function WorkspaceFolderTree({
   onOpenWorkspace,
   onUseFolderTemporarily,
   onCreateWorkspace,
+  onCreateFolder,
 }: WorkspaceFolderTreeProps) {
   const [search, setSearch] = useState('')
+  const [createdFolderPath, setCreatedFolderPath] = useState<string | null>(null)
+  const [createMessage, setCreateMessage] = useState<string | null>(null)
 
   const savedPaths = useMemo(() => new Set(workspaces.map((workspace) => workspace.path)), [workspaces])
   const searchValue = search.trim().toLowerCase()
@@ -56,6 +60,25 @@ export function WorkspaceFolderTree({
     }
     return entries.filter((entry) => entry.name.toLowerCase().includes(searchValue) || entry.path.toLowerCase().includes(searchValue))
   }, [browser?.entries, searchValue])
+  const currentPath = browser?.resolvedPath ?? ''
+  const createdMessageText = createMessage ? `Created “${createMessage}”` : null
+  const createFolder = async () => {
+    if (!currentPath) {
+      return
+    }
+    const name = window.prompt(`Name the new folder in ${currentPath}`)?.trim() ?? ''
+    if (!name) {
+      return
+    }
+    const createdPath = await onCreateFolder(currentPath, name)
+    if (createdPath) {
+      setCreatedFolderPath(createdPath)
+      setCreateMessage(name)
+      window.setTimeout(() => {
+        setCreateMessage((current) => (current === name ? null : current))
+      }, 3500)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4 border-t border-[var(--app-border)] pt-6">
@@ -82,7 +105,7 @@ export function WorkspaceFolderTree({
         </div>
 
         <div className="flex flex-wrap items-end gap-2 lg:justify-end">
-          <Button variant="outline" size="sm" className="rounded-md" onClick={() => onBrowsePath('')}>
+          <Button variant="outline" size="sm" className="rounded-md" onClick={() => onBrowsePath(browser?.homePath ?? '')}>
             <Home size={14} />
             Home
           </Button>
@@ -102,19 +125,27 @@ export function WorkspaceFolderTree({
           <Button
             variant="outline"
             size="sm"
-            className="rounded-md"
+            className="size-9 rounded-md p-0"
             onClick={() => onBrowsePath(browser?.resolvedPath ?? '')}
             disabled={browserLoading}
+            title="Refresh current folder"
+            aria-label="Refresh current folder"
           >
             <RefreshCw size={14} className={cn(browserLoading && 'animate-spin')} />
-            Refresh
           </Button>
         </div>
       </div>
 
       {browser ? (
-        <div className="text-xs text-[var(--app-text-subtle)]">
-          <span className="text-[var(--app-text-muted)]">Current:</span> {browser.resolvedPath}
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--app-text-subtle)]">
+          <div>
+            <span className="text-[var(--app-text-muted)]">Current:</span> {browser.resolvedPath}
+          </div>
+          {createdMessageText ? (
+            <div className="rounded-full border border-[var(--app-border-accent)] bg-[var(--app-surface-subtle)] px-3 py-1 text-[var(--app-text)]" role="status">
+              {createdMessageText}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -122,14 +153,30 @@ export function WorkspaceFolderTree({
         <WorkspaceStatus kind="error" title="Could not load explorer" message={browserError} />
       ) : browserLoading && !browser ? (
         <div className="text-sm text-[var(--app-text-muted)]">Loading explorer…</div>
-      ) : visibleEntries.length === 0 ? (
-        <WorkspaceStatus
-          kind="empty"
-          title={searchValue ? 'No matching folders' : 'No folders found'}
-          message={searchValue ? 'Try a broader search term or browse to another location.' : 'Browse a location to inspect folders here.'}
-        />
-      ) : (
+      ) : !browser ? null : (
         <div className="grid gap-4 lg:grid-cols-2">
+          {!searchValue ? (
+            <button
+              type="button"
+              onClick={() => void createFolder()}
+              disabled={browserLoading || !currentPath}
+              className="flex min-h-[104px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--app-border-strong)] bg-transparent p-4 text-center text-[var(--app-text-muted)] transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-60"
+              title="Create a folder here"
+            >
+              <FolderPlus size={28} strokeWidth={1.6} />
+              <span className="text-sm font-medium">New folder</span>
+              <span className="text-xs text-[var(--app-text-subtle)]">Creates it in the current folder</span>
+            </button>
+          ) : null}
+          {visibleEntries.length === 0 ? (
+            <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 lg:col-span-2">
+              <WorkspaceStatus
+                kind="empty"
+                title={searchValue ? 'No matching folders' : 'No folders found'}
+                message={searchValue ? 'Try a broader search term or browse to another location.' : 'Create a folder here or browse to another location.'}
+              />
+            </div>
+          ) : null}
           {visibleEntries.map((entry) => {
             const isSaved = savedPaths.has(entry.path)
             const meta = formatExplorerMeta(entry)
@@ -137,7 +184,12 @@ export function WorkspaceFolderTree({
             return (
               <div
                 key={entry.path}
-                className="flex flex-col gap-4 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 transition-colors hover:border-[var(--app-border-strong)] sm:flex-row sm:items-center sm:justify-between"
+                className={cn(
+                  'flex flex-col gap-4 rounded-lg border bg-[var(--app-surface-subtle)] p-4 transition-colors hover:border-[var(--app-border-strong)] sm:flex-row sm:items-center sm:justify-between',
+                  createdFolderPath === entry.path
+                    ? 'border-[var(--app-border-accent)] ring-2 ring-[var(--app-focus-ring)] ring-offset-2 ring-offset-[var(--app-bg)]'
+                    : 'border-[var(--app-border)]',
+                )}
               >
                 <div className="flex min-w-0 flex-1 items-start gap-3">
                   <button
