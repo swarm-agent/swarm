@@ -187,7 +187,7 @@ if [[ "${owner_check}" != "nobody:nogroup" ]]; then
   exit 1
 fi
 
-grep -F 'ts_tun_mode="${TS_TUN_MODE:-userspace-networking}"' /usr/local/bin/swarm-container-entrypoint >/dev/null || {
+grep -F "ts_tun_mode=\"\${TS_TUN_MODE:-userspace-networking}\"" /usr/local/bin/swarm-container-entrypoint >/dev/null || {
   echo "entrypoint no longer defaults TS_TUN_MODE to userspace-networking" >&2
   exit 1
 }
