@@ -127,6 +127,7 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 	for _, needle := range []string{
 		`remote_root='/var/lib/swarm/remote-deploy/test'`,
 		`config_home='/var/lib/swarm/remote-deploy/test/config'`,
+		`legacy_credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
 		`bootstrap_secret_file='/var/lib/swarm/remote-deploy/test/config/swarm/remote-deploy-bootstrap.secret'`,
 		`tailscale_state_dir='/var/lib/swarm/remote-deploy/test/state/tailscale'`,
 		`swarmd_state_dir='/var/lib/swarm/remote-deploy/test/state/swarmd'`,
@@ -138,14 +139,15 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`if runtime_cmd image inspect "$image_ref" >/dev/null 2>&1; then`,
 		`runtime_cmd load -i "$image_archive" >/dev/null`,
 		`as_root mkdir -p '/workspaces'`,
+		`rm -f "$legacy_credentials_file"`,
 		`cat > "$start_script" <<'SCRIPT'`,
 		`export XDG_CONFIG_HOME="$config_home"`,
 		`export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"`,
 		`export TS_OUTBOUND_HTTP_PROXY_LISTEN="127.0.0.1:1055"`,
 		`export SWARM_TAILSCALE_OUTBOUND_PROXY="http://127.0.0.1:1055"`,
 		`run_args+=(--volume '/workspaces:/workspaces')`,
-		`if [ -s "$credentials_file" ]; then`,
-		`run_args+=(--env-file "$credentials_file")`,
+		`run_args+=(-e TS_AUTHKEY)`,
+		`run_args+=(-e SWARM_REMOTE_SYNC_VAULT_PASSWORD)`,
 		`exec "$runtime_bin" "${run_args[@]}"`,
 		`nohup sudo -E /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &`,
 		`log_timer_step "start_remote_container" "$step_started_ms"`,
@@ -169,6 +171,7 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`SWARM_REMOTE_SYNC_VAULT_PASSWORD=`,
 		`remote_deploy_session_token =`,
 		`remote_deploy_invite_token =`,
+		`--env-file`,
 	} {
 		if strings.Contains(script, unexpected) {
 			t.Fatalf("installer script should not include %q\n%s", unexpected, script)
@@ -176,26 +179,36 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 	}
 }
 
-func TestRemoteBundleStartScriptWritesCredentialsFileWithoutInlineSecrets(t *testing.T) {
+func TestRemoteBundleStartScriptDeliversSecretsViaSSHStdinWithoutCredentialsFile(t *testing.T) {
 	record := &pebblestore.RemoteDeploySessionRecord{
 		ID:           "remote-child-test",
 		RemoteRoot:   "/var/lib/swarm/remote-deploy/test",
 		SessionToken: "session-secret",
 		InviteToken:  "invite-secret",
 	}
-	script, err := remoteBundleStartScript(record, "ts-auth-key", "vault-pass")
+	childCfgText := "remote_deploy_enabled = true\nremote_deploy_session_id = remote-child-test\nremote_deploy_host_api_base_url = https://host.example\n"
+	script, err := remoteBundleStartScript(record, childCfgText, "ts-auth-key", "vault-pass")
 	if err != nil {
 		t.Fatalf("remoteBundleStartScript error = %v", err)
 	}
 	for _, needle := range []string{
-		`cd '/var/lib/swarm/remote-deploy/test'`,
-		`credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
 		`umask 077`,
-		`cat > "$credentials_file" <<'EOF'`,
-		"TS_AUTHKEY=ts-auth-key",
-		"SWARM_REMOTE_SYNC_VAULT_PASSWORD=vault-pass",
-		`chmod 0600 "$credentials_file"`,
-		`./install-remote-child.sh`,
+		`remote_dir='/var/lib/swarm/remote-deploy/test'`,
+		`config_path='/var/lib/swarm/remote-deploy/test/config/swarm/swarm.conf'`,
+		`bootstrap_secret_path='/var/lib/swarm/remote-deploy/test/config/swarm/remote-deploy-bootstrap.secret'`,
+		`installer_path='/var/lib/swarm/remote-deploy/test/install-remote-child.sh'`,
+		`legacy_credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
+		`trap 'rm -f "$installer_path" "$legacy_credentials_file"' EXIT`,
+		`cat > "$config_path" <<'SWARM_REMOTE_CONFIG_EOF'`,
+		childCfgText,
+		`chmod 0600 "$config_path"`,
+		`cat > "$bootstrap_secret_path" <<'SWARM_REMOTE_SECRET_EOF'`,
+		"remote_deploy_session_token = session-secret",
+		"remote_deploy_invite_token = invite-secret",
+		`chmod 0600 "$bootstrap_secret_path"`,
+		`cat > "$installer_path" <<'SWARM_REMOTE_INSTALL_EOF'`,
+		`chmod 0700 "$installer_path"`,
+		`TS_AUTHKEY='ts-auth-key' SWARM_REMOTE_SYNC_VAULT_PASSWORD='vault-pass' "$installer_path"`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("start script missing %q\n%s", needle, script)
@@ -203,6 +216,9 @@ func TestRemoteBundleStartScriptWritesCredentialsFileWithoutInlineSecrets(t *tes
 	}
 	for _, unexpected := range []string{
 		`TAILSCALE_AUTHKEY=`,
+		`cat > "$credentials_file"`,
+		`--env-file`,
+		`chmod 0600 "$credentials_file"`,
 	} {
 		if strings.Contains(script, unexpected) {
 			t.Fatalf("start script should not include %q\n%s", unexpected, script)
@@ -500,66 +516,27 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func TestPrepareRemoteBundleWritesSecretConfigWithRestrictedPermissions(t *testing.T) {
+func TestPrepareRemoteBundleExcludesGeneratedConfigSecretsAndScripts(t *testing.T) {
 	workDir := t.TempDir()
 	service := &Service{}
 	record := &pebblestore.RemoteDeploySessionRecord{ID: "remote-test-1", SessionToken: "secret", InviteToken: "invite", RemoteRoot: "/var/lib/swarm/remote-deploy/test"}
-	childCfgText := "remote_deploy_enabled = true\nremote_deploy_session_id = remote-test-1\nremote_deploy_host_api_base_url = https://host.example\nremote_deploy_host_desktop_url = https://host.example\nremote_deploy_sync_enabled = false\nremote_deploy_sync_mode = \nremote_deploy_sync_owner_swarm_id = \nremote_deploy_sync_credential_url = \n"
 
-	if err := service.prepareRemoteBundle(context.Background(), workDir, record, childCfgText); err != nil {
+	if err := service.prepareRemoteBundle(context.Background(), workDir, record); err != nil {
 		t.Fatalf("prepareRemoteBundle() error = %v", err)
 	}
 
-	cfgPath := filepath.Join(workDir, "bundle", "remote", "config", "swarm", "swarm.conf")
-	info, err := os.Stat(cfgPath)
-	if err != nil {
-		t.Fatalf("Stat(%q) error = %v", cfgPath, err)
+	remoteBundleDir := filepath.Join(workDir, "bundle", "remote")
+	unexpectedPaths := []string{
+		filepath.Join(remoteBundleDir, "config", "swarm", "swarm.conf"),
+		filepath.Join(remoteBundleDir, "config", "swarm", "remote-deploy-bootstrap.secret"),
+		filepath.Join(remoteBundleDir, "install-remote-child.sh"),
+		filepath.Join(remoteBundleDir, "remote-child.credentials.env"),
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Fatalf("remote child startup config mode = %#o, want 0o600", got)
-	}
-
-	secretPath := filepath.Join(workDir, "bundle", "remote", "config", "swarm", "remote-deploy-bootstrap.secret")
-	secretInfo, err := os.Stat(secretPath)
-	if err != nil {
-		t.Fatalf("Stat(%q) error = %v", secretPath, err)
-	}
-	if got := secretInfo.Mode().Perm(); got != 0o600 {
-		t.Fatalf("remote bootstrap secret mode = %#o, want 0o600", got)
-	}
-	secretData, err := os.ReadFile(secretPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", secretPath, err)
-	}
-	secretText := string(secretData)
-	if !strings.Contains(secretText, "remote_deploy_session_token = secret") {
-		t.Fatalf("remote bootstrap secret missing session token: %q", secretText)
-	}
-	if !strings.Contains(secretText, "remote_deploy_invite_token = invite") {
-		t.Fatalf("remote bootstrap secret missing invite token: %q", secretText)
-	}
-	cfgData, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", cfgPath, err)
-	}
-	cfgText := string(cfgData)
-	if strings.Contains(cfgText, "remote_deploy_session_token") || strings.Contains(cfgText, "remote_deploy_invite_token") {
-		t.Fatalf("remote child startup config should not include bootstrap secrets: %q", cfgText)
-	}
-
-	installerPath := filepath.Join(workDir, "bundle", "remote", "install-remote-child.sh")
-	installer, err := os.ReadFile(installerPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", installerPath, err)
-	}
-	text := string(installer)
-	if !strings.Contains(text, "chmod 0700 \"$config_home\" \"$config_home/swarm\"") {
-		t.Fatalf("installer missing config dir hardening: %q", text)
-	}
-	if !strings.Contains(text, "chmod 0600 \"$config_home/swarm/swarm.conf\"") {
-		t.Fatalf("installer missing config file hardening: %q", text)
-	}
-	if !strings.Contains(text, "chmod 0600 \"$bootstrap_secret_file\"") {
-		t.Fatalf("installer missing bootstrap secret hardening: %q", text)
+	for _, path := range unexpectedPaths {
+		if _, err := os.Stat(path); err == nil {
+			t.Fatalf("prepareRemoteBundle wrote secret/script path %q", path)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("Stat(%q) error = %v", path, err)
+		}
 	}
 }
