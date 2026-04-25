@@ -15,6 +15,7 @@ coverage.out
 
 # Build outputs in this repo
 /.bin/
+/dist/
 /swarm
 /swarmd/.bin/
 /swarmd/.data/
