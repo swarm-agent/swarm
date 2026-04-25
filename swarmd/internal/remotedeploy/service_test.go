@@ -226,24 +226,42 @@ func TestRemoteBundleStartScriptDeliversSecretsViaSSHStdinWithoutCredentialsFile
 	}
 }
 
-func TestRemoteInstallerScriptPullsRegistryImageWithoutArchive(t *testing.T) {
-	t.Setenv(remoteImagePrefixEnv, "ghcr.io/swarm-agent/swarm-remote-child")
+func TestResolveRemoteImagePrefixRegistryUsesOfficialProductionImage(t *testing.T) {
+	t.Setenv(remoteImagePrefixEnv, "")
+	prefix, err := resolveRemoteImagePrefix(remoteImageDeliveryRegistry)
+	if err != nil {
+		t.Fatalf("resolveRemoteImagePrefix error = %v", err)
+	}
+	if prefix != "ghcr.io/swarm-agent/swarm" {
+		t.Fatalf("expected official image prefix, got %q", prefix)
+	}
 
+	t.Setenv(remoteImagePrefixEnv, "ghcr.io/swarm-agent/swarm-remote-child")
+	if _, err := resolveRemoteImagePrefix(remoteImageDeliveryRegistry); err == nil {
+		t.Fatalf("expected custom remote image prefix to be rejected")
+	}
+}
+
+func TestRemoteInstallerScriptPullsAndVerifiesProductionRegistryDigestWithoutArchive(t *testing.T) {
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:            "remote-child-test",
 		Name:          "remote-child",
 		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
 		RemoteRuntime: "docker",
-		ImageRef:      "ghcr.io/swarm-agent/swarm-remote-child:test1234",
+		ImageRef:      "ghcr.io/swarm-agent/swarm@sha256:abc123",
 		SudoMode:      "sudo",
 	}
 	script := remoteInstallerScript(record)
 	for _, needle := range []string{
-		`image_ref='ghcr.io/swarm-agent/swarm-remote-child:test1234'`,
+		`image_ref='ghcr.io/swarm-agent/swarm@sha256:abc123'`,
 		`image_archive='swarm-remote-tailscale-image.tar'`,
 		`use_archive_image='0'`,
 		`elif [ "$use_archive_image" != "1" ]; then`,
 		`runtime_cmd pull "$image_ref" >/dev/null`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' 2>/dev/null || true)`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "swarmagent.image.contract" }}' 2>/dev/null || true)`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "swarmagent.image.role" }}' 2>/dev/null || true)`,
+		`remote image label verification failed: %s=%s, expected %s`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("installer script missing %q\n%s", needle, script)

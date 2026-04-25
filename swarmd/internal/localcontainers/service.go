@@ -38,10 +38,13 @@ const (
 	PathContainerDelete       = "swarm.containers.local.delete.v1"
 	PathContainerPrune        = "swarm.containers.local.prune-missing.v1"
 	defaultImageName          = devmode.DefaultContainerImageRef
-	productionImagePrefix     = "ghcr.io/swarm-agent/swarm"
+	ProductionImagePrefix     = "ghcr.io/swarm-agent/swarm"
 	productionMetadataURLTmpl = "https://github.com/swarm-agent/swarm/releases/download/%s/container-image-info.txt"
-	officialSourceRepository  = "https://github.com/swarm-agent/swarm"
-	officialImageContract     = "swarm.container.v1"
+	OfficialSourceRepository  = "https://github.com/swarm-agent/swarm"
+	OfficialImageContract     = "swarm.container.v1"
+	productionImagePrefix     = ProductionImagePrefix
+	officialSourceRepository  = OfficialSourceRepository
+	officialImageContract     = OfficialImageContract
 	defaultContainerPath      = "/workspaces"
 	containerBackendPort      = startupconfig.DefaultPort
 	containerDesktopPort      = startupconfig.DefaultDesktopPort
@@ -1102,13 +1105,15 @@ func normalizeContainerPackageManifest(manifest ContainerPackageManifest) (Conta
 	return manifest, nil
 }
 
-type productionImageMetadata struct {
+type ProductionImageMetadata struct {
 	ImageRef       string
 	ImageDigestRef string
 	Version        string
 	Commit         string
 	SourceRevision string
 }
+
+type productionImageMetadata = ProductionImageMetadata
 
 func productionImageRef() (string, error) {
 	version := strings.TrimSpace(buildinfo.DisplayVersion())
@@ -1122,14 +1127,14 @@ func productionImageMetadataURL(version string) string {
 	return fmt.Sprintf(productionMetadataURLTmpl, url.PathEscape(strings.TrimSpace(version)))
 }
 
-func fetchProductionImageMetadata(ctx context.Context) (productionImageMetadata, error) {
+func FetchProductionImageMetadata(ctx context.Context) (ProductionImageMetadata, error) {
 	version := strings.TrimSpace(buildinfo.DisplayVersion())
 	if buildinfo.IsDevVersionString(version) {
-		return productionImageMetadata{}, fmt.Errorf("production local Add Swarm requires an installed release version, got %q", version)
+		return ProductionImageMetadata{}, fmt.Errorf("production container image requires an installed release version, got %q", version)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, productionImageMetadataURL(version), nil)
 	if err != nil {
-		return productionImageMetadata{}, err
+		return ProductionImageMetadata{}, err
 	}
 	client := productionImageMetadataClient
 	if client == nil {
@@ -1137,19 +1142,19 @@ func fetchProductionImageMetadata(ctx context.Context) (productionImageMetadata,
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return productionImageMetadata{}, err
+		return ProductionImageMetadata{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, response.Body)
-		return productionImageMetadata{}, fmt.Errorf("release image metadata returned HTTP %d", response.StatusCode)
+		return ProductionImageMetadata{}, fmt.Errorf("release image metadata returned HTTP %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 64*1024))
 	if err != nil {
-		return productionImageMetadata{}, err
+		return ProductionImageMetadata{}, err
 	}
 	fields := parseProductionImageMetadata(string(body))
-	metadata := productionImageMetadata{
+	metadata := ProductionImageMetadata{
 		ImageRef:       strings.TrimSpace(fields["image_ref"]),
 		ImageDigestRef: strings.TrimSpace(fields["image_digest_ref"]),
 		Version:        strings.TrimSpace(fields["version"]),
@@ -1157,19 +1162,20 @@ func fetchProductionImageMetadata(ctx context.Context) (productionImageMetadata,
 		SourceRevision: strings.TrimSpace(fields["source_revision"]),
 	}
 	if metadata.Version != version {
-		return productionImageMetadata{}, fmt.Errorf("release image metadata version mismatch: %q, expected %q", metadata.Version, version)
+		return ProductionImageMetadata{}, fmt.Errorf("release image metadata version mismatch: %q, expected %q", metadata.Version, version)
 	}
-	expectedRef, err := productionImageRef()
-	if err != nil {
-		return productionImageMetadata{}, err
-	}
+	expectedRef := ProductionImagePrefix + ":" + version
 	if metadata.ImageRef != expectedRef {
-		return productionImageMetadata{}, fmt.Errorf("release image metadata image_ref mismatch: %q, expected %q", metadata.ImageRef, expectedRef)
+		return ProductionImageMetadata{}, fmt.Errorf("release image metadata image_ref mismatch: %q, expected %q", metadata.ImageRef, expectedRef)
 	}
-	if !strings.HasPrefix(metadata.ImageDigestRef, productionImagePrefix+"@sha256:") {
-		return productionImageMetadata{}, fmt.Errorf("release image metadata missing official image digest for %q", productionImagePrefix)
+	if !strings.HasPrefix(metadata.ImageDigestRef, ProductionImagePrefix+"@sha256:") {
+		return ProductionImageMetadata{}, fmt.Errorf("release image metadata missing official image digest for %q", ProductionImagePrefix)
 	}
 	return metadata, nil
+}
+
+func fetchProductionImageMetadata(ctx context.Context) (productionImageMetadata, error) {
+	return FetchProductionImageMetadata(ctx)
 }
 
 func parseProductionImageMetadata(text string) map[string]string {

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	authruntime "swarm/packages/swarmd/internal/auth"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
@@ -288,13 +289,10 @@ func resolveRemoteImagePrefix(mode string) (string, error) {
 	switch normalizeRemoteImageDeliveryMode(mode) {
 	case remoteImageDeliveryRegistry:
 		prefix := strings.TrimRight(strings.TrimSpace(os.Getenv(remoteImagePrefixEnv)), "/")
-		if prefix == "" {
-			return "", fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- Published remote image download is enabled, but %s is not configured.\n\nWhat to do\n- Set %s to the pullable published remote image prefix.\n- Then rerun preflight.", remoteImagePrefixEnv, remoteImagePrefixEnv)
+		if prefix != "" && prefix != localcontainers.ProductionImagePrefix {
+			return "", fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- Published remote image download now uses the verified GHCR app image %s, but %s is set to %s.\n\nWhat to do\n- Unset %s or set it to %s.\n- Then rerun preflight.", localcontainers.ProductionImagePrefix, remoteImagePrefixEnv, prefix, remoteImagePrefixEnv, localcontainers.ProductionImagePrefix)
 		}
-		if strings.HasPrefix(prefix, "localhost/") {
-			return "", fmt.Errorf("Remote preflight failed on the master.\n\nWhat failed\n- Published remote image download is enabled, but %s points at a non-pullable local image prefix: %s\n\nWhat to do\n- Set %s to the pullable published remote image prefix.\n- Then rerun preflight.", remoteImagePrefixEnv, prefix, remoteImagePrefixEnv)
-		}
-		return prefix, nil
+		return localcontainers.ProductionImagePrefix, nil
 	default:
 		return remoteImageNamePrefix, nil
 	}
@@ -2610,6 +2608,9 @@ func requireHostedGroupForLocalSwarm(state swarmruntime.LocalState, groupID stri
 }
 
 func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRuntime, transportMode, imagePrefix string, manifest ContainerPackageManifest) (remoteRuntimeArtifact, error) {
+	if !remoteImageUsesArchive(remoteImageRef(imagePrefix, "preflight")) {
+		return prepareRemoteProductionRegistryArtifact(ctx)
+	}
 	buildRoot, err := resolveRemoteDeployBuildRoot(s.startupCWD)
 	if err != nil {
 		return remoteRuntimeArtifact{}, err
@@ -2811,6 +2812,66 @@ func validateTarGzArchive(path string) error {
 			return err
 		}
 	}
+}
+
+func prepareRemoteProductionRegistryArtifact(ctx context.Context) (remoteRuntimeArtifact, error) {
+	metadata, err := localcontainers.FetchProductionImageMetadata(ctx)
+	if err != nil {
+		return remoteRuntimeArtifact{}, fmt.Errorf("fetch production swarm image metadata: %w", err)
+	}
+	imageRef := strings.TrimSpace(metadata.ImageDigestRef)
+	if imageRef == "" {
+		return remoteRuntimeArtifact{}, fmt.Errorf("release image metadata missing image digest ref")
+	}
+	return remoteRuntimeArtifact{
+		Signature: strings.TrimPrefix(imageRef, localcontainers.ProductionImagePrefix+"@"),
+		ImageRef:  imageRef,
+	}, nil
+}
+
+func remoteProductionImageLabelChecks() []struct {
+	label    string
+	expected string
+} {
+	expectedVersion := strings.TrimSpace(buildinfo.DisplayVersion())
+	expectedCommit := strings.TrimSpace(buildinfo.DisplayCommit())
+	checks := []struct {
+		label    string
+		expected string
+	}{
+		{label: "org.opencontainers.image.source", expected: localcontainers.OfficialSourceRepository},
+		{label: "org.opencontainers.image.version", expected: expectedVersion},
+		{label: "swarmagent.image.contract", expected: localcontainers.OfficialImageContract},
+		{label: "swarmagent.image.role", expected: "app"},
+		{label: "swarmagent.version", expected: expectedVersion},
+	}
+	if expectedCommit != "" && expectedCommit != "unknown" {
+		checks = append(checks,
+			struct {
+				label    string
+				expected string
+			}{label: "org.opencontainers.image.revision", expected: expectedCommit},
+			struct {
+				label    string
+				expected string
+			}{label: "swarmagent.commit", expected: expectedCommit},
+		)
+	}
+	return checks
+}
+
+func remoteProductionImageVerificationScript() string {
+	var builder strings.Builder
+	for _, check := range remoteProductionImageLabelChecks() {
+		if strings.TrimSpace(check.expected) == "" {
+			continue
+		}
+		builder.WriteString(fmt.Sprintf("expected_label=%s\n", shellQuote(check.expected)))
+		builder.WriteString(fmt.Sprintf("actual_label=$(runtime_cmd image inspect \"$image_ref\" --format '{{ index .Config.Labels %q }}' 2>/dev/null || true)\n", check.label))
+		builder.WriteString("actual_label=$(printf '%s' \"$actual_label\" | tr -d '\\r' | sed -e 's/[[:space:]]*$//')\n")
+		builder.WriteString(fmt.Sprintf("if [ \"$actual_label\" != \"$expected_label\" ]; then printf 'remote image label verification failed: %%s=%%s, expected %%s\\n' %s \"$actual_label\" \"$expected_label\" >&2; exit 1; fi\n", shellQuote(check.label)))
+	}
+	return builder.String()
 }
 
 func ensureRemoteDeployImageCurrent(ctx context.Context, buildRoot, builderRuntime, imagePrefix, signature string, manifest ContainerPackageManifest) (string, error) {
@@ -3430,8 +3491,11 @@ func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string 
 	pidFile := filepath.ToSlash(filepath.Join(remoteRoot, "run-remote-child.pid"))
 	imageArchiveName := remoteImageArchiveName(transportMode)
 	useArchiveImage := "0"
+	imageVerification := ""
 	if remoteImageUsesArchive(record.ImageRef) {
 		useArchiveImage = "1"
+	} else if strings.HasPrefix(strings.TrimSpace(record.ImageRef), localcontainers.ProductionImagePrefix+"@sha256:") {
+		imageVerification = remoteProductionImageVerificationScript()
 	}
 	containerName := remoteContainerNameForSession(record.ID)
 	useSudo := "0"
@@ -3556,7 +3620,7 @@ else
   echo "remote image archive missing and image is not present: $image_ref" >&2
   exit 1
 fi
-log_timer_step "ensure_remote_image" "$step_started_ms"
+%slog_timer_step "ensure_remote_image" "$step_started_ms"
 step_started_ms="$(now_ms)"
 %s
 log_timer_step "extract_payloads" "$step_started_ms"
@@ -3694,7 +3758,7 @@ log_timer_step "wait_for_bootstrap_signal" "$step_started_ms"
 printf '%%s\n' "$log_output"
 printf 'TAILSCALE_AUTH_URL=%%s\n' "$auth_url"
 printf '%s=%%s\n' "$remote_url"
-`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(legacyCredentialsFile), shellQuote(bootstrapSecretFile), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(offlineMode), payloadExtract, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), mountArgs, bootstrapOutputPrefix)
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(legacyCredentialsFile), shellQuote(bootstrapSecretFile), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(offlineMode), imageVerification, payloadExtract, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), mountArgs, bootstrapOutputPrefix)
 }
 
 func remoteBundleStartScript(record *pebblestore.RemoteDeploySessionRecord, childCfgText string, tailscaleAuthKey string, syncVaultPassword string) (string, error) {
