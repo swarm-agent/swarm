@@ -39,7 +39,6 @@ const (
 	PathContainerPrune        = "swarm.containers.local.prune-missing.v1"
 	defaultImageName          = devmode.DefaultContainerImageRef
 	ProductionImagePrefix     = "ghcr.io/swarm-agent/swarm"
-	productionMetadataURLTmpl = "https://github.com/swarm-agent/swarm/releases/download/%s/container-image-info.txt"
 	OfficialSourceRepository  = "https://github.com/swarm-agent/swarm"
 	OfficialImageContract     = "swarm.container.v1"
 	productionImagePrefix     = ProductionImagePrefix
@@ -54,7 +53,10 @@ const (
 
 var containerPackageNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]*$`)
 
-var productionImageMetadataClient = http.DefaultClient
+var (
+	productionImageMetadataClient = http.DefaultClient
+	productionMetadataURLTmpl     = "https://github.com/swarm-agent/swarm/releases/download/%s/container-image-info.txt"
+)
 
 type Mount = pebblestore.SwarmLocalContainerMount
 

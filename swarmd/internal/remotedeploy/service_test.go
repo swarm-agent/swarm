@@ -4,15 +4,19 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -249,6 +253,8 @@ func TestRemoteBundleStartScriptDeliversSecretsViaSSHStdinWithoutCredentialsFile
 	for _, unexpected := range []string{
 		`TAILSCALE_AUTHKEY=`,
 		`cat > "$credentials_file"`,
+		`remote_deploy_session_token =` + "\n",
+		`remote_deploy_invite_token =` + "\n",
 		`--env-file`,
 		`chmod 0600 "$credentials_file"`,
 	} {
@@ -275,6 +281,15 @@ func TestResolveRemoteImagePrefixRegistryUsesOfficialProductionImage(t *testing.
 }
 
 func TestRemoteInstallerScriptPullsAndVerifiesProductionRegistryDigestWithoutArchive(t *testing.T) {
+	oldVersion := buildinfo.Version
+	oldCommit := buildinfo.Commit
+	buildinfo.Version = "v9.8.7"
+	buildinfo.Commit = "0123456789abcdef"
+	t.Cleanup(func() {
+		buildinfo.Version = oldVersion
+		buildinfo.Commit = oldCommit
+	})
+
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:            "remote-child-test",
 		Name:          "remote-child",
@@ -290,9 +305,16 @@ func TestRemoteInstallerScriptPullsAndVerifiesProductionRegistryDigestWithoutArc
 		`use_archive_image='0'`,
 		`elif [ "$use_archive_image" != "1" ]; then`,
 		`runtime_cmd pull "$image_ref" >/dev/null`,
+		`expected_label='https://github.com/swarm-agent/swarm'`,
+		`expected_label='v9.8.7'`,
+		`expected_label='swarm.container.v1'`,
+		`expected_label='app'`,
+		`expected_label='0123456789abcdef'`,
 		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' 2>/dev/null || true)`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)`,
 		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "swarmagent.image.contract" }}' 2>/dev/null || true)`,
 		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "swarmagent.image.role" }}' 2>/dev/null || true)`,
+		`actual_label=$(runtime_cmd image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)`,
 		`remote image label verification failed: %s=%s, expected %s`,
 	} {
 		if !strings.Contains(script, needle) {
@@ -568,14 +590,35 @@ func containsString(values []string, want string) bool {
 
 func TestPrepareRemoteBundleExcludesGeneratedConfigSecretsAndScripts(t *testing.T) {
 	workDir := t.TempDir()
+	sourceDir := t.TempDir()
+	writeTestFile(t, filepath.Join(sourceDir, "tracked.txt"), "tracked payload")
+	gitCommand(t, sourceDir, "init")
+	gitCommand(t, sourceDir, "add", "tracked.txt")
+	gitCommand(t, sourceDir, "-c", "user.name=Swarm Test", "-c", "user.email=swarm-test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "add tracked payload")
+
 	service := &Service{}
-	record := &pebblestore.RemoteDeploySessionRecord{ID: "remote-test-1", SessionToken: "secret", InviteToken: "invite", RemoteRoot: "/var/lib/swarm/remote-deploy/test"}
+	record := &pebblestore.RemoteDeploySessionRecord{
+		ID:           "remote-test-1",
+		SessionToken: "secret",
+		InviteToken:  "invite",
+		RemoteRoot:   "/var/lib/swarm/remote-deploy/test",
+		Payloads: []pebblestore.RemoteDeployPayloadRecord{{
+			ArchiveName: "payload-01.tar.gz",
+			SourcePath:  sourceDir,
+		}},
+	}
 
 	if err := service.prepareRemoteBundle(context.Background(), workDir, record); err != nil {
 		t.Fatalf("prepareRemoteBundle() error = %v", err)
 	}
 
 	remoteBundleDir := filepath.Join(workDir, "bundle", "remote")
+	archivePath := filepath.Join(remoteBundleDir, "payload-01.tar.gz")
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("expected payload archive to be staged: %v", err)
+	}
+	assertTarGzContainsOnly(t, archivePath, "tracked.txt")
+
 	unexpectedPaths := []string{
 		filepath.Join(remoteBundleDir, "config", "swarm", "swarm.conf"),
 		filepath.Join(remoteBundleDir, "config", "swarm", "remote-deploy-bootstrap.secret"),
@@ -588,5 +631,46 @@ func TestPrepareRemoteBundleExcludesGeneratedConfigSecretsAndScripts(t *testing.
 		} else if !os.IsNotExist(err) {
 			t.Fatalf("Stat(%q) error = %v", path, err)
 		}
+	}
+}
+
+func gitCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, strings.TrimSpace(string(output)))
+	}
+}
+
+func assertTarGzContainsOnly(t *testing.T, archivePath string, want ...string) {
+	t.Helper()
+	file, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatalf("open archive: %v", err)
+	}
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatalf("open gzip: %v", err)
+	}
+	defer gz.Close()
+	reader := tar.NewReader(gz)
+	var got []string
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read archive: %v", err)
+		}
+		if header == nil {
+			continue
+		}
+		got = append(got, header.Name)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("archive entries = %#v, want %#v", got, want)
 	}
 }
