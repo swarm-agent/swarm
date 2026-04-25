@@ -139,6 +139,12 @@ type SessionPayloadDirectory struct {
 	ExcludedNote  string `json:"excluded_note,omitempty"`
 }
 
+type RemoteDiskInfo struct {
+	Path           string `json:"path,omitempty"`
+	AvailableBytes int64  `json:"available_bytes,omitempty"`
+	RequiredBytes  int64  `json:"required_bytes,omitempty"`
+}
+
 type SessionPreflight struct {
 	PathID                  string           `json:"path_id"`
 	BuilderRuntime          string           `json:"builder_runtime,omitempty"`
@@ -150,6 +156,7 @@ type SessionPreflight struct {
 	SystemdUnit             string           `json:"systemd_unit,omitempty"`
 	RemoteRoot              string           `json:"remote_root,omitempty"`
 	RemoteNetworkCandidates []string         `json:"remote_network_candidates,omitempty"`
+	RemoteDisk              RemoteDiskInfo   `json:"remote_disk,omitempty"`
 	FilesToCopy             []string         `json:"files_to_copy,omitempty"`
 	Payloads                []SessionPayload `json:"payloads,omitempty"`
 	Summary                 string           `json:"summary,omitempty"`
@@ -218,6 +225,7 @@ type remoteRuntimeArtifact struct {
 	ArchiveName        string
 	ArchivePath        string
 	ArchiveBytes       int64
+	RequiredDiskBytes  int64
 	ArchiveHit         bool
 	RemoteImagePresent bool
 }
@@ -369,7 +377,7 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 	}
 	sessionID = sessionID + "-" + shortToken(4)
 	stepStartedAt = time.Now()
-	remoteRuntime, systemdAvailable, sudoMode, remoteHome, remoteNetworkCandidates, err := s.inspectRemoteHost(ctx, sshTarget, input.RemoteRuntime)
+	remoteRuntime, systemdAvailable, sudoMode, remoteHome, remoteNetworkCandidates, remoteAvailableBytes, err := s.inspectRemoteHost(ctx, sshTarget, input.RemoteRuntime)
 	logRemoteDeployTiming("create.inspect_remote_host", stepStartedAt, err, "session_id", sessionID, "ssh_target", sshTarget, "systemd", strconv.FormatBool(systemdAvailable), "sudo_mode", sudoMode)
 	if err != nil {
 		return Session{}, formatCreatePreflightError(sshTarget, err)
@@ -426,6 +434,21 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 	if err != nil {
 		return Session{}, err
 	}
+	stepStartedAt = time.Now()
+	remoteRequiredBytes, err := remotePreflightRequiredDiskBytes(ctx, imageDeliveryMode, payloads)
+	logRemoteDeployTiming("create.calculate_remote_disk_required", stepStartedAt, err, "session_id", sessionID, "required_bytes", strconv.FormatInt(remoteRequiredBytes, 10))
+	if err != nil {
+		return Session{}, formatCreatePreflightError(sshTarget, err)
+	}
+	stepStartedAt = time.Now()
+	checkedAvailableBytes, err := s.checkRemoteDiskCapacity(ctx, sshTarget, remoteRoot, remoteRequiredBytes)
+	logRemoteDeployTiming("create.check_remote_disk_capacity", stepStartedAt, err, "session_id", sessionID, "ssh_target", sshTarget, "available_bytes", strconv.FormatInt(checkedAvailableBytes, 10), "required_bytes", strconv.FormatInt(remoteRequiredBytes, 10))
+	if checkedAvailableBytes > 0 {
+		remoteAvailableBytes = checkedAvailableBytes
+	}
+	if err != nil {
+		return Session{}, formatCreatePreflightError(sshTarget, err)
+	}
 	filesToCopy := []string(nil)
 	if remoteImageUsesArchive(remoteImageRef(imagePrefix, "preflight")) {
 		filesToCopy = append(filesToCopy, filepath.ToSlash(filepath.Join("remote", remoteImageArchiveName(transportMode))))
@@ -469,8 +492,13 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 		SystemdAvailable:        systemdAvailable,
 		SudoMode:                sudoMode,
 		RemoteNetworkCandidates: remoteNetworkCandidates,
-		FilesToCopy:             filesToCopy,
-		Payloads:                payloads,
+		RemoteDisk: pebblestore.RemoteDeployDiskRecord{
+			Path:           remoteRoot,
+			AvailableBytes: remoteAvailableBytes,
+			RequiredBytes:  remoteRequiredBytes,
+		},
+		FilesToCopy: filesToCopy,
+		Payloads:    payloads,
 	}
 	stepStartedAt = time.Now()
 	saved, err := s.store.Put(record)
@@ -715,6 +743,7 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	record.ImageRef = runtimeArtifact.ImageRef
 	record.ImageSignature = runtimeArtifact.Signature
 	record.ImageArchiveBytes = runtimeArtifact.ArchiveBytes
+	record.RemoteDisk.RequiredBytes = remoteRequiredDiskBytes(runtimeArtifact.RequiredDiskBytes, record.Payloads)
 	stepStartedAt = time.Now()
 	remoteImagePresent, err := remoteImageExists(ctx, record.SSHSessionTarget, record.RemoteRuntime, runtimeArtifact.ImageRef, record.SudoMode)
 	logRemoteDeployTiming("start.check_remote_image", stepStartedAt, err, "session_id", record.ID, "image_ref", runtimeArtifact.ImageRef, "remote_image_present", strconv.FormatBool(remoteImagePresent))
@@ -728,6 +757,24 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		return mapSession(saved), err
 	}
 	runtimeArtifact.RemoteImagePresent = remoteImagePresent
+	if remoteImagePresent {
+		record.RemoteDisk.RequiredBytes = remoteRequiredDiskBytes(0, record.Payloads)
+	}
+	stepStartedAt = time.Now()
+	availableBytes, err := s.checkRemoteDiskCapacity(ctx, record.SSHSessionTarget, record.RemoteRoot, record.RemoteDisk.RequiredBytes)
+	logRemoteDeployTiming("start.check_remote_disk_capacity", stepStartedAt, err, "session_id", record.ID, "available_bytes", strconv.FormatInt(availableBytes, 10), "required_bytes", strconv.FormatInt(record.RemoteDisk.RequiredBytes, 10))
+	if availableBytes > 0 {
+		record.RemoteDisk.AvailableBytes = availableBytes
+	}
+	if err != nil {
+		record.Status = "failed"
+		record.LastError = err.Error()
+		saved, saveErr := s.store.Put(record)
+		if saveErr != nil {
+			return Session{}, saveErr
+		}
+		return mapSession(saved), err
+	}
 	stepStartedAt = time.Now()
 	if err := s.prepareRemoteBundle(ctx, workDir, &record); err != nil {
 		logRemoteDeployTiming("start.prepare_remote_bundle", stepStartedAt, err, "session_id", record.ID, "payload_archives", strconv.Itoa(remotePayloadArchiveCount(record.Payloads)))
@@ -1630,7 +1677,7 @@ func (s *Service) detectBuilderRuntime(ctx context.Context, preferredRuntime str
 	return "", fmt.Errorf("install Podman or Docker to build remote child artifacts")
 }
 
-func (s *Service) inspectRemoteHost(ctx context.Context, sshTarget, preferredRuntime string) (runtimeName string, systemdAvailable bool, sudoMode string, remoteHome string, remoteNetworkCandidates []string, err error) {
+func (s *Service) inspectRemoteHost(ctx context.Context, sshTarget, preferredRuntime string) (runtimeName string, systemdAvailable bool, sudoMode string, remoteHome string, remoteNetworkCandidates []string, remoteAvailableBytes int64, err error) {
 	checkCmd := fmt.Sprintf(`set -eu
 runtime=%s
 if command -v systemctl >/dev/null 2>&1; then systemd=1; else systemd=0; fi
@@ -1639,10 +1686,19 @@ if command -v sudo >/dev/null 2>&1; then sudo_mode="sudo"; fi
 remote_home="${HOME:-}"
 if [ -z "$remote_home" ]; then remote_home="$(cd && pwd)"; fi
 if [ -z "$remote_home" ] || [ "${remote_home#/}" = "$remote_home" ]; then echo "remote home directory missing" >&2; exit 41; fi
+remote_available_bytes=""
+if command -v df >/dev/null 2>&1; then
+  remote_available_kb="$(df -Pk "$remote_home" 2>/dev/null | awk 'NR==2 {print $4}')"
+  case "$remote_available_kb" in
+    ''|*[!0-9]*) remote_available_bytes="" ;;
+    *) remote_available_bytes="$((remote_available_kb * 1024))" ;;
+  esac
+fi
 printf 'REMOTE_RUNTIME=%%s\n' "$runtime"
 printf 'SYSTEMD_AVAILABLE=%%s\n' "$systemd"
 printf 'SUDO_MODE=%%s\n' "$sudo_mode"
 printf 'REMOTE_HOME=%%s\n' "$remote_home"
+printf 'REMOTE_AVAILABLE_BYTES=%%s\n' "$remote_available_bytes"
 if command -v ip >/dev/null 2>&1; then
   ip -o -4 addr show up 2>/dev/null | while read -r _ iface _ addr _; do
     case "$iface" in
@@ -1659,7 +1715,7 @@ fi
 `, shellQuote(firstNonEmpty(strings.TrimSpace(preferredRuntime), "native")))
 	out, err := runSSHCommand(ctx, sshTarget, checkCmd)
 	if err != nil {
-		return "", false, "", "", nil, err
+		return "", false, "", "", nil, 0, err
 	}
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -1672,17 +1728,22 @@ fi
 			sudoMode = strings.TrimSpace(strings.TrimPrefix(line, "SUDO_MODE="))
 		case strings.HasPrefix(line, "REMOTE_HOME="):
 			remoteHome = strings.TrimSpace(strings.TrimPrefix(line, "REMOTE_HOME="))
+		case strings.HasPrefix(line, "REMOTE_AVAILABLE_BYTES="):
+			available, parseErr := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "REMOTE_AVAILABLE_BYTES=")), 10, 64)
+			if parseErr == nil && available > 0 {
+				remoteAvailableBytes = available
+			}
 		case strings.HasPrefix(line, "REMOTE_NETWORK_CANDIDATE="):
 			remoteNetworkCandidates = append(remoteNetworkCandidates, strings.TrimSpace(strings.TrimPrefix(line, "REMOTE_NETWORK_CANDIDATE=")))
 		}
 	}
 	if runtimeName == "" {
-		return "", false, "", "", nil, fmt.Errorf("remote runtime detection failed")
+		return "", false, "", "", nil, 0, fmt.Errorf("remote runtime detection failed")
 	}
 	if remoteHome == "" || !strings.HasPrefix(remoteHome, "/") {
-		return "", false, "", "", nil, fmt.Errorf("remote home directory detection failed")
+		return "", false, "", "", nil, 0, fmt.Errorf("remote home directory detection failed")
 	}
-	return runtimeName, systemdAvailable, sudoMode, remoteHome, sortRemoteNetworkCandidates(remoteNetworkCandidates), nil
+	return runtimeName, systemdAvailable, sudoMode, remoteHome, sortRemoteNetworkCandidates(remoteNetworkCandidates), remoteAvailableBytes, nil
 }
 
 func (s *Service) checkRemoteInstallCollision(ctx context.Context, sshTarget, remoteRoot string) error {
@@ -1712,6 +1773,88 @@ printf 'REMOTE_INSTALL_PATH_CLEAR=1\n'
 	return nil
 }
 
+func (s *Service) checkRemoteDiskCapacity(ctx context.Context, sshTarget, remoteRoot string, requiredBytes int64) (availableBytes int64, err error) {
+	remoteRoot = strings.TrimSpace(remoteRoot)
+	if remoteRoot == "" {
+		return 0, fmt.Errorf("remote root is required for disk capacity check")
+	}
+	if requiredBytes <= 0 {
+		requiredBytes = remoteRequiredDiskBytes(0, nil)
+	}
+	checkCmd := fmt.Sprintf(`set -eu
+remote_root=%s
+required_bytes=%s
+parent="$remote_root"
+while [ ! -e "$parent" ] && [ "$parent" != "/" ]; do
+  parent="$(dirname "$parent")"
+done
+available_bytes=""
+if command -v df >/dev/null 2>&1; then
+  available_kb="$(df -Pk "$parent" 2>/dev/null | awk 'NR==2 {print $4}')"
+  case "$available_kb" in
+    ''|*[!0-9]*) available_bytes="" ;;
+    *) available_bytes="$((available_kb * 1024))" ;;
+  esac
+fi
+case "$available_bytes" in
+  ''|*[!0-9]*)
+    echo "REMOTE_DISK_AVAILABLE_UNKNOWN=$parent"
+    exit 44
+    ;;
+esac
+printf 'REMOTE_DISK_PATH=%%s\n' "$parent"
+printf 'REMOTE_DISK_AVAILABLE_BYTES=%%s\n' "$available_bytes"
+printf 'REMOTE_DISK_REQUIRED_BYTES=%%s\n' "$required_bytes"
+if [ "$available_bytes" -lt "$required_bytes" ]; then
+  echo "REMOTE_DISK_INSUFFICIENT=$parent:$available_bytes:$required_bytes"
+  exit 43
+fi
+`, shellQuote(remoteRoot), shellQuote(strconv.FormatInt(requiredBytes, 10)))
+	out, err := runSSHCommand(ctx, sshTarget, checkCmd)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "REMOTE_DISK_AVAILABLE_BYTES=") {
+			available, parseErr := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "REMOTE_DISK_AVAILABLE_BYTES=")), 10, 64)
+			if parseErr == nil && available > 0 {
+				availableBytes = available
+			}
+		}
+	}
+	if err != nil {
+		trimmed := strings.TrimSpace(out)
+		switch {
+		case strings.Contains(trimmed, "REMOTE_DISK_INSUFFICIENT="):
+			parts := strings.Split(strings.TrimSpace(strings.TrimPrefix(lastMatchingLine(trimmed, "REMOTE_DISK_INSUFFICIENT="), "REMOTE_DISK_INSUFFICIENT=")), ":")
+			path := remoteRoot
+			if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+				path = strings.TrimSpace(parts[0])
+			}
+			available := availableBytes
+			if len(parts) > 1 {
+				if parsed, parseErr := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64); parseErr == nil {
+					available = parsed
+				}
+			}
+			required := requiredBytes
+			if len(parts) > 2 {
+				if parsed, parseErr := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); parseErr == nil {
+					required = parsed
+				}
+			}
+			return available, fmt.Errorf("remote preflight failed: insufficient disk space at %s: available %d bytes, required %d bytes", path, available, required)
+		case strings.Contains(trimmed, "REMOTE_DISK_AVAILABLE_UNKNOWN="):
+			path := strings.TrimSpace(strings.TrimPrefix(lastMatchingLine(trimmed, "REMOTE_DISK_AVAILABLE_UNKNOWN="), "REMOTE_DISK_AVAILABLE_UNKNOWN="))
+			if path == "" {
+				path = remoteRoot
+			}
+			return availableBytes, fmt.Errorf("remote preflight failed: remote disk capacity unavailable at %s", path)
+		default:
+			return availableBytes, err
+		}
+	}
+	return availableBytes, nil
+}
+
 func formatCreatePreflightError(sshTarget string, err error) error {
 	message := strings.TrimSpace(err.Error())
 	lower := strings.ToLower(message)
@@ -1732,6 +1875,10 @@ func formatCreatePreflightError(sshTarget string, err error) error {
 			path = "remote deploy path"
 		}
 		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- The target remote deploy path already exists: %s\n\nWhat to do\n- Remove or rename that path on the remote host, or choose a different swarm name and rerun preflight.\n\nSuggested commands\n- ssh %s\n- ls -la %s\n- rm -rf %s   # only if this old deploy can be safely removed", target, path, target, path, path)
+	case strings.Contains(lower, "insufficient disk space at"):
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- The remote host does not have enough available disk space for the image and selected payloads.\n- %s\n\nWhat to do\n- Free disk space on the remote host or select fewer workspace payloads.\n- Then rerun preflight.\n\nSuggested commands\n- ssh %s\n- df -h\n- docker system df || true\n- docker system prune   # only if old Docker cache can be safely removed", target, message, target)
+	case strings.Contains(lower, "remote disk capacity unavailable"):
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Swarm could not read available disk capacity on the remote host.\n- %s\n\nWhat to do\n- Make sure df is installed and the remote home filesystem is readable.\n- Then rerun preflight.\n\nSuggested commands\n- ssh %s\n- df -Pk ~", target, message, target)
 	case strings.Contains(lower, "systemd unit already exists:"):
 		unit := strings.TrimSpace(strings.TrimPrefix(message, "remote preflight failed: systemd unit already exists:"))
 		if unit == "" {
@@ -2074,9 +2221,14 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 		SystemdUnit:             record.SystemdUnit,
 		RemoteRoot:              record.RemoteRoot,
 		RemoteNetworkCandidates: append([]string(nil), record.RemoteNetworkCandidates...),
-		FilesToCopy:             append([]string(nil), record.FilesToCopy...),
-		Payloads:                payloads,
-		Summary:                 remotePreflightSummary(record),
+		RemoteDisk: RemoteDiskInfo{
+			Path:           record.RemoteDisk.Path,
+			AvailableBytes: record.RemoteDisk.AvailableBytes,
+			RequiredBytes:  record.RemoteDisk.RequiredBytes,
+		},
+		FilesToCopy: append([]string(nil), record.FilesToCopy...),
+		Payloads:    payloads,
+		Summary:     remotePreflightSummary(record),
 		Checks: []string{
 			"local runtime bundle assets available",
 			"remote SSH reachable",
@@ -2134,11 +2286,36 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 func remotePreflightSummary(record pebblestore.RemoteDeploySessionRecord) string {
 	target := firstNonEmpty(record.SSHSessionTarget, "remote host")
 	transport := firstNonEmpty(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale)
+	workspaceSummary := "selected workspace payloads"
+	if len(record.Payloads) == 0 {
+		workspaceSummary = "no workspace payloads"
+	}
+	diskSummary := ""
+	if record.RemoteDisk.AvailableBytes > 0 && record.RemoteDisk.RequiredBytes > 0 {
+		diskSummary = fmt.Sprintf(" Remote disk check: %s available, %s required.", formatByteCount(record.RemoteDisk.AvailableBytes), formatByteCount(record.RemoteDisk.RequiredBytes))
+	}
 	if normalizeRemoteImageDeliveryMode(record.ImageDeliveryMode) == remoteImageDeliveryRegistry {
 		imageRef := firstNonEmpty(strings.TrimSpace(record.ImageRef), remoteImageRef(record.ImagePrefix, "published"))
-		return fmt.Sprintf("Prepare the selected workspace payloads locally, copy only those payloads plus config/install files over SSH to %s, have the remote host pull %s there, launch the remote child container, and wait for child approval over %s.", target, imageRef, transport)
+		return fmt.Sprintf("Prepare %s locally, copy only payload archives over SSH to %s, have the remote host pull %s there, launch the remote child container, and wait for child approval over %s.%s", workspaceSummary, target, imageRef, transport, diskSummary)
 	}
-	return fmt.Sprintf("Prepare the prepackaged Swarm remote image locally, copy it over SSH to %s when needed, launch the remote child container there now, and wait for child approval over %s.", target, transport)
+	return fmt.Sprintf("Prepare the prepackaged Swarm remote image locally, copy it over SSH to %s when needed, launch the remote child container there now, and wait for child approval over %s.%s", target, transport, diskSummary)
+}
+
+func formatByteCount(bytes int64) string {
+	if bytes < 0 {
+		bytes = 0
+	}
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	value := float64(bytes)
+	unit := 0
+	for value >= 1024 && unit < len(units)-1 {
+		value /= 1024
+		unit++
+	}
+	if unit == 0 {
+		return fmt.Sprintf("%d %s", bytes, units[unit])
+	}
+	return fmt.Sprintf("%.1f %s", value, units[unit])
 }
 
 func (s *Service) cleanupRemoteChildState(childSwarmID string, item *localcontainers.DeleteItemResult) error {
@@ -2677,13 +2854,15 @@ func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRunti
 	if err != nil {
 		return remoteRuntimeArtifact{}, err
 	}
+	archiveBytes := info.Size()
 	return remoteRuntimeArtifact{
-		Signature:    signature,
-		ImageRef:     imageRef,
-		ArchiveName:  archiveName,
-		ArchivePath:  archivePath,
-		ArchiveBytes: info.Size(),
-		ArchiveHit:   archiveHit,
+		Signature:         signature,
+		ImageRef:          imageRef,
+		ArchiveName:       archiveName,
+		ArchivePath:       archivePath,
+		ArchiveBytes:      archiveBytes,
+		RequiredDiskBytes: archiveBytes,
+		ArchiveHit:        archiveHit,
 	}, nil
 }
 
@@ -2824,8 +3003,9 @@ func prepareRemoteProductionRegistryArtifact(ctx context.Context) (remoteRuntime
 		return remoteRuntimeArtifact{}, fmt.Errorf("release image metadata missing image digest ref")
 	}
 	return remoteRuntimeArtifact{
-		Signature: strings.TrimPrefix(imageRef, localcontainers.ProductionImagePrefix+"@"),
-		ImageRef:  imageRef,
+		Signature:         strings.TrimPrefix(imageRef, localcontainers.ProductionImagePrefix+"@"),
+		ImageRef:          imageRef,
+		RequiredDiskBytes: metadata.ImageSizeBytes,
 	}, nil
 }
 
@@ -3276,6 +3456,37 @@ func remotePayloadIncludedBytes(payloads []pebblestore.RemoteDeployPayloadRecord
 	var total int64
 	for _, payload := range payloads {
 		total += payload.IncludedBytes
+	}
+	return total
+}
+
+func remotePreflightRequiredDiskBytes(ctx context.Context, imageDeliveryMode string, payloads []pebblestore.RemoteDeployPayloadRecord) (int64, error) {
+	var imageBytes int64
+	if normalizeRemoteImageDeliveryMode(imageDeliveryMode) == remoteImageDeliveryRegistry {
+		metadata, err := localcontainers.FetchProductionImageMetadata(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("fetch production swarm image metadata for disk preflight: %w", err)
+		}
+		imageBytes = metadata.ImageSizeBytes
+	}
+	return remoteRequiredDiskBytes(imageBytes, payloads), nil
+}
+
+func remoteRequiredDiskBytes(imageBytes int64, payloads []pebblestore.RemoteDeployPayloadRecord) int64 {
+	var total int64
+	if imageBytes > 0 {
+		total += imageBytes
+	}
+	payloadBytes := remotePayloadIncludedBytes(payloads)
+	if payloadBytes > 0 {
+		// Payload archives are staged on disk and then extracted into the target
+		// workspace mounts, so require enough room for both compressed input and
+		// unpacked files. The included byte count is the safest local estimate.
+		total += payloadBytes * 2
+	}
+	if total <= 0 {
+		// Keep zero-payload registry deploys from reporting an unknown/no-op check.
+		return 256 * 1024 * 1024
 	}
 	return total
 }

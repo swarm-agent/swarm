@@ -35,6 +35,12 @@ type RemoteDeployPayloadDirectoryRecord struct {
 	ExcludedNote  string `json:"excluded_note,omitempty"`
 }
 
+type RemoteDeployDiskRecord struct {
+	Path           string `json:"path,omitempty"`
+	AvailableBytes int64  `json:"available_bytes,omitempty"`
+	RequiredBytes  int64  `json:"required_bytes,omitempty"`
+}
+
 type RemoteDeploySessionRecord struct {
 	ID                      string                         `json:"id"`
 	Name                    string                         `json:"name"`
@@ -89,6 +95,7 @@ type RemoteDeploySessionRecord struct {
 	SyncBundleExportedAt    int64                          `json:"sync_bundle_exported_at,omitempty"`
 	SyncBundleExportCount   int                            `json:"sync_bundle_export_count,omitempty"`
 	RemoteNetworkCandidates []string                       `json:"remote_network_candidates,omitempty"`
+	RemoteDisk              RemoteDeployDiskRecord         `json:"remote_disk,omitempty"`
 	FilesToCopy             []string                       `json:"files_to_copy,omitempty"`
 	Payloads                []RemoteDeployPayloadRecord    `json:"payloads,omitempty"`
 	ApprovedAt              int64                          `json:"approved_at,omitempty"`
@@ -258,6 +265,13 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 		record.SyncBundleExportCount = 0
 	}
 	record.RemoteNetworkCandidates = normalizeRemoteDeployCandidateList(record.RemoteNetworkCandidates)
+	record.RemoteDisk.Path = strings.TrimSpace(record.RemoteDisk.Path)
+	if record.RemoteDisk.AvailableBytes < 0 {
+		record.RemoteDisk.AvailableBytes = 0
+	}
+	if record.RemoteDisk.RequiredBytes < 0 {
+		record.RemoteDisk.RequiredBytes = 0
+	}
 	for i := range record.FilesToCopy {
 		record.FilesToCopy[i] = strings.TrimSpace(record.FilesToCopy[i])
 	}

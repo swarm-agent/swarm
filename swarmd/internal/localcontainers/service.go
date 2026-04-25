@@ -1111,6 +1111,7 @@ type ProductionImageMetadata struct {
 	Version        string
 	Commit         string
 	SourceRevision string
+	ImageSizeBytes int64
 }
 
 type productionImageMetadata = ProductionImageMetadata
@@ -1160,6 +1161,13 @@ func FetchProductionImageMetadata(ctx context.Context) (ProductionImageMetadata,
 		Version:        strings.TrimSpace(fields["version"]),
 		Commit:         strings.TrimSpace(fields["commit"]),
 		SourceRevision: strings.TrimSpace(fields["source_revision"]),
+	}
+	if rawSize := strings.TrimSpace(fields["image_size_bytes"]); rawSize != "" {
+		imageSize, err := strconv.ParseInt(rawSize, 10, 64)
+		if err != nil || imageSize < 0 {
+			return ProductionImageMetadata{}, fmt.Errorf("release image metadata image_size_bytes is invalid: %q", rawSize)
+		}
+		metadata.ImageSizeBytes = imageSize
 	}
 	if metadata.Version != version {
 		return ProductionImageMetadata{}, fmt.Errorf("release image metadata version mismatch: %q, expected %q", metadata.Version, version)

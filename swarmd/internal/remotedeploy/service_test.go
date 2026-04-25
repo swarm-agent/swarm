@@ -78,6 +78,38 @@ func TestValidateTarGzArchiveRejectsTruncatedArchive(t *testing.T) {
 	}
 }
 
+func TestRemoteRequiredDiskBytesIncludesPayloadStagingAndFallback(t *testing.T) {
+	payloads := []pebblestore.RemoteDeployPayloadRecord{
+		{IncludedBytes: 100},
+		{IncludedBytes: 50},
+	}
+	if got, want := remoteRequiredDiskBytes(1000, payloads), int64(1300); got != want {
+		t.Fatalf("remoteRequiredDiskBytes = %d, want %d", got, want)
+	}
+	if got := remoteRequiredDiskBytes(0, nil); got <= 0 {
+		t.Fatalf("remoteRequiredDiskBytes zero-payload fallback = %d, want positive", got)
+	}
+}
+
+func TestRemotePreflightSummaryReportsZeroPayloadAndDisk(t *testing.T) {
+	record := pebblestore.RemoteDeploySessionRecord{
+		SSHSessionTarget:  "remote.example",
+		TransportMode:     startupconfig.NetworkModeTailscale,
+		ImageDeliveryMode: remoteImageDeliveryRegistry,
+		ImagePrefix:       "ghcr.io/swarm-agent/swarm",
+		RemoteDisk: pebblestore.RemoteDeployDiskRecord{
+			AvailableBytes: 2 * 1024 * 1024 * 1024,
+			RequiredBytes:  512 * 1024 * 1024,
+		},
+	}
+	summary := remotePreflightSummary(record)
+	for _, needle := range []string{"no workspace payloads", "Remote disk check", "2.0 GiB available", "512.0 MiB required"} {
+		if !strings.Contains(summary, needle) {
+			t.Fatalf("summary missing %q: %s", needle, summary)
+		}
+	}
+}
+
 func TestRemoteRuntimeSignatureChangesWithInputs(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "deploy", "container-mvp", "entrypoint.sh"), "#!/bin/sh\n")
