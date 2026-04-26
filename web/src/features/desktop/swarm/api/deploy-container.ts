@@ -1,5 +1,5 @@
 import { apiFetch, requestJson, readErrorMessage } from '../../../../app/api'
-import type { ContainerProfileMount } from '../../containers/types/container-profiles'
+import type { ContainerProfileMount } from '../types/container-mounts'
 import type { SwarmLocalContainerDeleteResult } from '../../onboarding/api'
 
 export interface DeployContainerWorkspaceBootstrapDirectory {

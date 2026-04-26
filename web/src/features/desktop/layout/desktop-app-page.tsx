@@ -16,7 +16,6 @@ import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-worksp
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { prefetchSessionRuntimeData, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopSessionRecord } from '../types/realtime'
-import { DesktopSettingsModal } from '../settings/components/desktop-settings-modal'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopChatPanel } from '../chat/components/desktop-chat-panel'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
@@ -1014,7 +1013,6 @@ export function DesktopAppPage() {
   const routeSessionId = (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: workspacesLoading } = useWorkspaceLauncher()
   const connectionState = useDesktopStore((state) => state.connectionState)
-  const vault = useDesktopStore((state) => state.vault)
   const liveSessions = useDesktopStore((state) => state.sessions)
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
@@ -1025,9 +1023,7 @@ export function DesktopAppPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<SettingsTabID>('agents')
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
@@ -1307,12 +1303,6 @@ export function DesktopAppPage() {
   useEffect(() => {
     saveStoredValue(DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(workspaceLayout))
   }, [workspaceLayout])
-
-  useEffect(() => {
-    if (vault.enabled) {
-      setSettingsTab('vault')
-    }
-  }, [vault.enabled])
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
@@ -1623,36 +1613,25 @@ export function DesktopAppPage() {
   }, [navigate, setActiveSession, setActiveWorkspacePath, workspaceSlugByPath])
 
   const handleOpenSettingsTab = useCallback((tab: SettingsTabID) => {
-    setSettingsTab(tab)
-    setSettingsOpen(true)
-  }, [])
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab } })
+      return
+    }
+    void navigate({ to: '/settings', search: { tab } })
+  }, [navigate, routeWorkspaceSlug])
 
   const handleOpenPermissions = useCallback(() => {
-    setSettingsTab('permissions')
-    setSettingsOpen(true)
-  }, [])
+    handleOpenSettingsTab('permissions')
+  }, [handleOpenSettingsTab])
 
   const handleOpenSwarmDashboardFromMenu = useCallback(() => {
     setSwarmMenu({ open: false })
-    if (!routeWorkspaceSlug) {
-      return
-    }
-    void navigate({
-      to: '/$workspaceSlug/swarm',
-      params: { workspaceSlug: routeWorkspaceSlug },
-    })
-  }, [navigate, routeWorkspaceSlug])
+    handleOpenSettingsTab('swarm')
+  }, [handleOpenSettingsTab])
 
   const handleOpenSwarmDashboard = useCallback(() => {
-    if (routeWorkspaceSlug) {
-      void navigate({
-        to: '/$workspaceSlug/swarm',
-        params: { workspaceSlug: routeWorkspaceSlug },
-      })
-      return
-    }
-    void navigate({ to: '/swarm' })
-  }, [navigate, routeWorkspaceSlug])
+    handleOpenSettingsTab('swarm')
+  }, [handleOpenSettingsTab])
 
   const handleOpenNotifications = useCallback(() => {
     setNotificationsOpen(true)
@@ -2027,7 +2006,7 @@ export function DesktopAppPage() {
                 <Button
                   variant="outline"
                   className="h-11 min-h-11 w-full justify-center rounded-xl"
-                  onClick={() => { setSettingsTab('agents'); setSettingsOpen(true) }}
+                  onClick={() => handleOpenSettingsTab('agents')}
                   aria-label="Open settings"
                 >
                   <Settings size={18} className="shrink-0" />
@@ -2272,12 +2251,6 @@ export function DesktopAppPage() {
 
       <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
 
-      <DesktopSettingsModal
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        onOpenSwarmDashboard={handleOpenSwarmDashboard}
-        initialTab={settingsTab}
-      />
     </div>
   )
 }

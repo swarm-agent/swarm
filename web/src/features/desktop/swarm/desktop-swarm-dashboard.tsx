@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useMatchRoute } from '@tanstack/react-router'
 import { Boxes, CheckSquare, Pencil, Play, Plus, Square, Trash2, TriangleAlert } from 'lucide-react'
-import { useDesktopStore } from '../../state/use-desktop-store'
-import { Badge } from '../../../../components/ui/badge'
-import { Button } from '../../../../components/ui/button'
-import { Card } from '../../../../components/ui/card'
-import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
-import { Input } from '../../../../components/ui/input'
-import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
-import { Select } from '../../../../components/ui/select'
-import { ContainerProfilesPanel } from '../../containers/components/container-profiles-panel'
+import { useDesktopStore } from '../state/use-desktop-store'
+import { Badge } from '../../../components/ui/badge'
+import { Button } from '../../../components/ui/button'
+import { Card } from '../../../components/ui/card'
+import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
+import { Input } from '../../../components/ui/input'
+import { ModalCloseButton } from '../../../components/ui/modal-close-button'
+import { Select } from '../../../components/ui/select'
 import {
   actOnSwarmLocalContainer,
   deleteSwarmLocalContainers,
@@ -23,14 +21,13 @@ import {
   type SwarmLocalContainerDeleteResult,
   type SwarmLocalRuntimeStatus,
   type SwarmLocalState,
-} from '../../onboarding/api'
-import type { DesktopOnboardingStatus, DesktopSwarmGroupState } from '../../onboarding/types'
-import { getUISettings } from '../../settings/swarm/queries/get-ui-settings'
-import { saveSwarmSettings } from '../../settings/swarm/mutations/save-swarm-settings'
-import { normalizeDefaultNewSessionMode } from '../../settings/swarm/types/swarm-settings'
-import type { UISettingsWire } from '../../settings/swarm/types/swarm-settings'
-import { SwarmSurfaceTabs, type SwarmSurfaceTab } from '../components/swarm-surface-tabs'
-import { AddSwarmModal } from '../components/add-swarm-modal'
+} from '../onboarding/api'
+import type { DesktopOnboardingStatus, DesktopSwarmGroupState } from '../onboarding/types'
+import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
+import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
+import { normalizeDefaultNewSessionMode } from '../settings/swarm/types/swarm-settings'
+import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { AddSwarmModal } from './components/add-swarm-modal'
 import {
   type DeployContainerDeployment,
   type DeployContainerWorkspaceBootstrap,
@@ -42,9 +39,9 @@ import {
   deleteRemoteDeploySessions,
   fetchDeployContainers,
   fetchRemoteDeploySessions,
-} from '../api/deploy-container'
-import { upsertSwarmGroup } from '../mutations/upsert-swarm-group'
-import { suggestGroupNetworkName } from '../services/group-network-name'
+} from './api/deploy-container'
+import { upsertSwarmGroup } from './mutations/upsert-swarm-group'
+import { suggestGroupNetworkName } from './services/group-network-name'
 
 function parsePeerTransportPort(value: string): number {
   if (!/^\d+$/.test(value.trim())) {
@@ -646,15 +643,7 @@ function DeleteSwarmsModal({
   )
 }
 
-export function DesktopSwarmPage() {
-  const navigate = useNavigate()
-  const matchRoute = useMatchRoute()
-  const swarmRouteMatch = matchRoute({ to: '/swarm', fuzzy: false })
-  const workspaceSwarmMatch = matchRoute({ to: '/$workspaceSlug/swarm', fuzzy: false })
-  const routeWorkspaceSlug = workspaceSwarmMatch ? workspaceSwarmMatch.workspaceSlug.trim() : ''
-
-  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
-  const sessions = useDesktopStore((state) => state.sessions)
+export function DesktopSwarmDashboard() {
   const requestOnboardingFlow = useDesktopStore((state) => state.requestOnboardingFlow)
 
   const [loading, setLoading] = useState(true)
@@ -672,7 +661,6 @@ export function DesktopSwarmPage() {
   const [localContainers, setLocalContainers] = useState<SwarmLocalContainer[]>([])
   const [deployments, setDeployments] = useState<DeployContainerDeployment[]>([])
   const [remoteSessions, setRemoteSessions] = useState<RemoteDeploySession[]>([])
-  const [activeTab, setActiveTab] = useState<SwarmSurfaceTab>('swarm')
   const [copyState, setCopyState] = useState<'idle' | 'desktop' | 'peer' | 'error'>('idle')
   const [editingGroupName, setEditingGroupName] = useState(false)
   const [editingLocalName, setEditingLocalName] = useState(false)
@@ -686,23 +674,6 @@ export function DesktopSwarmPage() {
   const [selectedDeleteSwarmContainerIDs, setSelectedDeleteSwarmContainerIDs] = useState<string[]>([])
   const [deleteSwarmRemoteMode, setDeleteSwarmRemoteMode] = useState<RemoteDeleteMode>('teardown')
   const [deleteResult, setDeleteResult] = useState<SwarmLocalContainerDeleteResult | null>(null)
-
-  const activeSession = activeSessionId ? sessions[activeSessionId] ?? null : null
-  const handleBack = useMemo(() => (
-    routeWorkspaceSlug
-      ? () => {
-          if (activeSession?.id) {
-            void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: activeSession.id } })
-            return
-          }
-          void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
-        }
-      : swarmRouteMatch
-        ? () => {
-            void navigate({ to: '/' })
-          }
-        : null
-  ), [activeSession?.id, navigate, routeWorkspaceSlug, swarmRouteMatch])
 
   const applyCoreDashboardState = (state: SwarmLocalState, onboarding: DesktopOnboardingStatus, nextUISettings: UISettingsWire) => {
     setSwarmState(state)
@@ -1438,40 +1409,22 @@ export function DesktopSwarmPage() {
     }
   }
 
-  return (
-    <div className="absolute inset-0 flex overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
-      <aside className="flex w-[240px] shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-5">
-        {handleBack ? (
-          <Button variant="outline" className="h-11 justify-start rounded-xl" onClick={handleBack}>
-            {routeWorkspaceSlug ? (activeSession?.id ? 'Back to chat' : 'Back to workspace') : 'Back to launcher'}
-          </Button>
-        ) : null}
-        <div className="mt-5">
-          <SwarmSurfaceTabs activeTab={activeTab} onChange={setActiveTab} sidebar />
+  const content = (
+    <>
+      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div className="space-y-2">
+          <h1 className="text-2xl font-semibold">Swarm</h1>
+          <p className="max-w-3xl text-sm text-[var(--app-text-muted)]">
+            Add local swarms from your existing workspaces with container/runtime details handled automatically.
+          </p>
         </div>
-      </aside>
+      </div>
 
-      <div className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
-          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <div className="space-y-2">
-              <h1 className="text-2xl font-semibold">{activeTab === 'swarm' ? 'Swarm dashboard' : 'Launcher profiles'}</h1>
-              <p className="max-w-3xl text-sm text-[var(--app-text-muted)]">
-                {activeTab === 'swarm'
-                  ? 'Add local swarms from your existing workspaces with container/runtime details handled automatically.'
-                  : 'Save simple launcher profiles built around name, folders, and role hint.'}
-              </p>
-            </div>
-          </div>
+      {error ? <Card className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
+      {status ? <Card className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
 
-          {error ? <Card className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
-          {status ? <Card className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
-
-          {activeTab === 'containers' ? <ContainerProfilesPanel /> : null}
-
-          {activeTab === 'swarm' ? (
-            <div className="flex flex-col gap-8">
-              <Card className="p-5">
+      <div className="flex flex-col gap-8">
+        <Card className="p-5">
                 <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div>
                     {editingGroupName ? (
@@ -2172,10 +2125,13 @@ export function DesktopSwarmPage() {
                   </div>
                 )}
               </div>
-            </div>
-          ) : null}
-        </div>
       </div>
+    </>
+  )
+
+  return (
+    <>
+      {content}
 
       <AddSwarmModal
         open={addSwarmOpen}
@@ -2217,6 +2173,6 @@ export function DesktopSwarmPage() {
         }}
         onConfirm={() => void handleDeleteSelectedSwarms()}
       />
-    </div>
+    </>
   )
 }

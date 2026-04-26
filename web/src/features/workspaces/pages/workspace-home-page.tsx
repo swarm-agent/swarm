@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { FolderOpen, RefreshCw } from 'lucide-react'
+import { FolderOpen, RefreshCw, Settings } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -296,6 +296,15 @@ export function WorkspaceHomePage() {
             <p className="mt-1 text-sm text-[var(--app-text-muted)]">Select a project to begin working</p>
           </div>
           <div className="flex items-center gap-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void navigate({ to: '/settings', search: { tab: 'agents' } })}
+              className="rounded-md bg-[var(--app-surface)] shadow-sm"
+            >
+              <Settings size={14} />
+              Settings
+            </Button>
             <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing} className="rounded-md bg-[var(--app-surface)] shadow-sm">
               <RefreshCw size={14} className={refreshing ? 'animate-spin' : undefined} />
               Refresh
