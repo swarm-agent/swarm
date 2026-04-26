@@ -101,6 +101,17 @@ func (s *Server) handleUpdateLocalContainers(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	if postRebuildRaw := strings.TrimSpace(r.URL.Query().Get("post_rebuild_check")); postRebuildRaw != "" {
+		switch strings.ToLower(postRebuildRaw) {
+		case "1", "true", "yes":
+			input.PostRebuildCheck = true
+		case "0", "false", "no":
+			input.PostRebuildCheck = false
+		default:
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid post_rebuild_check %q", postRebuildRaw))
+			return
+		}
+	}
 	input.TargetVersion = strings.TrimSpace(r.URL.Query().Get("target_version"))
 	plan, err := s.localContainers.UpdatePlan(r.Context(), input)
 	if err != nil {

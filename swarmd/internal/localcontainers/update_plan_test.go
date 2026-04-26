@@ -12,6 +12,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm-refactor/swarmtui/pkg/devmode"
+	"swarm-refactor/swarmtui/pkg/localupdate"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -175,16 +176,87 @@ func TestUpdatePlanImageInspectFailure(t *testing.T) {
 	}
 }
 
+func TestUpdatePlanDevPostRebuildTarget(t *testing.T) {
+	devRoot := makeDevRoot(t)
+	expectedFingerprint, err := devmode.ContainerImageFingerprint(devRoot)
+	if err != nil {
+		t.Fatalf("ContainerImageFingerprint() error = %v", err)
+	}
+	svc, cleanup := newUpdatePlanTestService(t, startupconfig.FileConfig{DevMode: true, DevRoot: devRoot})
+	defer cleanup()
+	putLocalContainerRecord(t, svc.store, "stale", "Stale", defaultImageName)
+	if err := localupdate.WriteRebuildStatus(svc.dataDir, localupdate.RebuildStatus{Mode: "dev", ImageRef: defaultImageName, Fingerprint: expectedFingerprint}); err != nil {
+		t.Fatalf("WriteRebuildStatus() error = %v", err)
+	}
+	svc.inspectImageFn = func(ctx context.Context, runtimeName, image string) (runtimeImageInfo, error) {
+		return runtimeImageInfo{ID: "sha256:stale", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: "old-fingerprint"}}, nil
+	}
+
+	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{PostRebuildCheck: true})
+	if err != nil {
+		t.Fatalf("UpdatePlan() error = %v", err)
+	}
+	if plan.Target.PostRebuildImageRef != defaultImageName || plan.Target.PostRebuildFingerprint != expectedFingerprint {
+		t.Fatalf("post-rebuild target = %+v", plan.Target)
+	}
+	item := plan.Containers[0]
+	if item.TargetFingerprint != expectedFingerprint || item.State != "needs-update" {
+		t.Fatalf("item after post-rebuild check = %+v", item)
+	}
+}
+
+func TestUpdatePlanDevPostRebuildFallsBackToRuntimeInspect(t *testing.T) {
+	devRoot := makeDevRoot(t)
+	expectedFingerprint, err := devmode.ContainerImageFingerprint(devRoot)
+	if err != nil {
+		t.Fatalf("ContainerImageFingerprint() error = %v", err)
+	}
+	svc, cleanup := newUpdatePlanTestService(t, startupconfig.FileConfig{DevMode: true, DevRoot: devRoot})
+	defer cleanup()
+	putLocalContainerRecord(t, svc.store, "stale", "Stale", defaultImageName)
+	svc.inspectImageFn = func(ctx context.Context, runtimeName, image string) (runtimeImageInfo, error) {
+		return runtimeImageInfo{ID: "sha256:rebuilt", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: expectedFingerprint}}, nil
+	}
+
+	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{PostRebuildCheck: true})
+	if err != nil {
+		t.Fatalf("UpdatePlan() error = %v", err)
+	}
+	if plan.Target.PostRebuildImageRef != defaultImageName || plan.Target.PostRebuildFingerprint != expectedFingerprint {
+		t.Fatalf("fallback post-rebuild target = %+v", plan.Target)
+	}
+}
+
+func TestUpdatePlanPackageAwareDevImageDeferred(t *testing.T) {
+	devRoot := makeDevRoot(t)
+	svc, cleanup := newUpdatePlanTestService(t, startupconfig.FileConfig{DevMode: true, DevRoot: devRoot})
+	defer cleanup()
+	putLocalContainerRecord(t, svc.store, "pkg", "Packages", "localhost/swarm-container-mvp:pkg-abc123")
+	svc.inspectImageFn = func(ctx context.Context, runtimeName, image string) (runtimeImageInfo, error) {
+		return runtimeImageInfo{ID: "sha256:pkg", Labels: map[string]string{devmode.ContainerImageBaseFingerprintLabel: "base"}}, nil
+	}
+
+	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{})
+	if err != nil {
+		t.Fatalf("UpdatePlan() error = %v", err)
+	}
+	item := plan.Containers[0]
+	if item.State != "unknown" || item.Reason != "package_aware_deferred" {
+		t.Fatalf("package-aware item = %+v", item)
+	}
+}
+
 func newUpdatePlanTestService(t *testing.T, cfg startupconfig.FileConfig) (*Service, func()) {
 	t.Helper()
-	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "local-containers.pebble"))
+	dataDir := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(dataDir, "local-containers.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	containerStore := pebblestore.NewSwarmLocalContainerStore(store)
 	configPath := filepath.Join(t.TempDir(), "swarm.conf")
 	writeStartupConfig(t, configPath, cfg)
-	svc := NewService(containerStore, nil, nil, nil, nil, configPath)
+	svc := NewServiceWithDataDir(containerStore, nil, nil, nil, nil, configPath, dataDir)
 	svc.inspectContainerFn = func(runtimeName, containerName string) (string, string, error) {
 		return "running", "runtime-" + containerName, nil
 	}

@@ -186,7 +186,7 @@ func TestRollbackPendingRuntimeUpdateRestoresPreviousRuntime(t *testing.T) {
 }
 
 func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testing.T) {
-	profile := Profile{InstallRoot: t.TempDir()}
+	profile := Profile{InstallRoot: t.TempDir(), DataDir: t.TempDir()}
 	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
 	result := UpdateResult{Version: "v1.2.3", RuntimeRoot: filepath.Join(profile.InstallRoot, "versions", "v1.2.3")}
 
@@ -246,7 +246,7 @@ func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testi
 }
 
 func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *testing.T) {
-	profile := Profile{InstallRoot: t.TempDir()}
+	profile := Profile{InstallRoot: t.TempDir(), DataDir: t.TempDir()}
 	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
 	result := UpdateResult{Version: "v1.2.3", RuntimeRoot: filepath.Join(profile.InstallRoot, "versions", "v1.2.3")}
 

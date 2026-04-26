@@ -193,13 +193,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	containerProfileSvc := containerprofiles.NewService(pebblestore.NewSwarmContainerProfileStore(store))
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
-	localContainerSvc := localcontainers.NewService(
+	localContainerSvc := localcontainers.NewServiceWithDataDir(
 		pebblestore.NewSwarmLocalContainerStore(store),
 		pebblestore.NewDeployContainerStore(store),
 		swarmStore,
 		authStore,
 		workspaceSvc,
 		cfg.ConfigPath,
+		cfg.DataDir,
 	)
 	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath)
 	remoteDeploySvc := remotedeploy.NewService(pebblestore.NewRemoteDeploySessionStore(store), swarmSvc, swarmStore, localContainerSvc, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD)

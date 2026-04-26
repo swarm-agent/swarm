@@ -1261,6 +1261,11 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) error {
 	if err := SyncDevContainerImages(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true); err != nil {
 		return err
 	}
+	if fingerprint, err := devmode.ContainerImageFingerprint(profile.Root); err != nil {
+		return err
+	} else if err := writeLocalContainerUpdateRebuildStatus(profile, "dev", "", devmode.DefaultContainerImageRef, fingerprint); err != nil {
+		return err
+	}
 	if _, err := InstallLaunchers(profile.Root); err != nil {
 		return err
 	}

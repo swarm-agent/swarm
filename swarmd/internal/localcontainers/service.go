@@ -25,6 +25,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm-refactor/swarmtui/pkg/devmode"
+	"swarm-refactor/swarmtui/pkg/localupdate"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -152,11 +153,13 @@ type UpdatePlan struct {
 }
 
 type UpdatePlanTarget struct {
-	ImageRef    string `json:"image_ref,omitempty"`
-	DigestRef   string `json:"digest_ref,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Fingerprint string `json:"fingerprint,omitempty"`
-	Commit      string `json:"commit,omitempty"`
+	ImageRef               string `json:"image_ref,omitempty"`
+	DigestRef              string `json:"digest_ref,omitempty"`
+	Version                string `json:"version,omitempty"`
+	Fingerprint            string `json:"fingerprint,omitempty"`
+	PostRebuildImageRef    string `json:"post_rebuild_image_ref,omitempty"`
+	PostRebuildFingerprint string `json:"post_rebuild_fingerprint,omitempty"`
+	Commit                 string `json:"commit,omitempty"`
 }
 
 type UpdateSummary struct {
@@ -197,8 +200,9 @@ type UpdateItem struct {
 }
 
 type UpdatePlanInput struct {
-	DevMode       *bool
-	TargetVersion string
+	DevMode          *bool
+	TargetVersion    string
+	PostRebuildCheck bool
 }
 
 type RuntimeNetwork struct {
@@ -214,6 +218,7 @@ type Service struct {
 	authStore          *pebblestore.AuthStore
 	workspace          *workspaceruntime.Service
 	startupPath        string
+	dataDir            string
 	inspectContainerFn func(string, string) (string, string, error)
 	inspectImageFn     func(context.Context, string, string) (runtimeImageInfo, error)
 	hostCallbackURLsMu sync.RWMutex
@@ -221,6 +226,10 @@ type Service struct {
 }
 
 func NewService(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath string) *Service {
+	return NewServiceWithDataDir(store, deployments, swarmStore, authStore, workspaceSvc, startupPath, "")
+}
+
+func NewServiceWithDataDir(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath, dataDir string) *Service {
 	return &Service{
 		store:              store,
 		deployments:        deployments,
@@ -228,6 +237,7 @@ func NewService(store *pebblestore.SwarmLocalContainerStore, deployments *pebble
 		authStore:          authStore,
 		workspace:          workspaceSvc,
 		startupPath:        strings.TrimSpace(startupPath),
+		dataDir:            strings.TrimSpace(dataDir),
 		inspectContainerFn: inspectContainer,
 		inspectImageFn:     inspectRuntimeImage,
 		hostCallbackURLs:   make(map[string]string),
@@ -340,6 +350,21 @@ func (s *Service) UpdatePlan(ctx context.Context, input UpdatePlanInput) (Update
 	if targetErr != nil {
 		plan.Error = targetErr.Error()
 	}
+	if input.PostRebuildCheck && startupCfg.DevMode && targetErr == nil {
+		postTarget, postErr := s.localDevPostRebuildTarget(ctx, target, records)
+		if postErr != nil {
+			if plan.Error == "" {
+				plan.Error = postErr.Error()
+			}
+		} else {
+			if strings.TrimSpace(postTarget.PostRebuildImageRef) != "" {
+				target.PostRebuildImageRef = postTarget.PostRebuildImageRef
+			}
+			if strings.TrimSpace(postTarget.PostRebuildFingerprint) != "" {
+				target.PostRebuildFingerprint = postTarget.PostRebuildFingerprint
+			}
+		}
+	}
 	plan.Target = target
 	for _, record := range records {
 		item := s.planLocalContainerUpdate(ctx, record, startupCfg, target, targetErr)
@@ -385,6 +410,44 @@ func localUpdateTarget(ctx context.Context, startupCfg startupconfig.FileConfig,
 	}, nil
 }
 
+func (s *Service) localDevPostRebuildTarget(ctx context.Context, target UpdatePlanTarget, records []pebblestore.SwarmLocalContainerRecord) (UpdatePlanTarget, error) {
+	if s != nil && strings.TrimSpace(s.dataDir) != "" {
+		status, ok, err := localupdate.ReadRebuildStatusPath(localupdate.RebuildStatusPath(s.dataDir))
+		if err != nil {
+			return UpdatePlanTarget{PostRebuildImageRef: defaultImageName}, fmt.Errorf("read local container rebuild status: %w", err)
+		}
+		if ok && strings.EqualFold(status.Mode, "dev") && strings.TrimSpace(status.Fingerprint) == strings.TrimSpace(target.Fingerprint) {
+			return UpdatePlanTarget{
+				PostRebuildImageRef:    firstNonEmpty(strings.TrimSpace(status.ImageRef), defaultImageName),
+				PostRebuildFingerprint: strings.TrimSpace(status.Fingerprint),
+			}, nil
+		}
+	}
+	inspector := inspectRuntimeImage
+	if s != nil && s.inspectImageFn != nil {
+		inspector = s.inspectImageFn
+	}
+	for _, record := range records {
+		runtimeName := normalizeRuntimeSelection(record.Runtime)
+		if runtimeName == "" {
+			continue
+		}
+		imageInfo, err := inspector(ctx, runtimeName, defaultImageName)
+		if err != nil {
+			return UpdatePlanTarget{PostRebuildImageRef: defaultImageName}, err
+		}
+		fingerprint := strings.TrimSpace(imageInfo.Labels[devmode.ContainerImageFingerprintLabel])
+		if fingerprint != "" && fingerprint == strings.TrimSpace(target.Fingerprint) {
+			return UpdatePlanTarget{
+				PostRebuildImageRef:    defaultImageName,
+				PostRebuildFingerprint: fingerprint,
+			}, nil
+		}
+		return UpdatePlanTarget{}, nil
+	}
+	return UpdatePlanTarget{}, nil
+}
+
 func (s *Service) planLocalContainerUpdate(ctx context.Context, record pebblestore.SwarmLocalContainerRecord, startupCfg startupconfig.FileConfig, target UpdatePlanTarget, targetErr error) UpdateItem {
 	item := baseUpdateItem(record)
 	resolved, resolveErr := s.resolveRecord(record)
@@ -406,10 +469,10 @@ func (s *Service) planLocalContainerUpdate(ctx context.Context, record pebblesto
 		item.Error = targetErr.Error()
 		return item
 	}
-	item.TargetImageRef = target.ImageRef
+	item.TargetImageRef = firstNonEmpty(target.PostRebuildImageRef, target.ImageRef)
 	item.TargetDigestRef = target.DigestRef
 	item.TargetVersion = target.Version
-	item.TargetFingerprint = target.Fingerprint
+	item.TargetFingerprint = firstNonEmpty(target.PostRebuildFingerprint, target.Fingerprint)
 	imageRef := strings.TrimSpace(firstNonEmpty(resolved.Image, record.Image))
 	if imageRef == "" {
 		item.State = "unknown"
@@ -432,12 +495,23 @@ func (s *Service) planLocalContainerUpdate(ctx context.Context, record pebblesto
 	item.Labels = imageInfo.Labels
 	if startupCfg.DevMode {
 		item.CurrentFingerprint = strings.TrimSpace(imageInfo.Labels[devmode.ContainerImageFingerprintLabel])
+		if isPackageAwareLocalImage(imageRef, imageInfo.Labels) {
+			item.State = "unknown"
+			item.Reason = "package_aware_deferred"
+			return item
+		}
 		if item.CurrentFingerprint == "" {
 			item.State = "unknown"
 			item.Reason = "missing_dev_fingerprint"
 			return item
 		}
-		if item.CurrentFingerprint == target.Fingerprint {
+		targetFingerprint := strings.TrimSpace(firstNonEmpty(target.PostRebuildFingerprint, target.Fingerprint))
+		if targetFingerprint == "" {
+			item.State = "unknown"
+			item.Reason = "missing_target_dev_fingerprint"
+			return item
+		}
+		if item.CurrentFingerprint == targetFingerprint {
 			item.State = "already-current"
 		} else {
 			item.State = "needs-update"
@@ -455,6 +529,16 @@ func (s *Service) planLocalContainerUpdate(ctx context.Context, record pebblesto
 		item.State = "needs-update"
 	}
 	return item
+}
+
+func isPackageAwareLocalImage(imageRef string, labels map[string]string) bool {
+	if strings.Contains(strings.TrimSpace(imageRef), ":pkg-") {
+		return true
+	}
+	if strings.TrimSpace(labels[devmode.ContainerImageBaseFingerprintLabel]) != "" {
+		return true
+	}
+	return false
 }
 
 func baseUpdateItem(record pebblestore.SwarmLocalContainerRecord) UpdateItem {

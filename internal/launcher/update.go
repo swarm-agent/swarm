@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/internal/client"
+	"swarm-refactor/swarmtui/pkg/localupdate"
 )
 
 const (
@@ -219,8 +220,20 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
+	if err := writeLocalContainerUpdateRebuildStatus(profile, "release", result.Version, "", ""); err != nil {
+		return err
+	}
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
 		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
+	})
+}
+
+func writeLocalContainerUpdateRebuildStatus(profile Profile, mode, version, imageRef, fingerprint string) error {
+	return localupdate.WriteRebuildStatus(profile.DataDir, localupdate.RebuildStatus{
+		Mode:        mode,
+		Version:     version,
+		ImageRef:    imageRef,
+		Fingerprint: fingerprint,
 	})
 }
 
