@@ -104,6 +104,7 @@ type Service struct {
 }
 
 type sandboxService interface {
+	IsEnabled() (bool, error)
 	GetStatus() (sandboxruntime.Status, error)
 }
 

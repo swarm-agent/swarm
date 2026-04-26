@@ -2435,6 +2435,9 @@ func remoteRootForHome(homeDir, sessionID string) string {
 	if homeDir == "" {
 		return remoteRoot(sessionID)
 	}
+	if filepath.Clean(homeDir) == "/root" {
+		return filepath.ToSlash(filepath.Join("/var/lib/swarm/rd", sanitizeSlug(sessionID)))
+	}
 	return filepath.ToSlash(filepath.Join(homeDir, ".local", "share", "swarm", "rd", sanitizeSlug(sessionID)))
 }
 
@@ -2793,6 +2796,12 @@ func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRunti
 		return remoteRuntimeArtifact{}, err
 	}
 	stepStartedAt := time.Now()
+	if err := ensureRemoteDeployBackendBinaries(ctx, buildRoot); err != nil {
+		logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, err)
+		return remoteRuntimeArtifact{}, err
+	}
+	logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, nil)
+	stepStartedAt = time.Now()
 	signature, err := remoteImageSignature(buildRoot, transportMode, manifest)
 	logRemoteDeployTiming("start.prepare_runtime.signature", stepStartedAt, err, "signature", signature)
 	if err != nil {
@@ -2805,12 +2814,6 @@ func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRunti
 			ImageRef:  imageRef,
 		}, nil
 	}
-	stepStartedAt = time.Now()
-	if err := ensureRemoteDeployBackendBinaries(ctx, buildRoot); err != nil {
-		logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, err)
-		return remoteRuntimeArtifact{}, err
-	}
-	logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, nil)
 	builderRuntime = normalizeRemoteDeployRuntime(builderRuntime)
 	if builderRuntime == "" {
 		builderRuntime = "docker"
@@ -3561,7 +3564,7 @@ func runSSHCommand(ctx context.Context, target, script string) (string, error) {
 	if target == "" {
 		return "", fmt.Errorf("ssh target is required")
 	}
-	cmd := exec.CommandContext(ctx, "ssh", target, "sh", "-se")
+	cmd := exec.CommandContext(ctx, "ssh", target, "bash", "-se")
 	cmd.Stdin = strings.NewReader(script + "\n")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -3773,6 +3776,7 @@ listen_addr=%s
 offline_mode=%s
 remote_user="$(id -un)"
 remote_group="$(id -gn)"
+cd "$remote_root"
 
 as_root() {
   if [ "$use_sudo" = "1" ]; then
@@ -3817,6 +3821,8 @@ chmod 0600 "$config_home/swarm/swarm.conf"
 if [ -f "$bootstrap_secret_file" ]; then
   chmod 0600 "$bootstrap_secret_file"
 fi
+as_root chmod 0755 "$remote_root" "$state_root" "$remote_root/xdg" "$remote_root/xdg/data" "$remote_root/xdg/state" >/dev/null 2>&1 || true
+as_root chown -R 65534:65534 "$config_home" "$remote_root/xdg" "$swarmd_state_dir" >/dev/null 2>&1 || true
 rm -f "$legacy_credentials_file"
 : > "$log_file"
 log_timer_step "prepare_remote_root" "$step_started_ms"

@@ -62,6 +62,24 @@ func TestHTTPProxyTargetUsesConfiguredHost(t *testing.T) {
 	}
 }
 
+func TestDetectedCurrentSwarmStateTransportsSkipsTailscaleInLANMode(t *testing.T) {
+	transports := detectedCurrentSwarmStateTransports(startupconfig.FileConfig{
+		NetworkMode:   startupconfig.NetworkModeLAN,
+		AdvertiseHost: "192.0.2.10",
+		TailscaleURL:  "https://saved.tailnet.example",
+	})
+
+	if len(transports) != 1 {
+		t.Fatalf("transports = %d, want 1: %#v", len(transports), transports)
+	}
+	if transports[0].Kind != startupconfig.NetworkModeLAN {
+		t.Fatalf("transport kind = %q, want %q", transports[0].Kind, startupconfig.NetworkModeLAN)
+	}
+	if transports[0].Primary != "192.0.2.10" {
+		t.Fatalf("transport primary = %q, want 192.0.2.10", transports[0].Primary)
+	}
+}
+
 func TestHTTPClientForTailscaleOutboundProxyUsesConfiguredProxy(t *testing.T) {
 	t.Setenv("SWARM_TAILSCALE_OUTBOUND_PROXY", "http://127.0.0.1:1055")
 

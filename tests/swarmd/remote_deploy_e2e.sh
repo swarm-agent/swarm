@@ -34,6 +34,8 @@ Options:
   --launches-per-target <count>         Number of sessions to launch per SSH target. Default: 1
   --transport-mode <tailscale|lan>      Remote child transport after SSH bootstrap. Default: tailscale
   --remote-runtime <docker|podman>      Remote runtime. Default: docker
+  --image-delivery-mode <registry|archive>
+                                      Remote image delivery path. Default: registry
   --session-prefix <prefix>             Remote child/session name prefix. Default: ssh-remote-e2e
   --workspace-path <path>               Source workspace path. Default: repo root
   --workspace-name <name>               Workspace display name. Default: basename of workspace path
@@ -66,6 +68,7 @@ Options:
   --proof-thinking <low|medium|high>    Thinking level for routed AI proof. Default: high
   --proof-provider-key-env <name>       Environment variable containing the provider API key for child seeding
   --proof-bash-command <cmd>            Command for the bash approval proof. Default: pwd
+  --proof-bash-expected <text>          Expected assistant text after the bash proof. Default: runtime workspace path
   --teardown-only                       Reuse an existing --host-root, clean remote sessions, stop the host, and exit
   --no-wait                             Start remote sessions and print auth URLs, but do not wait for attach
   --teardown                            Stop the isolated host and remove remote child state at the end
@@ -78,6 +81,8 @@ Artifacts:
 Notes:
   - This harness uses /v1/deploy/remote/session/*
   - It does not create a second remote transport path
+  - Registry image delivery mirrors the desktop UI path. Archive delivery is
+    still available for local-dev/current-worktree validation.
   - Auth-key mode is launch-only: the raw key is sent only on remote session start and is not saved by Swarm
 EOF
 }
@@ -121,6 +126,7 @@ write_timing_artifact() {
   local payload
   payload="$(jq -nc --arg phase "${phase}" --arg duration_ms "${duration_ms}" --arg extra_json "${extra_json}" '($extra_json | fromjson? // {}) + {phase:$phase,duration_ms:($duration_ms | tonumber? // 0)}')"
   write_artifact "${name}" "${payload}"
+  printf '%s\n' "${payload}" >>"${ARTIFACT_DIR}/timings.ndjson"
   log "timing ${phase}: ${duration_ms}ms"
 }
 
@@ -206,61 +212,6 @@ api_post_with_timeout() {
   api_request POST "${path}" "${body}" "${max_time_seconds}"
 }
 
-fetch_attach_token_for_base() {
-  local base_url="${1:-}"
-  local response
-  response="$(curl -fsS \
-    -H "Origin: ${base_url%/}" \
-    -H "Referer: ${base_url%/}/" \
-    -H 'Sec-Fetch-Site: same-origin' \
-    "${base_url%/}/v1/auth/attach/token")"
-  printf '%s' "${response}" | jq -r '.token // empty'
-}
-
-json_request_with_bearer() {
-  local base_url="${1:-}"
-  local token="${2:-}"
-  local method="${3:-GET}"
-  local path="${4:-}"
-  local body="${5:-}"
-  local max_time_seconds="${6:-60}"
-  local url="${base_url%/}${path}"
-  local body_file
-  body_file="$(mktemp)"
-  local request_body_file=""
-  local http_code
-  local args=(
-    -sS
-    --connect-timeout 3
-    --max-time "${max_time_seconds}"
-    -o "${body_file}"
-    -w '%{http_code}'
-    -H "Authorization: Bearer ${token}"
-    -H 'Accept: application/json'
-    -X "${method}"
-  )
-  if [[ -n "${body}" ]]; then
-    request_body_file="$(mktemp)"
-    printf '%s' "${body}" >"${request_body_file}"
-    args+=(-H 'Content-Type: application/json' --data-binary "@${request_body_file}")
-  fi
-  if http_code="$(curl "${args[@]}" "${url}")"; then
-    :
-  else
-    http_code="000"
-  fi
-  local response_body
-  response_body="$(cat -- "${body_file}")"
-  rm -f -- "${body_file}"
-  if [[ -n "${request_body_file}" ]]; then
-    rm -f -- "${request_body_file}"
-  fi
-  if [[ "${http_code}" != 2* ]]; then
-    fail "${method} ${url} failed with status ${http_code}: ${response_body}"
-  fi
-  printf '%s' "${response_body}"
-}
-
 ensure_host_vault_ready() {
   local vault_password="${1:-}"
   [[ -n "${vault_password}" ]] || fail "host vault password is required"
@@ -294,23 +245,21 @@ seed_host_provider_key() {
   [[ -n "${provider}" ]] || fail "provider is required for host provider seeding"
   [[ -n "${api_key}" ]] || fail "provider api key is required for host provider seeding"
   local payload response
-  payload="$(jq -nc --arg provider "${provider}" --arg api_key "${api_key}" '{provider:$provider,type:"api",api_key:$api_key,active:true}')"
+  payload="$(SWARM_HARNESS_PROVIDER="${provider}" SWARM_HARNESS_API_KEY="${api_key}" jq -nc '{provider:env.SWARM_HARNESS_PROVIDER,type:"api",api_key:env.SWARM_HARNESS_API_KEY,active:true}')"
   response="$(api_post '/v1/auth/credentials' "${payload}")"
   printf '%s' "${response}"
 }
 
 wait_for_remote_child_synced_provider() {
-  local child_base_url="${1:-}"
+  local remote_session_json="${1:-}"
   local provider="${2:-}"
   local want_storage_mode="${3:-}"
-  [[ -n "${child_base_url}" ]] || fail "child base url is required for synced credential wait"
+  [[ -n "${remote_session_json}" ]] || fail "remote session json is required for synced credential wait"
   [[ -n "${provider}" ]] || fail "provider is required for synced credential wait"
-  local child_token start_ts credentials_json match
-  child_token="$(fetch_attach_token_for_base "${child_base_url}")"
-  [[ -n "${child_token}" ]] || fail "failed to fetch child attach token from ${child_base_url}"
+  local start_ts credentials_json match
   start_ts="$(date +%s)"
   while :; do
-    credentials_json="$(json_request_with_bearer "${child_base_url}" "${child_token}" GET "/v1/auth/credentials?provider=${provider}&limit=200" "" 60)"
+    credentials_json="$(remote_child_json_request_over_ssh "${remote_session_json}" GET "/v1/auth/credentials?provider=${provider}&limit=200" "" 60)"
     if [[ -n "${want_storage_mode}" ]]; then
       match="$(printf '%s' "${credentials_json}" | jq -c --arg provider "${provider}" --arg storage_mode "${want_storage_mode}" '.records[]? | select((.provider // "") == $provider and (.storage_mode // "") == $storage_mode) | .id' | head -n 1)"
     else
@@ -321,7 +270,7 @@ wait_for_remote_child_synced_provider() {
       return 0
     fi
     if (( "$(date +%s)" - start_ts >= POLL_TIMEOUT_SECONDS )); then
-      fail "timed out waiting for synced provider ${provider} on remote child ${child_base_url}"
+      fail "timed out waiting for synced provider ${provider} on remote child"
     fi
     sleep "${POLL_INTERVAL_SECONDS}"
   done
@@ -331,11 +280,14 @@ prepare_host_routed_ai_prereqs() {
   if [[ "${PROVE_ROUTED_AI}" != "true" || "${PROOF_AUTH_SOURCE}" != "host-sync" ]]; then
     return 0
   fi
-  local host_vault_password provider_key
+  local host_vault_password provider_key seed_response
   host_vault_password="${!HOST_VAULT_PASSWORD_ENV:-}"
   provider_key="${!PROOF_PROVIDER_KEY_ENV:-}"
   ensure_host_vault_ready "${host_vault_password}"
-  write_artifact "host-auth-seed.json" "$(seed_host_provider_key "${PROOF_PROVIDER}" "${provider_key}")"
+  if ! seed_response="$(seed_host_provider_key "${PROOF_PROVIDER}" "${provider_key}")"; then
+    fail "failed to seed provider ${PROOF_PROVIDER} on host"
+  fi
+  write_artifact "host-auth-seed.json" "${seed_response}"
 }
 
 port_is_available() {
@@ -499,6 +451,9 @@ prepare_isolated_host() {
   fi
   ARTIFACT_DIR="${HOST_ROOT}/artifacts"
   mkdir -p "${ARTIFACT_DIR}"
+  if [[ "${TEARDOWN_ONLY}" != "true" ]]; then
+    : >"${ARTIFACT_DIR}/timings.ndjson"
+  fi
 
   write_host_startup_config
   write_host_control_files
@@ -725,12 +680,13 @@ create_remote_sessions() {
       --arg group_id "${TARGET_GROUP_ID}" \
       --arg group_name "${TARGET_GROUP_NAME}" \
       --arg remote_runtime "${REMOTE_RUNTIME}" \
+      --arg image_delivery_mode "${IMAGE_DELIVERY_MODE}" \
       --argjson sync_enabled "${SYNC_ENABLED}" \
       --arg source_path "${SOURCE_WORKSPACE_PATH}" \
       --arg workspace_path "${SOURCE_WORKSPACE_PATH}" \
       --arg workspace_name "${WORKSPACE_NAME}" \
       --arg target_path "/workspaces" \
-      '{name:$name,ssh_session_target:$ssh_session_target,transport_mode:$transport_mode,group_id:$group_id,group_name:$group_name,remote_runtime:$remote_runtime,sync_enabled:$sync_enabled,payloads:[{source_path:$source_path,workspace_path:$workspace_path,workspace_name:$workspace_name,target_path:$target_path,mode:"rw"}]} + (if $remote_advertise_host != "" then {remote_advertise_host:$remote_advertise_host} else {} end)')"
+      '{name:$name,ssh_session_target:$ssh_session_target,transport_mode:$transport_mode,group_id:$group_id,group_name:$group_name,remote_runtime:$remote_runtime,image_delivery_mode:$image_delivery_mode,sync_enabled:$sync_enabled,payloads:[{source_path:$source_path,workspace_path:$workspace_path,workspace_name:$workspace_name,target_path:$target_path,mode:"rw"}]} + (if $remote_advertise_host != "" then {remote_advertise_host:$remote_advertise_host} else {} end)')"
     create_started_ms="$(now_ms)"
     create_response="$(api_post '/v1/deploy/remote/session/create' "${create_payload}")"
     create_duration_ms=$(( $(now_ms) - create_started_ms ))
@@ -764,6 +720,22 @@ refresh_remote_sessions() {
   write_artifact "remote-sessions-latest.json" "${REMOTE_SESSIONS_JSON}"
 }
 
+try_refresh_remote_sessions() {
+  local output err_file err_text
+  err_file="$(mktemp)"
+  if output="$(api_get '/v1/deploy/remote/session?refresh=1' 2>"${err_file}")"; then
+    rm -f -- "${err_file}"
+    REMOTE_SESSIONS_JSON="${output}"
+    write_artifact "remote-sessions-latest.json" "${REMOTE_SESSIONS_JSON}"
+    return 0
+  fi
+  err_text="$(cat -- "${err_file}")"
+  rm -f -- "${err_file}"
+  write_artifact "remote-sessions-refresh-error-latest.txt" "${err_text}"
+  log "Remote session refresh failed; retrying: $(printf '%s' "${err_text}" | tail -n 1)"
+  return 1
+}
+
 session_json_by_id() {
   local session_id="${1:-}"
   printf '%s' "${REMOTE_SESSIONS_JSON}" | jq -c --arg session_id "${session_id}" '.sessions[] | select(.id == $session_id)' | head -n 1
@@ -783,18 +755,46 @@ populate_session_arrays_from_remote_sessions() {
   done < <(printf '%s' "${REMOTE_SESSIONS_JSON}" | jq -r '.sessions[]? | @base64')
 }
 
+remote_child_json_request_over_ssh() {
+  local remote_session_json="${1:-}"
+  local method="${2:-GET}"
+  local path="${3:-}"
+  local body="${4:-}"
+  local max_time_seconds="${5:-60}"
+  [[ -n "${remote_session_json}" ]] || fail "remote session json is required for remote child request"
+  [[ -n "${path}" ]] || fail "remote child request path is required"
+
+  local ssh_target remote_root socket_path remote_script
+  ssh_target="$(printf '%s' "${remote_session_json}" | jq -r '.ssh_session_target // empty')"
+  remote_root="$(printf '%s' "${remote_session_json}" | jq -r '.preflight.remote_root // empty')"
+  [[ -n "${ssh_target}" ]] || fail "remote session is missing ssh_session_target"
+  [[ -n "${remote_root}" ]] || fail "remote session is missing preflight.remote_root"
+  socket_path="${remote_root%/}/state/swarmd/local-transport/api.sock"
+
+  remote_script="$(printf '%s\n' \
+    'set -euo pipefail' \
+    'request_body="$(mktemp)"' \
+    'cleanup() { rm -f -- "${request_body}"; }' \
+    'trap cleanup EXIT' \
+    'cat >"${request_body}"' \
+    "args=(-fsS --connect-timeout 3 --max-time '${max_time_seconds}' --unix-socket '${socket_path}' -H 'Accept: application/json' -X '${method}')" \
+    'if [ -s "${request_body}" ]; then' \
+    '  args+=(-H "Content-Type: application/json" --data-binary "@${request_body}")' \
+    'fi' \
+    "curl \"\${args[@]}\" 'http://swarmd${path}'")"
+  printf '%s' "${body}" | ssh "${ssh_target}" "bash -lc $(printf '%q' "${remote_script}")"
+}
+
 seed_remote_child_provider_key() {
-  local child_base_url="${1:-}"
+  local remote_session_json="${1:-}"
   local provider="${2:-}"
   local api_key="${3:-}"
-  [[ -n "${child_base_url}" ]] || fail "child base url is required for provider seeding"
+  [[ -n "${remote_session_json}" ]] || fail "remote session json is required for provider seeding"
   [[ -n "${provider}" ]] || fail "provider is required for provider seeding"
   [[ -n "${api_key}" ]] || fail "provider api key is required for provider seeding"
-  local child_token payload response
-  child_token="$(fetch_attach_token_for_base "${child_base_url}")"
-  [[ -n "${child_token}" ]] || fail "failed to fetch child attach token from ${child_base_url}"
-  payload="$(jq -nc --arg provider "${provider}" --arg api_key "${api_key}" '{provider:$provider,type:"api",api_key:$api_key,active:true}')"
-  response="$(json_request_with_bearer "${child_base_url}" "${child_token}" POST '/v1/auth/credentials' "${payload}" 60)"
+  local payload response
+  payload="$(SWARM_HARNESS_PROVIDER="${provider}" SWARM_HARNESS_API_KEY="${api_key}" jq -nc '{provider:env.SWARM_HARNESS_PROVIDER,type:"api",api_key:env.SWARM_HARNESS_API_KEY,active:true}')"
+  response="$(remote_child_json_request_over_ssh "${remote_session_json}" POST '/v1/auth/credentials' "${payload}" 60)"
   printf '%s' "${response}"
 }
 
@@ -901,13 +901,17 @@ run_routed_ai_proof_for_session() {
   [[ -n "${remote_session_json}" ]] || fail "remote session json is required for routed AI proof"
   [[ -n "${session_id}" ]] || fail "remote deploy session id is required for routed AI proof"
 
-  local child_swarm_id child_base_url runtime_workspace_path provider_key want_storage_mode
-  local started_ms duration_ms timing_extra_json
+  local child_swarm_id child_base_url runtime_workspace_path provider_key want_storage_mode bash_expected
+  local started_ms duration_ms timing_extra_json exit_total_started_ms bash_total_started_ms
   child_swarm_id="$(printf '%s' "${remote_session_json}" | jq -r '.child_swarm_id // empty')"
   child_base_url="$(printf '%s' "${remote_session_json}" | jq -r '.remote_endpoint // .remote_tailnet_url // empty')"
   runtime_workspace_path="$(printf '%s' "${remote_session_json}" | jq -r '.preflight.payloads[0].target_path // empty')"
   if [[ -z "${runtime_workspace_path}" || "${runtime_workspace_path}" == "null" ]]; then
     runtime_workspace_path="/workspaces/${WORKSPACE_NAME}"
+  fi
+  bash_expected="${PROOF_BASH_EXPECTED}"
+  if [[ -z "${bash_expected}" ]]; then
+    bash_expected="${runtime_workspace_path}"
   fi
   provider_key="${!PROOF_PROVIDER_KEY_ENV:-}"
   want_storage_mode=""
@@ -918,13 +922,21 @@ run_routed_ai_proof_for_session() {
 
   case "${PROOF_AUTH_SOURCE}" in
     child)
-      write_artifact "remote-session-${session_id}-child-auth-seed.json" "$(seed_remote_child_provider_key "${child_base_url}" "${PROOF_PROVIDER}" "${provider_key}")"
+      local child_seed_response
+      if ! child_seed_response="$(seed_remote_child_provider_key "${remote_session_json}" "${PROOF_PROVIDER}" "${provider_key}")"; then
+        fail "failed to seed provider ${PROOF_PROVIDER} on remote child for session ${session_id}"
+      fi
+      write_artifact "remote-session-${session_id}-child-auth-seed.json" "${child_seed_response}"
       ;;
     host-sync)
       if [[ -n "${HOST_VAULT_PASSWORD_ENV}" ]]; then
         want_storage_mode="pebble/vault"
       fi
-      write_artifact "remote-session-${session_id}-child-auth-synced.json" "$(wait_for_remote_child_synced_provider "${child_base_url}" "${PROOF_PROVIDER}" "${want_storage_mode}")"
+      local child_sync_response
+      if ! child_sync_response="$(wait_for_remote_child_synced_provider "${remote_session_json}" "${PROOF_PROVIDER}" "${want_storage_mode}")"; then
+        fail "failed waiting for provider ${PROOF_PROVIDER} on remote child for session ${session_id}"
+      fi
+      write_artifact "remote-session-${session_id}-child-auth-synced.json" "${child_sync_response}"
       ;;
     *)
       fail "unsupported proof auth source: ${PROOF_AUTH_SOURCE}"
@@ -941,7 +953,8 @@ run_routed_ai_proof_for_session() {
   routed_session_id="$(printf '%s' "${routed_create_json}" | jq -r '.session.id // empty')"
   [[ -n "${routed_session_id}" ]] || fail "routed session create for remote session ${session_id} returned no session id"
 
-  started_ms="$(now_ms)"
+  exit_total_started_ms="$(now_ms)"
+  started_ms="${exit_total_started_ms}"
   write_artifact "remote-session-${session_id}-run-exit-plan-start.json" "$(start_routed_session_run "${routed_session_id}" "Exit plan mode. After approval, reply with exactly: I got out.")"
   duration_ms=$(( $(now_ms) - started_ms ))
   timing_extra_json="$(jq -nc --arg session_id "${session_id}" --arg routed_session_id "${routed_session_id}" '{session_id:$session_id,routed_session_id:$routed_session_id}')"
@@ -966,8 +979,11 @@ run_routed_ai_proof_for_session() {
   write_artifact "remote-session-${session_id}-message-i-got-out.json" "$(wait_for_message_content "${routed_session_id}" "I got out.")"
   duration_ms=$(( $(now_ms) - started_ms ))
   write_timing_artifact "remote-session-${session_id}-message-i-got-out-timing.json" "routed_wait_exit_plan_message" "${duration_ms}" "${timing_extra_json}"
+  duration_ms=$(( $(now_ms) - exit_total_started_ms ))
+  write_timing_artifact "remote-session-${session_id}-exit-plan-total-timing.json" "routed_exit_plan_total_host_to_response" "${duration_ms}" "${timing_extra_json}"
 
-  started_ms="$(now_ms)"
+  bash_total_started_ms="$(now_ms)"
+  started_ms="${bash_total_started_ms}"
   write_artifact "remote-session-${session_id}-run-bash-start.json" "$(start_routed_session_run "${routed_session_id}" "Run exactly this bash command and return only its output: ${PROOF_BASH_COMMAND}")"
   duration_ms=$(( $(now_ms) - started_ms ))
   write_timing_artifact "remote-session-${session_id}-run-bash-start-timing.json" "routed_run_start_bash" "${duration_ms}" "${timing_extra_json}"
@@ -984,9 +1000,11 @@ run_routed_ai_proof_for_session() {
   duration_ms=$(( $(now_ms) - started_ms ))
   write_timing_artifact "remote-session-${session_id}-permission-bash-resolve-timing.json" "routed_resolve_bash_permission" "${duration_ms}" "${timing_extra_json}"
   started_ms="$(now_ms)"
-  write_artifact "remote-session-${session_id}-message-bash-output.json" "$(wait_for_message_content "${routed_session_id}" "${runtime_workspace_path}")"
+  write_artifact "remote-session-${session_id}-message-bash-output.json" "$(wait_for_message_content "${routed_session_id}" "${bash_expected}")"
   duration_ms=$(( $(now_ms) - started_ms ))
   write_timing_artifact "remote-session-${session_id}-message-bash-output-timing.json" "routed_wait_bash_message" "${duration_ms}" "${timing_extra_json}"
+  duration_ms=$(( $(now_ms) - bash_total_started_ms ))
+  write_timing_artifact "remote-session-${session_id}-bash-total-timing.json" "routed_bash_total_host_to_remote_response" "${duration_ms}" "${timing_extra_json}"
 }
 
 approve_remote_session() {
@@ -1008,7 +1026,13 @@ wait_for_remote_attach() {
   start_ts="$(date +%s)"
   declare -gA LAST_PRINTED_AUTH_URLS=()
   while :; do
-    refresh_remote_sessions
+    if ! try_refresh_remote_sessions; then
+      if (( "$(date +%s)" - start_ts >= POLL_TIMEOUT_SECONDS )); then
+        fail "timed out waiting for remote sessions to attach after ${POLL_TIMEOUT_SECONDS}s"
+      fi
+      sleep "${POLL_INTERVAL_SECONDS}"
+      continue
+    fi
     local pending_count=0
     local idx session_id session_name target session_json status auth_url enrollment_id last_error
     for idx in "${!SESSION_IDS[@]}"; do
@@ -1086,12 +1110,13 @@ write_summary() {
     --arg host_callback_url "${HOST_CALLBACK_URL}" \
     --arg transport_mode "${TRANSPORT_MODE}" \
     --arg host_tailscale_url "${HOST_TAILSCALE_URL}" \
+    --arg image_delivery_mode "${IMAGE_DELIVERY_MODE}" \
     --arg group_id "${TARGET_GROUP_ID}" \
     --arg group_name "${TARGET_GROUP_NAME}" \
     --arg workspace_path "${SOURCE_WORKSPACE_PATH}" \
     --arg workspace_name "${WORKSPACE_NAME}" \
     --argjson sessions "${REMOTE_SESSIONS_JSON}" \
-    '{host_root:$host_root,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_callback_url:$host_callback_url,transport_mode:$transport_mode,host_tailscale_url:$host_tailscale_url,group_id:$group_id,group_name:$group_name,workspace_path:$workspace_path,workspace_name:$workspace_name,sessions:($sessions.sessions // [])}')"
+    '{host_root:$host_root,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_callback_url:$host_callback_url,transport_mode:$transport_mode,image_delivery_mode:$image_delivery_mode,host_tailscale_url:$host_tailscale_url,group_id:$group_id,group_name:$group_name,workspace_path:$workspace_path,workspace_name:$workspace_name,sessions:($sessions.sessions // [])}')"
   write_artifact "summary.json" "${summary_json}"
 }
 
@@ -1136,7 +1161,9 @@ print_next_steps() {
   log "  host api: ${HOST_ADMIN_API_URL}"
   log "  host desktop: ${HOST_DESKTOP_URL}"
   log "  transport mode: ${TRANSPORT_MODE}"
+  log "  image delivery mode: ${IMAGE_DELIVERY_MODE}"
   log "  host callback: ${HOST_CALLBACK_URL}"
+  log "  timings: ${ARTIFACT_DIR}/timings.ndjson"
   [[ -n "${HOST_TAILSCALE_URL}" ]] && log "  host tailscale url: ${HOST_TAILSCALE_URL}"
   for idx in "${!SESSION_IDS[@]}"; do
     session_id="${SESSION_IDS[$idx]}"
@@ -1196,6 +1223,7 @@ GROUP_ID=""
 GROUP_NAME=""
 REMOTE_RUNTIME="docker"
 TRANSPORT_MODE="tailscale"
+IMAGE_DELIVERY_MODE="registry"
 SESSION_PREFIX="ssh-remote-e2e"
 LAUNCHES_PER_TARGET=1
 POLL_TIMEOUT_SECONDS=600
@@ -1207,6 +1235,7 @@ PROOF_THINKING="high"
 PROOF_AUTH_SOURCE="child"
 PROOF_PROVIDER_KEY_ENV=""
 PROOF_BASH_COMMAND="pwd"
+PROOF_BASH_EXPECTED=""
 
 SSH_TARGETS=()
 SESSION_IDS=()
@@ -1238,6 +1267,11 @@ while (($# > 0)); do
       shift
       [[ $# -gt 0 ]] || fail "--remote-runtime requires a value"
       REMOTE_RUNTIME="$1"
+      ;;
+    --image-delivery-mode)
+      shift
+      [[ $# -gt 0 ]] || fail "--image-delivery-mode requires a value"
+      IMAGE_DELIVERY_MODE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
       ;;
     --session-prefix)
       shift
@@ -1395,6 +1429,11 @@ while (($# > 0)); do
       [[ $# -gt 0 ]] || fail "--proof-bash-command requires a value"
       PROOF_BASH_COMMAND="$1"
       ;;
+    --proof-bash-expected)
+      shift
+      [[ $# -gt 0 ]] || fail "--proof-bash-expected requires a value"
+      PROOF_BASH_EXPECTED="$1"
+      ;;
     --teardown-only)
       TEARDOWN_ONLY="true"
       ;;
@@ -1439,6 +1478,11 @@ esac
 case "${TRANSPORT_MODE}" in
   tailscale|lan) ;;
   *) fail "--transport-mode must be tailscale or lan" ;;
+esac
+
+case "${IMAGE_DELIVERY_MODE}" in
+  registry|archive) ;;
+  *) fail "--image-delivery-mode must be registry or archive" ;;
 esac
 
 case "${TAILSCALE_AUTH_MODE}" in
