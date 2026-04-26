@@ -263,6 +263,9 @@ func newUpdatePlanTestService(t *testing.T, cfg startupconfig.FileConfig) (*Serv
 	svc.inspectImageFn = func(ctx context.Context, runtimeName, image string) (runtimeImageInfo, error) {
 		return runtimeImageInfo{ID: "sha256:test", Labels: map[string]string{}}, nil
 	}
+	svc.inspectContainerImageFn = func(ctx context.Context, runtimeName, containerName string) (runtimeImageInfo, error) {
+		return svc.inspectImageFn(ctx, runtimeName, containerName)
+	}
 	return svc, func() { _ = store.Close() }
 }
 

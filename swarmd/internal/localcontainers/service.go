@@ -39,6 +39,7 @@ const (
 	PathContainerDelete       = "swarm.containers.local.delete.v1"
 	PathContainerPrune        = "swarm.containers.local.prune-missing.v1"
 	PathContainerUpdatePlan   = "swarm.containers.local.update-plan.v1"
+	PathContainerReplace      = "swarm.containers.local.replace.v1"
 	defaultImageName          = devmode.DefaultContainerImageRef
 	ProductionImagePrefix     = "ghcr.io/swarm-agent/swarm"
 	OfficialSourceRepository  = "https://github.com/swarm-agent/swarm"
@@ -205,6 +206,31 @@ type UpdatePlanInput struct {
 	PostRebuildCheck bool
 }
 
+type ReplaceInput struct {
+	ID        string
+	Target    UpdatePlanTarget
+	DevMode   *bool
+	StartMode string
+}
+
+type ReplaceResult struct {
+	PathID              string    `json:"path_id"`
+	ID                  string    `json:"id"`
+	Name                string    `json:"name"`
+	ContainerName       string    `json:"container_name,omitempty"`
+	Runtime             string    `json:"runtime,omitempty"`
+	PreviousContainerID string    `json:"previous_container_id,omitempty"`
+	ContainerID         string    `json:"container_id,omitempty"`
+	PreviousImageRef    string    `json:"previous_image_ref,omitempty"`
+	TargetImageRef      string    `json:"target_image_ref,omitempty"`
+	TargetFingerprint   string    `json:"target_fingerprint,omitempty"`
+	Status              string    `json:"status,omitempty"`
+	State               string    `json:"state"`
+	Reason              string    `json:"reason,omitempty"`
+	Warning             string    `json:"warning,omitempty"`
+	Container           Container `json:"container"`
+}
+
 type RuntimeNetwork struct {
 	Runtime string `json:"runtime"`
 	Name    string `json:"name"`
@@ -212,17 +238,25 @@ type RuntimeNetwork struct {
 }
 
 type Service struct {
-	store              *pebblestore.SwarmLocalContainerStore
-	deployments        *pebblestore.DeployContainerStore
-	swarmStore         *pebblestore.SwarmStore
-	authStore          *pebblestore.AuthStore
-	workspace          *workspaceruntime.Service
-	startupPath        string
-	dataDir            string
-	inspectContainerFn func(string, string) (string, string, error)
-	inspectImageFn     func(context.Context, string, string) (runtimeImageInfo, error)
-	hostCallbackURLsMu sync.RWMutex
-	hostCallbackURLs   map[string]string
+	store                     *pebblestore.SwarmLocalContainerStore
+	deployments               *pebblestore.DeployContainerStore
+	swarmStore                *pebblestore.SwarmStore
+	authStore                 *pebblestore.AuthStore
+	workspace                 *workspaceruntime.Service
+	startupPath               string
+	dataDir                   string
+	inspectContainerFn        func(string, string) (string, string, error)
+	inspectContainerImageFn   func(context.Context, string, string) (runtimeImageInfo, error)
+	inspectContainerEnvFn     func(context.Context, string, string) ([]string, error)
+	inspectContainerMountsFn  func(context.Context, string, string) ([]Mount, error)
+	inspectContainerRunArgsFn func(context.Context, string, string) ([]string, error)
+	inspectImageFn            func(context.Context, string, string) (runtimeImageInfo, error)
+	runContainerFn            func(context.Context, string, runOptions) (string, error)
+	renameContainerFn         func(context.Context, string, string, string) error
+	removeContainerFn         func(context.Context, string, string) error
+	controlContainerFn        func(context.Context, string, string, string) error
+	hostCallbackURLsMu        sync.RWMutex
+	hostCallbackURLs          map[string]string
 }
 
 func NewService(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath string) *Service {
@@ -231,16 +265,24 @@ func NewService(store *pebblestore.SwarmLocalContainerStore, deployments *pebble
 
 func NewServiceWithDataDir(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath, dataDir string) *Service {
 	return &Service{
-		store:              store,
-		deployments:        deployments,
-		swarmStore:         swarmStore,
-		authStore:          authStore,
-		workspace:          workspaceSvc,
-		startupPath:        strings.TrimSpace(startupPath),
-		dataDir:            strings.TrimSpace(dataDir),
-		inspectContainerFn: inspectContainer,
-		inspectImageFn:     inspectRuntimeImage,
-		hostCallbackURLs:   make(map[string]string),
+		store:                     store,
+		deployments:               deployments,
+		swarmStore:                swarmStore,
+		authStore:                 authStore,
+		workspace:                 workspaceSvc,
+		startupPath:               strings.TrimSpace(startupPath),
+		dataDir:                   strings.TrimSpace(dataDir),
+		inspectContainerFn:        inspectContainer,
+		inspectContainerImageFn:   inspectRuntimeContainerImage,
+		inspectContainerEnvFn:     inspectRuntimeContainerEnv,
+		inspectContainerMountsFn:  inspectRuntimeContainerMounts,
+		inspectContainerRunArgsFn: inspectRuntimeContainerRunArgs,
+		inspectImageFn:            inspectRuntimeImage,
+		runContainerFn:            runContainer,
+		renameContainerFn:         renameContainer,
+		removeContainerFn:         removeContainer,
+		controlContainerFn:        controlContainer,
+		hostCallbackURLs:          make(map[string]string),
 	}
 }
 
@@ -378,7 +420,7 @@ func localUpdateContract() UpdateContract {
 		WarningCopy:      "This will also update your local containers.",
 		DismissalScope:   "local-container-update-warning",
 		FailureSemantics: "Swarm update succeeds independently; local container update failures are reported as resumable follow-up work.",
-		Replacement:      "not-performed-in-this-checkpoint",
+		Replacement:      "replace-one-local-container-primitive",
 	}
 }
 
@@ -479,11 +521,7 @@ func (s *Service) planLocalContainerUpdate(ctx context.Context, record pebblesto
 		item.Reason = "missing_stored_image"
 		return item
 	}
-	inspector := inspectRuntimeImage
-	if s != nil && s.inspectImageFn != nil {
-		inspector = s.inspectImageFn
-	}
-	imageInfo, imageErr := inspector(ctx, resolved.Runtime, imageRef)
+	imageInfo, imageErr := s.inspectCurrentContainerImage(ctx, resolved, imageRef, startupCfg.DevMode)
 	if imageErr != nil {
 		item.State = "unknown"
 		item.Reason = "image_inspect_error"
@@ -529,6 +567,23 @@ func (s *Service) planLocalContainerUpdate(ctx context.Context, record pebblesto
 		item.State = "needs-update"
 	}
 	return item
+}
+
+func (s *Service) inspectCurrentContainerImage(ctx context.Context, record pebblestore.SwarmLocalContainerRecord, fallbackImageRef string, devMode bool) (runtimeImageInfo, error) {
+	if devMode && s != nil && s.inspectContainerImageFn != nil && strings.TrimSpace(record.ContainerName) != "" {
+		imageInfo, err := s.inspectContainerImageFn(ctx, record.Runtime, record.ContainerName)
+		if err == nil {
+			return imageInfo, nil
+		}
+		if strings.TrimSpace(fallbackImageRef) == "" {
+			return runtimeImageInfo{}, err
+		}
+	}
+	inspector := inspectRuntimeImage
+	if s != nil && s.inspectImageFn != nil {
+		inspector = s.inspectImageFn
+	}
+	return inspector(ctx, record.Runtime, fallbackImageRef)
 }
 
 func isPackageAwareLocalImage(imageRef string, labels map[string]string) bool {
@@ -936,6 +991,28 @@ func normalizeDeleteIDs(containerIDs []string) []string {
 	return out
 }
 
+func renameContainer(ctx context.Context, runtimeName, oldName, newName string) error {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if runtimeName == "" {
+		return errors.New("container runtime is required")
+	}
+	if oldName == "" || newName == "" {
+		return errors.New("container names are required")
+	}
+	cmd := exec.CommandContext(ctx, runtimeName, "rename", oldName, newName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("rename %s container: %s", runtimeName, message)
+	}
+	return nil
+}
+
 func removeContainer(ctx context.Context, runtimeName, containerName string) error {
 	runtimeName = normalizeRuntimeSelection(runtimeName)
 	containerName = strings.TrimSpace(containerName)
@@ -1179,6 +1256,151 @@ func (info runtimeImageInfo) digestRefFor(imageRef string) string {
 		}
 	}
 	return ""
+}
+
+func inspectRuntimeContainerEnv(parent context.Context, runtimeName, containerName string) ([]string, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	containerName = strings.TrimSpace(containerName)
+	if runtimeName == "" || containerName == "" {
+		return nil, fmt.Errorf("runtime and container name are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "inspect", "--format", "{{json .Config.Env}}", containerName)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("container env inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return nil, errors.New(message)
+	}
+	var env []string
+	if err := json.Unmarshal(output, &env); err != nil {
+		return nil, fmt.Errorf("decode container env inspect: %w", err)
+	}
+	return env, nil
+}
+
+func inspectRuntimeContainerMounts(parent context.Context, runtimeName, containerName string) ([]Mount, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	containerName = strings.TrimSpace(containerName)
+	if runtimeName == "" || containerName == "" {
+		return nil, fmt.Errorf("runtime and container name are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "inspect", "--format", "{{json .Mounts}}", containerName)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("container mounts inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return nil, errors.New(message)
+	}
+	var rawMounts []struct {
+		Source      string `json:"Source"`
+		Destination string `json:"Destination"`
+		Mode        string `json:"Mode"`
+		RW          bool   `json:"RW"`
+	}
+	if err := json.Unmarshal(output, &rawMounts); err != nil {
+		return nil, fmt.Errorf("decode container mounts inspect: %w", err)
+	}
+	mounts := make([]Mount, 0, len(rawMounts))
+	for _, raw := range rawMounts {
+		mount := Mount{SourcePath: strings.TrimSpace(raw.Source), TargetPath: strings.TrimSpace(raw.Destination)}
+		mode := strings.ToLower(strings.TrimSpace(raw.Mode))
+		if !raw.RW || strings.Contains(mode, "ro") {
+			mount.Mode = pebblestore.ContainerMountModeReadOnly
+		} else {
+			mount.Mode = pebblestore.ContainerMountModeReadWrite
+		}
+		if mount.SourcePath != "" && mount.TargetPath != "" {
+			mounts = append(mounts, mount)
+		}
+	}
+	return mounts, nil
+}
+
+func inspectRuntimeContainerRunArgs(parent context.Context, runtimeName, containerName string) ([]string, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	containerName = strings.TrimSpace(containerName)
+	if runtimeName == "" || containerName == "" {
+		return nil, fmt.Errorf("runtime and container name are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "inspect", "--format", "{{json .HostConfig.ExtraHosts}}", containerName)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("container run args inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return nil, errors.New(message)
+	}
+	var extraHosts []string
+	if err := json.Unmarshal(output, &extraHosts); err != nil {
+		return nil, nil
+	}
+	args := make([]string, 0, len(extraHosts)*2)
+	for _, host := range extraHosts {
+		host = strings.TrimSpace(host)
+		if host != "" {
+			args = append(args, "--add-host", host)
+		}
+	}
+	return args, nil
+}
+
+func inspectRuntimeContainerImage(parent context.Context, runtimeName, containerName string) (runtimeImageInfo, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	containerName = strings.TrimSpace(containerName)
+	if runtimeName == "" || containerName == "" {
+		return runtimeImageInfo{}, fmt.Errorf("runtime and container name are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "inspect", "--format", "{{.Image}}", containerName)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return runtimeImageInfo{}, fmt.Errorf("container image inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return runtimeImageInfo{}, errors.New(message)
+	}
+	imageID := strings.TrimSpace(string(output))
+	if imageID == "" || imageID == "<no value>" {
+		return runtimeImageInfo{}, errors.New("container inspect returned no image id")
+	}
+	return inspectRuntimeImage(parent, runtimeName, imageID)
 }
 
 func inspectRuntimeImage(parent context.Context, runtimeName, image string) (runtimeImageInfo, error) {
@@ -2117,6 +2339,20 @@ func normalizeEnv(values []string) []string {
 		}
 		seen[lowerKey] = struct{}{}
 		out = append(out, key+"="+strings.TrimSpace(strings.TrimPrefix(value, key+"=")))
+	}
+	return out
+}
+
+func AppendInheritedChildDebugEnv(env []string) []string {
+	keys := []string{
+		"SWARMD_RUN_REQUEST_DEBUG",
+		"SWARMD_FIREWORKS_DEBUG",
+	}
+	out := append([]string(nil), env...)
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			out = append(out, fmt.Sprintf("%s=%s", key, value))
+		}
 	}
 	return out
 }

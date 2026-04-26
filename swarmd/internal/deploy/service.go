@@ -1425,16 +1425,7 @@ func buildChildContainerEnv(input containerBootstrapEnvInput) []string {
 }
 
 func appendInheritedChildDebugEnv(env []string) []string {
-	keys := []string{
-		"SWARMD_RUN_REQUEST_DEBUG",
-		"SWARMD_FIREWORKS_DEBUG",
-	}
-	for _, key := range keys {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			env = append(env, fmt.Sprintf("%s=%s", key, value))
-		}
-	}
-	return env
+	return localcontainers.AppendInheritedChildDebugEnv(env)
 }
 
 func mapContainerPackageManifest(input ContainerPackageManifest) pebblestore.ContainerPackageManifestRecord {
