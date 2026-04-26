@@ -189,12 +189,14 @@ type ProviderDefaultsPreviewWire = {
   primary_agent?: string;
   primary_model?: string;
   primary_thinking?: string;
+  utility_provider?: string;
   utility_model?: string;
   utility_thinking?: string;
   utility_agents?: string[];
   affected_agents?: string[];
   out_of_sync_agents?: string[];
   inheriting_agents?: string[];
+  stale_inherited_agents?: string[];
 };
 
 type AgentStateWire = {
@@ -914,6 +916,7 @@ function mapProviderDefaultsPreview(
     primaryAgent: String(preview.primary_agent ?? "").trim(),
     primaryModel: String(preview.primary_model ?? "").trim(),
     primaryThinking: String(preview.primary_thinking ?? "").trim(),
+    utilityProvider: String(preview.utility_provider ?? preview.provider ?? "").trim(),
     utilityModel: String(preview.utility_model ?? "").trim(),
     utilityThinking: String(preview.utility_thinking ?? "").trim(),
     utilityAgents: Array.isArray(preview.utility_agents)
@@ -933,6 +936,11 @@ function mapProviderDefaultsPreview(
       : [],
     inheritingAgents: Array.isArray(preview.inheriting_agents)
       ? preview.inheriting_agents
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+      : [],
+    staleInheritedAgents: Array.isArray(preview.stale_inherited_agents)
+      ? preview.stale_inherited_agents
           .map((value) => String(value).trim())
           .filter(Boolean)
       : [],
@@ -981,7 +989,21 @@ function mapAgentDefaultsState(
   };
 }
 
-export async function restoreAgentDefaults(): Promise<AgentStateRecord> {
+export async function restoreAgentDefaults(input?: {
+  utilityProvider?: string;
+  utilityModel?: string;
+  utilityThinking?: string;
+}): Promise<AgentStateRecord> {
+  const body: Record<string, string> = {};
+  if (input?.utilityProvider !== undefined) {
+    body.utility_provider = input.utilityProvider;
+  }
+  if (input?.utilityModel !== undefined) {
+    body.utility_model = input.utilityModel;
+  }
+  if (input?.utilityThinking !== undefined) {
+    body.utility_thinking = input.utilityThinking;
+  }
   const response = await requestJson<RestoreAgentDefaultsWire>(
     "/v2/agents/defaults/restore",
     {
@@ -989,7 +1011,7 @@ export async function restoreAgentDefaults(): Promise<AgentStateRecord> {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify(body),
     },
   );
   return mapAgentDefaultsState(response);

@@ -1211,6 +1211,10 @@ func defaultSubagentAssignments() map[string]string {
 	}
 }
 
+func DefaultProfileByName(name string) (pebblestore.AgentProfile, bool) {
+	return defaultProfileByName(name, time.Now().UnixMilli())
+}
+
 func defaultProfileByName(name string, now int64) (pebblestore.AgentProfile, bool) {
 	name = normalizeName(name)
 	for _, profile := range defaultProfiles(now) {

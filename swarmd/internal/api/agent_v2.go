@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -145,6 +146,24 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 		methodNotAllowed(w)
 		return
 	}
+	var req struct {
+		UtilityProvider *string `json:"utility_provider"`
+		UtilityModel    *string `json:"utility_model"`
+		UtilityThinking *string `json:"utility_thinking"`
+	}
+	if r.Body != nil && r.Body != http.NoBody {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if len(strings.TrimSpace(string(body))) > 0 {
+			if err := decodeJSONBytes(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+	}
 	state, _, event, err := s.agents.RestoreDefaults()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -153,7 +172,23 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 	if event != nil && s.hub != nil {
 		s.hub.Publish(*event)
 	}
-	state, err = s.applyProviderDefaultsToBuiltIns(state)
+	if req.UtilityProvider != nil || req.UtilityModel != nil || req.UtilityThinking != nil {
+		provider := ""
+		model := ""
+		thinking := ""
+		if req.UtilityProvider != nil {
+			provider = *req.UtilityProvider
+		}
+		if req.UtilityModel != nil {
+			model = *req.UtilityModel
+		}
+		if req.UtilityThinking != nil {
+			thinking = *req.UtilityThinking
+		}
+		state, err = s.applyUtilityAIToBuiltIns(state, provider, model, thinking)
+	} else {
+		state, err = s.applyProviderDefaultsToBuiltIns(state)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

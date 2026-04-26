@@ -9,7 +9,6 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/provider/defaults"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func (s *Server) applyUtilityModelDefaults(preferredProvider string) (*auth.AutoDefaultsStatus, error) {
@@ -56,8 +55,8 @@ func (s *Server) applyUtilityModelDefaults(preferredProvider string) (*auth.Auto
 		return nil, fmt.Errorf("list agent state: %w", err)
 	}
 
-	assignments := make(map[string]struct{}, len(providerDefaults.UtilitySubagents))
-	for _, name := range providerDefaults.UtilitySubagents {
+	assignments := make(map[string]struct{}, len(builtinUtilityAgentNames()))
+	for _, name := range builtinUtilityAgentNames() {
 		if normalized := strings.ToLower(strings.TrimSpace(name)); normalized != "" {
 			assignments[normalized] = struct{}{}
 		}
@@ -67,57 +66,27 @@ func (s *Server) applyUtilityModelDefaults(preferredProvider string) (*auth.Auto
 	}
 	agentsSeen := make(map[string]struct{}, len(assignments))
 	subagentsSeen := make(map[string]struct{}, len(assignments))
-	for _, profile := range state.Profiles {
-		name := strings.ToLower(strings.TrimSpace(profile.Name))
-		if name == "" {
-			continue
-		}
-		mode := strings.ToLower(strings.TrimSpace(profile.Mode))
-		if mode == agentruntime.ModePrimary {
-			continue
-		}
-		if _, target := assignments[name]; !target {
-			continue
-		}
-		if mode != agentruntime.ModeSubagent {
-			continue
-		}
-		shouldAssign := firstProviderOnboarding
-		if !shouldAssign {
-			continue
-		}
-		enabled := profile.Enabled
-		profileThinking := strings.ToLower(strings.TrimSpace(profile.Thinking))
-		if profileThinking == "" {
-			profileThinking = providerDefaults.UtilityThinking
-		}
-		updated, _, event, err := s.agents.Upsert(agentruntime.UpsertInput{
-			Name:                profile.Name,
-			Mode:                profile.Mode,
-			Description:         profile.Description,
-			Provider:            providerID,
-			Model:               providerDefaults.UtilityModel,
-			Thinking:            profileThinking,
-			Prompt:              profile.Prompt,
-			ExecutionSetting:    profile.ExecutionSetting,
-			ExitPlanModeEnabled: pebblestore.CloneBoolPtr(profile.ExitPlanModeEnabled),
-			ToolScope:           pebblestore.CloneAgentToolScope(profile.ToolScope),
-			ToolContract:        pebblestore.CloneAgentToolContract(profile.ToolContract),
-			Enabled:             &enabled,
-		})
+	if firstProviderOnboarding {
+		state, err = s.applyUtilityAIToBuiltIns(state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking)
 		if err != nil {
-			return nil, fmt.Errorf("set utility defaults for subagent %q: %w", profile.Name, err)
+			return nil, fmt.Errorf("set utility AI defaults: %w", err)
 		}
-		if event != nil && s.hub != nil {
-			s.hub.Publish(*event)
+		for _, profile := range state.Profiles {
+			name := strings.ToLower(strings.TrimSpace(profile.Name))
+			if name == "" {
+				continue
+			}
+			if _, target := assignments[name]; !target {
+				continue
+			}
+			agentsSeen[name] = struct{}{}
+			if strings.EqualFold(strings.TrimSpace(profile.Mode), agentruntime.ModeSubagent) {
+				subagentsSeen[name] = struct{}{}
+			}
 		}
-		updatedName := strings.ToLower(strings.TrimSpace(updated.Name))
-		if updatedName == "" {
-			updatedName = name
+		if len(agentsSeen) > 0 {
+			out.Applied = true
 		}
-		agentsSeen[updatedName] = struct{}{}
-		subagentsSeen[updatedName] = struct{}{}
-		out.Applied = true
 	}
 
 	if !out.Applied {

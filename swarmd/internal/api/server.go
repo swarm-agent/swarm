@@ -3727,6 +3727,15 @@ func decodeJSON(r *http.Request, out any) error {
 	}
 	defer r.Body.Close()
 	decoder := json.NewDecoder(r.Body)
+	return decodeJSONObject(decoder, out)
+}
+
+func decodeJSONBytes(body []byte, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	return decodeJSONObject(decoder, out)
+}
+
+func decodeJSONObject(decoder *json.Decoder, out any) error {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(out); err != nil {
 		return err

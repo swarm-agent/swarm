@@ -25,16 +25,21 @@ type AgentModalProfile struct {
 }
 
 type AgentsModalData struct {
-	Profiles         []AgentModalProfile
-	ActivePrimary    string
-	ActiveSubagent   map[string]string
-	Version          int64
-	Providers        []string
-	ModelsByProvider map[string][]string
-	ReasoningModels  map[string]bool
-	DefaultProvider  string
-	DefaultModel     string
-	DefaultThinking  string
+	Profiles             []AgentModalProfile
+	ActivePrimary        string
+	ActiveSubagent       map[string]string
+	Version              int64
+	Providers            []string
+	ModelsByProvider     map[string][]string
+	ReasoningModels      map[string]bool
+	DefaultProvider      string
+	DefaultModel         string
+	DefaultThinking      string
+	UtilityProvider      string
+	UtilityModel         string
+	UtilityThinking      string
+	UtilityAgents        []string
+	StaleInheritedAgents []string
 }
 
 type AgentsModalActionKind string
@@ -110,6 +115,11 @@ type agentsModalState struct {
 	DefaultProvider      string
 	DefaultModel         string
 	DefaultThinking      string
+	UtilityProvider      string
+	UtilityModel         string
+	UtilityThinking      string
+	UtilityAgents        []string
+	StaleInheritedAgents []string
 	SelectedProfile      int
 	ListScroll           int
 	DetailScroll         int
@@ -215,6 +225,11 @@ func (p *HomePage) SetAgentsModalData(data AgentsModalData) {
 	if p.agentsModal.DefaultThinking == "" {
 		p.agentsModal.DefaultThinking = "xhigh"
 	}
+	p.agentsModal.UtilityProvider = strings.ToLower(strings.TrimSpace(data.UtilityProvider))
+	p.agentsModal.UtilityModel = strings.TrimSpace(data.UtilityModel)
+	p.agentsModal.UtilityThinking = normalizeThinkingValue(data.UtilityThinking)
+	p.agentsModal.UtilityAgents = dedupeAgentsModalOptions(data.UtilityAgents)
+	p.agentsModal.StaleInheritedAgents = dedupeAgentsModalOptions(data.StaleInheritedAgents)
 	p.agentsModal.FilterMode = filter
 	if p.agentsModal.FilterMode == "" {
 		p.agentsModal.FilterMode = "all"
@@ -1253,8 +1268,11 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 			}
 		} else if p.agentsModal.Focus == agentsModalFocusDetails {
 			status = "Enter edits • Esc back to cards • ↑/↓ scroll • Tab focus search"
+		} else if len(p.agentsModal.StaleInheritedAgents) > 0 {
+			status = fmt.Sprintf("Stale Utility AI inheritance: %s • Shift+R applies Utility AI", strings.Join(p.agentsModal.StaleInheritedAgents, ", "))
+			statusStyle = p.theme.Warning
 		} else {
-			status = "Enter open profile • a activate primary • n new • t enable/disable • d delete • r refresh • Shift+R restore defaults • Shift+Z reset all"
+			status = "Enter open profile • a activate primary • n new • t enable/disable • d delete • r refresh • Shift+R apply Utility AI • Shift+Z reset all"
 		}
 	}
 	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, statusStyle, clampEllipsis(status, rect.W-4))
@@ -1279,7 +1297,7 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 		p.drawAgentsModalListPane(s, bodyRect)
 	}
 
-	help := "Enter open profile • Tab focus • ↑/↓ move • PgUp/PgDn move • Esc close • Shift+R restore defaults • Shift+Z reset all"
+	help := "Enter open profile • Tab focus • ↑/↓ move • PgUp/PgDn move • Esc close • Shift+R apply Utility AI • Shift+Z reset all"
 	if p.agentsModal.Focus == agentsModalFocusDetails {
 		help = "Enter edit • Tab focus • ↑/↓ or PgUp/PgDn scroll • Esc back to cards"
 	}
@@ -1296,7 +1314,7 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 	} else if p.agentsModal.ConfirmResetDefaults {
 		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.Warning, "Warning: Shift+Z again resets all agents/tools to built-in defaults and deletes custom agents")
 	} else {
-		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "memory cannot be deleted; used for session titles • Shift+R restores built-ins • Shift+Z destructively resets everything")
+		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "memory cannot be deleted; used for session titles • Shift+R applies Utility AI to built-ins • Shift+Z destructively resets everything")
 	}
 	if p.agentsModal.ConfirmUnsaved {
 		p.drawAgentsModalUnsavedConfirm(s, rect)
@@ -1420,6 +1438,9 @@ func (p *HomePage) drawAgentsModalListPane(s tcell.Screen, rect Rect) {
 			}
 			if strings.EqualFold(profile.Name, "swarm") {
 				nameLine += "  [default]"
+			}
+			if p.agentsModalProfileIsUtility(profile.Name) {
+				nameLine += "  [Utility AI]"
 			}
 			lines = append(lines, agentsModalRenderLine{Text: clampEllipsis(nameLine, contentW), Style: lineStyle})
 
@@ -1588,11 +1609,19 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 			"type: " + strings.ToUpper(nonEmpty(profile.Mode, "subagent")),
 			"enabled: " + boolLabel(profile.Enabled),
 			"protected: " + boolLabel(strings.EqualFold(profile.Name, "swarm") || strings.EqualFold(profile.Name, "memory")),
-			"model: " + agentsModalModelLabel(profile.Model),
-			"thinking: " + agentsModalThinkingLabel(profile.Thinking),
-			"prompt tokens: " + chatFormatTokenCount(agentsModalPromptTokenEstimate(profile.Prompt)),
-			"updated: " + agentsModalTimeLabel(profile.UpdatedAt),
 		}
+		if p.agentsModalProfileIsUtility(profile.Name) {
+			base = append(base, "tag: Utility AI")
+			if strings.TrimSpace(p.agentsModal.UtilityModel) != "" {
+				base = append(base, "utility AI: "+nonEmpty(p.agentsModal.UtilityProvider, p.agentsModal.DefaultProvider)+"/"+p.agentsModal.UtilityModel)
+			}
+		}
+		base = append(base,
+			"model: "+agentsModalModelLabel(profile.Model),
+			"thinking: "+agentsModalThinkingLabel(profile.Thinking),
+			"prompt tokens: "+chatFormatTokenCount(agentsModalPromptTokenEstimate(profile.Prompt)),
+			"updated: "+agentsModalTimeLabel(profile.UpdatedAt),
+		)
 		for _, line := range base {
 			for _, wrapped := range Wrap(line, contentWidth) {
 				lines = append(lines, agentsModalRenderLine{Text: wrapped, Style: p.theme.Text})
@@ -1663,6 +1692,19 @@ type agentsModalRenderLine struct {
 
 func wrapAgentsModalWithPrefix(prefix, body string, width int) []string {
 	return wrapWithCustomPrefixes(prefix, "", body, width)
+}
+
+func (p *HomePage) agentsModalProfileIsUtility(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, agentName := range p.agentsModal.UtilityAgents {
+		if strings.EqualFold(strings.TrimSpace(agentName), name) {
+			return true
+		}
+	}
+	return false
 }
 
 func dedupeAgentsModalOptions(options []string) []string {

@@ -180,8 +180,19 @@ function actionButtonClassName(
   return "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-2 text-sm font-medium text-[var(--app-text)] shadow-sm transition-colors hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50";
 }
 
-async function restoreDefaults(): Promise<AgentStateRecord> {
-  return restoreAgentDefaults();
+async function restoreDefaults(input?: {
+  utilityProvider?: string;
+  utilityModel?: string;
+  utilityThinking?: string;
+}): Promise<AgentStateRecord> {
+  return restoreAgentDefaults(input);
+}
+
+function isUtilityAgent(profileName: string, utilityAgents: string[]): boolean {
+  const normalized = profileName.trim().toLowerCase();
+  return utilityAgents.some(
+    (name) => name.trim().toLowerCase() === normalized,
+  );
 }
 
 function PromptEditor({
@@ -545,20 +556,22 @@ export function AgentsSettingsPage() {
   };
 
   const handleRestoreDefaults = async () => {
-    const affectedLabel =
-      providerResetTargets.length > 0
-        ? providerResetTargets.join(", ")
-        : "swarm, explorer, memory, parallel";
-    const providerLabel =
-      providerDefaultsPreview?.provider?.trim() || "the active provider";
-    const utilityModelLabel =
-      providerDefaultsPreview?.utilityModel?.trim() ||
-      "the provider utility model";
+    const utilityAgentsLabel =
+      providerDefaultsPreview?.utilityAgents?.length
+        ? providerDefaultsPreview.utilityAgents.join(", ")
+        : "explorer, memory, parallel";
+    const utilityProvider =
+      providerDefaultsPreview?.utilityProvider?.trim() ||
+      providerDefaultsPreview?.provider?.trim() ||
+      "the active provider";
+    const utilityModel =
+      providerDefaultsPreview?.utilityModel?.trim() || "the utility model";
+    const utilityThinking = providerDefaultsPreview?.utilityThinking?.trim() || "";
     const primaryModelLabel =
       providerDefaultsPreview?.primaryModel?.trim() ||
       "the provider primary model";
     const confirmed = window.confirm(
-      `Reset built-in Swarm agents to ${providerLabel} defaults?\n\nAffected built-in agents only: ${affectedLabel}\nPrimary: swarm -> ${primaryModelLabel}\nUtility agents -> ${utilityModelLabel}\n\nCustom agents and custom tools will not be changed.`,
+      `Apply Utility AI to built-in Swarm agents?\n\nPrimary: swarm -> ${primaryModelLabel}\nUtility AI: ${utilityProvider}/${utilityModel}${utilityThinking ? ` (${utilityThinking})` : ""}\nUtility agents: ${utilityAgentsLabel}\n\nCustom agents and custom tools will not be changed.`,
     );
     if (!confirmed) {
       return;
@@ -567,18 +580,28 @@ export function AgentsSettingsPage() {
     setError(null);
     setStatus(null);
     try {
-      const nextState = await restoreDefaults();
+      const nextState = await restoreDefaults(
+        providerDefaultsPreview
+          ? {
+              utilityProvider: providerDefaultsPreview.utilityProvider,
+              utilityModel: providerDefaultsPreview.utilityModel,
+              utilityThinking: providerDefaultsPreview.utilityThinking,
+            }
+          : undefined,
+      );
       applyAgentState(nextState);
       setSelectedKey(
         nextState.activePrimary || nextState.profiles[0]?.name || "",
       );
       setViewMode("list");
-      setStatus(`Reset built-in Swarm agents to ${providerLabel} defaults.`);
+      setStatus(
+        `Applied Utility AI ${utilityProvider}/${utilityModel} to ${utilityAgentsLabel}.`,
+      );
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : "Failed to reset built-in agents to provider defaults",
+          : "Failed to apply Utility AI to built-in agents",
       );
     } finally {
       setSaving(false);
@@ -634,15 +657,14 @@ export function AgentsSettingsPage() {
   const backgroundAgents = profiles.filter(
     (p) => (p.mode || "primary").toLowerCase() === "background",
   );
-  const providerResetTargets = providerDefaultsPreview?.affectedAgents ?? [];
-  const outOfSyncTargets = providerDefaultsPreview?.outOfSyncAgents ?? [];
-  const inheritingTargets = providerDefaultsPreview?.inheritingAgents ?? [];
+  const utilityAgents = providerDefaultsPreview?.utilityAgents ?? [];
+  const staleInheritedTargets = providerDefaultsPreview?.staleInheritedAgents ?? [];
   const providerResetLabel = providerDefaultsPreview
-    ? `Reset built-in Swarm agents to ${providerDefaultsPreview.provider} defaults`
-    : "Reset built-in Swarm agents to provider defaults";
+    ? `Utility AI for built-in agents: ${providerDefaultsPreview.utilityProvider}/${providerDefaultsPreview.utilityModel}`
+    : "Utility AI for built-in agents";
   const providerResetSummary = providerDefaultsPreview
-    ? `Affects built-in Swarm agents only: ${providerResetTargets.join(", ")}. Custom agents are not changed.`
-    : "Affects built-in Swarm agents only. Custom agents are not changed.";
+    ? `Applies one Utility AI to built-in agents: ${utilityAgents.join(", ")}. Custom agents are not changed.`
+    : "Applies one Utility AI to built-in agents. Custom agents are not changed.";
 
   if (viewMode === "list") {
     return (
@@ -674,7 +696,7 @@ export function AgentsSettingsPage() {
               title={providerResetSummary}
             >
               <RotateCcw size={16} />
-              Reset to provider defaults
+              Apply Utility AI
             </button>
             <button
               type="button"
@@ -707,17 +729,14 @@ export function AgentsSettingsPage() {
               <div className="mt-1">{providerResetSummary}</div>
               <div className="mt-1">
                 Provider {providerDefaultsPreview.provider}: swarm uses{" "}
-                {providerDefaultsPreview.primaryModel};{" "}
-                {providerDefaultsPreview.utilityAgents.join(", ")} use{" "}
-                {providerDefaultsPreview.utilityModel}.
+                {providerDefaultsPreview.primaryModel}; Utility AI{" "}
+                {providerDefaultsPreview.utilityProvider}/{providerDefaultsPreview.utilityModel}{" "}
+                is shared by {providerDefaultsPreview.utilityAgents.join(", ")}.
               </div>
-              {outOfSyncTargets.length > 0 ? (
+              {staleInheritedTargets.length > 0 ? (
                 <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-[var(--app-warning)]">
-                  Out of sync: {outOfSyncTargets.join(", ")}. Reset to provider
-                  defaults to restore the built-in Swarm utility assignments.
-                  {inheritingTargets.length > 0
-                    ? ` Inheriting instead of using the utility model: ${inheritingTargets.join(", ")}.`
-                    : ""}
+                  Stale inherited Utility AI: {staleInheritedTargets.join(", ")}. Apply
+                  Utility AI to keep the built-in utility agents off the primary fallback.
                 </div>
               ) : null}
             </div>
@@ -768,17 +787,27 @@ export function AgentsSettingsPage() {
               </h3>
               <div className="flex flex-col gap-3">
                 {subAgents.map((profile) => {
+                  const utilityTagged = isUtilityAgent(profile.name, utilityAgents);
                   return (
                     <button
                       key={profile.name}
                       onClick={() => handleSelectProfile(profile.name)}
                       className="group relative flex flex-col items-start overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-left transition-colors hover:border-[var(--app-primary)] hover:bg-[var(--app-bg)] shadow-sm"
                     >
-                      <div className="mb-0.5 w-full truncate font-semibold text-[var(--app-text)]">
-                        {profile.name}
+                      <div className="mb-0.5 flex w-full items-center justify-between gap-2">
+                        <span className="truncate font-semibold text-[var(--app-text)]">
+                          {profile.name}
+                        </span>
+                        {utilityTagged ? (
+                          <span className="shrink-0 rounded-full border border-[var(--app-primary)]/30 bg-[var(--app-primary)]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--app-primary)]">
+                            Utility AI
+                          </span>
+                        ) : null}
                       </div>
                       <span className="w-full truncate text-xs font-medium text-[var(--app-text-muted)]">
-                        {agentRuntimeSummary(profile)}
+                        {utilityTagged && providerDefaultsPreview
+                          ? `${providerDefaultsPreview.utilityProvider}/${providerDefaultsPreview.utilityModel}`
+                          : agentRuntimeSummary(profile)}
                       </span>
                       {profile.description && (
                         <span className="mt-1.5 line-clamp-1 w-full text-xs text-[var(--app-text-muted)] opacity-80">
@@ -861,11 +890,9 @@ export function AgentsSettingsPage() {
           </div>
         ) : null}
         <div className="mb-6 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
-          memory cannot be deleted because it is used for session titles. Reset
-          to provider defaults restores only the built-in Swarm agents
-          {providerResetTargets.length > 0
-            ? `: ${providerResetTargets.join(", ")}.`
-            : "."}{" "}
+          memory cannot be deleted because it is used for session titles. Apply
+          Utility AI updates built-in utility agents together
+          {utilityAgents.length > 0 ? `: ${utilityAgents.join(", ")}.` : "."}{" "}
           Custom agents are not changed.
         </div>
 

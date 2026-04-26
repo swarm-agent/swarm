@@ -140,12 +140,14 @@ export interface ProviderDefaultsPreviewRecord {
   primaryAgent: string;
   primaryModel: string;
   primaryThinking: string;
+  utilityProvider: string;
   utilityModel: string;
   utilityThinking: string;
   utilityAgents: string[];
   affectedAgents: string[];
   outOfSyncAgents: string[];
   inheritingAgents: string[];
+  staleInheritedAgents: string[];
 }
 
 export interface AgentStateRecord {

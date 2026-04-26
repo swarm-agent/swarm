@@ -106,8 +106,8 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 		"memory":   {},
 		"parallel": {},
 	}
-	if len(upsertResp.AutoDefaults.Subagents) != len(wantSubagents) {
-		t.Fatalf("subagents updated = %v, want 3 defaults", upsertResp.AutoDefaults.Subagents)
+	if len(upsertResp.AutoDefaults.Subagents) != 3 {
+		t.Fatalf("subagents updated = %v, want 3 subagent defaults", upsertResp.AutoDefaults.Subagents)
 	}
 	for _, name := range upsertResp.AutoDefaults.Subagents {
 		if _, ok := wantSubagents[name]; !ok {
@@ -155,11 +155,11 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 	for _, profile := range agentsResp.State.Profiles {
 		switch profile.Name {
 		case "swarm":
-			if profile.Provider != "google" {
-				t.Fatalf("profile %q provider = %q, want google", profile.Name, profile.Provider)
+			if profile.Provider != "" {
+				t.Fatalf("profile %q provider = %q, want empty inherited primary", profile.Name, profile.Provider)
 			}
-			if profile.Model != "gemini-3.1-pro-preview" {
-				t.Fatalf("profile %q model = %q, want gemini-3.1-pro-preview", profile.Name, profile.Model)
+			if profile.Model != "" {
+				t.Fatalf("profile %q model = %q, want empty inherited primary", profile.Name, profile.Model)
 			}
 		case "explorer", "memory", "parallel":
 			if profile.Provider != "google" {
@@ -256,11 +256,11 @@ func TestAuthCredentialUpsertAppliesUtilityDefaultsOnce(t *testing.T) {
 	for _, profile := range agentsResp.State.Profiles {
 		switch profile.Name {
 		case "swarm":
-			if profile.Provider != "google" {
-				t.Fatalf("profile %q provider after second provider = %q, want google", profile.Name, profile.Provider)
+			if profile.Provider != "" {
+				t.Fatalf("profile %q provider after second provider = %q, want empty inherited primary", profile.Name, profile.Provider)
 			}
-			if profile.Model != "gemini-3.1-pro-preview" {
-				t.Fatalf("profile %q model after second provider = %q, want gemini-3.1-pro-preview", profile.Name, profile.Model)
+			if profile.Model != "" {
+				t.Fatalf("profile %q model after second provider = %q, want empty inherited primary", profile.Name, profile.Model)
 			}
 		case "explorer", "memory", "parallel":
 			if profile.Provider != "openai" {

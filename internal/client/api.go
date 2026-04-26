@@ -372,12 +372,28 @@ type AgentToolContract struct {
 	InheritPolicy bool                       `json:"inherit_policy,omitempty"`
 }
 
+type ProviderDefaultsPreview struct {
+	Provider             string   `json:"provider,omitempty"`
+	PrimaryAgent         string   `json:"primary_agent,omitempty"`
+	PrimaryModel         string   `json:"primary_model,omitempty"`
+	PrimaryThinking      string   `json:"primary_thinking,omitempty"`
+	UtilityProvider      string   `json:"utility_provider,omitempty"`
+	UtilityModel         string   `json:"utility_model,omitempty"`
+	UtilityThinking      string   `json:"utility_thinking,omitempty"`
+	UtilityAgents        []string `json:"utility_agents,omitempty"`
+	AffectedAgents       []string `json:"affected_agents,omitempty"`
+	OutOfSyncAgents      []string `json:"out_of_sync_agents,omitempty"`
+	InheritingAgents     []string `json:"inheriting_agents,omitempty"`
+	StaleInheritedAgents []string `json:"stale_inherited_agents,omitempty"`
+}
+
 type AgentState struct {
-	Profiles       []AgentProfile              `json:"profiles"`
-	CustomTools    []AgentCustomToolDefinition `json:"custom_tools,omitempty"`
-	ActivePrimary  string                      `json:"active_primary"`
-	ActiveSubagent map[string]string           `json:"active_subagent"`
-	Version        int64                       `json:"version"`
+	Profiles                []AgentProfile              `json:"profiles"`
+	CustomTools             []AgentCustomToolDefinition `json:"custom_tools,omitempty"`
+	ActivePrimary           string                      `json:"active_primary"`
+	ActiveSubagent          map[string]string           `json:"active_subagent"`
+	Version                 int64                       `json:"version"`
+	ProviderDefaultsPreview *ProviderDefaultsPreview    `json:"-"`
 }
 
 type AgentCustomToolDefinition struct {
@@ -389,10 +405,11 @@ type AgentCustomToolDefinition struct {
 }
 
 type RestoreAgentsDefaultsResult struct {
-	Profiles       []AgentProfile    `json:"profiles"`
-	ActivePrimary  string            `json:"active_primary"`
-	ActiveSubagent map[string]string `json:"active_subagent"`
-	Version        int64             `json:"version"`
+	Profiles                []AgentProfile           `json:"profiles"`
+	ActivePrimary           string                   `json:"active_primary"`
+	ActiveSubagent          map[string]string        `json:"active_subagent"`
+	Version                 int64                    `json:"version"`
+	ProviderDefaultsPreview *ProviderDefaultsPreview `json:"provider_defaults_preview,omitempty"`
 }
 
 type AgentUpsertRequest struct {
@@ -1654,13 +1671,52 @@ func (c *API) ListAgents(ctx context.Context, limit int) (AgentState, error) {
 	}
 	path := "/v2/agents?limit=" + strconv.Itoa(limit)
 	var resp struct {
-		OK    bool       `json:"ok"`
-		State AgentState `json:"state"`
+		OK                      bool                     `json:"ok"`
+		State                   AgentState               `json:"state"`
+		ProviderDefaultsPreview *ProviderDefaultsPreview `json:"provider_defaults_preview"`
 	}
 	if err := c.getJSON(ctx, path, &resp, true); err != nil {
 		return AgentState{}, err
 	}
+	resp.State.ProviderDefaultsPreview = normalizeProviderDefaultsPreview(resp.ProviderDefaultsPreview)
 	return resp.State, nil
+}
+
+func normalizeProviderDefaultsPreview(preview *ProviderDefaultsPreview) *ProviderDefaultsPreview {
+	if preview == nil {
+		return nil
+	}
+	out := *preview
+	out.Provider = strings.TrimSpace(out.Provider)
+	out.PrimaryAgent = strings.TrimSpace(out.PrimaryAgent)
+	out.PrimaryModel = strings.TrimSpace(out.PrimaryModel)
+	out.PrimaryThinking = strings.TrimSpace(out.PrimaryThinking)
+	out.UtilityProvider = strings.TrimSpace(out.UtilityProvider)
+	if out.UtilityProvider == "" {
+		out.UtilityProvider = out.Provider
+	}
+	out.UtilityModel = strings.TrimSpace(out.UtilityModel)
+	out.UtilityThinking = strings.TrimSpace(out.UtilityThinking)
+	out.UtilityAgents = trimStringSlice(out.UtilityAgents)
+	out.AffectedAgents = trimStringSlice(out.AffectedAgents)
+	out.OutOfSyncAgents = trimStringSlice(out.OutOfSyncAgents)
+	out.InheritingAgents = trimStringSlice(out.InheritingAgents)
+	out.StaleInheritedAgents = trimStringSlice(out.StaleInheritedAgents)
+	return &out
+}
+
+func trimStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (c *API) UpsertAgent(ctx context.Context, req AgentUpsertRequest) (AgentProfile, int64, error) {
@@ -1851,41 +1907,58 @@ func (c *API) DeleteAgent(ctx context.Context, name string) (string, string, int
 	return strings.TrimSpace(resp.Deleted), strings.TrimSpace(resp.ActivePrimary), resp.Version, nil
 }
 
-func (c *API) RestoreAgentDefaults(ctx context.Context) (RestoreAgentsDefaultsResult, error) {
+func (c *API) RestoreAgentDefaults(ctx context.Context, utilityInput ...ProviderDefaultsPreview) (RestoreAgentsDefaultsResult, error) {
 	var resp struct {
-		OK             bool              `json:"ok"`
-		Profiles       []AgentProfile    `json:"profiles"`
-		ActivePrimary  string            `json:"active_primary"`
-		ActiveSubagent map[string]string `json:"active_subagent"`
-		Version        int64             `json:"version"`
+		OK                      bool                     `json:"ok"`
+		Profiles                []AgentProfile           `json:"profiles"`
+		ActivePrimary           string                   `json:"active_primary"`
+		ActiveSubagent          map[string]string        `json:"active_subagent"`
+		Version                 int64                    `json:"version"`
+		ProviderDefaultsPreview *ProviderDefaultsPreview `json:"provider_defaults_preview"`
 	}
-	if err := c.postJSON(ctx, "/v2/agents/defaults/restore", map[string]any{}, &resp, true); err != nil {
+	payload := map[string]any{}
+	if len(utilityInput) > 0 {
+		input := utilityInput[0]
+		if strings.TrimSpace(input.UtilityProvider) != "" {
+			payload["utility_provider"] = strings.TrimSpace(input.UtilityProvider)
+		}
+		if strings.TrimSpace(input.UtilityModel) != "" {
+			payload["utility_model"] = strings.TrimSpace(input.UtilityModel)
+		}
+		if strings.TrimSpace(input.UtilityThinking) != "" {
+			payload["utility_thinking"] = strings.TrimSpace(input.UtilityThinking)
+		}
+	}
+	if err := c.postJSON(ctx, "/v2/agents/defaults/restore", payload, &resp, true); err != nil {
 		return RestoreAgentsDefaultsResult{}, err
 	}
 	return RestoreAgentsDefaultsResult{
-		Profiles:       resp.Profiles,
-		ActivePrimary:  strings.TrimSpace(resp.ActivePrimary),
-		ActiveSubagent: resp.ActiveSubagent,
-		Version:        resp.Version,
+		Profiles:                resp.Profiles,
+		ActivePrimary:           strings.TrimSpace(resp.ActivePrimary),
+		ActiveSubagent:          resp.ActiveSubagent,
+		Version:                 resp.Version,
+		ProviderDefaultsPreview: normalizeProviderDefaultsPreview(resp.ProviderDefaultsPreview),
 	}, nil
 }
 
 func (c *API) ResetAgentDefaults(ctx context.Context) (RestoreAgentsDefaultsResult, error) {
 	var resp struct {
-		OK             bool              `json:"ok"`
-		Profiles       []AgentProfile    `json:"profiles"`
-		ActivePrimary  string            `json:"active_primary"`
-		ActiveSubagent map[string]string `json:"active_subagent"`
-		Version        int64             `json:"version"`
+		OK                      bool                     `json:"ok"`
+		Profiles                []AgentProfile           `json:"profiles"`
+		ActivePrimary           string                   `json:"active_primary"`
+		ActiveSubagent          map[string]string        `json:"active_subagent"`
+		Version                 int64                    `json:"version"`
+		ProviderDefaultsPreview *ProviderDefaultsPreview `json:"provider_defaults_preview"`
 	}
 	if err := c.postJSON(ctx, "/v2/agents/defaults/reset", map[string]any{}, &resp, true); err != nil {
 		return RestoreAgentsDefaultsResult{}, err
 	}
 	return RestoreAgentsDefaultsResult{
-		Profiles:       resp.Profiles,
-		ActivePrimary:  strings.TrimSpace(resp.ActivePrimary),
-		ActiveSubagent: resp.ActiveSubagent,
-		Version:        resp.Version,
+		Profiles:                resp.Profiles,
+		ActivePrimary:           strings.TrimSpace(resp.ActivePrimary),
+		ActiveSubagent:          resp.ActiveSubagent,
+		Version:                 resp.Version,
+		ProviderDefaultsPreview: normalizeProviderDefaultsPreview(resp.ProviderDefaultsPreview),
 	}, nil
 }
 

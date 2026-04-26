@@ -420,8 +420,8 @@ func TestAgentsModalDrawsOnNarrowScreen(t *testing.T) {
 	if !strings.Contains(strings.ToLower(text), "memory cannot be deleted") {
 		t.Fatalf("expected memory protection notice, got:\n%s", text)
 	}
-	if !strings.Contains(text, "Shift+R restore defaults") {
-		t.Fatalf("expected Shift+R restore defaults hint, got:\n%s", text)
+	if !strings.Contains(text, "Shift+R apply Utility AI") {
+		t.Fatalf("expected Shift+R apply Utility AI hint, got:\n%s", text)
 	}
 	if !strings.Contains(text, "Shift+Z reset all") {
 		t.Fatalf("expected Shift+Z reset hint, got:\n%s", text)
