@@ -68,6 +68,63 @@ type UpdateApplyPlan struct {
 	ComparisonSource string `json:"comparison_source,omitempty"`
 }
 
+type LocalContainerUpdatePlan struct {
+	PathID        string                       `json:"path_id"`
+	Mode          string                       `json:"mode"`
+	DevMode       bool                         `json:"dev_mode"`
+	Target        LocalContainerUpdateTarget   `json:"target"`
+	Summary       LocalContainerUpdateSummary  `json:"summary"`
+	Containers    []LocalContainerUpdateItem   `json:"containers"`
+	Contract      LocalContainerUpdateContract `json:"contract"`
+	Error         string                       `json:"error,omitempty"`
+	CheckedAtUnix int64                        `json:"checked_at_unix_ms,omitempty"`
+}
+
+type LocalContainerUpdateTarget struct {
+	ImageRef    string `json:"image_ref,omitempty"`
+	DigestRef   string `json:"digest_ref,omitempty"`
+	Version     string `json:"version,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Commit      string `json:"commit,omitempty"`
+}
+
+type LocalContainerUpdateSummary struct {
+	Total          int `json:"total"`
+	Affected       int `json:"affected"`
+	AlreadyCurrent int `json:"already_current"`
+	NeedsUpdate    int `json:"needs_update"`
+	Unknown        int `json:"unknown"`
+	Errors         int `json:"errors"`
+}
+
+type LocalContainerUpdateContract struct {
+	WarningCopy      string `json:"warning_copy"`
+	DismissalScope   string `json:"dismissal_scope"`
+	FailureSemantics string `json:"failure_semantics"`
+	Replacement      string `json:"replacement"`
+}
+
+type LocalContainerUpdateItem struct {
+	ID                 string            `json:"id"`
+	Name               string            `json:"name"`
+	ContainerName      string            `json:"container_name"`
+	Runtime            string            `json:"runtime"`
+	Status             string            `json:"status,omitempty"`
+	ContainerID        string            `json:"container_id,omitempty"`
+	StoredImageRef     string            `json:"stored_image_ref,omitempty"`
+	CurrentImageRef    string            `json:"current_image_ref,omitempty"`
+	CurrentDigestRef   string            `json:"current_digest_ref,omitempty"`
+	CurrentFingerprint string            `json:"current_fingerprint,omitempty"`
+	TargetImageRef     string            `json:"target_image_ref,omitempty"`
+	TargetDigestRef    string            `json:"target_digest_ref,omitempty"`
+	TargetVersion      string            `json:"target_version,omitempty"`
+	TargetFingerprint  string            `json:"target_fingerprint,omitempty"`
+	State              string            `json:"state"`
+	Reason             string            `json:"reason,omitempty"`
+	Error              string            `json:"error,omitempty"`
+	Labels             map[string]string `json:"labels,omitempty"`
+}
+
 type CodexStatus struct {
 	Provider     string              `json:"provider"`
 	Configured   bool                `json:"configured"`
@@ -1076,6 +1133,25 @@ func (c *API) ApplyUpdate(ctx context.Context) (UpdateApplyPlan, error) {
 	var plan UpdateApplyPlan
 	if err := c.postJSON(ctx, "/v1/update/apply", map[string]any{}, &plan, true); err != nil {
 		return UpdateApplyPlan{}, err
+	}
+	return plan, nil
+}
+
+func (c *API) GetLocalContainerUpdatePlan(ctx context.Context, devMode *bool, targetVersion string) (LocalContainerUpdatePlan, error) {
+	path := "/v1/update/local-containers"
+	query := url.Values{}
+	if devMode != nil {
+		query.Set("dev_mode", strconv.FormatBool(*devMode))
+	}
+	if strings.TrimSpace(targetVersion) != "" {
+		query.Set("target_version", strings.TrimSpace(targetVersion))
+	}
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var plan LocalContainerUpdatePlan
+	if err := c.getJSON(ctx, path, &plan, true); err != nil {
+		return LocalContainerUpdatePlan{}, err
 	}
 	return plan, nil
 }

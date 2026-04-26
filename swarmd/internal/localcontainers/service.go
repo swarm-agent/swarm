@@ -37,6 +37,7 @@ const (
 	PathContainerAction       = "swarm.containers.local.action.v1"
 	PathContainerDelete       = "swarm.containers.local.delete.v1"
 	PathContainerPrune        = "swarm.containers.local.prune-missing.v1"
+	PathContainerUpdatePlan   = "swarm.containers.local.update-plan.v1"
 	defaultImageName          = devmode.DefaultContainerImageRef
 	ProductionImagePrefix     = "ghcr.io/swarm-agent/swarm"
 	OfficialSourceRepository  = "https://github.com/swarm-agent/swarm"
@@ -132,6 +133,74 @@ type DeleteResult struct {
 	Items            []DeleteItemResult `json:"items,omitempty"`
 }
 
+// UpdatePlan is a local-only inventory for future Swarm update checkpoints.
+// It is intentionally read-only: Checkpoint 1 reports which local containers
+// would be affected by a dev/prod Swarm update without replacing containers.
+// Swarm binary/apply updates remain independent; future container update
+// failures should be reported as resumable follow-up work instead of hiding or
+// rolling back the Swarm update itself.
+type UpdatePlan struct {
+	PathID        string           `json:"path_id"`
+	Mode          string           `json:"mode"`
+	DevMode       bool             `json:"dev_mode"`
+	Target        UpdatePlanTarget `json:"target"`
+	Summary       UpdateSummary    `json:"summary"`
+	Containers    []UpdateItem     `json:"containers"`
+	Contract      UpdateContract   `json:"contract"`
+	Error         string           `json:"error,omitempty"`
+	CheckedAtUnix int64            `json:"checked_at_unix_ms,omitempty"`
+}
+
+type UpdatePlanTarget struct {
+	ImageRef    string `json:"image_ref,omitempty"`
+	DigestRef   string `json:"digest_ref,omitempty"`
+	Version     string `json:"version,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Commit      string `json:"commit,omitempty"`
+}
+
+type UpdateSummary struct {
+	Total          int `json:"total"`
+	Affected       int `json:"affected"`
+	AlreadyCurrent int `json:"already_current"`
+	NeedsUpdate    int `json:"needs_update"`
+	Unknown        int `json:"unknown"`
+	Errors         int `json:"errors"`
+}
+
+type UpdateContract struct {
+	WarningCopy      string `json:"warning_copy"`
+	DismissalScope   string `json:"dismissal_scope"`
+	FailureSemantics string `json:"failure_semantics"`
+	Replacement      string `json:"replacement"`
+}
+
+type UpdateItem struct {
+	ID                 string            `json:"id"`
+	Name               string            `json:"name"`
+	ContainerName      string            `json:"container_name"`
+	Runtime            string            `json:"runtime"`
+	Status             string            `json:"status,omitempty"`
+	ContainerID        string            `json:"container_id,omitempty"`
+	StoredImageRef     string            `json:"stored_image_ref,omitempty"`
+	CurrentImageRef    string            `json:"current_image_ref,omitempty"`
+	CurrentDigestRef   string            `json:"current_digest_ref,omitempty"`
+	CurrentFingerprint string            `json:"current_fingerprint,omitempty"`
+	TargetImageRef     string            `json:"target_image_ref,omitempty"`
+	TargetDigestRef    string            `json:"target_digest_ref,omitempty"`
+	TargetVersion      string            `json:"target_version,omitempty"`
+	TargetFingerprint  string            `json:"target_fingerprint,omitempty"`
+	State              string            `json:"state"`
+	Reason             string            `json:"reason,omitempty"`
+	Error              string            `json:"error,omitempty"`
+	Labels             map[string]string `json:"labels,omitempty"`
+}
+
+type UpdatePlanInput struct {
+	DevMode       *bool
+	TargetVersion string
+}
+
 type RuntimeNetwork struct {
 	Runtime string `json:"runtime"`
 	Name    string `json:"name"`
@@ -146,6 +215,7 @@ type Service struct {
 	workspace          *workspaceruntime.Service
 	startupPath        string
 	inspectContainerFn func(string, string) (string, string, error)
+	inspectImageFn     func(context.Context, string, string) (runtimeImageInfo, error)
 	hostCallbackURLsMu sync.RWMutex
 	hostCallbackURLs   map[string]string
 }
@@ -159,6 +229,7 @@ func NewService(store *pebblestore.SwarmLocalContainerStore, deployments *pebble
 		workspace:          workspaceSvc,
 		startupPath:        strings.TrimSpace(startupPath),
 		inspectContainerFn: inspectContainer,
+		inspectImageFn:     inspectRuntimeImage,
 		hostCallbackURLs:   make(map[string]string),
 	}
 }
@@ -217,6 +288,206 @@ func (s *Service) List(context.Context) ([]Container, error) {
 		out = append(out, mapRecord(resolved))
 	}
 	return out, nil
+}
+
+func (s *Service) UpdatePlan(ctx context.Context, input UpdatePlanInput) (UpdatePlan, error) {
+	plan := UpdatePlan{
+		PathID:        PathContainerUpdatePlan,
+		Contract:      localUpdateContract(),
+		Containers:    []UpdateItem{},
+		CheckedAtUnix: time.Now().UnixMilli(),
+	}
+	if s == nil || s.store == nil {
+		return plan, errors.New("local container service is not configured")
+	}
+	startupCfg, cfgErr := s.loadStartupConfig()
+	devMode := false
+	if cfgErr == nil {
+		devMode = startupCfg.DevMode
+	}
+	if input.DevMode != nil {
+		devMode = *input.DevMode
+		startupCfg.DevMode = devMode
+	}
+	plan.DevMode = devMode
+	if devMode {
+		plan.Mode = "dev"
+	} else {
+		plan.Mode = "release"
+	}
+	records, err := s.store.List(500)
+	if err != nil {
+		return plan, err
+	}
+	if len(records) == 0 {
+		if cfgErr != nil {
+			plan.Error = cfgErr.Error()
+		}
+		return plan, nil
+	}
+	if cfgErr != nil {
+		plan.Error = cfgErr.Error()
+		for _, record := range records {
+			item := baseUpdateItem(record)
+			item.State = "unknown"
+			item.Reason = "startup_config_error"
+			item.Error = cfgErr.Error()
+			plan.addUpdateItem(item)
+		}
+		return plan, nil
+	}
+	target, targetErr := localUpdateTarget(ctx, startupCfg, strings.TrimSpace(input.TargetVersion))
+	if targetErr != nil {
+		plan.Error = targetErr.Error()
+	}
+	plan.Target = target
+	for _, record := range records {
+		item := s.planLocalContainerUpdate(ctx, record, startupCfg, target, targetErr)
+		plan.addUpdateItem(item)
+	}
+	return plan, nil
+}
+
+func localUpdateContract() UpdateContract {
+	return UpdateContract{
+		WarningCopy:      "This will also update your local containers.",
+		DismissalScope:   "local-container-update-warning",
+		FailureSemantics: "Swarm update succeeds independently; local container update failures are reported as resumable follow-up work.",
+		Replacement:      "not-performed-in-this-checkpoint",
+	}
+}
+
+func localUpdateTarget(ctx context.Context, startupCfg startupconfig.FileConfig, targetVersion string) (UpdatePlanTarget, error) {
+	targetVersion = strings.TrimSpace(targetVersion)
+	if targetVersion == "" {
+		targetVersion = buildinfo.DisplayVersion()
+	}
+	if startupCfg.DevMode {
+		repoRoot, err := resolveConfiguredDevRoot(startupCfg)
+		if err != nil {
+			return UpdatePlanTarget{}, err
+		}
+		fingerprint, err := devmode.ContainerImageFingerprint(repoRoot)
+		if err != nil {
+			return UpdatePlanTarget{}, fmt.Errorf("compute dev local container image fingerprint: %w", err)
+		}
+		return UpdatePlanTarget{ImageRef: defaultImageName, Fingerprint: fingerprint}, nil
+	}
+	metadata, err := fetchProductionImageMetadataForVersion(ctx, targetVersion)
+	if err != nil {
+		return UpdatePlanTarget{}, fmt.Errorf("fetch production swarm image metadata: %w", err)
+	}
+	return UpdatePlanTarget{
+		ImageRef:  metadata.ImageRef,
+		DigestRef: metadata.ImageDigestRef,
+		Version:   metadata.Version,
+		Commit:    metadata.Commit,
+	}, nil
+}
+
+func (s *Service) planLocalContainerUpdate(ctx context.Context, record pebblestore.SwarmLocalContainerRecord, startupCfg startupconfig.FileConfig, target UpdatePlanTarget, targetErr error) UpdateItem {
+	item := baseUpdateItem(record)
+	resolved, resolveErr := s.resolveRecord(record)
+	item.Status = resolved.Status
+	item.ContainerID = strings.TrimSpace(resolved.ContainerID)
+	item.StoredImageRef = strings.TrimSpace(resolved.Image)
+	if item.StoredImageRef == "" {
+		item.StoredImageRef = strings.TrimSpace(record.Image)
+	}
+	if resolveErr != nil {
+		item.State = "unknown"
+		item.Reason = "container_inspect_error"
+		item.Error = resolveErr.Error()
+		return item
+	}
+	if targetErr != nil {
+		item.State = "unknown"
+		item.Reason = "target_error"
+		item.Error = targetErr.Error()
+		return item
+	}
+	item.TargetImageRef = target.ImageRef
+	item.TargetDigestRef = target.DigestRef
+	item.TargetVersion = target.Version
+	item.TargetFingerprint = target.Fingerprint
+	imageRef := strings.TrimSpace(firstNonEmpty(resolved.Image, record.Image))
+	if imageRef == "" {
+		item.State = "unknown"
+		item.Reason = "missing_stored_image"
+		return item
+	}
+	inspector := inspectRuntimeImage
+	if s != nil && s.inspectImageFn != nil {
+		inspector = s.inspectImageFn
+	}
+	imageInfo, imageErr := inspector(ctx, resolved.Runtime, imageRef)
+	if imageErr != nil {
+		item.State = "unknown"
+		item.Reason = "image_inspect_error"
+		item.Error = imageErr.Error()
+		return item
+	}
+	item.CurrentImageRef = imageInfo.ID
+	item.CurrentDigestRef = imageInfo.digestRefFor(imageRef)
+	item.Labels = imageInfo.Labels
+	if startupCfg.DevMode {
+		item.CurrentFingerprint = strings.TrimSpace(imageInfo.Labels[devmode.ContainerImageFingerprintLabel])
+		if item.CurrentFingerprint == "" {
+			item.State = "unknown"
+			item.Reason = "missing_dev_fingerprint"
+			return item
+		}
+		if item.CurrentFingerprint == target.Fingerprint {
+			item.State = "already-current"
+		} else {
+			item.State = "needs-update"
+		}
+		return item
+	}
+	if item.CurrentDigestRef == "" {
+		item.State = "unknown"
+		item.Reason = "missing_digest"
+		return item
+	}
+	if item.CurrentDigestRef == target.DigestRef || imageRef == target.DigestRef {
+		item.State = "already-current"
+	} else {
+		item.State = "needs-update"
+	}
+	return item
+}
+
+func baseUpdateItem(record pebblestore.SwarmLocalContainerRecord) UpdateItem {
+	return UpdateItem{
+		ID:             strings.TrimSpace(record.ID),
+		Name:           strings.TrimSpace(record.Name),
+		ContainerName:  strings.TrimSpace(record.ContainerName),
+		Runtime:        strings.TrimSpace(record.Runtime),
+		Status:         strings.TrimSpace(record.Status),
+		ContainerID:    strings.TrimSpace(record.ContainerID),
+		StoredImageRef: strings.TrimSpace(record.Image),
+		State:          "unknown",
+	}
+}
+
+func (p *UpdatePlan) addUpdateItem(item UpdateItem) {
+	if p == nil {
+		return
+	}
+	p.Containers = append(p.Containers, item)
+	p.Summary.Total++
+	switch item.State {
+	case "already-current":
+		p.Summary.AlreadyCurrent++
+	case "needs-update":
+		p.Summary.NeedsUpdate++
+		p.Summary.Affected++
+	default:
+		p.Summary.Unknown++
+	}
+	if strings.TrimSpace(item.Error) != "" {
+		p.Summary.Errors++
+	}
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (Container, error) {
@@ -793,6 +1064,90 @@ func runtimePullImage(parent context.Context, runtimeName, image string) error {
 	return errors.New(message)
 }
 
+type runtimeImageInfo struct {
+	ID          string
+	RepoDigests []string
+	Labels      map[string]string
+}
+
+func (info runtimeImageInfo) digestRefFor(imageRef string) string {
+	imageRef = strings.TrimSpace(imageRef)
+	if strings.Contains(imageRef, "@sha256:") {
+		return imageRef
+	}
+	imageName := strings.TrimSpace(imageRef)
+	if idx := strings.LastIndex(imageName, ":"); idx > strings.LastIndex(imageName, "/") {
+		imageName = imageName[:idx]
+	}
+	for _, digest := range info.RepoDigests {
+		digest = strings.TrimSpace(digest)
+		if digest == "" || digest == "<none>" {
+			continue
+		}
+		if imageName == "" || strings.HasPrefix(digest, imageName+"@") {
+			return digest
+		}
+	}
+	for _, digest := range info.RepoDigests {
+		digest = strings.TrimSpace(digest)
+		if digest != "" && digest != "<none>" {
+			return digest
+		}
+	}
+	return ""
+}
+
+func inspectRuntimeImage(parent context.Context, runtimeName, image string) (runtimeImageInfo, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	image = strings.TrimSpace(image)
+	if runtimeName == "" || image == "" {
+		return runtimeImageInfo{}, fmt.Errorf("runtime and image are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "image", "inspect", image)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return runtimeImageInfo{}, fmt.Errorf("image inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return runtimeImageInfo{}, errors.New(message)
+	}
+	return parseRuntimeImageInspect(output)
+}
+
+func parseRuntimeImageInspect(output []byte) (runtimeImageInfo, error) {
+	var entries []struct {
+		ID          string   `json:"Id"`
+		RepoDigests []string `json:"RepoDigests"`
+		Config      struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	if err := json.Unmarshal(output, &entries); err != nil {
+		return runtimeImageInfo{}, fmt.Errorf("decode image inspect: %w", err)
+	}
+	if len(entries) == 0 {
+		return runtimeImageInfo{}, errors.New("image inspect returned no records")
+	}
+	labels := map[string]string{}
+	for key, value := range entries[0].Config.Labels {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			labels[key] = value
+		}
+	}
+	return runtimeImageInfo{ID: strings.TrimSpace(entries[0].ID), RepoDigests: append([]string(nil), entries[0].RepoDigests...), Labels: labels}, nil
+}
+
 func runtimeImageLabel(parent context.Context, runtimeName, image, label string) (string, bool, error) {
 	runtimeName = normalizeRuntimeSelection(runtimeName)
 	image = strings.TrimSpace(image)
@@ -1132,6 +1487,11 @@ func productionImageMetadataURL(version string) string {
 
 func FetchProductionImageMetadata(ctx context.Context) (ProductionImageMetadata, error) {
 	version := strings.TrimSpace(buildinfo.DisplayVersion())
+	return fetchProductionImageMetadataForVersion(ctx, version)
+}
+
+func fetchProductionImageMetadataForVersion(ctx context.Context, version string) (ProductionImageMetadata, error) {
+	version = strings.TrimSpace(version)
 	if buildinfo.IsDevVersionString(version) {
 		return ProductionImageMetadata{}, fmt.Errorf("production container image requires an installed release version, got %q", version)
 	}

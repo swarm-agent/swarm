@@ -26,6 +26,63 @@ export interface DesktopUpdateJob {
   completed_at_unix_ms?: number
 }
 
+export interface LocalContainerUpdatePlan {
+  path_id: string
+  mode: string
+  dev_mode: boolean
+  target: LocalContainerUpdateTarget
+  summary: LocalContainerUpdateSummary
+  containers: LocalContainerUpdateItem[]
+  contract: LocalContainerUpdateContract
+  error?: string
+  checked_at_unix_ms?: number
+}
+
+export interface LocalContainerUpdateTarget {
+  image_ref?: string
+  digest_ref?: string
+  version?: string
+  fingerprint?: string
+  commit?: string
+}
+
+export interface LocalContainerUpdateSummary {
+  total: number
+  affected: number
+  already_current: number
+  needs_update: number
+  unknown: number
+  errors: number
+}
+
+export interface LocalContainerUpdateContract {
+  warning_copy: string
+  dismissal_scope: string
+  failure_semantics: string
+  replacement: string
+}
+
+export interface LocalContainerUpdateItem {
+  id: string
+  name: string
+  container_name: string
+  runtime: string
+  status?: string
+  container_id?: string
+  stored_image_ref?: string
+  current_image_ref?: string
+  current_digest_ref?: string
+  current_fingerprint?: string
+  target_image_ref?: string
+  target_digest_ref?: string
+  target_version?: string
+  target_fingerprint?: string
+  state: string
+  reason?: string
+  error?: string
+  labels?: Record<string, string>
+}
+
 interface DesktopUpdateRunResponse {
   ok?: boolean
   job?: DesktopUpdateJob
@@ -44,6 +101,21 @@ export async function fetchDesktopUpdateStatus(): Promise<DesktopUpdateStatus> {
 
 export async function startDesktopUpdate(): Promise<DesktopUpdateJob> {
   return requireJob(await requestJson<DesktopUpdateRunResponse>('/v1/update/run', { method: 'POST' }))
+}
+
+export async function fetchLocalContainerUpdatePlan(options?: {
+  devMode?: boolean
+  targetVersion?: string
+}): Promise<LocalContainerUpdatePlan> {
+  const params = new URLSearchParams()
+  if (typeof options?.devMode === 'boolean') {
+    params.set('dev_mode', String(options.devMode))
+  }
+  if (options?.targetVersion?.trim()) {
+    params.set('target_version', options.targetVersion.trim())
+  }
+  const query = params.toString()
+  return requestJson<LocalContainerUpdatePlan>(`/v1/update/local-containers${query ? `?${query}` : ''}`)
 }
 
 export async function fetchDesktopUpdateJob(): Promise<DesktopUpdateJob> {

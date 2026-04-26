@@ -151,6 +151,7 @@ type localContainerService interface {
 	Act(ctx context.Context, input localcontainers.ActionInput) (localcontainers.Container, error)
 	BulkDelete(ctx context.Context, containerIDs []string) (localcontainers.DeleteResult, error)
 	PruneMissing(ctx context.Context) (localcontainers.DeleteResult, error)
+	UpdatePlan(ctx context.Context, input localcontainers.UpdatePlanInput) (localcontainers.UpdatePlan, error)
 	SetHostCallbackURL(runtimeName, baseURL string)
 	HostCallbackURL(runtimeName string) (string, bool)
 }
