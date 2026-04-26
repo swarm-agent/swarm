@@ -82,12 +82,17 @@ type SwarmSettings struct {
 	RemoteSSHTargets []string `json:"remote_ssh_targets,omitempty"`
 }
 
+type UpdateSettings struct {
+	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
+}
+
 type UISettings struct {
 	Theme     ThemeSettings    `json:"theme,omitempty"`
 	Input     InputSettings    `json:"input,omitempty"`
 	Chat      ChatSettings     `json:"chat,omitempty"`
 	Swarming  SwarmingSettings `json:"swarming,omitempty"`
 	Swarm     SwarmSettings    `json:"swarm,omitempty"`
+	Updates   UpdateSettings   `json:"updates,omitempty"`
 	UpdatedAt int64            `json:"updated_at"`
 }
 
@@ -133,6 +138,7 @@ func (s *Service) Set(settings UISettings) (UISettings, error) {
 		Chat:     chatRecordFromSettings(settings.Chat),
 		Swarming: swarmingRecordFromSettings(settings.Swarming),
 		Swarm:    swarmRecordFromSettings(settings.Swarm),
+		Updates:  updateRecordFromSettings(settings.Updates),
 	})
 	if err != nil {
 		return UISettings{}, fmt.Errorf("persist ui settings: %w", err)
@@ -194,6 +200,9 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		Swarm: SwarmSettings{
 			Name:             strings.TrimSpace(record.Swarm.Name),
 			RemoteSSHTargets: append([]string(nil), record.Swarm.RemoteSSHTargets...),
+		},
+		Updates: UpdateSettings{
+			LocalContainerWarningDismissed: record.Updates.LocalContainerWarningDismissed,
 		},
 		UpdatedAt: record.UpdatedAt,
 	}
@@ -263,6 +272,12 @@ func swarmRecordFromSettings(settings SwarmSettings) *pebblestore.UISwarmSetting
 	return &pebblestore.UISwarmSettingsRecord{
 		Name:             strings.TrimSpace(settings.Name),
 		RemoteSSHTargets: append([]string(nil), settings.RemoteSSHTargets...),
+	}
+}
+
+func updateRecordFromSettings(settings UpdateSettings) *pebblestore.UIUpdateSettingsRecord {
+	return &pebblestore.UIUpdateSettingsRecord{
+		LocalContainerWarningDismissed: settings.LocalContainerWarningDismissed,
 	}
 }
 

@@ -14,7 +14,7 @@ import {
 } from '../chat/services/chat-routing'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { prefetchSessionRuntimeData, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { prefetchSessionRuntimeData, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopSessionRecord } from '../types/realtime'
 import { DesktopSettingsModal } from '../settings/components/desktop-settings-modal'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
@@ -37,9 +37,12 @@ import {
   updateWorkspaceTodo,
 } from '../../workspaces/todos/types'
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
+import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
+import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/mutations/save-local-container-update-warning-dismissal'
+import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchSession } from '../chat/queries/chat-queries'
-import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate } from '../update/api'
+import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type LocalContainerUpdatePlan } from '../update/api'
 import {
   sessionChildDescriptor,
   sessionParentSessionID,
@@ -72,6 +75,11 @@ interface TodoModalState {
 
 interface SwarmTargetMenuState {
   open: boolean
+}
+
+interface LocalContainerUpdateConfirmState {
+  plan: LocalContainerUpdatePlan
+  pendingDismiss: boolean
 }
 
 function DesktopNotificationsLauncherButton({ onOpen }: { onOpen: () => void }) {
@@ -224,6 +232,31 @@ function workspaceSectionHeightStyle(ratio: number, totalVisibleRatio: number, c
     flexBasis: `${(safeRatio / safeTotal) * 100}%`,
     minHeight: MIN_WORKSPACE_SECTION_HEIGHT_PX,
   }
+}
+
+function formatLocalContainerUpdateTarget(plan: LocalContainerUpdatePlan): string {
+  const target = plan.target ?? {}
+  if (plan.dev_mode) {
+    const postRebuildFingerprint = target.post_rebuild_fingerprint?.trim()
+    const fingerprint = postRebuildFingerprint || target.fingerprint?.trim()
+    return fingerprint ? `Target dev image fingerprint: ${fingerprint.slice(0, 12)}` : 'Target dev image fingerprint unavailable'
+  }
+  const version = target.version?.trim()
+  const digest = target.digest_ref?.trim()
+  if (version && digest) {
+    return `Target ${version} (${digest})`
+  }
+  if (version) {
+    return `Target ${version}`
+  }
+  if (digest) {
+    return `Target ${digest}`
+  }
+  return 'Target version unavailable'
+}
+
+function localContainerUpdateAffected(plan: LocalContainerUpdatePlan): boolean {
+  return (plan.summary?.affected ?? 0) > 0 || (plan.summary?.needs_update ?? 0) > 0 || (plan.summary?.unknown ?? 0) > 0 || (plan.summary?.errors ?? 0) > 0
 }
 
 function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
@@ -1001,6 +1034,8 @@ export function DesktopAppPage() {
   const [swarmMenu, setSwarmMenu] = useState<SwarmTargetMenuState>({ open: false })
   const [updateRunning, setUpdateRunning] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
+  const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
+  const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [routeSessionPending, setRouteSessionPending] = useState(false)
@@ -1058,6 +1093,16 @@ export function DesktopAppPage() {
     ...workspaceOverviewQueryOptions([], 25),
     placeholderData: (previousData) => previousData,
   })
+  const uiSettingsQuery = useQuery({
+    queryKey: uiSettingsQueryKey(),
+    queryFn: () => getUISettings(),
+    staleTime: 30_000,
+  })
+  useEffect(() => {
+    if (uiSettingsQuery.data) {
+      setUISettings(uiSettingsQuery.data)
+    }
+  }, [uiSettingsQuery.data])
   const swarmSettingsQuery = useQuery({
     queryKey: ['ui-settings', 'swarm'] as const,
     queryFn: () => getSwarmSettings(),
@@ -1078,6 +1123,7 @@ export function DesktopAppPage() {
   })
 
   const updateStatus = updateStatusQuery.data ?? null
+  const effectiveUISettings = uiSettings ?? uiSettingsQuery.data ?? null
   const updateAvailable = updateStatus?.update_available === true
   const updateLatestVersion = updateStatus?.latest_version?.trim() ?? ''
   const updateStatusError = updateStatusQuery.error instanceof Error ? updateStatusQuery.error.message : null
@@ -1619,30 +1665,7 @@ export function DesktopAppPage() {
     void refreshNotifications()
   }, [refreshNotifications, updateAvailable, updateLatestVersion])
 
-  const handleDesktopUpdate = useCallback(async () => {
-    if (updateRunning) {
-      return
-    }
-    setUpdateError(null)
-    let status = updateStatus
-    try {
-      status = await updateStatusQuery.refetch().then((result) => result.data ?? status)
-    } catch {
-      // React Query stores the error; keep the current cached status if present.
-    }
-    if (status?.update_available !== true) {
-      const message = status?.suppressed
-        ? 'Updates are not available for this build.'
-        : status?.error?.trim()
-          ? `Update status unavailable: ${status.error}`
-          : updateStatusError
-            ? `Update status unavailable: ${updateStatusError}`
-            : status?.latest_version?.trim()
-              ? `Swarm is already up to date (${status.latest_version.trim()}).`
-              : 'No Swarm update is available yet.'
-      setUpdateError(message)
-      return
-    }
+  const runDesktopUpdate = useCallback(async () => {
     setUpdateRunning(true)
     try {
       await startDesktopUpdate()
@@ -1675,7 +1698,86 @@ export function DesktopAppPage() {
     } finally {
       setUpdateRunning(false)
     }
-  }, [refreshNotifications, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
+  }, [refreshNotifications])
+
+  const handleDesktopUpdate = useCallback(async () => {
+    if (updateRunning || localContainerUpdateConfirm) {
+      return
+    }
+    setUpdateError(null)
+    let status = updateStatus
+    try {
+      status = await updateStatusQuery.refetch().then((result) => result.data ?? status)
+    } catch {
+      // React Query stores the error; keep the current cached status if present.
+    }
+    if (status?.update_available !== true) {
+      const message = status?.suppressed
+        ? 'Updates are not available for this build.'
+        : status?.error?.trim()
+          ? `Update status unavailable: ${status.error}`
+          : updateStatusError
+            ? `Update status unavailable: ${updateStatusError}`
+            : status?.latest_version?.trim()
+              ? `Swarm is already up to date (${status.latest_version.trim()}).`
+              : 'No Swarm update is available yet.'
+      setUpdateError(message)
+      return
+    }
+    let settings = effectiveUISettings
+    if (!settings) {
+      try {
+        settings = await uiSettingsQuery.refetch().then((result) => result.data ?? null)
+      } catch {
+        settings = null
+      }
+    }
+    if (!localContainerUpdateWarningDismissed(settings)) {
+      try {
+        const plan = await fetchLocalContainerUpdatePlan({ devMode: status.dev_mode, targetVersion: status.latest_version, postRebuildCheck: status.dev_mode })
+        if (localContainerUpdateAffected(plan)) {
+          setLocalContainerUpdateConfirm({ plan, pendingDismiss: false })
+          return
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to check local containers before update'
+        setUpdateError(message)
+        return
+      }
+    }
+    await runDesktopUpdate()
+  }, [effectiveUISettings, localContainerUpdateConfirm, runDesktopUpdate, uiSettingsQuery, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
+
+  const handleConfirmLocalContainerUpdate = useCallback(async () => {
+    const confirmState = localContainerUpdateConfirm
+    if (!confirmState || updateRunning) {
+      return
+    }
+    if (confirmState.pendingDismiss) {
+      try {
+        const saved = await saveLocalContainerUpdateWarningDismissal(true)
+        setUISettings(saved)
+        queryClient.setQueryData(uiSettingsQueryKey(), saved)
+        queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to save local-container update warning setting'
+        setUpdateError(message)
+        return
+      }
+    }
+    setLocalContainerUpdateConfirm(null)
+    setUpdateError(null)
+    await runDesktopUpdate()
+  }, [localContainerUpdateConfirm, queryClient, runDesktopUpdate, updateRunning])
+
+  const handleCancelLocalContainerUpdate = useCallback(() => {
+    setLocalContainerUpdateConfirm(null)
+    setUpdateError(null)
+  }, [])
+
+  const handleToggleLocalContainerUpdateDismissal = useCallback((checked: boolean) => {
+    setLocalContainerUpdateConfirm((current) => current ? { ...current, pendingDismiss: checked } : current)
+  }, [])
 
   const handleOpenWorkspaceLauncher = useCallback(() => {
     setMobileSidebarOpen(false)
@@ -1939,6 +2041,15 @@ export function DesktopAppPage() {
     </>
   )
 
+  const localContainerConfirmPlan = localContainerUpdateConfirm?.plan ?? null
+  const localContainerConfirmSummary = localContainerConfirmPlan?.summary ?? null
+  const localContainerAffectedCount = localContainerConfirmSummary
+    ? Math.max(
+      localContainerConfirmSummary.affected ?? 0,
+      (localContainerConfirmSummary.needs_update ?? 0) + (localContainerConfirmSummary.unknown ?? 0) + (localContainerConfirmSummary.errors ?? 0),
+    )
+    : 0
+
   return (
     <div className="flex absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
       <aside className={cn('hidden shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] sm:flex', sidebarCollapsed ? 'sm:w-[56px]' : 'sm:w-[320px]')}>
@@ -2115,6 +2226,48 @@ export function DesktopAppPage() {
             setTodoSummaries((current) => ({ ...current, [todoModal.workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
           }}
         />
+      ) : null}
+
+      {localContainerConfirmPlan ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--app-backdrop)] px-4" aria-modal="true" role="dialog">
+          <Card className="w-full max-w-lg border-[var(--app-warning-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
+            <div className="text-lg font-semibold">Update local containers too?</div>
+            <p className="mt-3 text-sm text-[var(--app-text-muted)]">
+              {localContainerConfirmPlan.contract?.warning_copy || 'This will also update your local containers.'}
+            </p>
+            <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 text-sm">
+              <div className="font-medium">{localContainerAffectedCount} local container{localContainerAffectedCount === 1 ? '' : 's'} may need attention.</div>
+              <div className="mt-2 text-xs text-[var(--app-text-muted)]">
+                {formatLocalContainerUpdateTarget(localContainerConfirmPlan)}
+              </div>
+              {localContainerConfirmSummary ? (
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-[var(--app-text-muted)]">
+                  <div>Total: {localContainerConfirmSummary.total}</div>
+                  <div>Needs update: {localContainerConfirmSummary.needs_update}</div>
+                  <div>Already current: {localContainerConfirmSummary.already_current}</div>
+                  <div>Unknown/errors: {(localContainerConfirmSummary.unknown ?? 0) + (localContainerConfirmSummary.errors ?? 0)}</div>
+                </div>
+              ) : null}
+            </div>
+            <p className="mt-3 text-xs text-[var(--app-text-muted)]">
+              {localContainerConfirmPlan.contract?.failure_semantics || 'Swarm update succeeds independently; local container update failures are reported as resumable follow-up work.'}
+            </p>
+            <label className="mt-4 flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
+              <input
+                type="checkbox"
+                checked={localContainerUpdateConfirm.pendingDismiss}
+                onChange={(event) => handleToggleLocalContainerUpdateDismissal(event.currentTarget.checked)}
+              />
+              <span>Don&apos;t show this again for local-container update warnings</span>
+            </label>
+            <div className="mt-6 flex justify-end gap-3">
+              <Button variant="ghost" onClick={handleCancelLocalContainerUpdate} disabled={updateRunning}>Cancel</Button>
+              <Button onClick={() => { void handleConfirmLocalContainerUpdate() }} disabled={updateRunning}>
+                Continue update
+              </Button>
+            </div>
+          </Card>
+        </div>
       ) : null}
 
       <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />

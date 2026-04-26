@@ -80,12 +80,17 @@ type UISwarmSettingsRecord struct {
 	RemoteSSHTargets []string `json:"remote_ssh_targets,omitempty"`
 }
 
+type UIUpdateSettingsRecord struct {
+	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
+}
+
 type UISettingsRecord struct {
 	Theme     UIThemeSettingsRecord    `json:"theme,omitempty"`
 	Input     UIInputSettingsRecord    `json:"input,omitempty"`
 	Chat      UIChatSettingsRecord     `json:"chat,omitempty"`
 	Swarming  UISwarmingSettingsRecord `json:"swarming,omitempty"`
 	Swarm     UISwarmSettingsRecord    `json:"swarm,omitempty"`
+	Updates   UIUpdateSettingsRecord   `json:"updates,omitempty"`
 	UpdatedAt int64                    `json:"updated_at"`
 }
 
@@ -95,6 +100,7 @@ type UISettingsPatch struct {
 	Chat     *UIChatSettingsRecord
 	Swarming *UISwarmingSettingsRecord
 	Swarm    *UISwarmSettingsRecord
+	Updates  *UIUpdateSettingsRecord
 }
 
 type UISettingsStore struct {
@@ -139,6 +145,9 @@ func (s *UISettingsStore) Update(patch UISettingsPatch) (UISettingsRecord, error
 	}
 	if patch.Swarm != nil {
 		record.Swarm = *patch.Swarm
+	}
+	if patch.Updates != nil {
+		record.Updates = *patch.Updates
 	}
 	record.UpdatedAt = time.Now().UnixMilli()
 	record.Chat.UpdatedAt = record.UpdatedAt

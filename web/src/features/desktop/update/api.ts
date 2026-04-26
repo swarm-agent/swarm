@@ -43,6 +43,8 @@ export interface LocalContainerUpdateTarget {
   digest_ref?: string
   version?: string
   fingerprint?: string
+  post_rebuild_image_ref?: string
+  post_rebuild_fingerprint?: string
   commit?: string
 }
 
@@ -106,6 +108,7 @@ export async function startDesktopUpdate(): Promise<DesktopUpdateJob> {
 export async function fetchLocalContainerUpdatePlan(options?: {
   devMode?: boolean
   targetVersion?: string
+  postRebuildCheck?: boolean
 }): Promise<LocalContainerUpdatePlan> {
   const params = new URLSearchParams()
   if (typeof options?.devMode === 'boolean') {
@@ -113,6 +116,9 @@ export async function fetchLocalContainerUpdatePlan(options?: {
   }
   if (options?.targetVersion?.trim()) {
     params.set('target_version', options.targetVersion.trim())
+  }
+  if (options?.postRebuildCheck) {
+    params.set('post_rebuild_check', 'true')
   }
   const query = params.toString()
   return requestJson<LocalContainerUpdatePlan>(`/v1/update/local-containers${query ? `?${query}` : ''}`)

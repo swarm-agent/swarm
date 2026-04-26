@@ -277,6 +277,8 @@ type App struct {
 
 	devUpdateRequested     bool
 	releaseUpdateRequested bool
+
+	pendingLocalContainerUpdate *localContainerUpdateConfirmation
 }
 
 func New() (*App, error) {

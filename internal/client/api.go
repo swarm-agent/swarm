@@ -81,11 +81,13 @@ type LocalContainerUpdatePlan struct {
 }
 
 type LocalContainerUpdateTarget struct {
-	ImageRef    string `json:"image_ref,omitempty"`
-	DigestRef   string `json:"digest_ref,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Fingerprint string `json:"fingerprint,omitempty"`
-	Commit      string `json:"commit,omitempty"`
+	ImageRef               string `json:"image_ref,omitempty"`
+	DigestRef              string `json:"digest_ref,omitempty"`
+	Version                string `json:"version,omitempty"`
+	Fingerprint            string `json:"fingerprint,omitempty"`
+	PostRebuildImageRef    string `json:"post_rebuild_image_ref,omitempty"`
+	PostRebuildFingerprint string `json:"post_rebuild_fingerprint,omitempty"`
+	Commit                 string `json:"commit,omitempty"`
 }
 
 type LocalContainerUpdateSummary struct {
@@ -740,7 +742,12 @@ type UISwarmingSettings struct {
 // - UISwarmSettings is for the user-editable machine name shared by TUI /swarm and desktop settings.
 // Do not merge these concepts in future edits.
 type UISwarmSettings struct {
-	Name string `json:"name,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	RemoteSSHTargets []string `json:"remote_ssh_targets,omitempty"`
+}
+
+type UIUpdateSettings struct {
+	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
 }
 
 type UISettings struct {
@@ -749,6 +756,7 @@ type UISettings struct {
 	Chat      UIChatSettings     `json:"chat,omitempty"`
 	Swarming  UISwarmingSettings `json:"swarming,omitempty"`
 	Swarm     UISwarmSettings    `json:"swarm,omitempty"`
+	Updates   UIUpdateSettings   `json:"updates,omitempty"`
 	UpdatedAt int64              `json:"updated_at"`
 }
 
@@ -1138,6 +1146,10 @@ func (c *API) ApplyUpdate(ctx context.Context) (UpdateApplyPlan, error) {
 }
 
 func (c *API) GetLocalContainerUpdatePlan(ctx context.Context, devMode *bool, targetVersion string) (LocalContainerUpdatePlan, error) {
+	return c.GetLocalContainerUpdatePlanWithPostRebuild(ctx, devMode, targetVersion, false)
+}
+
+func (c *API) GetLocalContainerUpdatePlanWithPostRebuild(ctx context.Context, devMode *bool, targetVersion string, postRebuildCheck bool) (LocalContainerUpdatePlan, error) {
 	path := "/v1/update/local-containers"
 	query := url.Values{}
 	if devMode != nil {
@@ -1145,6 +1157,9 @@ func (c *API) GetLocalContainerUpdatePlan(ctx context.Context, devMode *bool, ta
 	}
 	if strings.TrimSpace(targetVersion) != "" {
 		query.Set("target_version", strings.TrimSpace(targetVersion))
+	}
+	if postRebuildCheck {
+		query.Set("post_rebuild_check", "true")
 	}
 	if encoded := query.Encode(); encoded != "" {
 		path += "?" + encoded
