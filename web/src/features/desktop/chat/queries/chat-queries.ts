@@ -197,6 +197,9 @@ type ProviderDefaultsPreviewWire = {
   out_of_sync_agents?: string[];
   inheriting_agents?: string[];
   stale_inherited_agents?: string[];
+  custom_utility_agents?: string[];
+  utility_baseline_agents?: string[];
+  overwrite_explicit?: boolean;
 };
 
 type AgentStateWire = {
@@ -944,6 +947,17 @@ function mapProviderDefaultsPreview(
           .map((value) => String(value).trim())
           .filter(Boolean)
       : [],
+    customUtilityAgents: Array.isArray(preview.custom_utility_agents)
+      ? preview.custom_utility_agents
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+      : [],
+    utilityBaselineAgents: Array.isArray(preview.utility_baseline_agents)
+      ? preview.utility_baseline_agents
+          .map((value) => String(value).trim())
+          .filter(Boolean)
+      : [],
+    overwriteExplicit: Boolean(preview.overwrite_explicit),
   };
 }
 
@@ -993,8 +1007,9 @@ export async function restoreAgentDefaults(input?: {
   utilityProvider?: string;
   utilityModel?: string;
   utilityThinking?: string;
+  overwriteExplicit?: boolean;
 }): Promise<AgentStateRecord> {
-  const body: Record<string, string> = {};
+  const body: Record<string, string | boolean> = {};
   if (input?.utilityProvider !== undefined) {
     body.utility_provider = input.utilityProvider;
   }
@@ -1003,6 +1018,9 @@ export async function restoreAgentDefaults(input?: {
   }
   if (input?.utilityThinking !== undefined) {
     body.utility_thinking = input.utilityThinking;
+  }
+  if (input?.overwriteExplicit !== undefined) {
+    body.overwrite_explicit = input.overwriteExplicit;
   }
   const response = await requestJson<RestoreAgentDefaultsWire>(
     "/v2/agents/defaults/restore",

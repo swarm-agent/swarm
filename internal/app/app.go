@@ -4824,23 +4824,49 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	switch action.Kind {
 	case ui.AgentsModalActionRefresh:
 		a.refreshAgentsModalData("Refreshing agent profiles...")
-	case ui.AgentsModalActionRestoreDefaults:
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		state, stateErr := a.api.ListAgents(ctx, 500)
-		var utilityInput []client.ProviderDefaultsPreview
-		if stateErr == nil && state.ProviderDefaultsPreview != nil {
-			utilityInput = append(utilityInput, *state.ProviderDefaultsPreview)
-		}
-		result, err := a.api.RestoreAgentDefaults(ctx, utilityInput...)
-		if err != nil {
+	case ui.AgentsModalActionSetUtilityAI:
+		input := action.UtilityAI
+		if input == nil || strings.TrimSpace(input.Provider) == "" || strings.TrimSpace(input.Model) == "" {
 			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError(fmt.Sprintf("apply Utility AI failed: %v", err))
+			a.home.SetAgentsModalError("choose a provider and model for Utility AI")
 			return
 		}
-		status := fmt.Sprintf("applied Utility AI to built-in agents: %d profiles", len(result.Profiles))
-		if result.ProviderDefaultsPreview != nil && strings.TrimSpace(result.ProviderDefaultsPreview.UtilityModel) != "" {
-			status = fmt.Sprintf("applied Utility AI %s/%s", emptyFallback(result.ProviderDefaultsPreview.UtilityProvider, result.ProviderDefaultsPreview.Provider), result.ProviderDefaultsPreview.UtilityModel)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		result, err := a.api.RestoreAgentDefaults(ctx, client.ProviderDefaultsPreview{
+			UtilityProvider:   strings.TrimSpace(input.Provider),
+			UtilityModel:      strings.TrimSpace(input.Model),
+			UtilityThinking:   strings.TrimSpace(input.Thinking),
+			OverwriteExplicit: input.OverwriteExplicit,
+		})
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("set Utility AI failed: %v", err))
+			return
+		}
+		status := fmt.Sprintf("set Utility AI baseline %s/%s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model))
+		if input.OverwriteExplicit {
+			status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model))
+		}
+		if result.ProviderDefaultsPreview != nil {
+			targets := result.ProviderDefaultsPreview.UtilityBaselineAgents
+			if len(targets) == 0 && len(result.ProviderDefaultsPreview.CustomUtilityAgents) == 0 {
+				targets = result.ProviderDefaultsPreview.UtilityAgents
+			}
+			if input.OverwriteExplicit {
+				if len(result.ProviderDefaultsPreview.UtilityAgents) > 0 {
+					status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s for %s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model), strings.Join(result.ProviderDefaultsPreview.UtilityAgents, ", "))
+				}
+			} else {
+				if len(targets) > 0 {
+					status = fmt.Sprintf("set Utility AI baseline %s/%s for %s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model), strings.Join(targets, ", "))
+				} else if len(result.ProviderDefaultsPreview.CustomUtilityAgents) > 0 {
+					status = fmt.Sprintf("no blank Utility AI agents to set for %s/%s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model))
+				}
+				if len(result.ProviderDefaultsPreview.CustomUtilityAgents) > 0 {
+					status += fmt.Sprintf("; preserved overrides for %s", strings.Join(result.ProviderDefaultsPreview.CustomUtilityAgents, ", "))
+				}
+			}
 		}
 		a.home.SetAgentsModalStatus(status)
 		a.refreshAgentsModalData("")
@@ -6025,6 +6051,8 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 		data.UtilityModel = strings.TrimSpace(preview.UtilityModel)
 		data.UtilityThinking = strings.TrimSpace(preview.UtilityThinking)
 		data.UtilityAgents = append([]string(nil), preview.UtilityAgents...)
+		data.CustomUtilityAgents = append([]string(nil), preview.CustomUtilityAgents...)
+		data.UtilityBaselineAgents = append([]string(nil), preview.UtilityBaselineAgents...)
 		data.StaleInheritedAgents = append([]string(nil), preview.StaleInheritedAgents...)
 	}
 	return data
@@ -6493,23 +6521,14 @@ func (a *App) handleAgentsCommand(args []string) {
 	case "default", "defaults", "restore":
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		state, stateErr := a.api.ListAgents(ctx, 500)
-		var utilityInput []client.ProviderDefaultsPreview
-		if stateErr == nil && state.ProviderDefaultsPreview != nil {
-			utilityInput = append(utilityInput, *state.ProviderDefaultsPreview)
-		}
-		result, err := a.api.RestoreAgentDefaults(ctx, utilityInput...)
+		result, err := a.api.RestoreAgentDefaults(ctx)
 		if err != nil {
 			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("apply Utility AI failed: %v", err))
+			a.home.SetStatus(fmt.Sprintf("restore defaults failed: %v", err))
 			return
 		}
 		a.home.ClearCommandOverlay()
-		status := fmt.Sprintf("applied Utility AI to built-in agents: %d profiles", len(result.Profiles))
-		if result.ProviderDefaultsPreview != nil && strings.TrimSpace(result.ProviderDefaultsPreview.UtilityModel) != "" {
-			status = fmt.Sprintf("applied Utility AI %s/%s", emptyFallback(result.ProviderDefaultsPreview.UtilityProvider, result.ProviderDefaultsPreview.Provider), result.ProviderDefaultsPreview.UtilityModel)
-		}
-		a.home.SetStatus(status)
+		a.home.SetStatus(fmt.Sprintf("restored default agents: %d profiles", len(result.Profiles)))
 		a.queueReload(false)
 		if a.home.AgentsModalVisible() {
 			a.refreshAgentsModalData("")

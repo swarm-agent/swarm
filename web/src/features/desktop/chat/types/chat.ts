@@ -148,6 +148,9 @@ export interface ProviderDefaultsPreviewRecord {
   outOfSyncAgents: string[];
   inheritingAgents: string[];
   staleInheritedAgents: string[];
+  customUtilityAgents: string[];
+  utilityBaselineAgents: string[];
+  overwriteExplicit?: boolean;
 }
 
 export interface AgentStateRecord {

@@ -67,7 +67,7 @@ func (s *Server) applyUtilityModelDefaults(preferredProvider string) (*auth.Auto
 	agentsSeen := make(map[string]struct{}, len(assignments))
 	subagentsSeen := make(map[string]struct{}, len(assignments))
 	if firstProviderOnboarding {
-		state, err = s.applyUtilityAIToBuiltIns(state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking)
+		state, err = s.applyUtilityAIToBuiltIns(state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
 		if err != nil {
 			return nil, fmt.Errorf("set utility AI defaults: %w", err)
 		}

@@ -9,18 +9,20 @@ import (
 )
 
 type providerDefaultsPreviewResponse struct {
-	Provider             string   `json:"provider,omitempty"`
-	PrimaryAgent         string   `json:"primary_agent,omitempty"`
-	PrimaryModel         string   `json:"primary_model,omitempty"`
-	PrimaryThinking      string   `json:"primary_thinking,omitempty"`
-	UtilityProvider      string   `json:"utility_provider,omitempty"`
-	UtilityModel         string   `json:"utility_model,omitempty"`
-	UtilityThinking      string   `json:"utility_thinking,omitempty"`
-	UtilityAgents        []string `json:"utility_agents,omitempty"`
-	AffectedAgents       []string `json:"affected_agents,omitempty"`
-	OutOfSyncAgents      []string `json:"out_of_sync_agents,omitempty"`
-	InheritingAgents     []string `json:"inheriting_agents,omitempty"`
-	StaleInheritedAgents []string `json:"stale_inherited_agents,omitempty"`
+	Provider              string   `json:"provider,omitempty"`
+	PrimaryAgent          string   `json:"primary_agent,omitempty"`
+	PrimaryModel          string   `json:"primary_model,omitempty"`
+	PrimaryThinking       string   `json:"primary_thinking,omitempty"`
+	UtilityProvider       string   `json:"utility_provider,omitempty"`
+	UtilityModel          string   `json:"utility_model,omitempty"`
+	UtilityThinking       string   `json:"utility_thinking,omitempty"`
+	UtilityAgents         []string `json:"utility_agents,omitempty"`
+	AffectedAgents        []string `json:"affected_agents,omitempty"`
+	OutOfSyncAgents       []string `json:"out_of_sync_agents,omitempty"`
+	InheritingAgents      []string `json:"inheriting_agents,omitempty"`
+	StaleInheritedAgents  []string `json:"stale_inherited_agents,omitempty"`
+	CustomUtilityAgents   []string `json:"custom_utility_agents,omitempty"`
+	UtilityBaselineAgents []string `json:"utility_baseline_agents,omitempty"`
 }
 
 func (s *Server) providerDefaultsPreviewForState(state agentruntime.State) *providerDefaultsPreviewResponse {
@@ -30,18 +32,20 @@ func (s *Server) providerDefaultsPreviewForState(state agentruntime.State) *prov
 	}
 	utilityAgents := utilityAgentNames(providerDefaults)
 	preview := &providerDefaultsPreviewResponse{
-		Provider:             providerID,
-		PrimaryAgent:         "swarm",
-		PrimaryModel:         strings.TrimSpace(providerDefaults.PrimaryModel),
-		PrimaryThinking:      strings.TrimSpace(providerDefaults.PrimaryThinking),
-		UtilityProvider:      providerID,
-		UtilityModel:         strings.TrimSpace(providerDefaults.UtilityModel),
-		UtilityThinking:      strings.TrimSpace(providerDefaults.UtilityThinking),
-		UtilityAgents:        append([]string(nil), utilityAgents...),
-		AffectedAgents:       append([]string{"swarm"}, utilityAgents...),
-		OutOfSyncAgents:      nil,
-		InheritingAgents:     nil,
-		StaleInheritedAgents: nil,
+		Provider:              providerID,
+		PrimaryAgent:          "swarm",
+		PrimaryModel:          strings.TrimSpace(providerDefaults.PrimaryModel),
+		PrimaryThinking:       strings.TrimSpace(providerDefaults.PrimaryThinking),
+		UtilityProvider:       providerID,
+		UtilityModel:          strings.TrimSpace(providerDefaults.UtilityModel),
+		UtilityThinking:       strings.TrimSpace(providerDefaults.UtilityThinking),
+		UtilityAgents:         append([]string(nil), utilityAgents...),
+		AffectedAgents:        append([]string{"swarm"}, utilityAgents...),
+		OutOfSyncAgents:       nil,
+		InheritingAgents:      nil,
+		StaleInheritedAgents:  nil,
+		CustomUtilityAgents:   nil,
+		UtilityBaselineAgents: nil,
 	}
 	profilesByName := agentProfilesByName(state.Profiles)
 	for _, name := range utilityAgents {
@@ -55,11 +59,13 @@ func (s *Server) providerDefaultsPreviewForState(state agentruntime.State) *prov
 			preview.InheritingAgents = append(preview.InheritingAgents, name)
 			preview.StaleInheritedAgents = append(preview.StaleInheritedAgents, name)
 			preview.OutOfSyncAgents = append(preview.OutOfSyncAgents, name)
+			continue
 		}
 	}
 	preview.OutOfSyncAgents = uniqueNamesInOrder(preview.OutOfSyncAgents)
 	preview.InheritingAgents = uniqueNamesInOrder(preview.InheritingAgents)
 	preview.StaleInheritedAgents = uniqueNamesInOrder(preview.StaleInheritedAgents)
+	preview.UtilityBaselineAgents, preview.CustomUtilityAgents = classifyUtilityAgents(utilityAgents, profilesByName)
 	return preview
 }
 
@@ -71,23 +77,40 @@ func (s *Server) applyProviderDefaultsToBuiltIns(state agentruntime.State) (agen
 	if !ok {
 		return state, nil
 	}
-	return s.applyUtilityAIToBuiltIns(state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking)
+	return s.applyUtilityAIToBuiltIns(state, providerID, providerDefaults.UtilityModel, providerDefaults.UtilityThinking, false)
 }
 
-func (s *Server) applyUtilityAIToBuiltIns(state agentruntime.State, utilityProvider, utilityModel, utilityThinking string) (agentruntime.State, error) {
+func (s *Server) applyUtilityAIToBuiltIns(state agentruntime.State, utilityProvider, utilityModel, utilityThinking string, overwriteExplicit bool) (agentruntime.State, error) {
 	if s == nil || s.agents == nil {
 		return state, nil
 	}
 	utilityProvider = strings.ToLower(strings.TrimSpace(utilityProvider))
 	utilityModel = strings.TrimSpace(utilityModel)
 	utilityThinking = strings.TrimSpace(utilityThinking)
+	if strings.EqualFold(utilityThinking, "off") {
+		utilityThinking = ""
+	}
 	if utilityProvider == "" || utilityModel == "" {
 		return state, nil
 	}
 	profilesByName := agentProfilesByName(state.Profiles)
+	baselineAgents, _ := classifyUtilityAgents(builtinUtilityAgentNames(), profilesByName)
+	baselineKeys := make(map[string]struct{}, len(baselineAgents))
+	for _, name := range baselineAgents {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key != "" {
+			baselineKeys[key] = struct{}{}
+		}
+	}
 	updated := false
 	for _, name := range builtinUtilityAgentNames() {
-		profile, found := profilesByName[strings.ToLower(strings.TrimSpace(name))]
+		key := strings.ToLower(strings.TrimSpace(name))
+		if !overwriteExplicit {
+			if _, ok := baselineKeys[key]; !ok {
+				continue
+			}
+		}
+		profile, found := profilesByName[key]
 		if !found {
 			defaultProfile, ok := agentruntime.DefaultProfileByName(name)
 			if !ok {
@@ -183,6 +206,76 @@ func utilityAgentNames(providerDefaults defaults.ProviderDefaults) []string {
 
 func agentProfileInheritsModel(profile pebblestore.AgentProfile) bool {
 	return strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == ""
+}
+
+func classifyUtilityAgents(utilityAgents []string, profilesByName map[string]pebblestore.AgentProfile) ([]string, []string) {
+	type utilityGroup struct {
+		Key   string
+		Names []string
+	}
+	inherited := make([]string, 0, len(utilityAgents))
+	groupsByKey := make(map[string]int, len(utilityAgents))
+	groups := make([]utilityGroup, 0, len(utilityAgents))
+	for _, name := range utilityAgents {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		profile, ok := profilesByName[strings.ToLower(trimmed)]
+		if !ok || agentProfileInheritsModel(profile) {
+			inherited = append(inherited, trimmed)
+			continue
+		}
+		key := utilityProfileModelKey(profile)
+		idx, ok := groupsByKey[key]
+		if !ok {
+			idx = len(groups)
+			groupsByKey[key] = idx
+			groups = append(groups, utilityGroup{Key: key})
+		}
+		groups[idx].Names = append(groups[idx].Names, trimmed)
+	}
+	if len(groups) == 0 {
+		return uniqueNamesInOrder(inherited), nil
+	}
+	if len(inherited) > 0 {
+		explicit := make([]string, 0, len(utilityAgents)-len(inherited))
+		for _, group := range groups {
+			explicit = append(explicit, group.Names...)
+		}
+		return uniqueNamesInOrder(inherited), uniqueNamesInOrder(explicit)
+	}
+	baseline := groups[0]
+	for _, group := range groups[1:] {
+		if len(group.Names) > len(baseline.Names) {
+			baseline = group
+		}
+	}
+	if len(baseline.Names) <= 1 && len(groups) > 1 {
+		return nil, uniqueNamesInOrder(utilityAgents)
+	}
+	baselineNames := append([]string(nil), inherited...)
+	baselineNames = append(baselineNames, baseline.Names...)
+	custom := make([]string, 0, len(utilityAgents)-len(baseline.Names))
+	baselineKeys := make(map[string]struct{}, len(baselineNames))
+	for _, name := range baselineNames {
+		baselineKeys[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
+	}
+	for _, name := range utilityAgents {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := baselineKeys[strings.ToLower(trimmed)]; ok {
+			continue
+		}
+		custom = append(custom, trimmed)
+	}
+	return uniqueNamesInOrder(baselineNames), uniqueNamesInOrder(custom)
+}
+
+func utilityProfileModelKey(profile pebblestore.AgentProfile) string {
+	return strings.ToLower(strings.TrimSpace(profile.Provider)) + "\x00" + strings.TrimSpace(profile.Model) + "\x00" + strings.ToLower(strings.TrimSpace(profile.Thinking))
 }
 
 func uniqueNamesInOrder(values []string) []string {

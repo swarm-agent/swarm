@@ -25,28 +25,30 @@ type AgentModalProfile struct {
 }
 
 type AgentsModalData struct {
-	Profiles             []AgentModalProfile
-	ActivePrimary        string
-	ActiveSubagent       map[string]string
-	Version              int64
-	Providers            []string
-	ModelsByProvider     map[string][]string
-	ReasoningModels      map[string]bool
-	DefaultProvider      string
-	DefaultModel         string
-	DefaultThinking      string
-	UtilityProvider      string
-	UtilityModel         string
-	UtilityThinking      string
-	UtilityAgents        []string
-	StaleInheritedAgents []string
+	Profiles              []AgentModalProfile
+	ActivePrimary         string
+	ActiveSubagent        map[string]string
+	Version               int64
+	Providers             []string
+	ModelsByProvider      map[string][]string
+	ReasoningModels       map[string]bool
+	DefaultProvider       string
+	DefaultModel          string
+	DefaultThinking       string
+	UtilityProvider       string
+	UtilityModel          string
+	UtilityThinking       string
+	UtilityAgents         []string
+	CustomUtilityAgents   []string
+	UtilityBaselineAgents []string
+	StaleInheritedAgents  []string
 }
 
 type AgentsModalActionKind string
 
 const (
 	AgentsModalActionRefresh         AgentsModalActionKind = "refresh"
-	AgentsModalActionRestoreDefaults AgentsModalActionKind = "restore-defaults"
+	AgentsModalActionSetUtilityAI    AgentsModalActionKind = "set-utility-ai"
 	AgentsModalActionResetDefaults   AgentsModalActionKind = "reset-defaults"
 	AgentsModalActionActivatePrimary AgentsModalActionKind = "activate-primary"
 	AgentsModalActionUpsert          AgentsModalActionKind = "upsert"
@@ -64,10 +66,18 @@ type AgentsModalUpsert struct {
 	Enabled     *bool
 }
 
+type AgentsModalUtilityAI struct {
+	Provider          string
+	Model             string
+	Thinking          string
+	OverwriteExplicit bool
+}
+
 type AgentsModalAction struct {
 	Kind       AgentsModalActionKind
 	Name       string
 	Upsert     *AgentsModalUpsert
+	UtilityAI  *AgentsModalUtilityAI
 	StatusHint string
 }
 
@@ -98,37 +108,39 @@ type agentsModalEditorField struct {
 }
 
 type agentsModalState struct {
-	Visible              bool
-	Loading              bool
-	Status               string
-	Error                string
-	Focus                agentsModalFocus
-	Search               string
-	FilterMode           string
-	Profiles             []AgentModalProfile
-	ActivePrimary        string
-	ActiveSubagent       map[string]string
-	Version              int64
-	Providers            []string
-	ModelsByProvider     map[string][]string
-	ReasoningModels      map[string]bool
-	DefaultProvider      string
-	DefaultModel         string
-	DefaultThinking      string
-	UtilityProvider      string
-	UtilityModel         string
-	UtilityThinking      string
-	UtilityAgents        []string
-	StaleInheritedAgents []string
-	SelectedProfile      int
-	ListScroll           int
-	DetailScroll         int
-	ConfirmDelete        bool
-	ConfirmName          string
-	ConfirmResetDefaults bool
-	ConfirmUnsaved       bool
-	UnsavedSaveFirst     bool
-	Editor               *agentsModalEditor
+	Visible               bool
+	Loading               bool
+	Status                string
+	Error                 string
+	Focus                 agentsModalFocus
+	Search                string
+	FilterMode            string
+	Profiles              []AgentModalProfile
+	ActivePrimary         string
+	ActiveSubagent        map[string]string
+	Version               int64
+	Providers             []string
+	ModelsByProvider      map[string][]string
+	ReasoningModels       map[string]bool
+	DefaultProvider       string
+	DefaultModel          string
+	DefaultThinking       string
+	UtilityProvider       string
+	UtilityModel          string
+	UtilityThinking       string
+	UtilityAgents         []string
+	CustomUtilityAgents   []string
+	UtilityBaselineAgents []string
+	StaleInheritedAgents  []string
+	SelectedProfile       int
+	ListScroll            int
+	DetailScroll          int
+	ConfirmDelete         bool
+	ConfirmName           string
+	ConfirmResetDefaults  bool
+	ConfirmUnsaved        bool
+	UnsavedSaveFirst      bool
+	Editor                *agentsModalEditor
 }
 
 func (p *HomePage) ShowAgentsModal() {
@@ -229,6 +241,37 @@ func (p *HomePage) SetAgentsModalData(data AgentsModalData) {
 	p.agentsModal.UtilityModel = strings.TrimSpace(data.UtilityModel)
 	p.agentsModal.UtilityThinking = normalizeThinkingValue(data.UtilityThinking)
 	p.agentsModal.UtilityAgents = dedupeAgentsModalOptions(data.UtilityAgents)
+	if len(p.agentsModal.UtilityAgents) == 0 {
+		p.agentsModal.UtilityAgents = []string{"explorer", "memory", "parallel"}
+	}
+	p.agentsModal.CustomUtilityAgents = dedupeAgentsModalOptions(data.CustomUtilityAgents)
+	p.agentsModal.UtilityBaselineAgents = dedupeAgentsModalOptions(data.UtilityBaselineAgents)
+	if len(p.agentsModal.UtilityBaselineAgents) == 0 {
+		p.agentsModal.UtilityBaselineAgents = agentsModalUtilityBaselineAgents(p.agentsModal.UtilityAgents, p.agentsModal.CustomUtilityAgents)
+	}
+	if len(p.agentsModal.UtilityBaselineAgents) == 0 && len(p.agentsModal.CustomUtilityAgents) == 0 {
+		p.agentsModal.UtilityBaselineAgents = append([]string(nil), p.agentsModal.UtilityAgents...)
+	}
+	if p.agentsModal.UtilityProvider == "" || p.agentsModal.UtilityModel == "" {
+		for _, name := range p.agentsModal.UtilityBaselineAgents {
+			for _, profile := range p.agentsModal.Profiles {
+				if !strings.EqualFold(strings.TrimSpace(profile.Name), name) {
+					continue
+				}
+				profileProvider := strings.ToLower(strings.TrimSpace(profile.Provider))
+				profileModel := strings.TrimSpace(profile.Model)
+				if profileProvider != "" && profileModel != "" {
+					p.agentsModal.UtilityProvider = profileProvider
+					p.agentsModal.UtilityModel = profileModel
+					p.agentsModal.UtilityThinking = normalizeThinkingValue(profile.Thinking)
+					break
+				}
+			}
+			if p.agentsModal.UtilityProvider != "" && p.agentsModal.UtilityModel != "" {
+				break
+			}
+		}
+	}
 	p.agentsModal.StaleInheritedAgents = dedupeAgentsModalOptions(data.StaleInheritedAgents)
 	p.agentsModal.FilterMode = filter
 	if p.agentsModal.FilterMode == "" {
@@ -449,10 +492,7 @@ func (p *HomePage) handleAgentsModalRune(ev *tcell.EventKey) {
 			StatusHint: "Refreshing agent profiles...",
 		})
 	case p.keybinds.Match(ev, KeybindAgentsRestoreDefaults):
-		p.enqueueAgentsModalAction(AgentsModalAction{
-			Kind:       AgentsModalActionRestoreDefaults,
-			StatusHint: "Restoring default agents...",
-		})
+		p.openAgentsModalUtilityAIEditor()
 	case p.keybinds.Match(ev, KeybindAgentsResetDefaults):
 		if p.agentsModal.ConfirmResetDefaults {
 			p.enqueueAgentsModalAction(AgentsModalAction{
@@ -623,6 +663,57 @@ func (p *HomePage) openAgentsModalCreateEditor() {
 	p.clearAgentsModalDeleteConfirm()
 }
 
+func (p *HomePage) openAgentsModalUtilityAIEditor() {
+	provider := p.agentsModal.UtilityProvider
+	model := p.agentsModal.UtilityModel
+	thinking := p.agentsModal.UtilityThinking
+	if provider == "" || model == "" {
+		for _, name := range p.agentsModal.UtilityBaselineAgents {
+			profile, ok := p.findAgentsModalProfileByName(name)
+			if !ok {
+				continue
+			}
+			profileProvider := strings.ToLower(strings.TrimSpace(profile.Provider))
+			profileModel := strings.TrimSpace(profile.Model)
+			if profileProvider != "" && profileModel != "" {
+				provider = profileProvider
+				model = profileModel
+				thinking = normalizeThinkingValue(profile.Thinking)
+				break
+			}
+		}
+	}
+	if thinking == "" {
+		thinking = "off"
+	}
+	providerOptions := p.agentsModalProviderOptionsWithInherit(false)
+	modelOptions := p.agentsModalModelOptionsForProviderWithInherit(provider, false)
+	thinkingOptions := p.agentsModalThinkingOptions(provider, model)
+	p.agentsModal.Editor = &agentsModalEditor{
+		Mode:       "utility-ai",
+		TargetName: "utility-ai",
+		Fields: []agentsModalEditorField{
+			{Key: "provider", Label: "Provider", Value: provider, Placeholder: "choose provider", Options: providerOptions},
+			{Key: "model", Label: "Model", Value: model, Placeholder: "choose model", Options: modelOptions},
+			{Key: "thinking", Label: "Thinking", Value: thinking, Placeholder: "thinking", Options: thinkingOptions},
+			{Key: "scope", Label: "Apply", Value: "blank only", Placeholder: "blank only", Options: []string{"blank only", "clear overrides"}},
+		},
+	}
+	p.agentsModal.Editor.Editing = false
+	p.normalizeAgentsModalEditorFields(p.agentsModal.Editor)
+	p.agentsModal.Editor.InitialFields = cloneAgentsModalEditorFields(p.agentsModal.Editor.Fields)
+	p.agentsModal.Focus = agentsModalFocusDetails
+	p.agentsModal.DetailScroll = 0
+	status := fmt.Sprintf("Set Utility AI fills blank utility agents (%s). Enter edits/commits fields. %s saves changes.", p.agentsModalUtilityAgentsLabel(), p.agentsModalEditorSaveLabel())
+	if customLabel := p.agentsModalCustomUtilityAgentsLabel(); customLabel != "" {
+		status += " Existing overrides for " + customLabel + " stay custom unless Apply=clear overrides."
+	}
+	p.agentsModal.Status = status
+	p.agentsModal.Error = ""
+	p.dismissAgentsModalUnsavedConfirm()
+	p.clearAgentsModalDeleteConfirm()
+}
+
 func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 	mode := strings.ToLower(strings.TrimSpace(profile.Mode))
 	if mode == "" {
@@ -706,6 +797,10 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 		}
 		p.dismissAgentsModalUnsavedConfirm()
 		if !agentsModalEditorHasPendingChanges(editor) {
+			if editor.Mode == "utility-ai" || editor.Mode == "utility-ai-overwrite" {
+				p.submitAgentsModalEditor()
+				return
+			}
 			p.agentsModal.Status = "No pending changes to save"
 			return
 		}
@@ -910,6 +1005,33 @@ func (p *HomePage) submitAgentsModalEditor() {
 		return ""
 	}
 
+	if editor.Mode == "utility-ai" || editor.Mode == "utility-ai-overwrite" {
+		provider := p.normalizeAgentsModalProviderValueWithFallback(get("provider"), false)
+		model := p.normalizeAgentsModalModelValueWithFallback(provider, get("model"), false)
+		if provider == "" || model == "" {
+			p.agentsModal.Error = "provider and model are required for Utility AI"
+			return
+		}
+		thinkingOptions := p.agentsModalThinkingOptions(provider, model)
+		thinking := normalizeAgentsModalThinkingValue(get("thinking"), thinkingOptions, "off")
+		if thinking == "" {
+			thinking = "off"
+		}
+		p.agentsModal.Editor = nil
+		overwriteExplicit := strings.EqualFold(editor.Mode, "utility-ai-overwrite") || agentsModalUtilityAIOverwriteChoice(get("scope"))
+		p.enqueueAgentsModalAction(AgentsModalAction{
+			Kind: AgentsModalActionSetUtilityAI,
+			UtilityAI: &AgentsModalUtilityAI{
+				Provider:          provider,
+				Model:             model,
+				Thinking:          thinking,
+				OverwriteExplicit: overwriteExplicit,
+			},
+			StatusHint: agentsModalUtilityAIStatusHint(provider, model, overwriteExplicit),
+		})
+		return
+	}
+
 	mode, ok := normalizeAgentModeValue(get("mode"))
 	if !ok {
 		p.agentsModal.Error = "mode must be primary, subagent, or background"
@@ -965,6 +1087,18 @@ func (p *HomePage) submitAgentsModalEditor() {
 		Upsert:     &upsert,
 		StatusHint: fmt.Sprintf("Saving profile %s...", upsert.Name),
 	})
+}
+
+func agentsModalUtilityAIOverwriteChoice(raw string) bool {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	return strings.Contains(value, "clear") || strings.Contains(value, "override") || value == "all"
+}
+
+func agentsModalUtilityAIStatusHint(provider, model string, overwriteExplicit bool) string {
+	if overwriteExplicit {
+		return fmt.Sprintf("Clearing Utility AI overrides and setting %s/%s...", provider, model)
+	}
+	return fmt.Sprintf("Setting Utility AI %s/%s for blank utility agents...", provider, model)
 }
 
 func normalizeAgentModeValue(raw string) (string, bool) {
@@ -1132,6 +1266,33 @@ func (p *HomePage) findAgentsModalIndexByName(name string) int {
 	return -1
 }
 
+func (p *HomePage) findAgentsModalProfileByName(name string) (AgentModalProfile, bool) {
+	idx := p.findAgentsModalIndexByName(name)
+	if idx < 0 || idx >= len(p.agentsModal.Profiles) {
+		return AgentModalProfile{}, false
+	}
+	return p.agentsModal.Profiles[idx], true
+}
+
+func (p *HomePage) agentsModalUtilityAgentsLabel() string {
+	agents := dedupeAgentsModalOptions(p.agentsModal.UtilityBaselineAgents)
+	if len(agents) == 0 && len(p.agentsModal.CustomUtilityAgents) > 0 {
+		return "none"
+	}
+	if len(agents) == 0 {
+		agents = dedupeAgentsModalOptions(p.agentsModal.UtilityAgents)
+	}
+	if len(agents) == 0 {
+		agents = []string{"explorer", "memory", "parallel"}
+	}
+	return strings.Join(agents, ", ")
+}
+
+func (p *HomePage) agentsModalCustomUtilityAgentsLabel() string {
+	agents := dedupeAgentsModalOptions(p.agentsModal.CustomUtilityAgents)
+	return strings.Join(agents, ", ")
+}
+
 func groupedAgentsModalIndexes(indexes []int, profiles []AgentModalProfile) []int {
 	if len(indexes) == 0 {
 		return nil
@@ -1265,14 +1426,17 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 				status = fmt.Sprintf("Save changes? %s save • Esc asks before closing", saveLabel)
 			} else {
 				status = fmt.Sprintf("Enter edit/commit field • %s save • Esc close", saveLabel)
+				if strings.EqualFold(editor.Mode, "utility-ai") && len(p.agentsModal.CustomUtilityAgents) > 0 {
+					status = fmt.Sprintf("Set Utility AI fills blanks; set Apply=clear overrides to reset %s • %s save", p.agentsModalCustomUtilityAgentsLabel(), saveLabel)
+				}
 			}
 		} else if p.agentsModal.Focus == agentsModalFocusDetails {
 			status = "Enter edits • Esc back to cards • ↑/↓ scroll • Tab focus search"
 		} else if len(p.agentsModal.StaleInheritedAgents) > 0 {
-			status = fmt.Sprintf("Stale Utility AI inheritance: %s • Shift+R applies Utility AI", strings.Join(p.agentsModal.StaleInheritedAgents, ", "))
+			status = fmt.Sprintf("Utility AI fallback inheritance: %s • Shift+R fills blank utility agents", strings.Join(p.agentsModal.StaleInheritedAgents, ", "))
 			statusStyle = p.theme.Warning
 		} else {
-			status = "Enter open profile • a activate primary • n new • t enable/disable • d delete • r refresh • Shift+R apply Utility AI • Shift+Z reset all"
+			status = "Enter open profile • a activate primary • n new • t enable/disable • d delete • r refresh • Shift+R set Utility AI • Shift+Z reset all"
 		}
 	}
 	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, statusStyle, clampEllipsis(status, rect.W-4))
@@ -1297,7 +1461,7 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 		p.drawAgentsModalListPane(s, bodyRect)
 	}
 
-	help := "Enter open profile • Tab focus • ↑/↓ move • PgUp/PgDn move • Esc close • Shift+R apply Utility AI • Shift+Z reset all"
+	help := "Enter open profile • Tab focus • ↑/↓ move • PgUp/PgDn move • Esc close • Shift+R set Utility AI • Shift+Z reset all"
 	if p.agentsModal.Focus == agentsModalFocusDetails {
 		help = "Enter edit • Tab focus • ↑/↓ or PgUp/PgDn scroll • Esc back to cards"
 	}
@@ -1314,7 +1478,7 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 	} else if p.agentsModal.ConfirmResetDefaults {
 		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.Warning, "Warning: Shift+Z again resets all agents/tools to built-in defaults and deletes custom agents")
 	} else {
-		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "memory cannot be deleted; used for session titles • Shift+R applies Utility AI to built-ins • Shift+Z destructively resets everything")
+		DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "memory cannot be deleted; used for session titles • Shift+R fills blank Utility AI agents • Shift+Z destructively resets everything")
 	}
 	if p.agentsModal.ConfirmUnsaved {
 		p.drawAgentsModalUnsavedConfirm(s, rect)
@@ -1449,7 +1613,11 @@ func (p *HomePage) drawAgentsModalListPane(s tcell.Screen, rect Rect) {
 				lines = append(lines, agentsModalRenderLine{Text: line, Style: metaStyle})
 			}
 
-			modeLine := fmt.Sprintf("    mode: %s • execution: %s", agentsModalModeLabel(profile.Mode), agentsModalExecutionSettingLabel(profile.ExecutionSetting))
+			modelLabel := agentsModalModelLabel(profile.Model)
+			if p.agentsModalProfileIsUtility(profile.Name) && strings.TrimSpace(profile.Provider) != "" && strings.TrimSpace(profile.Model) != "" {
+				modelLabel = strings.TrimSpace(profile.Provider) + "/" + strings.TrimSpace(profile.Model)
+			}
+			modeLine := fmt.Sprintf("    mode: %s • model: %s • execution: %s", agentsModalModeLabel(profile.Mode), modelLabel, agentsModalExecutionSettingLabel(profile.ExecutionSetting))
 			for _, line := range wrapAgentsModalWithPrefix("", modeLine, contentW) {
 				lines = append(lines, agentsModalRenderLine{Text: line, Style: metaStyle})
 			}
@@ -1612,8 +1780,10 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 		}
 		if p.agentsModalProfileIsUtility(profile.Name) {
 			base = append(base, "tag: Utility AI")
-			if strings.TrimSpace(p.agentsModal.UtilityModel) != "" {
-				base = append(base, "utility AI: "+nonEmpty(p.agentsModal.UtilityProvider, p.agentsModal.DefaultProvider)+"/"+p.agentsModal.UtilityModel)
+			if strings.TrimSpace(profile.Provider) != "" && strings.TrimSpace(profile.Model) != "" {
+				base = append(base, "utility AI override: "+strings.TrimSpace(profile.Provider)+"/"+strings.TrimSpace(profile.Model))
+			} else if strings.TrimSpace(p.agentsModal.UtilityModel) != "" {
+				base = append(base, "utility AI baseline: "+nonEmpty(p.agentsModal.UtilityProvider, p.agentsModal.DefaultProvider)+"/"+p.agentsModal.UtilityModel)
 			}
 		}
 		base = append(base,
@@ -1734,6 +1904,31 @@ func dedupeAgentsModelOptions(models []string) []string {
 	return dedupeAgentsModalOptions(models)
 }
 
+func agentsModalUtilityBaselineAgents(utilityAgents, customAgents []string) []string {
+	if len(utilityAgents) == 0 {
+		return nil
+	}
+	custom := make(map[string]struct{}, len(customAgents))
+	for _, name := range customAgents {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key != "" {
+			custom[key] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(utilityAgents))
+	for _, name := range utilityAgents {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := custom[strings.ToLower(trimmed)]; ok {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return dedupeAgentsModalOptions(out)
+}
+
 func findAgentsModalOption(options []string, value string) (string, bool) {
 	target := strings.ToLower(strings.TrimSpace(value))
 	if target == "" {
@@ -1813,8 +2008,14 @@ func (s *agentsModalState) defaultModelForProvider(providerID string) string {
 }
 
 func (p *HomePage) agentsModalProviderOptions() []string {
+	return p.agentsModalProviderOptionsWithInherit(true)
+}
+
+func (p *HomePage) agentsModalProviderOptionsWithInherit(includeInherit bool) []string {
 	out := make([]string, 0, len(p.agentsModal.Providers)+2)
-	out = append(out, "")
+	if includeInherit {
+		out = append(out, "")
+	}
 	out = append(out, p.agentsModal.Providers...)
 	if strings.TrimSpace(p.agentsModal.DefaultProvider) != "" {
 		out = append(out, strings.TrimSpace(p.agentsModal.DefaultProvider))
@@ -1823,21 +2024,33 @@ func (p *HomePage) agentsModalProviderOptions() []string {
 }
 
 func (p *HomePage) normalizeAgentsModalProviderValue(raw string) string {
+	return p.normalizeAgentsModalProviderValueWithFallback(raw, true)
+}
+
+func (p *HomePage) normalizeAgentsModalProviderValueWithFallback(raw string, allowDefault bool) string {
 	value := normalizeAgentsModalProviderID(raw)
-	options := p.agentsModalProviderOptions()
+	options := p.agentsModalProviderOptionsWithInherit(allowDefault)
 	if matched, ok := findAgentsModalOption(options, value); ok {
 		return normalizeAgentsModalProviderID(matched)
 	}
-	if matched, ok := findAgentsModalOption(options, p.agentsModal.DefaultProvider); ok {
-		return normalizeAgentsModalProviderID(matched)
+	if allowDefault {
+		if matched, ok := findAgentsModalOption(options, p.agentsModal.DefaultProvider); ok {
+			return normalizeAgentsModalProviderID(matched)
+		}
 	}
 	return ""
 }
 
 func (p *HomePage) agentsModalModelOptionsForProvider(providerID string) []string {
+	return p.agentsModalModelOptionsForProviderWithInherit(providerID, true)
+}
+
+func (p *HomePage) agentsModalModelOptionsForProviderWithInherit(providerID string, includeInherit bool) []string {
 	providerID = normalizeAgentsModalProviderID(providerID)
 	out := make([]string, 0, len(p.agentsModal.ModelsByProvider[providerID])+2)
-	out = append(out, "")
+	if includeInherit {
+		out = append(out, "")
+	}
 	if providerID != "" {
 		out = append(out, p.agentsModal.ModelsByProvider[providerID]...)
 		if fallback := p.agentsModal.defaultModelForProvider(providerID); fallback != "" {
@@ -1879,18 +2092,24 @@ func (p *HomePage) agentsModalThinkingOptions(providerID, model string) []string
 }
 
 func (p *HomePage) normalizeAgentsModalModelValue(providerID, raw string) string {
+	return p.normalizeAgentsModalModelValueWithFallback(providerID, raw, true)
+}
+
+func (p *HomePage) normalizeAgentsModalModelValueWithFallback(providerID, raw string, allowFallback bool) string {
 	providerID = normalizeAgentsModalProviderID(providerID)
 	if providerID == "" {
 		return ""
 	}
 	value := strings.TrimSpace(raw)
-	options := p.agentsModalModelOptionsForProvider(providerID)
+	options := p.agentsModalModelOptionsForProviderWithInherit(providerID, allowFallback)
 	if matched, ok := findAgentsModalOption(options, value); ok {
 		return matched
 	}
-	fallback := p.agentsModal.defaultModelForProvider(providerID)
-	if matched, ok := findAgentsModalOption(options, fallback); ok {
-		return matched
+	if allowFallback {
+		fallback := p.agentsModal.defaultModelForProvider(providerID)
+		if matched, ok := findAgentsModalOption(options, fallback); ok {
+			return matched
+		}
 	}
 	for _, option := range options {
 		if strings.TrimSpace(option) != "" {
@@ -1960,9 +2179,10 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 	}
 
 	providerField := p.findAgentsModalEditorField(editor, "provider")
+	utilityEditor := editor.Mode == "utility-ai" || editor.Mode == "utility-ai-overwrite"
 	if providerField != nil {
-		providerField.Options = p.agentsModalProviderOptions()
-		providerField.Value = p.normalizeAgentsModalProviderValue(providerField.Value)
+		providerField.Options = p.agentsModalProviderOptionsWithInherit(!utilityEditor)
+		providerField.Value = p.normalizeAgentsModalProviderValueWithFallback(providerField.Value, !utilityEditor)
 	}
 	selectedProvider := ""
 	if providerField != nil {
@@ -1971,8 +2191,8 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 
 	modelField := p.findAgentsModalEditorField(editor, "model")
 	if modelField != nil {
-		modelField.Options = p.agentsModalModelOptionsForProvider(selectedProvider)
-		modelField.Value = p.normalizeAgentsModalModelValue(selectedProvider, modelField.Value)
+		modelField.Options = p.agentsModalModelOptionsForProviderWithInherit(selectedProvider, !utilityEditor)
+		modelField.Value = p.normalizeAgentsModalModelValueWithFallback(selectedProvider, modelField.Value, !utilityEditor)
 	}
 
 	modelValue := ""
@@ -1981,7 +2201,19 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 	}
 	if thinking := p.findAgentsModalEditorField(editor, "thinking"); thinking != nil {
 		thinking.Options = p.agentsModalThinkingOptions(selectedProvider, modelValue)
-		thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, p.agentsModal.DefaultThinking)
+		fallback := p.agentsModal.DefaultThinking
+		if utilityEditor {
+			fallback = "off"
+		}
+		thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, fallback)
+	}
+	if scope := p.findAgentsModalEditorField(editor, "scope"); scope != nil {
+		scope.Options = dedupeAgentsModalOptions(nonEmptySlice(scope.Options, []string{"blank only", "clear overrides"}))
+		fallback := "blank only"
+		if strings.EqualFold(editor.Mode, "utility-ai-overwrite") {
+			fallback = "clear overrides"
+		}
+		scope.Value = normalizeAgentsModalOptionValue(scope.Value, scope.Options, fallback)
 	}
 }
 

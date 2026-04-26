@@ -346,20 +346,61 @@ func TestAgentsModalDeleteRejectsMemory(t *testing.T) {
 	}
 }
 
-func TestAgentsModalRestoreDefaultsAction(t *testing.T) {
+func TestAgentsModalSetUtilityAIAction(t *testing.T) {
 	p := NewHomePage(model.EmptyHome())
 	p.ShowAgentsModal()
 	p.SetAgentsModalData(AgentsModalData{
-		Profiles: []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true}},
+		Profiles:  []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true}},
+		Providers: []string{"codex"},
+		ModelsByProvider: map[string][]string{
+			"codex": {"gpt-5.4"},
+		},
+		UtilityProvider:       "codex",
+		UtilityModel:          "gpt-5.4",
+		UtilityAgents:         []string{"explorer", "memory", "parallel"},
+		CustomUtilityAgents:   []string{"memory"},
+		UtilityBaselineAgents: []string{"explorer", "parallel"},
 	})
 
 	p.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModShift))
+	if p.agentsModal.Editor == nil || p.agentsModal.Editor.Mode != "utility-ai" {
+		t.Fatalf("expected Utility AI editor, got %#v", p.agentsModal.Editor)
+	}
+	if got := strings.ToLower(p.agentsModal.Status); !strings.Contains(got, "explorer, parallel") || !strings.Contains(got, "overrides for memory") || !strings.Contains(got, "clear overrides") {
+		t.Fatalf("status = %q, want baseline targets and clear-overrides guidance", p.agentsModal.Status)
+	}
+	p.submitAgentsModalEditor()
 	action, ok := p.PopAgentsModalAction()
 	if !ok {
-		t.Fatalf("expected restore defaults action")
+		t.Fatalf("expected set Utility AI action")
 	}
-	if action.Kind != AgentsModalActionRestoreDefaults {
-		t.Fatalf("action kind = %q, want %q", action.Kind, AgentsModalActionRestoreDefaults)
+	if action.Kind != AgentsModalActionSetUtilityAI {
+		t.Fatalf("action kind = %q, want %q", action.Kind, AgentsModalActionSetUtilityAI)
+	}
+	if action.UtilityAI == nil || action.UtilityAI.Provider != "codex" || action.UtilityAI.Model != "gpt-5.4" {
+		t.Fatalf("utility input = %#v, want codex/gpt-5.4", action.UtilityAI)
+	}
+	if action.UtilityAI.OverwriteExplicit {
+		t.Fatalf("overwrite explicit = true, want false for normal Set Utility AI")
+	}
+
+	p.agentsModal.Editor = &agentsModalEditor{
+		Mode:       "utility-ai",
+		TargetName: "utility-ai",
+		Fields: []agentsModalEditorField{
+			{Key: "provider", Value: "codex"},
+			{Key: "model", Value: "gpt-5.4"},
+			{Key: "thinking", Value: "off"},
+			{Key: "scope", Value: "clear overrides"},
+		},
+	}
+	p.submitAgentsModalEditor()
+	action, ok = p.PopAgentsModalAction()
+	if !ok {
+		t.Fatalf("expected clear-overrides Utility AI action")
+	}
+	if action.UtilityAI == nil || !action.UtilityAI.OverwriteExplicit {
+		t.Fatalf("utility input = %#v, want overwrite explicit", action.UtilityAI)
 	}
 }
 
@@ -420,8 +461,8 @@ func TestAgentsModalDrawsOnNarrowScreen(t *testing.T) {
 	if !strings.Contains(strings.ToLower(text), "memory cannot be deleted") {
 		t.Fatalf("expected memory protection notice, got:\n%s", text)
 	}
-	if !strings.Contains(text, "Shift+R apply Utility AI") {
-		t.Fatalf("expected Shift+R apply Utility AI hint, got:\n%s", text)
+	if !strings.Contains(text, "Shift+R set Utility AI") {
+		t.Fatalf("expected Shift+R set Utility AI hint, got:\n%s", text)
 	}
 	if !strings.Contains(text, "Shift+Z reset all") {
 		t.Fatalf("expected Shift+Z reset hint, got:\n%s", text)

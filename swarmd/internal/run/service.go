@@ -1142,6 +1142,67 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}, nil
 	}
 
+	tryContextOverflowCompaction := func(step int, assistantDraft string) (bool, error) {
+		if contextCompactionAttempts >= contextCompactionRetryLimit {
+			return false, nil
+		}
+		contextCompactionAttempts++
+		compactedSummary, compactErr := s.compactRunContextWithMemory(
+			ctx,
+			sessionID,
+			prompt,
+			strings.TrimSpace(assistantDraft),
+			resolvedPreference.Preference,
+			resolvedPreference.ContextWindow,
+			resolvedPreference.MaxOutputTokens,
+			false,
+			step,
+			contextCompactionAttempts,
+			emit,
+		)
+		if compactErr != nil {
+			return false, fmt.Errorf("context overflow compact continuation failed: %w", compactErr)
+		}
+		resetSummary, _, compactEvents, compactErr := s.applyContextCompactionArtifacts(
+			sessionID,
+			compactedSummary,
+			"overflow",
+			resolvedPreference.ContextWindow,
+			providerID,
+			resolvedPreference.Preference.Model,
+			step,
+			emit,
+		)
+		if compactErr != nil {
+			return false, fmt.Errorf("context overflow compact bookkeeping failed: %w", compactErr)
+		}
+		if len(compactEvents) > 0 {
+			events = append(events, compactEvents...)
+		}
+		if resetSummary != nil {
+			usageSummaryState = resetSummary
+		}
+		turnUsageRecord = nil
+		accumulatedUsage = provideriface.TokenUsage{}
+		var activePlan *pebblestore.SessionPlanSnapshot
+		if s.sessions != nil {
+			plan, ok, planErr := s.sessions.GetActivePlan(sessionID)
+			if planErr != nil {
+				return false, fmt.Errorf("context overflow compact continuation active plan lookup failed: %w", planErr)
+			}
+			if ok {
+				activePlan = &plan
+			}
+		}
+		compactedInput := buildCompactedContinuationInput(prompt, compactedSummary, activePlan, "overflow")
+		if len(compactedInput) == 0 {
+			return false, errors.New("context overflow compact continuation produced empty input")
+		}
+		input = compactedInput
+		emptyStepRetries = 0
+		return true, nil
+	}
+
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
 			return RunResult{}, err
@@ -1386,6 +1447,16 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 		})
 		if err != nil {
+			if isContextOverflowDiagnostic(err.Error()) {
+				assistantDraft := strings.TrimSpace(strings.Join(assistantFragments, "\n\n"))
+				resumed, compactErr := tryContextOverflowCompaction(step, assistantDraft)
+				if compactErr != nil {
+					return RunResult{}, compactErr
+				}
+				if resumed {
+					continue
+				}
+			}
 			return RunResult{}, err
 		}
 		runRequestDebugEvent("provider_response", map[string]any{
@@ -1506,63 +1577,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			// - text + no tool calls => assistant is done for this turn
 			// - reasoning-only + no tool calls => keep looping for final answer
 			// - fully empty response => retry briefly for transient provider gaps, then fail clearly
-			if responseText == "" && shouldTriggerContextCompaction(response) && contextCompactionAttempts < contextCompactionRetryLimit {
-				contextCompactionAttempts++
+			if responseText == "" && shouldTriggerContextCompaction(response) {
 				assistantDraft := strings.TrimSpace(strings.Join(assistantFragments, "\n\n"))
-				compactedSummary, compactErr := s.compactRunContextWithMemory(
-					ctx,
-					sessionID,
-					prompt,
-					assistantDraft,
-					resolvedPreference.Preference,
-					resolvedPreference.ContextWindow,
-					resolvedPreference.MaxOutputTokens,
-					false,
-					step,
-					contextCompactionAttempts,
-					emit,
-				)
+				resumed, compactErr := tryContextOverflowCompaction(step, assistantDraft)
 				if compactErr != nil {
-					return RunResult{}, fmt.Errorf("context overflow compact continuation failed: %w", compactErr)
+					return RunResult{}, compactErr
 				}
-				resetSummary, _, compactEvents, compactErr := s.applyContextCompactionArtifacts(
-					sessionID,
-					compactedSummary,
-					"overflow",
-					resolvedPreference.ContextWindow,
-					providerID,
-					resolvedPreference.Preference.Model,
-					step,
-					emit,
-				)
-				if compactErr != nil {
-					return RunResult{}, fmt.Errorf("context overflow compact bookkeeping failed: %w", compactErr)
+				if resumed {
+					continue
 				}
-				if len(compactEvents) > 0 {
-					events = append(events, compactEvents...)
-				}
-				if resetSummary != nil {
-					usageSummaryState = resetSummary
-				}
-				turnUsageRecord = nil
-				accumulatedUsage = provideriface.TokenUsage{}
-				var activePlan *pebblestore.SessionPlanSnapshot
-				if s.sessions != nil {
-					plan, ok, planErr := s.sessions.GetActivePlan(sessionID)
-					if planErr != nil {
-						return RunResult{}, fmt.Errorf("context overflow compact continuation active plan lookup failed: %w", planErr)
-					}
-					if ok {
-						activePlan = &plan
-					}
-				}
-				compactedInput := buildCompactedContinuationInput(prompt, compactedSummary, activePlan, "overflow")
-				if len(compactedInput) == 0 {
-					return RunResult{}, errors.New("context overflow compact continuation produced empty input")
-				}
-				input = compactedInput
-				emptyStepRetries = 0
-				continue
 			}
 			if responseText == "" && stepReasoningSummary != "" {
 				emptyStepRetries = 0

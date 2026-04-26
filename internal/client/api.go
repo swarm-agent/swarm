@@ -373,18 +373,21 @@ type AgentToolContract struct {
 }
 
 type ProviderDefaultsPreview struct {
-	Provider             string   `json:"provider,omitempty"`
-	PrimaryAgent         string   `json:"primary_agent,omitempty"`
-	PrimaryModel         string   `json:"primary_model,omitempty"`
-	PrimaryThinking      string   `json:"primary_thinking,omitempty"`
-	UtilityProvider      string   `json:"utility_provider,omitempty"`
-	UtilityModel         string   `json:"utility_model,omitempty"`
-	UtilityThinking      string   `json:"utility_thinking,omitempty"`
-	UtilityAgents        []string `json:"utility_agents,omitempty"`
-	AffectedAgents       []string `json:"affected_agents,omitempty"`
-	OutOfSyncAgents      []string `json:"out_of_sync_agents,omitempty"`
-	InheritingAgents     []string `json:"inheriting_agents,omitempty"`
-	StaleInheritedAgents []string `json:"stale_inherited_agents,omitempty"`
+	Provider              string   `json:"provider,omitempty"`
+	PrimaryAgent          string   `json:"primary_agent,omitempty"`
+	PrimaryModel          string   `json:"primary_model,omitempty"`
+	PrimaryThinking       string   `json:"primary_thinking,omitempty"`
+	UtilityProvider       string   `json:"utility_provider,omitempty"`
+	UtilityModel          string   `json:"utility_model,omitempty"`
+	UtilityThinking       string   `json:"utility_thinking,omitempty"`
+	UtilityAgents         []string `json:"utility_agents,omitempty"`
+	AffectedAgents        []string `json:"affected_agents,omitempty"`
+	OutOfSyncAgents       []string `json:"out_of_sync_agents,omitempty"`
+	InheritingAgents      []string `json:"inheriting_agents,omitempty"`
+	StaleInheritedAgents  []string `json:"stale_inherited_agents,omitempty"`
+	CustomUtilityAgents   []string `json:"custom_utility_agents,omitempty"`
+	UtilityBaselineAgents []string `json:"utility_baseline_agents,omitempty"`
+	OverwriteExplicit     bool     `json:"overwrite_explicit,omitempty"`
 }
 
 type AgentState struct {
@@ -1702,6 +1705,8 @@ func normalizeProviderDefaultsPreview(preview *ProviderDefaultsPreview) *Provide
 	out.OutOfSyncAgents = trimStringSlice(out.OutOfSyncAgents)
 	out.InheritingAgents = trimStringSlice(out.InheritingAgents)
 	out.StaleInheritedAgents = trimStringSlice(out.StaleInheritedAgents)
+	out.CustomUtilityAgents = trimStringSlice(out.CustomUtilityAgents)
+	out.UtilityBaselineAgents = trimStringSlice(out.UtilityBaselineAgents)
 	return &out
 }
 
@@ -1928,6 +1933,11 @@ func (c *API) RestoreAgentDefaults(ctx context.Context, utilityInput ...Provider
 		if strings.TrimSpace(input.UtilityThinking) != "" {
 			payload["utility_thinking"] = strings.TrimSpace(input.UtilityThinking)
 		}
+		if input.OverwriteExplicit {
+			payload["overwrite_explicit"] = true
+		}
+	} else {
+		payload = nil
 	}
 	if err := c.postJSON(ctx, "/v2/agents/defaults/restore", payload, &resp, true); err != nil {
 		return RestoreAgentsDefaultsResult{}, err

@@ -307,7 +307,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindAgentsFocusDetails, Group: "Agents Modal", Action: "Focus details", Default: "l", Editable: true},
 	{ID: KeybindAgentsClearSearchAlt, Group: "Agents Modal", Action: "Clear search (alt)", Default: "x", Editable: true},
 	{ID: KeybindAgentsRefresh, Group: "Agents Modal", Action: "Refresh", Default: "r", Editable: true},
-	{ID: KeybindAgentsRestoreDefaults, Group: "Agents Modal", Action: "Restore defaults", Default: "shift+r", Editable: true},
+	{ID: KeybindAgentsRestoreDefaults, Group: "Agents Modal", Action: "Set Utility AI", Default: "shift+r", Editable: true},
 	{ID: KeybindAgentsResetDefaults, Group: "Agents Modal", Action: "Reset all to defaults", Default: "shift+z", Editable: true},
 	{ID: KeybindAgentsActivate, Group: "Agents Modal", Action: "Activate selected primary", Default: "a", Editable: true},
 	{ID: KeybindAgentsActivateAlt, Group: "Agents Modal", Action: "Activate selected primary (alt)", Default: "u", Editable: true},

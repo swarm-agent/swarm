@@ -147,9 +147,10 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var req struct {
-		UtilityProvider *string `json:"utility_provider"`
-		UtilityModel    *string `json:"utility_model"`
-		UtilityThinking *string `json:"utility_thinking"`
+		UtilityProvider   *string `json:"utility_provider"`
+		UtilityModel      *string `json:"utility_model"`
+		UtilityThinking   *string `json:"utility_thinking"`
+		OverwriteExplicit *bool   `json:"overwrite_explicit"`
 	}
 	if r.Body != nil && r.Body != http.NoBody {
 		body, err := io.ReadAll(r.Body)
@@ -164,15 +165,16 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 			}
 		}
 	}
-	state, _, event, err := s.agents.RestoreDefaults()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if event != nil && s.hub != nil {
-		s.hub.Publish(*event)
-	}
-	if req.UtilityProvider != nil || req.UtilityModel != nil || req.UtilityThinking != nil {
+	hasUtilityOverride := req.UtilityProvider != nil || req.UtilityModel != nil || req.UtilityThinking != nil || req.OverwriteExplicit != nil
+	var state agentruntime.State
+	var event *pebblestore.EventEnvelope
+	var err error
+	if hasUtilityOverride {
+		state, err = s.agents.ListState(2000)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		provider := ""
 		model := ""
 		thinking := ""
@@ -185,8 +187,17 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 		if req.UtilityThinking != nil {
 			thinking = *req.UtilityThinking
 		}
-		state, err = s.applyUtilityAIToBuiltIns(state, provider, model, thinking)
+		overwriteExplicit := req.OverwriteExplicit != nil && *req.OverwriteExplicit
+		state, err = s.applyUtilityAIToBuiltIns(state, provider, model, thinking, overwriteExplicit)
 	} else {
+		state, _, event, err = s.agents.RestoreDefaults()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if event != nil && s.hub != nil {
+			s.hub.Publish(*event)
+		}
 		state, err = s.applyProviderDefaultsToBuiltIns(state)
 	}
 	if err != nil {
