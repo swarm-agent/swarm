@@ -967,7 +967,7 @@ func isMissingContainerLookupError(err error) bool {
 		return false
 	}
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(message, "no such container") || strings.Contains(message, "no container with name or id") || (strings.Contains(message, "container") && strings.Contains(message, "not found"))
+	return strings.Contains(message, "no such container") || strings.Contains(message, "no such object") || strings.Contains(message, "no container with name or id") || (strings.Contains(message, "container") && strings.Contains(message, "not found"))
 }
 
 func IsMissingRuntimeContainerError(err error) bool {
