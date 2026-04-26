@@ -778,7 +778,11 @@ export function AgentsSettingsPage() {
   };
 
   const refreshAgents = async () => {
-    return queryClient.fetchQuery(agentStateQueryOptions());
+    const nextState = await queryClient.fetchQuery({
+      ...agentStateQueryOptions(),
+      staleTime: 0,
+    });
+    return applyAgentState(nextState);
   };
 
   const handleSelectProfile = (name: string) => {
