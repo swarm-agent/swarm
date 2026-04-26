@@ -51,6 +51,45 @@ func (s *Server) handleSwarmLocalContainers(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (s *Server) handleSwarmLocalContainerUpdateJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.localContainers == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("local container service not configured"))
+		return
+	}
+	var req struct {
+		DevMode          *bool  `json:"dev_mode,omitempty"`
+		TargetVersion    string `json:"target_version,omitempty"`
+		PostRebuildCheck bool   `json:"post_rebuild_check,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.localContainers.RunUpdateJob(r.Context(), localcontainers.UpdateJobInput{
+		DevMode:          req.DevMode,
+		TargetVersion:    req.TargetVersion,
+		PostRebuildCheck: req.PostRebuildCheck,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok":      false,
+			"path_id": localcontainers.PathContainerUpdateJob,
+			"result":  result,
+			"error":   err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"path_id": localcontainers.PathContainerUpdateJob,
+		"result":  result,
+	})
+}
+
 func (s *Server) handleSwarmLocalContainerCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

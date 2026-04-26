@@ -54,6 +54,7 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/containers/profiles/delete", s.handleSwarmContainerProfileDelete)
 	mux.HandleFunc("/v1/swarm/containers/local/runtime", s.handleSwarmLocalContainerRuntime)
 	mux.HandleFunc("/v1/swarm/containers/local", s.handleSwarmLocalContainers)
+	mux.HandleFunc("/v1/swarm/containers/local/update-job", s.handleSwarmLocalContainerUpdateJob)
 	mux.HandleFunc("/v1/swarm/containers/local/create", s.handleSwarmLocalContainerCreate)
 	mux.HandleFunc("/v1/swarm/containers/local/action", s.handleSwarmLocalContainerAction)
 	mux.HandleFunc("/v1/swarm/containers/local/delete", s.handleSwarmLocalContainerDelete)

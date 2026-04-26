@@ -439,6 +439,10 @@ func (f fakeLocalContainerUpdatePlanner) UpdatePlan(ctx context.Context, input l
 	return plan, nil
 }
 
+func (f fakeLocalContainerUpdatePlanner) RunUpdateJob(context.Context, localcontainers.UpdateJobInput) (localcontainers.UpdateJobResult, error) {
+	return localcontainers.UpdateJobResult{}, nil
+}
+
 func (f fakeLocalContainerUpdatePlanner) SetHostCallbackURL(string, string) {}
 
 func (f fakeLocalContainerUpdatePlanner) HostCallbackURL(string) (string, bool) { return "", false }

@@ -80,6 +80,46 @@ type LocalContainerUpdatePlan struct {
 	CheckedAtUnix int64                        `json:"checked_at_unix_ms,omitempty"`
 }
 
+type LocalContainerUpdateJobResult struct {
+	PathID          string                         `json:"path_id"`
+	Mode            string                         `json:"mode"`
+	DevMode         bool                           `json:"dev_mode"`
+	Target          LocalContainerUpdateTarget     `json:"target"`
+	Summary         LocalContainerUpdateJobSummary `json:"summary"`
+	Items           []LocalContainerUpdateJobItem  `json:"items"`
+	CheckedAtUnix   int64                          `json:"checked_at_unix_ms,omitempty"`
+	StartedAtUnix   int64                          `json:"started_at_unix_ms,omitempty"`
+	UpdatedAtUnix   int64                          `json:"updated_at_unix_ms,omitempty"`
+	CompletedAtUnix int64                          `json:"completed_at_unix_ms,omitempty"`
+}
+
+type LocalContainerUpdateJobSummary struct {
+	Total          int `json:"total"`
+	Replaced       int `json:"replaced"`
+	Skipped        int `json:"skipped"`
+	Failed         int `json:"failed"`
+	AlreadyCurrent int `json:"already_current"`
+	Unknown        int `json:"unknown"`
+}
+
+type LocalContainerUpdateJobItem struct {
+	ID                  string                   `json:"id"`
+	Name                string                   `json:"name,omitempty"`
+	ContainerName       string                   `json:"container_name,omitempty"`
+	Runtime             string                   `json:"runtime,omitempty"`
+	PreviousContainerID string                   `json:"previous_container_id,omitempty"`
+	ContainerID         string                   `json:"container_id,omitempty"`
+	PreviousImageRef    string                   `json:"previous_image_ref,omitempty"`
+	TargetImageRef      string                   `json:"target_image_ref,omitempty"`
+	TargetFingerprint   string                   `json:"target_fingerprint,omitempty"`
+	Status              string                   `json:"status,omitempty"`
+	State               string                   `json:"state"`
+	Reason              string                   `json:"reason,omitempty"`
+	Warning             string                   `json:"warning,omitempty"`
+	Error               string                   `json:"error,omitempty"`
+	Plan                LocalContainerUpdateItem `json:"plan,omitempty"`
+}
+
 type LocalContainerUpdateTarget struct {
 	ImageRef               string `json:"image_ref,omitempty"`
 	DigestRef              string `json:"digest_ref,omitempty"`

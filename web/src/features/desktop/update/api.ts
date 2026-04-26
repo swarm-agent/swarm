@@ -38,6 +38,46 @@ export interface LocalContainerUpdatePlan {
   checked_at_unix_ms?: number
 }
 
+export interface LocalContainerUpdateJobResult {
+  path_id: string
+  mode: string
+  dev_mode: boolean
+  target: LocalContainerUpdateTarget
+  summary: LocalContainerUpdateJobSummary
+  items: LocalContainerUpdateJobItem[]
+  checked_at_unix_ms?: number
+  started_at_unix_ms?: number
+  updated_at_unix_ms?: number
+  completed_at_unix_ms?: number
+}
+
+export interface LocalContainerUpdateJobSummary {
+  total: number
+  replaced: number
+  skipped: number
+  failed: number
+  already_current: number
+  unknown: number
+}
+
+export interface LocalContainerUpdateJobItem {
+  id: string
+  name?: string
+  container_name?: string
+  runtime?: string
+  previous_container_id?: string
+  container_id?: string
+  previous_image_ref?: string
+  target_image_ref?: string
+  target_fingerprint?: string
+  status?: string
+  state: string
+  reason?: string
+  warning?: string
+  error?: string
+  plan?: LocalContainerUpdateItem
+}
+
 export interface LocalContainerUpdateTarget {
   image_ref?: string
   digest_ref?: string
