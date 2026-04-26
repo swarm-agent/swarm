@@ -34,8 +34,7 @@ type Runner struct {
 }
 
 type googleAuth struct {
-	APIKey      string
-	AccessToken string
+	APIKey string
 }
 
 type googleContent struct {
@@ -161,11 +160,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 		return provideriface.Response{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if auth.APIKey != "" {
-		httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
-	} else {
-		httpReq.Header.Set("Authorization", "Bearer "+auth.AccessToken)
-	}
+	httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
 
 	resp, err := r.httpClient.Do(httpReq)
 	if err != nil {
@@ -219,11 +214,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	query := httpReq.URL.Query()
 	query.Set("alt", "sse")
 	httpReq.URL.RawQuery = query.Encode()
-	if auth.APIKey != "" {
-		httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
-	} else {
-		httpReq.Header.Set("Authorization", "Bearer "+auth.AccessToken)
-	}
+	httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
 
 	resp, err := r.httpClient.Do(httpReq)
 	if err != nil {
@@ -259,10 +250,7 @@ func (r *Runner) ensureAuth() (googleAuth, error) {
 	if apiKey := strings.TrimSpace(record.APIKey); apiKey != "" {
 		return googleAuth{APIKey: apiKey}, nil
 	}
-	if accessToken := strings.TrimSpace(record.AccessToken); accessToken != "" {
-		return googleAuth{AccessToken: accessToken}, nil
-	}
-	return googleAuth{}, errors.New("google auth is incomplete")
+	return googleAuth{}, errors.New("google api key is required")
 }
 
 func buildGoogleRequest(req provideriface.Request) googleRequest {

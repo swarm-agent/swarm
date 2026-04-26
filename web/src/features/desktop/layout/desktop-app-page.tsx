@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
+import { Bell, Bot, ChevronDown, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, PanelLeftClose, Plus, Settings, X } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -1847,52 +1847,62 @@ export function DesktopAppPage() {
       ) : (
         <div className="flex h-full flex-col min-h-0">
           <div className="flex flex-col gap-4 border-b border-[var(--app-border)] p-4">
-            <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 flex-1 flex-col gap-2 rounded-lg text-left">
               <button
                 type="button"
-                className="flex min-w-0 flex-1 flex-col gap-2 rounded-lg text-left transition-opacity hover:opacity-80"
+                className="flex min-w-0 items-center gap-2 text-left transition-opacity hover:opacity-80"
                 onClick={() => {
                   setWorkspaceMenuOpen(false)
                   setSwarmMenu((current) => ({ open: !current.open }))
                 }}
                 aria-label="Choose swarm target"
               >
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className={cn('h-2 w-2 shrink-0 rounded-full', connectionDotClass(connectionState))} />
-                  <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[var(--app-text)]">{swarmName}</span>
-                </div>
-                {visibleAssociatedSwarmTargets.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {visibleAssociatedSwarmTargets.map((target) => (
-                      <div
-                        key={target.swarm_id}
-                        className="flex items-center gap-1 rounded bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]"
-                        title={`${target.relationship} · ${target.role} · ${target.online ? 'online' : (target.attach_status || 'offline')}`}
-                      >
-                        <span className={cn(
-                          'h-1.5 w-1.5 shrink-0 rounded-full',
-                          target.online ? 'bg-emerald-500' : target.last_error ? 'bg-rose-500' : target.attach_status ? 'bg-amber-400' : 'bg-[var(--app-border-strong)]',
-                        )} />
-                        <span className="max-w-[8.5rem] truncate">{target.name}</span>
-                      </div>
-                    ))}
-                    {hiddenAssociatedSwarmTargetCount > 0 ? (
-                      <div className="flex items-center gap-1 rounded bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]">
-                        +{hiddenAssociatedSwarmTargetCount}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
+                <span className={cn('h-2 w-2 shrink-0 rounded-full', connectionDotClass(connectionState))} />
+                <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[var(--app-text)]">{swarmName}</span>
               </button>
-              <button
-                type="button"
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                onClick={handleOpenSwarmDashboard}
-                aria-label="Open swarm dashboard"
-                title="Open swarm dashboard"
-              >
-                <Plus size={16} strokeWidth={2} />
-              </button>
+              <div className="flex flex-wrap gap-1.5">
+                  {visibleAssociatedSwarmTargets.map((target) => (
+                    <button
+                      key={target.swarm_id}
+                      type="button"
+                      onClick={() => { void handleSelectSwarmTarget(target) }}
+                      disabled={!target.selectable}
+                      className={cn(
+                        'flex items-center gap-1 rounded bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)] transition-colors',
+                        target.selectable ? 'hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]' : 'cursor-not-allowed opacity-50',
+                      )}
+                      title={`${target.relationship} · ${target.role} · ${target.online ? 'online' : (target.attach_status || 'offline')}`}
+                    >
+                      <span className={cn(
+                        'h-1.5 w-1.5 shrink-0 rounded-full',
+                        target.online ? 'bg-emerald-500' : target.last_error ? 'bg-rose-500' : target.attach_status ? 'bg-amber-400' : 'bg-[var(--app-border-strong)]',
+                      )} />
+                      <span className="max-w-[8.5rem] truncate">{target.name}</span>
+                    </button>
+                  ))}
+                  {hiddenAssociatedSwarmTargetCount > 0 ? (
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 rounded bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      onClick={() => {
+                        setWorkspaceMenuOpen(false)
+                        setSwarmMenu({ open: true })
+                      }}
+                    >
+                      +{hiddenAssociatedSwarmTargetCount}
+                    </button>
+                  ) : null}
+                <button
+                  type="button"
+                  className="flex items-center gap-1 rounded border border-dashed border-[var(--app-border-strong)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)] transition-colors hover:border-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  onClick={handleOpenSwarmDashboard}
+                  aria-label="Add swarm"
+                  title="Add swarm"
+                >
+                  <Plus size={10} strokeWidth={2.2} />
+                  <span>Add Swarm</span>
+                </button>
+              </div>
             </div>
 
             {swarmMenu.open ? (
@@ -1971,10 +1981,19 @@ export function DesktopAppPage() {
                   <button
                     type="button"
                     className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    onClick={() => handleOpenSettingsTab('agents')}
+                    aria-label="Open settings"
+                    title="Settings"
+                  >
+                    <Settings size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                     onClick={() => setSidebarCollapsed(true)}
                     aria-label="Collapse sidebar"
                   >
-                    <ChevronLeft size={16} />
+                    <PanelLeftClose size={14} />
                   </button>
                 </div>
               </div>

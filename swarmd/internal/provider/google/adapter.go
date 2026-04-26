@@ -47,12 +47,7 @@ func (a *Adapter) Status(context.Context) (provideriface.Status, error) {
 }
 
 func recordReady(record pebblestore.AuthCredentialRecord) bool {
-	switch strings.ToLower(strings.TrimSpace(record.Type)) {
-	case pebblestore.CodexAuthTypeOAuth:
-		return strings.TrimSpace(record.AccessToken) != "" && strings.TrimSpace(record.RefreshToken) != ""
-	default:
-		return strings.TrimSpace(record.APIKey) != ""
-	}
+	return strings.TrimSpace(record.APIKey) != ""
 }
 
 func googleAuthMethods() []provideriface.AuthMethod {
@@ -62,12 +57,6 @@ func googleAuthMethods() []provideriface.AuthMethod {
 			Label:          "API key",
 			CredentialType: "api",
 			Description:    "Use a Google API key.",
-		},
-		{
-			ID:             "oauth",
-			Label:          "OAuth token",
-			CredentialType: "oauth",
-			Description:    "Use a Google OAuth access token.",
 		},
 	}
 }
