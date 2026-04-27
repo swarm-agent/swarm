@@ -56,6 +56,7 @@ func TestReplaceRunningLocalContainerPreservesRecordAndUpdatesDeployment(t *test
 
 	var removed []string
 	var renamed [][2]string
+	var stopped []string
 	var ran []runOptions
 	svc.removeContainerFn = func(ctx context.Context, runtimeName, containerName string) error {
 		removed = append(removed, containerName)
@@ -63,6 +64,12 @@ func TestReplaceRunningLocalContainerPreservesRecordAndUpdatesDeployment(t *test
 	}
 	svc.renameContainerFn = func(ctx context.Context, runtimeName, oldName, newName string) error {
 		renamed = append(renamed, [2]string{oldName, newName})
+		return nil
+	}
+	svc.controlContainerFn = func(ctx context.Context, runtimeName, action, containerName string) error {
+		if action == "stop" {
+			stopped = append(stopped, containerName)
+		}
 		return nil
 	}
 	svc.runContainerFn = func(ctx context.Context, runtimeName string, opts runOptions) (string, error) {
@@ -91,6 +98,9 @@ func TestReplaceRunningLocalContainerPreservesRecordAndUpdatesDeployment(t *test
 	}
 	if result.State != "replaced" || result.ContainerID != "new-container-id" || result.TargetFingerprint != targetFingerprint {
 		t.Fatalf("result = %+v", result)
+	}
+	if len(stopped) != 1 || stopped[0] != "alpha" {
+		t.Fatalf("stopped before rename = %+v", stopped)
 	}
 	if len(renamed) != 1 || renamed[0][0] != "alpha" || !strings.Contains(renamed[0][1], "swarm-update-old") {
 		t.Fatalf("renamed = %+v", renamed)
@@ -184,6 +194,66 @@ func TestReplaceStoppedLocalContainerStaysStopped(t *testing.T) {
 	}
 }
 
+func TestReplaceRunningLocalContainerIgnoresAlreadyStoppedBeforeRename(t *testing.T) {
+	devRoot := makeDevRoot(t)
+	targetFingerprint, err := devmode.ContainerImageFingerprint(devRoot)
+	if err != nil {
+		t.Fatalf("ContainerImageFingerprint() error = %v", err)
+	}
+	svc, _, cleanup := newReplacementTestService(t, startupconfig.FileConfig{DevMode: true, DevRoot: devRoot})
+	defer cleanup()
+	putReplaceRecord(t, svc.store, pebblestore.SwarmLocalContainerRecord{
+		ID:            "already-stopped",
+		Name:          "Already Stopped",
+		ContainerName: "already-stopped",
+		Runtime:       "podman",
+		Status:        "running",
+		ContainerID:   "old-container-id",
+		HostPort:      7786,
+		RuntimePort:   7786,
+		Image:         defaultImageName,
+	})
+
+	var renamed bool
+	svc.controlContainerFn = func(ctx context.Context, runtimeName, action, containerName string) error {
+		if action == "stop" && containerName == "already-stopped" {
+			return errors.New("container already stopped")
+		}
+		return nil
+	}
+	svc.renameContainerFn = func(ctx context.Context, runtimeName, oldName, newName string) error {
+		renamed = true
+		return nil
+	}
+	svc.removeContainerFn = func(ctx context.Context, runtimeName, containerName string) error { return nil }
+	svc.runContainerFn = func(ctx context.Context, runtimeName string, opts runOptions) (string, error) {
+		return "new-already-stopped-id", nil
+	}
+	svc.inspectContainerFn = func(runtimeName, containerName string) (string, string, error) {
+		return "running", "new-already-stopped-id", nil
+	}
+	svc.inspectImageFn = func(ctx context.Context, runtimeName, image string) (runtimeImageInfo, error) {
+		return runtimeImageInfo{ID: "sha256:target", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: targetFingerprint}}, nil
+	}
+	svc.inspectContainerImageFn = func(ctx context.Context, runtimeName, containerName string) (runtimeImageInfo, error) {
+		return runtimeImageInfo{ID: "sha256:old", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: "old-fingerprint"}}, nil
+	}
+
+	result, err := svc.Replace(context.Background(), ReplaceInput{
+		ID: "already-stopped",
+		Target: UpdatePlanTarget{
+			PostRebuildImageRef:    defaultImageName,
+			PostRebuildFingerprint: targetFingerprint,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	if result.State != "replaced" || !renamed {
+		t.Fatalf("result=%+v renamed=%v", result, renamed)
+	}
+}
+
 func TestReplaceAlreadyCurrentSkips(t *testing.T) {
 	devRoot := makeDevRoot(t)
 	targetFingerprint, err := devmode.ContainerImageFingerprint(devRoot)
@@ -262,6 +332,9 @@ func TestReplaceFailureLeavesOldRecordUnderstandable(t *testing.T) {
 	}
 	svc.removeContainerFn = func(ctx context.Context, runtimeName, containerName string) error {
 		removed = append(removed, containerName)
+		return nil
+	}
+	svc.controlContainerFn = func(ctx context.Context, runtimeName, action, containerName string) error {
 		return nil
 	}
 	svc.runContainerFn = func(ctx context.Context, runtimeName string, opts runOptions) (string, error) {

@@ -458,7 +458,7 @@ func (s *Service) localDevPostRebuildTarget(ctx context.Context, target UpdatePl
 		if err != nil {
 			return UpdatePlanTarget{PostRebuildImageRef: defaultImageName}, fmt.Errorf("read local container rebuild status: %w", err)
 		}
-		if ok && strings.EqualFold(status.Mode, "dev") && strings.TrimSpace(status.Fingerprint) == strings.TrimSpace(target.Fingerprint) {
+		if ok && strings.EqualFold(status.Mode, "dev") && strings.TrimSpace(status.Fingerprint) != "" {
 			return UpdatePlanTarget{
 				PostRebuildImageRef:    firstNonEmpty(strings.TrimSpace(status.ImageRef), defaultImageName),
 				PostRebuildFingerprint: strings.TrimSpace(status.Fingerprint),
@@ -960,6 +960,14 @@ func deploymentMatchesRecord(deployment pebblestore.DeployContainerRecord, recor
 
 func isMissingContainerRemoveError(err error) bool {
 	return isMissingContainerLookupError(err)
+}
+
+func isAlreadyStoppedContainerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(message, "already stopped") || strings.Contains(message, "is not running") || strings.Contains(message, "not running")
 }
 
 func isMissingContainerLookupError(err error) bool {

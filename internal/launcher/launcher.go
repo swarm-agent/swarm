@@ -571,6 +571,10 @@ func BuildSwarmdBinaries(profile Profile) error {
 }
 
 func SyncDevContainerImages(profile Profile, reason string, skipLocalArtifactRebuild bool) error {
+	return SyncDevContainerImagesWithFingerprint(profile, reason, skipLocalArtifactRebuild, "")
+}
+
+func SyncDevContainerImagesWithFingerprint(profile Profile, reason string, skipLocalArtifactRebuild bool, fingerprint string) error {
 	startupCfg, err := syncDevModeStartupConfig(profile)
 	if err != nil {
 		return err
@@ -582,9 +586,12 @@ func SyncDevContainerImages(profile Profile, reason string, skipLocalArtifactReb
 	if err != nil {
 		return fmt.Errorf("resolve dev container build root: %w", err)
 	}
-	fingerprint, err := devmode.ContainerImageFingerprint(devRoot)
-	if err != nil {
-		return fmt.Errorf("compute dev container image fingerprint: %w", err)
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		fingerprint, err = devmode.ContainerImageFingerprint(devRoot)
+		if err != nil {
+			return fmt.Errorf("compute dev container image fingerprint: %w", err)
+		}
 	}
 	runtimes := availableDevContainerBuildRuntimes()
 	if len(runtimes) == 0 {
@@ -621,8 +628,22 @@ func syncDevModeStartupConfig(profile Profile) (startupconfig.FileConfig, error)
 }
 
 func availableDevContainerBuildRuntimes() []string {
+	preferredRuntime := strings.TrimSpace(os.Getenv("BUILD_RUNTIME"))
+	candidates := []string{"podman", "docker"}
+	if preferredRuntime != "" {
+		candidates = append([]string{preferredRuntime}, candidates...)
+	}
 	out := make([]string, 0, 2)
-	for _, runtimeName := range []string{"docker", "podman"} {
+	seen := map[string]struct{}{}
+	for _, runtimeName := range candidates {
+		runtimeName = strings.ToLower(strings.TrimSpace(runtimeName))
+		if runtimeName == "" || (runtimeName != "podman" && runtimeName != "docker") {
+			continue
+		}
+		if _, ok := seen[runtimeName]; ok {
+			continue
+		}
+		seen[runtimeName] = struct{}{}
 		if _, err := exec.LookPath(runtimeName); err != nil {
 			continue
 		}
@@ -1248,22 +1269,20 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) error {
 	if err := EnsureWebPrereqs(profile); err != nil {
 		return err
 	}
-	cmd := exec.Command("npm", "run", "build")
-	cmd.Dir = profile.WebDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := BuildWebAssets(profile); err != nil {
 		return err
 	}
 	if err := InstallDesktopAssets(profile); err != nil {
 		return err
 	}
-	if err := SyncDevContainerImages(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true); err != nil {
+	fingerprint, err := devmode.ContainerImageFingerprint(profile.Root)
+	if err != nil {
 		return err
 	}
-	if fingerprint, err := devmode.ContainerImageFingerprint(profile.Root); err != nil {
+	if err := SyncDevContainerImagesWithFingerprint(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true, fingerprint); err != nil {
 		return err
-	} else if err := writeLocalContainerUpdateRebuildStatus(profile, "dev", "", devmode.DefaultContainerImageRef, fingerprint); err != nil {
+	}
+	if err := writeLocalContainerUpdateRebuildStatus(profile, "dev", "", devmode.DefaultContainerImageRef, fingerprint); err != nil {
 		return err
 	}
 	if _, err := InstallLaunchers(profile.Root); err != nil {
@@ -1276,7 +1295,21 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) error {
 		return err
 	}
 	fmt.Fprintln(os.Stdout, "Local dev rebuild completed. Restarting Swarm...")
+	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
+		return nil
+	}
 	return RunTUI(profile, relaunchArgs)
+}
+
+func isTerminal(file *os.File) bool {
+	if file == nil {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 func EnsureWebPrereqs(profile Profile) error {
@@ -1286,16 +1319,48 @@ func EnsureWebPrereqs(profile Profile) error {
 	if _, err := os.Stat(filepath.Join(profile.WebDir, "package.json")); err != nil {
 		return fmt.Errorf("missing web app under %s", profile.WebDir)
 	}
-	if _, err := exec.LookPath("node"); err != nil {
-		return errors.New("missing node; required for rebuild f")
-	}
 	if _, err := exec.LookPath("npm"); err != nil {
-		return errors.New("missing npm; required for rebuild f")
+		return errors.New("missing npm; required for desktop asset build")
 	}
 	if _, err := os.Stat(filepath.Join(profile.WebDir, "node_modules", "vite", "bin", "vite.js")); err != nil {
 		return fmt.Errorf("missing web dependencies under %s/node_modules", profile.WebDir)
 	}
 	return nil
+}
+
+func BuildWebAssets(profile Profile) error {
+	nodeMajor := detectedNodeMajor()
+	var cmd *exec.Cmd
+	if nodeMajor >= 20 {
+		cmd = exec.Command("npm", "run", "build")
+	} else {
+		cmd = exec.Command("npm", "exec", "--yes", "--package=node@22", "--", "npm", "run", "build")
+	}
+	cmd.Dir = profile.WebDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = profile.EnvList(nil)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build desktop assets: %w", err)
+	}
+	return nil
+}
+
+func detectedNodeMajor() int {
+	if _, err := exec.LookPath("node"); err != nil {
+		return 0
+	}
+	cmd := exec.Command("node", "-p", "Number(process.versions.node.split('.')[0])")
+	cmd.Env = os.Environ()
+	output, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	major, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0
+	}
+	return major
 }
 
 func InstallDesktopAssets(profile Profile) error {

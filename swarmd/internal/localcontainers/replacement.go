@@ -280,6 +280,17 @@ func (s *Service) replaceRuntimeContainer(ctx context.Context, record pebblestor
 		if err := remover(ctx, runtimeName, containerName); err != nil && !isMissingContainerRemoveError(err) {
 			return replacementRuntimeResult{}, err
 		}
+	} else if start {
+		if err := controller(ctx, runtimeName, "stop", containerName); err != nil && !isMissingContainerRemoveError(err) && !isAlreadyStoppedContainerError(err) {
+			return replacementRuntimeResult{}, err
+		}
+		if err := renamer(ctx, runtimeName, containerName, backupName); err != nil {
+			if !isMissingContainerRemoveError(err) {
+				return replacementRuntimeResult{}, err
+			}
+		} else {
+			oldRenamed = true
+		}
 	} else if err := renamer(ctx, runtimeName, containerName, backupName); err != nil {
 		if !isMissingContainerRemoveError(err) {
 			return replacementRuntimeResult{}, err
