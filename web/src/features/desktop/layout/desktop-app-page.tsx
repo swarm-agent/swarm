@@ -283,12 +283,12 @@ function connectionDotClass(connectionState: 'idle' | 'connecting' | 'open' | 'c
 
 function swarmKindDotClass(kind: SwarmTarget['kind'] | undefined, online = true): string {
   if (!online) {
-    return 'bg-[#e6bf73]'
+    return 'bg-[var(--app-warning)]'
   }
   if (kind === 'remote') {
-    return 'bg-[#8fb8ff]'
+    return 'bg-[var(--app-info)]'
   }
-  return 'bg-[#78d7ad]'
+  return 'bg-[var(--app-success)]'
 }
 
 function swarmKindLabel(target: SwarmTarget): string {
@@ -1844,12 +1844,12 @@ export function DesktopAppPage() {
         </div>
       ) : (
         <div className="flex h-full flex-col min-h-0">
-          <div className="border-b border-[var(--app-border)] p-3 font-mono">
-            <div className="relative min-h-[132px] overflow-hidden rounded-[14px] border border-[#1a1a1f] bg-[linear-gradient(180deg,#131316,#101012)] pr-8 shadow-[0_20px_60px_rgba(0,0,0,.28)]">
-              <div className="absolute bottom-[6px] right-[5px] top-[6px] z-[2] flex w-[25px] flex-col items-center gap-[3px] border-l border-[#1a1a1f] pl-[5px]">
+          <div className="border-b border-[var(--app-border)] px-3 py-3 font-mono">
+            <div className="relative min-h-[132px] overflow-hidden pr-8">
+              <div className="absolute bottom-0 right-0 top-0 z-[2] flex w-8 flex-col items-center gap-[3px] border-l border-[var(--app-border)] py-[6px] pl-[5px]">
                 <button
                   type="button"
-                  className="flex h-[23px] w-[23px] items-center justify-center rounded-[7px] border-0 bg-transparent p-0 font-inherit text-[#6b6b74] hover:bg-[#1d1d22] hover:text-[#eeeeef]"
+                  className="flex h-[23px] w-[23px] items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                   onClick={() => setSidebarCollapsed(true)}
                   aria-label="Collapse sidebar"
                   title="Collapse"
@@ -1858,7 +1858,7 @@ export function DesktopAppPage() {
                 </button>
                 <button
                   type="button"
-                  className="flex h-[23px] w-[23px] items-center justify-center rounded-[7px] border-0 bg-transparent p-0 font-inherit text-[#a1a1aa] hover:bg-[#1d1d22] hover:text-[#eeeeef]"
+                  className="flex h-[23px] w-[23px] items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                   onClick={handleOpenSwarmDashboard}
                   aria-label="Add swarm"
                   title="Add Swarm"
@@ -1867,7 +1867,7 @@ export function DesktopAppPage() {
                 </button>
                 <button
                   type="button"
-                  className="flex h-[23px] w-[23px] items-center justify-center rounded-[7px] border-0 bg-transparent p-0 font-inherit text-[#6b6b74] opacity-45 hover:bg-[#1d1d22] hover:text-[#eeeeef] hover:opacity-100"
+                  className="flex h-[23px] w-[23px] items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] opacity-45 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100"
                   onClick={() => handleOpenSettingsTab('agents')}
                   aria-label="Open settings"
                   title="Settings"
@@ -1877,7 +1877,7 @@ export function DesktopAppPage() {
                 <div className="flex-1" />
                 <button
                   type="button"
-                  className="flex h-[23px] w-[23px] items-center justify-center rounded-[7px] border-0 bg-transparent p-0 font-inherit text-[#6b6b74] opacity-45 hover:bg-[#1d1d22] hover:text-[#eeeeef] hover:opacity-100"
+                  className="flex h-[23px] w-[23px] items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] opacity-45 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100"
                   onClick={() => {
                     setSwarmMenu({ open: false })
                     setWorkspaceMenuOpen((open) => !open)
@@ -1891,15 +1891,15 @@ export function DesktopAppPage() {
 
               <div className="p-[13px_13px_10px]">
                 <div className="flex min-w-0 flex-col gap-[3px]">
-                  <div className="truncate text-[16px] font-semibold tracking-[-0.03em] text-[#eeeeef]">{swarmName}</div>
-                  <div className="truncate text-[11px] leading-[1.35] text-[#6b6b74]">
-                    <strong className="font-medium text-[#a1a1aa]">Master</strong> · {masterWorkspaceName}
+                  <div className="truncate text-[16px] font-semibold tracking-[-0.03em] text-[var(--app-text)]">{swarmName}</div>
+                  <div className="truncate text-[11px] leading-[1.35] text-[var(--app-text-subtle)]">
+                    <strong className="font-medium text-[var(--app-text-muted)]">Master</strong> · {masterWorkspaceName}
                   </div>
                 </div>
 
                 <button
                   type="button"
-                  className="mt-3 flex min-h-8 w-full items-center justify-between gap-2.5 rounded-[10px] border border-[#1a1a1f] bg-[rgba(255,255,255,.018)] px-2 py-[7px] text-left font-inherit text-[11px] text-[#a1a1aa] hover:border-[#242429] hover:bg-[rgba(255,255,255,.028)] hover:text-[#eeeeef]"
+                  className="mt-3 flex min-h-8 w-full items-center justify-between gap-2.5 border border-[var(--app-border)] bg-transparent px-2 py-[7px] text-left font-inherit text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                   onClick={() => {
                     setWorkspaceMenuOpen(false)
                     setSwarmMenu((current) => ({ open: !current.open }))
@@ -1911,16 +1911,16 @@ export function DesktopAppPage() {
                   <span className="flex min-w-0 items-center gap-[7px]">
                     <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(currentSwarmTarget?.kind, currentSwarmTarget?.online ?? true))} />
                     <span className="min-w-0 truncate">
-                      <span className="text-[#78d7ad]">{swarmTargetCounts.local} local</span>
+                      <span className="text-[var(--app-success)]">{swarmTargetCounts.local} local</span>
                       {' · '}
-                      <span className="text-[#8fb8ff]">{swarmTargetCounts.remote} remote</span>
+                      <span className="text-[var(--app-info)]">{swarmTargetCounts.remote} remote</span>
                     </span>
                   </span>
-                  <span className="shrink-0 text-[#6b6b74]">{swarmMenu.open ? '▴' : '▾'}</span>
+                  <span className="shrink-0 text-[var(--app-text-subtle)]">{swarmMenu.open ? '▴' : '▾'}</span>
                 </button>
 
                 {swarmMenu.open ? (
-                  <div className="mt-1.5 rounded-[10px] border border-[#1a1a1f] bg-[#141417] p-1">
+                  <div className="mt-1.5 border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
                     {swarmTargets.map((target) => (
                       <button
                         key={target.swarm_id}
@@ -1928,8 +1928,8 @@ export function DesktopAppPage() {
                         onClick={() => { void handleSelectSwarmTarget(target) }}
                         disabled={!target.selectable}
                         className={cn(
-                          'flex min-h-[30px] w-full items-center justify-between gap-2.5 rounded-[7px] px-[7px] py-[5px] text-left text-[12px] text-[#a1a1aa] hover:bg-[#1d1d22] hover:text-[#eeeeef]',
-                          target.current && 'bg-[#202027] text-[#eeeeef] shadow-[inset_2px_0_0_#78d7ad]',
+                          'flex min-h-[30px] w-full items-center justify-between gap-2.5 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                          target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
                           !target.selectable && 'cursor-not-allowed opacity-50',
                         )}
                         title={`${swarmKindLabel(target)} · ${target.online ? 'online' : (target.attach_status || 'offline')}`}
@@ -1938,20 +1938,20 @@ export function DesktopAppPage() {
                           <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
                           <span className="truncate">{target.name}</span>
                         </span>
-                        <span className="shrink-0 whitespace-nowrap text-[10px] text-[#6b6b74]">
+                        <span className="shrink-0 whitespace-nowrap text-[10px] text-[var(--app-text-subtle)]">
                           {swarmKindLabel(target)} · {target.current ? 'active' : target.online ? 'online' : (target.attach_status || 'offline')}
                         </span>
                       </button>
                     ))}
-                    {swarmSwitchError ? <div className="mt-1 rounded-md border border-[#e6bf73]/40 bg-[#e6bf73]/10 px-2 py-1.5 text-[10px] text-[#e6bf73]">{swarmSwitchError}</div> : null}
+                    {swarmSwitchError ? <div className="mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
                   </div>
                 ) : null}
 
-                <div className="mt-2 flex items-center justify-between gap-2.5 px-px text-[10px] text-[#6b6b74]">
+                <div className="mt-2 flex items-center justify-between gap-2.5 px-px text-[10px] text-[var(--app-text-subtle)]">
                   <span>{workspaceCount} workspaces</span>
                   <button
                     type="button"
-                    className="border-0 bg-transparent p-0 font-inherit text-[#a1a1aa] hover:text-[#eeeeef]"
+                    className="border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
                     onClick={() => {
                       setSwarmMenu({ open: false })
                       setWorkspaceMenuOpen((open) => !open)
@@ -1964,25 +1964,25 @@ export function DesktopAppPage() {
             </div>
 
             {workspaceMenuOpen ? (
-              <div className="mt-2 flex flex-col rounded-[10px] border border-[#1a1a1f] bg-[#141417] p-1 font-mono shadow-sm">
+              <div className="mt-2 flex flex-col border border-[var(--app-border)] bg-[var(--app-surface)] p-1 font-mono">
                 {mergedSidebarWorkspaceEntries.length === 0 ? (
-                  <div className="px-2 py-1.5 text-[11px] text-[#6b6b74]">No saved workspaces.</div>
+                  <div className="px-2 py-1.5 text-[11px] text-[var(--app-text-subtle)]">No saved workspaces.</div>
                 ) : mergedSidebarWorkspaceEntries.map((workspace) => {
                   const hidden = workspaceLayout[workspace.path]?.hidden ?? false
                   return (
-                    <div key={workspace.path} className="group flex min-h-[30px] items-center justify-between gap-2.5 rounded-[7px] px-[7px] py-[5px] text-[12px] text-[#a1a1aa] hover:bg-[#1d1d22] hover:text-[#eeeeef]">
+                    <div key={workspace.path} className="group flex min-h-[30px] items-center justify-between gap-2.5 px-[7px] py-[5px] text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
                       <button
                         type="button"
                         className="flex min-w-0 flex-1 items-center gap-2 text-left"
                         onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)}
                         title={workspace.path}
                       >
-                        <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', hidden ? 'bg-[#6b6b74]' : 'bg-[#78d7ad]')} />
+                        <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', hidden ? 'bg-[var(--app-text-subtle)]' : 'bg-[var(--app-success)]')} />
                         <span className={cn('truncate', hidden && 'opacity-60')}>{workspace.workspaceName}</span>
                       </button>
                       <button
                         type="button"
-                        className="shrink-0 rounded p-0.5 text-[#6b6b74] opacity-0 hover:bg-[#242429] hover:text-[#eeeeef] group-hover:opacity-100"
+                        className="shrink-0 p-0.5 text-[var(--app-text-subtle)] opacity-0 hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] group-hover:opacity-100"
                         onClick={(e) => { e.stopPropagation(); toggleWorkspaceHidden(workspace.path) }}
                         aria-label={`${hidden ? 'Show' : 'Hide'} ${workspace.workspaceName} in sidebar`}
                         title={`${hidden ? 'Show' : 'Hide'} in sidebar`}
@@ -1992,10 +1992,10 @@ export function DesktopAppPage() {
                     </div>
                   )
                 })}
-                <div className="my-1 h-px bg-[#1a1a1f]" />
+                <div className="my-1 h-px bg-[var(--app-border)]" />
                 <button
                   type="button"
-                  className="flex min-h-[30px] items-center gap-2 rounded-[7px] px-[7px] py-[5px] text-left text-[12px] text-[#a1a1aa] hover:bg-[#1d1d22] hover:text-[#eeeeef]"
+                  className="flex min-h-[30px] items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                   onClick={handleOpenWorkspaceLauncher}
                 >
                   <Home size={14} className="shrink-0" />
