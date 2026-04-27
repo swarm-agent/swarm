@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bot, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
+import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -1022,6 +1022,7 @@ export function DesktopAppPage() {
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
   const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
+  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
   const setActiveSession = useDesktopStore((state) => state.setActiveSession)
   const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
   const upsertSession = useDesktopStore((state) => state.upsertSession)
@@ -1845,61 +1846,43 @@ export function DesktopAppPage() {
       ) : (
         <div className="flex h-full flex-col min-h-0">
           <div className="border-b border-[var(--app-border)] px-3 py-3 font-mono">
-            <div className="relative min-h-[132px] overflow-hidden pr-8">
-              <div className="absolute bottom-0 right-0 top-0 z-[2] flex w-8 flex-col items-center gap-[3px] border-l border-[var(--app-border)] py-[6px] pl-[5px]">
-                <button
-                  type="button"
-                  className="flex h-[23px] w-[23px] items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                  onClick={() => setSidebarCollapsed(true)}
-                  aria-label="Collapse sidebar"
-                  title="Collapse"
-                >
-                  <ChevronLeft size={15} strokeWidth={1.8} className="shrink-0" />
-                </button>
-                <button
-                  type="button"
-                  className="flex h-[23px] w-[23px] items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                  onClick={handleOpenSwarmDashboard}
-                  aria-label="Add swarm"
-                  title="Add Swarm"
-                >
-                  <Plus size={15} strokeWidth={1.8} className="shrink-0" />
-                </button>
-                <button
-                  type="button"
-                  className="flex h-[23px] w-[23px] items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] opacity-45 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100"
-                  onClick={() => handleOpenSettingsTab('agents')}
-                  aria-label="Open settings"
-                  title="Settings"
-                >
-                  <Settings size={15} strokeWidth={1.8} className="shrink-0" />
-                </button>
-                <div className="flex-1" />
-                <button
-                  type="button"
-                  className="flex h-[23px] w-[23px] items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] opacity-45 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100"
-                  onClick={() => {
-                    setSwarmMenu({ open: false })
-                    setWorkspaceMenuOpen((open) => !open)
-                  }}
-                  aria-label="Open workspaces"
-                  title="Workspaces"
-                >
-                  <Menu size={15} strokeWidth={1.8} className="shrink-0" />
-                </button>
-              </div>
-
+            <div className="min-h-[132px] overflow-hidden">
               <div className="p-[13px_13px_10px]">
-                <div className="flex min-w-0 flex-col gap-[3px]">
-                  <div className="truncate text-[16px] font-semibold tracking-[-0.03em] text-[var(--app-text)]">{swarmName}</div>
-                  <div className="truncate text-[11px] leading-[1.35] text-[var(--app-text-subtle)]">
-                    <strong className="font-medium text-[var(--app-text-muted)]">Master</strong> · {masterWorkspaceName}
+                <div className="flex min-h-7 items-start justify-between gap-2.5">
+                  <div className="min-w-0">
+                    <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
+                    <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
+                      <strong className="font-medium text-[var(--app-text-muted)]">Master</strong> · {masterWorkspaceName}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-0 border-l border-[color-mix(in_srgb,var(--app-border)_46%,transparent)] pl-[3px]">
+                    <button
+                      type="button"
+                      className={cn(
+                        'flex h-6 w-6 items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                        notificationCenter.summary.unreadCount > 0 && 'text-[color-mix(in_srgb,var(--app-warning)_82%,var(--app-text-muted))] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-primary-hover)]',
+                      )}
+                      onClick={() => setNotificationsOpen(true)}
+                      aria-label="Open notifications"
+                      title={notificationCenter.summary.unreadCount > 0 ? `${notificationCenter.summary.unreadCount} unread notifications` : 'Notifications'}
+                    >
+                      <Bell size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                    <button
+                      type="button"
+                      className="flex h-6 w-6 items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      onClick={() => setSidebarCollapsed(true)}
+                      aria-label="Collapse sidebar"
+                      title="Collapse"
+                    >
+                      <ChevronLeft size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
                   </div>
                 </div>
 
                 <button
                   type="button"
-                  className="mt-3 flex min-h-8 w-full items-center justify-between gap-2.5 border border-[var(--app-border)] bg-transparent px-2 py-[7px] text-left font-inherit text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  className="mt-[7px] flex min-h-[30px] w-full items-center justify-between gap-2.5 border-0 bg-transparent p-0 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)]"
                   onClick={() => {
                     setWorkspaceMenuOpen(false)
                     setSwarmMenu((current) => ({ open: !current.open }))
@@ -1908,15 +1891,14 @@ export function DesktopAppPage() {
                   aria-label="Choose swarm target"
                   title={swarmTargetSummary}
                 >
-                  <span className="flex min-w-0 items-center gap-[7px]">
-                    <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(currentSwarmTarget?.kind, currentSwarmTarget?.online ?? true))} />
-                    <span className="min-w-0 truncate">
-                      <span className="text-[var(--app-success)]">{swarmTargetCounts.local} local</span>
-                      {' · '}
-                      <span className="text-[var(--app-info)]">{swarmTargetCounts.remote} remote</span>
-                    </span>
+                  <span className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+                    <span className="text-[color-mix(in_srgb,var(--app-success)_58%,var(--app-text-subtle))]">{swarmTargetCounts.local} local</span>
+                    <span className="opacity-55">·</span>
+                    <span className="text-[color-mix(in_srgb,var(--app-info)_58%,var(--app-text-subtle))]">{swarmTargetCounts.remote} remote</span>
                   </span>
-                  <span className="shrink-0 text-[var(--app-text-subtle)]">{swarmMenu.open ? '▴' : '▾'}</span>
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center border-0 bg-transparent text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                    <Plus size={14} strokeWidth={1.8} className="shrink-0" />
+                  </span>
                 </button>
 
                 {swarmMenu.open ? (
@@ -1947,17 +1929,26 @@ export function DesktopAppPage() {
                   </div>
                 ) : null}
 
-                <div className="mt-2 flex items-center justify-between gap-2.5 px-px text-[10px] text-[var(--app-text-subtle)]">
-                  <span>{workspaceCount} workspaces</span>
+                <div className="mt-[7px] flex min-h-7 items-center justify-between gap-2.5 border-t border-[color-mix(in_srgb,var(--app-border)_54%,transparent)] pt-[7px] text-[11px] text-[var(--app-text-subtle)]">
                   <button
                     type="button"
-                    className="border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                    className="flex min-h-[22px] items-center gap-1 border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                     onClick={() => {
                       setSwarmMenu({ open: false })
                       setWorkspaceMenuOpen((open) => !open)
                     }}
+                    aria-expanded={workspaceMenuOpen}
+                    aria-label={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspace list`}
                   >
-                    Workspaces
+                    <span>{workspaceCount} workspaces</span>
+                    {workspaceMenuOpen ? <ChevronDown size={14} strokeWidth={1.8} className="shrink-0 rotate-180" /> : <ChevronDown size={14} strokeWidth={1.8} className="shrink-0" />}
+                  </button>
+                  <button
+                    type="button"
+                    className="border-0 bg-transparent py-[3px] pl-2 pr-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    onClick={() => handleOpenSettingsTab('agents')}
+                  >
+                    Settings
                   </button>
                 </div>
               </div>
