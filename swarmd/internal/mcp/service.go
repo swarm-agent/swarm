@@ -219,26 +219,13 @@ func (s *Service) SetEnabled(id string, enabled bool) (Server, *pebblestore.Even
 }
 
 func (s *Service) ResolveExaRuntimeConfig() (ExaRuntimeConfig, error) {
-	if s == nil || s.store == nil {
-		return ExaRuntimeConfig{}, errors.New("mcp service is not configured")
-	}
-	record, ok, err := s.store.Get(DefaultExaServerID)
-	if err != nil {
-		return ExaRuntimeConfig{}, err
-	}
-	if !ok {
-		return ExaRuntimeConfig{
-			Enabled: true,
-			URL:     DefaultExaServerURL,
-		}, nil
-	}
-	url := strings.TrimSpace(record.URL)
-	if url == "" {
-		url = DefaultExaServerURL
-	}
+	// Generic MCP management is deferred, so Exa fallback must not depend on
+	// persisted MCP records. Old local records may exist from earlier builds;
+	// ignore them so free users always get the hosted Exa bridge when no API key
+	// is configured.
 	return ExaRuntimeConfig{
-		Enabled: record.Enabled,
-		URL:     url,
+		Enabled: true,
+		URL:     DefaultExaServerURL,
 	}, nil
 }
 
