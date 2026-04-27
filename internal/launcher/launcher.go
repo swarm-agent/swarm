@@ -586,13 +586,18 @@ func SyncDevContainerImagesWithFingerprint(profile Profile, reason string, skipL
 	if err != nil {
 		return fmt.Errorf("resolve dev container build root: %w", err)
 	}
-	fingerprint = strings.TrimSpace(fingerprint)
-	if fingerprint == "" {
-		fingerprint, err = devmode.ContainerImageFingerprint(devRoot)
-		if err != nil {
-			return fmt.Errorf("compute dev container image fingerprint: %w", err)
-		}
+	if err := devmode.SyncStagedContainerBinaries(devRoot, profile.BinDir); err != nil {
+		return fmt.Errorf("stage dev container image binaries: %w", err)
 	}
+	stagedFingerprint, err := devmode.ContainerImageFingerprint(devRoot)
+	if err != nil {
+		return fmt.Errorf("compute dev container image fingerprint: %w", err)
+	}
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint != "" && fingerprint != stagedFingerprint {
+		fmt.Fprintf(os.Stderr, "dev container fingerprint changed after staging current binaries; using %s instead of %s\n", stagedFingerprint, fingerprint)
+	}
+	fingerprint = stagedFingerprint
 	runtimes := availableDevContainerBuildRuntimes()
 	if len(runtimes) == 0 {
 		return errors.New("dev_mode is enabled but no local container runtime is available to build the canonical child image")
@@ -683,6 +688,7 @@ func rebuildDevContainerImage(devRoot, runtimeName, fingerprint, reason string, 
 		"IMAGE_NAME="+devmode.DefaultContainerImageRef,
 		"SWARM_REBUILD_REASON="+strings.TrimSpace(reason),
 		"SWARM_CONTAINER_DEV_FINGERPRINT="+strings.TrimSpace(fingerprint),
+		"SWARM_BIN_DIR="+filepath.Join(devRoot, ".bin", "main"),
 	)
 	if skipLocalArtifactRebuild {
 		cmd.Env = append(cmd.Env, "SWARM_SKIP_LOCAL_ARTIFACT_REBUILD=1")
@@ -1274,6 +1280,9 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) error {
 	}
 	if err := InstallDesktopAssets(profile); err != nil {
 		return err
+	}
+	if err := devmode.SyncStagedContainerBinaries(profile.Root, profile.BinDir); err != nil {
+		return fmt.Errorf("stage dev container image binaries: %w", err)
 	}
 	fingerprint, err := devmode.ContainerImageFingerprint(profile.Root)
 	if err != nil {

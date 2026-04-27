@@ -434,7 +434,7 @@ func localUpdateTarget(ctx context.Context, startupCfg startupconfig.FileConfig,
 		if err != nil {
 			return UpdatePlanTarget{}, err
 		}
-		fingerprint, err := devmode.ContainerImageFingerprint(repoRoot)
+		fingerprint, err := prepareDevContainerFingerprint(repoRoot)
 		if err != nil {
 			return UpdatePlanTarget{}, fmt.Errorf("compute dev local container image fingerprint: %w", err)
 		}
@@ -450,6 +450,53 @@ func localUpdateTarget(ctx context.Context, startupCfg startupconfig.FileConfig,
 		Version:   metadata.Version,
 		Commit:    metadata.Commit,
 	}, nil
+}
+
+func prepareDevContainerFingerprint(repoRoot string) (string, error) {
+	if err := syncDevContainerStagedBinaries(repoRoot); err != nil {
+		return "", err
+	}
+	fingerprint, err := devmode.ContainerImageFingerprint(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return fingerprint, nil
+}
+
+func syncDevContainerStagedBinaries(repoRoot string) error {
+	repoRoot, err := devmode.ResolveRoot(repoRoot)
+	if err != nil {
+		return err
+	}
+	sourceBinDir := strings.TrimSpace(os.Getenv("SWARM_BIN_DIR"))
+	if sourceBinDir != "" {
+		if err := devmode.SyncStagedContainerBinaries(repoRoot, sourceBinDir); err != nil {
+			return fmt.Errorf("stage dev local container binaries: %w", err)
+		}
+		return nil
+	}
+	stageDir := filepath.Join(repoRoot, ".bin", "main")
+	for _, name := range []string{"swarmd", "swarmctl"} {
+		path := filepath.Join(stageDir, name)
+		if err := requireExecutableDevContainerBinary(path); err != nil {
+			return fmt.Errorf("SWARM_BIN_DIR is not set and staged dev local container binary is not ready: %w", err)
+		}
+	}
+	return nil
+}
+
+func requireExecutableDevContainerBinary(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s: expected file, got directory", path)
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("%s: not executable", path)
+	}
+	return nil
 }
 
 func (s *Service) localDevPostRebuildTarget(ctx context.Context, target UpdatePlanTarget, records []pebblestore.SwarmLocalContainerRecord) (UpdatePlanTarget, error) {
@@ -2050,7 +2097,7 @@ func ensureCanonicalImageCurrent(ctx context.Context, runtimeName, image string,
 	if err != nil {
 		return "", err
 	}
-	expectedFingerprint, err := devmode.ContainerImageFingerprint(repoRoot)
+	expectedFingerprint, err := prepareDevContainerFingerprint(repoRoot)
 	if err != nil {
 		return "", fmt.Errorf("compute dev local container image fingerprint: %w", err)
 	}
@@ -2076,6 +2123,7 @@ func ensureCanonicalImageCurrent(ctx context.Context, runtimeName, image string,
 		"IMAGE_NAME="+image,
 		"SWARM_REBUILD_REASON=local-container-create",
 		"SWARM_CONTAINER_DEV_FINGERPRINT="+expectedFingerprint,
+		"SWARM_BIN_DIR="+filepath.Join(repoRoot, ".bin", "main"),
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

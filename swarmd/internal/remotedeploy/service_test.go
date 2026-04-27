@@ -146,6 +146,67 @@ func TestRemoteRuntimeSignatureChangesWithInputs(t *testing.T) {
 	}
 }
 
+func TestVerifyRemoteDeployBackendBinariesRequiresExecutableStagedBinaries(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".bin", "main", "swarmd"), "swarmd")
+	writeTestFile(t, filepath.Join(root, ".bin", "main", "swarmctl"), "swarmctl")
+
+	if err := verifyRemoteDeployBackendBinaries(root); err != nil {
+		t.Fatalf("verifyRemoteDeployBackendBinaries() error = %v", err)
+	}
+	if err := os.Chmod(filepath.Join(root, ".bin", "main", "swarmctl"), 0o644); err != nil {
+		t.Fatalf("chmod staged swarmctl: %v", err)
+	}
+	err := verifyRemoteDeployBackendBinaries(root)
+	if err == nil {
+		t.Fatal("verifyRemoteDeployBackendBinaries() error = nil, want missing executable error")
+	}
+	if !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("verifyRemoteDeployBackendBinaries() error = %q, want executable detail", err.Error())
+	}
+}
+
+func TestResolveMasterRemoteDeployEndpointUsesDevLanePort(t *testing.T) {
+	t.Setenv("SWARM_LANE", "dev")
+	t.Setenv("SWARM_LANE_PORT", "7782")
+	endpoint, err := resolveMasterRemoteDeployEndpoint(startupconfig.FileConfig{
+		Host:          "10.77.1.2",
+		Port:          7781,
+		AdvertiseHost: "10.77.1.2",
+		AdvertisePort: 7781,
+	}, startupconfig.NetworkModeLAN)
+	if err != nil {
+		t.Fatalf("resolveMasterRemoteDeployEndpoint() error = %v", err)
+	}
+	if endpoint != "http://10.77.1.2:7782" {
+		t.Fatalf("endpoint = %q, want dev lane port", endpoint)
+	}
+}
+
+func TestRemoteDevReplacementScriptDoesNotDuplicateRemoteRootMount(t *testing.T) {
+	record := pebblestore.RemoteDeploySessionRecord{
+		ID:                  "remote-replace-test",
+		Name:                "remote-replace-test",
+		TransportMode:       startupconfig.NetworkModeLAN,
+		RemoteRuntime:       "docker",
+		RemoteRoot:          "/var/lib/swarm/rd/remote-replace-test",
+		RemoteAdvertiseHost: "10.0.0.10",
+		Payloads: []pebblestore.RemoteDeployPayloadRecord{{
+			TargetPath: "/workspaces",
+		}},
+	}
+	script := remoteDevReplacementScript(record, remoteRuntimeArtifact{ImageRef: "localhost/swarm-remote-child:new"})
+	if got := strings.Count(script, `"$remote_root:$remote_root"`); got != 1 {
+		t.Fatalf("remote root mount occurrences = %d, want one\n%s", got, script)
+	}
+	if strings.Contains(script, `run_args+=(--volume '/var/lib/swarm/rd/remote-replace-test:/var/lib/swarm/rd/remote-replace-test')`) {
+		t.Fatalf("replacement script duplicates concrete remote root mount\n%s", script)
+	}
+	if !strings.Contains(script, `run_args+=(--volume '/workspaces:/workspaces')`) {
+		t.Fatalf("replacement script should still mount payload target\n%s", script)
+	}
+}
+
 func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testing.T) {
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:            "remote-child-test",

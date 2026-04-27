@@ -316,6 +316,7 @@ func boolString(value bool) string {
 
 func makeDevRoot(t *testing.T) string {
 	t.Helper()
+	t.Setenv("SWARM_BIN_DIR", "")
 	root := t.TempDir()
 	paths := []string{
 		filepath.Join(root, "scripts", "rebuild-container.sh"),

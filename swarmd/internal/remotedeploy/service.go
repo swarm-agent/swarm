@@ -754,7 +754,7 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	}
 	defer os.RemoveAll(workDir)
 	stepStartedAt = time.Now()
-	runtimeArtifact, err := s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, record.ImagePrefix, mapRemoteStoredContainerPackageManifest(record.ContainerPackages))
+	runtimeArtifact, err := s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, record.ImagePrefix, mapRemoteStoredContainerPackageManifest(record.ContainerPackages), true)
 	logRemoteDeployTiming(
 		"start.prepare_runtime_artifact",
 		stepStartedAt,
@@ -917,7 +917,7 @@ func (s *Service) RunUpdateJob(ctx context.Context, input UpdateJobInput) (Updat
 		artifact, cached := cachedArtifacts[cacheKey]
 		var prepareErr error
 		if !cached {
-			artifact, prepareErr = s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, record.ImagePrefix, mapRemoteStoredContainerPackageManifest(record.ContainerPackages))
+			artifact, prepareErr = s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, record.ImagePrefix, mapRemoteStoredContainerPackageManifest(record.ContainerPackages), !input.PostRebuildCheck)
 			if prepareErr == nil {
 				cachedArtifacts[cacheKey] = artifact
 			}
@@ -2800,7 +2800,7 @@ func remoteDevReplacementScript(record pebblestore.RemoteDeploySessionRecord, ru
 	if remoteImageUsesArchive(runtimeArtifact.ImageRef) {
 		useArchiveImage = "1"
 	}
-	mountTargets := []string{remoteRoot}
+	mountTargets := []string{}
 	seen := map[string]struct{}{remoteRoot: {}}
 	appendMount := func(path string) {
 		path = firstNonEmpty(strings.TrimSpace(path), "/workspaces")
@@ -2933,18 +2933,36 @@ run_args+=(--volume "$remote_root:$remote_root")
 exec "$runtime_bin" "${run_args[@]}"
 SCRIPT
 chmod 0755 "$start_script"
+restore_previous() {
+  runtime_cmd rm -f "$container_name" >/dev/null 2>&1 || true
+  cp "$backup_start_script" "$start_script" 2>/dev/null || true
+  if runtime_cmd inspect "$backup_name" >/dev/null 2>&1; then
+    runtime_cmd rename "$backup_name" "$container_name" >/dev/null 2>&1 || true
+    runtime_cmd start "$container_name" >/dev/null 2>&1 || true
+    return
+  fi
+  if [ -x "$start_script" ]; then
+    if [ "$use_sudo" = "1" ]; then
+      nohup sudo -E /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
+    else
+      nohup /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
+    fi
+    echo $! >"$pid_file"
+  fi
+}
 runtime_cmd rm -f "$backup_name" >/dev/null 2>&1 || true
 runtime_cmd stop "$container_name" >/dev/null 2>&1 || true
 if runtime_cmd inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
-  cp "$backup_start_script" "$start_script" 2>/dev/null || true
+  restore_previous
   printf 'REMOTE_UPDATE_ERROR=stop-old-failed\n'
   exit 1
 fi
-if ! runtime_cmd rename "$container_name" "$backup_name" >/dev/null 2>&1; then
-  cp "$backup_start_script" "$start_script" 2>/dev/null || true
-  runtime_cmd start "$container_name" >/dev/null 2>&1 || true
-  printf 'REMOTE_UPDATE_ERROR=rename-old-failed\n'
-  exit 1
+if runtime_cmd inspect "$container_name" >/dev/null 2>&1; then
+  if ! runtime_cmd rename "$container_name" "$backup_name" >/dev/null 2>&1; then
+    restore_previous
+    printf 'REMOTE_UPDATE_ERROR=rename-old-failed\n'
+    exit 1
+  fi
 fi
 rm -f "$pid_file"
 if [ "$use_sudo" = "1" ]; then
@@ -2967,8 +2985,10 @@ while :; do
       break
     fi
   fi
-  if ! runtime_cmd inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
-    break
+  if runtime_cmd inspect "$container_name" >/dev/null 2>&1; then
+    if ! runtime_cmd inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
+      break
+    fi
   fi
   if [ "${SECONDS}" -ge "$deadline" ]; then
     break
@@ -2976,18 +2996,12 @@ while :; do
   sleep 1
 done
 if ! runtime_cmd inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
-  runtime_cmd rm -f "$container_name" >/dev/null 2>&1 || true
-  runtime_cmd rename "$backup_name" "$container_name" >/dev/null 2>&1 || true
-  cp "$backup_start_script" "$start_script" 2>/dev/null || true
-  runtime_cmd start "$container_name" >/dev/null 2>&1 || true
+  restore_previous
   printf 'REMOTE_UPDATE_ERROR=replacement-not-running\n'
   exit 1
 fi
 if [ -z "$remote_url" ]; then
-  runtime_cmd rm -f "$container_name" >/dev/null 2>&1 || true
-  runtime_cmd rename "$backup_name" "$container_name" >/dev/null 2>&1 || true
-  cp "$backup_start_script" "$start_script" 2>/dev/null || true
-  runtime_cmd start "$container_name" >/dev/null 2>&1 || true
+  restore_previous
   printf 'REMOTE_UPDATE_ERROR=replacement-not-ready\n'
   exit 1
 fi
@@ -3039,10 +3053,7 @@ func resolveMasterRemoteDeployEndpoint(cfg startupconfig.FileConfig, transportMo
 		if host == "" {
 			return "", fmt.Errorf("master swarm.conf advertise_host is required for LAN/WireGuard remote child deploy")
 		}
-		port := cfg.AdvertisePort
-		if port < 1 || port > 65535 {
-			port = cfg.Port
-		}
+		port := remoteDeployAdvertisePort(cfg)
 		return "http://" + net.JoinHostPort(host, strconv.Itoa(port)), nil
 	default:
 		endpoint := strings.TrimSpace(cfg.TailscaleURL)
@@ -3051,6 +3062,19 @@ func resolveMasterRemoteDeployEndpoint(cfg startupconfig.FileConfig, transportMo
 		}
 		return normalizeRemoteSwarmURL(endpoint, "https"), nil
 	}
+}
+
+func remoteDeployAdvertisePort(cfg startupconfig.FileConfig) int {
+	port := cfg.AdvertisePort
+	if port < 1 || port > 65535 {
+		port = cfg.Port
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("SWARM_LANE")), "dev") && (port == cfg.Port || port == startupconfig.DefaultPort) {
+		if lanePort, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SWARM_LANE_PORT"))); err == nil && lanePort >= 1 && lanePort <= 65535 {
+			return lanePort
+		}
+	}
+	return port
 }
 
 func usableLANHost(value string) string {
@@ -3345,7 +3369,7 @@ func requireHostedGroupForLocalSwarm(state swarmruntime.LocalState, groupID stri
 	return fmt.Errorf("group %q is not part of the current local swarm state", groupID)
 }
 
-func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRuntime, transportMode, imagePrefix string, manifest ContainerPackageManifest) (remoteRuntimeArtifact, error) {
+func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRuntime, transportMode, imagePrefix string, manifest ContainerPackageManifest, rebuildBackend bool) (remoteRuntimeArtifact, error) {
 	if !remoteImageUsesArchive(remoteImageRef(imagePrefix, "preflight")) {
 		return prepareRemoteProductionRegistryArtifact(ctx)
 	}
@@ -3354,11 +3378,16 @@ func (s *Service) prepareRemoteRuntimeArtifact(ctx context.Context, builderRunti
 		return remoteRuntimeArtifact{}, err
 	}
 	stepStartedAt := time.Now()
-	if err := ensureRemoteDeployBackendBinaries(ctx, buildRoot); err != nil {
-		logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, err)
+	if rebuildBackend {
+		err = ensureRemoteDeployBackendBinaries(ctx, buildRoot)
+	} else {
+		err = verifyRemoteDeployBackendBinaries(buildRoot)
+	}
+	if err != nil {
+		logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, err, "rebuild", strconv.FormatBool(rebuildBackend))
 		return remoteRuntimeArtifact{}, err
 	}
-	logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, nil)
+	logRemoteDeployTiming("start.prepare_runtime.build_backend_binaries", stepStartedAt, nil, "rebuild", strconv.FormatBool(rebuildBackend))
 	stepStartedAt = time.Now()
 	signature, err := remoteImageSignature(buildRoot, transportMode, manifest)
 	logRemoteDeployTiming("start.prepare_runtime.signature", stepStartedAt, err, "signature", signature)
@@ -3666,6 +3695,7 @@ func rebuildRemoteBaseImage(ctx context.Context, buildRoot, builderRuntime, imag
 		"BUILD_RUNTIME="+builderRuntime,
 		"IMAGE_NAME="+strings.TrimSpace(imageRef),
 		"SWARM_REBUILD_REASON=remote-deploy-image-build",
+		"SWARM_BIN_DIR="+filepath.Join(buildRoot, ".bin", "main"),
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -3751,6 +3781,28 @@ func ensureRemoteDeployBackendBinaries(ctx context.Context, buildRoot string) er
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("build remote deploy backend binaries: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func verifyRemoteDeployBackendBinaries(buildRoot string) error {
+	buildRoot = strings.TrimSpace(buildRoot)
+	if buildRoot == "" {
+		return fmt.Errorf("build root is required")
+	}
+	stageDir := filepath.Join(buildRoot, ".bin", "main")
+	for _, name := range []string{"swarmd", "swarmctl"} {
+		path := filepath.Join(stageDir, name)
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("staged remote deploy backend binary %q is not ready: %w", path, err)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("staged remote deploy backend binary %q is a directory", path)
+		}
+		if info.Mode()&0o111 == 0 {
+			return fmt.Errorf("staged remote deploy backend binary %q is not executable", path)
+		}
 	}
 	return nil
 }
