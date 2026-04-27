@@ -1845,10 +1845,10 @@ export function DesktopAppPage() {
         </div>
       ) : (
         <div className="flex h-full flex-col min-h-0">
-          <div className="border-b border-[var(--app-border)] px-3 py-3 font-mono">
-            <div className="min-h-[132px] overflow-hidden">
-              <div className="p-[13px_13px_10px]">
-                <div className="flex min-h-7 items-start justify-between gap-2.5">
+          <div className="border-b border-[var(--app-border)] font-mono">
+            <div className="min-h-[124px] border border-[color-mix(in_srgb,var(--app-border)_74%,transparent)] bg-[var(--app-surface)]">
+              <div className="p-[12px_13px_11px]">
+                <div className="flex min-h-7 items-center justify-between gap-2.5">
                   <div className="min-w-0">
                     <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
                     <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
@@ -1859,7 +1859,7 @@ export function DesktopAppPage() {
                     <button
                       type="button"
                       className={cn(
-                        'flex h-6 w-6 items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                        'grid h-6 w-6 place-items-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
                         notificationCenter.summary.unreadCount > 0 && 'text-[color-mix(in_srgb,var(--app-warning)_82%,var(--app-text-muted))] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-primary-hover)]',
                       )}
                       onClick={() => setNotificationsOpen(true)}
@@ -1870,7 +1870,7 @@ export function DesktopAppPage() {
                     </button>
                     <button
                       type="button"
-                      className="flex h-6 w-6 items-center justify-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      className="grid h-6 w-6 place-items-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                       onClick={() => setSidebarCollapsed(true)}
                       aria-label="Collapse sidebar"
                       title="Collapse"
@@ -1880,26 +1880,32 @@ export function DesktopAppPage() {
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  className="mt-[7px] flex min-h-[30px] w-full items-center justify-between gap-2.5 border-0 bg-transparent p-0 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)]"
-                  onClick={() => {
-                    setWorkspaceMenuOpen(false)
-                    setSwarmMenu((current) => ({ open: !current.open }))
-                  }}
-                  aria-expanded={swarmMenu.open}
-                  aria-label="Choose swarm target"
-                  title={swarmTargetSummary}
-                >
-                  <span className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+                <div className="mt-[7px] flex min-h-[30px] items-center justify-between gap-2.5 text-[11px] text-[var(--app-text-subtle)]">
+                  <button
+                    type="button"
+                    className="flex min-w-0 items-center gap-2 whitespace-nowrap border-0 bg-transparent p-0 text-left font-inherit hover:text-[var(--app-text)]"
+                    onClick={() => {
+                      setWorkspaceMenuOpen(false)
+                      setSwarmMenu((current) => ({ open: !current.open }))
+                    }}
+                    aria-expanded={swarmMenu.open}
+                    aria-label="Choose swarm target"
+                    title={swarmTargetSummary}
+                  >
                     <span className="text-[color-mix(in_srgb,var(--app-success)_58%,var(--app-text-subtle))]">{swarmTargetCounts.local} local</span>
                     <span className="opacity-55">·</span>
                     <span className="text-[color-mix(in_srgb,var(--app-info)_58%,var(--app-text-subtle))]">{swarmTargetCounts.remote} remote</span>
-                  </span>
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center border-0 bg-transparent text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                  </button>
+                  <button
+                    type="button"
+                    className="grid h-6 w-6 shrink-0 place-items-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    onClick={handleOpenSwarmDashboard}
+                    aria-label="Add swarm"
+                    title="Add swarm"
+                  >
                     <Plus size={14} strokeWidth={1.8} className="shrink-0" />
-                  </span>
-                </button>
+                  </button>
+                </div>
 
                 {swarmMenu.open ? (
                   <div className="mt-1.5 border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
