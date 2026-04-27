@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
+
+	"swarm-refactor/swarmtui/internal/model"
 )
 
 type AuthDefaultsInfo struct {
@@ -111,11 +113,11 @@ func (p *HomePage) drawAuthDefaultsInfoModal(s tcell.Screen) {
 
 	info := p.authDefaultsInfoModal.Info
 	lines := make([]string, 0, 6)
-	primary := fmt.Sprintf("Primary default: %s/%s", info.Provider, info.PrimaryModel)
+	primary := fmt.Sprintf("Primary default: %s/%s", info.Provider, model.DisplayModelName(info.Provider, info.PrimaryModel))
 	if info.PrimaryThinking != "" {
 		primary += " (thinking: " + info.PrimaryThinking + ")"
 	}
-	utility := fmt.Sprintf("Utility default: %s/%s", info.UtilityProvider, info.UtilityModel)
+	utility := fmt.Sprintf("Utility default: %s/%s", info.UtilityProvider, model.DisplayModelName(info.UtilityProvider, info.UtilityModel))
 	if info.UtilityThinking != "" {
 		utility += " (thinking: " + info.UtilityThinking + ")"
 	}

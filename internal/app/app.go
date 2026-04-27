@@ -47,6 +47,7 @@ const (
 var (
 	modelPresetsByProvider = map[string][]string{
 		"anthropic": {
+			"claude-opus-4-7",
 			"claude-opus-4-6",
 			"claude-opus-4-5",
 			"claude-sonnet-4-6",
@@ -66,11 +67,14 @@ var (
 		"copilot": {
 			"gpt-5.4",
 			"gpt-5.4-mini",
+			"gemini-3-flash-preview",
 			"claude-haiku-4.5",
 			"claude-sonnet-4.5",
 			"claude-opus-4.6",
 		},
 		"fireworks": {
+			"accounts/fireworks/models/kimi-k2p6",
+			"accounts/fireworks/models/minimax-m2p7",
 			"accounts/fireworks/models/kimi-k2p5",
 		},
 		"google": {
@@ -79,6 +83,12 @@ var (
 			"gemini-2.5-pro",
 			"gemini-2.5-flash",
 			"gemini-2.0-flash",
+		},
+		"openrouter": {
+			"openai/gpt-5.5",
+			"google/gemini-3-flash-preview",
+			"openai/gpt-5.2",
+			"openai/gpt-5.2-mini",
 		},
 	}
 	thinkingPresets = []string{"off", "low", "medium", "high", "xhigh"}
@@ -4455,11 +4465,11 @@ func (a *App) notifyAuthAutoDefaults(details *client.AutoDefaultsStatus) {
 
 	switch {
 	case details.GlobalModel && len(subagents) > 0 && provider != "" && primaryModel != "":
-		a.showToast(ui.ToastInfo, fmt.Sprintf("new-chat model set to %s/%s; utility model %s/%s assigned to subagents: %s", provider, primaryModel, utilityProvider, utilityModel, strings.Join(subagents, ", ")))
+		a.showToast(ui.ToastInfo, fmt.Sprintf("new-chat model set to %s/%s; utility model %s/%s assigned to subagents: %s", provider, model.DisplayModelName(provider, primaryModel), utilityProvider, model.DisplayModelName(utilityProvider, utilityModel), strings.Join(subagents, ", ")))
 	case len(subagents) > 0 && utilityProvider != "" && utilityModel != "":
-		a.showToast(ui.ToastInfo, fmt.Sprintf("utility model %s/%s assigned to subagents: %s", utilityProvider, utilityModel, strings.Join(subagents, ", ")))
+		a.showToast(ui.ToastInfo, fmt.Sprintf("utility model %s/%s assigned to subagents: %s", utilityProvider, model.DisplayModelName(utilityProvider, utilityModel), strings.Join(subagents, ", ")))
 	case details.GlobalModel && provider != "" && primaryModel != "":
-		a.showToast(ui.ToastInfo, fmt.Sprintf("new-chat model set to %s/%s", provider, primaryModel))
+		a.showToast(ui.ToastInfo, fmt.Sprintf("new-chat model set to %s/%s", provider, model.DisplayModelName(provider, primaryModel)))
 	}
 	a.showAuthDefaultsInfo(details)
 }
@@ -4844,9 +4854,9 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			a.home.SetAgentsModalError(fmt.Sprintf("set Utility AI failed: %v", err))
 			return
 		}
-		status := fmt.Sprintf("set Utility AI baseline %s/%s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model))
+		status := fmt.Sprintf("set Utility AI baseline %s/%s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model))
 		if input.OverwriteExplicit {
-			status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model))
+			status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model))
 		}
 		if result.ProviderDefaultsPreview != nil {
 			targets := result.ProviderDefaultsPreview.UtilityBaselineAgents
@@ -4855,13 +4865,13 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			}
 			if input.OverwriteExplicit {
 				if len(result.ProviderDefaultsPreview.UtilityAgents) > 0 {
-					status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s for %s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model), strings.Join(result.ProviderDefaultsPreview.UtilityAgents, ", "))
+					status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s for %s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model), strings.Join(result.ProviderDefaultsPreview.UtilityAgents, ", "))
 				}
 			} else {
 				if len(targets) > 0 {
-					status = fmt.Sprintf("set Utility AI baseline %s/%s for %s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model), strings.Join(targets, ", "))
+					status = fmt.Sprintf("set Utility AI baseline %s/%s for %s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model), strings.Join(targets, ", "))
 				} else if len(result.ProviderDefaultsPreview.CustomUtilityAgents) > 0 {
-					status = fmt.Sprintf("no blank Utility AI agents to set for %s/%s", strings.TrimSpace(input.Provider), strings.TrimSpace(input.Model))
+					status = fmt.Sprintf("no blank Utility AI agents to set for %s/%s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model))
 				}
 				if len(result.ProviderDefaultsPreview.CustomUtilityAgents) > 0 {
 					status += fmt.Sprintf("; preserved overrides for %s", strings.Join(result.ProviderDefaultsPreview.CustomUtilityAgents, ", "))

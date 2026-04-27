@@ -9,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
+
+	modelpkg "swarm-refactor/swarmtui/internal/model"
 )
 
 type AgentModalProfile struct {
@@ -1096,9 +1098,9 @@ func agentsModalUtilityAIOverwriteChoice(raw string) bool {
 
 func agentsModalUtilityAIStatusHint(provider, model string, overwriteExplicit bool) string {
 	if overwriteExplicit {
-		return fmt.Sprintf("Clearing Utility AI overrides and setting %s/%s...", provider, model)
+		return fmt.Sprintf("Clearing Utility AI overrides and setting %s/%s...", provider, modelpkg.DisplayModelName(provider, model))
 	}
-	return fmt.Sprintf("Setting Utility AI %s/%s for blank utility agents...", provider, model)
+	return fmt.Sprintf("Setting Utility AI %s/%s for blank utility agents...", provider, modelpkg.DisplayModelName(provider, model))
 }
 
 func normalizeAgentModeValue(raw string) (string, bool) {
@@ -1781,9 +1783,10 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 		if p.agentsModalProfileIsUtility(profile.Name) {
 			base = append(base, "tag: Utility AI")
 			if strings.TrimSpace(profile.Provider) != "" && strings.TrimSpace(profile.Model) != "" {
-				base = append(base, "utility AI override: "+strings.TrimSpace(profile.Provider)+"/"+strings.TrimSpace(profile.Model))
+				base = append(base, "utility AI override: "+strings.TrimSpace(profile.Provider)+"/"+modelpkg.DisplayModelName(profile.Provider, profile.Model))
 			} else if strings.TrimSpace(p.agentsModal.UtilityModel) != "" {
-				base = append(base, "utility AI baseline: "+nonEmpty(p.agentsModal.UtilityProvider, p.agentsModal.DefaultProvider)+"/"+p.agentsModal.UtilityModel)
+				provider := nonEmpty(p.agentsModal.UtilityProvider, p.agentsModal.DefaultProvider)
+				base = append(base, "utility AI baseline: "+provider+"/"+modelpkg.DisplayModelName(provider, p.agentsModal.UtilityModel))
 			}
 		}
 		base = append(base,
