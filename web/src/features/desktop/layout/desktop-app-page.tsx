@@ -40,6 +40,7 @@ import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/mutations/save-local-container-update-warning-dismissal'
 import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
+import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { fetchSession } from '../chat/queries/chat-queries'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type LocalContainerUpdatePlan } from '../update/api'
 import {
@@ -79,6 +80,7 @@ interface SwarmTargetMenuState {
 
 interface LocalContainerUpdateConfirmState {
   plan: LocalContainerUpdatePlan
+  remoteSessions: RemoteDeploySession[]
   pendingDismiss: boolean
 }
 
@@ -280,6 +282,10 @@ function formatLocalContainerUpdateTarget(plan: LocalContainerUpdatePlan): strin
 
 function localContainerUpdateAffected(plan: LocalContainerUpdatePlan): boolean {
   return (plan.summary?.affected ?? 0) > 0 || (plan.summary?.needs_update ?? 0) > 0 || (plan.summary?.unknown ?? 0) > 0 || (plan.summary?.errors ?? 0) > 0
+}
+
+function remoteDeployUpdateSessionCount(sessions: RemoteDeploySession[]): number {
+  return sessions.filter((session) => session.status?.trim().toLowerCase() === 'attached' && Boolean(session.ssh_session_target?.trim())).length
 }
 
 function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
@@ -1697,12 +1703,15 @@ export function DesktopAppPage() {
       await refreshNotifications()
       const startedAt = Date.now()
       let sawBackendDrop = false
-      while (Date.now() - startedAt < 5 * 60_000) {
+      while (Date.now() - startedAt < 30 * 60_000) {
         await new Promise((resolve) => window.setTimeout(resolve, sawBackendDrop ? 1500 : 800))
         try {
           const job = await fetchDesktopUpdateJob()
           if (job.status === 'failed') {
             throw new Error(job.error || job.message || 'Update failed')
+          }
+          if (job.status === 'running') {
+            continue
           }
           await refreshNotifications()
           window.location.reload()
@@ -1714,8 +1723,7 @@ export function DesktopAppPage() {
           }
         }
       }
-      await refreshNotifications()
-      window.location.reload()
+      throw new Error('Update is still running. Leave this window open and check again shortly.')
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Update failed'
       setUpdateError(message)
@@ -1757,18 +1765,21 @@ export function DesktopAppPage() {
         settings = null
       }
     }
-    if (!localContainerUpdateWarningDismissed(settings)) {
-      try {
+    try {
+      const remoteSessions = await fetchRemoteDeploySessions()
+      const remoteUpdateCount = remoteDeployUpdateSessionCount(remoteSessions)
+      const warningDismissed = localContainerUpdateWarningDismissed(settings)
+      if (!warningDismissed || remoteUpdateCount > 0) {
         const plan = await fetchLocalContainerUpdatePlan({ devMode: status.dev_mode, targetVersion: status.latest_version, postRebuildCheck: status.dev_mode })
-        if (localContainerUpdateAffected(plan)) {
-          setLocalContainerUpdateConfirm({ plan, pendingDismiss: false })
+        if ((!warningDismissed && localContainerUpdateAffected(plan)) || remoteUpdateCount > 0) {
+          setLocalContainerUpdateConfirm({ plan, remoteSessions, pendingDismiss: false })
           return
         }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to check local containers before update'
-        setUpdateError(message)
-        return
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to check container images before update'
+      setUpdateError(message)
+      return
     }
     await runDesktopUpdate()
   }, [effectiveUISettings, localContainerUpdateConfirm, runDesktopUpdate, uiSettingsQuery, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
@@ -1785,7 +1796,7 @@ export function DesktopAppPage() {
         queryClient.setQueryData(uiSettingsQueryKey(), saved)
         queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to save local-container update warning setting'
+        const message = error instanceof Error ? error.message : 'Failed to save container image update warning setting'
         setUpdateError(message)
         return
       }
@@ -2183,6 +2194,7 @@ export function DesktopAppPage() {
   )
 
   const localContainerConfirmPlan = localContainerUpdateConfirm?.plan ?? null
+  const remoteContainerUpdateCount = localContainerUpdateConfirm ? remoteDeployUpdateSessionCount(localContainerUpdateConfirm.remoteSessions) : 0
   const localContainerConfirmSummary = localContainerConfirmPlan?.summary ?? null
   const localContainerAffectedCount = localContainerConfirmSummary
     ? Math.max(
@@ -2372,12 +2384,19 @@ export function DesktopAppPage() {
       {localContainerConfirmPlan ? (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--app-backdrop)] px-4" aria-modal="true" role="dialog">
           <Card className="w-full max-w-lg border-[var(--app-warning-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
-            <div className="text-lg font-semibold">Update local containers too?</div>
+            <div className="text-lg font-semibold">Update container images too?</div>
             <p className="mt-3 text-sm text-[var(--app-text-muted)]">
-              {localContainerConfirmPlan.contract?.warning_copy || 'This will also update your local containers.'}
+              {localContainerConfirmPlan.contract?.warning_copy || 'This will also update local and remote container images.'}
             </p>
             <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 text-sm">
-              <div className="font-medium">{localContainerAffectedCount} local container{localContainerAffectedCount === 1 ? '' : 's'} may need attention.</div>
+              <div className="font-medium">
+                {localContainerAffectedCount > 0
+                  ? `${localContainerAffectedCount} local container${localContainerAffectedCount === 1 ? '' : 's'} may need attention.`
+                  : 'No local containers need attention.'}
+              </div>
+              {remoteContainerUpdateCount > 0 ? (
+                <div className="mt-1 text-sm text-[var(--app-text)]">{remoteContainerUpdateCount} remote SSH session{remoteContainerUpdateCount === 1 ? '' : 's'} will be checked.</div>
+              ) : null}
               <div className="mt-2 text-xs text-[var(--app-text-muted)]">
                 {formatLocalContainerUpdateTarget(localContainerConfirmPlan)}
               </div>
@@ -2391,16 +2410,18 @@ export function DesktopAppPage() {
               ) : null}
             </div>
             <p className="mt-3 text-xs text-[var(--app-text-muted)]">
-              {localContainerConfirmPlan.contract?.failure_semantics || 'Swarm update succeeds independently; local container update failures are reported as resumable follow-up work.'}
+              {localContainerConfirmPlan.contract?.failure_semantics || 'Swarm update succeeds independently; local or remote container update failures are reported as resumable follow-up work.'}
             </p>
-            <label className="mt-4 flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
-              <input
-                type="checkbox"
-                checked={localContainerUpdateConfirm?.pendingDismiss ?? false}
-                onChange={(event) => handleToggleLocalContainerUpdateDismissal(event.currentTarget.checked)}
-              />
-              <span>Don&apos;t show this again for local-container update warnings</span>
-            </label>
+            {remoteContainerUpdateCount === 0 ? (
+              <label className="mt-4 flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
+                <input
+                  type="checkbox"
+                  checked={localContainerUpdateConfirm?.pendingDismiss ?? false}
+                  onChange={(event) => handleToggleLocalContainerUpdateDismissal(event.currentTarget.checked)}
+                />
+                <span>Don&apos;t show this again for local-only container image warnings</span>
+              </label>
+            ) : null}
             <div className="mt-6 flex justify-end gap-3">
               <Button variant="ghost" onClick={handleCancelLocalContainerUpdate} disabled={updateRunning}>Cancel</Button>
               <Button onClick={() => { void handleConfirmLocalContainerUpdate() }} disabled={updateRunning}>

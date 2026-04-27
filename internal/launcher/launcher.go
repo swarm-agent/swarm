@@ -1251,13 +1251,20 @@ func RunTUIWithExtraEnv(profile Profile, args []string, extraEnv map[string]stri
 	return RunForeground(tuiPath, args, profile.EnvList(env))
 }
 
-func RunDevUpdate(profile Profile, relaunchArgs []string) error {
+func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
+	jobTerminalStatusWritten := false
+	defer func() {
+		if err != nil && !jobTerminalStatusWritten {
+			_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusFailed, "", err.Error())
+		}
+	}()
 	if !profile.Startup.DevMode {
 		return errors.New("update dev requires dev_mode=true in swarm.conf")
 	}
 	if strings.TrimSpace(profile.Root) == "" {
 		return errors.New("update dev requires a source checkout")
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding local dev checkout.", "")
 	fmt.Fprintln(os.Stdout, "\nRebuilding local dev checkout...")
 	fmt.Fprintln(os.Stdout, "Swarm is shut down before rebuilding and restarting.")
 	if err := StopBackend(profile); err != nil {
@@ -1300,12 +1307,15 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) error {
 	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Updating local and remote container images.", "")
 	if err := runDevLocalContainerUpdateJobAfterRestart(profile); err != nil {
 		return err
 	}
 	if err := runDevRemoteDeployUpdateJobAfterRestart(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusCompleted, "Dev rebuild completed. Local and remote container image updates completed.", "")
+	jobTerminalStatusWritten = true
 	fmt.Fprintln(os.Stdout, "Local dev rebuild completed. Restarting Swarm...")
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 		return nil

@@ -338,6 +338,7 @@ func New(cfg config.Config) (*Daemon, error) {
 
 	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
+	apiServer.SetDataDir(cfg.DataDir)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)
 	apiServer.SetSandboxService(sandboxSvc)
 	apiServer.SetWorktreeService(worktreeSvc)

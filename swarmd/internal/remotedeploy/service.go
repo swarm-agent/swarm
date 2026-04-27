@@ -886,7 +886,6 @@ func (s *Service) RunUpdateJob(ctx context.Context, input UpdateJobInput) (Updat
 	result.DevMode = devMode
 	if !devMode {
 		result.Mode = "release"
-		return result, fmt.Errorf("remote SSH dev update only supports dev mode")
 	}
 	records, err := s.store.List(500)
 	if err != nil {
@@ -910,14 +909,27 @@ func (s *Service) RunUpdateJob(ctx context.Context, input UpdateJobInput) (Updat
 			continue
 		}
 		item := remoteUpdateItemForRecord(record)
+		if !devMode && !remoteUpdateRecordUsesProductionImage(record) {
+			item.State = "skipped"
+			item.Reason = "non-production-image-delivery"
+			result.addUpdateJobItem(item)
+			continue
+		}
 		cacheKey := remoteRuntimeArtifactCacheKey(record)
+		if !devMode {
+			cacheKey = "release\x00" + strings.TrimSpace(buildinfo.DisplayVersion())
+		}
 		if cachedArtifacts == nil {
 			cachedArtifacts = map[string]remoteRuntimeArtifact{}
 		}
 		artifact, cached := cachedArtifacts[cacheKey]
 		var prepareErr error
 		if !cached {
-			artifact, prepareErr = s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, record.ImagePrefix, mapRemoteStoredContainerPackageManifest(record.ContainerPackages), !input.PostRebuildCheck)
+			if devMode {
+				artifact, prepareErr = s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, record.ImagePrefix, mapRemoteStoredContainerPackageManifest(record.ContainerPackages), !input.PostRebuildCheck)
+			} else {
+				artifact, prepareErr = prepareRemoteProductionRegistryArtifact(ctx)
+			}
 			if prepareErr == nil {
 				cachedArtifacts[cacheKey] = artifact
 			}
@@ -1018,6 +1030,17 @@ func (s *Service) RunUpdateJob(ctx context.Context, input UpdateJobInput) (Updat
 
 func remoteUpdateRecordEligible(record pebblestore.RemoteDeploySessionRecord) bool {
 	return strings.EqualFold(strings.TrimSpace(record.Status), "attached") && strings.TrimSpace(record.SSHSessionTarget) != "" && strings.TrimSpace(record.RemoteRoot) != ""
+}
+
+func remoteUpdateRecordUsesProductionImage(record pebblestore.RemoteDeploySessionRecord) bool {
+	if normalizeRemoteImageDeliveryMode(record.ImageDeliveryMode) == remoteImageDeliveryRegistry {
+		return true
+	}
+	imageRef := strings.TrimSpace(record.ImageRef)
+	imagePrefix := strings.TrimRight(strings.TrimSpace(record.ImagePrefix), "/")
+	return strings.HasPrefix(imageRef, localcontainers.ProductionImagePrefix+"@sha256:") ||
+		strings.HasPrefix(imageRef, localcontainers.ProductionImagePrefix+":") ||
+		imagePrefix == localcontainers.ProductionImagePrefix
 }
 
 func remoteRuntimeArtifactCacheKey(record pebblestore.RemoteDeploySessionRecord) string {
@@ -2800,6 +2823,10 @@ func remoteDevReplacementScript(record pebblestore.RemoteDeploySessionRecord, ru
 	if remoteImageUsesArchive(runtimeArtifact.ImageRef) {
 		useArchiveImage = "1"
 	}
+	imageVerification := ""
+	if strings.HasPrefix(strings.TrimSpace(runtimeArtifact.ImageRef), localcontainers.ProductionImagePrefix+"@sha256:") {
+		imageVerification = remoteProductionImageVerificationScript()
+	}
 	mountTargets := []string{}
 	seen := map[string]struct{}{remoteRoot: {}}
 	appendMount := func(path string) {
@@ -2878,6 +2905,7 @@ if ! runtime_cmd image inspect "$image_ref" >/dev/null 2>&1; then
     runtime_cmd pull "$image_ref" >/dev/null
   fi
 fi
+%s
 cp "$start_script" "$backup_start_script" 2>/dev/null || true
 cat > "$start_script" <<'SCRIPT'
 #!/usr/bin/env bash
@@ -3010,7 +3038,7 @@ rm -f "$backup_start_script"
 printf 'REMOTE_UPDATE_STATE=replaced\n'
 printf '%s=%%s\n' "$remote_url"
 printf 'REMOTE_UPDATE_ENDPOINT=%%s\n' "$remote_url"
-`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(backupStartScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(backupName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), mountArgs, bootstrapOutputPrefix)
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(backupStartScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(backupName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), imageVerification, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), mountArgs, bootstrapOutputPrefix)
 }
 
 func remoteStartupConfigPath(record pebblestore.RemoteDeploySessionRecord) string {

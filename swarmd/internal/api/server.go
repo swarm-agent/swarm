@@ -93,6 +93,7 @@ type Server struct {
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	sessionRoutes               *pebblestore.SessionRouteStore
 	mode                        string
+	dataDir                     string
 	startupConfigPath           string
 	startedAt                   time.Time
 	bypassPermissions           bool
@@ -282,6 +283,13 @@ func (s *Server) SetStartupConfigPath(path string) {
 		return
 	}
 	s.startupConfigPath = strings.TrimSpace(path)
+}
+
+func (s *Server) SetDataDir(path string) {
+	if s == nil {
+		return
+	}
+	s.dataDir = strings.TrimSpace(path)
 }
 
 func (s *Server) BypassPermissions() bool {

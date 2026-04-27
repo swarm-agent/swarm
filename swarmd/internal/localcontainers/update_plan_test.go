@@ -31,7 +31,7 @@ func TestUpdatePlanNoLocalContainers(t *testing.T) {
 	if plan.Summary.Total != 0 || plan.Summary.Affected != 0 || len(plan.Containers) != 0 {
 		t.Fatalf("summary = %+v containers=%d, want empty", plan.Summary, len(plan.Containers))
 	}
-	if plan.Contract.WarningCopy != "This will also update your local containers." {
+	if plan.Contract.WarningCopy != "This will also update local and remote container images." {
 		t.Fatalf("WarningCopy = %q", plan.Contract.WarningCopy)
 	}
 }

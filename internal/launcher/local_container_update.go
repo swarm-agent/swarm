@@ -29,12 +29,15 @@ type remoteDeployUpdateJobResponse struct {
 	Error  string                             `json:"error,omitempty"`
 }
 
-func RunDevLocalContainerUpdateJob(profile Profile) (client.LocalContainerUpdateJobResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+func RunLocalContainerUpdateJob(profile Profile, devMode bool, targetVersion string, postRebuildCheck bool) (client.LocalContainerUpdateJobResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	payload := map[string]any{
-		"dev_mode":           true,
-		"post_rebuild_check": true,
+		"dev_mode":           devMode,
+		"post_rebuild_check": postRebuildCheck,
+	}
+	if strings.TrimSpace(targetVersion) != "" {
+		payload["target_version"] = strings.TrimSpace(targetVersion)
 	}
 	body, status, err := httpRequest(ctx, profile, http.MethodPost, profile.URL+"/v1/swarm/containers/local/update-job", map[string]string{
 		"Accept":       "application/json",
@@ -59,13 +62,16 @@ func RunDevLocalContainerUpdateJob(profile Profile) (client.LocalContainerUpdate
 	return response.Result, nil
 }
 
-func RunDevRemoteDeployUpdateJob(profile Profile) (client.RemoteDeployUpdateJobResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+func RunDevLocalContainerUpdateJob(profile Profile) (client.LocalContainerUpdateJobResult, error) {
+	return RunLocalContainerUpdateJob(profile, true, "", true)
+}
+
+func RunRemoteDeployUpdateJob(profile Profile, devMode bool, postRebuildCheck bool) (client.RemoteDeployUpdateJobResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	devMode := true
 	payload := map[string]any{
 		"dev_mode":           devMode,
-		"post_rebuild_check": true,
+		"post_rebuild_check": postRebuildCheck,
 	}
 	body, status, err := httpRequest(ctx, profile, http.MethodPost, profile.URL+"/v1/deploy/remote/session/update-job", map[string]string{
 		"Accept":       "application/json",
@@ -88,6 +94,10 @@ func RunDevRemoteDeployUpdateJob(profile Profile) (client.RemoteDeployUpdateJobR
 		return response.Result, fmt.Errorf("remote SSH update job failed (%d): %s", status, message)
 	}
 	return response.Result, nil
+}
+
+func RunDevRemoteDeployUpdateJob(profile Profile) (client.RemoteDeployUpdateJobResult, error) {
+	return RunRemoteDeployUpdateJob(profile, true, true)
 }
 
 func runDevLocalContainerUpdateJobAfterRestart(profile Profile) error {
@@ -124,4 +134,40 @@ func runDevRemoteDeployUpdateJobAfterRestart(profile Profile) error {
 	}
 	fmt.Fprintf(os.Stdout, "Remote SSH dev sessions updated: replaced=%d skipped=%d failed=%d\n", result.Summary.Replaced, result.Summary.Skipped, result.Summary.Failed)
 	return nil
+}
+
+func runReleaseLocalContainerUpdateJobAfterRestart(profile Profile, targetVersion string) (client.LocalContainerUpdateJobResult, error) {
+	if strings.TrimSpace(profile.DataDir) == "" || strings.TrimSpace(profile.URL) == "" {
+		return client.LocalContainerUpdateJobResult{}, nil
+	}
+	fmt.Fprintln(os.Stdout, "Updating local containers onto release image...")
+	result, err := RunLocalContainerUpdateJob(profile, false, targetVersion, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Local container update needs attention: %v\n", err)
+		return result, err
+	}
+	if result.Summary.Total == 0 {
+		fmt.Fprintln(os.Stdout, "No local containers need release image replacement.")
+		return result, nil
+	}
+	fmt.Fprintf(os.Stdout, "Local containers updated: replaced=%d skipped=%d failed=%d\n", result.Summary.Replaced, result.Summary.Skipped, result.Summary.Failed)
+	return result, nil
+}
+
+func runReleaseRemoteDeployUpdateJobAfterRestart(profile Profile) (client.RemoteDeployUpdateJobResult, error) {
+	if strings.TrimSpace(profile.DataDir) == "" || strings.TrimSpace(profile.URL) == "" {
+		return client.RemoteDeployUpdateJobResult{}, nil
+	}
+	fmt.Fprintln(os.Stdout, "Updating active remote SSH sessions onto release image...")
+	result, err := RunRemoteDeployUpdateJob(profile, false, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Remote SSH update needs attention: %v\n", err)
+		return result, err
+	}
+	if result.Summary.Total == 0 {
+		fmt.Fprintln(os.Stdout, "No active remote SSH sessions need release replacement.")
+		return result, nil
+	}
+	fmt.Fprintf(os.Stdout, "Remote SSH sessions updated: replaced=%d skipped=%d failed=%d\n", result.Summary.Replaced, result.Summary.Skipped, result.Summary.Failed)
+	return result, nil
 }

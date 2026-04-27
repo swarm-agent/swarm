@@ -153,6 +153,14 @@ type RemoteDeployUpdateJobItem struct {
 	Error            string `json:"error,omitempty"`
 }
 
+type RemoteDeploySession struct {
+	ID               string `json:"id"`
+	Name             string `json:"name,omitempty"`
+	Status           string `json:"status,omitempty"`
+	SSHSessionTarget string `json:"ssh_session_target,omitempty"`
+	ImageRef         string `json:"image_ref,omitempty"`
+}
+
 type LocalContainerUpdateTarget struct {
 	ImageRef               string `json:"image_ref,omitempty"`
 	DigestRef              string `json:"digest_ref,omitempty"`
@@ -1301,6 +1309,22 @@ func (c *API) RunRemoteDeployUpdateJob(ctx context.Context, devMode *bool, postR
 		return response.Result, errors.New(message)
 	}
 	return response.Result, nil
+}
+
+func (c *API) GetRemoteDeploySessions(ctx context.Context, refresh bool) ([]RemoteDeploySession, error) {
+	path := "/v1/deploy/remote/session"
+	if refresh {
+		path += "?refresh=1"
+	}
+	var response struct {
+		OK       bool                  `json:"ok"`
+		Sessions []RemoteDeploySession `json:"sessions"`
+		Error    string                `json:"error,omitempty"`
+	}
+	if err := c.getJSON(ctx, path, &response, true); err != nil {
+		return nil, err
+	}
+	return append([]RemoteDeploySession(nil), response.Sessions...), nil
 }
 
 func (c *API) GetUISettings(ctx context.Context) (UISettings, error) {

@@ -36,16 +36,17 @@ func TestLocalContainerUpdateWarningLinesIncludeContractCountsAndTarget(t *testi
 			Errors:      0,
 		},
 		Contract: client.LocalContainerUpdateContract{
-			WarningCopy:      "This will also update your local containers.",
+			WarningCopy:      "This will also update local and remote container images.",
 			FailureSemantics: "Container update failures are reported as resumable follow-up work.",
 		},
 	}
 
-	lines := localContainerUpdateWarningLines(plan)
+	lines := localContainerUpdateWarningLines(plan, []client.RemoteDeploySession{{Status: "attached", SSHSessionTarget: "remote"}})
 	joined := strings.Join(lines, "\n")
 	for _, want := range []string{
-		"This will also update your local containers.",
+		"This will also update local and remote container images.",
 		"local containers: total=4 affected=3 needs_update=2 unknown=1 errors=0",
+		"remote SSH sessions: attached=1",
 		"target dev fingerprint: rebuilt-fingerprint",
 		"Container update failures are reported as resumable follow-up work.",
 	} {
@@ -57,6 +58,10 @@ func TestLocalContainerUpdateWarningLinesIncludeContractCountsAndTarget(t *testi
 
 func TestConfirmLocalContainerUpdateSkipsWhenNoLocalContainersAffected(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/deploy/remote/session" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "sessions": []client.RemoteDeploySession{}})
+			return
+		}
 		if r.URL.Path != "/v1/update/local-containers" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -84,6 +89,10 @@ func TestConfirmLocalContainerUpdateSkipsWhenNoLocalContainersAffected(t *testin
 func TestConfirmLocalContainerUpdateRequiresConfirmWhenAffected(t *testing.T) {
 	var rawQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/deploy/remote/session" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "sessions": []client.RemoteDeploySession{{Status: "attached", SSHSessionTarget: "remote"}}})
+			return
+		}
 		if r.URL.Path != "/v1/update/local-containers" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -97,7 +106,7 @@ func TestConfirmLocalContainerUpdateRequiresConfirmWhenAffected(t *testing.T) {
 				Affected:    1,
 				NeedsUpdate: 1,
 			},
-			Contract: client.LocalContainerUpdateContract{WarningCopy: "This will also update your local containers."},
+			Contract: client.LocalContainerUpdateContract{WarningCopy: "This will also update local and remote container images."},
 		})
 	}))
 	defer server.Close()
@@ -113,15 +122,16 @@ func TestConfirmLocalContainerUpdateRequiresConfirmWhenAffected(t *testing.T) {
 	}
 	joined := strings.Join(a.home.CommandOverlayLines(), "\n")
 	for _, want := range []string{
-		"This will also update your local containers.",
+		"This will also update local and remote container images.",
 		"local containers: total=2 affected=1 needs_update=1 unknown=0 errors=0",
+		"remote SSH sessions: attached=1",
 		"Run /update confirm to continue once",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("overlay missing %q in:\n%s", want, joined)
 		}
 	}
-	if got := a.home.Status(); got != "local container update confirmation required" {
+	if got := a.home.Status(); got != "container image update confirmation required" {
 		t.Fatalf("status = %q", got)
 	}
 	for _, want := range []string{"dev_mode=true", "post_rebuild_check=true"} {

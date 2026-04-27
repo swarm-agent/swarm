@@ -417,9 +417,9 @@ func (s *Service) UpdatePlan(ctx context.Context, input UpdatePlanInput) (Update
 
 func localUpdateContract() UpdateContract {
 	return UpdateContract{
-		WarningCopy:      "This will also update your local containers.",
+		WarningCopy:      "This will also update local and remote container images.",
 		DismissalScope:   "local-container-update-warning",
-		FailureSemantics: "Swarm update succeeds independently; local container update failures are reported as resumable follow-up work.",
+		FailureSemantics: "Swarm update succeeds independently; local or remote container update failures are reported as resumable follow-up work.",
 		Replacement:      "replace-one-local-container-primitive",
 	}
 }

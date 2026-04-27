@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/localupdate"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/update"
@@ -128,7 +129,7 @@ func (s *Server) handleUpdateRun(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": defaultUpdateJobRunner.Status()})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": defaultUpdateJobRunner.Status(s)})
 	case http.MethodPost:
 		job, err := defaultUpdateJobRunner.Start(r.Context(), s)
 		if err != nil {
@@ -141,21 +142,30 @@ func (s *Server) handleUpdateRun(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (r *updateJobRunner) Status() desktopUpdateJob {
+func (r *updateJobRunner) Status(s *Server) desktopUpdateJob {
 	if r == nil {
 		return desktopUpdateJob{Status: updateJobStatusIdle}
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if strings.TrimSpace(r.current.ID) == "" {
-		return desktopUpdateJob{Status: updateJobStatusIdle}
+	current := r.current
+	r.mu.Unlock()
+	if persisted, ok := s.readPersistedUpdateJobStatus(); ok {
+		if strings.TrimSpace(current.ID) == "" || persisted.UpdatedAtUnix >= current.UpdatedAtUnix {
+			return persisted
+		}
 	}
-	return r.current
+	if strings.TrimSpace(current.ID) != "" {
+		return current
+	}
+	return desktopUpdateJob{Status: updateJobStatusIdle}
 }
 
 func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJob, error) {
 	if r == nil {
 		return desktopUpdateJob{}, errors.New("update runner is not configured")
+	}
+	if existing := r.Status(s); existing.Status == updateJobStatusRunning {
+		return existing, nil
 	}
 	status := s.update.Status(ctx, false)
 	kind := updateKindRelease
@@ -180,16 +190,21 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 	r.current = job
 	r.mu.Unlock()
 
+	if err := s.writePersistedUpdateJobStatus(job); err != nil {
+		failed := r.finish(job.ID, updateJobStatusFailed, "", err.Error(), s)
+		s.emitUpdateNotification(failed, pebblestore.NotificationSeverityError, "Swarm update failed", err.Error(), "update.failed")
+		return failed, err
+	}
 	s.emitUpdateNotification(job, pebblestore.NotificationSeverityInfo, "Swarm update started", job.Message, "update.started")
-	if err := startDetachedUpdateCommand(kind); err != nil {
-		failed := r.finish(job.ID, updateJobStatusFailed, "", err.Error())
+	if err := startDetachedUpdateCommand(kind, job.ID); err != nil {
+		failed := r.finish(job.ID, updateJobStatusFailed, "", err.Error(), s)
 		s.emitUpdateNotification(failed, pebblestore.NotificationSeverityError, "Swarm update failed", err.Error(), "update.failed")
 		return failed, err
 	}
 	return job, nil
 }
 
-func (r *updateJobRunner) finish(id, status, message, errorMessage string) desktopUpdateJob {
+func (r *updateJobRunner) finish(id, status, message, errorMessage string, s *Server) desktopUpdateJob {
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -201,10 +216,11 @@ func (r *updateJobRunner) finish(id, status, message, errorMessage string) deskt
 	r.current.Error = strings.TrimSpace(errorMessage)
 	r.current.UpdatedAtUnix = now
 	r.current.CompletedAtUnix = now
+	_ = s.writePersistedUpdateJobStatus(r.current)
 	return r.current
 }
 
-func startDetachedUpdateCommand(kind string) error {
+func startDetachedUpdateCommand(kind, jobID string) error {
 	swarmPath, err := resolveSwarmLauncherPath()
 	if err != nil {
 		return err
@@ -220,7 +236,10 @@ func startDetachedUpdateCommand(kind string) error {
 		args = append(args, "apply")
 	}
 	cmd := exec.Command(swarmPath, args...)
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(),
+		"SWARM_UPDATE_JOB_ID="+strings.TrimSpace(jobID),
+		"SWARM_UPDATE_JOB_KIND="+strings.TrimSpace(kind),
+	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
 		defer devNull.Close()
@@ -231,6 +250,42 @@ func startDetachedUpdateCommand(kind string) error {
 		return fmt.Errorf("start desktop update helper: %w", err)
 	}
 	return cmd.Process.Release()
+}
+
+func (s *Server) readPersistedUpdateJobStatus() (desktopUpdateJob, bool) {
+	if s == nil || strings.TrimSpace(s.dataDir) == "" {
+		return desktopUpdateJob{}, false
+	}
+	status, ok, err := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(s.dataDir))
+	if err != nil || !ok || strings.TrimSpace(status.ID) == "" {
+		return desktopUpdateJob{}, false
+	}
+	return desktopUpdateJob{
+		ID:              status.ID,
+		Kind:            status.Kind,
+		Status:          firstNonEmpty(status.Status, updateJobStatusIdle),
+		Message:         status.Message,
+		Error:           status.Error,
+		StartedAtUnix:   status.StartedAtUnix,
+		UpdatedAtUnix:   status.UpdatedAtUnix,
+		CompletedAtUnix: status.CompletedAtUnix,
+	}, true
+}
+
+func (s *Server) writePersistedUpdateJobStatus(job desktopUpdateJob) error {
+	if s == nil || strings.TrimSpace(s.dataDir) == "" {
+		return nil
+	}
+	return localupdate.WriteUpdateJobStatus(s.dataDir, localupdate.UpdateJobStatus{
+		ID:              job.ID,
+		Kind:            job.Kind,
+		Status:          job.Status,
+		Message:         job.Message,
+		Error:           job.Error,
+		StartedAtUnix:   job.StartedAtUnix,
+		UpdatedAtUnix:   job.UpdatedAtUnix,
+		CompletedAtUnix: job.CompletedAtUnix,
+	})
 }
 
 func resolveSwarmLauncherPath() (string, error) {
@@ -344,9 +399,9 @@ func newUpdateJobID(now int64, kind string) string {
 
 func updateStartMessage(kind string) string {
 	if kind == updateKindDev {
-		return "Updating Swarm. The desktop will reconnect when Swarm restarts."
+		return "Updating Swarm and container images. The desktop will reconnect when the update finishes."
 	}
-	return "Updating Swarm. The desktop will reconnect when Swarm restarts."
+	return "Updating Swarm and container images. The desktop will reconnect when the update finishes."
 }
 
 func firstPositive(values ...int64) int64 {

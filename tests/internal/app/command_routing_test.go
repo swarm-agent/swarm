@@ -503,6 +503,20 @@ func TestExecuteCommand_ExitAliasRequestsQuit(t *testing.T) {
 
 func TestApplyUpdateRequestsReleaseHandoff(t *testing.T) {
 	a := newCommandTestApp()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/update/status":
+			_ = json.NewEncoder(w).Encode(client.UpdateStatus{LatestVersion: "v1.2.3", UpdateAvailable: true})
+		case "/v1/deploy/remote/session":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "sessions": []client.RemoteDeploySession{}})
+		case "/v1/update/local-containers":
+			_ = json.NewEncoder(w).Encode(client.LocalContainerUpdatePlan{Summary: client.LocalContainerUpdateSummary{Total: 0}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	a.api = client.New(server.URL)
 
 	a.applyUpdate()
 

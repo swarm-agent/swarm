@@ -196,6 +196,18 @@ func (s *Service) verifyReplacementRecordSupported(record pebblestore.SwarmLocal
 }
 
 func (s *Service) verifyReplacementTarget(ctx context.Context, runtimeName, imageRef, targetFingerprint string, devMode bool) error {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	imageRef = strings.TrimSpace(imageRef)
+	if !devMode && strings.HasPrefix(imageRef, ProductionImagePrefix+"@sha256:") {
+		expectedImage, err := ensureProductionImageCurrent(ctx, runtimeName)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(expectedImage) != imageRef {
+			return fmt.Errorf("replacement image %q does not match installed release image %q", imageRef, expectedImage)
+		}
+		return nil
+	}
 	inspector := inspectRuntimeImage
 	if s != nil && s.inspectImageFn != nil {
 		inspector = s.inspectImageFn
