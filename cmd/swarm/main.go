@@ -67,6 +67,7 @@ func run(argv0 string, args []string) error {
 			return err
 		}
 	}
+	emitDirectLANDesktopWarning(profile)
 	if len(args) > 0 && args[0] == "--desktop" {
 		return runDesktop(profile, args[1:])
 	}
@@ -228,6 +229,12 @@ func runDesktop(profile launcher.Profile, args []string) error {
 		}
 	}
 	return launcher.RunDesktop(profile, port)
+}
+
+func emitDirectLANDesktopWarning(profile launcher.Profile) {
+	if warning := startupconfig.DirectLANDesktopWarning(profile.Startup); warning != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
 }
 
 func loadBuildProfile(lane string, bypassOverride *bool) (launcher.Profile, error) {

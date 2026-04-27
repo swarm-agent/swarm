@@ -86,6 +86,16 @@ By default:
 - `swarm --desktop` uses desktop port `5555`
 - `swarm dev --desktop` uses desktop port `5556`
 
+## MVP Network Access
+
+For the MVP launch, direct private-LAN desktop access is intentionally not treated as a safe supported path. Keep `host = 127.0.0.1` in `swarm.conf` for normal use.
+
+If you need to open Swarm from another device, prefer one of these paths:
+- SSH tunnel the desktop port with `ssh -L 5555:127.0.0.1:5555 <host>`, then open `http://127.0.0.1:5555` on the client machine.
+- Use Tailscale for a private encrypted network path.
+
+Opening `http://192.168.x.x:5555`, `http://10.x.x.x:5555`, or another private LAN address directly may show a browser "Not Secure" warning and Swarm desktop auth may reject it. That is expected until Swarm has a safe LAN pairing flow.
+
 You can also override the backend target directly:
 
 ```bash

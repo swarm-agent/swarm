@@ -46,6 +46,12 @@ Default Vite URL:
 - main desktop: `http://127.0.0.1:5555`
 - dev desktop: `http://127.0.0.1:5556`
 
+## MVP Network Access
+
+Direct private-LAN desktop access is not implemented safely yet. The desktop client warns when it is opened through a private LAN address because the backend desktop auth path is still local-first.
+
+For another device, keep the Swarm host bound to `127.0.0.1` and use an SSH tunnel to the desktop port, for example `ssh -L 5555:127.0.0.1:5555 <host>`, or use Tailscale. Tailscale is usually the lower-friction secure option.
+
 Expected local backend:
 - main lane: `http://127.0.0.1:7781`
 - dev lane: `http://127.0.0.1:7782`

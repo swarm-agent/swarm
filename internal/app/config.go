@@ -36,7 +36,8 @@ type AppConfig struct {
 // feature visibility. Keep these values read-only here; mutations should go
 // through startupconfig helpers.
 type StartupConfig struct {
-	DevMode bool
+	DevMode                 bool
+	DirectLANDesktopWarning string
 }
 
 type ChatConfig struct {
@@ -125,6 +126,10 @@ func defaultAppConfig() AppConfig {
 
 func loadAppConfig(api *client.API) (AppConfig, error) {
 	cfg := defaultAppConfig()
+	startupCfg, startupErr := loadStartupConfigForApp()
+	if startupErr == nil {
+		applyStartupConfig(&cfg, startupCfg)
+	}
 	if api == nil {
 		return cfg, fmt.Errorf("ui settings client not configured")
 	}
@@ -141,12 +146,19 @@ func loadAppConfig(api *client.API) (AppConfig, error) {
 	}
 	cfg = appConfigFromUISettings(settings)
 
-	startupCfg, err := loadStartupConfigForApp()
-	if err == nil {
-		cfg.Swarm.Role = startupConfigRole(startupCfg)
-		cfg.Startup.DevMode = startupCfg.DevMode
+	if startupErr == nil {
+		applyStartupConfig(&cfg, startupCfg)
 	}
 	return cfg, nil
+}
+
+func applyStartupConfig(cfg *AppConfig, startupCfg startupconfig.FileConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.Swarm.Role = startupConfigRole(startupCfg)
+	cfg.Startup.DevMode = startupCfg.DevMode
+	cfg.Startup.DirectLANDesktopWarning = startupconfig.DirectLANDesktopWarning(startupCfg)
 }
 
 func saveAppConfig(api *client.API, cfg AppConfig) error {

@@ -282,6 +282,8 @@ type App struct {
 
 	quitRequested bool
 
+	startupNetworkWarningModal startupNetworkWarningModalState
+
 	devUpdateRequested     bool
 	releaseUpdateRequested bool
 
@@ -390,6 +392,7 @@ func New() (*App, error) {
 	app.startSessionEventStream()
 	app.refreshGitRealtimeWatcher()
 	app.announceAppliedUpdate()
+	app.openStartupNetworkWarningModal()
 	return app, nil
 }
 
@@ -447,6 +450,9 @@ func (a *App) Run() error {
 			if a.permissionsBypassModalActive() {
 				a.drawPermissionsBypassModal()
 			}
+			if a.startupNetworkWarningModalActive() {
+				a.drawStartupNetworkWarningModal()
+			}
 			a.screen.Show()
 			a.noteStreamRenderDrawn(time.Now())
 			dirty = false
@@ -496,6 +502,12 @@ func (a *App) Run() error {
 				return nil
 			}
 		case *tcell.EventMouse:
+			if a.startupNetworkWarningModalActive() {
+				if a.handleStartupNetworkWarningModalMouse(e) {
+					dirty = true
+					continue
+				}
+			}
 			if a.permissionsBypassModalActive() {
 				if a.handlePermissionsBypassModalMouse(e) {
 					dirty = true
@@ -549,6 +561,12 @@ func (a *App) Run() error {
 			a.setPasteActive(e.Start())
 			dirty = true
 		case *tcell.EventKey:
+			if a.startupNetworkWarningModalActive() {
+				if a.handleStartupNetworkWarningModalKey(e) {
+					dirty = true
+					continue
+				}
+			}
 			if a.permissionsBypassModalActive() {
 				if a.handlePermissionsBypassModalKey(e) {
 					dirty = true

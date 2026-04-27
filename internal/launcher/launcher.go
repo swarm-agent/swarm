@@ -1410,7 +1410,7 @@ func EnsureWebDistReady(profile Profile) error {
 }
 
 func RunDesktop(profile Profile, port int) error {
-	frontendURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	frontendURL := desktopFrontendURL(profile, port)
 	if err := EnsureWebDistReady(profile); err != nil {
 		return err
 	}
@@ -1421,6 +1421,16 @@ func RunDesktop(profile Profile, port int) error {
 	_ = RecordPortFile(profile)
 	_ = OpenBrowser(frontendURL)
 	return nil
+}
+
+func desktopFrontendURL(profile Profile, port int) string {
+	host := strings.TrimSpace(profile.Startup.Host)
+	if host == "" || strings.EqualFold(host, "localhost") {
+		host = "127.0.0.1"
+	} else if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && ip.IsLoopback() {
+		host = "127.0.0.1"
+	}
+	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, strconv.Itoa(port))}).String()
 }
 
 func OpenBrowser(targetURL string) error {

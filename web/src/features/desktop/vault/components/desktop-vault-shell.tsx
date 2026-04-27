@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Outlet } from '@tanstack/react-router'
 import { debugLog, createDebugTimer } from '../../../../lib/debug-log'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -7,6 +7,7 @@ import { DesktopVaultGate } from './desktop-vault-gate'
 import { fetchDesktopOnboardingStatus } from '../../onboarding/api'
 import { DesktopOnboardingGate } from '../../onboarding/components/desktop-onboarding-gate'
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
+import { DirectLANDesktopWarningScreen, getDirectLANDesktopWarning } from '../../security/direct-lan-desktop-warning'
 
 export function DesktopVaultShell() {
   debugLog('desktop-vault-shell', 'render', {
@@ -19,13 +20,21 @@ export function DesktopVaultShell() {
   const [onboardingStatus, setOnboardingStatus] = useState<DesktopOnboardingStatus | null>(null)
   const [onboardingLoading, setOnboardingLoading] = useState(true)
   const [onboardingError, setOnboardingError] = useState<string | null>(null)
+  const directLANDesktopWarning = useMemo(() => getDirectLANDesktopWarning(), [])
 
   useEffect(() => {
+    if (directLANDesktopWarning) {
+      return
+    }
     debugLog('desktop-vault-shell', 'effect:bootstrap-vault-dispatch')
     void bootstrapVault()
-  }, [bootstrapVault])
+  }, [bootstrapVault, directLANDesktopWarning])
 
   useEffect(() => {
+    if (directLANDesktopWarning) {
+      setOnboardingLoading(false)
+      return
+    }
     debugLog('desktop-vault-shell', 'effect:onboarding-check', {
       vaultBootstrapped: vault.bootstrapped,
       vaultEnabled: vault.enabled,
@@ -78,7 +87,11 @@ export function DesktopVaultShell() {
       cancelled = true
       debugLog('desktop-vault-shell', 'effect:onboarding-cleanup')
     }
-  }, [onboardingFlowRequested, vault.bootstrapped, vault.enabled, vault.unlocked])
+  }, [directLANDesktopWarning, onboardingFlowRequested, vault.bootstrapped, vault.enabled, vault.unlocked])
+
+  if (directLANDesktopWarning) {
+    return <DirectLANDesktopWarningScreen warning={directLANDesktopWarning} />
+  }
 
   if (!vault.bootstrapped) {
     return (

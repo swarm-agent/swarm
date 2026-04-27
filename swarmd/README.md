@@ -27,6 +27,12 @@ SWARM_LANE=main ./scripts/dev-up.sh   # 127.0.0.1:7781
 SWARM_LANE=dev  ./scripts/dev-up.sh   # 127.0.0.1:7782
 ```
 
+## MVP Network Access
+
+Direct private-LAN desktop access is not a supported secure path for the MVP. Keep `swarm.conf` bound to `127.0.0.1` for the desktop/backend unless you are working on the LAN pairing implementation itself.
+
+For access from another device, use an SSH tunnel to the desktop port, for example `ssh -L 5555:127.0.0.1:5555 <host>`, or use Tailscale. Direct private LAN HTTP may show browser "Not Secure" warnings and desktop API auth may reject the request.
+
 ## API
 
 - `GET /healthz`
