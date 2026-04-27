@@ -15,7 +15,7 @@ test('local container update warning dismissal reads backend UI update setting o
 
 test('withLocalContainerUpdateWarningDismissed preserves existing settings while updating local warning flag', () => {
   const current: UISettingsWire = {
-    theme: { active_id: 'nord' },
+    theme: { active_id: 'crimson' },
     chat: { thinking_tags: false, default_new_session_mode: 'plan' },
     swarm: { name: 'Desk' },
     updates: { local_container_warning_dismissed: false },

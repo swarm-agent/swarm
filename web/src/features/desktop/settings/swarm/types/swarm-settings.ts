@@ -66,7 +66,7 @@ export function normalizeDefaultNewSessionMode(value: unknown): 'auto' | 'plan' 
 export function normalizeGlobalThemeSettings(payload?: UISettingsWire | null): GlobalThemeSettings {
   const activeId = typeof payload?.theme?.active_id === 'string' && payload.theme.active_id.trim()
     ? payload.theme.active_id.trim().toLowerCase()
-    : 'nord'
+    : 'crimson'
 
   return {
     activeId,

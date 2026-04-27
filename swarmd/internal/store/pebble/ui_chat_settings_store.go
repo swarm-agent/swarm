@@ -167,7 +167,7 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		record.Chat.UpdatedAt = 0
 	}
 	if record.Theme.ActiveID == "" {
-		record.Theme.ActiveID = "nord"
+		record.Theme.ActiveID = "crimson"
 	}
 	if record.Chat.DefaultNewSessionMode == "" {
 		record.Chat.DefaultNewSessionMode = "auto"
