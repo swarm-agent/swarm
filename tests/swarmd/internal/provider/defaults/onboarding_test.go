@@ -60,7 +60,7 @@ func TestLookupCopilotDefaults(t *testing.T) {
 	if !ok {
 		t.Fatalf("Lookup(copilot) ok = false")
 	}
-	if got.PrimaryModel != "gpt-5.5" {
+	if got.PrimaryModel != "gpt-5.4" {
 		t.Fatalf("primary model = %q", got.PrimaryModel)
 	}
 	if got.PrimaryThinking != "high" {
@@ -130,7 +130,7 @@ func TestLookupUnknownProvider(t *testing.T) {
 
 func TestSupportedProvidersSorted(t *testing.T) {
 	got := SupportedProviders()
-	want := []string{"anthropic", "codex", "copilot", "fireworks", "google", "openrouter"}
+	want := []string{"anthropic", "codex", "fireworks", "google", "openrouter"}
 	if len(got) != len(want) {
 		t.Fatalf("providers = %v", got)
 	}

@@ -3403,7 +3403,7 @@ func (r *Runtime) resolveExaConfig(ctx context.Context) (ExaRuntimeConfig, error
 		return ExaRuntimeConfig{}, err
 	}
 	if !config.Enabled {
-		return ExaRuntimeConfig{}, errors.New("exa websearch is unavailable: configure /auth key exa <api_key> or run /mcp enable exa-public")
+		return ExaRuntimeConfig{}, errors.New("exa websearch is unavailable: configure /auth key exa <api_key>; built-in free Exa MCP search is unavailable")
 	}
 	config.Source = strings.ToLower(strings.TrimSpace(config.Source))
 	config.APIKey = strings.TrimSpace(config.APIKey)
@@ -3415,7 +3415,7 @@ func (r *Runtime) resolveExaConfig(ctx context.Context) (ExaRuntimeConfig, error
 		case config.MCPURL != "":
 			config.Source = "mcp"
 		default:
-			return ExaRuntimeConfig{}, errors.New("exa source is unavailable: configure /auth key exa <api_key> or run /mcp enable exa-public")
+			return ExaRuntimeConfig{}, errors.New("exa source is unavailable: configure /auth key exa <api_key>; built-in free Exa MCP search is unavailable")
 		}
 	}
 	if config.Source != "mcp" && config.Source != "api_key" {
@@ -3425,7 +3425,7 @@ func (r *Runtime) resolveExaConfig(ctx context.Context) (ExaRuntimeConfig, error
 		return ExaRuntimeConfig{}, errors.New("exa api key is missing for API-key mode (run /auth key exa <api_key>)")
 	}
 	if config.Source == "mcp" && config.MCPURL == "" {
-		return ExaRuntimeConfig{}, errors.New("exa mcp endpoint is missing (run /mcp add exa-public https://mcp.exa.ai/mcp)")
+		return ExaRuntimeConfig{}, errors.New("built-in free Exa MCP endpoint is missing")
 	}
 	if config.APIKey == "" {
 		config.Source = "mcp"

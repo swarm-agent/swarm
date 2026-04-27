@@ -32,6 +32,9 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 		UtilityThinking:  "medium",
 		UtilitySubagents: []string{"explorer", "memory", "parallel"},
 	},
+	// Copilot defaults are retained for the dormant provider implementation, but
+	// Copilot is filtered out of option surfaces until we can fairly test it with
+	// the required paid plan.
 	"copilot": {
 		ProviderID:       "copilot",
 		PrimaryModel:     "gpt-5.4",
@@ -92,6 +95,11 @@ func MustLookup(providerID string) ProviderDefaults {
 func SupportedProviders() []string {
 	providers := make([]string, 0, len(providerDefaultsByProvider))
 	for providerID := range providerDefaultsByProvider {
+		if providerID == "copilot" {
+			// Copilot is retained for code-level defaults but hidden from supported
+			// provider option lists until paid-plan validation is possible.
+			continue
+		}
 		providers = append(providers, providerID)
 	}
 	sort.Strings(providers)

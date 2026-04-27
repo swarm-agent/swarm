@@ -136,10 +136,6 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/mcp/servers", s.handleMCPServers)
-	mux.HandleFunc("/v1/mcp/servers/upsert", s.handleMCPServerUpsert)
-	mux.HandleFunc("/v1/mcp/servers/delete", s.handleMCPServerDelete)
-	mux.HandleFunc("/v1/mcp/servers/enabled", s.handleMCPServerEnabled)
 	mux.HandleFunc("/v1/context/sources", s.handleContextSources)
 	mux.HandleFunc("/v1/system/shutdown", s.handleSystemShutdown)
 	mux.HandleFunc("/v1/permissions", s.handlePermissions)

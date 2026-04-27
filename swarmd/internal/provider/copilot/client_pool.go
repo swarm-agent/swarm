@@ -173,7 +173,11 @@ func (m *Manager) resolveActiveAuthBinding(ctx context.Context) (runtimeAuthBind
 		return runtimeAuthBinding{}, fmt.Errorf("read active Copilot auth source: %w", err)
 	}
 	if !ok {
-		return runtimeAuthBinding{}, errors.New("no active Copilot auth source selected")
+		record = pebblestore.AuthCredentialRecord{
+			Provider: "copilot",
+			Type:     pebblestore.AuthTypeCLI,
+			Label:    "Copilot CLI login",
+		}
 	}
 	return m.resolveCredentialBinding(ctx, record)
 }

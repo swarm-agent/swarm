@@ -57,18 +57,11 @@ func NewService(store *pebblestore.MCPStore, events *pebblestore.EventLog) *Serv
 }
 
 func (s *Service) EnsureDefaults() error {
-	if s == nil || s.store == nil {
-		return errors.New("mcp service is not configured")
-	}
-	_, _, err := s.store.EnsureDefault(pebblestore.MCPServerRecord{
-		ID:        DefaultExaServerID,
-		Name:      "Exa Public MCP",
-		Transport: "http",
-		URL:       DefaultExaServerURL,
-		Enabled:   true,
-		Source:    "default",
-	})
-	return err
+	// Generic MCP server management is deferred until it can be integrated
+	// with Swarm Sync. Do not persist a default MCP server record here; Exa
+	// search resolves the built-in public MCP endpoint directly when no user
+	// override exists.
+	return nil
 }
 
 func (s *Service) List(limit int) ([]Server, error) {
@@ -235,7 +228,7 @@ func (s *Service) ResolveExaRuntimeConfig() (ExaRuntimeConfig, error) {
 	}
 	if !ok {
 		return ExaRuntimeConfig{
-			Enabled: false,
+			Enabled: true,
 			URL:     DefaultExaServerURL,
 		}, nil
 	}

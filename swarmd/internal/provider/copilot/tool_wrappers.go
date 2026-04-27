@@ -108,30 +108,22 @@ func buildPermissionHandler(allowedToolNames []string) sdk.PermissionHandlerFunc
 	}
 
 	return func(request sdk.PermissionRequest, _ sdk.PermissionInvocation) (sdk.PermissionRequestResult, error) {
-		if strings.EqualFold(strings.TrimSpace(request.Kind), "custom-tool") {
-			if name := permissionToolName(request.Extra); name != "" {
+		if request.Kind == sdk.PermissionRequestKindCustomTool {
+			if name := strings.TrimSpace(stringValue(request.ToolName)); name != "" {
 				if _, ok := allowed[name]; ok {
-					return sdk.PermissionRequestResult{Kind: "approved"}, nil
+					return sdk.PermissionRequestResult{Kind: sdk.PermissionRequestResultKindApproved}, nil
 				}
 			}
 		}
-		return sdk.PermissionRequestResult{Kind: "denied-no-approval-rule-and-could-not-request-from-user"}, nil
+		return sdk.PermissionRequestResult{Kind: sdk.PermissionRequestResultKindUserNotAvailable}, nil
 	}
 }
 
-func permissionToolName(extra map[string]any) string {
-	if len(extra) == 0 {
+func stringValue(value *string) string {
+	if value == nil {
 		return ""
 	}
-	raw, ok := extra["toolName"]
-	if !ok {
-		return ""
-	}
-	name, ok := raw.(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(name)
+	return strings.TrimSpace(*value)
 }
 
 func buildCustomAgents(instructions string, availableToolNames []string) []sdk.CustomAgentConfig {

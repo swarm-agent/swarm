@@ -32,10 +32,19 @@ function testFastCommandIsReady(): void {
   assert(palette.exactMatch?.state === 'ready', 'expected /fast exact match to be ready')
 }
 
+function testMCPCommandIsDeferredButFreeExaSearchRemains(): void {
+  const mcp = getDesktopSlashCommands().find((command) => command.id === 'mcp')
+  assert(Boolean(mcp), 'expected /mcp command to exist')
+  assert(mcp?.state === 'coming-soon', 'expected /mcp command to remain deferred')
+  assert(mcp?.hint.includes('Swarm Sync'), 'expected /mcp hint to mention Swarm Sync')
+  assert(mcp?.tips.some((tip) => tip.includes('Free Exa MCP search')), 'expected /mcp tips to mention free Exa MCP search')
+}
+
 function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
   testFastCommandIsReady()
+  testMCPCommandIsDeferredButFreeExaSearchRemains()
   console.log('slash-commands tests passed')
 }
 
