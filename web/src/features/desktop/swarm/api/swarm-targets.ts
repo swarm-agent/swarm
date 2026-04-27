@@ -5,6 +5,7 @@ export interface SwarmTarget {
   name: string
   role: string
   relationship: string
+  kind: 'self' | 'local' | 'remote'
   deployment_id?: string
   attach_status?: string
   online: boolean

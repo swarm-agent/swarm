@@ -23,6 +23,7 @@ type swarmTarget struct {
 	Name         string `json:"name"`
 	Role         string `json:"role"`
 	Relationship string `json:"relationship"`
+	Kind         string `json:"kind"`
 	DeploymentID string `json:"deployment_id,omitempty"`
 	AttachStatus string `json:"attach_status,omitempty"`
 	Online       bool   `json:"online"`
@@ -184,6 +185,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		Name:         firstNonEmpty(strings.TrimSpace(state.Node.Name), strings.TrimSpace(cfg.SwarmName), "Local"),
 		Role:         firstNonEmpty(strings.TrimSpace(state.Node.Role), hostRoleFromConfig(cfg), "master"),
 		Relationship: "self",
+		Kind:         "self",
 		Online:       true,
 		Selectable:   true,
 		Current:      strings.EqualFold(localSwarmID, selectedID),
@@ -306,6 +308,7 @@ func mapDeployContainerTarget(item deployruntime.ContainerDeployment) (swarmTarg
 		Name:         name,
 		Role:         "child",
 		Relationship: swarmruntime.RelationshipChild,
+		Kind:         "local",
 		DeploymentID: strings.TrimSpace(item.ID),
 		AttachStatus: attachStatus,
 		Online:       online,
@@ -330,6 +333,7 @@ func mapRemoteDeployTarget(item remotedeploy.Session) (swarmTarget, bool) {
 		Name:         name,
 		Role:         "child",
 		Relationship: swarmruntime.RelationshipChild,
+		Kind:         "remote",
 		DeploymentID: strings.TrimSpace(item.ID),
 		AttachStatus: status,
 		Online:       online,
