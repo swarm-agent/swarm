@@ -62,7 +62,12 @@ func (a *App) applyPermissionsBypass(enabled bool) {
 		defer cancel()
 		saved, err := a.api.SetBypassPermissions(ctx, enabled)
 		if err != nil {
-			a.setPermissionsBypassStatus(fmt.Sprintf("permissions toggle failed: %v", err))
+			status := fmt.Sprintf("permissions toggle failed: %v", err)
+			a.setPermissionsBypassStatus(status)
+			if a.permissionsPolicyModal.Visible {
+				a.permissionsPolicyModal.Busy = false
+				a.permissionsPolicyModal.Err = status
+			}
 			if a.permissionsBypassModal.Visible {
 				a.permissionsBypassModal.Busy = false
 			}
@@ -81,11 +86,16 @@ func (a *App) applyPermissionsBypass(enabled bool) {
 			a.chat.SetMeta(meta)
 		}
 		a.permissionsBypassModal = permissionsBypassModalState{}
+		status := "Permissions ON: prompts enabled"
 		if saved {
-			a.setPermissionsBypassStatus("Permissions OFF: bypass permissions enabled")
-		} else {
-			a.setPermissionsBypassStatus("Permissions ON: prompts enabled")
+			status = "Permissions OFF: bypass permissions enabled"
 		}
+		if a.permissionsPolicyModal.Visible {
+			a.permissionsPolicyModal.Busy = false
+			a.permissionsPolicyModal.Err = ""
+			a.permissionsPolicyModal.Status = status
+		}
+		a.setPermissionsBypassStatus(status)
 		if a.screen != nil {
 			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptTick))
 		}

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from 'react'
+import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
@@ -53,6 +53,19 @@ const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
+const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
+const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] items-center gap-2.5`
+const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
+const SIDEBAR_ACTION_BOX_CLASS = 'grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center border-0 bg-transparent p-0 font-inherit'
+const SIDEBAR_ACTION_BUTTON_CLASS = `${SIDEBAR_ACTION_BOX_CLASS} text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]`
+
+function SidebarActionRail({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn(SIDEBAR_ACTION_RAIL_CLASS, className)}>{children}</div>
+}
+
+function SidebarActionRailSpacer() {
+  return <span aria-hidden="true" className={SIDEBAR_ACTION_BOX_CLASS} />
+}
 
 interface SidebarWorkspaceLayout {
   collapsed: boolean
@@ -507,27 +520,33 @@ function renderWorkspaceGitBar(args: {
   const dirtyLabel = dirtyDetailParts.join(' ')
 
   return (
-    <div className="flex items-center gap-2 px-6 pb-2 pt-0.5 text-[11px] min-w-0">
-      <span className={cn('truncate font-semibold', tone)}>{branch}</span>
-      <span className="shrink-0 text-[var(--app-text-muted)]">/</span>
-      <span className="shrink-0 text-[var(--app-text-muted)]">{syncLabel}</span>
-      {dirtyLabel ? <span className="shrink-0 text-[var(--app-text-muted)]">/</span> : null}
-      {dirtyLabel ? <span className={cn('shrink-0 text-[10px]', tone)}>{dirtyLabel}</span> : null}
-      <button
-        type="button"
-        className={cn(
-          'ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px]',
-          enabled ? 'text-[var(--app-selection)]' : 'text-[var(--app-text-muted)] opacity-45 hover:opacity-85',
-          worktreeBusy && 'cursor-progress opacity-70',
-        )}
-        onClick={onToggle}
-        aria-busy={worktreeBusy}
-        aria-disabled={worktreeBusy}
-        aria-pressed={enabled}
-        title={title}
-      >
-        {enabled ? 'worktree' : 'wt'}
-      </button>
+    <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'pb-2 pl-6 pr-1 pt-0.5 text-[11px]')}>
+      <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+        <span className={cn('truncate font-semibold', tone)}>{branch}</span>
+        <span className="shrink-0 text-[var(--app-text-muted)]">/</span>
+        <span className="shrink-0 text-[var(--app-text-muted)]">{syncLabel}</span>
+        {dirtyLabel ? <span className="shrink-0 text-[var(--app-text-muted)]">/</span> : null}
+        {dirtyLabel ? <span className={cn('shrink-0 text-[10px]', tone)}>{dirtyLabel}</span> : null}
+      </div>
+      <SidebarActionRail>
+        <SidebarActionRailSpacer />
+        <button
+          type="button"
+          className={cn(
+            SIDEBAR_ACTION_BUTTON_CLASS,
+            'text-[10px]',
+            enabled ? 'text-[var(--app-selection)]' : 'text-[var(--app-text-muted)] opacity-45 hover:opacity-85',
+            worktreeBusy && 'cursor-progress opacity-70',
+          )}
+          onClick={onToggle}
+          aria-busy={worktreeBusy}
+          aria-disabled={worktreeBusy}
+          aria-pressed={enabled}
+          title={title}
+        >
+          wt
+        </button>
+      </SidebarActionRail>
     </div>
   )
 }
@@ -1847,19 +1866,20 @@ export function DesktopAppPage() {
         <div className="flex h-full flex-col min-h-0">
           <div className="border-b border-[var(--app-border)] font-mono">
             <div className="min-h-[124px] border border-[color-mix(in_srgb,var(--app-border)_74%,transparent)] bg-[var(--app-surface)]">
-              <div className="p-[12px_13px_11px]">
-                <div className="flex min-h-7 items-center justify-between gap-2.5">
+              <div className="p-[12px_0_11px_13px]">
+                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')}>
                   <div className="min-w-0">
                     <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
                     <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
                       <strong className="font-medium text-[var(--app-text-muted)]">Master</strong> · {masterWorkspaceName}
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-0 border-l border-[color-mix(in_srgb,var(--app-border)_46%,transparent)] pl-[3px]">
+                  <SidebarActionRail>
                     <button
                       type="button"
                       className={cn(
-                        'grid h-6 w-6 place-items-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                        SIDEBAR_ACTION_BUTTON_CLASS,
+                        'text-[var(--app-text-subtle)]',
                         notificationCenter.summary.unreadCount > 0 && 'text-[color-mix(in_srgb,var(--app-warning)_82%,var(--app-text-muted))] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-primary-hover)]',
                       )}
                       onClick={() => setNotificationsOpen(true)}
@@ -1870,20 +1890,20 @@ export function DesktopAppPage() {
                     </button>
                     <button
                       type="button"
-                      className="grid h-6 w-6 place-items-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)]')}
                       onClick={() => setSidebarCollapsed(true)}
                       aria-label="Collapse sidebar"
                       title="Collapse"
                     >
                       <ChevronLeft size={14} strokeWidth={1.8} className="shrink-0" />
                     </button>
-                  </div>
+                  </SidebarActionRail>
                 </div>
 
-                <div className="mt-[7px] flex min-h-[30px] items-center justify-between gap-2.5 text-[11px] text-[var(--app-text-subtle)]">
+                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'mt-[7px] min-h-[30px] pr-4 text-[11px] text-[var(--app-text-subtle)]')}>
                   <button
                     type="button"
-                    className="flex min-w-0 items-center gap-2 whitespace-nowrap border-0 bg-transparent p-0 text-left font-inherit hover:text-[var(--app-text)]"
+                    className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap border-0 bg-transparent p-0 text-left font-inherit hover:text-[var(--app-text)]"
                     onClick={() => {
                       setWorkspaceMenuOpen(false)
                       setSwarmMenu((current) => ({ open: !current.open }))
@@ -1892,23 +1912,26 @@ export function DesktopAppPage() {
                     aria-label="Choose swarm target"
                     title={swarmTargetSummary}
                   >
-                    <span className="text-[color-mix(in_srgb,var(--app-success)_58%,var(--app-text-subtle))]">{swarmTargetCounts.local} local</span>
-                    <span className="opacity-55">·</span>
-                    <span className="text-[color-mix(in_srgb,var(--app-info)_58%,var(--app-text-subtle))]">{swarmTargetCounts.remote} remote</span>
+                    <span className="shrink-0 text-[color-mix(in_srgb,var(--app-success)_58%,var(--app-text-subtle))]">{swarmTargetCounts.local} local</span>
+                    <span className="shrink-0 opacity-55">·</span>
+                    <span className="truncate text-[color-mix(in_srgb,var(--app-info)_58%,var(--app-text-subtle))]">{swarmTargetCounts.remote} remote</span>
                   </button>
-                  <button
-                    type="button"
-                    className="grid h-6 w-6 shrink-0 place-items-center border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                    onClick={handleOpenSwarmDashboard}
-                    aria-label="Add swarm"
-                    title="Add swarm"
-                  >
-                    <Plus size={14} strokeWidth={1.8} className="shrink-0" />
-                  </button>
+                  <SidebarActionRail>
+                    <SidebarActionRailSpacer />
+                    <button
+                      type="button"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
+                      onClick={handleOpenSwarmDashboard}
+                      aria-label="Add swarm"
+                      title="Add swarm"
+                    >
+                      <Plus size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                  </SidebarActionRail>
                 </div>
 
                 {swarmMenu.open ? (
-                  <div className="mt-1.5 border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
+                  <div className="mr-4 mt-1.5 border border-[var(--app-border)] bg-[var(--app-surface)] py-1">
                     {swarmTargets.map((target) => (
                       <button
                         key={target.swarm_id}
@@ -1916,7 +1939,8 @@ export function DesktopAppPage() {
                         onClick={() => { void handleSelectSwarmTarget(target) }}
                         disabled={!target.selectable}
                         className={cn(
-                          'flex min-h-[30px] w-full items-center justify-between gap-2.5 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                          SIDEBAR_ACTION_ROW_CLASS,
+                          'min-h-[30px] w-full px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
                           target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
                           !target.selectable && 'cursor-not-allowed opacity-50',
                         )}
@@ -1926,7 +1950,7 @@ export function DesktopAppPage() {
                           <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
                           <span className="truncate">{target.name}</span>
                         </span>
-                        <span className="shrink-0 whitespace-nowrap text-[10px] text-[var(--app-text-subtle)]">
+                        <span className="shrink-0 truncate text-right text-[10px] text-[var(--app-text-subtle)]">
                           {swarmKindLabel(target)} · {target.current ? 'active' : target.online ? 'online' : (target.attach_status || 'offline')}
                         </span>
                       </button>
@@ -1935,10 +1959,10 @@ export function DesktopAppPage() {
                   </div>
                 ) : null}
 
-                <div className="mt-[7px] flex min-h-7 items-center justify-between gap-2.5 border-t border-[color-mix(in_srgb,var(--app-border)_54%,transparent)] pt-[7px] text-[11px] text-[var(--app-text-subtle)]">
+                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'mt-[7px] min-h-7 border-t border-[color-mix(in_srgb,var(--app-border)_54%,transparent)] pr-4 pt-[7px] text-[11px] text-[var(--app-text-subtle)]')}>
                   <button
                     type="button"
-                    className="flex min-h-[22px] items-center gap-1 border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    className="flex min-h-[22px] min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                     onClick={() => {
                       setSwarmMenu({ open: false })
                       setWorkspaceMenuOpen((open) => !open)
@@ -1946,16 +1970,21 @@ export function DesktopAppPage() {
                     aria-expanded={workspaceMenuOpen}
                     aria-label={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspace list`}
                   >
-                    <span>{workspaceCount} workspaces</span>
+                    <span className="truncate">{workspaceCount} workspaces</span>
                     {workspaceMenuOpen ? <ChevronDown size={14} strokeWidth={1.8} className="shrink-0 rotate-180" /> : <ChevronDown size={14} strokeWidth={1.8} className="shrink-0" />}
                   </button>
-                  <button
-                    type="button"
-                    className="border-0 bg-transparent py-[3px] pl-2 pr-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                    onClick={() => handleOpenSettingsTab('agents')}
-                  >
-                    Settings
-                  </button>
+                  <SidebarActionRail>
+                    <SidebarActionRailSpacer />
+                    <button
+                      type="button"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
+                      onClick={() => handleOpenSettingsTab('agents')}
+                      aria-label="Open agent settings"
+                      title="Settings"
+                    >
+                      <Settings size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                  </SidebarActionRail>
                 </div>
               </div>
             </div>
@@ -1967,25 +1996,28 @@ export function DesktopAppPage() {
                 ) : mergedSidebarWorkspaceEntries.map((workspace) => {
                   const hidden = workspaceLayout[workspace.path]?.hidden ?? false
                   return (
-                    <div key={workspace.path} className="group flex min-h-[30px] items-center justify-between gap-2.5 px-[7px] py-[5px] text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                    <div key={workspace.path} className={cn('group min-h-[30px] px-[7px] py-[5px] text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]', SIDEBAR_ACTION_ROW_CLASS)}>
                       <button
                         type="button"
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        className="flex min-w-0 items-center gap-2 overflow-hidden text-left"
                         onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)}
                         title={workspace.path}
                       >
                         <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', hidden ? 'bg-[var(--app-text-subtle)]' : 'bg-[var(--app-success)]')} />
                         <span className={cn('truncate', hidden && 'opacity-60')}>{workspace.workspaceName}</span>
                       </button>
-                      <button
-                        type="button"
-                        className="shrink-0 p-0.5 text-[var(--app-text-subtle)] opacity-0 hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] group-hover:opacity-100"
-                        onClick={(e) => { e.stopPropagation(); toggleWorkspaceHidden(workspace.path) }}
-                        aria-label={`${hidden ? 'Show' : 'Hide'} ${workspace.workspaceName} in sidebar`}
-                        title={`${hidden ? 'Show' : 'Hide'} in sidebar`}
-                      >
-                        {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
-                      </button>
+                      <SidebarActionRail>
+                        <SidebarActionRailSpacer />
+                        <button
+                          type="button"
+                          className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)] opacity-0 hover:bg-[var(--app-surface-active)] group-hover:opacity-100')}
+                          onClick={(e) => { e.stopPropagation(); toggleWorkspaceHidden(workspace.path) }}
+                          aria-label={`${hidden ? 'Show' : 'Hide'} ${workspace.workspaceName} in sidebar`}
+                          title={`${hidden ? 'Show' : 'Hide'} in sidebar`}
+                        >
+                          {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </SidebarActionRail>
                     </div>
                   )
                 })}
@@ -2019,23 +2051,23 @@ export function DesktopAppPage() {
                 return (
                   <Fragment key={workspace.path}>
                     <section style={workspaceSectionHeightStyle(layout?.ratio ?? 1, totalVisibleRatio, collapsed)} className="flex min-h-0 flex-col overflow-hidden">
-                      <div className="flex items-center justify-between gap-2 px-1 py-1">
+                      <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'px-1 py-1')}>
                         <button
                           type="button"
                           onClick={() => {
                             toggleWorkspaceCollapse(workspace.path)
                           }}
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-[var(--app-text)]"
+                          className="flex min-w-0 items-center gap-2 overflow-hidden text-left transition-colors hover:text-[var(--app-text)]"
                           aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${workspace.workspaceName}`}
                         >
                           {collapsed ? <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" /> : <ChevronDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />}
                           <div className="truncate text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">{workspace.workspaceName}</div>
                         </button>
-                        <div className="flex items-center gap-1">
+                        <SidebarActionRail>
                           {!workspaceByPath.has(workspace.path) ? (
-                            <Button
-                              variant="ghost"
-                              className="h-12 min-h-12 shrink-0 rounded-xl px-3 text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-warning)]"
+                            <button
+                              type="button"
+                              className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-warning)]')}
                               onClick={() => {
                                 void saveWorkspace({
                                   path: workspace.path,
@@ -2045,19 +2077,20 @@ export function DesktopAppPage() {
                                   linkedDirectories: [],
                                 })
                               }}
+                              aria-label="Save this temporary folder as a workspace"
                               title="Save this temporary folder as a workspace"
                             >
-                              ! Save
-                            </Button>
-                          ) : null}
-                          {selectingPath === workspace.path ? <span className="text-xs text-[var(--app-text-muted)]">opening…</span> : null}
-                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.user.taskCount ?? 0} tasks`}>
-                            <ListChecks size={17} strokeWidth={2.25} className="shrink-0" />
-                          </Button>
-                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">
-                            <Plus size={17} strokeWidth={2.25} className="shrink-0" />
-                          </Button>
-                        </div>
+                              !
+                            </button>
+                          ) : selectingPath === workspace.path ? <span className="grid h-6 w-6 place-items-center text-[10px] text-[var(--app-text-muted)]">…</span> : (
+                            <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.user.taskCount ?? 0} tasks`}>
+                              <ListChecks size={14} strokeWidth={1.8} className="shrink-0" />
+                            </button>
+                          )}
+                          <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">
+                            <Plus size={14} strokeWidth={1.8} className="shrink-0" />
+                          </button>
+                        </SidebarActionRail>
                       </div>
                       {!collapsed && renderWorkspaceGitBar({
                         workspace,

@@ -258,6 +258,7 @@ type App struct {
 	pasteActive            bool
 	quitModal              quitModalState
 	permissionsBypassModal permissionsBypassModalState
+	permissionsPolicyModal permissionsPolicyModalState
 
 	streamEvents            chan client.StreamEventEnvelope
 	streamCancel            context.CancelFunc
@@ -440,6 +441,9 @@ func (a *App) Run() error {
 			if a.quitModalActive() {
 				a.drawQuitModal()
 			}
+			if a.permissionsPolicyModalActive() {
+				a.drawPermissionsPolicyModal()
+			}
 			if a.permissionsBypassModalActive() {
 				a.drawPermissionsBypassModal()
 			}
@@ -498,6 +502,12 @@ func (a *App) Run() error {
 					continue
 				}
 			}
+			if a.permissionsPolicyModalActive() {
+				if a.handlePermissionsPolicyModalMouse(e) {
+					dirty = true
+					continue
+				}
+			}
 			if a.quitModalActive() {
 				if a.handleQuitModalMouse(e) {
 					dirty = true
@@ -541,6 +551,12 @@ func (a *App) Run() error {
 		case *tcell.EventKey:
 			if a.permissionsBypassModalActive() {
 				if a.handlePermissionsBypassModalKey(e) {
+					dirty = true
+					continue
+				}
+			}
+			if a.permissionsPolicyModalActive() {
+				if a.handlePermissionsPolicyModalKey(e) {
 					dirty = true
 					continue
 				}
@@ -8443,15 +8459,7 @@ func (a *App) handlePermissionsCommand(args []string) {
 			a.home.SetStatus(fmt.Sprintf("/permissions show failed: %v", err))
 			return
 		}
-		lines := []string{fmt.Sprintf("permission policy v%d", policy.Version)}
-		if len(policy.Rules) == 0 {
-			lines = append(lines, "No explicit rules. Built-in defaults: allow bash prefixes cd, ls; ask most others.")
-		} else {
-			for _, rule := range policy.Rules {
-				lines = append(lines, fmt.Sprintf("- %s  [%s]  %s", rule.ID, rule.Decision, a.previewPermissionRule(rule)))
-			}
-		}
-		a.home.SetCommandOverlay(lines)
+		a.openPermissionsPolicyModal(policy)
 		a.home.SetStatus("permission policy loaded")
 		return
 	}
