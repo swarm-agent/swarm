@@ -2396,7 +2396,7 @@ export function DesktopAppPage() {
             <label className="mt-4 flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
               <input
                 type="checkbox"
-                checked={localContainerUpdateConfirm.pendingDismiss}
+                checked={localContainerUpdateConfirm?.pendingDismiss ?? false}
                 onChange={(event) => handleToggleLocalContainerUpdateDismissal(event.currentTarget.checked)}
               />
               <span>Don&apos;t show this again for local-container update warnings</span>
