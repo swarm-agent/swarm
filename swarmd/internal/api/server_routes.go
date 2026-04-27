@@ -81,6 +81,7 @@ func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/remote/session/create", s.handleRemoteDeploySessionCreate)
 	mux.HandleFunc("/v1/deploy/remote/session/delete", s.handleRemoteDeploySessionDelete)
 	mux.HandleFunc("/v1/deploy/remote/session/start", s.handleRemoteDeploySessionStart)
+	mux.HandleFunc("/v1/deploy/remote/session/update-job", s.handleRemoteDeploySessionUpdateJob)
 	mux.HandleFunc("/v1/deploy/remote/session/sync/credentials", s.handleRemoteDeploySessionSyncCredentials)
 	mux.HandleFunc("/v1/deploy/remote/session/", s.handleRemoteDeploySessionApprove)
 }

@@ -120,6 +120,39 @@ type LocalContainerUpdateJobItem struct {
 	Plan                LocalContainerUpdateItem `json:"plan,omitempty"`
 }
 
+type RemoteDeployUpdateJobResult struct {
+	PathID          string                       `json:"path_id"`
+	Mode            string                       `json:"mode"`
+	DevMode         bool                         `json:"dev_mode"`
+	Summary         RemoteDeployUpdateJobSummary `json:"summary"`
+	Items           []RemoteDeployUpdateJobItem  `json:"items"`
+	StartedAtUnix   int64                        `json:"started_at_unix_ms,omitempty"`
+	UpdatedAtUnix   int64                        `json:"updated_at_unix_ms,omitempty"`
+	CompletedAtUnix int64                        `json:"completed_at_unix_ms,omitempty"`
+}
+
+type RemoteDeployUpdateJobSummary struct {
+	Total          int `json:"total"`
+	Replaced       int `json:"replaced"`
+	Skipped        int `json:"skipped"`
+	Failed         int `json:"failed"`
+	AlreadyCurrent int `json:"already_current"`
+	Unknown        int `json:"unknown"`
+}
+
+type RemoteDeployUpdateJobItem struct {
+	ID               string `json:"id"`
+	Name             string `json:"name,omitempty"`
+	SSHSessionTarget string `json:"ssh_session_target,omitempty"`
+	Status           string `json:"status,omitempty"`
+	State            string `json:"state"`
+	Reason           string `json:"reason,omitempty"`
+	PreviousImageRef string `json:"previous_image_ref,omitempty"`
+	TargetImageRef   string `json:"target_image_ref,omitempty"`
+	ImageSignature   string `json:"image_signature,omitempty"`
+	Error            string `json:"error,omitempty"`
+}
+
 type LocalContainerUpdateTarget struct {
 	ImageRef               string `json:"image_ref,omitempty"`
 	DigestRef              string `json:"digest_ref,omitempty"`
@@ -1229,6 +1262,45 @@ func (c *API) GetLocalContainerUpdatePlanWithPostRebuild(ctx context.Context, de
 		return LocalContainerUpdatePlan{}, err
 	}
 	return plan, nil
+}
+
+func (c *API) RunRemoteDeployUpdateJob(ctx context.Context, devMode *bool, postRebuildCheck bool) (RemoteDeployUpdateJobResult, error) {
+	payload := map[string]any{
+		"post_rebuild_check": postRebuildCheck,
+	}
+	if devMode != nil {
+		payload["dev_mode"] = *devMode
+	}
+	var response struct {
+		OK     bool                        `json:"ok"`
+		PathID string                      `json:"path_id,omitempty"`
+		Result RemoteDeployUpdateJobResult `json:"result"`
+		Error  string                      `json:"error,omitempty"`
+	}
+	status, body, err := c.request(ctx, http.MethodPost, "/v1/deploy/remote/session/update-job", payload, true)
+	if err != nil {
+		return RemoteDeployUpdateJobResult{}, err
+	}
+	if len(body) > 0 {
+		if decodeErr := json.Unmarshal(body, &response); decodeErr != nil {
+			return RemoteDeployUpdateJobResult{}, fmt.Errorf("decode remote deploy update job response: %w", decodeErr)
+		}
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		message := strings.TrimSpace(response.Error)
+		if message == "" {
+			return response.Result, decodeAPIError(status, body)
+		}
+		return response.Result, fmt.Errorf("api %d: %s", status, message)
+	}
+	if !response.OK {
+		message := strings.TrimSpace(response.Error)
+		if message == "" {
+			message = "remote deploy update job failed"
+		}
+		return response.Result, errors.New(message)
+	}
+	return response.Result, nil
 }
 
 func (c *API) GetUISettings(ctx context.Context) (UISettings, error) {

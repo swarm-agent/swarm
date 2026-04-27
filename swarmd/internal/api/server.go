@@ -181,6 +181,7 @@ type remoteDeployService interface {
 	Create(ctx context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error)
 	Delete(ctx context.Context, input remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error)
 	Start(ctx context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error)
+	RunUpdateJob(ctx context.Context, input remotedeploy.UpdateJobInput) (remotedeploy.UpdateJobResult, error)
 	Approve(ctx context.Context, input remotedeploy.ApproveSessionInput) (remotedeploy.Session, error)
 	ChildStatus(ctx context.Context, input remotedeploy.ChildStatusInput) (remotedeploy.Session, error)
 	SyncCredentialBundle(ctx context.Context, input remotedeploy.SyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error)

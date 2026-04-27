@@ -1294,6 +1294,9 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) error {
 	if err := runDevLocalContainerUpdateJobAfterRestart(profile); err != nil {
 		return err
 	}
+	if err := runDevRemoteDeployUpdateJobAfterRestart(profile); err != nil {
+		return err
+	}
 	fmt.Fprintln(os.Stdout, "Local dev rebuild completed. Restarting Swarm...")
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 		return nil

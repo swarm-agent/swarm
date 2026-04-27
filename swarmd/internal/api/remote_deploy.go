@@ -231,6 +231,43 @@ func (s *Server) handleRemoteDeploySessionStart(w http.ResponseWriter, r *http.R
 	})
 }
 
+func (s *Server) handleRemoteDeploySessionUpdateJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.remoteDeploys == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("remote deploy service not configured"))
+		return
+	}
+	var req struct {
+		DevMode          *bool `json:"dev_mode,omitempty"`
+		PostRebuildCheck bool  `json:"post_rebuild_check,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.remoteDeploys.RunUpdateJob(r.Context(), remotedeploy.UpdateJobInput{
+		DevMode:          req.DevMode,
+		PostRebuildCheck: req.PostRebuildCheck,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok":      false,
+			"path_id": remotedeploy.PathSessionUpdateJob,
+			"result":  result,
+			"error":   err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"path_id": remotedeploy.PathSessionUpdateJob,
+		"result":  result,
+	})
+}
+
 func (s *Server) handleRemoteDeploySessionSyncCredentials(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
