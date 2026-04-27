@@ -170,16 +170,17 @@ const (
 	KeybindChatInsertNewline        KeybindID = "chat.insert_newline"
 	KeybindChatSubmit               KeybindID = "chat.submit"
 
-	KeybindPermissionCycleMode   KeybindID = "permission.cycle_mode"
-	KeybindPermissionMoveUp      KeybindID = "permission.move_up"
-	KeybindPermissionMoveDown    KeybindID = "permission.move_down"
-	KeybindPermissionMoveDownAlt KeybindID = "permission.move_down_alt"
-	KeybindPermissionBackspace   KeybindID = "permission.backspace"
-	KeybindPermissionClear       KeybindID = "permission.clear"
-	KeybindPermissionAlwaysAllow KeybindID = "permission.always_allow"
-	KeybindPermissionAlwaysDeny  KeybindID = "permission.always_deny"
-	KeybindPermissionDeny        KeybindID = "permission.deny"
-	KeybindPermissionApprove     KeybindID = "permission.approve"
+	KeybindPermissionCycleMode    KeybindID = "permission.cycle_mode"
+	KeybindPermissionMoveUp       KeybindID = "permission.move_up"
+	KeybindPermissionMoveDown     KeybindID = "permission.move_down"
+	KeybindPermissionMoveDownAlt  KeybindID = "permission.move_down_alt"
+	KeybindPermissionBackspace    KeybindID = "permission.backspace"
+	KeybindPermissionClear        KeybindID = "permission.clear"
+	KeybindPermissionAlwaysAllow  KeybindID = "permission.always_allow"
+	KeybindPermissionAlwaysDeny   KeybindID = "permission.always_deny"
+	KeybindPermissionToggleBypass KeybindID = "permission.toggle_bypass"
+	KeybindPermissionDeny         KeybindID = "permission.deny"
+	KeybindPermissionApprove      KeybindID = "permission.approve"
 
 	KeybindPlanExitCancel      KeybindID = "plan_exit.cancel"
 	KeybindPlanExitToggle      KeybindID = "plan_exit.toggle"
@@ -364,6 +365,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindPermissionClear, Group: "Permissions", Action: "Reason clear", Default: "ctrl+u", Editable: true},
 	{ID: KeybindPermissionAlwaysAllow, Group: "Permissions", Action: "Always allow selected", Default: "ctrl+a", Editable: true},
 	{ID: KeybindPermissionAlwaysDeny, Group: "Permissions", Action: "Always deny selected", Default: "ctrl+d", Editable: true},
+	{ID: KeybindPermissionToggleBypass, Group: "Permissions", Action: "Toggle global permissions", Default: "b", Editable: true},
 	{ID: KeybindPermissionDeny, Group: "Permissions", Action: "Deny selected", Default: "esc", Editable: true},
 	{ID: KeybindPermissionApprove, Group: "Permissions", Action: "Approve selected", Default: "enter", Editable: true},
 

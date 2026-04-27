@@ -5,12 +5,13 @@ import "strings"
 type ChatActionKind string
 
 const (
-	ChatActionOpenSession     ChatActionKind = "open-session"
-	ChatActionCopyText        ChatActionKind = "copy-text"
-	ChatActionSavePlan        ChatActionKind = "save-plan"
-	ChatActionOpenAgentsModal ChatActionKind = "open-agents-modal"
-	ChatActionOpenModelsModal ChatActionKind = "open-models-modal"
-	ChatActionCycleThinking   ChatActionKind = "cycle-thinking"
+	ChatActionOpenSession             ChatActionKind = "open-session"
+	ChatActionCopyText                ChatActionKind = "copy-text"
+	ChatActionSavePlan                ChatActionKind = "save-plan"
+	ChatActionOpenAgentsModal         ChatActionKind = "open-agents-modal"
+	ChatActionOpenModelsModal         ChatActionKind = "open-models-modal"
+	ChatActionCycleThinking           ChatActionKind = "cycle-thinking"
+	ChatActionToggleBypassPermissions ChatActionKind = "toggle-bypass-permissions"
 )
 
 type ChatSessionPlan struct {

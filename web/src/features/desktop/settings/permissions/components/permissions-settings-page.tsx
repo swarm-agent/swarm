@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { requestJson } from '../../../../../app/api'
 import { Button } from '../../../../../components/ui/button'
+import { Dialog, DialogBackdrop, DialogPanel } from '../../../../../components/ui/dialog'
 import { Input } from '../../../../../components/ui/input'
+import { ModalCloseButton } from '../../../../../components/ui/modal-close-button'
 import { cn } from '../../../../../lib/cn'
 
 export interface PermissionRule {
@@ -32,6 +34,12 @@ interface PermissionExplain {
 interface PermissionPolicyResponse {
   ok?: boolean
   policy?: PermissionPolicy
+  bypass_permissions?: boolean
+}
+
+interface PermissionBypassResponse {
+  ok?: boolean
+  bypass_permissions?: boolean
 }
 
 interface PermissionRuleResponse {
@@ -96,9 +104,18 @@ function formatTimestamp(timestamp?: number): string {
   }
 }
 
-async function fetchPermissionPolicy(): Promise<PermissionPolicy> {
+async function fetchPermissionPolicy(): Promise<{ policy: PermissionPolicy; bypassPermissions: boolean }> {
   const response = await requestJson<PermissionPolicyResponse>('/v1/permissions')
-  return response.policy ?? { version: 0, rules: [] }
+  return { policy: response.policy ?? { version: 0, rules: [] }, bypassPermissions: Boolean(response.bypass_permissions) }
+}
+
+async function setBypassPermissions(enabled: boolean): Promise<boolean> {
+  const response = await requestJson<PermissionBypassResponse>('/v1/permissions/bypass', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  return Boolean(response.bypass_permissions)
 }
 
 async function createPermissionRule(input: { decision: string; kind: string; value: string }): Promise<PermissionRule> {
@@ -150,6 +167,9 @@ export function PermissionsSettingsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [bypassPermissions, setBypassPermissionsState] = useState(false)
+  const [bypassBusy, setBypassBusy] = useState(false)
+  const [confirmBypassOpen, setConfirmBypassOpen] = useState(false)
   const [busyRuleID, setBusyRuleID] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
@@ -165,7 +185,9 @@ export function PermissionsSettingsPage() {
     setLoading(true)
     setError(null)
     try {
-      setPolicy(await fetchPermissionPolicy())
+      const result = await fetchPermissionPolicy()
+      setPolicy(result.policy)
+      setBypassPermissionsState(result.bypassPermissions)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load permission policy')
     } finally {
@@ -232,6 +254,32 @@ export function PermissionsSettingsPage() {
     }
   }
 
+  const applyBypassPermissions = async (enabled: boolean) => {
+    setBypassBusy(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const saved = await setBypassPermissions(enabled)
+      setBypassPermissionsState(saved)
+      setConfirmBypassOpen(false)
+      setStatus(saved ? 'Permissions OFF: bypass permissions enabled' : 'Permissions ON: prompts enabled')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update bypass permissions')
+    } finally {
+      setBypassBusy(false)
+    }
+  }
+
+  const handleBypassButton = () => {
+    if (bypassPermissions) {
+      void applyBypassPermissions(false)
+      return
+    }
+    setError(null)
+    setStatus(null)
+    setConfirmBypassOpen(true)
+  }
+
   const handleReset = async () => {
     setResetting(true)
     setError(null)
@@ -267,7 +315,7 @@ export function PermissionsSettingsPage() {
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-[var(--app-text)]">Permissions</h1>
         <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-          Mirror the TUI permission controls here: view the policy, add always-allow or always-deny rules, remove rules, reset defaults, and preview how a tool request will resolve.
+          Mirror the TUI permission controls here: view the policy, toggle global permissions, add always-allow or always-deny rules, remove rules, reset defaults, and preview how a tool request will resolve.
         </p>
       </div>
 
@@ -275,6 +323,20 @@ export function PermissionsSettingsPage() {
       {status ? <div className="mb-4 rounded-xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-4 py-3 text-sm text-[var(--app-success)]">{status}</div> : null}
 
       <div className="grid gap-6 overflow-y-auto pb-12 pr-2">
+        <section className="rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-[var(--app-text)]">Global permissions</div>
+              <div className="text-xs text-[var(--app-text-muted)]">
+                {bypassPermissions ? 'Permissions are OFF. Tool approval prompts are bypassed globally.' : 'Permissions are ON. Tool approval prompts are enforced.'}
+              </div>
+            </div>
+            <Button variant={bypassPermissions ? 'outline' : 'primary'} onClick={handleBypassButton} disabled={loading || bypassBusy}>
+              {bypassBusy ? 'Saving…' : bypassPermissions ? 'Turn permissions ON' : 'Turn permissions OFF'}
+            </Button>
+          </div>
+        </section>
+
         <section className="rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -425,6 +487,30 @@ export function PermissionsSettingsPage() {
           ) : null}
         </section>
       </div>
+
+      {confirmBypassOpen ? (
+        <Dialog role="dialog" aria-modal="true" aria-label="Turn off permissions" className="z-[80] p-4 sm:p-6">
+          <DialogBackdrop onClick={() => { if (!bypassBusy) setConfirmBypassOpen(false) }} />
+          <DialogPanel className="w-[min(520px,100%)] rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)]">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-6 py-5">
+              <div>
+                <h2 className="text-lg font-semibold text-[var(--app-text)]">Turn OFF permissions?</h2>
+                <p className="mt-1 text-sm text-[var(--app-text-muted)]">This changes the global daemon setting and persists it to swarm.conf.</p>
+              </div>
+              <ModalCloseButton onClick={() => setConfirmBypassOpen(false)} disabled={bypassBusy} aria-label="Close bypass permissions confirmation" />
+            </div>
+            <div className="px-6 py-5 text-sm text-[var(--app-text)]">
+              This will turn OFF permissions, and may be dangerous depending on how you set up your environment.
+            </div>
+            <div className="flex justify-end gap-2 border-t border-[var(--app-border)] px-6 py-4">
+              <Button variant="ghost" onClick={() => setConfirmBypassOpen(false)} disabled={bypassBusy}>Cancel</Button>
+              <Button variant="primary" onClick={() => { void applyBypassPermissions(true) }} disabled={bypassBusy}>
+                {bypassBusy ? 'Saving…' : 'Turn permissions OFF'}
+              </Button>
+            </div>
+          </DialogPanel>
+        </Dialog>
+      ) : null}
     </div>
   )
 }

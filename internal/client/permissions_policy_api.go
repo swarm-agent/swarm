@@ -96,6 +96,17 @@ func (c *API) RemovePermissionRule(ctx context.Context, ruleID string) (bool, er
 	return payload.Removed, nil
 }
 
+func (c *API) SetBypassPermissions(ctx context.Context, enabled bool) (bool, error) {
+	var resp struct {
+		OK                bool `json:"ok"`
+		BypassPermissions bool `json:"bypass_permissions"`
+	}
+	if err := c.postJSON(ctx, "/v1/permissions/bypass", map[string]bool{"enabled": enabled}, &resp, true); err != nil {
+		return false, err
+	}
+	return resp.BypassPermissions, nil
+}
+
 func (c *API) ResetPermissionPolicy(ctx context.Context) (PermissionPolicy, error) {
 	var resp struct {
 		OK     bool             `json:"ok"`

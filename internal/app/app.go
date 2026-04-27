@@ -252,11 +252,12 @@ type App struct {
 	authLogging  atomic.Bool
 	codexPending *codexCodeLoginState
 
-	voiceCaptureSeq int64
-	voiceCapture    activeVoiceCapture
-	voiceCaptureCh  chan voiceCaptureEvent
-	pasteActive     bool
-	quitModal       quitModalState
+	voiceCaptureSeq        int64
+	voiceCapture           activeVoiceCapture
+	voiceCaptureCh         chan voiceCaptureEvent
+	pasteActive            bool
+	quitModal              quitModalState
+	permissionsBypassModal permissionsBypassModalState
 
 	streamEvents            chan client.StreamEventEnvelope
 	streamCancel            context.CancelFunc
@@ -439,6 +440,9 @@ func (a *App) Run() error {
 			if a.quitModalActive() {
 				a.drawQuitModal()
 			}
+			if a.permissionsBypassModalActive() {
+				a.drawPermissionsBypassModal()
+			}
 			a.screen.Show()
 			a.noteStreamRenderDrawn(time.Now())
 			dirty = false
@@ -488,6 +492,12 @@ func (a *App) Run() error {
 				return nil
 			}
 		case *tcell.EventMouse:
+			if a.permissionsBypassModalActive() {
+				if a.handlePermissionsBypassModalMouse(e) {
+					dirty = true
+					continue
+				}
+			}
 			if a.quitModalActive() {
 				if a.handleQuitModalMouse(e) {
 					dirty = true
@@ -529,6 +539,12 @@ func (a *App) Run() error {
 			a.setPasteActive(e.Start())
 			dirty = true
 		case *tcell.EventKey:
+			if a.permissionsBypassModalActive() {
+				if a.handlePermissionsBypassModalKey(e) {
+					dirty = true
+					continue
+				}
+			}
 			if a.quitModalActive() {
 				if a.handleQuitModalKey(e) {
 					dirty = true
@@ -1964,6 +1980,7 @@ func (a *App) showHelp() {
 		// "/sandbox   (open sandbox setup modal)",
 		// "/sandbox [on|off|status]",
 		"/output   (open full bash output viewer)",
+		"/permissions [on|off]   (toggle global permission prompts)",
 		"/permissions show   (show global permission policy)",
 		"/permissions allow tool <name>",
 		"/permissions allow bash-prefix <command>",
@@ -1972,6 +1989,7 @@ func (a *App) showHelp() {
 		"/permissions remove <rule-id>",
 		"/permissions reset",
 		"/permissions explain <tool> [arguments json or text]",
+		"Permissions modal: b toggles global permissions (OFF requires confirmation)",
 		"/worktrees   (open worktrees menu)",
 		"/wt   (alias for /worktrees)",
 		"/worktrees [on|off|status|branch <name>]",
@@ -4138,6 +4156,8 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 		a.openModelsModal("")
 	case ui.ChatActionCycleThinking:
 		a.cycleThinkingLevel()
+	case ui.ChatActionToggleBypassPermissions:
+		a.setPermissionsBypass(!a.homeModel.BypassPermissions)
 	}
 }
 
@@ -8407,6 +8427,16 @@ func (a *App) handlePermissionsCommand(args []string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
+	if len(args) > 0 {
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "off":
+			a.setPermissionsBypass(true)
+			return
+		case "on":
+			a.setPermissionsBypass(false)
+			return
+		}
+	}
 	if len(args) == 0 || strings.EqualFold(args[0], "show") {
 		policy, err := a.api.GetPermissionPolicy(ctx)
 		if err != nil {
@@ -8512,7 +8542,7 @@ func (a *App) handlePermissionsCommand(args []string) {
 		a.home.SetCommandOverlay(lines)
 		a.home.SetStatus("permission explain loaded")
 	default:
-		a.home.SetStatus("usage: /permissions [show|allow|ask|deny|remove|reset|explain]")
+		a.home.SetStatus("usage: /permissions [on|off|show|allow|ask|deny|remove|reset|explain]")
 	}
 }
 

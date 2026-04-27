@@ -1133,9 +1133,6 @@ func (c *API) SetToken(token string) {
 	c.mu.Unlock()
 }
 
-func (c *API) SetBypassPermissions(_ bool) {
-}
-
 func (c *API) Token() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
