@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,10 +19,13 @@ import (
 )
 
 type recordingRunner struct {
-	id      string
-	calls   int
-	lastReq provideriface.Request
-	resp    provideriface.Response
+	id        string
+	calls     int
+	lastReq   provideriface.Request
+	requests  []provideriface.Request
+	resp      provideriface.Response
+	responses []provideriface.Response
+	errs      []error
 }
 
 func (r *recordingRunner) ID() string {
@@ -35,6 +39,18 @@ func (r *recordingRunner) CreateResponse(ctx context.Context, req provideriface.
 func (r *recordingRunner) CreateResponseStreaming(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	r.calls++
 	r.lastReq = req
+	r.requests = append(r.requests, req)
+	idx := r.calls - 1
+	if idx >= 0 && idx < len(r.errs) && r.errs[idx] != nil {
+		return provideriface.Response{}, r.errs[idx]
+	}
+	if idx >= 0 && idx < len(r.responses) {
+		out := r.responses[idx]
+		if strings.TrimSpace(out.Model) == "" {
+			out.Model = req.Model
+		}
+		return out, nil
+	}
 	if strings.TrimSpace(r.resp.Text) != "" || len(r.resp.FunctionCalls) > 0 || r.resp.Usage.TotalTokens > 0 || strings.TrimSpace(r.resp.ReasoningSummary) != "" {
 		out := r.resp
 		if strings.TrimSpace(out.Model) == "" {
@@ -258,6 +274,91 @@ func TestRunTurnPersistsCodexTurnUsage(t *testing.T) {
 	}
 	if storedSummary.CacheReadTokens != 60 {
 		t.Fatalf("stored summary cache read tokens = %d, want 60", storedSummary.CacheReadTokens)
+	}
+}
+
+func TestRunTurnCompactsAndContinuesAfterContextOverflowError(t *testing.T) {
+	fixture := newRunPreferenceFixture(t)
+	if _, _, _, err := fixture.agents.Upsert(agentruntime.UpsertInput{
+		Name:     "swarm",
+		Provider: "codex",
+		Model:    "gpt-5.4",
+	}); err != nil {
+		t.Fatalf("set provider+model override: %v", err)
+	}
+	fixture.codexRunner.errs = []error{
+		errors.New(`codex websocket error event: {"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}`),
+	}
+	fixture.codexRunner.responses = []provideriface.Response{
+		{},
+		{Text: "compact recap with current task and files"},
+		{Text: "continued after compact"},
+	}
+
+	result, err := fixture.service.RunTurn(context.Background(), fixture.sessionID, RunOptions{
+		Prompt: "continue the task",
+	})
+	if err != nil {
+		t.Fatalf("run turn: %v", err)
+	}
+	if fixture.codexRunner.calls != 3 {
+		t.Fatalf("codex runner calls = %d, want 3", fixture.codexRunner.calls)
+	}
+	if result.AssistantMessage.Content != "continued after compact" {
+		t.Fatalf("assistant content = %q, want continued after compact", result.AssistantMessage.Content)
+	}
+	messages, err := fixture.sessions.ListMessages(fixture.sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	foundCheckpoint := false
+	for _, message := range messages {
+		if strings.Contains(message.Content, "[context-compact]") && strings.Contains(message.Content, "origin=overflow") {
+			foundCheckpoint = true
+			break
+		}
+	}
+	if !foundCheckpoint {
+		t.Fatalf("expected overflow context checkpoint in messages: %#v", messages)
+	}
+	if len(fixture.codexRunner.requests) < 3 {
+		t.Fatalf("recorded requests = %d, want at least 3", len(fixture.codexRunner.requests))
+	}
+	continuationInput := requestInputText(fixture.codexRunner.requests[2])
+	if !strings.Contains(continuationInput, "Continue the same task from this recap") {
+		t.Fatalf("continuation input missing compact continuation lead: %q", continuationInput)
+	}
+	if !strings.Contains(continuationInput, "compact recap with current task and files") {
+		t.Fatalf("continuation input missing compact recap: %q", continuationInput)
+	}
+}
+
+func requestInputText(req provideriface.Request) string {
+	parts := make([]string, 0, len(req.Input))
+	for _, item := range req.Input {
+		for _, content := range asTestMapSlice(item["content"]) {
+			if text, _ := content["text"].(string); strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func asTestMapSlice(value any) []map[string]any {
+	switch typed := value.(type) {
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			if mapped, ok := item.(map[string]any); ok {
+				out = append(out, mapped)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

@@ -3,7 +3,7 @@ import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-
 
 const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
 const DesktopAppPage = lazyRouteComponent(() => import('../features/desktop/layout/desktop-app-page'), 'DesktopAppPage')
-const DesktopSwarmPage = lazyRouteComponent(() => import('../features/desktop/swarm/pages/desktop-swarm-page'), 'DesktopSwarmPage')
+const DesktopSettingsPage = lazyRouteComponent(() => import('../features/desktop/settings/components/desktop-settings-page'), 'DesktopSettingsPage')
 
 function validateWorkspaceParams(params: Record<string, unknown>): { workspaceSlug: string } {
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
@@ -16,6 +16,11 @@ function validateWorkspaceSessionParams(params: Record<string, unknown>): { work
   return { workspaceSlug, sessionId }
 }
 
+function validateSettingsSearch(search: Record<string, unknown>): { tab?: string } {
+  const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
+  return tab ? { tab } : {}
+}
+
 const rootRoute = createRootRoute({
   component: DesktopVaultShell,
 })
@@ -26,10 +31,11 @@ const indexRoute = createRoute({
   component: WorkspaceHomePage,
 })
 
-const swarmRoute = createRoute({
+const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/swarm',
-  component: DesktopSwarmPage,
+  path: '/settings',
+  validateSearch: validateSettingsSearch,
+  component: DesktopSettingsPage,
 })
 
 const workspaceRoute = createRoute({
@@ -46,14 +52,15 @@ const workspaceSessionRoute = createRoute({
   component: DesktopAppPage,
 })
 
-const workspaceSwarmRoute = createRoute({
+const workspaceSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/$workspaceSlug/swarm',
+  path: '/$workspaceSlug/settings',
   parseParams: validateWorkspaceParams,
-  component: DesktopSwarmPage,
+  validateSearch: validateSettingsSearch,
+  component: DesktopSettingsPage,
 })
 
-const routeTree = rootRoute.addChildren([indexRoute, swarmRoute, workspaceRoute, workspaceSessionRoute, workspaceSwarmRoute])
+const routeTree = rootRoute.addChildren([indexRoute, settingsRoute, workspaceRoute, workspaceSessionRoute, workspaceSettingsRoute])
 
 export const router = createRouter({
   routeTree,

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/internal/client"
+	"swarm-refactor/swarmtui/pkg/localupdate"
 )
 
 const (
@@ -27,6 +28,13 @@ const (
 	updatePollInterval        = 200 * time.Millisecond
 	pendingUpdateBootstrapEnv = "SWARM_PENDING_UPDATE_BOOT"
 	appliedUpdateToastEnv     = "SWARM_APPLIED_UPDATE_TOAST"
+	updateJobIDEnv            = "SWARM_UPDATE_JOB_ID"
+	updateJobKindEnv          = "SWARM_UPDATE_JOB_KIND"
+	updateJobStatusRunning    = "running"
+	updateJobStatusCompleted  = "completed"
+	updateJobStatusFailed     = "failed"
+	updateKindRelease         = "release"
+	updateKindDev             = "dev"
 )
 
 var (
@@ -61,6 +69,13 @@ type updateRestartPlan struct {
 	systemdUnit   string
 	systemdActive bool
 	blockedErr    error
+}
+
+type postUpdateContainerImageOutcome struct {
+	LocalResult  client.LocalContainerUpdateJobResult
+	RemoteResult client.RemoteDeployUpdateJobResult
+	LocalErr     error
+	RemoteErr    error
 }
 
 func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.UpdateApplyPlan) (UpdateResult, error) {
@@ -195,7 +210,14 @@ func RunReleaseUpdate(profile Profile, relaunchArgs []string) error {
 	return RunUpdateHelper(profile, plan, 0, relaunchArgs)
 }
 
-func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int, relaunchArgs []string) error {
+func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int, relaunchArgs []string) (err error) {
+	jobTerminalStatusWritten := false
+	defer func() {
+		if err != nil && !jobTerminalStatusWritten {
+			_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusFailed, "", err.Error())
+		}
+	}()
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Applying Swarm update.", "")
 	if parentPID > 0 {
 		if err := waitForPIDExit(parentPID, updateParentWaitLimit); err != nil {
 			return err
@@ -219,8 +241,71 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
+	if err := writeLocalContainerUpdateRebuildStatus(profile, "release", result.Version, "", ""); err != nil {
+		return err
+	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Updating local and remote container images.", "")
+	outcome := runReleaseContainerImageUpdateJobsAfterRestart(profile, result.Version)
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version, outcome), "")
+	jobTerminalStatusWritten = true
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
 		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
+	})
+}
+
+func runReleaseContainerImageUpdateJobsAfterRestart(profile Profile, targetVersion string) postUpdateContainerImageOutcome {
+	var outcome postUpdateContainerImageOutcome
+	outcome.LocalResult, outcome.LocalErr = runReleaseLocalContainerUpdateJobAfterRestart(profile, targetVersion)
+	outcome.RemoteResult, outcome.RemoteErr = runReleaseRemoteDeployUpdateJobAfterRestart(profile)
+	return outcome
+}
+
+func releaseUpdateCompletedMessage(version string, outcome postUpdateContainerImageOutcome) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = "new release"
+	}
+	if outcome.LocalErr != nil || outcome.RemoteErr != nil || outcome.LocalResult.Summary.Failed > 0 || outcome.RemoteResult.Summary.Failed > 0 {
+		return fmt.Sprintf("Updated to %s. Container image update needs attention.", version)
+	}
+	return fmt.Sprintf("Updated to %s. Local and remote container image updates completed.", version)
+}
+
+func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorMessage string) error {
+	jobID := strings.TrimSpace(os.Getenv(updateJobIDEnv))
+	if jobID == "" || strings.TrimSpace(profile.DataDir) == "" {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	startedAt := now
+	existing, ok, _ := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(profile.DataDir))
+	if ok && existing.ID == jobID && existing.StartedAtUnix > 0 {
+		startedAt = existing.StartedAtUnix
+	}
+	if envKind := strings.TrimSpace(os.Getenv(updateJobKindEnv)); envKind != "" {
+		kind = envKind
+	}
+	next := localupdate.UpdateJobStatus{
+		ID:            jobID,
+		Kind:          strings.TrimSpace(kind),
+		Status:        strings.TrimSpace(status),
+		Message:       strings.TrimSpace(message),
+		Error:         strings.TrimSpace(errorMessage),
+		StartedAtUnix: startedAt,
+		UpdatedAtUnix: now,
+	}
+	if status == updateJobStatusCompleted || status == updateJobStatusFailed {
+		next.CompletedAtUnix = now
+	}
+	return localupdate.WriteUpdateJobStatus(profile.DataDir, next)
+}
+
+func writeLocalContainerUpdateRebuildStatus(profile Profile, mode, version, imageRef, fingerprint string) error {
+	return localupdate.WriteRebuildStatus(profile.DataDir, localupdate.RebuildStatus{
+		Mode:        mode,
+		Version:     version,
+		ImageRef:    imageRef,
+		Fingerprint: fingerprint,
 	})
 }
 

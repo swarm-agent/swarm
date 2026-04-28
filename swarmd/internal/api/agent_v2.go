@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -145,15 +146,60 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 		methodNotAllowed(w)
 		return
 	}
-	state, _, event, err := s.agents.RestoreDefaults()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	var req struct {
+		UtilityProvider   *string `json:"utility_provider"`
+		UtilityModel      *string `json:"utility_model"`
+		UtilityThinking   *string `json:"utility_thinking"`
+		OverwriteExplicit *bool   `json:"overwrite_explicit"`
 	}
-	if event != nil && s.hub != nil {
-		s.hub.Publish(*event)
+	if r.Body != nil && r.Body != http.NoBody {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if len(strings.TrimSpace(string(body))) > 0 {
+			if err := decodeJSONBytes(body, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
 	}
-	state, err = s.applyProviderDefaultsToBuiltIns(state)
+	hasUtilityOverride := req.UtilityProvider != nil || req.UtilityModel != nil || req.UtilityThinking != nil || req.OverwriteExplicit != nil
+	var state agentruntime.State
+	var event *pebblestore.EventEnvelope
+	var err error
+	if hasUtilityOverride {
+		state, err = s.agents.ListState(2000)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		provider := ""
+		model := ""
+		thinking := ""
+		if req.UtilityProvider != nil {
+			provider = *req.UtilityProvider
+		}
+		if req.UtilityModel != nil {
+			model = *req.UtilityModel
+		}
+		if req.UtilityThinking != nil {
+			thinking = *req.UtilityThinking
+		}
+		overwriteExplicit := req.OverwriteExplicit != nil && *req.OverwriteExplicit
+		state, err = s.applyUtilityAIToBuiltIns(state, provider, model, thinking, overwriteExplicit)
+	} else {
+		state, _, event, err = s.agents.RestoreDefaults()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if event != nil && s.hub != nil {
+			s.hub.Publish(*event)
+		}
+		state, err = s.applyProviderDefaultsToBuiltIns(state)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

@@ -26,6 +26,14 @@ func (s *Service) resolveRunSandboxContext(execCtx resolvedRunExecutionContext, 
 		return base, func() {}, nil
 	}
 
+	enabled, err := s.sandbox.IsEnabled()
+	if err != nil {
+		return runSandboxContext{}, func() {}, err
+	}
+	if !enabled {
+		return base, func() {}, nil
+	}
+
 	status, err := s.sandbox.GetStatus()
 	if err != nil {
 		return runSandboxContext{}, func() {}, fmt.Errorf("read sandbox status: %w", err)

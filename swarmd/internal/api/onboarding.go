@@ -786,10 +786,27 @@ func tailscaleCandidateURL(cfg startupconfig.FileConfig, tailscale onboardingTai
 
 func detectedOnboardingTransports(cfg startupconfig.FileConfig) []onboardingTransportPayload {
 	transports := make([]onboardingTransportPayload, 0, 2)
+	transports = append(transports, detectedLANOnboardingTransports(cfg)...)
+	transports = append(transports, detectedTailscaleOnboardingTransports(cfg)...)
+	return transports
+}
+
+func detectedCurrentSwarmStateTransports(cfg startupconfig.FileConfig) []onboardingTransportPayload {
+	if bootstrapNetworkMode(cfg) == startupconfig.NetworkModeLAN {
+		return detectedLANOnboardingTransports(cfg)
+	}
+	return detectedOnboardingTransports(cfg)
+}
+
+func detectedLANOnboardingTransports(cfg startupconfig.FileConfig) []onboardingTransportPayload {
 	lan := lanCandidateHosts(cfg)
 	if len(lan) > 0 {
-		transports = append(transports, onboardingTransportPayload{Kind: startupconfig.NetworkModeLAN, Primary: lan[0], All: lan})
+		return []onboardingTransportPayload{{Kind: startupconfig.NetworkModeLAN, Primary: lan[0], All: lan}}
 	}
+	return nil
+}
+
+func detectedTailscaleOnboardingTransports(cfg startupconfig.FileConfig) []onboardingTransportPayload {
 	tailscale := detectTailscale()
 	tailscaleValues := dedupeTransportStrings([]string{
 		strings.TrimSpace(cfg.TailscaleURL),
@@ -798,7 +815,7 @@ func detectedOnboardingTransports(cfg startupconfig.FileConfig) []onboardingTran
 	})
 	tailscaleValues = dedupeTransportStrings(append(tailscaleValues, tailscale.IPs...))
 	if len(tailscaleValues) > 0 {
-		transports = append(transports, onboardingTransportPayload{
+		return []onboardingTransportPayload{{
 			Kind: startupconfig.NetworkModeTailscale,
 			Primary: firstNonEmptyTransport(
 				strings.TrimSpace(cfg.TailscaleURL),
@@ -807,9 +824,9 @@ func detectedOnboardingTransports(cfg startupconfig.FileConfig) []onboardingTran
 				firstString(tailscale.IPs),
 			),
 			All: tailscaleValues,
-		})
+		}}
 	}
-	return transports
+	return nil
 }
 
 func lanCandidateHosts(cfg startupconfig.FileConfig) []string {
@@ -1186,7 +1203,7 @@ func (s *Server) currentSwarmState(cfg startupconfig.FileConfig) (swarmruntime.L
 	if s.swarm == nil {
 		return swarmruntime.LocalState{}, errors.New("swarm service is not configured")
 	}
-	transports := detectedOnboardingTransports(cfg)
+	transports := detectedCurrentSwarmStateTransports(cfg)
 	mode := bootstrapNetworkMode(cfg)
 	advertiseAddr := firstTransportForKind(transports, mode)
 	if mode == startupconfig.NetworkModeLAN {

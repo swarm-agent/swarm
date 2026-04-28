@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultThemeID         = "nord"
+	defaultThemeID         = "crimson"
 	defaultSwarmingTitle   = "Swarming"
 	defaultSwarmingStatus  = "swarming"
 	defaultSwarmName       = "Local"
@@ -28,6 +28,7 @@ type AppConfig struct {
 	UI       UIConfig
 	Swarming SwarmingConfig
 	Swarm    SwarmConfig
+	Updates  UpdateConfig
 	Startup  StartupConfig
 }
 
@@ -35,7 +36,8 @@ type AppConfig struct {
 // feature visibility. Keep these values read-only here; mutations should go
 // through startupconfig helpers.
 type StartupConfig struct {
-	DevMode bool
+	DevMode                 bool
+	DirectLANDesktopWarning string
 }
 
 type ChatConfig struct {
@@ -74,8 +76,13 @@ type SwarmingConfig struct {
 // - SwarmConfig stores the user-editable machine name used by /swarm and desktop identity UI.
 // This separation is intentional so future AI edits do not conflate run-state copy with machine identity.
 type SwarmConfig struct {
-	Name string
-	Role string
+	Name             string
+	Role             string
+	RemoteSSHTargets []string
+}
+
+type UpdateConfig struct {
+	LocalContainerWarningDismissed bool
 }
 
 type CustomThemeConfig struct {
@@ -119,6 +126,10 @@ func defaultAppConfig() AppConfig {
 
 func loadAppConfig(api *client.API) (AppConfig, error) {
 	cfg := defaultAppConfig()
+	startupCfg, startupErr := loadStartupConfigForApp()
+	if startupErr == nil {
+		applyStartupConfig(&cfg, startupCfg)
+	}
 	if api == nil {
 		return cfg, fmt.Errorf("ui settings client not configured")
 	}
@@ -135,12 +146,19 @@ func loadAppConfig(api *client.API) (AppConfig, error) {
 	}
 	cfg = appConfigFromUISettings(settings)
 
-	startupCfg, err := loadStartupConfigForApp()
-	if err == nil {
-		cfg.Swarm.Role = startupConfigRole(startupCfg)
-		cfg.Startup.DevMode = startupCfg.DevMode
+	if startupErr == nil {
+		applyStartupConfig(&cfg, startupCfg)
 	}
 	return cfg, nil
+}
+
+func applyStartupConfig(cfg *AppConfig, startupCfg startupconfig.FileConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.Swarm.Role = startupConfigRole(startupCfg)
+	cfg.Startup.DevMode = startupCfg.DevMode
+	cfg.Startup.DirectLANDesktopWarning = startupconfig.DirectLANDesktopWarning(startupCfg)
 }
 
 func saveAppConfig(api *client.API, cfg AppConfig) error {
@@ -200,7 +218,9 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 	cfg.Swarming.Title = emptyFallback(strings.TrimSpace(settings.Swarming.Title), defaultSwarmingTitle)
 	cfg.Swarming.Status = emptyFallback(strings.TrimSpace(settings.Swarming.Status), defaultSwarmingStatus)
 	cfg.Swarm.Name = emptyFallback(strings.TrimSpace(settings.Swarm.Name), defaultSwarmName)
+	cfg.Swarm.RemoteSSHTargets = append([]string(nil), settings.Swarm.RemoteSSHTargets...)
 	cfg.Swarm.Role = bootstrapRoleMaster
+	cfg.Updates.LocalContainerWarningDismissed = settings.Updates.LocalContainerWarningDismissed
 	return cfg
 }
 
@@ -235,7 +255,11 @@ func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 			Status: emptyFallback(strings.TrimSpace(cfg.Swarming.Status), defaultSwarmingStatus),
 		},
 		Swarm: client.UISwarmSettings{
-			Name: emptyFallback(strings.TrimSpace(cfg.Swarm.Name), defaultSwarmName),
+			Name:             emptyFallback(strings.TrimSpace(cfg.Swarm.Name), defaultSwarmName),
+			RemoteSSHTargets: append([]string(nil), cfg.Swarm.RemoteSSHTargets...),
+		},
+		Updates: client.UIUpdateSettings{
+			LocalContainerWarningDismissed: cfg.Updates.LocalContainerWarningDismissed,
 		},
 	}
 	for _, item := range cfg.UI.CustomThemes {

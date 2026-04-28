@@ -57,6 +57,7 @@ coverage.out
 # Local investigation/tooling artifacts
 /tmp/
 /swarmd/tmp/
+/.codex
 /.tools/
 /.tmp-tools/
 /audit/

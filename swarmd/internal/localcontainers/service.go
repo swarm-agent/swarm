@@ -25,6 +25,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm-refactor/swarmtui/pkg/devmode"
+	"swarm-refactor/swarmtui/pkg/localupdate"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -37,6 +38,8 @@ const (
 	PathContainerAction       = "swarm.containers.local.action.v1"
 	PathContainerDelete       = "swarm.containers.local.delete.v1"
 	PathContainerPrune        = "swarm.containers.local.prune-missing.v1"
+	PathContainerUpdatePlan   = "swarm.containers.local.update-plan.v1"
+	PathContainerReplace      = "swarm.containers.local.replace.v1"
 	defaultImageName          = devmode.DefaultContainerImageRef
 	ProductionImagePrefix     = "ghcr.io/swarm-agent/swarm"
 	OfficialSourceRepository  = "https://github.com/swarm-agent/swarm"
@@ -132,6 +135,102 @@ type DeleteResult struct {
 	Items            []DeleteItemResult `json:"items,omitempty"`
 }
 
+// UpdatePlan is a local-only inventory for future Swarm update checkpoints.
+// It is intentionally read-only: Checkpoint 1 reports which local containers
+// would be affected by a dev/prod Swarm update without replacing containers.
+// Swarm binary/apply updates remain independent; future container update
+// failures should be reported as resumable follow-up work instead of hiding or
+// rolling back the Swarm update itself.
+type UpdatePlan struct {
+	PathID        string           `json:"path_id"`
+	Mode          string           `json:"mode"`
+	DevMode       bool             `json:"dev_mode"`
+	Target        UpdatePlanTarget `json:"target"`
+	Summary       UpdateSummary    `json:"summary"`
+	Containers    []UpdateItem     `json:"containers"`
+	Contract      UpdateContract   `json:"contract"`
+	Error         string           `json:"error,omitempty"`
+	CheckedAtUnix int64            `json:"checked_at_unix_ms,omitempty"`
+}
+
+type UpdatePlanTarget struct {
+	ImageRef               string `json:"image_ref,omitempty"`
+	DigestRef              string `json:"digest_ref,omitempty"`
+	Version                string `json:"version,omitempty"`
+	Fingerprint            string `json:"fingerprint,omitempty"`
+	PostRebuildImageRef    string `json:"post_rebuild_image_ref,omitempty"`
+	PostRebuildFingerprint string `json:"post_rebuild_fingerprint,omitempty"`
+	Commit                 string `json:"commit,omitempty"`
+}
+
+type UpdateSummary struct {
+	Total          int `json:"total"`
+	Affected       int `json:"affected"`
+	AlreadyCurrent int `json:"already_current"`
+	NeedsUpdate    int `json:"needs_update"`
+	Unknown        int `json:"unknown"`
+	Errors         int `json:"errors"`
+}
+
+type UpdateContract struct {
+	WarningCopy      string `json:"warning_copy"`
+	DismissalScope   string `json:"dismissal_scope"`
+	FailureSemantics string `json:"failure_semantics"`
+	Replacement      string `json:"replacement"`
+}
+
+type UpdateItem struct {
+	ID                 string            `json:"id"`
+	Name               string            `json:"name"`
+	ContainerName      string            `json:"container_name"`
+	Runtime            string            `json:"runtime"`
+	Status             string            `json:"status,omitempty"`
+	ContainerID        string            `json:"container_id,omitempty"`
+	StoredImageRef     string            `json:"stored_image_ref,omitempty"`
+	CurrentImageRef    string            `json:"current_image_ref,omitempty"`
+	CurrentDigestRef   string            `json:"current_digest_ref,omitempty"`
+	CurrentFingerprint string            `json:"current_fingerprint,omitempty"`
+	TargetImageRef     string            `json:"target_image_ref,omitempty"`
+	TargetDigestRef    string            `json:"target_digest_ref,omitempty"`
+	TargetVersion      string            `json:"target_version,omitempty"`
+	TargetFingerprint  string            `json:"target_fingerprint,omitempty"`
+	State              string            `json:"state"`
+	Reason             string            `json:"reason,omitempty"`
+	Error              string            `json:"error,omitempty"`
+	Labels             map[string]string `json:"labels,omitempty"`
+}
+
+type UpdatePlanInput struct {
+	DevMode          *bool
+	TargetVersion    string
+	PostRebuildCheck bool
+}
+
+type ReplaceInput struct {
+	ID        string
+	Target    UpdatePlanTarget
+	DevMode   *bool
+	StartMode string
+}
+
+type ReplaceResult struct {
+	PathID              string    `json:"path_id"`
+	ID                  string    `json:"id"`
+	Name                string    `json:"name"`
+	ContainerName       string    `json:"container_name,omitempty"`
+	Runtime             string    `json:"runtime,omitempty"`
+	PreviousContainerID string    `json:"previous_container_id,omitempty"`
+	ContainerID         string    `json:"container_id,omitempty"`
+	PreviousImageRef    string    `json:"previous_image_ref,omitempty"`
+	TargetImageRef      string    `json:"target_image_ref,omitempty"`
+	TargetFingerprint   string    `json:"target_fingerprint,omitempty"`
+	Status              string    `json:"status,omitempty"`
+	State               string    `json:"state"`
+	Reason              string    `json:"reason,omitempty"`
+	Warning             string    `json:"warning,omitempty"`
+	Container           Container `json:"container"`
+}
+
 type RuntimeNetwork struct {
 	Runtime string `json:"runtime"`
 	Name    string `json:"name"`
@@ -139,27 +238,51 @@ type RuntimeNetwork struct {
 }
 
 type Service struct {
-	store              *pebblestore.SwarmLocalContainerStore
-	deployments        *pebblestore.DeployContainerStore
-	swarmStore         *pebblestore.SwarmStore
-	authStore          *pebblestore.AuthStore
-	workspace          *workspaceruntime.Service
-	startupPath        string
-	inspectContainerFn func(string, string) (string, string, error)
-	hostCallbackURLsMu sync.RWMutex
-	hostCallbackURLs   map[string]string
+	store                     *pebblestore.SwarmLocalContainerStore
+	deployments               *pebblestore.DeployContainerStore
+	swarmStore                *pebblestore.SwarmStore
+	authStore                 *pebblestore.AuthStore
+	workspace                 *workspaceruntime.Service
+	startupPath               string
+	dataDir                   string
+	inspectContainerFn        func(string, string) (string, string, error)
+	inspectContainerImageFn   func(context.Context, string, string) (runtimeImageInfo, error)
+	inspectContainerEnvFn     func(context.Context, string, string) ([]string, error)
+	inspectContainerMountsFn  func(context.Context, string, string) ([]Mount, error)
+	inspectContainerRunArgsFn func(context.Context, string, string) ([]string, error)
+	inspectImageFn            func(context.Context, string, string) (runtimeImageInfo, error)
+	runContainerFn            func(context.Context, string, runOptions) (string, error)
+	renameContainerFn         func(context.Context, string, string, string) error
+	removeContainerFn         func(context.Context, string, string) error
+	controlContainerFn        func(context.Context, string, string, string) error
+	hostCallbackURLsMu        sync.RWMutex
+	hostCallbackURLs          map[string]string
 }
 
 func NewService(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath string) *Service {
+	return NewServiceWithDataDir(store, deployments, swarmStore, authStore, workspaceSvc, startupPath, "")
+}
+
+func NewServiceWithDataDir(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath, dataDir string) *Service {
 	return &Service{
-		store:              store,
-		deployments:        deployments,
-		swarmStore:         swarmStore,
-		authStore:          authStore,
-		workspace:          workspaceSvc,
-		startupPath:        strings.TrimSpace(startupPath),
-		inspectContainerFn: inspectContainer,
-		hostCallbackURLs:   make(map[string]string),
+		store:                     store,
+		deployments:               deployments,
+		swarmStore:                swarmStore,
+		authStore:                 authStore,
+		workspace:                 workspaceSvc,
+		startupPath:               strings.TrimSpace(startupPath),
+		dataDir:                   strings.TrimSpace(dataDir),
+		inspectContainerFn:        inspectContainer,
+		inspectContainerImageFn:   inspectRuntimeContainerImage,
+		inspectContainerEnvFn:     inspectRuntimeContainerEnv,
+		inspectContainerMountsFn:  inspectRuntimeContainerMounts,
+		inspectContainerRunArgsFn: inspectRuntimeContainerRunArgs,
+		inspectImageFn:            inspectRuntimeImage,
+		runContainerFn:            runContainer,
+		renameContainerFn:         renameContainer,
+		removeContainerFn:         removeContainer,
+		controlContainerFn:        controlContainer,
+		hostCallbackURLs:          make(map[string]string),
 	}
 }
 
@@ -217,6 +340,340 @@ func (s *Service) List(context.Context) ([]Container, error) {
 		out = append(out, mapRecord(resolved))
 	}
 	return out, nil
+}
+
+func (s *Service) UpdatePlan(ctx context.Context, input UpdatePlanInput) (UpdatePlan, error) {
+	plan := UpdatePlan{
+		PathID:        PathContainerUpdatePlan,
+		Contract:      localUpdateContract(),
+		Containers:    []UpdateItem{},
+		CheckedAtUnix: time.Now().UnixMilli(),
+	}
+	if s == nil || s.store == nil {
+		return plan, errors.New("local container service is not configured")
+	}
+	startupCfg, cfgErr := s.loadStartupConfig()
+	devMode := false
+	if cfgErr == nil {
+		devMode = startupCfg.DevMode
+	}
+	if input.DevMode != nil {
+		devMode = *input.DevMode
+		startupCfg.DevMode = devMode
+	}
+	plan.DevMode = devMode
+	if devMode {
+		plan.Mode = "dev"
+	} else {
+		plan.Mode = "release"
+	}
+	records, err := s.store.List(500)
+	if err != nil {
+		return plan, err
+	}
+	if len(records) == 0 {
+		if cfgErr != nil {
+			plan.Error = cfgErr.Error()
+		}
+		return plan, nil
+	}
+	if cfgErr != nil {
+		plan.Error = cfgErr.Error()
+		for _, record := range records {
+			item := baseUpdateItem(record)
+			item.State = "unknown"
+			item.Reason = "startup_config_error"
+			item.Error = cfgErr.Error()
+			plan.addUpdateItem(item)
+		}
+		return plan, nil
+	}
+	target, targetErr := localUpdateTarget(ctx, startupCfg, strings.TrimSpace(input.TargetVersion))
+	if targetErr != nil {
+		plan.Error = targetErr.Error()
+	}
+	if input.PostRebuildCheck && startupCfg.DevMode && targetErr == nil {
+		postTarget, postErr := s.localDevPostRebuildTarget(ctx, target, records)
+		if postErr != nil {
+			if plan.Error == "" {
+				plan.Error = postErr.Error()
+			}
+		} else {
+			if strings.TrimSpace(postTarget.PostRebuildImageRef) != "" {
+				target.PostRebuildImageRef = postTarget.PostRebuildImageRef
+			}
+			if strings.TrimSpace(postTarget.PostRebuildFingerprint) != "" {
+				target.PostRebuildFingerprint = postTarget.PostRebuildFingerprint
+			}
+		}
+	}
+	plan.Target = target
+	for _, record := range records {
+		item := s.planLocalContainerUpdate(ctx, record, startupCfg, target, targetErr)
+		plan.addUpdateItem(item)
+	}
+	return plan, nil
+}
+
+func localUpdateContract() UpdateContract {
+	return UpdateContract{
+		WarningCopy:      "This will also update local and remote container images.",
+		DismissalScope:   "local-container-update-warning",
+		FailureSemantics: "Swarm update succeeds independently; local or remote container update failures are reported as resumable follow-up work.",
+		Replacement:      "replace-one-local-container-primitive",
+	}
+}
+
+func localUpdateTarget(ctx context.Context, startupCfg startupconfig.FileConfig, targetVersion string) (UpdatePlanTarget, error) {
+	targetVersion = strings.TrimSpace(targetVersion)
+	if targetVersion == "" {
+		targetVersion = buildinfo.DisplayVersion()
+	}
+	if startupCfg.DevMode {
+		repoRoot, err := resolveConfiguredDevRoot(startupCfg)
+		if err != nil {
+			return UpdatePlanTarget{}, err
+		}
+		fingerprint, err := prepareDevContainerFingerprint(repoRoot)
+		if err != nil {
+			return UpdatePlanTarget{}, fmt.Errorf("compute dev local container image fingerprint: %w", err)
+		}
+		return UpdatePlanTarget{ImageRef: defaultImageName, Fingerprint: fingerprint}, nil
+	}
+	metadata, err := fetchProductionImageMetadataForVersion(ctx, targetVersion)
+	if err != nil {
+		return UpdatePlanTarget{}, fmt.Errorf("fetch production swarm image metadata: %w", err)
+	}
+	return UpdatePlanTarget{
+		ImageRef:  metadata.ImageRef,
+		DigestRef: metadata.ImageDigestRef,
+		Version:   metadata.Version,
+		Commit:    metadata.Commit,
+	}, nil
+}
+
+func prepareDevContainerFingerprint(repoRoot string) (string, error) {
+	if err := syncDevContainerStagedBinaries(repoRoot); err != nil {
+		return "", err
+	}
+	fingerprint, err := devmode.ContainerImageFingerprint(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return fingerprint, nil
+}
+
+func syncDevContainerStagedBinaries(repoRoot string) error {
+	repoRoot, err := devmode.ResolveRoot(repoRoot)
+	if err != nil {
+		return err
+	}
+	sourceBinDir := strings.TrimSpace(os.Getenv("SWARM_BIN_DIR"))
+	if sourceBinDir != "" {
+		if err := devmode.SyncStagedContainerBinaries(repoRoot, sourceBinDir); err != nil {
+			return fmt.Errorf("stage dev local container binaries: %w", err)
+		}
+		return nil
+	}
+	stageDir := filepath.Join(repoRoot, ".bin", "main")
+	for _, name := range []string{"swarmd", "swarmctl"} {
+		path := filepath.Join(stageDir, name)
+		if err := requireExecutableDevContainerBinary(path); err != nil {
+			return fmt.Errorf("SWARM_BIN_DIR is not set and staged dev local container binary is not ready: %w", err)
+		}
+	}
+	return nil
+}
+
+func requireExecutableDevContainerBinary(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s: expected file, got directory", path)
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("%s: not executable", path)
+	}
+	return nil
+}
+
+func (s *Service) localDevPostRebuildTarget(ctx context.Context, target UpdatePlanTarget, records []pebblestore.SwarmLocalContainerRecord) (UpdatePlanTarget, error) {
+	if s != nil && strings.TrimSpace(s.dataDir) != "" {
+		status, ok, err := localupdate.ReadRebuildStatusPath(localupdate.RebuildStatusPath(s.dataDir))
+		if err != nil {
+			return UpdatePlanTarget{PostRebuildImageRef: defaultImageName}, fmt.Errorf("read local container rebuild status: %w", err)
+		}
+		if ok && strings.EqualFold(status.Mode, "dev") && strings.TrimSpace(status.Fingerprint) != "" {
+			return UpdatePlanTarget{
+				PostRebuildImageRef:    firstNonEmpty(strings.TrimSpace(status.ImageRef), defaultImageName),
+				PostRebuildFingerprint: strings.TrimSpace(status.Fingerprint),
+			}, nil
+		}
+	}
+	inspector := inspectRuntimeImage
+	if s != nil && s.inspectImageFn != nil {
+		inspector = s.inspectImageFn
+	}
+	for _, record := range records {
+		runtimeName := normalizeRuntimeSelection(record.Runtime)
+		if runtimeName == "" {
+			continue
+		}
+		imageInfo, err := inspector(ctx, runtimeName, defaultImageName)
+		if err != nil {
+			return UpdatePlanTarget{PostRebuildImageRef: defaultImageName}, err
+		}
+		fingerprint := strings.TrimSpace(imageInfo.Labels[devmode.ContainerImageFingerprintLabel])
+		if fingerprint != "" && fingerprint == strings.TrimSpace(target.Fingerprint) {
+			return UpdatePlanTarget{
+				PostRebuildImageRef:    defaultImageName,
+				PostRebuildFingerprint: fingerprint,
+			}, nil
+		}
+		return UpdatePlanTarget{}, nil
+	}
+	return UpdatePlanTarget{}, nil
+}
+
+func (s *Service) planLocalContainerUpdate(ctx context.Context, record pebblestore.SwarmLocalContainerRecord, startupCfg startupconfig.FileConfig, target UpdatePlanTarget, targetErr error) UpdateItem {
+	item := baseUpdateItem(record)
+	resolved, resolveErr := s.resolveRecord(record)
+	item.Status = resolved.Status
+	item.ContainerID = strings.TrimSpace(resolved.ContainerID)
+	item.StoredImageRef = strings.TrimSpace(resolved.Image)
+	if item.StoredImageRef == "" {
+		item.StoredImageRef = strings.TrimSpace(record.Image)
+	}
+	if resolveErr != nil {
+		item.State = "unknown"
+		item.Reason = "container_inspect_error"
+		item.Error = resolveErr.Error()
+		return item
+	}
+	if targetErr != nil {
+		item.State = "unknown"
+		item.Reason = "target_error"
+		item.Error = targetErr.Error()
+		return item
+	}
+	item.TargetImageRef = firstNonEmpty(target.PostRebuildImageRef, target.ImageRef)
+	item.TargetDigestRef = target.DigestRef
+	item.TargetVersion = target.Version
+	item.TargetFingerprint = firstNonEmpty(target.PostRebuildFingerprint, target.Fingerprint)
+	imageRef := strings.TrimSpace(firstNonEmpty(resolved.Image, record.Image))
+	if imageRef == "" {
+		item.State = "unknown"
+		item.Reason = "missing_stored_image"
+		return item
+	}
+	imageInfo, imageErr := s.inspectCurrentContainerImage(ctx, resolved, imageRef, startupCfg.DevMode)
+	if imageErr != nil {
+		item.State = "unknown"
+		item.Reason = "image_inspect_error"
+		item.Error = imageErr.Error()
+		return item
+	}
+	item.CurrentImageRef = imageInfo.ID
+	item.CurrentDigestRef = imageInfo.digestRefFor(imageRef)
+	item.Labels = imageInfo.Labels
+	if startupCfg.DevMode {
+		item.CurrentFingerprint = strings.TrimSpace(imageInfo.Labels[devmode.ContainerImageFingerprintLabel])
+		if isPackageAwareLocalImage(imageRef, imageInfo.Labels) {
+			item.State = "unknown"
+			item.Reason = "package_aware_deferred"
+			return item
+		}
+		if item.CurrentFingerprint == "" {
+			item.State = "unknown"
+			item.Reason = "missing_dev_fingerprint"
+			return item
+		}
+		targetFingerprint := strings.TrimSpace(firstNonEmpty(target.PostRebuildFingerprint, target.Fingerprint))
+		if targetFingerprint == "" {
+			item.State = "unknown"
+			item.Reason = "missing_target_dev_fingerprint"
+			return item
+		}
+		if item.CurrentFingerprint == targetFingerprint {
+			item.State = "already-current"
+		} else {
+			item.State = "needs-update"
+		}
+		return item
+	}
+	if item.CurrentDigestRef == "" {
+		item.State = "unknown"
+		item.Reason = "missing_digest"
+		return item
+	}
+	if item.CurrentDigestRef == target.DigestRef || imageRef == target.DigestRef {
+		item.State = "already-current"
+	} else {
+		item.State = "needs-update"
+	}
+	return item
+}
+
+func (s *Service) inspectCurrentContainerImage(ctx context.Context, record pebblestore.SwarmLocalContainerRecord, fallbackImageRef string, devMode bool) (runtimeImageInfo, error) {
+	if devMode && s != nil && s.inspectContainerImageFn != nil && strings.TrimSpace(record.ContainerName) != "" {
+		imageInfo, err := s.inspectContainerImageFn(ctx, record.Runtime, record.ContainerName)
+		if err == nil {
+			return imageInfo, nil
+		}
+		if strings.TrimSpace(fallbackImageRef) == "" {
+			return runtimeImageInfo{}, err
+		}
+	}
+	inspector := inspectRuntimeImage
+	if s != nil && s.inspectImageFn != nil {
+		inspector = s.inspectImageFn
+	}
+	return inspector(ctx, record.Runtime, fallbackImageRef)
+}
+
+func isPackageAwareLocalImage(imageRef string, labels map[string]string) bool {
+	if strings.Contains(strings.TrimSpace(imageRef), ":pkg-") {
+		return true
+	}
+	if strings.TrimSpace(labels[devmode.ContainerImageBaseFingerprintLabel]) != "" {
+		return true
+	}
+	return false
+}
+
+func baseUpdateItem(record pebblestore.SwarmLocalContainerRecord) UpdateItem {
+	return UpdateItem{
+		ID:             strings.TrimSpace(record.ID),
+		Name:           strings.TrimSpace(record.Name),
+		ContainerName:  strings.TrimSpace(record.ContainerName),
+		Runtime:        strings.TrimSpace(record.Runtime),
+		Status:         strings.TrimSpace(record.Status),
+		ContainerID:    strings.TrimSpace(record.ContainerID),
+		StoredImageRef: strings.TrimSpace(record.Image),
+		State:          "unknown",
+	}
+}
+
+func (p *UpdatePlan) addUpdateItem(item UpdateItem) {
+	if p == nil {
+		return
+	}
+	p.Containers = append(p.Containers, item)
+	p.Summary.Total++
+	switch item.State {
+	case "already-current":
+		p.Summary.AlreadyCurrent++
+	case "needs-update":
+		p.Summary.NeedsUpdate++
+		p.Summary.Affected++
+	default:
+		p.Summary.Unknown++
+	}
+	if strings.TrimSpace(item.Error) != "" {
+		p.Summary.Errors++
+	}
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (Container, error) {
@@ -552,12 +1009,20 @@ func isMissingContainerRemoveError(err error) bool {
 	return isMissingContainerLookupError(err)
 }
 
+func isAlreadyStoppedContainerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(message, "already stopped") || strings.Contains(message, "is not running") || strings.Contains(message, "not running")
+}
+
 func isMissingContainerLookupError(err error) bool {
 	if err == nil {
 		return false
 	}
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(message, "no such container") || strings.Contains(message, "no container with name or id") || (strings.Contains(message, "container") && strings.Contains(message, "not found"))
+	return strings.Contains(message, "no such container") || strings.Contains(message, "no such object") || strings.Contains(message, "no container with name or id") || (strings.Contains(message, "container") && strings.Contains(message, "not found"))
 }
 
 func IsMissingRuntimeContainerError(err error) bool {
@@ -579,6 +1044,28 @@ func normalizeDeleteIDs(containerIDs []string) []string {
 		out = append(out, normalized)
 	}
 	return out
+}
+
+func renameContainer(ctx context.Context, runtimeName, oldName, newName string) error {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+	if runtimeName == "" {
+		return errors.New("container runtime is required")
+	}
+	if oldName == "" || newName == "" {
+		return errors.New("container names are required")
+	}
+	cmd := exec.CommandContext(ctx, runtimeName, "rename", oldName, newName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("rename %s container: %s", runtimeName, message)
+	}
+	return nil
 }
 
 func removeContainer(ctx context.Context, runtimeName, containerName string) error {
@@ -791,6 +1278,235 @@ func runtimePullImage(parent context.Context, runtimeName, image string) error {
 		message = err.Error()
 	}
 	return errors.New(message)
+}
+
+type runtimeImageInfo struct {
+	ID          string
+	RepoDigests []string
+	Labels      map[string]string
+}
+
+func (info runtimeImageInfo) digestRefFor(imageRef string) string {
+	imageRef = strings.TrimSpace(imageRef)
+	if strings.Contains(imageRef, "@sha256:") {
+		return imageRef
+	}
+	imageName := strings.TrimSpace(imageRef)
+	if idx := strings.LastIndex(imageName, ":"); idx > strings.LastIndex(imageName, "/") {
+		imageName = imageName[:idx]
+	}
+	for _, digest := range info.RepoDigests {
+		digest = strings.TrimSpace(digest)
+		if digest == "" || digest == "<none>" {
+			continue
+		}
+		if imageName == "" || strings.HasPrefix(digest, imageName+"@") {
+			return digest
+		}
+	}
+	for _, digest := range info.RepoDigests {
+		digest = strings.TrimSpace(digest)
+		if digest != "" && digest != "<none>" {
+			return digest
+		}
+	}
+	return ""
+}
+
+func inspectRuntimeContainerEnv(parent context.Context, runtimeName, containerName string) ([]string, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	containerName = strings.TrimSpace(containerName)
+	if runtimeName == "" || containerName == "" {
+		return nil, fmt.Errorf("runtime and container name are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "inspect", "--format", "{{json .Config.Env}}", containerName)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("container env inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return nil, errors.New(message)
+	}
+	var env []string
+	if err := json.Unmarshal(output, &env); err != nil {
+		return nil, fmt.Errorf("decode container env inspect: %w", err)
+	}
+	return env, nil
+}
+
+func inspectRuntimeContainerMounts(parent context.Context, runtimeName, containerName string) ([]Mount, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	containerName = strings.TrimSpace(containerName)
+	if runtimeName == "" || containerName == "" {
+		return nil, fmt.Errorf("runtime and container name are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "inspect", "--format", "{{json .Mounts}}", containerName)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("container mounts inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return nil, errors.New(message)
+	}
+	var rawMounts []struct {
+		Source      string `json:"Source"`
+		Destination string `json:"Destination"`
+		Mode        string `json:"Mode"`
+		RW          bool   `json:"RW"`
+	}
+	if err := json.Unmarshal(output, &rawMounts); err != nil {
+		return nil, fmt.Errorf("decode container mounts inspect: %w", err)
+	}
+	mounts := make([]Mount, 0, len(rawMounts))
+	for _, raw := range rawMounts {
+		mount := Mount{SourcePath: strings.TrimSpace(raw.Source), TargetPath: strings.TrimSpace(raw.Destination)}
+		mode := strings.ToLower(strings.TrimSpace(raw.Mode))
+		if !raw.RW || strings.Contains(mode, "ro") {
+			mount.Mode = pebblestore.ContainerMountModeReadOnly
+		} else {
+			mount.Mode = pebblestore.ContainerMountModeReadWrite
+		}
+		if mount.SourcePath != "" && mount.TargetPath != "" {
+			mounts = append(mounts, mount)
+		}
+	}
+	return mounts, nil
+}
+
+func inspectRuntimeContainerRunArgs(parent context.Context, runtimeName, containerName string) ([]string, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	containerName = strings.TrimSpace(containerName)
+	if runtimeName == "" || containerName == "" {
+		return nil, fmt.Errorf("runtime and container name are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "inspect", "--format", "{{json .HostConfig.ExtraHosts}}", containerName)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("container run args inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return nil, errors.New(message)
+	}
+	var extraHosts []string
+	if err := json.Unmarshal(output, &extraHosts); err != nil {
+		return nil, nil
+	}
+	args := make([]string, 0, len(extraHosts)*2)
+	for _, host := range extraHosts {
+		host = strings.TrimSpace(host)
+		if host != "" {
+			args = append(args, "--add-host", host)
+		}
+	}
+	return args, nil
+}
+
+func inspectRuntimeContainerImage(parent context.Context, runtimeName, containerName string) (runtimeImageInfo, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	containerName = strings.TrimSpace(containerName)
+	if runtimeName == "" || containerName == "" {
+		return runtimeImageInfo{}, fmt.Errorf("runtime and container name are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "inspect", "--format", "{{.Image}}", containerName)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return runtimeImageInfo{}, fmt.Errorf("container image inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return runtimeImageInfo{}, errors.New(message)
+	}
+	imageID := strings.TrimSpace(string(output))
+	if imageID == "" || imageID == "<no value>" {
+		return runtimeImageInfo{}, errors.New("container inspect returned no image id")
+	}
+	return inspectRuntimeImage(parent, runtimeName, imageID)
+}
+
+func inspectRuntimeImage(parent context.Context, runtimeName, image string) (runtimeImageInfo, error) {
+	runtimeName = normalizeRuntimeSelection(runtimeName)
+	image = strings.TrimSpace(image)
+	if runtimeName == "" || image == "" {
+		return runtimeImageInfo{}, fmt.Errorf("runtime and image are required")
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, runtimeName, "image", "inspect", image)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return runtimeImageInfo{}, fmt.Errorf("image inspect timed out")
+	}
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		if idx := strings.IndexAny(message, "\r\n"); idx >= 0 {
+			message = strings.TrimSpace(message[:idx])
+		}
+		return runtimeImageInfo{}, errors.New(message)
+	}
+	return parseRuntimeImageInspect(output)
+}
+
+func parseRuntimeImageInspect(output []byte) (runtimeImageInfo, error) {
+	var entries []struct {
+		ID          string   `json:"Id"`
+		RepoDigests []string `json:"RepoDigests"`
+		Config      struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	if err := json.Unmarshal(output, &entries); err != nil {
+		return runtimeImageInfo{}, fmt.Errorf("decode image inspect: %w", err)
+	}
+	if len(entries) == 0 {
+		return runtimeImageInfo{}, errors.New("image inspect returned no records")
+	}
+	labels := map[string]string{}
+	for key, value := range entries[0].Config.Labels {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			labels[key] = value
+		}
+	}
+	return runtimeImageInfo{ID: strings.TrimSpace(entries[0].ID), RepoDigests: append([]string(nil), entries[0].RepoDigests...), Labels: labels}, nil
 }
 
 func runtimeImageLabel(parent context.Context, runtimeName, image, label string) (string, bool, error) {
@@ -1132,6 +1848,11 @@ func productionImageMetadataURL(version string) string {
 
 func FetchProductionImageMetadata(ctx context.Context) (ProductionImageMetadata, error) {
 	version := strings.TrimSpace(buildinfo.DisplayVersion())
+	return fetchProductionImageMetadataForVersion(ctx, version)
+}
+
+func fetchProductionImageMetadataForVersion(ctx context.Context, version string) (ProductionImageMetadata, error) {
+	version = strings.TrimSpace(version)
 	if buildinfo.IsDevVersionString(version) {
 		return ProductionImageMetadata{}, fmt.Errorf("production container image requires an installed release version, got %q", version)
 	}
@@ -1376,7 +2097,7 @@ func ensureCanonicalImageCurrent(ctx context.Context, runtimeName, image string,
 	if err != nil {
 		return "", err
 	}
-	expectedFingerprint, err := devmode.ContainerImageFingerprint(repoRoot)
+	expectedFingerprint, err := prepareDevContainerFingerprint(repoRoot)
 	if err != nil {
 		return "", fmt.Errorf("compute dev local container image fingerprint: %w", err)
 	}
@@ -1402,6 +2123,7 @@ func ensureCanonicalImageCurrent(ctx context.Context, runtimeName, image string,
 		"IMAGE_NAME="+image,
 		"SWARM_REBUILD_REASON=local-container-create",
 		"SWARM_CONTAINER_DEV_FINGERPRINT="+expectedFingerprint,
+		"SWARM_BIN_DIR="+filepath.Join(repoRoot, ".bin", "main"),
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1673,6 +2395,20 @@ func normalizeEnv(values []string) []string {
 		}
 		seen[lowerKey] = struct{}{}
 		out = append(out, key+"="+strings.TrimSpace(strings.TrimPrefix(value, key+"=")))
+	}
+	return out
+}
+
+func AppendInheritedChildDebugEnv(env []string) []string {
+	keys := []string{
+		"SWARMD_RUN_REQUEST_DEBUG",
+		"SWARMD_FIREWORKS_DEBUG",
+	}
+	out := append([]string(nil), env...)
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			out = append(out, fmt.Sprintf("%s=%s", key, value))
+		}
 	}
 	return out
 }

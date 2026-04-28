@@ -60,9 +60,8 @@ export type { WorkspaceThemeOption }
 
 const BUILTIN_WORKSPACE_THEME_OPTIONS: WorkspaceThemeOption[] = [
   { id: 'black', label: 'Black' },
-  { id: 'softwhite', label: 'Softwhite' },
-  { id: 'nord', label: 'Nord' },
   { id: 'crimson', label: 'Crimson' },
+  { id: 'nord', label: 'Nord' },
   { id: 'solarized-dark', label: 'Solarized Dark' },
   { id: 'dracula', label: 'Dracula' },
   { id: 'gruvbox-dark', label: 'Gruvbox Dark' },
@@ -78,6 +77,7 @@ const BUILTIN_WORKSPACE_THEME_OPTIONS: WorkspaceThemeOption[] = [
   { id: 'graphite', label: 'Graphite' },
   { id: 'cyberpunk', label: 'Cyberpunk' },
   { id: 'emerald-forest', label: 'Emerald Forest' },
+  { id: 'softwhite', label: 'Softwhite' },
   { id: 'paper-ink', label: 'Paper Ink' },
   { id: 'sunset-amber', label: 'Sunset Amber' },
   { id: 'neon-night', label: 'Neon Night' },

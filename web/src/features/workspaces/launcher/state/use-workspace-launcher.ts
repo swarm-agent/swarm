@@ -219,7 +219,7 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
   const [browserError, setBrowserError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [globalThemeId, setGlobalThemeId] = useState('nord')
+  const [globalThemeId, setGlobalThemeId] = useState('crimson')
 
   const applyCurrentResolution = useCallback((resolution: WorkspaceResolution | null) => {
     const nextPath = resolution?.resolvedPath?.trim() || null
@@ -254,7 +254,7 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
       })
       .catch(() => {
         if (!cancelled) {
-          setGlobalThemeId('nord')
+          setGlobalThemeId('crimson')
         }
       })
 

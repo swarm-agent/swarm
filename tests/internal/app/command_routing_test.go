@@ -411,7 +411,6 @@ func TestExecuteCommand_ChatModalCommandsKeepChatRoute(t *testing.T) {
 		{name: "add-dir", command: "/add-dir", visible: func(home *ui.HomePage) bool { return home.WorkspaceModalVisible() }},
 		{name: "worktrees", command: "/worktrees", visible: func(home *ui.HomePage) bool { return home.WorktreesModalVisible() }},
 		{name: "wt", command: "/wt", visible: func(home *ui.HomePage) bool { return home.WorktreesModalVisible() }},
-		{name: "mcp", command: "/mcp", visible: func(home *ui.HomePage) bool { return home.MCPModalVisible() }},
 		{name: "agents", command: "/agents", visible: func(home *ui.HomePage) bool { return home.AgentsModalVisible() }},
 		{name: "voice", command: "/voice", visible: func(home *ui.HomePage) bool { return home.VoiceModalVisible() }},
 		{name: "keybinds", command: "/keybinds", visible: func(home *ui.HomePage) bool { return home.KeybindsModalVisible() }},
@@ -441,6 +440,31 @@ func TestExecuteCommand_ChatModalCommandsKeepChatRoute(t *testing.T) {
 				t.Fatalf("expected modal visible after %s", tc.command)
 			}
 		})
+	}
+}
+
+func TestExecuteCommand_MCPDeferredFromChatKeepsChatRoute(t *testing.T) {
+	a := newCommandTestApp()
+	a.api = client.New("http://127.0.0.1:7782")
+	a.chat = ui.NewChatPage(ui.ChatPageOptions{
+		SessionID:      "session-1",
+		SessionTitle:   "Session",
+		ShowHeader:     true,
+		AuthConfigured: true,
+	})
+	a.route = "chat"
+
+	a.executeCommand("/mcp")
+
+	if a.route != "chat" {
+		t.Fatalf("route = %q, want chat", a.route)
+	}
+	if a.home.MCPModalVisible() {
+		t.Fatalf("MCPModalVisible() = true, want deferred status only")
+	}
+	got := a.home.Status()
+	if !strings.Contains(got, "MCP management is deferred") || !strings.Contains(got, "free Exa MCP") {
+		t.Fatalf("status = %q, want deferred free Exa MCP message", got)
 	}
 }
 
@@ -503,6 +527,20 @@ func TestExecuteCommand_ExitAliasRequestsQuit(t *testing.T) {
 
 func TestApplyUpdateRequestsReleaseHandoff(t *testing.T) {
 	a := newCommandTestApp()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/update/status":
+			_ = json.NewEncoder(w).Encode(client.UpdateStatus{LatestVersion: "v1.2.3", UpdateAvailable: true})
+		case "/v1/deploy/remote/session":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "sessions": []client.RemoteDeploySession{}})
+		case "/v1/update/local-containers":
+			_ = json.NewEncoder(w).Encode(client.LocalContainerUpdatePlan{Summary: client.LocalContainerUpdateSummary{Total: 0}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	a.api = client.New(server.URL)
 
 	a.applyUpdate()
 

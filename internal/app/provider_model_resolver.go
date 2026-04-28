@@ -21,6 +21,9 @@ type providerModelResolverResult struct {
 }
 
 func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favoritesLimit, catalogLimit int) providerModelResolverResult {
+	// Copilot remains implemented, but it is hidden from model/provider option
+	// surfaces until we can fairly validate it with a paid Copilot plan.
+	const copilotProviderTemporarilyDisabled = "copilot"
 	result := providerModelResolverResult{
 		ProviderStatuses: make(map[string]client.ProviderStatus, 16),
 		ModelsByProvider: make(map[string][]string, 16),
@@ -52,7 +55,7 @@ func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favo
 	providerSet := make(map[string]struct{}, len(modelPresetsByProvider)+len(providerStatuses)+len(favorites)+len(hints)+2)
 	addProvider := func(providerID string) {
 		providerID = normalizeModelProviderID(providerID)
-		if providerID != "" {
+		if providerID != "" && providerID != copilotProviderTemporarilyDisabled {
 			providerSet[providerID] = struct{}{}
 		}
 	}
@@ -62,7 +65,7 @@ func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favo
 	}
 	for _, status := range providerStatuses {
 		id := normalizeModelProviderID(status.ID)
-		if id == "" {
+		if id == "" || id == copilotProviderTemporarilyDisabled {
 			continue
 		}
 		status.ID = id
@@ -76,6 +79,9 @@ func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favo
 
 	for _, favorite := range favorites {
 		providerID := normalizeModelProviderID(favorite.Provider)
+		if providerID == copilotProviderTemporarilyDisabled {
+			continue
+		}
 		modelID := strings.TrimSpace(favorite.Model)
 		key := modelEntryKey(providerID, modelID)
 		if key == "" {
@@ -108,6 +114,9 @@ func (a *App) resolveProviderModelData(ctx context.Context, hints []string, favo
 	result.AuthOnlyProviderIDs = authOnlyProviderIDs
 
 	for _, providerID := range providerIDs {
+		if providerID == copilotProviderTemporarilyDisabled {
+			continue
+		}
 		records, err := a.api.ListModelCatalog(ctx, providerID, catalogLimit)
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s catalog unavailable", providerID))

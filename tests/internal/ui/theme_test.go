@@ -31,8 +31,8 @@ func TestResolveTheme_DefaultAndAliases(t *testing.T) {
 	if !ok {
 		t.Fatalf("ResolveTheme(%q) failed", DefaultThemeID())
 	}
-	if defaultTheme.ID != "nord" {
-		t.Fatalf("default theme id = %q, want nord", defaultTheme.ID)
+	if defaultTheme.ID != "crimson" {
+		t.Fatalf("default theme id = %q, want crimson", defaultTheme.ID)
 	}
 
 	if _, ok := ResolveTheme("Nord"); !ok {

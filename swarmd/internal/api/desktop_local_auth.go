@@ -92,7 +92,7 @@ func (s *Server) withDesktopLocalSession(next http.Handler) http.Handler {
 }
 
 func shouldUseDesktopLocalSessionAuth(r *http.Request) bool {
-	return isLocalDesktopBrowserRequest(r) && isSameOriginBrowserRequest(r)
+	return isSameOriginBrowserRequest(r) && isLocalDesktopBrowserRequest(r)
 }
 
 func isLocalDesktopBrowserRequest(r *http.Request) bool {

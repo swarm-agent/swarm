@@ -45,6 +45,16 @@ func (a *Adapter) ID() string {
 }
 
 func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
+	var checkAuth copilotAuthStatusFunc
+	if a != nil && a.manager != nil {
+		checkAuth = a.manager.GetAuthStatusForCredential
+	}
+	return a.status(ctx, checkAuth)
+}
+
+type copilotAuthStatusFunc func(context.Context, provideriface.AuthCredential) (AuthStatus, error)
+
+func (a *Adapter) status(ctx context.Context, checkAuth copilotAuthStatusFunc) (provideriface.Status, error) {
 	providerDefaults := defaults.MustLookup("copilot")
 	if a == nil || a.authStore == nil {
 		return provideriface.Status{
@@ -60,12 +70,12 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 		return provideriface.Status{}, err
 	}
 	if !ok {
-		return provideriface.Status{
-			ID:          "copilot",
-			Ready:       false,
-			Reason:      "no active Copilot auth source selected",
-			AuthMethods: copilotAuthMethods(),
-		}, nil
+		record = pebblestore.AuthCredentialRecord{
+			Provider: "copilot",
+			Type:     pebblestore.AuthTypeCLI,
+			Label:    "Copilot CLI login",
+		}
+		return copilotLiveAuthSourceStatus(ctx, record, providerDefaults.PrimaryModel, providerDefaults.PrimaryThinking, checkAuth), nil
 	}
 
 	if !copilotCredentialReady(record) {
@@ -77,6 +87,11 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 			DefaultThinking: providerDefaults.PrimaryThinking,
 			AuthMethods:     copilotAuthMethods(),
 		}, nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(record.Type)) {
+	case pebblestore.AuthTypeCLI, pebblestore.AuthTypeGH:
+		return copilotLiveAuthSourceStatus(ctx, record, providerDefaults.PrimaryModel, providerDefaults.PrimaryThinking, checkAuth), nil
 	}
 
 	ready, reason := copilotAuthManagerStatus(record)
@@ -95,6 +110,113 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 		DefaultThinking: providerDefaults.PrimaryThinking,
 		AuthMethods:     copilotAuthMethods(),
 	}, nil
+}
+
+func copilotLiveAuthSourceStatus(ctx context.Context, record pebblestore.AuthCredentialRecord, defaultModel, defaultThinking string, checkAuth copilotAuthStatusFunc) provideriface.Status {
+	method := strings.ToLower(strings.TrimSpace(record.Type))
+	if method == "" {
+		method = pebblestore.AuthTypeCLI
+	}
+	label := strings.TrimSpace(record.Label)
+	if label == "" {
+		label = activeCredentialName(record)
+	}
+	credential := provideriface.AuthCredential{
+		ID:           record.ID,
+		Provider:     "copilot",
+		Type:         method,
+		Label:        label,
+		Tags:         append([]string(nil), record.Tags...),
+		APIKey:       record.APIKey,
+		AccessToken:  record.AccessToken,
+		RefreshToken: record.RefreshToken,
+		AccountID:    record.AccountID,
+		ExpiresAt:    record.ExpiresAt,
+	}
+	if strings.TrimSpace(credential.Provider) == "" {
+		credential.Provider = "copilot"
+	}
+	if checkAuth == nil {
+		return provideriface.Status{
+			ID:              "copilot",
+			Ready:           false,
+			Reason:          "Copilot auth verifier is not configured",
+			DefaultModel:    defaultModel,
+			DefaultThinking: defaultThinking,
+			AuthMethods:     copilotAuthMethods(),
+		}
+	}
+
+	status, statusErr := checkAuth(ctxOrBackground(ctx), credential)
+	if statusErr != nil {
+		return provideriface.Status{
+			ID:              "copilot",
+			Ready:           false,
+			Reason:          copilotLiveAuthUnavailableMessage(method, statusErr),
+			DefaultModel:    defaultModel,
+			DefaultThinking: defaultThinking,
+			AuthMethods:     copilotAuthMethods(),
+		}
+	}
+	if !status.IsAuthenticated {
+		message := strings.TrimSpace(status.StatusMessage)
+		if message == "" {
+			message = copilotLiveAuthLoginHint(method)
+		}
+		return provideriface.Status{
+			ID:              "copilot",
+			Ready:           false,
+			Reason:          copilotLiveAuthUnauthenticatedMessage(method, message),
+			DefaultModel:    defaultModel,
+			DefaultThinking: defaultThinking,
+			AuthMethods:     copilotAuthMethods(),
+		}
+	}
+	login := strings.TrimSpace(status.Login)
+	if login == "" {
+		login = "signed-in user"
+	}
+	return provideriface.Status{
+		ID:              "copilot",
+		Ready:           true,
+		Reason:          copilotLiveAuthAuthenticatedMessage(method, login),
+		DefaultModel:    defaultModel,
+		DefaultThinking: defaultThinking,
+		AuthMethods:     copilotAuthMethods(),
+	}
+}
+
+func copilotLiveAuthUnavailableMessage(method string, err error) string {
+	if strings.EqualFold(strings.TrimSpace(method), pebblestore.AuthTypeGH) {
+		return fmt.Sprintf("GitHub CLI auth source unavailable or not logged in: %v", err)
+	}
+	return fmt.Sprintf("Copilot CLI sidecar unavailable or not logged in: %v", err)
+}
+
+func copilotLiveAuthUnauthenticatedMessage(method, message string) string {
+	message = strings.TrimSpace(message)
+	if strings.EqualFold(strings.TrimSpace(method), pebblestore.AuthTypeGH) {
+		return "GitHub CLI auth source found but not logged in: " + message
+	}
+	return "Copilot CLI sidecar found but not logged in: " + message
+}
+
+func copilotLiveAuthAuthenticatedMessage(method, login string) string {
+	login = strings.TrimSpace(login)
+	if login == "" {
+		login = "signed-in user"
+	}
+	if strings.EqualFold(strings.TrimSpace(method), pebblestore.AuthTypeGH) {
+		return fmt.Sprintf("GitHub CLI auth source authenticated as %s. New Copilot runs use this signed-in user.", login)
+	}
+	return fmt.Sprintf("Copilot CLI sidecar authenticated as %s. New Copilot runs use this signed-in user.", login)
+}
+
+func copilotLiveAuthLoginHint(method string) string {
+	if strings.EqualFold(strings.TrimSpace(method), pebblestore.AuthTypeGH) {
+		return "run `gh auth login`"
+	}
+	return "run `copilot login`"
 }
 
 func activeCredentialName(record pebblestore.AuthCredentialRecord) string {

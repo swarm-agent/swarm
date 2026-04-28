@@ -3,7 +3,7 @@ import { debugLog, createDebugTimer } from '../../../lib/debug-log'
 import { listAuthCredentials } from '../settings/queries/list-auth-credentials'
 import { listProviders } from '../settings/queries/list-providers'
 import { fetchVaultStatus } from '../vault/api'
-import type { ContainerProfileMount } from '../containers/types/container-profiles'
+import type { ContainerProfileMount } from '../swarm/types/container-mounts'
 import type {
   DesktopOnboardingAuth,
   DesktopOnboardingConfig,

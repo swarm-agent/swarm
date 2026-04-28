@@ -59,38 +59,6 @@ var builtinThemeCatalog = []ThemeOption{
 		PromptCursorBG: "#D6D0C4",
 		PromptCursorFG: "#000000",
 	}),
-	newBuiltinThemeOption("softwhite", "Softwhite", ThemePalette{
-		Background:     "#F7F4EC",
-		Panel:          "#FFFDF8",
-		Element:        "#FFFDF8",
-		Border:         "#D6CFC1",
-		BorderActive:   "#C2B8A6",
-		Text:           "#23201B",
-		TextMuted:      "#6F675B",
-		Primary:        "#5F5A52",
-		Secondary:      "#7A7368",
-		Accent:         "#8B7F6A",
-		Success:        "#6F8A63",
-		Warning:        "#9B7A44",
-		Error:          "#A05C5C",
-		PromptCursorBG: "#5F5A52",
-		PromptCursorFG: "#F7F4EC",
-	}),
-	newBuiltinThemeOption("nord", "Nord", ThemePalette{
-		Background:     "#2E3440",
-		Border:         "#434C5E",
-		BorderActive:   "#4C566A",
-		Text:           "#ECEFF4",
-		TextMuted:      "#8B95A7",
-		Primary:        "#88C0D0",
-		Secondary:      "#81A1C1",
-		Accent:         "#8FBCBB",
-		Success:        "#A3BE8C",
-		Warning:        "#D08770",
-		Error:          "#BF616A",
-		PromptCursorBG: "#88C0D0",
-		PromptCursorFG: "#2E3440",
-	}),
 	newBuiltinThemeOption("crimson", "Crimson", ThemePalette{
 		Background:     "#1E1418",
 		Panel:          "#26191E",
@@ -107,6 +75,21 @@ var builtinThemeCatalog = []ThemeOption{
 		Error:          "#FF6B6B",
 		PromptCursorBG: "#E36A7A",
 		PromptCursorFG: "#1E1418",
+	}),
+	newBuiltinThemeOption("nord", "Nord", ThemePalette{
+		Background:     "#2E3440",
+		Border:         "#434C5E",
+		BorderActive:   "#4C566A",
+		Text:           "#ECEFF4",
+		TextMuted:      "#8B95A7",
+		Primary:        "#88C0D0",
+		Secondary:      "#81A1C1",
+		Accent:         "#8FBCBB",
+		Success:        "#A3BE8C",
+		Warning:        "#D08770",
+		Error:          "#BF616A",
+		PromptCursorBG: "#88C0D0",
+		PromptCursorFG: "#2E3440",
 	}),
 	newBuiltinThemeOption("solarized-dark", "Solarized Dark", ThemePalette{
 		Background:     "#002B36",
@@ -363,6 +346,23 @@ var builtinThemeCatalog = []ThemeOption{
 		PromptCursorBG: "#5BD6A1",
 		PromptCursorFG: "#10231C",
 	}),
+	newBuiltinThemeOption("softwhite", "Softwhite", ThemePalette{
+		Background:     "#F7F4EC",
+		Panel:          "#FFFDF8",
+		Element:        "#FFFDF8",
+		Border:         "#D6CFC1",
+		BorderActive:   "#C2B8A6",
+		Text:           "#23201B",
+		TextMuted:      "#6F675B",
+		Primary:        "#5F5A52",
+		Secondary:      "#7A7368",
+		Accent:         "#8B7F6A",
+		Success:        "#6F8A63",
+		Warning:        "#9B7A44",
+		Error:          "#A05C5C",
+		PromptCursorBG: "#5F5A52",
+		PromptCursorFG: "#F7F4EC",
+	}),
 	newBuiltinThemeOption("paper-ink", "Paper Ink", ThemePalette{
 		Background:     "#FAF7F1",
 		Panel:          "#F0E9DD",
@@ -417,7 +417,7 @@ var builtinThemeCatalog = []ThemeOption{
 }
 
 func DefaultThemeID() string {
-	return "nord"
+	return "crimson"
 }
 
 func BuiltinThemeCatalog() []ThemeOption {

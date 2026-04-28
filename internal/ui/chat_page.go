@@ -1233,6 +1233,9 @@ func (p *ChatPage) handlePermissionModalKey(ev *tcell.EventKey) bool {
 	case p.keybinds.Match(ev, KeybindPermissionAlwaysDeny):
 		p.queueResolveSelected("deny_always", p.permissionReason())
 		return true
+	case p.keybinds.Match(ev, KeybindPermissionToggleBypass):
+		p.pendingChatAction = &ChatAction{Kind: ChatActionToggleBypassPermissions}
+		return true
 	case p.keybinds.Match(ev, KeybindPermissionDeny):
 		p.queueResolveSelected("deny_once", p.permissionReason())
 		return true

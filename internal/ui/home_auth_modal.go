@@ -488,14 +488,14 @@ func (p *HomePage) handleAuthModalRune(ev *tcell.EventKey) {
 	case p.keybinds.Match(ev, KeybindAuthNewAPI):
 		if strings.EqualFold(strings.TrimSpace(p.authContextProviderID()), "copilot") {
 			p.openCopilotAuthEditor("token", nil)
-			p.authModal.Status = "Add a direct GitHub token for Copilot, or switch Method to copilot login / gh auth."
+			p.authModal.Status = "Advanced: add a GitHub token for Copilot. Default path is Copilot CLI sidecar via `copilot login`."
 			return
 		}
 		p.openAuthModalEditor("api")
 	case p.keybinds.Match(ev, KeybindAuthNewOAuth):
 		if strings.EqualFold(strings.TrimSpace(p.authContextProviderID()), "copilot") {
 			p.openCopilotAuthEditor("cli", nil)
-			p.authModal.Status = "Choose Copilot auth method: copilot login, gh auth, or direct GitHub token."
+			p.authModal.Status = "Use Copilot CLI sidecar auth: run `copilot login`, then verify/refresh here."
 			return
 		}
 		p.openAuthModalEditor("oauth")
@@ -591,9 +591,9 @@ func (p *HomePage) triggerProviderLogin(providerID string) {
 	methodsSummary := providerAuthMethodsSummary(selectedProvider)
 	if providerID == "copilot" {
 		p.openCopilotAuthEditor("cli", nil)
-		p.authModal.Status = "Choose Copilot auth method (use left/right on Method): copilot login, gh auth, or direct GitHub token. Press Enter to continue."
+		p.authModal.Status = "Use Copilot CLI sidecar auth: run `copilot login`, then press Enter to verify. Token/gh are advanced fallback methods."
 		if methodsSummary != "" {
-			p.authModal.Status = fmt.Sprintf("Copilot auth methods: %s. Choose Method, optional name, token if needed, and active setting; then press Enter.", methodsSummary)
+			p.authModal.Status = fmt.Sprintf("Copilot auth: %s. Default path is the Copilot CLI sidecar; press Enter to verify or save it active.", methodsSummary)
 		}
 		p.authModal.Error = ""
 		return
@@ -682,7 +682,7 @@ func (p *HomePage) openCopilotAuthEditor(initialMethod string, credential *AuthM
 		Mode:         "copilot_login",
 		CredentialID: credentialID,
 		Fields: []authModalEditorField{
-			{Key: "method", Label: "Method (cli/gh/token)", Value: method, Placeholder: "cli"},
+			{Key: "method", Label: "Method (cli sidecar/gh/token)", Value: method, Placeholder: "cli"},
 			{Key: "label", Label: "Credential Name", Value: label, Placeholder: "optional"},
 			{Key: "token", Label: "GitHub Token", Value: "", Placeholder: "github_pat_... or OAuth token", Secret: true},
 			{Key: "active", Label: "Set this auth source active? (y/n)", Value: active, Placeholder: "y"},
@@ -1022,11 +1022,11 @@ func (p *HomePage) submitAuthModalEditor() {
 			Method:   method,
 		}
 		p.authModal.Editor = nil
-		statusHint := "Preparing Copilot auth source..."
+		statusHint := "Verifying Copilot auth source..."
 		if method == "cli" {
-			statusHint = "Preparing Copilot CLI auth..."
+			statusHint = "Verifying Copilot CLI sidecar auth in the active swarmd runtime..."
 		} else if method == "gh" {
-			statusHint = "Preparing GitHub CLI auth for Copilot..."
+			statusHint = "Verifying GitHub CLI auth for Copilot in the active swarmd runtime..."
 		}
 		p.enqueueAuthModalAction(AuthModalAction{
 			Kind: AuthModalActionLogin,
@@ -1772,7 +1772,7 @@ func (p *HomePage) drawAuthCredentialPane(s tcell.Screen, rect Rect) {
 				text  string
 			}{
 				{style: statusStyle, text: statusLine},
-				{style: p.theme.Warning, text: "Choose auth source with Enter or l: copilot login, gh auth, or direct GitHub token."},
+				{style: p.theme.Warning, text: "Default auth is the Copilot CLI sidecar: install `copilot`, run `copilot login`, then verify here."},
 				{style: p.theme.Warning, text: "Use r or v to verify the currently selected Copilot auth source."},
 			}
 			maxLines := availableRows

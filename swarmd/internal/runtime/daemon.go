@@ -193,13 +193,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	containerProfileSvc := containerprofiles.NewService(pebblestore.NewSwarmContainerProfileStore(store))
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
-	localContainerSvc := localcontainers.NewService(
+	localContainerSvc := localcontainers.NewServiceWithDataDir(
 		pebblestore.NewSwarmLocalContainerStore(store),
 		pebblestore.NewDeployContainerStore(store),
 		swarmStore,
 		authStore,
 		workspaceSvc,
 		cfg.ConfigPath,
+		cfg.DataDir,
 	)
 	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath)
 	remoteDeploySvc := remotedeploy.NewService(pebblestore.NewRemoteDeploySessionStore(store), swarmSvc, swarmStore, localContainerSvc, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD)
@@ -256,12 +257,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		if cfg.APIKey != "" {
 			cfg.Enabled = true
 			cfg.Source = "api_key"
-			if mcpConfig.Enabled {
-				if _, _, err := mcpSvc.SetEnabled(mcpruntime.DefaultExaServerID, false); err != nil {
-					return tool.ExaRuntimeConfig{}, err
-				}
-				cfg.MCPURL = strings.TrimSpace(mcpConfig.URL)
-			}
 			return cfg, nil
 		}
 		if mcpConfig.Enabled {
@@ -271,10 +266,13 @@ func New(cfg config.Config) (*Daemon, error) {
 		}
 		return cfg, nil
 	})
-	copilotManager := copilot.NewManager(authStore)
+	// Copilot provider code is retained, but it is intentionally not registered
+	// as a selectable/runnable provider right now. We cannot fairly validate the
+	// sidecar flow while the required paid Copilot plan is unavailable, so keep
+	// the implementation dormant until it can be tested end-to-end.
+	var copilotManager *copilot.Manager
 	providers := registry.New(
 		anthropic.NewAdapter(authStore),
-		copilot.NewAdapterWithManager(authStore, copilotManager),
 		codex.NewAdapter(authStore),
 		fireworks.NewAdapter(authStore),
 		google.NewAdapter(authStore),
@@ -288,7 +286,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		}),
 	)
 	providers.RegisterRunner(anthropic.NewRunner(authStore))
-	providers.RegisterRunner(copilot.NewRunnerWithManager(copilotManager))
+	// Copilot runner registration is disabled with the adapter above; leave the
+	// code in place for re-enablement after paid-plan validation is possible.
 	providers.RegisterRunner(codex.NewRunner(codexClient))
 	providers.RegisterRunner(fireworks.NewRunner(authStore))
 	providers.RegisterRunner(google.NewRunner(authStore))
@@ -337,6 +336,7 @@ func New(cfg config.Config) (*Daemon, error) {
 
 	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
+	apiServer.SetDataDir(cfg.DataDir)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)
 	apiServer.SetSandboxService(sandboxSvc)
 	apiServer.SetWorktreeService(worktreeSvc)

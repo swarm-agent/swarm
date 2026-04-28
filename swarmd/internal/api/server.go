@@ -93,6 +93,7 @@ type Server struct {
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	sessionRoutes               *pebblestore.SessionRouteStore
 	mode                        string
+	dataDir                     string
 	startupConfigPath           string
 	startedAt                   time.Time
 	bypassPermissions           bool
@@ -151,6 +152,8 @@ type localContainerService interface {
 	Act(ctx context.Context, input localcontainers.ActionInput) (localcontainers.Container, error)
 	BulkDelete(ctx context.Context, containerIDs []string) (localcontainers.DeleteResult, error)
 	PruneMissing(ctx context.Context) (localcontainers.DeleteResult, error)
+	UpdatePlan(ctx context.Context, input localcontainers.UpdatePlanInput) (localcontainers.UpdatePlan, error)
+	RunUpdateJob(ctx context.Context, input localcontainers.UpdateJobInput) (localcontainers.UpdateJobResult, error)
 	SetHostCallbackURL(runtimeName, baseURL string)
 	HostCallbackURL(runtimeName string) (string, bool)
 }
@@ -179,6 +182,7 @@ type remoteDeployService interface {
 	Create(ctx context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error)
 	Delete(ctx context.Context, input remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error)
 	Start(ctx context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error)
+	RunUpdateJob(ctx context.Context, input remotedeploy.UpdateJobInput) (remotedeploy.UpdateJobResult, error)
 	Approve(ctx context.Context, input remotedeploy.ApproveSessionInput) (remotedeploy.Session, error)
 	ChildStatus(ctx context.Context, input remotedeploy.ChildStatusInput) (remotedeploy.Session, error)
 	SyncCredentialBundle(ctx context.Context, input remotedeploy.SyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error)
@@ -279,6 +283,13 @@ func (s *Server) SetStartupConfigPath(path string) {
 		return
 	}
 	s.startupConfigPath = strings.TrimSpace(path)
+}
+
+func (s *Server) SetDataDir(path string) {
+	if s == nil {
+		return
+	}
+	s.dataDir = strings.TrimSpace(path)
 }
 
 func (s *Server) BypassPermissions() bool {
@@ -3605,7 +3616,7 @@ func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 		return true
 	case "/v1/auth/desktop/session":
 		return r.Method == http.MethodGet && shouldUseDesktopLocalSessionAuth(r)
-	case "/v1/update/status":
+	case "/v1/update/status", "/v1/update/local-containers":
 		return loopback && r.Method == http.MethodGet
 	case "/v1/swarm/discovery":
 		return trustedNetwork && r.Method == http.MethodGet
@@ -3725,6 +3736,15 @@ func decodeJSON(r *http.Request, out any) error {
 	}
 	defer r.Body.Close()
 	decoder := json.NewDecoder(r.Body)
+	return decodeJSONObject(decoder, out)
+}
+
+func decodeJSONBytes(body []byte, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	return decodeJSONObject(decoder, out)
+}
+
+func decodeJSONObject(decoder *json.Decoder, out any) error {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(out); err != nil {
 		return err
@@ -3784,7 +3804,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy})
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy, "bypass_permissions": s.BypassPermissions()})
 		case http.MethodPost:
 			var req struct {
 				Kind     string `json:"kind"`
@@ -3810,6 +3830,34 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		default:
 			methodNotAllowed(w)
 		}
+		return
+	case path == "/v1/permissions/bypass":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		cfg, err := s.loadStartupConfig()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !cfg.Exists {
+			cfg = startupconfig.Default(cfg.Path)
+		}
+		cfg.BypassPermissions = req.Enabled
+		if err := startupconfig.Write(cfg); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		s.SetBypassPermissions(req.Enabled)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bypass_permissions": s.BypassPermissions()})
 		return
 	case path == "/v1/permissions/reset":
 		if r.Method != http.MethodPost {

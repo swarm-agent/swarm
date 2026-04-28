@@ -57,18 +57,11 @@ func NewService(store *pebblestore.MCPStore, events *pebblestore.EventLog) *Serv
 }
 
 func (s *Service) EnsureDefaults() error {
-	if s == nil || s.store == nil {
-		return errors.New("mcp service is not configured")
-	}
-	_, _, err := s.store.EnsureDefault(pebblestore.MCPServerRecord{
-		ID:        DefaultExaServerID,
-		Name:      "Exa Public MCP",
-		Transport: "http",
-		URL:       DefaultExaServerURL,
-		Enabled:   true,
-		Source:    "default",
-	})
-	return err
+	// Generic MCP server management is deferred until it can be integrated
+	// with Swarm Sync. Do not persist a default MCP server record here; Exa
+	// search resolves the built-in public MCP endpoint directly when no user
+	// override exists.
+	return nil
 }
 
 func (s *Service) List(limit int) ([]Server, error) {
@@ -226,26 +219,13 @@ func (s *Service) SetEnabled(id string, enabled bool) (Server, *pebblestore.Even
 }
 
 func (s *Service) ResolveExaRuntimeConfig() (ExaRuntimeConfig, error) {
-	if s == nil || s.store == nil {
-		return ExaRuntimeConfig{}, errors.New("mcp service is not configured")
-	}
-	record, ok, err := s.store.Get(DefaultExaServerID)
-	if err != nil {
-		return ExaRuntimeConfig{}, err
-	}
-	if !ok {
-		return ExaRuntimeConfig{
-			Enabled: false,
-			URL:     DefaultExaServerURL,
-		}, nil
-	}
-	url := strings.TrimSpace(record.URL)
-	if url == "" {
-		url = DefaultExaServerURL
-	}
+	// Generic MCP management is deferred, so Exa fallback must not depend on
+	// persisted MCP records. Old local records may exist from earlier builds;
+	// ignore them so free users always get the hosted Exa bridge when no API key
+	// is configured.
 	return ExaRuntimeConfig{
-		Enabled: record.Enabled,
-		URL:     url,
+		Enabled: true,
+		URL:     DefaultExaServerURL,
 	}, nil
 }
 

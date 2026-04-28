@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent } from 'react'
+import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, Download, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
+import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -14,9 +14,8 @@ import {
 } from '../chat/services/chat-routing'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { prefetchSessionRuntimeData, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { prefetchSessionRuntimeData, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopSessionRecord } from '../types/realtime'
-import { DesktopSettingsModal } from '../settings/components/desktop-settings-modal'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
 import { DesktopChatPanel } from '../chat/components/desktop-chat-panel'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
@@ -37,9 +36,13 @@ import {
   updateWorkspaceTodo,
 } from '../../workspaces/todos/types'
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
+import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
+import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/mutations/save-local-container-update-warning-dismissal'
+import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
+import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { fetchSession } from '../chat/queries/chat-queries'
-import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate } from '../update/api'
+import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type LocalContainerUpdatePlan } from '../update/api'
 import {
   sessionChildDescriptor,
   sessionParentSessionID,
@@ -50,9 +53,23 @@ const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
+const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
+const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] items-center gap-2.5`
+const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
+const SIDEBAR_ACTION_BOX_CLASS = 'grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center border-0 bg-transparent p-0 font-inherit'
+const SIDEBAR_ACTION_BUTTON_CLASS = `${SIDEBAR_ACTION_BOX_CLASS} text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]`
+
+function SidebarActionRail({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn(SIDEBAR_ACTION_RAIL_CLASS, className)}>{children}</div>
+}
+
+function SidebarActionRailSpacer() {
+  return <span aria-hidden="true" className={SIDEBAR_ACTION_BOX_CLASS} />
+}
 
 interface SidebarWorkspaceLayout {
   collapsed: boolean
+  hidden: boolean
   ratio: number
 }
 
@@ -74,24 +91,10 @@ interface SwarmTargetMenuState {
   open: boolean
 }
 
-function DesktopNotificationsLauncherButton({ onOpen }: { onOpen: () => void }) {
-  const unreadCount = useDesktopStore((state) => state.notificationCenter.summary.unreadCount)
-  return (
-    <Button
-      variant="ghost"
-      className="relative h-12 w-12 min-w-12 p-0"
-      onClick={onOpen}
-      aria-label="Open notifications"
-      title={unreadCount > 0 ? `${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}` : 'No unread notifications'}
-    >
-      <Bell size={22} className="shrink-0" />
-      {unreadCount > 0 ? (
-        <span className="absolute right-2 top-2 min-w-[18px] rounded-full bg-[var(--app-primary)] px-1 text-center text-[10px] font-semibold leading-[18px] text-white">
-          {unreadCount > 9 ? '9+' : unreadCount}
-        </span>
-      ) : null}
-    </Button>
-  )
+interface LocalContainerUpdateConfirmState {
+  plan: LocalContainerUpdatePlan
+  remoteSessions: RemoteDeploySession[]
+  pendingDismiss: boolean
 }
 
 function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -226,6 +229,35 @@ function workspaceSectionHeightStyle(ratio: number, totalVisibleRatio: number, c
   }
 }
 
+function formatLocalContainerUpdateTarget(plan: LocalContainerUpdatePlan): string {
+  const target = plan.target ?? {}
+  if (plan.dev_mode) {
+    const postRebuildFingerprint = target.post_rebuild_fingerprint?.trim()
+    const fingerprint = postRebuildFingerprint || target.fingerprint?.trim()
+    return fingerprint ? `Target dev image fingerprint: ${fingerprint.slice(0, 12)}` : 'Target dev image fingerprint unavailable'
+  }
+  const version = target.version?.trim()
+  const digest = target.digest_ref?.trim()
+  if (version && digest) {
+    return `Target ${version} (${digest})`
+  }
+  if (version) {
+    return `Target ${version}`
+  }
+  if (digest) {
+    return `Target ${digest}`
+  }
+  return 'Target version unavailable'
+}
+
+function localContainerUpdateAffected(plan: LocalContainerUpdatePlan): boolean {
+  return (plan.summary?.affected ?? 0) > 0 || (plan.summary?.needs_update ?? 0) > 0 || (plan.summary?.unknown ?? 0) > 0 || (plan.summary?.errors ?? 0) > 0
+}
+
+function remoteDeployUpdateSessionCount(sessions: RemoteDeploySession[]): number {
+  return sessions.filter((session) => session.status?.trim().toLowerCase() === 'attached' && Boolean(session.ssh_session_target?.trim())).length
+}
+
 function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
   const raw = loadStoredValue(DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY)
   if (!raw) {
@@ -238,7 +270,8 @@ function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
       Object.entries(parsed).map(([path, entry]) => [
         path,
         {
-          collapsed: Boolean(entry?.collapsed ?? entry?.hidden),
+          collapsed: Boolean(entry?.collapsed),
+          hidden: Boolean(entry?.hidden),
           ratio: normalizeRatio(typeof entry?.ratio === 'number' ? entry.ratio : undefined),
         },
       ]),
@@ -259,6 +292,23 @@ function connectionDotClass(connectionState: 'idle' | 'connecting' | 'open' | 'c
     default:
       return 'bg-[var(--app-border-strong)]'
   }
+}
+
+function swarmKindDotClass(kind: SwarmTarget['kind'] | undefined, online = true): string {
+  if (!online) {
+    return 'bg-[var(--app-warning)]'
+  }
+  if (kind === 'remote') {
+    return 'bg-[var(--app-info)]'
+  }
+  return 'bg-[var(--app-success)]'
+}
+
+function swarmKindLabel(target: SwarmTarget): string {
+  if (target.kind === 'self') {
+    return 'Master'
+  }
+  return target.kind === 'remote' ? 'remote' : 'local'
 }
 
 function sessionPendingPermissionCount(session: DesktopSessionRecord): number {
@@ -470,27 +520,33 @@ function renderWorkspaceGitBar(args: {
   const dirtyLabel = dirtyDetailParts.join(' ')
 
   return (
-    <div className="flex items-center gap-2 px-6 pb-2 pt-0.5 text-[11px] min-w-0">
-      <span className={cn('truncate font-semibold', tone)}>{branch}</span>
-      <span className="shrink-0 text-[var(--app-text-muted)]">/</span>
-      <span className="shrink-0 text-[var(--app-text-muted)]">{syncLabel}</span>
-      {dirtyLabel ? <span className="shrink-0 text-[var(--app-text-muted)]">/</span> : null}
-      {dirtyLabel ? <span className={cn('shrink-0 text-[10px]', tone)}>{dirtyLabel}</span> : null}
-      <button
-        type="button"
-        className={cn(
-          'ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px]',
-          enabled ? 'text-[var(--app-selection)]' : 'text-[var(--app-text-muted)] opacity-45 hover:opacity-85',
-          worktreeBusy && 'cursor-progress opacity-70',
-        )}
-        onClick={onToggle}
-        aria-busy={worktreeBusy}
-        aria-disabled={worktreeBusy}
-        aria-pressed={enabled}
-        title={title}
-      >
-        {enabled ? 'worktree' : 'wt'}
-      </button>
+    <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'pb-2 pl-6 pr-1 pt-0.5 text-[11px]')}>
+      <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+        <span className={cn('truncate font-semibold', tone)}>{branch}</span>
+        <span className="shrink-0 text-[var(--app-text-muted)]">/</span>
+        <span className="shrink-0 text-[var(--app-text-muted)]">{syncLabel}</span>
+        {dirtyLabel ? <span className="shrink-0 text-[var(--app-text-muted)]">/</span> : null}
+        {dirtyLabel ? <span className={cn('shrink-0 text-[10px]', tone)}>{dirtyLabel}</span> : null}
+      </div>
+      <SidebarActionRail>
+        <SidebarActionRailSpacer />
+        <button
+          type="button"
+          className={cn(
+            SIDEBAR_ACTION_BUTTON_CLASS,
+            'text-[10px]',
+            enabled ? 'text-[var(--app-selection)]' : 'text-[var(--app-text-muted)] opacity-45 hover:opacity-85',
+            worktreeBusy && 'cursor-progress opacity-70',
+          )}
+          onClick={onToggle}
+          aria-busy={worktreeBusy}
+          aria-disabled={worktreeBusy}
+          aria-pressed={enabled}
+          title={title}
+        >
+          wt
+        </button>
+      </SidebarActionRail>
     </div>
   )
 }
@@ -981,26 +1037,27 @@ export function DesktopAppPage() {
   const routeSessionId = (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: workspacesLoading } = useWorkspaceLauncher()
   const connectionState = useDesktopStore((state) => state.connectionState)
-  const vault = useDesktopStore((state) => state.vault)
   const liveSessions = useDesktopStore((state) => state.sessions)
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
   const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
+  const notificationCenter = useDesktopStore((state) => state.notificationCenter)
   const setActiveSession = useDesktopStore((state) => state.setActiveSession)
   const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
   const upsertSession = useDesktopStore((state) => state.upsertSession)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<SettingsTabID>('agents')
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
   const [swarmMenu, setSwarmMenu] = useState<SwarmTargetMenuState>({ open: false })
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [updateRunning, setUpdateRunning] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
+  const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
+  const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [routeSessionPending, setRouteSessionPending] = useState(false)
@@ -1053,11 +1110,25 @@ export function DesktopAppPage() {
     ...workspace,
     todoSummary: todoSummaries[workspace.path] ?? workspace.todoSummary,
   })), [sidebarWorkspaceEntries, todoSummaries])
+  const visibleSidebarWorkspaceEntries = useMemo(
+    () => mergedSidebarWorkspaceEntries.filter((workspace) => !workspaceLayout[workspace.path]?.hidden),
+    [mergedSidebarWorkspaceEntries, workspaceLayout],
+  )
 
   const overviewQuery = useQuery({
     ...workspaceOverviewQueryOptions([], 25),
     placeholderData: (previousData) => previousData,
   })
+  const uiSettingsQuery = useQuery({
+    queryKey: uiSettingsQueryKey(),
+    queryFn: () => getUISettings(),
+    staleTime: 30_000,
+  })
+  useEffect(() => {
+    if (uiSettingsQuery.data) {
+      setUISettings(uiSettingsQuery.data)
+    }
+  }, [uiSettingsQuery.data])
   const swarmSettingsQuery = useQuery({
     queryKey: ['ui-settings', 'swarm'] as const,
     queryFn: () => getSwarmSettings(),
@@ -1078,6 +1149,7 @@ export function DesktopAppPage() {
   })
 
   const updateStatus = updateStatusQuery.data ?? null
+  const effectiveUISettings = uiSettings ?? uiSettingsQuery.data ?? null
   const updateAvailable = updateStatus?.update_available === true
   const updateLatestVersion = updateStatus?.latest_version?.trim() ?? ''
   const updateStatusError = updateStatusQuery.error instanceof Error ? updateStatusQuery.error.message : null
@@ -1097,6 +1169,14 @@ export function DesktopAppPage() {
   const swarmTargets = swarmTargetsQuery.data?.targets ?? []
   const currentSwarmTarget = swarmTargets.find((target) => target.current) ?? null
   const swarmName = currentSwarmTarget?.name ?? swarmSettingsQuery.data?.name ?? 'Local'
+  const masterWorkspaceName = selectedWorkspace?.workspaceName ?? routeWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath ?? '')
+  const swarmTargetCounts = useMemo(() => {
+    const local = swarmTargets.filter((target) => target.kind === 'self' || target.kind === 'local').length
+    const remote = swarmTargets.filter((target) => target.kind === 'remote').length
+    return { local, remote }
+  }, [swarmTargets])
+  const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} remote`
+  const workspaceCount = mergedSidebarWorkspaceEntries.length
   const swarmTopologySignature = useMemo(
     () => swarmTargets
       .map((target) => [
@@ -1112,9 +1192,6 @@ export function DesktopAppPage() {
       .join('|'),
     [swarmTargets],
   )
-  const swarmTargetSubtitle = currentSwarmTarget
-    ? `${currentSwarmTarget.relationship}${currentSwarmTarget.online ? '' : ' · offline'}`
-    : 'Notifications'
   const [swarmSwitchError, setSwarmSwitchError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -1245,11 +1322,12 @@ export function DesktopAppPage() {
       for (const workspace of mergedSidebarWorkspaceEntries) {
         const existing = current[workspace.path]
         const normalizedEntry = {
-          collapsed: existing?.collapsed ?? false,
+          collapsed: existing?.collapsed ?? true,
+          hidden: existing?.hidden ?? false,
           ratio: normalizeRatio(existing?.ratio),
         }
         next[workspace.path] = normalizedEntry
-        if (!existing || existing.collapsed !== normalizedEntry.collapsed || normalizeRatio(existing.ratio) !== normalizedEntry.ratio) {
+        if (!existing || existing.collapsed !== normalizedEntry.collapsed || existing.hidden !== normalizedEntry.hidden || normalizeRatio(existing.ratio) !== normalizedEntry.ratio) {
           changed = true
         }
       }
@@ -1261,12 +1339,6 @@ export function DesktopAppPage() {
   useEffect(() => {
     saveStoredValue(DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY, JSON.stringify(workspaceLayout))
   }, [workspaceLayout])
-
-  useEffect(() => {
-    if (vault.enabled) {
-      setSettingsTab('vault')
-    }
-  }, [vault.enabled])
 
   const sessionsByWorkspace = useMemo<Map<string, DesktopSessionRecord[]>>(() => {
     const grouped = new Map<string, DesktopSessionRecord[]>()
@@ -1408,7 +1480,7 @@ export function DesktopAppPage() {
     }
   }, [activeSessionId, activeWorkspacePath, routeSessionId, selectedSession, selectedWorkspacePath, setActiveSession, setActiveWorkspacePath])
 
-  const visibleWorkspacePaths = useMemo<string[]>(() => mergedSidebarWorkspaceEntries.map((workspace) => workspace.path), [mergedSidebarWorkspaceEntries])
+  const visibleWorkspacePaths = useMemo<string[]>(() => visibleSidebarWorkspaceEntries.map((workspace) => workspace.path), [visibleSidebarWorkspaceEntries])
 
   const stopResize = useCallback(() => {
     resizeStateRef.current = null
@@ -1431,11 +1503,13 @@ export function DesktopAppPage() {
     setWorkspaceLayout((current) => ({
       ...current,
       [activeResize.topPath]: {
-        collapsed: current[activeResize.topPath]?.collapsed ?? false,
+        collapsed: current[activeResize.topPath]?.collapsed ?? true,
+        hidden: current[activeResize.topPath]?.hidden ?? false,
         ratio: nextTopRatio,
       },
       [activeResize.bottomPath]: {
-        collapsed: current[activeResize.bottomPath]?.collapsed ?? false,
+        collapsed: current[activeResize.bottomPath]?.collapsed ?? true,
+        hidden: current[activeResize.bottomPath]?.hidden ?? false,
         ratio: nextBottomRatio,
       },
     }))
@@ -1475,6 +1549,18 @@ export function DesktopAppPage() {
       ...current,
       [path]: {
         collapsed: !current[path]?.collapsed,
+        hidden: current[path]?.hidden ?? false,
+        ratio: normalizeRatio(current[path]?.ratio),
+      },
+    }))
+  }, [])
+
+  const toggleWorkspaceHidden = useCallback((path: string) => {
+    setWorkspaceLayout((current) => ({
+      ...current,
+      [path]: {
+        collapsed: current[path]?.collapsed ?? true,
+        hidden: !current[path]?.hidden,
         ratio: normalizeRatio(current[path]?.ratio),
       },
     }))
@@ -1577,40 +1663,20 @@ export function DesktopAppPage() {
   }, [navigate, setActiveSession, setActiveWorkspacePath, workspaceSlugByPath])
 
   const handleOpenSettingsTab = useCallback((tab: SettingsTabID) => {
-    setSettingsTab(tab)
-    setSettingsOpen(true)
-  }, [])
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab } })
+      return
+    }
+    void navigate({ to: '/settings', search: { tab } })
+  }, [navigate, routeWorkspaceSlug])
 
   const handleOpenPermissions = useCallback(() => {
-    setSettingsTab('permissions')
-    setSettingsOpen(true)
-  }, [])
-
-  const handleOpenSwarmDashboardFromMenu = useCallback(() => {
-    setSwarmMenu({ open: false })
-    if (!routeWorkspaceSlug) {
-      return
-    }
-    void navigate({
-      to: '/$workspaceSlug/swarm',
-      params: { workspaceSlug: routeWorkspaceSlug },
-    })
-  }, [navigate, routeWorkspaceSlug])
+    handleOpenSettingsTab('permissions')
+  }, [handleOpenSettingsTab])
 
   const handleOpenSwarmDashboard = useCallback(() => {
-    if (routeWorkspaceSlug) {
-      void navigate({
-        to: '/$workspaceSlug/swarm',
-        params: { workspaceSlug: routeWorkspaceSlug },
-      })
-      return
-    }
-    void navigate({ to: '/swarm' })
-  }, [navigate, routeWorkspaceSlug])
-
-  const handleOpenNotifications = useCallback(() => {
-    setNotificationsOpen(true)
-  }, [])
+    handleOpenSettingsTab('swarm')
+  }, [handleOpenSettingsTab])
 
   useEffect(() => {
     if (!updateAvailable) {
@@ -1619,8 +1685,45 @@ export function DesktopAppPage() {
     void refreshNotifications()
   }, [refreshNotifications, updateAvailable, updateLatestVersion])
 
+  const runDesktopUpdate = useCallback(async () => {
+    setUpdateRunning(true)
+    try {
+      await startDesktopUpdate()
+      await refreshNotifications()
+      const startedAt = Date.now()
+      let sawBackendDrop = false
+      while (Date.now() - startedAt < 30 * 60_000) {
+        await new Promise((resolve) => window.setTimeout(resolve, sawBackendDrop ? 1500 : 800))
+        try {
+          const job = await fetchDesktopUpdateJob()
+          if (job.status === 'failed') {
+            throw new Error(job.error || job.message || 'Update failed')
+          }
+          if (job.status === 'running') {
+            continue
+          }
+          await refreshNotifications()
+          window.location.reload()
+          return
+        } catch (error) {
+          sawBackendDrop = true
+          if (error instanceof Error && /update failed/i.test(error.message)) {
+            throw error
+          }
+        }
+      }
+      throw new Error('Update is still running. Leave this window open and check again shortly.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Update failed'
+      setUpdateError(message)
+      await refreshNotifications()
+    } finally {
+      setUpdateRunning(false)
+    }
+  }, [refreshNotifications])
+
   const handleDesktopUpdate = useCallback(async () => {
-    if (updateRunning) {
+    if (updateRunning || localContainerUpdateConfirm) {
       return
     }
     setUpdateError(null)
@@ -1643,39 +1746,63 @@ export function DesktopAppPage() {
       setUpdateError(message)
       return
     }
-    setUpdateRunning(true)
+    let settings = effectiveUISettings
+    if (!settings) {
+      try {
+        settings = await uiSettingsQuery.refetch().then((result) => result.data ?? null)
+      } catch {
+        settings = null
+      }
+    }
     try {
-      await startDesktopUpdate()
-      await refreshNotifications()
-      const startedAt = Date.now()
-      let sawBackendDrop = false
-      while (Date.now() - startedAt < 5 * 60_000) {
-        await new Promise((resolve) => window.setTimeout(resolve, sawBackendDrop ? 1500 : 800))
-        try {
-          const job = await fetchDesktopUpdateJob()
-          if (job.status === 'failed') {
-            throw new Error(job.error || job.message || 'Update failed')
-          }
-          await refreshNotifications()
-          window.location.reload()
+      const remoteSessions = await fetchRemoteDeploySessions()
+      const remoteUpdateCount = remoteDeployUpdateSessionCount(remoteSessions)
+      const warningDismissed = localContainerUpdateWarningDismissed(settings)
+      if (!warningDismissed || remoteUpdateCount > 0) {
+        const plan = await fetchLocalContainerUpdatePlan({ devMode: status.dev_mode, targetVersion: status.latest_version, postRebuildCheck: status.dev_mode })
+        if ((!warningDismissed && localContainerUpdateAffected(plan)) || remoteUpdateCount > 0) {
+          setLocalContainerUpdateConfirm({ plan, remoteSessions, pendingDismiss: false })
           return
-        } catch (error) {
-          sawBackendDrop = true
-          if (error instanceof Error && /update failed/i.test(error.message)) {
-            throw error
-          }
         }
       }
-      await refreshNotifications()
-      window.location.reload()
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Update failed'
+      const message = error instanceof Error ? error.message : 'Failed to check container images before update'
       setUpdateError(message)
-      await refreshNotifications()
-    } finally {
-      setUpdateRunning(false)
+      return
     }
-  }, [refreshNotifications, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
+    await runDesktopUpdate()
+  }, [effectiveUISettings, localContainerUpdateConfirm, runDesktopUpdate, uiSettingsQuery, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
+
+  const handleConfirmLocalContainerUpdate = useCallback(async () => {
+    const confirmState = localContainerUpdateConfirm
+    if (!confirmState || updateRunning) {
+      return
+    }
+    if (confirmState.pendingDismiss) {
+      try {
+        const saved = await saveLocalContainerUpdateWarningDismissal(true)
+        setUISettings(saved)
+        queryClient.setQueryData(uiSettingsQueryKey(), saved)
+        queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(saved))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to save container image update warning setting'
+        setUpdateError(message)
+        return
+      }
+    }
+    setLocalContainerUpdateConfirm(null)
+    setUpdateError(null)
+    await runDesktopUpdate()
+  }, [localContainerUpdateConfirm, queryClient, runDesktopUpdate, updateRunning])
+
+  const handleCancelLocalContainerUpdate = useCallback(() => {
+    setLocalContainerUpdateConfirm(null)
+    setUpdateError(null)
+  }, [])
+
+  const handleToggleLocalContainerUpdateDismissal = useCallback((checked: boolean) => {
+    setLocalContainerUpdateConfirm((current) => current ? { ...current, pendingDismiss: checked } : current)
+  }, [])
 
   const handleOpenWorkspaceLauncher = useCallback(() => {
     setMobileSidebarOpen(false)
@@ -1704,12 +1831,12 @@ export function DesktopAppPage() {
   }, [routeSessionId, routeWorkspaceSlug])
 
   const totalVisibleRatio = useMemo(
-    () => mergedSidebarWorkspaceEntries.reduce((sum, workspace) => {
+    () => visibleSidebarWorkspaceEntries.reduce((sum, workspace) => {
       const layout = workspaceLayout[workspace.path]
       if (layout?.collapsed) return sum
       return sum + normalizeRatio(layout?.ratio)
-    }, 0) || mergedSidebarWorkspaceEntries.length || 1,
-    [mergedSidebarWorkspaceEntries, workspaceLayout],
+    }, 0) || visibleSidebarWorkspaceEntries.length || 1,
+    [visibleSidebarWorkspaceEntries, workspaceLayout],
   )
 
   const sidebarContent = (
@@ -1737,87 +1864,183 @@ export function DesktopAppPage() {
         </div>
       ) : (
         <div className="flex h-full flex-col min-h-0">
-          <div className="flex h-[60px] items-center border-b border-[var(--app-border)] px-4">
-            <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
-                <Button
-                  variant="ghost"
-                  className="h-12 min-w-0 flex-1 justify-start gap-2 px-3 text-left"
-                  onClick={() => setSwarmMenu((current) => ({ open: !current.open }))}
-                  aria-label="Choose swarm target"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold">{swarmName}</div>
-                    {swarmTargetSubtitle ? <div className="truncate text-xs text-[var(--app-text-muted)]">{swarmTargetSubtitle}</div> : null}
-                  </div>
-                  <ChevronsUpDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />
-                </Button>
-              </div>
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  className="h-12 w-12 min-w-12 p-0"
-                  onClick={() => { void handleDesktopUpdate() }}
-                  aria-label="Update Swarm"
-                  title={updateActionTitle}
-                  disabled={updateRunning || !updateAvailable}
-                >
-                  <Download size={22} className={cn('shrink-0', updateRunning && 'animate-pulse', updateAvailable && 'text-[var(--app-primary)]')} />
-                </Button>
-                <DesktopNotificationsLauncherButton onOpen={handleOpenNotifications} />
-                <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => setSidebarCollapsed(true)} aria-label="Collapse sidebar">
-                  <ChevronLeft size={28} className="shrink-0" />
-                </Button>
-              </div>
-            </div>
-          </div>
-          {swarmMenu.open ? (
-            <div className="border-b border-[var(--app-border)] px-3 py-2">
-              <div className="space-y-1">
-                {swarmTargets.map((target) => (
-                  <button
-                    key={target.swarm_id}
-                    type="button"
-                    onClick={() => { void handleSelectSwarmTarget(target) }}
-                    disabled={!target.selectable}
-                    className={cn(
-                      'flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition-colors',
-                      target.current ? 'bg-[var(--app-primary)]/10 text-[var(--app-text)]' : 'hover:bg-[var(--app-surface-hover)]',
-                      !target.selectable && 'cursor-not-allowed opacity-50',
-                    )}
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate font-medium">{target.name}</div>
-                      <div className="truncate text-xs text-[var(--app-text-muted)]">{target.relationship} · {target.role} · {target.online ? 'online' : (target.attach_status || 'offline')}</div>
-                      {target.last_error ? <div className="truncate text-[11px] text-[var(--app-warning)]">{target.last_error}</div> : null}
+          <div className="border-b border-[var(--app-border)] font-mono">
+            <div className="min-h-[124px] border border-[color-mix(in_srgb,var(--app-border)_74%,transparent)] bg-[var(--app-surface)]">
+              <div className="p-[12px_0_11px_13px]">
+                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')}>
+                  <div className="min-w-0">
+                    <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
+                    <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
+                      <strong className="font-medium text-[var(--app-text-muted)]">Master</strong> · {masterWorkspaceName}
                     </div>
-                    {target.current ? <span className="text-xs font-semibold text-[var(--app-primary)]">current</span> : null}
+                  </div>
+                  <SidebarActionRail>
+                    <button
+                      type="button"
+                      className={cn(
+                        SIDEBAR_ACTION_BUTTON_CLASS,
+                        'text-[var(--app-text-subtle)]',
+                        notificationCenter.summary.unreadCount > 0 && 'text-[color-mix(in_srgb,var(--app-warning)_82%,var(--app-text-muted))] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-primary-hover)]',
+                      )}
+                      onClick={() => setNotificationsOpen(true)}
+                      aria-label="Open notifications"
+                      title={notificationCenter.summary.unreadCount > 0 ? `${notificationCenter.summary.unreadCount} unread notifications` : 'Notifications'}
+                    >
+                      <Bell size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)]')}
+                      onClick={() => setSidebarCollapsed(true)}
+                      aria-label="Collapse sidebar"
+                      title="Collapse"
+                    >
+                      <ChevronLeft size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                  </SidebarActionRail>
+                </div>
+
+                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'mt-[7px] min-h-[30px] pr-4 text-[11px] text-[var(--app-text-subtle)]')}>
+                  <button
+                    type="button"
+                    className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap border-0 bg-transparent p-0 text-left font-inherit hover:text-[var(--app-text)]"
+                    onClick={() => {
+                      setWorkspaceMenuOpen(false)
+                      setSwarmMenu((current) => ({ open: !current.open }))
+                    }}
+                    aria-expanded={swarmMenu.open}
+                    aria-label="Choose swarm target"
+                    title={swarmTargetSummary}
+                  >
+                    <span className="shrink-0 text-[color-mix(in_srgb,var(--app-success)_58%,var(--app-text-subtle))]">{swarmTargetCounts.local} local</span>
+                    <span className="shrink-0 opacity-55">·</span>
+                    <span className="truncate text-[color-mix(in_srgb,var(--app-info)_58%,var(--app-text-subtle))]">{swarmTargetCounts.remote} remote</span>
                   </button>
-                ))}
-                {swarmSwitchError ? <div className="rounded-md border border-[var(--app-warning)]/40 bg-[var(--app-warning)]/10 px-3 py-2 text-xs text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
-              </div>
-              <div className="mt-3 border-t border-[var(--app-border)] pt-3">
-                <Button
-                  variant="outline"
-                  className="h-10 w-full justify-center rounded-xl"
-                  onClick={handleOpenSwarmDashboardFromMenu}
-                  aria-label="Open swarm dashboard"
-                >
-                  <Settings size={16} className="shrink-0" />
-                  <span>Swarm dashboard</span>
-                </Button>
+                  <SidebarActionRail>
+                    <SidebarActionRailSpacer />
+                    <button
+                      type="button"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
+                      onClick={handleOpenSwarmDashboard}
+                      aria-label="Add swarm"
+                      title="Add swarm"
+                    >
+                      <Plus size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                  </SidebarActionRail>
+                </div>
+
+                {swarmMenu.open ? (
+                  <div className="mr-4 mt-1.5 border border-[var(--app-border)] bg-[var(--app-surface)] py-1">
+                    {swarmTargets.map((target) => (
+                      <button
+                        key={target.swarm_id}
+                        type="button"
+                        onClick={() => { void handleSelectSwarmTarget(target) }}
+                        disabled={!target.selectable}
+                        className={cn(
+                          SIDEBAR_ACTION_ROW_CLASS,
+                          'min-h-[30px] w-full px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                          target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
+                          !target.selectable && 'cursor-not-allowed opacity-50',
+                        )}
+                        title={`${swarmKindLabel(target)} · ${target.online ? 'online' : (target.attach_status || 'offline')}`}
+                      >
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
+                          <span className="truncate">{target.name}</span>
+                        </span>
+                        <span className="shrink-0 truncate text-right text-[10px] text-[var(--app-text-subtle)]">
+                          {swarmKindLabel(target)} · {target.current ? 'active' : target.online ? 'online' : (target.attach_status || 'offline')}
+                        </span>
+                      </button>
+                    ))}
+                    {swarmSwitchError ? <div className="mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
+                  </div>
+                ) : null}
+
+                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'mt-[7px] min-h-7 border-t border-[color-mix(in_srgb,var(--app-border)_54%,transparent)] pr-4 pt-[7px] text-[11px] text-[var(--app-text-subtle)]')}>
+                  <button
+                    type="button"
+                    className="flex min-h-[22px] min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    onClick={() => {
+                      setSwarmMenu({ open: false })
+                      setWorkspaceMenuOpen((open) => !open)
+                    }}
+                    aria-expanded={workspaceMenuOpen}
+                    aria-label={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspace list`}
+                  >
+                    <span className="truncate">{workspaceCount} workspaces</span>
+                    {workspaceMenuOpen ? <ChevronDown size={14} strokeWidth={1.8} className="shrink-0 rotate-180" /> : <ChevronDown size={14} strokeWidth={1.8} className="shrink-0" />}
+                  </button>
+                  <SidebarActionRail>
+                    <SidebarActionRailSpacer />
+                    <button
+                      type="button"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
+                      onClick={() => handleOpenSettingsTab('agents')}
+                      aria-label="Open agent settings"
+                      title="Settings"
+                    >
+                      <Settings size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                  </SidebarActionRail>
+                </div>
               </div>
             </div>
-          ) : null}
+
+            {workspaceMenuOpen ? (
+              <div className="mt-2 flex flex-col border border-[var(--app-border)] bg-[var(--app-surface)] p-1 font-mono">
+                {mergedSidebarWorkspaceEntries.length === 0 ? (
+                  <div className="px-2 py-1.5 text-[11px] text-[var(--app-text-subtle)]">No saved workspaces.</div>
+                ) : mergedSidebarWorkspaceEntries.map((workspace) => {
+                  const hidden = workspaceLayout[workspace.path]?.hidden ?? false
+                  return (
+                    <div key={workspace.path} className={cn('group min-h-[30px] px-[7px] py-[5px] text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]', SIDEBAR_ACTION_ROW_CLASS)}>
+                      <button
+                        type="button"
+                        className="flex min-w-0 items-center gap-2 overflow-hidden text-left"
+                        onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)}
+                        title={workspace.path}
+                      >
+                        <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', hidden ? 'bg-[var(--app-text-subtle)]' : 'bg-[var(--app-success)]')} />
+                        <span className={cn('truncate', hidden && 'opacity-60')}>{workspace.workspaceName}</span>
+                      </button>
+                      <SidebarActionRail>
+                        <SidebarActionRailSpacer />
+                        <button
+                          type="button"
+                          className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)] opacity-0 hover:bg-[var(--app-surface-active)] group-hover:opacity-100')}
+                          onClick={(e) => { e.stopPropagation(); toggleWorkspaceHidden(workspace.path) }}
+                          aria-label={`${hidden ? 'Show' : 'Hide'} ${workspace.workspaceName} in sidebar`}
+                          title={`${hidden ? 'Show' : 'Hide'} in sidebar`}
+                        >
+                          {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </SidebarActionRail>
+                    </div>
+                  )
+                })}
+                <div className="my-1 h-px bg-[var(--app-border)]" />
+                <button
+                  type="button"
+                  className="flex min-h-[30px] items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  onClick={handleOpenWorkspaceLauncher}
+                >
+                  <Home size={14} className="shrink-0" />
+                  Workspace settings
+                </button>
+              </div>
+            ) : null}
+          </div>
           <div className="flex min-h-0 flex-1 flex-col">
             <div ref={sidebarBodyRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
-              {mergedSidebarWorkspaceEntries.map((workspace, index) => {
+              {visibleSidebarWorkspaceEntries.map((workspace, index) => {
                 const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
                 const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
                 const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, selectedSession?.id)
                 const layout = workspaceLayout[workspace.path]
-                const collapsed = layout?.collapsed ?? false
+                const collapsed = layout?.collapsed ?? true
                 const worktreeBusy = savingPath === workspace.path
                 const handleToggleWorkspaceWorktree = () => {
                   if (worktreeBusy) {
@@ -1828,23 +2051,23 @@ export function DesktopAppPage() {
                 return (
                   <Fragment key={workspace.path}>
                     <section style={workspaceSectionHeightStyle(layout?.ratio ?? 1, totalVisibleRatio, collapsed)} className="flex min-h-0 flex-col overflow-hidden">
-                      <div className="flex items-center justify-between gap-2 px-1 py-1">
+                      <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'px-1 py-1')}>
                         <button
                           type="button"
                           onClick={() => {
                             toggleWorkspaceCollapse(workspace.path)
                           }}
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-[var(--app-text)]"
+                          className="flex min-w-0 items-center gap-2 overflow-hidden text-left transition-colors hover:text-[var(--app-text)]"
                           aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${workspace.workspaceName}`}
                         >
                           {collapsed ? <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" /> : <ChevronDown size={16} className="shrink-0 text-[var(--app-text-subtle)]" />}
                           <div className="truncate text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">{workspace.workspaceName}</div>
                         </button>
-                        <div className="flex items-center gap-1">
+                        <SidebarActionRail>
                           {!workspaceByPath.has(workspace.path) ? (
-                            <Button
-                              variant="ghost"
-                              className="h-12 min-h-12 shrink-0 rounded-xl px-3 text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-warning)]"
+                            <button
+                              type="button"
+                              className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] hover:text-[var(--app-warning)]')}
                               onClick={() => {
                                 void saveWorkspace({
                                   path: workspace.path,
@@ -1854,19 +2077,20 @@ export function DesktopAppPage() {
                                   linkedDirectories: [],
                                 })
                               }}
+                              aria-label="Save this temporary folder as a workspace"
                               title="Save this temporary folder as a workspace"
                             >
-                              ! Save
-                            </Button>
-                          ) : null}
-                          {selectingPath === workspace.path ? <span className="text-xs text-[var(--app-text-muted)]">opening…</span> : null}
-                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.user.taskCount ?? 0} tasks`}>
-                            <ListChecks size={17} strokeWidth={2.25} className="shrink-0" />
-                          </Button>
-                          <Button variant="ghost" className="h-12 w-12 min-h-12 min-w-12 shrink-0 rounded-xl p-0 text-[var(--app-text-muted)] opacity-80 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:opacity-100" onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">
-                            <Plus size={17} strokeWidth={2.25} className="shrink-0" />
-                          </Button>
-                        </div>
+                              !
+                            </button>
+                          ) : selectingPath === workspace.path ? <span className="grid h-6 w-6 place-items-center text-[10px] text-[var(--app-text-muted)]">…</span> : (
+                            <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { openTodoModal(workspace.path, workspace.workspaceName) }} aria-label={`Open tasks for ${workspace.workspaceName}`} title={`${workspace.todoSummary?.user.taskCount ?? 0} tasks`}>
+                              <ListChecks size={14} strokeWidth={1.8} className="shrink-0" />
+                            </button>
+                          )}
+                          <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)} aria-label={`New session in ${workspace.workspaceName}`} title="New session">
+                            <Plus size={14} strokeWidth={1.8} className="shrink-0" />
+                          </button>
+                        </SidebarActionRail>
                       </div>
                       {!collapsed && renderWorkspaceGitBar({
                         workspace,
@@ -1895,49 +2119,38 @@ export function DesktopAppPage() {
                         </div>
                       )}
                     </section>
-                    {index < mergedSidebarWorkspaceEntries.length - 1 && !collapsed && !workspaceLayout[mergedSidebarWorkspaceEntries[index + 1].path]?.collapsed ? (
+                    {index < visibleSidebarWorkspaceEntries.length - 1 && !collapsed && !workspaceLayout[visibleSidebarWorkspaceEntries[index + 1].path]?.collapsed ? (
                       <div
                         role="separator"
                         aria-orientation="horizontal"
                         className="relative my-2 h-4 cursor-row-resize group px-1"
-                        onPointerDown={(event) => handleResizeStart(event, workspace.path, mergedSidebarWorkspaceEntries[index + 1].path)}
+                        onPointerDown={(event) => handleResizeStart(event, workspace.path, visibleSidebarWorkspaceEntries[index + 1].path)}
                       >
                         <div className="absolute inset-x-1 top-1/2 h-px bg-[var(--app-border)] group-hover:bg-[var(--app-border-strong)] transition-colors" />
                       </div>
-                    ) : index < mergedSidebarWorkspaceEntries.length - 1 ? (
+                    ) : index < visibleSidebarWorkspaceEntries.length - 1 ? (
                       <div className="h-2" />
                     ) : null}
                   </Fragment>
                 )
               })}
             </div>
-            <div className="border-t border-[var(--app-border)] px-4 py-3">
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  variant="outline"
-                  className="h-11 min-h-11 w-full justify-center rounded-xl"
-                  onClick={handleOpenWorkspaceLauncher}
-                  aria-label="Open workspaces"
-                >
-                  <Home size={18} className="shrink-0" />
-                  <span>Workspaces</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-11 min-h-11 w-full justify-center rounded-xl"
-                  onClick={() => { setSettingsTab('agents'); setSettingsOpen(true) }}
-                  aria-label="Open settings"
-                >
-                  <Settings size={18} className="shrink-0" />
-                  <span>Settings</span>
-                </Button>
-              </div>
-            </div>
+
           </div>
         </div>
       )}
     </>
   )
+
+  const localContainerConfirmPlan = localContainerUpdateConfirm?.plan ?? null
+  const remoteContainerUpdateCount = localContainerUpdateConfirm ? remoteDeployUpdateSessionCount(localContainerUpdateConfirm.remoteSessions) : 0
+  const localContainerConfirmSummary = localContainerConfirmPlan?.summary ?? null
+  const localContainerAffectedCount = localContainerConfirmSummary
+    ? Math.max(
+      localContainerConfirmSummary.affected ?? 0,
+      (localContainerConfirmSummary.needs_update ?? 0) + (localContainerConfirmSummary.unknown ?? 0) + (localContainerConfirmSummary.errors ?? 0),
+    )
+    : 0
 
   return (
     <div className="flex absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
@@ -2117,14 +2330,59 @@ export function DesktopAppPage() {
         />
       ) : null}
 
+      {localContainerConfirmPlan ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--app-backdrop)] px-4" aria-modal="true" role="dialog">
+          <Card className="w-full max-w-lg border-[var(--app-warning-border)] bg-[var(--app-surface)] p-6 shadow-2xl">
+            <div className="text-lg font-semibold">Update container images too?</div>
+            <p className="mt-3 text-sm text-[var(--app-text-muted)]">
+              {localContainerConfirmPlan.contract?.warning_copy || 'This will also update local and remote container images.'}
+            </p>
+            <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 text-sm">
+              <div className="font-medium">
+                {localContainerAffectedCount > 0
+                  ? `${localContainerAffectedCount} local container${localContainerAffectedCount === 1 ? '' : 's'} may need attention.`
+                  : 'No local containers need attention.'}
+              </div>
+              {remoteContainerUpdateCount > 0 ? (
+                <div className="mt-1 text-sm text-[var(--app-text)]">{remoteContainerUpdateCount} remote SSH session{remoteContainerUpdateCount === 1 ? '' : 's'} will be checked.</div>
+              ) : null}
+              <div className="mt-2 text-xs text-[var(--app-text-muted)]">
+                {formatLocalContainerUpdateTarget(localContainerConfirmPlan)}
+              </div>
+              {localContainerConfirmSummary ? (
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-[var(--app-text-muted)]">
+                  <div>Total: {localContainerConfirmSummary.total}</div>
+                  <div>Needs update: {localContainerConfirmSummary.needs_update}</div>
+                  <div>Already current: {localContainerConfirmSummary.already_current}</div>
+                  <div>Unknown/errors: {(localContainerConfirmSummary.unknown ?? 0) + (localContainerConfirmSummary.errors ?? 0)}</div>
+                </div>
+              ) : null}
+            </div>
+            <p className="mt-3 text-xs text-[var(--app-text-muted)]">
+              {localContainerConfirmPlan.contract?.failure_semantics || 'Swarm update succeeds independently; local or remote container update failures are reported as resumable follow-up work.'}
+            </p>
+            {remoteContainerUpdateCount === 0 ? (
+              <label className="mt-4 flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
+                <input
+                  type="checkbox"
+                  checked={localContainerUpdateConfirm?.pendingDismiss ?? false}
+                  onChange={(event) => handleToggleLocalContainerUpdateDismissal(event.currentTarget.checked)}
+                />
+                <span>Don&apos;t show this again for local-only container image warnings</span>
+              </label>
+            ) : null}
+            <div className="mt-6 flex justify-end gap-3">
+              <Button variant="ghost" onClick={handleCancelLocalContainerUpdate} disabled={updateRunning}>Cancel</Button>
+              <Button onClick={() => { void handleConfirmLocalContainerUpdate() }} disabled={updateRunning}>
+                Continue update
+              </Button>
+            </div>
+          </Card>
+        </div>
+      ) : null}
+
       <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
 
-      <DesktopSettingsModal
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        onOpenSwarmDashboard={handleOpenSwarmDashboard}
-        initialTab={settingsTab}
-      />
     </div>
   )
 }

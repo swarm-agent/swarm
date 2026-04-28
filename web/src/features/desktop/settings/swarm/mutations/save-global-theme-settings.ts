@@ -4,7 +4,7 @@ import { type UISettingsWire } from '../types/swarm-settings'
 
 export async function saveGlobalThemeSettings(themeId: string): Promise<UISettingsWire> {
   const current = await getUISettings()
-  const normalizedThemeId = themeId.trim().toLowerCase() || 'nord'
+  const normalizedThemeId = themeId.trim().toLowerCase() || 'crimson'
   const payload: UISettingsWire = {
     ...current,
     theme: {

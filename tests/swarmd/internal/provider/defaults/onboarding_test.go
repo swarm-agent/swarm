@@ -10,16 +10,16 @@ func TestLookupAnthropicDefaults(t *testing.T) {
 	if got.ProviderID != "anthropic" {
 		t.Fatalf("provider = %q, want anthropic", got.ProviderID)
 	}
-	if got.PrimaryModel != "claude-opus-4-6" {
+	if got.PrimaryModel != "claude-opus-4-7" {
 		t.Fatalf("primary model = %q", got.PrimaryModel)
 	}
-	if got.PrimaryThinking != "high" {
+	if got.PrimaryThinking != "xhigh" {
 		t.Fatalf("primary thinking = %q", got.PrimaryThinking)
 	}
-	if got.UtilityModel != "claude-haiku-4-5" {
+	if got.UtilityModel != "claude-sonnet-4-6" {
 		t.Fatalf("utility model = %q", got.UtilityModel)
 	}
-	if got.UtilityThinking != "high" {
+	if got.UtilityThinking != "xhigh" {
 		t.Fatalf("utility thinking = %q", got.UtilityThinking)
 	}
 }
@@ -60,13 +60,13 @@ func TestLookupCopilotDefaults(t *testing.T) {
 	if !ok {
 		t.Fatalf("Lookup(copilot) ok = false")
 	}
-	if got.PrimaryModel != "gpt-5.5" {
+	if got.PrimaryModel != "gpt-5.4" {
 		t.Fatalf("primary model = %q", got.PrimaryModel)
 	}
 	if got.PrimaryThinking != "high" {
 		t.Fatalf("primary thinking = %q", got.PrimaryThinking)
 	}
-	if got.UtilityModel != "claude-haiku-4.5" {
+	if got.UtilityModel != "gemini-3-flash-preview" {
 		t.Fatalf("utility model = %q", got.UtilityModel)
 	}
 	if got.UtilityThinking != "high" {
@@ -79,10 +79,10 @@ func TestLookupFireworksDefaults(t *testing.T) {
 	if !ok {
 		t.Fatalf("Lookup(fireworks) ok = false")
 	}
-	if got.PrimaryModel != "accounts/fireworks/models/kimi-k2p5" {
+	if got.PrimaryModel != "accounts/fireworks/models/kimi-k2p6" {
 		t.Fatalf("primary model = %q", got.PrimaryModel)
 	}
-	if got.UtilityModel != "accounts/fireworks/models/kimi-k2p5" {
+	if got.UtilityModel != "accounts/fireworks/models/minimax-m2p7" {
 		t.Fatalf("utility model = %q", got.UtilityModel)
 	}
 	if got.PrimaryThinking != "high" || got.UtilityThinking != "high" {
@@ -106,6 +106,22 @@ func TestLookupGoogleDefaults(t *testing.T) {
 	}
 }
 
+func TestLookupOpenRouterDefaults(t *testing.T) {
+	got, ok := Lookup("openrouter")
+	if !ok {
+		t.Fatalf("Lookup(openrouter) ok = false")
+	}
+	if got.PrimaryModel != "openai/gpt-5.5" {
+		t.Fatalf("primary model = %q", got.PrimaryModel)
+	}
+	if got.UtilityModel != "google/gemini-3-flash-preview" {
+		t.Fatalf("utility model = %q", got.UtilityModel)
+	}
+	if got.PrimaryThinking != "high" || got.UtilityThinking != "high" {
+		t.Fatalf("thinking = %q/%q, want high/high", got.PrimaryThinking, got.UtilityThinking)
+	}
+}
+
 func TestLookupUnknownProvider(t *testing.T) {
 	if _, ok := Lookup("unknown"); ok {
 		t.Fatalf("Lookup(unknown) ok = true, want false")
@@ -114,7 +130,7 @@ func TestLookupUnknownProvider(t *testing.T) {
 
 func TestSupportedProvidersSorted(t *testing.T) {
 	got := SupportedProviders()
-	want := []string{"anthropic", "codex", "copilot", "fireworks", "google"}
+	want := []string{"anthropic", "codex", "fireworks", "google", "openrouter"}
 	if len(got) != len(want) {
 		t.Fatalf("providers = %v", got)
 	}

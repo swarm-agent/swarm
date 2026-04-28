@@ -54,6 +54,7 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/containers/profiles/delete", s.handleSwarmContainerProfileDelete)
 	mux.HandleFunc("/v1/swarm/containers/local/runtime", s.handleSwarmLocalContainerRuntime)
 	mux.HandleFunc("/v1/swarm/containers/local", s.handleSwarmLocalContainers)
+	mux.HandleFunc("/v1/swarm/containers/local/update-job", s.handleSwarmLocalContainerUpdateJob)
 	mux.HandleFunc("/v1/swarm/containers/local/create", s.handleSwarmLocalContainerCreate)
 	mux.HandleFunc("/v1/swarm/containers/local/action", s.handleSwarmLocalContainerAction)
 	mux.HandleFunc("/v1/swarm/containers/local/delete", s.handleSwarmLocalContainerDelete)
@@ -80,6 +81,7 @@ func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/remote/session/create", s.handleRemoteDeploySessionCreate)
 	mux.HandleFunc("/v1/deploy/remote/session/delete", s.handleRemoteDeploySessionDelete)
 	mux.HandleFunc("/v1/deploy/remote/session/start", s.handleRemoteDeploySessionStart)
+	mux.HandleFunc("/v1/deploy/remote/session/update-job", s.handleRemoteDeploySessionUpdateJob)
 	mux.HandleFunc("/v1/deploy/remote/session/sync/credentials", s.handleRemoteDeploySessionSyncCredentials)
 	mux.HandleFunc("/v1/deploy/remote/session/", s.handleRemoteDeploySessionApprove)
 }
@@ -134,10 +136,6 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/mcp/servers", s.handleMCPServers)
-	mux.HandleFunc("/v1/mcp/servers/upsert", s.handleMCPServerUpsert)
-	mux.HandleFunc("/v1/mcp/servers/delete", s.handleMCPServerDelete)
-	mux.HandleFunc("/v1/mcp/servers/enabled", s.handleMCPServerEnabled)
 	mux.HandleFunc("/v1/context/sources", s.handleContextSources)
 	mux.HandleFunc("/v1/system/shutdown", s.handleSystemShutdown)
 	mux.HandleFunc("/v1/permissions", s.handlePermissions)
@@ -147,6 +145,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/notifications/summary", s.handleNotifications)
 	mux.HandleFunc("/v1/update/status", s.handleUpdateStatus)
 	mux.HandleFunc("/v1/update/apply", s.handleUpdateApply)
+	mux.HandleFunc("/v1/update/local-containers", s.handleUpdateLocalContainers)
 	mux.HandleFunc("/v1/update/run", s.handleUpdateRun)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/sessions/", s.handleSessionByID)

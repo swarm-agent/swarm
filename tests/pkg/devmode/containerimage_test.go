@@ -28,6 +28,43 @@ func TestContainerImageFingerprintChangesWhenStagedBinaryChanges(t *testing.T) {
 	}
 }
 
+func TestSyncStagedContainerBinariesCopiesCurrentLaneBinaries(t *testing.T) {
+	root := t.TempDir()
+	writeDevImageFixture(t, root)
+	sourceDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(sourceDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "swarmd"), []byte("current-swarmd"), 0o700); err != nil {
+		t.Fatalf("os.WriteFile(source swarmd) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "swarmctl"), []byte("current-swarmctl"), 0o700); err != nil {
+		t.Fatalf("os.WriteFile(source swarmctl) error = %v", err)
+	}
+
+	if err := devmode.SyncStagedContainerBinaries(root, sourceDir); err != nil {
+		t.Fatalf("SyncStagedContainerBinaries() error = %v", err)
+	}
+
+	for _, name := range []string{"swarmd", "swarmctl"} {
+		path := filepath.Join(root, ".bin", "main", name)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("os.ReadFile(%q) error = %v", path, err)
+		}
+		if got, want := string(body), "current-"+name; got != want {
+			t.Fatalf("%s staged body = %q, want %q", name, got, want)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("os.Stat(%q) error = %v", path, err)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Fatalf("%s staged mode = %v, want executable", name, info.Mode())
+		}
+	}
+}
+
 func TestResolveRootRequiresCanonicalDevPaths(t *testing.T) {
 	root := t.TempDir()
 	if _, err := devmode.ResolveRoot(root); err == nil {
@@ -59,6 +96,7 @@ func writeDevImageFixture(t *testing.T, root string) {
 	}
 	files := map[string]string{
 		filepath.Join(root, "scripts", "rebuild-container.sh"):                                    "#!/usr/bin/env bash\nexit 0\n",
+		filepath.Join(root, "deploy", "container-mvp", "Containerfile.base"):                      "FROM ubuntu:24.04\n",
 		filepath.Join(root, "deploy", "container-mvp", "Containerfile"):                           "FROM ubuntu:24.04\n",
 		filepath.Join(root, "deploy", "container-mvp", "entrypoint.sh"):                           "#!/usr/bin/env bash\n",
 		filepath.Join(root, ".bin", "main", "swarmd"):                                             "binary-one",

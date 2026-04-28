@@ -210,12 +210,12 @@ func (m *Manager) RunTurn(ctx context.Context, req provideriface.Request, onEven
 	unsubscribe := session.On(func(event sdk.SessionEvent) {
 		state.applyEvent(event, onEvent)
 		switch event.Type {
-		case sdk.SessionIdle:
+		case sdk.SessionEventTypeSessionIdle:
 			select {
 			case idleCh <- struct{}{}:
 			default:
 			}
-		case sdk.SessionError:
+		case sdk.SessionEventTypeSessionError:
 			if message := strings.TrimSpace(state.sessionErrorValue()); message != "" {
 				select {
 				case errCh <- errors.New(message):
@@ -511,10 +511,9 @@ func (s *turnState) applyEvent(event sdk.SessionEvent, onEvent func(providerifac
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data := event.Data
-	switch event.Type {
-	case sdk.AssistantMessageDelta, sdk.AssistantStreamingDelta:
-		delta := firstRawString(data.DeltaContent, data.Content)
+	switch data := event.Data.(type) {
+	case *sdk.AssistantMessageDeltaData:
+		delta := strings.TrimSpace(data.DeltaContent)
 		if delta == "" {
 			return
 		}
@@ -522,13 +521,13 @@ func (s *turnState) applyEvent(event sdk.SessionEvent, onEvent func(providerifac
 		if onEvent != nil {
 			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta})
 		}
-	case sdk.AssistantMessage:
-		text := strings.TrimSpace(firstString(data.Content, data.TransformedContent))
+	case *sdk.AssistantMessageData:
+		text := strings.TrimSpace(data.Content)
 		if text != "" {
 			s.assistantText = text
 		}
-	case sdk.AssistantReasoningDelta:
-		delta := firstRawString(data.DeltaContent, data.ReasoningText, data.Content)
+	case *sdk.AssistantReasoningDeltaData:
+		delta := strings.TrimSpace(data.DeltaContent)
 		if delta == "" {
 			return
 		}
@@ -536,23 +535,26 @@ func (s *turnState) applyEvent(event sdk.SessionEvent, onEvent func(providerifac
 		if onEvent != nil {
 			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: delta})
 		}
-	case sdk.AssistantReasoning:
-		text := strings.TrimSpace(firstString(data.ReasoningText, data.Content))
+	case *sdk.AssistantReasoningData:
+		text := strings.TrimSpace(data.Content)
 		if text != "" {
 			s.reasoningText = text
 		}
-	case sdk.SessionModelChange:
-		if model := strings.TrimSpace(firstString(data.NewModel, data.CurrentModel, data.Model, data.SelectedModel)); model != "" {
+	case *sdk.SessionModelChangeData:
+		if model := strings.TrimSpace(data.NewModel); model != "" {
 			s.model = model
 		}
-	case sdk.AssistantTurnEnd:
-		if stopReason := strings.TrimSpace(firstString(data.Reason, data.Message)); stopReason != "" {
-			s.stopReason = stopReason
+	case *sdk.AssistantTurnEndData:
+		if strings.TrimSpace(s.stopReason) == "" {
+			s.stopReason = "stop"
 		}
-	case sdk.AssistantUsage:
-		applyCopilotUsageFields(&s.usage, data)
-	case sdk.SessionUsageInfo:
-		applyCopilotUsageFields(&s.usage, data)
+	case *sdk.AssistantUsageData:
+		applyCopilotAssistantUsageFields(&s.usage, data)
+		if model := strings.TrimSpace(data.Model); model != "" {
+			s.model = model
+		}
+	case *sdk.SessionUsageInfoData:
+		applyCopilotSessionUsageFields(&s.usage, data)
 		s.usage.Source = "copilot_session_usage"
 		raw := buildCopilotSessionUsageRaw(data)
 		if len(raw) > 0 {
@@ -561,11 +563,8 @@ func (s *turnState) applyEvent(event sdk.SessionEvent, onEvent func(providerifac
 			s.usage.APIUsageHistory = append(s.usage.APIUsageHistory, cloneMap(raw))
 			s.usage.APIUsagePaths = append(s.usage.APIUsagePaths, "session.usage_info")
 		}
-		if model := strings.TrimSpace(firstString(data.CurrentModel, data.Model, data.SelectedModel)); model != "" {
-			s.model = model
-		}
-	case sdk.SessionError:
-		if message := strings.TrimSpace(sessionErrorMessage(data)); message != "" {
+	case *sdk.SessionErrorData:
+		if message := strings.TrimSpace(data.Message); message != "" {
 			s.sessionError = message
 		}
 	}
@@ -612,8 +611,8 @@ func (s *turnState) snapshot(fallbackModel string) provideriface.Response {
 	}
 }
 
-func applyCopilotUsageFields(usage *provideriface.TokenUsage, data sdk.Data) {
-	if usage == nil {
+func applyCopilotAssistantUsageFields(usage *provideriface.TokenUsage, data *sdk.AssistantUsageData) {
+	if usage == nil || data == nil {
 		return
 	}
 	if value, ok := floatValue(data.InputTokens); ok {
@@ -628,125 +627,42 @@ func applyCopilotUsageFields(usage *provideriface.TokenUsage, data sdk.Data) {
 	if value, ok := floatValue(data.CacheWriteTokens); ok {
 		usage.CacheWriteTokens = value
 	}
-	if value, ok := floatValue(data.CurrentTokens); ok {
-		usage.TotalTokens = value
-	}
 }
 
-func buildCopilotSessionUsageRaw(data sdk.Data) map[string]any {
-	raw := map[string]any{}
-	if value, ok := floatValue(data.CurrentTokens); ok {
-		raw["current_tokens"] = value
+func applyCopilotSessionUsageFields(usage *provideriface.TokenUsage, data *sdk.SessionUsageInfoData) {
+	if usage == nil || data == nil {
+		return
 	}
-	if value, ok := floatValue(data.TokenLimit); ok {
-		raw["token_limit"] = value
-		remaining := value
-		if current, ok := floatValue(data.CurrentTokens); ok {
-			remaining -= current
-			if remaining < 0 {
-				remaining = 0
-			}
-		}
-		raw["remaining_tokens"] = remaining
-	}
-	if value, ok := floatValue(data.InputTokens); ok {
-		raw["input_tokens"] = value
-	}
-	if value, ok := floatValue(data.OutputTokens); ok {
-		raw["output_tokens"] = value
-	}
-	if value, ok := floatValue(data.CacheReadTokens); ok {
-		raw["cache_read_tokens"] = value
-	}
-	if value, ok := floatValue(data.CacheWriteTokens); ok {
-		raw["cache_write_tokens"] = value
-	}
-	if model := strings.TrimSpace(firstString(data.CurrentModel, data.Model, data.SelectedModel)); model != "" {
-		raw["model"] = model
-	}
-	if len(data.QuotaSnapshots) > 0 {
-		quotas := make(map[string]any, len(data.QuotaSnapshots))
-		for key, snapshot := range data.QuotaSnapshots {
-			key = strings.TrimSpace(key)
-			if key == "" {
-				continue
-			}
-			entry := map[string]any{
-				"remaining_percentage":                 snapshot.RemainingPercentage,
-				"used_requests":                        snapshot.UsedRequests,
-				"entitlement_requests":                 snapshot.EntitlementRequests,
-				"overage":                              snapshot.Overage,
-				"is_unlimited_entitlement":             snapshot.IsUnlimitedEntitlement,
-				"usage_allowed_with_exhausted_quota":   snapshot.UsageAllowedWithExhaustedQuota,
-				"overage_allowed_with_exhausted_quota": snapshot.OverageAllowedWithExhaustedQuota,
-			}
-			if snapshot.ResetDate != nil {
-				entry["reset_date"] = snapshot.ResetDate.UnixMilli()
-			}
-			quotas[key] = entry
-		}
-		if len(quotas) > 0 {
-			raw["quota_snapshots"] = quotas
-		}
-	}
-	if data.CopilotUsage != nil {
-		tokenDetails := make([]map[string]any, 0, len(data.CopilotUsage.TokenDetails))
-		for _, detail := range data.CopilotUsage.TokenDetails {
-			tokenDetails = append(tokenDetails, map[string]any{
-				"token_type":     detail.TokenType,
-				"token_count":    detail.TokenCount,
-				"batch_size":     detail.BatchSize,
-				"cost_per_batch": detail.CostPerBatch,
-			})
-		}
-		raw["copilot_usage"] = map[string]any{
-			"total_nano_aiu": data.CopilotUsage.TotalNanoAiu,
-			"token_details":  tokenDetails,
-		}
-	}
-	if len(raw) == 0 {
+	usage.TotalTokens = int64(data.CurrentTokens)
+}
+
+func buildCopilotSessionUsageRaw(data *sdk.SessionUsageInfoData) map[string]any {
+	if data == nil {
 		return nil
 	}
+	raw := map[string]any{
+		"current_tokens": int64(data.CurrentTokens),
+		"token_limit":    int64(data.TokenLimit),
+	}
+	remaining := int64(data.TokenLimit - data.CurrentTokens)
+	if remaining < 0 {
+		remaining = 0
+	}
+	raw["remaining_tokens"] = remaining
+	if data.ConversationTokens != nil {
+		raw["conversation_tokens"] = int64(*data.ConversationTokens)
+	}
+	if data.SystemTokens != nil {
+		raw["system_tokens"] = int64(*data.SystemTokens)
+	}
+	if data.ToolDefinitionsTokens != nil {
+		raw["tool_definitions_tokens"] = int64(*data.ToolDefinitionsTokens)
+	}
+	if data.IsInitial != nil {
+		raw["is_initial"] = *data.IsInitial
+	}
+	raw["messages_length"] = int64(data.MessagesLength)
 	return raw
-}
-
-func sessionErrorMessage(data sdk.Data) string {
-	if message := strings.TrimSpace(firstString(data.Message)); message != "" {
-		return message
-	}
-	if data.Error != nil && data.Error.ErrorClass != nil {
-		if message := strings.TrimSpace(data.Error.ErrorClass.Message); message != "" {
-			return message
-		}
-	}
-	if message := strings.TrimSpace(firstString(data.ErrorReason)); message != "" {
-		return message
-	}
-	return ""
-}
-
-func firstString(values ...*string) string {
-	for _, value := range values {
-		if value == nil {
-			continue
-		}
-		if text := strings.TrimSpace(*value); text != "" {
-			return text
-		}
-	}
-	return ""
-}
-
-func firstRawString(values ...*string) string {
-	for _, value := range values {
-		if value == nil {
-			continue
-		}
-		if *value != "" {
-			return *value
-		}
-	}
-	return ""
 }
 
 func floatValue(value *float64) (int64, bool) {

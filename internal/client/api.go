@@ -68,6 +68,146 @@ type UpdateApplyPlan struct {
 	ComparisonSource string `json:"comparison_source,omitempty"`
 }
 
+type LocalContainerUpdatePlan struct {
+	PathID        string                       `json:"path_id"`
+	Mode          string                       `json:"mode"`
+	DevMode       bool                         `json:"dev_mode"`
+	Target        LocalContainerUpdateTarget   `json:"target"`
+	Summary       LocalContainerUpdateSummary  `json:"summary"`
+	Containers    []LocalContainerUpdateItem   `json:"containers"`
+	Contract      LocalContainerUpdateContract `json:"contract"`
+	Error         string                       `json:"error,omitempty"`
+	CheckedAtUnix int64                        `json:"checked_at_unix_ms,omitempty"`
+}
+
+type LocalContainerUpdateJobResult struct {
+	PathID          string                         `json:"path_id"`
+	Mode            string                         `json:"mode"`
+	DevMode         bool                           `json:"dev_mode"`
+	Target          LocalContainerUpdateTarget     `json:"target"`
+	Summary         LocalContainerUpdateJobSummary `json:"summary"`
+	Items           []LocalContainerUpdateJobItem  `json:"items"`
+	CheckedAtUnix   int64                          `json:"checked_at_unix_ms,omitempty"`
+	StartedAtUnix   int64                          `json:"started_at_unix_ms,omitempty"`
+	UpdatedAtUnix   int64                          `json:"updated_at_unix_ms,omitempty"`
+	CompletedAtUnix int64                          `json:"completed_at_unix_ms,omitempty"`
+}
+
+type LocalContainerUpdateJobSummary struct {
+	Total          int `json:"total"`
+	Replaced       int `json:"replaced"`
+	Skipped        int `json:"skipped"`
+	Failed         int `json:"failed"`
+	AlreadyCurrent int `json:"already_current"`
+	Unknown        int `json:"unknown"`
+}
+
+type LocalContainerUpdateJobItem struct {
+	ID                  string                   `json:"id"`
+	Name                string                   `json:"name,omitempty"`
+	ContainerName       string                   `json:"container_name,omitempty"`
+	Runtime             string                   `json:"runtime,omitempty"`
+	PreviousContainerID string                   `json:"previous_container_id,omitempty"`
+	ContainerID         string                   `json:"container_id,omitempty"`
+	PreviousImageRef    string                   `json:"previous_image_ref,omitempty"`
+	TargetImageRef      string                   `json:"target_image_ref,omitempty"`
+	TargetFingerprint   string                   `json:"target_fingerprint,omitempty"`
+	Status              string                   `json:"status,omitempty"`
+	State               string                   `json:"state"`
+	Reason              string                   `json:"reason,omitempty"`
+	Warning             string                   `json:"warning,omitempty"`
+	Error               string                   `json:"error,omitempty"`
+	Plan                LocalContainerUpdateItem `json:"plan,omitempty"`
+}
+
+type RemoteDeployUpdateJobResult struct {
+	PathID          string                       `json:"path_id"`
+	Mode            string                       `json:"mode"`
+	DevMode         bool                         `json:"dev_mode"`
+	Summary         RemoteDeployUpdateJobSummary `json:"summary"`
+	Items           []RemoteDeployUpdateJobItem  `json:"items"`
+	StartedAtUnix   int64                        `json:"started_at_unix_ms,omitempty"`
+	UpdatedAtUnix   int64                        `json:"updated_at_unix_ms,omitempty"`
+	CompletedAtUnix int64                        `json:"completed_at_unix_ms,omitempty"`
+}
+
+type RemoteDeployUpdateJobSummary struct {
+	Total          int `json:"total"`
+	Replaced       int `json:"replaced"`
+	Skipped        int `json:"skipped"`
+	Failed         int `json:"failed"`
+	AlreadyCurrent int `json:"already_current"`
+	Unknown        int `json:"unknown"`
+}
+
+type RemoteDeployUpdateJobItem struct {
+	ID               string `json:"id"`
+	Name             string `json:"name,omitempty"`
+	SSHSessionTarget string `json:"ssh_session_target,omitempty"`
+	Status           string `json:"status,omitempty"`
+	State            string `json:"state"`
+	Reason           string `json:"reason,omitempty"`
+	PreviousImageRef string `json:"previous_image_ref,omitempty"`
+	TargetImageRef   string `json:"target_image_ref,omitempty"`
+	ImageSignature   string `json:"image_signature,omitempty"`
+	Error            string `json:"error,omitempty"`
+}
+
+type RemoteDeploySession struct {
+	ID               string `json:"id"`
+	Name             string `json:"name,omitempty"`
+	Status           string `json:"status,omitempty"`
+	SSHSessionTarget string `json:"ssh_session_target,omitempty"`
+	ImageRef         string `json:"image_ref,omitempty"`
+}
+
+type LocalContainerUpdateTarget struct {
+	ImageRef               string `json:"image_ref,omitempty"`
+	DigestRef              string `json:"digest_ref,omitempty"`
+	Version                string `json:"version,omitempty"`
+	Fingerprint            string `json:"fingerprint,omitempty"`
+	PostRebuildImageRef    string `json:"post_rebuild_image_ref,omitempty"`
+	PostRebuildFingerprint string `json:"post_rebuild_fingerprint,omitempty"`
+	Commit                 string `json:"commit,omitempty"`
+}
+
+type LocalContainerUpdateSummary struct {
+	Total          int `json:"total"`
+	Affected       int `json:"affected"`
+	AlreadyCurrent int `json:"already_current"`
+	NeedsUpdate    int `json:"needs_update"`
+	Unknown        int `json:"unknown"`
+	Errors         int `json:"errors"`
+}
+
+type LocalContainerUpdateContract struct {
+	WarningCopy      string `json:"warning_copy"`
+	DismissalScope   string `json:"dismissal_scope"`
+	FailureSemantics string `json:"failure_semantics"`
+	Replacement      string `json:"replacement"`
+}
+
+type LocalContainerUpdateItem struct {
+	ID                 string            `json:"id"`
+	Name               string            `json:"name"`
+	ContainerName      string            `json:"container_name"`
+	Runtime            string            `json:"runtime"`
+	Status             string            `json:"status,omitempty"`
+	ContainerID        string            `json:"container_id,omitempty"`
+	StoredImageRef     string            `json:"stored_image_ref,omitempty"`
+	CurrentImageRef    string            `json:"current_image_ref,omitempty"`
+	CurrentDigestRef   string            `json:"current_digest_ref,omitempty"`
+	CurrentFingerprint string            `json:"current_fingerprint,omitempty"`
+	TargetImageRef     string            `json:"target_image_ref,omitempty"`
+	TargetDigestRef    string            `json:"target_digest_ref,omitempty"`
+	TargetVersion      string            `json:"target_version,omitempty"`
+	TargetFingerprint  string            `json:"target_fingerprint,omitempty"`
+	State              string            `json:"state"`
+	Reason             string            `json:"reason,omitempty"`
+	Error              string            `json:"error,omitempty"`
+	Labels             map[string]string `json:"labels,omitempty"`
+}
+
 type CodexStatus struct {
 	Provider     string              `json:"provider"`
 	Configured   bool                `json:"configured"`
@@ -273,12 +413,31 @@ type AgentToolContract struct {
 	InheritPolicy bool                       `json:"inherit_policy,omitempty"`
 }
 
+type ProviderDefaultsPreview struct {
+	Provider              string   `json:"provider,omitempty"`
+	PrimaryAgent          string   `json:"primary_agent,omitempty"`
+	PrimaryModel          string   `json:"primary_model,omitempty"`
+	PrimaryThinking       string   `json:"primary_thinking,omitempty"`
+	UtilityProvider       string   `json:"utility_provider,omitempty"`
+	UtilityModel          string   `json:"utility_model,omitempty"`
+	UtilityThinking       string   `json:"utility_thinking,omitempty"`
+	UtilityAgents         []string `json:"utility_agents,omitempty"`
+	AffectedAgents        []string `json:"affected_agents,omitempty"`
+	OutOfSyncAgents       []string `json:"out_of_sync_agents,omitempty"`
+	InheritingAgents      []string `json:"inheriting_agents,omitempty"`
+	StaleInheritedAgents  []string `json:"stale_inherited_agents,omitempty"`
+	CustomUtilityAgents   []string `json:"custom_utility_agents,omitempty"`
+	UtilityBaselineAgents []string `json:"utility_baseline_agents,omitempty"`
+	OverwriteExplicit     bool     `json:"overwrite_explicit,omitempty"`
+}
+
 type AgentState struct {
-	Profiles       []AgentProfile              `json:"profiles"`
-	CustomTools    []AgentCustomToolDefinition `json:"custom_tools,omitempty"`
-	ActivePrimary  string                      `json:"active_primary"`
-	ActiveSubagent map[string]string           `json:"active_subagent"`
-	Version        int64                       `json:"version"`
+	Profiles                []AgentProfile              `json:"profiles"`
+	CustomTools             []AgentCustomToolDefinition `json:"custom_tools,omitempty"`
+	ActivePrimary           string                      `json:"active_primary"`
+	ActiveSubagent          map[string]string           `json:"active_subagent"`
+	Version                 int64                       `json:"version"`
+	ProviderDefaultsPreview *ProviderDefaultsPreview    `json:"-"`
 }
 
 type AgentCustomToolDefinition struct {
@@ -290,10 +449,11 @@ type AgentCustomToolDefinition struct {
 }
 
 type RestoreAgentsDefaultsResult struct {
-	Profiles       []AgentProfile    `json:"profiles"`
-	ActivePrimary  string            `json:"active_primary"`
-	ActiveSubagent map[string]string `json:"active_subagent"`
-	Version        int64             `json:"version"`
+	Profiles                []AgentProfile           `json:"profiles"`
+	ActivePrimary           string                   `json:"active_primary"`
+	ActiveSubagent          map[string]string        `json:"active_subagent"`
+	Version                 int64                    `json:"version"`
+	ProviderDefaultsPreview *ProviderDefaultsPreview `json:"provider_defaults_preview,omitempty"`
 }
 
 type AgentUpsertRequest struct {
@@ -683,7 +843,12 @@ type UISwarmingSettings struct {
 // - UISwarmSettings is for the user-editable machine name shared by TUI /swarm and desktop settings.
 // Do not merge these concepts in future edits.
 type UISwarmSettings struct {
-	Name string `json:"name,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	RemoteSSHTargets []string `json:"remote_ssh_targets,omitempty"`
+}
+
+type UIUpdateSettings struct {
+	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
 }
 
 type UISettings struct {
@@ -692,6 +857,7 @@ type UISettings struct {
 	Chat      UIChatSettings     `json:"chat,omitempty"`
 	Swarming  UISwarmingSettings `json:"swarming,omitempty"`
 	Swarm     UISwarmSettings    `json:"swarm,omitempty"`
+	Updates   UIUpdateSettings   `json:"updates,omitempty"`
 	UpdatedAt int64              `json:"updated_at"`
 }
 
@@ -967,9 +1133,6 @@ func (c *API) SetToken(token string) {
 	c.mu.Unlock()
 }
 
-func (c *API) SetBypassPermissions(_ bool) {
-}
-
 func (c *API) Token() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -1078,6 +1241,87 @@ func (c *API) ApplyUpdate(ctx context.Context) (UpdateApplyPlan, error) {
 		return UpdateApplyPlan{}, err
 	}
 	return plan, nil
+}
+
+func (c *API) GetLocalContainerUpdatePlan(ctx context.Context, devMode *bool, targetVersion string) (LocalContainerUpdatePlan, error) {
+	return c.GetLocalContainerUpdatePlanWithPostRebuild(ctx, devMode, targetVersion, false)
+}
+
+func (c *API) GetLocalContainerUpdatePlanWithPostRebuild(ctx context.Context, devMode *bool, targetVersion string, postRebuildCheck bool) (LocalContainerUpdatePlan, error) {
+	path := "/v1/update/local-containers"
+	query := url.Values{}
+	if devMode != nil {
+		query.Set("dev_mode", strconv.FormatBool(*devMode))
+	}
+	if strings.TrimSpace(targetVersion) != "" {
+		query.Set("target_version", strings.TrimSpace(targetVersion))
+	}
+	if postRebuildCheck {
+		query.Set("post_rebuild_check", "true")
+	}
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var plan LocalContainerUpdatePlan
+	if err := c.getJSON(ctx, path, &plan, true); err != nil {
+		return LocalContainerUpdatePlan{}, err
+	}
+	return plan, nil
+}
+
+func (c *API) RunRemoteDeployUpdateJob(ctx context.Context, devMode *bool, postRebuildCheck bool) (RemoteDeployUpdateJobResult, error) {
+	payload := map[string]any{
+		"post_rebuild_check": postRebuildCheck,
+	}
+	if devMode != nil {
+		payload["dev_mode"] = *devMode
+	}
+	var response struct {
+		OK     bool                        `json:"ok"`
+		PathID string                      `json:"path_id,omitempty"`
+		Result RemoteDeployUpdateJobResult `json:"result"`
+		Error  string                      `json:"error,omitempty"`
+	}
+	status, body, err := c.request(ctx, http.MethodPost, "/v1/deploy/remote/session/update-job", payload, true)
+	if err != nil {
+		return RemoteDeployUpdateJobResult{}, err
+	}
+	if len(body) > 0 {
+		if decodeErr := json.Unmarshal(body, &response); decodeErr != nil {
+			return RemoteDeployUpdateJobResult{}, fmt.Errorf("decode remote deploy update job response: %w", decodeErr)
+		}
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		message := strings.TrimSpace(response.Error)
+		if message == "" {
+			return response.Result, decodeAPIError(status, body)
+		}
+		return response.Result, fmt.Errorf("api %d: %s", status, message)
+	}
+	if !response.OK {
+		message := strings.TrimSpace(response.Error)
+		if message == "" {
+			message = "remote deploy update job failed"
+		}
+		return response.Result, errors.New(message)
+	}
+	return response.Result, nil
+}
+
+func (c *API) GetRemoteDeploySessions(ctx context.Context, refresh bool) ([]RemoteDeploySession, error) {
+	path := "/v1/deploy/remote/session"
+	if refresh {
+		path += "?refresh=1"
+	}
+	var response struct {
+		OK       bool                  `json:"ok"`
+		Sessions []RemoteDeploySession `json:"sessions"`
+		Error    string                `json:"error,omitempty"`
+	}
+	if err := c.getJSON(ctx, path, &response, true); err != nil {
+		return nil, err
+	}
+	return append([]RemoteDeploySession(nil), response.Sessions...), nil
 }
 
 func (c *API) GetUISettings(ctx context.Context) (UISettings, error) {
@@ -1523,13 +1767,54 @@ func (c *API) ListAgents(ctx context.Context, limit int) (AgentState, error) {
 	}
 	path := "/v2/agents?limit=" + strconv.Itoa(limit)
 	var resp struct {
-		OK    bool       `json:"ok"`
-		State AgentState `json:"state"`
+		OK                      bool                     `json:"ok"`
+		State                   AgentState               `json:"state"`
+		ProviderDefaultsPreview *ProviderDefaultsPreview `json:"provider_defaults_preview"`
 	}
 	if err := c.getJSON(ctx, path, &resp, true); err != nil {
 		return AgentState{}, err
 	}
+	resp.State.ProviderDefaultsPreview = normalizeProviderDefaultsPreview(resp.ProviderDefaultsPreview)
 	return resp.State, nil
+}
+
+func normalizeProviderDefaultsPreview(preview *ProviderDefaultsPreview) *ProviderDefaultsPreview {
+	if preview == nil {
+		return nil
+	}
+	out := *preview
+	out.Provider = strings.TrimSpace(out.Provider)
+	out.PrimaryAgent = strings.TrimSpace(out.PrimaryAgent)
+	out.PrimaryModel = strings.TrimSpace(out.PrimaryModel)
+	out.PrimaryThinking = strings.TrimSpace(out.PrimaryThinking)
+	out.UtilityProvider = strings.TrimSpace(out.UtilityProvider)
+	if out.UtilityProvider == "" {
+		out.UtilityProvider = out.Provider
+	}
+	out.UtilityModel = strings.TrimSpace(out.UtilityModel)
+	out.UtilityThinking = strings.TrimSpace(out.UtilityThinking)
+	out.UtilityAgents = trimStringSlice(out.UtilityAgents)
+	out.AffectedAgents = trimStringSlice(out.AffectedAgents)
+	out.OutOfSyncAgents = trimStringSlice(out.OutOfSyncAgents)
+	out.InheritingAgents = trimStringSlice(out.InheritingAgents)
+	out.StaleInheritedAgents = trimStringSlice(out.StaleInheritedAgents)
+	out.CustomUtilityAgents = trimStringSlice(out.CustomUtilityAgents)
+	out.UtilityBaselineAgents = trimStringSlice(out.UtilityBaselineAgents)
+	return &out
+}
+
+func trimStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (c *API) UpsertAgent(ctx context.Context, req AgentUpsertRequest) (AgentProfile, int64, error) {
@@ -1720,41 +2005,63 @@ func (c *API) DeleteAgent(ctx context.Context, name string) (string, string, int
 	return strings.TrimSpace(resp.Deleted), strings.TrimSpace(resp.ActivePrimary), resp.Version, nil
 }
 
-func (c *API) RestoreAgentDefaults(ctx context.Context) (RestoreAgentsDefaultsResult, error) {
+func (c *API) RestoreAgentDefaults(ctx context.Context, utilityInput ...ProviderDefaultsPreview) (RestoreAgentsDefaultsResult, error) {
 	var resp struct {
-		OK             bool              `json:"ok"`
-		Profiles       []AgentProfile    `json:"profiles"`
-		ActivePrimary  string            `json:"active_primary"`
-		ActiveSubagent map[string]string `json:"active_subagent"`
-		Version        int64             `json:"version"`
+		OK                      bool                     `json:"ok"`
+		Profiles                []AgentProfile           `json:"profiles"`
+		ActivePrimary           string                   `json:"active_primary"`
+		ActiveSubagent          map[string]string        `json:"active_subagent"`
+		Version                 int64                    `json:"version"`
+		ProviderDefaultsPreview *ProviderDefaultsPreview `json:"provider_defaults_preview"`
 	}
-	if err := c.postJSON(ctx, "/v2/agents/defaults/restore", map[string]any{}, &resp, true); err != nil {
+	payload := map[string]any{}
+	if len(utilityInput) > 0 {
+		input := utilityInput[0]
+		if strings.TrimSpace(input.UtilityProvider) != "" {
+			payload["utility_provider"] = strings.TrimSpace(input.UtilityProvider)
+		}
+		if strings.TrimSpace(input.UtilityModel) != "" {
+			payload["utility_model"] = strings.TrimSpace(input.UtilityModel)
+		}
+		if strings.TrimSpace(input.UtilityThinking) != "" {
+			payload["utility_thinking"] = strings.TrimSpace(input.UtilityThinking)
+		}
+		if input.OverwriteExplicit {
+			payload["overwrite_explicit"] = true
+		}
+	} else {
+		payload = nil
+	}
+	if err := c.postJSON(ctx, "/v2/agents/defaults/restore", payload, &resp, true); err != nil {
 		return RestoreAgentsDefaultsResult{}, err
 	}
 	return RestoreAgentsDefaultsResult{
-		Profiles:       resp.Profiles,
-		ActivePrimary:  strings.TrimSpace(resp.ActivePrimary),
-		ActiveSubagent: resp.ActiveSubagent,
-		Version:        resp.Version,
+		Profiles:                resp.Profiles,
+		ActivePrimary:           strings.TrimSpace(resp.ActivePrimary),
+		ActiveSubagent:          resp.ActiveSubagent,
+		Version:                 resp.Version,
+		ProviderDefaultsPreview: normalizeProviderDefaultsPreview(resp.ProviderDefaultsPreview),
 	}, nil
 }
 
 func (c *API) ResetAgentDefaults(ctx context.Context) (RestoreAgentsDefaultsResult, error) {
 	var resp struct {
-		OK             bool              `json:"ok"`
-		Profiles       []AgentProfile    `json:"profiles"`
-		ActivePrimary  string            `json:"active_primary"`
-		ActiveSubagent map[string]string `json:"active_subagent"`
-		Version        int64             `json:"version"`
+		OK                      bool                     `json:"ok"`
+		Profiles                []AgentProfile           `json:"profiles"`
+		ActivePrimary           string                   `json:"active_primary"`
+		ActiveSubagent          map[string]string        `json:"active_subagent"`
+		Version                 int64                    `json:"version"`
+		ProviderDefaultsPreview *ProviderDefaultsPreview `json:"provider_defaults_preview"`
 	}
 	if err := c.postJSON(ctx, "/v2/agents/defaults/reset", map[string]any{}, &resp, true); err != nil {
 		return RestoreAgentsDefaultsResult{}, err
 	}
 	return RestoreAgentsDefaultsResult{
-		Profiles:       resp.Profiles,
-		ActivePrimary:  strings.TrimSpace(resp.ActivePrimary),
-		ActiveSubagent: resp.ActiveSubagent,
-		Version:        resp.Version,
+		Profiles:                resp.Profiles,
+		ActivePrimary:           strings.TrimSpace(resp.ActivePrimary),
+		ActiveSubagent:          resp.ActiveSubagent,
+		Version:                 resp.Version,
+		ProviderDefaultsPreview: normalizeProviderDefaultsPreview(resp.ProviderDefaultsPreview),
 	}, nil
 }
 

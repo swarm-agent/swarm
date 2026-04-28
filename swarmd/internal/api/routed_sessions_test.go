@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -22,6 +23,8 @@ import (
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
+
+var errTestRemoteUpdateFailure = errors.New("remote update failed")
 
 func TestRoutedSessionMessagesReloadFromHostWithoutProxy(t *testing.T) {
 	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
@@ -370,6 +373,40 @@ func TestRemoteDeploySessionStartForwardsLaunchOnlyTailscaleAuthKey(t *testing.T
 	}
 }
 
+func TestRemoteDeploySessionUpdateJobReturnsPartialResultOnConflict(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	fake := &fakeRemoteDeployService{
+		updateJobResult: remotedeploy.UpdateJobResult{
+			PathID: remotedeploy.PathSessionUpdateJob,
+			Summary: remotedeploy.UpdateJobSummary{
+				Total:  1,
+				Failed: 1,
+			},
+		},
+		updateJobErr: errTestRemoteUpdateFailure,
+	}
+	server.SetRemoteDeployService(fake)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/remote/session/update-job", bytes.NewBufferString(`{"dev_mode":true,"post_rebuild_check":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	var payload struct {
+		OK     bool                         `json:"ok"`
+		Result remotedeploy.UpdateJobResult `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.OK || payload.Result.Summary.Failed != 1 {
+		t.Fatalf("payload = %+v", payload)
+	}
+}
+
 func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service, *permission.Service, *pebblestore.SessionRouteStore) {
 	t.Helper()
 
@@ -450,10 +487,12 @@ type fakeRoutedSwarmService struct {
 }
 
 type fakeRemoteDeployService struct {
-	sessions       []remotedeploy.Session
-	lastStartInput remotedeploy.StartSessionInput
-	startResult    remotedeploy.Session
-	startErr       error
+	sessions        []remotedeploy.Session
+	lastStartInput  remotedeploy.StartSessionInput
+	startResult     remotedeploy.Session
+	startErr        error
+	updateJobResult remotedeploy.UpdateJobResult
+	updateJobErr    error
 }
 
 func (f *fakeRemoteDeployService) List(_ context.Context) ([]remotedeploy.Session, error) {
@@ -478,6 +517,10 @@ func (f *fakeRemoteDeployService) Start(_ context.Context, input remotedeploy.St
 		return remotedeploy.Session{}, f.startErr
 	}
 	return f.startResult, nil
+}
+
+func (f *fakeRemoteDeployService) RunUpdateJob(_ context.Context, input remotedeploy.UpdateJobInput) (remotedeploy.UpdateJobResult, error) {
+	return f.updateJobResult, f.updateJobErr
 }
 
 func (f *fakeRemoteDeployService) Approve(_ context.Context, input remotedeploy.ApproveSessionInput) (remotedeploy.Session, error) {

@@ -53,16 +53,22 @@ is_true() {
 }
 
 ensure_runtime_permissions() {
-  mkdir -p "${SWARM_RUNTIME_HOME}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")" /workspaces
+  runtime_config_home="${XDG_CONFIG_HOME:-${SWARM_RUNTIME_HOME}/.config}"
+  runtime_data_home="${XDG_DATA_HOME:-${SWARM_RUNTIME_HOME}/.local/share}"
+  runtime_state_home="${XDG_STATE_HOME:-${SWARM_RUNTIME_HOME}/.local/state}"
+  mkdir -p "${SWARM_RUNTIME_HOME}" "${runtime_config_home}" "${runtime_data_home}" "${runtime_state_home}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")" /workspaces
   # /workspaces is an intentional host-shared mount boundary; do not rewrite ownership.
-  chown -R nobody:nogroup "${SWARM_RUNTIME_HOME}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")"
+  chown -R nobody:nogroup "${SWARM_RUNTIME_HOME}" "${runtime_config_home}" "${runtime_data_home}" "${runtime_state_home}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")"
 }
 
 run_as_swarm_user() {
+  runtime_config_home="${XDG_CONFIG_HOME:-${SWARM_RUNTIME_HOME}/.config}"
+  runtime_data_home="${XDG_DATA_HOME:-${SWARM_RUNTIME_HOME}/.local/share}"
+  runtime_state_home="${XDG_STATE_HOME:-${SWARM_RUNTIME_HOME}/.local/state}"
   HOME="${SWARM_RUNTIME_HOME}" \
-  XDG_CONFIG_HOME="${SWARM_RUNTIME_HOME}/.config" \
-  XDG_DATA_HOME="${SWARM_RUNTIME_HOME}/.local/share" \
-  XDG_STATE_HOME="${SWARM_RUNTIME_HOME}/.local/state" \
+  XDG_CONFIG_HOME="${runtime_config_home}" \
+  XDG_DATA_HOME="${runtime_data_home}" \
+  XDG_STATE_HOME="${runtime_state_home}" \
   setpriv --reuid=nobody --regid=nogroup --clear-groups "$@"
 }
 

@@ -315,6 +315,29 @@ func Write(cfg FileConfig) error {
 	return nil
 }
 
+func DirectLANDesktopWarning(cfg FileConfig) string {
+	if cfg.DesktopPort == 0 {
+		return ""
+	}
+	host := strings.TrimSpace(cfg.Host)
+	if host == "" || isLoopbackHost(host) {
+		return ""
+	}
+	return "Direct LAN desktop access is not implemented safely in this MVP. Keep host=127.0.0.1 and use an SSH tunnel, or use Tailscale, instead of opening the desktop directly on a private LAN address."
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func Format(cfg FileConfig) string {
 	return fmt.Sprintf(`# Swarm startup mode.
 # interactive = normal local use; Swarm runs when you launch it.
@@ -333,7 +356,8 @@ dev_root = %s
 
 # Network bind host for the Swarm backend.
 # Keep this at 127.0.0.1 for local-only use.
-# Use a non-loopback host only when you intentionally want remote access.
+# MVP note: direct private-LAN desktop access is not implemented safely yet.
+# For another device, keep host at 127.0.0.1 and use SSH tunneling or Tailscale.
 host = %s
 
 # Backend API port.
@@ -925,6 +949,8 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 	if _, ok := seen["advertise_host"]; !ok {
 		lines = append(lines,
 			"# Canonical LAN host or IP that other machines should use to reach this Swarm.",
+			"# MVP note: direct private-LAN desktop access is not implemented safely yet.",
+			"# Prefer SSH tunneling or Tailscale instead of opening the desktop directly on LAN.",
 			"# Leave blank to detect or confirm it in onboarding.",
 			fmt.Sprintf("advertise_host = %s", cfg.AdvertiseHost),
 		)

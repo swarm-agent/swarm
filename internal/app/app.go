@@ -39,6 +39,7 @@ const (
 	interruptQuit           = "quit"
 	defaultDaemonURL        = "http://127.0.0.1:7781"
 	reloadInterval          = 3 * time.Second
+	streamRenderMinInterval = 66 * time.Millisecond
 	vaultExportDirName      = "Swarm"
 	vaultExportFileExt      = ".swarmvault"
 )
@@ -46,6 +47,7 @@ const (
 var (
 	modelPresetsByProvider = map[string][]string{
 		"anthropic": {
+			"claude-opus-4-7",
 			"claude-opus-4-6",
 			"claude-opus-4-5",
 			"claude-sonnet-4-6",
@@ -62,14 +64,12 @@ var (
 			"gpt-5.1-codex-max",
 			"gpt-5.1-codex-mini",
 		},
-		"copilot": {
-			"gpt-5.4",
-			"gpt-5.4-mini",
-			"claude-haiku-4.5",
-			"claude-sonnet-4.5",
-			"claude-opus-4.6",
-		},
+		// Copilot presets are intentionally hidden for now. The provider code stays
+		// in-tree, but we cannot fairly test or recommend it while the required paid
+		// Copilot plan is unavailable.
 		"fireworks": {
+			"accounts/fireworks/models/kimi-k2p6",
+			"accounts/fireworks/models/minimax-m2p7",
 			"accounts/fireworks/models/kimi-k2p5",
 		},
 		"google": {
@@ -78,6 +78,12 @@ var (
 			"gemini-2.5-pro",
 			"gemini-2.5-flash",
 			"gemini-2.0-flash",
+		},
+		"openrouter": {
+			"openai/gpt-5.5",
+			"google/gemini-3-flash-preview",
+			"openai/gpt-5.2",
+			"openai/gpt-5.2-mini",
 		},
 	}
 	thinkingPresets = []string{"off", "low", "medium", "high", "xhigh"}
@@ -103,7 +109,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/help", Hint: "Show command help"},
 		{Command: "/home", Hint: "Return to home without ending the chat session"},
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
-		{Command: "/mcp", Hint: "Open MCP servers CRUD modal", QuickTips: []string{"/mcp add <id> <url>", "/mcp add-local <id> <command>", "/mcp enable <id>", "/mcp disable <id>"}},
+		{Command: "/mcp", Hint: "MCP management is deferred until Swarm Sync integration", QuickTips: []string{"Exa search can use the built-in free Exa MCP server", "Use /auth key exa <api_key> for webfetch/deep fetch"}},
 		{Command: "/mode", Hint: "Set the default mode for new chats", QuickTips: []string{"/mode auto", "/mode plan", "/mode status"}},
 		{Command: "/models", Hint: "Open model manager modal (favorites + provider catalog)"},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
@@ -246,15 +252,20 @@ type App struct {
 	authLogging  atomic.Bool
 	codexPending *codexCodeLoginState
 
-	voiceCaptureSeq int64
-	voiceCapture    activeVoiceCapture
-	voiceCaptureCh  chan voiceCaptureEvent
-	pasteActive     bool
-	quitModal       quitModalState
+	voiceCaptureSeq        int64
+	voiceCapture           activeVoiceCapture
+	voiceCaptureCh         chan voiceCaptureEvent
+	pasteActive            bool
+	quitModal              quitModalState
+	permissionsBypassModal permissionsBypassModalState
+	permissionsPolicyModal permissionsPolicyModalState
 
-	streamEvents chan client.StreamEventEnvelope
-	streamCancel context.CancelFunc
-	streamSeq    atomic.Uint64
+	streamEvents            chan client.StreamEventEnvelope
+	streamCancel            context.CancelFunc
+	streamSeq               atomic.Uint64
+	streamRenderPending     bool
+	lastStreamRenderAt      time.Time
+	streamRenderWakePending atomic.Bool
 
 	gitStatusCh        chan gitStatusRefreshResult
 	gitWatcher         *repoGitWatcher
@@ -271,8 +282,12 @@ type App struct {
 
 	quitRequested bool
 
+	startupNetworkWarningModal startupNetworkWarningModalState
+
 	devUpdateRequested     bool
 	releaseUpdateRequested bool
+
+	pendingLocalContainerUpdate *localContainerUpdateConfirmation
 }
 
 func New() (*App, error) {
@@ -377,6 +392,7 @@ func New() (*App, error) {
 	app.startSessionEventStream()
 	app.refreshGitRealtimeWatcher()
 	app.announceAppliedUpdate()
+	app.openStartupNetworkWarningModal()
 	return app, nil
 }
 
@@ -428,7 +444,17 @@ func (a *App) Run() error {
 			if a.quitModalActive() {
 				a.drawQuitModal()
 			}
+			if a.permissionsPolicyModalActive() {
+				a.drawPermissionsPolicyModal()
+			}
+			if a.permissionsBypassModalActive() {
+				a.drawPermissionsBypassModal()
+			}
+			if a.startupNetworkWarningModalActive() {
+				a.drawStartupNetworkWarningModal()
+			}
 			a.screen.Show()
+			a.noteStreamRenderDrawn(time.Now())
 			dirty = false
 		}
 
@@ -459,8 +485,7 @@ func (a *App) Run() error {
 				a.consumeVoiceCaptureEvents()
 				dirty = true
 			case interruptStreamReady:
-				a.consumePendingStreamReady()
-				if a.consumeSessionStreamEvents() {
+				if a.consumeStreamReadyForRender(time.Now(), true) {
 					dirty = true
 				}
 			case interruptGitStatusReady:
@@ -477,6 +502,24 @@ func (a *App) Run() error {
 				return nil
 			}
 		case *tcell.EventMouse:
+			if a.startupNetworkWarningModalActive() {
+				if a.handleStartupNetworkWarningModalMouse(e) {
+					dirty = true
+					continue
+				}
+			}
+			if a.permissionsBypassModalActive() {
+				if a.handlePermissionsBypassModalMouse(e) {
+					dirty = true
+					continue
+				}
+			}
+			if a.permissionsPolicyModalActive() {
+				if a.handlePermissionsPolicyModalMouse(e) {
+					dirty = true
+					continue
+				}
+			}
 			if a.quitModalActive() {
 				if a.handleQuitModalMouse(e) {
 					dirty = true
@@ -518,6 +561,24 @@ func (a *App) Run() error {
 			a.setPasteActive(e.Start())
 			dirty = true
 		case *tcell.EventKey:
+			if a.startupNetworkWarningModalActive() {
+				if a.handleStartupNetworkWarningModalKey(e) {
+					dirty = true
+					continue
+				}
+			}
+			if a.permissionsBypassModalActive() {
+				if a.handlePermissionsBypassModalKey(e) {
+					dirty = true
+					continue
+				}
+			}
+			if a.permissionsPolicyModalActive() {
+				if a.handlePermissionsPolicyModalKey(e) {
+					dirty = true
+					continue
+				}
+			}
 			if a.quitModalActive() {
 				if a.handleQuitModalKey(e) {
 					dirty = true
@@ -668,6 +729,68 @@ func (a *App) consumePendingStreamReady() {
 	case <-a.pendingStreamReady:
 	default:
 	}
+}
+
+func (a *App) consumeStreamReadyForRender(now time.Time, scheduleWake bool) bool {
+	if a == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	a.consumePendingStreamReady()
+	if a.consumeSessionStreamEvents() {
+		a.streamRenderPending = true
+	}
+	if !a.streamRenderPending {
+		return false
+	}
+	if a.lastStreamRenderAt.IsZero() || !now.Before(a.lastStreamRenderAt.Add(streamRenderMinInterval)) {
+		return true
+	}
+	if scheduleWake {
+		a.scheduleStreamRenderWake(now)
+	}
+	return false
+}
+
+func (a *App) noteStreamRenderDrawn(now time.Time) {
+	if a == nil || !a.streamRenderPending {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	a.lastStreamRenderAt = now
+	a.streamRenderPending = false
+}
+
+func (a *App) scheduleStreamRenderWake(now time.Time) {
+	if a == nil || a.screen == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	wait := time.Duration(0)
+	if !a.lastStreamRenderAt.IsZero() {
+		wait = a.lastStreamRenderAt.Add(streamRenderMinInterval).Sub(now)
+		if wait < 0 {
+			wait = 0
+		}
+	}
+	if !a.streamRenderWakePending.CompareAndSwap(false, true) {
+		return
+	}
+	go func(delay time.Duration) {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		a.streamRenderWakePending.Store(false)
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptStreamReady))
+		}
+	}(wait)
 }
 
 func (a *App) startSessionEventStream() {
@@ -1886,15 +2009,12 @@ func (a *App) showHelp() {
 		"/workspace save [path|#n]   (open workspace setup)",
 		"/add-dir [path]   (open workspace linked-directory flow)",
 		"/workspace scan [query]",
-		"/mcp   (open MCP servers CRUD modal)",
-		"/mcp [list|status]",
-		"/mcp add <id> <url> [name]",
-		"/mcp add-local <id> <command> [args...]",
-		"/mcp [enable|disable|remove] <id>",
+		"/mcp   (deferred: MCP management needs Swarm Sync; Exa search can use the built-in free Exa MCP server)",
 		// Temporarily hidden from the UI surface.
 		// "/sandbox   (open sandbox setup modal)",
 		// "/sandbox [on|off|status]",
 		"/output   (open full bash output viewer)",
+		"/permissions [on|off]   (toggle global permission prompts)",
 		"/permissions show   (show global permission policy)",
 		"/permissions allow tool <name>",
 		"/permissions allow bash-prefix <command>",
@@ -1903,6 +2023,7 @@ func (a *App) showHelp() {
 		"/permissions remove <rule-id>",
 		"/permissions reset",
 		"/permissions explain <tool> [arguments json or text]",
+		"Permissions modal: b toggles global permissions (OFF requires confirmation)",
 		"/worktrees   (open worktrees menu)",
 		"/wt   (alias for /worktrees)",
 		"/worktrees [on|off|status|branch <name>]",
@@ -4069,6 +4190,8 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 		a.openModelsModal("")
 	case ui.ChatActionCycleThinking:
 		a.cycleThinkingLevel()
+	case ui.ChatActionToggleBypassPermissions:
+		a.setPermissionsBypass(!a.homeModel.BypassPermissions)
 	}
 }
 
@@ -4387,11 +4510,11 @@ func (a *App) notifyAuthAutoDefaults(details *client.AutoDefaultsStatus) {
 
 	switch {
 	case details.GlobalModel && len(subagents) > 0 && provider != "" && primaryModel != "":
-		a.showToast(ui.ToastInfo, fmt.Sprintf("new-chat model set to %s/%s; utility model %s/%s assigned to subagents: %s", provider, primaryModel, utilityProvider, utilityModel, strings.Join(subagents, ", ")))
+		a.showToast(ui.ToastInfo, fmt.Sprintf("new-chat model set to %s/%s; utility model %s/%s assigned to subagents: %s", provider, model.DisplayModelName(provider, primaryModel), utilityProvider, model.DisplayModelName(utilityProvider, utilityModel), strings.Join(subagents, ", ")))
 	case len(subagents) > 0 && utilityProvider != "" && utilityModel != "":
-		a.showToast(ui.ToastInfo, fmt.Sprintf("utility model %s/%s assigned to subagents: %s", utilityProvider, utilityModel, strings.Join(subagents, ", ")))
+		a.showToast(ui.ToastInfo, fmt.Sprintf("utility model %s/%s assigned to subagents: %s", utilityProvider, model.DisplayModelName(utilityProvider, utilityModel), strings.Join(subagents, ", ")))
 	case details.GlobalModel && provider != "" && primaryModel != "":
-		a.showToast(ui.ToastInfo, fmt.Sprintf("new-chat model set to %s/%s", provider, primaryModel))
+		a.showToast(ui.ToastInfo, fmt.Sprintf("new-chat model set to %s/%s", provider, model.DisplayModelName(provider, primaryModel)))
 	}
 	a.showAuthDefaultsInfo(details)
 }
@@ -4756,16 +4879,51 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	switch action.Kind {
 	case ui.AgentsModalActionRefresh:
 		a.refreshAgentsModalData("Refreshing agent profiles...")
-	case ui.AgentsModalActionRestoreDefaults:
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		result, err := a.api.RestoreAgentDefaults(ctx)
-		if err != nil {
+	case ui.AgentsModalActionSetUtilityAI:
+		input := action.UtilityAI
+		if input == nil || strings.TrimSpace(input.Provider) == "" || strings.TrimSpace(input.Model) == "" {
 			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError(fmt.Sprintf("restore defaults failed: %v", err))
+			a.home.SetAgentsModalError("choose a provider and model for Utility AI")
 			return
 		}
-		a.home.SetAgentsModalStatus(fmt.Sprintf("restored default agents: %d profiles", len(result.Profiles)))
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		result, err := a.api.RestoreAgentDefaults(ctx, client.ProviderDefaultsPreview{
+			UtilityProvider:   strings.TrimSpace(input.Provider),
+			UtilityModel:      strings.TrimSpace(input.Model),
+			UtilityThinking:   strings.TrimSpace(input.Thinking),
+			OverwriteExplicit: input.OverwriteExplicit,
+		})
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("set Utility AI failed: %v", err))
+			return
+		}
+		status := fmt.Sprintf("set Utility AI baseline %s/%s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model))
+		if input.OverwriteExplicit {
+			status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model))
+		}
+		if result.ProviderDefaultsPreview != nil {
+			targets := result.ProviderDefaultsPreview.UtilityBaselineAgents
+			if len(targets) == 0 && len(result.ProviderDefaultsPreview.CustomUtilityAgents) == 0 {
+				targets = result.ProviderDefaultsPreview.UtilityAgents
+			}
+			if input.OverwriteExplicit {
+				if len(result.ProviderDefaultsPreview.UtilityAgents) > 0 {
+					status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s for %s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model), strings.Join(result.ProviderDefaultsPreview.UtilityAgents, ", "))
+				}
+			} else {
+				if len(targets) > 0 {
+					status = fmt.Sprintf("set Utility AI baseline %s/%s for %s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model), strings.Join(targets, ", "))
+				} else if len(result.ProviderDefaultsPreview.CustomUtilityAgents) > 0 {
+					status = fmt.Sprintf("no blank Utility AI agents to set for %s/%s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model))
+				}
+				if len(result.ProviderDefaultsPreview.CustomUtilityAgents) > 0 {
+					status += fmt.Sprintf("; preserved overrides for %s", strings.Join(result.ProviderDefaultsPreview.CustomUtilityAgents, ", "))
+				}
+			}
+		}
+		a.home.SetAgentsModalStatus(status)
 		a.refreshAgentsModalData("")
 		a.queueReload(false)
 	case ui.AgentsModalActionResetDefaults:
@@ -5141,42 +5299,19 @@ func (a *App) startCopilotProviderLogin(login *ui.AuthModalLogin) {
 	}
 
 	if method == "cli" || method == "gh" {
-		a.home.SetAuthModalStatus(copilotInteractiveLoginStatus(method))
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		if err := a.runInteractiveAuthCommand(ctx, copilotInteractiveLoginCommand(method)); err != nil {
-			a.home.SetAuthModalLoading(false)
-			a.home.SetAuthModalError(fmt.Sprintf("copilot auth source saved, but login failed: %v", err))
-			return
-		}
-		verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer verifyCancel()
-		connection, err := a.api.VerifyAuthCredential(verifyCtx, "copilot", saved.ID)
-		if err != nil {
-			a.home.SetAuthModalLoading(false)
-			a.refreshAuthModalData("")
-			a.home.SetAuthModalError(fmt.Sprintf("copilot login finished, but verification failed: %v", err))
-			return
-		}
 		a.home.SetAuthModalLoading(false)
 		a.refreshAuthModalData("")
-		if !connection.Connected {
-			msg := strings.TrimSpace(connection.Message)
-			if msg == "" {
-				msg = "connection test failed"
+		msg := "connection test failed"
+		methodLabel := method
+		if saved.Connection != nil {
+			if trimmed := strings.TrimSpace(saved.Connection.Method); trimmed != "" {
+				methodLabel = trimmed
 			}
-			a.home.SetAuthModalError(fmt.Sprintf("copilot login finished, but verification failed: %s", msg))
-			return
+			if trimmed := strings.TrimSpace(saved.Connection.Message); trimmed != "" {
+				msg = trimmed
+			}
 		}
-		methodLabel := strings.TrimSpace(connection.Method)
-		if methodLabel == "" {
-			methodLabel = method
-		}
-		msg := strings.TrimSpace(connection.Message)
-		if msg == "" {
-			msg = "connected"
-		}
-		a.home.SetAuthModalStatus(fmt.Sprintf("Copilot auth verified (%s): %s", methodLabel, msg))
+		a.home.SetAuthModalError(fmt.Sprintf("Copilot auth source saved, but the sidecar was not verified by the active swarmd runtime (%s): %s. Swarm no longer launches `%s` from /auth; sign in on that runtime, then press r/v to verify.", methodLabel, msg, copilotInteractiveLoginCommand(method).String()))
 		return
 	}
 
@@ -5216,6 +5351,17 @@ func normalizeCopilotAuthMethod(value string) string {
 type interactiveCommandSpec struct {
 	Name string
 	Args []string
+}
+
+func (s interactiveCommandSpec) String() string {
+	parts := append([]string{strings.TrimSpace(s.Name)}, s.Args...)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 func copilotInteractiveLoginCommand(method string) interactiveCommandSpec {
@@ -5657,10 +5803,14 @@ func copilotAuthRefreshStatus(statusHint string, providers []ui.AuthModalProvide
 }
 
 func mergeAuthModalProviders(statuses []client.ProviderStatus, credentials client.AuthCredentialList) []ui.AuthModalProvider {
+	// Hide Copilot from the auth provider picker for now. Existing credential
+	// records remain stored, but the provider is not presented as usable until a
+	// paid-plan environment is available for fair end-to-end testing.
+	const copilotProviderTemporarilyDisabled = "copilot"
 	providerMap := make(map[string]ui.AuthModalProvider, len(statuses)+len(credentials.Providers))
 	for _, status := range statuses {
 		id := strings.ToLower(strings.TrimSpace(status.ID))
-		if id == "" {
+		if id == "" || id == copilotProviderTemporarilyDisabled {
 			continue
 		}
 		providerMap[id] = ui.AuthModalProvider{
@@ -5676,7 +5826,7 @@ func mergeAuthModalProviders(statuses []client.ProviderStatus, credentials clien
 	}
 	for _, providerID := range credentials.Providers {
 		id := strings.ToLower(strings.TrimSpace(providerID))
-		if id == "" {
+		if id == "" || id == copilotProviderTemporarilyDisabled {
 			continue
 		}
 		if _, ok := providerMap[id]; !ok {
@@ -5690,7 +5840,7 @@ func mergeAuthModalProviders(statuses []client.ProviderStatus, credentials clien
 	}
 	for _, record := range credentials.Records {
 		id := strings.ToLower(strings.TrimSpace(record.Provider))
-		if id == "" {
+		if id == "" || id == copilotProviderTemporarilyDisabled {
 			continue
 		}
 		if _, ok := providerMap[id]; !ok {
@@ -5930,7 +6080,7 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 		defaultThinking = "xhigh"
 	}
 
-	return ui.AgentsModalData{
+	data := ui.AgentsModalData{
 		Profiles:         profiles,
 		ActivePrimary:    strings.TrimSpace(state.ActivePrimary),
 		ActiveSubagent:   activeSubagent,
@@ -5942,6 +6092,17 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 		DefaultModel:     defaultModel,
 		DefaultThinking:  defaultThinking,
 	}
+	if state.ProviderDefaultsPreview != nil {
+		preview := state.ProviderDefaultsPreview
+		data.UtilityProvider = emptyFallback(strings.TrimSpace(preview.UtilityProvider), strings.TrimSpace(preview.Provider))
+		data.UtilityModel = strings.TrimSpace(preview.UtilityModel)
+		data.UtilityThinking = strings.TrimSpace(preview.UtilityThinking)
+		data.UtilityAgents = append([]string(nil), preview.UtilityAgents...)
+		data.CustomUtilityAgents = append([]string(nil), preview.CustomUtilityAgents...)
+		data.UtilityBaselineAgents = append([]string(nil), preview.UtilityBaselineAgents...)
+		data.StaleInheritedAgents = append([]string(nil), preview.StaleInheritedAgents...)
+	}
+	return data
 }
 
 func hasModelValue(models []string, target string) bool {
@@ -6022,129 +6183,8 @@ func (a *App) handleAddDirectoryCommand(args []string) {
 }
 
 func (a *App) handleMCPCommand(args []string) {
-	if a.api == nil {
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus("mcp API unavailable")
-		return
-	}
-	if len(args) == 0 || strings.EqualFold(args[0], "open") || strings.EqualFold(args[0], "manage") || strings.EqualFold(args[0], "crud") || strings.EqualFold(args[0], "list") || strings.EqualFold(args[0], "status") {
-		a.showMCPManager()
-		return
-	}
-
-	sub := strings.ToLower(strings.TrimSpace(args[0]))
-	switch sub {
-	case "enable", "disable":
-		if len(args) < 2 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /mcp enable <id> | /mcp disable <id>")
-			return
-		}
-		id := strings.TrimSpace(args[1])
-		enabled := sub == "enable"
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		server, err := a.api.SetMCPServerEnabled(ctx, id, enabled)
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("mcp %s failed: %v", sub, err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		state := "disabled"
-		if server.Enabled {
-			state = "enabled"
-		}
-		a.home.SetStatus(fmt.Sprintf("mcp %s: %s", server.ID, state))
-		if a.home.MCPModalVisible() {
-			a.refreshMCPModalData("")
-		}
-	case "remove", "delete":
-		if len(args) < 2 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /mcp remove <id>")
-			return
-		}
-		id := strings.TrimSpace(args[1])
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		if err := a.api.DeleteMCPServer(ctx, id); err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("mcp remove failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("mcp server removed: %s", id))
-		if a.home.MCPModalVisible() {
-			a.refreshMCPModalData("")
-		}
-	case "add":
-		if len(args) < 3 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /mcp add <id> <url> [name]")
-			return
-		}
-		id := strings.TrimSpace(args[1])
-		url := strings.TrimSpace(args[2])
-		name := strings.TrimSpace(strings.Join(args[3:], " "))
-		enabled := true
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		server, err := a.api.UpsertMCPServer(ctx, client.MCPServerUpsertRequest{
-			ID:        id,
-			Name:      name,
-			Transport: "http",
-			URL:       url,
-			Enabled:   &enabled,
-			Source:    "user",
-		})
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("mcp add failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("mcp remote upserted: %s (%s)", server.ID, server.URL))
-		if a.home.MCPModalVisible() {
-			a.refreshMCPModalData("")
-		}
-	case "add-local":
-		if len(args) < 3 {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus("usage: /mcp add-local <id> <command> [args...]")
-			return
-		}
-		id := strings.TrimSpace(args[1])
-		command := strings.TrimSpace(args[2])
-		cmdArgs := make([]string, 0, len(args)-3)
-		if len(args) > 3 {
-			cmdArgs = append(cmdArgs, args[3:]...)
-		}
-		enabled := true
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		server, err := a.api.UpsertMCPServer(ctx, client.MCPServerUpsertRequest{
-			ID:        id,
-			Transport: "stdio",
-			Command:   command,
-			Args:      cmdArgs,
-			Enabled:   &enabled,
-			Source:    "user",
-		})
-		if err != nil {
-			a.home.ClearCommandOverlay()
-			a.home.SetStatus(fmt.Sprintf("mcp add-local failed: %v", err))
-			return
-		}
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("mcp local upserted: %s (%s)", server.ID, server.Command))
-		if a.home.MCPModalVisible() {
-			a.refreshMCPModalData("")
-		}
-	default:
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus("usage: /mcp [list|add|add-local|enable|disable|remove]")
-	}
+	a.home.ClearCommandOverlay()
+	a.home.SetStatus("MCP management is deferred until Swarm Sync integration; Exa search can use the built-in free Exa MCP server")
 }
 
 func (a *App) handleSandboxCommand(args []string) {
@@ -8421,21 +8461,23 @@ func (a *App) handlePermissionsCommand(args []string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
+	if len(args) > 0 {
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "off":
+			a.setPermissionsBypass(true)
+			return
+		case "on":
+			a.setPermissionsBypass(false)
+			return
+		}
+	}
 	if len(args) == 0 || strings.EqualFold(args[0], "show") {
 		policy, err := a.api.GetPermissionPolicy(ctx)
 		if err != nil {
 			a.home.SetStatus(fmt.Sprintf("/permissions show failed: %v", err))
 			return
 		}
-		lines := []string{fmt.Sprintf("permission policy v%d", policy.Version)}
-		if len(policy.Rules) == 0 {
-			lines = append(lines, "No explicit rules. Built-in defaults: allow bash prefixes cd, ls; ask most others.")
-		} else {
-			for _, rule := range policy.Rules {
-				lines = append(lines, fmt.Sprintf("- %s  [%s]  %s", rule.ID, rule.Decision, a.previewPermissionRule(rule)))
-			}
-		}
-		a.home.SetCommandOverlay(lines)
+		a.openPermissionsPolicyModal(policy)
 		a.home.SetStatus("permission policy loaded")
 		return
 	}
@@ -8526,7 +8568,7 @@ func (a *App) handlePermissionsCommand(args []string) {
 		a.home.SetCommandOverlay(lines)
 		a.home.SetStatus("permission explain loaded")
 	default:
-		a.home.SetStatus("usage: /permissions [show|allow|ask|deny|remove|reset|explain]")
+		a.home.SetStatus("usage: /permissions [on|off|show|allow|ask|deny|remove|reset|explain]")
 	}
 }
 

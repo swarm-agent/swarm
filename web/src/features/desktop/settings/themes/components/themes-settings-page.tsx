@@ -22,8 +22,8 @@ export function ThemesSettingsPage() {
   const [savingPath, setSavingPath] = useState<string | null>(null)
   const [savingGlobalTheme, setSavingGlobalTheme] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [globalThemeId, setGlobalThemeId] = useState('nord')
-  const [globalThemeLabel, setGlobalThemeLabel] = useState('Nord')
+  const [globalThemeId, setGlobalThemeId] = useState('crimson')
+  const [globalThemeLabel, setGlobalThemeLabel] = useState('Crimson')
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
 
   useEffect(() => {

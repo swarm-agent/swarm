@@ -2,6 +2,7 @@ package localcontainers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,13 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/buildinfo"
 )
+
+func TestIsMissingRuntimeContainerErrorAcceptsPodmanNoSuchObject(t *testing.T) {
+	err := errors.New(`remove podman container: Error: no such object: "pc-container"`)
+	if !IsMissingRuntimeContainerError(err) {
+		t.Fatalf("IsMissingRuntimeContainerError(%q) = false, want true", err.Error())
+	}
+}
 
 func TestCurrentRuntimeMountFallsBackToSharedRuntimeFFFLibWhenRepoRuntimeMissing(t *testing.T) {
 	repoRoot := t.TempDir()
