@@ -223,6 +223,7 @@ type Session struct {
 	ImageRef            string                   `json:"image_ref,omitempty"`
 	ImageSignature      string                   `json:"image_signature,omitempty"`
 	ImageArchiveBytes   int64                    `json:"image_archive_bytes,omitempty"`
+	LastProgress        string                   `json:"last_progress,omitempty"`
 	EnrollmentID        string                   `json:"enrollment_id,omitempty"`
 	EnrollmentStatus    string                   `json:"enrollment_status,omitempty"`
 	ChildSwarmID        string                   `json:"child_swarm_id,omitempty"`
@@ -441,11 +442,15 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 	if err != nil {
 		return Session{}, formatCreatePreflightError(sshTarget, err)
 	}
-	remoteAdvertiseHost, err := normalizeRemoteAdvertiseHost(firstNonEmpty(
-		strings.TrimSpace(input.RemoteAdvertiseHost),
-		firstRemoteNetworkCandidate(remoteNetworkCandidates),
-		defaultReachableSSHHostCandidate(sshTarget),
-	))
+	remoteAdvertiseHostCandidate := ""
+	if transportMode == startupconfig.NetworkModeLAN {
+		remoteAdvertiseHostCandidate = firstNonEmpty(
+			strings.TrimSpace(input.RemoteAdvertiseHost),
+			firstRemoteNetworkCandidate(remoteNetworkCandidates),
+			defaultReachableSSHHostCandidate(sshTarget),
+		)
+	}
+	remoteAdvertiseHost, err := normalizeRemoteAdvertiseHost(remoteAdvertiseHostCandidate)
 	if err != nil {
 		return Session{}, formatCreatePreflightError(sshTarget, err)
 	}
@@ -710,28 +715,34 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	if err != nil {
 		return Session{}, err
 	}
+	if err := s.markRemoteDeployStartProgress(&record, "starting", "Starting remote deploy session."); err != nil {
+		return Session{}, err
+	}
 	if record.SyncEnabled {
 		stepStartedAt := time.Now()
+		if err := s.markRemoteDeployStartProgress(&record, "starting", "Exporting managed sync credentials for the remote child."); err != nil {
+			return Session{}, err
+		}
 		if err := s.requireManagedSyncVaultPassword(strings.TrimSpace(input.SyncVaultPassword)); err != nil {
 			logRemoteDeployTiming("start.require_sync_vault_password", stepStartedAt, err, "session_id", strings.TrimSpace(input.SessionID))
-			return Session{}, err
+			return s.failRemoteDeployStart(record, err)
 		}
 		logRemoteDeployTiming("start.require_sync_vault_password", stepStartedAt, nil, "session_id", strings.TrimSpace(input.SessionID))
 		if strings.TrimSpace(record.SyncBundlePassword) == "" {
 			bundlePassword, err := generateSecretToken(32)
 			if err != nil {
-				return Session{}, err
+				return s.failRemoteDeployStart(record, err)
 			}
 			record.SyncBundlePassword = bundlePassword
 		}
 		if s.auth == nil {
-			return Session{}, fmt.Errorf("auth service is not configured")
+			return s.failRemoteDeployStart(record, fmt.Errorf("auth service is not configured"))
 		}
 		stepStartedAt = time.Now()
 		_, exported, err := s.auth.ExportCredentials(record.SyncBundlePassword, strings.TrimSpace(input.SyncVaultPassword))
 		logRemoteDeployTiming("start.export_sync_credentials", stepStartedAt, err, "session_id", strings.TrimSpace(input.SessionID), "exported", strconv.Itoa(exported))
 		if err != nil {
-			return Session{}, err
+			return s.failRemoteDeployStart(record, err)
 		}
 		record.SyncBundleExportCount = exported
 		record.SyncBundleExportedAt = time.Now().UnixMilli()
@@ -741,6 +752,9 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	}
 	record.TransportMode = normalizeRemoteTransportMode(record.TransportMode)
 	stepStartedAt := time.Now()
+	if err := s.markRemoteDeployStartProgress(&record, "starting", "Creating the remote child invite."); err != nil {
+		return Session{}, err
+	}
 	invite, err := s.swarms.CreateInvite(swarmruntime.CreateInviteInput{
 		PrimarySwarmID:       strings.TrimSpace(hostState.Node.SwarmID),
 		PrimaryName:          firstNonEmpty(strings.TrimSpace(startupCfg.SwarmName), hostState.Node.Name, "Primary"),
@@ -751,16 +765,19 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	})
 	logRemoteDeployTiming("start.create_invite", stepStartedAt, err, "session_id", record.ID, "transport_mode", record.TransportMode)
 	if err != nil {
-		return Session{}, err
+		return s.failRemoteDeployStart(record, err)
 	}
 	record.InviteToken = invite.Token
 	childCfgText := s.renderChildStartupConfig(record, startupCfg, hostState)
 	workDir, err := os.MkdirTemp("", "swarm-remote-deploy-")
 	if err != nil {
-		return Session{}, err
+		return s.failRemoteDeployStart(record, err)
 	}
 	defer os.RemoveAll(workDir)
 	stepStartedAt = time.Now()
+	if err := s.markRemoteDeployStartProgress(&record, "starting", "Building or reusing the local remote-child image archive."); err != nil {
+		return Session{}, err
+	}
 	runtimeArtifact, err := s.prepareRemoteRuntimeArtifact(ctx, record.BuilderRuntime, record.TransportMode, record.ImagePrefix, mapRemoteStoredContainerPackageManifest(record.ContainerPackages), true)
 	logRemoteDeployTiming(
 		"start.prepare_runtime_artifact",
@@ -778,74 +795,59 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		runtimeArtifact.Signature,
 	)
 	if err != nil {
-		record.Status = "failed"
-		record.LastError = err.Error()
-		saved, saveErr := s.store.Put(record)
-		if saveErr != nil {
-			return Session{}, saveErr
-		}
-		return mapSession(saved), err
+		return s.failRemoteDeployStart(record, err)
 	}
 	record.ImageRef = runtimeArtifact.ImageRef
 	record.ImageSignature = runtimeArtifact.Signature
 	record.ImageArchiveBytes = runtimeArtifact.ArchiveBytes
 	record.RemoteDisk.RequiredBytes = remoteRequiredDiskBytes(runtimeArtifact.RequiredDiskBytes, record.Payloads)
 	stepStartedAt = time.Now()
+	if err := s.markRemoteDeployStartProgress(&record, "starting", "Checking whether the remote host already has this Swarm image."); err != nil {
+		return Session{}, err
+	}
 	remoteImagePresent, err := remoteImageExists(ctx, record.SSHSessionTarget, record.RemoteRuntime, runtimeArtifact.ImageRef, record.SudoMode)
 	logRemoteDeployTiming("start.check_remote_image", stepStartedAt, err, "session_id", record.ID, "image_ref", runtimeArtifact.ImageRef, "remote_image_present", strconv.FormatBool(remoteImagePresent))
 	if err != nil {
-		record.Status = "failed"
-		record.LastError = err.Error()
-		saved, saveErr := s.store.Put(record)
-		if saveErr != nil {
-			return Session{}, saveErr
-		}
-		return mapSession(saved), err
+		return s.failRemoteDeployStart(record, err)
 	}
 	runtimeArtifact.RemoteImagePresent = remoteImagePresent
 	if remoteImagePresent {
 		record.RemoteDisk.RequiredBytes = remoteRequiredDiskBytes(0, record.Payloads)
 	}
 	stepStartedAt = time.Now()
+	if err := s.markRemoteDeployStartProgress(&record, "starting", "Checking remote disk capacity before copying payloads."); err != nil {
+		return Session{}, err
+	}
 	availableBytes, err := s.checkRemoteDiskCapacity(ctx, record.SSHSessionTarget, record.RemoteRoot, record.RemoteDisk.RequiredBytes)
 	logRemoteDeployTiming("start.check_remote_disk_capacity", stepStartedAt, err, "session_id", record.ID, "available_bytes", strconv.FormatInt(availableBytes, 10), "required_bytes", strconv.FormatInt(record.RemoteDisk.RequiredBytes, 10))
 	if availableBytes > 0 {
 		record.RemoteDisk.AvailableBytes = availableBytes
 	}
 	if err != nil {
-		record.Status = "failed"
-		record.LastError = err.Error()
-		saved, saveErr := s.store.Put(record)
-		if saveErr != nil {
-			return Session{}, saveErr
-		}
-		return mapSession(saved), err
+		return s.failRemoteDeployStart(record, err)
 	}
 	stepStartedAt = time.Now()
+	if err := s.markRemoteDeployStartProgress(&record, "starting", "Creating Git-tracked workspace payload archives locally."); err != nil {
+		return Session{}, err
+	}
 	if err := s.prepareRemoteBundle(ctx, workDir, &record); err != nil {
 		logRemoteDeployTiming("start.prepare_remote_bundle", stepStartedAt, err, "session_id", record.ID, "payload_archives", strconv.Itoa(remotePayloadArchiveCount(record.Payloads)))
-		record.Status = "failed"
-		record.LastError = err.Error()
-		saved, saveErr := s.store.Put(record)
-		if saveErr != nil {
-			return Session{}, saveErr
-		}
-		return mapSession(saved), err
+		return s.failRemoteDeployStart(record, err)
 	}
 	logRemoteDeployTiming("start.prepare_remote_bundle", stepStartedAt, nil, "session_id", record.ID, "payload_archives", strconv.Itoa(remotePayloadArchiveCount(record.Payloads)))
 	stepStartedAt = time.Now()
+	if err := s.markRemoteDeployStartProgress(&record, "starting", "Copying the remote bundle over SSH."); err != nil {
+		return Session{}, err
+	}
 	if err := s.copyRemoteBundle(ctx, workDir, runtimeArtifact, &record); err != nil {
 		logRemoteDeployTiming("start.copy_remote_bundle", stepStartedAt, err, "session_id", record.ID, "ssh_target", record.SSHSessionTarget, "image_archive_bytes", strconv.FormatInt(runtimeArtifact.ArchiveBytes, 10))
-		record.Status = "failed"
-		record.LastError = err.Error()
-		saved, saveErr := s.store.Put(record)
-		if saveErr != nil {
-			return Session{}, saveErr
-		}
-		return mapSession(saved), err
+		return s.failRemoteDeployStart(record, err)
 	}
 	logRemoteDeployTiming("start.copy_remote_bundle", stepStartedAt, nil, "session_id", record.ID, "ssh_target", record.SSHSessionTarget, "image_archive_bytes", strconv.FormatInt(runtimeArtifact.ArchiveBytes, 10))
 	stepStartedAt = time.Now()
+	if err := s.markRemoteDeployStartProgress(&record, "starting", "Running the remote installer over SSH and waiting for the child bootstrap signal."); err != nil {
+		return Session{}, err
+	}
 	output, authURL, remoteEndpoint, err := s.startRemoteBundle(ctx, &record, childCfgText, strings.TrimSpace(input.TailscaleAuthKey), strings.TrimSpace(input.SyncVaultPassword))
 	logRemoteDeployTiming("start.start_remote_bundle", stepStartedAt, err, "session_id", record.ID, "ssh_target", record.SSHSessionTarget, "auth_required", strconv.FormatBool(strings.TrimSpace(authURL) != ""), "remote_endpoint_present", strconv.FormatBool(strings.TrimSpace(remoteEndpoint) != ""))
 	record.InviteToken = invite.Token
@@ -854,17 +856,25 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	record.RemoteEndpoint = strings.TrimSpace(remoteEndpoint)
 	record.RemoteTailnetURL = firstNonEmpty(map[bool]string{true: strings.TrimSpace(remoteEndpoint)}[strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale)])
 	if err != nil {
-		record.Status = "failed"
-		record.LastError = err.Error()
-		saved, saveErr := s.store.Put(record)
-		if saveErr != nil {
-			return Session{}, saveErr
+		return s.failRemoteDeployStart(record, err)
+	}
+	if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) && strings.TrimSpace(record.RemoteAuthURL) != "" && strings.TrimSpace(record.RemoteTailnetURL) == "" {
+		record.Status = "auth_required"
+		record.EnrollmentStatus = ""
+		record.LastError = ""
+		record.LastProgress = "Remote child started; approve the Tailscale login to continue."
+		stepStartedAt = time.Now()
+		saved, err := s.store.Put(record)
+		logRemoteDeployTiming("start.store_auth_required", stepStartedAt, err, "session_id", record.ID)
+		if err != nil {
+			return Session{}, err
 		}
-		return mapSession(saved), err
+		return mapSession(saved), nil
 	}
 	record.Status = "waiting_for_approval"
 	record.EnrollmentStatus = "pending"
 	record.LastError = ""
+	record.LastProgress = "Remote child started; waiting for the child to enroll and be approved."
 	stepStartedAt = time.Now()
 	saved, err := s.store.Put(record)
 	logRemoteDeployTiming("start.store_waiting_for_approval", stepStartedAt, err, "session_id", record.ID)
@@ -872,6 +882,40 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		return Session{}, err
 	}
 	return mapSession(saved), nil
+}
+
+func (s *Service) markRemoteDeployStartProgress(record *pebblestore.RemoteDeploySessionRecord, status, progress string) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("remote deploy service is not configured")
+	}
+	if record == nil {
+		return fmt.Errorf("remote deploy record is required")
+	}
+	record.Status = firstNonEmpty(strings.TrimSpace(status), record.Status)
+	record.LastProgress = strings.TrimSpace(progress)
+	record.LastError = ""
+	saved, err := s.store.Put(*record)
+	if err != nil {
+		return err
+	}
+	*record = saved
+	return nil
+}
+
+func (s *Service) failRemoteDeployStart(record pebblestore.RemoteDeploySessionRecord, cause error) (Session, error) {
+	if cause == nil {
+		cause = fmt.Errorf("remote deploy failed")
+	}
+	record.Status = "failed"
+	record.LastError = strings.TrimSpace(cause.Error())
+	if strings.TrimSpace(record.LastProgress) == "" {
+		record.LastProgress = "Remote deploy failed."
+	}
+	saved, saveErr := s.store.Put(record)
+	if saveErr != nil {
+		return Session{}, saveErr
+	}
+	return mapSession(saved), cause
 }
 
 type SyncCredentialRequestInput struct {
@@ -1172,6 +1216,7 @@ func (s *Service) Approve(ctx context.Context, input ApproveSessionInput) (Sessi
 	record.AttachedAt = time.Now().UnixMilli()
 	record.Status = "approved"
 	record.LastError = ""
+	record.LastProgress = "Approving the remote child and finalizing pairing."
 	if err := s.applyApprovedRemotePeerAuth(record); err != nil {
 		record.Status = "failed"
 		record.LastError = err.Error()
@@ -1191,6 +1236,7 @@ func (s *Service) Approve(ctx context.Context, input ApproveSessionInput) (Sessi
 		return mapSession(saved), err
 	}
 	record.Status = "attached"
+	record.LastProgress = "Remote child attached to this swarm."
 	if err := s.ensureWorkspaceReplicationLinks(record); err != nil {
 		record.Status = "failed"
 		record.LastError = err.Error()
@@ -1474,7 +1520,7 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 	changed := false
 	var refreshErr error
 	status := strings.TrimSpace(record.Status)
-	if status == "waiting_for_approval" || status == "approved" || status == "attached" {
+	if status == "starting" || status == "auth_required" || status == "waiting_for_approval" || status == "approved" || status == "attached" {
 		if runtimeChanged, err := s.refreshRemoteRuntimeSignals(ctx, &record); err != nil {
 			if firstNonEmpty(strings.TrimSpace(record.LastError), "") != strings.TrimSpace(err.Error()) {
 				record.LastError = strings.TrimSpace(err.Error())
@@ -1487,6 +1533,20 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 			}
 			if strings.TrimSpace(record.LastError) != "" {
 				record.LastError = ""
+				changed = true
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) {
+			if remoteSessionEndpoint(record) != "" && (status == "starting" || status == "auth_required") {
+				record.Status = "waiting_for_approval"
+				record.EnrollmentStatus = firstNonEmpty(strings.TrimSpace(record.EnrollmentStatus), "pending")
+				record.LastProgress = "Remote child joined Tailscale; waiting for the child to enroll and be approved."
+				status = record.Status
+				changed = true
+			} else if strings.TrimSpace(record.RemoteAuthURL) != "" && remoteSessionEndpoint(record) == "" && status == "starting" {
+				record.Status = "auth_required"
+				record.LastProgress = "Remote child started; approve the Tailscale login to continue."
+				status = record.Status
 				changed = true
 			}
 		}
@@ -2323,13 +2383,21 @@ func buildPayloadDirectoryRecord(sourcePath, targetPath, archivePrefix string) (
 func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessionRecord, startupCfg startupconfig.FileConfig, hostState swarmruntime.LocalState) string {
 	transportMode := normalizeRemoteTransportMode(record.TransportMode)
 	remoteAdvertiseHost := strings.TrimSpace(record.RemoteAdvertiseHost)
+	childHost := startupconfig.DefaultHost
+	childAdvertiseHost := startupconfig.DefaultHost
+	if transportMode == startupconfig.NetworkModeLAN {
+		childHost = firstNonEmpty(remoteAdvertiseHost, startupconfig.DefaultHost)
+		childAdvertiseHost = childHost
+	}
+	childPorts := remoteChildPorts(record.ID)
 	cfg := startupconfig.Default(remoteStartupConfigPath(record))
 	cfg.Mode = startupconfig.ModeBox
-	cfg.Host = firstNonEmpty(remoteAdvertiseHost, startupconfig.DefaultHost)
-	cfg.Port = startupconfig.DefaultPort
-	cfg.AdvertiseHost = firstNonEmpty(remoteAdvertiseHost, startupconfig.DefaultHost)
-	cfg.AdvertisePort = startupconfig.DefaultPort
-	cfg.DesktopPort = startupconfig.DefaultDesktopPort
+	cfg.Host = childHost
+	cfg.Port = childPorts.Backend
+	cfg.AdvertiseHost = childAdvertiseHost
+	cfg.AdvertisePort = childPorts.Backend
+	cfg.DesktopPort = childPorts.Desktop
+	cfg.PeerTransportPort = childPorts.PeerTransport
 	cfg.SwarmMode = true
 	cfg.Child = true
 	cfg.NetworkMode = transportMode
@@ -2556,6 +2624,7 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 		ImageRef:            record.ImageRef,
 		ImageSignature:      record.ImageSignature,
 		ImageArchiveBytes:   record.ImageArchiveBytes,
+		LastProgress:        record.LastProgress,
 		EnrollmentID:        record.EnrollmentID,
 		EnrollmentStatus:    record.EnrollmentStatus,
 		ChildSwarmID:        record.ChildSwarmID,
@@ -2723,6 +2792,47 @@ func remoteContainerNameForSession(sessionID string) string {
 	return fmt.Sprintf("%s-%s", remoteContainerPrefix, slug)
 }
 
+func remoteTailscaleHostname(name string) string {
+	slug := sanitizeSlug(name)
+	if slug == "" {
+		slug = "swarm-box"
+	}
+	if len(slug) > 63 {
+		slug = strings.Trim(slug[:63], "-")
+	}
+	if slug == "" {
+		return "swarm-box"
+	}
+	return slug
+}
+
+type remoteChildPortSet struct {
+	Backend        int
+	Desktop        int
+	PeerTransport  int
+	TailscaleProxy int
+}
+
+func remoteChildPorts(sessionID string) remoteChildPortSet {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID)))
+	offset := ((int(sum[0]) << 8) | int(sum[1])) % 4000
+	return remoteChildPortSet{
+		Backend:        20000 + offset,
+		Desktop:        25000 + offset,
+		PeerTransport:  30000 + offset,
+		TailscaleProxy: 35000 + offset,
+	}
+}
+
+func remoteChildListenAddr(record pebblestore.RemoteDeploySessionRecord, transportMode string) string {
+	childPorts := remoteChildPorts(record.ID)
+	if normalizeRemoteTransportMode(transportMode) == startupconfig.NetworkModeLAN {
+		remoteAdvertiseHost := firstNonEmpty(strings.TrimSpace(record.RemoteAdvertiseHost), startupconfig.DefaultHost)
+		return net.JoinHostPort(remoteAdvertiseHost, strconv.Itoa(childPorts.Backend))
+	}
+	return net.JoinHostPort(startupconfig.DefaultHost, strconv.Itoa(childPorts.Backend))
+}
+
 func remoteRoot(sessionID string) string {
 	// Keep the managed remote root short enough for swarmd's Unix socket paths.
 	return filepath.ToSlash(filepath.Join("~/.local/share/swarm/rd", sanitizeSlug(sessionID)))
@@ -2854,7 +2964,10 @@ func remoteDevReplacementScript(record pebblestore.RemoteDeploySessionRecord, ru
 	transportMode := normalizeRemoteTransportMode(record.TransportMode)
 	runtimeName := normalizeRemoteDeployRuntime(record.RemoteRuntime)
 	remoteAdvertiseHost := firstNonEmpty(strings.TrimSpace(record.RemoteAdvertiseHost), "127.0.0.1")
-	listenAddr := firstNonEmpty(map[bool]string{true: net.JoinHostPort(remoteAdvertiseHost, strconv.Itoa(startupconfig.DefaultPort))}[transportMode == startupconfig.NetworkModeLAN], "127.0.0.1:7781")
+	childPorts := remoteChildPorts(record.ID)
+	listenAddr := remoteChildListenAddr(record, transportMode)
+	tailscaleProxyAddr := net.JoinHostPort(startupconfig.DefaultHost, strconv.Itoa(childPorts.TailscaleProxy))
+	peerTransportPort := strconv.Itoa(childPorts.PeerTransport)
 	offlineMode := "0"
 	bootstrapOutputPrefix := "SWARM_TAILNET_URL"
 	if transportMode == startupconfig.NetworkModeLAN {
@@ -2919,6 +3032,9 @@ backup_name=%s
 transport_mode=%s
 remote_advertise_host=%s
 listen_addr=%s
+tailscale_proxy_addr=%s
+desktop_port=%s
+peer_transport_port=%s
 offline_mode=%s
 ts_hostname=%s
 mkdir -p "$remote_root" "$config_home/swarm" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
@@ -2936,6 +3052,39 @@ runtime_cmd() {
   else
     as_root docker "$@"
   fi
+}
+addr_port() {
+  local addr="${1:-}"
+  printf '%%s' "${addr##*:}"
+}
+port_in_use() {
+  local port="${1:-}"
+  if [ -z "$port" ]; then
+    return 1
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "sport = :${port}" 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit(found ? 0 : 1) }'
+    return $?
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  ( : >"/dev/tcp/127.0.0.1/${port}" ) >/dev/null 2>&1
+}
+check_port_available() {
+  local label="${1:-}"
+  local port="${2:-}"
+  if port_in_use "$port"; then
+    printf 'REMOTE_PORT_CONFLICT label=%%s port=%%s\n' "$label" "$port"
+    return 1
+  fi
+}
+check_remote_ports() {
+  check_port_available backend "$(addr_port "$listen_addr")"
+  check_port_available desktop "$desktop_port"
+  check_port_available peer_transport "$peer_transport_port"
+  check_port_available tailscale_proxy "$(addr_port "$tailscale_proxy_addr")"
 }
 if ! runtime_cmd inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
   printf 'REMOTE_UPDATE_STATE=skipped\nREMOTE_UPDATE_REASON=not-active\n'
@@ -2967,6 +3116,8 @@ runtime=%s
 image_ref=%s
 container_name=%s
 listen_addr=%s
+tailscale_proxy_addr=%s
+desktop_port=%s
 offline_mode=%s
 ts_hostname=%s
 mkdir -p "$tailscale_state_dir" "$swarmd_state_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
@@ -2975,15 +3126,16 @@ export XDG_DATA_HOME="$remote_root/xdg/data"
 export XDG_STATE_HOME="$remote_root/xdg/state"
 export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"
 export TS_STATE_DIR="$tailscale_state_dir"
-export TS_OUTBOUND_HTTP_PROXY_LISTEN="127.0.0.1:1055"
+export TS_OUTBOUND_HTTP_PROXY_LISTEN="$tailscale_proxy_addr"
 export TS_TUN_MODE=userspace-networking
-export SWARM_TAILSCALE_OUTBOUND_PROXY="http://127.0.0.1:1055"
+export SWARM_TAILSCALE_OUTBOUND_PROXY="http://$tailscale_proxy_addr"
 export SWARMD_DATA_DIR="$swarmd_state_dir"
 export SWARMD_LOCK_PATH="$swarmd_state_dir/swarmd.lock"
 export SWARMD_LISTEN="$listen_addr"
-export SWARM_DESKTOP_PORT="5555"
+export SWARM_DESKTOP_PORT="$desktop_port"
 export SWARM_CONTAINER_OFFLINE="$offline_mode"
 export TS_HOSTNAME="$ts_hostname"
+export SWARM_STARTUP_MODE=box
 if [ "$runtime" = "podman" ]; then
   runtime_bin=podman
 else
@@ -2995,15 +3147,16 @@ run_args=(run --rm --name "$container_name" --network host
   -e "XDG_STATE_HOME=$remote_root/xdg/state"
   -e "TS_SOCKET=$tailscale_state_dir/tailscaled.sock"
   -e "TS_STATE_DIR=$tailscale_state_dir"
-  -e "TS_OUTBOUND_HTTP_PROXY_LISTEN=127.0.0.1:1055"
+  -e "TS_OUTBOUND_HTTP_PROXY_LISTEN=$tailscale_proxy_addr"
   -e "TS_TUN_MODE=userspace-networking"
-  -e "SWARM_TAILSCALE_OUTBOUND_PROXY=http://127.0.0.1:1055"
+  -e "SWARM_TAILSCALE_OUTBOUND_PROXY=http://$tailscale_proxy_addr"
   -e "SWARMD_DATA_DIR=$swarmd_state_dir"
   -e "SWARMD_LOCK_PATH=$swarmd_state_dir/swarmd.lock"
   -e "SWARMD_LISTEN=$listen_addr"
-  -e "SWARM_DESKTOP_PORT=5555"
+  -e "SWARM_DESKTOP_PORT=$desktop_port"
   -e "SWARM_CONTAINER_OFFLINE=$offline_mode"
   -e "TS_HOSTNAME=$ts_hostname"
+  -e "SWARM_STARTUP_MODE=box"
 )
 run_args+=(--volume "$remote_root:$remote_root")
 %srun_args+=("$image_ref")
@@ -3041,6 +3194,11 @@ if runtime_cmd inspect "$container_name" >/dev/null 2>&1; then
     exit 1
   fi
 fi
+if ! check_remote_ports; then
+  restore_previous
+  printf 'REMOTE_UPDATE_ERROR=port-conflict\n'
+  exit 1
+fi
 rm -f "$pid_file"
 if [ "$use_sudo" = "1" ]; then
   nohup sudo -E /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
@@ -3052,8 +3210,8 @@ remote_url=""
 deadline=$((SECONDS + 90))
 while :; do
   if [ "$transport_mode" = "lan" ]; then
-    if runtime_cmd exec "$container_name" sh -lc "curl -fsS http://${remote_advertise_host}:7781/readyz >/dev/null 2>&1 || curl -fsS http://${remote_advertise_host}:7781/healthz >/dev/null 2>&1" >/dev/null 2>&1; then
-      remote_url="http://${remote_advertise_host}:7781"
+    if runtime_cmd exec "$container_name" sh -lc "curl -fsS http://${listen_addr}/readyz >/dev/null 2>&1 || curl -fsS http://${listen_addr}/healthz >/dev/null 2>&1" >/dev/null 2>&1; then
+      remote_url="http://${listen_addr}"
       break
     fi
   elif [ -s "$log_file" ]; then
@@ -3087,7 +3245,7 @@ rm -f "$backup_start_script"
 printf 'REMOTE_UPDATE_STATE=replaced\n'
 printf '%s=%%s\n' "$remote_url"
 printf 'REMOTE_UPDATE_ENDPOINT=%%s\n' "$remote_url"
-`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(backupStartScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(backupName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), imageVerification, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), mountArgs, bootstrapOutputPrefix)
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(backupStartScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(backupName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), imageVerification, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
 }
 
 func remoteStartupConfigPath(record pebblestore.RemoteDeploySessionRecord) string {
@@ -4376,7 +4534,10 @@ func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string 
 		runtimeName = "docker"
 	}
 	remoteAdvertiseHost := firstNonEmpty(strings.TrimSpace(record.RemoteAdvertiseHost), "127.0.0.1")
-	listenAddr := firstNonEmpty(map[bool]string{true: net.JoinHostPort(remoteAdvertiseHost, strconv.Itoa(startupconfig.DefaultPort))}[transportMode == startupconfig.NetworkModeLAN], "127.0.0.1:7781")
+	childPorts := remoteChildPorts(record.ID)
+	listenAddr := remoteChildListenAddr(record, transportMode)
+	tailscaleProxyAddr := net.JoinHostPort(startupconfig.DefaultHost, strconv.Itoa(childPorts.TailscaleProxy))
+	peerTransportPort := strconv.Itoa(childPorts.PeerTransport)
 	offlineMode := "0"
 	bootstrapOutputPrefix := "SWARM_TAILNET_URL"
 	if transportMode == startupconfig.NetworkModeLAN {
@@ -4460,6 +4621,9 @@ container_name=%s
 transport_mode=%s
 remote_advertise_host=%s
 listen_addr=%s
+tailscale_proxy_addr=%s
+desktop_port=%s
+peer_transport_port=%s
 offline_mode=%s
 remote_user="$(id -un)"
 remote_group="$(id -gn)"
@@ -4479,6 +4643,39 @@ runtime_cmd() {
   else
     as_root docker "$@"
   fi
+}
+addr_port() {
+  local addr="${1:-}"
+  printf '%%s' "${addr##*:}"
+}
+port_in_use() {
+  local port="${1:-}"
+  if [ -z "$port" ]; then
+    return 1
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "sport = :${port}" 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit(found ? 0 : 1) }'
+    return $?
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  ( : >"/dev/tcp/127.0.0.1/${port}" ) >/dev/null 2>&1
+}
+check_port_available() {
+  local label="${1:-}"
+  local port="${2:-}"
+  if port_in_use "$port"; then
+    printf 'REMOTE_PORT_CONFLICT label=%%s port=%%s\n' "$label" "$port"
+    return 1
+  fi
+}
+check_remote_ports() {
+  check_port_available backend "$(addr_port "$listen_addr")"
+  check_port_available desktop "$desktop_port"
+  check_port_available peer_transport "$peer_transport_port"
+  check_port_available tailscale_proxy "$(addr_port "$tailscale_proxy_addr")"
 }
 
 now_ms() {
@@ -4524,12 +4721,15 @@ else
   echo "remote image archive missing and image is not present: $image_ref" >&2
   exit 1
 fi
-%slog_timer_step "ensure_remote_image" "$step_started_ms"
+%s
+log_timer_step "ensure_remote_image" "$step_started_ms"
 step_started_ms="$(now_ms)"
 %s
 log_timer_step "extract_payloads" "$step_started_ms"
 
 step_started_ms="$(now_ms)"
+runtime_cmd rm -f "$container_name" >/dev/null 2>&1 || true
+check_remote_ports
 cat > "$start_script" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -4541,6 +4741,8 @@ runtime=%s
 image_ref=%s
 container_name=%s
 listen_addr=%s
+tailscale_proxy_addr=%s
+desktop_port=%s
 offline_mode=%s
 ts_hostname=%s
 mkdir -p "$tailscale_state_dir" "$swarmd_state_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
@@ -4549,15 +4751,16 @@ export XDG_DATA_HOME="$remote_root/xdg/data"
 export XDG_STATE_HOME="$remote_root/xdg/state"
 export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"
 export TS_STATE_DIR="$tailscale_state_dir"
-export TS_OUTBOUND_HTTP_PROXY_LISTEN="127.0.0.1:1055"
+export TS_OUTBOUND_HTTP_PROXY_LISTEN="$tailscale_proxy_addr"
 export TS_TUN_MODE=userspace-networking
-export SWARM_TAILSCALE_OUTBOUND_PROXY="http://127.0.0.1:1055"
+export SWARM_TAILSCALE_OUTBOUND_PROXY="http://$tailscale_proxy_addr"
 export SWARMD_DATA_DIR="$swarmd_state_dir"
 export SWARMD_LOCK_PATH="$swarmd_state_dir/swarmd.lock"
 export SWARMD_LISTEN="$listen_addr"
-export SWARM_DESKTOP_PORT="5555"
+export SWARM_DESKTOP_PORT="$desktop_port"
 export SWARM_CONTAINER_OFFLINE="$offline_mode"
 export TS_HOSTNAME="$ts_hostname"
+export SWARM_STARTUP_MODE=box
 if [ "$runtime" = "podman" ]; then
   runtime_bin=podman
 else
@@ -4574,15 +4777,16 @@ run_args=(
   -e "XDG_STATE_HOME=$remote_root/xdg/state"
   -e "TS_SOCKET=$tailscale_state_dir/tailscaled.sock"
   -e "TS_STATE_DIR=$tailscale_state_dir"
-  -e "TS_OUTBOUND_HTTP_PROXY_LISTEN=127.0.0.1:1055"
+  -e "TS_OUTBOUND_HTTP_PROXY_LISTEN=$tailscale_proxy_addr"
   -e "TS_TUN_MODE=userspace-networking"
-  -e "SWARM_TAILSCALE_OUTBOUND_PROXY=http://127.0.0.1:1055"
+  -e "SWARM_TAILSCALE_OUTBOUND_PROXY=http://$tailscale_proxy_addr"
   -e "SWARMD_DATA_DIR=$swarmd_state_dir"
   -e "SWARMD_LOCK_PATH=$swarmd_state_dir/swarmd.lock"
   -e "SWARMD_LISTEN=$listen_addr"
-  -e "SWARM_DESKTOP_PORT=5555"
+  -e "SWARM_DESKTOP_PORT=$desktop_port"
   -e "SWARM_CONTAINER_OFFLINE=$offline_mode"
   -e "TS_HOSTNAME=$ts_hostname"
+  -e "SWARM_STARTUP_MODE=box"
 )
 if [ -n "${TS_AUTHKEY:-}" ]; then
   run_args+=(-e TS_AUTHKEY)
@@ -4624,8 +4828,8 @@ while :; do
   fi
   auth_url="$(printf '%%s\n' "$log_output" | sed -n 's/^TAILSCALE_AUTH_URL=//p' | tail -n 1)"
   if [ "$transport_mode" = "lan" ]; then
-    if runtime_cmd exec "$container_name" sh -lc "curl -fsS http://${remote_advertise_host}:7781/readyz >/dev/null 2>&1 || curl -fsS http://${remote_advertise_host}:7781/healthz >/dev/null 2>&1" >/dev/null 2>&1; then
-      remote_url="http://${remote_advertise_host}:7781"
+    if runtime_cmd exec "$container_name" sh -lc "curl -fsS http://${listen_addr}/readyz >/dev/null 2>&1 || curl -fsS http://${listen_addr}/healthz >/dev/null 2>&1" >/dev/null 2>&1; then
+      remote_url="http://${listen_addr}"
     fi
   else
     remote_url="$(printf '%%s\n' "$log_output" | sed -n 's/^SWARM_TAILNET_URL=//p' | tail -n 1)"
@@ -4662,7 +4866,7 @@ log_timer_step "wait_for_bootstrap_signal" "$step_started_ms"
 printf '%%s\n' "$log_output"
 printf 'TAILSCALE_AUTH_URL=%%s\n' "$auth_url"
 printf '%s=%%s\n' "$remote_url"
-`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(legacyCredentialsFile), shellQuote(bootstrapSecretFile), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(offlineMode), imageVerification, payloadExtract, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(offlineMode), shellQuote(firstNonEmpty(strings.TrimSpace(record.Name), "swarm-box")), mountArgs, bootstrapOutputPrefix)
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(legacyCredentialsFile), shellQuote(bootstrapSecretFile), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), imageVerification, payloadExtract, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
 }
 
 func remoteBundleStartScript(record *pebblestore.RemoteDeploySessionRecord, childCfgText string, tailscaleAuthKey string, syncVaultPassword string) (string, error) {

@@ -17,7 +17,9 @@ cleanup() {
 
 extract_auth_url() {
   local name="$1"
-  podman logs "${name}" 2>&1 | sed -n 's/.*AuthURL is \(https:\/\/login.tailscale.com\/a\/[A-Za-z0-9]*\).*/\1/p' | tail -n 1
+  podman logs "${name}" 2>&1 | sed -n \
+    -e 's/^TAILSCALE_AUTH_URL=//p' \
+    -e 's/.*AuthURL is \(https:\/\/login.tailscale.com\/a\/[A-Za-z0-9]*\).*/\1/p' | tail -n 1
 }
 
 wait_for_auth_url() {

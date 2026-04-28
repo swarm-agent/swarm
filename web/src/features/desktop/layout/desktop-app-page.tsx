@@ -1151,21 +1151,26 @@ export function DesktopAppPage() {
   const updateStatus = updateStatusQuery.data ?? null
   const effectiveUISettings = uiSettings ?? uiSettingsQuery.data ?? null
   const updateAvailable = updateStatus?.update_available === true
+  const updateDevMode = updateStatus?.dev_mode === true
+  const updateActionEnabled = updateAvailable || updateDevMode
+  const updateActionLabel = updateDevMode ? 'Rebuild Swarm' : 'Update Swarm'
   const updateLatestVersion = updateStatus?.latest_version?.trim() ?? ''
   const updateStatusError = updateStatusQuery.error instanceof Error ? updateStatusQuery.error.message : null
-  const updateAttentionVisible = updateAvailable || updateRunning || Boolean(updateError)
+  const updateAttentionVisible = updateActionEnabled || updateRunning || Boolean(updateError)
   const updateActionTitle = updateError
     || (updateRunning
-      ? 'Updating Swarm…'
-      : updateAvailable
-        ? `Update Swarm${updateLatestVersion ? ` to ${updateLatestVersion}` : ''}`
-        : updateStatusQuery.isLoading
-          ? 'Checking for Swarm updates…'
-          : updateStatusError
-            ? `Update status unavailable: ${updateStatusError}`
-            : updateStatus?.suppressed
-              ? 'Updates are not available for this build'
-              : 'Swarm is up to date')
+      ? updateDevMode ? 'Rebuilding Swarm dev checkout…' : 'Updating Swarm…'
+      : updateDevMode
+        ? 'Rebuild Swarm dev checkout'
+        : updateAvailable
+          ? `Update Swarm${updateLatestVersion ? ` to ${updateLatestVersion}` : ''}`
+          : updateStatusQuery.isLoading
+            ? 'Checking for Swarm updates…'
+            : updateStatusError
+              ? `Update status unavailable: ${updateStatusError}`
+              : updateStatus?.suppressed
+                ? 'Updates are not available for this build'
+                : 'Swarm is up to date')
 
   const swarmTargets = swarmTargetsQuery.data?.targets ?? []
   const currentSwarmTarget = swarmTargets.find((target) => target.current) ?? null
@@ -1734,14 +1739,22 @@ export function DesktopAppPage() {
     } catch {
       // React Query stores the error; keep the current cached status if present.
     }
-    if (status?.update_available !== true) {
-      const message = status?.suppressed
+    if (!status) {
+      const message = updateStatusError
+        ? `Update status unavailable: ${updateStatusError}`
+        : 'No Swarm update is available yet.'
+      setUpdateError(message)
+      return
+    }
+    const devRebuild = status.dev_mode === true
+    if (!devRebuild && status.update_available !== true) {
+      const message = status.suppressed
         ? 'Updates are not available for this build.'
-        : status?.error?.trim()
+        : status.error?.trim()
           ? `Update status unavailable: ${status.error}`
           : updateStatusError
             ? `Update status unavailable: ${updateStatusError}`
-            : status?.latest_version?.trim()
+            : status.latest_version?.trim()
               ? `Swarm is already up to date (${status.latest_version.trim()}).`
               : 'No Swarm update is available yet.'
       setUpdateError(message)
@@ -1857,9 +1870,9 @@ export function DesktopAppPage() {
             <ListChecks size={24} className="shrink-0" />
           </Button>
           {updateAttentionVisible ? (
-            <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label="Update Swarm" title={updateActionTitle} disabled={updateRunning || !updateAvailable}>
-              <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateAvailable && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
-              {updateAvailable ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
+            <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label={updateActionLabel} title={updateActionTitle} disabled={updateRunning || !updateActionEnabled}>
+              <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
+              {updateActionEnabled ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
             </Button>
           ) : null}
           <div className="mt-2 flex flex-col items-center">
@@ -1898,18 +1911,18 @@ export function DesktopAppPage() {
                         className={cn(
                           SIDEBAR_ACTION_BUTTON_CLASS,
                           'relative text-[var(--app-text-subtle)]',
-                          updateAvailable && 'text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] hover:text-[var(--app-primary-hover)]',
+                          updateActionEnabled && 'text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] hover:text-[var(--app-primary-hover)]',
                           updateRunning && 'cursor-progress text-[var(--app-primary)]',
                           updateError && 'text-[var(--app-error)] hover:text-[var(--app-error)]',
                         )}
                         onClick={() => { void handleDesktopUpdate() }}
                         aria-busy={updateRunning}
-                        aria-label="Update Swarm"
-                        disabled={updateRunning || !updateAvailable}
+                        aria-label={updateActionLabel}
+                        disabled={updateRunning || !updateActionEnabled}
                         title={updateActionTitle}
                       >
                         <Download size={14} strokeWidth={1.8} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
-                        {updateAvailable ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_8px_var(--app-primary)]" /> : null}
+                        {updateActionEnabled ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_8px_var(--app-primary)]" /> : null}
                       </button>
                     ) : null}
                     <button

@@ -42,6 +42,7 @@ Options:
   --group-id <id>                       Existing target group id
   --group-name <name>                   Existing target group name, or name to create
   --host-swarm-name <name>              Host swarm name. Default: Remote Deploy Test Host
+  --host-lane <main|dev>                Local lane for the isolated host swarm. Default: main
   --host-root <path>                    Reuse a specific isolated host root instead of mktemp
   --host-bind-host <host>               Host bind address for the isolated master. LAN mode defaults to the first private non-container address.
   --host-advertise-host <host>          Host advertised callback address. Default: host bind address for LAN mode.
@@ -337,14 +338,23 @@ reserve_isolated_ports() {
   local backend_port="${HOST_BACKEND_PORT}"
   local desktop_port="${HOST_DESKTOP_PORT}"
   local peer_port="${HOST_PEER_PORT}"
+  local lane_offset
+  lane_offset="$(host_lane_port_offset)"
   local attempts=0
   while (( attempts < 200 )); do
-    if port_is_available "${backend_port}" \
-      && port_is_available "${desktop_port}" \
+    local effective_backend_port=$((backend_port + lane_offset))
+    local effective_desktop_port=$((desktop_port + lane_offset))
+    if (( effective_backend_port > 65535 || effective_desktop_port > 65535 )); then
+      return 1
+    fi
+    if port_is_available "${effective_backend_port}" \
+      && port_is_available "${effective_desktop_port}" \
       && port_is_available "${peer_port}"; then
       HOST_BACKEND_PORT="${backend_port}"
       HOST_DESKTOP_PORT="${desktop_port}"
       HOST_PEER_PORT="${peer_port}"
+      HOST_EFFECTIVE_BACKEND_PORT="${effective_backend_port}"
+      HOST_EFFECTIVE_DESKTOP_PORT="${effective_desktop_port}"
       return 0
     fi
     backend_port=$((backend_port + 11))
@@ -353,6 +363,13 @@ reserve_isolated_ports() {
     attempts=$((attempts + 1))
   done
   return 1
+}
+
+host_lane_port_offset() {
+  case "${HOST_LANE}" in
+    dev) printf '1' ;;
+    *) printf '0' ;;
+  esac
 }
 
 write_host_startup_config() {
@@ -403,7 +420,7 @@ XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \\
 XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \\
 XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \\
 XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \\
-SWARM_LANE=main \\
+SWARM_LANE="${HOST_LANE}" \\
 ./swarmd/scripts/dev-up.sh
 EOF
   chmod 0755 "${HOST_ROOT}/start-host.sh"
@@ -416,7 +433,7 @@ XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \\
 XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \\
 XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \\
 XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \\
-SWARM_LANE=main \\
+SWARM_LANE="${HOST_LANE}" \\
 ./swarmd/scripts/dev-down.sh
 EOF
   chmod 0755 "${HOST_ROOT}/stop-host.sh"
@@ -444,10 +461,10 @@ prepare_isolated_host() {
   reserve_isolated_ports || fail "unable to reserve isolated host ports"
 
   HOST_STARTUP_CONFIG="${HOST_XDG_CONFIG_HOME}/swarm/swarm.conf"
-  HOST_ADMIN_API_URL="http://${HOST_BIND_HOST}:${HOST_BACKEND_PORT}"
-  HOST_DESKTOP_URL="http://${HOST_BIND_HOST}:${HOST_DESKTOP_PORT}"
+  HOST_ADMIN_API_URL="http://${HOST_BIND_HOST}:${HOST_EFFECTIVE_BACKEND_PORT}"
+  HOST_DESKTOP_URL="http://${HOST_BIND_HOST}:${HOST_EFFECTIVE_DESKTOP_PORT}"
   if [[ "${TRANSPORT_MODE}" == "lan" ]]; then
-    HOST_CALLBACK_URL="http://${HOST_ADVERTISE_HOST}:${HOST_BACKEND_PORT}"
+    HOST_CALLBACK_URL="http://${HOST_ADVERTISE_HOST}:${HOST_EFFECTIVE_BACKEND_PORT}"
   fi
   ARTIFACT_DIR="${HOST_ROOT}/artifacts"
   mkdir -p "${ARTIFACT_DIR}"
@@ -477,7 +494,7 @@ resolve_host_transport() {
       HOST_ADVERTISE_HOST="$(trim "${HOST_ADVERTISE_HOST_OVERRIDE}")"
       [[ -n "${HOST_ADVERTISE_HOST}" ]] || HOST_ADVERTISE_HOST="${HOST_BIND_HOST}"
       HOST_TAILSCALE_URL=""
-      HOST_CALLBACK_URL="http://${HOST_ADVERTISE_HOST}:${HOST_BACKEND_PORT}"
+      HOST_CALLBACK_URL="http://${HOST_ADVERTISE_HOST}:${HOST_EFFECTIVE_BACKEND_PORT}"
       ;;
     *)
       fail "unsupported transport mode: ${TRANSPORT_MODE}"
@@ -512,7 +529,7 @@ ensure_tailscale_serve() {
     serve_host="${serve_host#http://}"
     serve_host="${serve_host%/}"
     current_proxy="$(printf '%s' "${serve_json}" | jq -r --arg host "${serve_host}:443" '.Web[$host].Handlers["/"].Proxy // empty')"
-    if [[ "${current_proxy}" == "http://127.0.0.1:${HOST_BACKEND_PORT}" ]]; then
+    if [[ "${current_proxy}" == "http://127.0.0.1:${HOST_EFFECTIVE_BACKEND_PORT}" ]]; then
       log "Reusing existing tailscale serve config for ${HOST_TAILSCALE_URL}"
       write_artifact "tailscale-serve-status.json" "${serve_json}"
       return 0
@@ -520,7 +537,7 @@ ensure_tailscale_serve() {
     fail "tailscale serve already has a non-empty config; rerun with --manage-tailscale-serve false and a known --host-tailscale-url, or reset serve first"
   fi
   log "Configuring tailscale serve for ${HOST_TAILSCALE_URL} -> ${HOST_ADMIN_API_URL}"
-  tailscale serve --bg "http://127.0.0.1:${HOST_BACKEND_PORT}" >/dev/null
+  tailscale serve --bg "http://127.0.0.1:${HOST_EFFECTIVE_BACKEND_PORT}" >/dev/null
   CREATED_TAILSCALE_SERVE="true"
   write_artifact "tailscale-serve-status.json" "$(tailscale serve status --json 2>/dev/null || printf '{}')"
 }
@@ -546,7 +563,7 @@ ensure_host_running() {
     XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \
     XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \
     XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \
-    SWARM_LANE=main \
+    SWARM_LANE="${HOST_LANE}" \
     ./swarmd/scripts/dev-up.sh
   )
   host_ready || fail "isolated host did not become ready at ${HOST_ADMIN_API_URL}"
@@ -585,7 +602,7 @@ maybe_rebuild_host() {
     XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \
     XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \
     XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \
-    SWARM_LANE=main \
+    SWARM_LANE="${HOST_LANE}" \
     SWARMD_BUILD_HARD_RESTART=0 \
     ./swarmd/scripts/dev-build.sh
   )
@@ -1108,6 +1125,7 @@ write_summary() {
     --arg host_api_url "${HOST_ADMIN_API_URL}" \
     --arg host_desktop_url "${HOST_DESKTOP_URL}" \
     --arg host_callback_url "${HOST_CALLBACK_URL}" \
+    --arg host_lane "${HOST_LANE}" \
     --arg transport_mode "${TRANSPORT_MODE}" \
     --arg host_tailscale_url "${HOST_TAILSCALE_URL}" \
     --arg image_delivery_mode "${IMAGE_DELIVERY_MODE}" \
@@ -1116,7 +1134,7 @@ write_summary() {
     --arg workspace_path "${SOURCE_WORKSPACE_PATH}" \
     --arg workspace_name "${WORKSPACE_NAME}" \
     --argjson sessions "${REMOTE_SESSIONS_JSON}" \
-    '{host_root:$host_root,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_callback_url:$host_callback_url,transport_mode:$transport_mode,image_delivery_mode:$image_delivery_mode,host_tailscale_url:$host_tailscale_url,group_id:$group_id,group_name:$group_name,workspace_path:$workspace_path,workspace_name:$workspace_name,sessions:($sessions.sessions // [])}')"
+    '{host_root:$host_root,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_callback_url:$host_callback_url,host_lane:$host_lane,transport_mode:$transport_mode,image_delivery_mode:$image_delivery_mode,host_tailscale_url:$host_tailscale_url,group_id:$group_id,group_name:$group_name,workspace_path:$workspace_path,workspace_name:$workspace_name,sessions:($sessions.sessions // [])}')"
   write_artifact "summary.json" "${summary_json}"
 }
 
@@ -1160,6 +1178,7 @@ print_next_steps() {
   log "  artifacts: ${ARTIFACT_DIR}"
   log "  host api: ${HOST_ADMIN_API_URL}"
   log "  host desktop: ${HOST_DESKTOP_URL}"
+  log "  host lane: ${HOST_LANE}"
   log "  transport mode: ${TRANSPORT_MODE}"
   log "  image delivery mode: ${IMAGE_DELIVERY_MODE}"
   log "  host callback: ${HOST_CALLBACK_URL}"
@@ -1205,6 +1224,7 @@ PROVE_ROUTED_AI="false"
 
 HOST_ROOT_OVERRIDE=""
 HOST_SWARM_NAME="Remote Deploy Test Host"
+HOST_LANE="main"
 HOST_BIND_HOST_OVERRIDE=""
 HOST_BIND_HOST="127.0.0.1"
 HOST_ADVERTISE_HOST_OVERRIDE=""
@@ -1214,6 +1234,8 @@ REMOTE_ADVERTISE_HOST=""
 HOST_BACKEND_PORT=17781
 HOST_DESKTOP_PORT=15555
 HOST_PEER_PORT=17791
+HOST_EFFECTIVE_BACKEND_PORT=17781
+HOST_EFFECTIVE_DESKTOP_PORT=15555
 HOST_TAILSCALE_URL_OVERRIDE=""
 HOST_TAILSCALE_URL=""
 
@@ -1302,6 +1324,11 @@ while (($# > 0)); do
       shift
       [[ $# -gt 0 ]] || fail "--host-swarm-name requires a value"
       HOST_SWARM_NAME="$1"
+      ;;
+    --host-lane)
+      shift
+      [[ $# -gt 0 ]] || fail "--host-lane requires a value"
+      HOST_LANE="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
       ;;
     --host-root)
       shift
@@ -1483,6 +1510,11 @@ esac
 case "${IMAGE_DELIVERY_MODE}" in
   registry|archive) ;;
   *) fail "--image-delivery-mode must be registry or archive" ;;
+esac
+
+case "${HOST_LANE}" in
+  main|dev) ;;
+  *) fail "--host-lane must be main or dev" ;;
 esac
 
 case "${TAILSCALE_AUTH_MODE}" in

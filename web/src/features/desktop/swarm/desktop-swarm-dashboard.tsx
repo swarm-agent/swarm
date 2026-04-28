@@ -196,6 +196,8 @@ function formatRemoteSessionStatus(value: string | null | undefined): string {
       return 'preflight ready'
     case 'waiting_for_child':
       return 'waiting for child'
+    case 'auth_required':
+      return 'auth required'
     case 'waiting_for_approval':
       return 'waiting for approval'
     default:

@@ -166,6 +166,7 @@ export interface RemoteDeploySession {
   sync_mode?: string
   sync_owner_swarm_id?: string
   container_packages?: DeployContainerPackageManifest
+  last_progress?: string
   last_error?: string
   last_remote_output?: string
   preflight: RemoteDeployPreflight
@@ -294,6 +295,13 @@ export interface RemoteDeployPreflightError {
   session?: RemoteDeploySession
 }
 
+export interface RemoteDeployStartError {
+  ok?: boolean
+  path_id?: string
+  error?: string
+  session?: RemoteDeploySession
+}
+
 export async function createRemoteDeploySession(input: {
   name: string
   sshSessionTarget: string
@@ -380,7 +388,7 @@ export async function startRemoteDeploySession(sessionID: string, input?: {
   tailscaleAuthKey?: string
   syncVaultPassword?: string
 }): Promise<RemoteDeploySession> {
-  const response = await requestJson<{ ok?: boolean; session?: RemoteDeploySession }>('/v1/deploy/remote/session/start', {
+  const response = await apiFetch('/v1/deploy/remote/session/start', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -391,10 +399,32 @@ export async function startRemoteDeploySession(sessionID: string, input?: {
       sync_vault_password: input?.syncVaultPassword,
     }),
   })
-  if (!response.session) {
+  const text = await response.text()
+  let payload: { ok?: boolean; path_id?: string; session?: RemoteDeploySession; error?: string } = {}
+  if (text.trim()) {
+    try {
+      payload = JSON.parse(text) as { ok?: boolean; path_id?: string; session?: RemoteDeploySession; error?: string }
+    } catch {
+      payload = { error: text.trim() }
+    }
+  }
+  if (!response.ok) {
+    const error = typeof payload.error === 'string' && payload.error.trim().length > 0
+      ? payload.error.trim()
+      : `Request failed with status ${response.status}`
+    const wrapped = new Error(error) as Error & { remoteStart?: RemoteDeployStartError }
+    wrapped.remoteStart = {
+      ok: payload.ok,
+      path_id: payload.path_id || 'deploy.remote.start.v1',
+      error,
+      session: payload.session,
+    }
+    throw wrapped
+  }
+  if (!payload.session) {
     throw new Error('remote deploy start response was missing session data')
   }
-  return response.session
+  return payload.session
 }
 
 export async function deleteRemoteDeploySessions(input: {

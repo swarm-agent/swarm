@@ -80,6 +80,7 @@ type RemoteDeploySessionRecord struct {
 	ImageRef                string                         `json:"image_ref,omitempty"`
 	ImageSignature          string                         `json:"image_signature,omitempty"`
 	ImageArchiveBytes       int64                          `json:"image_archive_bytes,omitempty"`
+	LastProgress            string                         `json:"last_progress,omitempty"`
 	LastRemoteOutput        string                         `json:"last_remote_output,omitempty"`
 	LastError               string                         `json:"last_error,omitempty"`
 	SSHReachable            bool                           `json:"ssh_reachable,omitempty"`
@@ -250,6 +251,7 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 	record.LastPairingURL = strings.TrimSpace(record.LastPairingURL)
 	record.ImageRef = strings.TrimSpace(record.ImageRef)
 	record.ImageSignature = strings.TrimSpace(record.ImageSignature)
+	record.LastProgress = strings.TrimSpace(record.LastProgress)
 	record.LastRemoteOutput = strings.TrimSpace(record.LastRemoteOutput)
 	record.LastError = strings.TrimSpace(record.LastError)
 	record.SudoMode = strings.TrimSpace(record.SudoMode)
@@ -357,6 +359,8 @@ func normalizeRemoteDeploySessionStatus(value string) string {
 		return "preflight_ready"
 	case "starting":
 		return "starting"
+	case "auth_required":
+		return "auth_required"
 	case "waiting_for_child":
 		return "waiting_for_child"
 	case "waiting_for_approval":

@@ -19,6 +19,7 @@ import {
   type DeployContainerPackageSelection,
   type RemoteDeployPreflightError,
   type RemoteDeploySession,
+  type RemoteDeployStartError,
 } from '../api/deploy-container'
 import { replicateSwarm, ReplicateSwarmLaunchError } from '../api/replicate-swarm'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
@@ -75,6 +76,7 @@ const CONTAINER_PACKAGE_BASE_IMAGE = 'ubuntu:24.04'
 const CONTAINER_PACKAGE_MANAGER = 'apt'
 const REMOTE_IMAGE_DELIVERY_MODE_RELEASE: 'registry' = 'registry'
 const REMOTE_IMAGE_DELIVERY_MODE_DEV: 'archive' = 'archive'
+const REMOTE_LAUNCH_POLL_INTERVAL_MS = 2000
 
 const DEFAULT_CONTAINER_PACKAGES: ContainerPackageDraft[] = [
   'bash',
@@ -558,6 +560,47 @@ function parseRemotePreflightGuidance(message: string): RemotePreflightGuidance 
   }
 }
 
+function remoteDeployStartError(error: unknown): RemoteDeployStartError | undefined {
+  if (!error || typeof error !== 'object' || !('remoteStart' in error)) {
+    return undefined
+  }
+  return (error as Error & { remoteStart?: RemoteDeployStartError }).remoteStart
+}
+
+function remoteLaunchStatusMessage(session: RemoteDeploySession, fallbackMethod: RemoteDeployMethod): string {
+  const progress = String(session.last_progress ?? '').trim()
+  const target = String(session.ssh_session_target ?? '').trim() || 'remote host'
+  const status = String(session.status ?? '').trim()
+  if (status === 'failed') {
+    return String(session.last_error ?? '').trim() || progress || `Remote deploy failed on ${target}.`
+  }
+  if (session.remote_auth_url) {
+    return `Remote child started. Approve Tailscale login: ${session.remote_auth_url}`
+  }
+  if (session.remote_endpoint) {
+    return `Remote child started. Waiting for the child to enroll back at ${session.remote_endpoint}…`
+  }
+  if (progress) {
+    return progress
+  }
+  if (status === 'starting') {
+    return `Remote deploy is running on ${target}.`
+  }
+  if (status === 'waiting_for_approval' || status === 'waiting_for_child') {
+    return `Remote child started. Waiting for the child to enroll back over ${fallbackMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`
+  }
+  return ''
+}
+
+function remoteLaunchFailureMessage(error: unknown, session: RemoteDeploySession | null): string {
+  const base = error instanceof Error ? error.message : 'Failed to launch remote swarm'
+  const details = [
+    String(session?.last_progress ?? '').trim(),
+    String(session?.last_error ?? '').trim(),
+  ].filter((value, index, values) => value && value !== base && values.indexOf(value) === index)
+  return [base, ...details].join('\n')
+}
+
 export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete }: AddSwarmModalProps) {
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -857,8 +900,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     }
   }, [remoteDeployMethod, remoteReachableHost, remoteSSHTarget])
 
-  const refreshRemoteSessions = async (): Promise<RemoteDeploySession[]> => {
-    const nextSessions = await fetchRemoteDeploySessions({ refresh: true })
+  const refreshRemoteSessions = async (options?: { refresh?: boolean }): Promise<RemoteDeploySession[]> => {
+    const nextSessions = await fetchRemoteDeploySessions({ refresh: options?.refresh ?? true })
     setRemoteSessions(nextSessions)
     logAddSwarm('refreshed remote session list', { sessions: nextSessions.length })
     return nextSessions
@@ -1077,6 +1120,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('Run the remote preflight check and fix any errors before launching.')
       return
     }
+    if (remotePreflightSession.name?.trim() !== swarmName.trim()) {
+      setError('Run remote preflight again after changing the child swarm name.')
+      return
+    }
     if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
       setError('Vault password is required to sync from a vaulted host.')
       return
@@ -1088,6 +1135,15 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
     setSubmitting(true)
     setError(null)
+    let latestRemoteSession: RemoteDeploySession | null = remotePreflightSession
+    let pollLaunchProgress = false
+    let launchProgressPoll: Promise<void> | null = null
+    const stopLaunchProgressPoll = async () => {
+      pollLaunchProgress = false
+      if (launchProgressPoll) {
+        await launchProgressPoll
+      }
+    }
     try {
       const session = remotePreflightSession
       setStatus(`Preflight ready: ${session.preflight.summary || `copying ${session.preflight.files_to_copy?.length || 0} files to ${remoteSSHTarget.trim()}`}`)
@@ -1120,28 +1176,56 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       }
 
       setStatus('Preparing payloads locally and shipping the minimum needed over SSH…')
+      pollLaunchProgress = true
+      launchProgressPoll = (async () => {
+        while (pollLaunchProgress) {
+          await new Promise((resolve) => window.setTimeout(resolve, REMOTE_LAUNCH_POLL_INTERVAL_MS))
+          if (!pollLaunchProgress) {
+            break
+          }
+          try {
+            const sessions = await refreshRemoteSessions({ refresh: remoteDeployMethod === 'tailscale' })
+            const nextSession = sessions.find((item) => item.id === session.id)
+            if (!nextSession) {
+              continue
+            }
+            latestRemoteSession = nextSession
+            const nextStatus = remoteLaunchStatusMessage(nextSession, remoteDeployMethod)
+            if (nextStatus) {
+              setStatus(nextStatus)
+            }
+          } catch (pollErr) {
+            logAddSwarmError('remote launch progress poll failed', pollErr, {
+              session_id: session.id,
+              ssh_target: remoteSSHTarget.trim(),
+            })
+          }
+        }
+      })()
       let currentSession = await startRemoteDeploySession(session.id, {
         tailscaleAuthKey: remoteDeployMethod === 'tailscale' && remoteTailscaleAuthMode === 'key' ? remoteTailscaleAuthKey.trim() : '',
         syncVaultPassword: syncEnabled && hostVaultEnabled ? syncVaultPassword.trim() : '',
       })
+      latestRemoteSession = currentSession
+      await stopLaunchProgressPoll()
       await refreshRemoteSessions()
-      if (currentSession.remote_auth_url) {
-        setStatus(`Remote child started. Approve Tailscale login: ${currentSession.remote_auth_url}`)
-      } else if (currentSession.remote_endpoint) {
-        setStatus(`Remote child started. Waiting for the child to enroll back over ${currentSession.transport_mode === 'lan' ? 'LAN / WireGuard' : 'the selected transport'} at ${currentSession.remote_endpoint}…`)
-      } else {
-        setStatus(`Remote child started. Waiting for the child to enroll back over ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`)
-      }
+      setStatus(remoteLaunchStatusMessage(currentSession, remoteDeployMethod)
+        || `Remote child started. Waiting for the child to enroll back over ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`)
 
       const startedAt = Date.now()
       const timeoutMs = 5 * 60 * 1000
       while (Date.now() - startedAt < timeoutMs) {
         const sessions = await refreshRemoteSessions()
         currentSession = sessions.find((item) => item.id === session.id) ?? currentSession
+        latestRemoteSession = currentSession
+        const nextStatus = remoteLaunchStatusMessage(currentSession, remoteDeployMethod)
+        if (nextStatus) {
+          setStatus(nextStatus)
+        }
         if (currentSession.enrollment_id || currentSession.child_swarm_id) {
           break
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 2000))
+        await new Promise((resolve) => window.setTimeout(resolve, REMOTE_LAUNCH_POLL_INTERVAL_MS))
       }
       if (!currentSession.enrollment_id && !currentSession.child_swarm_id) {
         throw new Error(currentSession.last_error || 'Remote child did not enroll before timeout')
@@ -1152,13 +1236,17 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       await refreshRemoteSessions()
       await finishSuccess(`Added remote child ${currentSession.name} to the swarm.`)
     } catch (err) {
+      await stopLaunchProgressPoll()
+      const startDetails = remoteDeployStartError(err)
+      latestRemoteSession = startDetails?.session ?? latestRemoteSession
       logAddSwarmError('remote launch flow failed', err, {
         swarm_name: swarmName.trim(),
         ssh_target: remoteSSHTarget.trim(),
         group_id: group.group.id,
       })
-      setError(err instanceof Error ? err.message : 'Failed to launch remote swarm')
+      setError(remoteLaunchFailureMessage(err, latestRemoteSession))
     } finally {
+      await stopLaunchProgressPoll()
       setSubmitting(false)
     }
   }
@@ -1426,7 +1514,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           ) : null}
 
           {error ? (
-            <Card className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">
+            <Card className="whitespace-pre-wrap border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">
               {error}
             </Card>
           ) : null}
@@ -1654,7 +1742,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <Input
                     value={swarmName}
                     onChange={(event) => {
-                      invalidateRemotePreflight()
                       setSwarmName(event.target.value)
                     }}
                     disabled={submitting}
