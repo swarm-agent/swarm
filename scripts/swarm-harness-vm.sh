@@ -32,7 +32,6 @@ Usage:
   ./scripts/swarm-harness-vm.sh run [--repo-root PATH] [--no-sync] -- <command...>
   ./scripts/swarm-harness-vm.sh local-replicate [--repo-root PATH] [--no-sync] -- [harness-args...]
   ./scripts/swarm-harness-vm.sh local-replicate-recovery [--repo-root PATH] [--no-sync] -- [harness-args...]
-  ./scripts/swarm-harness-vm.sh prod-update-replay [--repo-root PATH] [--no-sync] -- [harness-args...]
 
 Environment overrides:
   SWARM_HARNESS_VM_NAME            VM name. Default: swarm-harness
@@ -674,10 +673,6 @@ run_local_replicate_recovery() {
   run_in_guest_repo ./tests/swarmd/local_replicate_recovery_e2e.sh "$@"
 }
 
-run_prod_update_replay() {
-  run_in_guest_repo ./tests/swarmd/prod_update_replay_e2e.sh "$@"
-}
-
 install_host_deps() {
   require_command apt-get
   local sudo_cmd=()
@@ -743,7 +738,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "${COMMAND}" in
-  create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|setup|bootstrap|sync|provision|ssh|shell|run|local-replicate|local-replicate-recovery|prod-update-replay)
+  create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|setup|bootstrap|sync|provision|ssh|shell|run|local-replicate|local-replicate-recovery)
     ;;
   ""|help|-h|--help)
     usage
@@ -790,7 +785,7 @@ case "${COMMAND}" in
     [[ "${NO_SYNC}" != "true" ]] || fail "--no-sync is not supported for sync"
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for sync"
     ;;
-  run|local-replicate|local-replicate-recovery|prod-update-replay)
+  run|local-replicate|local-replicate-recovery)
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for ${COMMAND}; run bootstrap/provision --rebootstrap first"
     ;;
   create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|ssh|shell)
@@ -874,9 +869,5 @@ case "${COMMAND}" in
   local-replicate-recovery)
     load_vm_config || create_vm
     run_local_replicate_recovery "${ARGS[@]}"
-    ;;
-  prod-update-replay)
-    load_vm_config || create_vm
-    run_prod_update_replay "${ARGS[@]}"
     ;;
 esac

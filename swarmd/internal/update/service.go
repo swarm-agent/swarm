@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path"
 	"regexp"
 	"sort"
@@ -20,15 +19,13 @@ import (
 )
 
 const (
-	defaultRepoOwner           = "swarm-agent"
-	defaultRepoName            = "swarm"
-	defaultCacheTTL            = 30 * time.Minute
-	defaultLookupTimeout       = 5 * time.Second
-	defaultUserAgent           = "swarmd-update-status"
-	linuxAMD64ArchiveFmt       = "swarm-%s-linux-amd64.tar.gz"
-	comparisonSource           = "github_releases"
-	releasesURLTemplateEnv     = "SWARM_UPDATE_RELEASES_URL_TEMPLATE"
-	includeUnstableReleasesEnv = "SWARM_UPDATE_INCLUDE_UNSTABLE_RELEASES"
+	defaultRepoOwner     = "swarm-agent"
+	defaultRepoName      = "swarm"
+	defaultCacheTTL      = 30 * time.Minute
+	defaultLookupTimeout = 5 * time.Second
+	defaultUserAgent     = "swarmd-update-status"
+	linuxAMD64ArchiveFmt = "swarm-%s-linux-amd64.tar.gz"
+	comparisonSource     = "github_releases"
 )
 
 var (
@@ -247,7 +244,7 @@ func (s *Service) store(status Status) {
 }
 
 func (s *Service) fetchLatestStableRelease(ctx context.Context) (githubRelease, error) {
-	url := releasesAPIURL(s.repoOwner, s.repoName)
+	url := fmt.Sprintf(releasesAPIFormat, s.repoOwner, s.repoName)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return githubRelease{}, fmt.Errorf("build github releases request: %w", err)
@@ -270,14 +267,14 @@ func (s *Service) fetchLatestStableRelease(ctx context.Context) (githubRelease, 
 	}
 	eligible := make([]githubRelease, 0, len(releases))
 	for _, release := range releases {
-		if release.Draft {
+		if release.Draft || release.Prerelease {
 			continue
 		}
 		tagName := strings.TrimSpace(release.TagName)
 		if tagName == "" {
 			continue
 		}
-		if !includeUnstableReleases() && (release.Prerelease || !stableTagPattern.MatchString(tagName)) {
+		if !stableTagPattern.MatchString(tagName) {
 			continue
 		}
 		if strings.TrimSpace(release.PublishedAt) == "" {
@@ -292,23 +289,6 @@ func (s *Service) fetchLatestStableRelease(ctx context.Context) (githubRelease, 
 		return eligible[i].PublishedAt > eligible[j].PublishedAt
 	})
 	return eligible[0], nil
-}
-
-func releasesAPIURL(owner, repo string) string {
-	tmpl := strings.TrimSpace(os.Getenv(releasesURLTemplateEnv))
-	if tmpl == "" {
-		tmpl = releasesAPIFormat
-	}
-	return fmt.Sprintf(tmpl, owner, repo)
-}
-
-func includeUnstableReleases() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(includeUnstableReleasesEnv))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *Service) resolveAssetSHA256(ctx context.Context, archiveAsset githubReleaseAsset, assets []githubReleaseAsset, assetName string) (string, error) {
