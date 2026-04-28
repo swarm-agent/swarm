@@ -140,6 +140,39 @@ func TestMarkPendingRuntimeUpdateAndBootSuccess(t *testing.T) {
 	}
 }
 
+func TestSwitchRuntimeLinksReplacesLegacyManagedDirectories(t *testing.T) {
+	installRoot := t.TempDir()
+	targetRoot := filepath.Join(installRoot, "versions", "v1.1.0")
+	for _, dir := range []string{"bin", "libexec", "lib", "share"} {
+		if err := os.MkdirAll(filepath.Join(targetRoot, dir), 0o755); err != nil {
+			t.Fatalf("mkdir target %s: %v", dir, err)
+		}
+		legacyDir := filepath.Join(installRoot, dir)
+		if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+			t.Fatalf("mkdir legacy %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(legacyDir, "legacy.txt"), []byte("old"), 0o644); err != nil {
+			t.Fatalf("write legacy %s: %v", dir, err)
+		}
+	}
+
+	if err := switchRuntimeLinks(installRoot, targetRoot); err != nil {
+		t.Fatalf("switchRuntimeLinks: %v", err)
+	}
+
+	currentRoot, ok := resolveRuntimeLink(filepath.Join(installRoot, "current"))
+	if !ok || currentRoot != targetRoot {
+		t.Fatalf("current = %q ok=%v, want %q", currentRoot, ok, targetRoot)
+	}
+	for _, dir := range []string{"bin", "libexec", "lib", "share"} {
+		target, ok := resolveRuntimeLink(filepath.Join(installRoot, dir))
+		want := filepath.Join(installRoot, "current", dir)
+		if !ok || target != want {
+			t.Fatalf("%s = %q ok=%v, want %q", dir, target, ok, want)
+		}
+	}
+}
+
 func TestRollbackPendingRuntimeUpdateRestoresPreviousRuntime(t *testing.T) {
 	installRoot := t.TempDir()
 	xdgRoot := t.TempDir()
@@ -194,6 +227,7 @@ func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testi
 	originalApplyRelease := applyReleaseUpdateForUpdate
 	originalStartBackend := startBackendForUpdate
 	originalRunTUI := runTUIWithExtraEnvForUpdate
+	originalIsTerminal := isTerminalForUpdate
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
 	originalRollbackRestart := rollbackPendingUpdateAndRestartForUpdate
 	defer func() {
@@ -201,6 +235,7 @@ func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testi
 		applyReleaseUpdateForUpdate = originalApplyRelease
 		startBackendForUpdate = originalStartBackend
 		runTUIWithExtraEnvForUpdate = originalRunTUI
+		isTerminalForUpdate = originalIsTerminal
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
 		rollbackPendingUpdateAndRestartForUpdate = originalRollbackRestart
 	}()
@@ -228,6 +263,7 @@ func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testi
 		}
 		return nil
 	}
+	isTerminalForUpdate = func(*os.File) bool { return true }
 	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
 		return lifecycleManager{Kind: lifecycleKindDirect}, true, nil
 	}
@@ -255,6 +291,7 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 	originalApplyRelease := applyReleaseUpdateForUpdate
 	originalStartBackend := startBackendForUpdate
 	originalRunTUI := runTUIWithExtraEnvForUpdate
+	originalIsTerminal := isTerminalForUpdate
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
 	originalServiceActive := serviceActiveForUpdate
 	defer func() {
@@ -263,6 +300,7 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 		applyReleaseUpdateForUpdate = originalApplyRelease
 		startBackendForUpdate = originalStartBackend
 		runTUIWithExtraEnvForUpdate = originalRunTUI
+		isTerminalForUpdate = originalIsTerminal
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
 		serviceActiveForUpdate = originalServiceActive
 	}()
@@ -291,6 +329,7 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 		calls = append(calls, "run-tui")
 		return nil
 	}
+	isTerminalForUpdate = func(*os.File) bool { return true }
 	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
 		return lifecycleManager{Kind: lifecycleKindSystemd, Scope: "system", Unit: "swarm.service"}, true, nil
 	}

@@ -42,6 +42,7 @@ var (
 	applyReleaseUpdateForUpdate              = ApplyReleaseUpdate
 	startBackendForUpdate                    = StartBackend
 	runTUIWithExtraEnvForUpdate              = RunTUIWithExtraEnv
+	isTerminalForUpdate                      = isTerminal
 	resolveLifecycleManagerForUpdate         = resolveLifecycleManager
 	serviceActiveForUpdate                   = serviceActiveForScope
 	stopSystemdServiceForUpdate              = stopSystemdService
@@ -248,6 +249,9 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	outcome := runReleaseContainerImageUpdateJobsAfterRestart(profile, result.Version)
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version, outcome), "")
 	jobTerminalStatusWritten = true
+	if !isTerminalForUpdate(os.Stdin) || !isTerminalForUpdate(os.Stdout) {
+		return nil
+	}
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
 		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
 	})
@@ -450,7 +454,7 @@ func switchRuntimeLinks(installRoot, targetRoot string) error {
 		return fmt.Errorf("set current runtime link: %w", err)
 	}
 	for _, name := range []string{"bin", "libexec", "lib", "share"} {
-		if err := replaceSymlink(filepath.Join(installRoot, name), filepath.Join(installRoot, "current", name)); err != nil {
+		if err := replaceManagedRuntimeSymlink(installRoot, name, filepath.Join(installRoot, "current", name)); err != nil {
 			return fmt.Errorf("set %s runtime link: %w", name, err)
 		}
 	}
@@ -625,6 +629,19 @@ func replaceSymlink(linkPath, target string) error {
 		}
 	}
 	return nil
+}
+
+func replaceManagedRuntimeSymlink(installRoot, name, target string) error {
+	linkPath := filepath.Join(installRoot, name)
+	info, err := os.Lstat(linkPath)
+	if err == nil && info.Mode()&os.ModeSymlink == 0 {
+		if err := os.RemoveAll(linkPath); err != nil {
+			return err
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return replaceSymlink(linkPath, target)
 }
 
 func installedVersionMatches(targetRoot, version string) bool {
