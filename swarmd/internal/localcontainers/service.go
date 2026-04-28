@@ -1093,6 +1093,27 @@ func RemoveRuntimeContainer(ctx context.Context, runtimeName, containerName stri
 	return removeContainer(ctx, runtimeName, containerName)
 }
 
+func (s *Service) RemoveStoredRecordForDeployment(deployment pebblestore.DeployContainerRecord) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, errors.New("local container service is not configured")
+	}
+	records, err := s.store.List(500)
+	if err != nil {
+		return false, err
+	}
+	removed := false
+	for _, record := range records {
+		if !deploymentMatchesRecord(deployment, record) {
+			continue
+		}
+		if err := s.store.Delete(record.ID); err != nil {
+			return removed, err
+		}
+		removed = true
+	}
+	return removed, nil
+}
+
 func (s *Service) PruneMissing(ctx context.Context) (DeleteResult, error) {
 	if s == nil || s.store == nil {
 		return DeleteResult{}, errors.New("local container service is not configured")

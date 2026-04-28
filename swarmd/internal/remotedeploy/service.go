@@ -332,6 +332,13 @@ func normalizeRemoteImageDeliveryMode(mode string) string {
 	}
 }
 
+func resolveRemoteImageDeliveryMode(mode string, startupCfg startupconfig.FileConfig) string {
+	if startupCfg.DevMode {
+		return remoteImageDeliveryArchive
+	}
+	return normalizeRemoteImageDeliveryMode(mode)
+}
+
 func resolveRemoteImagePrefix(mode string) (string, error) {
 	switch normalizeRemoteImageDeliveryMode(mode) {
 	case remoteImageDeliveryRegistry:
@@ -393,14 +400,14 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 		return Session{}, fmt.Errorf("ssh_session_target is required")
 	}
 	transportMode := normalizeRemoteTransportMode(input.TransportMode)
-	imageDeliveryMode := normalizeRemoteImageDeliveryMode(input.ImageDeliveryMode)
-	imagePrefix, err := resolveRemoteImagePrefix(imageDeliveryMode)
-	if err != nil {
-		return Session{}, err
-	}
 	stepStartedAt := time.Now()
 	startupCfg, hostState, err := s.resolveBootstrapContext()
 	logRemoteDeployTiming("create.resolve_bootstrap_context", stepStartedAt, err)
+	if err != nil {
+		return Session{}, err
+	}
+	imageDeliveryMode := resolveRemoteImageDeliveryMode(input.ImageDeliveryMode, startupCfg)
+	imagePrefix, err := resolveRemoteImagePrefix(imageDeliveryMode)
 	if err != nil {
 		return Session{}, err
 	}
@@ -1927,6 +1934,7 @@ func (s *Service) detectBuilderRuntime(ctx context.Context, preferredRuntime str
 }
 
 func (s *Service) inspectRemoteHost(ctx context.Context, sshTarget, preferredRuntime string) (runtimeName string, systemdAvailable bool, sudoMode string, remoteHome string, remoteNetworkCandidates []string, remoteAvailableBytes int64, err error) {
+	selectedRuntime := normalizeRemoteDeployRuntime(preferredRuntime)
 	checkCmd := fmt.Sprintf(`set -eu
 runtime=%s
 if command -v systemctl >/dev/null 2>&1; then systemd=1; else systemd=0; fi
@@ -1935,6 +1943,27 @@ if command -v sudo >/dev/null 2>&1; then sudo_mode="sudo"; fi
 remote_home="${HOME:-}"
 if [ -z "$remote_home" ]; then remote_home="$(cd && pwd)"; fi
 if [ -z "$remote_home" ] || [ "${remote_home#/}" = "$remote_home" ]; then echo "remote home directory missing" >&2; exit 41; fi
+if [ "$sudo_mode" = "sudo" ]; then
+  runtime_found=0
+  if sudo -n sh -c 'command -v "$1" >/dev/null 2>&1' sh "$runtime"; then runtime_found=1; fi
+  if [ "$runtime_found" != "1" ]; then
+    echo "REMOTE_RUNTIME_MISSING=$runtime"
+    exit 42
+  fi
+  if ! sudo -n "$runtime" --version >/dev/null 2>&1 || ! sudo -n "$runtime" info >/dev/null 2>&1; then
+    echo "REMOTE_RUNTIME_UNUSABLE=$runtime"
+    exit 43
+  fi
+else
+  if ! command -v "$runtime" >/dev/null 2>&1; then
+    echo "REMOTE_RUNTIME_MISSING=$runtime"
+    exit 42
+  fi
+  if ! "$runtime" --version >/dev/null 2>&1 || ! "$runtime" info >/dev/null 2>&1; then
+    echo "REMOTE_RUNTIME_UNUSABLE=$runtime"
+    exit 43
+  fi
+fi
 remote_available_bytes=""
 if command -v df >/dev/null 2>&1; then
   remote_available_kb="$(df -Pk "$remote_home" 2>/dev/null | awk 'NR==2 {print $4}')"
@@ -1961,10 +1990,26 @@ if command -v ip >/dev/null 2>&1; then
     fi
   done
 fi
-`, shellQuote(firstNonEmpty(strings.TrimSpace(preferredRuntime), "native")))
+`, shellQuote(selectedRuntime))
 	out, err := runSSHCommand(ctx, sshTarget, checkCmd)
 	if err != nil {
-		return "", false, "", "", nil, 0, err
+		trimmed := strings.TrimSpace(out)
+		switch {
+		case strings.Contains(trimmed, "REMOTE_RUNTIME_MISSING="):
+			runtimeName := strings.TrimSpace(strings.TrimPrefix(lastMatchingLine(trimmed, "REMOTE_RUNTIME_MISSING="), "REMOTE_RUNTIME_MISSING="))
+			if runtimeName == "" {
+				runtimeName = selectedRuntime
+			}
+			return "", false, "", "", nil, 0, fmt.Errorf("remote runtime missing:%s", runtimeName)
+		case strings.Contains(trimmed, "REMOTE_RUNTIME_UNUSABLE="):
+			runtimeName := strings.TrimSpace(strings.TrimPrefix(lastMatchingLine(trimmed, "REMOTE_RUNTIME_UNUSABLE="), "REMOTE_RUNTIME_UNUSABLE="))
+			if runtimeName == "" {
+				runtimeName = selectedRuntime
+			}
+			return "", false, "", "", nil, 0, fmt.Errorf("remote runtime unusable:%s", runtimeName)
+		default:
+			return "", false, "", "", nil, 0, err
+		}
 	}
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -2116,6 +2161,10 @@ func formatCreatePreflightError(sshTarget string, err error) error {
 		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Docker was selected for the remote host, but Docker is not installed there.\n\nWhat to do on the remote host\n- Install Docker.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- apt update\n- apt install -y docker.io\n- systemctl enable --now docker\n- docker --version", target, target)
 	case strings.Contains(lower, "remote runtime missing:podman"):
 		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Podman was selected for the remote host, but Podman is not installed there.\n\nWhat to do on the remote host\n- Install Podman.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- apt update\n- apt install -y podman\n- podman --version", target, target)
+	case strings.Contains(lower, "remote runtime unusable:docker"):
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Docker was selected for the remote host, but Docker could not run successfully there.\n\nWhat to do on the remote host\n- Verify Docker is installed correctly and usable.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- docker --version\n- sudo docker --version", target, target)
+	case strings.Contains(lower, "remote runtime unusable:podman"):
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Podman was selected for the remote host, but the Podman CLI could not run successfully there.\n\nWhat to do on the remote host\n- Verify Podman is installed correctly and usable.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- podman --version\n- sudo podman --version", target, target)
 	case strings.Contains(lower, "remote runtime missing"):
 		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- No supported container runtime was found on the remote host.\n\nWhat to do on the remote host\n- Install Docker or Podman.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- apt update\n- apt install -y docker.io\n- systemctl enable --now docker\n- docker --version\n\nAlternative\n- apt install -y podman\n- podman --version", target, target)
 	case strings.Contains(lower, "target remote path already exists:"):

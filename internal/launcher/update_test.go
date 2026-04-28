@@ -101,6 +101,61 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 	}
 }
 
+func TestSwitchRuntimeLinksReplacesLegacyTopLevelRuntimeDirs(t *testing.T) {
+	installRoot := t.TempDir()
+	targetRoot := filepath.Join(installRoot, "versions", "v1.2.3")
+	for _, dir := range []string{"bin", "libexec", "lib", "share"} {
+		if err := os.MkdirAll(filepath.Join(targetRoot, dir), 0o755); err != nil {
+			t.Fatalf("mkdir target %s: %v", dir, err)
+		}
+		legacyDir := filepath.Join(installRoot, dir)
+		if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+			t.Fatalf("mkdir legacy %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(legacyDir, "legacy.txt"), []byte("old layout"), 0o644); err != nil {
+			t.Fatalf("write legacy %s: %v", dir, err)
+		}
+	}
+
+	if err := switchRuntimeLinks(installRoot, targetRoot); err != nil {
+		t.Fatalf("switchRuntimeLinks: %v", err)
+	}
+
+	currentRoot, ok := resolveRuntimeLink(filepath.Join(installRoot, "current"))
+	if !ok || currentRoot != targetRoot {
+		t.Fatalf("current = %q ok=%v, want %q", currentRoot, ok, targetRoot)
+	}
+	for _, dir := range []string{"bin", "libexec", "lib", "share"} {
+		linkPath := filepath.Join(installRoot, dir)
+		info, err := os.Lstat(linkPath)
+		if err != nil {
+			t.Fatalf("lstat %s: %v", linkPath, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s should be a symlink after switching runtime links; mode=%s", linkPath, info.Mode())
+		}
+		target, ok := resolveRuntimeLink(linkPath)
+		want := filepath.Join(installRoot, "current", dir)
+		if !ok || target != want {
+			t.Fatalf("%s = %q ok=%v, want %q", linkPath, target, ok, want)
+		}
+	}
+}
+
+func TestReplaceSymlinkDoesNotRemoveUnexpectedDirectory(t *testing.T) {
+	root := t.TempDir()
+	linkPath := filepath.Join(root, "last-known-good")
+	if err := os.MkdirAll(linkPath, 0o755); err != nil {
+		t.Fatalf("mkdir existing dir: %v", err)
+	}
+	if err := replaceSymlink(linkPath, filepath.Join(root, "target")); err == nil {
+		t.Fatalf("replaceSymlink should fail for an existing directory")
+	}
+	if info, err := os.Lstat(linkPath); err != nil || !info.IsDir() {
+		t.Fatalf("existing directory should remain, info=%v err=%v", info, err)
+	}
+}
+
 func TestMarkPendingRuntimeUpdateAndBootSuccess(t *testing.T) {
 	installRoot := t.TempDir()
 	previousRoot := filepath.Join(installRoot, "versions", "v1.0.0")

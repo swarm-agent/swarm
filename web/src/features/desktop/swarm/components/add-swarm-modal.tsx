@@ -73,7 +73,8 @@ interface ContainerPackageDraft {
 
 const CONTAINER_PACKAGE_BASE_IMAGE = 'ubuntu:24.04'
 const CONTAINER_PACKAGE_MANAGER = 'apt'
-const REMOTE_IMAGE_DELIVERY_MODE: 'registry' = 'registry'
+const REMOTE_IMAGE_DELIVERY_MODE_RELEASE: 'registry' = 'registry'
+const REMOTE_IMAGE_DELIVERY_MODE_DEV: 'archive' = 'archive'
 
 const DEFAULT_CONTAINER_PACKAGES: ContainerPackageDraft[] = [
   'bash',
@@ -600,6 +601,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   ) as 'podman' | 'docker' | ''
   const activeRuntimeLabel = launchTarget === 'remote' ? remoteRuntimeChoice : runtimeChoice
   const devMode = Boolean(currentOnboardingStatus?.config.devMode)
+  const remoteImageDeliveryMode = devMode ? REMOTE_IMAGE_DELIVERY_MODE_DEV : REMOTE_IMAGE_DELIVERY_MODE_RELEASE
 
   const group = useMemo(() => currentGroup(currentOnboardingStatus), [currentOnboardingStatus])
   const hostSwarmID = group?.group.hostSwarmID || ''
@@ -917,7 +919,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         groupID: group.group.id,
         groupName: group.group.name,
         remoteRuntime: remoteRuntimeChoice,
-        imageDeliveryMode: REMOTE_IMAGE_DELIVERY_MODE,
+        imageDeliveryMode: remoteImageDeliveryMode,
         syncEnabled,
         bypassPermissions,
         containerPackages: buildContainerPackageManifest(containerPackages),
@@ -1104,7 +1106,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         selectedRemotePayloads.length > 0
           ? 'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.'
           : 'No workspace payloads will be staged; the remote child will start empty and connect back to this master.',
-        `This will deliver generated config/install/start content over SSH stdin${selectedRemotePayloads.length > 0 ? ' and copy selected payload archives over SSH' : ''}, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
+        devMode
+          ? `This will deliver generated config/install/start content over SSH stdin, copy a locally built dev Swarm image archive${selectedRemotePayloads.length > 0 ? ' and selected payload archives' : ''} over SSH, then load and launch it on the remote host.`
+          : `This will deliver generated config/install/start content over SSH stdin${selectedRemotePayloads.length > 0 ? ' and copy selected payload archives over SSH' : ''}, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
         `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
         'Swarm will not install persistence on the remote machine in this path.',
         '',

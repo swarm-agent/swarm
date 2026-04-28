@@ -756,6 +756,12 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 			return item
 		}
 	}
+	if s.containers != nil {
+		if _, err := s.containers.RemoveStoredRecordForDeployment(record); err != nil {
+			item.Error = err.Error()
+			return item
+		}
+	}
 	if err := s.store.Delete(record.ID); err != nil {
 		item.Error = err.Error()
 		return item

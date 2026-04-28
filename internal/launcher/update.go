@@ -450,7 +450,7 @@ func switchRuntimeLinks(installRoot, targetRoot string) error {
 		return fmt.Errorf("set current runtime link: %w", err)
 	}
 	for _, name := range []string{"bin", "libexec", "lib", "share"} {
-		if err := replaceSymlink(filepath.Join(installRoot, name), filepath.Join(installRoot, "current", name)); err != nil {
+		if err := replaceInstallRootRuntimeLink(filepath.Join(installRoot, name), filepath.Join(installRoot, "current", name)); err != nil {
 			return fmt.Errorf("set %s runtime link: %w", name, err)
 		}
 	}
@@ -612,19 +612,47 @@ func resolveRuntimeLink(linkPath string) (string, bool) {
 }
 
 func replaceSymlink(linkPath, target string) error {
+	return replaceSymlinkPath(linkPath, target, false)
+}
+
+func replaceInstallRootRuntimeLink(linkPath, target string) error {
+	return replaceSymlinkPath(linkPath, target, true)
+}
+
+func replaceSymlinkPath(linkPath, target string, replaceExistingDirs bool) error {
 	tmpPath := linkPath + ".tmp"
 	_ = os.Remove(tmpPath)
 	if err := os.Symlink(target, tmpPath); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpPath, linkPath); err != nil {
-		_ = os.Remove(tmpPath)
-		_ = os.Remove(linkPath)
-		if err2 := os.Symlink(target, linkPath); err2 != nil {
+		if removeErr := removeExistingSymlinkPath(linkPath, replaceExistingDirs); removeErr != nil {
+			_ = os.Remove(tmpPath)
+			return err
+		}
+		if err2 := os.Rename(tmpPath, linkPath); err2 != nil {
+			_ = os.Remove(tmpPath)
 			return err
 		}
 	}
 	return nil
+}
+
+func removeExistingSymlinkPath(path string, replaceExistingDirs bool) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		if !replaceExistingDirs {
+			return fmt.Errorf("existing path is a directory: %s", path)
+		}
+		return os.RemoveAll(path)
+	}
+	return os.Remove(path)
 }
 
 func installedVersionMatches(targetRoot, version string) bool {

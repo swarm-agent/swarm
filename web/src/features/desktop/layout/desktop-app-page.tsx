@@ -1153,6 +1153,7 @@ export function DesktopAppPage() {
   const updateAvailable = updateStatus?.update_available === true
   const updateLatestVersion = updateStatus?.latest_version?.trim() ?? ''
   const updateStatusError = updateStatusQuery.error instanceof Error ? updateStatusQuery.error.message : null
+  const updateAttentionVisible = updateAvailable || updateRunning || Boolean(updateError)
   const updateActionTitle = updateError
     || (updateRunning
       ? 'Updating Swarm…'
@@ -1855,9 +1856,12 @@ export function DesktopAppPage() {
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (selectedWorkspacePath) { openTodoModal(selectedWorkspacePath, selectedWorkspace?.workspaceName ?? 'Workspace') } }} aria-label="Open tasks" disabled={!selectedWorkspacePath}>
             <ListChecks size={24} className="shrink-0" />
           </Button>
-          <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label="Update Swarm" title={updateActionTitle} disabled={updateRunning || !updateAvailable}>
-            <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateAvailable && 'text-[var(--app-primary)]')} />
-          </Button>
+          {updateAttentionVisible ? (
+            <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label="Update Swarm" title={updateActionTitle} disabled={updateRunning || !updateAvailable}>
+              <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateAvailable && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
+              {updateAvailable ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
+            </Button>
+          ) : null}
           <div className="mt-2 flex flex-col items-center">
             <span className={cn('h-2.5 w-2.5 rounded-full', connectionDotClass(connectionState))} />
           </div>
@@ -1867,14 +1871,14 @@ export function DesktopAppPage() {
           <div className="border-b border-[var(--app-border)] font-mono">
             <div className="min-h-[124px] border border-[color-mix(in_srgb,var(--app-border)_74%,transparent)] bg-[var(--app-surface)]">
               <div className="p-[12px_0_11px_13px]">
-                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')}>
+                <div className={updateAttentionVisible ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_78px] items-center gap-2.5 min-h-7 pr-4' : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')}>
                   <div className="min-w-0">
                     <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
                     <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
                       <strong className="font-medium text-[var(--app-text-muted)]">Master</strong> · {masterWorkspaceName}
                     </div>
                   </div>
-                  <SidebarActionRail>
+                  <SidebarActionRail className={updateAttentionVisible ? '!w-[78px] !grid-cols-[24px_24px_24px]' : undefined}>
                     <button
                       type="button"
                       className={cn(
@@ -1888,6 +1892,26 @@ export function DesktopAppPage() {
                     >
                       <Bell size={14} strokeWidth={1.8} className="shrink-0" />
                     </button>
+                    {updateAttentionVisible ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          SIDEBAR_ACTION_BUTTON_CLASS,
+                          'relative text-[var(--app-text-subtle)]',
+                          updateAvailable && 'text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] hover:text-[var(--app-primary-hover)]',
+                          updateRunning && 'cursor-progress text-[var(--app-primary)]',
+                          updateError && 'text-[var(--app-error)] hover:text-[var(--app-error)]',
+                        )}
+                        onClick={() => { void handleDesktopUpdate() }}
+                        aria-busy={updateRunning}
+                        aria-label="Update Swarm"
+                        disabled={updateRunning || !updateAvailable}
+                        title={updateActionTitle}
+                      >
+                        <Download size={14} strokeWidth={1.8} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
+                        {updateAvailable ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_8px_var(--app-primary)]" /> : null}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)]')}
