@@ -6,6 +6,8 @@ ROOT_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 # shellcheck disable=SC1091
 source "${ROOT_DIR}/scripts/lib-lane.sh"
+# shellcheck disable=SC1091
+source "${ROOT_DIR}/scripts/lib-go.sh"
 
 usage() {
   cat <<'EOF'
@@ -30,6 +32,9 @@ Options:
   --skip-candidate-build         Reuse an existing --work-dir candidate dist
   --skip-web                     Skip web build for candidate dist
   --keep-server-log              Do not remove fake release server log on success
+  --baseline-host-port <port>    Isolated host API port. Default: 7781
+  --baseline-host-desktop-port <port>
+                                  Isolated host desktop port. Default: 5555
   -h, --help                     Show this help text
 
 Environment:
@@ -56,6 +61,8 @@ WORK_DIR=""
 SKIP_CANDIDATE_BUILD="false"
 SKIP_WEB="false"
 KEEP_SERVER_LOG="false"
+BASELINE_HOST_PORT="7781"
+BASELINE_HOST_DESKTOP_PORT="5555"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -91,6 +98,14 @@ while [[ $# -gt 0 ]]; do
       KEEP_SERVER_LOG="true"
       shift
       ;;
+    --baseline-host-port)
+      BASELINE_HOST_PORT="${2:-}"
+      shift 2
+      ;;
+    --baseline-host-desktop-port)
+      BASELINE_HOST_DESKTOP_PORT="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -103,6 +118,8 @@ done
 
 [[ -n "$(trim "${BASELINE_VERSION}")" ]] || fail "--baseline-version is required"
 [[ -n "$(trim "${CANDIDATE_VERSION}")" ]] || fail "--candidate-version is required"
+[[ "${BASELINE_HOST_PORT}" =~ ^[0-9]+$ ]] || fail "--baseline-host-port must be a positive integer"
+[[ "${BASELINE_HOST_DESKTOP_PORT}" =~ ^[0-9]+$ ]] || fail "--baseline-host-desktop-port must be a positive integer"
 
 require_cmd curl
 require_cmd jq
@@ -111,7 +128,7 @@ require_cmd sha256sum
 require_cmd awk
 require_cmd sed
 require_cmd find
-require_cmd go
+swarm_require_go "${ROOT_DIR}"
 
 WORK_DIR="${WORK_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/swarm-prod-update-replay-XXXXXX")}" 
 mkdir -p "${WORK_DIR}"
@@ -180,6 +197,14 @@ prepare_fake_release_tree() {
   cat >"${FAKE_RELEASE_DIR}/releases.json" <<EOF
 [
   {
+    "tag_name": "${BASELINE_VERSION}",
+    "html_url": "https://github.com/swarm-agent/swarm/releases/tag/${BASELINE_VERSION}",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2000-01-01T00:00:00Z",
+    "assets": []
+  },
+  {
     "tag_name": "${CANDIDATE_VERSION}",
     "html_url": "http://127.0.0.1:0/${CANDIDATE_VERSION}",
     "draft": false,
@@ -189,14 +214,6 @@ prepare_fake_release_tree() {
       {"name": "${archive_name}", "browser_download_url": "__BASE_URL__/${archive_name}", "digest": "sha256:${digest}"},
       {"name": "${archive_name}.sha256", "browser_download_url": "__BASE_URL__/${archive_name}.sha256"}
     ]
-  },
-  {
-    "tag_name": "${BASELINE_VERSION}",
-    "html_url": "https://github.com/swarm-agent/swarm/releases/tag/${BASELINE_VERSION}",
-    "draft": false,
-    "prerelease": false,
-    "published_at": "2000-01-01T00:00:00Z",
-    "assets": []
   }
 ]
 EOF
@@ -266,11 +283,17 @@ run_baseline_replicate() {
   if [[ -n "${RUNTIME}" ]]; then
     args+=(--runtime "${RUNTIME}")
   fi
+  args+=(--host-port "${BASELINE_HOST_PORT}" --host-desktop-port "${BASELINE_HOST_DESKTOP_PORT}")
   if [[ -n "${HOST_ROOT}" ]]; then
     args+=(--host-root "${HOST_ROOT}")
   fi
+  local releases_url_template="${SERVER_BASE_URL}/releases.json?owner=%s&repo=%s"
+  local metadata_url_template="${SERVER_BASE_URL}/container-image-info.txt?version=%s"
   log "Creating baseline local child from ${BASELINE_VERSION}"
-  "${ROOT_DIR}/tests/swarmd/local_replicate_e2e.sh" "${args[@]}" | tee "${ARTIFACT_DIR}/baseline-local-replicate.log"
+  SWARM_UPDATE_RELEASES_URL_TEMPLATE="${releases_url_template}" \
+  SWARM_UPDATE_INCLUDE_UNSTABLE_RELEASES=true \
+  SWARM_PRODUCTION_IMAGE_METADATA_URL_TEMPLATE="${metadata_url_template}" \
+    "${ROOT_DIR}/tests/swarmd/local_replicate_e2e.sh" "${args[@]}" | tee "${ARTIFACT_DIR}/baseline-local-replicate.log"
   local baseline_artifacts summary_path
   baseline_artifacts="$(grep -E '^Artifacts: ' "${ARTIFACT_DIR}/baseline-local-replicate.log" | tail -n 1 | sed 's/^Artifacts: //')"
   summary_path="${baseline_artifacts}/summary.json"
