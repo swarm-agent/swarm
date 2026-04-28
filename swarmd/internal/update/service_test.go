@@ -90,3 +90,27 @@ func TestFetchLatestStableReleaseErrorsWhenNoStableReleaseExists(t *testing.T) {
 		t.Fatalf("expected error when no stable release exists")
 	}
 }
+
+func TestFetchLatestStableReleaseCanUseHarnessOverrideForPrerelease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"tag_name":"v0.1.0","draft":false,"prerelease":false,"published_at":"2026-04-22T10:00:00Z"},
+			{"tag_name":"v0.1.1-test","html_url":"https://example.com/pr","draft":false,"prerelease":true,"published_at":"2026-04-23T10:00:00Z","assets":[{"name":"swarm-v0.1.1-test-linux-amd64.tar.gz","browser_download_url":"https://example.com/swarm-v0.1.1-test-linux-amd64.tar.gz","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}]}
+		]`))
+	}))
+	defer server.Close()
+
+	t.Setenv(releasesURLTemplateEnv, server.URL+"/%s/%s")
+	t.Setenv(includeUnstableReleasesEnv, "true")
+	svc := NewService("main", false)
+	svc.client = server.Client()
+
+	release, err := svc.fetchLatestStableRelease(context.Background())
+	if err != nil {
+		t.Fatalf("fetchLatestStableRelease error: %v", err)
+	}
+	if release.TagName != "v0.1.1-test" {
+		t.Fatalf("expected prerelease override v0.1.1-test, got %q", release.TagName)
+	}
+}

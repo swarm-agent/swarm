@@ -61,6 +61,8 @@ var (
 	productionMetadataURLTmpl     = "https://github.com/swarm-agent/swarm/releases/download/%s/container-image-info.txt"
 )
 
+const productionMetadataURLTemplateEnv = "SWARM_PRODUCTION_IMAGE_METADATA_URL_TEMPLATE"
+
 type Mount = pebblestore.SwarmLocalContainerMount
 
 type ContainerPackageSelection = pebblestore.ContainerPackageSelectionRecord
@@ -1843,7 +1845,11 @@ func productionImageRef() (string, error) {
 }
 
 func productionImageMetadataURL(version string) string {
-	return fmt.Sprintf(productionMetadataURLTmpl, url.PathEscape(strings.TrimSpace(version)))
+	tmpl := strings.TrimSpace(os.Getenv(productionMetadataURLTemplateEnv))
+	if tmpl == "" {
+		tmpl = productionMetadataURLTmpl
+	}
+	return fmt.Sprintf(tmpl, url.PathEscape(strings.TrimSpace(version)))
 }
 
 func FetchProductionImageMetadata(ctx context.Context) (ProductionImageMetadata, error) {
