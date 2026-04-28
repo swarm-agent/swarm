@@ -40,7 +40,6 @@ Environment overrides:
   SWARM_HARNESS_VM_SSH_PORT        Host loopback SSH port. Default: auto-pick from 4222-4299
   SWARM_HARNESS_VM_CPUS            Guest vCPU count. Default: 4
   SWARM_HARNESS_VM_MEMORY_MB       Guest memory in MiB. Default: 8192
-  SWARM_HARNESS_VM_NODE_MAJOR      Guest Node.js major version. Default: 22
   SWARM_HARNESS_VM_DISK_SIZE       Guest overlay disk size. Default: 80G
   SWARM_HARNESS_VM_IMAGE_URL       Ubuntu cloud image URL
   SWARM_HARNESS_VM_REPO_DIR        Guest repo checkout path. Default: ~/swarm-go inside the guest
@@ -116,10 +115,6 @@ VM_NAME="${SWARM_HARNESS_VM_NAME:-swarm-harness}"
 GUEST_USER="${SWARM_HARNESS_VM_USER:-swarm}"
 VM_CPUS="${SWARM_HARNESS_VM_CPUS:-4}"
 VM_MEMORY_MB="${SWARM_HARNESS_VM_MEMORY_MB:-8192}"
-NODE_MAJOR="${SWARM_HARNESS_VM_NODE_MAJOR:-22}"
-if ! [[ "${NODE_MAJOR}" =~ ^[0-9]+$ ]] || (( NODE_MAJOR < 20 )); then
-  fail "SWARM_HARNESS_VM_NODE_MAJOR must be an integer >= 20"
-fi
 VM_DISK_SIZE="${SWARM_HARNESS_VM_DISK_SIZE:-80G}"
 VM_IMAGE_URL="${SWARM_HARNESS_VM_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}"
 GUEST_HOME_DIR="$(printf '/%s/%s' home "${GUEST_USER}")"
@@ -148,7 +143,7 @@ SEED_IMAGE_FILE="${VM_DATA_ROOT}/seed.img"
 BASE_IMAGE_FILE="${VM_DATA_ROOT}/ubuntu-cloudimg-amd64.img"
 BOOTSTRAP_IMAGE_FILE="${VM_DATA_ROOT}/bootstrap.qcow2"
 OVERLAY_IMAGE_FILE="${VM_DATA_ROOT}/overlay.qcow2"
-BOOTSTRAP_STAMP_FILE="${VM_CONFIG_ROOT}/bootstrap-complete-node${NODE_MAJOR}"
+BOOTSTRAP_STAMP_FILE="${VM_CONFIG_ROOT}/bootstrap-complete"
 SYNC_STAMP_FILE="${VM_STATE_ROOT}/last-sync.txt"
 
 mkdir -p "${VM_STATE_ROOT}" "${VM_DATA_ROOT}" "${VM_CONFIG_ROOT}"
@@ -167,7 +162,6 @@ VM_NAME=$(shell_quote "${VM_NAME}")
 GUEST_USER=$(shell_quote "${GUEST_USER}")
 VM_CPUS=$(shell_quote "${VM_CPUS}")
 VM_MEMORY_MB=$(shell_quote "${VM_MEMORY_MB}")
-NODE_MAJOR=$(shell_quote "${NODE_MAJOR}")
 VM_DISK_SIZE=$(shell_quote "${VM_DISK_SIZE}")
 VM_IMAGE_URL=$(shell_quote "${VM_IMAGE_URL}")
 GUEST_REPO_DIR=$(shell_quote "${GUEST_REPO_DIR}")
@@ -525,44 +519,24 @@ bootstrap_vm() {
   else
     log "Installing guest prerequisites"
   fi
-  remote_ssh bash -se -- "${NODE_MAJOR}" <<'EOF'
+  remote_ssh bash -se <<'EOF'
 set -euo pipefail
-NODE_MAJOR="${1:?node major is required}"
 export DEBIAN_FRONTEND=noninteractive
-
-sudo apt-get update
-sudo apt-get install -y \
-  ca-certificates \
-  curl \
-  gnupg
-
-sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/nodesource.gpg
-sudo chmod 0644 /etc/apt/keyrings/nodesource.gpg
-printf 'deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_%s.x nodistro main\n' "${NODE_MAJOR}" | sudo tee /etc/apt/sources.list.d/nodesource.list >/dev/null
-
-sudo apt-get purge -y nodejs npm libnode-dev || true
 sudo apt-get update
 sudo apt-get install -y \
   build-essential \
+  ca-certificates \
+  curl \
   docker.io \
   fuse-overlayfs \
   git \
   jq \
-  nodejs \
+  npm \
   podman \
   pkg-config \
   rsync \
   slirp4netns \
   uidmap
-
-node_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf 0)"
-if ! [[ "${node_major}" =~ ^[0-9]+$ ]] || (( node_major < 20 )); then
-  printf 'error: Node.js >=20 is required; got %s\n' "$(node --version 2>/dev/null || printf missing)" >&2
-  exit 1
-fi
-npm --version >/dev/null
-
 sudo systemctl enable --now docker > /dev/null 2>&1 || true
 sudo usermod -aG docker "$(id -un)" || true
 EOF
@@ -609,7 +583,6 @@ sync_repo() {
 
 maybe_sync_repo() {
   if [[ "${NO_SYNC}" == "true" ]]; then
-    start_vm
     log "Skipping repo sync (--no-sync); using existing guest checkout at ${GUEST_REPO_DIR}"
     return 0
   fi
@@ -626,7 +599,7 @@ provision_vm() {
 verify_guest_ready() {
   start_vm
   local repo_dir_literal="${GUEST_REPO_DIR/#\~/$HOME}"
-  remote_ssh_command "test -d $(shell_quote "${repo_dir_literal}") && test -f $(shell_quote "${repo_dir_literal}/go.mod") && test -x $(shell_quote "${repo_dir_literal}/.tools/go/bin/go") && command -v bash > /dev/null && command -v git > /dev/null && command -v node > /dev/null && node -e 'const major = Number(process.versions.node.split(\".\")[0]); if (!Number.isInteger(major) || major < 20) process.exit(1)' && command -v npm > /dev/null && command -v podman > /dev/null && command -v docker > /dev/null"
+  remote_ssh_command "test -d $(shell_quote "${repo_dir_literal}") && test -f $(shell_quote "${repo_dir_literal}/go.mod") && test -x $(shell_quote "${repo_dir_literal}/.tools/go/bin/go") && command -v bash > /dev/null && command -v git > /dev/null && command -v npm > /dev/null && command -v podman > /dev/null && command -v docker > /dev/null"
 }
 
 fast_vm() {
