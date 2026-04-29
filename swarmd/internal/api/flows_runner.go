@@ -311,31 +311,37 @@ func (s *Server) flowRunSessionPreference(assignment flow.Assignment) (pref stru
 	ServiceTier string
 	ContextMode string
 }, err error) {
-	if s == nil || s.agents == nil {
-		return pref, errors.New("agent service not configured")
+	profile, err := s.flowRunAgentProfile(assignment.Agent)
+	if err != nil {
+		return pref, err
 	}
-	targetKind := runruntime.NormalizeRunTargetKind(assignment.Agent.TargetKind)
-	if targetKind == runruntime.RunTargetKindBackground {
-		profile, err := s.agents.ResolveBackground(assignment.Agent.TargetName)
-		if err != nil {
-			return pref, err
-		}
-		pref.Provider = strings.TrimSpace(profile.Provider)
-		pref.Model = strings.TrimSpace(profile.Model)
-		pref.Thinking = strings.TrimSpace(profile.Thinking)
-	} else {
-		profile, err := s.agents.ResolveSubagent(assignment.Agent.TargetName)
-		if err != nil {
-			return pref, err
-		}
-		pref.Provider = strings.TrimSpace(profile.Provider)
-		pref.Model = strings.TrimSpace(profile.Model)
-		pref.Thinking = strings.TrimSpace(profile.Thinking)
-	}
+	pref.Provider = strings.TrimSpace(profile.Provider)
+	pref.Model = strings.TrimSpace(profile.Model)
+	pref.Thinking = strings.TrimSpace(profile.Thinking)
 	if pref.Provider == "" || pref.Model == "" || pref.Thinking == "" {
 		return pref, fmt.Errorf("flow agent %q execution preference is not configured on target", strings.TrimSpace(assignment.Agent.TargetName))
 	}
 	return pref, nil
+}
+
+func (s *Server) flowRunAgentProfile(agent flow.AgentSelection) (pebblestore.AgentProfile, error) {
+	if s == nil || s.agents == nil {
+		return pebblestore.AgentProfile{}, errors.New("agent service not configured")
+	}
+	name := strings.TrimSpace(agent.TargetName)
+	switch runruntime.NormalizeRunTargetKind(agent.TargetKind) {
+	case runruntime.RunTargetKindAgent:
+		return s.agents.ResolvePrimary(name)
+	case runruntime.RunTargetKindSubagent:
+		return s.agents.ResolveSubagent(name)
+	case runruntime.RunTargetKindBackground:
+		if strings.EqualFold(name, "memory") {
+			return s.agents.ResolveSubagent(name)
+		}
+		return s.agents.ResolveBackground(name)
+	default:
+		return pebblestore.AgentProfile{}, fmt.Errorf("unsupported target_kind %q", strings.TrimSpace(agent.TargetKind))
+	}
 }
 
 func flowRunPrompt(intent flow.PromptIntent) string {

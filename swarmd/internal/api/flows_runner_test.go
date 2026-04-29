@@ -15,51 +15,96 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-func TestTargetLocalFlowRunnerLaunchesSavedBackgroundProfileWithoutToolScope(t *testing.T) {
-	server, flows := newFlowPeerTestServer(t)
-	ensureFlowTestAgent(t, server)
-	runner := &fakeFlowRunService{}
-	server.runner = runner
-	assignment := testAPIFlowAssignment("flow-runner", 4)
-	assignment.Agent = flow.AgentSelection{TargetKind: runruntime.RunTargetKindSubagent, TargetName: "flow-test"}
-	assignment.Workspace.WorkspacePath = t.TempDir()
-	assignment.Workspace.CWD = assignment.Workspace.WorkspacePath
-	assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
-	assignment.Intent.Mode = "auto"
-	accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
-	if err != nil {
-		t.Fatalf("put accepted assignment: %v", err)
-	}
+func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		agent          flow.AgentSelection
+		expectedKind   string
+		expectedName   string
+		expectedAgent  string
+		expectedPreset string
+	}{
+		{
+			name:           "saved subagent",
+			agent:          flow.AgentSelection{TargetKind: runruntime.RunTargetKindSubagent, TargetName: "flow-test"},
+			expectedKind:   runruntime.RunTargetKindSubagent,
+			expectedName:   "flow-test",
+			expectedAgent:  "flow-test",
+			expectedPreset: "",
+		},
+		{
+			name:           "memory background alias",
+			agent:          flow.AgentSelection{TargetKind: runruntime.RunTargetKindBackground, TargetName: "memory"},
+			expectedKind:   runruntime.RunTargetKindBackground,
+			expectedName:   "memory",
+			expectedAgent:  "memory",
+			expectedPreset: "background_commit",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, flows := newFlowPeerTestServer(t)
+			ensureFlowTestAgent(t, server)
+			if tc.expectedAgent == "memory" {
+				ensureFlowMemoryAgentRunnable(t, server)
+			}
+			runner := &fakeFlowRunService{}
+			server.runner = runner
+			assignment := testAPIFlowAssignment("flow-runner", 4)
+			assignment.Agent = tc.agent
+			assignment.Workspace.WorkspacePath = t.TempDir()
+			assignment.Workspace.CWD = assignment.Workspace.WorkspacePath
+			assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
+			assignment.Intent.Mode = "auto"
+			accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
+			if err != nil {
+				t.Fatalf("put accepted assignment: %v", err)
+			}
 
-	scheduledAt := time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)
-	start, err := server.NewTargetLocalFlowRunner().RunAcceptedFlow(t.Context(), accepted, flow.RunRequest{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: scheduledAt})
-	if err != nil {
-		t.Fatalf("run accepted flow: %v", err)
-	}
-	if start.FlowID != assignment.FlowID || start.Revision != assignment.Revision || !start.ScheduledAt.Equal(scheduledAt) {
-		t.Fatalf("start identity = %+v", start)
-	}
-	if strings.TrimSpace(start.SessionID) == "" || strings.TrimSpace(start.RunID) == "" {
-		t.Fatalf("start missing ids = %+v", start)
-	}
-	if runner.lastRequest.TargetKind != runruntime.RunTargetKindSubagent || runner.lastRequest.TargetName != "flow-test" || !runner.lastRequest.Background {
-		t.Fatalf("run request target/background = %+v", runner.lastRequest)
-	}
-	if runner.lastRequest.ToolScope != nil {
-		t.Fatalf("flow run carried request-time tool scope: %+v", runner.lastRequest.ToolScope)
-	}
-	if runner.lastRequest.ExecutionContext == nil || runner.lastRequest.ExecutionContext.WorkspacePath != assignment.Workspace.WorkspacePath || runner.lastRequest.ExecutionContext.CWD != assignment.Workspace.CWD {
-		t.Fatalf("execution context = %+v", runner.lastRequest.ExecutionContext)
-	}
-	if runner.lastMeta.OwnerTransport != "flow_scheduler" || runner.lastMeta.RunID == "" {
-		t.Fatalf("run meta = %+v", runner.lastMeta)
-	}
-	session, ok, err := server.sessions.GetSession(start.SessionID)
-	if err != nil || !ok {
-		t.Fatalf("get session ok=%v err=%v", ok, err)
-	}
-	if session.Metadata["flow_id"] != assignment.FlowID || session.Metadata["flow_revision"] != float64(assignment.Revision) {
-		t.Fatalf("session flow metadata = %+v", session.Metadata)
+			scheduledAt := time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)
+			start, err := server.NewTargetLocalFlowRunner().RunAcceptedFlow(t.Context(), accepted, flow.RunRequest{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: scheduledAt})
+			if err != nil {
+				t.Fatalf("run accepted flow: %v", err)
+			}
+			if start.FlowID != assignment.FlowID || start.Revision != assignment.Revision || !start.ScheduledAt.Equal(scheduledAt) {
+				t.Fatalf("start identity = %+v", start)
+			}
+			if strings.TrimSpace(start.SessionID) == "" || strings.TrimSpace(start.RunID) == "" {
+				t.Fatalf("start missing ids = %+v", start)
+			}
+			if runner.lastRequest.TargetKind != tc.expectedKind || runner.lastRequest.TargetName != tc.expectedName || !runner.lastRequest.Background {
+				t.Fatalf("run request target/background = %+v", runner.lastRequest)
+			}
+			if runner.lastRequest.ToolScope != nil {
+				t.Fatalf("flow run carried request-time tool scope: %+v", runner.lastRequest.ToolScope)
+			}
+			if runner.lastRequest.ExecutionContext == nil || runner.lastRequest.ExecutionContext.WorkspacePath != assignment.Workspace.WorkspacePath || runner.lastRequest.ExecutionContext.CWD != assignment.Workspace.CWD {
+				t.Fatalf("execution context = %+v", runner.lastRequest.ExecutionContext)
+			}
+			if runner.lastMeta.OwnerTransport != "flow_scheduler" || runner.lastMeta.RunID == "" {
+				t.Fatalf("run meta = %+v", runner.lastMeta)
+			}
+			session, ok, err := server.sessions.GetSession(start.SessionID)
+			if err != nil || !ok {
+				t.Fatalf("get session ok=%v err=%v", ok, err)
+			}
+			if session.Metadata["flow_id"] != assignment.FlowID || session.Metadata["flow_revision"] != float64(assignment.Revision) {
+				t.Fatalf("session flow metadata = %+v", session.Metadata)
+			}
+			profile, err := server.flowRunAgentProfile(assignment.Agent)
+			if err != nil {
+				t.Fatalf("resolve flow agent profile: %v", err)
+			}
+			if profile.Name != tc.expectedAgent {
+				t.Fatalf("profile name = %q, want %q", profile.Name, tc.expectedAgent)
+			}
+			preset := ""
+			if profile.ToolContract != nil {
+				preset = strings.TrimSpace(profile.ToolContract.Preset)
+			}
+			if preset != tc.expectedPreset {
+				t.Fatalf("profile tool preset = %q, want %q", preset, tc.expectedPreset)
+			}
+		})
 	}
 }
 
@@ -117,6 +162,27 @@ func ensureFlowTestAgent(t *testing.T, server *Server) {
 	}
 	if profile.ExecutionSetting == "" || profile.Provider == "" || profile.Model == "" || profile.Thinking == "" || pebblestore.AgentExitPlanModeEnabled(profile) {
 		t.Fatalf("flow-test profile not runnable: %+v", profile)
+	}
+}
+
+func ensureFlowMemoryAgentRunnable(t *testing.T, server *Server) {
+	t.Helper()
+	if server == nil || server.agents == nil {
+		t.Fatal("agent service not configured")
+	}
+	enabled := true
+	_, _, _, err := server.agents.Upsert(agentruntime.UpsertInput{
+		Name:        "memory",
+		Provider:    "test-provider",
+		Model:       "test-model",
+		Thinking:    "medium",
+		ProviderSet: true,
+		ModelSet:    true,
+		ThinkingSet: true,
+		Enabled:     &enabled,
+	})
+	if err != nil {
+		t.Fatalf("upsert memory agent runtime preferences: %v", err)
 	}
 }
 

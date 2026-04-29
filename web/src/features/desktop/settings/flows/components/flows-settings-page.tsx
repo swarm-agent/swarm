@@ -340,6 +340,7 @@ function formToCreateInput(form: AddFlowForm): CreateFlowInput {
   const cadence = form.scheduleCadence === 'On demand' ? 'on_demand' : form.scheduleCadence.toLowerCase()
   const targetName = form.target.trim()
   const isLocalTarget = targetName.toLowerCase() === 'local'
+  const workspacePath = form.workspace.trim() || '.'
   return {
     name: form.name.trim() || 'Untitled flow',
     enabled: form.scheduleCadence !== 'On demand',
@@ -352,8 +353,7 @@ function formToCreateInput(form: AddFlowForm): CreateFlowInput {
       target_name: form.agent.trim() || 'memory',
     },
     workspace: {
-      workspace_path: form.workspace.trim() || '.',
-      cwd: form.location.trim(),
+      workspace_path: workspacePath,
     },
     schedule: {
       cadence,
@@ -443,7 +443,7 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
   }
 
   return (
-    <Dialog role="dialog" aria-modal="true" aria-label="Add Flow" className="z-[80] p-4 sm:p-6">
+    <Dialog role="dialog" aria-modal="true" aria-label="Add Flow" className="z-[80] p-4 sm:p-6" data-testid="flows-add-modal">
       <DialogBackdrop onClick={busy ? undefined : onClose} />
       <DialogPanel className="w-[min(780px,100%)] gap-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-2xl">
         <form onSubmit={submit} className="flex max-h-[min(820px,calc(100vh-48px))] flex-col">
@@ -460,11 +460,11 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
             <div className="grid gap-x-8 gap-y-5 md:grid-cols-2">
               <label className="flex flex-col gap-2 md:col-span-2">
                 <span className={labelClass}>Flow name</span>
-                <Input value={form.name} onChange={update('name')} className={fieldClass} />
+                <Input data-testid="flows-add-name" value={form.name} onChange={update('name')} className={fieldClass} />
               </label>
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Agent/profile</span>
-                <select value={form.agent} onChange={update('agent')} className={fieldClass}>
+                <select data-testid="flows-add-agent" value={form.agent} onChange={update('agent')} className={fieldClass}>
                   <option value="memory">memory</option>
                   <option value="swarm">swarm</option>
                   <option value="explorer">explorer</option>
@@ -473,7 +473,7 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
               </label>
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Target</span>
-                <select value={form.target} onChange={update('target')} className={fieldClass}>
+                <select data-testid="flows-add-target" value={form.target} onChange={update('target')} className={fieldClass}>
                   <option>local</option>
                   <option>laptop</option>
                   <option>container</option>
@@ -481,7 +481,7 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
               </label>
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Workspace</span>
-                <select value={form.workspace} onChange={update('workspace')} className={fieldClass}>
+                <select data-testid="flows-add-workspace" value={form.workspace} onChange={update('workspace')} className={fieldClass}>
                   {formWorkspaceOptions.map((workspace) => <option key={workspace}>{workspace}</option>)}
                 </select>
               </label>
@@ -498,7 +498,7 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
                 </div>
                 <label className="flex flex-col gap-2">
                   <span className="text-xs text-[var(--app-text-muted)]">Cadence</span>
-                  <select value={form.scheduleCadence} onChange={update('scheduleCadence')} className={fieldClass}>
+                  <select data-testid="flows-add-cadence" value={form.scheduleCadence} onChange={update('scheduleCadence')} className={fieldClass}>
                     {scheduleCadenceOptions.map((cadence) => <option key={cadence}>{cadence}</option>)}
                   </select>
                 </label>
@@ -541,7 +541,7 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
               </label>
               <label className="flex flex-col gap-2 md:col-span-2">
                 <span className={labelClass}>Task</span>
-                <textarea value={form.task} onChange={update('task')} rows={4} className="resize-none rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-sm leading-6 text-[var(--app-text)] outline-none transition hover:border-[var(--app-border-strong)] focus:border-[var(--app-border-accent)] focus:ring-2 focus:ring-[var(--app-focus-ring)]" />
+                <textarea data-testid="flows-add-task" value={form.task} onChange={update('task')} rows={4} className="resize-none rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-sm leading-6 text-[var(--app-text)] outline-none transition hover:border-[var(--app-border-strong)] focus:border-[var(--app-border-accent)] focus:ring-2 focus:ring-[var(--app-focus-ring)]" />
               </label>
             </div>
           </div>
@@ -550,7 +550,7 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
             <p className="text-xs text-[var(--app-text-muted)]">Targets keep accepted assignments and schedule locally.</p>
             <div className="flex items-center gap-2">
               <Button variant="ghost" className="rounded-xl" onClick={onClose} disabled={busy}>Cancel</Button>
-              <Button type="submit" variant="primary" className="rounded-xl" disabled={busy}>{busy ? 'Adding…' : 'Add Flow'}</Button>
+              <Button data-testid="flows-add-submit" type="submit" variant="primary" className="rounded-xl" disabled={busy}>{busy ? 'Adding…' : 'Add Flow'}</Button>
             </div>
           </div>
         </form>
@@ -561,7 +561,7 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
 
 function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefinition; onBack: () => void; onRunNow: (id: string) => void; onDelete: (id: string) => void; busy?: boolean }) {
   return (
-    <div className="flex min-h-full flex-col gap-8 pb-10 text-[var(--app-text)]">
+    <div data-testid="flows-detail" className="flex min-h-full flex-col gap-8 pb-10 text-[var(--app-text)]">
       <div className="flex items-center justify-between gap-4 border-b border-[var(--app-border)] pb-5">
         <div className="min-w-0">
           <button type="button" onClick={onBack} className="mb-4 inline-flex items-center gap-2 text-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)]">
@@ -574,7 +574,7 @@ function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefi
           <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--app-text-muted)]">{flow.task}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <Button variant="outline" className="rounded-xl" onClick={() => onRunNow(flow.id)} disabled={busy}>
+          <Button data-testid="flows-detail-run-now" variant="outline" className="rounded-xl" onClick={() => onRunNow(flow.id)} disabled={busy}>
             Run now
           </Button>
           <Button variant="ghost" className="rounded-xl text-[var(--app-danger)]" onClick={() => onDelete(flow.id)} disabled={busy}>
@@ -623,7 +623,7 @@ function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefi
 
         <aside>
           <h2 className="text-base font-semibold text-[var(--app-text)]">Recent runs</h2>
-          <div className="mt-4 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
+          <div data-testid="flows-recent-runs" className="mt-4 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
             {flow.runs.length ? flow.runs.map((run) => (
               <div key={run.id} className="border-b border-[var(--app-border)] px-4 py-3 last:border-b-0">
                 <div className="flex items-center justify-between gap-3">
@@ -751,14 +751,14 @@ export function FlowsSettingsPage() {
   if (selectedFlow) {
     return (
       <>
-        {error ? <div className="mb-4 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
+        {error ? <div data-testid="flows-error" className="mb-4 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
         <FlowDetail flow={selectedFlow} onBack={() => setSelectedFlowID(null)} onRunNow={handleRunNow} onDelete={handleDelete} busy={busyID === selectedFlow.id} />
       </>
     )
   }
 
   return (
-    <div className="flex min-h-full flex-col gap-5 pb-10 text-[var(--app-text)]">
+    <div data-testid="flows-settings-page" className="flex min-h-full flex-col gap-5 pb-10 text-[var(--app-text)]">
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--app-border)] pb-5">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
@@ -767,13 +767,13 @@ export function FlowsSettingsPage() {
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--app-text)]">Flows</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">Control scheduled and background agent jobs from real controller data.</p>
         </div>
-        <Button variant="primary" className="rounded-xl" onClick={() => setAddOpen(true)}>
+        <Button data-testid="flows-add-open" variant="primary" className="rounded-xl" onClick={() => setAddOpen(true)}>
           <Plus size={16} /> Add Flow
         </Button>
       </header>
 
       {error ? (
-        <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div>
+        <div data-testid="flows-error" className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div>
       ) : null}
       {flowsQuery.isLoading ? (
         <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">Loading flows…</div>
@@ -869,7 +869,7 @@ export function FlowsSettingsPage() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[980px] border-collapse text-left">
+          <table data-testid="flows-table" className="w-full min-w-[980px] border-collapse text-left">
             <thead>
               <tr className="border-b border-[var(--app-border)] bg-[var(--app-bg-inset)] text-[11px] uppercase tracking-[0.16em] text-[var(--app-text-muted)]">
                 <th className="px-5 py-3 font-medium">Flow</th>
@@ -883,7 +883,7 @@ export function FlowsSettingsPage() {
             </thead>
             <tbody>
               {filteredFlows.length ? filteredFlows.map((flow) => (
-                <tr key={flow.id} className="border-b border-[var(--app-border)] last:border-b-0 hover:bg-[var(--app-surface-subtle)]">
+                <tr key={flow.id} data-testid="flows-row" data-flow-id={flow.id} className="border-b border-[var(--app-border)] last:border-b-0 hover:bg-[var(--app-surface-subtle)]">
                   <td className="px-5 py-4 align-top">
                     <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="max-w-[520px] text-left">
                       <div className="truncate text-sm font-medium text-[var(--app-text)]">{flow.name}</div>
