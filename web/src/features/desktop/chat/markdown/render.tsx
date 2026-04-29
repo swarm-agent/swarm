@@ -18,6 +18,10 @@ type MarkdownRenderEntry =
 const copyOpenTagPattern = /<copy(?:\s+[^>]*)?>/gi
 const copyLabelPattern = /\b(?:label|title|name)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i
 
+type CopyProtectedRange = { start: number; end: number }
+type CopyFenceLine = { marker: '`' | '~'; count: number; info: string }
+type CopyFenceState = { marker: '`' | '~'; count: number; start: number } | null
+
 function normalizeCopyContent(content: string): string {
   return content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/^\n+|\n+$/g, '')
 }
@@ -28,29 +32,111 @@ function copyTagLabel(openTag: string): string {
   return (match[2] ?? match[3] ?? match[4] ?? '').trim()
 }
 
+function mayContainCopyOpenTag(source: string): boolean {
+  return /<copy(?:\s|>)/i.test(source)
+}
+
+function parseCopyFenceLine(line: string): CopyFenceLine | null {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+  const marker = trimmed[0]
+  if (marker !== '`' && marker !== '~') return null
+  let count = 0
+  while (count < trimmed.length && trimmed[count] === marker) count += 1
+  if (count < 3) return null
+  return { marker, count, info: trimmed.slice(count).trim() }
+}
+
+function markdownCopyProtectedRanges(source: string): CopyProtectedRange[] {
+  const ranges: CopyProtectedRange[] = []
+  let fence: CopyFenceState = null
+  let lineStart = 0
+
+  while (lineStart < source.length) {
+    const newlineIndex = source.indexOf('\n', lineStart)
+    const lineEnd = newlineIndex === -1 ? source.length : newlineIndex
+    const nextLineStart = newlineIndex === -1 ? source.length : newlineIndex + 1
+    const fenceLine = parseCopyFenceLine(source.slice(lineStart, lineEnd))
+
+    if (fenceLine) {
+      if (!fence) {
+        fence = { marker: fenceLine.marker, count: fenceLine.count, start: lineStart }
+      } else if (fenceLine.marker === fence.marker && fenceLine.count >= fence.count && fenceLine.info === '') {
+        ranges.push({ start: fence.start, end: nextLineStart })
+        fence = null
+      }
+    }
+
+    lineStart = nextLineStart
+  }
+
+  if (fence) {
+    ranges.push({ start: fence.start, end: source.length })
+  }
+  return ranges
+}
+
+function protectedRangeEnd(index: number, ranges: CopyProtectedRange[]): number | null {
+  for (const range of ranges) {
+    if (index < range.start) return null
+    if (index >= range.start && index < range.end) return range.end
+  }
+  return null
+}
+
+function nextCopyOpenTag(
+  source: string,
+  start: number,
+  protectedRanges: CopyProtectedRange[],
+): { index: number; end: number; tag: string } | null {
+  let cursor = start
+  while (cursor < source.length) {
+    copyOpenTagPattern.lastIndex = cursor
+    const match = copyOpenTagPattern.exec(source)
+    if (!match) return null
+
+    const end = match.index + match[0].length
+    const protectedEnd = protectedRangeEnd(match.index, protectedRanges)
+    if (protectedEnd !== null) {
+      cursor = Math.max(protectedEnd, end)
+      continue
+    }
+    return { index: match.index, end, tag: match[0] }
+  }
+  return null
+}
+
 function splitMarkdownCopySegments(content: string): MarkdownCopySegment[] {
   const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  if (!mayContainCopyOpenTag(normalized)) {
+    return normalized.trim() === '' ? [] : [{ type: 'markdown', source: normalized }]
+  }
+
+  const protectedRanges = markdownCopyProtectedRanges(normalized)
+  const lower = normalized.toLowerCase()
   const segments: MarkdownCopySegment[] = []
   let cursor = 0
-  copyOpenTagPattern.lastIndex = 0
 
-  while (true) {
-    const match = copyOpenTagPattern.exec(normalized)
+  while (cursor < normalized.length) {
+    const match = nextCopyOpenTag(normalized, cursor, protectedRanges)
     if (!match) break
     if (match.index > cursor) {
       segments.push({ type: 'markdown', source: normalized.slice(cursor, match.index) })
     }
 
-    const contentStart = match.index + match[0].length
-    const closeIndex = normalized.toLowerCase().indexOf('</copy>', contentStart)
-    const contentEnd = closeIndex === -1 ? normalized.length : closeIndex
+    const closeIndex = lower.indexOf('</copy>', match.end)
+    if (closeIndex === -1) {
+      segments.push({ type: 'markdown', source: normalized.slice(match.index) })
+      cursor = normalized.length
+      break
+    }
+
     segments.push({
       type: 'copy',
-      label: copyTagLabel(match[0]),
-      content: normalizeCopyContent(normalized.slice(contentStart, contentEnd)),
+      label: copyTagLabel(match.tag),
+      content: normalizeCopyContent(normalized.slice(match.end, closeIndex)),
     })
-    cursor = closeIndex === -1 ? normalized.length : contentEnd + '</copy>'.length
-    copyOpenTagPattern.lastIndex = cursor
+    cursor = closeIndex + '</copy>'.length
   }
 
   if (cursor < normalized.length) {

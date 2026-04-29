@@ -96,6 +96,69 @@ func TestCachedLiveAssistantLinesReuseRecentParseResult(t *testing.T) {
 	}
 }
 
+func TestLiveAssistantStreamingUsesMarkdownRenderer(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{
+		SessionID:      "session-test",
+		SessionMode:    "auto",
+		AuthConfigured: true,
+	})
+	page.liveAssistant = "# Streaming Title\n\n- first item\n- second item\n\n```go\nfunc main() {}\n```"
+	page.streamingRun = true
+	page.busy = true
+	page.ownedRunID = "run-1"
+	page.lifecycle = &ChatSessionLifecycle{
+		SessionID: "session-test",
+		RunID:     "run-1",
+		Active:    true,
+		Phase:     "running",
+	}
+
+	lines := page.renderLiveAssistantLines(100)
+	if len(lines) == 0 {
+		t.Fatal("expected streaming assistant lines")
+	}
+	rendered := chatRenderLinesText(lines)
+	if !containsAll(rendered, []string{"Streaming Title", "first item", "second item", "func main()"}) {
+		t.Fatalf("streaming markdown content missing:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "```go") {
+		t.Fatalf("streaming code fence was not parsed as markdown:\n%s", rendered)
+	}
+	if !renderLinesContainStyle(lines, page.theme.MarkdownHeading) {
+		t.Fatalf("streaming heading was not markdown-styled:\n%s", rendered)
+	}
+	if !renderLinesContainStyle(lines, page.theme.MarkdownList) {
+		t.Fatalf("streaming list was not markdown-styled:\n%s", rendered)
+	}
+}
+
+func TestLiveAssistantStreamingCopyBlocksUseCopyAwareMarkdown(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{
+		SessionID:      "session-test",
+		SessionMode:    "auto",
+		AuthConfigured: true,
+	})
+	page.liveAssistant = "Here is a block:\n\n<copy label=\"cmd\">swarm status</copy>"
+	page.streamingRun = true
+	page.busy = true
+	page.ownedRunID = "run-1"
+	page.lifecycle = &ChatSessionLifecycle{
+		SessionID: "session-test",
+		RunID:     "run-1",
+		Active:    true,
+		Phase:     "running",
+	}
+
+	lines := page.renderLiveAssistantLines(100)
+	rendered := chatRenderLinesText(lines)
+	if !strings.Contains(rendered, "/copy 1 · cmd") {
+		t.Fatalf("streaming copy block marker missing:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "swarm status") {
+		t.Fatalf("streaming copy block preview missing:\n%s", rendered)
+	}
+}
+
 func TestStreamingMarkdownDrawRemainsVisibleAcrossCompletedLifecycleAndFinalPersist(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",
@@ -180,4 +243,18 @@ func containsAll(text string, needles []string) bool {
 		}
 	}
 	return true
+}
+
+func renderLinesContainStyle(lines []chatRenderLine, style tcell.Style) bool {
+	for _, line := range lines {
+		if markdownStylesEqualExact(line.Style, style) {
+			return true
+		}
+		for _, span := range line.Spans {
+			if markdownStylesEqualExact(span.Style, style) {
+				return true
+			}
+		}
+	}
+	return false
 }

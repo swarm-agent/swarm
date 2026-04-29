@@ -31,37 +31,117 @@ func splitChatCopySegments(text string) []chatCopySegment {
 	if text == "" {
 		return nil
 	}
+	if !chatMayContainCopyOpenTag(text) {
+		return []chatCopySegment{{Text: text}}
+	}
 
+	protectedRanges := chatCopyMarkdownProtectedRanges(text)
 	segments := make([]chatCopySegment, 0, 4)
-	remaining := text
-	for remaining != "" {
-		loc := chatCopyOpenTagPattern.FindStringIndex(remaining)
+	cursor := 0
+	for cursor < len(text) {
+		loc := nextChatCopyOpenTag(text, cursor, protectedRanges)
 		if loc == nil {
-			segments = appendCopyTextSegment(segments, remaining)
+			segments = appendCopyTextSegment(segments, text[cursor:])
 			break
 		}
-		if loc[0] > 0 {
-			segments = appendCopyTextSegment(segments, remaining[:loc[0]])
+		if loc[0] > cursor {
+			segments = appendCopyTextSegment(segments, text[cursor:loc[0]])
 		}
 
-		openTag := remaining[loc[0]:loc[1]]
-		afterOpen := remaining[loc[1]:]
+		openTag := text[loc[0]:loc[1]]
+		afterOpen := text[loc[1]:]
 		lowerAfterOpen := strings.ToLower(afterOpen)
 		closeIdx := strings.Index(lowerAfterOpen, "</copy>")
-		content := afterOpen
-		if closeIdx >= 0 {
-			content = afterOpen[:closeIdx]
-			remaining = afterOpen[closeIdx+len("</copy>"):]
-		} else {
-			remaining = ""
+		if closeIdx < 0 {
+			segments = appendCopyTextSegment(segments, text[loc[0]:])
+			break
 		}
 
 		segments = append(segments, chatCopySegment{Copy: &chatCopyBlock{
 			Label:   chatCopyTagLabel(openTag),
-			Content: normalizeChatCopyContent(content),
+			Content: normalizeChatCopyContent(afterOpen[:closeIdx]),
 		}})
+		cursor = loc[1] + closeIdx + len("</copy>")
 	}
 	return segments
+}
+
+func chatMayContainCopyOpenTag(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "<copy>") || strings.Contains(lower, "<copy ") || strings.Contains(lower, "<copy\t") || strings.Contains(lower, "<copy\n")
+}
+
+type chatCopyByteRange struct {
+	Start int
+	End   int
+}
+
+func nextChatCopyOpenTag(text string, start int, protectedRanges []chatCopyByteRange) []int {
+	for start < len(text) {
+		loc := chatCopyOpenTagPattern.FindStringIndex(text[start:])
+		if loc == nil {
+			return nil
+		}
+		loc[0] += start
+		loc[1] += start
+		if protected, end := chatCopyIndexProtected(loc[0], protectedRanges); protected {
+			start = maxInt(end, loc[1])
+			continue
+		}
+		return loc
+	}
+	return nil
+}
+
+func chatCopyIndexProtected(index int, protectedRanges []chatCopyByteRange) (bool, int) {
+	for _, protected := range protectedRanges {
+		if index < protected.Start {
+			return false, 0
+		}
+		if index >= protected.Start && index < protected.End {
+			return true, protected.End
+		}
+	}
+	return false, 0
+}
+
+func chatCopyMarkdownProtectedRanges(text string) []chatCopyByteRange {
+	if text == "" {
+		return nil
+	}
+	ranges := make([]chatCopyByteRange, 0, 2)
+	fence := markdownFenceState{}
+	fenceStart := 0
+	lineStart := 0
+	for lineStart < len(text) {
+		lineEnd := strings.IndexByte(text[lineStart:], '\n')
+		nextLineStart := len(text)
+		if lineEnd >= 0 {
+			lineEnd += lineStart
+			nextLineStart = lineEnd + 1
+		} else {
+			lineEnd = len(text)
+		}
+		line := text[lineStart:lineEnd]
+		trimmed := strings.TrimSpace(strings.TrimRight(line, "\t \r"))
+		fenceLine, ok := parseMarkdownFenceLine(trimmed)
+		if ok {
+			if !fence.active() {
+				if fenceLine.Count >= 3 {
+					fence = markdownFenceState{Active: true, Marker: fenceLine.Marker, Count: fenceLine.Count}
+					fenceStart = lineStart
+				}
+			} else if fence.canClose(fenceLine) {
+				ranges = append(ranges, chatCopyByteRange{Start: fenceStart, End: nextLineStart})
+				fence = markdownFenceState{}
+			}
+		}
+		lineStart = nextLineStart
+	}
+	if fence.active() {
+		ranges = append(ranges, chatCopyByteRange{Start: fenceStart, End: len(text)})
+	}
+	return ranges
 }
 
 func appendCopyTextSegment(segments []chatCopySegment, text string) []chatCopySegment {

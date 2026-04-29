@@ -34,7 +34,7 @@ const (
 	chatMaxToolEntries                   = 600
 	chatMaxLiveToolOutputRunes           = 96 * 1024
 	chatMaxBashTimelinePreviewRunes      = 12 * 1024
-	chatMaxBashOutputRunes               = 512 * 1024
+	chatMaxBashOutputRunes               = 96 * 1024
 	chatBashTimelineRefreshMS            = 80
 	chatUserVariantCount                 = 10
 	chatAssistantVariantCount            = 10
@@ -4269,6 +4269,12 @@ func appendToolDeltaText(current, chunk string, maxRunes int) string {
 	if maxRunes <= 0 {
 		return merged
 	}
+	// Fast path for the overwhelmingly common ASCII/plain-output case. The old
+	// code converted every merged string to []rune before checking length, which
+	// made each bash delta allocate proportional to the whole accumulated output.
+	if len(merged) <= maxRunes {
+		return merged
+	}
 	runes := []rune(merged)
 	if len(runes) <= maxRunes {
 		return merged
@@ -4343,7 +4349,7 @@ func (p *ChatPage) maybeStartInlineBashOutput(entry chatToolStreamEntry) {
 	p.bashOutput.UpdatedAt = entry.CreatedAt
 	p.bashOutput.Running = !isTerminalToolState(strings.TrimSpace(entry.State))
 	if strings.TrimSpace(entry.Output) != "" && strings.TrimSpace(p.bashOutput.Output) == "" {
-		p.bashOutput.Output = appendToolDeltaText("", entry.Output, 0)
+		p.bashOutput.Output = appendToolDeltaText("", entry.Output, chatMaxBashOutputRunes)
 	}
 	p.bashOutput.Truncated = strings.HasPrefix(p.bashOutput.Output, "...")
 	if !p.bashOutput.Expanded {
@@ -4361,7 +4367,7 @@ func (p *ChatPage) updateInlineBashOutput(entry chatToolStreamEntry, chunk strin
 	}
 	p.maybeStartInlineBashOutput(entry)
 	if strings.TrimSpace(chunk) != "" {
-		p.bashOutput.Output = appendToolDeltaText(p.bashOutput.Output, chunk, 0)
+		p.bashOutput.Output = appendToolDeltaText(p.bashOutput.Output, chunk, chatMaxBashOutputRunes)
 	}
 	if createdAt > 0 {
 		p.bashOutput.UpdatedAt = createdAt
@@ -4380,16 +4386,16 @@ func mergeBashSessionOutput(existing, incoming string) string {
 	case incoming == "":
 		return existing
 	case existing == "":
-		return incoming
+		return appendToolDeltaText("", incoming, chatMaxBashOutputRunes)
 	}
 	if toolTextLooksTruncated(existing) && !toolTextLooksTruncated(incoming) {
-		return incoming
+		return appendToolDeltaText("", incoming, chatMaxBashOutputRunes)
 	}
 	if toolTextLooksTruncated(incoming) && !toolTextLooksTruncated(existing) {
 		return existing
 	}
 	if utf8.RuneCountInString(incoming) > utf8.RuneCountInString(existing) {
-		return incoming
+		return appendToolDeltaText("", incoming, chatMaxBashOutputRunes)
 	}
 	return existing
 }
@@ -4498,7 +4504,15 @@ func (p *ChatPage) bashOutputViewportLines(width, height int) []string {
 	if p == nil || width <= 0 || height <= 0 {
 		return nil
 	}
-	lines := Wrap(strings.TrimSpace(p.bashOutput.Output), width)
+	text := strings.TrimSpace(p.bashOutput.Output)
+	if text == "" {
+		return []string{""}
+	}
+	// The live bash viewer is a tail view. Wrapping the full accumulated output
+	// on every draw creates CPU and allocation spikes during high-volume streams.
+	// Keep enough bytes to fill the visible viewport plus scrollback context.
+	text = liveRenderTail(text, maxInt(width*height*8, 16*1024))
+	lines := Wrap(text, width)
 	if len(lines) == 0 {
 		lines = []string{""}
 	}
