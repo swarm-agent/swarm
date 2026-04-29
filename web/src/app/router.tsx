@@ -4,6 +4,7 @@ import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-
 const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
 const DesktopAppPage = lazyRouteComponent(() => import('../features/desktop/layout/desktop-app-page'), 'DesktopAppPage')
 const DesktopSettingsPage = lazyRouteComponent(() => import('../features/desktop/settings/components/desktop-settings-page'), 'DesktopSettingsPage')
+const FlowRedirectRoute = lazyRouteComponent(() => import('./flow-redirect-route'), 'FlowRedirectRoute')
 
 function validateWorkspaceParams(params: Record<string, unknown>): { workspaceSlug: string } {
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
@@ -38,6 +39,12 @@ const settingsRoute = createRoute({
   component: DesktopSettingsPage,
 })
 
+const flowRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/flow',
+  component: FlowRedirectRoute,
+})
+
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug',
@@ -60,7 +67,7 @@ const workspaceSettingsRoute = createRoute({
   component: DesktopSettingsPage,
 })
 
-const routeTree = rootRoute.addChildren([indexRoute, settingsRoute, workspaceRoute, workspaceSessionRoute, workspaceSettingsRoute])
+const routeTree = rootRoute.addChildren([indexRoute, settingsRoute, flowRoute, workspaceRoute, workspaceSessionRoute, workspaceSettingsRoute])
 
 export const router = createRouter({
   routeTree,
