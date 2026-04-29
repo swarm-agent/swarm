@@ -158,7 +158,9 @@ resolve_defaults() {
   fi
 
   if [[ -z "${ARTIFACT_DIR}" ]]; then
-    ARTIFACT_DIR="${ROOT_DIR}/tmp/remote-deploy-diagnostics/$(date -u +%Y%m%dT%H%M%SZ)"
+    local artifact_root
+    artifact_root="${SWARM_REMOTE_DEPLOY_DIAG_ARTIFACT_ROOT:-tmp}"
+    ARTIFACT_DIR="${ROOT_DIR}/${artifact_root}/remote-deploy-diagnostics/$(date -u +%Y%m%dT%H%M%SZ)"
   fi
   mkdir -p "${ARTIFACT_DIR}"
 }

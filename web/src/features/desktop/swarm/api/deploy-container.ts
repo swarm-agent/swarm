@@ -133,6 +133,13 @@ export interface RemoteDeployPreflight {
   checks?: string[]
 }
 
+export interface RemoteDeployTiming {
+  step: string
+  elapsed_ms: number
+  status?: string
+  fields?: Record<string, string>
+}
+
 export interface RemoteDeploySession {
   id: string
   name: string
@@ -169,6 +176,7 @@ export interface RemoteDeploySession {
   last_progress?: string
   last_error?: string
   last_remote_output?: string
+  start_timings?: RemoteDeployTiming[]
   preflight: RemoteDeployPreflight
   created_at: number
   updated_at: number
@@ -282,10 +290,32 @@ export async function deleteDeployContainersViaHost(childBackendURL: string, ids
 
 export async function fetchRemoteDeploySessions(options?: {
   refresh?: boolean
+  id?: string
 }): Promise<RemoteDeploySession[]> {
-  const refresh = options?.refresh ? '?refresh=1' : ''
-  const response = await requestJson<{ ok?: boolean; sessions?: RemoteDeploySession[] }>(`/v1/deploy/remote/session${refresh}`)
+  const params = new URLSearchParams()
+  if (options?.refresh) {
+    params.set('refresh', '1')
+  }
+  if (options?.id?.trim()) {
+    params.set('id', options.id.trim())
+  }
+  const query = params.toString()
+  const response = await requestJson<{ ok?: boolean; session?: RemoteDeploySession; sessions?: RemoteDeploySession[] }>(`/v1/deploy/remote/session${query ? `?${query}` : ''}`)
+  if (response.session) {
+    return [response.session]
+  }
   return Array.isArray(response.sessions) ? response.sessions : []
+}
+
+export async function fetchRemoteDeploySession(sessionID: string, options?: {
+  refresh?: boolean
+}): Promise<RemoteDeploySession> {
+  const sessions = await fetchRemoteDeploySessions({ id: sessionID, refresh: options?.refresh })
+  const session = sessions.find((item) => item.id === sessionID) ?? sessions[0]
+  if (!session) {
+    throw new Error('remote deploy session response was missing session data')
+  }
+  return session
 }
 
 export interface RemoteDeployPreflightError {

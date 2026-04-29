@@ -24,6 +24,27 @@ func (s *Server) handleRemoteDeploySessions(w http.ResponseWriter, r *http.Reque
 	}
 	refresh := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("refresh")), "1") ||
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("refresh")), "true")
+	sessionID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if sessionID != "" {
+		ctx := r.Context()
+		var cancel context.CancelFunc
+		if refresh {
+			ctx, cancel = context.WithTimeout(r.Context(), remoteDeploySessionRefreshTimeout)
+			defer cancel()
+		}
+		session, err := s.remoteDeploys.Get(ctx, sessionID, refresh)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"path_id":  remotedeploy.PathSessionList,
+			"session":  session,
+			"sessions": []remotedeploy.Session{session},
+		})
+		return
+	}
 	var (
 		items []remotedeploy.Session
 		err   error

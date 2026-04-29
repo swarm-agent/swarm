@@ -179,6 +179,7 @@ type deployContainerService interface {
 type remoteDeployService interface {
 	List(ctx context.Context) ([]remotedeploy.Session, error)
 	ListCached(ctx context.Context) ([]remotedeploy.Session, error)
+	Get(ctx context.Context, sessionID string, refresh bool) (remotedeploy.Session, error)
 	Create(ctx context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error)
 	Delete(ctx context.Context, input remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error)
 	Start(ctx context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error)

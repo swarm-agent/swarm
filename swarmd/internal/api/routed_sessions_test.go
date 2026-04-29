@@ -503,6 +503,15 @@ func (f *fakeRemoteDeployService) ListCached(_ context.Context) ([]remotedeploy.
 	return append([]remotedeploy.Session(nil), f.sessions...), nil
 }
 
+func (f *fakeRemoteDeployService) Get(_ context.Context, sessionID string, _ bool) (remotedeploy.Session, error) {
+	for _, session := range f.sessions {
+		if session.ID == sessionID {
+			return session, nil
+		}
+	}
+	return remotedeploy.Session{}, errors.New("remote deploy session not found")
+}
+
 func (f *fakeRemoteDeployService) Create(_ context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error) {
 	return remotedeploy.Session{}, nil
 }
