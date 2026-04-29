@@ -608,7 +608,7 @@ func (p *HomePage) triggerProviderLogin(providerID string) {
 		return
 	}
 	p.openAuthModalEditor("codex_login")
-	p.authModal.Status = "Choose login method (use left/right to switch): browser opens the local callback flow automatically; remote lets you copy the full auth URL here or leave the TUI and run swarm auth codex remote. Then set optional name and active state, and press Enter."
+	p.authModal.Status = "Codex auth: press Enter for browser sign-in, ←/→ to choose API key or remote, or ↑ to add an optional label first."
 	p.authModal.Error = ""
 }
 
@@ -635,10 +635,10 @@ func (p *HomePage) openAuthModalEditor(mode string) {
 		p.authModal.Editor = &authModalEditor{
 			Mode: "codex_login",
 			Fields: []authModalEditorField{
-				{Key: "method", Label: "Login method (browser/remote)", Value: "browser", Placeholder: "browser"},
-				{Key: "label", Label: "Credential Name", Value: "", Placeholder: "optional (type while selected)"},
-				{Key: "active", Label: "Set this credential active? (y/n)", Value: "y", Placeholder: "y"},
+				{Key: "label", Label: "Optional Label", Value: "", Placeholder: "press ↑ and type to name this credential"},
+				{Key: "method", Label: "Auth method", Value: "browser", Placeholder: "browser"},
 			},
+			Selected: 1,
 		}
 	default:
 		p.authModal.Editor = &authModalEditor{
@@ -825,8 +825,6 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 				field.Value = ""
 			case "method":
 				field.Value = "browser"
-			case "active":
-				field.Value = "y"
 			}
 			return
 		}
@@ -846,6 +844,10 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 	case p.keybinds.Match(ev, KeybindEditorSubmit):
 		selectedField := editor.Fields[editor.Selected]
 		if selectedField.Key == "api_key" || selectedField.Key == "callback_input" || selectedField.Key == "copy_url" || selectedField.Key == "token" {
+			p.submitAuthModalEditor()
+			return
+		}
+		if editor.Mode == "codex_login" && selectedField.Key == "label" && strings.TrimSpace(selectedField.Value) != "" {
 			p.submitAuthModalEditor()
 			return
 		}
@@ -876,18 +878,16 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 			return
 		}
 		if editor.Mode == "codex_login" && field.Key != "label" {
-			switch {
-			case r == ' ':
-				if field.Key == "active" {
-					field.Value = cycleYNValue(field.Value, 1)
-				}
-			case r == 'h' || r == 'l':
-				if field.Key == "method" {
+			if field.Key == "method" {
+				switch {
+				case r == ' ' || r == 'h' || r == 'l':
 					field.Value = cycleCodexLoginMethodValue(field.Value, 1)
-				}
-			case r == 'j' || r == 'k':
-				if field.Key == "active" {
-					field.Value = cycleYNValue(field.Value, 1)
+				case r == '1' || r == 'b' || r == 'B':
+					field.Value = "browser"
+				case r == '2' || r == 'r' || r == 'R':
+					field.Value = "remote"
+				case r == '3' || r == 'a' || r == 'A':
+					field.Value = "api key"
 				}
 			}
 			return
@@ -936,6 +936,24 @@ func (p *HomePage) submitAuthModalEditor() {
 		method, openBrowser := normalizeCodexLoginMethod(get("method"))
 		label := get("label")
 		provider := "codex"
+		if method == "api" {
+			p.openAuthModalEditor("api")
+			if p.authModal.Editor != nil {
+				for i := range p.authModal.Editor.Fields {
+					switch p.authModal.Editor.Fields[i].Key {
+					case "provider":
+						p.authModal.Editor.Fields[i].Value = provider
+					case "label":
+						p.authModal.Editor.Fields[i].Value = label
+					case "api_key":
+						p.authModal.Editor.Selected = i
+					}
+				}
+			}
+			p.authModal.Status = "Paste Codex API key and press Enter to save."
+			p.authModal.Error = ""
+			return
+		}
 		authURL := ""
 		if p.authModal.Login != nil {
 			authURL = strings.TrimSpace(p.authModal.Login.AuthURL)
@@ -1943,7 +1961,7 @@ func parseYN(value string) bool {
 }
 
 func cycleCodexLoginMethodValue(value string, delta int) string {
-	options := []string{"browser", "remote"}
+	options := []string{"browser", "remote", "api key"}
 	if len(options) == 0 {
 		return "browser"
 	}
@@ -1953,6 +1971,8 @@ func cycleCodexLoginMethodValue(value string, delta int) string {
 	switch value {
 	case "remote", "code", "manual":
 		index = 1
+	case "api", "api key", "apikey", "key":
+		index = 2
 	default:
 		index = 0
 	}
@@ -2022,7 +2042,7 @@ func authEditorHelpText(mode string) string {
 	case "codex_browser_pending":
 		return "Enter copies URL • Esc close"
 	case "codex_login":
-		return "Tab/↑/↓ move • ←/→ toggle options • type only in Credential Name • Enter next/submit"
+		return "Enter starts selected method • ↑ label first • ←/→ or 1/2/3 choose browser/remote/API key • Esc cancel"
 	case "copilot_login":
 		return "Tab/↑/↓ move • ←/→ toggle Method/active • type in Name or Token • Enter next/submit"
 	default:
@@ -2035,6 +2055,8 @@ func normalizeCodexLoginMethod(value string) (method string, openBrowser bool) {
 	switch value {
 	case "remote", "code", "manual":
 		return "code", false
+	case "api", "api key", "apikey", "key":
+		return "api", false
 	default:
 		return "auto", true
 	}
