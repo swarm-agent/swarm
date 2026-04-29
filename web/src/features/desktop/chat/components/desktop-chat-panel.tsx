@@ -10,6 +10,7 @@ import {
   draftModelQueryOptions,
   ensureSessionRuntimeData,
   modelOptionsQueryOptions,
+  sessionMessagesQueryKey,
   sessionMessagesQueryOptions,
   sessionPreferenceQueryKey,
   sessionPreferenceQueryOptions,
@@ -64,6 +65,7 @@ import {
   saveDesktopChatRouteForWorkspace,
 } from '../services/chat-routing'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from '../services/slash-commands'
+import { appendPendingUserMessage, createPendingUserMessage, removePendingUserMessage } from '../services/message-cache'
 import type { SettingsTabID } from '../../settings/types/settings-tabs'
 import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
 
@@ -175,12 +177,6 @@ interface DesktopChatPanelProps {
   onStartNewSession: (workspacePath: string, workspaceName: string) => void
 }
 
-interface PendingUserMessage {
-  sessionId: string
-  content: string
-  baselineSeq: number
-}
-
 type CommitMode = 'agent' | 'manual'
 
 interface CommitModalState {
@@ -237,17 +233,6 @@ function optionKey(provider: string, model: string, contextMode = ''): string {
 
 function nearBottom(element: HTMLDivElement): boolean {
   return element.scrollHeight - element.scrollTop - element.clientHeight < 48
-}
-
-function buildPendingUserMessage(sessionId: string, prompt: string, baselineSeq: number): ChatMessageRecord {
-  return {
-    id: `pending-user:${sessionId}:${baselineSeq + 1}`,
-    sessionId,
-    globalSeq: baselineSeq + 1,
-    role: 'user',
-    content: prompt,
-    createdAt: Date.now(),
-  }
 }
 
 type RenderItem =
@@ -675,7 +660,6 @@ export function DesktopChatPanel({
   const [permissionError, setPermissionError] = useState<string | null>(null)
   const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(() => new Set())
   const [lastSavedRulePreview, setLastSavedRulePreview] = useState<string | null>(null)
-  const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessage | null>(null)
   const [commitModal, setCommitModal] = useState<CommitModalState>(EMPTY_COMMIT_MODAL_STATE)
   const [planModal, setPlanModal] = useState<PlanModalState>(EMPTY_PLAN_MODAL_STATE)
   const [timerNow, setTimerNow] = useState(() => Date.now())
@@ -799,15 +783,7 @@ export function DesktopChatPanel({
   }, [slashPalette.matches, slashSelectionIndex])
 
   const messages = useMemo(() => dedupeMessages(messagesQuery.data ?? []), [messagesQuery.data])
-  const displayedMessages = useMemo(() => {
-    if (!pendingUserMessage || pendingUserMessage.sessionId !== sessionId) {
-      return messages
-    }
-    if (messages.some((message) => message.role === 'user' && message.content.trim() === pendingUserMessage.content.trim() && message.globalSeq >= pendingUserMessage.baselineSeq + 1)) {
-      return messages
-    }
-    return dedupeMessages([...messages, buildPendingUserMessage(pendingUserMessage.sessionId, pendingUserMessage.content, pendingUserMessage.baselineSeq)])
-  }, [messages, pendingUserMessage, sessionId])
+  const displayedMessages = messages
   const liveAssistantDraft = liveSession?.live.assistantDraft ?? ''
   const liveToolMessage = useMemo(() => buildLiveToolMessage(liveSession), [liveSession])
   const shouldRenderLiveToolMessage = useMemo(
@@ -1210,15 +1186,6 @@ export function DesktopChatPanel({
   }, [session, storedSession, upsertSession])
 
   useEffect(() => {
-    if (!pendingUserMessage || pendingUserMessage.sessionId !== sessionId) {
-      return
-    }
-    if (messages.some((message) => message.role === 'user' && message.content.trim() === pendingUserMessage.content.trim() && message.globalSeq >= pendingUserMessage.baselineSeq + 1)) {
-      setPendingUserMessage(null)
-    }
-  }, [messages, pendingUserMessage, sessionId])
-
-  useEffect(() => {
     if (!messagesQuery.error) {
       return
     }
@@ -1565,8 +1532,9 @@ export function DesktopChatPanel({
     shouldStickToBottomRef.current = true
     setPanelError(null)
 
+    let targetSession = session
+    let pendingMessageId = ''
     try {
-      let targetSession = session
       if (!canSendWithSelectedPreference) {
         throw new Error('Select an authenticated model and thinking level before sending')
       }
@@ -1590,11 +1558,14 @@ export function DesktopChatPanel({
         onSessionCreated(targetSession)
       }
 
-      setPendingUserMessage({
-        sessionId: targetSession.id,
-        content: prompt,
-        baselineSeq: messages[messages.length - 1]?.globalSeq ?? 0,
-      })
+      const cachedTargetMessages = queryClient.getQueryData<ChatMessageRecord[]>(sessionMessagesQueryKey(targetSession.id)) ?? []
+      const pendingMessage = createPendingUserMessage(
+        targetSession.id,
+        prompt,
+        cachedTargetMessages[cachedTargetMessages.length - 1]?.globalSeq ?? 0,
+      )
+      pendingMessageId = pendingMessage.id
+      queryClient.setQueryData(sessionMessagesQueryKey(targetSession.id), (current: ChatMessageRecord[] | undefined) => appendPendingUserMessage(current, pendingMessage))
 
       await submitPrompt({
         sessionId: targetSession.id,
@@ -1607,9 +1578,14 @@ export function DesktopChatPanel({
       })
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to send prompt')
-      setPendingUserMessage(null)
+      if (targetSession?.id) {
+        if (pendingMessageId) {
+          queryClient.setQueryData(sessionMessagesQueryKey(targetSession.id), (current: ChatMessageRecord[] | undefined) => removePendingUserMessage(current, pendingMessageId))
+        }
+        void queryClient.invalidateQueries({ queryKey: sessionMessagesQueryKey(targetSession.id) })
+      }
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, composer, currentSessionAgent, mentionSubagents, messages, onSessionCreated, queryClient, session, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, composer, currentSessionAgent, mentionSubagents, onSessionCreated, queryClient, session, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {

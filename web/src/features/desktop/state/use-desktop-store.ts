@@ -22,6 +22,7 @@ import {
 } from '../chat/queries/chat-queries'
 import { sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeGlobalThemeSettings, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import {
@@ -1308,16 +1309,7 @@ function draftKeyForSession(sessionId: string | null, workspacePath?: string | n
 
 function updateMessagesCache(sessionId: string, message: ChatMessageRecord): void {
   deferDesktopCacheMutation('message cache sync', () => {
-    queryClient.setQueryData(sessionMessagesQueryOptions(sessionId).queryKey, (current: ChatMessageRecord[] | undefined) => {
-      const next = current ?? []
-      const existingIndex = next.findIndex((entry) => entry.globalSeq === message.globalSeq)
-      if (existingIndex >= 0) {
-        const updated = [...next]
-        updated[existingIndex] = message
-        return updated
-      }
-      return [...next, message].sort((left, right) => left.globalSeq - right.globalSeq)
-    })
+    queryClient.setQueryData(sessionMessagesQueryOptions(sessionId).queryKey, (current: ChatMessageRecord[] | undefined) => mergeMessageIntoCache(current, message))
   })
 }
 
