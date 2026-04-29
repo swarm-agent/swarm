@@ -1385,14 +1385,10 @@ function permissionArgumentCodeLanguage(toolName: string, key: string): string {
   return ''
 }
 
-function shouldRenderPermissionArgumentBlock(toolName: string, key: string, value: string): boolean {
-  const normalizedTool = normalizePermissionToolName(toolName)
+function shouldRenderPermissionArgumentBlock(key: string, value: string): boolean {
   const normalizedKey = key.trim().toLowerCase()
   if (!value.trim()) {
     return false
-  }
-  if (normalizedTool === 'bash' && normalizedKey === 'command') {
-    return true
   }
   switch (normalizedKey) {
     case 'content':
@@ -1412,10 +1408,13 @@ function permissionArgumentBlockMarkdown(toolName: string, key: string, value: u
     if (!trimmed) {
       return `- **${label}:** (empty)`
     }
-    if (shouldRenderPermissionArgumentBlock(toolName, key, trimmed)) {
+    if (shouldRenderPermissionArgumentBlock(key, trimmed)) {
       const language = permissionArgumentCodeLanguage(toolName, key)
       const fence = language ? `\`\`\`${language}` : '```'
       return [`**${label}**`, '', fence, trimmed, '```'].join('\n')
+    }
+    if (normalizePermissionToolName(toolName) === 'bash' && key.trim().toLowerCase() === 'command') {
+      return permissionScalarValue(key, trimmed)
     }
     return `- **${label}:** ${permissionScalarValue(key, trimmed)}`
   }
@@ -1438,19 +1437,31 @@ function permissionArgumentBlockMarkdown(toolName: string, key: string, value: u
 function buildPermissionArgumentsMarkdown(permission: DesktopPermissionRecord): string {
   const payload = decodePermissionArguments(permission.toolArguments)
   if (!payload) {
-    return ['### Arguments', '', '```json', prettyPermissionArguments(permission.toolArguments), '```'].join('\n')
+    return ['```json', prettyPermissionArguments(permission.toolArguments), '```'].join('\n')
   }
 
   const normalized = normalizePermissionPayloadValue(payload) as Record<string, unknown>
+
+  if (normalizePermissionToolName(permission.toolName) === 'bash') {
+    const command = typeof normalized.command === 'string' ? normalized.command.trim() : ''
+    const supportingFields = orderedPermissionArguments(permission.toolName, normalized)
+      .filter(([key]) => !['command', 'timeout_ms', 'yield_time_ms', 'max_output_tokens'].includes(key.trim().toLowerCase()))
+      .map(([key, value]) => permissionArgumentBlockMarkdown(permission.toolName, key, value))
+
+    if (command) {
+      return [inlinePermissionValue(command), ...supportingFields].filter(Boolean).join('\n\n')
+    }
+  }
+
   const fields = orderedPermissionArguments(permission.toolName, normalized).map(([key, value]) => (
     permissionArgumentBlockMarkdown(permission.toolName, key, value)
   ))
 
   if (fields.length === 0) {
-    return ['### Arguments', '', '```json', '{}', '```'].join('\n')
+    return ['```json', '{}', '```'].join('\n')
   }
 
-  return ['### Arguments', '', ...fields].join('\n\n')
+  return fields.join('\n\n')
 }
 
 export function buildGenericPermissionMarkdown(permission: DesktopPermissionRecord): string {
@@ -1461,17 +1472,13 @@ export function buildGenericPermissionMarkdown(permission: DesktopPermissionReco
     sections.push(permission.reason.trim())
   }
 
-  sections.push(
-    [
-      '### Request details',
-      bashPrefix ? `- **Always allow prefix:** \`${bashPrefix}\`` : '',
-      `- **Tool:** ${permissionDisplayToolName(permission.toolName)}`,
-      `- **Requirement:** ${permissionRequirementLabel(permission.requirement)}`,
-      permission.mode.trim() ? `- **Mode:** ${permission.mode.trim()}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n'),
-  )
+  const details = [
+    `Tool: ${permissionDisplayToolName(permission.toolName)}`,
+    `Requirement: ${permissionRequirementLabel(permission.requirement)}`,
+    permission.mode.trim() ? `Mode: ${permission.mode.trim()}` : '',
+  ].filter(Boolean).join(' · ')
+
+  sections.push(bashPrefix ? `${details} · Always allow prefix: \`${bashPrefix}\`` : details)
 
   if (permission.toolArguments.trim()) {
     sections.push(buildPermissionArgumentsMarkdown(permission))

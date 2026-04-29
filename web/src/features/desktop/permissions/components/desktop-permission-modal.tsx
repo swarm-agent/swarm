@@ -20,7 +20,6 @@ import {
   parseTaskLaunchPermission,
   parseWorkspaceScopePermission,
   permissionDisplayToolName,
-  permissionRequirementLabel,
   permissionKind,
 } from '../services/permission-payload'
 
@@ -65,10 +64,11 @@ function ModalShell({
   children,
   onOpenChange,
   onRequestClose,
+  showSessionMeta = true,
 }: {
   open: boolean
   title: string
-  subtitle: string
+  subtitle?: string
   pendingCount: number
   sessionMode: string
   widthClassName: string
@@ -77,6 +77,7 @@ function ModalShell({
   children: React.ReactNode
   onOpenChange: (open: boolean) => void
   onRequestClose?: () => void
+  showSessionMeta?: boolean
 }) {
   const handleRequestClose = () => {
     if (onRequestClose) {
@@ -93,21 +94,25 @@ function ModalShell({
   }
 
   return (
-    <Dialog role="dialog" aria-modal="true" aria-label={title} className="z-[80] p-4 sm:p-6">
+    <Dialog role="dialog" aria-modal="true" aria-label={title} className="z-[80] p-3 sm:p-4">
       <DialogBackdrop onClick={handleRequestClose} />
-      <DialogPanel className={cn('flex min-h-0 max-h-[calc(100vh-24px)] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100vh-48px)]', widthClassName)}>
-        <div className="shrink-0 flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-6 py-5">
-          <div className="min-w-0 flex-1">
-            <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">{title}</h2>
-            <p className="mt-1 text-sm text-[var(--app-text-muted)]">{subtitle}</p>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
-              <span className="inline-flex items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium uppercase tracking-[0.08em]">mode {sessionMode.trim() || 'plan'}</span>
-              {pendingCount > 1 ? <span>{pendingCount} requests pending in this session</span> : null}
-            </div>
+      <DialogPanel className={cn('flex min-h-0 max-h-[calc(100vh-18px)] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100vh-32px)]', widthClassName)}>
+        <div className="shrink-0 flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-5 py-3">
+          <div className="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <h2 className="text-base font-semibold tracking-tight text-[var(--app-text)]">{title}</h2>
+            {subtitle?.trim() ? <span className="text-sm text-[var(--app-text-muted)]">{subtitle}</span> : null}
+            {showSessionMeta ? (
+              <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
+                <span>mode {sessionMode.trim() || 'plan'}</span>
+                {pendingCount > 1 ? <span>{pendingCount} pending</span> : null}
+              </div>
+            ) : pendingCount > 1 ? (
+              <span className="text-xs text-[var(--app-text-subtle)]">{pendingCount} pending</span>
+            ) : null}
           </div>
           <ModalCloseButton onClick={handleRequestClose} aria-label="Close permission modal" />
         </div>
-        <div className={cn('min-h-0 flex-1 overflow-auto px-6 py-5', bodyClassName)}>{children}</div>
+        <div className={cn('min-h-0 flex-1 overflow-auto px-5 py-4', bodyClassName)}>{children}</div>
         {footer}
       </DialogPanel>
     </Dialog>
@@ -140,8 +145,8 @@ function PermissionActionBar({
   children?: React.ReactNode
 }) {
   return (
-    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-6 py-4">
-      {children ? <div className="mb-4">{children}</div> : null}
+    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-3">
+      {children ? <div className="mb-3">{children}</div> : null}
       <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="ghost" onClick={onDeny} disabled={loading}>
           {denyLabel}
@@ -239,32 +244,31 @@ function GenericPermissionModal({
     <ModalShell
       open={open}
       title="Permission request"
-      subtitle={`${permissionRequirementLabel(permission.requirement)} · ${permissionDisplayToolName(permission.toolName)}`}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(980px,calc(100vw-24px))] sm:w-[min(1040px,calc(100vw-48px))]"
+      widthClassName="w-[min(860px,calc(100vw-18px))] sm:w-[min(920px,calc(100vw-32px))]"
+      bodyClassName="py-3"
+      showSessionMeta={false}
       onOpenChange={onOpenChange}
     >
-      <div className="grid gap-5">
-        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+      <div className="grid gap-3">
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2.5 text-sm">
           <ChatMarkdown content={body} />
         </div>
         {persistentAllowed ? (
-          <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Always allow prefix</div>
-            <div className="mt-2 text-sm text-[var(--app-text-muted)]">
-              {persistentRuleDescription}
-            </div>
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-xs text-[var(--app-text-muted)]">
+            <span className="font-medium text-[var(--app-text-subtle)]">Always allow prefix</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[var(--app-text)]">{persistentRuleDescription || 'available after approval'}</span>
           </div>
         ) : null}
-        <label className="grid gap-2">
-          <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Response note</span>
+        <label className="grid gap-1.5">
+          <span className="text-xs font-medium text-[var(--app-text-subtle)]">Response note</span>
           <Textarea
             value={note}
             onChange={(event) => setNote(event.target.value)}
-            placeholder="Optional note to send with this decision…"
-            className="min-h-[120px] resize-y bg-[var(--app-bg-alt)]"
-            rows={4}
+            placeholder="Optional note…"
+            className="min-h-[72px] resize-y bg-[var(--app-bg-alt)]"
+            rows={2}
           />
         </label>
       </div>
