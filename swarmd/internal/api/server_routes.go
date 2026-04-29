@@ -152,6 +152,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerPeerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/swarm/peer/flows/apply", s.handlePeerFlowApply)
 	mux.HandleFunc("/v1/swarm/peer/sessions/open", s.handlePeerSessionOpen)
 	mux.HandleFunc("/v1/swarm/peer/sessions/append_message", s.handlePeerSessionAppendMessage)
 	mux.HandleFunc("/v1/swarm/peer/sessions/mode", s.handlePeerSessionMode)
@@ -175,6 +176,7 @@ func (s *Server) registerLocalTransportRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/container/sync/credentials", s.handleDeployContainerSyncCredentials)
 	mux.HandleFunc("/v1/deploy/container/sync/agents", s.handleDeployContainerSyncAgents)
 	mux.HandleFunc("/v1/deploy/container/workspaces/bootstrap", s.handleDeployContainerWorkspaceBootstrap)
+	mux.HandleFunc("/v1/swarm/peer/flows/apply", s.handlePeerFlowApply)
 	mux.HandleFunc("/v1/swarm/peer/sessions/open", s.handlePeerSessionOpen)
 	mux.HandleFunc("/v1/swarm/peer/sessions/append_message", s.handlePeerSessionAppendMessage)
 	mux.HandleFunc("/v1/swarm/peer/sessions/mode", s.handlePeerSessionMode)

@@ -102,7 +102,7 @@ func (s Scheduler) runDue(ctx context.Context, item DueRun, now time.Time) (RunS
 	if !claimed {
 		return RunStart{}, false, nil
 	}
-	request := RunRequest{FlowID: claim.FlowID, Revision: claim.Revision, ScheduledAt: claim.ScheduledAt}
+	request := RunRequest{FlowID: claim.FlowID, Revision: claim.Revision, ScheduledAt: claim.ScheduledAt, RunID: storedClaim.RunID}
 	start, err := s.Runner.RunAcceptedFlow(ctx, assignment, request)
 	if err != nil {
 		return RunStart{}, true, err

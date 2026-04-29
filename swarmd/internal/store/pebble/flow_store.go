@@ -310,6 +310,18 @@ func (s *FlowStore) GetOutboxCommand(commandID string) (FlowOutboxCommandRecord,
 	return normalizeFlowOutboxCommandRecord(record), true, nil
 }
 
+func (s *FlowStore) CountOutboxCommands(status string) (int, error) {
+	if s == nil || s.store == nil {
+		return 0, errors.New("flow store is not configured")
+	}
+	count := 0
+	err := s.store.IteratePrefix(FlowOutboxStatusPrefix(status), 100000, func(_ string, _ []byte) error {
+		count++
+		return nil
+	})
+	return count, err
+}
+
 func (s *FlowStore) ListOutboxCommands(status string, limit int) ([]FlowOutboxCommandRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
@@ -403,6 +415,101 @@ func (s *FlowStore) PutAcceptedAssignment(record flow.AcceptedAssignment) (flow.
 		return flow.AcceptedAssignment{}, err
 	}
 	return record, nil
+}
+
+func (s *FlowStore) ApplyTargetAssignmentCommand(command flow.AssignmentCommand, targetSwarmID string, now time.Time) (flow.AssignmentAck, bool, error) {
+	if s == nil || s.store == nil {
+		return flow.AssignmentAck{}, false, errors.New("flow store is not configured")
+	}
+	command = normalizeFlowAssignmentCommand(command)
+	if err := command.ValidateIdempotencyKey(); err != nil {
+		return flow.AssignmentAck{}, false, err
+	}
+	key := command.IdempotencyKey()
+	if existing, ok, err := s.GetCommandLedger(key.FlowID, key.Revision, key.CommandID); err != nil || ok {
+		if err != nil {
+			return flow.AssignmentAck{}, false, err
+		}
+		return normalizeFlowAssignmentAck(existing.Ack), false, nil
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	targetSwarmID = strings.TrimSpace(targetSwarmID)
+	baseAck := flow.AssignmentAck{
+		CommandID:     key.CommandID,
+		FlowID:        key.FlowID,
+		TargetSwarmID: targetSwarmID,
+		TargetClock:   now,
+	}
+	current, hasCurrent, err := s.GetAcceptedAssignment(key.FlowID)
+	if err != nil {
+		return flow.AssignmentAck{}, false, err
+	}
+	maxAppliedRevision, err := s.maxAppliedTargetAssignmentRevision(key.FlowID)
+	if err != nil {
+		return flow.AssignmentAck{}, false, err
+	}
+	if hasCurrent && current.Revision > maxAppliedRevision {
+		maxAppliedRevision = current.Revision
+	}
+	reject := func(status flow.AssignmentStatus, reason string) (flow.AssignmentAck, bool, error) {
+		ack := baseAck
+		ack.Status = status
+		ack.Reason = strings.TrimSpace(reason)
+		if hasCurrent {
+			ack.AcceptedRevision = current.Revision
+		} else if maxAppliedRevision > 0 {
+			ack.AcceptedRevision = maxAppliedRevision
+		}
+		_, inserted, err := s.PutCommandLedger(FlowCommandLedgerRecord{
+			CommandID: key.CommandID,
+			FlowID:    key.FlowID,
+			Revision:  key.Revision,
+			Action:    command.Action,
+			Status:    status,
+			Ack:       ack,
+			AppliedAt: now,
+		})
+		return ack, inserted, err
+	}
+
+	switch command.Action {
+	case flow.CommandInstall, flow.CommandUpdate:
+		assignment := normalizeFlowAssignment(command.Assignment)
+		if assignment.FlowID != key.FlowID || assignment.Revision != key.Revision {
+			return reject(flow.AssignmentRejected, "assignment identity must match command flow_id and revision")
+		}
+		if maxAppliedRevision >= key.Revision {
+			return reject(flow.AssignmentOutOfOrder, fmt.Sprintf("target already applied revision %d", maxAppliedRevision))
+		}
+		if err := flow.ValidateAssignment(assignment); err != nil {
+			return reject(flow.AssignmentRejected, err.Error())
+		}
+		return s.acceptTargetAssignmentCommand(command, baseAck, assignment, now)
+	case flow.CommandDelete:
+		if hasCurrent && current.Revision > key.Revision {
+			return reject(flow.AssignmentOutOfOrder, fmt.Sprintf("target already accepted revision %d", current.Revision))
+		}
+		if !hasCurrent && maxAppliedRevision > key.Revision {
+			return reject(flow.AssignmentOutOfOrder, fmt.Sprintf("target already applied revision %d", maxAppliedRevision))
+		}
+		return s.acceptTargetDeleteCommand(command, baseAck, now)
+	case flow.CommandRunNow:
+		if !hasCurrent {
+			return reject(flow.AssignmentRejected, "accepted assignment is not installed on target")
+		}
+		if current.Revision > key.Revision {
+			return reject(flow.AssignmentOutOfOrder, fmt.Sprintf("target already accepted revision %d", current.Revision))
+		}
+		if current.Revision != key.Revision {
+			return reject(flow.AssignmentRejected, fmt.Sprintf("accepted revision %d does not match run_now revision %d", current.Revision, key.Revision))
+		}
+		return reject(flow.AssignmentRejected, "run_now requires the target execution service")
+	default:
+		return reject(flow.AssignmentRejected, fmt.Sprintf("unsupported flow command action %q", command.Action))
+	}
 }
 
 func (s *FlowStore) GetAcceptedAssignment(flowID string) (flow.AcceptedAssignment, bool, error) {
@@ -618,12 +725,28 @@ func (s *FlowStore) PutTargetRun(record FlowRunSummaryRecord) (FlowRunSummaryRec
 	if err != nil {
 		return FlowRunSummaryRecord{}, fmt.Errorf("marshal target flow run: %w", err)
 	}
+	recordKey := KeyFlowTargetRun(record.RunID)
+	var existing FlowRunSummaryRecord
+	existingOK, err := s.store.GetJSON(recordKey, &existing)
+	if err != nil {
+		return FlowRunSummaryRecord{}, err
+	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if err := batch.Set([]byte(KeyFlowTargetRun(record.RunID)), payload, nil); err != nil {
+	if existingOK {
+		existing = normalizeFlowRunSummaryRecord(existing)
+		oldIndex := KeyFlowTargetRunByFlow(existing.FlowID, existing.StartedAt.UTC().UnixMilli(), existing.RunID)
+		newIndex := KeyFlowTargetRunByFlow(record.FlowID, record.StartedAt.UTC().UnixMilli(), record.RunID)
+		if oldIndex != newIndex {
+			if err := batch.Delete([]byte(oldIndex), nil); err != nil {
+				return FlowRunSummaryRecord{}, fmt.Errorf("delete stale target flow run index: %w", err)
+			}
+		}
+	}
+	if err := batch.Set([]byte(recordKey), payload, nil); err != nil {
 		return FlowRunSummaryRecord{}, fmt.Errorf("set target flow run: %w", err)
 	}
-	if err := batch.Set([]byte(KeyFlowTargetRunByFlow(record.FlowID, record.StartedAt.UTC().UnixMilli(), record.RunID)), []byte(KeyFlowTargetRun(record.RunID)), nil); err != nil {
+	if err := batch.Set([]byte(KeyFlowTargetRunByFlow(record.FlowID, record.StartedAt.UTC().UnixMilli(), record.RunID)), []byte(recordKey), nil); err != nil {
 		return FlowRunSummaryRecord{}, fmt.Errorf("set target flow run by flow: %w", err)
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
@@ -739,10 +862,10 @@ func normalizeFlowOutboxCommandRecord(record FlowOutboxCommandRecord) FlowOutbox
 		record.Status = FlowOutboxStatusPending
 	}
 	record.LastError = strings.TrimSpace(record.LastError)
+	record.Command = normalizeFlowAssignmentCommand(record.Command)
 	record.Command.CommandID = strings.TrimSpace(firstNonEmptyString(record.Command.CommandID, record.CommandID))
 	record.Command.FlowID = strings.TrimSpace(firstNonEmptyString(record.Command.FlowID, record.FlowID))
 	record.Command.Revision = firstNonZeroInt64(record.Command.Revision, record.Revision)
-	record.Command.Assignment = normalizeFlowAssignment(record.Command.Assignment)
 	record.NextAttemptAt = record.NextAttemptAt.UTC()
 	record.LastAttemptAt = record.LastAttemptAt.UTC()
 	record.CreatedAt = record.CreatedAt.UTC()
@@ -766,6 +889,12 @@ func normalizeFlowRunSummaryRecord(record FlowRunSummaryRecord) FlowRunSummaryRe
 		record.StartedAt = record.ScheduledAt
 	}
 	record.FinishedAt = record.FinishedAt.UTC()
+	if !record.FinishedAt.IsZero() && record.DurationMS == 0 && !record.StartedAt.IsZero() {
+		durationMS := record.FinishedAt.Sub(record.StartedAt).Milliseconds()
+		if durationMS > 0 {
+			record.DurationMS = durationMS
+		}
+	}
 	return record
 }
 

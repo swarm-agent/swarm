@@ -92,6 +92,7 @@ type Server struct {
 	update                      *update.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	sessionRoutes               *pebblestore.SessionRouteStore
+	flows                       *pebblestore.FlowStore
 	mode                        string
 	dataDir                     string
 	startupConfigPath           string

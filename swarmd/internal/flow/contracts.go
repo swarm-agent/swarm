@@ -200,6 +200,7 @@ type RunRequest struct {
 	Revision    int64     `json:"revision"`
 	ScheduledAt time.Time `json:"scheduled_at"`
 	RunNow      bool      `json:"run_now,omitempty"`
+	RunID       string    `json:"run_id,omitempty"`
 }
 
 type RunClaimKey struct {

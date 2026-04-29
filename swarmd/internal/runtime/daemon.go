@@ -331,6 +331,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err := permissionSvc.ReconcilePendingRuns("daemon restarted"); err != nil {
 		log.Printf("warning: reconcile pending permissions: %v", err)
 	}
+	flowStore := pebblestore.NewFlowStore(store)
+	if err := reconcileFlowRunsFromLifecycles(flowStore, sessionSvc); err != nil {
+		log.Printf("warning: reconcile flow runs: %v", err)
+	}
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 
@@ -345,6 +349,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetUISettingsService(uiSettingsSvc)
 	apiServer.SetSwarmDesktopTargetSelectionStore(swarmDesktopTargetSelectionStore)
 	apiServer.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
+	apiServer.SetFlowStore(flowStore)
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetSwarmService(swarmSvc)
 	apiServer.SetContainerProfileService(containerProfileSvc)
@@ -634,6 +639,10 @@ func (d *Daemon) Run() error {
 				d.requestStop("peer-transport-serve-error")
 			}
 		}()
+	}
+	if d.apiServer != nil {
+		go d.apiServer.StartFlowScheduler(d.bgCtx)
+		go d.apiServer.StartFlowOutboxDeliveryLoop(d.bgCtx)
 	}
 	if d.deployContainers != nil {
 		go func() {
