@@ -216,8 +216,8 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 	}
 
 	runs := []FlowRunSummaryRecord{
-		{RunID: "run-old", FlowID: "flow-1", Revision: 7, ScheduledAt: due1.DueAt, StartedAt: time.Date(2025, 1, 2, 10, 1, 0, 0, time.UTC), Status: FlowRunStatusSuccess},
-		{RunID: "run-new", FlowID: "flow-1", Revision: 7, ScheduledAt: due3.DueAt, StartedAt: time.Date(2025, 1, 3, 9, 1, 0, 0, time.UTC), Status: FlowRunStatusFailed},
+		{RunID: "run-old", FlowID: "flow-1", Revision: 7, ScheduledAt: due1.DueAt, StartedAt: time.Date(2025, 1, 2, 10, 1, 0, 0, time.UTC), FinishedAt: time.Date(2025, 1, 2, 10, 2, 0, 0, time.UTC), Status: FlowRunStatusSuccess},
+		{RunID: "run-new", FlowID: "flow-1", Revision: 7, ScheduledAt: due3.DueAt, StartedAt: time.Date(2025, 1, 3, 9, 1, 0, 0, time.UTC), FinishedAt: time.Date(2025, 1, 3, 9, 2, 0, 0, time.UTC), Status: FlowRunStatusFailed},
 	}
 	for _, run := range runs {
 		if _, err := flows.PutTargetRun(run); err != nil {
@@ -230,6 +230,24 @@ func TestFlowStoreTargetIdempotencyDueClaimsAndRunHistory(t *testing.T) {
 	}
 	if len(history) != 2 || history[0].RunID != "run-new" || history[1].RunID != "run-old" {
 		t.Fatalf("history order = %+v", history)
+	}
+	pendingReports, err := flows.ListPendingTargetRunReports(time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC), 10)
+	if err != nil {
+		t.Fatalf("list pending target run reports: %v", err)
+	}
+	if len(pendingReports) != 2 || pendingReports[0].RunID != "run-new" || pendingReports[1].RunID != "run-old" {
+		t.Fatalf("pending reports = %+v", pendingReports)
+	}
+	pendingReports[0].ReportedAt = time.Date(2025, 1, 4, 1, 0, 0, 0, time.UTC)
+	if _, err := flows.PutTargetRun(pendingReports[0]); err != nil {
+		t.Fatalf("mark reported: %v", err)
+	}
+	pendingReports, err = flows.ListPendingTargetRunReports(time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC), 10)
+	if err != nil {
+		t.Fatalf("list pending target run reports after reported: %v", err)
+	}
+	if len(pendingReports) != 1 || pendingReports[0].RunID != "run-old" {
+		t.Fatalf("pending reports after reported = %+v", pendingReports)
 	}
 }
 

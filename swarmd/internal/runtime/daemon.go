@@ -643,6 +643,7 @@ func (d *Daemon) Run() error {
 	if d.apiServer != nil {
 		go d.apiServer.StartFlowScheduler(d.bgCtx)
 		go d.apiServer.StartFlowOutboxDeliveryLoop(d.bgCtx)
+		go d.apiServer.StartFlowReportDeliveryLoop(d.bgCtx)
 	}
 	if d.deployContainers != nil {
 		go func() {

@@ -68,17 +68,21 @@ type FlowOutboxCommandRecord struct {
 }
 
 type FlowRunSummaryRecord struct {
-	RunID         string    `json:"run_id"`
-	FlowID        string    `json:"flow_id"`
-	Revision      int64     `json:"revision"`
-	ScheduledAt   time.Time `json:"scheduled_at"`
-	StartedAt     time.Time `json:"started_at"`
-	FinishedAt    time.Time `json:"finished_at,omitempty"`
-	DurationMS    int64     `json:"duration_ms,omitempty"`
-	Status        string    `json:"status"`
-	Summary       string    `json:"summary,omitempty"`
-	SessionID     string    `json:"session_id,omitempty"`
-	TargetSwarmID string    `json:"target_swarm_id,omitempty"`
+	RunID              string    `json:"run_id"`
+	FlowID             string    `json:"flow_id"`
+	Revision           int64     `json:"revision"`
+	ScheduledAt        time.Time `json:"scheduled_at"`
+	StartedAt          time.Time `json:"started_at"`
+	FinishedAt         time.Time `json:"finished_at,omitempty"`
+	DurationMS         int64     `json:"duration_ms,omitempty"`
+	Status             string    `json:"status"`
+	Summary            string    `json:"summary,omitempty"`
+	SessionID          string    `json:"session_id,omitempty"`
+	TargetSwarmID      string    `json:"target_swarm_id,omitempty"`
+	ReportedAt         time.Time `json:"reported_at,omitempty"`
+	ReportAttemptCount int       `json:"report_attempt_count,omitempty"`
+	NextReportAt       time.Time `json:"next_report_at,omitempty"`
+	ReportError        string    `json:"report_error,omitempty"`
 }
 
 type FlowCommandLedgerRecord struct {
@@ -768,6 +772,23 @@ func (s *FlowStore) GetTargetRun(runID string) (FlowRunSummaryRecord, bool, erro
 }
 
 func (s *FlowStore) ListTargetRuns(flowID string, limit int) ([]FlowRunSummaryRecord, error) {
+	return s.listTargetRuns(flowID, limit, false, func(FlowRunSummaryRecord) bool { return true })
+}
+
+func (s *FlowStore) ListPendingTargetRunReports(now time.Time, limit int) ([]FlowRunSummaryRecord, error) {
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return s.listTargetRuns("", limit, true, func(record FlowRunSummaryRecord) bool {
+		if record.FinishedAt.IsZero() || !record.ReportedAt.IsZero() {
+			return false
+		}
+		return record.NextReportAt.IsZero() || !record.NextReportAt.After(now)
+	})
+}
+
+func (s *FlowStore) listTargetRuns(flowID string, limit int, scanAll bool, include func(FlowRunSummaryRecord) bool) ([]FlowRunSummaryRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("flow store is not configured")
 	}
@@ -775,7 +796,11 @@ func (s *FlowStore) ListTargetRuns(flowID string, limit int) ([]FlowRunSummaryRe
 		limit = 200
 	}
 	out := make([]FlowRunSummaryRecord, 0, min(limit, 16))
-	err := s.store.IteratePrefix(FlowTargetRunByFlowPrefix(flowID), 100000, func(_ string, value []byte) error {
+	prefix := FlowTargetRunByFlowPrefix(flowID)
+	if scanAll {
+		prefix = KeyFlowTargetRunByFlowPrefix
+	}
+	err := s.store.IteratePrefix(prefix, 100000, func(_ string, value []byte) error {
 		if len(out) >= limit {
 			return nil
 		}
@@ -788,7 +813,10 @@ func (s *FlowStore) ListTargetRuns(flowID string, limit int) ([]FlowRunSummaryRe
 		if err != nil || !ok {
 			return err
 		}
-		out = append(out, normalizeFlowRunSummaryRecord(record))
+		record = normalizeFlowRunSummaryRecord(record)
+		if include == nil || include(record) {
+			out = append(out, record)
+		}
 		return nil
 	})
 	return out, err
@@ -883,12 +911,15 @@ func normalizeFlowRunSummaryRecord(record FlowRunSummaryRecord) FlowRunSummaryRe
 	record.Summary = strings.TrimSpace(record.Summary)
 	record.SessionID = strings.TrimSpace(record.SessionID)
 	record.TargetSwarmID = strings.TrimSpace(record.TargetSwarmID)
+	record.ReportError = strings.TrimSpace(record.ReportError)
 	record.ScheduledAt = record.ScheduledAt.UTC()
 	record.StartedAt = record.StartedAt.UTC()
 	if record.StartedAt.IsZero() {
 		record.StartedAt = record.ScheduledAt
 	}
 	record.FinishedAt = record.FinishedAt.UTC()
+	record.ReportedAt = record.ReportedAt.UTC()
+	record.NextReportAt = record.NextReportAt.UTC()
 	if !record.FinishedAt.IsZero() && record.DurationMS == 0 && !record.StartedAt.IsZero() {
 		durationMS := record.FinishedAt.Sub(record.StartedAt).Milliseconds()
 		if durationMS > 0 {

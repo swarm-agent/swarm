@@ -250,7 +250,7 @@ func (s *Server) putFlowRunSummary(start flow.RunStart, startedAt, finishedAt ti
 	if errText != "" {
 		summary = strings.TrimSpace(errText)
 	}
-	_, err := s.flows.PutTargetRun(pebblestore.FlowRunSummaryRecord{
+	record, err := s.flows.PutTargetRun(pebblestore.FlowRunSummaryRecord{
 		RunID:         strings.TrimSpace(start.RunID),
 		FlowID:        strings.TrimSpace(start.FlowID),
 		Revision:      start.Revision,
@@ -263,7 +263,13 @@ func (s *Server) putFlowRunSummary(start flow.RunStart, startedAt, finishedAt ti
 		SessionID:     strings.TrimSpace(start.SessionID),
 		TargetSwarmID: s.flowLocalSwarmID(),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if !record.FinishedAt.IsZero() {
+		s.reportFlowRunSummaryNonFatal(context.Background(), record)
+	}
+	return nil
 }
 
 func (s *Server) flowLocalSwarmID() string {
