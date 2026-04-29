@@ -11,6 +11,10 @@ type MarkdownCopySegment =
   | { type: 'markdown'; source: string }
   | { type: 'copy'; label: string; content: string }
 
+type MarkdownRenderEntry =
+  | { segment: Extract<MarkdownCopySegment, { type: 'markdown' }>; source: string; block: MarkdownBlock }
+  | { segment: Extract<MarkdownCopySegment, { type: 'copy' }>; source: ''; block: null }
+
 const copyOpenTagPattern = /<copy(?:\s+[^>]*)?>/gi
 const copyLabelPattern = /\b(?:label|title|name)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i
 
@@ -229,15 +233,17 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
   const entries = useMemo(() => {
     const segments = splitMarkdownCopySegments(content)
     const nextCache = new Map<string, MarkdownBlock>()
-    const resolved = segments.flatMap((segment) => {
+    const resolved: MarkdownRenderEntry[] = []
+    segments.forEach((segment) => {
       if (segment.type === 'copy') {
-        return [{ segment, source: '', block: null as MarkdownBlock | null }]
+        resolved.push({ segment, source: '', block: null })
+        return
       }
-      return splitMarkdownBlocks(segment.source).map((source) => {
+      splitMarkdownBlocks(segment.source).forEach((source) => {
         const cached = cacheRef.current.get(source)
         const block = cached ?? parseMarkdownBlock(source)
         nextCache.set(source, block)
-        return { segment, source, block }
+        resolved.push({ segment, source, block })
       })
     })
     cacheRef.current = nextCache
