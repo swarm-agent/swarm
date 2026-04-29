@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ListChecks, LoaderCircle, Menu, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
@@ -261,7 +261,9 @@ function renderItemKey(item: RenderItem | undefined, index: number): string {
   }
   switch (item.type) {
     case 'message':
-      return item.message.id
+      return item.message.globalSeq > 0
+        ? `message:${item.message.sessionId}:${item.message.globalSeq}`
+        : item.message.id
     case 'live-tool':
       return `live-tool:${item.toolMessage.callId || item.toolMessage.tool || 'active'}`
     case 'live-assistant':
@@ -850,10 +852,10 @@ export function DesktopChatPanel({
     return items
   }, [displayedMessages, liveAssistantDraft, liveToolMessage, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
   const renderMeasurementKey = useMemo(
-    () => renderItems.map((item) => {
+    () => renderItems.map((item, index) => {
       switch (item.type) {
         case 'message':
-          return `m:${item.message.id}:${item.message.content.length}`
+          return `m:${renderItemKey(item, index)}:${item.message.content.length}`
         case 'live-tool':
           return `lt:${item.toolMessage.callId || item.toolMessage.tool}:${item.toolMessage.output.length}:${item.toolMessage.completedOutput.length}:${item.toolMessage.taskRows.length}`
         case 'live-assistant':
@@ -982,29 +984,17 @@ export function DesktopChatPanel({
     shouldStickToBottomRef.current = nearBottom(scroller)
   }, [])
 
-  const scrollToLatest = useCallback((attempts = 3) => {
+  const scrollToLatest = useCallback(() => {
     if (scrollToLatestFrameRef.current !== null) {
       window.cancelAnimationFrame(scrollToLatestFrameRef.current)
       scrollToLatestFrameRef.current = null
     }
-    if (renderItems.length === 0) {
+    const scroller = scrollerRef.current
+    if (!scroller) {
       return
     }
-    const targetIndex = renderItems.length - 1
-    const run = (remainingAttempts: number) => {
-      rowVirtualizer.scrollToIndex(targetIndex, { align: 'end' })
-      if (remainingAttempts <= 1) {
-        scrollToLatestFrameRef.current = null
-        return
-      }
-      scrollToLatestFrameRef.current = window.requestAnimationFrame(() => {
-        run(remainingAttempts - 1)
-      })
-    }
-    scrollToLatestFrameRef.current = window.requestAnimationFrame(() => {
-      run(Math.max(1, attempts))
-    })
-  }, [renderItems.length, rowVirtualizer])
+    scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+  }, [])
 
   const pinToLatest = useCallback(() => {
     shouldStickToBottomRef.current = true
@@ -1257,11 +1247,13 @@ export function DesktopChatPanel({
     })
   }, [commitModal.status, commitModal.targetSessionId, trackedCommitSession])
 
-  useEffect(() => {
-    if (shouldStickToBottomRef.current) {
-      scrollToLatest()
+  useLayoutEffect(() => {
+    if (!shouldStickToBottomRef.current) {
+      return
     }
-  }, [messages, renderMeasurementKey, scrollToLatest, sessionId])
+    rowVirtualizer.measure()
+    scrollToLatest()
+  }, [renderMeasurementKey, rowVirtualizer, scrollToLatest, sessionId])
 
   useEffect(() => {
     return () => {
