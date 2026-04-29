@@ -547,21 +547,21 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	if s.agents == nil {
 		return pebblestore.SessionSnapshot{}, nil, "", "", errors.New("agent service not configured")
 	}
-	profile, profileErr := s.agents.ResolvePrimary(strings.TrimSpace(req.AgentName))
+	profile, profileErr := s.agents.ResolveAgent(strings.TrimSpace(req.AgentName))
 	if profileErr != nil {
 		return pebblestore.SessionSnapshot{}, nil, "", "", profileErr
+	}
+	agentName := strings.TrimSpace(profile.Name)
+	if agentName == "" {
+		agentName = "swarm"
 	}
 	if !pebblestore.AgentExitPlanModeEnabled(profile) {
 		setting, ok := pebblestore.AgentExecutionSetting(profile)
 		if !ok {
-			agentName := strings.TrimSpace(profile.Name)
-			if agentName == "" {
-				agentName = "selected primary agent"
-			}
 			return pebblestore.SessionSnapshot{}, nil, "", "", errors.New(agentName + " has plan mode disabled but no execution_setting is configured")
 		}
 		if sessionruntime.NormalizeMode(req.Mode) != setting {
-			modeWarning = "selected primary agent " + strconv.Quote(strings.TrimSpace(profile.Name)) + " has plan mode disabled; ignoring requested session mode " + strconv.Quote(sessionruntime.NormalizeMode(req.Mode)) + " and using execution setting " + strconv.Quote(setting)
+			modeWarning = "agent " + strconv.Quote(agentName) + " has plan mode disabled; ignoring requested session mode " + strconv.Quote(sessionruntime.NormalizeMode(req.Mode)) + " and using execution setting " + strconv.Quote(setting)
 		}
 		createOptions.Mode = setting
 	}
@@ -574,6 +574,8 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		"workspace_id":  worktreeruntime.WorkspaceIdentityForSession(sessionID),
 		"runtime_state": "standby",
 		"title_pending": true,
+		"agent_name":    agentName,
+		"agent_mode":    strings.TrimSpace(profile.Mode),
 	}, mergeSessionCreateMetadata(req.Metadata, overrideMetadata))
 	warning := ""
 	if allowWorktree {

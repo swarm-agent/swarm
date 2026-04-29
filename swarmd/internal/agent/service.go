@@ -1078,6 +1078,21 @@ func (s *Service) DeleteActiveSubagent(purpose string) (map[string]string, int64
 }
 
 func (s *Service) ResolvePrimary(name string) (pebblestore.AgentProfile, error) {
+	profile, err := s.resolveProfile(name)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	if profile.Mode != ModePrimary {
+		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is not primary", strings.TrimSpace(profile.Name))
+	}
+	return profile, nil
+}
+
+func (s *Service) ResolveAgent(name string) (pebblestore.AgentProfile, error) {
+	return s.resolveProfile(name)
+}
+
+func (s *Service) resolveProfile(name string) (pebblestore.AgentProfile, error) {
 	name = normalizeName(name)
 	if name == "" {
 		active, ok, err := s.store.GetActivePrimary()
@@ -1100,9 +1115,6 @@ func (s *Service) ResolvePrimary(name string) (pebblestore.AgentProfile, error) 
 	}
 	if !profile.Enabled {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is disabled", name)
-	}
-	if profile.Mode != ModePrimary {
-		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is not primary", name)
 	}
 	return profile, nil
 }

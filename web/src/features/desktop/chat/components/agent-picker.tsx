@@ -20,6 +20,18 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
   const [position, setPosition] = useState<{ top: number; right: number; minWidth: number; maxWidth: number } | null>(null)
 
   const profileLabel = (profile: AgentProfileRecord) => profile.name === 'swarm' ? 'Swarm' : profile.name
+  const profileModeLabel = (profile: AgentProfileRecord) => {
+    switch (profile.mode) {
+      case 'primary':
+        return 'Primary'
+      case 'subagent':
+        return 'Subagent'
+      case 'background':
+        return 'Background'
+      default:
+        return profile.mode || 'Agent'
+    }
+  }
   const selectedProfile = agents.find((agent) => agent.name === selectedPrimaryAgent)
   const currentProfile = agents.find((agent) => agent.name === currentAgent)
   const displayLabel = currentAgent || selectedProfile?.name || selectedPrimaryAgent
@@ -132,7 +144,10 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
                     <span className="w-[14px] shrink-0" />
                   )}
                   <User size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
-                  <span className="truncate">{profileLabel(profile)}</span>
+                  <span className="min-w-0 flex-1 truncate">{profileLabel(profile)}</span>
+                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">
+                    {profileModeLabel(profile)}
+                  </span>
                 </button>
               )
             })}

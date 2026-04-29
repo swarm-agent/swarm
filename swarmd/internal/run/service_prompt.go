@@ -196,7 +196,7 @@ func (s *Service) resolveAgentProfile(name, targetKind string) (pebblestore.Agen
 	targetKind = normalizeRunTargetKind(targetKind)
 	switch targetKind {
 	case "", RunTargetKindAgent:
-		return s.resolvePrimaryAgent(name)
+		return s.resolveAgent(name)
 	case RunTargetKindSubagent:
 		if s.agents == nil {
 			return pebblestore.AgentProfile{}, fmt.Errorf("subagent %q cannot resolve without agent service", strings.TrimSpace(name))
@@ -215,9 +215,9 @@ func (s *Service) resolveAgentProfile(name, targetKind string) (pebblestore.Agen
 	}
 }
 
-func (s *Service) resolvePrimaryAgent(name string) (pebblestore.AgentProfile, error) {
+func (s *Service) resolveAgent(name string) (pebblestore.AgentProfile, error) {
 	if s.agents != nil {
-		return s.agents.ResolvePrimary(name)
+		return s.agents.ResolveAgent(name)
 	}
 	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name:                "swarm",

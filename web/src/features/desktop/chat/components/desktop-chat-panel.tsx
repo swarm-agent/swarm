@@ -470,25 +470,15 @@ function buildFastPreference(
   }
 }
 
-type SessionMode = 'plan' | 'auto' | 'read' | 'readwrite'
+type SessionMode = 'plan' | 'auto'
 
 function normalizeSessionMode(mode: string): SessionMode {
-  switch (mode.trim().toLowerCase()) {
-    case 'auto':
-    case 'read':
-    case 'readwrite':
-      return mode.trim().toLowerCase() as Exclude<SessionMode, 'plan'>
-    default:
-      return 'plan'
-  }
+  return mode.trim().toLowerCase() === 'auto' ? 'auto' : 'plan'
 }
 
-function sessionModeFromAgent(profile: AgentStateRecord['profiles'][number] | null): SessionMode {
-  if (!profile) {
-    return 'plan'
-  }
-  if (profile.exitPlanModeEnabled) {
-    return 'plan'
+function executionSettingLabel(profile: AgentStateRecord['profiles'][number] | null): string {
+  if (!profile || profile.exitPlanModeEnabled) {
+    return ''
   }
   return profile.executionSetting === 'readwrite' ? 'readwrite' : 'read'
 }
@@ -501,7 +491,7 @@ function desiredSessionModeForAgent(
     return normalizeSessionMode(currentMode)
   }
   if (!profile.exitPlanModeEnabled) {
-    return sessionModeFromAgent(profile)
+    return 'auto'
   }
   return normalizeSessionMode(currentMode) === 'auto' ? 'auto' : 'plan'
 }
@@ -849,8 +839,8 @@ export function DesktopChatPanel({
   })
   const virtualItems = rowVirtualizer.getVirtualItems()
 
-  const primaryAgents = useMemo(
-    () => agentState.profiles.filter((profile) => profile.enabled && profile.mode === 'primary'),
+  const selectableAgents = useMemo(
+    () => agentState.profiles.filter((profile) => profile.enabled),
     [agentState.profiles],
   )
   const mentionSubagents = useMemo(
@@ -883,12 +873,12 @@ export function DesktopChatPanel({
     [agentState.activePrimary, liveSession, session],
   )
   const selectedPrimaryAgentProfile = useMemo(
-    () => primaryAgents.find((profile) => profile.name === selectedPrimaryAgent) ?? null,
-    [primaryAgents, selectedPrimaryAgent],
+    () => selectableAgents.find((profile) => profile.name === selectedPrimaryAgent) ?? null,
+    [selectableAgents, selectedPrimaryAgent],
   )
   const currentPrimaryAgentProfile = useMemo(
-    () => primaryAgents.find((profile) => profile.name === agentState.activePrimary.trim()) ?? null,
-    [agentState.activePrimary, primaryAgents],
+    () => selectableAgents.find((profile) => profile.name === agentState.activePrimary.trim()) ?? null,
+    [agentState.activePrimary, selectableAgents],
   )
   const activeModeSourceProfile = selectedPrimaryAgentProfile ?? currentPrimaryAgentProfile
   const agentDerivedMode = useMemo(
@@ -901,6 +891,7 @@ export function DesktopChatPanel({
   const effectiveSessionMode = selectedPrimaryAgentProfile?.exitPlanModeEnabled
     ? sessionMode
     : agentDerivedMode
+  const selectedExecutionSettingLabel = executionSettingLabel(selectedPrimaryAgentProfile)
 
   const resolvedModelOptions = useMemo(() => modelOptions, [modelOptions])
 
@@ -988,37 +979,37 @@ export function DesktopChatPanel({
   }, [scrollToLatest])
 
   useEffect(() => {
-    if (primaryAgents.length === 0) {
+    if (selectableAgents.length === 0) {
       if (selectedPrimaryAgent !== 'swarm') {
         setSelectedPrimaryAgent('swarm')
       }
       return
     }
     const effectiveAgent = resolveSessionEffectiveAgentName(liveSession ?? session, agentState.activePrimary)
-    if (primaryAgents.some((profile) => profile.name === effectiveAgent)) {
+    if (selectableAgents.some((profile) => profile.name === effectiveAgent)) {
       if (effectiveAgent !== selectedPrimaryAgent) {
         setSelectedPrimaryAgent(effectiveAgent)
       }
       return
     }
-    if (primaryAgents.some((profile) => profile.name === selectedPrimaryAgent)) {
+    if (selectableAgents.some((profile) => profile.name === selectedPrimaryAgent)) {
       return
     }
-    const nextSelectedAgent = agentState.activePrimary || primaryAgents[0].name || 'swarm'
+    const nextSelectedAgent = agentState.activePrimary || selectableAgents[0].name || 'swarm'
     if (nextSelectedAgent !== selectedPrimaryAgent) {
       setSelectedPrimaryAgent(nextSelectedAgent)
     }
-  }, [agentState.activePrimary, liveSession, primaryAgents, selectedPrimaryAgent, session])
+  }, [agentState.activePrimary, liveSession, selectableAgents, selectedPrimaryAgent, session])
 
   useEffect(() => {
     if (!sessionId) {
       return
     }
-    const nextAgent = primaryAgents.some((profile) => profile.name === resolvedSessionAgent)
+    const nextAgent = selectableAgents.some((profile) => profile.name === resolvedSessionAgent)
       ? resolvedSessionAgent
-      : agentState.activePrimary.trim() || primaryAgents[0]?.name || 'swarm'
+      : agentState.activePrimary.trim() || selectableAgents[0]?.name || 'swarm'
     setCurrentSessionAgent(nextAgent)
-  }, [agentState.activePrimary, primaryAgents, resolvedSessionAgent, sessionId])
+  }, [agentState.activePrimary, selectableAgents, resolvedSessionAgent, sessionId])
 
   useEffect(() => {
     if (sessionId) {
@@ -1117,6 +1108,10 @@ export function DesktopChatPanel({
     }
     const effectiveAgent = resolveSessionEffectiveAgentName(liveSession ?? session, agentState.activePrimary).trim()
     if (effectiveAgent && effectiveAgent === selectedPrimaryAgentProfile.name.trim()) {
+      lastActivatedAgentRef.current = ''
+      return
+    }
+    if (selectedPrimaryAgentProfile.mode !== 'primary') {
       lastActivatedAgentRef.current = ''
       return
     }
@@ -2274,15 +2269,15 @@ export function DesktopChatPanel({
                     />
                   ) : selectedPrimaryAgentProfile ? (
                     <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
-                      <span className="text-[var(--app-text-subtle)]">Mode:</span>
-                      <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{effectiveSessionMode}</span>
+                      <span className="text-[var(--app-text-subtle)]">Execution:</span>
+                      <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{selectedExecutionSettingLabel}</span>
                     </span>
                   ) : null}
 
                   <AgentPicker
                     currentAgent={currentSessionAgent}
                     selectedPrimaryAgent={selectedPrimaryAgent}
-                    agents={primaryAgents}
+                    agents={selectableAgents}
                     onSelect={(value) => {
                       void handleAgentSelect(value)
                     }}
