@@ -51,14 +51,14 @@ func (p *ChatPage) renderAssistantMarkdownMessageLines(firstPrefix, continuation
 	return out
 }
 
-func (p *ChatPage) renderAssistantMarkdownBubble(body string, width int, style tcell.Style, title string) []chatRenderLine {
+func (p *ChatPage) renderAssistantMarkdownBubble(message chatMessageItem, body string, width int, style tcell.Style, title string) []chatRenderLine {
 	if width <= 0 {
 		return nil
 	}
 	lines := []chatRenderLine{
 		{Text: clampEllipsis(title, width), Style: style},
 	}
-	content := p.renderAssistantMarkdownMessageLines("│ ", "│ ", body, width, style)
+	content := p.renderAssistantCopyAwareMessageLines("│ ", "│ ", body, width, style, message)
 	lines = append(lines, content...)
 	lines = append(lines, chatRenderLine{Text: clampEllipsis("╰", width), Style: style})
 	return lines

@@ -105,7 +105,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/codex", Hint: "Show Codex gpt-5.4/gpt-5.5 runtime settings (Fast on/off)", QuickTips: []string{"/codex status", "/codex fast", "/fast"}},
 		{Command: "/commit", Hint: "Launch the memory agent in background to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
 		{Command: "/compact", Hint: "Compact current chat context via memory agent", QuickTips: []string{"/compact [threshold%] [notes]"}},
-		{Command: "/copy", Hint: "Copy chat snapshot to clipboard"},
+		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
 		{Command: "/fast", Hint: "Toggle Codex Fast for the current chat or home draft (gpt-5.4/gpt-5.5)", QuickTips: []string{"alias tip: /codex fast"}},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
 		{Command: "/help", Hint: "Show command help"},
@@ -2068,7 +2068,7 @@ func (a *App) showHelp() {
 		"/keybinds   (open keybind manager modal)",
 		"/keybinds list",
 		"/keybinds reset [all]",
-		"/copy   (copy chat snapshot to clipboard)",
+		"/copy [n]   (copy chat snapshot or assistant tagged copy block)",
 		"/auth   (open auth manager modal)",
 		"/vault   (status, unlock, export, or import the local vault credentials)",
 		"/auth status",
@@ -2087,13 +2087,25 @@ func (a *App) handleCopyCommand(args []string) {
 		a.home.SetStatus("/copy is available in chat sessions only")
 		return
 	}
+	payload := ""
+	successStatus := "copied chat snapshot to clipboard"
 	if len(args) > 0 {
-		a.home.SetStatus("usage: /copy")
-		return
+		index, ok := ui.ParseCopyBlockIndexArg(args)
+		if !ok {
+			a.home.SetStatus("usage: /copy [number]")
+			return
+		}
+		copyText, ok := a.chat.CopyBlockText(index)
+		if !ok {
+			a.home.SetStatus(fmt.Sprintf("/copy %d not found", index))
+			return
+		}
+		payload = copyText
+		successStatus = ui.CopyBlockPreviewStatus(index, copyText)
+	} else {
+		payload = a.chat.ClipboardText()
 	}
 
-	payload := a.chat.ClipboardText()
-	successStatus := "copied chat snapshot to clipboard"
 	if err := copyTextToClipboard(payload); err != nil {
 		a.home.SetStatus(fmt.Sprintf("copy failed: %v", err))
 		a.showToast(ui.ToastError, fmt.Sprintf("copy failed: %v", err))

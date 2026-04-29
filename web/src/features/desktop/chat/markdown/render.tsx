@@ -1,10 +1,58 @@
-import { memo, useMemo, useRef, type ReactNode } from 'react'
+import { memo, useMemo, useRef, useState, type ReactNode } from 'react'
 import { cn } from '../../../../lib/cn'
 import { parseMarkdownBlock, splitMarkdownBlocks } from './parser'
 import type { MarkdownBlock, MarkdownInlineNode, MarkdownInlineSegments, MarkdownListItem } from './types'
 
 interface MarkdownRendererProps {
   content: string
+}
+
+type MarkdownCopySegment =
+  | { type: 'markdown'; source: string }
+  | { type: 'copy'; label: string; content: string }
+
+const copyOpenTagPattern = /<copy(?:\s+[^>]*)?>/gi
+const copyLabelPattern = /\b(?:label|title|name)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i
+
+function normalizeCopyContent(content: string): string {
+  return content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/^\n+|\n+$/g, '')
+}
+
+function copyTagLabel(openTag: string): string {
+  const match = openTag.match(copyLabelPattern)
+  if (!match) return ''
+  return (match[2] ?? match[3] ?? match[4] ?? '').trim()
+}
+
+function splitMarkdownCopySegments(content: string): MarkdownCopySegment[] {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const segments: MarkdownCopySegment[] = []
+  let cursor = 0
+  copyOpenTagPattern.lastIndex = 0
+
+  while (true) {
+    const match = copyOpenTagPattern.exec(normalized)
+    if (!match) break
+    if (match.index > cursor) {
+      segments.push({ type: 'markdown', source: normalized.slice(cursor, match.index) })
+    }
+
+    const contentStart = match.index + match[0].length
+    const closeIndex = normalized.toLowerCase().indexOf('</copy>', contentStart)
+    const contentEnd = closeIndex === -1 ? normalized.length : closeIndex
+    segments.push({
+      type: 'copy',
+      label: copyTagLabel(match[0]),
+      content: normalizeCopyContent(normalized.slice(contentStart, contentEnd)),
+    })
+    cursor = closeIndex === -1 ? normalized.length : contentEnd + '</copy>'.length
+    copyOpenTagPattern.lastIndex = cursor
+  }
+
+  if (cursor < normalized.length) {
+    segments.push({ type: 'markdown', source: normalized.slice(cursor) })
+  }
+  return segments.filter((segment) => segment.type === 'copy' || segment.source.trim() !== '')
 }
 
 function renderInlineNode(node: MarkdownInlineNode, key: string): ReactNode {
@@ -71,6 +119,50 @@ function renderListItems(items: MarkdownListItem[], keyPrefix: string): ReactNod
   ))
 }
 
+function CopyBlock({ label, content }: { label: string; content: string }) {
+  const [copied, setCopied] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const preview = content.split('\n').slice(0, 8)
+
+  const handleCopy = async () => {
+    setFailed(false)
+    try {
+      if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+        throw new Error('Clipboard unavailable')
+      }
+      await navigator.clipboard.writeText(content)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setFailed(true)
+      window.setTimeout(() => setFailed(false), 1800)
+    }
+  }
+
+  return (
+    <div className="my-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)]">
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-3 py-2 text-xs text-[var(--app-text-muted)]">
+        <span className="min-w-0 truncate font-mono text-[var(--app-primary)]">
+          /copy{label.trim() ? ` · ${label.trim()}` : ''}
+        </span>
+        <button
+          type="button"
+          onClick={() => void handleCopy()}
+          className="shrink-0 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)] hover:bg-[var(--app-bg)]"
+        >
+          {copied ? 'Copied' : failed ? 'Copy failed' : 'Copy'}
+        </button>
+      </div>
+      <pre className="my-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] px-4 py-3">
+        <code className="block min-w-0 font-mono text-[13px] leading-6 text-[var(--app-text)]">
+          {preview.join('\n') || '(empty copy block)'}
+          {content.split('\n').length > preview.length ? `\n… ${content.split('\n').length - preview.length} more lines` : ''}
+        </code>
+      </pre>
+    </div>
+  )
+}
+
 function renderBlock(block: MarkdownBlock, key: string | number): ReactNode {
   switch (block.type) {
     case 'paragraph':
@@ -135,13 +227,18 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
   const cacheRef = useRef(new Map<string, MarkdownBlock>())
 
   const entries = useMemo(() => {
-    const sources = splitMarkdownBlocks(content)
+    const segments = splitMarkdownCopySegments(content)
     const nextCache = new Map<string, MarkdownBlock>()
-    const resolved = sources.map((source) => {
-      const cached = cacheRef.current.get(source)
-      const block = cached ?? parseMarkdownBlock(source)
-      nextCache.set(source, block)
-      return { source, block }
+    const resolved = segments.flatMap((segment) => {
+      if (segment.type === 'copy') {
+        return [{ segment, source: '', block: null as MarkdownBlock | null }]
+      }
+      return splitMarkdownBlocks(segment.source).map((source) => {
+        const cached = cacheRef.current.get(source)
+        const block = cached ?? parseMarkdownBlock(source)
+        nextCache.set(source, block)
+        return { segment, source, block }
+      })
     })
     cacheRef.current = nextCache
     return resolved
@@ -151,7 +248,17 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
     return null
   }
 
-  return <div className="grid min-w-0 gap-3">{entries.map((entry, index) => renderBlock(entry.block, index))}</div>
+  return (
+    <div className="grid min-w-0 gap-3">
+      {entries.map((entry, index) =>
+        entry.segment.type === 'copy' ? (
+          <CopyBlock key={index} label={entry.segment.label} content={entry.segment.content} />
+        ) : entry.block ? (
+          renderBlock(entry.block, index)
+        ) : null,
+      )}
+    </div>
+  )
 }
 
 export const MarkdownRenderer = memo(MarkdownRendererInner)

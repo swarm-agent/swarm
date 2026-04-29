@@ -100,26 +100,26 @@ func (p *ChatPage) renderAssistantMessageLines(message chatMessageItem, width in
 
 	switch variant {
 	case 1:
-		return p.renderAssistantMarkdownMessageLines("□ ", "", body, width, p.theme.Accent.Bold(true))
+		return p.renderAssistantCopyAwareMessageLines("□ ", "", body, width, p.theme.Accent.Bold(true), message)
 	case 2:
-		return p.renderAssistantMarkdownMessageLines("▢ ", "", body, width, p.theme.Accent)
+		return p.renderAssistantCopyAwareMessageLines("▢ ", "", body, width, p.theme.Accent, message)
 	case 3:
-		return p.renderAssistantMarkdownMessageLines("□ ", "│ ", body, width, p.theme.Accent)
+		return p.renderAssistantCopyAwareMessageLines("□ ", "│ ", body, width, p.theme.Accent, message)
 	case 4:
 		prefix := fmt.Sprintf("□ %s ", formatMessageClock(message.CreatedAt))
-		return p.renderAssistantMarkdownMessageLines(prefix, "  ", body, width, p.theme.Accent)
+		return p.renderAssistantCopyAwareMessageLines(prefix, "  ", body, width, p.theme.Accent, message)
 	case 5:
-		return p.renderAssistantMarkdownMessageLines("[□] ", "    ", body, width, p.theme.Accent)
+		return p.renderAssistantCopyAwareMessageLines("[□] ", "    ", body, width, p.theme.Accent, message)
 	case 6:
-		return p.renderAssistantMarkdownBubble(body, width, p.theme.Accent, "╭─□ assistant")
+		return p.renderAssistantMarkdownBubble(message, body, width, p.theme.Accent, "╭─□ assistant")
 	case 7:
-		return p.renderAssistantMarkdownMessageLines("□ » ", "  » ", body, width, p.theme.Accent)
+		return p.renderAssistantCopyAwareMessageLines("□ » ", "  » ", body, width, p.theme.Accent, message)
 	case 8:
-		return p.renderAssistantMarkdownMessageLines("□· ", "   ", body, width, p.theme.Accent)
+		return p.renderAssistantCopyAwareMessageLines("□· ", "   ", body, width, p.theme.Accent, message)
 	case 9:
-		return p.renderAssistantMarkdownMessageLines("▣ assistant ", "▣ ", body, width, p.theme.Accent.Bold(true))
+		return p.renderAssistantCopyAwareMessageLines("▣ assistant ", "▣ ", body, width, p.theme.Accent.Bold(true), message)
 	default:
-		return p.renderAssistantMarkdownMessageLines("▢ ", "", body, width, p.theme.Accent)
+		return p.renderAssistantCopyAwareMessageLines("▢ ", "", body, width, p.theme.Accent, message)
 	}
 }
 
