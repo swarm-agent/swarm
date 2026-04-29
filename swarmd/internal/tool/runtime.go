@@ -34,13 +34,15 @@ import (
 )
 
 const (
-	defaultReadMaxLines                 = 2000
-	maxReadMaxLines                     = 2000
-	maxReadLineBytes                    = 1024 * 1024
-	maxReadLineChars                    = 16 * 1024
-	maxEditBytes                        = 2 * 1024 * 1024
-	maxEditPreviewRunes                 = 1200
-	maxCommandOutput                    = 32 * 1024
+	defaultReadMaxLines = 2000
+	maxReadMaxLines     = 2000
+	maxReadLineBytes    = 1024 * 1024
+	maxReadLineChars    = 16 * 1024
+	maxEditBytes        = 2 * 1024 * 1024
+	maxEditPreviewRunes = 1200
+	maxCommandOutput    = 32 * 1024
+	// Keep /output useful for real command logs while still bounding in-memory capture.
+	maxBashOutputViewerBytes            = 4 * 1024 * 1024
 	bashStreamEmitChunkBytes            = 1024
 	maxSearchCommandOut                 = 256 * 1024
 	defaultBashTimeout                  = 2 * time.Minute
@@ -1470,8 +1472,8 @@ func executeBash(parent context.Context, scope WorkspaceScope, args map[string]a
 	}
 	prepareCommandForCancellation(cmd)
 
-	capture := newCappedBuffer(maxCommandOutput)
-	streamWriter := newBashStreamWriter(capture, maxCommandOutput, onDelta)
+	capture := newCappedBuffer(maxBashOutputViewerBytes)
+	streamWriter := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
 	cmd.Stdout = streamWriter
 	cmd.Stderr = streamWriter
 

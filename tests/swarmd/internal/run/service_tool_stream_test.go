@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/model"
@@ -2079,12 +2078,11 @@ func TestRunTurnPersistsFailureMessageOnRunnerError(t *testing.T) {
 	}
 }
 
-func TestLiveStreamRawOutputTruncatesBashOnly(t *testing.T) {
-	call := tool.Call{Name: "bash"}
-	result := tool.Result{Output: strings.Repeat("x", maxBashCompletedRawOutputBytes+64)}
-	got := liveStreamRawOutput(call, result)
-	if utf8.RuneCountInString(got) > maxBashCompletedRawOutputBytes {
-		t.Fatalf("bash raw output length = %d, want <= %d", utf8.RuneCountInString(got), maxBashCompletedRawOutputBytes)
+func TestLiveStreamRawOutputPreservesBashForOutputViewer(t *testing.T) {
+	result := tool.Result{Output: strings.Repeat("x", 2048)}
+	got := liveStreamRawOutput(tool.Call{Name: "bash"}, result)
+	if got != result.Output {
+		t.Fatalf("bash raw output should remain unchanged for /output viewer, got length %d want %d", len(got), len(result.Output))
 	}
 
 	nonBash := liveStreamRawOutput(tool.Call{Name: "grep"}, result)
