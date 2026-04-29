@@ -33,6 +33,10 @@ type UpdateJobStatus struct {
 	Status          string `json:"status"`
 	Message         string `json:"message,omitempty"`
 	Error           string `json:"error,omitempty"`
+	Lane            string `json:"lane,omitempty"`
+	Command         string `json:"command,omitempty"`
+	HelperPID       int    `json:"helper_pid,omitempty"`
+	LogPath         string `json:"log_path,omitempty"`
 	StartedAtUnix   int64  `json:"started_at_unix_ms,omitempty"`
 	UpdatedAtUnix   int64  `json:"updated_at_unix_ms,omitempty"`
 	CompletedAtUnix int64  `json:"completed_at_unix_ms,omitempty"`
@@ -108,6 +112,9 @@ func WriteUpdateJobStatus(dataDir string, status UpdateJobStatus) error {
 	status.Status = strings.TrimSpace(status.Status)
 	status.Message = strings.TrimSpace(status.Message)
 	status.Error = strings.TrimSpace(status.Error)
+	status.Lane = strings.TrimSpace(status.Lane)
+	status.Command = strings.TrimSpace(status.Command)
+	status.LogPath = strings.TrimSpace(status.LogPath)
 	raw, err := json.MarshalIndent(status, "", "  ")
 	if err != nil {
 		return err
@@ -136,5 +143,8 @@ func ReadUpdateJobStatusPath(path string) (UpdateJobStatus, bool, error) {
 	status.Status = strings.TrimSpace(status.Status)
 	status.Message = strings.TrimSpace(status.Message)
 	status.Error = strings.TrimSpace(status.Error)
+	status.Lane = strings.TrimSpace(status.Lane)
+	status.Command = strings.TrimSpace(status.Command)
+	status.LogPath = strings.TrimSpace(status.LogPath)
 	return status, true, nil
 }

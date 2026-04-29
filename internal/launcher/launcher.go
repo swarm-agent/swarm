@@ -1264,46 +1264,57 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	if strings.TrimSpace(profile.Root) == "" {
 		return errors.New("update dev requires a source checkout")
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding local dev checkout.", "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Stopping Swarm backend for dev rebuild.", "")
 	fmt.Fprintln(os.Stdout, "\nRebuilding local dev checkout...")
 	fmt.Fprintln(os.Stdout, "Swarm is shut down before rebuilding and restarting.")
 	if err := StopBackend(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding swarmd binaries.", "")
 	if err := BuildSwarmdBinaries(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding launcher/tool binaries.", "")
 	if err := BuildToolBinaries(profile.Root, map[string]bool{"rebuild": true}); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding Swarm TUI.", "")
 	if err := BuildSwarmTUI(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Checking desktop web build prerequisites.", "")
 	if err := EnsureWebPrereqs(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Building desktop web assets.", "")
 	if err := BuildWebAssets(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing desktop web assets.", "")
 	if err := InstallDesktopAssets(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Staging dev container image binaries.", "")
 	if err := devmode.SyncStagedContainerBinaries(profile.Root, profile.BinDir); err != nil {
 		return fmt.Errorf("stage dev container image binaries: %w", err)
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Preparing dev container image fingerprint.", "")
 	fingerprint, err := devmode.ContainerImageFingerprint(profile.Root)
 	if err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding/syncing dev container image.", "")
 	if err := SyncDevContainerImagesWithFingerprint(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true, fingerprint); err != nil {
 		return err
 	}
 	if err := writeLocalContainerUpdateRebuildStatus(profile, "dev", "", devmode.DefaultContainerImageRef, fingerprint); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing Swarm launchers.", "")
 	if _, err := InstallLaunchers(profile.Root); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Restarting Swarm backend.", "")
 	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return err
 	}

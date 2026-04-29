@@ -198,6 +198,7 @@ func RequestReleaseUpdatePlan(ctx context.Context, profile Profile) (client.Upda
 func RunReleaseUpdate(profile Profile, relaunchArgs []string) error {
 	plan, err := RequestReleaseUpdatePlan(context.Background(), profile)
 	if err != nil {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusFailed, "", err.Error())
 		return err
 	}
 	version := strings.TrimSpace(plan.TargetVersion)
@@ -217,7 +218,7 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 			_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusFailed, "", err.Error())
 		}
 	}()
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Applying Swarm update.", "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Preparing to stop Swarm backend for release update.", "")
 	if parentPID > 0 {
 		if err := waitForPIDExit(parentPID, updateParentWaitLimit); err != nil {
 			return err
@@ -228,16 +229,22 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 		return err
 	}
 	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdActive {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, fmt.Sprintf("Stopping Swarm backend via systemd (%s).", restartPlan.systemdUnit), "")
 		if err := stopSystemdServiceForUpdate(restartPlan.systemdScope, restartPlan.systemdUnit); err != nil {
 			return err
 		}
-	} else if err := stopBackendForUpdate(profile); err != nil {
-		return err
+	} else {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Stopping Swarm backend.", "")
+		if err := stopBackendForUpdate(profile); err != nil {
+			return err
+		}
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Applying Swarm release update.", "")
 	result, err := applyReleaseUpdateForUpdate(context.Background(), profile, plan)
 	if err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Restarting Swarm backend.", "")
 	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
@@ -291,6 +298,10 @@ func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorM
 		Status:        strings.TrimSpace(status),
 		Message:       strings.TrimSpace(message),
 		Error:         strings.TrimSpace(errorMessage),
+		Lane:          firstNonEmptyString(strings.TrimSpace(existing.Lane), strings.TrimSpace(profile.Lane)),
+		Command:       strings.TrimSpace(existing.Command),
+		HelperPID:     existing.HelperPID,
+		LogPath:       strings.TrimSpace(existing.LogPath),
 		StartedAtUnix: startedAt,
 		UpdatedAtUnix: now,
 	}
@@ -307,6 +318,15 @@ func writeLocalContainerUpdateRebuildStatus(profile Profile, mode, version, imag
 		ImageRef:    imageRef,
 		Fingerprint: fingerprint,
 	})
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func responseErrorMessage(body []byte) string {

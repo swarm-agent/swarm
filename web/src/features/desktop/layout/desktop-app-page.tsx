@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, Menu, Plus, Settings, X } from 'lucide-react'
+import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, LoaderCircle, Menu, Plus, Settings, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -42,7 +42,7 @@ import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISe
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { fetchSession } from '../chat/queries/chat-queries'
-import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type LocalContainerUpdatePlan } from '../update/api'
+import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
 import {
   sessionChildDescriptor,
   sessionParentSessionID,
@@ -58,6 +58,13 @@ const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] it
 const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
 const SIDEBAR_ACTION_BOX_CLASS = 'grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center border-0 bg-transparent p-0 font-inherit'
 const SIDEBAR_ACTION_BUTTON_CLASS = `${SIDEBAR_ACTION_BOX_CLASS} text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]`
+const UPDATE_PROGRESS_STEP_TITLES = [
+  'Start update helper',
+  'Stop Swarm backend',
+  'Rebuild/apply Swarm',
+  'Restart backend',
+  'Update container images',
+] as const
 
 function SidebarActionRail({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn(SIDEBAR_ACTION_RAIL_CLASS, className)}>{children}</div>
@@ -85,6 +92,12 @@ interface SidebarResizeState {
 interface TodoModalState {
   workspacePath: string
   workspaceName: string
+}
+
+interface DesktopUpdateProgressState {
+  open: boolean
+  job: DesktopUpdateJob | null
+  startedAt: number | null
 }
 
 interface SwarmTargetMenuState {
@@ -256,6 +269,48 @@ function localContainerUpdateAffected(plan: LocalContainerUpdatePlan): boolean {
 
 function remoteDeployUpdateSessionCount(sessions: RemoteDeploySession[]): number {
   return sessions.filter((session) => session.status?.trim().toLowerCase() === 'attached' && Boolean(session.ssh_session_target?.trim())).length
+}
+
+function updateJobMessage(job: DesktopUpdateJob | null): string {
+  const message = job?.error?.trim() || job?.message?.trim()
+  if (message) {
+    return message
+  }
+  if (job?.status === 'completed') {
+    return 'Update completed. Reloading desktop…'
+  }
+  if (job?.status === 'failed') {
+    return 'Update failed.'
+  }
+  return 'Starting update helper…'
+}
+
+function updateProgressStepIndex(job: DesktopUpdateJob | null): number {
+  const status = job?.status?.trim().toLowerCase() ?? ''
+  const message = updateJobMessage(job).toLowerCase()
+  if (status === 'completed') {
+    return UPDATE_PROGRESS_STEP_TITLES.length
+  }
+  if (message.includes('container image') || message.includes('container images') || message.includes('local and remote')) {
+    return 4
+  }
+  if (message.includes('restart') || message.includes('reconnect')) {
+    return 3
+  }
+  if (message.includes('rebuild') || message.includes('build') || message.includes('applying') || message.includes('installing') || message.includes('staging') || message.includes('fingerprint') || message.includes('syncing')) {
+    return 2
+  }
+  if (message.includes('shut down') || message.includes('stop')) {
+    return 1
+  }
+  return status === 'running' ? 1 : 0
+}
+
+function formatUpdateProgressTime(value: number | undefined): string {
+  if (!value) {
+    return '—'
+  }
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 function loadSidebarWorkspaceLayout(): Record<string, SidebarWorkspaceLayout> {
@@ -1056,6 +1111,7 @@ export function DesktopAppPage() {
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [updateRunning, setUpdateRunning] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
+  const [updateProgress, setUpdateProgress] = useState<DesktopUpdateProgressState>({ open: false, job: null, startedAt: null })
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
@@ -1153,7 +1209,7 @@ export function DesktopAppPage() {
   const updateAvailable = updateStatus?.update_available === true
   const updateDevMode = updateStatus?.dev_mode === true
   const updateActionEnabled = updateAvailable || updateDevMode
-  const updateActionLabel = updateDevMode ? 'Rebuild Swarm' : 'Update Swarm'
+  const updateActionLabel = updateDevMode ? 'Update Dev' : 'Update Swarm'
   const updateLatestVersion = updateStatus?.latest_version?.trim() ?? ''
   const updateStatusError = updateStatusQuery.error instanceof Error ? updateStatusQuery.error.message : null
   const updateAttentionVisible = updateActionEnabled || updateRunning || Boolean(updateError)
@@ -1693,8 +1749,10 @@ export function DesktopAppPage() {
 
   const runDesktopUpdate = useCallback(async () => {
     setUpdateRunning(true)
+    setUpdateProgress({ open: true, job: null, startedAt: Date.now() })
     try {
-      await startDesktopUpdate()
+      const initialJob = await startDesktopUpdate()
+      setUpdateProgress((current) => ({ ...current, job: initialJob }))
       await refreshNotifications()
       const startedAt = Date.now()
       let sawBackendDrop = false
@@ -1702,8 +1760,9 @@ export function DesktopAppPage() {
         await new Promise((resolve) => window.setTimeout(resolve, sawBackendDrop ? 1500 : 800))
         try {
           const job = await fetchDesktopUpdateJob()
+          setUpdateProgress((current) => ({ ...current, job }))
           if (job.status === 'failed') {
-            throw new Error(job.error || job.message || 'Update failed')
+            throw new Error(`Update failed: ${job.error || job.message || 'unknown error'}`)
           }
           if (job.status === 'running') {
             continue
@@ -1722,11 +1781,21 @@ export function DesktopAppPage() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Update failed'
       setUpdateError(message)
+      setUpdateProgress((current) => ({
+        ...current,
+        open: true,
+        job: current.job ? { ...current.job, status: 'failed', error: message } : {
+          id: '',
+          kind: updateDevMode ? 'dev' : 'release',
+          status: 'failed',
+          error: message,
+        },
+      }))
       await refreshNotifications()
     } finally {
       setUpdateRunning(false)
     }
-  }, [refreshNotifications])
+  }, [refreshNotifications, updateDevMode])
 
   const handleDesktopUpdate = useCallback(async () => {
     if (updateRunning || localContainerUpdateConfirm) {
@@ -1813,6 +1882,13 @@ export function DesktopAppPage() {
     setLocalContainerUpdateConfirm(null)
     setUpdateError(null)
   }, [])
+
+  const handleCloseUpdateProgress = useCallback(() => {
+    if (updateRunning) {
+      return
+    }
+    setUpdateProgress((current) => ({ ...current, open: false }))
+  }, [updateRunning])
 
   const handleToggleLocalContainerUpdateDismissal = useCallback((checked: boolean) => {
     setLocalContainerUpdateConfirm((current) => current ? { ...current, pendingDismiss: checked } : current)
@@ -2182,6 +2258,11 @@ export function DesktopAppPage() {
   const localContainerConfirmPlan = localContainerUpdateConfirm?.plan ?? null
   const remoteContainerUpdateCount = localContainerUpdateConfirm ? remoteDeployUpdateSessionCount(localContainerUpdateConfirm.remoteSessions) : 0
   const localContainerConfirmSummary = localContainerConfirmPlan?.summary ?? null
+  const updateProgressJob = updateProgress.job
+  const updateProgressMessage = updateJobMessage(updateProgressJob)
+  const updateProgressStep = updateProgressStepIndex(updateProgressJob)
+  const updateProgressFailed = updateProgressJob?.status === 'failed'
+  const updateProgressCompleted = updateProgressJob?.status === 'completed'
   const localContainerAffectedCount = localContainerConfirmSummary
     ? Math.max(
       localContainerConfirmSummary.affected ?? 0,
@@ -2365,6 +2446,57 @@ export function DesktopAppPage() {
             setTodoSummaries((current) => ({ ...current, [todoModal.workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
           }}
         />
+      ) : null}
+
+      {updateProgress.open ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[var(--app-backdrop)] px-4" aria-modal="true" role="dialog" aria-label="Swarm update progress">
+          <Card className="w-full max-w-xl border-[var(--app-border-strong)] bg-[var(--app-surface)] p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-lg font-semibold">Swarm update progress</div>
+                <p className="mt-1 text-sm text-[var(--app-text-muted)]">
+                  {updateProgressJob?.kind === 'dev'
+                    ? 'Running the same dev rebuild path as /update dev.'
+                    : 'Running the release update path.'}
+                </p>
+              </div>
+              {updateProgressFailed ? <XCircle className="shrink-0 text-[var(--app-error)]" size={24} /> : updateProgressCompleted ? <CheckCircle2 className="shrink-0 text-[var(--app-success)]" size={24} /> : <LoaderCircle className="shrink-0 animate-spin text-[var(--app-primary)]" size={24} />}
+            </div>
+            <div className={cn('mt-4 rounded-xl border p-4 text-sm', updateProgressFailed ? 'border-[var(--app-error)] bg-[color-mix(in_srgb,var(--app-error)_10%,transparent)] text-[var(--app-error)]' : 'border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-text)]')}>
+              {updateProgressMessage}
+            </div>
+            <ol className="mt-4 space-y-3">
+              {UPDATE_PROGRESS_STEP_TITLES.map((title, index) => {
+                const done = updateProgressCompleted || index < updateProgressStep
+                const current = !updateProgressFailed && !updateProgressCompleted && index === Math.min(updateProgressStep, UPDATE_PROGRESS_STEP_TITLES.length - 1)
+                return (
+                  <li key={title} className="flex items-center gap-3 text-sm">
+                    <span className={cn(
+                      'grid h-6 w-6 shrink-0 place-items-center rounded-full border text-[11px]',
+                      done ? 'border-[var(--app-success)] bg-[color-mix(in_srgb,var(--app-success)_18%,transparent)] text-[var(--app-success)]' : current ? 'border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_16%,transparent)] text-[var(--app-primary)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)]',
+                    )}>
+                      {done ? <CheckCircle2 size={14} /> : current ? <LoaderCircle size={14} className="animate-spin" /> : index + 1}
+                    </span>
+                    <span className={cn(current && 'font-medium text-[var(--app-primary)]', done && 'text-[var(--app-text)]', !done && !current && 'text-[var(--app-text-muted)]')}>{title}</span>
+                  </li>
+                )
+              })}
+            </ol>
+            <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-xs text-[var(--app-text-muted)]">
+              <div>Kind: {updateProgressJob?.kind || (updateDevMode ? 'dev' : 'release')}</div>
+              <div>Status: {updateProgressJob?.status || (updateRunning ? 'starting' : 'idle')}</div>
+              <div>Lane: {updateProgressJob?.lane || (updateProgressJob?.kind === 'dev' || updateDevMode ? 'dev' : 'main')}</div>
+              <div>Helper PID: {updateProgressJob?.helper_pid || '—'}</div>
+              <div className="col-span-2 break-all">Command: {updateProgressJob?.command || 'starting…'}</div>
+              <div className="col-span-2 break-all">Log: {updateProgressJob?.log_path || 'not available yet'}</div>
+              <div>Started: {formatUpdateProgressTime(updateProgressJob?.started_at_unix_ms ?? updateProgress.startedAt ?? undefined)}</div>
+              <div>Updated: {formatUpdateProgressTime(updateProgressJob?.updated_at_unix_ms)}</div>
+            </div>
+            <div className="mt-5 flex justify-end gap-3">
+              <Button variant="ghost" onClick={handleCloseUpdateProgress} disabled={updateRunning}>Close</Button>
+            </div>
+          </Card>
+        </div>
       ) : null}
 
       {localContainerConfirmPlan ? (
