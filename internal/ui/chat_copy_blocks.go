@@ -129,8 +129,16 @@ func (p *ChatPage) copyBlockBaseIndexForMessage(message chatMessageItem) int {
 }
 
 func (p *ChatPage) CopyBlockText(index int) (string, bool) {
-	if p == nil || index <= 0 {
+	block, ok := p.copyBlockAt(index)
+	if !ok {
 		return "", false
+	}
+	return block.Content, true
+}
+
+func (p *ChatPage) copyBlockAt(index int) (chatCopyBlock, bool) {
+	if p == nil || index <= 0 {
+		return chatCopyBlock{}, false
 	}
 	current := 0
 	for _, item := range p.timeline {
@@ -143,7 +151,7 @@ func (p *ChatPage) CopyBlockText(index int) (string, bool) {
 			}
 			current++
 			if current == index {
-				return segment.Copy.Content, true
+				return *segment.Copy, true
 			}
 		}
 	}
@@ -154,11 +162,46 @@ func (p *ChatPage) CopyBlockText(index int) (string, bool) {
 			}
 			current++
 			if current == index {
-				return segment.Copy.Content, true
+				return *segment.Copy, true
 			}
 		}
 	}
-	return "", false
+	return chatCopyBlock{}, false
+}
+
+func (p *ChatPage) copyBlockCommandSuggestions() []CommandSuggestion {
+	if p == nil {
+		return nil
+	}
+	suggestions := make([]CommandSuggestion, 0, 4)
+	current := 0
+	appendBlocks := func(text string) {
+		for _, segment := range splitChatCopySegments(text) {
+			if segment.Copy == nil {
+				continue
+			}
+			current++
+			label := strings.TrimSpace(segment.Copy.Label)
+			hint := fmt.Sprintf("Copy assistant tagged copy block %d", current)
+			if label != "" {
+				hint += ": " + label
+			}
+			suggestions = append(suggestions, CommandSuggestion{
+				Command: fmt.Sprintf("/copy %d", current),
+				Hint:    hint,
+			})
+		}
+	}
+	for _, item := range p.timeline {
+		if !strings.EqualFold(strings.TrimSpace(item.Role), "assistant") {
+			continue
+		}
+		appendBlocks(item.Text)
+	}
+	if strings.TrimSpace(p.liveAssistant) != "" {
+		appendBlocks(p.liveAssistant)
+	}
+	return suggestions
 }
 
 func (p *ChatPage) renderAssistantCopyAwareMessageLines(firstPrefix, continuationPrefix, body string, width int, baseStyle tcell.Style, message chatMessageItem) []chatRenderLine {
