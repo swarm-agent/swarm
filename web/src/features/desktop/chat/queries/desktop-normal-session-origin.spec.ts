@@ -50,7 +50,7 @@ test('normal desktop session start does not send background-targeted metadata', 
   })
 })
 
-test('commit session start keeps explicit background commit lineage', async () => {
+test('commit session start targets memory as the commit-capable subagent', async () => {
   const { startSessionRun } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
@@ -59,7 +59,7 @@ test('commit session start keeps explicit background commit lineage', async () =
       prompt: 'commit',
       background: true,
       targetKind: 'background',
-      targetName: 'commit',
+      targetName: 'memory',
     })
 
     const runCall = calls.find((entry) => String(entry.input).includes('/v1/sessions/session-commit/run/stream'))
@@ -67,7 +67,7 @@ test('commit session start keeps explicit background commit lineage', async () =
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, true)
     assert.equal(body.target_kind, 'background')
-    assert.equal(body.target_name, 'commit')
+    assert.equal(body.target_name, 'memory')
   })
 })
 

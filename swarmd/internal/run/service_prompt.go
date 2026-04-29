@@ -204,6 +204,9 @@ func (s *Service) resolveAgentProfile(name, targetKind string) (pebblestore.Agen
 		if s.agents == nil {
 			return pebblestore.AgentProfile{}, fmt.Errorf("background agent %q cannot resolve without agent service", strings.TrimSpace(name))
 		}
+		if strings.EqualFold(strings.TrimSpace(name), "memory") {
+			return s.agents.ResolveSubagent(name)
+		}
 		return s.agents.ResolveBackground(name)
 	default:
 		return pebblestore.AgentProfile{}, fmt.Errorf("unsupported target_kind %q", strings.TrimSpace(targetKind))

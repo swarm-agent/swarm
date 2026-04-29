@@ -29,19 +29,21 @@ import (
 )
 
 const (
-	interruptTick           = "tick"
-	interruptChatAsync      = "chat-async"
-	interruptReloadReady    = "reload-ready"
-	interruptAuthReady      = "auth-ready"
-	interruptVoiceReady     = "voice-ready"
-	interruptStreamReady    = "stream-ready"
-	interruptGitStatusReady = "git-status-ready"
-	interruptQuit           = "quit"
-	defaultDaemonURL        = "http://127.0.0.1:7781"
-	reloadInterval          = 3 * time.Second
-	streamRenderMinInterval = 66 * time.Millisecond
-	vaultExportDirName      = "Swarm"
-	vaultExportFileExt      = ".swarmvault"
+	interruptTick              = "tick"
+	interruptChatAsync         = "chat-async"
+	interruptReloadReady       = "reload-ready"
+	interruptAuthReady         = "auth-ready"
+	interruptVoiceReady        = "voice-ready"
+	interruptStreamReady       = "stream-ready"
+	interruptGitStatusReady    = "git-status-ready"
+	interruptQuit              = "quit"
+	defaultDaemonURL           = "http://127.0.0.1:7781"
+	reloadInterval             = 3 * time.Second
+	streamRenderMinInterval    = 66 * time.Millisecond
+	vaultExportDirName         = "Swarm"
+	vaultExportFileExt         = ".swarmvault"
+	commitBackgroundAgentName  = "memory"
+	commitBackgroundLineageTag = "@memory"
 )
 
 var (
@@ -101,7 +103,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/agents", Hint: "Open agents manager modal", QuickTips: []string{"/agents reset", "/agents restore", "/agents use <name>", "/agents prompt <name> <text>", "/agents delete <name>"}},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
 		{Command: "/codex", Hint: "Show Codex gpt-5.4/gpt-5.5 runtime settings (Fast on/off)", QuickTips: []string{"/codex status", "/codex fast", "/fast"}},
-		{Command: "/commit", Hint: "Launch the background commit agent to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
+		{Command: "/commit", Hint: "Launch the memory agent in background to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
 		{Command: "/compact", Hint: "Compact current chat context via memory agent", QuickTips: []string{"/compact [threshold%] [notes]"}},
 		{Command: "/copy", Hint: "Copy chat snapshot to clipboard"},
 		{Command: "/fast", Hint: "Toggle Codex Fast for the current chat or home draft (gpt-5.4/gpt-5.5)", QuickTips: []string{"alias tip: /codex fast"}},
@@ -2001,7 +2003,7 @@ func (a *App) showHelp() {
 		"/plan use <plan_id>   (set active plan)",
 		"/plan new [title]   (create and activate a new plan draft)",
 		"/compact [threshold%] [notes]   (compact now + optionally set auto-compact threshold)",
-		"/commit [instructions]   (launch background commit agent to review diffs and commit)",
+		"/commit [instructions]   (launch memory agent in background to review diffs and commit)",
 		"/fast   (toggle Codex Fast for current chat or home draft; gpt-5.4/gpt-5.5)",
 		"/codex [status|fast]   (Codex gpt-5.4/gpt-5.5 runtime settings; Fast on-off)",
 		"/workspace   (open workspace manager)",
@@ -2411,7 +2413,7 @@ func (a *App) handleCommitCommand(args []string) {
 		ParentTitle:         strings.TrimSpace(parentSummary.Title),
 		ChildTitle:          strings.TrimSpace(childSummary.Title),
 		TargetKind:          "background",
-		TargetName:          "commit",
+		TargetName:          commitBackgroundAgentName,
 		Status:              "running",
 		PendingPermissions:  0,
 		WorkspacePath:       strings.TrimSpace(execCtx.WorkspacePath),
@@ -3475,7 +3477,7 @@ func (a *App) commitSessionTitle(parentTitle, instructions string) string {
 
 func (a *App) commitRunInstructions(userInstructions string) string {
 	instructions := []string{
-		"You are the background commit agent handling /commit from the TUI.",
+		"You are the memory agent handling /commit from the TUI.",
 		"Inspect git status and diffs in the scoped current working directory before making changes.",
 		"Understand the changed work, stage the appropriate files, and create one commit with a concise, accurate message.",
 		"Use git add and git commit only when needed and only inside the granted workspace scope.",
@@ -3494,10 +3496,10 @@ func (a *App) commitLineageMetadata(parentSessionID string, parentSummary model.
 		"parent_title":               strings.TrimSpace(parentSummary.Title),
 		"commit_instructions":        strings.TrimSpace(instructions),
 		"lineage_kind":               "background_agent",
-		"lineage_label":              "@commit",
+		"lineage_label":              commitBackgroundLineageTag,
 		"launch_source":              "commit",
-		"requested_background_agent": "commit",
-		"background_agent":           "commit",
+		"requested_background_agent": commitBackgroundAgentName,
+		"background_agent":           commitBackgroundAgentName,
 	}
 	if execCtx != nil {
 		metadata["execution_context"] = map[string]any{
@@ -3719,7 +3721,7 @@ func (a *App) startBackgroundCommitRun(ctx context.Context, childSummary model.S
 		Compact:          false,
 		Background:       true,
 		TargetKind:       "background",
-		TargetName:       "commit",
+		TargetName:       commitBackgroundAgentName,
 		ExecutionContext: a.commitExecutionContext(childSummary),
 	})
 }

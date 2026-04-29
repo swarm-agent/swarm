@@ -557,7 +557,7 @@ function formatContextUsageTooltip(usage: DesktopSessionRecord['usage'] | null):
 
 function buildCommitAgentInstructions(userInstructions: string): string {
   const instructions = [
-    'You are the background commit agent handling /commit from the web desktop.',
+    'You are Memory handling /commit from the web desktop as a background durable-artifact task.',
     'Inspect git status and diffs in the scoped current working directory before making changes.',
     'Understand the changed work, stage the appropriate files, and create one commit with a concise, accurate message.',
     'Use git add and git commit only when needed and only inside the granted workspace scope.',
@@ -634,7 +634,7 @@ function commitStatusLabel(state: CommitModalState): string {
     case 'starting':
       return 'Starting save…'
     case 'running':
-      return state.mode === 'manual' ? 'Manual commit running…' : 'Commit agent running…'
+      return state.mode === 'manual' ? 'Manual commit running…' : 'Memory commit running…'
     case 'success':
       return 'Save completed. You can save again.'
     case 'error':
@@ -1755,12 +1755,12 @@ export function DesktopChatPanel({
             parent_session_id: session.id,
             parent_title: session.title,
             lineage_kind: 'background_agent',
-            lineage_label: '@commit',
+            lineage_label: '@memory',
             launch_source: 'commit',
             commit_instructions: instructions,
             execution_context: executionContext,
-            requested_background_agent: 'commit',
-            background_agent: 'commit',
+            requested_background_agent: 'memory',
+            background_agent: 'memory',
           },
           preference: activePreferenceRecord.preference,
           route: activeChatRoute,
@@ -1770,7 +1770,7 @@ export function DesktopChatPanel({
         prompt = 'Review the git diff in scope, prepare the right staged set, and create the commit now.'
         runInstructions = buildCommitAgentInstructions(instructions)
         targetKind = 'background'
-        targetName = 'commit'
+        targetName = 'memory'
       } else {
         prompt = instructions || 'Review the git diff in scope, stage the appropriate files, and create the commit now.'
         runInstructions = instructions
@@ -2455,7 +2455,7 @@ export function DesktopChatPanel({
               <div className="min-w-0 flex-1">
                 <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Save changes</h2>
                 <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                  Commit from the desktop header with either the saved commit agent or a manual git commit flow.
+                  Commit from the desktop header with Memory or a manual git commit flow.
                 </p>
               </div>
               <ModalCloseButton onClick={closeCommitModal} aria-label="Close save dialog" />
@@ -2469,8 +2469,8 @@ export function DesktopChatPanel({
                     : 'rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-left hover:border-[var(--app-border-accent)]'}
                   onClick={() => handleCommitModeChange('agent')}
                 >
-                  <div className="text-sm font-semibold text-[var(--app-text)]">Commit agent</div>
-                  <div className="mt-1 text-xs text-[var(--app-text-muted)]">Use the saved background commit agent contract.</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">Memory agent</div>
+                  <div className="mt-1 text-xs text-[var(--app-text-muted)]">Use Memory’s saved commit-capable tool contract.</div>
                 </button>
                 <button
                   type="button"

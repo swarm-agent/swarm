@@ -112,7 +112,7 @@ func TestRunTurnStreamingSessionMetadataDistinguishesForegroundAndBackgroundRuns
 		Prompt:     "commit now",
 		Background: true,
 		TargetKind: runpkg.RunTargetKindBackground,
-		TargetName: "commit",
+		TargetName: "memory",
 	}, runpkg.RunStartMeta{
 		RunID: "run-background",
 	}, nil); err != nil {
@@ -155,7 +155,7 @@ func TestRunTurnStreamingSessionMetadataDistinguishesForegroundAndBackgroundRuns
 	if got, _ := updatedBackground.Metadata["target_kind"].(string); got != "background" {
 		t.Fatalf("background session target_kind = %q, want background", got)
 	}
-	if got, _ := updatedBackground.Metadata["target_name"].(string); got != "commit" {
-		t.Fatalf("background session target_name = %q, want commit", got)
+	if got, _ := updatedBackground.Metadata["target_name"].(string); got != "memory" {
+		t.Fatalf("background session target_name = %q, want memory", got)
 	}
 }
