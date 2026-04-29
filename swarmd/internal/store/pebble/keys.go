@@ -53,6 +53,17 @@ const (
 	KeyNotificationBySwarmPrefix       = "notification_by_swarm/"
 	KeyNotificationPermissionRefPrefix = "notification_permission_ref/"
 	KeyNotificationSummaryPrefix       = "notification_summary/"
+	KeyFlowDefinitionPrefix            = "flow/definition/"
+	KeyFlowAssignmentStatusPrefix      = "flow/assignment_status/"
+	KeyFlowOutboxPrefix                = "flow/outbox/"
+	KeyFlowOutboxStatusPrefix          = "flow/outbox_status/"
+	KeyFlowMirroredRunPrefix           = "flow/mirrored_run/"
+	KeyFlowTargetAcceptedPrefix        = "flow_target/accepted/"
+	KeyFlowTargetCommandLedgerPrefix   = "flow_target/command_ledger/"
+	KeyFlowTargetDuePrefix             = "flow_target/due/"
+	KeyFlowTargetRunPrefix             = "flow_target/run/"
+	KeyFlowTargetRunByFlowPrefix       = "flow_target/run_by_flow/"
+	KeyFlowTargetRunClaimPrefix        = "flow_target/run_claim/"
 	keyGlobalSequenceCounter           = "meta/global_seq"
 )
 
@@ -368,6 +379,114 @@ func KeyNotificationSummary(swarmID string) string {
 	return KeyNotificationSummaryPrefix + keyPart(swarmID)
 }
 
+func KeyFlowDefinition(flowID string) string {
+	return KeyFlowDefinitionPrefix + keyPart(flowID)
+}
+
+func FlowDefinitionPrefix() string {
+	return KeyFlowDefinitionPrefix
+}
+
+func KeyFlowAssignmentStatus(flowID, targetSwarmID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyFlowAssignmentStatusPrefix, keyPart(flowID), keyPart(targetSwarmID))
+}
+
+func FlowAssignmentStatusPrefix(flowID string) string {
+	part := keyPart(flowID)
+	if part == "" {
+		return KeyFlowAssignmentStatusPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyFlowAssignmentStatusPrefix, part)
+}
+
+func KeyFlowOutbox(commandID string) string {
+	return KeyFlowOutboxPrefix + keyPart(commandID)
+}
+
+func FlowOutboxPrefix() string {
+	return KeyFlowOutboxPrefix
+}
+
+func KeyFlowOutboxStatus(status string, nextAttemptAt int64, commandID string) string {
+	return fmt.Sprintf("%s%s/%020d/%s", KeyFlowOutboxStatusPrefix, keyPart(status), nextAttemptAt, keyPart(commandID))
+}
+
+func FlowOutboxStatusPrefix(status string) string {
+	part := keyPart(status)
+	if part == "" {
+		return KeyFlowOutboxStatusPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyFlowOutboxStatusPrefix, part)
+}
+
+func KeyFlowMirroredRun(flowID string, startedAt int64, runID string) string {
+	return fmt.Sprintf("%s%s/%020d/%s", KeyFlowMirroredRunPrefix, keyPart(flowID), reverseMillis(startedAt), keyPart(runID))
+}
+
+func FlowMirroredRunPrefix(flowID string) string {
+	part := keyPart(flowID)
+	if part == "" {
+		return KeyFlowMirroredRunPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyFlowMirroredRunPrefix, part)
+}
+
+func KeyFlowTargetAccepted(flowID string) string {
+	return KeyFlowTargetAcceptedPrefix + keyPart(flowID)
+}
+
+func FlowTargetAcceptedPrefix() string {
+	return KeyFlowTargetAcceptedPrefix
+}
+
+func KeyFlowTargetCommandLedger(flowID string, revision int64, commandID string) string {
+	return fmt.Sprintf("%s%s/%020d/%s", KeyFlowTargetCommandLedgerPrefix, keyPart(flowID), revision, keyPart(commandID))
+}
+
+func FlowTargetCommandLedgerPrefix(flowID string) string {
+	part := keyPart(flowID)
+	if part == "" {
+		return KeyFlowTargetCommandLedgerPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyFlowTargetCommandLedgerPrefix, part)
+}
+
+func KeyFlowTargetDue(dueAt int64, flowID string, revision int64) string {
+	return fmt.Sprintf("%s%020d/%s/%020d", KeyFlowTargetDuePrefix, dueAt, keyPart(flowID), revision)
+}
+
+func FlowTargetDuePrefix() string {
+	return KeyFlowTargetDuePrefix
+}
+
+func KeyFlowTargetRun(runID string) string {
+	return KeyFlowTargetRunPrefix + keyPart(runID)
+}
+
+func KeyFlowTargetRunByFlow(flowID string, startedAt int64, runID string) string {
+	return fmt.Sprintf("%s%s/%020d/%s", KeyFlowTargetRunByFlowPrefix, keyPart(flowID), reverseMillis(startedAt), keyPart(runID))
+}
+
+func FlowTargetRunByFlowPrefix(flowID string) string {
+	part := keyPart(flowID)
+	if part == "" {
+		return KeyFlowTargetRunByFlowPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyFlowTargetRunByFlowPrefix, part)
+}
+
+func KeyFlowTargetRunClaim(flowID string, revision int64, scheduledAt int64) string {
+	return fmt.Sprintf("%s%s/%020d/%020d", KeyFlowTargetRunClaimPrefix, keyPart(flowID), revision, scheduledAt)
+}
+
+func FlowTargetRunClaimPrefix(flowID string) string {
+	part := keyPart(flowID)
+	if part == "" {
+		return KeyFlowTargetRunClaimPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyFlowTargetRunClaimPrefix, part)
+}
+
 func KeyAgentProfile(name string) string {
 	return KeyAgentProfilePrefix + keyPart(name)
 }
@@ -450,6 +569,13 @@ func SwarmTrustedPeerPrefix() string {
 
 func AgentActiveSubagentPrefix() string {
 	return KeyAgentActiveSubagentPrefix
+}
+
+func reverseMillis(value int64) int64 {
+	if value < 0 {
+		value = 0
+	}
+	return 999999999999999999 - value
 }
 
 func keyPart(value string) string {

@@ -59,6 +59,8 @@ func TestFlowAssignmentDoesNotExposeRequestTimeToolOverrides(t *testing.T) {
 		reflect.TypeOf(Assignment{}),
 		reflect.TypeOf(AgentSelection{}),
 		reflect.TypeOf(AssignmentCommand{}),
+		reflect.TypeOf(DueRun{}),
+		reflect.TypeOf(RunClaim{}),
 	} {
 		for _, field := range []string{"ToolScope", "ToolContract", "AllowTools", "DenyTools", "BashPrefixes"} {
 			if _, ok := typ.FieldByName(field); ok {
