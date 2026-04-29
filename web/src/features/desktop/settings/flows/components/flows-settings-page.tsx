@@ -1,10 +1,21 @@
 import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Bot, ChevronDown, Clock, MapPin, MoreHorizontal, Plus, Search, Workflow } from 'lucide-react'
 import { Button } from '../../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../../components/ui/dialog'
 import { Input } from '../../../../../components/ui/input'
 import { ModalCloseButton } from '../../../../../components/ui/modal-close-button'
 import { cn } from '../../../../../lib/cn'
+import {
+  createFlow,
+  deleteFlow,
+  fetchFlows,
+  flowsQueryKey,
+  runFlowNow,
+  type CreateFlowInput,
+  type FlowSummaryRecord,
+  type FlowTaskStep,
+} from '../api'
 
 type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
 type FlowMode = 'One-shot background job' | 'Scheduled background job' | 'Manual one-shot'
@@ -47,6 +58,7 @@ interface FlowDefinition {
   task: string
   tasks: FlowTask[]
   runs: FlowRun[]
+  raw: FlowSummaryRecord
 }
 
 interface AddFlowForm {
@@ -64,124 +76,7 @@ interface AddFlowForm {
   task: string
 }
 
-const initialFlows: FlowDefinition[] = [
-  {
-    id: 'flow-memory-agents',
-    name: 'Nightly AGENTS.md memory refresh',
-    workspace: 'swarm-go',
-    location: 'current workspace on laptop',
-    target: 'laptop',
-    agent: 'Memory agent',
-    agentType: 'memory',
-    schedule: 'Daily at 12:00 AM',
-    startTime: '12:00 AM',
-    lastRun: 'Today 12:00 AM',
-    lastRunMeta: '42 runs',
-    nextRun: 'Today 12:00 AM',
-    nextRunMeta: 'in 2h 15m',
-    totalRuns: 42,
-    status: 'active',
-    enabled: true,
-    mode: 'Scheduled background job',
-    context: 'plan → approval → execute',
-    task: 'Read git diffs and update AGENTS.md to be more accurate.',
-    tasks: [
-      { id: 'diffs', title: 'Read repository diffs', detail: 'Collect changed files and summarize intent from the target workspace.', action: 'read' },
-      { id: 'memory', title: 'Compare against AGENTS.md', detail: 'Find stale or missing agent instructions without rewriting unrelated sections.', action: 'propose' },
-      { id: 'patch', title: 'Prepare guarded edit', detail: 'Create a small AGENTS.md patch for review or approved write execution.', action: 'write' },
-    ],
-    runs: [
-      { id: 'run-042', startedAt: 'Today 12:00 AM', duration: '1m 18s', status: 'success', summary: 'Updated AGENTS.md from four relevant diffs.' },
-      { id: 'run-041', startedAt: 'Yesterday 12:00 AM', duration: '22s', status: 'skipped', summary: 'No meaningful instruction changes found.' },
-      { id: 'run-040', startedAt: 'Two days ago 12:00 AM', duration: '2m 04s', status: 'review', summary: 'Prepared AGENTS.md edits requiring approval.' },
-    ],
-  },
-  {
-    id: 'flow-release-notes',
-    name: 'Release note scout',
-    workspace: 'swarm-go',
-    location: 'release workspace',
-    target: 'local',
-    agent: 'Parallel agent',
-    agentType: 'parallel',
-    schedule: 'On demand',
-    startTime: 'On demand',
-    lastRun: 'Yesterday 4:16 PM',
-    lastRunMeta: '9 runs',
-    nextRun: '—',
-    nextRunMeta: '',
-    totalRuns: 9,
-    status: 'paused',
-    enabled: false,
-    mode: 'Manual one-shot',
-    context: 'read-only summary',
-    task: 'Summarize merged changes for release notes.',
-    tasks: [
-      { id: 'commits', title: 'Read recent commits', detail: 'Collect the merged commits since the last stable tag.', action: 'read' },
-      { id: 'notes', title: 'Draft release bullets', detail: 'Group user-facing changes separately from internal maintenance.', action: 'propose' },
-    ],
-    runs: [
-      { id: 'run-009', startedAt: 'Yesterday 4:16 PM', duration: '48s', status: 'success', summary: 'Drafted six release note bullets.' },
-      { id: 'run-008', startedAt: 'Last week', duration: '31s', status: 'success', summary: 'Generated maintenance summary.' },
-    ],
-  },
-  {
-    id: 'flow-doc-check',
-    name: 'Docs drift check',
-    workspace: 'desktop-ui',
-    location: 'docs workspace',
-    target: 'container',
-    agent: 'Explorer agent',
-    agentType: 'explorer',
-    schedule: 'Daily at 8:30 AM',
-    startTime: '8:30 AM',
-    lastRun: 'Mon 8:30 AM',
-    lastRunMeta: '16 runs',
-    nextRun: 'Tomorrow 8:30 AM',
-    nextRunMeta: 'in 22h 45m',
-    totalRuns: 16,
-    status: 'needs_review',
-    enabled: true,
-    mode: 'Scheduled background job',
-    context: 'proposal only',
-    task: 'Find documentation sections that no longer match the code.',
-    tasks: [
-      { id: 'scan', title: 'Scan docs and routes', detail: 'Map changed UI routes to documentation pages.', action: 'read' },
-      { id: 'report', title: 'Write drift report', detail: 'List mismatches and proposed doc edits.', action: 'review' },
-    ],
-    runs: [
-      { id: 'run-016', startedAt: 'Mon 8:30 AM', duration: '3m 11s', status: 'review', summary: 'Found two docs sections that need review.' },
-    ],
-  },
-  {
-    id: 'flow-agent-cleanup',
-    name: 'Background agent cleanup',
-    workspace: 'infra',
-    location: 'ops workspace',
-    target: 'local',
-    agent: 'Background agent',
-    agentType: 'background',
-    schedule: 'Weekly on Sun 1:00 AM',
-    startTime: '1:00 AM',
-    lastRun: 'Never',
-    lastRunMeta: '',
-    nextRun: 'Sun 1:00 AM',
-    nextRunMeta: 'in 2d 15h',
-    totalRuns: 0,
-    status: 'draft',
-    enabled: false,
-    mode: 'Scheduled background job',
-    context: 'approval required',
-    task: 'Inspect stale background runs and propose cleanup actions.',
-    tasks: [
-      { id: 'inspect', title: 'Inspect old runs', detail: 'Find detached runs older than the configured retention window.', action: 'read' },
-      { id: 'cleanup', title: 'Propose cleanup', detail: 'Prepare an action list; do not delete without approval.', action: 'propose' },
-    ],
-    runs: [],
-  },
-]
-
-const formWorkspaceOptions = ['swarm-go', 'desktop-ui', 'infra']
+const formWorkspaceOptions = ['.', 'swarm-go', 'desktop-ui', 'infra']
 const formLocationOptions = ['current workspace on laptop', 'release workspace', 'docs workspace', 'ops workspace']
 const scheduleCadenceOptions: ScheduleCadence[] = ['Daily', 'Weekly', 'Monthly', 'On demand']
 const scheduleDayOptions = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -196,13 +91,13 @@ const scheduleTimeOptions = Array.from({ length: 48 }, (_, index) => {
 
 const defaultAddFlowForm: AddFlowForm = {
   name: 'Nightly AGENTS.md memory refresh',
-  agent: 'Memory agent',
-  target: 'laptop',
+  agent: 'memory',
+  target: 'local',
   scheduleCadence: 'Daily',
   scheduleTime: '12:00 AM',
   scheduleDay: 'Mon',
   scheduleDate: '1',
-  workspace: 'swarm-go',
+  workspace: '.',
   location: 'current workspace on laptop',
   context: 'plan → approval → execute',
   mode: 'Scheduled background job',
@@ -266,34 +161,218 @@ function buildScheduleLabel(form: AddFlowForm) {
   return `Daily at ${form.scheduleTime}`
 }
 
-function makeFlowFromForm(form: AddFlowForm): FlowDefinition {
-  const id = `flow-${Date.now()}`
-  const schedule = buildScheduleLabel(form)
+function clockLabelToHHMM(value: string): string {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i)
+  if (!match) {
+    return '00:00'
+  }
+  let hour = Number(match[1])
+  const minute = match[2]
+  const period = match[3].toUpperCase()
+  if (period === 'AM' && hour === 12) {
+    hour = 0
+  }
+  if (period === 'PM' && hour !== 12) {
+    hour += 12
+  }
+  return `${String(hour).padStart(2, '0')}:${minute}`
+}
+
+function hhmmToDisplay(value: string): string {
+  const [rawHour, minute = '00'] = value.split(':')
+  const hour24 = Number(rawHour)
+  if (!Number.isFinite(hour24)) {
+    return value || 'Manual'
+  }
+  const period = hour24 < 12 ? 'AM' : 'PM'
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12
+  return `${hour12}:${minute.padStart(2, '0')} ${period}`
+}
+
+function isoDisplay(value?: string): string {
+  if (!value) {
+    return '—'
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime()) || date.getTime() <= 0) {
+    return '—'
+  }
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date)
+}
+
+function durationLabel(ms?: number): string {
+  if (!ms || ms <= 0) {
+    return '—'
+  }
+  if (ms < 1000) {
+    return `${ms}ms`
+  }
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) {
+    return `${seconds}s`
+  }
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`
+}
+
+function cadenceLabel(cadence: string): ScheduleCadence {
+  switch (cadence.trim().toLowerCase()) {
+    case 'daily':
+      return 'Daily'
+    case 'weekly':
+      return 'Weekly'
+    case 'monthly':
+      return 'Monthly'
+    default:
+      return 'On demand'
+  }
+}
+
+function scheduleLabelFromRecord(record: FlowSummaryRecord): string {
+  const schedule = record.definition.assignment.schedule
+  const cadence = cadenceLabel(schedule.cadence)
+  if (cadence === 'On demand') {
+    return 'On demand'
+  }
+  const time = hhmmToDisplay(schedule.time ?? '')
+  if (cadence === 'Weekly') {
+    return `Weekly on ${schedule.weekday || 'Mon'} ${time}`
+  }
+  if (cadence === 'Monthly') {
+    return `Monthly on day ${schedule.month_day || 1} ${time}`
+  }
+  return `Daily at ${time}`
+}
+
+function statusFromRecord(record: FlowSummaryRecord): FlowStatus {
+  if (record.last_run?.status === 'failed') {
+    return 'failed'
+  }
+  if (record.last_run?.status === 'review') {
+    return 'needs_review'
+  }
+  if (!record.definition.assignment.enabled) {
+    return record.history_count > 0 ? 'paused' : 'draft'
+  }
+  const statuses = record.assignment_statuses ?? []
+  if (statuses.some((status) => status.pending_sync || status.status === 'target_offline' || status.status === 'target_unusable')) {
+    return 'needs_review'
+  }
+  return 'active'
+}
+
+function modeFromRecord(record: FlowSummaryRecord): FlowMode {
+  const cadence = cadenceLabel(record.definition.assignment.schedule.cadence)
+  if (cadence === 'On demand') {
+    return 'Manual one-shot'
+  }
+  return 'Scheduled background job'
+}
+
+function normalizeRunStatus(status: string): FlowRun['status'] {
+  if (status === 'failed') {
+    return 'failed'
+  }
+  if (status === 'review') {
+    return 'review'
+  }
+  if (status === 'skipped') {
+    return 'skipped'
+  }
+  return 'success'
+}
+
+function normalizeTask(task: FlowTaskStep, index: number): FlowTask {
+  const rawAction = task.action.trim().toLowerCase()
+  const action: FlowTask['action'] = rawAction === 'write' || rawAction === 'review' || rawAction === 'read' ? rawAction : 'propose'
   return {
-    id,
+    id: task.id.trim() || `task-${index + 1}`,
+    title: task.title.trim() || `Task ${index + 1}`,
+    detail: task.detail?.trim() || task.title.trim() || 'Run configured flow step.',
+    action,
+  }
+}
+
+function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
+  const assignment = record.definition.assignment
+  const history = record.last_run ? [record.last_run] : []
+  const runs = history.map((run): FlowRun => ({
+    id: run.run_id,
+    startedAt: isoDisplay(run.started_at || run.scheduled_at),
+    duration: durationLabel(run.duration_ms),
+    status: normalizeRunStatus(run.status),
+    summary: run.summary || run.status,
+  }))
+  const workspace = assignment.workspace.workspace_path?.trim() || 'workspace'
+  const target = assignment.target.name?.trim() || assignment.target.swarm_id?.trim() || assignment.target.kind?.trim() || 'local'
+  const agent = assignment.agent.target_name?.trim() || 'memory'
+  const agentType = assignment.agent.target_kind?.trim() || 'background'
+  const tasks = assignment.intent.tasks?.length
+    ? assignment.intent.tasks.map(normalizeTask)
+    : [{ id: `${assignment.flow_id}-prompt`, title: 'Run prompt', detail: assignment.intent.prompt || 'Run configured prompt.', action: 'propose' as const }]
+  return {
+    id: assignment.flow_id,
+    name: assignment.name || assignment.flow_id,
+    workspace,
+    location: assignment.workspace.cwd?.trim() || workspace,
+    target,
+    agent,
+    agentType,
+    schedule: scheduleLabelFromRecord(record),
+    startTime: assignment.schedule.time ? hhmmToDisplay(assignment.schedule.time) : 'Manual',
+    lastRun: record.last_run ? isoDisplay(record.last_run.started_at || record.last_run.scheduled_at) : 'Never',
+    lastRunMeta: record.history_count ? `${record.history_count} runs` : '',
+    nextRun: record.definition.next_due_at ? isoDisplay(record.definition.next_due_at) : '—',
+    nextRunMeta: record.assignment_statuses?.some((status) => status.pending_sync) ? 'pending sync' : '',
+    totalRuns: record.history_count,
+    status: statusFromRecord(record),
+    enabled: assignment.enabled,
+    mode: modeFromRecord(record),
+    context: assignment.intent.mode || assignment.catch_up_policy.mode || 'target-owned schedule',
+    task: assignment.intent.prompt || tasks.map((task) => task.title).join(', '),
+    tasks,
+    runs,
+    raw: record,
+  }
+}
+
+function formToCreateInput(form: AddFlowForm): CreateFlowInput {
+  const cadence = form.scheduleCadence === 'On demand' ? 'on_demand' : form.scheduleCadence.toLowerCase()
+  const targetName = form.target.trim()
+  const isLocalTarget = targetName.toLowerCase() === 'local'
+  return {
     name: form.name.trim() || 'Untitled flow',
-    workspace: form.workspace.trim() || 'All workspaces',
-    location: form.location.trim() || 'Current workspace',
-    target: form.target.trim() || 'local',
-    agent: form.agent.trim() || 'Background agent',
-    agentType: form.agent.toLowerCase().replace(/\s+agent$/i, '').trim() || 'agent',
-    schedule,
-    startTime: form.scheduleCadence === 'On demand' ? 'Manual' : form.scheduleTime,
-    lastRun: 'Never',
-    lastRunMeta: '',
-    nextRun: schedule === 'On demand' ? '—' : schedule,
-    nextRunMeta: '',
-    totalRuns: 0,
-    status: 'draft',
-    enabled: false,
-    mode: form.mode,
-    context: form.context.trim() || 'approval required',
-    task: form.task.trim() || 'Describe the task this flow should run.',
-    tasks: [
-      { id: `${id}-context`, title: 'Prepare run context', detail: `Target ${form.target || 'local'} in ${form.location || 'the selected workspace'}.`, action: 'read' },
-      { id: `${id}-task`, title: 'Run agent task', detail: form.task.trim() || 'Run the configured task prompt.', action: 'propose' },
-    ],
-    runs: [],
+    enabled: form.scheduleCadence !== 'On demand',
+    target: {
+      kind: isLocalTarget ? 'self' : undefined,
+      name: isLocalTarget ? undefined : targetName || undefined,
+    },
+    agent: {
+      target_kind: 'background',
+      target_name: form.agent.trim() || 'memory',
+    },
+    workspace: {
+      workspace_path: form.workspace.trim() || '.',
+      cwd: form.location.trim(),
+    },
+    schedule: {
+      cadence,
+      time: cadence === 'on_demand' ? undefined : clockLabelToHHMM(form.scheduleTime),
+      weekday: cadence === 'weekly' ? form.scheduleDay : undefined,
+      month_day: cadence === 'monthly' ? Number(form.scheduleDate) : undefined,
+      timezone: 'UTC',
+    },
+    catch_up_policy: {
+      mode: 'once',
+    },
+    intent: {
+      prompt: form.task.trim() || 'Run the configured task prompt.',
+      mode: form.context.trim(),
+      tasks: [
+        { id: 'context', title: 'Prepare run context', detail: `Target ${form.target || 'local'} in ${form.location || 'the selected workspace'}.`, action: 'read' },
+        { id: 'task', title: 'Run agent task', detail: form.task.trim() || 'Run the configured task prompt.', action: 'propose' },
+      ],
+    },
   }
 }
 
@@ -310,15 +389,16 @@ function StatusBadge({ status }: { status: FlowStatus }) {
   )
 }
 
-function EnabledToggle({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
+function EnabledToggle({ enabled, disabled, onToggle }: { enabled: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={enabled}
       onClick={onToggle}
+      disabled={disabled}
       className={cn(
-        'relative inline-flex h-6 w-11 items-center rounded-full border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)]',
+        'relative inline-flex h-6 w-11 items-center rounded-full border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)] disabled:cursor-not-allowed disabled:opacity-50',
         enabled ? 'border-[var(--app-success-border)] bg-[var(--app-success)]' : 'border-[var(--app-border)] bg-[var(--app-surface-active)]',
       )}
     >
@@ -343,7 +423,7 @@ function FilterSelect({ value, onChange, options, label }: { value: string; onCh
   )
 }
 
-function AddFlowModal({ open, onClose, onAdd }: { open: boolean; onClose: () => void; onAdd: (flow: FlowDefinition) => void }) {
+function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: () => void; onAdd: (input: CreateFlowInput) => void; busy?: boolean }) {
   const [form, setForm] = useState<AddFlowForm>(defaultAddFlowForm)
 
   if (!open) {
@@ -358,21 +438,20 @@ function AddFlowModal({ open, onClose, onAdd }: { open: boolean; onClose: () => 
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    onAdd(makeFlowFromForm(form))
+    onAdd(formToCreateInput(form))
     setForm(defaultAddFlowForm)
-    onClose()
   }
 
   return (
     <Dialog role="dialog" aria-modal="true" aria-label="Add Flow" className="z-[80] p-4 sm:p-6">
-      <DialogBackdrop onClick={onClose} />
+      <DialogBackdrop onClick={busy ? undefined : onClose} />
       <DialogPanel className="w-[min(780px,100%)] gap-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-2xl">
         <form onSubmit={submit} className="flex max-h-[min(820px,calc(100vh-48px))] flex-col">
           <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-6 py-5">
             <div>
               <div className={labelClass}>New scheduled job</div>
               <h2 className="mt-1 text-lg font-semibold text-[var(--app-text)]">Add Flow</h2>
-              <p className="mt-1 text-sm text-[var(--app-text-muted)]">Create a local UI draft. Backend launch and persistence come next.</p>
+              <p className="mt-1 text-sm text-[var(--app-text-muted)]">Creates a controller Flow and syncs it to the selected target.</p>
             </div>
             <ModalCloseButton className="rounded-xl" onClick={onClose} aria-label="Close Add Flow" />
           </div>
@@ -386,17 +465,17 @@ function AddFlowModal({ open, onClose, onAdd }: { open: boolean; onClose: () => 
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Agent/profile</span>
                 <select value={form.agent} onChange={update('agent')} className={fieldClass}>
-                  <option>Memory agent</option>
-                  <option>Background agent</option>
-                  <option>Explorer agent</option>
-                  <option>Parallel agent</option>
+                  <option value="memory">memory</option>
+                  <option value="swarm">swarm</option>
+                  <option value="explorer">explorer</option>
+                  <option value="parallel">parallel</option>
                 </select>
               </label>
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Target</span>
                 <select value={form.target} onChange={update('target')} className={fieldClass}>
-                  <option>laptop</option>
                   <option>local</option>
+                  <option>laptop</option>
                   <option>container</option>
                 </select>
               </label>
@@ -468,10 +547,10 @@ function AddFlowModal({ open, onClose, onAdd }: { open: boolean; onClose: () => 
           </div>
 
           <div className="flex items-center justify-between border-t border-[var(--app-border)] px-6 py-4">
-            <p className="text-xs text-[var(--app-text-muted)]">Creates a local draft row only.</p>
+            <p className="text-xs text-[var(--app-text-muted)]">Targets keep accepted assignments and schedule locally.</p>
             <div className="flex items-center gap-2">
-              <Button variant="ghost" className="rounded-xl" onClick={onClose}>Cancel</Button>
-              <Button type="submit" variant="primary" className="rounded-xl">Add Flow</Button>
+              <Button variant="ghost" className="rounded-xl" onClick={onClose} disabled={busy}>Cancel</Button>
+              <Button type="submit" variant="primary" className="rounded-xl" disabled={busy}>{busy ? 'Adding…' : 'Add Flow'}</Button>
             </div>
           </div>
         </form>
@@ -480,7 +559,7 @@ function AddFlowModal({ open, onClose, onAdd }: { open: boolean; onClose: () => 
   )
 }
 
-function FlowDetail({ flow, onBack }: { flow: FlowDefinition; onBack: () => void }) {
+function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefinition; onBack: () => void; onRunNow: (id: string) => void; onDelete: (id: string) => void; busy?: boolean }) {
   return (
     <div className="flex min-h-full flex-col gap-8 pb-10 text-[var(--app-text)]">
       <div className="flex items-center justify-between gap-4 border-b border-[var(--app-border)] pb-5">
@@ -494,9 +573,14 @@ function FlowDetail({ flow, onBack }: { flow: FlowDefinition; onBack: () => void
           <h1 className="mt-2 truncate text-2xl font-semibold tracking-tight text-[var(--app-text)]">{flow.name}</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--app-text-muted)]">{flow.task}</p>
         </div>
-        <Button variant="outline" className="rounded-xl" disabled>
-          Save edits
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="outline" className="rounded-xl" onClick={() => onRunNow(flow.id)} disabled={busy}>
+            Run now
+          </Button>
+          <Button variant="ghost" className="rounded-xl text-[var(--app-danger)]" onClick={() => onDelete(flow.id)} disabled={busy}>
+            Delete
+          </Button>
+        </div>
       </div>
 
       <section className="grid gap-x-10 gap-y-6 border-b border-[var(--app-border)] pb-8 md:grid-cols-3">
@@ -520,11 +604,8 @@ function FlowDetail({ flow, onBack }: { flow: FlowDefinition; onBack: () => void
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-[var(--app-text)]">Tasks inside this flow</h2>
-              <p className="mt-1 text-sm text-[var(--app-text-muted)]">Future Actions can be inserted and reviewed here.</p>
+              <p className="mt-1 text-sm text-[var(--app-text-muted)]">Tasks are sent as durable assignment intent to the target.</p>
             </div>
-            <Button variant="outline" className="rounded-xl" disabled>
-              <Plus size={15} /> Add task
-            </Button>
           </div>
           <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
             {flow.tasks.map((task, index) => (
@@ -553,7 +634,7 @@ function FlowDetail({ flow, onBack }: { flow: FlowDefinition; onBack: () => void
                 <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">{run.duration}</div>
               </div>
             )) : (
-              <div className="px-4 py-5 text-sm text-[var(--app-text-muted)]">No runs yet.</div>
+              <div className="px-4 py-5 text-sm text-[var(--app-text-muted)]">No mirrored runs yet.</div>
             )}
           </div>
         </aside>
@@ -563,13 +644,18 @@ function FlowDetail({ flow, onBack }: { flow: FlowDefinition; onBack: () => void
 }
 
 export function FlowsSettingsPage() {
-  const [flows, setFlows] = useState<FlowDefinition[]>(initialFlows)
+  const queryClient = useQueryClient()
+  const flowsQuery = useQuery({ queryKey: flowsQueryKey, queryFn: ({ signal }) => fetchFlows(signal) })
+  const flows = useMemo(() => (flowsQuery.data ?? []).map(recordToFlow), [flowsQuery.data])
   const [workspaceFilter, setWorkspaceFilter] = useState('all')
   const [agentFilter, setAgentFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [query, setQuery] = useState('')
   const [selectedFlowID, setSelectedFlowID] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
+  const [busyID, setBusyID] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const workspaces = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.workspace)))], [flows])
   const agents = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.agentType)))], [flows])
@@ -594,48 +680,81 @@ export function FlowsSettingsPage() {
   const reviewCount = flows.filter((flow) => flow.status === 'needs_review').length
   const draftCount = flows.filter((flow) => flow.status === 'draft').length
   const pausedCount = flows.filter((flow) => flow.status === 'paused').length
+  const runningCount = (flowsQuery.data ?? []).filter((record) => record.last_run?.status === 'running').length
+  const nextFlow = flows.find((flow) => flow.nextRun !== '—') ?? null
 
   const metaHeaderItems = [
-    { label: 'Today', value: String(flows.length), helper: 'total runs', tone: 'primary' as const },
-    { label: 'Running now', value: '0', helper: 'active jobs', tone: 'active' as const },
-    { label: 'Next up', value: '12:00 AM', helper: 'Nightly AGENTS.md memory refresh', tone: 'primary' as const },
+    { label: 'Flows', value: String(flows.length), helper: 'controller records', tone: 'primary' as const },
+    { label: 'Running now', value: String(runningCount), helper: 'active jobs', tone: 'active' as const },
+    { label: 'Next up', value: nextFlow?.startTime ?? '—', helper: nextFlow?.name ?? 'no scheduled flows', tone: 'primary' as const },
     { label: 'Needs review', value: String(reviewCount), helper: 'requires attention', tone: 'needs_review' as const },
     { label: 'Paused', value: String(pausedCount), helper: 'disabled', tone: 'paused' as const },
     { label: 'Drafts', value: String(draftCount), helper: 'not enabled', tone: 'draft' as const },
   ]
 
-  const scheduleItems = [
-    { flow: flows.find((flow) => flow.id === 'flow-memory-agents'), time: '12:00 AM', day: 'Today', meta: 'Daily run / next in 2h 15m' },
-    { flow: flows.find((flow) => flow.id === 'flow-doc-check'), time: '8:30 AM', day: 'Tomorrow', meta: 'Daily run / needs review from last run' },
-    { flow: flows.find((flow) => flow.id === 'flow-agent-cleanup'), time: '1:00 AM', day: 'Sun', meta: 'Weekly run / draft schedule' },
-  ].filter((event): event is { flow: FlowDefinition; time: string; day: string; meta: string } => Boolean(event.flow))
+  const scheduleItems = flows
+    .filter((flow) => flow.nextRun !== '—')
+    .slice(0, 6)
+    .map((flow) => ({ flow, time: flow.startTime, day: flow.nextRun, meta: `${flow.schedule}${flow.nextRunMeta ? ` / ${flow.nextRunMeta}` : ''}` }))
 
-  const attentionItems = [
-    { flow: flows.find((flow) => flow.id === 'flow-doc-check'), meta: 'Last run: Mon 8:30 AM', dotStatus: 'needs_review' as FlowStatus },
-    { flow: flows.find((flow) => flow.id === 'flow-release-notes'), meta: 'Last run: Yesterday 4:16 PM', dotStatus: 'failed' as FlowStatus },
-    { flow: flows.find((flow) => flow.id === 'flow-agent-cleanup'), meta: 'Next run: Sun 1:00 AM', dotStatus: 'draft' as FlowStatus },
-  ].filter((item): item is { flow: FlowDefinition; meta: string; dotStatus: FlowStatus } => Boolean(item.flow))
+  const attentionItems = flows
+    .filter((flow) => flow.status === 'needs_review' || flow.status === 'failed' || flow.status === 'draft' || flow.status === 'paused')
+    .slice(0, 6)
+    .map((flow) => ({ flow, meta: flow.lastRun === 'Never' ? `Next run: ${flow.nextRun}` : `Last run: ${flow.lastRun}`, dotStatus: flow.status }))
 
-  const addFlow = (flow: FlowDefinition) => {
-    setFlows((current) => [flow, ...current])
-    setSelectedFlowID(flow.id)
+  const refreshFlows = async () => {
+    await queryClient.invalidateQueries({ queryKey: flowsQueryKey })
   }
 
-  const toggleFlowEnabled = (id: string) => {
-    setFlows((current) => current.map((flow) => {
-      if (flow.id !== id) {
-        return flow
-      }
-      const enabled = !flow.enabled
-      const status: FlowStatus = enabled
-        ? flow.status === 'paused' ? 'active' : flow.status
-        : flow.status === 'draft' ? 'draft' : 'paused'
-      return { ...flow, enabled, status }
-    }))
+  const addFlow = async (input: CreateFlowInput) => {
+    setSaving(true)
+    setError(null)
+    try {
+      const detail = await createFlow(input)
+      setAddOpen(false)
+      setSelectedFlowID(detail.definition.flow_id)
+      await refreshFlows()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create flow')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRunNow = async (id: string) => {
+    setBusyID(id)
+    setError(null)
+    try {
+      await runFlowNow(id)
+      await refreshFlows()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to run flow')
+    } finally {
+      setBusyID(null)
+    }
+  }
+
+  const handleDelete = async (id: string) => {
+    setBusyID(id)
+    setError(null)
+    try {
+      await deleteFlow(id)
+      setSelectedFlowID(null)
+      await refreshFlows()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete flow')
+    } finally {
+      setBusyID(null)
+    }
   }
 
   if (selectedFlow) {
-    return <FlowDetail flow={selectedFlow} onBack={() => setSelectedFlowID(null)} />
+    return (
+      <>
+        {error ? <div className="mb-4 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
+        <FlowDetail flow={selectedFlow} onBack={() => setSelectedFlowID(null)} onRunNow={handleRunNow} onDelete={handleDelete} busy={busyID === selectedFlow.id} />
+      </>
+    )
   }
 
   return (
@@ -646,12 +765,19 @@ export function FlowsSettingsPage() {
             <Workflow size={14} /> Settings / Flows
           </div>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--app-text)]">Flows</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">Control scheduled and background agent jobs.</p>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">Control scheduled and background agent jobs from real controller data.</p>
         </div>
         <Button variant="primary" className="rounded-xl" onClick={() => setAddOpen(true)}>
           <Plus size={16} /> Add Flow
         </Button>
       </header>
+
+      {error ? (
+        <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div>
+      ) : null}
+      {flowsQuery.isLoading ? (
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">Loading flows…</div>
+      ) : null}
 
       <section className={cn(surfaceClass, 'flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3')}>
         {metaHeaderItems.map((item) => {
@@ -676,23 +802,8 @@ export function FlowsSettingsPage() {
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h2 className="text-base font-semibold text-[var(--app-text)]">Schedule</h2>
-              <div className="mt-3 flex flex-wrap items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] p-1">
-                {['Today', 'Tomorrow', 'Week', 'All'].map((tab) => (
-                  <button
-                    key={tab}
-                    type="button"
-                    className={cn(
-                      'rounded-lg px-3 py-1.5 text-xs transition',
-                      tab === 'Today' ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]',
-                    )}
-                  >
-                    {tab}
-                  </button>
-                ))}
-              </div>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <button type="button" className={filterControlClass}>May 24, 2025</button>
               <FilterSelect label="Workspace filter" value={workspaceFilter} onChange={setWorkspaceFilter} options={workspaceOptions} />
               <FilterSelect label="Agent filter" value={agentFilter} onChange={setAgentFilter} options={agentOptions} />
               <FilterSelect label="Status filter" value={statusFilter} onChange={setStatusFilter} options={statusOptions} />
@@ -700,47 +811,32 @@ export function FlowsSettingsPage() {
           </div>
 
           <div className="mt-5 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-inset)]">
-            <div className="grid grid-cols-[88px_92px_minmax(0,1fr)_120px] gap-3 border-b border-[var(--app-border)] px-4 py-2 text-[11px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
+            <div className="grid grid-cols-[88px_140px_minmax(0,1fr)_120px] gap-3 border-b border-[var(--app-border)] px-4 py-2 text-[11px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
               <div>Time</div>
-              <div>Day</div>
+              <div>Next</div>
               <div>Flow</div>
               <div className="text-right">Status</div>
             </div>
             <div className="divide-y divide-[var(--app-border)]">
-              {scheduleItems.map((event) => (
-                <button
-                  key={event.flow.id}
-                  type="button"
-                  onClick={() => setSelectedFlowID(event.flow.id)}
-                  className="grid w-full grid-cols-[88px_92px_minmax(0,1fr)_120px] items-center gap-3 px-4 py-4 text-left transition hover:bg-[var(--app-surface-subtle)]"
-                >
+              {scheduleItems.length ? scheduleItems.map((event) => (
+                <button key={event.flow.id} type="button" onClick={() => setSelectedFlowID(event.flow.id)} className="grid w-full grid-cols-[88px_140px_minmax(0,1fr)_120px] items-center gap-3 px-4 py-4 text-left transition hover:bg-[var(--app-surface-subtle)]">
                   <span className="font-mono text-sm text-[var(--app-text)]">{event.time}</span>
-                  <span className="text-xs text-[var(--app-text-muted)]">{event.day}</span>
+                  <span className="truncate text-xs text-[var(--app-text-muted)]">{event.day}</span>
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium text-[var(--app-text)]">{event.flow.name}</span>
                     <span className="mt-1 block truncate text-xs text-[var(--app-text-muted)]">{event.flow.workspace} / {event.flow.agentType} / {event.meta}</span>
                   </span>
-                  <span className="justify-self-end">
-                    <StatusBadge status={event.flow.status} />
-                  </span>
+                  <span className="justify-self-end"><StatusBadge status={event.flow.status} /></span>
                 </button>
-              ))}
+              )) : <div className="px-4 py-5 text-sm text-[var(--app-text-muted)]">No scheduled flows yet.</div>}
             </div>
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--app-text-muted)]">
-            <span>{scheduleItems.length} scheduled items in this view</span>
-            <span className="inline-flex items-center gap-2 text-[var(--app-primary)]">Click any row to inspect the flow →</span>
           </div>
         </div>
 
         <aside className={cn(surfaceClass, 'flex flex-col p-5')}>
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-base font-semibold text-[var(--app-text)]">Needs attention</h2>
-            <button type="button" className="text-xs text-[var(--app-primary)] hover:text-[var(--app-primary-hover)]">View all →</button>
-          </div>
+          <h2 className="text-base font-semibold text-[var(--app-text)]">Needs attention</h2>
           <div className="mt-4 flex-1 divide-y divide-[var(--app-border)] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)]">
-            {attentionItems.map((item) => (
+            {attentionItems.length ? attentionItems.map((item) => (
               <button key={item.flow.id} type="button" onClick={() => setSelectedFlowID(item.flow.id)} className="flex w-full items-start gap-3 px-3 py-3 text-left transition hover:bg-[var(--app-surface-subtle)]">
                 <FlowStatusDot status={item.dotStatus} className="mt-1" />
                 <span className="min-w-0 flex-1">
@@ -749,9 +845,9 @@ export function FlowsSettingsPage() {
                 </span>
                 <StatusBadge status={item.flow.status} />
               </button>
-            ))}
+            )) : <div className="px-4 py-5 text-sm text-[var(--app-text-muted)]">No flows need attention.</div>}
           </div>
-          <div className="mt-4 text-xs text-[var(--app-text-muted)]">1 needs review • 1 paused • 1 draft</div>
+          <div className="mt-4 text-xs text-[var(--app-text-muted)]">{reviewCount} needs review • {pausedCount} paused • {draftCount} draft</div>
         </aside>
       </section>
 
@@ -759,22 +855,16 @@ export function FlowsSettingsPage() {
         <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--app-border)] p-5">
           <div>
             <h2 className="text-base font-semibold text-[var(--app-text)]">Flow controls</h2>
-            <p className="mt-1 text-sm text-[var(--app-text-muted)]">Enable, disable, and manage all flows.</p>
+            <p className="mt-1 text-sm text-[var(--app-text-muted)]">Run and delete controller-backed flows.</p>
           </div>
           <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
             <label className="relative w-[148px] shrink-0">
               <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search flows"
-                className="h-9 min-h-9 rounded-xl border-[var(--app-border)] bg-[var(--app-surface-subtle)] py-0 pl-8 pr-3 text-xs focus-visible:ring-0 focus-visible:ring-offset-0"
-              />
+              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search flows" className="h-9 min-h-9 rounded-xl border-[var(--app-border)] bg-[var(--app-surface-subtle)] py-0 pl-8 pr-3 text-xs focus-visible:ring-0 focus-visible:ring-offset-0" />
             </label>
             <FilterSelect label="Workspace filter" value={workspaceFilter} onChange={setWorkspaceFilter} options={workspaceOptions} />
             <FilterSelect label="Agent filter" value={agentFilter} onChange={setAgentFilter} options={agentOptions} />
             <FilterSelect label="Status filter" value={statusFilter} onChange={setStatusFilter} options={statusOptions} />
-            <button type="button" className={filterControlClass}>More filters</button>
           </div>
         </div>
 
@@ -792,7 +882,7 @@ export function FlowsSettingsPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredFlows.map((flow) => (
+              {filteredFlows.length ? filteredFlows.map((flow) => (
                 <tr key={flow.id} className="border-b border-[var(--app-border)] last:border-b-0 hover:bg-[var(--app-surface-subtle)]">
                   <td className="px-5 py-4 align-top">
                     <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="max-w-[520px] text-left">
@@ -815,25 +905,23 @@ export function FlowsSettingsPage() {
                     <div className="text-sm text-[var(--app-text)]">{flow.nextRun}</div>
                     {flow.nextRunMeta ? <div className="mt-1 text-xs text-[var(--app-text-muted)]">{flow.nextRunMeta}</div> : null}
                   </td>
-                  <td className="px-4 py-4 align-top">
-                    <StatusBadge status={flow.status} />
-                  </td>
-                  <td className="px-4 py-4 align-top">
-                    <EnabledToggle enabled={flow.enabled} onToggle={() => toggleFlowEnabled(flow.id)} />
-                  </td>
+                  <td className="px-4 py-4 align-top"><StatusBadge status={flow.status} /></td>
+                  <td className="px-4 py-4 align-top"><EnabledToggle enabled={flow.enabled} disabled onToggle={() => undefined} /></td>
                   <td className="px-5 py-4 text-right align-top">
                     <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-text-muted)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" aria-label={`Manage ${flow.name}`}>
                       <MoreHorizontal size={16} />
                     </button>
                   </td>
                 </tr>
-              ))}
+              )) : (
+                <tr><td colSpan={7} className="px-5 py-8 text-center text-sm text-[var(--app-text-muted)]">No flows found.</td></tr>
+              )}
             </tbody>
           </table>
         </div>
       </section>
 
-      <AddFlowModal open={addOpen} onClose={() => setAddOpen(false)} onAdd={addFlow} />
+      <AddFlowModal open={addOpen} onClose={() => setAddOpen(false)} onAdd={(input) => void addFlow(input)} busy={saving} />
     </div>
   )
 }

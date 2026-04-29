@@ -474,6 +474,7 @@ func (s *Server) apiMux() *http.ServeMux {
 	s.registerAuthVaultRoutes(mux)
 	s.registerOnboardingRoutes(mux)
 	s.registerSwarmRoutes(mux)
+	s.registerFlowRoutes(mux)
 	s.registerDeployRoutes(mux)
 	s.registerAgentRoutes(mux)
 	s.registerProviderRoutes(mux)

@@ -175,6 +175,14 @@ func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCo
 	return stored, nil
 }
 
+func (s *Server) applyFlowAssignmentCommandLocally(ctx context.Context, command flow.AssignmentCommand, targetSwarmID string) (flow.AssignmentAck, bool, error) {
+	if normalizeAPIFlowAssignmentCommand(command).Action == flow.CommandRunNow {
+		command.Assignment.Target.SwarmID = firstNonEmpty(strings.TrimSpace(command.Assignment.Target.SwarmID), strings.TrimSpace(targetSwarmID))
+		return s.applyFlowRunNowCommand(ctx, command, time.Now().UTC())
+	}
+	return s.flows.ApplyTargetAssignmentCommand(command, targetSwarmID, time.Now().UTC())
+}
+
 func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record pebblestore.FlowOutboxCommandRecord, target swarmTarget) (flowAssignmentDeliverResult, error) {
 	if s == nil || s.flows == nil {
 		return flowAssignmentDeliverResult{}, errors.New("flow store is not configured")
@@ -182,6 +190,27 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 	record = normalizeAPIFlowOutboxCommand(record)
 	if strings.TrimSpace(target.SwarmID) == "" {
 		target.SwarmID = strings.TrimSpace(record.TargetSwarmID)
+	}
+	if strings.EqualFold(strings.TrimSpace(target.Relationship), "self") || strings.EqualFold(strings.TrimSpace(target.Kind), "self") {
+		ack, _, err := s.applyFlowAssignmentCommandLocally(ctx, record.Command, strings.TrimSpace(target.SwarmID))
+		if err != nil {
+			updated, state, updateErr := s.markFlowAssignmentPending(record, flow.AssignmentTargetUnusable, err.Error(), nil)
+			if updateErr != nil {
+				return flowAssignmentDeliverResult{}, updateErr
+			}
+			return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, PendingSync: true}, nil
+		}
+		updated, state, err := s.applyFlowAssignmentAck(record, ack)
+		if err != nil {
+			return flowAssignmentDeliverResult{}, err
+		}
+		return flowAssignmentDeliverResult{
+			Outbox:          updated,
+			AssignmentState: state,
+			Ack:             ack,
+			Delivered:       ack.Status == flow.AssignmentAccepted || ack.Status == flow.AssignmentDuplicate,
+			PendingSync:     state.PendingSync,
+		}, nil
 	}
 	if strings.TrimSpace(target.BackendURL) == "" || !target.Online || !target.Selectable {
 		reason := firstNonEmpty(strings.TrimSpace(target.LastError), "target is not currently reachable")
