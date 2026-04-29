@@ -5,6 +5,7 @@ import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
+import { requestJson } from '../../../../app/api'
 import { ChatMarkdown } from '../../chat/components/chat-markdown'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 import {
@@ -174,14 +175,42 @@ function GenericPermissionModal({
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
   const [alwaysPreview, setAlwaysPreview] = useState('')
+  const [alwaysPreviewError, setAlwaysPreviewError] = useState('')
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
       setAlwaysPreview('')
+      setAlwaysPreviewError('')
     }
   }, [open, permission?.id])
+
+  useEffect(() => {
+    if (!open || !permission || !genericPermissionSupportsPersistentActions(permission)) {
+      return undefined
+    }
+
+    let cancelled = false
+    setAlwaysPreview('')
+    setAlwaysPreviewError('')
+
+    void permissionPersistentRulePreview(permission, sessionMode)
+      .then((preview) => {
+        if (!cancelled) {
+          setAlwaysPreview(preview)
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setAlwaysPreviewError(error instanceof Error ? error.message : String(error))
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, permission, sessionMode])
 
   if (!permission) {
     return null
@@ -203,6 +232,8 @@ function GenericPermissionModal({
 
   const persistentAllowed = genericPermissionSupportsPersistentActions(permission)
   const persistentRulePreview = alwaysPreview || genericPermissionPersistentRulePreview(permission)
+  const persistentRuleDescription = persistentRulePreview
+    || (alwaysPreviewError ? `Unable to preview reusable rule: ${alwaysPreviewError}` : 'Loading reusable policy rule preview…')
 
   return (
     <ModalShell
@@ -222,7 +253,7 @@ function GenericPermissionModal({
           <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
             <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Always allow prefix</div>
             <div className="mt-2 text-sm text-[var(--app-text-muted)]">
-              {persistentRulePreview || 'This approval can be saved as a reusable policy rule.'}
+              {persistentRuleDescription}
             </div>
           </div>
         ) : null}
@@ -1044,10 +1075,48 @@ function genericPermissionSupportsPersistentActions(permission: DesktopPermissio
   return toolName !== 'ask-user' && toolName !== 'exit_plan_mode'
 }
 
+interface PermissionExplainResponse {
+  explain?: {
+    rule_preview?: string
+  }
+}
+
+function bashPersistentPrefixFromRulePreview(preview: string): string {
+  const trimmed = preview.trim()
+  const match = /^(?:allow|deny)\s+bash(?:\s+command)?\s+prefix:\s*(.+)$/i.exec(trimmed)
+  return match?.[1]?.trim() || trimmed
+}
+
+async function permissionPersistentRulePreview(permission: DesktopPermissionRecord, sessionMode: string): Promise<string> {
+  const params = new URLSearchParams()
+  params.set('mode', (permission.mode || sessionMode).trim())
+  params.set('tool', permission.toolName.trim())
+  params.set('arguments', permission.toolArguments.trim())
+  const response = await requestJson<PermissionExplainResponse>(`/v1/permissions/explain?${params.toString()}`)
+  const preview = response.explain?.rule_preview?.trim() || ''
+  if (preview && permissionDisplayToolName(permission.toolName) === 'bash') {
+    return bashPersistentPrefixFromRulePreview(preview)
+  }
+  return preview || genericPermissionPersistentRulePreview(permission)
+}
+
 function genericPermissionPersistentRulePreview(permission: DesktopPermissionRecord): string {
+  const savedRule = permission.savedRule
+  if (savedRule?.kind?.trim().toLowerCase() === 'bash_prefix') {
+    return (savedRule.pattern || '').trim()
+  }
+  if (savedRule?.kind?.trim().toLowerCase() === 'tool') {
+    const decision = savedRule.decision?.trim() || 'allow'
+    const tool = savedRule.tool?.trim() || permissionDisplayToolName(permission.toolName)
+    return `${decision} tool: ${tool}`
+  }
+  if (savedRule?.kind?.trim().toLowerCase() === 'phrase') {
+    const decision = savedRule.decision?.trim() || 'allow'
+    return `${decision} phrase: ${(savedRule.pattern || '').trim()}`
+  }
   const toolName = permissionDisplayToolName(permission.toolName)
   if (toolName === 'bash') {
-    return 'bash'
+    return ''
   }
   return `allow tool: ${toolName}`
 }
