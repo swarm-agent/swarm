@@ -136,7 +136,7 @@ func permissionPrimaryRequestSummary(toolName string, payload map[string]any) st
 		if command == "" {
 			return "bash"
 		}
-		return "bash " + sanitizeCommandSnippetPreview(clampEllipsis(command, 120))
+		return "bash " + command
 	case "read":
 		path := strings.TrimSpace(jsonString(payload, "path"))
 		if path == "" {
