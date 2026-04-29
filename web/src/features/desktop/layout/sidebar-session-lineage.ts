@@ -64,7 +64,7 @@ function sessionHasBackgroundLineage(metadata: Record<string, unknown> | null): 
   const launchMode = metadataString(metadata, 'launch_mode').toLowerCase()
   const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
   const targetKind = metadataString(metadata, 'target_kind').toLowerCase()
-  return background || launchMode === 'background' || lineageKind === 'background_agent' || targetKind === 'background'
+  return background || launchMode === 'background' || lineageKind === 'background_agent' || lineageKind === 'flow' || targetKind === 'background'
 }
 
 export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSessionChildDescriptor {

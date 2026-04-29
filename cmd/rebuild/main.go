@@ -41,7 +41,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := launcher.BuildToolBinaries(root, map[string]bool{"rebuild": true}); err != nil {
+	if err := launcher.ForceBuildToolBinaries(root, map[string]bool{"rebuild": true}); err != nil {
 		return err
 	}
 	return launcher.Rebuild(profile, includeWeb, restartSystemd)

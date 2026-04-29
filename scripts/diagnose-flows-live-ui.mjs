@@ -690,7 +690,8 @@ async function runFlowNowFromDetail(page, flowID, flowName, opts, summary, recor
   await verifyFlowRunVisible(page, flowID, flowName, opts.runTimeoutMs, summary, 'host.run_now')
 }
 
-async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, label) {
+async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, label, options = {}) {
+  const requireControllerSession = options.requireControllerSession !== false
   const deadline = Date.now() + timeoutMs
   let last = null
   while (Date.now() < deadline) {
@@ -712,10 +713,11 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
     }
     summary.observations[`${label}.last_poll`] = last
     const latestRun = history.find((run) => String(run.flow_id || '').trim() === flowID) || history[0]
-    if (latestRun && String(latestRun.session_id || '').trim() && matchingSessions.length > 0) {
+    if (latestRun && String(latestRun.session_id || '').trim() && (!requireControllerSession || matchingSessions.length > 0)) {
       summary.observations[`${label}.verified`] = {
         run: summarizeRun(latestRun),
-        session: summarizeSession(matchingSessions[0]),
+        session: matchingSessions.length > 0 ? summarizeSession(matchingSessions[0]) : null,
+        controller_session_required: requireControllerSession,
       }
       const recentRuns = page.locator(selectors.recentRuns).first()
       if (await recentRuns.isVisible({ timeout: 1000 }).catch(() => false)) {
@@ -726,7 +728,8 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
     }
     await delay(3000)
   }
-  fail(`${label} did not appear in mirrored history and session list before timeout; last=${JSON.stringify(last)}`)
+  const expectation = requireControllerSession ? 'mirrored history and session list' : 'mirrored history'
+  fail(`${label} did not appear in ${expectation} before timeout; last=${JSON.stringify(last)}`)
 }
 
 function targetDefaultsForPhase(opts) {

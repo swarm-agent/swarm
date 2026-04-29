@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
 func TestPeerFlowApplyIsIdempotentAndRejectsOutOfOrder(t *testing.T) {
@@ -136,6 +138,76 @@ func TestFlowAssignmentDeliveryKeepsUnreachableTargetsPending(t *testing.T) {
 	}
 }
 
+func TestFlowAssignmentDeliveryTranslatesReplicatedWorkspacePath(t *testing.T) {
+	server, _ := newFlowPeerTestServer(t)
+	hostWorkspace := filepath.Join(t.TempDir(), "swarm-go")
+	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	if _, err := server.workspace.AddReplicationLink(hostWorkspace, pebblestore.WorkspaceReplicationLink{
+		ID:                  "pc-container",
+		TargetKind:          "local",
+		TargetSwarmID:       "child-container",
+		TargetSwarmName:     "pc container",
+		TargetWorkspacePath: "/root/swarm-go",
+		ReplicationMode:     workspaceruntime.ReplicationModeBundle,
+		Writable:            true,
+	}); err != nil {
+		t.Fatalf("add replication link: %v", err)
+	}
+
+	var delivered flow.AssignmentCommand
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != flowPeerApplyPath {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&delivered); err != nil {
+			t.Fatalf("decode child command: %v", err)
+		}
+		writeJSON(w, http.StatusOK, flowAssignmentApplyResponse{OK: true, Ack: flow.AssignmentAck{
+			CommandID:        delivered.CommandID,
+			FlowID:           delivered.FlowID,
+			AcceptedRevision: delivered.Revision,
+			Status:           flow.AssignmentAccepted,
+			TargetSwarmID:    "child-container",
+			TargetClock:      time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC),
+		}})
+	}))
+	defer child.Close()
+	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
+		SwarmID:      "child-container",
+		Name:         "pc container",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "pc-container",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   child.URL,
+	}}})
+	assignment := testAPIFlowAssignment("flow-replicated-workspace", 1)
+	assignment.Target = flow.TargetSelection{SwarmID: "child-container", Kind: "local", Name: "pc container", DeploymentID: "pc-container"}
+	assignment.Workspace = flow.WorkspaceContext{WorkspacePath: filepath.Join(hostWorkspace, "subdir"), CWD: filepath.Join(hostWorkspace, "subdir", "nested")}
+	command := testAPIFlowCommand("cmd-replicated-workspace", assignment, flow.CommandInstall)
+
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	if err != nil {
+		t.Fatalf("enqueue deliver: %v", err)
+	}
+	if !result.Delivered || result.Ack.Status != flow.AssignmentAccepted {
+		t.Fatalf("result = %+v", result)
+	}
+	if delivered.Assignment.Workspace.WorkspacePath != "/root/swarm-go/subdir" {
+		t.Fatalf("delivered workspace path = %q", delivered.Assignment.Workspace.WorkspacePath)
+	}
+	if delivered.Assignment.Workspace.CWD != "/root/swarm-go/subdir/nested" {
+		t.Fatalf("delivered cwd = %q", delivered.Assignment.Workspace.CWD)
+	}
+}
+
 func TestFlowAssignmentDeliveryStoresRejection(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,9 +278,11 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 	}
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, nil)
-	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
+	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
+	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
 	flows := pebblestore.NewFlowStore(store)
 	server.SetFlowStore(flows)
+	server.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
 	server.SetSwarmService(fakeRoutedSwarmService{
 		state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"}},
 		token: "peer-token",

@@ -448,11 +448,21 @@ function formatRelativeTime(timestamp: number | null, now: number): string {
   return `${days} day${days === 1 ? '' : 's'} ago`
 }
 
+function metadataString(metadata: Record<string, unknown> | undefined, key: string): string {
+  const value = metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 function sessionOriginLabel(session: DesktopSessionRecord, fallbackSwarmName: string): string {
   const route = loadDesktopChatRouteForSession(session.id)
   const routeLabel = route?.label?.trim() ?? ''
   if (routeLabel) {
     return routeLabel
+  }
+  const targetLabel = metadataString(session.metadata, 'swarm_target_name')
+    || metadataString(session.metadata, 'target_display_name')
+  if (targetLabel) {
+    return targetLabel
   }
   const normalizedFallback = fallbackSwarmName.trim()
   return normalizedFallback || 'host'

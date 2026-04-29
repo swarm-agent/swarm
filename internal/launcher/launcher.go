@@ -486,6 +486,14 @@ func FindGoBin(root string) (string, error) {
 }
 
 func BuildToolBinaries(root string, skip map[string]bool) error {
+	return buildToolBinaries(root, skip, false)
+}
+
+func ForceBuildToolBinaries(root string, skip map[string]bool) error {
+	return buildToolBinaries(root, skip, true)
+}
+
+func buildToolBinaries(root string, skip map[string]bool, force bool) error {
 	goBin, err := FindGoBin(root)
 	if err != nil {
 		return err
@@ -514,12 +522,14 @@ func BuildToolBinaries(root string, skip map[string]bool) error {
 			continue
 		}
 		outPath := filepath.Join(toolDir, command.Name)
-		needsBuild, err := binaryNeedsRebuild(outPath, toolBuildDeps(root, command.Name)...)
-		if err != nil {
-			return err
-		}
-		if !needsBuild {
-			continue
+		if !force {
+			needsBuild, err := binaryNeedsRebuild(outPath, toolBuildDeps(root, command.Name)...)
+			if err != nil {
+				return err
+			}
+			if !needsBuild {
+				continue
+			}
 		}
 		workDir := root
 		if strings.TrimSpace(command.WorkDir) != "" {
@@ -1287,7 +1297,7 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding launcher/tool binaries.", "")
-	if err := BuildToolBinaries(profile.Root, map[string]bool{"rebuild": true}); err != nil {
+	if err := ForceBuildToolBinaries(profile.Root, map[string]bool{"rebuild": true}); err != nil {
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding Swarm TUI.", "")

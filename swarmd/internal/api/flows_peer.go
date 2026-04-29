@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
 const flowPeerApplyPath = "/v1/swarm/peer/flows/apply"
@@ -139,6 +142,7 @@ func (s *Server) DeliverPendingFlowAssignmentCommands(ctx context.Context, limit
 
 func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCommand, target swarmTarget, resolved flow.ResolvedTarget) (pebblestore.FlowOutboxCommandRecord, error) {
 	command = normalizeAPIFlowAssignmentCommand(command)
+	command.Assignment.Workspace = s.flowWorkspaceForTarget(command.Assignment.Workspace, target, resolved)
 	if err := command.ValidateIdempotencyKey(); err != nil {
 		return pebblestore.FlowOutboxCommandRecord{}, err
 	}
@@ -389,6 +393,134 @@ func normalizeFlowTargetSelection(selection flow.TargetSelection) flow.TargetSel
 	selection.DeploymentID = strings.TrimSpace(selection.DeploymentID)
 	selection.Name = strings.TrimSpace(selection.Name)
 	return selection
+}
+
+func (s *Server) flowWorkspaceForTarget(workspace flow.WorkspaceContext, target swarmTarget, resolved flow.ResolvedTarget) flow.WorkspaceContext {
+	workspace.WorkspacePath = strings.TrimSpace(workspace.WorkspacePath)
+	workspace.CWD = strings.TrimSpace(workspace.CWD)
+	workspace.WorktreeMode = strings.TrimSpace(workspace.WorktreeMode)
+	if workspace.WorkspacePath == "" || s == nil || s.workspace == nil || isSelfFlowTarget(target, resolved) {
+		return workspace
+	}
+	translated := s.resolveReplicatedFlowWorkspacePath(workspace.WorkspacePath, target, resolved)
+	if translated == "" || translated == workspace.WorkspacePath {
+		return workspace
+	}
+	workspace.CWD = translateFlowSubpath(workspace.WorkspacePath, translated, workspace.CWD)
+	workspace.WorkspacePath = translated
+	return workspace
+}
+
+func (s *Server) resolveReplicatedFlowWorkspacePath(hostWorkspacePath string, target swarmTarget, resolved flow.ResolvedTarget) string {
+	if s == nil || s.workspace == nil {
+		return ""
+	}
+	hostWorkspacePath = filepath.Clean(strings.TrimSpace(hostWorkspacePath))
+	if hostWorkspacePath == "." || hostWorkspacePath == string(filepath.Separator) {
+		return ""
+	}
+	targetSwarmID := firstNonEmpty(strings.TrimSpace(resolved.SwarmID), strings.TrimSpace(target.SwarmID))
+	targetKind := firstNonEmpty(strings.TrimSpace(resolved.Kind), strings.TrimSpace(target.Kind))
+	deploymentID := firstNonEmpty(strings.TrimSpace(resolved.DeploymentID), strings.TrimSpace(target.DeploymentID))
+	entries, err := s.workspace.ListKnown(100000)
+	if err != nil {
+		return ""
+	}
+	bestSource := ""
+	bestTarget := ""
+	for _, entry := range entries {
+		for _, link := range entry.ReplicationLinks {
+			targetPath := strings.TrimSpace(link.TargetWorkspacePath)
+			if targetPath == "" || !flowReplicationLinkMatchesTarget(link, targetSwarmID, targetKind, deploymentID) {
+				continue
+			}
+			for _, source := range flowWorkspaceLinkSources(entry) {
+				if !flowPathWithinRoot(source, hostWorkspacePath) {
+					continue
+				}
+				if len(source) > len(bestSource) {
+					bestSource = source
+					bestTarget = targetPath
+				}
+			}
+		}
+	}
+	if bestSource == "" || bestTarget == "" {
+		return ""
+	}
+	return translateFlowSubpath(bestSource, bestTarget, hostWorkspacePath)
+}
+
+func isSelfFlowTarget(target swarmTarget, resolved flow.ResolvedTarget) bool {
+	return strings.EqualFold(strings.TrimSpace(target.Relationship), "self") ||
+		strings.EqualFold(strings.TrimSpace(target.Kind), "self") ||
+		strings.EqualFold(strings.TrimSpace(resolved.Relationship), "self") ||
+		strings.EqualFold(strings.TrimSpace(resolved.Kind), "self")
+}
+
+func flowReplicationLinkMatchesTarget(link pebblestore.WorkspaceReplicationLink, targetSwarmID, targetKind, deploymentID string) bool {
+	if targetSwarmID != "" && strings.EqualFold(strings.TrimSpace(link.TargetSwarmID), targetSwarmID) {
+		return true
+	}
+	if deploymentID != "" && strings.EqualFold(strings.TrimSpace(link.ID), deploymentID) {
+		return true
+	}
+	if targetKind != "" && strings.TrimSpace(link.TargetSwarmID) == "" && strings.EqualFold(strings.TrimSpace(link.TargetKind), targetKind) {
+		return true
+	}
+	return false
+}
+
+func flowWorkspaceLinkSources(entry workspaceruntime.Entry) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 1+len(entry.Directories))
+	for _, raw := range append([]string{entry.Path}, entry.Directories...) {
+		source := strings.TrimSpace(raw)
+		if source == "" {
+			continue
+		}
+		source = filepath.Clean(source)
+		if _, ok := seen[source]; ok {
+			continue
+		}
+		seen[source] = struct{}{}
+		out = append(out, source)
+	}
+	return out
+}
+
+func flowPathWithinRoot(root, candidate string) bool {
+	root = filepath.Clean(strings.TrimSpace(root))
+	candidate = filepath.Clean(strings.TrimSpace(candidate))
+	if root == "" || candidate == "" {
+		return false
+	}
+	if root == candidate {
+		return true
+	}
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
+}
+
+func translateFlowSubpath(sourceRoot, targetRoot, candidate string) string {
+	sourceRoot = filepath.Clean(strings.TrimSpace(sourceRoot))
+	targetRoot = strings.TrimRight(strings.TrimSpace(targetRoot), "/")
+	candidate = strings.TrimSpace(candidate)
+	if sourceRoot == "" || targetRoot == "" || candidate == "" {
+		return candidate
+	}
+	cleanCandidate := filepath.Clean(candidate)
+	rel, err := filepath.Rel(sourceRoot, cleanCandidate)
+	if err != nil || rel == "." {
+		return targetRoot
+	}
+	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return candidate
+	}
+	return path.Join(targetRoot, filepath.ToSlash(rel))
 }
 
 func flowTargetMatchesSelection(target swarmTarget, selection flow.TargetSelection) bool {
