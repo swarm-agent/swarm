@@ -181,6 +181,7 @@ for required_path in \
   "${BUILD_INFO}" \
   "${SWARMD_DIST_DIR}/swarmd" \
   "${SWARMD_DIST_DIR}/swarmctl" \
+  "${SWARMD_DIST_DIR}/swarm-fff-search" \
   "${SWARMD_DIST_DIR}/libfff_c.so" \
   "${WEB_DIST_DIR}" \
   "${ROOT_DIR}/deploy/container-mvp/Containerfile.base" \
@@ -229,6 +230,7 @@ mkdir -p "${OUTPUT_DIR}" "${ROOT_DIR}/.bin/main" "${ROOT_DIR}/web/dist"
 
 install -m 0755 "${SWARMD_DIST_DIR}/swarmd" "${ROOT_DIR}/.bin/main/swarmd"
 install -m 0755 "${SWARMD_DIST_DIR}/swarmctl" "${ROOT_DIR}/.bin/main/swarmctl"
+install -m 0755 "${SWARMD_DIST_DIR}/swarm-fff-search" "${ROOT_DIR}/.bin/main/swarm-fff-search"
 install -m 0755 "${SWARMD_DIST_DIR}/libfff_c.so" "${ROOT_DIR}/swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so"
 rm -rf "${ROOT_DIR}/web/dist"
 mkdir -p "${ROOT_DIR}/web/dist"
@@ -311,6 +313,7 @@ workspace_root="$(join_path workspaces)"
 required_execs=(
   "${usr_local}/bin/swarmd"
   "${usr_local}/bin/swarmctl"
+  "${usr_local}/bin/swarm-fff-search"
   "${usr_local}/bin/tailscale"
   "${usr_local}/bin/tailscaled"
   "${usr_local}/bin/swarm-container-entrypoint"
@@ -366,6 +369,7 @@ fi
 # Smoke the dynamic linker without starting the daemon.
 ldd "${usr_local}/bin/swarmd" >/dev/null
 ldd "${usr_local}/bin/swarmctl" >/dev/null
+ldd "${usr_local}/bin/swarm-fff-search" >/dev/null
 '
 
 label_contract="$(runtime_image_label "${IMAGE_NAME}" "swarmagent.image.contract")"

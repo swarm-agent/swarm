@@ -415,6 +415,7 @@ func installRuntimeTreeFromArtifact(runtimeRoot, artifactRoot string) error {
 		{name: "swarmtui", source: filepath.Join(rootArtifactDir, "swarmtui"), target: filepath.Join(binDir, "swarmtui"), executable: true},
 		{name: "swarmd", source: filepath.Join(swarmdArtifactDir, "swarmd"), target: filepath.Join(binDir, "swarmd"), executable: true},
 		{name: "swarmctl", source: filepath.Join(swarmdArtifactDir, "swarmctl"), target: filepath.Join(binDir, "swarmctl"), executable: true},
+		{name: "swarm-fff-search", source: filepath.Join(swarmdArtifactDir, "swarm-fff-search"), target: filepath.Join(binDir, "swarm-fff-search"), executable: true},
 		{name: "libfff_c.so", source: filepath.Join(swarmdArtifactDir, "libfff_c.so"), target: filepath.Join(libDir, "libfff_c.so"), executable: false},
 	}
 	for _, item := range requiredFiles {

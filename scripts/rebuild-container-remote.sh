@@ -67,6 +67,12 @@ build_container_artifacts() {
     GOPATH="${GOPATH_DIR}" \
     GOTOOLCHAIN="${GOTOOLCHAIN}" \
     "${GO_BIN}" build -trimpath -o "${BIN_DIR}/swarmctl" ./cmd/swarmctl
+
+    GOCACHE="${GOCACHE_DIR}" \
+    GOMODCACHE="${GOMODCACHE_DIR}" \
+    GOPATH="${GOPATH_DIR}" \
+    GOTOOLCHAIN="${GOTOOLCHAIN}" \
+    "${GO_BIN}" build -trimpath -o "${BIN_DIR}/swarm-fff-search" ./cmd/swarm-fff-search
   )
 
   echo "[rebuild-container-remote] building web assets"

@@ -28,6 +28,7 @@ import (
 	"swarm/packages/swarmd/internal/fff"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	todoruntime "swarm/packages/swarmd/internal/todo"
+	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -108,6 +109,7 @@ const (
 	defaultWebDownloadDir               = ".swarm/downloads"
 	defaultExaSearchURL                 = "https://api.exa.ai/search"
 	defaultExaContentsURL               = "https://api.exa.ai/contents"
+	fffSearchHelperBinaryName           = "swarm-fff-search"
 	manageThemeActionInspect            = "inspect"
 	manageThemeActionGet                = "get"
 	manageThemeActionCreate             = "create"
@@ -1778,17 +1780,22 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	inst, _, err := fff.Create(searchRoot, false)
+	helperResp, err := executeSearchHelper(ctx, searchipc.Request{
+		SearchRoot:    searchRoot,
+		Queries:       queries,
+		Include:       include,
+		MaxResults:    maxResults,
+		PageLimit:     uint32(maxResults + searchResultPageSlack),
+		TimeoutMillis: timeout.Milliseconds(),
+		AfterContext:  searchDefinitionAfterContext,
+	})
 	if err != nil {
-		return "", fmt.Errorf("search FFF create failed: %w", err)
+		return "", err
 	}
-	defer inst.Destroy()
-
-	completed, _, err := inst.WaitForScan(timeout)
-	if err != nil {
-		return "", fmt.Errorf("search FFF scan wait failed: %w", err)
+	if strings.TrimSpace(helperResp.HelperError) != "" {
+		return "", fmt.Errorf("search FFF helper failed: %s", helperResp.HelperError)
 	}
-	if !completed {
+	if !helperResp.Completed {
 		results := make([]searchQueryExecution, len(queries))
 		for i, query := range queries {
 			results[i] = searchQueryExecution{Query: query, Mode: "content", Truncated: true, TimedOut: true}
@@ -1799,37 +1806,159 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		return "", err
 	}
 
-	var (
-		contentResults []searchQueryExecution
-		contentErrors  []error
-	)
-	if len(queries) == 1 {
-		result, err := executeSearchContentQuery(inst, searchRoot, queries[0], include, maxResults, timeout)
-		contentResults = []searchQueryExecution{result}
-		if err != nil {
-			contentErrors = []error{fmt.Errorf("query %q: %w", queries[0], err)}
-		}
-	} else {
-		result, err := executeSearchMultiContentQuery(inst, searchRoot, queries, include, maxResults, timeout)
-		contentResults = []searchQueryExecution{result}
-		if err != nil {
-			contentErrors = []error{fmt.Errorf("multi-grep %q: %w", strings.Join(queries, " | "), err)}
-		}
-	}
+	contentResults, contentErrors := searchHelperContentResults(helperResp.Content, searchRoot, queries, include, maxResults)
 	if len(contentErrors) == 0 || ctx.Err() != nil {
 		return encodeSearchPayload(selectSearchContentPayload(payloadStyle, searchRoot, queries, include, contentResults, maxResults))
 	}
 
-	workers := searchWorkerCount(r, len(queries))
-	fileResults, fileErrors := executeSearchQueryBatch(ctx, queries, workers, func(query string) (searchQueryExecution, error) {
-		return executeSearchFileQuery(inst, searchRoot, query, include, maxResults)
-	})
+	fileResults, fileErrors := searchHelperFileResults(helperResp.FileResults, searchRoot, queries, include, maxResults)
 	if len(fileErrors) > 0 {
 		return "", fmt.Errorf("search query execution failed: content mode: %s; file mode: %s", formatSearchQueryErrors(contentErrors), formatSearchQueryErrors(fileErrors))
 	}
 	payload := selectSearchFilePayload(payloadStyle, searchRoot, queries, include, fileResults, maxResults)
 	payload["content_search_error"] = formatSearchQueryErrors(contentErrors)
 	return encodeSearchPayload(payload)
+}
+
+func executeSearchHelper(ctx context.Context, req searchipc.Request) (searchipc.Response, error) {
+	helperPath, err := resolveSearchHelperPath()
+	if err != nil {
+		return searchipc.Response{}, err
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return searchipc.Response{}, fmt.Errorf("marshal FFF search helper request: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, helperPath)
+	cmd.Stdin = bytes.NewReader(payload)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return searchipc.Response{}, fmt.Errorf("search FFF helper timed out or was cancelled: %w", ctxErr)
+		}
+		return searchipc.Response{}, fmt.Errorf("search FFF helper exited: %w%s", err, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
+	}
+	var resp searchipc.Response
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		return searchipc.Response{}, fmt.Errorf("decode FFF search helper response: %w%s", err, formatSearchHelperDiagnostic(stderr.String(), stdout.String()))
+	}
+	return resp, nil
+}
+
+func resolveSearchHelperPath() (string, error) {
+	if configured := strings.TrimSpace(os.Getenv("SWARM_FFF_SEARCH_HELPER")); configured != "" {
+		if isExecutableFile(configured) {
+			return configured, nil
+		}
+		return "", fmt.Errorf("configured FFF search helper is not executable: %s", configured)
+	}
+	candidates := make([]string, 0, 3)
+	if binDir := strings.TrimSpace(os.Getenv("SWARM_BIN_DIR")); binDir != "" {
+		candidates = append(candidates, filepath.Join(binDir, fffSearchHelperBinaryName))
+	}
+	if exe, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), fffSearchHelperBinaryName))
+	}
+	for _, candidate := range candidates {
+		if isExecutableFile(candidate) {
+			return candidate, nil
+		}
+	}
+	if path, err := exec.LookPath(fffSearchHelperBinaryName); err == nil && isExecutableFile(path) {
+		return path, nil
+	}
+	return "", fmt.Errorf("FFF search helper %q is not installed; rebuild or reinstall swarmd binaries", fffSearchHelperBinaryName)
+}
+
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0o111 != 0
+}
+
+func formatSearchHelperDiagnostic(stderrText, stdoutText string) string {
+	detail := strings.TrimSpace(stderrText)
+	if detail == "" {
+		detail = strings.TrimSpace(stdoutText)
+	}
+	if detail == "" {
+		return ""
+	}
+	detail = strings.ReplaceAll(strings.ReplaceAll(detail, "\r", " "), "\n", " ")
+	if len(detail) > 500 {
+		detail = detail[:500] + "..."
+	}
+	return ": " + detail
+}
+
+func searchHelperContentResults(resp searchipc.GrepQueryResult, searchRoot string, queries []string, include string, maxResults int) ([]searchQueryExecution, []error) {
+	query := strings.TrimSpace(resp.Query)
+	if query == "" {
+		query = firstSearchQuery(queries)
+	}
+	result := searchQueryExecution{Query: query, Mode: "content"}
+	if strings.TrimSpace(resp.Error) != "" {
+		result.Error = strings.TrimSpace(resp.Error)
+		return []searchQueryExecution{result}, []error{formatSearchContentHelperError(queries, result.Error)}
+	}
+	collectQuery := query
+	if len(queries) > 1 {
+		collectQuery = ""
+	}
+	rows, totals, truncated, timedOut, _ := collectSearchContentRows(collectQuery, searchRoot, include, resp.Matches, resp.Metrics, maxResults)
+	result.ContentRows = rows
+	result.Totals = totals
+	result.ReturnedCount = len(rows)
+	result.Truncated = truncated
+	result.TimedOut = timedOut
+	return []searchQueryExecution{result}, nil
+}
+
+func formatSearchContentHelperError(queries []string, message string) error {
+	message = strings.TrimSpace(message)
+	if len(queries) == 1 {
+		return fmt.Errorf("query %q: %s", firstSearchQuery(queries), message)
+	}
+	return fmt.Errorf("multi-grep %q: %s", strings.Join(queries, " | "), message)
+}
+
+func searchHelperFileResults(helperResults []searchipc.SearchQueryResult, searchRoot string, queries []string, include string, maxResults int) ([]searchQueryExecution, []error) {
+	byQuery := make(map[string]searchipc.SearchQueryResult, len(helperResults))
+	for _, result := range helperResults {
+		byQuery[strings.ToLower(strings.TrimSpace(result.Query))] = result
+	}
+	results := make([]searchQueryExecution, 0, len(queries))
+	errs := make([]error, 0, len(queries))
+	for _, query := range queries {
+		helperResult, ok := byQuery[strings.ToLower(strings.TrimSpace(query))]
+		result := searchQueryExecution{Query: query, Mode: "files"}
+		if !ok {
+			err := fmt.Errorf("query %q: FFF search helper did not return file-mode results", query)
+			result.Error = err.Error()
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		if strings.TrimSpace(helperResult.Error) != "" {
+			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
+			result.Error = strings.TrimSpace(helperResult.Error)
+			results = append(results, result)
+			errs = append(errs, err)
+			continue
+		}
+		rows, totals, truncated := collectSearchFileRows(query, searchRoot, include, helperResult.Items, helperResult.Metrics, maxResults)
+		result.FileRows = rows
+		result.Totals = totals
+		result.ReturnedCount = len(rows)
+		result.Truncated = truncated
+		results = append(results, result)
+	}
+	return results, errs
 }
 
 func selectSearchContentPayload(style, searchRoot string, queries []string, include string, results []searchQueryExecution, maxResults int) map[string]any {
@@ -1855,15 +1984,6 @@ func encodeSearchPayload(payload map[string]any) (string, error) {
 }
 
 func buildFFFGrepQuery(include, pattern string) string {
-	pattern = strings.TrimSpace(pattern)
-	include = strings.TrimSpace(include)
-	if include == "" {
-		return pattern
-	}
-	return include + " " + pattern
-}
-
-func buildFFFSearchQuery(include, pattern string) string {
 	pattern = strings.TrimSpace(pattern)
 	include = strings.TrimSpace(include)
 	if include == "" {
@@ -1932,11 +2052,6 @@ type searchAggregateTotals struct {
 	RegexFallbackError string
 }
 
-type searchQueryBatchJob struct {
-	Index int
-	Query string
-}
-
 func parseSearchQueries(args map[string]any) ([]string, error) {
 	queries := make([]string, 0, 8)
 	if single := strings.TrimSpace(asString(args["query"])); single != "" {
@@ -1977,138 +2092,6 @@ func firstSearchQuery(queries []string) string {
 		return ""
 	}
 	return strings.TrimSpace(queries[0])
-}
-
-func searchWorkerCount(r *Runtime, queryCount int) int {
-	if queryCount <= 0 {
-		return 1
-	}
-	workers := 4
-	if r != nil && r.maxParallel > 0 {
-		workers = r.maxParallel
-	}
-	if workers > queryCount {
-		workers = queryCount
-	}
-	if workers <= 0 {
-		workers = 1
-	}
-	return workers
-}
-
-func executeSearchQueryBatch(ctx context.Context, queries []string, workers int, runner func(string) (searchQueryExecution, error)) ([]searchQueryExecution, []error) {
-	results := make([]searchQueryExecution, len(queries))
-	if len(queries) == 0 {
-		return results, nil
-	}
-	if workers <= 0 {
-		workers = 1
-	}
-	if workers > len(queries) {
-		workers = len(queries)
-	}
-
-	jobs := make(chan searchQueryBatchJob, len(queries))
-	for idx, query := range queries {
-		jobs <- searchQueryBatchJob{Index: idx, Query: query}
-	}
-	close(jobs)
-
-	errSlots := make([]error, len(queries))
-	var wg sync.WaitGroup
-	for worker := 0; worker < workers; worker++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				if err := ctx.Err(); err != nil {
-					results[job.Index] = searchQueryExecution{
-						Query:     job.Query,
-						Mode:      "content",
-						Truncated: true,
-						TimedOut:  errors.Is(err, context.DeadlineExceeded),
-						Error:     strings.TrimSpace(err.Error()),
-					}
-					errSlots[job.Index] = fmt.Errorf("query %q: %w", job.Query, err)
-					continue
-				}
-				result, err := runner(job.Query)
-				if strings.TrimSpace(result.Query) == "" {
-					result.Query = job.Query
-				}
-				if result.ReturnedCount == 0 {
-					result.ReturnedCount = len(result.ContentRows) + len(result.FileRows)
-				}
-				results[job.Index] = result
-				if err != nil {
-					errSlots[job.Index] = fmt.Errorf("query %q: %w", job.Query, err)
-				}
-			}
-		}()
-	}
-	wg.Wait()
-
-	errs := make([]error, 0, len(errSlots))
-	for _, err := range errSlots {
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return results, errs
-}
-
-func executeSearchContentQuery(inst *fff.Instance, searchRoot, query, include string, maxResults int, timeout time.Duration) (searchQueryExecution, error) {
-	result := searchQueryExecution{Query: query, Mode: "content"}
-	pageLimit := uint32(maxResults + searchResultPageSlack)
-	matches, metrics, err := inst.GrepWithConfig(buildFFFGrepQuery(include, query), fff.GrepOptions{
-		PageLimit:           pageLimit,
-		TimeBudget:          timeout,
-		AfterContext:        searchDefinitionAfterContext,
-		ClassifyDefinitions: true,
-	})
-	if err != nil {
-		result.Error = strings.TrimSpace(err.Error())
-		return result, err
-	}
-	rows, totals, truncated, timedOut, _ := collectSearchContentRows(query, searchRoot, include, matches, metrics, maxResults)
-	result.ContentRows = rows
-	result.Totals = totals
-	result.ReturnedCount = len(rows)
-	result.Truncated = truncated
-	result.TimedOut = timedOut
-	return result, nil
-}
-
-func executeSearchMultiContentQuery(inst *fff.Instance, searchRoot string, queries []string, include string, maxResults int, timeout time.Duration) (searchQueryExecution, error) {
-	result := searchQueryExecution{Query: firstSearchQuery(queries), Mode: "content"}
-	pageLimit := uint32(maxResults + searchResultPageSlack)
-	matches, metrics, err := inst.MultiGrepWithOptions(compactSearchQueries(queries), include, pageLimit, timeout, 0, 0, searchDefinitionAfterContext, true)
-	if err != nil {
-		result.Error = strings.TrimSpace(err.Error())
-		return result, err
-	}
-	rows, totals, truncated, timedOut, _ := collectSearchContentRows("", searchRoot, include, matches, metrics, maxResults)
-	result.ContentRows = rows
-	result.Totals = totals
-	result.ReturnedCount = len(rows)
-	result.Truncated = truncated
-	result.TimedOut = timedOut
-	return result, nil
-}
-
-func executeSearchFileQuery(inst *fff.Instance, searchRoot, query, include string, maxResults int) (searchQueryExecution, error) {
-	result := searchQueryExecution{Query: query, Mode: "files"}
-	items, metrics, err := inst.SearchWithOptions(buildFFFSearchQuery(include, query), uint32(maxResults+1), 0)
-	if err != nil {
-		result.Error = strings.TrimSpace(err.Error())
-		return result, err
-	}
-	rows, totals, truncated := collectSearchFileRows(query, searchRoot, include, items, metrics, maxResults)
-	result.FileRows = rows
-	result.Totals = totals
-	result.ReturnedCount = len(rows)
-	result.Truncated = truncated
-	return result, nil
 }
 
 func collectSearchContentRows(query, searchRoot, include string, matches []fff.GrepMatch, metrics fff.GrepMetrics, maxResults int) ([]searchContentRow, searchAggregateTotals, bool, bool, string) {

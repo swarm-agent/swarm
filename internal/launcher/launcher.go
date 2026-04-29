@@ -564,6 +564,9 @@ func BuildSwarmdBinaries(profile Profile) error {
 	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmctl"), "./cmd/swarmctl"); err != nil {
 		return err
 	}
+	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarm-fff-search"), "./cmd/swarm-fff-search"); err != nil {
+		return err
+	}
 	if err := copyFile(filepath.Join(swarmdRoot, "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so"), filepath.Join(profile.LibDir, "libfff_c.so")); err != nil {
 		return err
 	}
@@ -1077,9 +1080,18 @@ func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []st
 		return "", nil, err
 	}
 	backendPath := filepath.Join(profile.BinDir, "swarmd")
+	helperPath := filepath.Join(profile.BinDir, "swarm-fff-search")
 	if !isExecutable(backendPath) {
 		if !opts.BuildIfMissing {
 			return "", nil, missingInstalledBinaryError("swarmd", backendPath)
+		}
+		if err := BuildSwarmdBinaries(profile); err != nil {
+			return "", nil, err
+		}
+	}
+	if !isExecutable(helperPath) {
+		if !opts.BuildIfMissing {
+			return "", nil, missingInstalledBinaryError("swarm-fff-search", helperPath)
 		}
 		if err := BuildSwarmdBinaries(profile); err != nil {
 			return "", nil, err

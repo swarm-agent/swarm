@@ -233,6 +233,7 @@ join_path() {
 required_execs=(
   /usr/local/bin/swarmd
   /usr/local/bin/swarmctl
+  /usr/local/bin/swarm-fff-search
   /usr/local/bin/tailscale
   /usr/local/bin/tailscaled
   /usr/local/bin/swarm-container-entrypoint

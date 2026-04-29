@@ -3,10 +3,11 @@ FROM ${SWARM_BASE_IMAGE}
 
 COPY .bin/main/swarmd /usr/local/bin/swarmd
 COPY .bin/main/swarmctl /usr/local/bin/swarmctl
+COPY .bin/main/swarm-fff-search /usr/local/bin/swarm-fff-search
 COPY swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so /usr/local/lib/libfff_c.so
 COPY web/dist /opt/swarm/web/dist
 COPY deploy/container-mvp/entrypoint.sh /usr/local/bin/swarm-container-entrypoint
 
-RUN chmod 0755 /usr/local/bin/swarmd /usr/local/bin/swarmctl /usr/local/bin/swarm-container-entrypoint
+RUN chmod 0755 /usr/local/bin/swarmd /usr/local/bin/swarmctl /usr/local/bin/swarm-fff-search /usr/local/bin/swarm-container-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/swarm-container-entrypoint"]

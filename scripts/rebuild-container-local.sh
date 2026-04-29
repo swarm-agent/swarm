@@ -66,11 +66,11 @@ stage_container_binaries() {
   local target_bin_dir="${ROOT_DIR}/.bin/main"
   mkdir -p "${target_bin_dir}"
 
-  if [[ ! -x "${source_bin_dir}/swarmd" || ! -x "${source_bin_dir}/swarmctl" ]]; then
+  if [[ ! -x "${source_bin_dir}/swarmd" || ! -x "${source_bin_dir}/swarmctl" || ! -x "${source_bin_dir}/swarm-fff-search" ]]; then
     source_bin_dir="${ROOT_DIR}/.bin/main"
   fi
 
-  for binary_name in swarmd swarmctl; do
+  for binary_name in swarmd swarmctl swarm-fff-search; do
     local source_path="${source_bin_dir}/${binary_name}"
     local target_path="${target_bin_dir}/${binary_name}"
     if [[ ! -x "${source_path}" ]]; then

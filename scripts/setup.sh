@@ -129,6 +129,7 @@ SWARM_LANE=main GO_BIN="${GO_BIN}" "${ROOT_DIR}/scripts/dev-build.sh"
 swarm_lane_export_profile main "${ROOT_DIR}"
 require_executable "${SWARM_BIN_DIR}/swarmd"
 require_executable "${SWARM_BIN_DIR}/swarmctl"
+require_executable "${SWARM_BIN_DIR}/swarm-fff-search"
 require_executable "${SWARM_BIN_DIR}/swarmtui"
 
 echo "building dev-lane binaries..."
@@ -137,6 +138,7 @@ SWARM_LANE=dev GO_BIN="${GO_BIN}" "${ROOT_DIR}/scripts/dev-build.sh"
 swarm_lane_export_profile dev "${ROOT_DIR}"
 require_executable "${SWARM_BIN_DIR}/swarmd"
 require_executable "${SWARM_BIN_DIR}/swarmctl"
+require_executable "${SWARM_BIN_DIR}/swarm-fff-search"
 require_executable "${SWARM_BIN_DIR}/swarmtui"
 
 if [[ "${install_web}" == "1" ]]; then

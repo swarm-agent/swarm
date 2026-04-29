@@ -30,7 +30,7 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 			t.Fatalf("write %s: %v", path, err)
 		}
 	}
-	for _, name := range []string{"swarmd", "swarmctl"} {
+	for _, name := range []string{"swarmd", "swarmctl", "swarm-fff-search"} {
 		path := filepath.Join(platformRoot, "swarmd", name)
 		if err := os.WriteFile(path, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
 			t.Fatalf("write %s: %v", path, err)
@@ -68,6 +68,7 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 		filepath.Join("bin", "swarmtui"),
 		filepath.Join("bin", "swarmd"),
 		filepath.Join("bin", "swarmctl"),
+		filepath.Join("bin", "swarm-fff-search"),
 		filepath.Join("lib", "libfff_c.so"),
 		filepath.Join("share", "index.html"),
 		filepath.Join("share", "assets", "app.js"),
