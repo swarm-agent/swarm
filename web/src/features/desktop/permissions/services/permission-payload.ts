@@ -1357,6 +1357,24 @@ function inlinePermissionValue(value: string): string {
   return `\`${trimmed}\``
 }
 
+function stripWrappingBackticks(value: string): string {
+  let trimmed = value.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  const fenceMatch = trimmed.match(/^```[^\n`]*\n([\s\S]*?)\n```$/)
+  if (fenceMatch) {
+    trimmed = fenceMatch[1].trim()
+  }
+
+  if (trimmed.length >= 2 && trimmed.startsWith('`') && trimmed.endsWith('`')) {
+    trimmed = trimmed.slice(1, -1).trim()
+  }
+
+  return trimmed
+}
+
 function permissionScalarValue(key: string, value: string | number | boolean | null): string {
   if (value === null) {
     return '`null`'
@@ -1403,18 +1421,22 @@ function shouldRenderPermissionArgumentBlock(key: string, value: string): boolea
 
 function permissionArgumentBlockMarkdown(toolName: string, key: string, value: unknown): string {
   const label = permissionArgumentLabel(key)
+  const normalizedTool = normalizePermissionToolName(toolName)
+  const normalizedKey = key.trim().toLowerCase()
   if (typeof value === 'string') {
-    const trimmed = value.trim()
+    const trimmed = normalizedTool === 'bash' && normalizedKey === 'command'
+      ? stripWrappingBackticks(value)
+      : value.trim()
     if (!trimmed) {
       return `- **${label}:** (empty)`
+    }
+    if (normalizedTool === 'bash' && normalizedKey === 'command') {
+      return [`**${label}**`, '', '```bash', trimmed, '```'].join('\n')
     }
     if (shouldRenderPermissionArgumentBlock(key, trimmed)) {
       const language = permissionArgumentCodeLanguage(toolName, key)
       const fence = language ? `\`\`\`${language}` : '```'
       return [`**${label}**`, '', fence, trimmed, '```'].join('\n')
-    }
-    if (normalizePermissionToolName(toolName) === 'bash' && key.trim().toLowerCase() === 'command') {
-      return permissionScalarValue(key, trimmed)
     }
     return `- **${label}:** ${permissionScalarValue(key, trimmed)}`
   }
@@ -1443,13 +1465,13 @@ function buildPermissionArgumentsMarkdown(permission: DesktopPermissionRecord): 
   const normalized = normalizePermissionPayloadValue(payload) as Record<string, unknown>
 
   if (normalizePermissionToolName(permission.toolName) === 'bash') {
-    const command = typeof normalized.command === 'string' ? normalized.command.trim() : ''
+    const command = typeof normalized.command === 'string' ? stripWrappingBackticks(normalized.command) : ''
     const supportingFields = orderedPermissionArguments(permission.toolName, normalized)
       .filter(([key]) => !['command', 'timeout_ms', 'yield_time_ms', 'max_output_tokens'].includes(key.trim().toLowerCase()))
       .map(([key, value]) => permissionArgumentBlockMarkdown(permission.toolName, key, value))
 
     if (command) {
-      return [inlinePermissionValue(command), ...supportingFields].filter(Boolean).join('\n\n')
+      return [permissionArgumentBlockMarkdown(permission.toolName, 'command', command), ...supportingFields].filter(Boolean).join('\n\n')
     }
   }
 
