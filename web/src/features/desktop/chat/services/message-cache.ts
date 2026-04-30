@@ -32,12 +32,29 @@ function samePendingUserMessage(left: ChatMessageRecord, right: ChatMessageRecor
     && left.content.trim() === right.content.trim()
 }
 
+function isSameCanonicalMessage(left: ChatMessageRecord, right: ChatMessageRecord): boolean {
+  return left.id.trim() !== '' && left.id === right.id
+}
+
+function shouldReplaceBySequence(existing: ChatMessageRecord, incoming: ChatMessageRecord): boolean {
+  if (existing.sessionId !== incoming.sessionId || existing.globalSeq <= 0 || existing.globalSeq !== incoming.globalSeq) {
+    return false
+  }
+  if (isPendingUserMessage(existing)) {
+    return false
+  }
+  if (isSameCanonicalMessage(existing, incoming)) {
+    return true
+  }
+  return existing.role === incoming.role && !existing.toolMessage && !incoming.toolMessage
+}
+
 export function mergeMessageIntoCache(current: ChatMessageRecord[] | undefined, incoming: ChatMessageRecord): ChatMessageRecord[] {
   const messages = current ?? []
-  const existingIndex = messages.findIndex((entry) => entry.sessionId === incoming.sessionId && entry.globalSeq > 0 && entry.globalSeq === incoming.globalSeq)
-  if (existingIndex >= 0) {
+  const canonicalIndex = messages.findIndex((entry) => isSameCanonicalMessage(entry, incoming))
+  if (canonicalIndex >= 0) {
     const updated = [...messages]
-    updated[existingIndex] = incoming
+    updated[canonicalIndex] = incoming
     return updated.sort(messageSort)
   }
 
@@ -45,6 +62,13 @@ export function mergeMessageIntoCache(current: ChatMessageRecord[] | undefined, 
   if (pendingIndex >= 0) {
     const updated = [...messages]
     updated[pendingIndex] = incoming
+    return updated.sort(messageSort)
+  }
+
+  const existingIndex = messages.findIndex((entry) => shouldReplaceBySequence(entry, incoming))
+  if (existingIndex >= 0) {
+    const updated = [...messages]
+    updated[existingIndex] = incoming
     return updated.sort(messageSort)
   }
 

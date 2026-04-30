@@ -127,7 +127,7 @@ function testManageTodosListShowsItems(): void {
     `unexpected manage_todos summary: ${message?.summary}`,
   );
   assert(
-    message?.previewLines[0] === "ux · #desktop",
+    message?.previewLines[0] === "ux · \#desktop",
     `unexpected first todo metadata preview: ${message?.previewLines.join(" | ")}`,
   );
   assert(
@@ -135,7 +135,7 @@ function testManageTodosListShowsItems(): void {
     `unexpected first todo body preview: ${message?.previewLines.join(" | ")}`,
   );
   assert(
-    message?.previewLines[2] === "[x] Ship tui todo rendering · medium",
+    message?.previewLines[3] === "[x] Ship tui todo rendering · medium",
     `unexpected second todo body preview: ${message?.previewLines.join(" | ")}`,
   );
 }
@@ -358,6 +358,23 @@ function testTaskRowsHideAssistantPreviewText(): void {
   assert(message?.taskRows[0]?.previewText === '', `assistant preview should be hidden: ${message?.taskRows[0]?.previewText}`)
 }
 
+function testBashToolMessageShowsAlwaysAllowedScriptCommand(): void {
+  const command = './scripts/check.sh --fast'
+  const message = buildStructuredToolMessage({
+    tool: 'bash',
+    callId: 'call_bash_script_1',
+    argumentsText: JSON.stringify({ command }),
+    outputText: JSON.stringify({ command, exit_code: 0, output: 'ok' }),
+  })
+
+  assert(Boolean(message), 'expected structured bash tool message')
+  assert(message?.summary === `bash ${command}`, `unexpected bash summary: ${message?.summary}`)
+  assert(
+    message?.previewLines.includes(`$ ${command}`) === true,
+    `missing bash command preview: ${message?.previewLines.join(' | ')}`,
+  )
+}
+
 function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): void {
   const deltaPayload = JSON.stringify({
     tool: 'task',
@@ -434,6 +451,7 @@ function main(): void {
   testEditToolPreservesFullExpandedDiff();
   testTaskRowsMapReasoningToThinkingWithoutPreviewLeak();
   testTaskRowsHideAssistantPreviewText();
+  testBashToolMessageShowsAlwaysAllowedScriptCommand();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   console.log("tool-message tests passed");
 }
