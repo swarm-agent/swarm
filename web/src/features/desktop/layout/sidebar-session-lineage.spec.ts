@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import type { DesktopSessionRecord } from '../types/realtime'
 
-import { sessionChildDescriptor, sessionParentSessionID } from './sidebar-session-lineage'
+import { sessionBackgroundInfo, sessionChildDescriptor, sessionParentSessionID } from './sidebar-session-lineage'
 
 function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
   return {
@@ -110,6 +110,40 @@ test('session lineage keeps real background children background-targeted from di
 
   assert.equal(sessionParentSessionID(session), 'parent-session')
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'background' })
+})
+
+test('flow background sessions expose target label and flow badge for sidebar rows', () => {
+  const session = makeSession({
+    id: 'flow-session',
+    title: 'Refresh AGENTS memory',
+    metadata: {
+      source: 'flow',
+      lineage_kind: 'flow',
+      background: true,
+      swarm_target_name: 'pc container',
+    },
+    lifecycle: {
+      sessionId: 'flow-session',
+      runId: 'run-flow',
+      active: true,
+      phase: 'running',
+      startedAt: 1,
+      endedAt: 0,
+      updatedAt: 2,
+      generation: 1,
+      stopReason: null,
+      error: null,
+      ownerTransport: 'flow_scheduler',
+    },
+    live: {
+      ...makeSession().live,
+      status: 'running',
+      startedAt: 1,
+    },
+  })
+
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null })
+  assert.deepEqual(sessionBackgroundInfo(session, 'host'), { active: true, badge: 'flow', targetLabel: 'pc container' })
 })
 
 test('session lineage keeps real subagent children labeled as subagents', () => {

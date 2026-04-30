@@ -44,6 +44,7 @@ import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/ap
 import { fetchSession } from '../chat/queries/chat-queries'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
 import {
+  sessionBackgroundInfo,
   sessionChildDescriptor,
   sessionParentSessionID,
   type SidebarSessionNodeKind,
@@ -949,10 +950,14 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, d
   const session = useDesktopStore((state) => state.sessions[initialSession.id] ?? initialSession)
   const activeSession = sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, fallbackSwarmName)
+  const backgroundInfo = sessionBackgroundInfo(session, originLabel)
   const timerLabel = activeSession ? sessionTimerLabel(session, now) : ''
-  const rightLabel = activeSession
-    ? sessionActivityLabel(session) || sessionMeta(session) || ''
-    : sessionStatusDetail(session, now) || sessionMeta(session) || ''
+  const bottomLeftLabel = backgroundInfo?.targetLabel || originLabel
+  const bottomRightLabel = backgroundInfo?.active
+    ? timerLabel
+    : activeSession
+      ? sessionActivityLabel(session) || sessionMeta(session) || ''
+      : sessionStatusDetail(session, now) || sessionMeta(session) || ''
   const commitSummary = sessionCommitSummary(session)
   const committedFileSummary = sessionCommittedFileSummary(session)
   const committedDeltaSummary = sessionCommittedDeltaSummary(session)
@@ -1004,38 +1009,22 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, d
         />
       </div>
       <div className="flex items-center justify-between gap-3 text-xs text-[var(--app-text-muted)] min-w-0 w-full">
-        {activeSession ? (
-          <>
-            <div className="flex min-w-0 shrink-0 items-center gap-2 overflow-hidden">
-              <span className="max-w-[8rem] truncate">{originLabel}</span>
-              {childLabel ? (
-                <span className={cn(
-                  'shrink-0 truncate text-[11px]',
-                  childKind === 'subagent' ? 'text-sky-300/90' : 'text-[var(--app-text-subtle)]',
-                )}>
-                  {childLabel}
-                </span>
-              ) : null}
-              <span className="shrink-0 text-[var(--app-text-subtle)]">{timerLabel}</span>
-            </div>
-            <span className="min-w-0 flex-1 truncate text-right text-[var(--app-text-subtle)]">{rightLabel}</span>
-          </>
-        ) : (
-          <>
-            <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-              <span className="truncate">{originLabel}</span>
-              {childLabel ? (
-                <span className={cn(
-                  'shrink-0 truncate text-[11px]',
-                  childKind === 'subagent' ? 'text-sky-300/90' : 'text-[var(--app-text-subtle)]',
-                )}>
-                  {childLabel}
-                </span>
-              ) : null}
-            </div>
-            <span className="shrink-0 text-[var(--app-text-subtle)]">{rightLabel}</span>
-          </>
-        )}
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+          <span className={cn(backgroundInfo?.active ? 'max-w-[8rem]' : null, 'truncate')}>{bottomLeftLabel}</span>
+          {backgroundInfo ? (
+            <span className="inline-flex h-4 shrink-0 items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-1.5 text-[10px] font-medium leading-none text-[var(--app-text-subtle)]">
+              {backgroundInfo.badge}
+            </span>
+          ) : childLabel ? (
+            <span className={cn(
+              'shrink-0 truncate text-[11px]',
+              childKind === 'subagent' ? 'text-sky-300/90' : 'text-[var(--app-text-subtle)]',
+            )}>
+              {childLabel}
+            </span>
+          ) : null}
+        </div>
+        <span className={cn('shrink-0 text-[var(--app-text-subtle)]', backgroundInfo?.active ? 'font-mono tabular-nums' : null)}>{bottomRightLabel}</span>
       </div>
       {session.worktreeEnabled || commitMetaLabel || hasAgentChildren ? (
         <div className="flex items-center justify-between gap-3 text-[10px] leading-4 text-[var(--app-text-subtle)] min-w-0 w-full">

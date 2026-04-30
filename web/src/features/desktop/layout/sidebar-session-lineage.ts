@@ -7,6 +7,12 @@ export interface SidebarSessionChildDescriptor {
   label: string | null
 }
 
+export interface SidebarSessionBackgroundInfo {
+  active: boolean
+  badge: string
+  targetLabel: string
+}
+
 function normalizeMetadataRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null
 }
@@ -67,6 +73,29 @@ function sessionHasBackgroundLineage(metadata: Record<string, unknown> | null): 
   return background || launchMode === 'background' || lineageKind === 'background_agent' || lineageKind === 'flow' || targetKind === 'background'
 }
 
+function sessionBackgroundBadge(metadata: Record<string, unknown> | null): string {
+  const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
+  const source = metadataString(metadata, 'source').toLowerCase()
+  return lineageKind === 'flow' || source === 'flow' ? 'flow' : 'background'
+}
+
+export function sessionBackgroundInfo(session: DesktopSessionRecord, fallbackTargetLabel = ''): SidebarSessionBackgroundInfo | null {
+  const metadata = normalizeMetadataRecord(session.metadata)
+  if (!sessionHasBackgroundLineage(metadata)) {
+    return null
+  }
+  return {
+    active: session.lifecycle?.active === true || ['starting', 'running', 'blocked'].includes(session.live.status),
+    badge: sessionBackgroundBadge(metadata),
+    targetLabel: firstNonEmpty(
+      metadataString(metadata, 'swarm_target_name'),
+      metadataString(metadata, 'target_display_name'),
+      fallbackTargetLabel,
+      'host',
+    ),
+  }
+}
+
 export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSessionChildDescriptor {
   const metadata = normalizeMetadataRecord(session.metadata)
   const parentSessionID = sessionParentSessionID(session)
@@ -82,7 +111,7 @@ export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSe
     return { kind: 'subagent', label: lineageLabel || '@subagent' }
   }
   if (sessionHasBackgroundLineage(metadata)) {
-    return { kind: 'background', label: 'background' }
+    return { kind: 'background', label: sessionBackgroundBadge(metadata) }
   }
   if (lineageLabel) {
     return { kind: lineageLabel.startsWith('@') ? 'subagent' : 'background', label: lineageLabel }
