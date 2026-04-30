@@ -11,6 +11,13 @@ export interface DesktopSessionUsageRecord {
   updatedAt: number
 }
 
+export interface DesktopLiveAssistantSegment {
+  id: string
+  content: string
+  createdAt: number
+  seq: number
+}
+
 export interface DesktopSessionRecord {
   id: string
   title: string
@@ -76,6 +83,7 @@ export interface DesktopSessionRecord {
     error: string | null
     seq: number
     assistantDraft: string
+    retainedAssistantSegments: DesktopLiveAssistantSegment[]
     reasoningSummary: string
     reasoningText: string
     reasoningState: 'idle' | 'running' | 'done' | 'error'

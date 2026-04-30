@@ -39,6 +39,7 @@ function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSess
       error: null,
       seq: 0,
       assistantDraft: '',
+      retainedAssistantSegments: [],
       reasoningSummary: '',
       reasoningText: '',
       reasoningState: 'idle',

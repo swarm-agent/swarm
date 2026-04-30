@@ -238,7 +238,7 @@ function nearBottom(element: HTMLDivElement): boolean {
 type RenderItem =
   | { type: 'message'; message: ChatMessageRecord }
   | { type: 'live-tool'; toolMessage: NonNullable<ChatMessageRecord['toolMessage']> }
-  | { type: 'live-assistant'; content: string }
+  | { type: 'live-assistant'; id: string; content: string }
 
 function renderItemKey(item: RenderItem | undefined, index: number): string {
   if (!item) {
@@ -250,7 +250,7 @@ function renderItemKey(item: RenderItem | undefined, index: number): string {
     case 'live-tool':
       return `live-tool:${item.toolMessage.callId || item.toolMessage.tool || 'active'}`
     case 'live-assistant':
-      return 'live-assistant'
+      return item.id
     default:
       return `render-item:${index}`
   }
@@ -775,6 +775,7 @@ export function DesktopChatPanel({
   const messages = useMemo(() => dedupeMessages(messagesQuery.data ?? []), [messagesQuery.data])
   const displayedMessages = messages
   const liveAssistantDraft = liveSession?.live.assistantDraft ?? ''
+  const retainedAssistantSegments = liveSession?.live.retainedAssistantSegments ?? []
   const liveToolMessage = useMemo(() => buildLiveToolMessage(liveSession), [liveSession])
   const shouldRenderLiveToolMessage = useMemo(
     () => liveToolMessage !== null && !hasCanonicalLiveToolReplacement(displayedMessages, liveToolMessage),
@@ -807,14 +808,19 @@ export function DesktopChatPanel({
   const agentTodoBadgeLabel = formatAgentTodoBadge(agentTodoSummary)
   const renderItems = useMemo(() => {
     const items: RenderItem[] = displayedMessages.map((message) => ({ type: 'message', message }))
+    for (const segment of retainedAssistantSegments) {
+      if (segment.content.trim() !== '') {
+        items.push({ type: 'live-assistant', id: segment.id, content: segment.content })
+      }
+    }
     if (shouldRenderLiveToolMessage && liveToolMessage) {
       items.push({ type: 'live-tool', toolMessage: liveToolMessage })
     }
     if (shouldRenderLiveAssistantDraft) {
-      items.push({ type: 'live-assistant', content: liveAssistantDraft })
+      items.push({ type: 'live-assistant', id: 'live-assistant:draft', content: liveAssistantDraft })
     }
     return items
-  }, [displayedMessages, liveAssistantDraft, liveToolMessage, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
+  }, [displayedMessages, liveAssistantDraft, liveToolMessage, retainedAssistantSegments, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
   const renderMeasurementKey = useMemo(
     () => renderItems.map((item) => {
       switch (item.type) {
