@@ -156,11 +156,12 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 	}
 	target, targetFound := s.resolveFlowMirrorTarget(summary, definition.Assignment.Target)
 	targetSwarmID := firstNonEmpty(strings.TrimSpace(summary.TargetSwarmID), strings.TrimSpace(target.SwarmID), strings.TrimSpace(definition.Assignment.Target.SwarmID))
-	runtimeWorkspacePath := strings.TrimSpace(definition.Assignment.Workspace.WorkspacePath)
+	workspaceContext := definition.Assignment.Workspace
+	workspacePath := firstNonEmpty(strings.TrimSpace(workspaceContext.HostWorkspacePath), strings.TrimSpace(workspaceContext.WorkspacePath))
+	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(workspaceContext.RuntimeWorkspacePath), strings.TrimSpace(workspaceContext.WorkspacePath))
 	if reportedSession != nil && strings.TrimSpace(reportedSession.WorkspacePath) != "" {
 		runtimeWorkspacePath = strings.TrimSpace(reportedSession.WorkspacePath)
 	}
-	workspacePath := strings.TrimSpace(definition.Assignment.Workspace.WorkspacePath)
 	if translated := s.resolveControllerFlowWorkspacePath(runtimeWorkspacePath, targetSwarmID, definition.Assignment.Target); translated != "" {
 		workspacePath = translated
 	}
@@ -218,9 +219,17 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 	}
 	if runtimeWorkspacePath != "" {
 		metadata["swarm_target_workspace_path"] = runtimeWorkspacePath
+		metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] = runtimeWorkspacePath
 	}
 	if workspacePath != "" {
 		metadata["host_workspace_path"] = workspacePath
+		metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] = workspacePath
+	}
+	if hostSwarmID := strings.TrimSpace(s.flowLocalSwarmID()); hostSwarmID != "" {
+		metadata[sessionruntime.HostedSessionMetadataHostSwarmID] = hostSwarmID
+	}
+	if targetSwarmID != "" {
+		metadata[sessionruntime.HostedSessionMetadataChildSwarmID] = targetSwarmID
 	}
 	if !summary.ScheduledAt.IsZero() {
 		metadata["scheduled_at"] = summary.ScheduledAt.UTC().Format(time.RFC3339Nano)
@@ -242,7 +251,7 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 		mirroredSession = *reportedSession
 		mirroredSession.ID = sessionID
 		mirroredSession.WorkspacePath = workspacePath
-		mirroredSession.WorkspaceName = firstNonEmpty(strings.TrimSpace(mirroredSession.WorkspaceName), filepath.Base(workspacePath))
+		mirroredSession.WorkspaceName = filepath.Base(workspacePath)
 		mirroredSession.Title = flowRunSessionTitle(definition.Assignment)
 		mirroredSession.Mode = firstNonEmpty(strings.TrimSpace(mirroredSession.Mode), sessionruntime.ModeAuto)
 		mirroredSession.Metadata = metadata
@@ -253,9 +262,22 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 			mirroredSession.UpdatedAt = updatedAt
 		}
 	}
-	storedSession, err := s.sessions.StoreMirroredSession(mirroredSession)
+	storedSession, sessionCreatedEvent, err := s.sessions.StoreMirroredSessionWithEvent(mirroredSession)
 	if err != nil {
 		return err
+	}
+	if s.hub != nil {
+		if sessionCreatedEvent != nil {
+			s.hub.Publish(*sessionCreatedEvent)
+		} else {
+			sessionUpdatedEvent, err := s.sessions.StoreMirroredSessionEvent(storedSession, "session.updated")
+			if err != nil {
+				return err
+			}
+			if sessionUpdatedEvent != nil {
+				s.hub.Publish(*sessionUpdatedEvent)
+			}
+		}
 	}
 	for _, message := range reportedMessages {
 		if strings.TrimSpace(message.SessionID) == "" {
@@ -273,6 +295,9 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 		lifecycle.SessionID = sessionID
 		if err := s.sessions.StoreMirroredLifecycle(lifecycle); err != nil {
 			return err
+		}
+		if lifecycleEvent, err := mirroredLifecycleEvent(lifecycle); err == nil && lifecycleEvent != nil && s.hub != nil {
+			s.hub.Publish(*lifecycleEvent)
 		}
 	}
 	if targetFound && strings.TrimSpace(target.BackendURL) != "" && s.sessionRoutes != nil {

@@ -1790,7 +1790,8 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
   }
 
   switch (eventType) {
-    case 'session.created': {
+    case 'session.created':
+    case 'session.updated': {
       const metadataRecord = payloadRecord.metadata && typeof payloadRecord.metadata === 'object'
         ? payloadRecord.metadata as Record<string, unknown>
         : null

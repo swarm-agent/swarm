@@ -62,7 +62,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			}
 
 			scheduledAt := time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)
-			start, err := server.NewTargetLocalFlowRunner().RunAcceptedFlow(t.Context(), accepted, flow.RunRequest{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: scheduledAt})
+			start, err := server.runAcceptedFlow(t.Context(), accepted, flow.RunRequest{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: scheduledAt})
 			if err != nil {
 				t.Fatalf("run accepted flow: %v", err)
 			}
@@ -88,13 +88,17 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if err != nil || !ok {
 				t.Fatalf("get session ok=%v err=%v", ok, err)
 			}
-			if session.Title != "Read" {
-				t.Fatalf("session title = %q, want task title", session.Title)
+			if session.Title != "Memory sweep" {
+				t.Fatalf("session title = %q, want flow name", session.Title)
+			}
+			createdPayload := requireSessionCreatedPayload(t, server, start.SessionID)
+			if createdPayload.ID != start.SessionID || createdPayload.Title != "Memory sweep" {
+				t.Fatalf("created payload = %+v, want flow name", createdPayload)
 			}
 			if session.Metadata["flow_id"] != assignment.FlowID || session.Metadata["flow_revision"] != float64(assignment.Revision) {
 				t.Fatalf("session flow metadata = %+v", session.Metadata)
 			}
-			if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask {
+			if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask || session.Metadata["source"] != "flow" {
 				t.Fatalf("session title metadata = %+v", session.Metadata)
 			}
 			if session.Metadata["workspace_id"] == nil || session.Metadata["agent_name"] != "swarm" {
@@ -118,10 +122,15 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 	}
 }
 
-func TestFlowRunSessionTitlePrefersTaskTitleDetailThenPrompt(t *testing.T) {
+func TestFlowRunSessionTitlePrefersFlowNameThenTaskTitleDetailThenPrompt(t *testing.T) {
 	assignment := testAPIFlowAssignment("flow-title", 1)
 	assignment.Name = "Nightly Memory Sweep"
 	assignment.Intent = flow.PromptIntent{Prompt: "Summarize outstanding work.", Tasks: []flow.TaskStep{{ID: "context", Title: "Prepare run context", Detail: "Target local.", Action: "read"}, {ID: "task", Title: "  Run agent task  ", Detail: "Refresh AGENTS memory", Action: "write"}}}
+	if title := flowRunSessionTitle(assignment); title != "Nightly Memory Sweep" {
+		t.Fatalf("flow name title = %q", title)
+	}
+
+	assignment.Name = ""
 	if title := flowRunSessionTitle(assignment); title != "Refresh AGENTS memory" {
 		t.Fatalf("title = %q, want task detail", title)
 	}
@@ -164,6 +173,23 @@ func TestRunAcceptedFlowNowUsesTargetLocalAcceptedAssignment(t *testing.T) {
 	}
 	if runner.lastRequest.TargetKind != assignment.Agent.TargetKind || runner.lastRequest.TargetName != assignment.Agent.TargetName {
 		t.Fatalf("run request = %+v", runner.lastRequest)
+	}
+	session, ok, err := server.sessions.GetSession(start.SessionID)
+	if err != nil || !ok {
+		t.Fatalf("get run-now session ok=%v err=%v", ok, err)
+	}
+	if session.Title != "Memory sweep" {
+		t.Fatalf("run-now session title = %q, want flow name", session.Title)
+	}
+	if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask || session.Metadata["source"] != "flow" {
+		t.Fatalf("run-now title metadata = %+v", session.Metadata)
+	}
+	if runner.lastSessionID != start.SessionID {
+		t.Fatalf("runner session id = %q, want %q", runner.lastSessionID, start.SessionID)
+	}
+	createdPayload := requireSessionCreatedPayload(t, server, start.SessionID)
+	if createdPayload.ID != start.SessionID || createdPayload.Title != "Memory sweep" {
+		t.Fatalf("run-now created payload = %+v, want flow name", createdPayload)
 	}
 }
 
@@ -321,14 +347,14 @@ func (f *fakeFlowRunService) RunTurnStreaming(_ context.Context, sessionID strin
 		<-block
 	}
 	for _, event := range emitEvents {
-		if onEvent != nil {
-			onEvent(event)
-		}
 		if strings.TrimSpace(event.SessionID) == "" {
 			event.SessionID = sessionID
 		}
 		if strings.TrimSpace(event.RunID) == "" {
 			event.RunID = meta.RunID
+		}
+		if onEvent != nil {
+			onEvent(event)
 		}
 		f.mu.Lock()
 		f.receivedEvents = append(f.receivedEvents, event)

@@ -3754,6 +3754,22 @@ func decodeJSON(r *http.Request, out any) error {
 	return decodeJSONObject(decoder, out)
 }
 
+func decodeLenientJSON(r *http.Request, out any) error {
+	if r.Body == nil {
+		return errors.New("missing request body")
+	}
+	defer r.Body.Close()
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("request body must contain one JSON object")
+	}
+	return nil
+}
+
 func decodeJSONBytes(body []byte, out any) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	return decodeJSONObject(decoder, out)

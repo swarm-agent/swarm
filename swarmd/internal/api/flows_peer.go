@@ -49,10 +49,17 @@ func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
 	}
 	var command flow.AssignmentCommand
 	if err := decodeJSON(r, &command); err != nil {
+		if strings.Contains(err.Error(), "unknown field") {
+			var fallback map[string]any
+			if fallbackErr := decodeLenientJSON(r, &fallback); fallbackErr == nil {
+				writeError(w, http.StatusConflict, fmt.Errorf("peer flow protocol mismatch: %w", err))
+				return
+			}
+		}
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	peerSwarmID, _ := extractPeerAuth(r)
+	targetSwarmID := s.flowPeerApplyTargetSwarmID(command)
 	now := time.Now().UTC()
 	var (
 		ack      flow.AssignmentAck
@@ -60,10 +67,10 @@ func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
 		err      error
 	)
 	if normalizeAPIFlowAssignmentCommand(command).Action == flow.CommandRunNow {
-		command.Assignment.Target.SwarmID = firstNonEmpty(strings.TrimSpace(command.Assignment.Target.SwarmID), strings.TrimSpace(peerSwarmID))
+		command.Assignment.Target.SwarmID = targetSwarmID
 		ack, inserted, err = s.applyFlowRunNowCommand(r.Context(), command, now)
 	} else {
-		ack, inserted, err = s.flows.ApplyTargetAssignmentCommand(command, peerSwarmID, now)
+		ack, inserted, err = s.flows.ApplyTargetAssignmentCommand(command, targetSwarmID, now)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -149,6 +156,7 @@ func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCo
 	key := command.IdempotencyKey()
 	now := time.Now().UTC()
 	targetSelection := targetSelectionForOutbox(command, target, resolved)
+	command.Assignment.Target = targetSelection
 	record := pebblestore.FlowOutboxCommandRecord{
 		CommandID:     key.CommandID,
 		FlowID:        key.FlowID,
@@ -180,11 +188,19 @@ func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCo
 }
 
 func (s *Server) applyFlowAssignmentCommandLocally(ctx context.Context, command flow.AssignmentCommand, targetSwarmID string) (flow.AssignmentAck, bool, error) {
+	targetSwarmID = firstNonEmpty(strings.TrimSpace(targetSwarmID), s.flowPeerApplyTargetSwarmID(command))
 	if normalizeAPIFlowAssignmentCommand(command).Action == flow.CommandRunNow {
-		command.Assignment.Target.SwarmID = firstNonEmpty(strings.TrimSpace(command.Assignment.Target.SwarmID), strings.TrimSpace(targetSwarmID))
+		command.Assignment.Target.SwarmID = targetSwarmID
 		return s.applyFlowRunNowCommand(ctx, command, time.Now().UTC())
 	}
 	return s.flows.ApplyTargetAssignmentCommand(command, targetSwarmID, time.Now().UTC())
+}
+
+func (s *Server) flowPeerApplyTargetSwarmID(command flow.AssignmentCommand) string {
+	if localSwarmID := strings.TrimSpace(s.flowLocalSwarmID()); localSwarmID != "" {
+		return localSwarmID
+	}
+	return strings.TrimSpace(command.Assignment.Target.SwarmID)
 }
 
 func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record pebblestore.FlowOutboxCommandRecord, target swarmTarget) (flowAssignmentDeliverResult, error) {
@@ -397,17 +413,31 @@ func normalizeFlowTargetSelection(selection flow.TargetSelection) flow.TargetSel
 
 func (s *Server) flowWorkspaceForTarget(workspace flow.WorkspaceContext, target swarmTarget, resolved flow.ResolvedTarget) flow.WorkspaceContext {
 	workspace.WorkspacePath = strings.TrimSpace(workspace.WorkspacePath)
+	workspace.HostWorkspacePath = strings.TrimSpace(workspace.HostWorkspacePath)
+	workspace.RuntimeWorkspacePath = strings.TrimSpace(workspace.RuntimeWorkspacePath)
 	workspace.CWD = strings.TrimSpace(workspace.CWD)
 	workspace.WorktreeMode = strings.TrimSpace(workspace.WorktreeMode)
+	hostWorkspacePath := firstNonEmpty(workspace.HostWorkspacePath, workspace.WorkspacePath)
+	runtimeWorkspacePath := firstNonEmpty(workspace.RuntimeWorkspacePath, workspace.WorkspacePath)
+	if workspace.HostWorkspacePath == "" {
+		workspace.HostWorkspacePath = hostWorkspacePath
+	}
+	if workspace.RuntimeWorkspacePath == "" {
+		workspace.RuntimeWorkspacePath = runtimeWorkspacePath
+	}
 	if workspace.WorkspacePath == "" || s == nil || s.workspace == nil || isSelfFlowTarget(target, resolved) {
 		return workspace
 	}
-	translated := s.resolveReplicatedFlowWorkspacePath(workspace.WorkspacePath, target, resolved)
+	translated := s.resolveReplicatedFlowWorkspacePath(hostWorkspacePath, target, resolved)
 	if translated == "" || translated == workspace.WorkspacePath {
+		if translated != "" {
+			workspace.RuntimeWorkspacePath = translated
+		}
 		return workspace
 	}
-	workspace.CWD = translateFlowSubpath(workspace.WorkspacePath, translated, workspace.CWD)
+	workspace.CWD = translateFlowSubpath(hostWorkspacePath, translated, workspace.CWD)
 	workspace.WorkspacePath = translated
+	workspace.RuntimeWorkspacePath = translated
 	return workspace
 }
 

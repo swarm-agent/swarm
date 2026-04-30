@@ -4964,17 +4964,17 @@ log_timer_step() {
 
 step_started_ms="$(now_ms)"
 mkdir -p "$remote_root" "$config_home/swarm" "$state_root" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
-chmod 0700 "$config_home" "$config_home/swarm"
+as_root chown -R 65534:65534 "$config_home" "$remote_root/xdg" "$swarmd_state_dir" >/dev/null 2>&1 || true
+as_root chmod 0755 "$remote_root" "$state_root" "$remote_root/xdg" "$remote_root/xdg/data" "$remote_root/xdg/state" >/dev/null 2>&1 || true
+as_root chmod 0700 "$config_home" "$config_home/swarm" "$swarmd_state_dir" >/dev/null 2>&1 || true
 if [ ! -f "$config_home/swarm/swarm.conf" ]; then
   echo "remote startup config missing: $config_home/swarm/swarm.conf" >&2
   exit 1
 fi
-chmod 0600 "$config_home/swarm/swarm.conf"
+as_root chmod 0600 "$config_home/swarm/swarm.conf" >/dev/null 2>&1 || true
 if [ -f "$bootstrap_secret_file" ]; then
-  chmod 0600 "$bootstrap_secret_file"
+  as_root chmod 0600 "$bootstrap_secret_file" >/dev/null 2>&1 || true
 fi
-as_root chmod 0755 "$remote_root" "$state_root" "$remote_root/xdg" "$remote_root/xdg/data" "$remote_root/xdg/state" >/dev/null 2>&1 || true
-as_root chown -R 65534:65534 "$config_home" "$remote_root/xdg" "$swarmd_state_dir" >/dev/null 2>&1 || true
 rm -f "$legacy_credentials_file"
 : > "$log_file"
 log_timer_step "prepare_remote_root" "$step_started_ms"

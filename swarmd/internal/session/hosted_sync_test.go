@@ -35,7 +35,7 @@ func TestHostedAppendMessageMirrorsCanonicalStateIntoLocalRuntimeCache(t *testin
 		},
 		session: pebblestore.SessionSnapshot{
 			ID:            "session-routed",
-			WorkspacePath: "/host/workspace",
+			WorkspacePath: "/runtime/workspace",
 			WorkspaceName: "workspace",
 			Title:         "Routed Session",
 			Mode:          ModePlan,
@@ -112,6 +112,118 @@ func TestHostedAppendMessageMirrorsCanonicalStateIntoLocalRuntimeCache(t *testin
 	}
 	if messages[0].Content != "hello from child" {
 		t.Fatalf("cached message content = %q, want %q", messages[0].Content, "hello from child")
+	}
+}
+
+func TestMirroredRoutedSessionUsesLocalRuntimeWorkspaceWhenLocalSwarmIsUnknown(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "runtime-mirrored-routed-session.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+
+	svc := NewService(pebblestore.NewSessionStore(store), eventLog)
+	descriptor := HostedSessionDescriptor{
+		HostSwarmID:          "host-swarm",
+		HostBackendURL:       "http://127.0.0.1:8781",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/runtime/workspace",
+		ChildSwarmID:         "child-swarm",
+	}
+
+	mirrored, err := svc.StoreMirroredSession(descriptor.apply(pebblestore.SessionSnapshot{
+		ID:            "session-flow",
+		WorkspacePath: "/runtime/workspace",
+		WorkspaceName: "workspace",
+		Title:         "Flow",
+		Mode:          ModeAuto,
+		UpdatedAt:     time.Now().UnixMilli(),
+		CreatedAt:     time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatalf("store mirrored session: %v", err)
+	}
+	if mirrored.WorkspacePath != "/runtime/workspace" {
+		t.Fatalf("mirrored workspace path = %q, want runtime workspace", mirrored.WorkspacePath)
+	}
+
+	cached, ok, err := svc.GetSession("session-flow")
+	if err != nil || !ok {
+		t.Fatalf("get mirrored session ok=%v err=%v", ok, err)
+	}
+	if cached.WorkspacePath != "/runtime/workspace" {
+		t.Fatalf("cached workspace path = %q, want runtime workspace", cached.WorkspacePath)
+	}
+}
+
+func TestExistingControllerMirroredRoutedSessionStaysInHostWorkspaceWithoutLocalSwarmID(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "controller-mirrored-routed-session.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+
+	svc := NewService(pebblestore.NewSessionStore(store), eventLog)
+	descriptor := HostedSessionDescriptor{
+		HostSwarmID:          "host-swarm",
+		HostBackendURL:       "http://127.0.0.1:8781",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/runtime/workspace",
+		ChildSwarmID:         "child-swarm",
+	}
+
+	initial, err := svc.StoreMirroredSession(descriptor.apply(pebblestore.SessionSnapshot{
+		ID:            "session-flow",
+		WorkspacePath: "/host/workspace",
+		WorkspaceName: "workspace",
+		Title:         "Flow",
+		Mode:          ModeAuto,
+		UpdatedAt:     time.Now().UnixMilli(),
+		CreatedAt:     time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatalf("store initial mirrored session: %v", err)
+	}
+	if initial.WorkspacePath != "/host/workspace" {
+		t.Fatalf("initial workspace path = %q, want host workspace", initial.WorkspacePath)
+	}
+
+	mirrored, err := svc.StoreMirroredSession(descriptor.apply(pebblestore.SessionSnapshot{
+		ID:            "session-flow",
+		WorkspacePath: "/runtime/workspace",
+		WorkspaceName: "workspace",
+		Title:         "Flow",
+		Mode:          ModeAuto,
+		UpdatedAt:     time.Now().UnixMilli(),
+		CreatedAt:     time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatalf("store updated mirrored session: %v", err)
+	}
+	if mirrored.WorkspacePath != "/host/workspace" {
+		t.Fatalf("mirrored workspace path = %q, want host workspace", mirrored.WorkspacePath)
+	}
+
+	cached, ok, err := svc.GetSession("session-flow")
+	if err != nil || !ok {
+		t.Fatalf("get mirrored session ok=%v err=%v", ok, err)
+	}
+	if cached.WorkspacePath != "/host/workspace" {
+		t.Fatalf("cached workspace path = %q, want host workspace", cached.WorkspacePath)
 	}
 }
 

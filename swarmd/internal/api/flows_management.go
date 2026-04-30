@@ -468,6 +468,8 @@ func normalizeManagementAgentSelection(agent flow.AgentSelection) flow.AgentSele
 
 func normalizeManagementWorkspace(workspace flow.WorkspaceContext) flow.WorkspaceContext {
 	workspace.WorkspacePath = strings.TrimSpace(workspace.WorkspacePath)
+	workspace.HostWorkspacePath = strings.TrimSpace(workspace.HostWorkspacePath)
+	workspace.RuntimeWorkspacePath = strings.TrimSpace(workspace.RuntimeWorkspacePath)
 	workspace.CWD = strings.TrimSpace(workspace.CWD)
 	workspace.WorktreeMode = strings.TrimSpace(workspace.WorktreeMode)
 	return workspace

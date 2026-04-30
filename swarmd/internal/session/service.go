@@ -176,6 +176,33 @@ func (s *Service) CreateSessionWithOptions(options CreateSessionOptions) (pebble
 }
 
 func (s *Service) StoreMirroredSession(session pebblestore.SessionSnapshot) (pebblestore.SessionSnapshot, error) {
+	stored, _, err := s.StoreMirroredSessionWithEvent(session)
+	return stored, err
+}
+
+func (s *Service) StoreMirroredSessionEvent(session pebblestore.SessionSnapshot, eventType string) (*pebblestore.EventEnvelope, error) {
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" {
+		return nil, errors.New("event type is required")
+	}
+	if s.events == nil {
+		return nil, nil
+	}
+	if strings.TrimSpace(session.ID) == "" {
+		return nil, errors.New("session id is required")
+	}
+	payload, err := json.Marshal(session)
+	if err != nil {
+		return nil, err
+	}
+	env, err := s.events.Append("session:"+strings.TrimSpace(session.ID), eventType, strings.TrimSpace(session.ID), payload, "", "")
+	if err != nil {
+		return nil, err
+	}
+	return &env, nil
+}
+
+func (s *Service) StoreMirroredSessionWithEvent(session pebblestore.SessionSnapshot) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
 	session.ID = strings.TrimSpace(session.ID)
 	session.WorkspacePath = strings.TrimSpace(session.WorkspacePath)
 	session.WorkspaceName = strings.TrimSpace(session.WorkspaceName)
@@ -183,10 +210,10 @@ func (s *Service) StoreMirroredSession(session pebblestore.SessionSnapshot) (peb
 	session.Mode = NormalizeMode(session.Mode)
 	session.Metadata = cloneSessionMetadataMap(session.Metadata)
 	if session.ID == "" {
-		return pebblestore.SessionSnapshot{}, errors.New("session id is required")
+		return pebblestore.SessionSnapshot{}, nil, errors.New("session id is required")
 	}
 	if session.WorkspacePath == "" {
-		return pebblestore.SessionSnapshot{}, errors.New("workspace path is required")
+		return pebblestore.SessionSnapshot{}, nil, errors.New("workspace path is required")
 	}
 	if session.WorkspaceName == "" {
 		session.WorkspaceName = filepathBaseSafe(session.WorkspacePath)
@@ -195,20 +222,29 @@ func (s *Service) StoreMirroredSession(session pebblestore.SessionSnapshot) (peb
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	created := false
 	if existing, ok, err := s.store.GetSession(session.ID); err != nil {
-		return pebblestore.SessionSnapshot{}, err
+		return pebblestore.SessionSnapshot{}, nil, err
 	} else if ok {
-		session = preserveHostedMirroredSession(existing, session)
+		session = s.preserveHostedMirroredSession(existing, session)
 		if err := s.store.UpdateSession(session); err != nil {
-			return pebblestore.SessionSnapshot{}, err
+			return pebblestore.SessionSnapshot{}, nil, err
 		}
 	} else {
-		session = adaptHostedSessionForRuntime(session)
+		session = adaptHostedSessionForLocalRuntime(session, s.localSwarmID())
 		if err := s.store.CreateSession(session); err != nil {
-			return pebblestore.SessionSnapshot{}, err
+			return pebblestore.SessionSnapshot{}, nil, err
 		}
+		created = true
 	}
-	return session, nil
+	if !created || s.events == nil {
+		return session, nil, nil
+	}
+	env, err := s.StoreMirroredSessionEvent(session, "session.created")
+	if err != nil {
+		return pebblestore.SessionSnapshot{}, nil, err
+	}
+	return session, env, nil
 }
 
 func (s *Service) SyncHostedMirrorOpenState(sessionID string, source pebblestore.SessionSnapshot) (pebblestore.SessionSnapshot, error) {
@@ -415,7 +451,6 @@ func (s *Service) UpdateMetadata(sessionID string, metadata map[string]any) (peb
 					return pebblestore.SessionSnapshot{}, nil, err
 				}
 			} else {
-				updated = adaptHostedSessionForRuntime(updated)
 				mirrored, mirrorErr := s.StoreMirroredSession(updated)
 				if mirrorErr != nil {
 					return pebblestore.SessionSnapshot{}, nil, mirrorErr
@@ -823,7 +858,6 @@ func (s *Service) SetMode(sessionID, mode string) (pebblestore.SessionSnapshot, 
 					return pebblestore.SessionSnapshot{}, nil, err
 				}
 			} else {
-				updated = adaptHostedSessionForRuntime(updated)
 				mirrored, mirrorErr := s.StoreMirroredSession(updated)
 				if mirrorErr != nil {
 					return pebblestore.SessionSnapshot{}, nil, mirrorErr
@@ -909,7 +943,6 @@ func (s *Service) SetTitle(sessionID, title string) (pebblestore.SessionSnapshot
 					return pebblestore.SessionSnapshot{}, nil, err
 				}
 			} else {
-				updated = adaptHostedSessionForRuntime(updated)
 				mirrored, mirrorErr := s.StoreMirroredSession(updated)
 				if mirrorErr != nil {
 					return pebblestore.SessionSnapshot{}, nil, mirrorErr
@@ -1027,7 +1060,6 @@ func (s *Service) AppendMessage(sessionID, role, content string, metadata map[st
 					return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err
 				}
 			} else {
-				updated = adaptHostedSessionForRuntime(updated)
 				mirrored, mirrorErr := s.StoreMirroredMessage(updated, message)
 				if mirrorErr != nil {
 					return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, mirrorErr
@@ -1201,13 +1233,25 @@ func hostedSyncOptional(metadata map[string]any) bool {
 		strings.EqualFold(stringMetadataValue(metadata, "lineage_kind"), "flow")
 }
 
-func preserveHostedMirroredSession(existing, incoming pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {
+func (s *Service) localSwarmID() string {
+	if s == nil || s.localSwarmIDResolver == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.localSwarmIDResolver())
+}
+
+func (s *Service) preserveHostedMirroredSession(existing, incoming pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {
+	localSwarmID := s.localSwarmID()
 	if descriptor, hosted := HostedSessionFromMetadata(existing.Metadata); hosted {
 		if _, incomingHosted := HostedSessionFromMetadata(incoming.Metadata); !incomingHosted {
 			incoming.Metadata = descriptor.WithMetadata(incoming.Metadata)
 		}
+		hostWorkspacePath := strings.TrimSpace(descriptor.HostWorkspacePath)
+		if localSwarmID == "" && hostWorkspacePath != "" && strings.TrimSpace(existing.WorkspacePath) == hostWorkspacePath {
+			incoming.WorkspacePath = hostWorkspacePath
+		}
 	}
-	return adaptHostedSessionForRuntime(incoming)
+	return adaptHostedSessionForLocalRuntime(incoming, localSwarmID)
 }
 
 func cloneSessionMetadataValue(value any) any {

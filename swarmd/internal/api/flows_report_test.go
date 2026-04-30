@@ -13,6 +13,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/flow"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -96,7 +97,7 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 		ID:            "session-report-session",
 		WorkspacePath: "/workspaces/swarm-go",
 		WorkspaceName: "swarm-go",
-		Title:         "target flow title",
+		Title:         "Run smoke prompt",
 		Mode:          "auto",
 		Metadata: map[string]any{
 			"source":        "flow",
@@ -150,11 +151,27 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	if session.WorkspacePath != hostWorkspace {
 		t.Fatalf("workspace path = %q, want %q", session.WorkspacePath, hostWorkspace)
 	}
-	if session.Title != "Read" {
-		t.Fatalf("session title = %q, want task title", session.Title)
+	if session.Title != "Memory sweep" {
+		t.Fatalf("session title = %q, want flow name", session.Title)
 	}
 	if session.Metadata["flow_id"] != assignment.FlowID || session.Metadata["target_swarm_id"] != "target-swarm-1" || session.Metadata["swarm_target_name"] != "pc container" {
 		t.Fatalf("metadata = %+v", session.Metadata)
+	}
+	events, err := server.events.ReadFrom(1, 20)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	createdPayload := requireSessionCreatedPayload(t, server, "session-report-session")
+	if createdPayload.Title != "Memory sweep" || createdPayload.Metadata["swarm_target_name"] != "pc container" || createdPayload.WorkspacePath != hostWorkspace {
+		t.Fatalf("created payload = %+v", createdPayload)
+	}
+	for _, event := range events {
+		if event.EventType == "session.updated" && event.EntityID == "session-report-session" {
+			t.Fatalf("session.updated should not be required to correct first mirrored title; events = %+v", events)
+		}
+	}
+	if session.Metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != hostWorkspace || session.Metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] != "/workspaces/swarm-go" || session.Metadata[sessionruntime.HostedSessionMetadataHostSwarmID] != "host-swarm-id" {
+		t.Fatalf("routed workspace metadata = %+v", session.Metadata)
 	}
 	if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask {
 		t.Fatalf("title metadata = %+v", session.Metadata)
@@ -267,8 +284,8 @@ func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T
 	if err != nil || !ok {
 		t.Fatalf("get mirrored session ok=%v err=%v", ok, err)
 	}
-	if session.Title != "Read" {
-		t.Fatalf("session title = %q, want task title", session.Title)
+	if session.Title != "Memory sweep" {
+		t.Fatalf("session title = %q, want flow name", session.Title)
 	}
 	if session.WorkspacePath != hostWorkspace || session.Metadata["swarm_target_name"] != "pc container" {
 		t.Fatalf("session = %+v", session)

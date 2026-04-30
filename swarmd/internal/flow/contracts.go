@@ -92,9 +92,11 @@ type AgentSelection struct {
 }
 
 type WorkspaceContext struct {
-	WorkspacePath string `json:"workspace_path,omitempty"`
-	CWD           string `json:"cwd,omitempty"`
-	WorktreeMode  string `json:"worktree_mode,omitempty"`
+	WorkspacePath        string `json:"workspace_path,omitempty"`
+	HostWorkspacePath    string `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath string `json:"runtime_workspace_path,omitempty"`
+	CWD                  string `json:"cwd,omitempty"`
+	WorktreeMode         string `json:"worktree_mode,omitempty"`
 }
 
 type ScheduleSpec struct {

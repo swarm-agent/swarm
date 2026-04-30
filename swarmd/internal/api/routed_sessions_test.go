@@ -43,8 +43,26 @@ func TestPeerSessionEventStoresAndPublishesMirroredRunEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
-	if len(events) != 1 || events[0].EventType != "run.assistant.delta" || events[0].EntityID != "session-live-peer" {
+	if len(events) != 2 || events[1].EventType != "run.assistant.delta" || events[1].EntityID != "session-live-peer" {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestStoreMirroredSessionWithEventPublishesCreatedEvent(t *testing.T) {
+	_, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	session, event, err := sessionSvc.StoreMirroredSessionWithEvent(pebblestore.SessionSnapshot{ID: "session-live-created", WorkspacePath: "/host/workspace", WorkspaceName: "workspace", Title: "Flow live", Mode: sessionruntime.ModeAuto, CreatedAt: 1, UpdatedAt: 1})
+	if err != nil {
+		t.Fatalf("store mirrored session: %v", err)
+	}
+	if event == nil || event.EventType != "session.created" || event.EntityID != session.ID {
+		t.Fatalf("event = %+v, session = %+v", event, session)
+	}
+	_, event, err = sessionSvc.StoreMirroredSessionWithEvent(session)
+	if err != nil {
+		t.Fatalf("store mirrored session again: %v", err)
+	}
+	if event != nil {
+		t.Fatalf("duplicate store emitted event: %+v", event)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/flow"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	modelruntime "swarm/packages/swarmd/internal/model"
+	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
@@ -98,6 +99,58 @@ func TestPeerFlowApplyIsIdempotentAndRejectsOutOfOrder(t *testing.T) {
 	}
 }
 
+func TestPeerFlowApplyReturnsConflictForProtocolMismatch(t *testing.T) {
+	server, _ := newFlowPeerTestServer(t)
+	body := []byte(`{"command_id":"cmd-unknown","flow_id":"flow-unknown","revision":1,"action":"install","created_at":"2026-01-01T00:00:00Z","assignment":{"flow_id":"flow-unknown","revision":1,"name":"Unknown field flow","enabled":true,"target":{"swarm_id":"child-swarm"},"agent":{"target_kind":"background","target_name":"memory"},"workspace":{"workspace_path":"/workspace","host_workspace_path":"/host/workspace"},"schedule":{"cadence":"on_demand","timezone":"UTC"},"intent":{"prompt":"hello"}}}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, flowPeerApplyPath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+func TestPeerFlowApplyAcksLocalTargetSwarmInsteadOfSender(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	server.SetSwarmService(fakeRoutedSwarmService{
+		state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "child-swarm", Name: "child", Role: "child"}},
+		token: "peer-token",
+	})
+	command := testAPIFlowCommand("cmd-apply-child", testAPIFlowAssignment("flow-apply-child", 1), flow.CommandInstall)
+	command.Assignment.Target = flow.TargetSelection{SwarmID: "child-swarm", Kind: "remote", Name: "pc child", DeploymentID: "pc-child"}
+	body, err := json.Marshal(command)
+	if err != nil {
+		t.Fatalf("marshal command: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, flowPeerApplyPath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, "host-swarm")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload flowAssignmentApplyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Ack.Status != flow.AssignmentAccepted {
+		t.Fatalf("ack status = %q, want accepted: %+v", payload.Ack.Status, payload.Ack)
+	}
+	if payload.Ack.TargetSwarmID != "child-swarm" {
+		t.Fatalf("ack target swarm = %q, want child-swarm", payload.Ack.TargetSwarmID)
+	}
+	accepted, ok, err := flows.GetAcceptedAssignment("flow-apply-child")
+	if err != nil || !ok {
+		t.Fatalf("accepted ok=%v err=%v", ok, err)
+	}
+	if accepted.Target.SwarmID != "child-swarm" {
+		t.Fatalf("accepted target swarm = %q, want child-swarm", accepted.Target.SwarmID)
+	}
+}
+
 func TestFlowAssignmentDeliveryKeepsUnreachableTargetsPending(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
@@ -135,6 +188,54 @@ func TestFlowAssignmentDeliveryKeepsUnreachableTargetsPending(t *testing.T) {
 	}
 	if !stored.PendingSync || stored.Status != flow.AssignmentTargetOffline {
 		t.Fatalf("stored status = %+v", stored)
+	}
+}
+
+func TestFlowAssignmentDeliveryUsesResolvedRemoteTargetSwarm(t *testing.T) {
+	server, _ := newFlowPeerTestServer(t)
+	var delivered flow.AssignmentCommand
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != flowPeerApplyPath {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&delivered); err != nil {
+			t.Fatalf("decode child command: %v", err)
+		}
+		writeJSON(w, http.StatusOK, flowAssignmentApplyResponse{OK: true, Ack: flow.AssignmentAck{
+			CommandID:        delivered.CommandID,
+			FlowID:           delivered.FlowID,
+			AcceptedRevision: delivered.Revision,
+			Status:           flow.AssignmentAccepted,
+			TargetSwarmID:    "child-remote",
+			TargetClock:      time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC),
+		}})
+	}))
+	defer child.Close()
+	server.SetRemoteDeployService(&fakeRemoteDeployService{sessions: []remotedeploy.Session{{
+		ID:               "pc-child-remote",
+		Name:             "pc child",
+		Status:           "attached",
+		ChildSwarmID:     "child-remote",
+		RemoteTailnetURL: child.URL,
+		RemoteEndpoint:   child.URL,
+	}}})
+	assignment := testAPIFlowAssignment("flow-remote-target", 1)
+	assignment.Target = flow.TargetSelection{SwarmID: "child-remote", Kind: "remote", Name: "pc child", DeploymentID: "pc-child-remote"}
+	command := testAPIFlowCommand("cmd-remote-target", assignment, flow.CommandInstall)
+
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	if err != nil {
+		t.Fatalf("enqueue deliver: %v", err)
+	}
+	if !result.Delivered || result.Ack.Status != flow.AssignmentAccepted {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.AssignmentState.TargetSwarmID != "child-remote" || result.Outbox.TargetSwarmID != "child-remote" {
+		t.Fatalf("target attribution outbox=%q state=%q", result.Outbox.TargetSwarmID, result.AssignmentState.TargetSwarmID)
+	}
+	if delivered.Assignment.Target.SwarmID != "child-remote" || delivered.Assignment.Target.Kind != "remote" || delivered.Assignment.Target.DeploymentID != "pc-child-remote" {
+		t.Fatalf("delivered target = %+v", delivered.Assignment.Target)
 	}
 }
 
@@ -202,6 +303,12 @@ func TestFlowAssignmentDeliveryTranslatesReplicatedWorkspacePath(t *testing.T) {
 	}
 	if delivered.Assignment.Workspace.WorkspacePath != "/root/swarm-go/subdir" {
 		t.Fatalf("delivered workspace path = %q", delivered.Assignment.Workspace.WorkspacePath)
+	}
+	if delivered.Assignment.Workspace.HostWorkspacePath != filepath.Join(hostWorkspace, "subdir") {
+		t.Fatalf("delivered host workspace path = %q", delivered.Assignment.Workspace.HostWorkspacePath)
+	}
+	if delivered.Assignment.Workspace.RuntimeWorkspacePath != "/root/swarm-go/subdir" {
+		t.Fatalf("delivered runtime workspace path = %q", delivered.Assignment.Workspace.RuntimeWorkspacePath)
 	}
 	if delivered.Assignment.Workspace.CWD != "/root/swarm-go/subdir/nested" {
 		t.Fatalf("delivered cwd = %q", delivered.Assignment.Workspace.CWD)
@@ -277,6 +384,7 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 		t.Fatalf("ensure agent defaults: %v", err)
 	}
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
+	sessionSvc.SetLocalSwarmIDResolver(func() string { return "host-swarm-id" })
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, nil)
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
 	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))

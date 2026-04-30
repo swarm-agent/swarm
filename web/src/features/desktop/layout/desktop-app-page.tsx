@@ -1551,6 +1551,23 @@ export function DesktopAppPage() {
       setActiveWorkspacePath(selectedWorkspacePath)
     }
 
+    if (routeSessionId || selectedSession?.id) {
+      setWorkspaceLayout((current) => {
+        const currentEntry = current[selectedWorkspacePath]
+        if (currentEntry && currentEntry.collapsed === false && currentEntry.hidden !== true) {
+          return current
+        }
+        return {
+          ...current,
+          [selectedWorkspacePath]: {
+            collapsed: false,
+            hidden: currentEntry?.hidden ?? false,
+            ratio: normalizeRatio(currentEntry?.ratio),
+          },
+        }
+      })
+    }
+
     if (routeSessionId && selectedSession?.id) {
       if (selectedSession.id !== activeSessionId) {
         setActiveSession(selectedSession.id)

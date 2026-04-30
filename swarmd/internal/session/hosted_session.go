@@ -121,8 +121,31 @@ func adaptHostedSessionForRuntime(session pebblestore.SessionSnapshot) pebblesto
 	if !ok {
 		return session
 	}
-	if strings.TrimSpace(descriptor.RuntimeWorkspacePath) != "" {
-		session.WorkspacePath = strings.TrimSpace(descriptor.RuntimeWorkspacePath)
+	if runtimeWorkspacePath := strings.TrimSpace(descriptor.RuntimeWorkspacePath); runtimeWorkspacePath != "" {
+		session.WorkspacePath = runtimeWorkspacePath
+	}
+	return session
+}
+
+func adaptHostedSessionForLocalRuntime(session pebblestore.SessionSnapshot, localSwarmID string) pebblestore.SessionSnapshot {
+	descriptor, ok := HostedSessionFromMetadata(session.Metadata)
+	if !ok {
+		return session
+	}
+	hostWorkspacePath := strings.TrimSpace(descriptor.HostWorkspacePath)
+	runtimeWorkspacePath := strings.TrimSpace(descriptor.RuntimeWorkspacePath)
+	localSwarmID = strings.TrimSpace(localSwarmID)
+	if localSwarmID != "" && strings.EqualFold(strings.TrimSpace(descriptor.HostSwarmID), localSwarmID) {
+		if hostWorkspacePath != "" {
+			session.WorkspacePath = hostWorkspacePath
+		}
+		return session
+	}
+	if localSwarmID == "" && hostWorkspacePath != "" && strings.TrimSpace(session.WorkspacePath) == hostWorkspacePath {
+		return session
+	}
+	if runtimeWorkspacePath != "" {
+		session.WorkspacePath = runtimeWorkspacePath
 	}
 	return session
 }

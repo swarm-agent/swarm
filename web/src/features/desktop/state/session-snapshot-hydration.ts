@@ -5,7 +5,8 @@ export function sessionRequiresSnapshotHydration(session: DesktopSessionRecord, 
     return false
   }
 
-  if (eventType.trim().toLowerCase() === 'session.created') {
+  const normalizedEventType = eventType.trim().toLowerCase()
+  if (normalizedEventType === 'session.created' || normalizedEventType === 'session.updated') {
     return false
   }
 

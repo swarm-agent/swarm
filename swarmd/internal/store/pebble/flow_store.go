@@ -985,6 +985,8 @@ func normalizeFlowAssignment(record flow.Assignment) flow.Assignment {
 	record.Agent.TargetKind = strings.TrimSpace(record.Agent.TargetKind)
 	record.Agent.TargetName = strings.TrimSpace(record.Agent.TargetName)
 	record.Workspace.WorkspacePath = strings.TrimSpace(record.Workspace.WorkspacePath)
+	record.Workspace.HostWorkspacePath = strings.TrimSpace(record.Workspace.HostWorkspacePath)
+	record.Workspace.RuntimeWorkspacePath = strings.TrimSpace(record.Workspace.RuntimeWorkspacePath)
 	record.Workspace.CWD = strings.TrimSpace(record.Workspace.CWD)
 	record.Workspace.WorktreeMode = strings.TrimSpace(record.Workspace.WorktreeMode)
 	record.Schedule.Cadence = strings.TrimSpace(record.Schedule.Cadence)

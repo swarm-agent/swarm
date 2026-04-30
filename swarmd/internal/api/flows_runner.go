@@ -155,12 +155,14 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	if descriptor, ok := s.flowHostedSessionDescriptor(assignment); ok {
 		metadata = descriptor.WithMetadata(metadata)
 	}
+	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(assignment.Workspace.RuntimeWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath))
+	hostWorkspacePath := firstNonEmpty(strings.TrimSpace(assignment.Workspace.HostWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath))
 	sessionReq := sessionCreateRequest{
 		Title:                flowRunSessionTitle(assignment),
-		WorkspacePath:        strings.TrimSpace(assignment.Workspace.WorkspacePath),
-		HostWorkspacePath:    strings.TrimSpace(assignment.Workspace.WorkspacePath),
-		RuntimeWorkspacePath: strings.TrimSpace(assignment.Workspace.WorkspacePath),
-		WorkspaceName:        filepath.Base(strings.TrimSpace(assignment.Workspace.WorkspacePath)),
+		WorkspacePath:        runtimeWorkspacePath,
+		HostWorkspacePath:    hostWorkspacePath,
+		RuntimeWorkspacePath: runtimeWorkspacePath,
+		WorkspaceName:        filepath.Base(runtimeWorkspacePath),
 		Mode:                 sessionruntime.ModeAuto,
 		AgentName:            "",
 		WorktreeMode:         strings.TrimSpace(assignment.Workspace.WorktreeMode),
@@ -177,6 +179,9 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	if strings.TrimSpace(sessionReq.WorkspacePath) == "" {
 		return flow.RunStart{}, errors.New("flow workspace_path is required")
 	}
+	if strings.TrimSpace(sessionReq.WorkspaceName) == "" || sessionReq.WorkspaceName == "." || sessionReq.WorkspaceName == string(filepath.Separator) {
+		sessionReq.WorkspaceName = "workspace"
+	}
 	session, _, _, _, err := s.createSessionFromRequestWithSessionID(sessionReq, nil, true, sessionID)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
@@ -190,7 +195,7 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 		TargetName: strings.TrimSpace(assignment.Agent.TargetName),
 		Background: true,
 		ExecutionContext: &runruntime.RunExecutionContext{
-			WorkspacePath: strings.TrimSpace(assignment.Workspace.WorkspacePath),
+			WorkspacePath: runtimeWorkspacePath,
 			CWD:           strings.TrimSpace(assignment.Workspace.CWD),
 			WorktreeMode:  strings.TrimSpace(assignment.Workspace.WorktreeMode),
 		},
@@ -233,7 +238,6 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 		}
 		return flow.RunStart{}, err
 	}
-	_ = result
 	if s.flowRunFinished(result, session.ID, runID) {
 		if summaryErr := s.putFlowRunSummary(start, startedAt, finishedAt, ""); summaryErr != nil {
 			return flow.RunStart{}, summaryErr
@@ -391,8 +395,8 @@ func (s *Server) flowHostedSessionDescriptor(assignment flow.Assignment) (sessio
 	return sessionruntime.HostedSessionDescriptor{
 		HostSwarmID:          controllerSwarmID,
 		HostBackendURL:       hostBackendURL,
-		HostWorkspacePath:    strings.TrimSpace(assignment.Workspace.WorkspacePath),
-		RuntimeWorkspacePath: strings.TrimSpace(assignment.Workspace.WorkspacePath),
+		HostWorkspacePath:    firstNonEmpty(strings.TrimSpace(assignment.Workspace.HostWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath)),
+		RuntimeWorkspacePath: firstNonEmpty(strings.TrimSpace(assignment.Workspace.RuntimeWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath)),
 		ChildSwarmID:         localSwarmID,
 	}, true
 }
@@ -445,14 +449,14 @@ func flowRunMetadata(assignment flow.Assignment, scheduledAt time.Time, runNow b
 }
 
 func flowRunSessionTitle(assignment flow.Assignment) string {
+	if name := flowTitleText(assignment.Name); name != "" {
+		return name
+	}
 	if title := flowTaskSessionTitle(assignment.Intent); title != "" {
 		return title
 	}
 	if prompt := flowTitleText(assignment.Intent.Prompt); prompt != "" {
 		return prompt
-	}
-	if name := flowTitleText(assignment.Name); name != "" {
-		return name
 	}
 	if flowID := flowTitleText(assignment.FlowID); flowID != "" {
 		return flowID
