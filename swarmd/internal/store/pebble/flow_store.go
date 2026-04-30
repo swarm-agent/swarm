@@ -781,8 +781,11 @@ func (s *FlowStore) ListPendingTargetRunReports(now time.Time, limit int) ([]Flo
 		now = time.Now().UTC()
 	}
 	return s.listTargetRuns("", limit, true, func(record FlowRunSummaryRecord) bool {
-		if record.FinishedAt.IsZero() || !record.ReportedAt.IsZero() {
+		if !record.ReportedAt.IsZero() {
 			return false
+		}
+		if record.FinishedAt.IsZero() {
+			return record.ReportAttemptCount == 0
 		}
 		return record.NextReportAt.IsZero() || !record.NextReportAt.After(now)
 	})

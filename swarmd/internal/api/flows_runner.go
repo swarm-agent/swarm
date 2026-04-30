@@ -266,9 +266,7 @@ func (s *Server) putFlowRunSummary(start flow.RunStart, startedAt, finishedAt ti
 	if err != nil {
 		return err
 	}
-	if !record.FinishedAt.IsZero() {
-		s.reportFlowRunSummaryNonFatal(context.Background(), record)
-	}
+	s.reportFlowRunSummaryNonFatal(context.Background(), record)
 	return nil
 }
 

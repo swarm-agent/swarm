@@ -176,6 +176,110 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	}
 }
 
+func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	hostWorkspace := filepath.Join(t.TempDir(), "swarm-go")
+	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	if _, err := server.workspace.AddReplicationLink(hostWorkspace, pebblestore.WorkspaceReplicationLink{
+		ID:                  "pc-container",
+		TargetKind:          "local",
+		TargetSwarmID:       "target-swarm-1",
+		TargetSwarmName:     "pc container",
+		TargetWorkspacePath: "/workspaces/swarm-go",
+		ReplicationMode:     workspaceruntime.ReplicationModeBundle,
+		Writable:            true,
+	}); err != nil {
+		t.Fatalf("add replication link: %v", err)
+	}
+	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
+		SwarmID:      "target-swarm-1",
+		Name:         "pc container",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "pc-container",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   "http://child.example",
+	}}})
+	assignment := testAPIFlowAssignment("flow-report-running-session", 2)
+	assignment.Target = flow.TargetSelection{SwarmID: "target-swarm-1", Kind: "local", DeploymentID: "pc-container", Name: "pc container"}
+	assignment.Workspace = flow.WorkspaceContext{WorkspacePath: "/workspaces/swarm-go"}
+	if _, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
+		t.Fatalf("put definition: %v", err)
+	}
+
+	startedAt := time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC)
+	reportedSession := pebblestore.SessionSnapshot{
+		ID:            "session-running-report",
+		WorkspacePath: "/workspaces/swarm-go",
+		WorkspaceName: "swarm-go",
+		Title:         "running flow title",
+		Mode:          "auto",
+		Metadata: map[string]any{
+			"source":        "flow",
+			"target_kind":   "background",
+			"target_name":   "memory",
+			"runtime_state": "standby",
+		},
+		CreatedAt: startedAt.UnixMilli(),
+		UpdatedAt: startedAt.UnixMilli(),
+		Lifecycle: &pebblestore.SessionLifecycleSnapshot{
+			SessionID:      "session-running-report",
+			RunID:          "run-running-report",
+			Active:         true,
+			Phase:          "running",
+			StartedAt:      startedAt.UnixMilli(),
+			UpdatedAt:      startedAt.UnixMilli(),
+			OwnerTransport: "flow_scheduler",
+		},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, flowPeerReportPath, jsonReader(t, flowRunReportRequest{
+		Summary: pebblestore.FlowRunSummaryRecord{
+			RunID:       "run-running-report",
+			FlowID:      assignment.FlowID,
+			Revision:    assignment.Revision,
+			ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+			StartedAt:   startedAt,
+			Status:      pebblestore.FlowRunStatusRunning,
+			SessionID:   "session-running-report",
+		},
+		Session: &reportedSession,
+	}))
+	req.Header.Set(peerAuthSwarmIDHeader, "target-swarm-1")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	session, ok, err := server.sessions.GetSession("session-running-report")
+	if err != nil || !ok {
+		t.Fatalf("get mirrored session ok=%v err=%v", ok, err)
+	}
+	if session.WorkspacePath != hostWorkspace || session.Metadata["swarm_target_name"] != "pc container" {
+		t.Fatalf("session = %+v", session)
+	}
+	lifecycle, ok, err := server.sessions.GetLifecycle("session-running-report")
+	if err != nil || !ok {
+		t.Fatalf("get lifecycle ok=%v err=%v", ok, err)
+	}
+	if !lifecycle.Active || lifecycle.Phase != "running" || lifecycle.OwnerTransport != "flow_scheduler" {
+		t.Fatalf("lifecycle = %+v", lifecycle)
+	}
+	route, ok, err := server.sessionRoutes.Get("session-running-report")
+	if err != nil || !ok {
+		t.Fatalf("get route ok=%v err=%v", ok, err)
+	}
+	if route.ChildSwarmID != "target-swarm-1" || route.RuntimeWorkspacePath != "/workspaces/swarm-go" || route.HostWorkspacePath != hostWorkspace {
+		t.Fatalf("route = %+v", route)
+	}
+}
+
 func TestFlowRunSummaryReportingIsNonFatalWhenControllerUnreachable(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	startupPath := writeFlowReportStartupConfig(t, startupconfig.FileConfig{
@@ -204,8 +308,8 @@ func TestFlowRunSummaryReportingIsNonFatalWhenControllerUnreachable(t *testing.T
 	}
 }
 
-func TestFlowRunSummaryReportsToController(t *testing.T) {
-	server, _ := newFlowPeerTestServer(t)
+func TestFlowRunSummaryReportsRunningSessionToController(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
 	localSession := pebblestore.SessionSnapshot{
 		ID:            "session-report-controller",
 		WorkspacePath: filepath.Join(t.TempDir(), "workspace"),
@@ -252,26 +356,34 @@ func TestFlowRunSummaryReportsToController(t *testing.T) {
 		token: "peer-token",
 	})
 
-	if err := server.reportFlowRunSummary(context.Background(), pebblestore.FlowRunSummaryRecord{
+	if err := server.putFlowRunSummary(flow.RunStart{
 		RunID:       "run-report-controller",
 		FlowID:      "flow-report-controller",
 		Revision:    4,
 		ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
-		StartedAt:   time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC),
-		FinishedAt:  time.Date(2025, 1, 2, 9, 2, 0, 0, time.UTC),
-		Status:      pebblestore.FlowRunStatusSuccess,
 		SessionID:   localSession.ID,
-	}); err != nil {
-		t.Fatalf("report summary: %v", err)
+		Status:      pebblestore.FlowRunStatusRunning,
+	}, time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC), time.Time{}, ""); err != nil {
+		t.Fatalf("put/report running summary: %v", err)
 	}
-	if got.Summary.RunID != "run-report-controller" || got.Summary.TargetSwarmID != "target-swarm" {
+	if got.Summary.RunID != "run-report-controller" || got.Summary.TargetSwarmID != "target-swarm" || got.Summary.Status != pebblestore.FlowRunStatusRunning || !got.Summary.FinishedAt.IsZero() {
 		t.Fatalf("got report = %+v", got.Summary)
 	}
 	if got.Session == nil || got.Session.ID != localSession.ID {
 		t.Fatalf("got session = %+v", got.Session)
 	}
+	if got.Session.Lifecycle == nil || !got.Session.Lifecycle.Active || got.Session.Lifecycle.Phase != "running" || got.Session.Lifecycle.OwnerTransport != "flow_scheduler" {
+		t.Fatalf("got lifecycle = %+v", got.Session.Lifecycle)
+	}
 	if len(got.Messages) != 1 || got.Messages[0].Content != "controller payload" {
 		t.Fatalf("got messages = %+v", got.Messages)
+	}
+	stored, ok, err := flows.GetTargetRun("run-report-controller")
+	if err != nil || !ok {
+		t.Fatalf("get target run ok=%v err=%v", ok, err)
+	}
+	if stored.ReportedAt.IsZero() || stored.ReportError != "" || stored.ReportAttemptCount != 0 {
+		t.Fatalf("stored running summary = %+v", stored)
 	}
 }
 

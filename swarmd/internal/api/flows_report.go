@@ -295,11 +295,11 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 	return nil
 }
 
-func (s *Server) flowRunReportSessionPayload(sessionID string) (*pebblestore.SessionSnapshot, []pebblestore.MessageSnapshot, error) {
+func (s *Server) flowRunReportSessionPayload(summary pebblestore.FlowRunSummaryRecord) (*pebblestore.SessionSnapshot, []pebblestore.MessageSnapshot, error) {
 	if s == nil || s.sessions == nil {
 		return nil, nil, nil
 	}
-	sessionID = strings.TrimSpace(sessionID)
+	sessionID := strings.TrimSpace(summary.SessionID)
 	if sessionID == "" {
 		return nil, nil, nil
 	}
@@ -310,11 +310,48 @@ func (s *Server) flowRunReportSessionPayload(sessionID string) (*pebblestore.Ses
 	if !ok {
 		return nil, nil, nil
 	}
+	if session.Lifecycle == nil {
+		if lifecycle, active := flowRunActiveLifecycleSnapshot(summary); active {
+			session.Lifecycle = &lifecycle
+		}
+	}
 	messages, err := s.sessions.ListMessages(sessionID, 0, 10000)
 	if err != nil {
 		return nil, nil, err
 	}
 	return &session, messages, nil
+}
+
+func flowRunActiveLifecycleSnapshot(summary pebblestore.FlowRunSummaryRecord) (pebblestore.SessionLifecycleSnapshot, bool) {
+	sessionID := strings.TrimSpace(summary.SessionID)
+	runID := strings.TrimSpace(summary.RunID)
+	if sessionID == "" || runID == "" || !summary.FinishedAt.IsZero() {
+		return pebblestore.SessionLifecycleSnapshot{}, false
+	}
+	status := strings.ToLower(strings.TrimSpace(summary.Status))
+	if status == "" {
+		status = pebblestore.FlowRunStatusRunning
+	}
+	if status != pebblestore.FlowRunStatusRunning && status != pebblestore.FlowRunStatusClaimed {
+		return pebblestore.SessionLifecycleSnapshot{}, false
+	}
+	startedAt := summary.StartedAt.UnixMilli()
+	if startedAt <= 0 {
+		startedAt = summary.ScheduledAt.UnixMilli()
+	}
+	if startedAt <= 0 {
+		startedAt = time.Now().UnixMilli()
+	}
+	return pebblestore.SessionLifecycleSnapshot{
+		SessionID:      sessionID,
+		RunID:          runID,
+		Active:         true,
+		Phase:          pebblestore.FlowRunStatusRunning,
+		StartedAt:      startedAt,
+		UpdatedAt:      startedAt,
+		Generation:     1,
+		OwnerTransport: "flow_scheduler",
+	}, true
 }
 
 func (s *Server) resolveFlowMirrorTarget(summary pebblestore.FlowRunSummaryRecord, selection flow.TargetSelection) (swarmTarget, bool) {
@@ -414,6 +451,13 @@ func (s *Server) reportFlowRunSummary(ctx context.Context, summary pebblestore.F
 		if err != nil {
 			return err
 		}
+		if s.sessions != nil && strings.TrimSpace(stored.SessionID) != "" {
+			if _, ok, sessionErr := s.sessions.GetSession(stored.SessionID); sessionErr != nil {
+				return sessionErr
+			} else if ok {
+				return nil
+			}
+		}
 		return s.mirrorFlowRunSessionFromReport(stored, nil, nil)
 	}
 	target, err := s.resolveFlowControllerReportTarget(ctx, cfg)
@@ -423,7 +467,7 @@ func (s *Server) reportFlowRunSummary(ctx context.Context, summary pebblestore.F
 	if strings.TrimSpace(summary.TargetSwarmID) == "" {
 		summary.TargetSwarmID = target.LocalSwarmID
 	}
-	reportedSession, reportedMessages, err := s.flowRunReportSessionPayload(strings.TrimSpace(summary.SessionID))
+	reportedSession, reportedMessages, err := s.flowRunReportSessionPayload(summary)
 	if err != nil {
 		return err
 	}
