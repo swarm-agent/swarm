@@ -58,22 +58,28 @@ func run() error {
 	}
 
 	resp := searchipc.Response{
-		Completed: true,
-		Content:   runContentSearch(inst, req, timeout),
+		Completed:      true,
+		ContentResults: runContentSearches(inst, req, timeout),
 	}
-	if strings.TrimSpace(resp.Content.Error) != "" {
-		resp.FileResults = runFileSearches(inst, req)
+	if len(resp.ContentResults) == 1 {
+		resp.Content = resp.ContentResults[0]
 	}
+	resp.FileResults = runFileSearches(inst, req, resp.ContentResults)
 	return encodeResponse(resp)
 }
 
-func runContentSearch(inst *fff.Instance, req searchipc.Request, timeout time.Duration) searchipc.GrepQueryResult {
-	result := searchipc.GrepQueryResult{
-		Query: strings.TrimSpace(req.Queries[0]),
-		Mode:  "content",
-	}
-	if len(req.Queries) == 1 {
-		matches, metrics, err := inst.GrepWithConfig(buildFFFGrepQuery(req.Include, req.Queries[0]), fff.GrepOptions{
+func runContentSearches(inst *fff.Instance, req searchipc.Request, timeout time.Duration) []searchipc.GrepQueryResult {
+	results := make([]searchipc.GrepQueryResult, 0, len(req.Queries))
+	for _, query := range req.Queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		result := searchipc.GrepQueryResult{
+			Query: query,
+			Mode:  "content",
+		}
+		matches, metrics, err := inst.GrepWithConfig(buildFFFGrepQuery(req.Include, query), fff.GrepOptions{
 			PageLimit:           req.PageLimit,
 			TimeBudget:          timeout,
 			AfterContext:        req.AfterContext,
@@ -84,24 +90,21 @@ func runContentSearch(inst *fff.Instance, req searchipc.Request, timeout time.Du
 		if err != nil {
 			result.Error = strings.TrimSpace(err.Error())
 		}
-		return result
+		results = append(results, result)
 	}
-
-	matches, metrics, err := inst.MultiGrepWithOptions(req.Queries, strings.TrimSpace(req.Include), req.PageLimit, timeout, 0, 0, req.AfterContext, true)
-	result.Matches = matches
-	result.Metrics = metrics
-	if err != nil {
-		result.Error = strings.TrimSpace(err.Error())
-	}
-	return result
+	return results
 }
 
-func runFileSearches(inst *fff.Instance, req searchipc.Request) []searchipc.SearchQueryResult {
+func runFileSearches(inst *fff.Instance, req searchipc.Request, contentResults []searchipc.GrepQueryResult) []searchipc.SearchQueryResult {
 	results := make([]searchipc.SearchQueryResult, 0, len(req.Queries))
 	pageSize := uint32(req.MaxResults + 1)
 	for _, query := range req.Queries {
+		query = strings.TrimSpace(query)
+		if query == "" || !needsFileSearchFallback(query, contentResults) {
+			continue
+		}
 		result := searchipc.SearchQueryResult{
-			Query: strings.TrimSpace(query),
+			Query: query,
 			Mode:  "files",
 		}
 		items, metrics, err := inst.SearchWithOptions(buildFFFSearchQuery(req.Include, query), pageSize, 0)
@@ -113,6 +116,15 @@ func runFileSearches(inst *fff.Instance, req searchipc.Request) []searchipc.Sear
 		results = append(results, result)
 	}
 	return results
+}
+
+func needsFileSearchFallback(query string, contentResults []searchipc.GrepQueryResult) bool {
+	for _, result := range contentResults {
+		if strings.EqualFold(strings.TrimSpace(result.Query), query) {
+			return strings.TrimSpace(result.Error) != "" || result.Metrics.TotalMatched == 0
+		}
+	}
+	return true
 }
 
 func encodeResponse(resp searchipc.Response) error {

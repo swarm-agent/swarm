@@ -106,7 +106,15 @@ func scopeExpansionArgument(call Call) (string, string, bool) {
 	case "read", "write", "edit", "list", "search", "agentic_search":
 		path := strings.TrimSpace(asString(args["path"]))
 		if path == "" {
-			return "", "", false
+			paths := asStringSlice(args["paths"])
+			if len(paths) == 0 {
+				return "", "", false
+			}
+			path = strings.TrimSpace(paths[0])
+			if path == "" {
+				return "", "", false
+			}
+			return "paths", path, true
 		}
 		return "path", path, true
 	case "webdownload":

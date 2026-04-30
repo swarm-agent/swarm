@@ -13,10 +13,11 @@ type Request struct {
 }
 
 type Response struct {
-	Completed   bool                `json:"completed"`
-	Content     GrepQueryResult     `json:"content,omitempty"`
-	FileResults []SearchQueryResult `json:"file_results,omitempty"`
-	HelperError string              `json:"helper_error,omitempty"`
+	Completed      bool                `json:"completed"`
+	Content        GrepQueryResult     `json:"content,omitempty"`
+	ContentResults []GrepQueryResult   `json:"content_results,omitempty"`
+	FileResults    []SearchQueryResult `json:"file_results,omitempty"`
+	HelperError    string              `json:"helper_error,omitempty"`
 }
 
 type GrepQueryResult struct {
