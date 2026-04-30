@@ -24,6 +24,7 @@ const selectors = {
   detail: '[data-testid="flows-detail"]',
   runNow: '[data-testid="flows-detail-run-now"]',
   recentRuns: '[data-testid="flows-recent-runs"]',
+  desktopSidebar: '[data-testid="desktop-workspace-sidebar"], aside',
   table: '[data-testid="flows-table"]',
   row: '[data-testid="flows-row"]',
   error: '[data-testid="flows-error"]',
@@ -687,11 +688,13 @@ async function runFlowNowFromDetail(page, flowID, flowName, opts, summary, recor
   }
   assertDeliverResultAccepted(payload, 'host UI run-now')
   finish({ status: response.status(), run: payload?.run || null })
-  await verifyFlowRunVisible(page, flowID, flowName, opts.runTimeoutMs, summary, 'host.run_now')
+  const expectedRunID = String(payload?.run?.reason || payload?.result?.ack?.reason || '').match(/run_now started\s+(\S+)/)?.[1] || ''
+  await verifyFlowRunVisible(page, flowID, flowName, opts.runTimeoutMs, summary, 'host.run_now', { expectedRunID })
 }
 
 async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, label, options = {}) {
   const requireControllerSession = options.requireControllerSession !== false
+  const expectedRunID = String(options.expectedRunID || '').trim()
   const deadline = Date.now() + timeoutMs
   let last = null
   while (Date.now() < deadline) {
@@ -702,6 +705,7 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
     ])
     const history = Array.isArray(historyPayload.history) ? historyPayload.history : []
     const sessions = Array.isArray(sessionsPayload.sessions) ? sessionsPayload.sessions : []
+    const flowRuns = history.filter((run) => String(run.flow_id || '').trim() === flowID)
     const matchingSessions = sessions.filter((session) => {
       const metadata = session?.metadata && typeof session.metadata === 'object' ? session.metadata : {}
       return String(metadata.flow_id || '').trim() === flowID || String(session?.title || '').includes(flowName)
@@ -712,11 +716,20 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
       matching_sessions: matchingSessions.map(summarizeSession),
     }
     summary.observations[`${label}.last_poll`] = last
-    const latestRun = history.find((run) => String(run.flow_id || '').trim() === flowID) || history[0]
+    const latestRun = expectedRunID
+      ? flowRuns.find((run) => String(run.run_id || '').trim() === expectedRunID)
+      : flowRuns[0] || history[0]
     if (latestRun && String(latestRun.session_id || '').trim() && (!requireControllerSession || matchingSessions.length > 0)) {
+      const duplicateCompletedRuns = flowRuns.filter((run) => String(run.run_id || '').trim() !== String(latestRun.run_id || '').trim())
+      if (duplicateCompletedRuns.length > 0) {
+        fail(`${label} produced duplicate history entries for one run-now command: ${JSON.stringify(duplicateCompletedRuns.map(summarizeRun))}`)
+      }
+      const latestSessionID = String(latestRun.session_id || '').trim()
+      const latestSession = matchingSessions.find((session) => String(session?.id || '').trim() === latestSessionID) || matchingSessions[0] || null
+      const latestSessionActive = Boolean(latestSession?.lifecycle?.active)
       summary.observations[`${label}.verified`] = {
         run: summarizeRun(latestRun),
-        session: matchingSessions.length > 0 ? summarizeSession(matchingSessions[0]) : null,
+        session: latestSession ? summarizeSession(latestSession) : null,
         controller_session_required: requireControllerSession,
       }
       const recentRuns = page.locator(selectors.recentRuns).first()
@@ -724,12 +737,50 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
         const text = await recentRuns.innerText().catch(() => '')
         summary.observations[`${label}.recent_runs_text`] = text.slice(0, 500)
       }
+      if (latestSessionActive) {
+        await captureSidebarVerification(page, flowID, flowName, summary, label)
+      } else {
+        summary.notes.push(`${label} sidebar active-placement verification skipped: run completed before sidebar capture`)
+      }
       return latestRun
     }
     await delay(3000)
   }
   const expectation = requireControllerSession ? 'mirrored history and session list' : 'mirrored history'
   fail(`${label} did not appear in ${expectation} before timeout; last=${JSON.stringify(last)}`)
+}
+
+async function captureSidebarVerification(page, flowID, flowName, summary, label) {
+  const session = summary.observations[`${label}.verified`]?.session
+  const workspacePath = String(session?.workspace_path || '').trim()
+  if (workspacePath) {
+    await navigateToWorkspaceSidebar(page, workspacePath, summary, label)
+  }
+  const sidebar = page.locator(selectors.desktopSidebar).first()
+  if (!(await sidebar.isVisible({ timeout: 3000 }).catch(() => false))) {
+    fail(`${label} sidebar was not visible for verification`)
+  }
+  const text = await sidebar.innerText().catch(() => '')
+  const hasFlowTitle = text.includes(flowName) || text.includes('Flow smoke') || text.includes('flow smoke ok') || text.includes('Run smoke prompt')
+  const hasBackgroundBadge = /background|flow/i.test(text)
+  const hasElapsed = /\b\d+(?:s|m|h)\b/.test(text)
+  summary.observations[`${label}.sidebar`] = {
+    text: text.slice(0, 1000),
+    has_flow_title: hasFlowTitle,
+    has_background_badge: hasBackgroundBadge,
+    has_elapsed_label: hasElapsed,
+  }
+  if (!hasFlowTitle || !hasBackgroundBadge) {
+    fail(`${label} sidebar did not show expected Flow title/background badge for ${flowID}`)
+  }
+}
+
+async function navigateToWorkspaceSidebar(page, workspacePath, summary, label) {
+  const name = workspacePath.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || 'workspace'
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'workspace'
+  await page.goto(new URL(`/${encodeURIComponent(base)}`, page.url()).toString(), { waitUntil: 'domcontentloaded' })
+  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {})
+  summary.observations[`${label}.sidebar_route`] = { workspace_path: workspacePath, slug: base }
 }
 
 function targetDefaultsForPhase(opts) {
@@ -865,9 +916,10 @@ async function runAPITargetSmoke(page, opts, summary, recorder) {
     }), summary, `${opts.phase}.run_now`)
     finishCreate({ flow_id: flowID })
     const finishRun = recorder.start(`${opts.phase}.api.run_now`, { flow_id: flowID })
-    await runFlowNowViaAPI(page, flowID, summary, `${opts.phase}.run_now`)
+    const runNowPayload = await runFlowNowViaAPI(page, flowID, summary, `${opts.phase}.run_now`)
     finishRun()
-    await verifyFlowRunVisible(page, flowID, name, opts.runTimeoutMs, summary, `${opts.phase}.run_now`)
+    const expectedRunID = String(runNowPayload?.run?.reason || runNowPayload?.result?.ack?.reason || '').match(/run_now started\s+(\S+)/)?.[1] || ''
+    await verifyFlowRunVisible(page, flowID, name, opts.runTimeoutMs, summary, `${opts.phase}.run_now`, { expectedRunID })
   }
 
   if (opts.schedule) {

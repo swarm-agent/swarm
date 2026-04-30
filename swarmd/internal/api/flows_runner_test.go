@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,6 +167,72 @@ func TestRunAcceptedFlowNowUsesTargetLocalAcceptedAssignment(t *testing.T) {
 	}
 }
 
+func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	runner := &fakeFlowRunService{started: started, block: unblock}
+	server.runner = runner
+	assignment := testAPIFlowAssignment("flow-run-now-replay", 7)
+	assignment.Agent = flow.AgentSelection{TargetKind: runruntime.RunTargetKindSubagent, TargetName: "flow-test"}
+	assignment.Workspace.WorkspacePath = t.TempDir()
+	assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
+	accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
+	if err != nil {
+		t.Fatalf("put accepted assignment: %v", err)
+	}
+
+	commandCreatedAt := time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC)
+	command := testAPIFlowCommand("cmd-run-now-replay", accepted.Assignment, flow.CommandRunNow)
+	command.CreatedAt = commandCreatedAt
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		if _, _, err := server.applyFlowRunNowCommand(t.Context(), command, commandCreatedAt.Add(5*time.Second)); err != nil {
+			t.Errorf("first run-now command: %v", err)
+		}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first run-now command did not start")
+	}
+
+	secondAck, secondInserted, err := server.applyFlowRunNowCommand(t.Context(), command, commandCreatedAt.Add(12*time.Second))
+	if err != nil {
+		t.Fatalf("second run-now command: %v", err)
+	}
+	if !secondInserted || secondAck.Status != flow.AssignmentAccepted {
+		t.Fatalf("second ack inserted=%v ack=%+v", secondInserted, secondAck)
+	}
+	close(unblock)
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first run-now command did not finish")
+	}
+
+	if got := runner.callCount(); got != 1 {
+		t.Fatalf("runner call count = %d, want 1", got)
+	}
+	runs, err := flows.ListTargetRuns(assignment.FlowID, 10)
+	if err != nil {
+		t.Fatalf("list target runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("target run count = %d, want 1: %+v", len(runs), runs)
+	}
+	if !runs[0].ScheduledAt.Equal(commandCreatedAt) {
+		t.Fatalf("scheduled_at = %s, want %s", runs[0].ScheduledAt, commandCreatedAt)
+	}
+	if !strings.Contains(runs[0].RunID, sanitizeFlowRunIDPart(command.CommandID)) {
+		t.Fatalf("run id %q does not include command id %q", runs[0].RunID, command.CommandID)
+	}
+}
+
 func ensureFlowTestAgent(t *testing.T, server *Server) {
 	t.Helper()
 	if server == nil || server.agents == nil {
@@ -220,12 +287,16 @@ func ensureFlowMemoryAgentRunnable(t *testing.T, server *Server) {
 }
 
 type fakeFlowRunService struct {
+	mu             sync.Mutex
 	lastSessionID  string
 	lastRequest    runruntime.RunRequest
 	lastMeta       runruntime.RunStartMeta
 	emitEvents     []runruntime.StreamEvent
 	receivedEvents []runruntime.StreamEvent
 	err            error
+	started        chan struct{}
+	block          chan struct{}
+	calls          int
 }
 
 func (f *fakeFlowRunService) RunTurn(context.Context, string, runruntime.RunRequest, runruntime.RunStartMeta) (runruntime.RunResult, error) {
@@ -233,10 +304,23 @@ func (f *fakeFlowRunService) RunTurn(context.Context, string, runruntime.RunRequ
 }
 
 func (f *fakeFlowRunService) RunTurnStreaming(_ context.Context, sessionID string, request runruntime.RunRequest, meta runruntime.RunStartMeta, onEvent runruntime.StreamHandler) (runruntime.RunResult, error) {
+	f.mu.Lock()
+	f.calls++
 	f.lastSessionID = sessionID
 	f.lastRequest = request
 	f.lastMeta = meta
-	for _, event := range f.emitEvents {
+	started := f.started
+	block := f.block
+	emitEvents := append([]runruntime.StreamEvent(nil), f.emitEvents...)
+	err := f.err
+	f.mu.Unlock()
+	if started != nil {
+		close(started)
+	}
+	if block != nil {
+		<-block
+	}
+	for _, event := range emitEvents {
 		if onEvent != nil {
 			onEvent(event)
 		}
@@ -246,12 +330,20 @@ func (f *fakeFlowRunService) RunTurnStreaming(_ context.Context, sessionID strin
 		if strings.TrimSpace(event.RunID) == "" {
 			event.RunID = meta.RunID
 		}
+		f.mu.Lock()
 		f.receivedEvents = append(f.receivedEvents, event)
+		f.mu.Unlock()
 	}
-	if f.err != nil {
-		return runruntime.RunResult{}, f.err
+	if err != nil {
+		return runruntime.RunResult{}, err
 	}
 	return runruntime.RunResult{SessionID: sessionID, Background: request.Background, TargetKind: request.TargetKind, TargetName: request.TargetName}, nil
+}
+
+func (f *fakeFlowRunService) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func (f *fakeFlowRunService) StopSessionRun(string, string, string) error {

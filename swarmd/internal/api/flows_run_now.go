@@ -69,7 +69,11 @@ func (s *Server) applyFlowRunNowCommand(ctx context.Context, command flow.Assign
 	if accepted.Revision != key.Revision {
 		return reject(flow.AssignmentRejected, fmt.Sprintf("accepted revision %d does not match run_now revision %d", accepted.Revision, key.Revision))
 	}
-	start, err := s.RunAcceptedFlowNowAt(ctx, accepted, now, key.CommandID)
+	scheduledAt := command.CreatedAt.UTC()
+	if scheduledAt.IsZero() {
+		scheduledAt = now
+	}
+	start, err := s.RunAcceptedFlowNowAt(ctx, accepted, scheduledAt, key.CommandID)
 	if err != nil {
 		return reject(flow.AssignmentRejected, err.Error())
 	}
