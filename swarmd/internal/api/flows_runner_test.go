@@ -187,20 +187,34 @@ func ensureFlowMemoryAgentRunnable(t *testing.T, server *Server) {
 }
 
 type fakeFlowRunService struct {
-	lastSessionID string
-	lastRequest   runruntime.RunRequest
-	lastMeta      runruntime.RunStartMeta
-	err           error
+	lastSessionID  string
+	lastRequest    runruntime.RunRequest
+	lastMeta       runruntime.RunStartMeta
+	emitEvents     []runruntime.StreamEvent
+	receivedEvents []runruntime.StreamEvent
+	err            error
 }
 
 func (f *fakeFlowRunService) RunTurn(context.Context, string, runruntime.RunRequest, runruntime.RunStartMeta) (runruntime.RunResult, error) {
 	return runruntime.RunResult{}, errors.New("RunTurn should not be used by flow runner")
 }
 
-func (f *fakeFlowRunService) RunTurnStreaming(_ context.Context, sessionID string, request runruntime.RunRequest, meta runruntime.RunStartMeta, _ runruntime.StreamHandler) (runruntime.RunResult, error) {
+func (f *fakeFlowRunService) RunTurnStreaming(_ context.Context, sessionID string, request runruntime.RunRequest, meta runruntime.RunStartMeta, onEvent runruntime.StreamHandler) (runruntime.RunResult, error) {
 	f.lastSessionID = sessionID
 	f.lastRequest = request
 	f.lastMeta = meta
+	for _, event := range f.emitEvents {
+		if onEvent != nil {
+			onEvent(event)
+		}
+		if strings.TrimSpace(event.SessionID) == "" {
+			event.SessionID = sessionID
+		}
+		if strings.TrimSpace(event.RunID) == "" {
+			event.RunID = meta.RunID
+		}
+		f.receivedEvents = append(f.receivedEvents, event)
+	}
 	if f.err != nil {
 		return runruntime.RunResult{}, f.err
 	}

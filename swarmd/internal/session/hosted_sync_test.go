@@ -199,6 +199,10 @@ func (f *fakeHostedSessionSync) UpsertLifecycle(context.Context, HostedSessionDe
 	return nil
 }
 
+func (f *fakeHostedSessionSync) PublishEvent(context.Context, HostedSessionDescriptor, string, string, map[string]any, string, string) (pebblestore.EventEnvelope, error) {
+	return pebblestore.EventEnvelope{}, nil
+}
+
 func (d HostedSessionDescriptor) apply(session pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {
 	session.Metadata = d.WithMetadata(session.Metadata)
 	return session

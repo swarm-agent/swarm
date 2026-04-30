@@ -89,6 +89,10 @@ func (s *Service) hostedDescriptor(metadata map[string]any) (HostedSessionDescri
 	return HostedSessionFromMetadataForLocal(metadata, localSwarmID)
 }
 
+func (s *Service) HostedDescriptor(metadata map[string]any) (HostedSessionDescriptor, bool) {
+	return s.hostedDescriptor(metadata)
+}
+
 func (s *Service) CreateSession(title, workspacePath, workspaceName string) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
 	return s.CreateSessionWithOptions(CreateSessionOptions{
 		Title:         title,
@@ -280,6 +284,11 @@ func (s *Service) StoreMirroredMessage(session pebblestore.SessionSnapshot, mess
 	message.Metadata = cloneSessionMetadataMap(message.Metadata)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok, err := s.store.GetMessage(message.SessionID, message.GlobalSeq); err != nil {
+		return pebblestore.SessionSnapshot{}, err
+	} else if ok && mirroredMessageSnapshotsEqual(existing, message) {
+		return mirrored, nil
+	}
 	if err := s.store.PutMessage(message); err != nil {
 		return pebblestore.SessionSnapshot{}, err
 	}
@@ -292,6 +301,32 @@ func (s *Service) StoreMirroredLifecycle(snapshot pebblestore.SessionLifecycleSn
 		return errors.New("session id is required")
 	}
 	return s.store.UpsertSessionLifecycle(snapshot)
+}
+
+func (s *Service) PublishHostedEvent(ctx context.Context, descriptor HostedSessionDescriptor, sessionID, eventType string, payload map[string]any, causationID, correlationID string) (pebblestore.EventEnvelope, error) {
+	if s == nil || s.hosted == nil {
+		return pebblestore.EventEnvelope{}, errors.New("hosted sync client is not configured")
+	}
+	return s.hosted.PublishEvent(ctx, descriptor, sessionID, eventType, payload, causationID, correlationID)
+}
+
+func (s *Service) StoreMirroredEvent(sessionID, eventType string, payload map[string]any, causationID, correlationID string) (pebblestore.EventEnvelope, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	eventType = strings.TrimSpace(eventType)
+	if sessionID == "" {
+		return pebblestore.EventEnvelope{}, errors.New("session id is required")
+	}
+	if eventType == "" {
+		return pebblestore.EventEnvelope{}, errors.New("event type is required")
+	}
+	if s == nil || s.events == nil {
+		return pebblestore.EventEnvelope{}, errors.New("event log is not configured")
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return pebblestore.EventEnvelope{}, err
+	}
+	return s.events.Append("session:"+sessionID, eventType, sessionID, payloadBytes, strings.TrimSpace(causationID), strings.TrimSpace(correlationID))
 }
 
 func (s *Service) DeleteSession(sessionID string) error {
@@ -376,14 +411,17 @@ func (s *Service) UpdateMetadata(sessionID string, metadata map[string]any) (peb
 		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
 			updated, err := s.hosted.UpdateMetadata(context.Background(), descriptor, sessionID, metadata)
 			if err != nil {
-				return pebblestore.SessionSnapshot{}, nil, err
+				if !hostedSyncOptional(session.Metadata) {
+					return pebblestore.SessionSnapshot{}, nil, err
+				}
+			} else {
+				updated = adaptHostedSessionForRuntime(updated)
+				mirrored, mirrorErr := s.StoreMirroredSession(updated)
+				if mirrorErr != nil {
+					return pebblestore.SessionSnapshot{}, nil, mirrorErr
+				}
+				return mirrored, nil, nil
 			}
-			updated = adaptHostedSessionForRuntime(updated)
-			mirrored, mirrorErr := s.StoreMirroredSession(updated)
-			if mirrorErr != nil {
-				return pebblestore.SessionSnapshot{}, nil, mirrorErr
-			}
-			return mirrored, nil, nil
 		}
 	}
 
@@ -540,7 +578,7 @@ func (s *Service) UpsertLifecycle(snapshot pebblestore.SessionLifecycleSnapshot)
 	if err != nil {
 		return err
 	}
-	if ok && s.hosted != nil {
+	if ok && s.hosted != nil && !hostedSyncOptional(session.Metadata) {
 		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
 			if err := s.hosted.UpsertLifecycle(context.Background(), descriptor, snapshot); err != nil {
 				return err
@@ -781,14 +819,17 @@ func (s *Service) SetMode(sessionID, mode string) (pebblestore.SessionSnapshot, 
 		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
 			updated, err := s.hosted.SetMode(context.Background(), descriptor, sessionID, mode)
 			if err != nil {
-				return pebblestore.SessionSnapshot{}, nil, err
+				if !hostedSyncOptional(session.Metadata) {
+					return pebblestore.SessionSnapshot{}, nil, err
+				}
+			} else {
+				updated = adaptHostedSessionForRuntime(updated)
+				mirrored, mirrorErr := s.StoreMirroredSession(updated)
+				if mirrorErr != nil {
+					return pebblestore.SessionSnapshot{}, nil, mirrorErr
+				}
+				return mirrored, nil, nil
 			}
-			updated = adaptHostedSessionForRuntime(updated)
-			mirrored, mirrorErr := s.StoreMirroredSession(updated)
-			if mirrorErr != nil {
-				return pebblestore.SessionSnapshot{}, nil, mirrorErr
-			}
-			return mirrored, nil, nil
 		}
 	}
 
@@ -864,14 +905,17 @@ func (s *Service) SetTitle(sessionID, title string) (pebblestore.SessionSnapshot
 		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
 			updated, err := s.hosted.SetTitle(context.Background(), descriptor, sessionID, title)
 			if err != nil {
-				return pebblestore.SessionSnapshot{}, nil, err
+				if !hostedSyncOptional(session.Metadata) {
+					return pebblestore.SessionSnapshot{}, nil, err
+				}
+			} else {
+				updated = adaptHostedSessionForRuntime(updated)
+				mirrored, mirrorErr := s.StoreMirroredSession(updated)
+				if mirrorErr != nil {
+					return pebblestore.SessionSnapshot{}, nil, mirrorErr
+				}
+				return mirrored, nil, nil
 			}
-			updated = adaptHostedSessionForRuntime(updated)
-			mirrored, mirrorErr := s.StoreMirroredSession(updated)
-			if mirrorErr != nil {
-				return pebblestore.SessionSnapshot{}, nil, mirrorErr
-			}
-			return mirrored, nil, nil
 		}
 	}
 
@@ -979,14 +1023,17 @@ func (s *Service) AppendMessage(sessionID, role, content string, metadata map[st
 		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
 			message, updated, err := s.hosted.AppendMessage(context.Background(), descriptor, sessionID, role, content, metadata)
 			if err != nil {
-				return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err
+				if !hostedSyncOptional(session.Metadata) {
+					return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err
+				}
+			} else {
+				updated = adaptHostedSessionForRuntime(updated)
+				mirrored, mirrorErr := s.StoreMirroredMessage(updated, message)
+				if mirrorErr != nil {
+					return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, mirrorErr
+				}
+				return message, mirrored, nil, nil
 			}
-			updated = adaptHostedSessionForRuntime(updated)
-			mirrored, mirrorErr := s.StoreMirroredMessage(updated, message)
-			if mirrorErr != nil {
-				return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, mirrorErr
-			}
-			return message, mirrored, nil, nil
 		}
 	}
 
@@ -1122,6 +1169,36 @@ func cloneSessionMetadataMap(input map[string]any) map[string]any {
 		return nil
 	}
 	return out
+}
+
+func mirroredMessageSnapshotsEqual(left, right pebblestore.MessageSnapshot) bool {
+	left.Metadata = cloneSessionMetadataMap(left.Metadata)
+	right.Metadata = cloneSessionMetadataMap(right.Metadata)
+	return left.ID == right.ID &&
+		left.SessionID == right.SessionID &&
+		left.GlobalSeq == right.GlobalSeq &&
+		left.Role == right.Role &&
+		left.Content == right.Content &&
+		left.CreatedAt == right.CreatedAt &&
+		mapsEqualJSON(left.Metadata, right.Metadata)
+}
+
+func mapsEqualJSON(left, right map[string]any) bool {
+	if len(left) == 0 && len(right) == 0 {
+		return true
+	}
+	leftBytes, leftErr := json.Marshal(left)
+	rightBytes, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return string(leftBytes) == string(rightBytes)
+}
+
+func hostedSyncOptional(metadata map[string]any) bool {
+	return strings.EqualFold(stringMetadataValue(metadata, "source"), "flow") ||
+		strings.EqualFold(stringMetadataValue(metadata, "owner_transport"), "flow_scheduler") ||
+		strings.EqualFold(stringMetadataValue(metadata, "lineage_kind"), "flow")
 }
 
 func preserveHostedMirroredSession(existing, incoming pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {

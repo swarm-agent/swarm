@@ -146,6 +146,10 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	if err != nil {
 		return flow.RunStart{}, err
 	}
+	metadata := flowRunMetadata(assignment, scheduledAt, request.RunNow)
+	if descriptor, ok := s.flowHostedSessionDescriptor(assignment); ok {
+		metadata = descriptor.WithMetadata(metadata)
+	}
 	sessionReq := sessionCreateRequest{
 		Title:                flowRunSessionTitle(assignment),
 		WorkspacePath:        strings.TrimSpace(assignment.Workspace.WorkspacePath),
@@ -155,7 +159,7 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 		Mode:                 sessionruntime.ModeAuto,
 		AgentName:            "",
 		WorktreeMode:         strings.TrimSpace(assignment.Workspace.WorktreeMode),
-		Metadata:             flowRunMetadata(assignment, scheduledAt, request.RunNow),
+		Metadata:             metadata,
 	}
 	sessionReq.Preference.Provider = pref.Provider
 	sessionReq.Preference.Model = pref.Model
@@ -201,7 +205,21 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	result, err := s.runner.RunTurnStreaming(ctx, session.ID, runReq, runruntime.RunStartMeta{
 		RunID:          runID,
 		OwnerTransport: "flow_scheduler",
-	}, nil)
+	}, func(event runruntime.StreamEvent) {
+		if strings.TrimSpace(event.SessionID) == "" {
+			event.SessionID = session.ID
+		}
+		if strings.TrimSpace(event.RunID) == "" {
+			event.RunID = runID
+		}
+		if event.Metadata == nil {
+			event.Metadata = make(map[string]any, 4)
+		}
+		event.Metadata["flow_id"] = strings.TrimSpace(assignment.FlowID)
+		event.Metadata["flow_run_id"] = runID
+		event.Metadata["source"] = "flow"
+		event.Metadata["owner_transport"] = "flow_scheduler"
+	})
 	finishedAt := time.Now().UTC()
 	if err != nil {
 		_ = result
@@ -340,6 +358,38 @@ func (s *Server) flowRunAgentProfile(agent flow.AgentSelection) (pebblestore.Age
 	default:
 		return pebblestore.AgentProfile{}, fmt.Errorf("unsupported target_kind %q", strings.TrimSpace(agent.TargetKind))
 	}
+}
+
+func (s *Server) flowHostedSessionDescriptor(assignment flow.Assignment) (sessionruntime.HostedSessionDescriptor, bool) {
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		return sessionruntime.HostedSessionDescriptor{}, false
+	}
+	if flowShouldMirrorRunSummaryLocally(cfg) {
+		return sessionruntime.HostedSessionDescriptor{}, false
+	}
+	localSwarmID := s.flowLocalSwarmID()
+	state, err := s.currentSwarmState(cfg)
+	if err != nil {
+		return sessionruntime.HostedSessionDescriptor{}, false
+	}
+	controllerSwarmID := firstNonEmpty(
+		strings.TrimSpace(cfg.ParentSwarmID),
+		strings.TrimSpace(cfg.DeployContainer.SyncOwnerSwarmID),
+		strings.TrimSpace(cfg.RemoteDeploy.SyncOwnerSwarmID),
+		strings.TrimSpace(state.Pairing.ParentSwarmID),
+	)
+	if localSwarmID == "" || controllerSwarmID == "" || strings.EqualFold(localSwarmID, controllerSwarmID) {
+		return sessionruntime.HostedSessionDescriptor{}, false
+	}
+	hostBackendURL := firstNonEmpty(strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL), strings.TrimSpace(cfg.RemoteDeploy.HostAPIBaseURL))
+	return sessionruntime.HostedSessionDescriptor{
+		HostSwarmID:          controllerSwarmID,
+		HostBackendURL:       hostBackendURL,
+		HostWorkspacePath:    strings.TrimSpace(assignment.Workspace.WorkspacePath),
+		RuntimeWorkspacePath: strings.TrimSpace(assignment.Workspace.WorkspacePath),
+		ChildSwarmID:         localSwarmID,
+	}, true
 }
 
 func flowRunPrompt(intent flow.PromptIntent) string {

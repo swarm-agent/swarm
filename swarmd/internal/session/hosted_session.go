@@ -31,6 +31,7 @@ type HostedSessionSync interface {
 	SetTitle(ctx context.Context, descriptor HostedSessionDescriptor, sessionID, title string) (pebblestore.SessionSnapshot, error)
 	UpdateMetadata(ctx context.Context, descriptor HostedSessionDescriptor, sessionID string, metadata map[string]any) (pebblestore.SessionSnapshot, error)
 	UpsertLifecycle(ctx context.Context, descriptor HostedSessionDescriptor, snapshot pebblestore.SessionLifecycleSnapshot) error
+	PublishEvent(ctx context.Context, descriptor HostedSessionDescriptor, sessionID, eventType string, payload map[string]any, causationID, correlationID string) (pebblestore.EventEnvelope, error)
 }
 
 func HostedSessionFromMetadata(metadata map[string]any) (HostedSessionDescriptor, bool) {
