@@ -367,6 +367,16 @@ function swarmKindLabel(target: SwarmTarget): string {
   return target.kind === 'remote' ? 'remote' : 'local'
 }
 
+function swarmTargetStatusLabel(target: SwarmTarget): string {
+  if (target.current) {
+    return 'active'
+  }
+  if (target.online) {
+    return 'online'
+  }
+  return target.attach_status?.trim() || 'offline'
+}
+
 function sessionPendingPermissionCount(session: DesktopSessionRecord): number {
   return countApprovalRequiredPermissions(session.pendingPermissions, session.mode)
 }
@@ -1237,6 +1247,18 @@ export function DesktopAppPage() {
     return { local, remote }
   }, [swarmTargets])
   const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} remote`
+  const visibleSwarmTargetChips = useMemo(() => [...swarmTargets]
+    .sort((left, right) => {
+      if (left.current !== right.current) {
+        return left.current ? -1 : 1
+      }
+      if (left.online !== right.online) {
+        return left.online ? -1 : 1
+      }
+      return left.name.localeCompare(right.name)
+    })
+    .slice(0, 6), [swarmTargets])
+  const hiddenSwarmTargetChipCount = Math.max(0, swarmTargets.length - visibleSwarmTargetChips.length)
   const workspaceCount = mergedSidebarWorkspaceEntries.length
   const swarmTopologySignature = useMemo(
     () => swarmTargets
@@ -2013,21 +2035,72 @@ export function DesktopAppPage() {
                 </div>
 
                 <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'mt-[7px] min-h-[30px] pr-4 text-[11px] text-[var(--app-text-subtle)]')}>
-                  <button
-                    type="button"
-                    className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap border-0 bg-transparent p-0 text-left font-inherit hover:text-[var(--app-text)]"
-                    onClick={() => {
-                      setWorkspaceMenuOpen(false)
-                      setSwarmMenu((current) => ({ open: !current.open }))
-                    }}
-                    aria-expanded={swarmMenu.open}
-                    aria-label="Choose swarm target"
-                    title={swarmTargetSummary}
-                  >
-                    <span className="shrink-0 text-[color-mix(in_srgb,var(--app-success)_58%,var(--app-text-subtle))]">{swarmTargetCounts.local} local</span>
-                    <span className="shrink-0 opacity-55">·</span>
-                    <span className="truncate text-[color-mix(in_srgb,var(--app-info)_58%,var(--app-text-subtle))]">{swarmTargetCounts.remote} remote</span>
-                  </button>
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5" title={swarmTargetSummary}>
+                    {visibleSwarmTargetChips.length > 0 ? visibleSwarmTargetChips.map((target) => {
+                      const statusLabel = swarmTargetStatusLabel(target)
+                      const targetLabel = target.name || target.swarm_id
+                      return (
+                        <button
+                          key={target.swarm_id}
+                          type="button"
+                          className={cn(
+                            'group flex h-[22px] min-w-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_72%,transparent)] px-1.5 text-left font-inherit text-[10px] text-[var(--app-text-muted)] transition-[border-color,background-color,color] hover:border-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                            target.current && 'border-[color-mix(in_srgb,var(--app-success)_58%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-success)_10%,transparent)] text-[var(--app-text)]',
+                            !target.selectable && !target.current && 'cursor-not-allowed opacity-55',
+                          )}
+                          onClick={() => { void handleSelectSwarmTarget(target) }}
+                          disabled={!target.selectable && !target.current}
+                          aria-label={`${targetLabel} ${swarmKindLabel(target)} ${statusLabel}`}
+                          title={`${targetLabel} · ${swarmKindLabel(target)} · ${statusLabel}${target.selectable && !target.current ? ' · click to go' : ''}`}
+                        >
+                          <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
+                          <span>{targetLabel}</span>
+                        </button>
+                      )
+                    }) : (
+                      <button
+                        type="button"
+                        className="flex h-[22px] min-w-0 items-center gap-1.5 overflow-hidden rounded-full border border-[var(--app-border)] px-1.5 text-left font-inherit text-[10px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                        onClick={() => {
+                          setWorkspaceMenuOpen(false)
+                          setSwarmMenu((current) => ({ open: !current.open }))
+                        }}
+                        aria-expanded={swarmMenu.open}
+                        aria-label="Choose swarm target"
+                        title="Choose swarm target"
+                      >
+                        <span className="truncate">No swarms</span>
+                      </button>
+                    )}
+                    {hiddenSwarmTargetChipCount > 0 ? (
+                      <button
+                        type="button"
+                        className="flex h-[22px] shrink-0 items-center rounded-full border border-[var(--app-border)] px-1.5 font-inherit text-[10px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                        onClick={() => {
+                          setWorkspaceMenuOpen(false)
+                          setSwarmMenu((current) => ({ open: !current.open }))
+                        }}
+                        aria-expanded={swarmMenu.open}
+                        aria-label="Show all swarm targets"
+                        title="Show all swarm targets"
+                      >
+                        +{hiddenSwarmTargetChipCount}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full border border-transparent font-inherit text-[var(--app-text-subtle)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      onClick={() => {
+                        setWorkspaceMenuOpen(false)
+                        setSwarmMenu((current) => ({ open: !current.open }))
+                      }}
+                      aria-expanded={swarmMenu.open}
+                      aria-label="Show swarm target menu"
+                      title="Show swarm target menu"
+                    >
+                      <ChevronDown size={13} strokeWidth={1.8} className={cn('shrink-0', swarmMenu.open && 'rotate-180')} />
+                    </button>
+                  </div>
                   <SidebarActionRail>
                     <SidebarActionRailSpacer />
                     <button
