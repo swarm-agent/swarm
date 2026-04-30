@@ -3776,6 +3776,13 @@ func decodeBase64Audio(raw string) ([]byte, error) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	header := w.Header()
+	if header.Get("Content-Type") == "" {
+		header.Set("Content-Type", "application/json; charset=utf-8")
+	}
+	if header.Get("Cache-Control") == "" {
+		header.Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
 }
