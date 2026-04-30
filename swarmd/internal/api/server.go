@@ -2366,9 +2366,21 @@ func mergeSessionCreateMetadata(base, extra map[string]any) map[string]any {
 		merged[key] = value
 	}
 	for key, value := range base {
+		if _, exists := merged[key]; exists && overridableSessionCreateMetadataKey(key) {
+			continue
+		}
 		merged[key] = value
 	}
 	return merged
+}
+
+func overridableSessionCreateMetadataKey(key string) bool {
+	switch strings.TrimSpace(key) {
+	case "title_pending":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {

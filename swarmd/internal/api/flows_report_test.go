@@ -150,8 +150,14 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	if session.WorkspacePath != hostWorkspace {
 		t.Fatalf("workspace path = %q, want %q", session.WorkspacePath, hostWorkspace)
 	}
+	if session.Title != "Read" {
+		t.Fatalf("session title = %q, want task title", session.Title)
+	}
 	if session.Metadata["flow_id"] != assignment.FlowID || session.Metadata["target_swarm_id"] != "target-swarm-1" || session.Metadata["swarm_target_name"] != "pc container" {
 		t.Fatalf("metadata = %+v", session.Metadata)
+	}
+	if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask {
+		t.Fatalf("title metadata = %+v", session.Metadata)
 	}
 	messages, err := server.sessions.ListMessages("session-report-session", 0, 10)
 	if err != nil {
@@ -261,8 +267,14 @@ func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T
 	if err != nil || !ok {
 		t.Fatalf("get mirrored session ok=%v err=%v", ok, err)
 	}
+	if session.Title != "Read" {
+		t.Fatalf("session title = %q, want task title", session.Title)
+	}
 	if session.WorkspacePath != hostWorkspace || session.Metadata["swarm_target_name"] != "pc container" {
 		t.Fatalf("session = %+v", session)
+	}
+	if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask {
+		t.Fatalf("title metadata = %+v", session.Metadata)
 	}
 	lifecycle, ok, err := server.sessions.GetLifecycle("session-running-report")
 	if err != nil || !ok {

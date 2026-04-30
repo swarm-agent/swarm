@@ -87,8 +87,17 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if err != nil || !ok {
 				t.Fatalf("get session ok=%v err=%v", ok, err)
 			}
+			if session.Title != "Read" {
+				t.Fatalf("session title = %q, want task title", session.Title)
+			}
 			if session.Metadata["flow_id"] != assignment.FlowID || session.Metadata["flow_revision"] != float64(assignment.Revision) {
 				t.Fatalf("session flow metadata = %+v", session.Metadata)
+			}
+			if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask {
+				t.Fatalf("session title metadata = %+v", session.Metadata)
+			}
+			if session.Metadata["workspace_id"] == nil || session.Metadata["agent_name"] != "swarm" {
+				t.Fatalf("session create metadata was not preserved: %+v", session.Metadata)
 			}
 			profile, err := server.flowRunAgentProfile(assignment.Agent)
 			if err != nil {
@@ -105,6 +114,30 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 				t.Fatalf("profile tool preset = %q, want %q", preset, tc.expectedPreset)
 			}
 		})
+	}
+}
+
+func TestFlowRunSessionTitlePrefersTaskTitleDetailThenPrompt(t *testing.T) {
+	assignment := testAPIFlowAssignment("flow-title", 1)
+	assignment.Name = "Nightly Memory Sweep"
+	assignment.Intent = flow.PromptIntent{Prompt: "Summarize outstanding work.", Tasks: []flow.TaskStep{{ID: "context", Title: "Prepare run context", Detail: "Target local.", Action: "read"}, {ID: "task", Title: "  Run agent task  ", Detail: "Refresh AGENTS memory", Action: "write"}}}
+	if title := flowRunSessionTitle(assignment); title != "Refresh AGENTS memory" {
+		t.Fatalf("title = %q, want task detail", title)
+	}
+
+	assignment.Intent.Tasks = []flow.TaskStep{{ID: "task", Title: "  Refresh AGENTS memory  ", Detail: "Detailed fallback", Action: "write"}}
+	if title := flowRunSessionTitle(assignment); title != "Refresh AGENTS memory" {
+		t.Fatalf("task title = %q", title)
+	}
+
+	assignment.Intent.Tasks[0].Title = ""
+	if title := flowRunSessionTitle(assignment); title != "Detailed fallback" {
+		t.Fatalf("detail title = %q", title)
+	}
+
+	assignment.Intent.Tasks = nil
+	if title := flowRunSessionTitle(assignment); title != "Summarize outstanding work." {
+		t.Fatalf("prompt title = %q", title)
 	}
 }
 

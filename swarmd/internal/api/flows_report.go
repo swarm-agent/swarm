@@ -201,9 +201,9 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 	if _, ok := metadata["runtime_state"]; !ok {
 		metadata["runtime_state"] = "standby"
 	}
-	if _, ok := metadata["title_pending"]; !ok {
-		metadata["title_pending"] = true
-	}
+	metadata["title_pending"] = false
+	metadata["title_locked"] = true
+	metadata["title_source"] = flowSessionTitleSourceTask
 	if _, ok := metadata["run_now"]; !ok {
 		metadata["run_now"] = strings.Contains(strings.ToLower(strings.TrimSpace(summary.RunID)), "run_now")
 	}
@@ -243,7 +243,7 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 		mirroredSession.ID = sessionID
 		mirroredSession.WorkspacePath = workspacePath
 		mirroredSession.WorkspaceName = firstNonEmpty(strings.TrimSpace(mirroredSession.WorkspaceName), filepath.Base(workspacePath))
-		mirroredSession.Title = firstNonEmpty(strings.TrimSpace(mirroredSession.Title), flowRunSessionTitle(definition.Assignment))
+		mirroredSession.Title = flowRunSessionTitle(definition.Assignment)
 		mirroredSession.Mode = firstNonEmpty(strings.TrimSpace(mirroredSession.Mode), sessionruntime.ModeAuto)
 		mirroredSession.Metadata = metadata
 		if mirroredSession.CreatedAt <= 0 {

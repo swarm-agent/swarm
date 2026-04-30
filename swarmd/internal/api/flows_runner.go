@@ -14,6 +14,11 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+const (
+	flowSessionTitleSourceTask = "flow_task"
+	flowSessionTitleMaxRunes   = 96
+)
+
 type targetLocalFlowRunner struct {
 	server *Server
 }
@@ -419,6 +424,8 @@ func flowRunMetadata(assignment flow.Assignment, scheduledAt time.Time, runNow b
 	metadata := map[string]any{
 		"runtime_state":     "standby",
 		"title_pending":     false,
+		"title_locked":      true,
+		"title_source":      flowSessionTitleSourceTask,
 		"source":            "flow",
 		"lineage_kind":      "flow",
 		"flow_id":           strings.TrimSpace(assignment.FlowID),
@@ -438,14 +445,82 @@ func flowRunMetadata(assignment flow.Assignment, scheduledAt time.Time, runNow b
 }
 
 func flowRunSessionTitle(assignment flow.Assignment) string {
-	name := strings.TrimSpace(assignment.Name)
-	if name == "" {
-		name = strings.TrimSpace(assignment.FlowID)
+	if title := flowTaskSessionTitle(assignment.Intent); title != "" {
+		return title
 	}
-	if name == "" {
-		name = "Flow run"
+	if prompt := flowTitleText(assignment.Intent.Prompt); prompt != "" {
+		return prompt
 	}
-	return "Flow: " + name
+	if name := flowTitleText(assignment.Name); name != "" {
+		return name
+	}
+	if flowID := flowTitleText(assignment.FlowID); flowID != "" {
+		return flowID
+	}
+	return "Flow run"
+}
+
+func flowTaskSessionTitle(intent flow.PromptIntent) string {
+	for _, task := range intent.Tasks {
+		if flowTaskLooksLikeContext(task) {
+			continue
+		}
+		if title := flowTaskTitleCandidate(task); title != "" {
+			return title
+		}
+	}
+	for _, task := range intent.Tasks {
+		if title := flowTaskTitleCandidate(task); title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func flowTaskTitleCandidate(task flow.TaskStep) string {
+	title := flowTitleText(task.Title)
+	detail := flowTitleText(task.Detail)
+	if detail != "" && flowTaskTitleIsGeneric(title) {
+		return detail
+	}
+	if title != "" {
+		return title
+	}
+	return detail
+}
+
+func flowTaskLooksLikeContext(task flow.TaskStep) bool {
+	id := strings.ToLower(strings.TrimSpace(task.ID))
+	if id == "context" || id == "setup" {
+		return true
+	}
+	switch strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(task.Title)), " ")) {
+	case "prepare run context":
+		return true
+	default:
+		return false
+	}
+}
+
+func flowTaskTitleIsGeneric(title string) bool {
+	switch strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(title)), " ")) {
+	case "", "run agent task", "run prompt", "task":
+		return true
+	default:
+		return false
+	}
+}
+
+func flowTitleText(value string) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if value == "" {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= flowSessionTitleMaxRunes {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:flowSessionTitleMaxRunes-1])) + "…"
 }
 
 func flowRunID(flowID string, revision int64, scheduledAt time.Time, runNow bool) string {

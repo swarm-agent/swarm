@@ -2917,11 +2917,58 @@ func shouldGenerateMemorySessionTitle(session pebblestore.SessionSnapshot) bool 
 	if session.MessageCount > 0 {
 		return false
 	}
+	if sessionTitleGenerationLocked(session.Metadata) {
+		return false
+	}
 	title := strings.ToLower(strings.TrimSpace(session.Title))
 	if strings.Contains(title, " subagent)") && strings.Contains(title, "(@") {
 		return false
 	}
 	return true
+}
+
+func sessionTitleGenerationLocked(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if metadataBoolValue(metadata, "title_locked") {
+		return true
+	}
+	if strings.EqualFold(metadataStringValue(metadata, "title_source"), "flow_task") {
+		return true
+	}
+	if strings.EqualFold(metadataStringValue(metadata, "source"), "flow") ||
+		strings.EqualFold(metadataStringValue(metadata, "owner_transport"), "flow_scheduler") ||
+		strings.EqualFold(metadataStringValue(metadata, "lineage_kind"), "flow") {
+		return true
+	}
+	return false
+}
+
+func metadataBoolValue(metadata map[string]any, key string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	switch typed := metadata[key].(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
+}
+
+func metadataStringValue(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	switch typed := metadata[key].(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
 }
 
 func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, basePreference pebblestore.ModelPreference, emit StreamHandler) {
