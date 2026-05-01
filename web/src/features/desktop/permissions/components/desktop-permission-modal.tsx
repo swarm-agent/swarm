@@ -1213,6 +1213,196 @@ function approvedArgumentsFromProfileForm(
   return args
 }
 
+interface AgentToolAccessSummary {
+  allowed: string[]
+  blocked: string[]
+  restricted: string[]
+  preset: string
+  inheritPolicy: boolean
+  catalogCount: number
+}
+
+function sortedUnique(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right))
+}
+
+function agentToolAccessSummary(payload: ReturnType<typeof parseAgentChangePermission>, form: AgentProfileFormState | null): AgentToolAccessSummary {
+  if (form) {
+    const allowed: string[] = []
+    const blocked: string[] = []
+    const restricted: string[] = []
+    Object.entries(form.toolContractTools).forEach(([name, config]) => {
+      const toolName = name.trim()
+      if (!toolName) return
+      if (config.enabled) allowed.push(toolName)
+      else blocked.push(toolName)
+      if (splitCSV(config.bashPrefixes).length > 0) restricted.push(toolName)
+    })
+    return {
+      allowed: sortedUnique(allowed),
+      blocked: sortedUnique(blocked),
+      restricted: sortedUnique(restricted),
+      preset: form.toolContractPreset.trim(),
+      inheritPolicy: form.toolContractInheritPolicy,
+      catalogCount: toolInventoryTools(payload, form).length,
+    }
+  }
+
+  const profile = payload.profile
+  const contract = objectValue(profile, 'tool_contract')
+  const scope = objectValue(profile, 'tool_scope')
+  const contractTools = objectValue(contract, 'tools')
+  const allowed: string[] = []
+  const blocked: string[] = []
+  const restricted: string[] = []
+
+  Object.entries(contractTools).forEach(([name, rawConfig]) => {
+    const toolName = name.trim()
+    if (!toolName) return
+    const config = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) ? rawConfig as Record<string, unknown> : {}
+    if (stringArrayValue(config, 'bash_prefixes').length > 0) restricted.push(toolName)
+    if ('enabled' in config) {
+      if (boolValue(config, 'enabled', true)) allowed.push(toolName)
+      else blocked.push(toolName)
+    }
+  })
+
+  if (allowed.length === 0 && blocked.length === 0) {
+    allowed.push(...stringArrayValue(scope, 'allow_tools'))
+    blocked.push(...stringArrayValue(scope, 'deny_tools'))
+    if (stringArrayValue(scope, 'bash_prefixes').length > 0) restricted.push('bash')
+  }
+
+  return {
+    allowed: sortedUnique(allowed),
+    blocked: sortedUnique(blocked),
+    restricted: sortedUnique(restricted),
+    preset: stringValue(contract, 'preset') || stringValue(scope, 'preset'),
+    inheritPolicy: boolValue(contract, 'inherit_policy', boolValue(scope, 'inherit_policy', false)),
+    catalogCount: payload.toolInventory.tools.length,
+  }
+}
+
+function agentChangeCompactSummary(payload: ReturnType<typeof parseAgentChangePermission>): string {
+  if (payload.target !== 'agent_profile') {
+    return payload.summary
+  }
+  const action = payload.action.trim().toLowerCase()
+  const actionLabel = action === 'create' ? 'Create' : action === 'update' ? 'Update' : action === 'delete' ? 'Delete' : 'Review'
+  const parts = [
+    `${actionLabel} agent profile`,
+    payload.agentName ? `@${payload.agentName}` : '',
+    payload.purpose,
+  ].map((value) => value.trim()).filter(Boolean)
+  return parts.join(' · ')
+}
+
+function AgentToolAccessSummaryCard({
+  payload,
+  form,
+  disabled = false,
+  onToolToggle,
+}: {
+  payload: ReturnType<typeof parseAgentChangePermission>
+  form: AgentProfileFormState | null
+  disabled?: boolean
+  onToolToggle?: (toolName: string, enabled: boolean) => void
+}) {
+  const summary = agentToolAccessSummary(payload, form)
+  const hasExplicitTools = summary.allowed.length > 0 || summary.blocked.length > 0
+  const policyText = [
+    summary.preset ? `preset ${summary.preset}` : '',
+    summary.inheritPolicy ? 'inherits policy' : '',
+    summary.catalogCount > 0 ? `${summary.catalogCount} catalog tools` : '',
+  ].filter(Boolean).join(' · ')
+
+  return (
+    <div className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tool access</div>
+        {policyText ? <div className="text-xs text-[var(--app-text-muted)]">{policyText}</div> : null}
+      </div>
+      <div className="grid gap-2">
+        <ToolAccessRow
+          label="Allowed"
+          count={summary.allowed.length}
+          items={summary.allowed}
+          emptyText={hasExplicitTools ? 'No explicit allows' : 'Controlled by preset / inherited policy'}
+          tone="allow"
+          onItemClick={onToolToggle ? (item) => onToolToggle(item, false) : undefined}
+          disabled={disabled}
+          itemTitle="Click to block this tool"
+        />
+        <ToolAccessRow
+          label="Not allowed"
+          count={summary.blocked.length}
+          items={summary.blocked}
+          emptyText={hasExplicitTools ? 'None blocked' : 'No explicit blocks'}
+          tone="block"
+          onItemClick={onToolToggle ? (item) => onToolToggle(item, true) : undefined}
+          disabled={disabled}
+          itemTitle="Click to allow this tool"
+        />
+      </div>
+      {summary.restricted.length > 0 ? (
+        <div className="text-xs text-[var(--app-warning)]">Restricted prefixes: {summary.restricted.join(', ')}</div>
+      ) : null}
+    </div>
+  )
+}
+
+function ToolAccessRow({
+  label,
+  count,
+  items,
+  emptyText,
+  tone,
+  onItemClick,
+  disabled = false,
+  itemTitle,
+}: {
+  label: string
+  count: number
+  items: string[]
+  emptyText: string
+  tone: 'allow' | 'block'
+  onItemClick?: (item: string) => void
+  disabled?: boolean
+  itemTitle?: string
+}) {
+  const toneClassName = tone === 'allow'
+    ? 'border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success)]'
+    : 'border-[color-mix(in_srgb,var(--app-error)_45%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-error)_10%,transparent)] text-[var(--app-error)]'
+  return (
+    <div className="grid gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 sm:grid-cols-[8rem_1fr] sm:items-start">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+        <span>{label}</span>
+        <span className="rounded-md border border-[var(--app-border)] px-1.5 py-0.5 text-[10px] leading-none text-[var(--app-text-muted)]">{count}</span>
+      </div>
+      {items.length > 0 ? (
+        <div className="flex min-w-0 flex-wrap gap-1.5">
+          {items.map((item) => onItemClick ? (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onItemClick(item)}
+              disabled={disabled}
+              title={itemTitle}
+              className={cn('rounded-md border px-2 py-0.5 text-left text-xs leading-5', toneClassName, !disabled && 'hover:border-[var(--app-primary)]')}
+            >
+              {item}
+            </button>
+          ) : (
+            <span key={item} className={cn('rounded-md border px-2 py-0.5 text-xs leading-5', toneClassName)}>{item}</span>
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs leading-5 text-[var(--app-text-muted)]">{emptyText}</div>
+      )}
+    </div>
+  )
+}
+
 function modelProviderGroups(options: ModelOptionRecord[]): Array<[string, ModelOptionRecord[]]> {
   const groups = new Map<string, ModelOptionRecord[]>()
   for (const option of options) {
@@ -1252,7 +1442,17 @@ function AgentProfileApprovalForm({
   }, [form.provider, modelOptions])
   const activeModels = providers.find(([provider]) => provider === form.provider)?.[1] ?? []
   const inventoryTools = toolInventoryTools(payload, form)
-  const presetOptions = payload.toolInventory.presets
+  const [toolsExpanded, setToolsExpanded] = useState(false)
+  const setToolEnabled = (toolName: string, enabled: boolean) => {
+    const current = form.toolContractTools[toolName]
+    onChange({
+      ...form,
+      toolContractTools: {
+        ...form.toolContractTools,
+        [toolName]: { enabled, bashPrefixes: current?.bashPrefixes ?? '' },
+      },
+    })
+  }
 
   return (
     <div className="grid gap-4">
@@ -1331,60 +1531,60 @@ function AgentProfileApprovalForm({
           Plan → auto runtime
         </label>
       </div>
-      <div className="grid gap-3 border-t border-[var(--app-border)] pt-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tools</div>
-          <div className="text-xs text-[var(--app-text-muted)]">{inventoryTools.length || 'No'} tools in catalog</div>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="grid gap-1.5 text-sm">
-            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Preset</span>
-            <div className="relative">
-              <select value={form.toolContractPreset} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, toolContractPreset: event.target.value })} disabled={disabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
-                <option value="">No preset / custom</option>
-                {form.toolContractPreset && !presetOptions.some((preset) => preset.id === form.toolContractPreset) ? <option value={form.toolContractPreset}>{form.toolContractPreset}</option> : null}
-                {presetOptions.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
-              </select>
-              <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+      <div className="grid gap-2 border-t border-[var(--app-border)] pt-3">
+        <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setToolsExpanded((expanded) => !expanded)}
+                className="flex items-center gap-2 text-left text-sm font-medium text-[var(--app-text)]"
+                disabled={disabled}
+                aria-expanded={toolsExpanded}
+              >
+                <ChevronDown size={15} className={cn('text-[var(--app-text-muted)] transition-transform', toolsExpanded ? 'rotate-180' : '-rotate-90')} />
+                Tool descriptions
+              </button>
+              <span className="rounded-md border border-[var(--app-border)] px-1.5 py-0.5 text-[10px] leading-none text-[var(--app-text-muted)]">{inventoryTools.length || 'No'} tools</span>
             </div>
-          </label>
-          <label className="flex items-end gap-2 pb-2 text-sm text-[var(--app-text)]">
-            <input type="checkbox" checked={form.toolContractInheritPolicy} onChange={(event) => onChange({ ...form, toolContractInheritPolicy: event.target.checked })} disabled={disabled} />
-            Inherit parent/session policy
-          </label>
-        </div>
-        {inventoryTools.length > 0 ? (
-          <div className="grid max-h-72 gap-2 overflow-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 sm:grid-cols-2">
-            {inventoryTools.map((tool) => {
-              const config = form.toolContractTools[tool.name]
-              const checked = config?.enabled ?? false
-              const bashPrefixes = config?.bashPrefixes ?? ''
-              return (
-                <div key={`${tool.kind}:${tool.name}`} className="grid gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-2">
-                  <label className="flex items-center gap-2 text-sm text-[var(--app-text)]">
-                    <input type="checkbox" checked={checked} onChange={(event) => {
-                      const nextTools = { ...form.toolContractTools }
-                      nextTools[tool.name] = { enabled: event.target.checked, bashPrefixes }
-                      onChange({ ...form, toolContractTools: nextTools })
-                    }} disabled={disabled} />
-                    <span className="font-medium">{tool.name}</span>
-                    <span className="text-xs text-[var(--app-text-muted)]">{tool.group}</span>
-                  </label>
-                  {tool.description ? <div className="text-xs leading-5 text-[var(--app-text-muted)]">{tool.description}</div> : null}
-                  {tool.name === 'bash' || bashPrefixes ? (
-                    <input value={bashPrefixes} onChange={(event) => {
-                      const nextTools = { ...form.toolContractTools }
-                      nextTools[tool.name] = { enabled: checked || event.target.value.trim() !== '', bashPrefixes: event.target.value }
-                      onChange({ ...form, toolContractTools: nextTools })
-                    }} disabled={disabled} placeholder="bash prefixes, comma-separated" className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-1 text-xs text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
-                  ) : null}
-                </div>
-              )
-            })}
+            <button type="button" onClick={() => setToolsExpanded((expanded) => !expanded)} disabled={disabled} className="rounded-md border border-[var(--app-border)] px-2.5 py-1.5 text-xs text-[var(--app-text-muted)] hover:text-[var(--app-text)]">
+              {toolsExpanded ? 'Hide descriptions' : 'Read what tools do'}
+            </button>
           </div>
-        ) : (
-          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No backend tool inventory was included with this approval payload.</div>
-        )}
+          {!toolsExpanded ? (
+            <div className="border-t border-[var(--app-border)] px-3 py-2 text-xs text-[var(--app-text-muted)]">Advanced tool catalog hidden. Expand to read descriptions for each tool. Change permissions from the Tool Access summary above.</div>
+          ) : null}
+          {toolsExpanded ? (
+            inventoryTools.length > 0 ? (
+              <div className="grid max-h-56 gap-1.5 overflow-auto border-t border-[var(--app-border)] p-2 sm:grid-cols-2">
+                {inventoryTools.map((tool) => {
+                  const config = form.toolContractTools[tool.name]
+                  const checked = config?.enabled ?? false
+                  const bashPrefixes = config?.bashPrefixes ?? ''
+                  return (
+                    <div key={`${tool.kind}:${tool.name}`} className="grid gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-2">
+                      <label className="flex items-center gap-2 text-sm text-[var(--app-text)]">
+                        <input type="checkbox" checked={checked} onChange={(event) => setToolEnabled(tool.name, event.target.checked)} disabled={disabled} />
+                        <span className="font-medium">{tool.name}</span>
+                        <span className="text-xs text-[var(--app-text-muted)]">{tool.group}</span>
+                      </label>
+                      {tool.description ? <div className="text-xs leading-5 text-[var(--app-text-muted)]">{tool.description}</div> : null}
+                      {tool.name === 'bash' || bashPrefixes ? (
+                        <input value={bashPrefixes} onChange={(event) => {
+                          const nextTools = { ...form.toolContractTools }
+                          nextTools[tool.name] = { enabled: checked || event.target.value.trim() !== '', bashPrefixes: event.target.value }
+                          onChange({ ...form, toolContractTools: nextTools })
+                        }} disabled={disabled} placeholder="bash prefixes, comma-separated" className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-1 text-xs text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="border-t border-[var(--app-border)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No backend tool inventory was included with this approval payload.</div>
+            )
+          ) : null}
+        </div>
       </div>
     </div>
   )
@@ -1442,14 +1642,23 @@ function AgentChangeModal({
       shortcutsDisabled={loading}
     >
       <div className="grid gap-4">
-        <div className="grid gap-2 border-b border-[var(--app-border)] pb-3">
-          <p className="text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
+        <div className="grid gap-3 border-b border-[var(--app-border)] pb-3">
+          <p className="text-sm leading-6 text-[var(--app-text)]">{agentChangeCompactSummary(payload)}</p>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--app-text-muted)]">
             <span>agent {payload.agentName ? `@${payload.agentName}` : 'n/a'}</span>
             <span>mode {payload.mode || 'n/a'}</span>
             <span>execution {payload.execution || 'n/a'}</span>
-            <span>tools {payload.tools || 'n/a'}</span>
           </div>
+          {payload.target === 'agent_profile' ? <AgentToolAccessSummaryCard payload={payload} form={form} disabled={loading} onToolToggle={editableProfile && form ? (toolName, enabled) => {
+            const current = form.toolContractTools[toolName]
+            setForm({
+              ...form,
+              toolContractTools: {
+                ...form.toolContractTools,
+                [toolName]: { enabled, bashPrefixes: current?.bashPrefixes ?? '' },
+              },
+            })
+          } : undefined} /> : null}
         </div>
 
         {editableProfile && form ? (
