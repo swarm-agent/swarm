@@ -12,8 +12,8 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
-func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
-	artifactRoot := t.TempDir()
+func writeRuntimeArtifact(t *testing.T, artifactRoot, version string, omit map[string]bool) {
+	t.Helper()
 	platformRoot := filepath.Join(artifactRoot, runtime.GOOS+"-"+runtime.GOARCH)
 	for _, dir := range []string{
 		filepath.Join(platformRoot, "root"),
@@ -25,30 +25,45 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"swarm", "swarmdev", "rebuild", "swarmsetup", "swarmtui"} {
+		if omit[name] {
+			continue
+		}
 		path := filepath.Join(platformRoot, "root", name)
 		if err := os.WriteFile(path, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
 			t.Fatalf("write %s: %v", path, err)
 		}
 	}
 	for _, name := range []string{"swarmd", "swarmctl", "swarm-fff-search"} {
+		if omit[name] {
+			continue
+		}
 		path := filepath.Join(platformRoot, "swarmd", name)
 		if err := os.WriteFile(path, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
 			t.Fatalf("write %s: %v", path, err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(platformRoot, "swarmd", "libfff_c.so"), []byte("fff"), 0o644); err != nil {
-		t.Fatalf("write libfff: %v", err)
+	if !omit["libfff_c.so"] {
+		if err := os.WriteFile(filepath.Join(platformRoot, "swarmd", "libfff_c.so"), []byte("fff"), 0o644); err != nil {
+			t.Fatalf("write libfff: %v", err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(artifactRoot, "web", "index.html"), []byte("<!doctype html><html></html>"), 0o644); err != nil {
-		t.Fatalf("write index.html: %v", err)
+	if !omit["web"] {
+		if err := os.WriteFile(filepath.Join(artifactRoot, "web", "index.html"), []byte("<!doctype html><html></html>"), 0o644); err != nil {
+			t.Fatalf("write index.html: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(artifactRoot, "web", "assets", "app.js"), []byte("console.log('artifact');"), 0o644); err != nil {
+			t.Fatalf("write app.js: %v", err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(artifactRoot, "web", "assets", "app.js"), []byte("console.log('artifact');"), 0o644); err != nil {
-		t.Fatalf("write app.js: %v", err)
-	}
-	const version = "v1.2.3"
 	if err := os.WriteFile(filepath.Join(artifactRoot, "build-info.txt"), []byte("version="+version+"\ncommit=test\n"), 0o644); err != nil {
 		t.Fatalf("write build-info: %v", err)
 	}
+}
+
+func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
+	artifactRoot := t.TempDir()
+	const version = "v1.2.3"
+	writeRuntimeArtifact(t, artifactRoot, version, nil)
 
 	xdgRoot := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", filepath.Join(xdgRoot, "data"))
@@ -99,6 +114,95 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 	}
 	if got := CurrentRuntimeVersion(filepath.Join(xdgRoot, "data", "swarm")); got != version {
 		t.Fatalf("CurrentRuntimeVersion = %q, want %q", got, version)
+	}
+}
+
+func TestInstallRuntimeFromArtifactDoesNotBreakCurrentRuntimeOnIncompleteArtifact(t *testing.T) {
+	xdgRoot := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(xdgRoot, "data"))
+	t.Setenv("XDG_BIN_HOME", filepath.Join(xdgRoot, "bin"))
+
+	const version = "v1.2.3"
+	goodArtifact := t.TempDir()
+	writeRuntimeArtifact(t, goodArtifact, version, nil)
+	report, err := InstallRuntimeFromArtifact(goodArtifact)
+	if err != nil {
+		t.Fatalf("initial InstallRuntimeFromArtifact: %v", err)
+	}
+	installRoot := filepath.Join(xdgRoot, "data", "swarm")
+	wantCurrent, ok := resolveRuntimeLink(filepath.Join(installRoot, "current"))
+	if !ok {
+		t.Fatalf("current runtime link missing after initial install")
+	}
+	launcherTarget, err := os.Readlink(filepath.Join(report.BinHome, "swarm"))
+	if err != nil {
+		t.Fatalf("read swarm launcher link: %v", err)
+	}
+
+	brokenArtifact := t.TempDir()
+	writeRuntimeArtifact(t, brokenArtifact, version, map[string]bool{"swarmd": true})
+	if _, err := InstallRuntimeFromArtifact(brokenArtifact); err == nil {
+		t.Fatalf("InstallRuntimeFromArtifact should reject incomplete artifact")
+	}
+
+	current, ok := resolveRuntimeLink(filepath.Join(installRoot, "current"))
+	if !ok || current != wantCurrent {
+		t.Fatalf("current after failed install = %q ok=%v, want %q", current, ok, wantCurrent)
+	}
+	if got := CurrentRuntimeVersion(installRoot); got != version {
+		t.Fatalf("CurrentRuntimeVersion after failed install = %q, want %q", got, version)
+	}
+	if !isExecutable(launcherTarget) {
+		t.Fatalf("existing launcher target should remain executable after failed install: %s", launcherTarget)
+	}
+}
+
+func TestInstalledVersionMatchesRejectsIncompleteRuntime(t *testing.T) {
+	targetRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(targetRoot, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetRoot, "bin", "swarmtui"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write swarmtui: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetRoot, "build-info.txt"), []byte("version=v1.2.3\n"), 0o644); err != nil {
+		t.Fatalf("write build-info: %v", err)
+	}
+	if installedVersionMatches(targetRoot, "v1.2.3") {
+		t.Fatalf("installedVersionMatches accepted an incomplete runtime")
+	}
+}
+
+func TestRunGoBuildWithArgsPreservesExistingBinaryOnFailure(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	goBin, err := FindGoBin(repoRoot)
+	if err != nil {
+		t.Fatalf("FindGoBin: %v", err)
+	}
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "go.mod"), []byte("module example.com/broken\n\ngo 1.20\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	outPath := filepath.Join(t.TempDir(), "swarm")
+	const original = "old-binary\n"
+	if err := os.WriteFile(outPath, []byte(original), 0o755); err != nil {
+		t.Fatalf("write existing binary: %v", err)
+	}
+	if err := runGoBuildWithArgs(projectRoot, projectRoot, goBin, outPath, "./missing"); err == nil {
+		t.Fatalf("runGoBuildWithArgs should fail for missing package")
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read existing binary: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("existing binary changed after failed build: %q", string(data))
+	}
+	if !isExecutable(outPath) {
+		t.Fatalf("existing binary lost executable bit")
 	}
 }
 

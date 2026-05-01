@@ -102,6 +102,53 @@ bin_home() {
   fi
 }
 
+data_home() {
+  if [ -n "${XDG_DATA_HOME:-}" ]; then
+    printf '%s\n' "$XDG_DATA_HOME"
+  else
+    printf '%s/.local/share\n' "$HOME"
+  fi
+}
+
+install_root() {
+  printf '%s/swarm\n' "$(data_home)"
+}
+
+verify_installed_runtime() {
+  root="$(install_root)"
+  bin_dir="$(bin_home)"
+
+  for name in swarm swarmdev rebuild swarmsetup; do
+    if [ ! -x "$bin_dir/$name" ]; then
+      echo "installed launcher is missing or not executable: $bin_dir/$name" >&2
+      return 1
+    fi
+  done
+
+  for rel in \
+    libexec/swarm \
+    libexec/swarmdev \
+    libexec/rebuild \
+    libexec/swarmsetup \
+    bin/swarmtui \
+    bin/swarmd \
+    bin/swarmctl \
+    bin/swarm-fff-search
+  do
+    if [ ! -x "$root/$rel" ]; then
+      echo "installed runtime executable is missing: $root/$rel" >&2
+      return 1
+    fi
+  done
+
+  for rel in lib/libfff_c.so share/index.html build-info.txt; do
+    if [ ! -f "$root/$rel" ]; then
+      echo "installed runtime file is missing: $root/$rel" >&2
+      return 1
+    fi
+  done
+}
+
 bin_home_on_path() {
   target="$(bin_home)"
   case ":${PATH:-}:" in
@@ -196,6 +243,9 @@ if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ];
   fi
   print_ok
   printf 'linking launcher... '
+  if ! verify_installed_runtime; then
+    exit 1
+  fi
   print_ok
   finish_install
   exit 0
@@ -252,5 +302,8 @@ if ! run_bundle_install "$artifact_root" "$tmp_dir/swarmsetup.log"; then
 fi
 print_ok
 printf 'linking launcher... '
+if ! verify_installed_runtime; then
+  exit 1
+fi
 print_ok
 finish_install

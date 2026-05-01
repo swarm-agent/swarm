@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -157,11 +158,14 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 	if err := os.WriteFile(filepath.Join(stagedRuntime, ".version"), []byte(version+"\n"), 0o644); err != nil {
 		return UpdateResult{}, err
 	}
-	if err := os.RemoveAll(targetRoot); err != nil {
+	if err := validateInstalledRuntime(stagedRuntime, version); err != nil {
 		return UpdateResult{}, err
 	}
-	if err := os.Rename(stagedRuntime, targetRoot); err != nil {
+	if err := replaceRuntimeRoot(targetRoot, stagedRuntime); err != nil {
 		return UpdateResult{}, fmt.Errorf("activate staged runtime: %w", err)
+	}
+	if err := validateInstalledRuntime(targetRoot, version); err != nil {
+		return UpdateResult{}, err
 	}
 	if err := switchRuntimeLinks(profile.InstallRoot, targetRoot); err != nil {
 		return UpdateResult{}, err
@@ -444,9 +448,88 @@ func installRuntimeTreeFromArtifact(runtimeRoot, artifactRoot string) error {
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	} else {
+		return fmt.Errorf("missing desktop web artifact: %s", filepath.Join(webArtifactDir, "index.html"))
 	}
 	if err := copyFile(filepath.Join(artifactRoot, "build-info.txt"), filepath.Join(runtimeRoot, "build-info.txt")); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateInstalledRuntime(runtimeRoot, version string) error {
+	runtimeRoot = filepath.Clean(strings.TrimSpace(runtimeRoot))
+	if runtimeRoot == "" {
+		return errors.New("runtime root must not be empty")
+	}
+	requiredFiles := []struct {
+		name       string
+		path       string
+		executable bool
+	}{
+		{name: "swarm", path: filepath.Join(runtimeRoot, "libexec", "swarm"), executable: true},
+		{name: "swarmdev", path: filepath.Join(runtimeRoot, "libexec", "swarmdev"), executable: true},
+		{name: "rebuild", path: filepath.Join(runtimeRoot, "libexec", "rebuild"), executable: true},
+		{name: "swarmsetup", path: filepath.Join(runtimeRoot, "libexec", "swarmsetup"), executable: true},
+		{name: "swarmtui", path: filepath.Join(runtimeRoot, "bin", "swarmtui"), executable: true},
+		{name: "swarmd", path: filepath.Join(runtimeRoot, "bin", "swarmd"), executable: true},
+		{name: "swarmctl", path: filepath.Join(runtimeRoot, "bin", "swarmctl"), executable: true},
+		{name: "swarm-fff-search", path: filepath.Join(runtimeRoot, "bin", "swarm-fff-search"), executable: true},
+		{name: "libfff_c.so", path: filepath.Join(runtimeRoot, "lib", "libfff_c.so")},
+		{name: "desktop web index", path: filepath.Join(runtimeRoot, "share", "index.html")},
+		{name: "build-info.txt", path: filepath.Join(runtimeRoot, "build-info.txt")},
+		{name: ".version", path: filepath.Join(runtimeRoot, ".version")},
+	}
+	for _, item := range requiredFiles {
+		if item.executable {
+			if !isExecutable(item.path) {
+				return fmt.Errorf("installed runtime %s is missing executable %s at %s", runtimeRoot, item.name, item.path)
+			}
+			continue
+		}
+		if !isReadableFile(item.path) {
+			return fmt.Errorf("installed runtime %s is missing %s at %s", runtimeRoot, item.name, item.path)
+		}
+	}
+	if strings.TrimSpace(version) == "" {
+		return nil
+	}
+	buildInfoVersion, err := readBuildInfoVersion(filepath.Join(runtimeRoot, "build-info.txt"))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(buildInfoVersion) != strings.TrimSpace(version) {
+		return fmt.Errorf("installed runtime version mismatch: runtime=%s expected=%s", buildInfoVersion, version)
+	}
+	return nil
+}
+
+func replaceRuntimeRoot(targetRoot, stagedRuntime string) error {
+	targetRoot = filepath.Clean(strings.TrimSpace(targetRoot))
+	stagedRuntime = filepath.Clean(strings.TrimSpace(stagedRuntime))
+	if targetRoot == "" || stagedRuntime == "" {
+		return errors.New("target and staged runtime roots are required")
+	}
+	if !isReadableFile(filepath.Join(stagedRuntime, "build-info.txt")) {
+		return fmt.Errorf("staged runtime is incomplete: %s", stagedRuntime)
+	}
+	backupRoot := ""
+	if _, err := os.Lstat(targetRoot); err == nil {
+		backupRoot = targetRoot + ".replace-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+		if err := os.Rename(targetRoot, backupRoot); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(stagedRuntime, targetRoot); err != nil {
+		if backupRoot != "" {
+			_ = os.Rename(backupRoot, targetRoot)
+		}
+		return err
+	}
+	if backupRoot != "" {
+		_ = os.RemoveAll(backupRoot)
 	}
 	return nil
 }
@@ -677,14 +760,7 @@ func removeExistingSymlinkPath(path string, replaceExistingDirs bool) error {
 }
 
 func installedVersionMatches(targetRoot, version string) bool {
-	if _, err := os.Stat(filepath.Join(targetRoot, "bin", "swarmtui")); err != nil {
-		return false
-	}
-	installed, err := readBuildInfoVersion(filepath.Join(targetRoot, "build-info.txt"))
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(installed) == strings.TrimSpace(version)
+	return validateInstalledRuntime(targetRoot, version) == nil
 }
 
 func normalizeUpdateSHA256(value string) string {

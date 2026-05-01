@@ -721,7 +721,8 @@ func runGoBuildWithArgs(projectRoot, workDir, goBin, outPath, pkg string, extraA
 	goCache := envOrDefault("GOCACHE_DIR", filepath.Join(cacheRoot, "build"))
 	goModCache := envOrDefault("GOMODCACHE_DIR", filepath.Join(cacheRoot, "mod"))
 	goPath := envOrDefault("GOPATH_DIR", filepath.Join(cacheRoot, "path"))
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+	outDir := filepath.Dir(outPath)
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(goCache, 0o755); err != nil {
@@ -733,11 +734,24 @@ func runGoBuildWithArgs(projectRoot, workDir, goBin, outPath, pkg string, extraA
 	if err := os.MkdirAll(goPath, 0o755); err != nil {
 		return err
 	}
+	tmpFile, err := os.CreateTemp(outDir, "."+filepath.Base(outPath)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Remove(tmpPath); err != nil {
+		return err
+	}
+	defer os.Remove(tmpPath)
 	args := []string{"build", "-trimpath"}
 	if len(extraArgs) > 0 {
 		args = append(args, "-ldflags", strings.Join(extraArgs, " "))
 	}
-	args = append(args, "-o", outPath, pkg)
+	args = append(args, "-o", tmpPath, pkg)
 	cmd := exec.Command(goBin, args...)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
@@ -759,6 +773,9 @@ func runGoBuildWithArgs(projectRoot, workDir, goBin, outPath, pkg string, extraA
 			return fmt.Errorf("go build %s: %w", pkg, err)
 		}
 		return fmt.Errorf("go build %s: %w (%s)", pkg, err, trimmed)
+	}
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		return fmt.Errorf("install built binary %s: %w", outPath, err)
 	}
 	return nil
 }
@@ -864,7 +881,8 @@ func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
 		return InstallReport{}, err
 	}
 	installRoot := swarmInstallRoot(dataHome)
-	if err := os.MkdirAll(filepath.Join(installRoot, "versions"), 0o755); err != nil {
+	versionsDir := filepath.Join(installRoot, "versions")
+	if err := os.MkdirAll(versionsDir, 0o755); err != nil {
 		return InstallReport{}, err
 	}
 	version, err := readBuildInfoVersion(filepath.Join(artifactRoot, "build-info.txt"))
@@ -872,13 +890,25 @@ func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
 		return InstallReport{}, err
 	}
 	targetRoot := filepath.Join(installRoot, "versions", version)
-	if err := os.RemoveAll(targetRoot); err != nil {
+	stageDir, err := os.MkdirTemp(versionsDir, ".install-stage-")
+	if err != nil {
 		return InstallReport{}, err
 	}
-	if err := installRuntimeTreeFromArtifact(targetRoot, artifactRoot); err != nil {
+	defer os.RemoveAll(stageDir)
+	stagedRuntime := filepath.Join(stageDir, "runtime")
+	if err := installRuntimeTreeFromArtifact(stagedRuntime, artifactRoot); err != nil {
 		return InstallReport{}, err
 	}
-	if err := os.WriteFile(filepath.Join(targetRoot, ".version"), []byte(version+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(stagedRuntime, ".version"), []byte(version+"\n"), 0o644); err != nil {
+		return InstallReport{}, err
+	}
+	if err := validateInstalledRuntime(stagedRuntime, version); err != nil {
+		return InstallReport{}, err
+	}
+	if err := replaceRuntimeRoot(targetRoot, stagedRuntime); err != nil {
+		return InstallReport{}, err
+	}
+	if err := validateInstalledRuntime(targetRoot, version); err != nil {
 		return InstallReport{}, err
 	}
 	if err := switchRuntimeLinks(installRoot, targetRoot); err != nil {
@@ -1395,7 +1425,6 @@ func BuildWebAssets(profile Profile) error {
 	}
 	return nil
 }
-
 
 func InstallDesktopAssets(profile Profile) error {
 	if strings.TrimSpace(profile.WebDir) == "" {

@@ -98,11 +98,11 @@ type onboardingDiscoveredSwarmPayload struct {
 }
 
 type onboardingResponse struct {
-	OK               bool                               `json:"ok"`
-	NeedsOnboarding  bool                               `json:"needs_onboarding"`
-	Config           onboardingConfigPayload            `json:"config"`
-	Heuristics       onboardingHeuristicsPayload        `json:"heuristics"`
-	Tailscale        onboardingTailscalePayload         `json:"tailscale"`
+	OK              bool                        `json:"ok"`
+	NeedsOnboarding bool                        `json:"needs_onboarding"`
+	Config          onboardingConfigPayload     `json:"config"`
+	Heuristics      onboardingHeuristicsPayload `json:"heuristics"`
+	Tailscale       onboardingTailscalePayload  `json:"tailscale"`
 }
 
 type onboardingUpdateRequest struct {
