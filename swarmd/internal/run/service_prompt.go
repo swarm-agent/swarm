@@ -539,12 +539,9 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 		switch role {
 		case "assistant":
-			input = append(input, map[string]any{
-				"role": "assistant",
-				"content": []map[string]any{
-					{"type": "output_text", "text": content},
-				},
-			})
+			if assistantInput, ok := buildAssistantOutputInput(content); ok {
+				input = append(input, assistantInput)
+			}
 		case "reasoning":
 			// Reasoning summaries are for UI/debug visibility and should not
 			// influence subsequent model turns.
@@ -579,6 +576,19 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 		}
 	}
 	return input
+}
+
+func buildAssistantOutputInput(content string) (map[string]any, bool) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, false
+	}
+	return map[string]any{
+		"role": "assistant",
+		"content": []map[string]any{
+			{"type": "output_text", "text": content},
+		},
+	}, true
 }
 
 func shouldDropSensitiveConversationMessage(message pebblestore.MessageSnapshot) bool {

@@ -54,6 +54,7 @@ import {
 } from './sidebar-session-lineage'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
+const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
@@ -102,6 +103,15 @@ interface DesktopUpdateProgressState {
   open: boolean
   job: DesktopUpdateJob | null
   startedAt: number | null
+}
+
+interface DesktopToastState {
+  message: string
+  tone: 'success' | 'error' | 'info'
+}
+
+interface StoredDesktopToastState extends DesktopToastState {
+  createdAt: number
 }
 
 interface SwarmTargetMenuState {
@@ -373,6 +383,40 @@ function updateJobMessage(job: DesktopUpdateJob | null): string {
     return 'Update failed.'
   }
   return 'Starting update helper…'
+}
+
+function updateCompleteToastMessage(job: DesktopUpdateJob): string {
+  const message = job.message?.trim()
+  if (message) {
+    return message
+  }
+  return job.kind?.trim().toLowerCase() === 'dev'
+    ? 'Dev rebuild completed.'
+    : 'Swarm update completed.'
+}
+
+function loadPendingDesktopToast(): DesktopToastState | null {
+  const raw = loadStoredValue(DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY)
+  if (!raw) {
+    return null
+  }
+  saveStoredValue(DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY, null)
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredDesktopToastState>
+    const message = parsed.message?.trim()
+    const tone = parsed.tone === 'error' || parsed.tone === 'info' ? parsed.tone : 'success'
+    const createdAt = typeof parsed.createdAt === 'number' ? parsed.createdAt : 0
+    if (!message || Date.now() - createdAt > 60_000) {
+      return null
+    }
+    return { message, tone }
+  } catch {
+    return null
+  }
+}
+
+function savePendingDesktopToast(toast: DesktopToastState): void {
+  saveStoredValue(DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY, JSON.stringify({ ...toast, createdAt: Date.now() } satisfies StoredDesktopToastState))
 }
 
 function updateProgressStepIndex(job: DesktopUpdateJob | null): number {
@@ -1223,6 +1267,7 @@ export function DesktopAppPage() {
   const [updateRunning, setUpdateRunning] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [updateProgress, setUpdateProgress] = useState<DesktopUpdateProgressState>({ open: false, job: null, startedAt: null })
+  const [desktopToast, setDesktopToast] = useState<DesktopToastState | null>(() => loadPendingDesktopToast())
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [localContainerUpdateConfirm, setLocalContainerUpdateConfirm] = useState<LocalContainerUpdateConfirmState | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
@@ -1239,6 +1284,14 @@ export function DesktopAppPage() {
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
   )
+  useEffect(() => {
+    if (!desktopToast) {
+      return
+    }
+    const timer = window.setTimeout(() => setDesktopToast(null), 5_000)
+    return () => window.clearTimeout(timer)
+  }, [desktopToast])
+
   const temporaryRouteWorkspace = useMemo<WorkspaceEntry | null>(() => {
     const candidatePath = activeWorkspacePath?.trim() ?? ''
     if (!routeWorkspaceSlug || routeSessionId || routeWorkspace || !candidatePath || workspaceByPath.has(candidatePath)) {
@@ -1954,8 +2007,10 @@ export function DesktopAppPage() {
           if (job.status === 'running') {
             continue
           }
-          await refreshNotifications()
-          window.location.reload()
+          const toast = { message: updateCompleteToastMessage(job), tone: 'success' } satisfies DesktopToastState
+          setDesktopToast(toast)
+          savePendingDesktopToast(toast)
+          window.setTimeout(() => window.location.reload(), 900)
           return
         } catch (error) {
           sawBackendDrop = true
@@ -1968,6 +2023,7 @@ export function DesktopAppPage() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Update failed'
       setUpdateError(message)
+      setDesktopToast({ message, tone: 'error' })
       setUpdateProgress((current) => ({
         ...current,
         open: true,
@@ -2691,6 +2747,24 @@ export function DesktopAppPage() {
             setTodoSummaries((current) => ({ ...current, [todoModal.workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
           }}
         />
+      ) : null}
+
+      {desktopToast ? (
+        <div className="pointer-events-none absolute right-6 top-6 z-[70] max-w-md" role="status" aria-live="polite">
+          <Card className={cn(
+            'border p-4 shadow-2xl',
+            desktopToast.tone === 'success'
+              ? 'border-[var(--app-success)] bg-[color-mix(in_srgb,var(--app-success)_12%,var(--app-surface))] text-[var(--app-text)]'
+              : desktopToast.tone === 'error'
+                ? 'border-[var(--app-error)] bg-[color-mix(in_srgb,var(--app-error)_12%,var(--app-surface))] text-[var(--app-text)]'
+                : 'border-[var(--app-border-strong)] bg-[var(--app-surface)] text-[var(--app-text)]',
+          )}>
+            <div className="flex items-start gap-3 text-sm">
+              {desktopToast.tone === 'success' ? <CheckCircle2 className="mt-0.5 shrink-0 text-[var(--app-success)]" size={18} /> : desktopToast.tone === 'error' ? <XCircle className="mt-0.5 shrink-0 text-[var(--app-error)]" size={18} /> : <Bell className="mt-0.5 shrink-0 text-[var(--app-primary)]" size={18} />}
+              <div className="min-w-0 font-medium">{desktopToast.message}</div>
+            </div>
+          </Card>
+        </div>
       ) : null}
 
       {updateProgress.open ? (

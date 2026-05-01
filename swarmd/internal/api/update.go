@@ -24,9 +24,10 @@ import (
 )
 
 const (
-	updateJobStatusIdle    = "idle"
-	updateJobStatusRunning = "running"
-	updateJobStatusFailed  = "failed"
+	updateJobStatusIdle      = "idle"
+	updateJobStatusRunning   = "running"
+	updateJobStatusCompleted = "completed"
+	updateJobStatusFailed    = "failed"
 
 	updateKindRelease = "release"
 	updateKindDev     = "dev"
@@ -219,7 +220,6 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 		s.emitUpdateNotification(failed, pebblestore.NotificationSeverityError, "Swarm update failed", err.Error(), "update.failed")
 		return failed, err
 	}
-	s.emitUpdateNotification(job, pebblestore.NotificationSeverityInfo, "Swarm update started", job.Message, "update.started")
 	launch, err := s.startDetachedUpdateCommand(kind, job.ID, r)
 	if err != nil {
 		failed := r.finish(job.ID, updateJobStatusFailed, "", err.Error(), s)
@@ -518,8 +518,8 @@ func (s *Server) emitUpdateNotification(job desktopUpdateJob, severity, title, b
 	if record.SwarmID == "" {
 		return
 	}
-	if job.Status == updateJobStatusFailed {
-		record.Status = pebblestore.NotificationStatusResolved
+	if job.Status == updateJobStatusCompleted && severity == pebblestore.NotificationSeverityInfo {
+		return
 	}
 	_, _, _ = s.notifications.UpsertSystemNotification(record)
 }

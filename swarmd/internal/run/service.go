@@ -1146,6 +1146,23 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}, nil
 	}
 
+	flushAssistantFragments := func(step int) (pebblestore.MessageSnapshot, bool, error) {
+		assistantText := strings.TrimSpace(strings.Join(assistantFragments, "\n\n"))
+		if assistantText == "" {
+			return pebblestore.MessageSnapshot{}, false, nil
+		}
+		assistantMessage, _, assistantEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", assistantText, nil)
+		if appendErr != nil {
+			return pebblestore.MessageSnapshot{}, false, appendErr
+		}
+		assistantFragments = assistantFragments[:0]
+		if assistantEvent != nil {
+			events = append(events, *assistantEvent)
+		}
+		emit(StreamEvent{Type: StreamEventMessageStored, Step: step, Message: &assistantMessage})
+		return assistantMessage, true, nil
+	}
+
 	tryContextOverflowCompaction := func(step int, assistantDraft string) (bool, error) {
 		if contextCompactionAttempts >= contextCompactionRetryLimit {
 			return false, nil
@@ -1611,6 +1628,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		emptyStepRetries = 0
 
+		flushedAssistantInput := map[string]any(nil)
+		if flushedAssistantMessage, flushed, flushErr := flushAssistantFragments(step); flushErr != nil {
+			return RunResult{}, flushErr
+		} else if flushed {
+			if assistantInput, ok := buildAssistantOutputInput(flushedAssistantMessage.Content); ok {
+				flushedAssistantInput = assistantInput
+			}
+		}
+
 		totalToolCalls += len(response.FunctionCalls)
 		toolCalls := make([]tool.Call, 0, len(response.FunctionCalls))
 		toolCallMetadata := make([]map[string]any, 0, len(response.FunctionCalls))
@@ -1824,7 +1850,10 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			markToolCompleted(step, toolCalls[i], result)
 		}
 
-		nextInput := make([]map[string]any, 0, len(toolCalls)*2)
+		nextInput := make([]map[string]any, 0, len(toolCalls)*2+1)
+		if flushedAssistantInput != nil {
+			nextInput = append(nextInput, flushedAssistantInput)
+		}
 		nextInputFunctionCalls := make([]map[string]any, 0, len(toolCalls))
 		nextInputFunctionOutputs := make([]map[string]any, 0, len(toolCalls))
 		for i := range toolCalls {
@@ -1896,18 +1925,22 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		input = append(input, nextInput...)
 	}
 
-	assistantText := strings.TrimSpace(strings.Join(assistantFragments, "\n\n"))
-	if assistantText == "" {
-		assistantText = "No assistant text output."
-	}
-	assistantMessage, _, assistantEvent, err := s.sessions.AppendMessage(sessionID, "assistant", assistantText, nil)
+	assistantMessage, flushedFinalAssistant, err := flushAssistantFragments(stepsCompleted)
 	if err != nil {
 		return RunResult{}, err
 	}
-	if assistantEvent != nil {
-		events = append(events, *assistantEvent)
+	if !flushedFinalAssistant {
+		assistantText := "No assistant text output."
+		var assistantEvent *pebblestore.EventEnvelope
+		assistantMessage, _, assistantEvent, err = s.sessions.AppendMessage(sessionID, "assistant", assistantText, nil)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if assistantEvent != nil {
+			events = append(events, *assistantEvent)
+		}
+		emit(StreamEvent{Type: StreamEventMessageStored, Step: stepsCompleted, Message: &assistantMessage})
 	}
-	emit(StreamEvent{Type: StreamEventMessageStored, Message: &assistantMessage})
 	if completedSnapshot, changed, lifecycleErr := s.finishSessionLifecycle(sessionID, runID, nil); lifecycleErr == nil && changed {
 		emitLifecycleSnapshot(emit, completedSnapshot)
 	}
