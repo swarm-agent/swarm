@@ -311,23 +311,9 @@ func (p *ChatPage) agentChangeModalLines(record ChatPermissionRecord, width int)
 		highlights = append(highlights, p.taskLaunchTextLine("No headline settings to review.", p.theme.TextMuted))
 	}
 
-	changes := make([]chatRenderLine, 0, len(summary.ChangeRows))
-	for _, row := range summary.ChangeRows {
-		changes = append(changes, p.taskLaunchKeyValueLine(row.Label, row.Value, p.theme.Text))
-	}
-	if len(changes) == 0 {
-		changes = append(changes, p.taskLaunchTextLine("No visible settings change.", p.theme.TextMuted))
-	}
-
-	details := make([]chatRenderLine, 0, 4)
-	if summary.DescriptionPreview != "" {
-		details = append(details, p.taskLaunchKeyValueLine("description", clampEllipsis(summary.DescriptionPreview, maxInt(12, width-20)), p.theme.TextMuted))
-	}
-	if summary.PromptPreview != "" {
-		details = append(details, p.taskLaunchKeyValueLine("prompt", "updated", p.theme.TextMuted))
-	}
-	if len(details) == 0 {
-		details = append(details, p.taskLaunchTextLine("Prompt and description are unchanged or not shown here.", p.theme.TextMuted))
+	promptLines := agentChangePromptLines(summary.PromptPreview, p.theme.Text)
+	if len(promptLines) == 0 {
+		promptLines = append(promptLines, p.taskLaunchTextLine("No prompt text included in this preview.", p.theme.TextMuted))
 	}
 
 	controls := []chatRenderLine{
@@ -340,8 +326,7 @@ func (p *ChatPage) agentChangeModalLines(record ChatPermissionRecord, width int)
 	sections := []agentChangePreviewSection{
 		{Title: "Overview", BorderStyle: p.theme.BorderActive, TitleStyle: p.theme.Secondary.Bold(true), Lines: overview},
 		{Title: "Highlights", BorderStyle: p.theme.Border, TitleStyle: p.theme.Primary.Bold(true), Lines: highlights},
-		{Title: "What changes", BorderStyle: p.theme.Border, TitleStyle: p.theme.Success.Bold(true), Lines: changes},
-		{Title: "Details", BorderStyle: p.theme.Border, TitleStyle: p.theme.Accent.Bold(true), Lines: details},
+		{Title: "Prompt", BorderStyle: p.theme.Border, TitleStyle: p.theme.Accent.Bold(true), Lines: promptLines},
 		{Title: "Controls", BorderStyle: p.theme.Border, TitleStyle: p.theme.Accent.Bold(true), Lines: controls},
 	}
 	lines := make([]chatRenderLine, 0, len(sections)*8)
@@ -489,6 +474,19 @@ func agentChangeSummaryText(action, target, agentName, purpose, mode, execution,
 		return actionLabel + " @" + agentName
 	}
 	return actionLabel + " agent state"
+}
+
+func agentChangePromptLines(prompt string, style tcell.Style) []chatRenderLine {
+	prompt = strings.TrimSpace(strings.ReplaceAll(prompt, "\r\n", "\n"))
+	if prompt == "" {
+		return nil
+	}
+	parts := strings.Split(prompt, "\n")
+	lines := make([]chatRenderLine, 0, len(parts))
+	for _, part := range parts {
+		lines = append(lines, chatRenderLine{Text: strings.TrimRight(part, " \t"), Style: style})
+	}
+	return lines
 }
 
 func agentChangeFields(action, target string, before, after any, purpose string) []agentChangeField {

@@ -93,7 +93,41 @@ function testAgentChangeKindAndPayloadParsing(): void {
   assert(payload.mode === 'subagent', 'expected parsed mode')
   assert(payload.execution === 'read', 'expected parsed execution')
   assert(payload.tools === 'all enabled', 'expected full tools label')
+  assert(payload.profile.name === 'review-bot', 'expected profile snapshot')
+  assert(payload.approvedArguments.action === undefined, 'expected no approved args when absent')
   assert(payload.changes.some((change) => change.label === 'Result'), 'expected result change row')
+}
+
+function testAgentChangeParsesApprovedContentFallback(): void {
+  const permission = makePermission({
+    toolName: 'manage_agent',
+    requirement: 'agent_change',
+    toolArguments: JSON.stringify({
+      action: 'create',
+      approved_arguments: {
+        action: 'create',
+        agent: 'desktop-bot',
+        content: {
+          name: 'desktop-bot',
+          mode: 'subagent',
+          provider: 'anthropic',
+          model: 'claude-sonnet',
+          prompt: 'Help from desktop.',
+          enabled: true,
+          tool_scope: {
+            allow_tools: ['search', 'read'],
+          },
+        },
+      },
+    }),
+  })
+  const payload = parseAgentChangePermission(permission)
+  assert(payload.agentName === 'desktop-bot', 'expected approved content agent name')
+  assert(payload.mode === 'subagent', 'expected approved content mode')
+  assert(payload.model === 'anthropic / claude-sonnet', 'expected approved content model')
+  assert(payload.tools === 'limited to search, read', 'expected approved content tools')
+  assert(payload.profile.prompt === 'Help from desktop.', 'expected approved content profile')
+  assert(Object.keys(payload.approvedArguments).length > 0, 'expected approved arguments to be retained')
 }
 
 function testTaskLaunchKindAndApproval(): void {
@@ -218,6 +252,7 @@ function testManageTodosBatchParsing(): void {
 
 function main(): void {
   testAgentChangeKindAndPayloadParsing()
+  testAgentChangeParsesApprovedContentFallback()
   testTaskLaunchKindAndApproval()
   testTaskLaunchPayloadParsing()
   testManageTodosKindAndPayloadParsing()

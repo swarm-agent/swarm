@@ -127,6 +127,8 @@ export interface AgentChangePayload {
   model: string
   descriptionPreview: string
   promptPreview: string
+  profile: Record<string, unknown>
+  approvedArguments: Record<string, unknown>
   changes: AgentChangeField[]
 }
 
@@ -639,13 +641,19 @@ export function parseAgentChangePermission(permission: DesktopPermissionRecord):
   const payload = decodePermissionArguments(permission.toolArguments) ?? {}
   const change = mapObjectArg(payload, 'change')
   const action = firstNonEmptyString(mapStringArg(payload, 'action'), mapStringArg(change, 'operation'), 'change')
-  const target = firstNonEmptyString(mapStringArg(change, 'target'), mapStringArg(payload, 'target'), 'agent state')
+  const approvedArguments = mapObjectArg(payload, 'approved_arguments')
+  const approvedContent = mapObjectArg(approvedArguments, 'content')
+  const payloadAgent = asRecord(payload.agent)
+  const inferredTarget = (approvedContent.name || approvedContent.mode || payloadAgent?.name) ? 'agent_profile' : 'agent state'
+  const target = firstNonEmptyString(mapStringArg(change, 'target'), mapStringArg(payload, 'target'), inferredTarget)
   const before = normalizePermissionPayloadValue(change.before)
   const after = normalizePermissionPayloadValue(change.after)
   const beforeProfile = asRecord(before)
   const afterProfile = asRecord(after)
-  const agentRecord = afterProfile ?? beforeProfile ?? asRecord(payload.agent) ?? {}
-  const snapshotProfile = action === 'delete' ? (beforeProfile ?? afterProfile ?? {}) : (afterProfile ?? beforeProfile ?? {})
+  const agentRecord = afterProfile ?? beforeProfile ?? payloadAgent ?? approvedContent ?? approvedArguments ?? {}
+  const snapshotProfile = action === 'delete'
+    ? (beforeProfile ?? afterProfile ?? payloadAgent ?? approvedContent ?? {})
+    : (afterProfile ?? beforeProfile ?? payloadAgent ?? approvedContent ?? approvedArguments ?? {})
   const agentName = firstNonEmptyString(
     mapStringArg(agentRecord, 'name'),
     mapStringArg(payload, 'agent'),
@@ -684,6 +692,8 @@ export function parseAgentChangePermission(permission: DesktopPermissionRecord):
     model,
     descriptionPreview,
     promptPreview,
+    profile: snapshotProfile,
+    approvedArguments,
     changes: buildAgentChangeFields(action, target, before, after, purpose),
   }
 }

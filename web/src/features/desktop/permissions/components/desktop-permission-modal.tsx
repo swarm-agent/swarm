@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Copy, Check, AlertCircle } from 'lucide-react'
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
+import { Copy, Check, AlertCircle, ChevronDown } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -7,6 +7,9 @@ import { Textarea } from '../../../../components/ui/textarea'
 import { cn } from '../../../../lib/cn'
 import { requestJson } from '../../../../app/api'
 import { ChatMarkdown } from '../../chat/components/chat-markdown'
+import type { ModelOptionRecord } from '../../chat/types/chat'
+import { modelOptionsQueryOptions } from '../../../queries/query-options'
+import { useQuery } from '@tanstack/react-query'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 import {
   buildAskUserResolutionReason,
@@ -1050,6 +1053,237 @@ function TaskLaunchModal({
   )
 }
 
+interface AgentProfileFormState {
+  name: string
+  mode: string
+  description: string
+  provider: string
+  model: string
+  thinking: string
+  prompt: string
+  executionSetting: string
+  exitPlanModeEnabled: boolean
+  enabled: boolean
+  toolScopePreset: string
+  toolScopeAllowTools: string
+  toolScopeDenyTools: string
+  toolScopeBashPrefixes: string
+  toolScopeInheritPolicy: boolean
+}
+
+function stringValue(record: Record<string, unknown>, key: string): string {
+  const value = record[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function boolValue(record: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = record[key]
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function stringArrayValue(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key]
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
+}
+
+function objectValue(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = record[key]
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function profileFormFromPayload(payload: ReturnType<typeof parseAgentChangePermission>): AgentProfileFormState {
+  const profile = payload.profile
+  const approvedContent = objectValue(payload.approvedArguments, 'content')
+  const source = { ...profile, ...approvedContent }
+  const scope = objectValue(source, 'tool_scope')
+  return {
+    name: stringValue(source, 'name') || payload.agentName,
+    mode: stringValue(source, 'mode') || 'primary',
+    description: stringValue(source, 'description'),
+    provider: stringValue(source, 'provider'),
+    model: stringValue(source, 'model'),
+    thinking: stringValue(source, 'thinking'),
+    prompt: stringValue(source, 'prompt'),
+    executionSetting: stringValue(source, 'execution_setting') || 'readwrite',
+    exitPlanModeEnabled: boolValue(source, 'exit_plan_mode_enabled', false),
+    enabled: boolValue(source, 'enabled', true),
+    toolScopePreset: stringValue(scope, 'preset'),
+    toolScopeAllowTools: stringArrayValue(scope, 'allow_tools').join(', '),
+    toolScopeDenyTools: stringArrayValue(scope, 'deny_tools').join(', '),
+    toolScopeBashPrefixes: stringArrayValue(scope, 'bash_prefixes').join(', '),
+    toolScopeInheritPolicy: boolValue(scope, 'inherit_policy', false),
+  }
+}
+
+function splitCSV(value: string): string[] {
+  return value.split(',').map((entry) => entry.trim()).filter(Boolean)
+}
+
+function approvedArgumentsFromProfileForm(
+  payload: ReturnType<typeof parseAgentChangePermission>,
+  form: AgentProfileFormState,
+): Record<string, unknown> {
+  const args: Record<string, unknown> = { ...payload.approvedArguments }
+  args.action = payload.action
+  args.confirm = true
+  const content: Record<string, unknown> = {
+    ...(objectValue(payload.approvedArguments, 'content')),
+    name: form.name.trim(),
+    mode: form.mode.trim(),
+    description: form.description.trim(),
+    provider: form.provider.trim(),
+    model: form.provider.trim() ? form.model.trim() : '',
+    thinking: form.thinking.trim(),
+    prompt: form.prompt,
+    execution_setting: form.exitPlanModeEnabled ? '' : form.executionSetting.trim(),
+    exit_plan_mode_enabled: form.exitPlanModeEnabled,
+    enabled: form.enabled,
+  }
+  const toolScope: Record<string, unknown> = {
+    preset: form.toolScopePreset.trim(),
+    allow_tools: splitCSV(form.toolScopeAllowTools),
+    deny_tools: splitCSV(form.toolScopeDenyTools),
+    bash_prefixes: splitCSV(form.toolScopeBashPrefixes),
+    inherit_policy: form.toolScopeInheritPolicy,
+  }
+  content.tool_scope = toolScope
+  args.content = content
+  args.agent = form.name.trim()
+  args.name = form.name.trim()
+  return args
+}
+
+function modelProviderGroups(options: ModelOptionRecord[]): Array<[string, ModelOptionRecord[]]> {
+  const groups = new Map<string, ModelOptionRecord[]>()
+  for (const option of options) {
+    const provider = option.provider.trim()
+    const model = option.model.trim()
+    if (!provider || !model) {
+      continue
+    }
+    const list = groups.get(provider) ?? []
+    if (!list.some((entry) => entry.model === model)) {
+      list.push({ ...option, provider, model })
+    }
+    groups.set(provider, list)
+  }
+  return Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right))
+}
+
+function AgentProfileApprovalForm({
+  form,
+  modelOptions,
+  disabled,
+  onChange,
+}: {
+  form: AgentProfileFormState
+  modelOptions: ModelOptionRecord[]
+  disabled: boolean
+  onChange: (next: AgentProfileFormState) => void
+}) {
+  const providers = useMemo(() => {
+    const groups = modelProviderGroups(modelOptions)
+    if (form.provider.trim() && !groups.some(([provider]) => provider === form.provider.trim())) {
+      groups.push([form.provider.trim(), []])
+    }
+    return groups
+  }, [form.provider, modelOptions])
+  const activeModels = providers.find(([provider]) => provider === form.provider)?.[1] ?? []
+
+  return (
+    <div className="grid gap-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <label className="grid gap-1.5 text-sm">
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Name</span>
+          <input value={form.name} onChange={(event) => onChange({ ...form, name: event.target.value })} disabled={disabled} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+        </label>
+        <label className="grid gap-1.5 text-sm">
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Mode</span>
+          <div className="relative">
+            <select value={form.mode} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, mode: event.target.value })} disabled={disabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
+              <option value="primary">primary</option>
+              <option value="subagent">subagent</option>
+              <option value="background">background</option>
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </label>
+        <label className="grid gap-1.5 text-sm">
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Provider</span>
+          <div className="relative">
+            <select value={form.provider} onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+              const provider = event.target.value
+              const firstModel = providers.find(([candidate]) => candidate === provider)?.[1]?.[0]?.model ?? ''
+              onChange({ ...form, provider, model: firstModel })
+            }} disabled={disabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
+              <option value="">None / inherit default</option>
+              {providers.map(([provider]) => <option key={provider} value={provider}>{provider}</option>)}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </label>
+        <label className="grid gap-1.5 text-sm">
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Model</span>
+          <div className="relative">
+            <select value={form.model} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, model: event.target.value })} disabled={disabled || !form.provider} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
+              <option value="">Choose model</option>
+              {form.model && !activeModels.some((option) => option.model === form.model) ? <option value={form.model}>{form.model}</option> : null}
+              {activeModels.map((option) => <option key={`${option.provider}:${option.model}:${option.contextMode}`} value={option.model}>{option.label || option.model}</option>)}
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </label>
+        <label className="grid gap-1.5 text-sm">
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Thinking</span>
+          <input value={form.thinking} onChange={(event) => onChange({ ...form, thinking: event.target.value })} disabled={disabled} placeholder="default, low, medium, high, xhigh" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+        </label>
+        <label className="grid gap-1.5 text-sm">
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Execution</span>
+          <div className="relative">
+            <select value={form.executionSetting} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, executionSetting: event.target.value })} disabled={disabled || form.exitPlanModeEnabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
+              <option value="readwrite">readwrite</option>
+              <option value="read">read</option>
+              <option value="">unset</option>
+            </select>
+            <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+          </div>
+        </label>
+      </div>
+      <label className="grid gap-1.5 text-sm">
+        <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Description</span>
+        <input value={form.description} onChange={(event) => onChange({ ...form, description: event.target.value })} disabled={disabled} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+      </label>
+      <label className="grid gap-1.5 text-sm">
+        <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Prompt</span>
+        <Textarea value={form.prompt} onChange={(event) => onChange({ ...form, prompt: event.target.value })} disabled={disabled} rows={9} className="min-h-[14rem] bg-[var(--app-bg-alt)] font-mono text-sm" />
+      </label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex items-center gap-2 text-sm text-[var(--app-text)]">
+          <input type="checkbox" checked={form.enabled} onChange={(event) => onChange({ ...form, enabled: event.target.checked })} disabled={disabled} />
+          Enabled
+        </label>
+        <label className="flex items-center gap-2 text-sm text-[var(--app-text)]">
+          <input type="checkbox" checked={form.exitPlanModeEnabled} onChange={(event) => onChange({ ...form, exitPlanModeEnabled: event.target.checked })} disabled={disabled} />
+          Plan → auto runtime
+        </label>
+      </div>
+      <div className="grid gap-2 border-t border-[var(--app-border)] pt-3">
+        <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tools</div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input value={form.toolScopeAllowTools} onChange={(event) => onChange({ ...form, toolScopeAllowTools: event.target.value })} disabled={disabled} placeholder="allow: search, list, read" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+          <input value={form.toolScopeDenyTools} onChange={(event) => onChange({ ...form, toolScopeDenyTools: event.target.value })} disabled={disabled} placeholder="deny: write, edit, bash" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+          <input value={form.toolScopeBashPrefixes} onChange={(event) => onChange({ ...form, toolScopeBashPrefixes: event.target.value })} disabled={disabled} placeholder="bash prefixes" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+          <input value={form.toolScopePreset} onChange={(event) => onChange({ ...form, toolScopePreset: event.target.value })} disabled={disabled} placeholder="preset" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+          <label className="flex items-center gap-2 text-sm text-[var(--app-text)]">
+            <input type="checkbox" checked={form.toolScopeInheritPolicy} onChange={(event) => onChange({ ...form, toolScopeInheritPolicy: event.target.checked })} disabled={disabled} />
+            Inherit policy
+          </label>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AgentChangeModal({
   permission,
   open,
@@ -1059,23 +1293,30 @@ function AgentChangeModal({
   onResolve,
 }: DesktopPermissionModalProps) {
   const [loading, setLoading] = useState(false)
+  const [form, setForm] = useState<AgentProfileFormState | null>(null)
+  const { data: modelOptions = [] } = useQuery(modelOptionsQueryOptions())
+
+  const payload = permission ? parseAgentChangePermission(permission) : null
+  const editableProfile = Boolean(payload && payload.target === 'agent_profile' && (payload.action === 'create' || payload.action === 'update'))
 
   useEffect(() => {
     if (open) {
       setLoading(false)
+      setForm(payload && editableProfile ? profileFormFromPayload(payload) : null)
     }
   }, [open, permission?.id])
 
-  if (!permission) {
+  if (!permission || !payload) {
     return null
   }
-
-  const payload = parseAgentChangePermission(permission)
 
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
     try {
-      await onResolve(action, '')
+      const approvedArguments = action === 'approve' && editableProfile && form
+        ? approvedArgumentsFromProfileForm(payload, form)
+        : undefined
+      await onResolve(action, '', approvedArguments)
     } finally {
       setLoading(false)
     }
@@ -1088,64 +1329,27 @@ function AgentChangeModal({
       subtitle={payload.subtitle || 'Review this manage-agent change before it is applied'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(980px,calc(100vw-24px))] sm:w-[min(1040px,calc(100vw-48px))]"
+      widthClassName="w-[min(960px,calc(100vw-24px))] sm:w-[min(1040px,calc(100vw-48px))]"
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      <div className="grid gap-5">
-        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+      <div className="grid gap-4">
+        <div className="grid gap-2 border-b border-[var(--app-border)] pb-3">
           <p className="text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
-        </div>
-
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Agent</div>
-            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.agentName ? `@${payload.agentName}` : 'n/a'}</div>
-          </section>
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Mode</div>
-            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.mode || 'n/a'}</div>
-          </section>
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Execution</div>
-            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.execution || 'n/a'}</div>
-          </section>
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tools</div>
-            <div className="mt-2 text-sm text-[var(--app-text)]">{payload.tools || 'n/a'}</div>
-          </section>
-        </div>
-
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">What changes</div>
-          <div className="mt-3 grid gap-2 text-sm text-[var(--app-text)]">
-            {payload.changes.length > 0 ? (
-              payload.changes.map((change) => (
-                <div key={`${change.label}:${change.value}`} className="flex flex-col gap-1 sm:flex-row sm:items-start sm:gap-3">
-                  <div className="min-w-[112px] text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{change.label}</div>
-                  <div className="text-sm text-[var(--app-text)]">{change.value}</div>
-                </div>
-              ))
-            ) : (
-              <div className="text-sm text-[var(--app-text-muted)]">No visible settings change.</div>
-            )}
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--app-text-muted)]">
+            <span>agent {payload.agentName ? `@${payload.agentName}` : 'n/a'}</span>
+            <span>mode {payload.mode || 'n/a'}</span>
+            <span>execution {payload.execution || 'n/a'}</span>
+            <span>tools {payload.tools || 'n/a'}</span>
           </div>
-        </section>
+        </div>
 
-        {(payload.status || payload.model || payload.descriptionPreview || payload.promptPreview || payload.purpose) ? (
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Details</div>
-            <div className="mt-3 grid gap-2 text-sm text-[var(--app-text)]">
-              {payload.purpose ? <div>Purpose: {payload.purpose}</div> : null}
-              {payload.status ? <div>Status: {payload.status}</div> : null}
-              {payload.model ? <div>Model: {payload.model}</div> : null}
-              {payload.descriptionPreview ? <div>Description: {payload.descriptionPreview}</div> : null}
-              {payload.promptPreview ? <div>Prompt: updated</div> : null}
-            </div>
-          </section>
+        {editableProfile && form ? (
+          <AgentProfileApprovalForm form={form} modelOptions={modelOptions} disabled={loading} onChange={setForm} />
         ) : null}
+
       </div>
       <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Apply change" />
     </ModalShell>
