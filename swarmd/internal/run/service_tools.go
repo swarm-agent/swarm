@@ -1819,7 +1819,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	var firstErr error
 	launchPayloads := make([]map[string]any, 0, len(outcomes))
 	summaryParts := make([]string, 0, len(outcomes))
-	nextActions := make([]string, 0, len(outcomes))
 	for i := range outcomes {
 		launch := outcomes[i]
 		err := runErrs[i]
@@ -1853,6 +1852,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if launch.ReportTruncated {
 			reportTruncatedAny = true
 		}
+		reportExcerpt := strings.TrimSpace(launch.ReportExcerpt)
+		reportTruncated := launch.ReportTruncated
+		if launch.ReportChars > 0 && reportMaxChars > 0 && len([]rune(reportExcerpt)) > reportMaxChars {
+			reportExcerpt = truncateRunes(reportExcerpt, reportMaxChars)
+			reportTruncated = true
+			reportTruncatedAny = true
+		}
 		status := "ok"
 		if strings.TrimSpace(launch.Error) != "" {
 			status = "error"
@@ -1866,15 +1872,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		}
 		summaryParts = append(summaryParts, fmt.Sprintf("[%d] %s", launch.LaunchIndex, launchSummary))
-		if strings.TrimSpace(launch.ReportFile) != "" {
-			nextActions = append(nextActions, fmt.Sprintf("launch %d: read %s", launch.LaunchIndex, launch.ReportFile))
-		}
 		launchPreviewKind, launchPreviewText := publicTaskPreview(launch.CurrentPreviewKind, launch.CurrentPreviewText)
 		launchPhase := "completed"
 		if status == "error" {
 			launchPhase = "failed"
 		}
-		launchPayloads = append(launchPayloads, map[string]any{
+		launchPayload := map[string]any{
 			"launch_index":               launch.LaunchIndex,
 			"status":                     status,
 			"requested_subagent":         strings.TrimSpace(launch.RequestedSubagent),
@@ -1900,13 +1903,17 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			"error":                      strings.TrimSpace(launch.Error),
 			"summary":                    strings.TrimSpace(launch.Summary),
 			"report_chars":               launch.ReportChars,
-			"report_truncated":           launch.ReportTruncated,
-			"report_file":                strings.TrimSpace(launch.ReportFile),
+			"report_truncated":           reportTruncated,
 			"tool_started":               launch.ToolStarted,
 			"tool_completed":             launch.ToolCompleted,
 			"tool_failed":                launch.ToolFailed,
 			"tool_order":                 append([]string(nil), launch.ToolOrder...),
-		})
+		}
+		if reportExcerpt != "" {
+			launchPayload["report_excerpt"] = reportExcerpt
+			launchPayload["report"] = reportExcerpt
+		}
+		launchPayloads = append(launchPayloads, launchPayload)
 		outcomes[i] = launch
 	}
 
@@ -1961,10 +1968,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		payload["worktree_root_path"] = strings.TrimSpace(first.WorktreeRootPath)
 		payload["worktree_branch"] = strings.TrimSpace(first.WorktreeBranch)
 	}
-	if len(nextActions) > 0 {
-		payload["report_available"] = true
-	}
-
 	encoded, encodeErr := json.Marshal(payload)
 	if encodeErr != nil {
 		if firstErr != nil {
