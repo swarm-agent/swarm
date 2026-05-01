@@ -10,6 +10,45 @@ import (
 	"testing"
 )
 
+func TestSearchRuntimeAcceptsSingleFilePath(t *testing.T) {
+	t.Setenv("SWARM_FFF_SEARCH_HELPER", searchEvalHelperPath(t))
+	repoRoot := searchEvalRepoRoot(t)
+	scope := WorkspaceScope{PrimaryPath: repoRoot, Roots: []string{repoRoot}}
+	filePath := filepath.Join(repoRoot, "web", "src", "features", "desktop", "layout", "desktop-app-page.tsx")
+	args, err := json.Marshal(map[string]any{
+		"query":       "DesktopAppPage",
+		"path":        filePath,
+		"max_results": 8,
+		"timeout_ms":  4000,
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	output, err := ExecuteForWorkspaceScope(context.Background(), scope, Call{Name: "search", Arguments: string(args)})
+	if err != nil {
+		t.Fatalf("execute search tool: %v\noutput:\n%s", err, output)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("decode output: %v\noutput:\n%s", err, output)
+	}
+	if got := mapString(decoded, "path"); got != filePath {
+		t.Fatalf("path mismatch: got %q want %q\noutput=%s", got, filePath, output)
+	}
+	results, ok := decoded["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("expected exactly one file result group, got %T %#v\noutput=%s", decoded["results"], decoded["results"], output)
+	}
+	paths := searchDecodedResultPaths(results)
+	if !searchPathContains(paths, "web/src/features/desktop/layout/desktop-app-page.tsx") {
+		t.Fatalf("expected desktop app page result, paths=%v output=%s", paths, output)
+	}
+	if searchPathContains(paths, "sidebar-session-lineage") {
+		t.Fatalf("single-file search leaked sibling file result, paths=%v output=%s", paths, output)
+	}
+}
+
 func TestSearchRuntimeHandlesWhitespaceSeparatedMultiPath(t *testing.T) {
 	t.Setenv("SWARM_FFF_SEARCH_HELPER", searchEvalHelperPath(t))
 	repoRoot := searchEvalRepoRoot(t)

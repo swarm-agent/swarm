@@ -1767,10 +1767,11 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		return "", err
 	}
 
-	searchRoots, err := resolveSearchRoots(scope, args)
+	searchTargets, err := resolveSearchTargets(scope, args)
 	if err != nil {
 		return "", err
 	}
+	searchRoots := searchTargetRoots(searchTargets)
 
 	include := strings.TrimSpace(asString(args["include"]))
 	payloadStyle := strings.ToLower(strings.TrimSpace(asString(args["_search_payload_style"])))
@@ -1789,14 +1790,16 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 	combinedResults := make([]searchQueryExecution, 0, len(searchRoots)*len(queries))
 	rootErrors := make([]error, 0)
 	completed := true
-	searchRoot := searchRootLabel(searchRoots)
-	for _, root := range searchRoots {
+	searchRoot := searchRootLabel(searchTargets)
+	for _, target := range searchTargets {
+		root := target.Root
+		targetInclude := searchTargetInclude(target, include)
 		timeout := resolveSearchTimeout(args["timeout_ms"])
 		ctx, cancel := context.WithTimeout(parent, timeout)
 		helperResp, err := executeSearchHelper(ctx, searchipc.Request{
 			SearchRoot:    root,
 			Queries:       queries,
-			Include:       include,
+			Include:       targetInclude,
 			MaxResults:    rootResultLimit,
 			PageLimit:     uint32(rootResultLimit + searchResultPageSlack),
 			TimeoutMillis: timeout.Milliseconds(),
@@ -1805,13 +1808,13 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		ctxErr := ctx.Err()
 		cancel()
 		if err != nil {
-			rootErrors = append(rootErrors, fmt.Errorf("%s: %w", searchRootDisplay(root), err))
+			rootErrors = append(rootErrors, fmt.Errorf("%s: %w", searchTargetDisplay(target), err))
 			completed = false
 			combinedResults = append(combinedResults, timedOutSearchResults(queries)...)
 			continue
 		}
 		if strings.TrimSpace(helperResp.HelperError) != "" {
-			rootErrors = append(rootErrors, fmt.Errorf("%s: %s", searchRootDisplay(root), strings.TrimSpace(helperResp.HelperError)))
+			rootErrors = append(rootErrors, fmt.Errorf("%s: %s", searchTargetDisplay(target), strings.TrimSpace(helperResp.HelperError)))
 			completed = false
 			combinedResults = append(combinedResults, erroredSearchResults(queries, strings.TrimSpace(helperResp.HelperError))...)
 			continue
@@ -1822,15 +1825,15 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 			continue
 		}
 
-		contentResults, contentErrors := searchHelperContentResults(helperResp, root, queries, include, rootResultLimit)
-		fileResults, fileErrors := searchHelperFileResults(helperResp.FileResults, root, queries, include, rootResultLimit)
+		contentResults, contentErrors := searchHelperContentResults(helperResp, root, queries, targetInclude, rootResultLimit)
+		fileResults, fileErrors := searchHelperFileResults(helperResp.FileResults, root, queries, targetInclude, rootResultLimit)
 		combinedResults = append(combinedResults, mergeSearchHelperResults(contentResults, fileResults)...)
 		if len(fileResults) == 0 || !searchErrorsAreFallbackMisses(contentErrors, fileResults) {
 			rootErrors = append(rootErrors, contentErrors...)
 		}
 		rootErrors = append(rootErrors, fileErrors...)
 	}
-	combinedResults = rewriteSearchResultsForDisplay(scope.PrimaryPath, searchRoots, combinedResults)
+	combinedResults = rewriteSearchResultsForDisplay(scope.PrimaryPath, searchRoots, searchTargetsContainFile(searchTargets), combinedResults)
 	if len(combinedResults) == 0 {
 		return "", fmt.Errorf("search query execution failed: %s", formatSearchQueryErrors(rootErrors))
 	}
@@ -2134,51 +2137,98 @@ func parseSearchQueries(args map[string]any) ([]string, error) {
 	return deduped, nil
 }
 
-func resolveSearchRoots(scope WorkspaceScope, args map[string]any) ([]string, error) {
+type searchTarget struct {
+	Root        string
+	FileName    string
+	DisplayPath string
+}
+
+func resolveSearchTargets(scope WorkspaceScope, args map[string]any) ([]searchTarget, error) {
 	requested := asStringSlice(args["paths"])
 	if len(requested) == 0 {
 		pathArg := strings.TrimSpace(asString(args["path"]))
 		if pathArg == "" {
 			pathArg = "."
 		}
-		if root, err := resolveSearchDirectory(scope, pathArg); err == nil {
-			return []string{root}, nil
+		if target, err := resolveSearchTarget(scope, pathArg); err == nil {
+			return []searchTarget{target}, nil
 		} else {
 			split, splitErr := splitSearchPathArgument(scope, pathArg)
 			if splitErr != nil {
 				return nil, err
 			}
-			return dedupeSearchRoots(split), nil
+			return dedupeSearchTargets(split), nil
 		}
 	}
-	roots := make([]string, 0, len(requested))
+	targets := make([]searchTarget, 0, len(requested))
 	for _, path := range requested {
-		root, err := resolveSearchDirectory(scope, path)
+		target, err := resolveSearchTarget(scope, path)
 		if err != nil {
 			return nil, err
 		}
-		roots = append(roots, root)
+		targets = append(targets, target)
 	}
-	roots = dedupeSearchRoots(roots)
-	if len(roots) == 0 {
+	targets = dedupeSearchTargets(targets)
+	if len(targets) == 0 {
 		return nil, errors.New("search path is required")
 	}
-	return roots, nil
+	return targets, nil
 }
 
-func resolveSearchDirectory(scope WorkspaceScope, requested string) (string, error) {
+func resolveSearchTarget(scope WorkspaceScope, requested string) (searchTarget, error) {
 	root, err := resolveWorkspacePath(scope, requested)
 	if err != nil {
-		return "", err
+		return searchTarget{}, err
 	}
 	info, err := os.Stat(root)
 	if err != nil {
-		return "", fmt.Errorf("stat search path %q: %w", requested, err)
+		return searchTarget{}, fmt.Errorf("stat search path %q: %w", requested, err)
 	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("search path %q is not a directory", requested)
+	root = filepath.Clean(root)
+	if info.IsDir() {
+		return searchTarget{Root: root, DisplayPath: root}, nil
 	}
-	return filepath.Clean(root), nil
+	return searchTarget{Root: filepath.Dir(root), FileName: filepath.Base(root), DisplayPath: root}, nil
+}
+
+func dedupeSearchTargets(targets []searchTarget) []searchTarget {
+	out := make([]searchTarget, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		target.Root = filepath.Clean(strings.TrimSpace(target.Root))
+		target.FileName = strings.TrimSpace(target.FileName)
+		target.DisplayPath = filepath.Clean(strings.TrimSpace(target.DisplayPath))
+		if target.Root == "" {
+			continue
+		}
+		if target.DisplayPath == "" || target.DisplayPath == "." {
+			target.DisplayPath = target.Root
+		}
+		key := strings.ToLower(target.Root + "\x00" + target.FileName)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, target)
+	}
+	return out
+}
+
+func searchTargetRoots(targets []searchTarget) []string {
+	roots := make([]string, 0, len(targets))
+	for _, target := range targets {
+		roots = append(roots, target.Root)
+	}
+	return dedupeSearchRoots(roots)
+}
+
+func searchTargetsContainFile(targets []searchTarget) bool {
+	for _, target := range targets {
+		if strings.TrimSpace(target.FileName) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func dedupeSearchRoots(roots []string) []string {
@@ -2199,29 +2249,36 @@ func dedupeSearchRoots(roots []string) []string {
 	return out
 }
 
-func splitSearchPathArgument(scope WorkspaceScope, raw string) ([]string, error) {
+func searchTargetInclude(target searchTarget, include string) string {
+	if strings.TrimSpace(target.FileName) != "" {
+		return target.FileName
+	}
+	return strings.TrimSpace(include)
+}
+
+func splitSearchPathArgument(scope WorkspaceScope, raw string) ([]searchTarget, error) {
 	fields := strings.FieldsFunc(raw, func(r rune) bool {
 		return r == ',' || unicode.IsSpace(r)
 	})
 	if len(fields) <= 1 {
 		return nil, fmt.Errorf("search path %q is not a resolvable workspace path", raw)
 	}
-	roots := make([]string, 0, len(fields))
+	targets := make([]searchTarget, 0, len(fields))
 	for _, field := range fields {
 		field = strings.TrimSpace(field)
 		if field == "" {
 			continue
 		}
-		root, err := resolveSearchDirectory(scope, field)
+		target, err := resolveSearchTarget(scope, field)
 		if err != nil {
 			return nil, err
 		}
-		roots = append(roots, root)
+		targets = append(targets, target)
 	}
-	if len(roots) <= 1 {
+	if len(targets) <= 1 {
 		return nil, fmt.Errorf("search path %q is not a multi-path value", raw)
 	}
-	return roots, nil
+	return targets, nil
 }
 
 func firstSearchQuery(queries []string) string {
@@ -2848,8 +2905,8 @@ func formatSearchQueryErrors(errs []error) string {
 	return strings.Join(parts, " | ")
 }
 
-func rewriteSearchResultsForDisplay(primaryRoot string, searchRoots []string, results []searchQueryExecution) []searchQueryExecution {
-	if len(results) == 0 || len(searchRoots) <= 1 {
+func rewriteSearchResultsForDisplay(primaryRoot string, searchRoots []string, force bool, results []searchQueryExecution) []searchQueryExecution {
+	if len(results) == 0 || (!force && len(searchRoots) <= 1) {
 		return results
 	}
 	primaryRoot = filepath.Clean(strings.TrimSpace(primaryRoot))
@@ -2879,15 +2936,22 @@ func workspaceRelativeSearchPath(primaryRoot, fullPath, fallback string) string 
 	return filepath.ToSlash(strings.TrimSpace(fallback))
 }
 
-func searchRootLabel(searchRoots []string) string {
-	if len(searchRoots) == 1 {
-		return searchRoots[0]
+func searchRootLabel(targets []searchTarget) string {
+	if len(targets) == 1 {
+		return searchTargetDisplay(targets[0])
 	}
-	parts := make([]string, 0, len(searchRoots))
-	for _, root := range searchRoots {
-		parts = append(parts, searchRootDisplay(root))
+	parts := make([]string, 0, len(targets))
+	for _, target := range targets {
+		parts = append(parts, searchTargetDisplay(target))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func searchTargetDisplay(target searchTarget) string {
+	if display := searchRootDisplay(target.DisplayPath); display != "." {
+		return display
+	}
+	return searchRootDisplay(target.Root)
 }
 
 func searchRootDisplay(root string) string {
