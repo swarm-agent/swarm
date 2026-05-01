@@ -36,20 +36,57 @@ interface DesktopPermissionModalProps {
   ) => Promise<void>
 }
 
-function useEscapeToClose(open: boolean, onClose: () => void) {
+function shouldKeepNativeEnter(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+  if (target.isContentEditable) {
+    return true
+  }
+  const tag = target.tagName.toLowerCase()
+  if (tag === 'button' || tag === 'select' || tag === 'a') {
+    return true
+  }
+  if (tag === 'input') {
+    const type = (target as HTMLInputElement).type.toLowerCase()
+    return ['button', 'checkbox', 'color', 'file', 'image', 'radio', 'range', 'reset', 'submit'].includes(type)
+  }
+  return false
+}
+
+function usePermissionKeyboardShortcuts({
+  open,
+  disabled,
+  onPrimary,
+  onDeny,
+}: {
+  open: boolean
+  disabled: boolean
+  onPrimary?: () => void
+  onDeny: () => void
+}) {
   useEffect(() => {
     if (!open) {
       return undefined
     }
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (disabled || event.repeat) {
+        return
+      }
       if (event.key === 'Escape') {
         event.preventDefault()
-        onClose()
+        onDeny()
+        return
       }
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing || !onPrimary || shouldKeepNativeEnter(event.target)) {
+        return
+      }
+      event.preventDefault()
+      onPrimary()
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [open, onClose])
+  }, [disabled, onDeny, onPrimary, open])
 }
 
 function ModalShell({
@@ -64,6 +101,9 @@ function ModalShell({
   children,
   onOpenChange,
   onRequestClose,
+  onPrimaryShortcut,
+  onDenyShortcut,
+  shortcutsDisabled = false,
   showSessionMeta = true,
 }: {
   open: boolean
@@ -77,9 +117,15 @@ function ModalShell({
   children: React.ReactNode
   onOpenChange: (open: boolean) => void
   onRequestClose?: () => void
+  onPrimaryShortcut?: () => void
+  onDenyShortcut?: () => void
+  shortcutsDisabled?: boolean
   showSessionMeta?: boolean
 }) {
   const handleRequestClose = () => {
+    if (shortcutsDisabled) {
+      return
+    }
     if (onRequestClose) {
       onRequestClose()
       return
@@ -87,7 +133,12 @@ function ModalShell({
     onOpenChange(false)
   }
 
-  useEscapeToClose(open, handleRequestClose)
+  usePermissionKeyboardShortcuts({
+    open,
+    disabled: shortcutsDisabled,
+    onPrimary: onPrimaryShortcut,
+    onDeny: onDenyShortcut ?? handleRequestClose,
+  })
 
   if (!open) {
     return null
@@ -131,6 +182,7 @@ function PermissionActionBar({
   approveLabel = 'Approve',
   denyLabel = 'Deny',
   children,
+  shortcutHint = 'Enter approves · Esc denies · Shift+Enter adds a newline',
 }: {
   onApprove: () => void
   onDeny: () => void
@@ -143,12 +195,13 @@ function PermissionActionBar({
   approveLabel?: string
   denyLabel?: string
   children?: React.ReactNode
+  shortcutHint?: string
 }) {
   return (
     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-3">
       {children ? <div className="mb-3">{children}</div> : null}
       <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="ghost" onClick={onDeny} disabled={loading}>
+        <Button type="button" variant="ghost" onClick={onDeny} disabled={loading} title="Esc">
           {denyLabel}
         </Button>
         {showPersistentActions && onAlwaysDeny ? (
@@ -161,10 +214,11 @@ function PermissionActionBar({
             {alwaysAllowLabel}
           </Button>
         ) : null}
-        <Button type="button" variant="primary" onClick={onApprove} disabled={loading}>
+        <Button type="button" variant="primary" onClick={onApprove} disabled={loading} title="Enter">
           {approveLabel}
         </Button>
       </div>
+      {shortcutHint ? <div className="mt-2 text-right text-[11px] text-[var(--app-text-subtle)]">{shortcutHint}</div> : null}
     </div>
   )
 }
@@ -250,6 +304,9 @@ function GenericPermissionModal({
       bodyClassName="py-3"
       showSessionMeta={false}
       onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
     >
       <div className="grid gap-3">
         <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2.5 text-sm">
@@ -352,6 +409,9 @@ function ExitPlanModal({
         </PermissionActionBar>
       }
       onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
     >
       <div className="flex h-full min-h-0 flex-col gap-4">
         <section className="flex min-h-0 flex-1 flex-col gap-3">
@@ -450,6 +510,9 @@ function PlanUpdateModal({
         </PermissionActionBar>
       }
       onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
     >
       <div className="grid gap-5">
         <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
@@ -561,6 +624,9 @@ function ManageTodosModal({
         </PermissionActionBar>
       }
       onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
     >
       <div className="flex h-full min-h-0 flex-col gap-4">
         <section className="flex min-h-0 flex-1 flex-col gap-3">
@@ -678,6 +744,9 @@ function AskUserModal({
       sessionMode={sessionMode}
       widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1140px,calc(100vw-48px))]"
       onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void submit('approve')}
+      onDenyShortcut={() => void submit('deny')}
+      shortcutsDisabled={loading}
     >
       <div className="grid gap-5">
         {payload.context.trim() ? (
@@ -789,6 +858,9 @@ function WorkspaceScopeModal({
       sessionMode={sessionMode}
       widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1120px,calc(100vw-48px))]"
       onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.sessionAllow.decision))}
+      onDenyShortcut={() => void resolve('deny', '')}
+      shortcutsDisabled={loading}
     >
       <div className="grid gap-5">
         <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
@@ -919,6 +991,9 @@ function TaskLaunchModal({
         </PermissionActionBar>
       }
       onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
       onRequestClose={() => {
         if (loading) {
           return
@@ -1015,6 +1090,9 @@ function AgentChangeModal({
       sessionMode={sessionMode}
       widthClassName="w-[min(980px,calc(100vw-24px))] sm:w-[min(1040px,calc(100vw-48px))]"
       onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
     >
       <div className="grid gap-5">
         <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">

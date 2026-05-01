@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { queryClient } from '../../../../app/query-client'
 import { draftModelQueryOptions, modelOptionsQueryOptions, agentStateQueryOptions } from '../../../queries/query-options'
 import { Button } from '../../../../components/ui/button'
@@ -180,6 +180,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     onComplete(next)
   }
 
+  const handleIdentitySubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (submitting) {
+      return
+    }
+    void handleIdentityContinue()
+  }
+
   const handleIdentityContinue = async () => {
     setSubmitting(true)
     setError(null)
@@ -235,6 +243,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     }
   }
 
+  const handleCredentialKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || submitting) {
+      return
+    }
+    event.preventDefault()
+    void handleProviderSave()
+  }
+
   const handleStartOAuth = async (method: CodexOAuthMode) => {
     if (!selectedProvider) {
       setError('Choose a provider first.')
@@ -263,6 +279,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const handleCallbackKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || submitting) {
+      return
+    }
+    event.preventDefault()
+    void handleCompleteOAuth()
   }
 
   const handleCompleteOAuth = async () => {
@@ -335,7 +359,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
           ) : null}
 
           {step === 'identity' ? (
-            <div className="grid gap-6">
+            <form className="grid gap-6" onSubmit={handleIdentitySubmit}>
               <div className="grid gap-2">
                 <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-swarm-name">
                   Device / Swarm name
@@ -353,11 +377,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
               </div>
 
               <div className="flex justify-end">
-                <Button type="button" onClick={() => void handleIdentityContinue()} disabled={submitting}>
+                <Button type="submit" disabled={submitting}>
                   {submitting ? 'Saving…' : 'Continue'}
                 </Button>
               </div>
-            </div>
+            </form>
           ) : null}
 
           {step === 'provider' ? (
@@ -406,6 +430,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                               autoComplete="off"
                               value={credentialValue}
                               onChange={(event) => setCredentialValue(event.target.value)}
+                              onKeyDown={handleCredentialKeyDown}
                               placeholder={credentialLabel(selectedManualMethod)}
                             />
                           </label>
@@ -431,7 +456,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                             <>
                               <label className="grid gap-2">
                                 <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Callback URL or code</span>
-                                <textarea value={callbackInput} onChange={(event) => setCallbackInput(event.target.value)} placeholder="Paste the callback URL, query string, or authorization code" className="min-h-24 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+                                <textarea value={callbackInput} onChange={(event) => setCallbackInput(event.target.value)} onKeyDown={handleCallbackKeyDown} placeholder="Paste the callback URL, query string, or authorization code" className="min-h-24 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
                               </label>
                               <div className="flex justify-end">
                                 <Button type="button" onClick={() => void handleCompleteOAuth()} disabled={submitting || !oauthSession.sessionID}>
