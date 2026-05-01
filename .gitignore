@@ -63,6 +63,7 @@ coverage.out
 /audit/
 /docs/*
 !/docs/swarm-harness-vm.md
+!/docs/flows-smoke-harness.md
 /REPO_SHIP_READINESS_CHECKLIST.md
 /tests/swarmd/*_plan.md
 /scripts/benchmark-*.sh

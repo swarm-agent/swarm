@@ -96,6 +96,7 @@ func (p *ChatPage) structuredPermissionArgumentRenderLines(record ChatPermission
 	}
 
 	fields := permissionArgumentFields(toolName, object)
+	fields = filterPermissionArgumentFields(toolName, fields, out)
 	if len(fields) == 0 {
 		return out
 	}
@@ -135,7 +136,7 @@ func permissionPrimaryRequestSummary(toolName string, payload map[string]any) st
 		if command == "" {
 			return "bash"
 		}
-		return "bash " + sanitizeCommandSnippetPreview(clampEllipsis(command, 120))
+		return "bash " + command
 	case "read":
 		path := strings.TrimSpace(jsonString(payload, "path"))
 		if path == "" {
@@ -291,6 +292,29 @@ func permissionArgumentFields(toolName string, payload map[string]any) []permiss
 		add(key)
 	}
 	return out
+}
+
+func filterPermissionArgumentFields(toolName string, fields []permissionArgumentField, summaries []chatRenderLine) []permissionArgumentField {
+	if normalizePermissionToolName(toolName) != "bash" || !permissionRenderLinesContainRequestSummary(summaries) {
+		return fields
+	}
+	out := fields[:0]
+	for _, field := range fields {
+		if strings.EqualFold(strings.TrimSpace(field.Key), "command") {
+			continue
+		}
+		out = append(out, field)
+	}
+	return out
+}
+
+func permissionRenderLinesContainRequestSummary(lines []chatRenderLine) bool {
+	for _, line := range lines {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line.Text)), "request:") {
+			return true
+		}
+	}
+	return false
 }
 
 func permissionPreferredArgumentKeys(toolName string) []string {
@@ -620,16 +644,18 @@ func bashPermissionPreviewPrefix(preview string) string {
 	if preview == "" {
 		return ""
 	}
-	const allowPrefix = "allow bash prefix:"
-	const denyPrefix = "deny bash prefix:"
-	switch {
-	case strings.HasPrefix(strings.ToLower(preview), allowPrefix):
-		return strings.TrimSpace(preview[len(allowPrefix):])
-	case strings.HasPrefix(strings.ToLower(preview), denyPrefix):
-		return strings.TrimSpace(preview[len(denyPrefix):])
-	default:
-		return preview
+	lower := strings.ToLower(preview)
+	for _, prefix := range []string{
+		"allow bash command prefix:",
+		"allow bash prefix:",
+		"deny bash command prefix:",
+		"deny bash prefix:",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(preview[len(prefix):])
+		}
 	}
+	return preview
 }
 
 func permissionRequirementLabel(raw string) string {

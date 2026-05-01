@@ -26,6 +26,68 @@ import (
 
 var errTestRemoteUpdateFailure = errors.New("remote update failed")
 
+func TestPeerSessionEventStoresAndPublishesMirroredRunEvent(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-live-peer", WorkspacePath: "/host/workspace", WorkspaceName: "workspace", Title: "Flow live", Mode: sessionruntime.ModeAuto, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store session: %v", err)
+	}
+
+	payload := []byte(`{"session_id":"session-live-peer","event_type":"run.assistant.delta","payload":{"type":"assistant.delta","session_id":"session-live-peer","run_id":"run-live","delta":"hello"},"causation_id":"run-live"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/event", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionEvent(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	events, err := server.events.ReadFrom(1, 20)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if len(events) != 2 || events[1].EventType != "run.assistant.delta" || events[1].EntityID != "session-live-peer" {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestStoreMirroredSessionWithEventPublishesCreatedEvent(t *testing.T) {
+	_, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	session, event, err := sessionSvc.StoreMirroredSessionWithEvent(pebblestore.SessionSnapshot{ID: "session-live-created", WorkspacePath: "/host/workspace", WorkspaceName: "workspace", Title: "Flow live", Mode: sessionruntime.ModeAuto, CreatedAt: 1, UpdatedAt: 1})
+	if err != nil {
+		t.Fatalf("store mirrored session: %v", err)
+	}
+	if event == nil || event.EventType != "session.created" || event.EntityID != session.ID {
+		t.Fatalf("event = %+v, session = %+v", event, session)
+	}
+	_, event, err = sessionSvc.StoreMirroredSessionWithEvent(session)
+	if err != nil {
+		t.Fatalf("store mirrored session again: %v", err)
+	}
+	if event != nil {
+		t.Fatalf("duplicate store emitted event: %+v", event)
+	}
+}
+
+func TestPeerSessionEventStoresMirroredPayloadMessage(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-live-message", WorkspacePath: "/host/workspace", WorkspaceName: "workspace", Title: "Flow live", Mode: sessionruntime.ModeAuto, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store session: %v", err)
+	}
+
+	payload := []byte(`{"session_id":"session-live-message","event_type":"run.message.stored","payload":{"type":"message.stored","session_id":"session-live-message","run_id":"run-live","message":{"id":"msg_00000000000000000007","session_id":"session-live-message","global_seq":7,"role":"assistant","content":"mirrored payload","created_at":123}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/event", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	server.handlePeerSessionEvent(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	messages, err := sessionSvc.ListMessages("session-live-message", 0, 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "mirrored payload" || messages[0].GlobalSeq != 7 {
+		t.Fatalf("messages = %+v", messages)
+	}
+}
+
 func TestRoutedSessionMessagesReloadFromHostWithoutProxy(t *testing.T) {
 	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
 	sessionID := seedRoutedSession(t, sessionSvc)
@@ -501,6 +563,15 @@ func (f *fakeRemoteDeployService) List(_ context.Context) ([]remotedeploy.Sessio
 
 func (f *fakeRemoteDeployService) ListCached(_ context.Context) ([]remotedeploy.Session, error) {
 	return append([]remotedeploy.Session(nil), f.sessions...), nil
+}
+
+func (f *fakeRemoteDeployService) Get(_ context.Context, sessionID string, _ bool) (remotedeploy.Session, error) {
+	for _, session := range f.sessions {
+		if session.ID == sessionID {
+			return session, nil
+		}
+	}
+	return remotedeploy.Session{}, errors.New("remote deploy session not found")
 }
 
 func (f *fakeRemoteDeployService) Create(_ context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error) {

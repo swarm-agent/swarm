@@ -19,8 +19,8 @@ if daemon_running; then
   exit 0
 fi
 
-if [[ ! -x "${BIN_DIR}/swarmd" ]]; then
-  echo "swarmd binary missing at ${BIN_DIR}/swarmd; building first"
+if [[ ! -x "${BIN_DIR}/swarmd" || ! -x "${BIN_DIR}/swarm-fff-search" ]]; then
+  echo "required swarmd binaries missing under ${BIN_DIR}; building first"
   "${SCRIPT_DIR}/dev-build.sh"
 fi
 

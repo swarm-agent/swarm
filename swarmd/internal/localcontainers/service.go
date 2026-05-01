@@ -61,8 +61,6 @@ var (
 	productionMetadataURLTmpl     = "https://github.com/swarm-agent/swarm/releases/download/%s/container-image-info.txt"
 )
 
-const productionMetadataURLTemplateEnv = "SWARM_PRODUCTION_IMAGE_METADATA_URL_TEMPLATE"
-
 type Mount = pebblestore.SwarmLocalContainerMount
 
 type ContainerPackageSelection = pebblestore.ContainerPackageSelectionRecord
@@ -1095,6 +1093,27 @@ func RemoveRuntimeContainer(ctx context.Context, runtimeName, containerName stri
 	return removeContainer(ctx, runtimeName, containerName)
 }
 
+func (s *Service) RemoveStoredRecordForDeployment(deployment pebblestore.DeployContainerRecord) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, errors.New("local container service is not configured")
+	}
+	records, err := s.store.List(500)
+	if err != nil {
+		return false, err
+	}
+	removed := false
+	for _, record := range records {
+		if !deploymentMatchesRecord(deployment, record) {
+			continue
+		}
+		if err := s.store.Delete(record.ID); err != nil {
+			return removed, err
+		}
+		removed = true
+	}
+	return removed, nil
+}
+
 func (s *Service) PruneMissing(ctx context.Context) (DeleteResult, error) {
 	if s == nil || s.store == nil {
 		return DeleteResult{}, errors.New("local container service is not configured")
@@ -1845,11 +1864,7 @@ func productionImageRef() (string, error) {
 }
 
 func productionImageMetadataURL(version string) string {
-	tmpl := strings.TrimSpace(os.Getenv(productionMetadataURLTemplateEnv))
-	if tmpl == "" {
-		tmpl = productionMetadataURLTmpl
-	}
-	return fmt.Sprintf(tmpl, url.PathEscape(strings.TrimSpace(version)))
+	return fmt.Sprintf(productionMetadataURLTmpl, url.PathEscape(strings.TrimSpace(version)))
 }
 
 func FetchProductionImageMetadata(ctx context.Context) (ProductionImageMetadata, error) {

@@ -423,7 +423,138 @@ func (s *Server) handlePeerSessionLifecycle(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if event, err := mirroredLifecycleEvent(req.Lifecycle); err == nil && event != nil {
+		if s.hub != nil {
+			s.hub.Publish(*event)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handlePeerSessionEvent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.sessions == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
+		return
+	}
+	var req struct {
+		SessionID     string         `json:"session_id"`
+		EventType     string         `json:"event_type"`
+		Payload       map[string]any `json:"payload"`
+		CausationID   string         `json:"causation_id"`
+		CorrelationID string         `json:"correlation_id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	env, err := s.sessions.StoreMirroredEvent(req.SessionID, req.EventType, req.Payload, req.CausationID, req.CorrelationID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.storeMirroredEventPayloadLifecycle(req.SessionID, req.Payload); err != nil {
+		log.Printf("warning: store mirrored event lifecycle failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
+	}
+	if err := s.storeMirroredEventPayloadMessage(req.SessionID, req.Payload); err != nil {
+		log.Printf("warning: store mirrored event message failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
+	}
+	if s.hub != nil {
+		s.hub.Publish(env)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "event": env})
+}
+
+func (s *Server) storeMirroredEventPayloadLifecycle(sessionID string, payload map[string]any) error {
+	if s == nil || s.sessions == nil || len(payload) == 0 {
+		return nil
+	}
+	rawLifecycle, ok := payload["lifecycle"]
+	if !ok || rawLifecycle == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(rawLifecycle)
+	if err != nil {
+		return err
+	}
+	var lifecycle pebblestore.SessionLifecycleSnapshot
+	if err := json.Unmarshal(encoded, &lifecycle); err != nil {
+		return err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if lifecycle.SessionID == "" {
+		lifecycle.SessionID = sessionID
+	}
+	if sessionID == "" || !strings.EqualFold(strings.TrimSpace(lifecycle.SessionID), sessionID) {
+		return nil
+	}
+	return s.sessions.StoreMirroredLifecycle(lifecycle)
+}
+
+func (s *Server) storeMirroredEventPayloadMessage(sessionID string, payload map[string]any) error {
+	if s == nil || s.sessions == nil || len(payload) == 0 {
+		return nil
+	}
+	rawMessage, ok := payload["message"]
+	if !ok || rawMessage == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(rawMessage)
+	if err != nil {
+		return err
+	}
+	var message pebblestore.MessageSnapshot
+	if err := json.Unmarshal(encoded, &message); err != nil {
+		return err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if message.SessionID == "" {
+		message.SessionID = sessionID
+	}
+	if sessionID == "" || !strings.EqualFold(strings.TrimSpace(message.SessionID), sessionID) || message.GlobalSeq == 0 {
+		return nil
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return err
+	}
+	_, err = s.sessions.StoreMirroredMessage(session, message)
+	return err
+}
+
+func mirroredLifecycleEvent(snapshot pebblestore.SessionLifecycleSnapshot) (*pebblestore.EventEnvelope, error) {
+	sessionID := strings.TrimSpace(snapshot.SessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"type":            "session.lifecycle.updated",
+		"session_id":      sessionID,
+		"run_id":          strings.TrimSpace(snapshot.RunID),
+		"lifecycle":       snapshot,
+		"active":          snapshot.Active,
+		"phase":           strings.TrimSpace(snapshot.Phase),
+		"started_at":      snapshot.StartedAt,
+		"ended_at":        snapshot.EndedAt,
+		"updated_at":      snapshot.UpdatedAt,
+		"generation":      snapshot.Generation,
+		"stop_reason":     strings.TrimSpace(snapshot.StopReason),
+		"error":           strings.TrimSpace(snapshot.Error),
+		"owner_transport": strings.TrimSpace(snapshot.OwnerTransport),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &pebblestore.EventEnvelope{
+		Stream:    "session:" + sessionID,
+		EventType: "session.lifecycle.updated",
+		EntityID:  sessionID,
+		Payload:   payload,
+		TsUnixMs:  time.Now().UnixMilli(),
+	}, nil
 }
 
 func (s *Server) decodeSessionCreateRequest(r *http.Request) (sessionCreateRequest, error) {
@@ -547,21 +678,21 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	if s.agents == nil {
 		return pebblestore.SessionSnapshot{}, nil, "", "", errors.New("agent service not configured")
 	}
-	profile, profileErr := s.agents.ResolvePrimary(strings.TrimSpace(req.AgentName))
+	profile, profileErr := s.agents.ResolveAgent(strings.TrimSpace(req.AgentName))
 	if profileErr != nil {
 		return pebblestore.SessionSnapshot{}, nil, "", "", profileErr
+	}
+	agentName := strings.TrimSpace(profile.Name)
+	if agentName == "" {
+		agentName = "swarm"
 	}
 	if !pebblestore.AgentExitPlanModeEnabled(profile) {
 		setting, ok := pebblestore.AgentExecutionSetting(profile)
 		if !ok {
-			agentName := strings.TrimSpace(profile.Name)
-			if agentName == "" {
-				agentName = "selected primary agent"
-			}
 			return pebblestore.SessionSnapshot{}, nil, "", "", errors.New(agentName + " has plan mode disabled but no execution_setting is configured")
 		}
 		if sessionruntime.NormalizeMode(req.Mode) != setting {
-			modeWarning = "selected primary agent " + strconv.Quote(strings.TrimSpace(profile.Name)) + " has plan mode disabled; ignoring requested session mode " + strconv.Quote(sessionruntime.NormalizeMode(req.Mode)) + " and using execution setting " + strconv.Quote(setting)
+			modeWarning = "agent " + strconv.Quote(agentName) + " has plan mode disabled; ignoring requested session mode " + strconv.Quote(sessionruntime.NormalizeMode(req.Mode)) + " and using execution setting " + strconv.Quote(setting)
 		}
 		createOptions.Mode = setting
 	}
@@ -574,6 +705,8 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		"workspace_id":  worktreeruntime.WorkspaceIdentityForSession(sessionID),
 		"runtime_state": "standby",
 		"title_pending": true,
+		"agent_name":    agentName,
+		"agent_mode":    strings.TrimSpace(profile.Mode),
 	}, mergeSessionCreateMetadata(req.Metadata, overrideMetadata))
 	warning := ""
 	if allowWorktree {

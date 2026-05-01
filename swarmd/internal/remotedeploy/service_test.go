@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -95,6 +96,29 @@ func TestRemoteRequiredDiskBytesIncludesPayloadStagingAndFallback(t *testing.T) 
 	}
 }
 
+func TestResolveRemoteImageDeliveryModeUsesArchiveInDevMode(t *testing.T) {
+	if got := resolveRemoteImageDeliveryMode(remoteImageDeliveryRegistry, startupconfig.FileConfig{DevMode: true}); got != remoteImageDeliveryArchive {
+		t.Fatalf("resolveRemoteImageDeliveryMode(dev registry) = %q, want %q", got, remoteImageDeliveryArchive)
+	}
+	if got := resolveRemoteImageDeliveryMode(remoteImageDeliveryRegistry, startupconfig.FileConfig{}); got != remoteImageDeliveryRegistry {
+		t.Fatalf("resolveRemoteImageDeliveryMode(release registry) = %q, want %q", got, remoteImageDeliveryRegistry)
+	}
+}
+
+func TestRemotePreflightRequiredDiskBytesArchiveAllowsDevVersion(t *testing.T) {
+	oldVersion := buildinfo.Version
+	buildinfo.Version = "dev"
+	t.Cleanup(func() { buildinfo.Version = oldVersion })
+
+	required, err := remotePreflightRequiredDiskBytes(context.Background(), remoteImageDeliveryArchive, nil)
+	if err != nil {
+		t.Fatalf("remotePreflightRequiredDiskBytes(archive dev) error = %v", err)
+	}
+	if required <= 0 {
+		t.Fatalf("remotePreflightRequiredDiskBytes(archive dev) = %d, want positive fallback", required)
+	}
+}
+
 func TestRemotePreflightSummaryReportsZeroPayloadAndDisk(t *testing.T) {
 	record := pebblestore.RemoteDeploySessionRecord{
 		SSHSessionTarget:  "remote.example",
@@ -111,6 +135,40 @@ func TestRemotePreflightSummaryReportsZeroPayloadAndDisk(t *testing.T) {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q: %s", needle, summary)
 		}
+	}
+}
+
+func TestFormatCreatePreflightErrorReportsSelectedRemoteRuntime(t *testing.T) {
+	err := formatCreatePreflightError("remote.example", errors.New("remote runtime missing:podman"))
+	if err == nil {
+		t.Fatalf("formatCreatePreflightError() error = nil")
+	}
+	message := err.Error()
+	for _, needle := range []string{"Podman was selected", "Podman is not installed", "apt install -y podman"} {
+		if !strings.Contains(message, needle) {
+			t.Fatalf("formatted error missing %q:\n%s", needle, message)
+		}
+	}
+	if strings.Contains(message, "Docker was selected") {
+		t.Fatalf("formatted error should not mention Docker selection for podman:\n%s", message)
+	}
+}
+
+func TestRemoteRuntimePreflightScriptChecksSelectedRuntimeWithSudo(t *testing.T) {
+	record := pebblestore.RemoteDeploySessionRecord{
+		ID:            "remote-child-test",
+		Name:          "remote-child",
+		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
+		RemoteRuntime: "podman",
+		ImageRef:      "localhost/swarm-remote-child:test1234",
+		SudoMode:      "sudo",
+	}
+	script := remoteInstallerScript(record)
+	if !strings.Contains(script, `runtime='podman'`) {
+		t.Fatalf("installer script missing selected runtime:\n%s", script)
+	}
+	if !strings.Contains(script, `as_root podman "$@"`) {
+		t.Fatalf("installer script does not invoke selected runtime through sudo helper:\n%s", script)
 	}
 }
 
@@ -183,6 +241,32 @@ func TestResolveMasterRemoteDeployEndpointUsesDevLanePort(t *testing.T) {
 	}
 }
 
+func TestRenderChildStartupConfigIgnoresRemoteAdvertiseHostForTailscale(t *testing.T) {
+	record := pebblestore.RemoteDeploySessionRecord{
+		ID:                  "laptop-c5d07eb0",
+		Name:                "laptop",
+		TransportMode:       startupconfig.NetworkModeTailscale,
+		MasterEndpoint:      "https://host.tailnet.ts.net",
+		RemoteAdvertiseHost: "10.0.0.1",
+	}
+	cfg := (&Service{}).renderChildStartupConfig(record, startupconfig.FileConfig{}, swarmruntime.LocalState{})
+	for _, needle := range []string{
+		"host = 127.0.0.1",
+		"advertise_host = 127.0.0.1",
+		"mode = tailscale",
+		"tailscale_url = https://host.tailnet.ts.net",
+		"remote_deploy_enabled = true",
+		"remote_deploy_host_api_base_url = https://host.tailnet.ts.net",
+	} {
+		if !strings.Contains(cfg, needle) {
+			t.Fatalf("child startup config missing %q\n%s", needle, cfg)
+		}
+	}
+	if strings.Contains(cfg, "host = 10.0.0.1") || strings.Contains(cfg, "advertise_host = 10.0.0.1") {
+		t.Fatalf("tailscale child startup config should not use remote LAN host\n%s", cfg)
+	}
+}
+
 func TestRemoteDevReplacementScriptDoesNotDuplicateRemoteRootMount(t *testing.T) {
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:                  "remote-replace-test",
@@ -204,6 +288,34 @@ func TestRemoteDevReplacementScriptDoesNotDuplicateRemoteRootMount(t *testing.T)
 	}
 	if !strings.Contains(script, `run_args+=(--volume '/workspaces:/workspaces')`) {
 		t.Fatalf("replacement script should still mount payload target\n%s", script)
+	}
+}
+
+func TestRemoteInstallerScriptSanitizesTailscaleHostname(t *testing.T) {
+	record := pebblestore.RemoteDeploySessionRecord{
+		ID:            "pc-child-test",
+		Name:          "pc child",
+		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
+		RemoteRuntime: "docker",
+		ImageRef:      "localhost/swarm-remote-child:test1234",
+	}
+	script := remoteInstallerScript(record)
+	for _, needle := range []string{
+		`ts_hostname='pc-child'`,
+		`export TS_HOSTNAME="$ts_hostname"`,
+		`-e "TS_HOSTNAME=$ts_hostname"`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("installer script missing sanitized hostname %q\n%s", needle, script)
+		}
+	}
+	for _, unexpected := range []string{
+		`ts_hostname='pc child'`,
+		`TS_HOSTNAME=pc child`,
+	} {
+		if strings.Contains(script, unexpected) {
+			t.Fatalf("installer script leaked unsanitized Tailscale hostname %q\n%s", unexpected, script)
+		}
 	}
 }
 
@@ -236,12 +348,23 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`if runtime_cmd image inspect "$image_ref" >/dev/null 2>&1; then`,
 		`runtime_cmd load -i "$image_archive" >/dev/null`,
 		`as_root mkdir -p '/workspaces'`,
+		`as_root chown -R 65534:65534 "$config_home" "$remote_root/xdg" "$swarmd_state_dir"`,
+		`as_root chmod 0700 "$config_home" "$config_home/swarm" "$swarmd_state_dir"`,
+		`as_root chmod 0600 "$config_home/swarm/swarm.conf"`,
 		`rm -f "$legacy_credentials_file"`,
 		`cat > "$start_script" <<'SCRIPT'`,
 		`export XDG_CONFIG_HOME="$config_home"`,
 		`export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"`,
-		`export TS_OUTBOUND_HTTP_PROXY_LISTEN="127.0.0.1:1055"`,
-		`export SWARM_TAILSCALE_OUTBOUND_PROXY="http://127.0.0.1:1055"`,
+		`tailscale_proxy_addr=`,
+		`desktop_port=`,
+		`peer_transport_port=`,
+		`check_remote_ports`,
+		`printf 'REMOTE_PORT_CONFLICT label=%s port=%s\n' "$label" "$port"`,
+		`export TS_OUTBOUND_HTTP_PROXY_LISTEN="$tailscale_proxy_addr"`,
+		`export SWARM_TAILSCALE_OUTBOUND_PROXY="http://$tailscale_proxy_addr"`,
+		`export SWARM_DESKTOP_PORT="$desktop_port"`,
+		`export SWARM_STARTUP_MODE=box`,
+		`-e "SWARM_STARTUP_MODE=box"`,
 		`run_args+=(--volume '/workspaces:/workspaces')`,
 		`run_args+=(-e TS_AUTHKEY)`,
 		`run_args+=(-e SWARM_REMOTE_SYNC_VAULT_PASSWORD)`,
@@ -381,6 +504,12 @@ func TestRemoteInstallerScriptPullsAndVerifiesProductionRegistryDigestWithoutArc
 		if !strings.Contains(script, needle) {
 			t.Fatalf("installer script missing %q\n%s", needle, script)
 		}
+	}
+	if !strings.Contains(script, "\nlog_timer_step \"ensure_remote_image\" \"$step_started_ms\"") {
+		t.Fatalf("installer script should separate image verification from timer step\n%s", script)
+	}
+	if strings.Contains(script, "configlog_timer_step") {
+		t.Fatalf("installer script joined config path and timer command\n%s", script)
 	}
 	if !strings.Contains(script, `elif [ -f "$image_archive" ]; then`) {
 		t.Fatalf("installer script should keep archive fallback branch for archive-based refs\n%s", script)

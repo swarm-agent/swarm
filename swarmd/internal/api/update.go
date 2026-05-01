@@ -15,7 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/localupdate"
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/update"
@@ -36,9 +38,20 @@ type desktopUpdateJob struct {
 	Status          string `json:"status"`
 	Message         string `json:"message,omitempty"`
 	Error           string `json:"error,omitempty"`
+	Lane            string `json:"lane,omitempty"`
+	Command         string `json:"command,omitempty"`
+	HelperPID       int    `json:"helper_pid,omitempty"`
+	LogPath         string `json:"log_path,omitempty"`
 	StartedAtUnix   int64  `json:"started_at_unix_ms,omitempty"`
 	UpdatedAtUnix   int64  `json:"updated_at_unix_ms,omitempty"`
 	CompletedAtUnix int64  `json:"completed_at_unix_ms,omitempty"`
+}
+
+type updateLaunchDetails struct {
+	Lane      string
+	Command   string
+	HelperPID int
+	LogPath   string
 }
 
 type updateJobRunner struct {
@@ -150,6 +163,11 @@ func (r *updateJobRunner) Status(s *Server) desktopUpdateJob {
 	current := r.current
 	r.mu.Unlock()
 	if persisted, ok := s.readPersistedUpdateJobStatus(); ok {
+		if persisted.Status == updateJobStatusRunning {
+			if kind, err := s.desktopUpdateKind(); err == nil && !updateJobKindMatches(persisted.Kind, kind) {
+				return r.supersedeMismatchedRunningJob(persisted, kind, s)
+			}
+		}
 		if strings.TrimSpace(current.ID) == "" || persisted.UpdatedAtUnix >= current.UpdatedAtUnix {
 			return persisted
 		}
@@ -164,20 +182,26 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 	if r == nil {
 		return desktopUpdateJob{}, errors.New("update runner is not configured")
 	}
-	if existing := r.Status(s); existing.Status == updateJobStatusRunning {
-		return existing, nil
+	kind, err := s.desktopUpdateKind()
+	if err != nil {
+		return desktopUpdateJob{}, err
 	}
-	status := s.update.Status(ctx, false)
-	kind := updateKindRelease
-	if status.DevMode {
-		kind = updateKindDev
+	if existing := r.Status(s); existing.Status == updateJobStatusRunning {
+		if updateJobKindMatches(existing.Kind, kind) {
+			return existing, nil
+		}
+		r.supersedeMismatchedRunningJob(existing, kind, s)
 	}
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	if r.current.Status == updateJobStatusRunning {
 		job := r.current
 		r.mu.Unlock()
-		return job, nil
+		if updateJobKindMatches(job.Kind, kind) {
+			return job, nil
+		}
+		r.supersedeMismatchedRunningJob(job, kind, s)
+		r.mu.Lock()
 	}
 	job := desktopUpdateJob{
 		ID:            newUpdateJobID(now, kind),
@@ -196,12 +220,41 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 		return failed, err
 	}
 	s.emitUpdateNotification(job, pebblestore.NotificationSeverityInfo, "Swarm update started", job.Message, "update.started")
-	if err := startDetachedUpdateCommand(kind, job.ID); err != nil {
+	launch, err := s.startDetachedUpdateCommand(kind, job.ID, r)
+	if err != nil {
 		failed := r.finish(job.ID, updateJobStatusFailed, "", err.Error(), s)
 		s.emitUpdateNotification(failed, pebblestore.NotificationSeverityError, "Swarm update failed", err.Error(), "update.failed")
 		return failed, err
 	}
+	job = r.updateLaunchDetails(job.ID, launch, s)
 	return job, nil
+}
+
+func updateJobKindMatches(existingKind, desiredKind string) bool {
+	return strings.EqualFold(strings.TrimSpace(existingKind), strings.TrimSpace(desiredKind))
+}
+
+func (r *updateJobRunner) supersedeMismatchedRunningJob(existing desktopUpdateJob, desiredKind string, s *Server) desktopUpdateJob {
+	if strings.TrimSpace(existing.ID) == "" {
+		return existing
+	}
+	now := time.Now().UnixMilli()
+	failed := existing
+	failed.Status = updateJobStatusFailed
+	failed.Message = ""
+	failed.Error = fmt.Sprintf("superseded stale %s update job because startup config now requires %s update", firstNonEmpty(existing.Kind, "unknown"), strings.TrimSpace(desiredKind))
+	failed.UpdatedAtUnix = now
+	failed.CompletedAtUnix = now
+	if failed.StartedAtUnix == 0 {
+		failed.StartedAtUnix = now
+	}
+	r.mu.Lock()
+	if strings.TrimSpace(r.current.ID) == "" || r.current.ID == existing.ID {
+		r.current = failed
+	}
+	r.mu.Unlock()
+	_ = s.writePersistedUpdateJobStatus(failed)
+	return failed
 }
 
 func (r *updateJobRunner) finish(id, status, message, errorMessage string, s *Server) desktopUpdateJob {
@@ -220,15 +273,28 @@ func (r *updateJobRunner) finish(id, status, message, errorMessage string, s *Se
 	return r.current
 }
 
-func startDetachedUpdateCommand(kind, jobID string) error {
+func (r *updateJobRunner) updateLaunchDetails(id string, launch updateLaunchDetails, s *Server) desktopUpdateJob {
+	now := time.Now().UnixMilli()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.current.ID != id {
+		return r.current
+	}
+	r.current.Lane = strings.TrimSpace(launch.Lane)
+	r.current.Command = strings.TrimSpace(launch.Command)
+	r.current.HelperPID = launch.HelperPID
+	r.current.LogPath = strings.TrimSpace(launch.LogPath)
+	r.current.UpdatedAtUnix = now
+	_ = s.writePersistedUpdateJobStatus(r.current)
+	return r.current
+}
+
+func (s *Server) startDetachedUpdateCommand(kind, jobID string, runner *updateJobRunner) (updateLaunchDetails, error) {
 	swarmPath, err := resolveSwarmLauncherPath()
 	if err != nil {
-		return err
+		return updateLaunchDetails{}, err
 	}
-	lane := strings.TrimSpace(os.Getenv("SWARM_LANE"))
-	if lane == "" {
-		lane = "main"
-	}
+	lane := updateLaneForKind(kind)
 	args := []string{lane, "update"}
 	if kind == updateKindDev {
 		args = append(args, "dev")
@@ -236,20 +302,98 @@ func startDetachedUpdateCommand(kind, jobID string) error {
 		args = append(args, "apply")
 	}
 	cmd := exec.Command(swarmPath, args...)
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"SWARM_UPDATE_JOB_ID="+strings.TrimSpace(jobID),
 		"SWARM_UPDATE_JOB_KIND="+strings.TrimSpace(kind),
 	)
+	if kind == updateKindDev {
+		devRoot, err := s.configuredDevRoot()
+		if err != nil {
+			return updateLaunchDetails{}, err
+		}
+		env = append(env, "SWARM_ROOT="+devRoot)
+		cmd.Dir = devRoot
+	}
+	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
+	logPath := s.updateHelperLogPath(jobID)
+	if logPath != "" {
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+			return updateLaunchDetails{}, fmt.Errorf("prepare update helper log: %w", err)
+		}
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			return updateLaunchDetails{}, fmt.Errorf("open update helper log: %w", err)
+		}
+		defer logFile.Close()
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	} else if devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
 		defer devNull.Close()
 		cmd.Stdout = devNull
 		cmd.Stderr = devNull
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start desktop update helper: %w", err)
+		return updateLaunchDetails{}, fmt.Errorf("start desktop update helper: %w", err)
 	}
-	return cmd.Process.Release()
+	launch := updateLaunchDetails{
+		Lane:      lane,
+		Command:   strings.Join(append([]string{swarmPath}, args...), " "),
+		HelperPID: cmd.Process.Pid,
+		LogPath:   logPath,
+	}
+	go s.watchDetachedUpdateCommand(cmd, strings.TrimSpace(jobID), runner)
+	return launch, nil
+}
+
+func (s *Server) watchDetachedUpdateCommand(cmd *exec.Cmd, jobID string, runner *updateJobRunner) {
+	if cmd == nil || runner == nil || strings.TrimSpace(jobID) == "" {
+		return
+	}
+	if err := cmd.Wait(); err != nil {
+		if persisted, ok := s.readPersistedUpdateJobStatus(); ok && persisted.ID == jobID && persisted.Status != updateJobStatusRunning {
+			return
+		}
+		failed := runner.finish(jobID, updateJobStatusFailed, "", fmt.Sprintf("update helper exited early: %v", err), s)
+		s.emitUpdateNotification(failed, pebblestore.NotificationSeverityError, "Swarm update failed", failed.Error, "update.failed")
+	}
+}
+
+func (s *Server) desktopUpdateKind() (string, error) {
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		return "", err
+	}
+	if cfg.DevMode {
+		return updateKindDev, nil
+	}
+	return updateKindRelease, nil
+}
+
+func (s *Server) configuredDevRoot() (string, error) {
+	if s == nil {
+		return "", errors.New("update server is not configured")
+	}
+	path := strings.TrimSpace(s.startupConfigPath)
+	if path == "" {
+		return "", errors.New("startup config path is not configured")
+	}
+	cfg, err := startupconfig.Load(path)
+	if err != nil {
+		return "", fmt.Errorf("load startup config: %w", err)
+	}
+	if !cfg.DevMode {
+		return "", errors.New("update dev requires dev_mode=true in swarm.conf")
+	}
+	devRoot := strings.TrimSpace(cfg.DevRoot)
+	if devRoot == "" {
+		return "", errors.New("update dev requires dev_root in swarm.conf; run rebuild once from the source checkout")
+	}
+	resolved, err := devmode.ResolveRoot(devRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve dev_root %q: %w", devRoot, err)
+	}
+	return resolved, nil
 }
 
 func (s *Server) readPersistedUpdateJobStatus() (desktopUpdateJob, bool) {
@@ -266,6 +410,10 @@ func (s *Server) readPersistedUpdateJobStatus() (desktopUpdateJob, bool) {
 		Status:          firstNonEmpty(status.Status, updateJobStatusIdle),
 		Message:         status.Message,
 		Error:           status.Error,
+		Lane:            status.Lane,
+		Command:         status.Command,
+		HelperPID:       status.HelperPID,
+		LogPath:         status.LogPath,
 		StartedAtUnix:   status.StartedAtUnix,
 		UpdatedAtUnix:   status.UpdatedAtUnix,
 		CompletedAtUnix: status.CompletedAtUnix,
@@ -282,10 +430,30 @@ func (s *Server) writePersistedUpdateJobStatus(job desktopUpdateJob) error {
 		Status:          job.Status,
 		Message:         job.Message,
 		Error:           job.Error,
+		Lane:            job.Lane,
+		Command:         job.Command,
+		HelperPID:       job.HelperPID,
+		LogPath:         job.LogPath,
 		StartedAtUnix:   job.StartedAtUnix,
 		UpdatedAtUnix:   job.UpdatedAtUnix,
 		CompletedAtUnix: job.CompletedAtUnix,
 	})
+}
+
+func (s *Server) updateHelperLogPath(jobID string) string {
+	if s == nil || strings.TrimSpace(s.dataDir) == "" || strings.TrimSpace(jobID) == "" {
+		return ""
+	}
+	return filepath.Join(s.dataDir, "update", "helpers", strings.TrimSpace(jobID)+".log")
+}
+
+func updateLaneForKind(kind string) string {
+	_ = kind
+	lane := strings.ToLower(strings.TrimSpace(os.Getenv("SWARM_LANE")))
+	if lane == "dev" {
+		return "dev"
+	}
+	return "main"
 }
 
 func resolveSwarmLauncherPath() (string, error) {
@@ -399,9 +567,9 @@ func newUpdateJobID(now int64, kind string) string {
 
 func updateStartMessage(kind string) string {
 	if kind == updateKindDev {
-		return "Updating Swarm and container images. The desktop will reconnect when the update finishes."
+		return "Starting /update dev helper."
 	}
-	return "Updating Swarm and container images. The desktop will reconnect when the update finishes."
+	return "Starting update apply helper."
 }
 
 func firstPositive(values ...int64) int64 {

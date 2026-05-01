@@ -30,17 +30,27 @@ func (p *ChatPage) commandPaletteActive() bool {
 	return strings.HasPrefix(strings.TrimSpace(p.input), "/")
 }
 
+func (p *ChatPage) commandPaletteSuggestions() []CommandSuggestion {
+	base := append([]CommandSuggestion(nil), p.commandSuggestions...)
+	copySuggestions := p.copyBlockCommandSuggestions()
+	if len(copySuggestions) == 0 {
+		return base
+	}
+	return append(base, copySuggestions...)
+}
+
 func (p *ChatPage) commandPaletteMatches() []CommandSuggestion {
 	if !p.commandPaletteActive() {
 		return nil
 	}
+	suggestions := p.commandPaletteSuggestions()
 	query := commandPaletteQuery(p.input)
 	if query == "" {
-		return append([]CommandSuggestion(nil), p.commandSuggestions...)
+		return suggestions
 	}
-	prefixMatches := make([]CommandSuggestion, 0, len(p.commandSuggestions))
-	containsMatches := make([]CommandSuggestion, 0, len(p.commandSuggestions))
-	for _, suggestion := range p.commandSuggestions {
+	prefixMatches := make([]CommandSuggestion, 0, len(suggestions))
+	containsMatches := make([]CommandSuggestion, 0, len(suggestions))
+	for _, suggestion := range suggestions {
 		candidate := commandPaletteQuery(suggestion.Command)
 		if candidate == "" {
 			continue

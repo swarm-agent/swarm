@@ -11,6 +11,8 @@ import (
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 )
 
+const remoteDeploySessionRefreshTimeout = 8 * time.Second
+
 func (s *Server) handleRemoteDeploySessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -22,14 +24,37 @@ func (s *Server) handleRemoteDeploySessions(w http.ResponseWriter, r *http.Reque
 	}
 	refresh := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("refresh")), "1") ||
 		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("refresh")), "true")
+	sessionID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if sessionID != "" {
+		ctx := r.Context()
+		var cancel context.CancelFunc
+		if refresh {
+			ctx, cancel = context.WithTimeout(r.Context(), remoteDeploySessionRefreshTimeout)
+			defer cancel()
+		}
+		session, err := s.remoteDeploys.Get(ctx, sessionID, refresh)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"path_id":  remotedeploy.PathSessionList,
+			"session":  session,
+			"sessions": []remotedeploy.Session{session},
+		})
+		return
+	}
 	var (
 		items []remotedeploy.Session
 		err   error
 	)
 	if refresh {
-		items, err = s.remoteDeploys.List(context.Background())
+		ctx, cancel := context.WithTimeout(r.Context(), remoteDeploySessionRefreshTimeout)
+		defer cancel()
+		items, err = s.remoteDeploys.List(ctx)
 	} else {
-		items, err = s.remoteDeploys.ListCached(context.Background())
+		items, err = s.remoteDeploys.ListCached(r.Context())
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

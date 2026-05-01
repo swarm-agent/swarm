@@ -37,6 +37,7 @@ export function DesktopVaultGate() {
               </div>
               <div className="w-full space-y-4">
                 <Input
+                  data-testid="desktop-vault-password"
                   type="password"
                   autoFocus
                   className="h-12 bg-[var(--app-surface-soft)] border-transparent focus:border-[var(--app-primary)] transition-all"
@@ -58,6 +59,7 @@ export function DesktopVaultGate() {
                 ) : null}
 
                 <Button 
+                  data-testid="desktop-vault-unlock"
                   className="h-12 w-full rounded-xl bg-[var(--app-primary)] hover:bg-[var(--app-primary-hover)] text-white shadow-lg shadow-[var(--app-primary)]/10"
                   onClick={() => void submit()} 
                   disabled={vault.loading}
@@ -110,6 +112,7 @@ export function DesktopVaultGate() {
                   </label>
                   <Input
                     id="desktop-vault-password"
+                    data-testid="desktop-vault-password"
                     type="password"
                     autoFocus
                     className="h-12 bg-[var(--app-surface-soft)] border-transparent focus:border-[var(--app-primary)] transition-all"
@@ -132,6 +135,7 @@ export function DesktopVaultGate() {
                 ) : null}
 
                 <Button 
+                  data-testid="desktop-vault-unlock"
                   className="h-12 w-full rounded-xl bg-[var(--app-primary)] hover:bg-[var(--app-primary-hover)] text-white shadow-lg shadow-[var(--app-primary)]/10"
                   onClick={() => void submit()} 
                   disabled={vault.loading}

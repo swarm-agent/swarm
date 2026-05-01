@@ -96,6 +96,8 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- If a branch of investigation is not required to complete the user request, stop and list it as optional follow-up instead of exploring it now.",
 		"- If the user explicitly instructs you to change settings, make the settings change directly via the appropriate settings/config tool or file path instead of only suggesting it.",
 		"- If the user is only making a suggestion or preference statement rather than an explicit change request, do not silently mutate settings; either note the suggestion as follow-up guidance or redirect them to the relevant settings surface.",
+		"- When you provide long commands, config snippets, file contents, or any text the user is likely to copy, wrap that exact payload in <copy>...</copy> tags. Use an optional label attribute like <copy label=\"restart command\">...</copy> when it helps the UI preview.",
+		"- Keep copy-tag payloads exact and free of explanatory prose; put context before or after the tagged block. Multiple <copy> blocks are allowed in one response.",
 		"- In plan mode, once the plan is actionable, submit it with exit_plan_mode for approval so the session can leave plan mode and continue execution; do not continue irrelevant exploration.",
 		fmt.Sprintf("- In auto mode, never call exit_plan_mode. To update the active plan instead, use plan_manage with exactly: %s", autoModePlanManageSaveSnippet),
 		"Harness tool usage examples:",
@@ -194,7 +196,7 @@ func (s *Service) resolveAgentProfile(name, targetKind string) (pebblestore.Agen
 	targetKind = normalizeRunTargetKind(targetKind)
 	switch targetKind {
 	case "", RunTargetKindAgent:
-		return s.resolvePrimaryAgent(name)
+		return s.resolveAgent(name)
 	case RunTargetKindSubagent:
 		if s.agents == nil {
 			return pebblestore.AgentProfile{}, fmt.Errorf("subagent %q cannot resolve without agent service", strings.TrimSpace(name))
@@ -204,15 +206,18 @@ func (s *Service) resolveAgentProfile(name, targetKind string) (pebblestore.Agen
 		if s.agents == nil {
 			return pebblestore.AgentProfile{}, fmt.Errorf("background agent %q cannot resolve without agent service", strings.TrimSpace(name))
 		}
+		if strings.EqualFold(strings.TrimSpace(name), "memory") {
+			return s.agents.ResolveSubagent(name)
+		}
 		return s.agents.ResolveBackground(name)
 	default:
 		return pebblestore.AgentProfile{}, fmt.Errorf("unsupported target_kind %q", strings.TrimSpace(targetKind))
 	}
 }
 
-func (s *Service) resolvePrimaryAgent(name string) (pebblestore.AgentProfile, error) {
+func (s *Service) resolveAgent(name string) (pebblestore.AgentProfile, error) {
 	if s.agents != nil {
-		return s.agents.ResolvePrimary(name)
+		return s.agents.ResolveAgent(name)
 	}
 	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name:                "swarm",

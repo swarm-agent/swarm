@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -377,6 +378,340 @@ func BenchmarkChatPageMarkdownHeavyFiveSecondStreamDrawEveryDelta(b *testing.B) 
 		stats := replayStreamingScenario(page, screen, scenario, true)
 		if stats.AssistantDeltas != scenario.ExpectedTokenCount {
 			b.Fatalf("assistant deltas = %d, want %d", stats.AssistantDeltas, scenario.ExpectedTokenCount)
+		}
+	}
+}
+
+const loremBashStreamDuration = 5 * time.Second
+const loremBashChunkInterval = 10 * time.Millisecond
+const loremBashDrawInterval = 33 * time.Millisecond
+
+type bashLoremStreamScenario struct {
+	Events              []ChatRunStreamEvent
+	EventOffsets        []time.Duration
+	Output              string
+	Duration            time.Duration
+	ExpectedChunkCount  int
+	NonOutputEventCount int
+}
+
+type bashLoremReplayStats struct {
+	Events            int
+	ToolDeltas        int
+	Draws             int
+	OutputBytes       int
+	ViewportLineCount int
+	SimulatedDuration time.Duration
+}
+
+func bashLoremIpsumStreamingScenario() bashLoremStreamScenario {
+	chunks := buildBashLoremIpsumChunks(int(loremBashStreamDuration/loremBashChunkInterval) + 1)
+	output := strings.Join(chunks, "")
+
+	events := make([]ChatRunStreamEvent, 0, len(chunks)+2)
+	offsets := make([]time.Duration, 0, len(chunks)+2)
+	appendEvent := func(offset time.Duration, event ChatRunStreamEvent) {
+		events = append(events, event)
+		offsets = append(offsets, offset)
+	}
+
+	appendEvent(0, ChatRunStreamEvent{
+		Type:      "tool.started",
+		SessionID: streamSpikeSessionID,
+		RunID:     streamSpikeRunID,
+		ToolName:  "bash",
+		CallID:    "call-bash-lorem",
+		Arguments: `{"command":"bash -lc 'for i in $(seq 1 500); do printf %s lorem; done'"}`,
+	})
+	for i, chunk := range chunks {
+		appendEvent(time.Duration(i)*loremBashChunkInterval, ChatRunStreamEvent{
+			Type:      "tool.delta",
+			SessionID: streamSpikeSessionID,
+			RunID:     streamSpikeRunID,
+			ToolName:  "bash",
+			CallID:    "call-bash-lorem",
+			Output:    chunk,
+		})
+	}
+	appendEvent(loremBashStreamDuration, ChatRunStreamEvent{
+		Type:       "tool.completed",
+		SessionID:  streamSpikeSessionID,
+		RunID:      streamSpikeRunID,
+		ToolName:   "bash",
+		CallID:     "call-bash-lorem",
+		Output:     output,
+		RawOutput:  output,
+		DurationMS: loremBashStreamDuration.Milliseconds(),
+	})
+
+	return bashLoremStreamScenario{
+		Events:              events,
+		EventOffsets:        offsets,
+		Output:              output,
+		Duration:            loremBashStreamDuration,
+		ExpectedChunkCount:  len(chunks),
+		NonOutputEventCount: len(events) - len(chunks),
+	}
+}
+
+func replayBashLoremStreamingScenario(page *ChatPage, screen tcell.Screen, scenario bashLoremStreamScenario, drawEveryEvent bool, expanded bool) bashLoremReplayStats {
+	var stats bashLoremReplayStats
+	if page == nil || screen == nil {
+		return stats
+	}
+	start := time.Now().Add(-scenario.Duration)
+	nextDrawAt := time.Duration(0)
+	for i, event := range scenario.Events {
+		offset := time.Duration(0)
+		if i < len(scenario.EventOffsets) {
+			offset = scenario.EventOffsets[i]
+		}
+		page.applyRunStreamEvent(event, start.Add(offset).UnixMilli())
+		if expanded && page.bashOutputAvailable() {
+			page.bashOutput.Visible = true
+			page.bashOutput.Expanded = true
+		}
+		stats.Events++
+		if event.Type == "tool.delta" {
+			stats.ToolDeltas++
+		}
+		if drawEveryEvent || offset >= nextDrawAt || i == len(scenario.Events)-1 {
+			page.Draw(screen)
+			screen.Show()
+			stats.Draws++
+			if !drawEveryEvent {
+				for nextDrawAt <= offset {
+					nextDrawAt += loremBashDrawInterval
+				}
+			}
+		}
+	}
+	stats.OutputBytes = len(page.bashOutput.Output)
+	stats.ViewportLineCount = len(page.bashOutputViewportLines(100, 12))
+	stats.SimulatedDuration = scenario.Duration
+	return stats
+}
+
+func buildBashLoremIpsumChunks(targetChunks int) []string {
+	paragraphs := []string{
+		"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed non risus suspendisse lectus tortor dignissim sit amet adipiscing nec ultricies sed dolor.\n\n",
+		"Cras elementum ultrices diam. Maecenas ligula massa, varius a semper congue, euismod non mi. Proin porttitor, orci nec nonummy molestie, enim est eleifend mi.\n\n",
+		"Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident.\n\n",
+		"Integer in mauris eu nibh euismod gravida. Duis ac tellus et risus vulputate vehicula. Donec lobortis risus a elit etiam tempor ut ullamcorper leo.\n\n",
+	}
+	chunks := make([]string, 0, targetChunks)
+	for i := 0; i < targetChunks; i++ {
+		var out strings.Builder
+		fmt.Fprintf(&out, "[lorem-bash:%03d] ", i+1)
+		out.WriteString(paragraphs[i%len(paragraphs)])
+		if i%25 == 24 {
+			fmt.Fprintf(&out, "--- burst boundary %03d ---\n\n", i+1)
+		}
+		chunks = append(chunks, out.String())
+	}
+	return chunks
+}
+
+func TestBashLoremIpsumStreamingReplaySpansFiveSeconds(t *testing.T) {
+	scenario := bashLoremIpsumStreamingScenario()
+	if scenario.Duration != loremBashStreamDuration {
+		t.Fatalf("duration = %s, want %s", scenario.Duration, loremBashStreamDuration)
+	}
+	if got, want := len(scenario.Events), scenario.ExpectedChunkCount+scenario.NonOutputEventCount; got != want {
+		t.Fatalf("event count = %d, want %d", got, want)
+	}
+	if len(scenario.Output) < 70_000 {
+		t.Fatalf("bash lorem fixture too small: %d bytes", len(scenario.Output))
+	}
+
+	page := newStreamSpikeChatPage()
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(132, 42)
+
+	stats := replayBashLoremStreamingScenario(page, screen, scenario, false, true)
+	if stats.SimulatedDuration != loremBashStreamDuration {
+		t.Fatalf("simulated duration = %s, want %s", stats.SimulatedDuration, loremBashStreamDuration)
+	}
+	if stats.ToolDeltas != scenario.ExpectedChunkCount {
+		t.Fatalf("tool deltas = %d, want %d", stats.ToolDeltas, scenario.ExpectedChunkCount)
+	}
+	if stats.Draws < 145 || stats.Draws > 155 {
+		t.Fatalf("draws = %d, want roughly a 33ms cadence over 5s", stats.Draws)
+	}
+	if got := strings.TrimSpace(page.bashOutput.Output); got == "" || !strings.Contains(got, "lorem-bash:500") {
+		t.Fatalf("expected final lorem bash output, got length=%d", len(got))
+	}
+	if !page.bashOutputAvailable() {
+		t.Fatal("expected inline bash output to be available during replay")
+	}
+}
+
+func BenchmarkChatPageBashLoremIpsumStreamApplyOnly(b *testing.B) {
+	scenario := bashLoremIpsumStreamingScenario()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page := newStreamSpikeChatPage()
+		for idx, event := range scenario.Events {
+			offset := time.Duration(0)
+			if idx < len(scenario.EventOffsets) {
+				offset = scenario.EventOffsets[idx]
+			}
+			page.applyRunStreamEvent(event, int64(offset/time.Millisecond))
+		}
+	}
+}
+
+func BenchmarkChatPageBashLoremIpsumStreamDrawCadenceCollapsed(b *testing.B) {
+	scenario := bashLoremIpsumStreamingScenario()
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		b.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(132, 42)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page := newStreamSpikeChatPage()
+		stats := replayBashLoremStreamingScenario(page, screen, scenario, false, false)
+		if stats.ToolDeltas != scenario.ExpectedChunkCount {
+			b.Fatalf("tool deltas = %d, want %d", stats.ToolDeltas, scenario.ExpectedChunkCount)
+		}
+	}
+}
+
+func BenchmarkChatPageBashLoremIpsumStreamDrawCadenceExpanded(b *testing.B) {
+	scenario := bashLoremIpsumStreamingScenario()
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		b.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(132, 42)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page := newStreamSpikeChatPage()
+		stats := replayBashLoremStreamingScenario(page, screen, scenario, false, true)
+		if stats.ToolDeltas != scenario.ExpectedChunkCount {
+			b.Fatalf("tool deltas = %d, want %d", stats.ToolDeltas, scenario.ExpectedChunkCount)
+		}
+	}
+}
+
+func BenchmarkChatPageBashLoremIpsumStreamDrawEveryDeltaExpanded(b *testing.B) {
+	scenario := bashLoremIpsumStreamingScenario()
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		b.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(132, 42)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page := newStreamSpikeChatPage()
+		stats := replayBashLoremStreamingScenario(page, screen, scenario, true, true)
+		if stats.ToolDeltas != scenario.ExpectedChunkCount {
+			b.Fatalf("tool deltas = %d, want %d", stats.ToolDeltas, scenario.ExpectedChunkCount)
+		}
+	}
+}
+
+func BenchmarkChatPageBashLoremIpsumViewportWrap(b *testing.B) {
+	scenario := bashLoremIpsumStreamingScenario()
+	page := newStreamSpikeChatPage()
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		b.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(132, 42)
+	replayBashLoremStreamingScenario(page, screen, scenario, false, true)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if lines := page.bashOutputViewportLines(100, 12); len(lines) == 0 {
+			b.Fatal("expected viewport lines")
+		}
+	}
+}
+
+func parseToolJSONBeforeFastGuardForBenchmark(raw string) map[string]any {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil
+	}
+	return payload
+}
+
+func BenchmarkParseToolJSONBeforeFastGuardOnBashLoremOutput(b *testing.B) {
+	scenario := bashLoremIpsumStreamingScenario()
+	samples := make([]string, 0, scenario.ExpectedChunkCount)
+	for _, event := range scenario.Events {
+		if event.Type == "tool.delta" {
+			samples = append(samples, event.Output)
+		}
+	}
+	if len(samples) == 0 {
+		b.Fatal("expected bash lorem output samples")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, sample := range samples {
+			if payload := parseToolJSONBeforeFastGuardForBenchmark(sample); payload != nil {
+				b.Fatalf("expected non-JSON bash output, got %#v", payload)
+			}
+		}
+	}
+}
+
+func BenchmarkParseToolJSONAfterFastGuardOnBashLoremOutput(b *testing.B) {
+	scenario := bashLoremIpsumStreamingScenario()
+	samples := make([]string, 0, scenario.ExpectedChunkCount)
+	for _, event := range scenario.Events {
+		if event.Type == "tool.delta" {
+			samples = append(samples, event.Output)
+		}
+	}
+	if len(samples) == 0 {
+		b.Fatal("expected bash lorem output samples")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, sample := range samples {
+			if payload := parseToolJSON(sample); payload != nil {
+				b.Fatalf("expected non-JSON bash output, got %#v", payload)
+			}
+		}
+	}
+}
+
+func BenchmarkParseToolJSONAfterFastGuardOnValidToolJSON(b *testing.B) {
+	samples := []string{
+		`{"command":"go test ./internal/ui","exit_code":0,"output":"ok"}`,
+		` {"path":"internal/ui/chat_page.go","line_start":1,"max_lines":120} `,
+		`{"items":[{"name":"first"},{"name":"second"}]}`,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, sample := range samples {
+			_ = parseToolJSON(sample)
 		}
 	}
 }

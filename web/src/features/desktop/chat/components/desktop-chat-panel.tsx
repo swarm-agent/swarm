@@ -10,6 +10,7 @@ import {
   draftModelQueryOptions,
   ensureSessionRuntimeData,
   modelOptionsQueryOptions,
+  sessionMessagesQueryKey,
   sessionMessagesQueryOptions,
   sessionPreferenceQueryKey,
   sessionPreferenceQueryOptions,
@@ -64,6 +65,7 @@ import {
   saveDesktopChatRouteForWorkspace,
 } from '../services/chat-routing'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from '../services/slash-commands'
+import { appendPendingUserMessage, createPendingUserMessage, removePendingUserMessage } from '../services/message-cache'
 import type { SettingsTabID } from '../../settings/types/settings-tabs'
 import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
 
@@ -175,12 +177,6 @@ interface DesktopChatPanelProps {
   onStartNewSession: (workspacePath: string, workspaceName: string) => void
 }
 
-interface PendingUserMessage {
-  sessionId: string
-  content: string
-  baselineSeq: number
-}
-
 type CommitMode = 'agent' | 'manual'
 
 interface CommitModalState {
@@ -239,21 +235,10 @@ function nearBottom(element: HTMLDivElement): boolean {
   return element.scrollHeight - element.scrollTop - element.clientHeight < 48
 }
 
-function buildPendingUserMessage(sessionId: string, prompt: string, baselineSeq: number): ChatMessageRecord {
-  return {
-    id: `pending-user:${sessionId}:${baselineSeq + 1}`,
-    sessionId,
-    globalSeq: baselineSeq + 1,
-    role: 'user',
-    content: prompt,
-    createdAt: Date.now(),
-  }
-}
-
 type RenderItem =
   | { type: 'message'; message: ChatMessageRecord }
   | { type: 'live-tool'; toolMessage: NonNullable<ChatMessageRecord['toolMessage']> }
-  | { type: 'live-assistant'; content: string }
+  | { type: 'live-assistant'; id: string; content: string }
 
 function renderItemKey(item: RenderItem | undefined, index: number): string {
   if (!item) {
@@ -265,7 +250,7 @@ function renderItemKey(item: RenderItem | undefined, index: number): string {
     case 'live-tool':
       return `live-tool:${item.toolMessage.callId || item.toolMessage.tool || 'active'}`
     case 'live-assistant':
-      return 'live-assistant'
+      return item.id
     default:
       return `render-item:${index}`
   }
@@ -485,25 +470,15 @@ function buildFastPreference(
   }
 }
 
-type SessionMode = 'plan' | 'auto' | 'read' | 'readwrite'
+type SessionMode = 'plan' | 'auto'
 
 function normalizeSessionMode(mode: string): SessionMode {
-  switch (mode.trim().toLowerCase()) {
-    case 'auto':
-    case 'read':
-    case 'readwrite':
-      return mode.trim().toLowerCase() as Exclude<SessionMode, 'plan'>
-    default:
-      return 'plan'
-  }
+  return mode.trim().toLowerCase() === 'auto' ? 'auto' : 'plan'
 }
 
-function sessionModeFromAgent(profile: AgentStateRecord['profiles'][number] | null): SessionMode {
-  if (!profile) {
-    return 'plan'
-  }
-  if (profile.exitPlanModeEnabled) {
-    return 'plan'
+function executionSettingLabel(profile: AgentStateRecord['profiles'][number] | null): string {
+  if (!profile || profile.exitPlanModeEnabled) {
+    return ''
   }
   return profile.executionSetting === 'readwrite' ? 'readwrite' : 'read'
 }
@@ -516,7 +491,7 @@ function desiredSessionModeForAgent(
     return normalizeSessionMode(currentMode)
   }
   if (!profile.exitPlanModeEnabled) {
-    return sessionModeFromAgent(profile)
+    return 'auto'
   }
   return normalizeSessionMode(currentMode) === 'auto' ? 'auto' : 'plan'
 }
@@ -557,7 +532,7 @@ function formatContextUsageTooltip(usage: DesktopSessionRecord['usage'] | null):
 
 function buildCommitAgentInstructions(userInstructions: string): string {
   const instructions = [
-    'You are the background commit agent handling /commit from the web desktop.',
+    'You are Memory handling /commit from the web desktop as a background durable-artifact task.',
     'Inspect git status and diffs in the scoped current working directory before making changes.',
     'Understand the changed work, stage the appropriate files, and create one commit with a concise, accurate message.',
     'Use git add and git commit only when needed and only inside the granted workspace scope.',
@@ -634,7 +609,7 @@ function commitStatusLabel(state: CommitModalState): string {
     case 'starting':
       return 'Starting save…'
     case 'running':
-      return state.mode === 'manual' ? 'Manual commit running…' : 'Commit agent running…'
+      return state.mode === 'manual' ? 'Manual commit running…' : 'Memory commit running…'
     case 'success':
       return 'Save completed. You can save again.'
     case 'error':
@@ -675,7 +650,6 @@ export function DesktopChatPanel({
   const [permissionError, setPermissionError] = useState<string | null>(null)
   const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(() => new Set())
   const [lastSavedRulePreview, setLastSavedRulePreview] = useState<string | null>(null)
-  const [pendingUserMessage, setPendingUserMessage] = useState<PendingUserMessage | null>(null)
   const [commitModal, setCommitModal] = useState<CommitModalState>(EMPTY_COMMIT_MODAL_STATE)
   const [planModal, setPlanModal] = useState<PlanModalState>(EMPTY_PLAN_MODAL_STATE)
   const [timerNow, setTimerNow] = useState(() => Date.now())
@@ -799,16 +773,9 @@ export function DesktopChatPanel({
   }, [slashPalette.matches, slashSelectionIndex])
 
   const messages = useMemo(() => dedupeMessages(messagesQuery.data ?? []), [messagesQuery.data])
-  const displayedMessages = useMemo(() => {
-    if (!pendingUserMessage || pendingUserMessage.sessionId !== sessionId) {
-      return messages
-    }
-    if (messages.some((message) => message.role === 'user' && message.content.trim() === pendingUserMessage.content.trim() && message.globalSeq >= pendingUserMessage.baselineSeq + 1)) {
-      return messages
-    }
-    return dedupeMessages([...messages, buildPendingUserMessage(pendingUserMessage.sessionId, pendingUserMessage.content, pendingUserMessage.baselineSeq)])
-  }, [messages, pendingUserMessage, sessionId])
+  const displayedMessages = messages
   const liveAssistantDraft = liveSession?.live.assistantDraft ?? ''
+  const retainedAssistantSegments = liveSession?.live.retainedAssistantSegments ?? []
   const liveToolMessage = useMemo(() => buildLiveToolMessage(liveSession), [liveSession])
   const shouldRenderLiveToolMessage = useMemo(
     () => liveToolMessage !== null && !hasCanonicalLiveToolReplacement(displayedMessages, liveToolMessage),
@@ -841,14 +808,19 @@ export function DesktopChatPanel({
   const agentTodoBadgeLabel = formatAgentTodoBadge(agentTodoSummary)
   const renderItems = useMemo(() => {
     const items: RenderItem[] = displayedMessages.map((message) => ({ type: 'message', message }))
+    for (const segment of retainedAssistantSegments) {
+      if (segment.content.trim() !== '') {
+        items.push({ type: 'live-assistant', id: segment.id, content: segment.content })
+      }
+    }
     if (shouldRenderLiveToolMessage && liveToolMessage) {
       items.push({ type: 'live-tool', toolMessage: liveToolMessage })
     }
     if (shouldRenderLiveAssistantDraft) {
-      items.push({ type: 'live-assistant', content: liveAssistantDraft })
+      items.push({ type: 'live-assistant', id: 'live-assistant:draft', content: liveAssistantDraft })
     }
     return items
-  }, [displayedMessages, liveAssistantDraft, liveToolMessage, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
+  }, [displayedMessages, liveAssistantDraft, liveToolMessage, retainedAssistantSegments, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
   const renderMeasurementKey = useMemo(
     () => renderItems.map((item) => {
       switch (item.type) {
@@ -873,8 +845,8 @@ export function DesktopChatPanel({
   })
   const virtualItems = rowVirtualizer.getVirtualItems()
 
-  const primaryAgents = useMemo(
-    () => agentState.profiles.filter((profile) => profile.enabled && profile.mode === 'primary'),
+  const selectableAgents = useMemo(
+    () => agentState.profiles.filter((profile) => profile.enabled),
     [agentState.profiles],
   )
   const mentionSubagents = useMemo(
@@ -907,12 +879,12 @@ export function DesktopChatPanel({
     [agentState.activePrimary, liveSession, session],
   )
   const selectedPrimaryAgentProfile = useMemo(
-    () => primaryAgents.find((profile) => profile.name === selectedPrimaryAgent) ?? null,
-    [primaryAgents, selectedPrimaryAgent],
+    () => selectableAgents.find((profile) => profile.name === selectedPrimaryAgent) ?? null,
+    [selectableAgents, selectedPrimaryAgent],
   )
   const currentPrimaryAgentProfile = useMemo(
-    () => primaryAgents.find((profile) => profile.name === agentState.activePrimary.trim()) ?? null,
-    [agentState.activePrimary, primaryAgents],
+    () => selectableAgents.find((profile) => profile.name === agentState.activePrimary.trim()) ?? null,
+    [agentState.activePrimary, selectableAgents],
   )
   const activeModeSourceProfile = selectedPrimaryAgentProfile ?? currentPrimaryAgentProfile
   const agentDerivedMode = useMemo(
@@ -925,6 +897,7 @@ export function DesktopChatPanel({
   const effectiveSessionMode = selectedPrimaryAgentProfile?.exitPlanModeEnabled
     ? sessionMode
     : agentDerivedMode
+  const selectedExecutionSettingLabel = executionSettingLabel(selectedPrimaryAgentProfile)
 
   const resolvedModelOptions = useMemo(() => modelOptions, [modelOptions])
 
@@ -1012,37 +985,37 @@ export function DesktopChatPanel({
   }, [scrollToLatest])
 
   useEffect(() => {
-    if (primaryAgents.length === 0) {
+    if (selectableAgents.length === 0) {
       if (selectedPrimaryAgent !== 'swarm') {
         setSelectedPrimaryAgent('swarm')
       }
       return
     }
     const effectiveAgent = resolveSessionEffectiveAgentName(liveSession ?? session, agentState.activePrimary)
-    if (primaryAgents.some((profile) => profile.name === effectiveAgent)) {
+    if (selectableAgents.some((profile) => profile.name === effectiveAgent)) {
       if (effectiveAgent !== selectedPrimaryAgent) {
         setSelectedPrimaryAgent(effectiveAgent)
       }
       return
     }
-    if (primaryAgents.some((profile) => profile.name === selectedPrimaryAgent)) {
+    if (selectableAgents.some((profile) => profile.name === selectedPrimaryAgent)) {
       return
     }
-    const nextSelectedAgent = agentState.activePrimary || primaryAgents[0].name || 'swarm'
+    const nextSelectedAgent = agentState.activePrimary || selectableAgents[0].name || 'swarm'
     if (nextSelectedAgent !== selectedPrimaryAgent) {
       setSelectedPrimaryAgent(nextSelectedAgent)
     }
-  }, [agentState.activePrimary, liveSession, primaryAgents, selectedPrimaryAgent, session])
+  }, [agentState.activePrimary, liveSession, selectableAgents, selectedPrimaryAgent, session])
 
   useEffect(() => {
     if (!sessionId) {
       return
     }
-    const nextAgent = primaryAgents.some((profile) => profile.name === resolvedSessionAgent)
+    const nextAgent = selectableAgents.some((profile) => profile.name === resolvedSessionAgent)
       ? resolvedSessionAgent
-      : agentState.activePrimary.trim() || primaryAgents[0]?.name || 'swarm'
+      : agentState.activePrimary.trim() || selectableAgents[0]?.name || 'swarm'
     setCurrentSessionAgent(nextAgent)
-  }, [agentState.activePrimary, primaryAgents, resolvedSessionAgent, sessionId])
+  }, [agentState.activePrimary, selectableAgents, resolvedSessionAgent, sessionId])
 
   useEffect(() => {
     if (sessionId) {
@@ -1144,6 +1117,10 @@ export function DesktopChatPanel({
       lastActivatedAgentRef.current = ''
       return
     }
+    if (selectedPrimaryAgentProfile.mode !== 'primary') {
+      lastActivatedAgentRef.current = ''
+      return
+    }
     const currentPrimary = agentState.activePrimary.trim()
     const nextSelectedAgent = selectedPrimaryAgentProfile.name.trim()
     if (nextSelectedAgent === '' || currentPrimary === '' || currentPrimary === nextSelectedAgent) {
@@ -1208,15 +1185,6 @@ export function DesktopChatPanel({
     }
     upsertSession(session)
   }, [session, storedSession, upsertSession])
-
-  useEffect(() => {
-    if (!pendingUserMessage || pendingUserMessage.sessionId !== sessionId) {
-      return
-    }
-    if (messages.some((message) => message.role === 'user' && message.content.trim() === pendingUserMessage.content.trim() && message.globalSeq >= pendingUserMessage.baselineSeq + 1)) {
-      setPendingUserMessage(null)
-    }
-  }, [messages, pendingUserMessage, sessionId])
 
   useEffect(() => {
     if (!messagesQuery.error) {
@@ -1565,8 +1533,9 @@ export function DesktopChatPanel({
     shouldStickToBottomRef.current = true
     setPanelError(null)
 
+    let targetSession = session
+    let pendingMessageId = ''
     try {
-      let targetSession = session
       if (!canSendWithSelectedPreference) {
         throw new Error('Select an authenticated model and thinking level before sending')
       }
@@ -1590,11 +1559,14 @@ export function DesktopChatPanel({
         onSessionCreated(targetSession)
       }
 
-      setPendingUserMessage({
-        sessionId: targetSession.id,
-        content: prompt,
-        baselineSeq: messages[messages.length - 1]?.globalSeq ?? 0,
-      })
+      const cachedTargetMessages = queryClient.getQueryData<ChatMessageRecord[]>(sessionMessagesQueryKey(targetSession.id)) ?? []
+      const pendingMessage = createPendingUserMessage(
+        targetSession.id,
+        prompt,
+        cachedTargetMessages[cachedTargetMessages.length - 1]?.globalSeq ?? 0,
+      )
+      pendingMessageId = pendingMessage.id
+      queryClient.setQueryData(sessionMessagesQueryKey(targetSession.id), (current: ChatMessageRecord[] | undefined) => appendPendingUserMessage(current, pendingMessage))
 
       await submitPrompt({
         sessionId: targetSession.id,
@@ -1607,9 +1579,14 @@ export function DesktopChatPanel({
       })
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to send prompt')
-      setPendingUserMessage(null)
+      if (targetSession?.id) {
+        if (pendingMessageId) {
+          queryClient.setQueryData(sessionMessagesQueryKey(targetSession.id), (current: ChatMessageRecord[] | undefined) => removePendingUserMessage(current, pendingMessageId))
+        }
+        void queryClient.invalidateQueries({ queryKey: sessionMessagesQueryKey(targetSession.id) })
+      }
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, composer, currentSessionAgent, mentionSubagents, messages, onSessionCreated, queryClient, session, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, composer, currentSessionAgent, mentionSubagents, onSessionCreated, queryClient, session, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {
@@ -1755,12 +1732,12 @@ export function DesktopChatPanel({
             parent_session_id: session.id,
             parent_title: session.title,
             lineage_kind: 'background_agent',
-            lineage_label: '@commit',
+            lineage_label: '@memory',
             launch_source: 'commit',
             commit_instructions: instructions,
             execution_context: executionContext,
-            requested_background_agent: 'commit',
-            background_agent: 'commit',
+            requested_background_agent: 'memory',
+            background_agent: 'memory',
           },
           preference: activePreferenceRecord.preference,
           route: activeChatRoute,
@@ -1770,7 +1747,7 @@ export function DesktopChatPanel({
         prompt = 'Review the git diff in scope, prepare the right staged set, and create the commit now.'
         runInstructions = buildCommitAgentInstructions(instructions)
         targetKind = 'background'
-        targetName = 'commit'
+        targetName = 'memory'
       } else {
         prompt = instructions || 'Review the git diff in scope, stage the appropriate files, and create the commit now.'
         runInstructions = instructions
@@ -2298,15 +2275,15 @@ export function DesktopChatPanel({
                     />
                   ) : selectedPrimaryAgentProfile ? (
                     <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
-                      <span className="text-[var(--app-text-subtle)]">Mode:</span>
-                      <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{effectiveSessionMode}</span>
+                      <span className="text-[var(--app-text-subtle)]">Execution:</span>
+                      <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{selectedExecutionSettingLabel}</span>
                     </span>
                   ) : null}
 
                   <AgentPicker
                     currentAgent={currentSessionAgent}
                     selectedPrimaryAgent={selectedPrimaryAgent}
-                    agents={primaryAgents}
+                    agents={selectableAgents}
                     onSelect={(value) => {
                       void handleAgentSelect(value)
                     }}
@@ -2455,7 +2432,7 @@ export function DesktopChatPanel({
               <div className="min-w-0 flex-1">
                 <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Save changes</h2>
                 <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                  Commit from the desktop header with either the saved commit agent or a manual git commit flow.
+                  Commit from the desktop header with Memory or a manual git commit flow.
                 </p>
               </div>
               <ModalCloseButton onClick={closeCommitModal} aria-label="Close save dialog" />
@@ -2469,8 +2446,8 @@ export function DesktopChatPanel({
                     : 'rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-left hover:border-[var(--app-border-accent)]'}
                   onClick={() => handleCommitModeChange('agent')}
                 >
-                  <div className="text-sm font-semibold text-[var(--app-text)]">Commit agent</div>
-                  <div className="mt-1 text-xs text-[var(--app-text-muted)]">Use the saved background commit agent contract.</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">Memory agent</div>
+                  <div className="mt-1 text-xs text-[var(--app-text-muted)]">Use Memory’s saved commit-capable tool contract.</div>
                 </button>
                 <button
                   type="button"

@@ -486,6 +486,14 @@ func FindGoBin(root string) (string, error) {
 }
 
 func BuildToolBinaries(root string, skip map[string]bool) error {
+	return buildToolBinaries(root, skip, false)
+}
+
+func ForceBuildToolBinaries(root string, skip map[string]bool) error {
+	return buildToolBinaries(root, skip, true)
+}
+
+func buildToolBinaries(root string, skip map[string]bool, force bool) error {
 	goBin, err := FindGoBin(root)
 	if err != nil {
 		return err
@@ -514,12 +522,14 @@ func BuildToolBinaries(root string, skip map[string]bool) error {
 			continue
 		}
 		outPath := filepath.Join(toolDir, command.Name)
-		needsBuild, err := binaryNeedsRebuild(outPath, toolBuildDeps(root, command.Name)...)
-		if err != nil {
-			return err
-		}
-		if !needsBuild {
-			continue
+		if !force {
+			needsBuild, err := binaryNeedsRebuild(outPath, toolBuildDeps(root, command.Name)...)
+			if err != nil {
+				return err
+			}
+			if !needsBuild {
+				continue
+			}
 		}
 		workDir := root
 		if strings.TrimSpace(command.WorkDir) != "" {
@@ -562,6 +572,9 @@ func BuildSwarmdBinaries(profile Profile) error {
 		return err
 	}
 	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarmctl"), "./cmd/swarmctl"); err != nil {
+		return err
+	}
+	if err := runGoBuild(profile.Root, swarmdRoot, goBin, filepath.Join(profile.BinDir, "swarm-fff-search"), "./cmd/swarm-fff-search"); err != nil {
 		return err
 	}
 	if err := copyFile(filepath.Join(swarmdRoot, "internal", "fff", "lib", fffLibraryPlatformDir(), "libfff_c.so"), filepath.Join(profile.LibDir, "libfff_c.so")); err != nil {
@@ -1077,9 +1090,18 @@ func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []st
 		return "", nil, err
 	}
 	backendPath := filepath.Join(profile.BinDir, "swarmd")
+	helperPath := filepath.Join(profile.BinDir, "swarm-fff-search")
 	if !isExecutable(backendPath) {
 		if !opts.BuildIfMissing {
 			return "", nil, missingInstalledBinaryError("swarmd", backendPath)
+		}
+		if err := BuildSwarmdBinaries(profile); err != nil {
+			return "", nil, err
+		}
+	}
+	if !isExecutable(helperPath) {
+		if !opts.BuildIfMissing {
+			return "", nil, missingInstalledBinaryError("swarm-fff-search", helperPath)
 		}
 		if err := BuildSwarmdBinaries(profile); err != nil {
 			return "", nil, err
@@ -1264,46 +1286,57 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	if strings.TrimSpace(profile.Root) == "" {
 		return errors.New("update dev requires a source checkout")
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding local dev checkout.", "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Stopping Swarm backend for dev rebuild.", "")
 	fmt.Fprintln(os.Stdout, "\nRebuilding local dev checkout...")
 	fmt.Fprintln(os.Stdout, "Swarm is shut down before rebuilding and restarting.")
 	if err := StopBackend(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding swarmd binaries.", "")
 	if err := BuildSwarmdBinaries(profile); err != nil {
 		return err
 	}
-	if err := BuildToolBinaries(profile.Root, map[string]bool{"rebuild": true}); err != nil {
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding launcher/tool binaries.", "")
+	if err := ForceBuildToolBinaries(profile.Root, map[string]bool{"rebuild": true}); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding Swarm TUI.", "")
 	if err := BuildSwarmTUI(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Checking desktop web build prerequisites.", "")
 	if err := EnsureWebPrereqs(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Building desktop web assets.", "")
 	if err := BuildWebAssets(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing desktop web assets.", "")
 	if err := InstallDesktopAssets(profile); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Staging dev container image binaries.", "")
 	if err := devmode.SyncStagedContainerBinaries(profile.Root, profile.BinDir); err != nil {
 		return fmt.Errorf("stage dev container image binaries: %w", err)
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Preparing dev container image fingerprint.", "")
 	fingerprint, err := devmode.ContainerImageFingerprint(profile.Root)
 	if err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding/syncing dev container image.", "")
 	if err := SyncDevContainerImagesWithFingerprint(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true, fingerprint); err != nil {
 		return err
 	}
 	if err := writeLocalContainerUpdateRebuildStatus(profile, "dev", "", devmode.DefaultContainerImageRef, fingerprint); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing Swarm launchers.", "")
 	if _, err := InstallLaunchers(profile.Root); err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Restarting Swarm backend.", "")
 	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return err
 	}

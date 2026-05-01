@@ -62,6 +62,11 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/replicate", s.handleSwarmReplicate)
 }
 
+func (s *Server) registerFlowRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/flows", s.handleFlows)
+	mux.HandleFunc("/v1/flows/", s.handleFlows)
+}
+
 func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/container/runtime", s.handleDeployContainerRuntime)
 	mux.HandleFunc("/v1/deploy/container", s.handleDeployContainers)
@@ -152,12 +157,15 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerPeerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/swarm/peer/flows/apply", s.handlePeerFlowApply)
+	mux.HandleFunc("/v1/swarm/peer/flows/report", s.handlePeerFlowReport)
 	mux.HandleFunc("/v1/swarm/peer/sessions/open", s.handlePeerSessionOpen)
 	mux.HandleFunc("/v1/swarm/peer/sessions/append_message", s.handlePeerSessionAppendMessage)
 	mux.HandleFunc("/v1/swarm/peer/sessions/mode", s.handlePeerSessionMode)
 	mux.HandleFunc("/v1/swarm/peer/sessions/title", s.handlePeerSessionTitle)
 	mux.HandleFunc("/v1/swarm/peer/sessions/metadata", s.handlePeerSessionMetadata)
 	mux.HandleFunc("/v1/swarm/peer/sessions/lifecycle", s.handlePeerSessionLifecycle)
+	mux.HandleFunc("/v1/swarm/peer/sessions/event", s.handlePeerSessionEvent)
 	mux.HandleFunc("/v1/swarm/peer/permissions/create", s.handlePeerPermissionCreate)
 	mux.HandleFunc("/v1/swarm/peer/permissions/wait", s.handlePeerPermissionWait)
 	mux.HandleFunc("/v1/swarm/peer/permissions/cancel_run", s.handlePeerPermissionCancelRun)
@@ -175,12 +183,15 @@ func (s *Server) registerLocalTransportRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/container/sync/credentials", s.handleDeployContainerSyncCredentials)
 	mux.HandleFunc("/v1/deploy/container/sync/agents", s.handleDeployContainerSyncAgents)
 	mux.HandleFunc("/v1/deploy/container/workspaces/bootstrap", s.handleDeployContainerWorkspaceBootstrap)
+	mux.HandleFunc("/v1/swarm/peer/flows/apply", s.handlePeerFlowApply)
+	mux.HandleFunc("/v1/swarm/peer/flows/report", s.handlePeerFlowReport)
 	mux.HandleFunc("/v1/swarm/peer/sessions/open", s.handlePeerSessionOpen)
 	mux.HandleFunc("/v1/swarm/peer/sessions/append_message", s.handlePeerSessionAppendMessage)
 	mux.HandleFunc("/v1/swarm/peer/sessions/mode", s.handlePeerSessionMode)
 	mux.HandleFunc("/v1/swarm/peer/sessions/title", s.handlePeerSessionTitle)
 	mux.HandleFunc("/v1/swarm/peer/sessions/metadata", s.handlePeerSessionMetadata)
 	mux.HandleFunc("/v1/swarm/peer/sessions/lifecycle", s.handlePeerSessionLifecycle)
+	mux.HandleFunc("/v1/swarm/peer/sessions/event", s.handlePeerSessionEvent)
 	mux.HandleFunc("/v1/swarm/peer/permissions/create", s.handlePeerPermissionCreate)
 	mux.HandleFunc("/v1/swarm/peer/permissions/wait", s.handlePeerPermissionWait)
 	mux.HandleFunc("/v1/swarm/peer/permissions/cancel_run", s.handlePeerPermissionCancelRun)

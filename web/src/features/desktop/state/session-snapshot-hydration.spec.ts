@@ -39,6 +39,7 @@ function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSess
       error: null,
       seq: 0,
       assistantDraft: '',
+      retainedAssistantSegments: [],
       reasoningSummary: '',
       reasoningText: '',
       reasoningState: 'idle',
@@ -84,6 +85,22 @@ test('does not hydrate again for a full session.created snapshot', () => {
   })
 
   assert.equal(sessionRequiresSnapshotHydration(session, 'session.created'), false)
+})
+
+test('does not hydrate again for a full mirrored session.updated snapshot', () => {
+  const session = makeSession({
+    title: 'Remote Flow',
+    workspacePath: '/host/workspace',
+    workspaceName: 'workspace',
+    metadata: {
+      source: 'flow',
+      swarm_target_name: 'pc child',
+    },
+    updatedAt: 2,
+    createdAt: 1,
+  })
+
+  assert.equal(sessionRequiresSnapshotHydration(session, 'session.updated'), false)
 })
 
 test('keeps hydrating after title updates when workspace identity is still missing', () => {

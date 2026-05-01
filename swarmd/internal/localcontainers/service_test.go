@@ -141,12 +141,3 @@ func TestFetchProductionImageMetadataRejectsInvalidSize(t *testing.T) {
 		t.Fatalf("FetchProductionImageMetadata() error = %v, want invalid image_size_bytes", err)
 	}
 }
-
-func TestProductionImageMetadataURLCanUseHarnessOverride(t *testing.T) {
-	t.Setenv(productionMetadataURLTemplateEnv, "http://127.0.0.1:9999/releases/%s/container-image-info.txt")
-	got := productionImageMetadataURL("v9.8.7")
-	want := "http://127.0.0.1:9999/releases/v9.8.7/container-image-info.txt"
-	if got != want {
-		t.Fatalf("productionImageMetadataURL() = %q, want %q", got, want)
-	}
-}

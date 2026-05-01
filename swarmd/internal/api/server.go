@@ -92,6 +92,7 @@ type Server struct {
 	update                      *update.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	sessionRoutes               *pebblestore.SessionRouteStore
+	flows                       *pebblestore.FlowStore
 	mode                        string
 	dataDir                     string
 	startupConfigPath           string
@@ -179,6 +180,7 @@ type deployContainerService interface {
 type remoteDeployService interface {
 	List(ctx context.Context) ([]remotedeploy.Session, error)
 	ListCached(ctx context.Context) ([]remotedeploy.Session, error)
+	Get(ctx context.Context, sessionID string, refresh bool) (remotedeploy.Session, error)
 	Create(ctx context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error)
 	Delete(ctx context.Context, input remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error)
 	Start(ctx context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error)
@@ -472,6 +474,7 @@ func (s *Server) apiMux() *http.ServeMux {
 	s.registerAuthVaultRoutes(mux)
 	s.registerOnboardingRoutes(mux)
 	s.registerSwarmRoutes(mux)
+	s.registerFlowRoutes(mux)
 	s.registerDeployRoutes(mux)
 	s.registerAgentRoutes(mux)
 	s.registerProviderRoutes(mux)
@@ -2363,9 +2366,21 @@ func mergeSessionCreateMetadata(base, extra map[string]any) map[string]any {
 		merged[key] = value
 	}
 	for key, value := range base {
+		if _, exists := merged[key]; exists && overridableSessionCreateMetadataKey(key) {
+			continue
+		}
 		merged[key] = value
 	}
 	return merged
+}
+
+func overridableSessionCreateMetadataKey(key string) bool {
+	switch strings.TrimSpace(key) {
+	case "title_pending":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
@@ -3739,6 +3754,22 @@ func decodeJSON(r *http.Request, out any) error {
 	return decodeJSONObject(decoder, out)
 }
 
+func decodeLenientJSON(r *http.Request, out any) error {
+	if r.Body == nil {
+		return errors.New("missing request body")
+	}
+	defer r.Body.Close()
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("request body must contain one JSON object")
+	}
+	return nil
+}
+
 func decodeJSONBytes(body []byte, out any) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	return decodeJSONObject(decoder, out)
@@ -3773,6 +3804,13 @@ func decodeBase64Audio(raw string) ([]byte, error) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	header := w.Header()
+	if header.Get("Content-Type") == "" {
+		header.Set("Content-Type", "application/json; charset=utf-8")
+	}
+	if header.Get("Cache-Control") == "" {
+		header.Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
 }

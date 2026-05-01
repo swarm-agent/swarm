@@ -6,6 +6,7 @@ import {
   parseTaskLaunchPermission,
   permissionKind,
   permissionRequiresApproval,
+  buildGenericPermissionMarkdown,
 } from './permission-payload'
 
 function makePermission(overrides: Partial<DesktopPermissionRecord> = {}): DesktopPermissionRecord {
@@ -161,6 +162,31 @@ function testPlanUpdateKindAndPayloadParsing(): void {
   assert(Object.keys(payload.approvedArguments).length === 0, 'expected no approved arguments by default')
 }
 
+function testGenericBashPermissionFormatsCommandAsCodeBlock(): void {
+  const command = [
+    "perl -0pi -e 's/advertiseport = \\$\\{backendBasePort \\+ 1\\}/advertiseport = ${backendBasePort + 1}/' /tmp/swarm-dev-update-playwright-e2e-v2.mjs",
+    'inspect line',
+    '',
+    "grep -n 'advertise_port' /tmp/swarm-dev-update-playwright-e2e-v2.mjs",
+    "./scripts/swarm-harness-vm.sh run --no-sync -- bash -lc 'cd ~/swarm-go; cat > /tmp/swarm-dev-update-playwright-e2e-v2.mjs' < /tmp/swarm-dev-update-playwright-e2e-v2.mjs",
+    "./scripts/swarm-harness-vm.sh run --no-sync -- bash -lc 'cd ~/swarm-go; node /tmp/swarm-dev-update-playwright-e2e-v2.mjs'",
+  ].join('\n')
+  const permission = makePermission({
+    toolName: 'bash',
+    requirement: 'bash',
+    mode: 'auto',
+    toolArguments: JSON.stringify({
+      command: `\`${command}\``,
+    }),
+  })
+
+  const body = buildGenericPermissionMarkdown(permission)
+  assert(body.includes('Tool: bash · Requirement: bash · Mode: auto'), 'expected permission metadata')
+  assert(body.includes('**Command**\n\n```bash\n'), 'expected bash code fence')
+  assert(body.includes(command), 'expected unwrapped command body')
+  assert(!body.includes(`\`${command}\``), 'expected wrapping backticks to be removed')
+}
+
 function testManageTodosBatchParsing(): void {
   const permission = makePermission({
     toolName: 'manage_todos',
@@ -196,6 +222,7 @@ function main(): void {
   testTaskLaunchPayloadParsing()
   testManageTodosKindAndPayloadParsing()
   testPlanUpdateKindAndPayloadParsing()
+  testGenericBashPermissionFormatsCommandAsCodeBlock()
   testManageTodosBatchParsing()
   console.log('permission-payload tests passed')
 }

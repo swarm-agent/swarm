@@ -222,6 +222,58 @@ func TestTargetedBackgroundFullBashToolContractAPIEndToEnd(t *testing.T) {
 	}
 }
 
+func TestDefaultMemoryAgentOwnsCommitToolContract(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "memory-commit-defaults.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	modelSvc := model.NewService(pebblestore.NewModelStore(store), eventLog, nil)
+	if _, _, err := modelSvc.SetGlobalPreference("codex", "gpt-5-codex", "high"); err != nil {
+		t.Fatalf("set global preference: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
+	if err := agentSvc.EnsureDefaults(); err != nil {
+		t.Fatalf("ensure default agents: %v", err)
+	}
+	providers := registry.New()
+	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, agentSvc, nil, eventLog)
+	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
+	handler := server.Handler()
+
+	if _, ok, err := pebblestore.NewAgentStore(store).GetProfile("commit"); err != nil {
+		t.Fatalf("get commit profile: %v", err)
+	} else if ok {
+		t.Fatalf("built-in commit profile should not be created")
+	}
+
+	memory := getAgentV2(t, handler, "memory")
+	if memory.Mode != "subagent" {
+		t.Fatalf("memory mode = %q, want subagent", memory.Mode)
+	}
+	if memory.ToolContract == nil {
+		t.Fatalf("memory missing tool contract")
+	}
+	resolved := getResolvedToolContractV2(t, handler, "memory")
+	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
+		if !requestResolvedToolEnabled(resolved, name) {
+			t.Fatalf("memory resolved tool %s disabled: %+v", name, resolved.Resolved.Tools[name])
+		}
+	}
+	for _, name := range []string{"websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "bash", "write", "edit", "task", "exit_plan_mode"} {
+		if requestResolvedToolEnabled(resolved, name) {
+			t.Fatalf("memory resolved tool %s enabled, want disabled", name)
+		}
+	}
+}
+
 func TestAgentAndCustomToolsManageableViaV2API(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-custom-tools-v2-api.pebble"))
 	if err != nil {
@@ -513,6 +565,11 @@ func runTargetedAgentViaAPI(t *testing.T, handler http.Handler, sessionID string
 		t.Fatalf("POST /v1/sessions/%s/run status=%d payload=%v", sessionID, status, payload)
 	}
 	return resp
+}
+
+func requestResolvedToolEnabled(resp resolvedToolContractResponse, name string) bool {
+	toolState, ok := resp.Resolved.Tools[strings.ToLower(strings.TrimSpace(name))]
+	return ok && toolState.Enabled
 }
 
 func requestContainsTool(req provideriface.Request, want string) bool {

@@ -56,6 +56,7 @@ GO_CACHE_ROOT="${CACHE_ROOT}" \
 GOCACHE_DIR="${GOCACHE_DIR}" \
 GOMODCACHE_DIR="${GOMODCACHE_DIR}" \
 GOPATH_DIR="${GOPATH_DIR}" \
+SWARM_BUILD_TOOLS_SKIP_REBUILD=1 \
 bash "${PROJECT_ROOT}/scripts/build-tools.sh"
 
 echo "built ${OUT_DIR}/swarmtui"

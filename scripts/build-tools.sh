@@ -26,12 +26,16 @@ GOCACHE_DIR="${GOCACHE_DIR:-${CACHE_ROOT}/build}"
 GOMODCACHE_DIR="${GOMODCACHE_DIR:-${CACHE_ROOT}/mod}"
 GOPATH_DIR="${GOPATH_DIR:-${CACHE_ROOT}/path}"
 OUT_DIR="${OUT_DIR:-${SWARM_TOOL_BIN_DIR:-$(swarm_lane_tool_bin_dir)}}"
+SKIP_REBUILD="${SWARM_BUILD_TOOLS_SKIP_REBUILD:-0}"
 mkdir -p "${OUT_DIR}" "${GOCACHE_DIR}" "${GOMODCACHE_DIR}" "${GOPATH_DIR}"
 
 build_tool() {
   local name="$1"
   local pkg="$2"
   local invoked_name="${3:-}"
+  if [[ "${SKIP_REBUILD}" == "1" && "${name}" == "rebuild" ]]; then
+    return
+  fi
   local args=(build -trimpath)
   if [[ -n "${invoked_name}" ]]; then
     args+=( -ldflags "-X main.defaultInvokedName=${invoked_name}" )

@@ -99,14 +99,18 @@ func (s *Service) EnsureDefaults() error {
 	}
 
 	now := time.Now().UnixMilli()
+	if current, ok, err := s.store.GetProfile("memory"); err != nil {
+		return err
+	} else if ok && shouldReconcileBuiltInMemory(current) {
+		profile := reconcileBuiltInMemory(current, now)
+		if err := s.store.PutProfile(profile); err != nil {
+			return err
+		}
+	}
 	if current, ok, err := s.store.GetProfile("commit"); err != nil {
 		return err
-	} else if ok && shouldReconcileBuiltInCommit(current) {
-		profile, ok := defaultProfileByName("commit", now)
-		if !ok {
-			return errors.New("default commit profile is missing")
-		}
-		if err := s.store.PutProfile(profile); err != nil {
+	} else if ok && shouldRemoveBuiltInCommit(current) {
+		if err := s.store.DeleteProfile("commit"); err != nil {
 			return err
 		}
 	}
@@ -160,27 +164,96 @@ func (s *Service) EnsureDefaults() error {
 	return s.store.SetActivePrimary(fallback)
 }
 
-func shouldReconcileBuiltInCommit(profile pebblestore.AgentProfile) bool {
+func defaultMemoryPrompt() string {
+	return strings.TrimSpace("" +
+		"You are Memory, the durable artifacts agent.\n" +
+		"Produce commit messages, session titles, compact summaries, and durable run artifacts that are accurate and traceable.\n" +
+		"When handling a background commit, inspect git status and diffs, stage the correct files, and create exactly one accurate commit.\n" +
+		"Do not push unless the user explicitly requested push.")
+}
+
+func defaultMemoryToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{
+		Preset: "background_commit",
+		Tools: map[string]pebblestore.AgentToolConfig{
+			"git_status":     {Enabled: pebblestore.BoolPtr(true)},
+			"git_diff":       {Enabled: pebblestore.BoolPtr(true)},
+			"git_add":        {Enabled: pebblestore.BoolPtr(true)},
+			"git_commit":     {Enabled: pebblestore.BoolPtr(true)},
+			"bash":           {Enabled: pebblestore.BoolPtr(false)},
+			"write":          {Enabled: pebblestore.BoolPtr(false)},
+			"edit":           {Enabled: pebblestore.BoolPtr(false)},
+			"websearch":      {Enabled: pebblestore.BoolPtr(false)},
+			"webfetch":       {Enabled: pebblestore.BoolPtr(false)},
+			"skill_use":      {Enabled: pebblestore.BoolPtr(false)},
+			"plan_manage":    {Enabled: pebblestore.BoolPtr(false)},
+			"ask_user":       {Enabled: pebblestore.BoolPtr(false)},
+			"exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
+			"task":           {Enabled: pebblestore.BoolPtr(false)},
+		},
+	}
+}
+
+func shouldReconcileBuiltInMemory(profile pebblestore.AgentProfile) bool {
+	if strings.TrimSpace(profile.Name) != "memory" {
+		return false
+	}
+	if profile.Mode != ModeSubagent || !profile.Enabled {
+		return true
+	}
+	if pebblestore.NormalizeAgentExecutionSetting(profile.ExecutionSetting) != pebblestore.AgentExecutionSettingRead {
+		return true
+	}
+	if profile.ToolContract == nil || strings.TrimSpace(profile.ToolContract.Preset) != "background_commit" {
+		return true
+	}
+	for _, toolName := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
+		state, ok := profile.ToolContract.Tools[toolName]
+		if !ok || state.Enabled == nil || !*state.Enabled {
+			return true
+		}
+	}
+	for _, toolName := range []string{"websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "task", "bash", "write", "edit", "exit_plan_mode"} {
+		state, ok := profile.ToolContract.Tools[toolName]
+		if !ok || state.Enabled == nil || *state.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+func reconcileBuiltInMemory(profile pebblestore.AgentProfile, now int64) pebblestore.AgentProfile {
+	profile.Name = "memory"
+	profile.Mode = ModeSubagent
+	profile.Description = "Durable artifacts and commits"
+	profile.ExecutionSetting = pebblestore.AgentExecutionSettingRead
+	profile.ExitPlanModeEnabled = pebblestore.BoolPtr(false)
+	profile.ToolContract = defaultMemoryToolContract()
+	profile.Enabled = true
+	profile.UpdatedAt = now
+	if prompt := strings.TrimSpace(profile.Prompt); prompt == "" || strings.EqualFold(prompt, oldDefaultMemoryPrompt()) {
+		profile.Prompt = defaultMemoryPrompt()
+	}
+	return pebblestore.NormalizeAgentProfile(profile)
+}
+
+func oldDefaultMemoryPrompt() string {
+	return strings.TrimSpace("" +
+		"You are Memory, a subagent for durable artifacts.\n" +
+		"Produce commit messages, session titles, and compact summaries that are accurate and traceable.")
+}
+
+func shouldRemoveBuiltInCommit(profile pebblestore.AgentProfile) bool {
 	if strings.TrimSpace(profile.Name) != "commit" {
 		return false
 	}
-	if profile.Mode != ModeBackground {
+	if strings.TrimSpace(profile.Description) == "Commit specialist" {
 		return true
 	}
-	if pebblestore.NormalizeAgentExecutionSetting(profile.ExecutionSetting) != pebblestore.AgentExecutionSettingReadWrite {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(profile.Prompt)), "you are commit") {
 		return true
 	}
-	if profile.ToolContract == nil {
-		return true
-	}
-	if strings.TrimSpace(profile.ToolContract.Preset) != "background_commit" {
-		return true
-	}
-	bash, ok := profile.ToolContract.Tools["git_commit"]
-	if !ok || bash.Enabled == nil || !*bash.Enabled {
-		return true
-	}
-	return false
+	return profile.Mode == ModeBackground && profile.ToolContract != nil && strings.TrimSpace(profile.ToolContract.Preset) == "background_commit"
 }
 
 func shouldReconcileBuiltInParallel(profile pebblestore.AgentProfile) bool {
@@ -1005,6 +1078,21 @@ func (s *Service) DeleteActiveSubagent(purpose string) (map[string]string, int64
 }
 
 func (s *Service) ResolvePrimary(name string) (pebblestore.AgentProfile, error) {
+	profile, err := s.resolveProfile(name)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	if profile.Mode != ModePrimary {
+		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is not primary", strings.TrimSpace(profile.Name))
+	}
+	return profile, nil
+}
+
+func (s *Service) ResolveAgent(name string) (pebblestore.AgentProfile, error) {
+	return s.resolveProfile(name)
+}
+
+func (s *Service) resolveProfile(name string) (pebblestore.AgentProfile, error) {
 	name = normalizeName(name)
 	if name == "" {
 		active, ok, err := s.store.GetActivePrimary()
@@ -1027,9 +1115,6 @@ func (s *Service) ResolvePrimary(name string) (pebblestore.AgentProfile, error) 
 	}
 	if !profile.Enabled {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is disabled", name)
-	}
-	if profile.Mode != ModePrimary {
-		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is not primary", name)
 	}
 	return profile, nil
 }
@@ -1132,48 +1217,16 @@ func defaultProfiles(now int64) []pebblestore.AgentProfile {
 			UpdatedAt: now,
 		},
 		{
-			Name:             "memory",
-			Mode:             ModeSubagent,
-			Description:      "Summary writer",
-			Provider:         "",
-			ExecutionSetting: pebblestore.AgentExecutionSettingRead,
-			Prompt: strings.TrimSpace("" +
-				"You are Memory, a subagent for durable artifacts.\n" +
-				"Produce commit messages, session titles, and compact summaries that are accurate and traceable."),
-			Enabled:   true,
-			UpdatedAt: now,
-		},
-		{
-			Name:             "commit",
-			Mode:             ModeBackground,
-			Description:      "Commit specialist",
-			Provider:         "",
-			ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-			Prompt: strings.TrimSpace("" +
-				"You are Commit, a background agent for accurate git commits.\n" +
-				"Inspect git status and diffs, stage the correct files, and create exactly one accurate commit.\n" +
-				"Do not push unless the user explicitly requested push."),
-			ToolContract: &pebblestore.AgentToolContract{
-				Preset: "background_commit",
-				Tools: map[string]pebblestore.AgentToolConfig{
-					"git_status":     {Enabled: pebblestore.BoolPtr(true)},
-					"git_diff":       {Enabled: pebblestore.BoolPtr(true)},
-					"git_add":        {Enabled: pebblestore.BoolPtr(true)},
-					"git_commit":     {Enabled: pebblestore.BoolPtr(true)},
-					"bash":           {Enabled: pebblestore.BoolPtr(false)},
-					"write":          {Enabled: pebblestore.BoolPtr(false)},
-					"edit":           {Enabled: pebblestore.BoolPtr(false)},
-					"websearch":      {Enabled: pebblestore.BoolPtr(false)},
-					"webfetch":       {Enabled: pebblestore.BoolPtr(false)},
-					"skill_use":      {Enabled: pebblestore.BoolPtr(false)},
-					"plan_manage":    {Enabled: pebblestore.BoolPtr(false)},
-					"ask_user":       {Enabled: pebblestore.BoolPtr(false)},
-					"exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
-					"task":           {Enabled: pebblestore.BoolPtr(false)},
-				},
-			},
-			Enabled:   true,
-			UpdatedAt: now,
+			Name:                "memory",
+			Mode:                ModeSubagent,
+			Description:         "Durable artifacts and commits",
+			Provider:            "",
+			ExecutionSetting:    pebblestore.AgentExecutionSettingRead,
+			ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+			Prompt:              defaultMemoryPrompt(),
+			ToolContract:        defaultMemoryToolContract(),
+			Enabled:             true,
+			UpdatedAt:           now,
 		},
 		{
 			Name:             "parallel",

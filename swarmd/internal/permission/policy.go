@@ -402,7 +402,7 @@ func policyRuleMatches(ctx policyEvalContext, rule PolicyRule) bool {
 		if ctx.ToolName != "bash" {
 			return false
 		}
-		return hasCommandPrefix(ctx.BashCommand, strings.ToLower(strings.TrimSpace(rule.Pattern)))
+		return hasBashCommandPrefix(ctx.BashCommand, rule.Pattern)
 	case PolicyRuleKindTool:
 		return ctx.ToolName != "" && ctx.ToolName == normalizePolicyToolName(rule.Tool)
 	default:
@@ -503,7 +503,7 @@ func extractBashCommandPrefix(command string) string {
 		return ""
 	}
 	tokens := strings.Fields(command)
-	start := bashCommandStartIndex(tokens)
+	start := bashScriptStartIndex(tokens, bashCommandStartIndex(tokens))
 	if start < 0 || start >= len(tokens) {
 		return ""
 	}
@@ -516,7 +516,7 @@ func bashCommandStartIndex(tokens []string) int {
 		if token == "" {
 			continue
 		}
-		if token == "sudo" || token == "env" || token == "command" {
+		if isCommandWrapper(token) {
 			continue
 		}
 		if strings.Contains(token, "=") && !strings.HasPrefix(token, "-") {
@@ -527,6 +527,67 @@ func bashCommandStartIndex(tokens []string) int {
 	return -1
 }
 
+func bashScriptStartIndex(tokens []string, commandStart int) int {
+	for i := commandStart; i >= 0 && i < len(tokens); i++ {
+		token := cleanShellToken(tokens[i])
+		if token == "" {
+			continue
+		}
+		if isCommandWrapper(token) || (strings.Contains(token, "=") && !strings.HasPrefix(token, "-")) {
+			continue
+		}
+		if !isShellInterpreter(token) {
+			return i
+		}
+		for j := i + 1; j < len(tokens); j++ {
+			token = cleanShellToken(tokens[j])
+			if token == "" {
+				continue
+			}
+			if token == "--" {
+				continue
+			}
+			if isShellOptionWithValue(token) {
+				j++
+				continue
+			}
+			if strings.HasPrefix(token, "-") {
+				continue
+			}
+			return j
+		}
+		return -1
+	}
+	return -1
+}
+
+func isCommandWrapper(token string) bool {
+	switch path.Base(cleanShellToken(token)) {
+	case "sudo", "env", "command":
+		return true
+	default:
+		return false
+	}
+}
+
+func isShellInterpreter(token string) bool {
+	switch path.Base(cleanShellToken(token)) {
+	case "bash", "sh", "zsh", "dash", "ksh":
+		return true
+	default:
+		return false
+	}
+}
+
+func isShellOptionWithValue(token string) bool {
+	switch token {
+	case "-c", "--command", "-o", "--option", "--init-file", "--rcfile":
+		return true
+	default:
+		return false
+	}
+}
+
 func hasCommandPrefix(command, prefix string) bool {
 	command = strings.TrimSpace(strings.ToLower(command))
 	prefix = strings.TrimSpace(strings.ToLower(prefix))
@@ -534,6 +595,21 @@ func hasCommandPrefix(command, prefix string) bool {
 		return false
 	}
 	return command == prefix || strings.HasPrefix(command, prefix+" ")
+}
+
+func hasBashCommandPrefix(command, prefix string) bool {
+	command = strings.TrimSpace(strings.ToLower(command))
+	prefix = path.Base(cleanShellToken(strings.TrimSpace(strings.ToLower(prefix))))
+	if command == "" || prefix == "" {
+		return false
+	}
+	tokens := strings.Fields(command)
+	start := bashScriptStartIndex(tokens, bashCommandStartIndex(tokens))
+	if start < 0 || start >= len(tokens) {
+		return false
+	}
+	script := path.Base(cleanShellToken(tokens[start]))
+	return script == prefix || strings.HasPrefix(script, prefix+" ")
 }
 
 func splitPolicyMode(mode string) (string, bool) {

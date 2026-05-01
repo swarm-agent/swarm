@@ -23,6 +23,7 @@ const (
 	hostedSessionPeerSetTitlePath      = "/v1/swarm/peer/sessions/title"
 	hostedSessionPeerMetadataPath      = "/v1/swarm/peer/sessions/metadata"
 	hostedSessionPeerLifecyclePath     = "/v1/swarm/peer/sessions/lifecycle"
+	hostedSessionPeerEventPath         = "/v1/swarm/peer/sessions/event"
 
 	hostedSessionLocalTransportBaseURL = "http://swarm-local-transport"
 )
@@ -122,6 +123,24 @@ func (c *HostedSyncClient) UpsertLifecycle(ctx context.Context, descriptor Hoste
 	return c.postJSON(ctx, descriptor, hostedSessionPeerLifecyclePath, map[string]any{
 		"lifecycle": snapshot,
 	}, &response)
+}
+
+func (c *HostedSyncClient) PublishEvent(ctx context.Context, descriptor HostedSessionDescriptor, sessionID, eventType string, payload map[string]any, causationID, correlationID string) (pebblestore.EventEnvelope, error) {
+	var response struct {
+		OK    bool                      `json:"ok"`
+		Event pebblestore.EventEnvelope `json:"event"`
+	}
+	err := c.postJSON(ctx, descriptor, hostedSessionPeerEventPath, map[string]any{
+		"session_id":     sessionID,
+		"event_type":     eventType,
+		"payload":        payload,
+		"causation_id":   causationID,
+		"correlation_id": correlationID,
+	}, &response)
+	if err != nil {
+		return pebblestore.EventEnvelope{}, err
+	}
+	return response.Event, nil
 }
 
 func (c *HostedSyncClient) postJSON(ctx context.Context, descriptor HostedSessionDescriptor, path string, payload any, out any) error {

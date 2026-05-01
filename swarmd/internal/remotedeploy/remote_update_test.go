@@ -72,6 +72,8 @@ func TestRemoteDevReplacementScriptStopsBeforeRenameAndRestoresOnFailure(t *test
 		`runtime_cmd rename "$backup_name" "$container_name"`,
 		`cp "$backup_start_script" "$start_script"`,
 		`runtime_cmd start "$container_name"`,
+		`export SWARM_STARTUP_MODE=box`,
+		`-e "SWARM_STARTUP_MODE=box"`,
 		`REMOTE_UPDATE_ERROR=replacement-not-running`,
 		`REMOTE_UPDATE_ERROR=replacement-not-ready`,
 		`REMOTE_UPDATE_STATE=replaced`,

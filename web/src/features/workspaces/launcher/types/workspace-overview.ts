@@ -254,6 +254,7 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire): DesktopSessi
       error: lifecycle?.error ?? null,
       seq: typeof activeRun?.last_seq === 'number' ? activeRun.last_seq : 0,
       assistantDraft: '',
+      retainedAssistantSegments: [],
       reasoningSummary: '',
       reasoningText: '',
       reasoningState: 'idle',

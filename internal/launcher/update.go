@@ -42,7 +42,6 @@ var (
 	applyReleaseUpdateForUpdate              = ApplyReleaseUpdate
 	startBackendForUpdate                    = StartBackend
 	runTUIWithExtraEnvForUpdate              = RunTUIWithExtraEnv
-	isTerminalForUpdate                      = isTerminal
 	resolveLifecycleManagerForUpdate         = resolveLifecycleManager
 	serviceActiveForUpdate                   = serviceActiveForScope
 	stopSystemdServiceForUpdate              = stopSystemdService
@@ -199,6 +198,7 @@ func RequestReleaseUpdatePlan(ctx context.Context, profile Profile) (client.Upda
 func RunReleaseUpdate(profile Profile, relaunchArgs []string) error {
 	plan, err := RequestReleaseUpdatePlan(context.Background(), profile)
 	if err != nil {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusFailed, "", err.Error())
 		return err
 	}
 	version := strings.TrimSpace(plan.TargetVersion)
@@ -218,7 +218,7 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 			_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusFailed, "", err.Error())
 		}
 	}()
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Applying Swarm update.", "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Preparing to stop Swarm backend for release update.", "")
 	if parentPID > 0 {
 		if err := waitForPIDExit(parentPID, updateParentWaitLimit); err != nil {
 			return err
@@ -229,16 +229,22 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 		return err
 	}
 	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdActive {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, fmt.Sprintf("Stopping Swarm backend via systemd (%s).", restartPlan.systemdUnit), "")
 		if err := stopSystemdServiceForUpdate(restartPlan.systemdScope, restartPlan.systemdUnit); err != nil {
 			return err
 		}
-	} else if err := stopBackendForUpdate(profile); err != nil {
-		return err
+	} else {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Stopping Swarm backend.", "")
+		if err := stopBackendForUpdate(profile); err != nil {
+			return err
+		}
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Applying Swarm release update.", "")
 	result, err := applyReleaseUpdateForUpdate(context.Background(), profile, plan)
 	if err != nil {
 		return err
 	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Restarting Swarm backend.", "")
 	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
@@ -249,9 +255,6 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	outcome := runReleaseContainerImageUpdateJobsAfterRestart(profile, result.Version)
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version, outcome), "")
 	jobTerminalStatusWritten = true
-	if !isTerminalForUpdate(os.Stdin) || !isTerminalForUpdate(os.Stdout) {
-		return nil
-	}
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
 		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
 	})
@@ -295,6 +298,10 @@ func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorM
 		Status:        strings.TrimSpace(status),
 		Message:       strings.TrimSpace(message),
 		Error:         strings.TrimSpace(errorMessage),
+		Lane:          firstNonEmptyString(strings.TrimSpace(existing.Lane), strings.TrimSpace(profile.Lane)),
+		Command:       strings.TrimSpace(existing.Command),
+		HelperPID:     existing.HelperPID,
+		LogPath:       strings.TrimSpace(existing.LogPath),
 		StartedAtUnix: startedAt,
 		UpdatedAtUnix: now,
 	}
@@ -311,6 +318,15 @@ func writeLocalContainerUpdateRebuildStatus(profile Profile, mode, version, imag
 		ImageRef:    imageRef,
 		Fingerprint: fingerprint,
 	})
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func responseErrorMessage(body []byte) string {
@@ -399,6 +415,7 @@ func installRuntimeTreeFromArtifact(runtimeRoot, artifactRoot string) error {
 		{name: "swarmtui", source: filepath.Join(rootArtifactDir, "swarmtui"), target: filepath.Join(binDir, "swarmtui"), executable: true},
 		{name: "swarmd", source: filepath.Join(swarmdArtifactDir, "swarmd"), target: filepath.Join(binDir, "swarmd"), executable: true},
 		{name: "swarmctl", source: filepath.Join(swarmdArtifactDir, "swarmctl"), target: filepath.Join(binDir, "swarmctl"), executable: true},
+		{name: "swarm-fff-search", source: filepath.Join(swarmdArtifactDir, "swarm-fff-search"), target: filepath.Join(binDir, "swarm-fff-search"), executable: true},
 		{name: "libfff_c.so", source: filepath.Join(swarmdArtifactDir, "libfff_c.so"), target: filepath.Join(libDir, "libfff_c.so"), executable: false},
 	}
 	for _, item := range requiredFiles {
@@ -454,7 +471,7 @@ func switchRuntimeLinks(installRoot, targetRoot string) error {
 		return fmt.Errorf("set current runtime link: %w", err)
 	}
 	for _, name := range []string{"bin", "libexec", "lib", "share"} {
-		if err := replaceManagedRuntimeSymlink(installRoot, name, filepath.Join(installRoot, "current", name)); err != nil {
+		if err := replaceInstallRootRuntimeLink(filepath.Join(installRoot, name), filepath.Join(installRoot, "current", name)); err != nil {
 			return fmt.Errorf("set %s runtime link: %w", name, err)
 		}
 	}
@@ -616,32 +633,47 @@ func resolveRuntimeLink(linkPath string) (string, bool) {
 }
 
 func replaceSymlink(linkPath, target string) error {
+	return replaceSymlinkPath(linkPath, target, false)
+}
+
+func replaceInstallRootRuntimeLink(linkPath, target string) error {
+	return replaceSymlinkPath(linkPath, target, true)
+}
+
+func replaceSymlinkPath(linkPath, target string, replaceExistingDirs bool) error {
 	tmpPath := linkPath + ".tmp"
 	_ = os.Remove(tmpPath)
 	if err := os.Symlink(target, tmpPath); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpPath, linkPath); err != nil {
-		_ = os.Remove(tmpPath)
-		_ = os.Remove(linkPath)
-		if err2 := os.Symlink(target, linkPath); err2 != nil {
+		if removeErr := removeExistingSymlinkPath(linkPath, replaceExistingDirs); removeErr != nil {
+			_ = os.Remove(tmpPath)
+			return err
+		}
+		if err2 := os.Rename(tmpPath, linkPath); err2 != nil {
+			_ = os.Remove(tmpPath)
 			return err
 		}
 	}
 	return nil
 }
 
-func replaceManagedRuntimeSymlink(installRoot, name, target string) error {
-	linkPath := filepath.Join(installRoot, name)
-	info, err := os.Lstat(linkPath)
-	if err == nil && info.Mode()&os.ModeSymlink == 0 {
-		if err := os.RemoveAll(linkPath); err != nil {
-			return err
-		}
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+func removeExistingSymlinkPath(path string, replaceExistingDirs bool) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	return replaceSymlink(linkPath, target)
+	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		if !replaceExistingDirs {
+			return fmt.Errorf("existing path is a directory: %s", path)
+		}
+		return os.RemoveAll(path)
+	}
+	return os.Remove(path)
 }
 
 func installedVersionMatches(targetRoot, version string) bool {

@@ -18,6 +18,20 @@ async function withFetchStub(
         headers: { 'Content-Type': 'application/json' },
       })
     }
+    if (url.startsWith('/v1/sessions/') && url.endsWith('/mode')) {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      const mode = String(body.mode ?? '').trim()
+      if (mode !== 'plan' && mode !== 'auto') {
+        return new Response(JSON.stringify({ error: `invalid mode ${JSON.stringify(mode)}` }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ ok: true, mode }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     throw new Error(`unexpected fetch: ${url}`)
   }) as typeof fetch
 
@@ -50,7 +64,7 @@ test('normal desktop session start does not send background-targeted metadata', 
   })
 })
 
-test('commit session start keeps explicit background commit lineage', async () => {
+test('commit session start targets memory as the commit-capable subagent', async () => {
   const { startSessionRun } = await import('./chat-queries')
 
   await withFetchStub(async (calls) => {
@@ -59,7 +73,7 @@ test('commit session start keeps explicit background commit lineage', async () =
       prompt: 'commit',
       background: true,
       targetKind: 'background',
-      targetName: 'commit',
+      targetName: 'memory',
     })
 
     const runCall = calls.find((entry) => String(entry.input).includes('/v1/sessions/session-commit/run/stream'))
@@ -67,7 +81,7 @@ test('commit session start keeps explicit background commit lineage', async () =
     const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(body.background, true)
     assert.equal(body.target_kind, 'background')
-    assert.equal(body.target_name, 'commit')
+    assert.equal(body.target_name, 'memory')
   })
 })
 
@@ -92,5 +106,40 @@ test('subagent-targeted desktop session start sends targeted lineage metadata', 
     assert.equal(body.agent_name, 'swarm')
     assert.equal(body.target_kind, 'subagent')
     assert.equal(body.target_name, 'explorer')
+  })
+})
+
+test('session mode update only sends runtime plan or auto modes', async () => {
+  const { updateSessionMode } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    const resolved = await updateSessionMode('session-memory', 'auto')
+
+    assert.equal(resolved, 'auto')
+    const modeCall = calls.find((entry) => String(entry.input).includes('/v1/sessions/session-memory/mode'))
+    assert.ok(modeCall, 'expected session mode request')
+    const body = JSON.parse(String(modeCall?.init?.body ?? '{}')) as Record<string, unknown>
+    assert.equal(body.mode, 'auto')
+  })
+})
+
+test('direct non-primary desktop session run can select memory as the agent', async () => {
+  const { startSessionRun } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    await startSessionRun({
+      sessionId: 'session-memory',
+      prompt: 'please update your AGENTS.md notes',
+      agentName: 'memory',
+      background: false,
+    })
+
+    const runCall = calls.find((entry) => String(entry.input).includes('/v1/sessions/session-memory/run/stream'))
+    assert.ok(runCall, 'expected memory run start request')
+    const body = JSON.parse(String(runCall?.init?.body ?? '{}')) as Record<string, unknown>
+    assert.equal(body.background, false)
+    assert.equal(body.agent_name, 'memory')
+    assert.equal(body.target_kind, '')
+    assert.equal(body.target_name, '')
   })
 })

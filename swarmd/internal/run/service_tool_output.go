@@ -10,8 +10,7 @@ import (
 )
 
 const (
-	toolHistoryPathID              = "run.tool-history.v2"
-	maxBashCompletedRawOutputBytes = 512
+	toolHistoryPathID = "run.tool-history.v2"
 )
 
 type gitStatusResponseFields = gitstatus.ResponseFields
@@ -33,14 +32,7 @@ func formatToolHistory(call tool.Call, result tool.Result) string {
 }
 
 func liveStreamRawOutput(call tool.Call, result tool.Result) string {
-	output := strings.TrimSpace(result.Output)
-	if output == "" {
-		return ""
-	}
-	if strings.EqualFold(strings.TrimSpace(call.Name), "bash") {
-		return strings.TrimSpace(truncateRunes(output, maxBashCompletedRawOutputBytes))
-	}
-	return output
+	return strings.TrimSpace(result.Output)
 }
 
 func formatToolHistoryWithMetadata(call tool.Call, metadata map[string]any, result tool.Result) string {

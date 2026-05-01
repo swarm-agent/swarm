@@ -1,193 +1,188 @@
-# swarmtui (Go + tcell)
+<p align="center">
+  <img src="web/public/favicon.svg" alt="Swarm logo" width="96" height="96">
+</p>
 
-Component-first Swarm TUI refactor playground.
+# Swarm
 
-Current scope is a **backend-connected Home page + Chat demo page**:
-- live workspace state from `swarmd`
-- `/` command system (`/workspace`, `/workspaces`, `/model`, `/auth`, `/keybinds`, `/reload`, `/help`)
-- `/header` command to toggle chat header visibility (`on|off|toggle|status`)
-- `/themes` command for hot-swapping full UI theme colors (`list|set|next|prev|status|create|edit|delete|slots`)
-- custom themes with persistence (`/themes create`, `/themes edit`, `/themes delete`)
-- codex auth key update from inside TUI
-- model selection + thinking updates from inside TUI
-- backend providers include `codex`, `google`, `copilot`, `fireworks`, and `openrouter` (`exa` remains search-only)
-- fuzzy workspace tree scan with `#<n>` pick shortcuts
-- centered prompt card, quick action row, hint/tip lines, recent session list
+**Swarm is a local AI coding workspace for the terminal and browser, written in Go.**
 
-Press `Enter` on a non-empty home prompt to open a dedicated **Chat demo page** with:
-- streamed assistant responses
-- unified timeline (chat + tool stream in one flow)
-- tool stream states (pending/running/completed) inline with messages
-- bash spinner demo (`⋮ ⋰ ⋯ ⋱`)
-- context meter in sidebar
-- bottom input + model presets row
-- bottom swarm bar with tabs
-- workspace sidebar (path/workspace/git), hidden on narrow terminals
+It combines an installed `swarm` launcher, the `swarmd` daemon, a tcell terminal UI, and a desktop web UI for working with local repositories, AI model providers, sessions, tools, permissions, themes, and workspace state.
 
-Default theme is **Nord** (mapped from Swarm's `nord.json`) with 20 built-in themes including `crimson`.
+This repository is under active development. The README below is intentionally conservative: it describes capabilities represented in the current codebase and avoids placeholder screenshots, hosted-service promises, or benchmark claims.
 
-Install from a GitHub release:
+## What Swarm does
 
-1. Download the versioned `swarm-<version>-linux-amd64.tar.gz` release asset from GitHub Releases.
-2. Extract it.
-3. Install it with:
+- Runs a local backend daemon (`swarmd`) for workspace, session, model, auth, permission, and UI settings state.
+- Opens a terminal UI with slash commands for workspaces, sessions, providers, models, auth, permissions, themes, keybinds, updates, and related coding workflow controls.
+- Opens a browser desktop UI with the installed launcher via `swarm --desktop`.
+- Supports main and dev runtime lanes so an installed release and a development lane can use separate ports and state.
+- Stores runtime data under XDG-aware user directories instead of requiring repository-local mutable state.
+- Uses attach-token authenticated local API endpoints for non-health daemon access.
+- Includes provider adapters and auth/status plumbing for Anthropic, Codex, Google, Copilot, Fireworks, OpenRouter, and Exa search support.
+- Includes repository guardrails for public-repo hygiene, pre-commit checks, secret scanning, policy checks, and vulnerability scanning.
+
+## Install
+
+Install from a GitHub release asset when one is available. After extracting `swarm-<version>-linux-amd64.tar.gz`, run the bundled installer from the extracted artifact root:
 
 ```bash
-./swarmsetup --artifact-root /path/to/extracted/swarm-<version>-linux-amd64
+cd /path/to/extracted/swarm-<version>-linux-amd64
+sh install.sh
 ```
 
-That installs the real Swarm runtime layout and launchers so the user can open the installed app.
-
-Release bundles built by `./scripts/build-main-dist.sh --version <version>` embed the same version metadata into the launcher binaries and `swarmd`/`swarmctl`, so installed update status matches the shipped release version.
-
-For `main` releases, if the promoted commit is not already tagged with an exact stable version, `build-main` auto-creates and pushes the next patch tag from the latest stable release (for example `v0.1.0` -> `v0.1.1`).
-Consecutive untagged `dev` -> `main` promotions therefore keep advancing stable patch releases without any manual version prompt or workflow input.
-
-After install, launch Swarm with either:
+Equivalent explicit artifact-root form:
 
 ```bash
-swarm
+sh install.sh --artifact-root /path/to/extracted/swarm-<version>-linux-amd64
 ```
 
-or, if your current shell does not have `${XDG_BIN_HOME:-$HOME/.local/bin}` on `PATH` yet:
+The installer uses the bundled `linux-amd64/root/swarmsetup` helper, places launchers in `${XDG_BIN_HOME:-$HOME/.local/bin}`, and installs runtime artifacts under `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}`.
+
+If your shell does not already include the launcher directory on `PATH`, run Swarm with:
 
 ```bash
 ${XDG_BIN_HOME:-$HOME/.local/bin}/swarm
 ```
 
-Other common commands:
+From a source checkout, the setup helper can build and install local launchers:
+
+```bash
+./setup
+```
+
+## Quick start
+
+Open the main terminal UI:
+
+```bash
+swarm
+```
+
+Open the desktop UI:
 
 ```bash
 swarm --desktop
+```
+
+Manage the local backend without opening a UI:
+
+```bash
 swarm server on
 swarm server status
 swarm server off
-swarm dev
-swarmdev
 ```
 
-Launchers are installed into `${XDG_BIN_HOME:-$HOME/.local/bin}` and point at installed runtime artifacts under `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}`.
-
-## Run
+Use the development lane:
 
 ```bash
-swarm                     # open the main app
-swarm --desktop           # open the desktop app
-swarm server on           # start backend without opening UI
-swarm server status       # show backend status
-swarm server off          # stop backend
-swarm dev                 # open the dev lane
-swarmdev                  # dev alias
+swarm dev
+swarmdev
+swarm dev --desktop
+swarm dev info
 ```
 
-By default:
-- `swarm` uses the main lane backend at `http://127.0.0.1:7781`
-- `swarm dev` / `swarmdev` use the dev lane backend at `http://127.0.0.1:7782`
-- `swarm --desktop` uses desktop port `5555`
-- `swarm dev --desktop` uses desktop port `5556`
+Default local ports:
 
-## MVP Network Access
+| Command | Backend | Desktop |
+| --- | --- | --- |
+| `swarm` | `http://127.0.0.1:7781` | `http://127.0.0.1:5555` |
+| `swarm dev` / `swarmdev` | `http://127.0.0.1:7782` | `http://127.0.0.1:5556` |
 
-For the MVP launch, direct private-LAN desktop access is intentionally not treated as a safe supported path. Keep `host = 127.0.0.1` in `swarm.conf` for normal use.
+## Terminal UI commands
 
-If you need to open Swarm from another device, prefer one of these paths:
-- SSH tunnel the desktop port with `ssh -L 5555:127.0.0.1:5555 <host>`, then open `http://127.0.0.1:5555` on the client machine.
-- Use Tailscale for a private encrypted network path.
+Type `/` in the terminal UI to open command suggestions. Current command surfaces include:
 
-Opening `http://192.168.x.x:5555`, `http://10.x.x.x:5555`, or another private LAN address directly may show a browser "Not Secure" warning and Swarm desktop auth may reject it. That is expected until Swarm has a safe LAN pairing flow.
+- `/auth` and `/models` for provider credentials, active credentials, model selection, and provider catalog state.
+- `/workspace`, `/workspaces`, and `/add-dir` for workspace selection and linked-directory flows.
+- `/sessions`, `/new`, `/home`, and `/compact` for session navigation and chat context management.
+- `/permissions` for global tool and bash-prefix policy controls.
+- `/plan` for plan-mode session workflows.
+- `/agents` for saved agent profile management.
+- `/themes`, `/keybinds`, and `/mouse` for UI customization and terminal input behavior.
+- `/voice` for voice profiles, devices, STT/TTS settings, and tests.
+- `/update` and `/rebuild` for installed runtime update and development rebuild flows.
 
-You can also override the backend target directly:
+Useful keys and runtime behavior:
+
+- `Ctrl+C` quits.
+- `F8` toggles mouse capture.
+- `/mouse on`, `/mouse off`, and `/mouse status` manage mouse capture from the UI.
+- When mouse capture is enabled, use the terminal selection modifier, usually `Shift+drag`, to select text.
+
+## Architecture
+
+Swarm is split into a launcher, a terminal UI, a daemon, and a web frontend:
+
+| Area | Path | Purpose |
+| --- | --- | --- |
+| Launcher CLI | `cmd/swarm/`, `internal/launcher/` | Starts/stops lanes, records port metadata, launches TUI or desktop, runs update helpers. |
+| Installer | `cmd/swarmsetup/` | Installs launchers and release artifacts into XDG-aware locations. |
+| Terminal UI | `cmd/swarmtui/`, `internal/app/`, `internal/ui/` | tcell app, slash commands, modals, settings, model/auth/workspace/session UI. |
+| Daemon | `swarmd/` | HTTP/WebSocket API, provider runtime, sessions, workspaces, permissions, Pebble-backed persistence. |
+| Desktop UI | `web/` | Vite/React browser frontend served by the local runtime. |
+| Tests and harnesses | `tests/`, `swarmd/tests/`, `scripts/` | Unit tests, integration tests, e2e harnesses, release and policy checks. |
+
+`swarmd` exposes health endpoints plus authenticated local API routes for auth credentials, provider status, model preferences/catalogs, workspaces, sessions, UI settings, permissions, and streaming session events.
+
+## Local-first networking model
+
+Swarm is designed for local use by default. Normal desktop/backend traffic should stay bound to `127.0.0.1`.
+
+For access from another device, prefer an SSH tunnel or a private overlay network such as Tailscale. Direct private-LAN browser access may show browser security warnings and may be rejected by desktop auth until a safer LAN pairing flow exists.
+
+Example SSH tunnel for the desktop port:
+
+```bash
+ssh -L 5555:127.0.0.1:5555 <host>
+```
+
+You can point the terminal UI at a specific daemon with:
 
 ```bash
 SWARMD_URL=http://127.0.0.1:7782 SWARMD_TOKEN=<token> swarm dev
 ```
 
-Installed files live under:
-- `${XDG_BIN_HOME:-$HOME/.local/bin}` for launchers
-- `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}` for runtime files
-- `${XDG_STATE_HOME:-$HOME/.local/state}/swarm/...` for runtime state
+## Data and configuration locations
 
-Use `/mouse on` and `/mouse off` at runtime to toggle mouse capture without restarting.
-When mouse capture is enabled, use your terminal's selection modifier (typically `Shift+drag`) to select/copy text.
+Swarm uses XDG-aware paths:
 
-- `Ctrl+C`: quit
-- `Enter` on Home with prompt text: open Chat demo page
-- `Enter` on Home with `/command`: execute command in-place
-- `Enter` on Home with `/...` and palette visible: runs selected command immediately
-- type `/` on Home: open command palette suggestions above the prompt
-- `Tab` on Home with `/...`: autocomplete selected command
-- `Up/Down` on Home with `/...`: navigate command suggestions
-- `/sessions` on Home: open sessions modal
-- `/auth` on Home: open auth manager modal
-- in auth modal: `Enter` on provider opens that provider's auth flow; for `copilot` it opens a chooser for `copilot login`, `gh auth`, or direct GitHub token
-- in auth modal: `n` add token/API key, `o` add OAuth or provider login flow, `e` edit, `a` set active, `d` delete, `r` refresh, `l` login/method chooser
-- in auth modal: `/` provider search, `f` credential search, `Tab` focus switch, `Esc` close
-- `Esc` in Chat page: return to Home
-- type `/` in Chat: open command palette suggestions above the chat input
-- `Enter` in Chat with prompt text: replay demo with new prompt
-- `Enter` in Chat with `/...` and palette visible: runs selected command immediately
-- `Enter` in Chat with `/command`: execute slash command in chat (for example `/header off`)
-- `g` in Chat: open/close full diff gallery (10 variants)
-- `j/k` or `Up/Down` in diff gallery: scroll
-- mouse wheel in Chat: scroll timeline; in diff gallery: scroll diff rows
-- `[` / `]` in Chat: switch swarm bar tab highlight
-- `Up/Down` or `j/k`: select recent session
-- `Enter`: mock open selected session
-- type text: edit prompt line
-- `Backspace`: delete prompt chars
-- `Ctrl+U`: clear prompt
-- click a recent session row: select it
-- click workspace chips in the top bar: switch active workspace
-- click top-bar objects (`git`, `agents`, `plan`, `mode`, `sessions`): mock panel actions
-- `Ctrl+R` on Home: hot reload home state from backend
-- `/header` on Home: toggle chat header visibility for new chat sessions
-- `/mouse` on Home/Chat: toggle mouse capture (`/mouse status` for current state)
-- `/themes` on Home/Chat: open theme modal (live preview while moving selection)
-- `/themes create <id> [from <theme>]`: create a persistent custom theme
-- `/themes edit <id> <slot> <#RRGGBB>`: modify custom theme colors
-- `/themes delete <id>`: remove a custom theme
-- `/themes slots`: list editable color slots
-- in themes modal: `Up/Down` (or `j/k`) live preview, `Enter` apply, `Esc` cancel/revert preview
-- `/keybinds` on Home/Chat: open keybind manager modal
-- in keybinds modal: `Enter` edit selected, press any key to bind, `Esc` cancel/close, `r` reset selected, `Shift+R` reset all
-- `F8`: toggle mouse capture
-- Chat focus strip is centered and fixed: `[a:...] [m:...] [t:...]`
-- Context usage is shown separately at the bottom-right: `used:limit` (for example `0:400.0k`)
+- `${XDG_BIN_HOME:-$HOME/.local/bin}` for launchers.
+- `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}` for runtime files.
+- `${XDG_STATE_HOME:-$HOME/.local/state}/swarm/...` for runtime state, logs, PID files, and lane port records.
 
-## Dev lane metadata for AI/testing
+UI settings are persisted through the daemon-backed `/v1/ui/settings` API. Current settings include chat header visibility, thinking tags, tool stream display, mouse capture, keybinds, theme selection, custom themes, and swarm display metadata.
 
-- Use `swarm dev info` to print lane listen/url/state/log metadata.
-- Use `swarmdev info` as shorthand for dev lane metadata.
-- `swarm dev` and `swarmdev` launch the installed dev-lane runtime; use `rebuild dev` to refresh it from the current branch.
-- `swarm` and `swarmdev` refuse to launch when the installed runtime is missing (no silent fallback to source builds).
-- Lane occupancy/port records are written to user state (`${XDG_STATE_HOME:-~/.local/state}/swarm/ports/swarmd-main.env`, `${XDG_STATE_HOME:-~/.local/state}/swarm/ports/swarmd-dev.env`).
+## Development
 
-## Git branch flow
+Run the repository pre-commit gate before committing changes:
 
-- `dev` is the day-to-day working branch.
-- `main` is the protected release/build branch.
-- Merge from `dev` into `main` only when you want the canonical GitHub build to run.
-- GitHub Actions now builds artifacts only for pushes to `main` (and manual dispatch), and the workflow is gated so only the `swarm-agent` account can run the build job.
-- Protect `main` in GitHub so only your account can push to it; leave `dev` available for normal collaborative work.
-- Recommended GitHub rule setup:
-  - branch rule / ruleset for `main`
-  - block force pushes
-  - block deletions
-  - restrict direct pushes to your account
-  - optionally require pull requests for everyone except your admin bypass
+```bash
+./scripts/check-precommit.sh
+```
 
-`swarmtui` now persists UI settings through the daemon-backed `/v1/ui/settings` API backed by Pebble.
-There is no local `swarmtui.json` file anymore.
+That gate includes repository policy checks, secret checks, hardcoded-path checks, and vulnerability scanning. Additional development scripts live under `scripts/`.
 
-Current settings include:
-- `chat.show_header`
-- `chat.thinking_tags`
-- `chat.tool_stream`
-- `input.mouse_enabled`
-- `input.keybinds`
-- `ui.theme`
-- `ui.custom_themes`
-- `swarming.title`
-- `swarming.status`
+Common source-checkout commands:
 
-`SWARMTUI_THEME` overrides `ui.theme` for that process only.
+```bash
+./setup
+./rebuild dev
+swarm dev
+swarm dev info
+```
+
+## Suggested GitHub repository metadata
+
+These fields must be set in the GitHub repository UI by a maintainer:
+
+**About description**
+
+> Local AI coding workspace for terminal and desktop: Go launcher, swarmd daemon, tcell TUI, browser UI, providers, sessions, tools, and permissions.
+
+**Topics**
+
+`ai-coding-agent`, `developer-tools`, `terminal-ui`, `tui`, `desktop-app`, `go`, `golang`, `local-first`, `multi-agent`, `coding-assistant`, `llm`, `ai-tools`, `workspace-management`, `permissions`, `websocket`, `react`, `vite`, `pebble`, `cli`, `open-source`
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

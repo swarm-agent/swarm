@@ -239,6 +239,7 @@ type StreamEvent struct {
 	Permission   *pebblestore.PermissionRecord         `json:"permission,omitempty"`
 	TurnUsage    *pebblestore.SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
 	UsageSummary *pebblestore.SessionUsageSummary      `json:"usage_summary,omitempty"`
+	Metadata     map[string]any                        `json:"metadata,omitempty"`
 	Title        string                                `json:"title,omitempty"`
 	TitleStage   string                                `json:"title_stage,omitempty"`
 	Warning      string                                `json:"warning,omitempty"`
@@ -879,6 +880,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		if s != nil {
 			s.publishStreamEventEnvelope(event)
+			s.mirrorHostedStreamEvent(event)
 		}
 		var derivedStatusEvent *StreamEvent
 		var lifecycleEvent *StreamEvent
@@ -891,6 +893,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			if s != nil {
 				s.publishStreamEventEnvelope(*lifecycleEvent)
+				s.mirrorHostedStreamEvent(*lifecycleEvent)
 			}
 		}
 		if status := sessionStatusForEvent(event); status != "" {
@@ -905,6 +908,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			if s != nil {
 				s.publishStreamEventEnvelope(statusEvent)
+				s.mirrorHostedStreamEvent(statusEvent)
 			}
 			derivedStatusEvent = &statusEvent
 		}
@@ -2913,11 +2917,58 @@ func shouldGenerateMemorySessionTitle(session pebblestore.SessionSnapshot) bool 
 	if session.MessageCount > 0 {
 		return false
 	}
+	if sessionTitleGenerationLocked(session.Metadata) {
+		return false
+	}
 	title := strings.ToLower(strings.TrimSpace(session.Title))
 	if strings.Contains(title, " subagent)") && strings.Contains(title, "(@") {
 		return false
 	}
 	return true
+}
+
+func sessionTitleGenerationLocked(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if metadataBoolValue(metadata, "title_locked") {
+		return true
+	}
+	if strings.EqualFold(metadataStringValue(metadata, "title_source"), "flow_task") {
+		return true
+	}
+	if strings.EqualFold(metadataStringValue(metadata, "source"), "flow") ||
+		strings.EqualFold(metadataStringValue(metadata, "owner_transport"), "flow_scheduler") ||
+		strings.EqualFold(metadataStringValue(metadata, "lineage_kind"), "flow") {
+		return true
+	}
+	return false
+}
+
+func metadataBoolValue(metadata map[string]any, key string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	switch typed := metadata[key].(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
+}
+
+func metadataStringValue(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	switch typed := metadata[key].(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
 }
 
 func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, basePreference pebblestore.ModelPreference, emit StreamHandler) {
@@ -3161,6 +3212,39 @@ func (s *Service) publishEventEnvelope(event pebblestore.EventEnvelope) {
 	s.eventPublish(event)
 }
 
+func (s *Service) mirrorHostedStreamEvent(event StreamEvent) {
+	if s == nil || s.sessions == nil {
+		return
+	}
+	sessionID := strings.TrimSpace(event.SessionID)
+	if sessionID == "" {
+		return
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return
+	}
+	if event.Message != nil {
+		_, _ = s.sessions.StoreMirroredMessage(session, *event.Message)
+	}
+	if event.Type == StreamEventSessionLifecycle && event.Lifecycle != nil {
+		_ = s.sessions.StoreMirroredLifecycle(*event.Lifecycle)
+	}
+	descriptor, hosted := s.sessions.HostedDescriptor(session.Metadata)
+	if !hosted {
+		return
+	}
+	eventType := streamEventEnvelopeType(event)
+	if eventType == "" {
+		return
+	}
+	payload := streamEventEnvelopePayload(event)
+	if len(payload) == 0 {
+		return
+	}
+	_, _ = s.sessions.PublishHostedEvent(context.Background(), descriptor, sessionID, eventType, payload, strings.TrimSpace(event.RunID), strings.TrimSpace(event.CallID))
+}
+
 func (s *Service) publishStreamEventEnvelope(event StreamEvent) {
 	if s == nil || s.events == nil {
 		return
@@ -3293,6 +3377,9 @@ func streamEventEnvelopePayload(event StreamEvent) map[string]any {
 	}
 	if event.Message != nil {
 		payload["message"] = event.Message
+	}
+	if len(event.Metadata) > 0 {
+		payload["metadata"] = cloneGenericMap(event.Metadata)
 	}
 	if event.Permission != nil {
 		payload["permission"] = event.Permission

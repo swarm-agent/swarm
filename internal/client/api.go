@@ -159,6 +159,8 @@ type RemoteDeploySession struct {
 	Status           string `json:"status,omitempty"`
 	SSHSessionTarget string `json:"ssh_session_target,omitempty"`
 	ImageRef         string `json:"image_ref,omitempty"`
+	LastProgress     string `json:"last_progress,omitempty"`
+	LastError        string `json:"last_error,omitempty"`
 }
 
 type LocalContainerUpdateTarget struct {

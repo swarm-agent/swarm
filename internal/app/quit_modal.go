@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	quitChoiceCloseSessions = iota
-	quitChoiceKeepBackground
+	quitChoiceKeepBackground = iota
+	quitChoiceCloseSessions
 )
 
 type quitModalState struct {
@@ -56,7 +56,7 @@ func (a *App) openQuitModal(runningCount, blockedCount int) {
 	}
 	a.quitModal = quitModalState{
 		Visible:      true,
-		Selection:    quitChoiceCloseSessions,
+		Selection:    quitChoiceKeepBackground,
 		RunningCount: runningCount,
 		BlockedCount: blockedCount,
 		Interactive:  a.interactiveLifecycleEnabled(),
@@ -161,7 +161,7 @@ func (a *App) handleQuitModalKey(ev *tcell.EventKey) bool {
 	}
 	switch {
 	case a.keybinds.Match(ev, ui.KeybindModalFocusLeft), a.keybinds.Match(ev, ui.KeybindModalMoveUp), a.keybinds.Match(ev, ui.KeybindModalMoveUpAlt):
-		a.quitModal.Selection = quitChoiceCloseSessions
+		a.quitModal.Selection = quitChoiceKeepBackground
 		return true
 	case a.keybinds.Match(ev, ui.KeybindModalFocusRight), a.keybinds.Match(ev, ui.KeybindModalMoveDown), a.keybinds.Match(ev, ui.KeybindModalMoveDownAlt), a.keybinds.Match(ev, ui.KeybindModalFocusNext), a.keybinds.Match(ev, ui.KeybindModalFocusPrev), a.keybinds.Match(ev, ui.KeybindPlanExitToggle), a.keybinds.Match(ev, ui.KeybindPlanExitToggleLeft), a.keybinds.Match(ev, ui.KeybindPlanExitToggleRight):
 		a.quitModal.Selection = 1 - a.quitModal.Selection
@@ -183,12 +183,12 @@ func (a *App) handleQuitModalMouse(ev *tcell.EventMouse) bool {
 	}
 	x, y := ev.Position()
 	if a.quitModal.CancelRect.Contains(x, y) {
-		a.quitModal.Selection = quitChoiceCloseSessions
+		a.quitModal.Selection = quitChoiceKeepBackground
 		a.confirmQuitModalSelection()
 		return true
 	}
 	if a.quitModal.ConfirmRect.Contains(x, y) {
-		a.quitModal.Selection = quitChoiceKeepBackground
+		a.quitModal.Selection = quitChoiceCloseSessions
 		a.confirmQuitModalSelection()
 		return true
 	}
@@ -229,35 +229,35 @@ func (a *App) drawQuitModal() {
 		ui.DrawText(a.screen, modal.X+2, modal.Y+2+i, modal.W-4, theme.Text, line)
 	}
 	buttonY := modal.Y + modal.H - 2
-	closeLabel := " Close sessions and exit "
 	keepLabel := " Keep running in background "
+	closeLabel := " Close sessions and exit "
 	if !a.quitModal.Interactive {
 		keepLabel = " Background keep-running unavailable "
 	}
 	if a.quitModal.ShutdownInProgress {
-		keepLabel = " Closing interactive runtime... "
+		closeLabel = " Closing interactive runtime... "
 	}
-	closeStyle := theme.Element
 	keepStyle := theme.Element
-	if a.quitModal.Selection == quitChoiceCloseSessions {
-		closeStyle = theme.Accent
-	} else {
+	closeStyle := theme.Element
+	if a.quitModal.Selection == quitChoiceKeepBackground {
 		keepStyle = theme.Accent
+	} else {
+		closeStyle = theme.Accent
 	}
-	closeW := len([]rune(closeLabel))
 	keepW := len([]rune(keepLabel))
+	closeW := len([]rune(closeLabel))
 	gap := 2
-	totalW := closeW + gap + keepW
+	totalW := keepW + gap + closeW
 	if totalW > modal.W-4 {
 		keepLabel = " Keep background "
 		keepW = len([]rune(keepLabel))
-		totalW = closeW + gap + keepW
+		totalW = keepW + gap + closeW
 	}
 	startX := modal.X + maxInt(2, (modal.W-totalW)/2)
-	a.quitModal.CancelRect = ui.Rect{X: startX, Y: buttonY, W: closeW, H: 1}
-	a.quitModal.ConfirmRect = ui.Rect{X: startX + closeW + gap, Y: buttonY, W: keepW, H: 1}
-	ui.DrawText(a.screen, a.quitModal.CancelRect.X, buttonY, closeW, closeStyle, closeLabel)
-	ui.DrawText(a.screen, a.quitModal.ConfirmRect.X, buttonY, keepW, keepStyle, keepLabel)
+	a.quitModal.CancelRect = ui.Rect{X: startX, Y: buttonY, W: keepW, H: 1}
+	a.quitModal.ConfirmRect = ui.Rect{X: startX + keepW + gap, Y: buttonY, W: closeW, H: 1}
+	ui.DrawText(a.screen, a.quitModal.CancelRect.X, buttonY, keepW, keepStyle, keepLabel)
+	ui.DrawText(a.screen, a.quitModal.ConfirmRect.X, buttonY, closeW, closeStyle, closeLabel)
 }
 
 func (a *App) quitModalLines(width int) []string {

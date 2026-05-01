@@ -196,6 +196,8 @@ function formatRemoteSessionStatus(value: string | null | undefined): string {
       return 'preflight ready'
     case 'waiting_for_child':
       return 'waiting for child'
+    case 'auth_required':
+      return 'auth required'
     case 'waiting_for_approval':
       return 'waiting for approval'
     default:
@@ -1420,8 +1422,8 @@ export function DesktopSwarmDashboard() {
         </div>
       </div>
 
-      {error ? <Card className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
-      {status ? <Card className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
+      {error ? <Card data-testid="swarm-dashboard-error" className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
+      {status ? <Card data-testid="swarm-dashboard-status" className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
 
       <div className="flex flex-col gap-8">
         <Card className="p-5">
@@ -1453,7 +1455,7 @@ export function DesktopSwarmDashboard() {
                   <div className="flex flex-col items-start gap-2 md:items-end">
                     <Badge tone="neutral">{formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}</Badge>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" onClick={openAddSwarm} disabled={loading || busy}>
+                      <Button type="button" data-testid="swarm-dashboard-add-swarm" onClick={openAddSwarm} disabled={loading || busy}>
                         <Plus size={14} />
                         Add swarm
                       </Button>

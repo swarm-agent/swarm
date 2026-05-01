@@ -12,6 +12,7 @@ import type { DesktopOnboardingStatus } from '../../onboarding/types'
 import {
   approveRemoteDeploySession,
   createRemoteDeploySession,
+  fetchRemoteDeploySession,
   fetchRemoteDeploySessions,
   startRemoteDeploySession,
   suggestDeployContainerPackages,
@@ -19,6 +20,7 @@ import {
   type DeployContainerPackageSelection,
   type RemoteDeployPreflightError,
   type RemoteDeploySession,
+  type RemoteDeployStartError,
 } from '../api/deploy-container'
 import { replicateSwarm, ReplicateSwarmLaunchError } from '../api/replicate-swarm'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
@@ -73,7 +75,9 @@ interface ContainerPackageDraft {
 
 const CONTAINER_PACKAGE_BASE_IMAGE = 'ubuntu:24.04'
 const CONTAINER_PACKAGE_MANAGER = 'apt'
-const REMOTE_IMAGE_DELIVERY_MODE: 'registry' = 'registry'
+const REMOTE_IMAGE_DELIVERY_MODE_RELEASE: 'registry' = 'registry'
+const REMOTE_IMAGE_DELIVERY_MODE_DEV: 'archive' = 'archive'
+const REMOTE_LAUNCH_POLL_INTERVAL_MS = 2000
 
 const DEFAULT_CONTAINER_PACKAGES: ContainerPackageDraft[] = [
   'bash',
@@ -557,6 +561,47 @@ function parseRemotePreflightGuidance(message: string): RemotePreflightGuidance 
   }
 }
 
+function remoteDeployStartError(error: unknown): RemoteDeployStartError | undefined {
+  if (!error || typeof error !== 'object' || !('remoteStart' in error)) {
+    return undefined
+  }
+  return (error as Error & { remoteStart?: RemoteDeployStartError }).remoteStart
+}
+
+function remoteLaunchStatusMessage(session: RemoteDeploySession, fallbackMethod: RemoteDeployMethod): string {
+  const progress = String(session.last_progress ?? '').trim()
+  const target = String(session.ssh_session_target ?? '').trim() || 'remote host'
+  const status = String(session.status ?? '').trim()
+  if (status === 'failed') {
+    return String(session.last_error ?? '').trim() || progress || `Remote deploy failed on ${target}.`
+  }
+  if (session.remote_auth_url) {
+    return `Remote child started. Approve Tailscale login: ${session.remote_auth_url}`
+  }
+  if (session.remote_endpoint) {
+    return `Remote child started. Waiting for the child to enroll back at ${session.remote_endpoint}…`
+  }
+  if (progress) {
+    return progress
+  }
+  if (status === 'starting') {
+    return `Remote deploy is running on ${target}.`
+  }
+  if (status === 'waiting_for_approval' || status === 'waiting_for_child') {
+    return `Remote child started. Waiting for the child to enroll back over ${fallbackMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`
+  }
+  return ''
+}
+
+function remoteLaunchFailureMessage(error: unknown, session: RemoteDeploySession | null): string {
+  const base = error instanceof Error ? error.message : 'Failed to launch remote swarm'
+  const details = [
+    String(session?.last_progress ?? '').trim(),
+    String(session?.last_error ?? '').trim(),
+  ].filter((value, index, values) => value && value !== base && values.indexOf(value) === index)
+  return [base, ...details].join('\n')
+}
+
 export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete }: AddSwarmModalProps) {
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -600,6 +645,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   ) as 'podman' | 'docker' | ''
   const activeRuntimeLabel = launchTarget === 'remote' ? remoteRuntimeChoice : runtimeChoice
   const devMode = Boolean(currentOnboardingStatus?.config.devMode)
+  const remoteImageDeliveryMode = devMode ? REMOTE_IMAGE_DELIVERY_MODE_DEV : REMOTE_IMAGE_DELIVERY_MODE_RELEASE
 
   const group = useMemo(() => currentGroup(currentOnboardingStatus), [currentOnboardingStatus])
   const hostSwarmID = group?.group.hostSwarmID || ''
@@ -855,8 +901,14 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     }
   }, [remoteDeployMethod, remoteReachableHost, remoteSSHTarget])
 
-  const refreshRemoteSessions = async (): Promise<RemoteDeploySession[]> => {
-    const nextSessions = await fetchRemoteDeploySessions({ refresh: true })
+  const refreshRemoteSessions = async (options?: { refresh?: boolean; sessionID?: string }): Promise<RemoteDeploySession[]> => {
+    if (options?.sessionID?.trim()) {
+      const nextSession = await fetchRemoteDeploySession(options.sessionID.trim(), { refresh: options.refresh ?? true })
+      setRemoteSessions((current) => [nextSession, ...current.filter((item) => item.id !== nextSession.id)])
+      logAddSwarm('refreshed remote session', { session_id: nextSession.id, status: nextSession.status })
+      return [nextSession]
+    }
+    const nextSessions = await fetchRemoteDeploySessions({ refresh: options?.refresh ?? true })
     setRemoteSessions(nextSessions)
     logAddSwarm('refreshed remote session list', { sessions: nextSessions.length })
     return nextSessions
@@ -917,7 +969,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         groupID: group.group.id,
         groupName: group.group.name,
         remoteRuntime: remoteRuntimeChoice,
-        imageDeliveryMode: REMOTE_IMAGE_DELIVERY_MODE,
+        imageDeliveryMode: remoteImageDeliveryMode,
         syncEnabled,
         bypassPermissions,
         containerPackages: buildContainerPackageManifest(containerPackages),
@@ -1075,6 +1127,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('Run the remote preflight check and fix any errors before launching.')
       return
     }
+    if (remotePreflightSession.name?.trim() !== swarmName.trim()) {
+      setError('Run remote preflight again after changing the child swarm name.')
+      return
+    }
     if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
       setError('Vault password is required to sync from a vaulted host.')
       return
@@ -1086,6 +1142,15 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
     setSubmitting(true)
     setError(null)
+    let latestRemoteSession: RemoteDeploySession | null = remotePreflightSession
+    let pollLaunchProgress = false
+    let launchProgressPoll: Promise<void> | null = null
+    const stopLaunchProgressPoll = async () => {
+      pollLaunchProgress = false
+      if (launchProgressPoll) {
+        await launchProgressPoll
+      }
+    }
     try {
       const session = remotePreflightSession
       setStatus(`Preflight ready: ${session.preflight.summary || `copying ${session.preflight.files_to_copy?.length || 0} files to ${remoteSSHTarget.trim()}`}`)
@@ -1104,7 +1169,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         selectedRemotePayloads.length > 0
           ? 'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.'
           : 'No workspace payloads will be staged; the remote child will start empty and connect back to this master.',
-        `This will deliver generated config/install/start content over SSH stdin${selectedRemotePayloads.length > 0 ? ' and copy selected payload archives over SSH' : ''}, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
+        devMode
+          ? `This will deliver generated config/install/start content over SSH stdin, copy a locally built dev Swarm image archive${selectedRemotePayloads.length > 0 ? ' and selected payload archives' : ''} over SSH, then load and launch it on the remote host.`
+          : `This will deliver generated config/install/start content over SSH stdin${selectedRemotePayloads.length > 0 ? ' and copy selected payload archives over SSH' : ''}, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
         `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
         'Swarm will not install persistence on the remote machine in this path.',
         '',
@@ -1116,28 +1183,56 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       }
 
       setStatus('Preparing payloads locally and shipping the minimum needed over SSH…')
+      pollLaunchProgress = true
+      launchProgressPoll = (async () => {
+        while (pollLaunchProgress) {
+          await new Promise((resolve) => window.setTimeout(resolve, REMOTE_LAUNCH_POLL_INTERVAL_MS))
+          if (!pollLaunchProgress) {
+            break
+          }
+          try {
+            const sessions = await refreshRemoteSessions({ sessionID: session.id, refresh: false })
+            const nextSession = sessions.find((item) => item.id === session.id)
+            if (!nextSession) {
+              continue
+            }
+            latestRemoteSession = nextSession
+            const nextStatus = remoteLaunchStatusMessage(nextSession, remoteDeployMethod)
+            if (nextStatus) {
+              setStatus(nextStatus)
+            }
+          } catch (pollErr) {
+            logAddSwarmError('remote launch progress poll failed', pollErr, {
+              session_id: session.id,
+              ssh_target: remoteSSHTarget.trim(),
+            })
+          }
+        }
+      })()
       let currentSession = await startRemoteDeploySession(session.id, {
         tailscaleAuthKey: remoteDeployMethod === 'tailscale' && remoteTailscaleAuthMode === 'key' ? remoteTailscaleAuthKey.trim() : '',
         syncVaultPassword: syncEnabled && hostVaultEnabled ? syncVaultPassword.trim() : '',
       })
-      await refreshRemoteSessions()
-      if (currentSession.remote_auth_url) {
-        setStatus(`Remote child started. Approve Tailscale login: ${currentSession.remote_auth_url}`)
-      } else if (currentSession.remote_endpoint) {
-        setStatus(`Remote child started. Waiting for the child to enroll back over ${currentSession.transport_mode === 'lan' ? 'LAN / WireGuard' : 'the selected transport'} at ${currentSession.remote_endpoint}…`)
-      } else {
-        setStatus(`Remote child started. Waiting for the child to enroll back over ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`)
-      }
+      latestRemoteSession = currentSession
+      await stopLaunchProgressPoll()
+      await refreshRemoteSessions({ sessionID: session.id })
+      setStatus(remoteLaunchStatusMessage(currentSession, remoteDeployMethod)
+        || `Remote child started. Waiting for the child to enroll back over ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`)
 
       const startedAt = Date.now()
       const timeoutMs = 5 * 60 * 1000
       while (Date.now() - startedAt < timeoutMs) {
-        const sessions = await refreshRemoteSessions()
+        const sessions = await refreshRemoteSessions({ sessionID: session.id })
         currentSession = sessions.find((item) => item.id === session.id) ?? currentSession
+        latestRemoteSession = currentSession
+        const nextStatus = remoteLaunchStatusMessage(currentSession, remoteDeployMethod)
+        if (nextStatus) {
+          setStatus(nextStatus)
+        }
         if (currentSession.enrollment_id || currentSession.child_swarm_id) {
           break
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 2000))
+        await new Promise((resolve) => window.setTimeout(resolve, REMOTE_LAUNCH_POLL_INTERVAL_MS))
       }
       if (!currentSession.enrollment_id && !currentSession.child_swarm_id) {
         throw new Error(currentSession.last_error || 'Remote child did not enroll before timeout')
@@ -1145,16 +1240,20 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
       setStatus(`Remote child ${currentSession.name} is waiting for approval on the main swarm…`)
       currentSession = await approveRemoteDeploySession(currentSession.id)
-      await refreshRemoteSessions()
+      await refreshRemoteSessions({ sessionID: currentSession.id })
       await finishSuccess(`Added remote child ${currentSession.name} to the swarm.`)
     } catch (err) {
+      await stopLaunchProgressPoll()
+      const startDetails = remoteDeployStartError(err)
+      latestRemoteSession = startDetails?.session ?? latestRemoteSession
       logAddSwarmError('remote launch flow failed', err, {
         swarm_name: swarmName.trim(),
         ssh_target: remoteSSHTarget.trim(),
         group_id: group.group.id,
       })
-      setError(err instanceof Error ? err.message : 'Failed to launch remote swarm')
+      setError(remoteLaunchFailureMessage(err, latestRemoteSession))
     } finally {
+      await stopLaunchProgressPoll()
       setSubmitting(false)
     }
   }
@@ -1211,6 +1310,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     <div className="flex items-start gap-3">
                       <input
                         type="checkbox"
+                        data-testid="add-swarm-workspace-checkbox"
+                        data-workspace-path={workspace.workspacePath}
+                        data-workspace-name={workspace.workspaceName}
                         className="mt-1 h-4 w-4 rounded border-[var(--app-border)]"
                         checked={checked}
                         onChange={(event) => {
@@ -1398,7 +1500,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   return (
     <Dialog>
       <DialogBackdrop onClick={closeModal} />
-      <DialogPanel className="mx-auto mt-[8vh] flex w-[min(880px,calc(100vw-24px))] max-w-[880px] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(880px,calc(100vw-48px))]">
+      <DialogPanel
+        data-testid="add-swarm-modal"
+        className="mx-auto mt-[8vh] flex w-[min(880px,calc(100vw-24px))] max-w-[880px] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(880px,calc(100vw-48px))]"
+      >
         <div className="border-b border-[var(--app-border)] px-6 py-5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -1422,13 +1527,13 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           ) : null}
 
           {error ? (
-            <Card className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">
+            <Card data-testid="add-swarm-error" className="whitespace-pre-wrap border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">
               {error}
             </Card>
           ) : null}
 
           {status ? (
-            <Card className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">
+            <Card data-testid="add-swarm-status" className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">
               {status}
             </Card>
           ) : null}
@@ -1438,6 +1543,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             <div className="grid gap-3 sm:grid-cols-2">
               <button
                 type="button"
+                data-testid="add-swarm-target-local"
                 className={`rounded-2xl border p-4 text-left transition ${launchTarget === 'local' ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
                 onClick={() => setLaunchTarget('local')}
                 disabled={submitting}
@@ -1458,6 +1564,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
               <button
                 type="button"
+                data-testid="add-swarm-target-remote"
                 className={`rounded-2xl border p-4 text-left transition ${launchTarget === 'remote' ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] opacity-75'}`}
                 onClick={() => setLaunchTarget('remote')}
                 disabled={submitting}
@@ -1624,6 +1731,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       Use the host vault password so the child stores synced credentials in its own vault.
                     </div>
                     <Input
+                      data-testid="add-swarm-sync-vault-password"
                       className="mt-3"
                       type="password"
                       value={syncVaultPassword}
@@ -1650,7 +1758,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <Input
                     value={swarmName}
                     onChange={(event) => {
-                      invalidateRemotePreflight()
                       setSwarmName(event.target.value)
                     }}
                     disabled={submitting}
@@ -1675,6 +1782,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">SSH alias or target</label>
                     <Input
+                      data-testid="add-swarm-ssh-target"
                       value={remoteSSHTarget}
                       onChange={(event) => {
                         setRemoteSSHTarget(event.target.value)
@@ -1689,6 +1797,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Remote runtime</label>
                     <Select
+                      data-testid="add-swarm-remote-runtime"
                       value={remoteRuntimeChoice}
                       onChange={(event) => {
                         setRemoteRuntimeChoice((event.target.value === 'podman' ? 'podman' : 'docker'))
@@ -1705,6 +1814,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <Button
                     type="button"
                     variant="outline"
+                    data-testid="add-swarm-run-preflight"
                     onClick={() => {
                       setError(null)
                       setStatus('Running remote preflight…')
@@ -1758,6 +1868,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     <button
                       key={option.id}
                       type="button"
+                      data-testid={`add-swarm-method-${option.id}`}
                       onClick={() => {
                         setRemoteDeployMethod(option.id)
                         setRemotePreflightSession(null)
@@ -1814,6 +1925,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     <div className="grid gap-2 sm:max-w-xs">
                       <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Login mode</label>
                       <Select
+                        data-testid="add-swarm-tailscale-login-mode"
                         value={remoteTailscaleAuthMode}
                         onChange={(event) => setRemoteTailscaleAuthMode(event.target.value === 'key' ? 'key' : 'manual')}
                         disabled={submitting || remotePreflightLoading}
@@ -1826,6 +1938,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       <div className="grid gap-2">
                         <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Launch-only auth key</label>
                         <Input
+                          data-testid="add-swarm-tailscale-auth-key"
                           type="password"
                           value={remoteTailscaleAuthKey}
                           onChange={(event) => setRemoteTailscaleAuthKey(event.target.value)}
@@ -1846,6 +1959,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
                     <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Remote reachable host</label>
                     <Input
+                      data-testid="add-swarm-remote-reachable-host"
                       value={remoteReachableHost}
                       onChange={(event) => {
                         setRemoteReachableHost(event.target.value)
@@ -1961,6 +2075,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       Use the host vault password so the remote child stores synced credentials in its own vault.
                     </div>
                     <Input
+                      data-testid="add-swarm-sync-vault-password"
                       className="mt-3"
                       type="password"
                       value={syncVaultPassword}
@@ -1994,7 +2109,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               ) : null}
 
               {remotePreflightSession ? (
-                <div className="rounded-2xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">
+                <div data-testid="add-swarm-preflight-success" className="rounded-2xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">
                   <div className="font-medium">Preflight passed</div>
                   <div className="mt-2 text-[var(--app-text)]">
                     {remotePreflightSession.preflight.summary || 'Remote host is ready for SSH launch.'}
@@ -2023,6 +2138,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div className="grid gap-2 sm:max-w-[320px]">
                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Child swarm name</label>
                   <Input
+                    data-testid="add-swarm-child-name"
                     value={swarmName}
                     onChange={(event) => {
                       invalidateRemotePreflight()
@@ -2078,6 +2194,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             <Button type="button" variant="outline" onClick={closeModal} disabled={submitting}>Cancel</Button>
             <Button
               type="button"
+              data-testid="add-swarm-launch"
               onClick={() => void handleSubmit()}
               disabled={
                 submitting

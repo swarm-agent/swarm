@@ -111,7 +111,23 @@ func commitOnlyToolNames() []string {
 }
 
 func allowCommitOnlyTools(profile pebblestore.AgentProfile) bool {
-	return strings.EqualFold(strings.TrimSpace(profile.Name), "commit") && profile.Mode == "background"
+	if strings.EqualFold(strings.TrimSpace(profile.Name), "commit") && profile.Mode == "background" {
+		return true
+	}
+	contract := profile.ToolContract
+	if contract == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(contract.Preset), "background_commit") {
+		return true
+	}
+	for _, name := range commitOnlyToolNames() {
+		cfg, ok := contract.Tools[name]
+		if ok && cfg.Enabled != nil && *cfg.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) ResolveAgentToolContract(profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {

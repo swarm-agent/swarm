@@ -41,6 +41,13 @@ type RemoteDeployDiskRecord struct {
 	RequiredBytes  int64  `json:"required_bytes,omitempty"`
 }
 
+type RemoteDeployTimingRecord struct {
+	Step      string            `json:"step"`
+	ElapsedMS int64             `json:"elapsed_ms"`
+	Status    string            `json:"status,omitempty"`
+	Fields    map[string]string `json:"fields,omitempty"`
+}
+
 type RemoteDeploySessionRecord struct {
 	ID                      string                         `json:"id"`
 	Name                    string                         `json:"name"`
@@ -80,6 +87,7 @@ type RemoteDeploySessionRecord struct {
 	ImageRef                string                         `json:"image_ref,omitempty"`
 	ImageSignature          string                         `json:"image_signature,omitempty"`
 	ImageArchiveBytes       int64                          `json:"image_archive_bytes,omitempty"`
+	LastProgress            string                         `json:"last_progress,omitempty"`
 	LastRemoteOutput        string                         `json:"last_remote_output,omitempty"`
 	LastError               string                         `json:"last_error,omitempty"`
 	SSHReachable            bool                           `json:"ssh_reachable,omitempty"`
@@ -98,6 +106,7 @@ type RemoteDeploySessionRecord struct {
 	RemoteDisk              RemoteDeployDiskRecord         `json:"remote_disk,omitempty"`
 	FilesToCopy             []string                       `json:"files_to_copy,omitempty"`
 	Payloads                []RemoteDeployPayloadRecord    `json:"payloads,omitempty"`
+	StartTimings            []RemoteDeployTimingRecord     `json:"start_timings,omitempty"`
 	ApprovedAt              int64                          `json:"approved_at,omitempty"`
 	AttachedAt              int64                          `json:"attached_at,omitempty"`
 	CreatedAt               int64                          `json:"created_at"`
@@ -250,6 +259,7 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 	record.LastPairingURL = strings.TrimSpace(record.LastPairingURL)
 	record.ImageRef = strings.TrimSpace(record.ImageRef)
 	record.ImageSignature = strings.TrimSpace(record.ImageSignature)
+	record.LastProgress = strings.TrimSpace(record.LastProgress)
 	record.LastRemoteOutput = strings.TrimSpace(record.LastRemoteOutput)
 	record.LastError = strings.TrimSpace(record.LastError)
 	record.SudoMode = strings.TrimSpace(record.SudoMode)
@@ -305,6 +315,7 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 			record.Payloads[i].IncludedBytes = 0
 		}
 	}
+	record.StartTimings = normalizeRemoteDeployTimingRecords(record.StartTimings)
 	if record.ApprovedAt < 0 {
 		record.ApprovedAt = 0
 	}
@@ -321,6 +332,49 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 		record.UpdatedAt = 0
 	}
 	return record
+}
+
+func normalizeRemoteDeployTimingRecords(values []RemoteDeployTimingRecord) []RemoteDeployTimingRecord {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]RemoteDeployTimingRecord, 0, len(values))
+	for _, value := range values {
+		step := strings.TrimSpace(value.Step)
+		if step == "" {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(value.Status))
+		if status != "error" {
+			status = "ok"
+		}
+		fields := make(map[string]string, len(value.Fields))
+		for key, fieldValue := range value.Fields {
+			key = strings.TrimSpace(key)
+			fieldValue = strings.TrimSpace(fieldValue)
+			if key == "" || fieldValue == "" {
+				continue
+			}
+			fields[key] = fieldValue
+		}
+		if len(fields) == 0 {
+			fields = nil
+		}
+		elapsedMS := value.ElapsedMS
+		if elapsedMS < 0 {
+			elapsedMS = 0
+		}
+		out = append(out, RemoteDeployTimingRecord{
+			Step:      step,
+			ElapsedMS: elapsedMS,
+			Status:    status,
+			Fields:    fields,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func normalizeRemoteDeployCandidateList(values []string) []string {
@@ -357,6 +411,8 @@ func normalizeRemoteDeploySessionStatus(value string) string {
 		return "preflight_ready"
 	case "starting":
 		return "starting"
+	case "auth_required":
+		return "auth_required"
 	case "waiting_for_child":
 		return "waiting_for_child"
 	case "waiting_for_approval":

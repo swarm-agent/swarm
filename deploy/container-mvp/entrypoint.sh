@@ -186,8 +186,7 @@ set -- \
   --reset \
   --hostname="${TS_HOSTNAME}" \
   --accept-dns=true \
-  --accept-routes=false \
-  --timeout=1s
+  --accept-routes=false
 
 if [ -n "${TS_AUTHKEY:-}" ]; then
   set -- "$@" --auth-key="${TS_AUTHKEY}"
@@ -202,6 +201,7 @@ served=0
 
 while :; do
   status_json="$(tailscale --socket="${TS_SOCKET}" status --json 2>/dev/null | tr -d '\n' || true)"
+  backend_state=""
   if [ -n "${status_json}" ]; then
     if [ -z "${auth_url}" ]; then
       auth_url="$(printf '%s' "${status_json}" | jq -r '.AuthURL // ""' 2>/dev/null || true)"
@@ -224,6 +224,16 @@ while :; do
       fi
       echo "SWARM_TAILNET_URL=https://${dns_name}"
       break
+    fi
+  fi
+
+  if [ -n "${TS_UP_PID:-}" ] && ! kill -0 "${TS_UP_PID}" 2>/dev/null; then
+    ts_up_status=0
+    wait "${TS_UP_PID}" || ts_up_status="$?"
+    TS_UP_PID=""
+    if [ "${backend_state}" != "Running" ] && [ -z "${auth_url}" ]; then
+      echo "[swarm-container] tailscale up exited before auth URL or running state (status=${ts_up_status})" >&2
+      cat "${TS_UP_LOG}" >&2 || true
     fi
   fi
 

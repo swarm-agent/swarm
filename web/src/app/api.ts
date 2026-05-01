@@ -78,6 +78,7 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit, att
     })
     return fetch(input, {
       ...init,
+      cache: init?.cache ?? 'no-store',
       credentials: init?.credentials ?? 'same-origin',
       headers,
     })

@@ -314,7 +314,11 @@ func formatUnifiedToolEntry(entry chatToolStreamEntry) string {
 		}
 		lines = append(lines, preview)
 	}
-	return clampEllipsis(strings.Join(lines, "\n"), maxUnifiedRunes)
+	joined := strings.Join(lines, "\n")
+	if strings.EqualFold(strings.TrimSpace(entry.ToolName), "bash") && strings.Contains(joined, "/output") {
+		return joined
+	}
+	return clampEllipsis(joined, maxUnifiedRunes)
 }
 
 func formatEditToolEntry(entry chatToolStreamEntry, maxRunes int) string {
@@ -1139,7 +1143,7 @@ func toolPreviewLines(entry chatToolStreamEntry, maxRunes, maxLines int) []strin
 		return nil
 	}
 	if isLiveBashToolEntry(entry) {
-		return withBashOutputHint(entry, liveBashPreviewLines(entry, maxRunes, maxLines), maxRunes)
+		return bashPreviewLinesWithHint(entry, maxRunes, maxLines)
 	}
 
 	if editLines := editToolPreviewLines(entry, maxRunes, maxLines); len(editLines) > 0 {
@@ -1156,10 +1160,12 @@ func toolPreviewLines(entry chatToolStreamEntry, maxRunes, maxLines int) []strin
 	if preview == "" {
 		return nil
 	}
-	if structured := structuredToolPreviewLines(toolName, preview, maxRunes, maxLines); len(structured) > 0 {
-		if toolName == "bash" {
-			return withBashOutputHint(entry, structured, maxRunes)
+	if toolName == "bash" {
+		if lines := bashPreviewLinesWithHint(entry, maxRunes, maxLines); len(lines) > 0 {
+			return lines
 		}
+	}
+	if structured := structuredToolPreviewLines(toolName, preview, maxRunes, maxLines); len(structured) > 0 {
 		return structured
 	}
 	if summary := summarizeStructuredToolPreview(toolName, preview); summary != "" {
@@ -1196,14 +1202,30 @@ func isLiveBashToolEntry(entry chatToolStreamEntry) bool {
 }
 
 func liveBashPreviewLines(entry chatToolStreamEntry, maxRunes, maxLines int) []string {
+	lines, _ := bashPreviewLinesAndTruncated(entry, maxRunes, maxLines)
+	return lines
+}
+
+func bashPreviewLinesWithHint(entry chatToolStreamEntry, maxRunes, maxLines int) []string {
+	lines, truncated := bashPreviewLinesAndTruncated(entry, maxRunes, maxLines)
+	if len(lines) == 0 || !truncated {
+		return lines
+	}
+	hint := clampEllipsis("write /output to see full output", maxRunes)
+	lines[len(lines)-1] = hint
+	return lines
+}
+
+func bashPreviewLinesAndTruncated(entry chatToolStreamEntry, maxRunes, maxLines int) ([]string, bool) {
 	if maxRunes <= 0 {
 		maxRunes = chatToolPreviewMaxRunes
 	}
 	if maxLines <= 0 {
 		maxLines = chatBashLivePreviewMaxLines
 	}
-	text, _ := bashPreviewSource(entry)
-	return tailPreviewLines(text, maxRunes, maxLines)
+	text, payloadTruncated := bashPreviewSource(entry)
+	lines, previewTruncated := tailPreviewLinesWithTruncation(text, maxRunes, maxLines)
+	return lines, payloadTruncated || previewTruncated
 }
 
 func structuredToolPreviewLines(toolName, raw string, maxRunes, maxLines int) []string {
@@ -1315,29 +1337,8 @@ func structuredBashPreviewLines(payload map[string]any, maxRunes, maxLines int) 
 	if output == "" {
 		return nil
 	}
-	return tailPreviewLines(output, maxRunes, maxLines)
-}
-
-func withBashOutputHint(entry chatToolStreamEntry, lines []string, maxRunes int) []string {
-	if len(lines) == 0 || !bashOutputNeedsViewerHint(entry, len(lines)) {
-		return lines
-	}
-	hint := clampEllipsis("write /output to see full output", maxRunes)
-	return append(lines, hint)
-}
-
-func bashOutputNeedsViewerHint(entry chatToolStreamEntry, shownLines int) bool {
-	if shownLines <= 0 {
-		return false
-	}
-	text, truncated := bashPreviewSource(entry)
-	if truncated || strings.HasPrefix(strings.TrimSpace(entry.Output), "...") || strings.HasPrefix(strings.TrimSpace(entry.Raw), "...") {
-		return true
-	}
-	if text == "" {
-		return false
-	}
-	return countNonEmptyPreviewLines(text) > shownLines
+	lines, _ := tailPreviewLinesWithTruncation(output, maxRunes, maxLines)
+	return lines
 }
 
 func bashPreviewSource(entry chatToolStreamEntry) (string, bool) {
@@ -1362,6 +1363,11 @@ func bashPreviewSource(entry chatToolStreamEntry) (string, bool) {
 }
 
 func tailPreviewLines(text string, maxRunes, maxLines int) []string {
+	lines, _ := tailPreviewLinesWithTruncation(text, maxRunes, maxLines)
+	return lines
+}
+
+func tailPreviewLinesWithTruncation(text string, maxRunes, maxLines int) ([]string, bool) {
 	if maxRunes <= 0 {
 		maxRunes = chatToolPreviewMaxRunes
 	}
@@ -1370,21 +1376,32 @@ func tailPreviewLines(text string, maxRunes, maxLines int) []string {
 	}
 	text = normalizePreviewNewlines(text)
 	if strings.TrimSpace(text) == "" {
-		return nil
+		return nil, false
 	}
 	parts := strings.Split(text, "\n")
+	totalNonEmpty := 0
+	for _, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			totalNonEmpty++
+		}
+	}
 	lines := make([]string, 0, minInt(maxLines, len(parts)))
+	lineTruncated := false
 	for i := len(parts) - 1; i >= 0 && len(lines) < maxLines; i-- {
 		line := strings.TrimRight(parts[i], "\t ")
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		lines = append(lines, clampEllipsis(line, maxRunes))
+		clamped := clampEllipsis(line, maxRunes)
+		if clamped != line {
+			lineTruncated = true
+		}
+		lines = append(lines, clamped)
 	}
 	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
 		lines[i], lines[j] = lines[j], lines[i]
 	}
-	return lines
+	return lines, lineTruncated || totalNonEmpty > len(lines)
 }
 
 func countNonEmptyPreviewLines(text string) int {
@@ -4071,6 +4088,10 @@ func jsonStringMap(payload map[string]any, key string) map[string]string {
 }
 
 func parseToolJSON(raw string) map[string]any {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw[0] != '{' {
+		return nil
+	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return nil

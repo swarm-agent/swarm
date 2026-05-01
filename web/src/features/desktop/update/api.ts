@@ -21,6 +21,10 @@ export interface DesktopUpdateJob {
   status: 'idle' | 'running' | 'completed' | 'failed' | string
   message?: string
   error?: string
+  lane?: string
+  command?: string
+  helper_pid?: number
+  log_path?: string
   started_at_unix_ms?: number
   updated_at_unix_ms?: number
   completed_at_unix_ms?: number

@@ -22,6 +22,7 @@ import {
 } from '../chat/queries/chat-queries'
 import { sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
+import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { normalizeGlobalThemeSettings, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import {
@@ -42,6 +43,7 @@ import type { VaultStatus } from '../vault/types'
 import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/workspace-overview'
 import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
+import { appendLiveAssistantSegment } from './live-assistant-segments'
 import { clearNotifications as clearDurableNotifications, fetchNotifications, fetchNotificationSummary, updateNotification } from '../notifications/api'
 import type { DurableNotificationRecord, NotificationSummaryRecord } from '../notifications/types'
 
@@ -532,6 +534,7 @@ function emptyLiveState(): DesktopSessionRecord['live'] {
     error: null,
     seq: 0,
     assistantDraft: '',
+    retainedAssistantSegments: [],
     reasoningSummary: '',
     reasoningText: '',
     reasoningState: 'idle',
@@ -583,6 +586,20 @@ function resetRetainedLiveToolState(live: DesktopSessionRecord['live']): void {
   live.retainedToolArguments = null
   live.retainedToolOutput = ''
   live.retainedToolState = null
+}
+
+function flushLiveAssistantDraftToSegment(live: DesktopSessionRecord['live'], createdAt: number): void {
+  const draft = live.assistantDraft.trim()
+  if (!draft) {
+    return
+  }
+  live.retainedAssistantSegments = appendLiveAssistantSegment(live.retainedAssistantSegments, draft, createdAt, live.seq)
+  live.assistantDraft = ''
+}
+
+function resetLiveAssistantState(live: DesktopSessionRecord['live']): void {
+  live.assistantDraft = ''
+  live.retainedAssistantSegments = []
 }
 
 function resetLiveReasoningState(live: DesktopSessionRecord['live']): void {
@@ -817,7 +834,7 @@ function applyLifecycleSnapshot(
   cancelDraftFlush(sessionId)
   retainLiveToolState(session.live, lifecycle.phase.trim().toLowerCase() === 'errored' ? 'error' : 'done')
   resetLiveToolState(session.live)
-  session.live.assistantDraft = ''
+  resetLiveAssistantState(session.live)
   resetLiveReasoningState(session.live)
   session.live.summary = lifecycleTerminalSummary(lifecycle)
 }
@@ -1094,6 +1111,7 @@ function mergeExternalSessionRecord(existing: DesktopSessionRecord | null, incom
     incoming.live.error === null &&
     incoming.live.seq === 0 &&
     incoming.live.assistantDraft === '' &&
+    incoming.live.retainedAssistantSegments.length === 0 &&
     incoming.live.reasoningSummary === '' &&
     incoming.live.startedAt === null &&
     incoming.live.awaitingAck === false
@@ -1271,7 +1289,7 @@ function applyAuthoritativeSessionStatus(
       retainLiveToolState(session.live, 'done')
       resetLiveToolState(session.live)
       session.live.summary = null
-      session.live.assistantDraft = ''
+      resetLiveAssistantState(session.live)
       resetLiveReasoningState(session.live)
       session.live.error = null
       break
@@ -1308,16 +1326,7 @@ function draftKeyForSession(sessionId: string | null, workspacePath?: string | n
 
 function updateMessagesCache(sessionId: string, message: ChatMessageRecord): void {
   deferDesktopCacheMutation('message cache sync', () => {
-    queryClient.setQueryData(sessionMessagesQueryOptions(sessionId).queryKey, (current: ChatMessageRecord[] | undefined) => {
-      const next = current ?? []
-      const existingIndex = next.findIndex((entry) => entry.globalSeq === message.globalSeq)
-      if (existingIndex >= 0) {
-        const updated = [...next]
-        updated[existingIndex] = message
-        return updated
-      }
-      return [...next, message].sort((left, right) => left.globalSeq - right.globalSeq)
-    })
+    queryClient.setQueryData(sessionMessagesQueryOptions(sessionId).queryKey, (current: ChatMessageRecord[] | undefined) => mergeMessageIntoCache(current, message))
   })
 }
 
@@ -1395,6 +1404,9 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
     case 'tool.started':
     case 'tool.delta':
     case 'tool.completed':
+      if (type === 'tool.started') {
+        flushLiveAssistantDraftToSegment(session.live, ts)
+      }
       session.live.toolName = String(payload.tool_name ?? '').trim() || session.live.toolName
       if (typeof payload.summary === 'string' && payload.summary.trim() !== '') {
         session.live.summary = payload.summary.trim()
@@ -1458,7 +1470,7 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
         updateMessagesCache(normalized.sessionId, normalized)
         if (normalized.role === 'assistant') {
           cancelDraftFlush(sessionId)
-          session.live.assistantDraft = ''
+          resetLiveAssistantState(session.live)
         }
       }
       break
@@ -1472,7 +1484,7 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
         retainLiveToolState(session.live, 'done')
         resetLiveToolState(session.live)
         session.live.summary = null
-        session.live.assistantDraft = ''
+        resetLiveAssistantState(session.live)
         resetLiveReasoningState(session.live)
         session.live.error = null
         session.live.runId = null
@@ -1778,7 +1790,8 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
   }
 
   switch (eventType) {
-    case 'session.created': {
+    case 'session.created':
+    case 'session.updated': {
       const metadataRecord = payloadRecord.metadata && typeof payloadRecord.metadata === 'object'
         ? payloadRecord.metadata as Record<string, unknown>
         : null
@@ -2856,7 +2869,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       session.live.awaitingAck = true
       session.live.summary = 'Starting…'
       session.live.error = null
-      session.live.assistantDraft = ''
+      resetLiveAssistantState(session.live)
       resetLiveToolState(session.live)
       resetLiveReasoningState(session.live)
       session.live.reasoningSegment = 0

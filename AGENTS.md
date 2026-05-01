@@ -90,14 +90,17 @@ Keep this section durable and small. It is not a live proof board.
 - Put transient test boards, investigation notes, run logs, and per-host proof details in issues, PRs, or gitignored local notes instead.
 - Source of truth for behavior is the checked-in code plus the checked-in harnesses below. If chat memory, old notes, or this file disagree with code/harnesses, code and harnesses win.
 
-Canonical harness map:
+Canonical harness map (not exhaustive; use `list`/`search` for current tests before relying on this):
 - `tests/swarmd/local_replicate_e2e.sh` — live runner for the local `/v1/swarm/replicate` path.
 - `tests/swarmd/local_replicate_recovery_e2e.sh` — live runner for local recovery on top of the real replicate path.
 - `tests/swarmd/remote_deploy_e2e.sh` — live runner for the current remote `ssh + tailscale` path.
 - `tests/swarmd/remote_deploy_recovery_e2e.sh` — live runner for remote Tailscale recovery on top of the real SSH deploy path.
+- `tests/swarmd/live_prod_update_e2e.sh` — harness-VM-only live production install/update and local-container lifecycle check.
 - `tests/swarmd/container_startup_e2e.sh` — container startup harness; use it for container bring-up checks, not as a substitute for replicate/deploy coverage.
-- `swarmd/internal/api/swarm_replicate_test.go` — unit/API coverage for `/v1/swarm/replicate` request handling.
+- `tests/swarmd/auth_footer_delete_e2e.sh` — containerized auth/footer delete regression harness.
+- `swarmd/internal/api/swarm_replicate_test.go` — legacy colocated unit/API coverage for `/v1/swarm/replicate` request handling.
 - `swarmd/tests/internal/deploy/sync_credentials_test.go` — backend sync-credential coverage used by child/host sync paths.
+- `tests/swarmd/internal/...` — preferred relocated backend test tree for new package-level backend tests when feasible.
 
 Remote/local testing boundaries:
 - Remote deploy is separate from local replicate.
@@ -130,6 +133,9 @@ Important areas:
 - `cmd/` — root-module binaries and entrypoints
 - `internal/` — root-module implementation packages
 - `pkg/` — reusable public packages
+- `bin/` — checked-in launcher shims used by local/dev workflows
+- `deploy/` — container/deployment packaging inputs
+- `theme/` — shared UI theme data
 - `README.md` — top-level product/dev workflow overview
 
 ### `swarmd/`
@@ -147,6 +153,7 @@ Browser/desktop web client.
 Important areas:
 - `web/src/` — frontend source
 - `web/scripts/` — frontend-specific scripts
+- `web/public/` — checked-in static web assets such as the favicon/logo SVG
 - `web/README.md` — web/dev-server context
 
 ### Search runtime / vendored native dependency
@@ -155,9 +162,10 @@ Important areas:
 
 These contain the vendored FFF bindings/runtime used by the canonical in-app `search` tool. Treat these directories as intentional product dependencies, not random binary junk.
 
-### Scripts
+### Scripts and docs
 - `scripts/` — root-level build/dev/audit/release helper scripts
 - `swarmd/scripts/` — backend dev helper scripts
+- `docs/` — mostly ignored local docs area with a small number of intentional tracked docs; verify with `git ls-files docs` before treating a doc as canonical or disposable.
 
 Do not add random debug/demo scripts casually. Keep only scripts that are intentional, reusable, and worth carrying in a public repo.
 
@@ -184,7 +192,7 @@ Safe local throwaway areas:
 
 Rules for scratch usage:
 - Treat these paths as local-only piles, not canonical product storage.
-- `docs/` may be used for local fast notes/plans during cleanup; do not assume it is public/canonical unless the user explicitly keeps it.
+- Prefer `tmp/`, `.swarm/`, or another ignored scratch path for local fast notes/plans; do not add new tracked `docs/` files unless they are intentional user-facing documentation.
 - Do not make runtime behavior depend on files living there unless that path is an intentional, documented product path.
 - Do not reference scratch artifacts from committed docs as if they are permanent sources of truth.
 - Before finishing a cleanup task, make sure throwaway artifacts are not being accidentally staged.
@@ -197,7 +205,7 @@ Required behavior:
 
 - Remove fast notes, temporary plans, audit scratchpads, private cleanup logs, and similar working files unless the user explicitly wants them kept.
 - Prefer gitignored local note areas over tracked cleanup/audit writeups.
-- Treat `audit/`, `docs/`, and one-off checklist files as removable if they were created for rapid internal cleanup work and are not clearly product/user documentation.
+- Treat `audit/`, ignored `docs/` scratch files, and one-off checklist files as removable if they were created for rapid internal cleanup work and are not clearly product/user documentation. Do not delete tracked docs just because they live under `docs/`; first verify intent with `git ls-files`, content, and user context.
 - Keep the public tree focused on product code, required scripts, intentional tests, and intentional user-facing docs.
 - Before claiming the tree is clean, check for secrets, personal names, local usernames, machine-specific paths, generated outputs, caches, and random scratch files.
 - If in doubt during a cleanup-for-publication pass, remove it now and re-add a cleaner version later.
@@ -208,9 +216,12 @@ Required behavior:
 - Shared run/session/auth flows should remain provider-agnostic where possible.
 - New functionality should be additive and modular.
 - Do not grow god-files.
-  - Split large frontend files by responsibility.
+  - Some frontend files are already large; do not use that as precedent for adding more unrelated responsibility.
+  - When touching large frontend files, prefer extracting focused helpers/components if it is directly related to the requested change.
   - Keep transport, parsing, state, and rendering concerns separated.
-- Keep one canonical websocket/state path for the web workspace surfaces.
+- Keep websocket/state paths canonical for the web workspace surfaces.
+  - Desktop realtime socket code lives under `web/src/features/desktop/realtime/` and desktop state wiring under `web/src/features/desktop/state/`.
+  - Chat/run streaming uses the run-stream controller path; do not add parallel ad hoc websocket state for the same flow.
 
 ## 7. Search and Native Dependency Rules
 
