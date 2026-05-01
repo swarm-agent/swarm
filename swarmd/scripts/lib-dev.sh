@@ -95,6 +95,7 @@ require_go() {
 
 run_go() {
   require_go
+  CGO_ENABLED=1 \
   GOCACHE="${GOCACHE_DIR}" \
   GOMODCACHE="${GOMODCACHE_DIR}" \
   GOPATH="${GOPATH_DIR}" \

@@ -741,6 +741,7 @@ func runGoBuildWithArgs(projectRoot, workDir, goBin, outPath, pkg string, extraA
 	cmd := exec.Command(goBin, args...)
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
+		"CGO_ENABLED=1",
 		"GOCACHE="+goCache,
 		"GOMODCACHE="+goModCache,
 		"GOPATH="+goPath,
@@ -1384,13 +1385,7 @@ func EnsureWebPrereqs(profile Profile) error {
 }
 
 func BuildWebAssets(profile Profile) error {
-	nodeMajor := detectedNodeMajor()
-	var cmd *exec.Cmd
-	if nodeMajor >= 20 {
-		cmd = exec.Command("npm", "run", "build")
-	} else {
-		cmd = exec.Command("npm", "exec", "--yes", "--package=node@22", "--", "npm", "run", "build")
-	}
+	cmd := exec.Command("npm", "run", "build")
 	cmd.Dir = profile.WebDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1401,22 +1396,6 @@ func BuildWebAssets(profile Profile) error {
 	return nil
 }
 
-func detectedNodeMajor() int {
-	if _, err := exec.LookPath("node"); err != nil {
-		return 0
-	}
-	cmd := exec.Command("node", "-p", "Number(process.versions.node.split('.')[0])")
-	cmd.Env = os.Environ()
-	output, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-	major, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil {
-		return 0
-	}
-	return major
-}
 
 func InstallDesktopAssets(profile Profile) error {
 	if strings.TrimSpace(profile.WebDir) == "" {
@@ -1602,11 +1581,7 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 		if err := EnsureWebPrereqs(profile); err != nil {
 			return err
 		}
-		cmd := exec.Command("npm", "run", "build")
-		cmd.Dir = profile.WebDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
+		if err := BuildWebAssets(profile); err != nil {
 			return err
 		}
 		if err := InstallDesktopAssets(profile); err != nil {

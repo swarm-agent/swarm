@@ -126,9 +126,9 @@ echo "building launcher and TUI binaries into ${ROOT_ARTIFACT_DIR}"
 echo "building swarmd binaries into ${SWARMD_ARTIFACT_DIR}"
 (
   cd "${ROOT_DIR}/swarmd"
-  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmd" ./cmd/swarmd
-  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmctl" ./cmd/swarmctl
-  "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarm-fff-search" ./cmd/swarm-fff-search
+  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmd" ./cmd/swarmd
+  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarmctl" ./cmd/swarmctl
+  CGO_ENABLED=1 "${GO_BIN}" build -trimpath -ldflags "${ldflags[*]}" -o "${SWARMD_ARTIFACT_DIR}/swarm-fff-search" ./cmd/swarm-fff-search
 )
 cp "${ROOT_DIR}/swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so" "${SWARMD_ARTIFACT_DIR}/libfff_c.so"
 

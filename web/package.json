@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node ./scripts/vite-launcher.mjs",
-    "build": "tsc -b && node ./scripts/vite-launcher.mjs build",
-    "preview": "node ./scripts/vite-launcher.mjs preview",
+    "dev": "node ./scripts/use-local-node.mjs ./scripts/vite-launcher.mjs",
+    "build": "node ./scripts/use-local-node.mjs ./node_modules/typescript/bin/tsc -b && node ./scripts/use-local-node.mjs ./scripts/vite-launcher.mjs build",
+    "preview": "node ./scripts/use-local-node.mjs ./scripts/vite-launcher.mjs preview",
     "test": "node --import tsx --test ./src/**/*.spec.ts"
   },
   "dependencies": {
@@ -21,10 +21,12 @@
     "zustand": "^5.0.5"
   },
   "devDependencies": {
+    "@rolldown/binding-linux-x64-gnu": "^1.0.0-rc.18",
     "@tailwindcss/vite": "^4.2.2",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^6.0.1",
+    "node": "^22.22.2",
     "playwright": "^1.59.1",
     "tsx": "^4.20.5",
     "typescript": "^5.8.3",
