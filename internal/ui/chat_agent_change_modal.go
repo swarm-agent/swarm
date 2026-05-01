@@ -31,6 +31,7 @@ type agentChangeSummary struct {
 	Thinking           string
 	DescriptionPreview string
 	PromptPreview      string
+	ToolInventory      agentToolInventory
 	Summary            string
 	ChangeRows         []agentChangeField
 }
@@ -38,6 +39,24 @@ type agentChangeSummary struct {
 type agentChangeField struct {
 	Label string
 	Value string
+}
+
+type agentToolInventory struct {
+	Tools   []agentToolInventoryTool
+	Presets []agentToolInventoryPreset
+}
+
+type agentToolInventoryTool struct {
+	Name        string
+	Description string
+	Group       string
+	Kind        string
+}
+
+type agentToolInventoryPreset struct {
+	ID          string
+	Label       string
+	Description string
 }
 
 type agentChangeModelOption struct {
@@ -307,6 +326,13 @@ func (p *ChatPage) agentChangeModalLines(record ChatPermissionRecord, width int)
 	appendIf("status", summary.Status, p.theme.Text)
 	appendIf("model", summary.Model, p.theme.TextMuted)
 	appendIf("thinking", summary.Thinking, p.theme.TextMuted)
+	if len(summary.ToolInventory.Tools) > 0 {
+		groups := agentChangeInventoryGroupCounts(summary.ToolInventory.Tools)
+		appendIf("catalog", fmt.Sprintf("%d tools · %s", len(summary.ToolInventory.Tools), strings.Join(groups, ", ")), p.theme.TextMuted)
+	}
+	if len(summary.ToolInventory.Presets) > 0 {
+		appendIf("presets", agentChangeInventoryPresetLabels(summary.ToolInventory.Presets), p.theme.TextMuted)
+	}
 	if len(highlights) == 0 {
 		highlights = append(highlights, p.taskLaunchTextLine("No headline settings to review.", p.theme.TextMuted))
 	}
@@ -397,6 +423,7 @@ func buildAgentChangeSummary(payload map[string]any) agentChangeSummary {
 		Thinking:           normalizeAgentChangeThinkingValue(strings.TrimSpace(jsonString(snapshot, "thinking"))),
 		DescriptionPreview: description,
 		PromptPreview:      prompt,
+		ToolInventory:      agentChangeToolInventory(payload),
 		Summary:            summaryText,
 		ChangeRows:         agentChangeFields(action, target, before, after, purpose),
 	}
@@ -609,6 +636,42 @@ func agentChangeTools(profile map[string]any) string {
 	if len(profile) == 0 {
 		return ""
 	}
+	contract := jsonObject(profile, "tool_contract")
+	contractTools := jsonObject(contract, "tools")
+	enabled := make([]string, 0)
+	disabled := make([]string, 0)
+	bashRestricted := false
+	for name, rawConfig := range contractTools {
+		toolName := strings.TrimSpace(name)
+		config, _ := rawConfig.(map[string]any)
+		if toolName == "" || len(config) == 0 {
+			continue
+		}
+		if len(jsonStringSlice(config, "bash_prefixes")) > 0 {
+			bashRestricted = true
+		}
+		if _, ok := config["enabled"]; ok {
+			if jsonBool(config, "enabled") {
+				enabled = append(enabled, toolName)
+			} else {
+				disabled = append(disabled, toolName)
+			}
+		}
+	}
+	sort.Strings(enabled)
+	sort.Strings(disabled)
+	contractPreset := strings.TrimSpace(jsonString(contract, "preset"))
+	switch {
+	case len(enabled) > 0 && len(disabled) == 0:
+		return "custom: " + strings.Join(enabled, ", ")
+	case len(disabled) > 0:
+		return "removed: " + strings.Join(disabled, ", ")
+	case bashRestricted:
+		return "bash restricted"
+	case contractPreset != "":
+		return "preset " + contractPreset
+	}
+
 	scope := jsonObject(profile, "tool_scope")
 	allow := jsonStringSlice(scope, "allow_tools")
 	deny := jsonStringSlice(scope, "deny_tools")
@@ -626,6 +689,71 @@ func agentChangeTools(profile map[string]any) string {
 	default:
 		return "all enabled"
 	}
+}
+
+func agentChangeInventoryGroupCounts(tools []agentToolInventoryTool) []string {
+	counts := make(map[string]int)
+	for _, tool := range tools {
+		group := emptyValue(strings.TrimSpace(tool.Group), "other")
+		counts[group]++
+	}
+	groups := make([]string, 0, len(counts))
+	for group, count := range counts {
+		groups = append(groups, fmt.Sprintf("%s:%d", group, count))
+	}
+	sort.Strings(groups)
+	return groups
+}
+
+func agentChangeInventoryPresetLabels(presets []agentToolInventoryPreset) string {
+	labels := make([]string, 0, len(presets))
+	for _, preset := range presets {
+		label := strings.TrimSpace(preset.Label)
+		if label == "" {
+			label = strings.TrimSpace(preset.ID)
+		}
+		if label != "" {
+			labels = append(labels, label)
+		}
+	}
+	sort.Strings(labels)
+	return strings.Join(labels, ", ")
+}
+
+func agentChangeToolInventory(payload map[string]any) agentToolInventory {
+	inventory := jsonObject(payload, "tool_inventory")
+	out := agentToolInventory{}
+	for _, item := range jsonObjectSlice(inventory, "tools") {
+		name := strings.TrimSpace(jsonString(item, "name"))
+		if name == "" {
+			continue
+		}
+		out.Tools = append(out.Tools, agentToolInventoryTool{
+			Name:        name,
+			Description: strings.TrimSpace(jsonString(item, "description")),
+			Group:       emptyValue(strings.TrimSpace(jsonString(item, "group")), "other"),
+			Kind:        emptyValue(strings.TrimSpace(jsonString(item, "kind")), "built_in"),
+		})
+	}
+	for _, item := range jsonObjectSlice(inventory, "presets") {
+		id := strings.TrimSpace(jsonString(item, "id"))
+		if id == "" {
+			continue
+		}
+		out.Presets = append(out.Presets, agentToolInventoryPreset{
+			ID:          id,
+			Label:       emptyValue(strings.TrimSpace(jsonString(item, "label")), id),
+			Description: strings.TrimSpace(jsonString(item, "description")),
+		})
+	}
+	sort.Slice(out.Tools, func(i, j int) bool {
+		if out.Tools[i].Group != out.Tools[j].Group {
+			return out.Tools[i].Group < out.Tools[j].Group
+		}
+		return out.Tools[i].Name < out.Tools[j].Name
+	})
+	sort.Slice(out.Presets, func(i, j int) bool { return out.Presets[i].ID < out.Presets[j].ID })
+	return out
 }
 
 func agentChangeStatus(profile map[string]any) string {

@@ -81,8 +81,23 @@ function testAgentChangeKindAndPayloadParsing(): void {
           prompt: 'Review code changes carefully.',
           execution_setting: 'read',
           enabled: true,
-          tool_scope: {},
+          tool_contract: {
+            preset: 'read_only',
+            tools: {
+              read: { enabled: true },
+              bash: { enabled: false },
+            },
+          },
         },
+      },
+      tool_inventory: {
+        tools: [
+          { name: 'read', description: 'Read files', group: 'workspace_inspection', kind: 'built_in' },
+          { name: 'bash', description: 'Run shell', group: 'shell', kind: 'built_in' },
+        ],
+        presets: [
+          { id: 'read_only', label: 'Read only', description: 'Read tools only' },
+        ],
       },
     }),
   })
@@ -92,8 +107,10 @@ function testAgentChangeKindAndPayloadParsing(): void {
   assert(payload.agentName === 'review-bot', 'expected parsed agent name')
   assert(payload.mode === 'subagent', 'expected parsed mode')
   assert(payload.execution === 'read', 'expected parsed execution')
-  assert(payload.tools === 'all enabled', 'expected full tools label')
+  assert(payload.tools === 'removed: bash', 'expected tool contract label')
   assert(payload.profile.name === 'review-bot', 'expected profile snapshot')
+  assert(payload.toolInventory.tools.length === 2, 'expected tool inventory tools')
+  assert(payload.toolInventory.presets[0]?.id === 'read_only', 'expected tool inventory preset')
   assert(payload.approvedArguments.action === undefined, 'expected no approved args when absent')
   assert(payload.changes.some((change) => change.label === 'Result'), 'expected result change row')
 }
@@ -128,6 +145,35 @@ function testAgentChangeParsesApprovedContentFallback(): void {
   assert(payload.tools === 'limited to search, read', 'expected approved content tools')
   assert(payload.profile.prompt === 'Help from desktop.', 'expected approved content profile')
   assert(Object.keys(payload.approvedArguments).length > 0, 'expected approved arguments to be retained')
+}
+
+function testAgentChangeParsesToolContractFallback(): void {
+  const permission = makePermission({
+    toolName: 'manage_agent',
+    requirement: 'agent_change',
+    toolArguments: JSON.stringify({
+      action: 'update',
+      approved_arguments: {
+        action: 'update',
+        agent: 'contract-bot',
+        content: {
+          name: 'contract-bot',
+          mode: 'subagent',
+          enabled: true,
+          tool_contract: {
+            preset: 'read_write',
+            tools: {
+              websearch: { enabled: false },
+            },
+          },
+        },
+      },
+    }),
+  })
+  const payload = parseAgentChangePermission(permission)
+  assert(payload.agentName === 'contract-bot', 'expected contract content agent name')
+  assert(payload.tools === 'removed: websearch', 'expected tool_contract to drive tools label')
+  assert(payload.profile.tool_contract !== undefined, 'expected contract profile')
 }
 
 function testTaskLaunchKindAndApproval(): void {
@@ -253,6 +299,7 @@ function testManageTodosBatchParsing(): void {
 function main(): void {
   testAgentChangeKindAndPayloadParsing()
   testAgentChangeParsesApprovedContentFallback()
+  testAgentChangeParsesToolContractFallback()
   testTaskLaunchKindAndApproval()
   testTaskLaunchPayloadParsing()
   testManageTodosKindAndPayloadParsing()

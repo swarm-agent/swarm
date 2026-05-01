@@ -619,8 +619,60 @@ func convertToolDefinitions(definitions []tool.Definition) []provideriface.ToolD
 			Type:        definition.Type,
 			Name:        definition.Name,
 			Description: definition.Description,
-			Parameters:  definition.Parameters,
+			Parameters:  normalizeProviderToolParameters(definition.Parameters),
 		})
 	}
 	return out
+}
+
+func normalizeProviderToolParameters(parameters map[string]any) map[string]any {
+	if len(parameters) == 0 {
+		return map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}
+	}
+	out := cloneToolSchemaMap(parameters)
+	if strings.TrimSpace(mapString(out, "type")) == "" {
+		out["type"] = "object"
+	}
+	if strings.EqualFold(strings.TrimSpace(mapString(out, "type")), "object") {
+		if _, ok := out["properties"].(map[string]any); !ok {
+			out["properties"] = map[string]any{}
+		}
+	}
+	return out
+}
+
+func cloneToolSchemaMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		if value == nil {
+			continue
+		}
+		out[key] = cloneToolSchemaValue(value)
+	}
+	return out
+}
+
+func cloneToolSchemaValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneToolSchemaMap(typed)
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			if item != nil {
+				out = append(out, cloneToolSchemaValue(item))
+			}
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
+	}
 }

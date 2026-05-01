@@ -843,17 +843,8 @@ func (r *Runtime) Definitions() []Definition {
 									"execution_setting":      map[string]any{"type": "string", "description": "read|readwrite"},
 									"exit_plan_mode_enabled": map[string]any{"type": "boolean"},
 									"enabled":                map[string]any{"type": "boolean"},
-									"tool_scope": map[string]any{
-										"type": "object",
-										"properties": map[string]any{
-											"preset":         map[string]any{"type": "string"},
-											"allow_tools":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-											"deny_tools":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-											"bash_prefixes":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-											"inherit_policy": map[string]any{"type": "boolean"},
-										},
-										"additionalProperties": false,
-									},
+									"tool_scope":             manageAgentToolScopeSchema(),
+									"tool_contract":          manageAgentToolContractSchema(),
 								},
 								"additionalProperties": false,
 							},
@@ -6241,6 +6232,7 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 		"status":            "ok",
 		"action":            "inspect",
 		"agents":            agents,
+		"tool_inventory":    manageAgentToolInventoryMap(r.Definitions(), customTools),
 		"count":             len(agents),
 		"custom_tools":      customTools,
 		"custom_tool_count": len(customTools),
@@ -6248,11 +6240,11 @@ func (r *Runtime) manageAgentInspect(scope WorkspaceScope) (string, error) {
 		"active_subagent":   cloneStringMap(state.ActiveSubagent),
 		"version":           state.Version,
 		"supported_actions": []string{"inspect", "list", "get", "create", "update", "delete", "activate_primary", "set_active_subagent", "remove_active_subagent", "create_custom_tool", "update_custom_tool", "delete_custom_tool", "assign_custom_tool", "unassign_custom_tool"},
-		"instructions":      "Use manage-agent to inspect and manage saved agents and custom tools. Call inspect/list first, then get before mutating an agent profile. For agent create/update, prefer object-form `content` with the desired profile fields; do not rely on flattened top-level fields. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Nested `tool_scope` supports `allow_tools`, `deny_tools`, `bash_prefixes`, `preset`, and `inherit_policy`. Mutating actions return approval-ready previews unless confirm=true.",
+		"instructions":      "Use manage-agent to inspect and manage saved agents and custom tools. Call inspect/list first, then get before mutating an agent profile. For agent create/update, prefer object-form `content` with the desired profile fields; do not rely on flattened top-level fields. Custom tool actions use `content={name,kind,description?,command}` and assignment actions use top-level `agent` plus `tool_name`. Nested `tool_scope` supports `allow_tools`, `deny_tools`, `bash_prefixes`, `preset`, and `inherit_policy`; nested `tool_contract` supports `preset`, `inherit_policy`, and per-tool `tools.{name}.enabled/bash_prefixes`. Inspect output includes tool_inventory with supported tool names and presets. Mutating actions return approval-ready previews unless confirm=true.",
 		"examples": []map[string]any{
 			{"action": "inspect"},
 			{"action": "get", "agent": strings.TrimSpace(state.ActivePrimary)},
-			{"action": "create", "agent": "review-bot", "content": map[string]any{"name": "review-bot", "mode": "subagent", "description": "Code review specialist.", "prompt": "Review diffs and call out concrete risks.", "execution_setting": "read", "tool_scope": map[string]any{"allow_tools": []string{"search", "list", "read"}, "deny_tools": []string{"write", "edit", "bash"}}}},
+			{"action": "create", "agent": "review-bot", "content": map[string]any{"name": "review-bot", "mode": "subagent", "description": "Code review specialist.", "prompt": "Review diffs and call out concrete risks.", "execution_setting": "read", "tool_contract": map[string]any{"preset": "read_only", "tools": map[string]any{"bash": map[string]any{"enabled": false}}}}},
 			{"action": "create_custom_tool", "content": map[string]any{"name": "show_go_version", "kind": "fixed_bash", "description": "Show the installed Go version.", "command": "go version"}},
 			{"action": "assign_custom_tool", "agent": strings.TrimSpace(state.ActivePrimary), "tool_name": "show_go_version"},
 		},
@@ -6285,6 +6277,7 @@ func (r *Runtime) manageAgentGet(args map[string]any) (string, error) {
 		"status":               "ok",
 		"action":               "get",
 		"agent":                manageAgentProfileMap(profile, strings.EqualFold(strings.TrimSpace(state.ActivePrimary), strings.TrimSpace(profile.Name)), manageAgentPurposesForProfile(state.ActiveSubagent, profile.Name)),
+		"tool_inventory":       manageAgentToolInventoryMap(r.Definitions(), manageAgentCustomToolMapsFromState(state.CustomTools)),
 		"active_primary":       strings.TrimSpace(state.ActivePrimary),
 		"active_subagent":      cloneStringMap(state.ActiveSubagent),
 		"path_id":              toolPathID("manage-agent"),
@@ -6351,6 +6344,7 @@ func (r *Runtime) manageAgentUpsert(args map[string]any, mustExist, confirm bool
 			"applied":              true,
 			"agent":                manageAgentProfileMap(profile, strings.EqualFold(strings.TrimSpace(updatedState.ActivePrimary), strings.TrimSpace(profile.Name)), manageAgentPurposesForProfile(updatedState.ActiveSubagent, profile.Name)),
 			"change":               change,
+			"tool_inventory":       manageAgentToolInventoryMap(r.Definitions(), manageAgentCustomToolMapsFromState(updatedState.CustomTools)),
 			"active_primary":       strings.TrimSpace(updatedState.ActivePrimary),
 			"active_subagent":      cloneStringMap(updatedState.ActiveSubagent),
 			"version":              updatedState.Version,
@@ -6367,6 +6361,7 @@ func (r *Runtime) manageAgentUpsert(args map[string]any, mustExist, confirm bool
 		"action":               action,
 		"agent":                manageAgentProfileMap(preview.After, strings.EqualFold(strings.TrimSpace(state.ActivePrimary), strings.TrimSpace(preview.After.Name)), manageAgentPurposesForProfile(state.ActiveSubagent, preview.After.Name)),
 		"change":               change,
+		"tool_inventory":       manageAgentToolInventoryMap(r.Definitions(), manageAgentCustomToolMapsFromState(state.CustomTools)),
 		"active_primary":       strings.TrimSpace(state.ActivePrimary),
 		"active_subagent":      cloneStringMap(state.ActiveSubagent),
 		"version":              state.Version,
@@ -7003,6 +6998,13 @@ func manageAgentUpsertInputFromArgs(args map[string]any) (agentruntime.UpsertInp
 		}
 		input.ToolScope = scope
 	}
+	if value, ok := manageAgentValue(args, content, "tool_contract"); ok {
+		contract, err := manageAgentToolContractFromValue(value)
+		if err != nil {
+			return agentruntime.UpsertInput{}, err
+		}
+		input.ToolContract = contract
+	}
 	return input, nil
 }
 
@@ -7221,6 +7223,46 @@ func manageAgentStringSlice(value any) []string {
 	return out
 }
 
+func manageAgentToolContractFromValue(value any) (*pebblestore.AgentToolContract, error) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("manage-agent tool_contract must be an object")
+	}
+	contract := &pebblestore.AgentToolContract{}
+	contract.Preset = strings.TrimSpace(asString(object["preset"]))
+	if inherit, ok := object["inherit_policy"].(bool); ok {
+		contract.InheritPolicy = inherit
+	}
+	if rawTools, ok := object["tools"]; ok && rawTools != nil {
+		toolsObject, ok := rawTools.(map[string]any)
+		if !ok {
+			return nil, errors.New("manage-agent tool_contract.tools must be an object")
+		}
+		contract.Tools = make(map[string]pebblestore.AgentToolConfig, len(toolsObject))
+		for rawName, rawConfig := range toolsObject {
+			name := strings.TrimSpace(rawName)
+			if name == "" {
+				continue
+			}
+			configObject, ok := rawConfig.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("manage-agent tool_contract.tools.%s must be an object", name)
+			}
+			config := pebblestore.AgentToolConfig{}
+			if rawEnabled, ok := configObject["enabled"]; ok {
+				enabled, ok := rawEnabled.(bool)
+				if !ok {
+					return nil, fmt.Errorf("manage-agent tool_contract.tools.%s.enabled must be boolean", name)
+				}
+				config.Enabled = pebblestore.BoolPtr(enabled)
+			}
+			config.BashPrefixes = manageAgentStringSlice(configObject["bash_prefixes"])
+			contract.Tools[name] = config
+		}
+	}
+	return pebblestore.NormalizeAgentToolContract(contract), nil
+}
+
 func manageAgentProfileMap(profile pebblestore.AgentProfile, activePrimary bool, purposes []string) map[string]any {
 	payload := map[string]any{
 		"name":                   strings.TrimSpace(profile.Name),
@@ -7262,6 +7304,42 @@ func manageAgentToolScopeMap(scope *pebblestore.AgentToolScope) any {
 	}
 }
 
+func manageAgentToolScopeSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"preset":         map[string]any{"type": "string"},
+			"allow_tools":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"deny_tools":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"bash_prefixes":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"inherit_policy": map[string]any{"type": "boolean"},
+		},
+		"additionalProperties": false,
+	}
+}
+
+func manageAgentToolContractSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"preset":         map[string]any{"type": "string"},
+			"inherit_policy": map[string]any{"type": "boolean"},
+			"tools": map[string]any{
+				"type": "object",
+				"additionalProperties": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"enabled":       map[string]any{"type": "boolean"},
+						"bash_prefixes": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"additionalProperties": false,
+	}
+}
+
 func manageAgentToolContractMap(contract *pebblestore.AgentToolContract) any {
 	if contract == nil {
 		return nil
@@ -7299,6 +7377,82 @@ func manageAgentCustomToolMap(definition pebblestore.AgentCustomToolDefinition) 
 		"description": strings.TrimSpace(definition.Description),
 		"command":     strings.TrimSpace(definition.Command),
 		"updated_at":  definition.UpdatedAt,
+	}
+}
+
+func manageAgentCustomToolMapsFromState(definitions []pebblestore.AgentCustomToolDefinition) []map[string]any {
+	out := make([]map[string]any, 0, len(definitions))
+	for _, definition := range definitions {
+		out = append(out, manageAgentCustomToolMap(definition))
+	}
+	return out
+}
+
+func manageAgentToolInventoryMap(definitions []Definition, customTools []map[string]any) map[string]any {
+	tools := make([]map[string]any, 0, len(definitions))
+	seen := make(map[string]struct{}, len(definitions))
+	for _, definition := range definitions {
+		name := strings.TrimSpace(definition.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		tools = append(tools, map[string]any{
+			"name":        name,
+			"description": strings.TrimSpace(definition.Description),
+			"group":       manageAgentToolGroup(name),
+			"kind":        "built_in",
+		})
+	}
+	sort.Slice(tools, func(i, j int) bool {
+		left, _ := tools[i]["name"].(string)
+		right, _ := tools[j]["name"].(string)
+		return strings.TrimSpace(left) < strings.TrimSpace(right)
+	})
+	return map[string]any{
+		"tools":        tools,
+		"tool_count":   len(tools),
+		"custom_tools": customTools,
+		"presets":      manageAgentToolPresetInventory(),
+		"schemas": map[string]any{
+			"tool_scope":    manageAgentToolScopeSchema(),
+			"tool_contract": manageAgentToolContractSchema(),
+		},
+	}
+}
+
+func manageAgentToolPresetInventory() []map[string]any {
+	return []map[string]any{
+		{"id": "read_only", "label": "Read only", "description": "Inspect workspace files and web content without file mutation or shell execution."},
+		{"id": "read_write", "label": "Read/write", "description": "Inspect and edit workspace files without shell execution or delegation."},
+		{"id": "bash_git_only", "label": "Git shell only", "description": "Allow read tools plus bash restricted to git status/diff/log/show prefixes."},
+		{"id": "background_commit", "label": "Background commit", "description": "Allow only read/list/search plus git status/diff/add/commit tools for durable commits."},
+	}
+}
+
+func manageAgentToolGroup(name string) string {
+	switch strings.TrimSpace(name) {
+	case "read", "search", "list":
+		return "workspace_inspection"
+	case "write", "edit":
+		return "file_mutation"
+	case "bash":
+		return "shell"
+	case "websearch", "webfetch", "webdownload":
+		return "web"
+	case "task":
+		return "delegation"
+	case "ask-user", "ask_user", "exit_plan_mode", "plan_manage":
+		return "conversation_control"
+	case "git_status", "git_diff", "git_add", "git_commit":
+		return "git_commit"
+	case "skill-use", "skill_use", "manage-skill", "manage_skill", "manage-agent", "manage_agent", "manage-theme", "manage_theme", "manage-worktree", "manage_worktree", "manage_todos":
+		return "management"
+	default:
+		return "other"
 	}
 }
 

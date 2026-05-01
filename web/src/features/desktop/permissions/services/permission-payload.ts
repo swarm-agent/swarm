@@ -112,6 +112,24 @@ export interface AgentChangeField {
   value: string
 }
 
+export interface AgentToolInventoryTool {
+  name: string
+  description: string
+  group: string
+  kind: string
+}
+
+export interface AgentToolInventoryPreset {
+  id: string
+  label: string
+  description: string
+}
+
+export interface AgentToolInventory {
+  tools: AgentToolInventoryTool[]
+  presets: AgentToolInventoryPreset[]
+}
+
 export interface AgentChangePayload {
   title: string
   subtitle: string
@@ -129,6 +147,7 @@ export interface AgentChangePayload {
   promptPreview: string
   profile: Record<string, unknown>
   approvedArguments: Record<string, unknown>
+  toolInventory: AgentToolInventory
   changes: AgentChangeField[]
 }
 
@@ -643,6 +662,7 @@ export function parseAgentChangePermission(permission: DesktopPermissionRecord):
   const action = firstNonEmptyString(mapStringArg(payload, 'action'), mapStringArg(change, 'operation'), 'change')
   const approvedArguments = mapObjectArg(payload, 'approved_arguments')
   const approvedContent = mapObjectArg(approvedArguments, 'content')
+  const toolInventory = parseAgentToolInventory(payload.tool_inventory)
   const payloadAgent = asRecord(payload.agent)
   const inferredTarget = (approvedContent.name || approvedContent.mode || payloadAgent?.name) ? 'agent_profile' : 'agent state'
   const target = firstNonEmptyString(mapStringArg(change, 'target'), mapStringArg(payload, 'target'), inferredTarget)
@@ -694,6 +714,7 @@ export function parseAgentChangePermission(permission: DesktopPermissionRecord):
     promptPreview,
     profile: snapshotProfile,
     approvedArguments,
+    toolInventory,
     changes: buildAgentChangeFields(action, target, before, after, purpose),
   }
 }
@@ -838,6 +859,35 @@ function agentProfileExecution(profile: Record<string, unknown>): string {
 }
 
 function agentProfileTools(profile: Record<string, unknown>): string {
+  const contract = mapObjectArg(profile, 'tool_contract')
+  const contractTools = mapObjectArg(contract, 'tools')
+  const enabledTools: string[] = []
+  const disabledTools: string[] = []
+  let bashRestricted = false
+  Object.entries(contractTools).forEach(([name, rawConfig]) => {
+    const toolName = name.trim()
+    const config = asRecord(rawConfig) ?? {}
+    if (!toolName) return
+    if (mapStringArrayArg(config, 'bash_prefixes').length > 0) bashRestricted = true
+    if ('enabled' in config) {
+      if (mapBoolArg(config, 'enabled')) enabledTools.push(toolName)
+      else disabledTools.push(toolName)
+    }
+  })
+  const contractPreset = mapStringArg(contract, 'preset')
+  if (enabledTools.length > 0 && disabledTools.length === 0) {
+    return `custom: ${enabledTools.join(', ')}`
+  }
+  if (disabledTools.length > 0) {
+    return `removed: ${disabledTools.join(', ')}`
+  }
+  if (bashRestricted) {
+    return 'bash restricted'
+  }
+  if (contractPreset) {
+    return `preset ${contractPreset}`
+  }
+
   const scope = mapObjectArg(profile, 'tool_scope')
   const allowTools = mapStringArrayArg(scope, 'allow_tools')
   const denyTools = mapStringArrayArg(scope, 'deny_tools')
@@ -856,6 +906,38 @@ function agentProfileTools(profile: Record<string, unknown>): string {
     return `preset ${preset}`
   }
   return 'all enabled'
+}
+
+function parseAgentToolInventory(raw: unknown): AgentToolInventory {
+  const inventory = asRecord(raw) ?? {}
+  const tools = Array.isArray(inventory.tools)
+    ? inventory.tools.map((entry) => {
+        const record = asRecord(entry)
+        if (!record) return null
+        const name = mapStringArg(record, 'name')
+        if (!name) return null
+        return {
+          name,
+          description: mapStringArg(record, 'description'),
+          group: mapStringArg(record, 'group') || 'other',
+          kind: mapStringArg(record, 'kind') || 'built_in',
+        }
+      }).filter((entry): entry is AgentToolInventoryTool => entry !== null)
+    : []
+  const presets = Array.isArray(inventory.presets)
+    ? inventory.presets.map((entry) => {
+        const record = asRecord(entry)
+        if (!record) return null
+        const id = mapStringArg(record, 'id')
+        if (!id) return null
+        return {
+          id,
+          label: mapStringArg(record, 'label') || id,
+          description: mapStringArg(record, 'description'),
+        }
+      }).filter((entry): entry is AgentToolInventoryPreset => entry !== null)
+    : []
+  return { tools, presets }
 }
 
 function agentProfileStatus(profile: Record<string, unknown>): string {

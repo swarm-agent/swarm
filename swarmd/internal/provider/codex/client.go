@@ -468,7 +468,7 @@ func buildRequestPayload(req Request) ([]byte, error) {
 		body["instructions"] = strings.TrimSpace(req.Instructions)
 	}
 	if len(req.Tools) > 0 {
-		body["tools"] = req.Tools
+		body["tools"] = normalizeCodexRequestTools(req.Tools)
 		toolChoice := strings.TrimSpace(req.ToolChoice)
 		if toolChoice == "" {
 			toolChoice = "auto"
@@ -487,6 +487,15 @@ func buildRequestPayload(req Request) ([]byte, error) {
 		body["include"] = []string{includeReasoningEncryptedContentPath}
 	}
 	return json.Marshal(body)
+}
+
+func normalizeCodexRequestTools(tools []ToolDefinition) []ToolDefinition {
+	out := make([]ToolDefinition, 0, len(tools))
+	for _, tool := range tools {
+		tool.Parameters = sanitizeCodexToolParameters(tool.Parameters)
+		out = append(out, tool)
+	}
+	return out
 }
 
 func reasoningPayload(thinking string) map[string]any {
@@ -913,11 +922,27 @@ func buildCodexWebsocketPayload(decoded map[string]any) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unsupported codex websocket request type %q", requestType)
 	}
+	normalizeCodexWebsocketToolParameters(decoded)
 	encoded, err := json.Marshal(decoded)
 	if err != nil {
 		return nil, fmt.Errorf("encode codex websocket payload: %w", err)
 	}
 	return encoded, nil
+}
+
+func normalizeCodexWebsocketToolParameters(decoded map[string]any) {
+	tools := asSlice(decoded["tools"])
+	if len(tools) == 0 {
+		return
+	}
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		parameters, _ := tool["parameters"].(map[string]any)
+		tool["parameters"] = sanitizeCodexToolParameters(parameters)
+	}
 }
 
 func extractSessionIDFromDecodedPayload(decoded map[string]any) string {

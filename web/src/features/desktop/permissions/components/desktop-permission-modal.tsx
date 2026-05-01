@@ -16,6 +16,7 @@ import {
   buildWorkspaceScopeResolutionReason,
   buildGenericPermissionMarkdown,
   parseAgentChangePermission,
+  type AgentToolInventory,
   parseAskUserPermission,
   parseExitPlanPermission,
   parseManageTodosPermission,
@@ -1064,11 +1065,14 @@ interface AgentProfileFormState {
   executionSetting: string
   exitPlanModeEnabled: boolean
   enabled: boolean
-  toolScopePreset: string
-  toolScopeAllowTools: string
-  toolScopeDenyTools: string
-  toolScopeBashPrefixes: string
-  toolScopeInheritPolicy: boolean
+  toolContractPreset: string
+  toolContractInheritPolicy: boolean
+  toolContractTools: Record<string, AgentToolConfigFormState>
+}
+
+interface AgentToolConfigFormState {
+  enabled: boolean
+  bashPrefixes: string
 }
 
 function stringValue(record: Record<string, unknown>, key: string): string {
@@ -1095,7 +1099,6 @@ function profileFormFromPayload(payload: ReturnType<typeof parseAgentChangePermi
   const profile = payload.profile
   const approvedContent = objectValue(payload.approvedArguments, 'content')
   const source = { ...profile, ...approvedContent }
-  const scope = objectValue(source, 'tool_scope')
   return {
     name: stringValue(source, 'name') || payload.agentName,
     mode: stringValue(source, 'mode') || 'primary',
@@ -1107,16 +1110,79 @@ function profileFormFromPayload(payload: ReturnType<typeof parseAgentChangePermi
     executionSetting: stringValue(source, 'execution_setting') || 'readwrite',
     exitPlanModeEnabled: boolValue(source, 'exit_plan_mode_enabled', false),
     enabled: boolValue(source, 'enabled', true),
-    toolScopePreset: stringValue(scope, 'preset'),
-    toolScopeAllowTools: stringArrayValue(scope, 'allow_tools').join(', '),
-    toolScopeDenyTools: stringArrayValue(scope, 'deny_tools').join(', '),
-    toolScopeBashPrefixes: stringArrayValue(scope, 'bash_prefixes').join(', '),
-    toolScopeInheritPolicy: boolValue(scope, 'inherit_policy', false),
+    ...toolContractFormFromProfile(source),
   }
 }
 
 function splitCSV(value: string): string[] {
   return value.split(',').map((entry) => entry.trim()).filter(Boolean)
+}
+
+function toolContractFormFromProfile(source: Record<string, unknown>): Pick<AgentProfileFormState, 'toolContractPreset' | 'toolContractInheritPolicy' | 'toolContractTools'> {
+  const contract = objectValue(source, 'tool_contract')
+  const contractTools = objectValue(contract, 'tools')
+  const tools: Record<string, AgentToolConfigFormState> = {}
+  Object.entries(contractTools).forEach(([name, rawConfig]) => {
+    const toolName = name.trim()
+    if (!toolName) return
+    const config = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) ? rawConfig as Record<string, unknown> : {}
+    tools[toolName] = {
+      enabled: boolValue(config, 'enabled', true),
+      bashPrefixes: stringArrayValue(config, 'bash_prefixes').join(', '),
+    }
+  })
+
+  const scope = objectValue(source, 'tool_scope')
+  if (Object.keys(tools).length === 0) {
+    stringArrayValue(scope, 'allow_tools').forEach((toolName) => { tools[toolName] = { enabled: true, bashPrefixes: '' } })
+    stringArrayValue(scope, 'deny_tools').forEach((toolName) => { tools[toolName] = { enabled: false, bashPrefixes: '' } })
+    const bashPrefixes = stringArrayValue(scope, 'bash_prefixes').join(', ')
+    if (bashPrefixes) {
+      tools.bash = { enabled: true, bashPrefixes }
+    }
+  }
+
+  return {
+    toolContractPreset: stringValue(contract, 'preset') || stringValue(scope, 'preset'),
+    toolContractInheritPolicy: boolValue(contract, 'inherit_policy', boolValue(scope, 'inherit_policy', false)),
+    toolContractTools: tools,
+  }
+}
+
+function toolInventoryTools(payload: ReturnType<typeof parseAgentChangePermission>, form: AgentProfileFormState): AgentToolInventory['tools'] {
+  const byName = new Map<string, AgentToolInventory['tools'][number]>()
+  payload.toolInventory.tools.forEach((tool) => byName.set(tool.name, tool))
+  Object.keys(form.toolContractTools).forEach((name) => {
+    if (!byName.has(name)) {
+      byName.set(name, { name, description: '', group: 'custom', kind: 'custom' })
+    }
+  })
+  return Array.from(byName.values()).sort((left, right) => {
+    const group = left.group.localeCompare(right.group)
+    return group !== 0 ? group : left.name.localeCompare(right.name)
+  })
+}
+
+function agentToolContractFromForm(form: AgentProfileFormState): Record<string, unknown> {
+  const tools: Record<string, unknown> = {}
+  Object.entries(form.toolContractTools).forEach(([name, config]) => {
+    const toolName = name.trim()
+    if (!toolName) return
+    const entry: Record<string, unknown> = { enabled: config.enabled }
+    const bashPrefixes = splitCSV(config.bashPrefixes)
+    if (bashPrefixes.length > 0) {
+      entry.bash_prefixes = bashPrefixes
+    }
+    tools[toolName] = entry
+  })
+  const contract: Record<string, unknown> = {
+    preset: form.toolContractPreset.trim(),
+    inherit_policy: form.toolContractInheritPolicy,
+  }
+  if (Object.keys(tools).length > 0) {
+    contract.tools = tools
+  }
+  return contract
 }
 
 function approvedArgumentsFromProfileForm(
@@ -1139,14 +1205,8 @@ function approvedArgumentsFromProfileForm(
     exit_plan_mode_enabled: form.exitPlanModeEnabled,
     enabled: form.enabled,
   }
-  const toolScope: Record<string, unknown> = {
-    preset: form.toolScopePreset.trim(),
-    allow_tools: splitCSV(form.toolScopeAllowTools),
-    deny_tools: splitCSV(form.toolScopeDenyTools),
-    bash_prefixes: splitCSV(form.toolScopeBashPrefixes),
-    inherit_policy: form.toolScopeInheritPolicy,
-  }
-  content.tool_scope = toolScope
+  content.tool_contract = agentToolContractFromForm(form)
+  delete content.tool_scope
   args.content = content
   args.agent = form.name.trim()
   args.name = form.name.trim()
@@ -1172,10 +1232,12 @@ function modelProviderGroups(options: ModelOptionRecord[]): Array<[string, Model
 
 function AgentProfileApprovalForm({
   form,
+  payload,
   modelOptions,
   disabled,
   onChange,
 }: {
+  payload: ReturnType<typeof parseAgentChangePermission>
   form: AgentProfileFormState
   modelOptions: ModelOptionRecord[]
   disabled: boolean
@@ -1189,6 +1251,8 @@ function AgentProfileApprovalForm({
     return groups
   }, [form.provider, modelOptions])
   const activeModels = providers.find(([provider]) => provider === form.provider)?.[1] ?? []
+  const inventoryTools = toolInventoryTools(payload, form)
+  const presetOptions = payload.toolInventory.presets
 
   return (
     <div className="grid gap-4">
@@ -1267,18 +1331,60 @@ function AgentProfileApprovalForm({
           Plan → auto runtime
         </label>
       </div>
-      <div className="grid gap-2 border-t border-[var(--app-border)] pt-3">
-        <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tools</div>
+      <div className="grid gap-3 border-t border-[var(--app-border)] pt-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Tools</div>
+          <div className="text-xs text-[var(--app-text-muted)]">{inventoryTools.length || 'No'} tools in catalog</div>
+        </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <input value={form.toolScopeAllowTools} onChange={(event) => onChange({ ...form, toolScopeAllowTools: event.target.value })} disabled={disabled} placeholder="allow: search, list, read" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
-          <input value={form.toolScopeDenyTools} onChange={(event) => onChange({ ...form, toolScopeDenyTools: event.target.value })} disabled={disabled} placeholder="deny: write, edit, bash" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
-          <input value={form.toolScopeBashPrefixes} onChange={(event) => onChange({ ...form, toolScopeBashPrefixes: event.target.value })} disabled={disabled} placeholder="bash prefixes" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
-          <input value={form.toolScopePreset} onChange={(event) => onChange({ ...form, toolScopePreset: event.target.value })} disabled={disabled} placeholder="preset" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
-          <label className="flex items-center gap-2 text-sm text-[var(--app-text)]">
-            <input type="checkbox" checked={form.toolScopeInheritPolicy} onChange={(event) => onChange({ ...form, toolScopeInheritPolicy: event.target.checked })} disabled={disabled} />
-            Inherit policy
+          <label className="grid gap-1.5 text-sm">
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Preset</span>
+            <div className="relative">
+              <select value={form.toolContractPreset} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, toolContractPreset: event.target.value })} disabled={disabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
+                <option value="">No preset / custom</option>
+                {form.toolContractPreset && !presetOptions.some((preset) => preset.id === form.toolContractPreset) ? <option value={form.toolContractPreset}>{form.toolContractPreset}</option> : null}
+                {presetOptions.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+              </select>
+              <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+            </div>
+          </label>
+          <label className="flex items-end gap-2 pb-2 text-sm text-[var(--app-text)]">
+            <input type="checkbox" checked={form.toolContractInheritPolicy} onChange={(event) => onChange({ ...form, toolContractInheritPolicy: event.target.checked })} disabled={disabled} />
+            Inherit parent/session policy
           </label>
         </div>
+        {inventoryTools.length > 0 ? (
+          <div className="grid max-h-72 gap-2 overflow-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 sm:grid-cols-2">
+            {inventoryTools.map((tool) => {
+              const config = form.toolContractTools[tool.name]
+              const checked = config?.enabled ?? false
+              const bashPrefixes = config?.bashPrefixes ?? ''
+              return (
+                <div key={`${tool.kind}:${tool.name}`} className="grid gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-2">
+                  <label className="flex items-center gap-2 text-sm text-[var(--app-text)]">
+                    <input type="checkbox" checked={checked} onChange={(event) => {
+                      const nextTools = { ...form.toolContractTools }
+                      nextTools[tool.name] = { enabled: event.target.checked, bashPrefixes }
+                      onChange({ ...form, toolContractTools: nextTools })
+                    }} disabled={disabled} />
+                    <span className="font-medium">{tool.name}</span>
+                    <span className="text-xs text-[var(--app-text-muted)]">{tool.group}</span>
+                  </label>
+                  {tool.description ? <div className="text-xs leading-5 text-[var(--app-text-muted)]">{tool.description}</div> : null}
+                  {tool.name === 'bash' || bashPrefixes ? (
+                    <input value={bashPrefixes} onChange={(event) => {
+                      const nextTools = { ...form.toolContractTools }
+                      nextTools[tool.name] = { enabled: checked || event.target.value.trim() !== '', bashPrefixes: event.target.value }
+                      onChange({ ...form, toolContractTools: nextTools })
+                    }} disabled={disabled} placeholder="bash prefixes, comma-separated" className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-1 text-xs text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No backend tool inventory was included with this approval payload.</div>
+        )}
       </div>
     </div>
   )
@@ -1347,7 +1453,7 @@ function AgentChangeModal({
         </div>
 
         {editableProfile && form ? (
-          <AgentProfileApprovalForm form={form} modelOptions={modelOptions} disabled={loading} onChange={setForm} />
+          <AgentProfileApprovalForm payload={payload} form={form} modelOptions={modelOptions} disabled={loading} onChange={setForm} />
         ) : null}
 
       </div>

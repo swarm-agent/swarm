@@ -1188,17 +1188,28 @@ func TestToolRuntimeManageAgentInspectIncludesStructuredContentGuidance(t *testi
 			if !ok {
 				continue
 			}
-			toolScope, ok := content["tool_scope"].(map[string]any)
+			toolContract, ok := content["tool_contract"].(map[string]any)
 			if !ok {
 				continue
 			}
-			if _, ok := toolScope["allow_tools"].([]any); ok {
+			if _, ok := toolContract["tools"].(map[string]any); ok {
 				foundStructured = true
 				break
 			}
 		}
 		if !foundStructured {
-			t.Fatalf("expected structured manage-agent example with tool_scope.allow_tools: %v", examples)
+			t.Fatalf("expected structured manage-agent example with tool_contract.tools: %v", examples)
+		}
+		inventory, ok := decoded["tool_inventory"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected tool_inventory object, got %T", decoded["tool_inventory"])
+		}
+		if got := int(inventory["tool_count"].(float64)); got == 0 {
+			t.Fatalf("expected non-empty tool inventory: %v", inventory)
+		}
+		presets, ok := inventory["presets"].([]any)
+		if !ok || len(presets) == 0 {
+			t.Fatalf("expected inventory presets, got %T %v", inventory["presets"], inventory["presets"])
 		}
 		return
 	} else if !strings.Contains(errText, "service is not configured") {

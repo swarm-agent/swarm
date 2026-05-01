@@ -157,6 +157,95 @@ func TestBuildRequestPayloadOmitsReasoningIncludeWhenThinkingOff(t *testing.T) {
 	}
 }
 
+func TestBuildRequestPayloadNormalizesNilToolParameters(t *testing.T) {
+	payload, err := buildRequestPayload(Request{
+		Model: "gpt-5.3-codex",
+		Input: []map[string]any{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "input_text",
+						"text": "hello",
+					},
+				},
+			},
+		},
+		Tools: []ToolDefinition{
+			{
+				Type: "function",
+				Name: "manage-agent",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestPayload error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	tools := asSlice(decoded["tools"])
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one tool", decoded["tools"])
+	}
+	toolDef, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool = %#v, want object", tools[0])
+	}
+	parameters, ok := toolDef["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters = %#v, want object", toolDef["parameters"])
+	}
+	if got := strings.TrimSpace(asString(parameters["type"])); got != "object" {
+		t.Fatalf("parameters.type = %q, want object", got)
+	}
+	if properties, ok := parameters["properties"].(map[string]any); !ok || len(properties) != 0 {
+		t.Fatalf("parameters.properties = %#v, want empty object", parameters["properties"])
+	}
+}
+
+func TestBuildCodexWebsocketPayloadNormalizesNilToolParameters(t *testing.T) {
+	payload, err := buildCodexWebsocketPayload(map[string]any{
+		"model": "gpt-5.3-codex",
+		"input": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		"tools": []any{
+			map[string]any{
+				"type":       "function",
+				"name":       "manage-agent",
+				"parameters": nil,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildCodexWebsocketPayload error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode websocket payload: %v", err)
+	}
+	tools := asSlice(decoded["tools"])
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one tool", decoded["tools"])
+	}
+	toolDef, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool = %#v, want object", tools[0])
+	}
+	parameters, ok := toolDef["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters = %#v, want object", toolDef["parameters"])
+	}
+	if got := strings.TrimSpace(asString(parameters["type"])); got != "object" {
+		t.Fatalf("parameters.type = %q, want object", got)
+	}
+}
+
 func TestSendUsesWebsocketResultWithoutFallback(t *testing.T) {
 	client := NewClient(nil)
 	client.sendWSFn = func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error) {
