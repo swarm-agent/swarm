@@ -16,6 +16,7 @@ import {
   buildWorkspaceScopeResolutionReason,
   buildGenericPermissionMarkdown,
   parseAgentChangePermission,
+  type AgentEffectiveExecution,
   type AgentToolInventory,
   parseAskUserPermission,
   parseExitPlanPermission,
@@ -1062,7 +1063,7 @@ interface AgentProfileFormState {
   model: string
   thinking: string
   prompt: string
-  executionSetting: string
+  executionSetting: AgentEffectiveExecution
   exitPlanModeEnabled: boolean
   enabled: boolean
   toolContractPreset: string
@@ -1095,6 +1096,19 @@ function objectValue(record: Record<string, unknown>, key: string): Record<strin
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+function normalizeExecutionSetting(value: string): AgentEffectiveExecution {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'readwrite' || normalized === 'read_write' || normalized === 'read-write') return 'readwrite'
+  if (normalized === 'read') return 'read'
+  if (normalized === 'plan → auto' || normalized === 'plan_auto' || normalized === 'plan-auto') return 'plan → auto'
+  return 'unset'
+}
+
+function normalizeEditableExecutionSetting(value: string): AgentEffectiveExecution {
+  const normalized = normalizeExecutionSetting(value)
+  return normalized === 'readwrite' ? 'readwrite' : 'read'
+}
+
 function profileFormFromPayload(payload: ReturnType<typeof parseAgentChangePermission>): AgentProfileFormState {
   const profile = payload.profile
   const approvedContent = objectValue(payload.approvedArguments, 'content')
@@ -1107,7 +1121,7 @@ function profileFormFromPayload(payload: ReturnType<typeof parseAgentChangePermi
     model: stringValue(source, 'model'),
     thinking: stringValue(source, 'thinking'),
     prompt: stringValue(source, 'prompt'),
-    executionSetting: stringValue(source, 'execution_setting') || 'readwrite',
+    executionSetting: normalizeEditableExecutionSetting(stringValue(source, 'effective_execution_setting') || stringValue(source, 'execution_setting') || payload.effectiveExecution || 'read'),
     exitPlanModeEnabled: boolValue(source, 'exit_plan_mode_enabled', false),
     enabled: boolValue(source, 'enabled', true),
     ...toolContractFormFromProfile(source),
@@ -1163,8 +1177,22 @@ function toolInventoryTools(payload: ReturnType<typeof parseAgentChangePermissio
   })
 }
 
-function agentToolContractFromForm(form: AgentProfileFormState): Record<string, unknown> {
+const AGENT_WRITE_TOOL_NAMES = new Set(['write', 'edit', 'bash', 'task', 'git_add', 'git_commit'])
+const AGENT_DEFAULT_READWRITE_TOOL_NAMES = ['write', 'edit']
+
+function deriveExecutionSettingFromTools(tools: Record<string, AgentToolConfigFormState>): AgentEffectiveExecution {
+  return Object.entries(tools).some(([name, config]) => {
+    if (!AGENT_WRITE_TOOL_NAMES.has(name.trim().toLowerCase())) return false
+    return config.enabled || splitCSV(config.bashPrefixes).length > 0
+  }) ? 'readwrite' : 'read'
+}
+
+function agentToolContractFromForm(payload: ReturnType<typeof parseAgentChangePermission>, form: AgentProfileFormState): Record<string, unknown> {
   const tools: Record<string, unknown> = {}
+  const inventoryToolNames = new Set(toolInventoryTools(payload, form).map((tool) => tool.name.trim()).filter(Boolean))
+  inventoryToolNames.forEach((toolName) => {
+    tools[toolName] = { enabled: false }
+  })
   Object.entries(form.toolContractTools).forEach(([name, config]) => {
     const toolName = name.trim()
     if (!toolName) return
@@ -1201,11 +1229,11 @@ function approvedArgumentsFromProfileForm(
     model: form.provider.trim() ? form.model.trim() : '',
     thinking: form.thinking.trim(),
     prompt: form.prompt,
-    execution_setting: form.exitPlanModeEnabled ? '' : form.executionSetting.trim(),
+    execution_setting: form.exitPlanModeEnabled || form.executionSetting === 'plan → auto' || form.executionSetting === 'unset' ? '' : form.executionSetting,
     exit_plan_mode_enabled: form.exitPlanModeEnabled,
     enabled: form.enabled,
   }
-  content.tool_contract = agentToolContractFromForm(form)
+  content.tool_contract = agentToolContractFromForm(payload, form)
   delete content.tool_scope
   args.content = content
   args.agent = form.name.trim()
@@ -1231,12 +1259,18 @@ function agentToolAccessSummary(payload: ReturnType<typeof parseAgentChangePermi
     const allowed: string[] = []
     const blocked: string[] = []
     const restricted: string[] = []
+    const explicitToolNames = new Set(Object.keys(form.toolContractTools).map((name) => name.trim()).filter(Boolean))
     Object.entries(form.toolContractTools).forEach(([name, config]) => {
       const toolName = name.trim()
       if (!toolName) return
       if (config.enabled) allowed.push(toolName)
       else blocked.push(toolName)
       if (splitCSV(config.bashPrefixes).length > 0) restricted.push(toolName)
+    })
+    toolInventoryTools(payload, form).forEach((tool) => {
+      if (!explicitToolNames.has(tool.name)) {
+        blocked.push(tool.name)
+      }
     })
     return {
       allowed: sortedUnique(allowed),
@@ -1445,12 +1479,14 @@ function AgentProfileApprovalForm({
   const [toolsExpanded, setToolsExpanded] = useState(false)
   const setToolEnabled = (toolName: string, enabled: boolean) => {
     const current = form.toolContractTools[toolName]
+    const nextTools = {
+      ...form.toolContractTools,
+      [toolName]: { enabled, bashPrefixes: current?.bashPrefixes ?? '' },
+    }
     onChange({
       ...form,
-      toolContractTools: {
-        ...form.toolContractTools,
-        [toolName]: { enabled, bashPrefixes: current?.bashPrefixes ?? '' },
-      },
+      executionSetting: deriveExecutionSettingFromTools(nextTools),
+      toolContractTools: nextTools,
     })
   }
 
@@ -1504,10 +1540,24 @@ function AgentProfileApprovalForm({
         <label className="grid gap-1.5 text-sm">
           <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Execution</span>
           <div className="relative">
-            <select value={form.executionSetting} onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange({ ...form, executionSetting: event.target.value })} disabled={disabled || form.exitPlanModeEnabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
+            <select value={form.executionSetting} onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+              const executionSetting = normalizeEditableExecutionSetting(event.target.value)
+              const nextTools = { ...form.toolContractTools }
+              Object.entries(nextTools).forEach(([name, config]) => {
+                if (AGENT_WRITE_TOOL_NAMES.has(name.trim().toLowerCase()) && config.enabled && executionSetting === 'read') {
+                  nextTools[name] = { ...config, enabled: false, bashPrefixes: '' }
+                }
+              })
+              if (executionSetting === 'readwrite') {
+                AGENT_DEFAULT_READWRITE_TOOL_NAMES.forEach((toolName) => {
+                  const current = nextTools[toolName]
+                  nextTools[toolName] = { enabled: true, bashPrefixes: current?.bashPrefixes ?? '' }
+                })
+              }
+              onChange({ ...form, executionSetting: deriveExecutionSettingFromTools(nextTools), toolContractTools: nextTools })
+            }} disabled={disabled || form.exitPlanModeEnabled} className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 pr-8 text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]">
               <option value="readwrite">readwrite</option>
               <option value="read">read</option>
-              <option value="">unset</option>
             </select>
             <ChevronDown size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
           </div>
@@ -1573,7 +1623,7 @@ function AgentProfileApprovalForm({
                         <input value={bashPrefixes} onChange={(event) => {
                           const nextTools = { ...form.toolContractTools }
                           nextTools[tool.name] = { enabled: checked || event.target.value.trim() !== '', bashPrefixes: event.target.value }
-                          onChange({ ...form, toolContractTools: nextTools })
+                          onChange({ ...form, executionSetting: deriveExecutionSettingFromTools(nextTools), toolContractTools: nextTools })
                         }} disabled={disabled} placeholder="bash prefixes, comma-separated" className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-1 text-xs text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
                       ) : null}
                     </div>
@@ -1647,16 +1697,18 @@ function AgentChangeModal({
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--app-text-muted)]">
             <span>agent {payload.agentName ? `@${payload.agentName}` : 'n/a'}</span>
             <span>mode {payload.mode || 'n/a'}</span>
-            <span>execution {payload.execution || 'n/a'}</span>
+            <span>execution {editableProfile && form ? (form.exitPlanModeEnabled ? 'plan → auto' : form.executionSetting) : (payload.effectiveExecution || payload.execution || 'n/a')}</span>
           </div>
           {payload.target === 'agent_profile' ? <AgentToolAccessSummaryCard payload={payload} form={form} disabled={loading} onToolToggle={editableProfile && form ? (toolName, enabled) => {
             const current = form.toolContractTools[toolName]
+            const nextTools = {
+              ...form.toolContractTools,
+              [toolName]: { enabled, bashPrefixes: current?.bashPrefixes ?? '' },
+            }
             setForm({
               ...form,
-              toolContractTools: {
-                ...form.toolContractTools,
-                [toolName]: { enabled, bashPrefixes: current?.bashPrefixes ?? '' },
-              },
+              executionSetting: deriveExecutionSettingFromTools(nextTools),
+              toolContractTools: nextTools,
             })
           } : undefined} /> : null}
         </div>

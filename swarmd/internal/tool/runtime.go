@@ -6304,6 +6304,13 @@ func (r *Runtime) manageAgentUpsert(args map[string]any, mustExist, confirm bool
 	if err != nil {
 		return "", err
 	}
+	if aligned := manageAgentEffectiveExecutionSetting(preview.After); aligned != "" && !strings.EqualFold(strings.TrimSpace(aligned), strings.TrimSpace(preview.After.ExecutionSetting)) {
+		input.ExecutionSetting = aligned
+		preview, err = r.agents.PreviewUpsert(input)
+		if err != nil {
+			return "", err
+		}
+	}
 	if mustExist && !preview.Exists {
 		return "", fmt.Errorf("agent %q does not exist", preview.After.Name)
 	}
@@ -7085,7 +7092,7 @@ func validateManageAgentMutationInput(input agentruntime.UpsertInput, mustExist 
 		strings.TrimSpace(input.Prompt) != "" ||
 		strings.TrimSpace(input.ExecutionSetting) != "" ||
 		input.ProviderSet || input.ModelSet || input.ThinkingSet ||
-		input.ExitPlanModeEnabled != nil || input.ToolScope != nil || input.Enabled != nil
+		input.ExitPlanModeEnabled != nil || input.ToolScope != nil || input.ToolContract != nil || input.Enabled != nil
 	if mustExist {
 		if !hasMutation {
 			return errors.New("manage-agent update requires at least one field to change")
@@ -7263,23 +7270,95 @@ func manageAgentToolContractFromValue(value any) (*pebblestore.AgentToolContract
 	return pebblestore.NormalizeAgentToolContract(contract), nil
 }
 
+func manageAgentEffectiveExecutionSetting(profile pebblestore.AgentProfile) string {
+	if pebblestore.AgentExitPlanModeEnabled(profile) {
+		return ""
+	}
+	baseline := pebblestore.NormalizeAgentExecutionSetting(profile.ExecutionSetting)
+	if profile.ToolContract == nil && profile.ToolScope == nil {
+		return baseline
+	}
+	writeTools := map[string]bool{
+		"write":      baseline == pebblestore.AgentExecutionSettingReadWrite,
+		"edit":       baseline == pebblestore.AgentExecutionSettingReadWrite,
+		"bash":       false,
+		"task":       false,
+		"git_add":    false,
+		"git_commit": false,
+	}
+	applyPreset := func(preset string) {
+		preset = strings.ToLower(strings.TrimSpace(preset))
+		if preset == "" {
+			return
+		}
+		for name := range writeTools {
+			writeTools[name] = false
+		}
+		switch preset {
+		case "read_write":
+			writeTools["write"] = true
+			writeTools["edit"] = true
+		case "bash_git_only":
+			writeTools["bash"] = true
+		case "background_commit":
+			writeTools["git_add"] = true
+			writeTools["git_commit"] = true
+		}
+	}
+	setWriteTool := func(name string, enabled bool) {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if _, ok := writeTools[name]; ok {
+			writeTools[name] = enabled
+		}
+	}
+	if contract := profile.ToolContract; contract != nil {
+		applyPreset(contract.Preset)
+		for name, cfg := range contract.Tools {
+			if cfg.Enabled != nil {
+				setWriteTool(name, *cfg.Enabled)
+			}
+			if len(cfg.BashPrefixes) > 0 {
+				setWriteTool(name, true)
+			}
+		}
+	} else if scope := profile.ToolScope; scope != nil {
+		applyPreset(scope.Preset)
+		for _, name := range scope.AllowTools {
+			setWriteTool(name, true)
+		}
+		for _, name := range scope.DenyTools {
+			setWriteTool(name, false)
+		}
+		if len(scope.BashPrefixes) > 0 {
+			setWriteTool("bash", true)
+		}
+	}
+	for _, enabled := range writeTools {
+		if enabled {
+			return pebblestore.AgentExecutionSettingReadWrite
+		}
+	}
+	return pebblestore.AgentExecutionSettingRead
+}
+
 func manageAgentProfileMap(profile pebblestore.AgentProfile, activePrimary bool, purposes []string) map[string]any {
 	payload := map[string]any{
-		"name":                   strings.TrimSpace(profile.Name),
-		"mode":                   strings.TrimSpace(profile.Mode),
-		"description":            strings.TrimSpace(profile.Description),
-		"provider":               strings.TrimSpace(profile.Provider),
-		"model":                  strings.TrimSpace(profile.Model),
-		"thinking":               strings.TrimSpace(profile.Thinking),
-		"prompt":                 strings.TrimSpace(profile.Prompt),
-		"execution_setting":      strings.TrimSpace(profile.ExecutionSetting),
-		"exit_plan_mode_enabled": pebblestore.AgentExitPlanModeEnabled(profile),
-		"tool_scope":             manageAgentToolScopeMap(profile.ToolScope),
-		"tool_contract":          manageAgentToolContractMap(profile.ToolContract),
-		"enabled":                profile.Enabled,
-		"updated_at":             profile.UpdatedAt,
-		"active_primary":         activePrimary,
-		"active_purposes":        append([]string(nil), purposes...),
+		"name":                        strings.TrimSpace(profile.Name),
+		"mode":                        strings.TrimSpace(profile.Mode),
+		"description":                 strings.TrimSpace(profile.Description),
+		"provider":                    strings.TrimSpace(profile.Provider),
+		"model":                       strings.TrimSpace(profile.Model),
+		"thinking":                    strings.TrimSpace(profile.Thinking),
+		"prompt":                      strings.TrimSpace(profile.Prompt),
+		"execution_setting":           strings.TrimSpace(profile.ExecutionSetting),
+		"effective_execution_setting": manageAgentEffectiveExecutionSetting(profile),
+		"exit_plan_mode_enabled":      pebblestore.AgentExitPlanModeEnabled(profile),
+		"tool_scope":                  manageAgentToolScopeMap(profile.ToolScope),
+		"tool_contract":               manageAgentToolContractMap(profile.ToolContract),
+		"enabled":                     profile.Enabled,
+		"updated_at":                  profile.UpdatedAt,
+		"active_primary":              activePrimary,
+		"active_purposes":             append([]string(nil), purposes...),
 	}
 	return payload
 }

@@ -130,6 +130,8 @@ export interface AgentToolInventory {
   presets: AgentToolInventoryPreset[]
 }
 
+export type AgentEffectiveExecution = 'read' | 'readwrite' | 'plan → auto' | 'unset'
+
 export interface AgentChangePayload {
   title: string
   subtitle: string
@@ -140,6 +142,7 @@ export interface AgentChangePayload {
   purpose: string
   mode: string
   execution: string
+  effectiveExecution: AgentEffectiveExecution
   tools: string
   status: string
   model: string
@@ -682,6 +685,7 @@ export function parseAgentChangePermission(permission: DesktopPermissionRecord):
   )
   const mode = target === 'agent_profile' ? agentProfileMode(snapshotProfile) : ''
   const execution = target === 'agent_profile' ? agentProfileExecution(snapshotProfile) : ''
+  const effectiveExecution = target === 'agent_profile' ? agentProfileEffectiveExecution(snapshotProfile) : 'unset'
   const tools = target === 'agent_profile' ? agentProfileTools(snapshotProfile) : ''
   const status = target === 'agent_profile' ? agentProfileStatus(snapshotProfile) : ''
   const model = target === 'agent_profile' ? agentProfileModel(snapshotProfile) : ''
@@ -707,6 +711,7 @@ export function parseAgentChangePermission(permission: DesktopPermissionRecord):
     purpose,
     mode,
     execution,
+    effectiveExecution,
     tools,
     status,
     model,
@@ -856,6 +861,70 @@ function agentProfileExecution(profile: Record<string, unknown>): string {
     return 'plan → auto'
   }
   return mapStringArg(profile, 'execution_setting') || 'unset'
+}
+
+function agentProfileEffectiveExecution(profile: Record<string, unknown>): AgentEffectiveExecution {
+  if (mapBoolArg(profile, 'exit_plan_mode_enabled')) {
+    return 'plan → auto'
+  }
+  const explicit = mapStringArg(profile, 'effective_execution_setting') || inferAgentProfileEffectiveExecution(profile)
+  return normalizeAgentEffectiveExecution(explicit)
+}
+
+function normalizeAgentEffectiveExecution(value: string): AgentEffectiveExecution {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'readwrite' || normalized === 'read_write' || normalized === 'read-write') return 'readwrite'
+  if (normalized === 'read') return 'read'
+  if (normalized === 'plan → auto' || normalized === 'plan_auto' || normalized === 'plan-auto') return 'plan → auto'
+  return 'unset'
+}
+
+function inferAgentProfileEffectiveExecution(profile: Record<string, unknown>): AgentEffectiveExecution {
+  const contract = mapObjectArg(profile, 'tool_contract')
+  const scope = mapObjectArg(profile, 'tool_scope')
+  if (Object.keys(contract).length === 0 && Object.keys(scope).length === 0) {
+    return normalizeAgentEffectiveExecution(mapStringArg(profile, 'execution_setting'))
+  }
+  const writeTools = new Map<string, boolean>([
+    ['write', agentProfileExecution(profile) === 'readwrite'],
+    ['edit', agentProfileExecution(profile) === 'readwrite'],
+    ['bash', false],
+    ['task', false],
+    ['git_add', false],
+    ['git_commit', false],
+  ])
+  const applyPreset = (preset: string) => {
+    const normalized = preset.trim().toLowerCase()
+    if (!normalized) return
+    writeTools.forEach((_, name) => writeTools.set(name, false))
+    if (normalized === 'read_write') {
+      writeTools.set('write', true)
+      writeTools.set('edit', true)
+    } else if (normalized === 'bash_git_only') {
+      writeTools.set('bash', true)
+    } else if (normalized === 'background_commit') {
+      writeTools.set('git_add', true)
+      writeTools.set('git_commit', true)
+    }
+  }
+  const setWriteTool = (name: string, enabled: boolean) => {
+    const normalized = name.trim().toLowerCase()
+    if (writeTools.has(normalized)) writeTools.set(normalized, enabled)
+  }
+  if (Object.keys(contract).length > 0) {
+    applyPreset(mapStringArg(contract, 'preset'))
+    Object.entries(mapObjectArg(contract, 'tools')).forEach(([name, rawConfig]) => {
+      const config = asRecord(rawConfig) ?? {}
+      if ('enabled' in config) setWriteTool(name, mapBoolArg(config, 'enabled'))
+      if (mapStringArrayArg(config, 'bash_prefixes').length > 0) setWriteTool(name, true)
+    })
+  } else {
+    applyPreset(mapStringArg(scope, 'preset'))
+    mapStringArrayArg(scope, 'allow_tools').forEach((name) => setWriteTool(name, true))
+    mapStringArrayArg(scope, 'deny_tools').forEach((name) => setWriteTool(name, false))
+    if (mapStringArrayArg(scope, 'bash_prefixes').length > 0) setWriteTool('bash', true)
+  }
+  return Array.from(writeTools.values()).some(Boolean) ? 'readwrite' : 'read'
 }
 
 function agentProfileTools(profile: Record<string, unknown>): string {

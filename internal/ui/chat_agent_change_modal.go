@@ -629,7 +629,11 @@ func agentChangeExecution(profile map[string]any) string {
 	if jsonBool(profile, "exit_plan_mode_enabled") {
 		return "plan → auto"
 	}
-	return emptyValue(strings.TrimSpace(jsonString(profile, "execution_setting")), "unset")
+	setting := strings.TrimSpace(jsonString(profile, "effective_execution_setting"))
+	if setting == "" {
+		setting = strings.TrimSpace(jsonString(profile, "execution_setting"))
+	}
+	return emptyValue(setting, "unset")
 }
 
 func agentChangeTools(profile map[string]any) string {
