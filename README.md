@@ -18,12 +18,28 @@ This repository is under active development. The README below is intentionally c
 - Supports main and dev runtime lanes so an installed release and a development lane can use separate ports and state.
 - Stores runtime data under XDG-aware user directories instead of requiring repository-local mutable state.
 - Uses attach-token authenticated local API endpoints for non-health daemon access.
-- Includes provider adapters and auth/status plumbing for Anthropic, Codex, Google, Copilot, Fireworks, OpenRouter, and Exa search support.
+- Includes provider adapters and auth/status plumbing for Anthropic, Codex, Google, Fireworks, OpenRouter, and Exa search support. Copilot is not currently available as a selectable or runnable provider.
 - Includes repository guardrails for public-repo hygiene, pre-commit checks, secret scanning, policy checks, and vulnerability scanning.
 
 ## Install
 
-Install from a GitHub release asset when one is available. After extracting `swarm-<version>-linux-amd64.tar.gz`, run the bundled installer from the extracted artifact root:
+Fast lane for Linux x86_64:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh
+```
+
+That command fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm.
+
+The installer places launchers in `${XDG_BIN_HOME:-$HOME/.local/bin}` and installs runtime artifacts under `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}`.
+
+If your shell does not already include the launcher directory on `PATH`, run Swarm with:
+
+```bash
+${XDG_BIN_HOME:-$HOME/.local/bin}/swarm
+```
+
+Manual release asset install is also supported. Download `swarm-<version>-linux-amd64.tar.gz` from a GitHub release, extract it, and run:
 
 ```bash
 cd /path/to/extracted/swarm-<version>-linux-amd64
@@ -36,15 +52,7 @@ Equivalent explicit artifact-root form:
 sh install.sh --artifact-root /path/to/extracted/swarm-<version>-linux-amd64
 ```
 
-The installer uses the bundled `linux-amd64/root/swarmsetup` helper, places launchers in `${XDG_BIN_HOME:-$HOME/.local/bin}`, and installs runtime artifacts under `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}`.
-
-If your shell does not already include the launcher directory on `PATH`, run Swarm with:
-
-```bash
-${XDG_BIN_HOME:-$HOME/.local/bin}/swarm
-```
-
-From a source checkout, the setup helper can build and install local launchers:
+From a source checkout, the setup helper can build and install local development launchers:
 
 ```bash
 ./setup
@@ -99,7 +107,7 @@ Type `/` in the terminal UI to open command suggestions. Current command surface
 - `/plan` for plan-mode session workflows.
 - `/agents` for saved agent profile management.
 - `/themes`, `/keybinds`, and `/mouse` for UI customization and terminal input behavior.
-- `/voice` for voice profiles, devices, STT/TTS settings, and tests.
+- `/voice` for experimental terminal voice input controls. The terminal STT path has been tested, but voice is not a polished or guaranteed workflow yet.
 - `/update` and `/rebuild` for installed runtime update and development rebuild flows.
 
 Useful keys and runtime behavior:

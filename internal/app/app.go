@@ -7402,10 +7402,10 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 			cycleLabel = label
 		}
 	}
-	modeHint := fmt.Sprintf("%s cycle mode", cycleLabel)
+	modeHint := fmt.Sprintf("%s changes mode", cycleLabel)
 	if next.HintLine == "" {
 		next.HintLine = modeHint
-	} else if !strings.Contains(strings.ToLower(next.HintLine), "cycle mode") {
+	} else if !strings.Contains(strings.ToLower(next.HintLine), "changes mode") {
 		next.HintLine = next.HintLine + " • " + modeHint
 	}
 	if len(errorsSeen) > 0 && len(next.Workspaces) == 0 && strings.TrimSpace(next.ModelName) == "" && len(next.RecentSessions) == 0 {
