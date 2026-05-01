@@ -912,6 +912,14 @@ export function AgentsSettingsPage() {
       );
       return;
     }
+    if (
+      (selectedProfile?.mode || form.mode).trim().toLowerCase() ===
+        "primary" &&
+      primaryAgents.length <= 1
+    ) {
+      setError("The last primary agent cannot be deleted.");
+      return;
+    }
     if (!window.confirm(`Delete agent ${targetName}?`)) {
       return;
     }
@@ -1037,17 +1045,19 @@ export function AgentsSettingsPage() {
   const selectedMode = (selectedProfile?.mode || form.mode)
     .trim()
     .toLowerCase();
+  const primaryAgents = profiles.filter(
+    (p) => (p.mode || "primary").toLowerCase() === "primary",
+  );
   const canActivate =
     Boolean(selectedProfile?.name) &&
     selectedMode === "primary" &&
     selectedProfile?.name !== activePrimary;
   const canDelete =
-    Boolean(selectedProfile?.name) && !Boolean(selectedProfile?.protected);
+    Boolean(selectedProfile?.name) &&
+    !Boolean(selectedProfile?.protected) &&
+    (selectedMode !== "primary" || primaryAgents.length > 1);
   const busy = saving || isFetching;
 
-  const primaryAgents = profiles.filter(
-    (p) => (p.mode || "primary").toLowerCase() === "primary",
-  );
   const subAgents = profiles.filter(
     (p) => (p.mode || "primary").toLowerCase() === "subagent",
   );

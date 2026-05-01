@@ -110,6 +110,7 @@ type Server struct {
 	requestStop          func(reason string)
 	desktopLocalSessions *desktopLocalSessionManager
 	gitRealtime          *gitRealtimeManager
+	swarmTargetHealth    swarmTargetHealthCache
 }
 
 type runService interface {

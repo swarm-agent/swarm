@@ -230,7 +230,7 @@ func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
 	if AgentExitPlanModeEnabled(profile) {
 		profile.ExecutionSetting = ""
 	}
-	profile.Protected = strings.EqualFold(profile.Name, "swarm") || strings.EqualFold(profile.Name, "memory")
+	profile.Protected = strings.EqualFold(profile.Name, "memory")
 	return profile
 }
 

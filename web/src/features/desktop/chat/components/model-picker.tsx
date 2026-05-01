@@ -202,7 +202,7 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0 }: 
       <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/40">
         <div className="grid max-h-[420px] grid-cols-[220px_minmax(0,1fr)]">
           <div className="border-r border-[var(--app-border)] bg-[var(--app-surface-subtle)]">
-            <div className="border-b border-[var(--app-border)] px-4 py-3">
+            <div className="flex h-11 items-center border-b border-[var(--app-border)] px-4">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
                 Providers
               </span>
@@ -236,8 +236,8 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0 }: 
           </div>
 
           <div className="min-w-0">
-            <div className="border-b border-[var(--app-border)] px-4 py-3">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
+            <div className="flex h-11 min-w-0 items-center border-b border-[var(--app-border)] px-4">
+              <div className="truncate text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
                 {resolvedActiveProvider || 'Models'}
               </div>
             </div>

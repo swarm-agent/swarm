@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, LoaderCircle, Menu, Plus, RefreshCcw, Settings, X, XCircle } from 'lucide-react'
+import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, LoaderCircle, Menu, Plus, RefreshCcw, Settings, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -58,6 +58,7 @@ const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_upda
 const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
+const SWARM_TARGET_REFETCH_INTERVAL_MS = 10_000
 const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
 const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] items-center gap-2.5`
 const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
@@ -502,12 +503,34 @@ function swarmKindLabel(target: SwarmTarget): string {
 
 function swarmTargetStatusLabel(target: SwarmTarget): string {
   if (target.current) {
-    return 'active'
+    return 'active here'
   }
   if (target.online) {
     return 'online'
   }
-  return target.attach_status?.trim() || 'offline'
+  const status = target.attach_status?.trim()
+  if (!status || status === 'attached') {
+    return 'offline'
+  }
+  return status
+}
+
+function swarmTargetOpenURL(target: SwarmTarget): string {
+  return (target.desktop_url?.trim() || target.backend_url?.trim() || '')
+}
+
+function swarmTargetShortName(target: SwarmTarget): string {
+  const label = (target.name || target.swarm_id || 'swarm').trim()
+  return label.length > 12 ? `${label.slice(0, 11)}…` : label
+}
+
+function swarmTargetInitials(target: SwarmTarget): string {
+  const label = (target.name || target.swarm_id || '?').trim()
+  const parts = label.split(/[\s._-]+/).filter(Boolean)
+  const initials = parts.length >= 2
+    ? `${parts[0]?.[0] ?? ''}${parts[1]?.[0] ?? ''}`
+    : label.slice(0, 2)
+  return initials.toUpperCase() || '?'
 }
 
 function sessionPendingPermissionCount(session: DesktopSessionRecord): number {
@@ -1397,8 +1420,9 @@ export function DesktopAppPage() {
   const swarmTargetsQuery = useQuery({
     queryKey: ['swarm-targets'] as const,
     queryFn: () => fetchSwarmTargets(),
-    staleTime: 15_000,
-    refetchInterval: 15_000,
+    staleTime: SWARM_TARGET_REFETCH_INTERVAL_MS,
+    refetchInterval: SWARM_TARGET_REFETCH_INTERVAL_MS,
+    refetchIntervalInBackground: true,
   })
   const updateStatusQuery = useQuery({
     queryKey: ['desktop-update-status'] as const,
@@ -1436,13 +1460,7 @@ export function DesktopAppPage() {
   const currentSwarmTarget = swarmTargets.find((target) => target.current) ?? null
   const swarmName = currentSwarmTarget?.name ?? swarmSettingsQuery.data?.name ?? 'Local'
   const masterWorkspaceName = selectedWorkspace?.workspaceName ?? routeWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath ?? '')
-  const swarmTargetCounts = useMemo(() => {
-    const local = swarmTargets.filter((target) => target.kind === 'self' || target.kind === 'local').length
-    const remote = swarmTargets.filter((target) => target.kind === 'remote').length
-    return { local, remote }
-  }, [swarmTargets])
-  const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} remote`
-  const visibleSwarmTargetChips = useMemo(() => [...swarmTargets]
+  const sortedSwarmTargets = useMemo(() => [...swarmTargets]
     .sort((left, right) => {
       if (left.current !== right.current) {
         return left.current ? -1 : 1
@@ -1451,9 +1469,17 @@ export function DesktopAppPage() {
         return left.online ? -1 : 1
       }
       return left.name.localeCompare(right.name)
-    })
-    .slice(0, 6), [swarmTargets])
-  const hiddenSwarmTargetChipCount = Math.max(0, swarmTargets.length - visibleSwarmTargetChips.length)
+    }), [swarmTargets])
+  const selfSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'self' || target.current), [sortedSwarmTargets])
+  const localSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'local' && !target.current), [sortedSwarmTargets])
+  const remoteSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'remote' && !target.current), [sortedSwarmTargets])
+  const swarmTargetCounts = useMemo(() => {
+    const local = selfSwarmTargets.length + localSwarmTargets.length
+    const remote = remoteSwarmTargets.length
+    const offline = sortedSwarmTargets.filter((target) => !target.online && !target.current).length
+    return { local, remote, offline }
+  }, [localSwarmTargets.length, remoteSwarmTargets, selfSwarmTargets.length, sortedSwarmTargets])
+  const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} remote${swarmTargetCounts.offline > 0 ? ` · ${swarmTargetCounts.offline} offline` : ''}`
   const workspaceCount = mergedSidebarWorkspaceEntries.length
   const swarmTopologySignature = useMemo(
     () => swarmTargets
@@ -1538,47 +1564,33 @@ export function DesktopAppPage() {
   }, [])
 
   const handleSelectSwarmTarget = useCallback(async (target: SwarmTarget) => {
-    if (!target.selectable || target.current) {
-      setSwarmMenu({ open: false })
+    setSwarmSwitchError(null)
+    if (target.current || target.kind === 'self') {
+      try {
+        await selectSwarmTarget(target.swarm_id)
+        await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to return to master'
+        setSwarmSwitchError(message)
+      } finally {
+        setSwarmMenu({ open: false })
+      }
       return
     }
-    setSwarmSwitchError(null)
-    try {
-      await selectSwarmTarget(target.swarm_id)
+
+    const openURL = swarmTargetOpenURL(target)
+    if (!target.online) {
+      setSwarmSwitchError(`${target.name || 'This swarm'} is offline.`)
       setSwarmMenu({ open: false })
-      queryClient.removeQueries({ queryKey: ['workspace-overview'] })
-      queryClient.removeQueries({ queryKey: ['session-messages'] })
-      queryClient.removeQueries({ queryKey: ['session-preference'] })
-      queryClient.removeQueries({ queryKey: ['swarm-targets'] })
-      useDesktopStore.getState().disconnect()
-      useDesktopStore.setState((state) => ({
-        ...state,
-        sessions: {},
-        activeSessionId: null,
-        activeWorkspacePath: null,
-        notifications: state.notifications.filter((notification) => notification.source !== 'swarm'),
-        notificationCenter: {
-          items: [],
-          summary: {
-            swarmID: '',
-            totalCount: 0,
-            unreadCount: 0,
-            activeCount: 0,
-            updatedAt: 0,
-          },
-          loading: false,
-          hydrated: false,
-        },
-      }))
-      await queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
-      await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
-      void useDesktopStore.getState().hydrate()
-      void useDesktopStore.getState().refreshNotifications()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to switch swarm target'
-      setSwarmSwitchError(message)
-      console.error('[desktop-app-page] failed to switch swarm target', error)
+      void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
+      return
     }
+    if (!openURL) {
+      setSwarmSwitchError(`${target.name || 'This swarm'} does not have a desktop URL yet.`)
+      return
+    }
+    window.open(openURL, '_blank', 'noopener,noreferrer')
+    setSwarmMenu({ open: false })
   }, [queryClient])
 
   const mutateTodoState = useCallback(async <T,>(workspacePath: string, action: () => Promise<T>): Promise<T> => {
@@ -2172,6 +2184,159 @@ export function DesktopAppPage() {
     [visibleSidebarWorkspaceEntries, workspaceLayout],
   )
 
+  const openSwarmMenu = useCallback(() => {
+    setWorkspaceMenuOpen(false)
+    setSwarmMenu((current) => ({ open: !current.open }))
+  }, [])
+
+  const renderSwarmOverflowButton = useCallback((count: number, label = 'more') => {
+    if (count <= 0) return null
+    return (
+      <button
+        type="button"
+        className="h-[18px] shrink-0 rounded border border-[var(--app-border)] px-1 font-inherit text-[9px] leading-none text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+        onClick={openSwarmMenu}
+        aria-expanded={swarmMenu.open}
+        title={`Show ${count} ${label}`}
+      >
+        +{count}
+      </button>
+    )
+  }, [openSwarmMenu, swarmMenu.open])
+
+  const renderSwarmTargetButton = useCallback((target: SwarmTarget, variant: 'pill' | 'plain' | 'avatar' | 'row' | 'tiny' = 'pill') => {
+    const statusLabel = swarmTargetStatusLabel(target)
+    const targetLabel = target.name || target.swarm_id
+    const shortLabel = swarmTargetShortName(target)
+    const openURL = swarmTargetOpenURL(target)
+    const clickHint = target.current || target.kind === 'self'
+      ? 'local master'
+      : target.online && openURL
+        ? 'open in new window'
+        : 'offline'
+    const title = `${targetLabel} · ${swarmKindLabel(target)} · ${statusLabel} · ${clickHint}`
+    const sharedClass = cn(
+      'font-inherit transition-[border-color,background-color,color,opacity] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+      !target.online && !target.current && 'opacity-65',
+      target.current && 'text-[var(--app-text)]',
+    )
+
+    if (variant === 'avatar') {
+      return (
+        <button
+          key={target.swarm_id}
+          type="button"
+          className={cn(
+            sharedClass,
+            'grid h-[20px] w-[20px] shrink-0 place-items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-[8px] font-semibold uppercase',
+            target.current && 'border-[color-mix(in_srgb,var(--app-success)_62%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-success)_12%,transparent)]',
+            target.kind === 'remote' && !target.current && 'border-[color-mix(in_srgb,var(--app-info)_50%,var(--app-border))]',
+          )}
+          onClick={() => { void handleSelectSwarmTarget(target) }}
+          aria-label={title}
+          title={title}
+        >
+          {swarmTargetInitials(target)}
+        </button>
+      )
+    }
+
+    if (variant === 'plain') {
+      return (
+        <button
+          key={target.swarm_id}
+          type="button"
+          className={cn(sharedClass, 'flex min-w-0 items-center gap-1 border-0 bg-transparent p-0 text-left text-[10px] text-[var(--app-text-muted)]')}
+          onClick={() => { void handleSelectSwarmTarget(target) }}
+          aria-label={title}
+          title={title}
+        >
+          <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
+          <span className="truncate">{shortLabel}</span>
+          {!target.current && target.online && openURL ? <ExternalLink size={9} strokeWidth={1.8} className="shrink-0 opacity-70" /> : null}
+        </button>
+      )
+    }
+
+    if (variant === 'row') {
+      return (
+        <button
+          key={target.swarm_id}
+          type="button"
+          className={cn(sharedClass, 'flex min-h-[18px] min-w-0 items-center justify-between gap-2 rounded px-1 text-left text-[10px] text-[var(--app-text-muted)]')}
+          onClick={() => { void handleSelectSwarmTarget(target) }}
+          aria-label={title}
+          title={title}
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
+            <span className="truncate">{shortLabel}</span>
+          </span>
+          <span className="shrink-0 text-[8px] uppercase text-[var(--app-text-subtle)]">{target.current ? 'here' : target.kind}</span>
+        </button>
+      )
+    }
+
+    if (variant === 'tiny') {
+      return (
+        <button
+          key={target.swarm_id}
+          type="button"
+          className={cn(sharedClass, 'flex h-[18px] min-w-0 shrink-0 items-center gap-1 rounded border border-[var(--app-border)] px-1 text-left text-[9px] text-[var(--app-text-muted)]')}
+          onClick={() => { void handleSelectSwarmTarget(target) }}
+          aria-label={title}
+          title={title}
+        >
+          <span className={cn('h-[4px] w-[4px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
+          <span className="max-w-[54px] truncate">{shortLabel}</span>
+        </button>
+      )
+    }
+
+    return (
+      <button
+        key={target.swarm_id}
+        type="button"
+        className={cn(
+          sharedClass,
+          'group flex h-[22px] min-w-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_72%,transparent)] px-1.5 text-left text-[10px] text-[var(--app-text-muted)] hover:border-[var(--app-text-subtle)]',
+          target.current && 'border-[color-mix(in_srgb,var(--app-success)_58%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-success)_10%,transparent)]',
+        )}
+        onClick={() => { void handleSelectSwarmTarget(target) }}
+        aria-label={title}
+        title={title}
+      >
+        <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
+        <span className="truncate">{shortLabel}</span>
+        {!target.current && target.online && openURL ? <ExternalLink size={10} strokeWidth={1.8} className="shrink-0 opacity-70" /> : null}
+      </button>
+    )
+  }, [handleSelectSwarmTarget])
+
+  const renderSwarmGroup = useCallback((label: string, targets: SwarmTarget[], variant: 'pill' | 'plain' | 'avatar' | 'row' | 'tiny' = 'tiny', limit = 3) => {
+    const visible = targets.slice(0, limit)
+    return (
+      <div className="flex min-w-0 items-center gap-1">
+        <span className="w-[38px] shrink-0 text-[8px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">{label}</span>
+        <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+          {visible.length > 0 ? visible.map((target) => renderSwarmTargetButton(target, variant)) : <span className="text-[9px] text-[var(--app-text-subtle)]">none</span>}
+          {renderSwarmOverflowButton(targets.length - visible.length, label)}
+        </span>
+      </div>
+    )
+  }, [renderSwarmOverflowButton, renderSwarmTargetButton])
+
+  const renderSwarmTargetRows = useCallback(() => {
+    const currentTargets = selfSwarmTargets.length > 0 ? selfSwarmTargets : sortedSwarmTargets.slice(0, 1)
+    const localAndSelfTargets = [...currentTargets, ...localSwarmTargets]
+    return (
+      <div className="grid gap-0.5">
+        {renderSwarmGroup('Local', localAndSelfTargets, 'plain', 4)}
+        {renderSwarmGroup('Remote', remoteSwarmTargets, 'plain', 4)}
+      </div>
+    )
+  }, [localSwarmTargets, remoteSwarmTargets, renderSwarmGroup, selfSwarmTargets, sortedSwarmTargets])
+
   const sidebarContent = (
     <>
       {sidebarCollapsed ? (
@@ -2257,36 +2422,12 @@ export function DesktopAppPage() {
                 </div>
 
                 <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'mt-[7px] min-h-[30px] pr-4 text-[11px] text-[var(--app-text-subtle)]')}>
-                  <div className="flex min-w-0 flex-wrap items-center gap-1.5" title={swarmTargetSummary}>
-                    {visibleSwarmTargetChips.length > 0 ? visibleSwarmTargetChips.map((target) => {
-                      const statusLabel = swarmTargetStatusLabel(target)
-                      const targetLabel = target.name || target.swarm_id
-                      return (
-                        <button
-                          key={target.swarm_id}
-                          type="button"
-                          className={cn(
-                            'group flex h-[22px] min-w-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_72%,transparent)] px-1.5 text-left font-inherit text-[10px] text-[var(--app-text-muted)] transition-[border-color,background-color,color] hover:border-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
-                            target.current && 'border-[color-mix(in_srgb,var(--app-success)_58%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-success)_10%,transparent)] text-[var(--app-text)]',
-                            !target.selectable && !target.current && 'cursor-not-allowed opacity-55',
-                          )}
-                          onClick={() => { void handleSelectSwarmTarget(target) }}
-                          disabled={!target.selectable && !target.current}
-                          aria-label={`${targetLabel} ${swarmKindLabel(target)} ${statusLabel}`}
-                          title={`${targetLabel} · ${swarmKindLabel(target)} · ${statusLabel}${target.selectable && !target.current ? ' · click to go' : ''}`}
-                        >
-                          <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-                          <span>{targetLabel}</span>
-                        </button>
-                      )
-                    }) : (
+                  <div className="min-w-0" title={swarmTargetSummary}>
+                    {swarmTargets.length > 0 ? renderSwarmTargetRows() : (
                       <button
                         type="button"
                         className="flex h-[22px] min-w-0 items-center gap-1.5 overflow-hidden rounded-full border border-[var(--app-border)] px-1.5 text-left font-inherit text-[10px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={() => {
-                          setWorkspaceMenuOpen(false)
-                          setSwarmMenu((current) => ({ open: !current.open }))
-                        }}
+                        onClick={openSwarmMenu}
                         aria-expanded={swarmMenu.open}
                         aria-label="Choose swarm target"
                         title="Choose swarm target"
@@ -2294,34 +2435,6 @@ export function DesktopAppPage() {
                         <span className="truncate">No swarms</span>
                       </button>
                     )}
-                    {hiddenSwarmTargetChipCount > 0 ? (
-                      <button
-                        type="button"
-                        className="flex h-[22px] shrink-0 items-center rounded-full border border-[var(--app-border)] px-1.5 font-inherit text-[10px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                        onClick={() => {
-                          setWorkspaceMenuOpen(false)
-                          setSwarmMenu((current) => ({ open: !current.open }))
-                        }}
-                        aria-expanded={swarmMenu.open}
-                        aria-label="Show all swarm targets"
-                        title="Show all swarm targets"
-                      >
-                        +{hiddenSwarmTargetChipCount}
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full border border-transparent font-inherit text-[var(--app-text-subtle)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                      onClick={() => {
-                        setWorkspaceMenuOpen(false)
-                        setSwarmMenu((current) => ({ open: !current.open }))
-                      }}
-                      aria-expanded={swarmMenu.open}
-                      aria-label="Show swarm target menu"
-                      title="Show swarm target menu"
-                    >
-                      <ChevronDown size={13} strokeWidth={1.8} className={cn('shrink-0', swarmMenu.open && 'rotate-180')} />
-                    </button>
                   </div>
                   <SidebarActionRail>
                     <SidebarActionRailSpacer />
@@ -2339,34 +2452,51 @@ export function DesktopAppPage() {
 
                 {swarmMenu.open ? (
                   <div className="mr-4 mt-1.5 border border-[var(--app-border)] bg-[var(--app-surface)] py-1">
-                    {swarmTargets.map((target) => (
-                      <button
-                        key={target.swarm_id}
-                        type="button"
-                        onClick={() => { void handleSelectSwarmTarget(target) }}
-                        disabled={!target.selectable}
-                        className={cn(
-                          SIDEBAR_ACTION_ROW_CLASS,
-                          'min-h-[30px] w-full px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
-                          target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
-                          !target.selectable && 'cursor-not-allowed opacity-50',
-                        )}
-                        title={`${swarmKindLabel(target)} · ${target.online ? 'online' : (target.attach_status || 'offline')}`}
-                      >
-                        <span className="flex min-w-0 items-center gap-2">
-                          <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-                          <span className="truncate">{target.name}</span>
-                        </span>
-                        <span className="shrink-0 truncate text-right text-[10px] text-[var(--app-text-subtle)]">
-                          {swarmKindLabel(target)} · {target.current ? 'active' : target.online ? 'online' : (target.attach_status || 'offline')}
-                        </span>
-                      </button>
-                    ))}
+                    {swarmTargets.map((target) => {
+                      const openURL = swarmTargetOpenURL(target)
+                      const statusLabel = swarmTargetStatusLabel(target)
+                      return (
+                        <button
+                          key={target.swarm_id}
+                          type="button"
+                          onClick={() => { void handleSelectSwarmTarget(target) }}
+                          className={cn(
+                            SIDEBAR_ACTION_ROW_CLASS,
+                            'min-h-[30px] w-full px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                            target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
+                            !target.online && !target.current && 'opacity-65',
+                          )}
+                          title={`${swarmKindLabel(target)} · ${statusLabel}${!target.current && target.online && openURL ? ' · open in new window' : ''}`}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
+                            <span className="truncate">{target.name}</span>
+                            {!target.current && target.online && openURL ? <ExternalLink size={11} strokeWidth={1.8} className="shrink-0 opacity-70" /> : null}
+                          </span>
+                          <span className="shrink-0 truncate text-right text-[10px] text-[var(--app-text-subtle)]">
+                            {swarmKindLabel(target)} · {statusLabel}
+                          </span>
+                        </button>
+                      )
+                    })}
                     {swarmSwitchError ? <div className="mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
                   </div>
                 ) : null}
 
-                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'mt-[7px] min-h-7 border-t border-[color-mix(in_srgb,var(--app-border)_54%,transparent)] pr-4 pt-[7px] text-[11px] text-[var(--app-text-subtle)]')}>
+                <div className="relative mr-4 mt-[7px] h-[13px] border-t border-[color-mix(in_srgb,var(--app-border)_54%,transparent)]">
+                  <button
+                    type="button"
+                    className="absolute left-1/2 top-0 grid h-[17px] w-[28px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-[color-mix(in_srgb,var(--app-border)_72%,transparent)] bg-[var(--app-surface)] text-[var(--app-text-subtle)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    onClick={openSwarmMenu}
+                    aria-expanded={swarmMenu.open}
+                    aria-label="Show swarm target menu"
+                    title="Show swarm target menu"
+                  >
+                    <ChevronDown size={12} strokeWidth={1.8} className={cn('shrink-0', swarmMenu.open && 'rotate-180')} />
+                  </button>
+                </div>
+
+                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4 text-[11px] text-[var(--app-text-subtle)]')}>
                   <button
                     type="button"
                     className="flex min-h-[22px] min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"

@@ -714,7 +714,7 @@ func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEn
 	if name == "" {
 		return DeleteResult{}, 0, nil, errors.New("agent name is required")
 	}
-	if name == "swarm" || name == "memory" {
+	if name == "memory" {
 		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is protected and cannot be deleted", name)
 	}
 

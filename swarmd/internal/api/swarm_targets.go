@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
@@ -16,7 +17,22 @@ import (
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
-const swarmTargetRemoteListTimeout = 250 * time.Millisecond
+const (
+	swarmTargetRemoteListTimeout = 250 * time.Millisecond
+	swarmTargetHealthTTL         = 20 * time.Second
+	swarmTargetHealthTimeout     = 750 * time.Millisecond
+)
+
+type swarmTargetHealthEntry struct {
+	online    bool
+	checkedAt time.Time
+	checking  bool
+}
+
+type swarmTargetHealthCache struct {
+	mu      sync.Mutex
+	entries map[string]swarmTargetHealthEntry
+}
 
 type swarmTarget struct {
 	SwarmID      string `json:"swarm_id"`
@@ -191,9 +207,11 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		Current:      strings.EqualFold(localSwarmID, selectedID),
 	})
 	for _, deployment := range deployments {
+		s.applyCachedSwarmTargetHealth(&deployment)
 		targets = append(targets, deployment)
 	}
 	for _, deployment := range remoteDeployments {
+		s.applyCachedSwarmTargetHealth(&deployment)
 		targets = append(targets, deployment)
 	}
 	sort.Slice(targets, func(i, j int) bool {
@@ -293,6 +311,106 @@ func (s *Server) listRemoteDeployTargets(r *http.Request) ([]swarmTarget, error)
 		out = append(out, target)
 	}
 	return out, nil
+}
+
+func (s *Server) applyCachedSwarmTargetHealth(target *swarmTarget) {
+	if s == nil || target == nil || target.Kind == "self" || strings.TrimSpace(target.BackendURL) == "" {
+		return
+	}
+	if !target.Online {
+		s.markSwarmTargetHealth(target, false)
+		return
+	}
+	key := swarmTargetHealthKey(*target)
+	now := time.Now()
+	s.swarmTargetHealth.mu.Lock()
+	if s.swarmTargetHealth.entries == nil {
+		s.swarmTargetHealth.entries = make(map[string]swarmTargetHealthEntry)
+	}
+	entry, ok := s.swarmTargetHealth.entries[key]
+	fresh := ok && !entry.checkedAt.IsZero() && now.Sub(entry.checkedAt) < swarmTargetHealthTTL
+	if fresh {
+		target.Online = entry.online
+		if !entry.online {
+			target.Selectable = false
+			if strings.TrimSpace(target.AttachStatus) == "" || strings.EqualFold(target.AttachStatus, "attached") {
+				target.AttachStatus = "offline"
+			}
+		}
+		s.swarmTargetHealth.mu.Unlock()
+		return
+	}
+	if ok && entry.checking {
+		target.Online = entry.online
+		if !entry.online {
+			target.Selectable = false
+			if strings.TrimSpace(target.AttachStatus) == "" || strings.EqualFold(target.AttachStatus, "attached") {
+				target.AttachStatus = "checking"
+			}
+		}
+		s.swarmTargetHealth.mu.Unlock()
+		return
+	}
+	entry.checking = true
+	s.swarmTargetHealth.entries[key] = entry
+	s.swarmTargetHealth.mu.Unlock()
+
+	go s.refreshSwarmTargetHealth(key, target.BackendURL)
+}
+
+func (s *Server) markSwarmTargetHealth(target *swarmTarget, online bool) {
+	if s == nil || target == nil {
+		return
+	}
+	key := swarmTargetHealthKey(*target)
+	if strings.TrimSpace(key) == "" {
+		return
+	}
+	s.swarmTargetHealth.mu.Lock()
+	if s.swarmTargetHealth.entries == nil {
+		s.swarmTargetHealth.entries = make(map[string]swarmTargetHealthEntry)
+	}
+	s.swarmTargetHealth.entries[key] = swarmTargetHealthEntry{online: online, checkedAt: time.Now()}
+	s.swarmTargetHealth.mu.Unlock()
+}
+
+func (s *Server) refreshSwarmTargetHealth(key, backendURL string) {
+	ctx, cancel := context.WithTimeout(context.Background(), swarmTargetHealthTimeout)
+	defer cancel()
+	online := probeSwarmTargetBackend(ctx, backendURL)
+	s.swarmTargetHealth.mu.Lock()
+	if s.swarmTargetHealth.entries == nil {
+		s.swarmTargetHealth.entries = make(map[string]swarmTargetHealthEntry)
+	}
+	s.swarmTargetHealth.entries[key] = swarmTargetHealthEntry{online: online, checkedAt: time.Now()}
+	s.swarmTargetHealth.mu.Unlock()
+}
+
+func probeSwarmTargetBackend(ctx context.Context, backendURL string) bool {
+	base := strings.TrimRight(strings.TrimSpace(backendURL), "/")
+	if base == "" {
+		return false
+	}
+	client := http.Client{Timeout: swarmTargetHealthTimeout}
+	for _, path := range []string{"/readyz", "/healthz"} {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+			return true
+		}
+	}
+	return false
+}
+
+func swarmTargetHealthKey(target swarmTarget) string {
+	return strings.Join([]string{strings.TrimSpace(target.Kind), strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL)}, "|")
 }
 
 func mapDeployContainerTarget(item deployruntime.ContainerDeployment) (swarmTarget, bool) {
