@@ -32,6 +32,7 @@ type agentChangeSummary struct {
 	DescriptionPreview string
 	PromptPreview      string
 	ToolInventory      agentToolInventory
+	ToolAccess         agentToolAccessSummary
 	Summary            string
 	ChangeRows         []agentChangeField
 }
@@ -57,6 +58,15 @@ type agentToolInventoryPreset struct {
 	ID          string
 	Label       string
 	Description string
+}
+
+type agentToolAccessSummary struct {
+	Allowed       []string
+	Blocked       []string
+	Restricted    []string
+	Preset        string
+	InheritPolicy bool
+	CatalogCount  int
 }
 
 type agentChangeModelOption struct {
@@ -322,17 +332,9 @@ func (p *ChatPage) agentChangeModalLines(record ChatPermissionRecord, width int)
 	}
 	appendIf("mode", summary.Mode, p.theme.Text)
 	appendIf("execution", summary.Execution, p.theme.Text)
-	appendIf("tools", summary.Tools, p.theme.Text)
 	appendIf("status", summary.Status, p.theme.Text)
 	appendIf("model", summary.Model, p.theme.TextMuted)
 	appendIf("thinking", summary.Thinking, p.theme.TextMuted)
-	if len(summary.ToolInventory.Tools) > 0 {
-		groups := agentChangeInventoryGroupCounts(summary.ToolInventory.Tools)
-		appendIf("catalog", fmt.Sprintf("%d tools · %s", len(summary.ToolInventory.Tools), strings.Join(groups, ", ")), p.theme.TextMuted)
-	}
-	if len(summary.ToolInventory.Presets) > 0 {
-		appendIf("presets", agentChangeInventoryPresetLabels(summary.ToolInventory.Presets), p.theme.TextMuted)
-	}
 	if len(highlights) == 0 {
 		highlights = append(highlights, p.taskLaunchTextLine("No headline settings to review.", p.theme.TextMuted))
 	}
@@ -341,6 +343,8 @@ func (p *ChatPage) agentChangeModalLines(record ChatPermissionRecord, width int)
 	if len(promptLines) == 0 {
 		promptLines = append(promptLines, p.taskLaunchTextLine("No prompt text included in this preview.", p.theme.TextMuted))
 	}
+
+	toolAccessLines := p.agentChangeToolAccessLines(summary.ToolAccess)
 
 	controls := []chatRenderLine{
 		p.taskLaunchTextLine("Enter applies the change.", p.theme.Success),
@@ -352,6 +356,7 @@ func (p *ChatPage) agentChangeModalLines(record ChatPermissionRecord, width int)
 	sections := []agentChangePreviewSection{
 		{Title: "Overview", BorderStyle: p.theme.BorderActive, TitleStyle: p.theme.Secondary.Bold(true), Lines: overview},
 		{Title: "Highlights", BorderStyle: p.theme.Border, TitleStyle: p.theme.Primary.Bold(true), Lines: highlights},
+		{Title: "Tool Access", BorderStyle: p.theme.Border, TitleStyle: p.theme.Primary.Bold(true), Lines: toolAccessLines},
 		{Title: "Prompt", BorderStyle: p.theme.Border, TitleStyle: p.theme.Accent.Bold(true), Lines: promptLines},
 		{Title: "Controls", BorderStyle: p.theme.Border, TitleStyle: p.theme.Accent.Bold(true), Lines: controls},
 	}
@@ -410,6 +415,7 @@ func buildAgentChangeSummary(payload map[string]any) agentChangeSummary {
 	if summaryText == "" {
 		summaryText = agentChangeSummaryText(action, target, agentName, purpose, mode, execution, tools)
 	}
+	toolInventory := agentChangeToolInventory(payload)
 	return agentChangeSummary{
 		Action:             action,
 		Target:             emptyValue(target, "agent state"),
@@ -423,7 +429,8 @@ func buildAgentChangeSummary(payload map[string]any) agentChangeSummary {
 		Thinking:           normalizeAgentChangeThinkingValue(strings.TrimSpace(jsonString(snapshot, "thinking"))),
 		DescriptionPreview: description,
 		PromptPreview:      prompt,
-		ToolInventory:      agentChangeToolInventory(payload),
+		ToolInventory:      toolInventory,
+		ToolAccess:         agentChangeToolAccessSummary(snapshot, toolInventory),
 		Summary:            summaryText,
 		ChangeRows:         agentChangeFields(action, target, before, after, purpose),
 	}
@@ -501,6 +508,45 @@ func agentChangeSummaryText(action, target, agentName, purpose, mode, execution,
 		return actionLabel + " @" + agentName
 	}
 	return actionLabel + " agent state"
+}
+
+func (p *ChatPage) agentChangeToolAccessLines(summary agentToolAccessSummary) []chatRenderLine {
+	lines := make([]chatRenderLine, 0, 6)
+	policy := make([]string, 0, 3)
+	if summary.Preset != "" {
+		policy = append(policy, "preset "+summary.Preset)
+	}
+	if summary.InheritPolicy {
+		policy = append(policy, "inherits policy")
+	}
+	if summary.CatalogCount > 0 {
+		policy = append(policy, fmt.Sprintf("%d catalog tools", summary.CatalogCount))
+	}
+	if len(policy) > 0 {
+		lines = append(lines, p.taskLaunchKeyValueLine("Policy", strings.Join(policy, " · "), p.theme.TextMuted))
+	}
+	allowed := strings.Join(summary.Allowed, ", ")
+	if allowed == "" {
+		allowed = "No explicit allows"
+		if len(summary.Blocked) == 0 {
+			allowed = "Controlled by preset / inherited policy"
+		}
+	}
+	blocked := strings.Join(summary.Blocked, ", ")
+	if blocked == "" {
+		blocked = "None blocked"
+		if len(summary.Allowed) == 0 {
+			blocked = "No explicit blocks"
+		}
+	}
+	lines = append(lines,
+		p.taskLaunchKeyValueLine(fmt.Sprintf("Allowed (%d)", len(summary.Allowed)), allowed, p.theme.Success),
+		p.taskLaunchKeyValueLine(fmt.Sprintf("Not allowed (%d)", len(summary.Blocked)), blocked, p.theme.Error),
+	)
+	if len(summary.Restricted) > 0 {
+		lines = append(lines, p.taskLaunchKeyValueLine("Restricted prefixes", strings.Join(summary.Restricted, ", "), p.theme.Warning))
+	}
+	return lines
 }
 
 func agentChangePromptLines(prompt string, style tcell.Style) []chatRenderLine {
@@ -640,88 +686,94 @@ func agentChangeTools(profile map[string]any) string {
 	if len(profile) == 0 {
 		return ""
 	}
+	summary := agentChangeToolAccessSummary(profile, agentToolInventory{})
+	switch {
+	case len(summary.Allowed) > 0 || len(summary.Blocked) > 0:
+		return fmt.Sprintf("%d allowed · %d blocked", len(summary.Allowed), len(summary.Blocked))
+	case len(summary.Restricted) > 0:
+		return "restricted prefixes"
+	case summary.Preset != "":
+		return "preset " + summary.Preset
+	default:
+		return "all enabled"
+	}
+}
+
+func agentChangeToolAccessSummary(profile map[string]any, inventory agentToolInventory) agentToolAccessSummary {
+	summary := agentToolAccessSummary{CatalogCount: len(inventory.Tools)}
+	if len(profile) == 0 {
+		return summary
+	}
 	contract := jsonObject(profile, "tool_contract")
 	contractTools := jsonObject(contract, "tools")
-	enabled := make([]string, 0)
-	disabled := make([]string, 0)
-	bashRestricted := false
+	explicitTools := make(map[string]struct{})
 	for name, rawConfig := range contractTools {
 		toolName := strings.TrimSpace(name)
 		config, _ := rawConfig.(map[string]any)
 		if toolName == "" || len(config) == 0 {
 			continue
 		}
+		explicitTools[toolName] = struct{}{}
 		if len(jsonStringSlice(config, "bash_prefixes")) > 0 {
-			bashRestricted = true
+			summary.Restricted = append(summary.Restricted, toolName)
 		}
 		if _, ok := config["enabled"]; ok {
 			if jsonBool(config, "enabled") {
-				enabled = append(enabled, toolName)
+				summary.Allowed = append(summary.Allowed, toolName)
 			} else {
-				disabled = append(disabled, toolName)
+				summary.Blocked = append(summary.Blocked, toolName)
 			}
 		}
 	}
-	sort.Strings(enabled)
-	sort.Strings(disabled)
-	contractPreset := strings.TrimSpace(jsonString(contract, "preset"))
-	switch {
-	case len(enabled) > 0 && len(disabled) == 0:
-		return "custom: " + strings.Join(enabled, ", ")
-	case len(disabled) > 0:
-		return "removed: " + strings.Join(disabled, ", ")
-	case bashRestricted:
-		return "bash restricted"
-	case contractPreset != "":
-		return "preset " + contractPreset
-	}
-
-	scope := jsonObject(profile, "tool_scope")
-	allow := jsonStringSlice(scope, "allow_tools")
-	deny := jsonStringSlice(scope, "deny_tools")
-	bashPrefixes := jsonStringSlice(scope, "bash_prefixes")
-	preset := strings.TrimSpace(jsonString(scope, "preset"))
-	switch {
-	case len(allow) > 0:
-		return "limited to " + strings.Join(allow, ", ")
-	case len(deny) > 0:
-		return "removed: " + strings.Join(deny, ", ")
-	case len(bashPrefixes) > 0:
-		return "bash restricted"
-	case preset != "":
-		return "preset " + preset
-	default:
-		return "all enabled"
-	}
-}
-
-func agentChangeInventoryGroupCounts(tools []agentToolInventoryTool) []string {
-	counts := make(map[string]int)
-	for _, tool := range tools {
-		group := emptyValue(strings.TrimSpace(tool.Group), "other")
-		counts[group]++
-	}
-	groups := make([]string, 0, len(counts))
-	for group, count := range counts {
-		groups = append(groups, fmt.Sprintf("%s:%d", group, count))
-	}
-	sort.Strings(groups)
-	return groups
-}
-
-func agentChangeInventoryPresetLabels(presets []agentToolInventoryPreset) string {
-	labels := make([]string, 0, len(presets))
-	for _, preset := range presets {
-		label := strings.TrimSpace(preset.Label)
-		if label == "" {
-			label = strings.TrimSpace(preset.ID)
+	for _, tool := range inventory.Tools {
+		toolName := strings.TrimSpace(tool.Name)
+		if toolName == "" {
+			continue
 		}
-		if label != "" {
-			labels = append(labels, label)
+		if _, ok := explicitTools[toolName]; !ok {
+			summary.Blocked = append(summary.Blocked, toolName)
 		}
 	}
-	sort.Strings(labels)
-	return strings.Join(labels, ", ")
+	summary.Preset = strings.TrimSpace(jsonString(contract, "preset"))
+	summary.InheritPolicy = jsonBool(contract, "inherit_policy")
+
+	if len(summary.Allowed) == 0 && len(summary.Blocked) == 0 {
+		scope := jsonObject(profile, "tool_scope")
+		summary.Allowed = append(summary.Allowed, jsonStringSlice(scope, "allow_tools")...)
+		summary.Blocked = append(summary.Blocked, jsonStringSlice(scope, "deny_tools")...)
+		if len(jsonStringSlice(scope, "bash_prefixes")) > 0 {
+			summary.Restricted = append(summary.Restricted, "bash")
+		}
+		if summary.Preset == "" {
+			summary.Preset = strings.TrimSpace(jsonString(scope, "preset"))
+		}
+		if !summary.InheritPolicy {
+			summary.InheritPolicy = jsonBool(scope, "inherit_policy")
+		}
+	}
+
+	summary.Allowed = sortedUniqueStrings(summary.Allowed)
+	summary.Blocked = sortedUniqueStrings(summary.Blocked)
+	summary.Restricted = sortedUniqueStrings(summary.Restricted)
+	return summary
+}
+
+func sortedUniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func agentChangeToolInventory(payload map[string]any) agentToolInventory {
