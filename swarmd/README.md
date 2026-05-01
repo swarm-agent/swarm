@@ -10,7 +10,7 @@ Implemented in this iteration:
 - Codex auth persistence (`auth/codex/default`, API key or OAuth tokens, unencrypted profile)
 - Codex Responses transport uses WebSocket-first (`wss://chatgpt.com/backend-api/codex/responses`) with explicit HTTP/SSE fallback
 - global model preference (`provider`, `model`, `thinking`)
-- modular provider boundary with runnable model providers `codex`, `google`, `copilot`, `fireworks`, and `openrouter` (`exa` remains search-only)
+- modular provider boundary with runnable model providers `anthropic`, `codex`, `google`, `fireworks`, and `openrouter` (`exa` remains search-only); Copilot implementation code is present but intentionally not registered as selectable/runnable right now
 - Fireworks runtime uses the OpenAI-compatible Fireworks Chat Completions API (`https://api.fireworks.ai/inference/v1/chat/completions`) with generic API-key auth
 - OpenRouter runtime uses the OpenRouter Chat Completions API (`https://openrouter.ai/api/v1/chat/completions`) with generic API-key auth
 - opt-in workspace persistence (saved explicitly)
@@ -64,19 +64,12 @@ For access from another device, use an SSH tunnel to the desktop port, for examp
 - `GET /v1/sessions/{id}`
 - `GET /v1/sessions/{id}/messages?after_seq=0&limit=500`
 - `POST /v1/sessions/{id}/messages`
-- `POST /v1/sessions/{id}/run` (provider execution loop with concurrent tool calls; `codex`/`google`/`copilot`/`fireworks`/`openrouter`)
+- `POST /v1/sessions/{id}/run` (provider execution loop with concurrent tool calls; `anthropic`/`codex`/`google`/`fireworks`/`openrouter`)
 - `GET /ws` (WebSocket)
 
-### Copilot Auth Source Of Truth
+### Copilot availability
 
-- The active `copilot` credential in `/v1/auth/credentials` is the canonical runtime auth source.
-- Supported Swarm-managed Copilot auth sources are:
-  - direct GitHub token stored in the active Swarm credential
-  - `copilot login` selected via an active `cli` Copilot credential
-  - `gh auth` selected via an active `gh` Copilot credential
-- Managed mode (default): when `COPILOT_SIDECAR_URL`/`COPILOT_CLI_URL` are not set, `swarmd` constructs the Copilot SDK client from the selected active auth source. Token-backed sources pass `GitHubToken`; `cli` sources use logged-in-user mode; `gh` sources resolve `gh auth token` at runtime.
-- External server mode is not supported for Swarm-managed Copilot credentials. If `COPILOT_SIDECAR_URL` or `COPILOT_CLI_URL` is set, Copilot requests fail explicitly until that override is removed.
-- Optional Copilot CLI binary override: `COPILOT_CLI_PATH=/path/to/copilot`.
+Copilot provider code is retained in the tree, but Copilot is intentionally not registered as a selectable or runnable provider right now. Do not document Copilot as supported until it can be validated end-to-end with the required paid Copilot plan.
 
 WebSocket client messages:
 
@@ -118,8 +111,6 @@ cd swarmd
 
 # model catalog (models.dev-backed cache with stale fallback)
  go run ./cmd/swarmctl model catalog get --provider codex --model gpt-5.4
- # Copilot runtime provider is `copilot` (models.dev source provider id: `github-copilot`)
- go run ./cmd/swarmctl model catalog get --provider copilot
 # Fireworks runtime provider is `fireworks` (models.dev source provider id: `fireworks-ai`)
 go run ./cmd/swarmctl model catalog get --provider fireworks
 # OpenRouter runtime provider is `openrouter`
