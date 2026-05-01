@@ -418,7 +418,7 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 			modeKeyLabel = label
 		}
 	}
-	modeHint := fmt.Sprintf("%s cycle mode", modeKeyLabel)
+	modeHint := fmt.Sprintf("%s changes mode", modeKeyLabel)
 	line := ""
 	switch {
 	case hint != "" && tip != "":
@@ -430,7 +430,7 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 	default:
 		line = modeHint
 	}
-	if !strings.Contains(strings.ToLower(line), "cycle mode") {
+	if !strings.Contains(strings.ToLower(line), "changes mode") {
 		line = fmt.Sprintf("%s • %s", line, modeHint)
 	}
 	if centered {
