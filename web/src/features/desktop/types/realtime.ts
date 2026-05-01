@@ -245,4 +245,5 @@ export interface DesktopStoreState {
   ensureRunStream: (sessionId: string, runId?: string | null) => Promise<void>
   closeRunStream: (sessionId: string) => void
   stopRun: (sessionId: string) => Promise<void>
+  __testApplyRunStreamFrame?: (sessionId: string, payload: Record<string, unknown>, ts?: number) => void
 }

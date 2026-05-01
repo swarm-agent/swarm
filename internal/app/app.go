@@ -107,6 +107,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/compact", Hint: "Compact current chat context via memory agent", QuickTips: []string{"/compact [threshold%] [notes]"}},
 		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
 		{Command: "/fast", Hint: "Toggle Codex Fast for the current chat or home draft (gpt-5.4/gpt-5.5)", QuickTips: []string{"alias tip: /codex fast"}},
+		{Command: "/git", Hint: "Show authoritative Git status for the active workspace"},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
 		{Command: "/help", Hint: "Show command help"},
 		{Command: "/home", Hint: "Return to home without ending the chat session"},
@@ -1935,6 +1936,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleCommitCommand(args)
 	case "fast":
 		a.handleCodexCommand([]string{"fast"})
+	case "git":
+		a.handleGitCommand(args)
 	case "codex":
 		a.handleCodexCommand(args)
 	case "workspace":
@@ -2005,6 +2008,7 @@ func (a *App) showHelp() {
 		"/compact [threshold%] [notes]   (compact now + optionally set auto-compact threshold)",
 		"/commit [instructions]   (launch memory agent in background to review diffs and commit)",
 		"/fast   (toggle Codex Fast for current chat or home draft; gpt-5.4/gpt-5.5)",
+		"/git   (show authoritative Git status for the active workspace)",
 		"/codex [status|fast]   (Codex gpt-5.4/gpt-5.5 runtime settings; Fast on-off)",
 		"/workspace   (open workspace manager)",
 		"/workspaces   (alias for /workspace)",

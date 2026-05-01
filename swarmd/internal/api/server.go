@@ -109,6 +109,7 @@ type Server struct {
 	activeRuns           atomic.Int32
 	requestStop          func(reason string)
 	desktopLocalSessions *desktopLocalSessionManager
+	gitRealtime          *gitRealtimeManager
 }
 
 type runService interface {
@@ -265,6 +266,7 @@ func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Servic
 		startedAt:            time.Now(),
 		codexOAuthSessions:   make(map[string]*codexOAuthSession),
 		desktopLocalSessions: newDesktopLocalSessionManager(),
+		gitRealtime:          nil,
 		runCtx:               runCtx,
 		runCancel:            runCancel,
 	}
@@ -413,6 +415,9 @@ func (s *Server) CancelInFlightRuns() {
 	s.shuttingDown.Store(true)
 	if s.runCancel != nil {
 		s.runCancel()
+	}
+	if s.gitRealtime != nil {
+		s.gitRealtime.stopAll()
 	}
 }
 

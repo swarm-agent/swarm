@@ -2,10 +2,11 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, LoaderCircle, Menu, Plus, Settings, X, XCircle } from 'lucide-react'
+import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, LoaderCircle, Menu, Plus, RefreshCcw, Settings, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
+import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { cn } from '../../../lib/cn'
 import { useDesktopStore } from '../state/use-desktop-store'
@@ -42,6 +43,8 @@ import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISe
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { fetchSession } from '../chat/queries/chat-queries'
+import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
+import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
 import {
   sessionBackgroundInfo,
@@ -109,6 +112,59 @@ interface LocalContainerUpdateConfirmState {
   plan: LocalContainerUpdatePlan
   remoteSessions: RemoteDeploySession[]
   pendingDismiss: boolean
+}
+
+interface GitPanelState {
+  workspacePath: string
+  workspaceName: string
+}
+
+function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onClose: () => void }) {
+  if (!state) return null
+  const files = snapshot?.files ?? []
+  return (
+    <Dialog>
+      <DialogBackdrop onClick={onClose} />
+      <DialogPanel className="w-[min(760px,100%)] gap-4 font-mono">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-[var(--app-text)]">Git status · {state.workspaceName}</div>
+            <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{snapshot?.repo_root || state.workspacePath}</div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={onRefresh} title="Refresh git status" aria-label="Refresh git status">
+              <RefreshCcw size={14} className={cn(loading && 'animate-spin')} />
+            </button>
+            <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={onClose} title="Close" aria-label="Close git details">
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+        {error ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]">{error}</div> : null}
+        {snapshot?.has_git ? (
+          <>
+            <div className="grid gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-4">
+              <div className="border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Branch</div><div className="truncate text-[var(--app-text)]">{snapshot.branch || 'detached'}</div></div>
+              <div className="border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Changes</div><div className="text-[var(--app-text)]">{snapshot.dirty_count}</div></div>
+              <div className="border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Remote</div><div className="text-[var(--app-text)]">↑{snapshot.ahead_count} ↓{snapshot.behind_count}</div></div>
+              <div className="border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Stash</div><div className="text-[var(--app-text)]">{snapshot.stash_count}</div></div>
+            </div>
+            <div className="min-h-0 overflow-hidden border border-[var(--app-border)]">
+              <div className="border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-xs text-[var(--app-text-muted)]">Files ({files.length})</div>
+              <div className="max-h-[360px] overflow-auto">
+                {files.length === 0 ? <div className="px-3 py-4 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div> : files.map((file) => (
+                  <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="grid grid-cols-[96px_minmax(0,1fr)] gap-3 border-b border-[var(--app-border)] px-3 py-2 text-xs last:border-b-0">
+                    <span className="text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span>
+                    <span className="min-w-0 truncate text-[var(--app-text)]" title={file.orig_path ? `${file.orig_path} → ${file.path}` : file.path}>{file.orig_path ? `${file.orig_path} → ${file.path}` : file.path}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : <div className="border border-[var(--app-border)] px-3 py-4 text-xs text-[var(--app-text-subtle)]">No git repository detected for this workspace.</div>}
+      </DialogPanel>
+    </Dialog>
+  )
 }
 
 function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -182,6 +238,39 @@ function normalizeRatio(value: number | undefined): number {
 function fallbackWorkspaceNameFromPath(path: string): string {
   const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] || path.trim() || 'Temporary folder'
+}
+
+function gitFileStatusLabel(file: GitFileStatus): string {
+  if (file.conflict) return 'conflict'
+  if (file.untracked) return 'untracked'
+  const labels: string[] = []
+  if (file.staged) labels.push('staged')
+  if (file.modified) labels.push('modified')
+  return labels.join(' + ') || file.kind || 'changed'
+}
+
+function gitSummaryTooltip(status: GitSnapshot | null | undefined): string {
+  if (!status?.has_git) return 'No git repository detected'
+  const files = status.files ?? []
+  const header = [
+    status.branch ? `branch ${status.branch}` : 'detached',
+    status.upstream ? `upstream ${status.upstream}` : '',
+    status.ahead_count > 0 ? `ahead ${status.ahead_count}` : '',
+    status.behind_count > 0 ? `behind ${status.behind_count}` : '',
+  ].filter(Boolean).join(' · ')
+  if (files.length === 0) return `${header || 'git'} · clean`
+  const lines = files.slice(0, 12).map((file) => `${gitFileStatusLabel(file)}: ${file.path}`)
+  if (files.length > 12) lines.push(`+${files.length - 12} more files`)
+  return [header, ...lines].filter(Boolean).join('\n')
+}
+
+function gitBadgeClass(status: GitSnapshot | null | undefined, loading: boolean): string {
+  if (loading && !status) return 'border-[var(--app-border)] text-[var(--app-text-subtle)]'
+  if (!status?.has_git) return 'border-[var(--app-border)] text-[var(--app-text-subtle)] opacity-55'
+  if (status.conflict_count > 0) return 'border-[var(--app-danger)] bg-[var(--app-danger-bg)] text-[var(--app-danger)]'
+  if (status.dirty_count > 0) return 'border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] text-[var(--app-warning)]'
+  if (status.ahead_count > 0 || status.behind_count > 0) return 'border-[var(--app-primary)] bg-[var(--app-selection-bg)] text-[var(--app-primary)]'
+  return 'border-[color-mix(in_srgb,var(--app-success)_55%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-success)_10%,transparent)] text-[var(--app-success)]'
 }
 
 function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): WorkspaceEntry {
@@ -574,18 +663,22 @@ function workspaceWorktreeTitle(enabled: boolean, busy: boolean): string {
 function renderWorkspaceGitBar(args: {
   workspace: WorkspaceEntry
   worktreeBusy: boolean
+  gitSnapshot: GitSnapshot | null
+  gitLoading: boolean
+  gitError: string | null
+  onOpenGit: () => void
   onToggle: () => void
 }): JSX.Element {
-  const { workspace, worktreeBusy, onToggle } = args
+  const { workspace, worktreeBusy, gitSnapshot, gitLoading, gitError, onOpenGit, onToggle } = args
   const enabled = workspace.worktreeEnabled
   const title = workspaceWorktreeTitle(enabled, worktreeBusy)
-  const tone = workspaceGitBarTone(workspace)
-  const branch = workspace.gitBranch?.trim() || 'git'
-  const ahead = Math.max(0, Number(workspace.gitAheadCount ?? 0))
-  const behind = Math.max(0, Number(workspace.gitBehindCount ?? 0))
+  const tone = gitSnapshot ? gitBadgeClass(gitSnapshot, gitLoading) : workspaceGitBarTone(workspace)
+  const branch = gitSnapshot?.branch?.trim() || workspace.gitBranch?.trim() || 'git'
+  const ahead = Math.max(0, Number(gitSnapshot?.ahead_count ?? workspace.gitAheadCount ?? 0))
+  const behind = Math.max(0, Number(gitSnapshot?.behind_count ?? workspace.gitBehindCount ?? 0))
   const syncLabel = `↑${ahead} ↓${behind}`
-  const modified = Math.max(0, Number(workspace.gitModifiedCount ?? 0))
-  const untracked = Math.max(0, Number(workspace.gitUntrackedCount ?? 0))
+  const modified = Math.max(0, Number(gitSnapshot?.modified_count ?? workspace.gitModifiedCount ?? 0))
+  const untracked = Math.max(0, Number(gitSnapshot?.untracked_count ?? workspace.gitUntrackedCount ?? 0))
   const dirtyDetailParts: string[] = []
   if (modified > 0) {
     dirtyDetailParts.push(`${modified}M`)
@@ -594,16 +687,23 @@ function renderWorkspaceGitBar(args: {
     dirtyDetailParts.push(`${untracked}U`)
   }
   const dirtyLabel = dirtyDetailParts.join(' ')
+  const gitTitle = gitError ? `Git realtime error: ${gitError}` : gitSummaryTooltip(gitSnapshot)
 
   return (
     <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'pb-2 pl-6 pr-1 pt-0.5 text-[11px]')}>
-      <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-        <span className={cn('truncate font-semibold', tone)}>{branch}</span>
+      <button
+        type="button"
+        className="flex min-w-0 items-center gap-2 overflow-hidden text-left hover:text-[var(--app-text)]"
+        onClick={onOpenGit}
+        title={gitTitle}
+        aria-label={`Open git status for ${workspace.workspaceName}`}
+      >
+        <span className={cn('truncate font-semibold', tone, gitLoading && 'animate-pulse')}>{branch}</span>
         <span className="shrink-0 text-[var(--app-text-muted)]">/</span>
         <span className="shrink-0 text-[var(--app-text-muted)]">{syncLabel}</span>
         {dirtyLabel ? <span className="shrink-0 text-[var(--app-text-muted)]">/</span> : null}
         {dirtyLabel ? <span className={cn('shrink-0 text-[10px]', tone)}>{dirtyLabel}</span> : null}
-      </div>
+      </button>
       <SidebarActionRail>
         <SidebarActionRailSpacer />
         <button
@@ -1114,6 +1214,8 @@ export function DesktopAppPage() {
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
+  const [gitPanel, setGitPanel] = useState<GitPanelState | null>(null)
+  const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
   const [swarmMenu, setSwarmMenu] = useState<SwarmTargetMenuState>({ open: false })
@@ -1179,6 +1281,46 @@ export function DesktopAppPage() {
     () => mergedSidebarWorkspaceEntries.filter((workspace) => !workspaceLayout[workspace.path]?.hidden),
     [mergedSidebarWorkspaceEntries, workspaceLayout],
   )
+  const visibleWorkspacePaths = useMemo<string[]>(() => visibleSidebarWorkspaceEntries.map((workspace) => workspace.path), [visibleSidebarWorkspaceEntries])
+  const selectedGitWorkspacePath = selectedWorkspacePath ?? visibleWorkspacePaths[0] ?? ''
+
+  const gitStatusQuery = useQuery({
+    queryKey: gitStatusQueryKey(selectedGitWorkspacePath),
+    queryFn: () => fetchGitStatus(selectedGitWorkspacePath, 12),
+    enabled: selectedGitWorkspacePath.trim() !== '',
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  })
+  const gitSnapshot = gitStatusQuery.data?.status ?? null
+  const gitSnapshotByPath = useMemo(() => {
+    const entries = new Map<string, GitSnapshot>()
+    if (gitSnapshot?.workspace_path) entries.set(gitSnapshot.workspace_path, gitSnapshot)
+    if (selectedGitWorkspacePath && gitSnapshot) entries.set(selectedGitWorkspacePath, gitSnapshot)
+    return entries
+  }, [gitSnapshot, selectedGitWorkspacePath])
+
+  useEffect(() => {
+    let cancelled = false
+    visibleWorkspacePaths.forEach((workspacePath) => {
+      void startGitRealtime(workspacePath)
+        .then(() => {
+          if (!cancelled) {
+            setGitRealtimeErrors((current) => {
+              if (!current[workspacePath]) return current
+              const next = { ...current }
+              delete next[workspacePath]
+              return next
+            })
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setGitRealtimeErrors((current) => ({ ...current, [workspacePath]: error instanceof Error ? error.message : String(error) }))
+          }
+        })
+    })
+    return () => { cancelled = true }
+  }, [visibleWorkspacePaths])
 
   const overviewQuery = useQuery({
     ...workspaceOverviewQueryOptions([], 25),
@@ -1331,6 +1473,15 @@ export function DesktopAppPage() {
 
   const closeTodoModal = useCallback(() => {
     setTodoModal(null)
+  }, [])
+  const openGitPanel = useCallback((workspacePath: string, workspaceName: string) => {
+    const normalizedPath = workspacePath.trim()
+    if (!normalizedPath) return
+    setGitPanel({ workspacePath: normalizedPath, workspaceName })
+    void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(normalizedPath) })
+  }, [queryClient])
+  const closeGitPanel = useCallback(() => {
+    setGitPanel(null)
   }, [])
 
   const handleSelectSwarmTarget = useCallback(async (target: SwarmTarget) => {
@@ -1579,8 +1730,6 @@ export function DesktopAppPage() {
       setActiveSession(null)
     }
   }, [activeSessionId, activeWorkspacePath, routeSessionId, selectedSession, selectedWorkspacePath, setActiveSession, setActiveWorkspacePath])
-
-  const visibleWorkspacePaths = useMemo<string[]>(() => visibleSidebarWorkspaceEntries.map((workspace) => workspace.path), [visibleSidebarWorkspaceEntries])
 
   const stopResize = useCallback(() => {
     resizeStateRef.current = null
@@ -2244,6 +2393,9 @@ export function DesktopAppPage() {
                 const layout = workspaceLayout[workspace.path]
                 const collapsed = layout?.collapsed ?? true
                 const worktreeBusy = savingPath === workspace.path
+                const workspaceGitSnapshot = gitSnapshotByPath.get(workspace.path) ?? (workspace.path === selectedGitWorkspacePath ? gitSnapshot : null)
+                const workspaceGitLoading = workspace.path === selectedGitWorkspacePath && gitStatusQuery.isFetching
+                const workspaceGitError = gitRealtimeErrors[workspace.path] ?? (workspace.path === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)
                 const handleToggleWorkspaceWorktree = () => {
                   if (worktreeBusy) {
                     return
@@ -2297,6 +2449,10 @@ export function DesktopAppPage() {
                       {!collapsed && renderWorkspaceGitBar({
                         workspace,
                         worktreeBusy,
+                        gitSnapshot: workspaceGitSnapshot,
+                        gitLoading: workspaceGitLoading,
+                        gitError: workspaceGitError,
+                        onOpenGit: () => openGitPanel(workspace.path, workspace.workspaceName),
                         onToggle: handleToggleWorkspaceWorktree,
                       })}
                       {!collapsed && (
@@ -2639,6 +2795,14 @@ export function DesktopAppPage() {
         </div>
       ) : null}
 
+      <GitDetailsOverlay
+        state={gitPanel}
+        snapshot={gitPanel ? (gitSnapshotByPath.get(gitPanel.workspacePath) ?? (gitPanel.workspacePath === selectedGitWorkspacePath ? gitSnapshot : null)) : null}
+        loading={Boolean(gitPanel && gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.isFetching)}
+        error={gitPanel ? (gitRealtimeErrors[gitPanel.workspacePath] ?? (gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)) : null}
+        onRefresh={() => { if (gitPanel) void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(gitPanel.workspacePath) }) }}
+        onClose={closeGitPanel}
+      />
       <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
 
     </div>

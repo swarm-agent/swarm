@@ -133,6 +133,8 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/workspace/rename", s.handleWorkspaceRename)
 	mux.HandleFunc("/v1/workspace/move", s.handleWorkspaceMove)
 	mux.HandleFunc("/v1/workspace/todos", s.handleWorkspaceTodos)
+	mux.HandleFunc("/v1/workspace/git/status", s.handleGitStatus)
+	mux.HandleFunc("/v1/workspace/git/realtime", s.handleGitRealtime)
 	mux.HandleFunc("/v1/workspace/delete", s.handleWorkspaceDelete)
 	mux.HandleFunc("/v1/sandbox", s.handleSandbox)
 	mux.HandleFunc("/v1/sandbox/preflight", s.handleSandboxPreflight)

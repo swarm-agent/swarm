@@ -20,6 +20,7 @@ import {
   fetchSessionPendingPermissions,
   fetchSessionUsageSummary,
 } from '../chat/queries/chat-queries'
+import { gitStatusQueryKey } from '../git/api'
 import { sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { mergeMessageIntoCache } from '../chat/services/message-cache'
@@ -834,7 +835,6 @@ function applyLifecycleSnapshot(
   cancelDraftFlush(sessionId)
   retainLiveToolState(session.live, lifecycle.phase.trim().toLowerCase() === 'errored' ? 'error' : 'done')
   resetLiveToolState(session.live)
-  resetLiveAssistantState(session.live)
   resetLiveReasoningState(session.live)
   session.live.summary = lifecycleTerminalSummary(lifecycle)
 }
@@ -1289,7 +1289,6 @@ function applyAuthoritativeSessionStatus(
       retainLiveToolState(session.live, 'done')
       resetLiveToolState(session.live)
       session.live.summary = null
-      resetLiveAssistantState(session.live)
       resetLiveReasoningState(session.live)
       session.live.error = null
       break
@@ -1404,13 +1403,19 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
     case 'tool.started':
     case 'tool.delta':
     case 'tool.completed':
-      if (type === 'tool.started') {
+    case 'run.tool.started':
+    case 'run.tool.delta':
+    case 'run.tool.completed': {
+      const isToolStarted = type === 'tool.started' || type === 'run.tool.started'
+      const isToolDelta = type === 'tool.delta' || type === 'run.tool.delta'
+      const isToolCompleted = type === 'tool.completed' || type === 'run.tool.completed'
+      if (isToolStarted) {
         flushLiveAssistantDraftToSegment(session.live, ts)
       }
       session.live.toolName = String(payload.tool_name ?? '').trim() || session.live.toolName
       if (typeof payload.summary === 'string' && payload.summary.trim() !== '') {
         session.live.summary = payload.summary.trim()
-      } else if (type === 'tool.started' && session.live.toolName?.trim()) {
+      } else if (isToolStarted && session.live.toolName?.trim()) {
         session.live.summary = session.live.toolName.trim()
       }
       if (typeof payload.arguments === 'string') {
@@ -1419,7 +1424,7 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
       if (typeof payload.call_id === 'string' && payload.call_id.trim() !== '') {
         session.live.toolCallId = payload.call_id.trim()
       }
-      if (type === 'tool.started') {
+      if (isToolStarted) {
         resetRetainedLiveToolState(session.live)
         session.live.toolOutput = ''
         scheduleDraftFlush(sessionId, {
@@ -1430,7 +1435,7 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
           reasoningSegment: session.live.reasoningSegment,
           toolOutput: session.live.toolOutput,
         })
-      } else if (type === 'tool.delta' && typeof payload.output === 'string') {
+      } else if (isToolDelta && typeof payload.output === 'string') {
         session.live.toolOutput = session.live.toolName === 'task'
           ? mergedTaskToolDelta(session.live.toolOutput, payload.output)
           : appendLiveToolOutput(session.live.toolOutput, payload.output)
@@ -1442,7 +1447,7 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
           reasoningSegment: session.live.reasoningSegment,
           toolOutput: session.live.toolOutput,
         })
-      } else if (type === 'tool.completed') {
+      } else if (isToolCompleted) {
         const completedToolOutput = typeof payload.raw_output === 'string'
           ? replaceLiveToolOutput(payload.raw_output)
           : typeof payload.output === 'string'
@@ -1450,19 +1455,13 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
             : session.live.toolOutput
         session.live.toolOutput = completedToolOutput
         retainLiveToolState(session.live, 'done')
-        scheduleDraftFlush(sessionId, {
-          assistantDraft: session.live.assistantDraft,
-          reasoningSummary: session.live.reasoningSummary,
-          reasoningText: session.live.reasoningText,
-          reasoningState: session.live.reasoningState,
-          reasoningSegment: session.live.reasoningSegment,
-          toolOutput: session.live.toolOutput,
-        })
+        resetLiveToolState(session.live)
       }
       if (typeof payload.step === 'number') {
         session.live.step = payload.step
       }
       break
+    }
     case 'message.stored':
     case 'message.updated': {
       const normalized = normalizeMessage(payload.message, sessionId)
@@ -1484,7 +1483,6 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
         retainLiveToolState(session.live, 'done')
         resetLiveToolState(session.live)
         session.live.summary = null
-        resetLiveAssistantState(session.live)
         resetLiveReasoningState(session.live)
         session.live.error = null
         session.live.runId = null
@@ -1633,6 +1631,21 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
         agent: agentSummary,
       })
       deferDesktopCacheMutation('workspace todo invalidate', () => {
+        void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
+      })
+    }
+    return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
+  }
+  if (eventType === 'workspace.git.status.updated') {
+    const workspacePath = typeof payloadRecord.workspace_path === 'string'
+      ? payloadRecord.workspace_path.trim()
+      : typeof envelope.entity_id === 'string'
+        ? envelope.entity_id.trim()
+        : ''
+    const status = payloadRecord.status && typeof payloadRecord.status === 'object' ? payloadRecord.status : null
+    if (workspacePath && status) {
+      queryClient.setQueryData(gitStatusQueryKey(workspacePath), { ok: true, status })
+      deferDesktopCacheMutation('workspace git status invalidate', () => {
         void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
       })
     }
@@ -2055,6 +2068,7 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
       session.live.lastEventAt = ts
       break
     case 'run.tool.started':
+      flushLiveAssistantDraftToSegment(session.live, ts)
       session.live.runId = typeof payloadRecord.run_id === 'string' ? payloadRecord.run_id : session.live.runId
       session.live.toolName = typeof payloadRecord.tool_name === 'string' ? payloadRecord.tool_name : session.live.toolName
       session.live.step = typeof payloadRecord.step === 'number' ? payloadRecord.step : session.live.step
@@ -2107,6 +2121,7 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
           : replaceLiveToolOutput(payloadRecord.output)
       }
       retainLiveToolState(session.live, 'done')
+      resetLiveToolState(session.live)
       if (typeof payloadRecord.summary === 'string' && payloadRecord.summary.trim() !== '') {
         session.live.summary = payloadRecord.summary.trim()
       }
@@ -2136,6 +2151,10 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
       const normalized = normalizeMessage(payloadRecord.message as RunStreamEventMessage['message'], sessionId)
       if (normalized) {
         updateMessagesCache(normalized.sessionId, normalized)
+        if (normalized.role === 'assistant') {
+          cancelDraftFlush(sessionId)
+          resetLiveAssistantState(session.live)
+        }
       }
       break
     }
@@ -2702,6 +2721,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'ui:*', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'user:*', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'workspace:*', last_seen_seq: get().lastGlobalSeq }))
+        socket.send(JSON.stringify({ type: 'subscribe', channel: 'workspace_git:*', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'system:worktrees', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'workspace_todo:*', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'swarm:*', last_seen_seq: get().lastGlobalSeq }))
@@ -2930,5 +2950,8 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       set((state) => applyRunStreamResumeFailure(state, targetSessionId, message, Date.now()))
       throw error
     }
+  },
+  __testApplyRunStreamFrame: (sessionId, payload, ts = Date.now()) => {
+    set((state) => applyRunStreamFrame(state, sessionId, payload as RunStreamEventMessage, ts))
   },
 }))
