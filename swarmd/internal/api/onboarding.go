@@ -103,7 +103,6 @@ type onboardingResponse struct {
 	Config           onboardingConfigPayload            `json:"config"`
 	Heuristics       onboardingHeuristicsPayload        `json:"heuristics"`
 	Tailscale        onboardingTailscalePayload         `json:"tailscale"`
-	DiscoveredSwarms []onboardingDiscoveredSwarmPayload `json:"discovered_swarms,omitempty"`
 }
 
 type onboardingUpdateRequest struct {
@@ -488,7 +487,7 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 		return onboardingResponse{}, err
 	}
 	needsOnboarding := shouldShowOnboarding(cfg, vaultStatus, credentialList.Total, savedCount)
-	tailscale, tailscaleStatus := detectTailscaleWithStatus()
+	tailscale, _ := detectTailscaleWithStatus()
 	response := onboardingResponse{
 		OK:              true,
 		NeedsOnboarding: needsOnboarding,
@@ -518,7 +517,6 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 	if !includeSensitive {
 		response.Config = redactSensitiveOnboardingConfig(response.Config)
 		response.Tailscale = redactSensitiveOnboardingTailscale(response.Tailscale)
-		response.DiscoveredSwarms = nil
 		return response, nil
 	}
 	if !needsOnboarding {
@@ -527,13 +525,9 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 	}
 	response.Tailscale.CandidateURL = tailscaleCandidateURL(cfg, tailscale)
 	response.Tailscale.Serve = detectTailscaleServe(cfg, response.Tailscale)
-	var localState *swarmruntime.LocalState
-	if s != nil && s.swarm != nil {
-		if state, stateErr := s.currentSwarmState(cfg); stateErr == nil {
-			localState = &state
-		}
-	}
-	response.DiscoveredSwarms = s.discoverRemoteSwarms(cfg, localState, tailscaleStatus)
+	// Keep first-launch onboarding fast: remote swarm discovery probes peers and
+	// should not block the initial setup screen. Discovery can be loaded by
+	// explicit swarm-management screens instead of the base onboarding status.
 	return response, nil
 }
 

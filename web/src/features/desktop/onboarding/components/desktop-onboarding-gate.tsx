@@ -1,29 +1,24 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { queryClient } from '../../../../app/query-client'
 import { draftModelQueryOptions, modelOptionsQueryOptions, agentStateQueryOptions } from '../../../queries/query-options'
-import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { Input } from '../../../../components/ui/input'
-import { useDesktopStore } from '../../state/use-desktop-store'
 import {
   fetchDesktopOnboardingStatus,
   saveDesktopOnboarding,
-  submitSwarmEnrollment,
 } from '../api'
 import type { DesktopOnboardingStatus } from '../types'
 import { startCodexOAuth } from '../../settings/mutations/start-codex-oauth'
 import { getCodexOAuthStatus } from '../../settings/queries/get-codex-oauth-status'
+import { completeCodexOAuth } from '../../settings/mutations/complete-codex-oauth'
 import { upsertAuthCredential } from '../../settings/mutations/upsert-auth-credential'
 import { verifyAuthCredential } from '../../settings/mutations/verify-auth-credential'
-import type { AuthMethod, CodexOAuthSession, ProviderStatus, UpsertAuthCredentialInput } from '../../settings/types/auth'
+import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
 import { upsertSwarmGroup } from '../../swarm/mutations/upsert-swarm-group'
-import { suggestGroupNetworkName } from '../../swarm/services/group-network-name'
 
-type OnboardingStep = 'identity' | 'security' | 'provider' | 'child-bootstrap'
-type SecurityChoice = 'setup' | 'import' | 'skip' | null
-type SwarmRole = 'master' | 'child'
-type BootstrapMode = 'lan' | 'tailscale'
+type OnboardingStep = 'identity' | 'provider'
+type CodexOAuthMode = StartCodexOAuthInput['method']
 
 interface DesktopOnboardingGateProps {
   status: DesktopOnboardingStatus
@@ -32,24 +27,7 @@ interface DesktopOnboardingGateProps {
 }
 
 function deriveInitialStep(status: DesktopOnboardingStatus): OnboardingStep {
-  if (!status.config.swarmMode) {
-    return 'identity'
-  }
-  if (status.config.swarmRole === 'child' && status.pairing.pairingState !== 'paired') {
-    return 'child-bootstrap'
-  }
-  if (status.auth.credentialCount > 0) {
-    return 'provider'
-  }
-  if (
-    status.vault.enabled
-    || status.config.swarmName
-    || status.config.mode === 'tailscale'
-    || status.config.child
-  ) {
-    return 'security'
-  }
-  return 'identity'
+  return status.config.swarmName ? 'provider' : 'identity'
 }
 
 function apiCompatibleMethods(provider: ProviderStatus): AuthMethod[] {
@@ -61,56 +39,6 @@ function supportsCodexOAuth(provider: ProviderStatus | null): boolean {
     return false
   }
   return provider.authMethods.some((method) => method.credentialType === 'oauth' || method.id === 'oauth')
-}
-
-function suggestedTailscaleURL(status: DesktopOnboardingStatus, mode: BootstrapMode): string {
- if (mode === 'tailscale') {
-    return status.config.tailscaleURL || status.network.tailscale.candidateURL || status.network.tailscale.tailnetURL || status.network.tailscale.dnsName || status.network.tailscale.ips[0] || ''
-  }
-  return ''
-}
-
-function suggestedAdvertiseHost(status: DesktopOnboardingStatus): string {
-  return status.config.advertiseHost || status.network.lanAddresses[0] || ''
-}
-
-function defaultBootstrapMode(status: DesktopOnboardingStatus): BootstrapMode {
-  if (status.config.mode === 'tailscale' || status.config.mode === 'lan') {
-    return status.config.mode
-  }
-  if (status.network.tailscale.connected) {
-    return 'tailscale'
-  }
-  return 'lan'
-}
-
-function defaultSwarmRole(status: DesktopOnboardingStatus): SwarmRole {
-  return status.config.swarmRole === 'child' ? 'child' : 'master'
-}
-
-function parseAPIPort(value: string): number {
-  if (!/^\d+$/.test(value.trim())) {
-    throw new Error('Backend API port must be a whole number.')
-  }
-  const parsed = Number.parseInt(value.trim(), 10)
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
-    throw new Error('Backend API port must be between 1 and 65535.')
-  }
-  return parsed
-}
-
-function parseAdvertiseHost(value: string): string {
-  const normalized = value.trim()
-  if (!normalized) {
-    throw new Error('LAN advertise host is required.')
-  }
-  if (normalized.includes('://')) {
-    throw new Error('LAN advertise host must be a host or IP only, without http:// or https://.')
-  }
-  if (normalized.includes('/')) {
-    throw new Error('LAN advertise host must not contain path separators.')
-  }
-  return normalized
 }
 
 function credentialLabel(method: AuthMethod | null): string {
@@ -135,17 +63,6 @@ function currentGroupName(status: DesktopOnboardingStatus): string {
   return firstGroupName
 }
 
-function currentGroupNetworkName(status: DesktopOnboardingStatus): string {
-  const currentGroupID = status.currentGroupID.trim()
-  if (currentGroupID) {
-    const current = status.groups.find((group) => group.group.id === currentGroupID)
-    if (current?.group.networkName.trim()) {
-      return current.group.networkName.trim()
-    }
-  }
-  return status.groups[0]?.group.networkName?.trim() || ''
-}
-
 async function refreshAuthDependentQueries(): Promise<void> {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: draftModelQueryOptions().queryKey }),
@@ -164,9 +81,6 @@ function suggestedGroupName(status: DesktopOnboardingStatus, swarmName: string):
 }
 
 export function DesktopOnboardingGate({ status: initialStatus, restart = false, onComplete }: DesktopOnboardingGateProps) {
-  const enableVault = useDesktopStore((state) => state.enableVault)
-  const importVaultBundle = useDesktopStore((state) => state.importVaultBundle)
-
   const [status, setStatus] = useState(initialStatus)
   const [step, setStep] = useState<OnboardingStep>(() => (restart ? 'identity' : deriveInitialStep(initialStatus)))
   const [submitting, setSubmitting] = useState(false)
@@ -174,25 +88,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [notice, setNotice] = useState<string | null>(null)
 
   const [swarmName, setSwarmName] = useState(initialStatus.config.swarmName)
-  const [swarmRole, setSwarmRole] = useState<SwarmRole>(() => defaultSwarmRole(initialStatus))
-  const [groupName, setGroupName] = useState(() => suggestedGroupName(initialStatus, initialStatus.config.swarmName))
-  const [groupNameTouched, setGroupNameTouched] = useState(() => currentGroupName(initialStatus) !== '')
-  const [mode, setMode] = useState<BootstrapMode>(() => defaultBootstrapMode(initialStatus))
-  const [apiPort, setAPIPort] = useState(() => String(initialStatus.config.port))
-  const [advertiseHost, setAdvertiseHost] = useState(() => initialStatus.config.advertiseHost || suggestedAdvertiseHost(initialStatus))
-  const [advertisePort, setAdvertisePort] = useState(() => String(initialStatus.config.advertisePort))
-  const [tailscaleURL, setTailscaleURL] = useState(
-    initialStatus.config.tailscaleURL || suggestedTailscaleURL(initialStatus, defaultBootstrapMode(initialStatus)),
-  )
-  const [inviteToken, setInviteToken] = useState('')
-
-  const [securityChoice, setSecurityChoice] = useState<SecurityChoice>(initialStatus.vault.enabled ? 'setup' : null)
-  const [vaultPassword, setVaultPassword] = useState('')
-  const [vaultConfirm, setVaultConfirm] = useState('')
-  const [importPassword, setImportPassword] = useState('')
-  const [importVaultPassword, setImportVaultPassword] = useState('')
-  const [importBundleName, setImportBundleName] = useState('')
-  const [importBundleBytes, setImportBundleBytes] = useState<Uint8Array | null>(null)
 
   const providerOptions = useMemo(
     () => status.auth.providers.filter((provider) => provider.id !== '' && !provider.runReason.toLowerCase().includes('search-only provider')),
@@ -200,9 +95,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   )
   const [providerID, setProviderID] = useState(status.auth.activeProviders[0] || providerOptions[0]?.id || '')
   const [credentialValue, setCredentialValue] = useState('')
+  const [codexOAuthMode, setCodexOAuthMode] = useState<CodexOAuthMode>('browser')
   const [oauthSession, setOAuthSession] = useState<CodexOAuthSession | null>(null)
-
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [callbackInput, setCallbackInput] = useState('')
 
   const selectedProvider = useMemo(
     () => providerOptions.find((provider) => provider.id === providerID) ?? providerOptions[0] ?? null,
@@ -211,10 +106,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const manualMethods = useMemo(() => (selectedProvider ? apiCompatibleMethods(selectedProvider) : []), [selectedProvider])
   const selectedManualMethod = manualMethods[0] ?? null
   const providerAlreadyConnected = Boolean(selectedProvider && status.auth.activeProviders.includes(selectedProvider.id))
-  const groupNetworkPreview = useMemo(
-    () => currentGroupNetworkName(status) || suggestGroupNetworkName(groupName || suggestedGroupName(status, swarmName) || 'swarm-group'),
-    [groupName, status, swarmName],
-  )
+  const canStartOAuth = supportsCodexOAuth(selectedProvider)
+  const canQuickAuthenticate = Boolean(selectedManualMethod || canStartOAuth)
 
   useEffect(() => {
     if (!status.auth.activeProviders.includes(providerID) && !providerOptions.some((provider) => provider.id === providerID)) {
@@ -223,28 +116,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }, [providerID, providerOptions, status.auth.activeProviders])
 
   useEffect(() => {
-    if (mode === 'tailscale') {
-      setTailscaleURL((current) => current || suggestedTailscaleURL(status, mode))
-    }
-  }, [mode, status])
-
-  useEffect(() => {
-    if (mode !== 'lan') {
-      return
-    }
-    setAdvertiseHost((current) => current || suggestedAdvertiseHost(status))
-    setAdvertisePort((current) => current || String(status.config.advertisePort || status.config.port))
-  }, [mode, status])
-
-  useEffect(() => {
-    if (swarmRole !== 'master' || groupNameTouched) {
-      return
-    }
-    setGroupName(suggestedGroupName(status, swarmName))
-  }, [groupNameTouched, status, swarmName, swarmRole])
-
-  useEffect(() => {
-    if (!oauthSession?.sessionID || oauthSession.status === 'success' || oauthSession.status === 'error') {
+    if (codexOAuthMode !== 'browser' || !oauthSession?.sessionID || oauthSession.status === 'success' || oauthSession.status === 'error') {
       return
     }
 
@@ -266,7 +138,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     return () => {
       window.clearInterval(timer)
     }
-  }, [oauthSession])
+  }, [codexOAuthMode, oauthSession])
 
   const reloadStatus = async () => {
     const next = await fetchDesktopOnboardingStatus()
@@ -276,51 +148,28 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const persistIdentity = async () => {
     const normalizedName = swarmName.trim()
-    const normalizedGroupName = groupName.trim()
-    const normalizedAPIPort = parseAPIPort(apiPort)
-    const normalizedAdvertisePort = advertisePort.trim() ? parseAPIPort(advertisePort) : status.config.advertisePort || normalizedAPIPort
-    const normalizedAdvertiseHost = advertiseHost.trim() ? parseAdvertiseHost(advertiseHost) : ''
-    const normalizedTailscaleURL = tailscaleURL.trim()
-
+    const normalizedGroupName = suggestedGroupName(status, normalizedName).trim()
     if (!normalizedName) {
       throw new Error('Swarm name is required.')
     }
-    if (swarmRole === 'master' && !normalizedGroupName) {
+    if (!normalizedGroupName) {
       throw new Error('Group name is required for the first swarm group.')
     }
-    if (mode === 'tailscale' && !normalizedTailscaleURL) {
-      throw new Error('Choose or enter a Tailscale URL before continuing.')
-    }
-
     const next = await saveDesktopOnboarding({
       swarmName: normalizedName,
       swarmMode: true,
-      child: swarmRole === 'child',
-      mode,
-      port: normalizedAPIPort,
-      advertiseHost: normalizedAdvertiseHost,
-      advertisePort: normalizedAdvertisePort,
-      tailscaleURL: normalizedTailscaleURL,
+      child: false,
     })
     let refreshed = next
-    if (swarmRole === 'master') {
-      const currentGroupID = next.currentGroupID.trim() || next.groups[0]?.group.id?.trim() || ''
-      await upsertSwarmGroup({
-        groupID: currentGroupID || undefined,
-        name: normalizedGroupName,
-        setCurrent: true,
-      })
-      refreshed = await fetchDesktopOnboardingStatus()
-    }
+    const currentGroupID = next.currentGroupID.trim() || next.groups[0]?.group.id?.trim() || ''
+    await upsertSwarmGroup({
+      groupID: currentGroupID || undefined,
+      name: normalizedGroupName,
+      setCurrent: true,
+    })
+    refreshed = await fetchDesktopOnboardingStatus()
     setStatus(refreshed)
     setSwarmName(refreshed.config.swarmName)
-    setSwarmRole(defaultSwarmRole(refreshed))
-    setGroupName(currentGroupName(refreshed) || normalizedGroupName)
-    setMode(refreshed.config.mode)
-    setAPIPort(String(refreshed.config.port))
-    setAdvertiseHost(refreshed.config.advertiseHost || suggestedAdvertiseHost(refreshed))
-    setAdvertisePort(String(refreshed.config.advertisePort))
-    setTailscaleURL(refreshed.config.tailscaleURL)
     return refreshed
   }
 
@@ -337,116 +186,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     setNotice(null)
     try {
       const next = await persistIdentity()
-      if (swarmRole === 'child') {
-        setStep('child-bootstrap')
-      } else {
-        setStep('security')
-      }
+      setStep('provider')
       setStatus(next)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save onboarding settings')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const handleChildBootstrapContinue = async () => {
-    setSubmitting(true)
-    setError(null)
-    setNotice(null)
-    try {
-      const token = inviteToken.trim()
-      if (!token) {
-        throw new Error('Invite token is required.')
-      }
-      const enrollment = await submitSwarmEnrollment({
-        inviteToken: token,
-        childSwarmID: status.pairing.swarmID,
-        childName: swarmName.trim(),
-        childRole: 'child',
-        transportMode: mode,
-        rendezvousTransports: status.pairing.rendezvousTransports,
-      })
-      const next = await reloadStatus()
-      setNotice(`Enrollment requested. Status: ${enrollment.status}. Waiting for Primary approval.`)
-      setStatus(next)
-      if (next.auth.credentialCount > 0) {
-        await finalizeOnboarding()
-      } else {
-        setStep('provider')
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to submit enrollment request')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const handleEnableVault = async () => {
-    setSubmitting(true)
-    setError(null)
-    setNotice(null)
-    try {
-      if (!vaultPassword.trim()) {
-        throw new Error('Vault password is required.')
-      }
-      if (vaultPassword !== vaultConfirm) {
-        throw new Error('Vault passwords do not match.')
-      }
-      await enableVault(vaultPassword)
-      await reloadStatus()
-      setVaultPassword('')
-      setVaultConfirm('')
-      setNotice('Vault enabled.')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to enable vault')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const handleImportBundle = async () => {
-    setSubmitting(true)
-    setError(null)
-    setNotice(null)
-    try {
-      if (!importBundleBytes) {
-        throw new Error('Choose a vault bundle first.')
-      }
-      if (!importPassword.trim()) {
-        throw new Error('Bundle password is required.')
-      }
-      const result = await importVaultBundle(importPassword.trim(), importBundleBytes, importVaultPassword.trim())
-      await reloadStatus()
-      setImportPassword('')
-      setImportVaultPassword('')
-      setImportBundleName('')
-      setImportBundleBytes(null)
-      setNotice(`Imported ${result.imported} credential(s).`)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to import vault bundle')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const handleSecurityContinue = async () => {
-    setSubmitting(true)
-    setError(null)
-    setNotice(null)
-    try {
-      if (securityChoice === null) {
-        throw new Error('Choose how to handle credentials first.')
-      }
-      if (securityChoice === 'setup' && !status.vault.enabled) {
-        throw new Error('Set up the vault before continuing.')
-      }
-      if (securityChoice === 'import' && !status.vault.enabled && status.auth.credentialCount === 0) {
-        throw new Error('Import a vault bundle before continuing.')
-      }
-      setStep('provider')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to continue onboarding')
     } finally {
       setSubmitting(false)
     }
@@ -458,7 +201,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     setNotice(null)
     try {
       if (!selectedProvider || !selectedManualMethod) {
-        throw new Error('Choose a provider with API key support, or skip for now.')
+        throw new Error('Choose a provider with API key support, use browser sign-in, or skip for now.')
       }
       if (!credentialValue.trim()) {
         throw new Error(`${credentialLabel(selectedManualMethod)} is required.`)
@@ -492,7 +235,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     }
   }
 
-  const handleStartOAuth = async () => {
+  const handleStartOAuth = async (method: CodexOAuthMode) => {
     if (!selectedProvider) {
       setError('Choose a provider first.')
       return
@@ -500,59 +243,67 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     setSubmitting(true)
     setError(null)
     setNotice(null)
+    setCallbackInput('')
     try {
       const session = await startCodexOAuth({
         provider: selectedProvider.id,
         active: true,
-        method: 'browser',
+        method,
       })
+      setCodexOAuthMode(method)
       setOAuthSession(session)
-      if (session.authURL && typeof window !== 'undefined') {
+      if (method === 'browser' && session.authURL && typeof window !== 'undefined') {
         window.open(session.authURL, '_blank', 'noopener,noreferrer')
       }
-      setNotice('Finish sign-in in your browser. Swarm will continue when it sees the callback.')
+      setNotice(method === 'browser'
+        ? 'Finish local sign-in in your browser. Swarm will continue when it sees the callback.'
+        : 'Open the remote auth URL anywhere, then paste the callback URL or code here.')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start browser sign-in')
+      setError(err instanceof Error ? err.message : 'Failed to start Codex sign-in')
     } finally {
       setSubmitting(false)
     }
   }
 
-  const handleImportFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) {
+  const handleCompleteOAuth = async () => {
+    if (!oauthSession?.sessionID) {
+      setError('Start remote sign-in first.')
       return
     }
+    if (!callbackInput.trim()) {
+      setError('Paste the callback URL, query string, or authorization code.')
+      return
+    }
+
+    setSubmitting(true)
+    setError(null)
+    setNotice(null)
     try {
-      const raw = new Uint8Array(await file.arrayBuffer())
-      if (raw.length === 0) {
-        throw new Error('Selected bundle file is empty.')
+      const session = await completeCodexOAuth({
+        session_id: oauthSession.sessionID,
+        callback_input: callbackInput.trim(),
+      })
+      setOAuthSession(session)
+      if (session.status !== 'success') {
+        throw new Error(session.error || 'OAuth completion did not succeed.')
       }
-      setImportBundleName(file.name)
-      setImportBundleBytes(raw)
-      setNotice(`Selected ${file.name}.`)
-      setError(null)
+      setCredentialValue('')
+      setCallbackInput('')
+      setNotice('Provider connected.')
+      await reloadStatus()
+      await finalizeOnboarding()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to read bundle file')
+      setError(err instanceof Error ? err.message : 'Failed to complete remote sign-in')
+    } finally {
+      setSubmitting(false)
     }
   }
 
-  const title = step === 'identity'
-    ? 'Name this Swarm'
-    : step === 'child-bootstrap'
-      ? 'Join a Primary Swarm'
-      : step === 'security'
-        ? 'Protect credentials'
-        : 'Connect a provider'
+  const title = step === 'identity' ? 'Name this Swarm' : 'Connect a provider'
 
   const subtitle = step === 'identity'
-    ? 'Give this machine a clear name, then decide how other devices should reach it.'
-    : step === 'child-bootstrap'
-      ? 'Use a short-lived invite token from the Primary. Reachability can be LAN, Tailscale, or both.'
-      : step === 'security'
-        ? 'Store credentials in a local vault now, import one, or skip until later.'
-        : 'Add a provider now so this Swarm is ready to run immediately, or skip for now.'
+    ? 'Give this machine a clear name. Provider sign-in is next.'
+    : 'Add an API key or sign in now so this Swarm is ready to run immediately.'
 
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_top,#1b2f45,transparent_52%),var(--app-bg)] px-6 py-8">
@@ -560,9 +311,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         <div className="grid gap-6 p-8">
           <div className="grid gap-3">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge tone="live">{restart ? 'Swarm setup' : 'First launch'}</Badge>
+              <span className="rounded-full border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-2.5 py-1 text-xs font-medium text-[var(--app-success)]">{restart ? 'Swarm setup' : 'First launch'}</span>
               <span className="text-xs uppercase tracking-[0.2em] text-[var(--app-text-muted)]">
-                {step === 'identity' ? 'Step 1 of 4' : step === 'child-bootstrap' ? 'Step 2 of 4' : step === 'security' ? 'Step 3 of 4' : 'Step 4 of 4'}
+                {step === 'identity' ? 'Step 1 of 2' : 'Step 2 of 2'}
               </span>
             </div>
             <div className="grid gap-1">
@@ -597,295 +348,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                   placeholder="my-device"
                 />
                 <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                  This is the label Swarm shows for this machine in discovery and networking screens.
+                  This is the label Swarm shows for this machine in discovery and launcher screens.
                 </p>
               </div>
-
-              <div className="grid gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-sm font-semibold text-[var(--app-text)]">Swarm role</h2>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {[
-                    {
-                      id: 'master',
-                      title: 'Master Swarm',
-                      text: 'Master is the default. This Swarm owns approval and desired pairing state for the group.',
-                    },
-                    {
-                      id: 'child',
-                      title: 'Child Swarm',
-                      text: 'This Swarm requests secure pairing to a Primary over LAN, Tailscale, or mixed reachability.',
-                    },
-                  ].map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => setSwarmRole(option.id as SwarmRole)}
-                      className={`grid gap-2 rounded-2xl border px-4 py-4 text-left transition ${
-                        swarmRole === option.id
-                          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,var(--app-surface))]'
-                          : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] hover:border-[var(--app-border-strong)]'
-                      }`}
-                    >
-                      <strong className="text-sm text-[var(--app-text)]">{option.title}</strong>
-                      <span className="text-sm leading-6 text-[var(--app-text-muted)]">{option.text}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {swarmRole === 'master' ? (
-                <div className="grid gap-2">
-                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-group-name">
-                    Swarm group name
-                  </label>
-                  <Input
-                    id="desktop-onboarding-group-name"
-                    value={groupName}
-                    onChange={(event) => {
-                      setGroupName(event.target.value)
-                      setGroupNameTouched(true)
-                    }}
-                    placeholder={suggestedGroupName(status, swarmName) || 'Main Swarm Group'}
-                  />
-                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                    This names the current group that this machine hosts when Swarm Mode is turned on.
-                  </p>
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Group network</div>
-                    <div className="mt-2 break-all text-sm font-medium text-[var(--app-text)]">{groupNetworkPreview}</div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]">
-                      This network name is assigned from the group when the master is created and then reused for Podman and Docker local children.
-                    </p>
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="grid gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-sm font-semibold text-[var(--app-text)]">Reachability</h2>
-                  {status.network.tailscale.connected ? (
-                    <Badge tone="live">
-                      Tailscale detected: {status.network.tailscale.dnsName || status.network.tailscale.ips[0] || 'connected'}
-                    </Badge>
-                  ) : null}
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {[
-                    { id: 'lan', title: 'Use LAN', text: 'Use local network transport for nearby devices and containers.' },
-                    { id: 'tailscale', title: 'Use Tailscale', text: 'Use the canonical saved Tailscale URL for tailnet reachability.' },
-                  ].map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      onClick={() => setMode(option.id as BootstrapMode)}
-                      className={`grid gap-2 rounded-2xl border px-4 py-4 text-left transition ${
-                        mode === option.id
-                          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,var(--app-surface))]'
-                          : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] hover:border-[var(--app-border-strong)]'
-                      }`}
-                    >
-                      <strong className="text-sm text-[var(--app-text)]">{option.title}</strong>
-                      <span className="text-sm leading-6 text-[var(--app-text-muted)]">{option.text}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {mode === 'tailscale' ? (
-                <div className="grid gap-2">
-                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-tailscale-url">
-                    Tailscale URL
-                  </label>
-                  <Input
-                    id="desktop-onboarding-tailscale-url"
-                    value={tailscaleURL}
-                    onChange={(event) => setTailscaleURL(event.target.value)}
-                    placeholder={suggestedTailscaleURL(status, mode) || 'https://example.ts.net'}
-                  />
-                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                    This value is saved as `tailscale_url` and becomes the durable bootstrap endpoint.
-                  </p>
-                </div>
-              ) : (
-                <div className="grid gap-2">
-                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-advertise-host">
-                    LAN Advertise Host
-                  </label>
-                  <Input
-                    id="desktop-onboarding-advertise-host"
-                    value={advertiseHost}
-                    onChange={(event) => setAdvertiseHost(event.target.value)}
-                    placeholder={suggestedAdvertiseHost(status) || '192.168.1.20'}
-                  />
-                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                    Swarm auto-detects a LAN host for normal setups. Local Add Swarm containers also use this advertised host when they call back to the master, but the master backend must also be bound to a non-loopback `host` in `swarm.conf`. Change this only when you need to override the advertised LAN endpoint for containers or advanced networking. It is saved as `advertise_host` in `swarm.conf`.
-                  </p>
-                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-api-port">
-                    Backend API Port
-                  </label>
-                  <Input
-                    id="desktop-onboarding-api-port"
-                    value={apiPort}
-                    onChange={(event) => setAPIPort(event.target.value)}
-                    inputMode="numeric"
-                    placeholder="7781"
-                  />
-                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                    This is the port the backend listens on. Default is `7781`. Changing it requires a restart and is saved as `port` in `swarm.conf`.
-                  </p>
-                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-advertise-port">
-                    LAN Advertise Port
-                  </label>
-                  <Input
-                    id="desktop-onboarding-advertise-port"
-                    value={advertisePort}
-                    onChange={(event) => setAdvertisePort(event.target.value)}
-                    inputMode="numeric"
-                    placeholder="7781"
-                  />
-                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                    By default this matches the backend API port. Local Add Swarm containers use this advertised backend port, and new child containers continue from the next host port pair. Change it only when other machines or sibling containers should reach this Swarm on a different LAN port. It is saved as `advertise_port` in `swarm.conf`.
-                  </p>
-                  {status.network.lanAddresses.length > 0 ? (
-                    <div className="text-sm leading-6 text-[var(--app-text-muted)]">
-                      Detected LAN targets: {status.network.lanAddresses.map((address) => `${address}:${advertisePort.trim() || '7781'}`).join(', ')}
-                    </div>
-                  ) : null}
-                </div>
-              )}
 
               <div className="flex justify-end">
                 <Button type="button" onClick={() => void handleIdentityContinue()} disabled={submitting}>
-                  {submitting ? 'Saving…' : 'Continue'}
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
-          {step === 'child-bootstrap' ? (
-            <div className="grid gap-6">
-              <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                <div className="text-sm text-[var(--app-text-muted)]">
-                  <div><strong className="text-[var(--app-text)]">Pairing status:</strong> {status.pairing.pairingState || 'unpaired'}</div>
-                  <div className="mt-2"><strong className="text-[var(--app-text)]">Reachability:</strong> {mode.toUpperCase()}</div>
-                  <div className="mt-2">Transport is reachability only. Trust activates only after Primary approval.</div>
-                </div>
-                {status.pairing.rendezvousTransports.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {status.pairing.rendezvousTransports.map((transport) => (
-                      <Badge key={`${transport.kind}-${transport.primary}`} tone="live">
-                        {transport.kind}: {transport.primary || transport.all[0] || 'available'}
-                      </Badge>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="grid gap-2">
-                <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-invite-token">
-                  Invite token
-                </label>
-                <Input
-                  id="desktop-onboarding-invite-token"
-                  autoFocus
-                  value={inviteToken}
-                  onChange={(event) => setInviteToken(event.target.value)}
-                  placeholder="paste invite token from Primary"
-                />
-                <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                  Use a token created on the Primary. This works for LAN-only, Tailscale-only, or mixed paths.
-                </p>
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <Button type="button" variant="outline" onClick={() => setStep('identity')} disabled={submitting}>
-                  Back
-                </Button>
-                <Button type="button" onClick={() => void handleChildBootstrapContinue()} disabled={submitting}>
-                  {submitting ? 'Requesting…' : 'Request pairing'}
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
-          {step === 'security' ? (
-            <div className="grid gap-6">
-              <div className="grid gap-3 sm:grid-cols-3">
-                {[
-                  {
-                    id: 'setup',
-                    title: 'Set up vault now',
-                    text: 'Encrypt saved provider credentials on this machine.',
-                  },
-                  {
-                    id: 'import',
-                    title: 'Import existing vault',
-                    text: 'Bring in an exported Swarm vault bundle and keep your saved credentials.',
-                  },
-                  {
-                    id: 'skip',
-                    title: 'Skip for now',
-                    text: 'Keep moving and add vault protection later from Settings.',
-                  },
-                ].map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    onClick={() => {
-                      setSecurityChoice(option.id as SecurityChoice)
-                      setError(null)
-                      setNotice(null)
-                    }}
-                    className={`grid gap-2 rounded-2xl border px-4 py-4 text-left transition ${
-                      securityChoice === option.id
-                        ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,var(--app-surface))]'
-                        : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] hover:border-[var(--app-border-strong)]'
-                    }`}
-                  >
-                    <strong className="text-sm text-[var(--app-text)]">{option.title}</strong>
-                    <span className="text-sm leading-6 text-[var(--app-text-muted)]">{option.text}</span>
-                  </button>
-                ))}
-              </div>
-
-              {securityChoice === 'setup' ? (
-                <div className="grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                  <Input type="password" value={vaultPassword} onChange={(event) => setVaultPassword(event.target.value)} placeholder="Vault password" />
-                  <Input type="password" value={vaultConfirm} onChange={(event) => setVaultConfirm(event.target.value)} placeholder="Confirm vault password" />
-                  <div className="flex justify-end">
-                    <Button type="button" onClick={() => void handleEnableVault()} disabled={submitting || status.vault.enabled}>
-                      {status.vault.enabled ? 'Vault ready' : submitting ? 'Enabling…' : 'Enable vault'}
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-
-              {securityChoice === 'import' ? (
-                <div className="grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                  <input ref={fileInputRef} type="file" accept=".swarmvault,application/octet-stream" className="hidden" onChange={(event) => void handleImportFileSelected(event)} />
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()} disabled={submitting}>
-                      {importBundleName ? 'Choose another file' : 'Choose vault bundle'}
-                    </Button>
-                    {importBundleName ? <span className="text-sm text-[var(--app-text-muted)]">{importBundleName}</span> : null}
-                  </div>
-                  <Input type="password" value={importPassword} onChange={(event) => setImportPassword(event.target.value)} placeholder="Bundle password" />
-                  <Input type="password" value={importVaultPassword} onChange={(event) => setImportVaultPassword(event.target.value)} placeholder="Vault password (optional)" />
-                  <div className="flex justify-end">
-                    <Button type="button" onClick={() => void handleImportBundle()} disabled={submitting}>
-                      {submitting ? 'Importing…' : 'Import vault'}
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="flex items-center justify-between gap-3">
-                <Button type="button" variant="outline" onClick={() => setStep(swarmRole === 'child' ? 'child-bootstrap' : 'identity')} disabled={submitting}>
-                  Back
-                </Button>
-                <Button type="button" onClick={() => void handleSecurityContinue()} disabled={submitting}>
                   {submitting ? 'Saving…' : 'Continue'}
                 </Button>
               </div>
@@ -903,7 +371,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                     <select
                       id="desktop-onboarding-provider"
                       value={providerID}
-                      onChange={(event) => setProviderID(event.target.value)}
+                      onChange={(event) => {
+                        setProviderID(event.target.value)
+                        setCredentialValue('')
+                        setCallbackInput('')
+                        setOAuthSession(null)
+                        setError(null)
+                        setNotice(null)
+                      }}
                       className="h-11 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]"
                     >
                       {providerOptions.map((provider) => (
@@ -914,26 +389,83 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                     </select>
                   </div>
 
-                  {!providerAlreadyConnected && selectedManualMethod ? (
+                  {providerAlreadyConnected ? (
+                    <div className="rounded-2xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-4 py-4 text-sm leading-6 text-[var(--app-success)]">
+                      {selectedProvider?.id || 'Selected provider'} is already connected.
+                    </div>
+                  ) : canQuickAuthenticate ? (
                     <div className="grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                      <Input
-                        type="password"
-                        value={credentialValue}
-                        onChange={(event) => setCredentialValue(event.target.value)}
-                        placeholder={credentialLabel(selectedManualMethod)}
-                      />
+                      {selectedManualMethod ? (
+                        <>
+                          <label className="grid gap-2">
+                            <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                              {credentialLabel(selectedManualMethod)}
+                            </span>
+                            <Input
+                              type="password"
+                              autoComplete="off"
+                              value={credentialValue}
+                              onChange={(event) => setCredentialValue(event.target.value)}
+                              placeholder={credentialLabel(selectedManualMethod)}
+                            />
+                          </label>
+                          {selectedManualMethod.description ? (
+                            <p className="text-sm leading-6 text-[var(--app-text-muted)]">{selectedManualMethod.description}</p>
+                          ) : null}
+                        </>
+                      ) : null}
+
+                      {canStartOAuth && oauthSession ? (
+                        <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm leading-6 text-[var(--app-text-muted)]">
+                          <div>
+                            {codexOAuthMode === 'browser' ? 'Local browser sign-in' : 'Remote browser sign-in'} status: <span className="font-medium text-[var(--app-text)]">{oauthSession.status || 'waiting'}</span>
+                            {oauthSession.error ? <div className="text-[var(--app-danger)]">{oauthSession.error}</div> : null}
+                          </div>
+                          {oauthSession.authURL ? (
+                            <label className="grid gap-2">
+                              <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Auth URL</span>
+                              <textarea readOnly value={oauthSession.authURL} className="min-h-24 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text)] outline-none" />
+                            </label>
+                          ) : null}
+                          {codexOAuthMode === 'manual' ? (
+                            <>
+                              <label className="grid gap-2">
+                                <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Callback URL or code</span>
+                                <textarea value={callbackInput} onChange={(event) => setCallbackInput(event.target.value)} placeholder="Paste the callback URL, query string, or authorization code" className="min-h-24 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+                              </label>
+                              <div className="flex justify-end">
+                                <Button type="button" onClick={() => void handleCompleteOAuth()} disabled={submitting || !oauthSession.sessionID}>
+                                  {submitting ? 'Completing…' : 'Complete remote sign-in'}
+                                </Button>
+                              </div>
+                            </>
+                          ) : null}
+                        </div>
+                      ) : null}
+
                       <div className="flex flex-wrap justify-end gap-3">
-                        {supportsCodexOAuth(selectedProvider) ? (
-                          <Button type="button" variant="outline" onClick={() => void handleStartOAuth()} disabled={submitting}>
-                            Sign in with browser
+                        {canStartOAuth ? (
+                          <>
+                            <Button type="button" variant="outline" onClick={() => void handleStartOAuth('browser')} disabled={submitting}>
+                              Local browser sign-in
+                            </Button>
+                            <Button type="button" variant="outline" onClick={() => void handleStartOAuth('manual')} disabled={submitting}>
+                              Remote browser sign-in
+                            </Button>
+                          </>
+                        ) : null}
+                        {selectedManualMethod ? (
+                          <Button type="button" onClick={() => void handleProviderSave()} disabled={submitting}>
+                            {submitting ? 'Saving…' : 'Save provider'}
                           </Button>
                         ) : null}
-                        <Button type="button" onClick={() => void handleProviderSave()} disabled={submitting}>
-                          {submitting ? 'Saving…' : 'Save provider'}
-                        </Button>
                       </div>
                     </div>
-                  ) : null}
+                  ) : (
+                    <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-4 text-sm leading-6 text-[var(--app-text-muted)]">
+                      The selected provider does not expose a quick auth method here. Finish onboarding and connect it from Settings.
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-4 text-sm leading-6 text-[var(--app-text-muted)]">
@@ -942,10 +474,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
               )}
 
               <div className="flex items-center justify-between gap-3">
-                <Button type="button" variant="outline" onClick={() => setStep('security')} disabled={submitting}>
+                <Button type="button" variant="outline" onClick={() => setStep('identity')} disabled={submitting}>
                   Back
                 </Button>
-                <Button type="button" onClick={() => void finalizeOnboarding()} disabled={submitting}>
+                <Button type="button" variant={providerAlreadyConnected || providerOptions.length === 0 ? 'primary' : 'outline'} onClick={() => void finalizeOnboarding()} disabled={submitting}>
                   {submitting ? 'Finishing…' : providerAlreadyConnected || providerOptions.length === 0 ? 'Open launcher' : 'Skip for now'}
                 </Button>
               </div>

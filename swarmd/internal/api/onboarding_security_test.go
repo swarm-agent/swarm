@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -54,8 +55,8 @@ func TestOnboardingRedactsSensitiveMetadataWithoutAuth(t *testing.T) {
 	if status.Tailscale.DNSName != "" || status.Tailscale.TailnetURL != "" || status.Tailscale.AuthURL != "" || len(status.Tailscale.IPs) != 0 || status.Tailscale.CandidateURL != "" || status.Tailscale.TailnetName != "" {
 		t.Fatalf("expected tailscale metadata to be redacted, got %+v", status.Tailscale)
 	}
-	if len(status.DiscoveredSwarms) != 0 {
-		t.Fatalf("expected discovered swarms to be omitted, got %d", len(status.DiscoveredSwarms))
+	if bytes.Contains(rec.Body.Bytes(), []byte("discovered_swarms")) {
+		t.Fatalf("expected discovered swarms to be omitted, got body=%s", rec.Body.String())
 	}
 }
 
