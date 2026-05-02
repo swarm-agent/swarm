@@ -393,10 +393,10 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
     status: normalizeRunStatus(run.status),
     summary: run.summary || run.status,
   }))
-  const workspace = assignment.workspace.workspace_path?.trim() || 'workspace'
-  const target = assignment.target.name?.trim() || assignment.target.swarm_id?.trim() || assignment.target.kind?.trim() || 'local'
-  const agent = assignment.agent.target_name?.trim() || 'memory'
-  const agentType = assignment.agent.target_kind?.trim() || 'background'
+  const workspace = record.workspace_detail?.workspace_path?.trim() || assignment.workspace.workspace_path?.trim() || 'workspace'
+  const target = record.target_detail?.name?.trim() || record.target_detail?.swarm_id?.trim() || assignment.target.name?.trim() || assignment.target.swarm_id?.trim() || assignment.target.kind?.trim() || 'local'
+  const agent = record.agent_detail?.name?.trim() || assignment.agent.target_name?.trim() || 'memory'
+  const agentType = record.agent_detail?.mode?.trim() || assignment.agent.target_kind?.trim() || 'background'
   const tasks = assignment.intent.tasks?.length
     ? assignment.intent.tasks.map(normalizeTask)
     : [{ id: `${assignment.flow_id}-prompt`, title: 'Run prompt', detail: assignment.intent.prompt || 'Run configured prompt.', action: 'propose' as const }]

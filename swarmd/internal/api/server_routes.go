@@ -65,6 +65,8 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 func (s *Server) registerFlowRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/flows", s.handleFlows)
 	mux.HandleFunc("/v1/flows/", s.handleFlows)
+	mux.HandleFunc("/v2/flows", s.handleFlowsV2)
+	mux.HandleFunc("/v2/flows/", s.handleFlowsV2)
 }
 
 func (s *Server) registerDeployRoutes(mux *http.ServeMux) {

@@ -16,6 +16,13 @@ export interface FlowTargetSelection {
 export type FlowSwarmTarget = SwarmTarget
 export type FlowWorkspaceEntry = WorkspaceEntry
 
+export interface FlowAgentProfileDetail {
+  name: string
+  mode?: string
+  description?: string
+  enabled?: boolean
+}
+
 export interface FlowAgentSelection {
   target_kind: string
   target_name: string
@@ -92,22 +99,6 @@ export interface FlowAssignmentStatusRecord {
   updated_at: string
 }
 
-export interface FlowOutboxCommandRecord {
-  command_id: string
-  flow_id: string
-  revision: number
-  target_swarm_id: string
-  target: FlowTargetSelection
-  command: unknown
-  status: string
-  attempt_count?: number
-  next_attempt_at?: string
-  last_attempt_at?: string
-  last_error?: string
-  created_at: string
-  updated_at: string
-}
-
 export interface FlowRunSummaryRecord {
   run_id: string
   flow_id: string
@@ -126,8 +117,19 @@ export interface FlowRunSummaryRecord {
   report_error?: string
 }
 
+export interface FlowWorkspaceDetail {
+  workspace_path: string
+  host_workspace_path?: string
+  runtime_workspace_path?: string
+  cwd?: string
+  worktree_mode?: string
+}
+
 export interface FlowSummaryRecord {
   definition: FlowDefinitionRecord
+  target_detail?: FlowSwarmTarget | null
+  agent_detail?: FlowAgentProfileDetail | null
+  workspace_detail?: FlowWorkspaceDetail | null
   assignment_statuses?: FlowAssignmentStatusRecord[]
   last_run?: FlowRunSummaryRecord | null
   history_count: number
@@ -135,8 +137,10 @@ export interface FlowSummaryRecord {
 
 export interface FlowDetailRecord {
   definition: FlowDefinitionRecord
+  target_detail?: FlowSwarmTarget | null
+  agent_detail?: FlowAgentProfileDetail | null
+  workspace_detail?: FlowWorkspaceDetail | null
   assignment_statuses: FlowAssignmentStatusRecord[]
-  outbox: FlowOutboxCommandRecord[]
   history: FlowRunSummaryRecord[]
 }
 
@@ -172,7 +176,7 @@ export interface CreateFlowInput {
 }
 
 export async function fetchFlows(signal?: AbortSignal): Promise<FlowSummaryRecord[]> {
-  const response = await requestJson<FlowListResponse>('/v1/flows?limit=200', {
+  const response = await requestJson<FlowListResponse>('/v2/flows?limit=200', {
     cache: 'no-store',
     signal,
   })
@@ -189,7 +193,7 @@ export async function fetchFlowWorkspaces(): Promise<FlowWorkspaceEntry[]> {
 }
 
 export async function createFlow(input: CreateFlowInput): Promise<FlowDetailRecord> {
-  const response = await requestJson<FlowCreateResponse>('/v1/flows', {
+  const response = await requestJson<FlowCreateResponse>('/v2/flows', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -200,13 +204,13 @@ export async function createFlow(input: CreateFlowInput): Promise<FlowDetailReco
 }
 
 export async function deleteFlow(flowID: string): Promise<void> {
-  await requestJson(`/v1/flows/${encodeURIComponent(flowID)}`, {
+  await requestJson(`/v2/flows/${encodeURIComponent(flowID)}`, {
     method: 'DELETE',
   })
 }
 
 export async function runFlowNow(flowID: string): Promise<FlowRunNowResponse> {
-  return requestJson<FlowRunNowResponse>(`/v1/flows/${encodeURIComponent(flowID)}/run-now`, {
+  return requestJson<FlowRunNowResponse>(`/v2/flows/${encodeURIComponent(flowID)}/run-now`, {
     method: 'POST',
   })
 }

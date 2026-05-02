@@ -7,13 +7,13 @@ async function withFetchStub(run: (calls: Array<{ input: RequestInfo | URL; init
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push({ input, init })
     const url = String(input)
-    if (url === '/v1/flows?limit=200') {
+    if (url === '/v2/flows?limit=200') {
       return new Response(JSON.stringify({ ok: true, flows: [] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v1/flows' && init?.method === 'POST') {
+    if (url === '/v2/flows' && init?.method === 'POST') {
       return new Response(JSON.stringify({
         ok: true,
         flow: {
@@ -24,8 +24,10 @@ async function withFetchStub(run: (calls: Array<{ input: RequestInfo | URL; init
             created_at: '2025-01-01T00:00:00Z',
             updated_at: '2025-01-01T00:00:00Z',
           },
+          target_detail: { swarm_id: 'host-swarm-id', kind: 'self', name: 'Local', online: true, selectable: true, current: true },
+          agent_detail: { name: 'memory', mode: 'background', enabled: true },
+          workspace_detail: { workspace_path: '/tmp/workspace' },
           assignment_statuses: [],
-          outbox: [],
           history: [],
         },
       }), {
@@ -33,13 +35,13 @@ async function withFetchStub(run: (calls: Array<{ input: RequestInfo | URL; init
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v1/flows/flow-ui/run-now' && init?.method === 'POST') {
+    if (url === '/v2/flows/flow-ui/run-now' && init?.method === 'POST') {
       return new Response(JSON.stringify({ ok: true, run: { command_id: 'cmd-run', pending_sync: false } }), {
         status: 202,
         headers: { 'Content-Type': 'application/json' },
       })
     }
-    if (url === '/v1/flows/flow-ui' && init?.method === 'DELETE') {
+    if (url === '/v2/flows/flow-ui' && init?.method === 'DELETE') {
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -55,7 +57,7 @@ async function withFetchStub(run: (calls: Array<{ input: RequestInfo | URL; init
   }
 }
 
-test('flows API uses controller management endpoints', async () => {
+test('flows API uses native host-only v2 endpoints', async () => {
   const { createFlow, deleteFlow, fetchFlows, runFlowNow } = await import('./api')
 
   await withFetchStub(async (calls) => {
@@ -73,15 +75,15 @@ test('flows API uses controller management endpoints', async () => {
     await runFlowNow('flow-ui')
     await deleteFlow('flow-ui')
 
-    assert.equal(String(calls[0]?.input), '/v1/flows?limit=200')
-    assert.equal(String(calls[1]?.input), '/v1/flows')
+    assert.equal(String(calls[0]?.input), '/v2/flows?limit=200')
+    assert.equal(String(calls[1]?.input), '/v2/flows')
     assert.equal(calls[1]?.init?.method, 'POST')
     assert.equal(new Headers(calls[1]?.init?.headers).get('Content-Type'), 'application/json')
     const createBody = JSON.parse(String(calls[1]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(createBody.name, 'UI flow')
-    assert.equal(String(calls[2]?.input), '/v1/flows/flow-ui/run-now')
+    assert.equal(String(calls[2]?.input), '/v2/flows/flow-ui/run-now')
     assert.equal(calls[2]?.init?.method, 'POST')
-    assert.equal(String(calls[3]?.input), '/v1/flows/flow-ui')
+    assert.equal(String(calls[3]?.input), '/v2/flows/flow-ui')
     assert.equal(calls[3]?.init?.method, 'DELETE')
   })
 })
