@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
+
+const execFileAsync = promisify(execFile)
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
 const ROOT_DIR = path.resolve(SCRIPT_DIR, '..')
@@ -66,6 +70,20 @@ Flow:
   --wait-for-manual-auth         Keep waiting after a manual Tailscale auth URL is produced.
                                  Default: stop there and report auth_required.
 
+TTFAI existing child probe:
+  --ttfai-probe                  Skip launch UI and measure host→remote→AI timing on an already attached child swarm.
+  --ttfai-target <auto|remote|id|name>
+                                 Existing remote deploy session or selectable child swarm target. Default: auto.
+  --ttfai-prompt <text>          Prompt sent for timing. Default: Reply with exactly: pong
+  --ttfai-provider <provider>    Default: codex.
+  --ttfai-model <model>          Default: gpt-5.5.
+  --ttfai-thinking <level>       Default: high.
+  --ttfai-service-tier <tier>    Optional, for example fast.
+  --ttfai-context-mode <mode>    Optional model context mode.
+  --ttfai-timeout-ms <ms>        Probe timeout. Default: 120000.
+  --ttfai-verify-ssh-target <target>
+                                 SSH target that hosts the remote child container; verifies child DB evidence after the run.
+
 Browser/artifacts:
   --artifact-dir <path>          Default: tmp/remote-deploy-ui-diagnostics/<timestamp>.
   --browser-executable <path>    Use a system browser executable.
@@ -116,6 +134,16 @@ function parseArgs(argv) {
     configureOnly: false,
     preflightOnly: false,
     waitForManualAuth: false,
+    ttfaiProbe: false,
+    ttfaiTarget: process.env.SWARM_TTFAI_TARGET || 'auto',
+    ttfaiPrompt: process.env.SWARM_TTFAI_PROMPT || 'Reply with exactly: pong',
+    ttfaiProvider: process.env.SWARM_TTFAI_PROVIDER || 'codex',
+    ttfaiModel: process.env.SWARM_TTFAI_MODEL || 'gpt-5.5',
+    ttfaiThinking: process.env.SWARM_TTFAI_THINKING || 'high',
+    ttfaiServiceTier: process.env.SWARM_TTFAI_SERVICE_TIER || '',
+    ttfaiContextMode: process.env.SWARM_TTFAI_CONTEXT_MODE || '',
+    ttfaiTimeoutMs: Number(process.env.SWARM_TTFAI_TIMEOUT_MS || '') || 120000,
+    ttfaiVerifySSHTarget: process.env.SWARM_TTFAI_VERIFY_SSH_TARGET || '',
     artifactDir: '',
     browserExecutable: process.env.PLAYWRIGHT_BROWSER_EXECUTABLE || '',
     headless: true,
@@ -187,6 +215,45 @@ function parseArgs(argv) {
       case '--wait-for-manual-auth':
         opts.waitForManualAuth = true
         break
+      case '--ttfai-probe':
+        opts.ttfaiProbe = true
+        break
+      case '--ttfai-target':
+        opts.ttfaiTarget = requireValue(argv, index, arg)
+        index += 1
+        break
+      case '--ttfai-prompt':
+        opts.ttfaiPrompt = requireValue(argv, index, arg)
+        index += 1
+        break
+      case '--ttfai-provider':
+        opts.ttfaiProvider = requireValue(argv, index, arg)
+        index += 1
+        break
+      case '--ttfai-model':
+        opts.ttfaiModel = requireValue(argv, index, arg)
+        index += 1
+        break
+      case '--ttfai-thinking':
+        opts.ttfaiThinking = requireValue(argv, index, arg)
+        index += 1
+        break
+      case '--ttfai-service-tier':
+        opts.ttfaiServiceTier = requireValue(argv, index, arg)
+        index += 1
+        break
+      case '--ttfai-context-mode':
+        opts.ttfaiContextMode = requireValue(argv, index, arg)
+        index += 1
+        break
+      case '--ttfai-timeout-ms':
+        opts.ttfaiTimeoutMs = parseNumber(requireValue(argv, index, arg), arg)
+        index += 1
+        break
+      case '--ttfai-verify-ssh-target':
+        opts.ttfaiVerifySSHTarget = requireValue(argv, index, arg)
+        index += 1
+        break
       case '--artifact-dir':
         opts.artifactDir = requireValue(argv, index, arg)
         index += 1
@@ -223,10 +290,10 @@ function parseArgs(argv) {
   if (!['docker', 'podman'].includes(opts.runtime)) {
     fail('--runtime must be docker or podman')
   }
-  if (!opts.help && !opts.sshTarget.trim()) {
-    fail('--ssh-target is required')
+  if (!opts.help && !opts.ttfaiProbe && !opts.sshTarget.trim()) {
+    fail('--ssh-target is required unless --ttfai-probe is used')
   }
-  if (opts.transport === 'lan' && !opts.remoteHost.trim()) {
+  if (!opts.ttfaiProbe && opts.transport === 'lan' && !opts.remoteHost.trim()) {
     fail('--remote-host is required when --transport lan')
   }
   if (opts.tailscaleAuthKeyEnv.trim() && opts.transport !== 'tailscale') {
@@ -283,13 +350,17 @@ function defaultArtifactDir() {
   return path.join(ROOT_DIR, 'tmp', 'remote-deploy-ui-diagnostics', timestamp())
 }
 
-function loadPlaywright() {
+function requireFromWebPackage(name) {
   try {
     const requireFromWeb = createRequire(WEB_PACKAGE_JSON)
-    return requireFromWeb('playwright')
+    return requireFromWeb(name)
   } catch (error) {
-    fail(`Playwright is not installed for the web package: ${error instanceof Error ? error.message : String(error)}`)
+    fail(`${name} is not installed for the web package: ${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+function loadPlaywright() {
+  return requireFromWebPackage('playwright')
 }
 
 function redactSensitive(value) {
@@ -627,6 +698,715 @@ function compactSessionProgress(session) {
 
 function logRemoteSessionProgress(label, session) {
   console.log(`PROGRESS ${label} ${compactSessionProgress(session)}`)
+}
+
+function shellQuote(value) {
+  return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`
+}
+
+function sanitizeRemoteDeploySlug(value) {
+  value = String(value ?? '').trim().toLowerCase()
+  if (!value) {
+    return ''
+  }
+  let out = ''
+  let lastDash = false
+  for (const char of value) {
+    if ((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9')) {
+      out += char
+      lastDash = false
+      continue
+    }
+    if (!lastDash) {
+      out += '-'
+      lastDash = true
+    }
+  }
+  return out.replace(/^-+|-+$/g, '')
+}
+
+function remoteContainerNameForSessionID(sessionID) {
+  const slug = sanitizeRemoteDeploySlug(sessionID)
+  return slug ? `swarm-remote-child-${slug}` : ''
+}
+
+async function verifyTTFAIRemoteChildEvidence(opts, probe, artifactDir) {
+  const sshTarget = String(opts.ttfaiVerifySSHTarget || '').trim()
+  const deploymentID = String(probe?.target?.deployment_id || probe?.remote_deploy_session?.id || '').trim()
+  const childSwarmID = String(probe?.target?.swarm_id || '').trim()
+  const sessionID = String(probe?.session_create?.session_id || '').trim()
+  const runID = String(probe?.websocket?.run_id || '').trim()
+  if (!sshTarget) {
+    return { verified: false, skipped: true, reason: 'no --ttfai-verify-ssh-target provided' }
+  }
+  if (!deploymentID || !sessionID || !runID) {
+    return { verified: false, skipped: false, reason: 'missing deployment/session/run id for verification' }
+  }
+  const containerName = remoteContainerNameForSessionID(deploymentID)
+  if (!containerName) {
+    return { verified: false, skipped: false, reason: 'unable to derive remote child container name' }
+  }
+  const evidencePath = path.join(artifactDir, 'ttfai-remote-evidence.txt')
+  const checks = [
+    ['session_id', sessionID],
+    ['run_id', runID],
+    ['title', 'TTFAI diagnostic'],
+    ['prompt', opts.ttfaiPrompt],
+  ].filter(([, value]) => String(value || '').trim())
+  const childInfoScript = [
+    'printf child_hostname=',
+    'hostname',
+    'printf child_swarmd=',
+    'ps -eo pid,args | grep -E "[s]warmd" | head -1',
+  ].join('\n')
+  const checkCalls = checks.map(([label, value]) => `check ${shellQuote(label)} ${shellQuote(value)}`)
+  const childEvidenceScript = [
+    `db=/var/lib/swarm/rd/${String(deploymentID).replace(/"/g, '')}/state/swarmd/swarmd.pebble`,
+    'echo db=$db',
+    'check() {',
+    '  label="$1"',
+    '  needle="$2"',
+    '  matches="$(find "$db" -maxdepth 2 -type f -exec grep -a -l -- "$needle" {} + 2>/dev/null | sed -n "1,20p" || true)"',
+    '  if [ -n "$matches" ]; then',
+    '    echo "found_${label}=yes"',
+    '    printf "%s\n" "$matches" | sed "s/^/match_${label}=/"',
+    '  else',
+    '    echo "found_${label}=no"',
+    '  fi',
+    '}',
+    ...checkCalls,
+  ].join('\n')
+  const remoteScript = [
+    'set -eu',
+    `container=${shellQuote(containerName)}`,
+    'echo "container=$container"',
+    'docker inspect -f "running={{.State.Running}} image={{.Config.Image}}" "$container"',
+    `docker exec "$container" sh -lc ${shellQuote(childInfoScript)}`,
+    `docker exec "$container" sh -lc ${shellQuote(childEvidenceScript)}`,
+  ].join('\n')
+  let stdout = ''
+  let stderr = ''
+  let exitCode = 0
+  try {
+    const result = await execFileAsync('ssh', [sshTarget, remoteScript], {
+      timeout: Math.max(30000, Math.min(Number(opts.ttfaiTimeoutMs || 120000), 120000)),
+      maxBuffer: 1024 * 1024 * 4,
+    })
+    stdout = result.stdout || ''
+    stderr = result.stderr || ''
+  } catch (error) {
+    stdout = error?.stdout || ''
+    stderr = error?.stderr || (error instanceof Error ? error.message : String(error))
+    exitCode = Number(error?.code || 1)
+  }
+  const combined = redactSensitive(`${stdout}\n${stderr}`).trim()
+  await fs.writeFile(evidencePath, `${combined}\n`, 'utf8')
+  const foundSession = /^found_session_id=yes$/m.test(combined)
+  const foundRun = /^found_run_id=yes$/m.test(combined)
+  const foundPrompt = /^found_prompt=yes$/m.test(combined)
+  const verified = exitCode === 0 && foundSession && foundRun && foundPrompt
+  return {
+    verified,
+    skipped: false,
+    ssh_target: sshTarget,
+    deployment_id: deploymentID,
+    child_swarm_id: childSwarmID,
+    container_name: containerName,
+    artifact: path.relative(ROOT_DIR, evidencePath),
+    exit_code: exitCode,
+    found_session_id: foundSession,
+    found_run_id: foundRun,
+    found_prompt: foundPrompt,
+    evidence_preview: combined.split(/\r?\n/).slice(0, 40),
+  }
+}
+
+function summarizeSwarmTarget(target) {
+  if (!target || typeof target !== 'object') {
+    return null
+  }
+  return {
+    swarm_id: String(target.swarm_id ?? ''),
+    name: String(target.name ?? ''),
+    role: String(target.role ?? ''),
+    relationship: String(target.relationship ?? ''),
+    kind: String(target.kind ?? ''),
+    deployment_id: String(target.deployment_id ?? ''),
+    attach_status: String(target.attach_status ?? ''),
+    online: Boolean(target.online),
+    selectable: Boolean(target.selectable),
+    current: Boolean(target.current),
+    backend_url_present: Boolean(String(target.backend_url ?? '').trim()),
+    desktop_url_present: Boolean(String(target.desktop_url ?? '').trim()),
+    last_error: redactSensitive(target.last_error || ''),
+  }
+}
+
+function chooseTTFAITarget(targets, selector) {
+  const requested = String(selector || 'auto').trim()
+  const candidates = (Array.isArray(targets) ? targets : [])
+    .filter((target) => target && typeof target === 'object')
+    .filter((target) => !String(target.relationship || '').trim().toLowerCase().includes('self'))
+    .filter((target) => Boolean(target.selectable) && Boolean(target.online))
+  if (candidates.length === 0) {
+    fail('no selectable attached child swarm targets are available for TTFAI probe')
+  }
+  if (!requested || requested.toLowerCase() === 'auto') {
+    const remote = candidates.find((target) => String(target.kind || '').trim().toLowerCase() === 'remote')
+    if (remote) {
+      return { target: remote, mode: 'first-remote' }
+    }
+    const current = candidates.find((target) => Boolean(target.current))
+    if (current) {
+      return { target: current, mode: 'current' }
+    }
+    return { target: candidates[0], mode: 'first-selectable' }
+  }
+  const normalized = requested.toLowerCase()
+  if (normalized === 'remote') {
+    const remote = candidates.find((target) => String(target.kind || '').trim().toLowerCase() === 'remote')
+    if (!remote) {
+      fail('TTFAI target "remote" was requested but no selectable attached remote child swarm is available')
+    }
+    return { target: remote, mode: 'first-remote' }
+  }
+  const matched = candidates.find((target) => [target.swarm_id, target.name, target.deployment_id]
+    .some((value) => String(value || '').trim().toLowerCase() === normalized))
+  if (!matched) {
+    fail(`TTFAI target ${JSON.stringify(requested)} was not found among selectable attached child swarms`)
+  }
+  return { target: matched, mode: 'explicit' }
+}
+
+function concreteWorkspaceForTTFAI(opts) {
+  const requested = String(opts.workspace || '').trim()
+  if (!requested || requested === 'first' || requested === 'none') {
+    return process.cwd()
+  }
+  return path.resolve(requested)
+}
+
+function buildTTFAIToolScope() {
+  return {
+    deny_tools: [
+      'ask-user',
+      'bash',
+      'edit',
+      'exit-plan-mode',
+      'list',
+      'manage-agent',
+      'manage-skill',
+      'manage-theme',
+      'manage-todos',
+      'manage-worktree',
+      'plan-manage',
+      'read',
+      'search',
+      'skill-use',
+      'task',
+      'webfetch',
+      'websearch',
+      'write',
+    ],
+  }
+}
+
+async function pageFetchJSON(page, endpoint, init = {}) {
+  const result = await page.evaluate(async ({ endpoint: requestEndpoint, init: requestInit }) => {
+    const started = performance.now()
+    const response = await fetch(requestEndpoint, requestInit)
+    const text = await response.text()
+    let payload = null
+    let parse_error = ''
+    if (text.trim()) {
+      try {
+        payload = JSON.parse(text)
+      } catch (error) {
+        parse_error = error instanceof Error ? error.message : String(error)
+      }
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      status_text: response.statusText,
+      duration_ms: Math.round(performance.now() - started),
+      payload,
+      text: payload ? '' : text.slice(0, 4000),
+      parse_error,
+    }
+  }, { endpoint, init })
+  if (!result.ok) {
+    const message = result.payload?.error || result.text || `${endpoint} failed with status ${result.status}`
+    fail(redactSensitive(message))
+  }
+  return result
+}
+
+function summarizeTTFAIEvent(event, elapsedMS) {
+  const type = String(event?.type ?? '')
+  const summary = {
+    at_ms: elapsedMS,
+    type,
+    seq: Number(event?.seq || 0),
+    step: Number(event?.step || 0),
+  }
+  if (event?.status) {
+    summary.status = String(event.status)
+  }
+  if (event?.summary) {
+    summary.summary = redactSensitive(String(event.summary).slice(0, 240))
+  }
+  if (event?.error) {
+    summary.error = redactSensitive(String(event.error).slice(0, 500))
+  }
+  if (event?.delta) {
+    const delta = String(event.delta)
+    summary.delta_chars = delta.length
+    summary.delta_preview = redactSensitive(delta.slice(0, 120))
+  }
+  if (event?.message) {
+    summary.message_role = String(event.message.role ?? '')
+    const content = String(event.message.content ?? '')
+    summary.message_chars = content.length
+    summary.message_preview = redactSensitive(content.slice(0, 120))
+  }
+  if (event?.lifecycle) {
+    summary.lifecycle_active = Boolean(event.lifecycle.active)
+    summary.lifecycle_phase = String(event.lifecycle.phase ?? '')
+    summary.lifecycle_owner_transport = String(event.lifecycle.owner_transport ?? '')
+  }
+  if (event?.usage_summary) {
+    summary.usage_provider = String(event.usage_summary.provider ?? '')
+    summary.usage_model = String(event.usage_summary.model ?? '')
+    summary.usage_total_tokens = Number(event.usage_summary.total_tokens || 0)
+  }
+  return summary
+}
+
+function buildTTFAIMetrics(probe) {
+  const marks = probe?.websocket?.marks || {}
+  const markValue = (name) => {
+    const raw = marks[name]
+    if (raw == null || raw === '') {
+      return null
+    }
+    const value = Number(raw)
+    return Number.isFinite(value) ? value : null
+  }
+  const sent = markValue('run_start_sent_ms')
+  const metricSinceSend = (name) => {
+    const value = markValue(name)
+    return sent != null && value != null ? Math.max(0, value - sent) : null
+  }
+  const metrics = {
+    target_list_ms: probe?.target_list?.duration_ms ?? null,
+    session_create_ms: probe?.session_create?.duration_ms ?? null,
+    websocket_connect_ms: markValue('websocket_open_ms'),
+    host_send_to_run_accepted_ms: metricSinceSend('run_accepted_ms'),
+    host_send_to_lifecycle_active_ms: metricSinceSend('first_lifecycle_active_ms'),
+    host_send_to_first_model_event_ms: metricSinceSend('first_model_event_ms'),
+    host_send_to_first_assistant_text_ms: metricSinceSend('first_assistant_text_ms'),
+    host_send_to_first_message_stored_ms: metricSinceSend('first_assistant_message_ms'),
+    host_send_to_turn_completed_ms: metricSinceSend('turn_completed_ms'),
+  }
+  if (metrics.host_send_to_run_accepted_ms != null && metrics.host_send_to_first_assistant_text_ms != null) {
+    metrics.run_accepted_to_first_assistant_text_ms = metrics.host_send_to_first_assistant_text_ms - metrics.host_send_to_run_accepted_ms
+  }
+  if (metrics.host_send_to_lifecycle_active_ms != null && metrics.host_send_to_first_assistant_text_ms != null) {
+    metrics.lifecycle_active_to_first_assistant_text_ms = metrics.host_send_to_first_assistant_text_ms - metrics.host_send_to_lifecycle_active_ms
+  }
+  return metrics
+}
+
+function createTTFAIWebSocketResult() {
+  return {
+    ok: false,
+    error: '',
+    timed_out: false,
+    run_id: '',
+    marks: {
+      websocket_open_ms: null,
+      run_start_sent_ms: null,
+      run_accepted_ms: null,
+      first_lifecycle_ms: null,
+      first_lifecycle_active_ms: null,
+      first_status_running_ms: null,
+      first_model_event_ms: null,
+      first_reasoning_delta_ms: null,
+      first_assistant_delta_ms: null,
+      first_assistant_text_ms: null,
+      first_assistant_message_ms: null,
+      turn_completed_ms: null,
+      turn_error_ms: null,
+      socket_closed_ms: null,
+    },
+    event_count: 0,
+    events: [],
+  }
+}
+
+function applyTTFAIEventMarks(result, event, atMS) {
+  const marks = result.marks
+  const mark = (name, value) => {
+    if (marks[name] == null) {
+      marks[name] = value
+    }
+  }
+  const type = String(event?.type ?? '')
+  if (event?.run_id && !result.run_id) {
+    result.run_id = String(event.run_id)
+  }
+  if (type === 'run.accepted') {
+    mark('run_accepted_ms', atMS)
+  }
+  if (type === 'session.lifecycle.updated') {
+    mark('first_lifecycle_ms', atMS)
+    if (event?.lifecycle?.active) {
+      mark('first_lifecycle_active_ms', atMS)
+    }
+  }
+  if (type === 'session.status' && String(event?.status ?? '').toLowerCase() === 'running') {
+    mark('first_status_running_ms', atMS)
+  }
+  if (type === 'reasoning.delta') {
+    mark('first_model_event_ms', atMS)
+    mark('first_reasoning_delta_ms', atMS)
+  }
+  if (type === 'assistant.delta' || type === 'assistant.commentary') {
+    mark('first_model_event_ms', atMS)
+    mark('first_assistant_delta_ms', atMS)
+    if (String(event?.delta ?? '').trim()) {
+      mark('first_assistant_text_ms', atMS)
+    }
+  }
+  if ((type === 'message.stored' || type === 'message.updated') && String(event?.message?.role ?? '').toLowerCase() === 'assistant') {
+    mark('first_model_event_ms', atMS)
+    mark('first_assistant_message_ms', atMS)
+    if (String(event?.message?.content ?? '').trim()) {
+      mark('first_assistant_text_ms', atMS)
+    }
+  }
+  if (type === 'turn.completed') {
+    mark('turn_completed_ms', atMS)
+  }
+  if (type === 'turn.error' || type === 'error') {
+    mark('turn_error_ms', atMS)
+  }
+}
+
+async function runTTFAIWebSocketProbe(page, input) {
+  const wsURL = await page.evaluate((sessionID) => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return new URL(`/v1/sessions/${encodeURIComponent(sessionID)}/run/stream`, `${protocol}//${window.location.host}`).toString()
+  }, input.sessionID)
+  const browserContext = page.context()
+  const cookies = await browserContext.cookies(input.desktopURL || undefined)
+  const cookieHeader = cookies
+    .filter((cookie) => cookie.name && cookie.value)
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join('; ')
+  const WebSocket = requireFromWebPackage('ws')
+  const started = performance.now()
+  const result = createTTFAIWebSocketResult()
+  const elapsed = () => Math.round(performance.now() - started)
+  const mark = (name, value) => {
+    if (result.marks[name] == null) {
+      result.marks[name] = value
+    }
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (extra = {}) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      result.ok = !extra.error && !extra.timed_out
+      result.error = extra.error || ''
+      result.timed_out = Boolean(extra.timed_out)
+      result.event_count = result.events.length
+      try {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.close()
+        }
+      } catch {
+        // Ignore close races while collecting diagnostics.
+      }
+      resolve(result)
+    }
+    const timeout = setTimeout(() => {
+      finish({ timed_out: true, error: `TTFAI probe timed out after ${input.timeoutMs}ms` })
+    }, input.timeoutMs)
+    const headers = {
+      Origin: input.desktopURL,
+      Referer: `${String(input.desktopURL || '').replace(/\/+$/, '')}/settings?tab=swarm`,
+      'Sec-Fetch-Site': 'same-origin',
+    }
+    if (cookieHeader) {
+      headers.Cookie = cookieHeader
+    }
+    const socket = new WebSocket(wsURL, {
+      headers,
+      origin: input.desktopURL,
+    })
+    socket.on('open', () => {
+      mark('websocket_open_ms', elapsed())
+      const payload = {
+        type: 'run.start',
+        prompt: input.prompt,
+        agent_name: 'swarm',
+        instructions: input.instructions,
+        background: false,
+        target_kind: 'agent',
+        target_name: 'swarm',
+        tool_scope: input.toolScope,
+      }
+      socket.send(JSON.stringify(payload))
+      mark('run_start_sent_ms', elapsed())
+    })
+    socket.on('message', (data) => {
+      const atMS = elapsed()
+      let event
+      try {
+        event = JSON.parse(String(data))
+      } catch (error) {
+        result.events.push({ at_ms: atMS, type: 'parse.error', error: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      result.events.push(summarizeTTFAIEvent(event, atMS))
+      applyTTFAIEventMarks(result, event, atMS)
+      const type = String(event?.type ?? '')
+      if (type === 'turn.completed') {
+        finish()
+      }
+      if (type === 'turn.error' || type === 'error') {
+        finish({ error: String(event?.error || event?.summary || 'run stream error') })
+      }
+    })
+    socket.on('error', (error) => {
+      if (!settled) {
+        result.events.push({ at_ms: elapsed(), type: 'socket.error', error: error instanceof Error ? error.message : String(error) })
+      }
+    })
+    socket.on('close', (code, reason) => {
+      mark('socket_closed_ms', elapsed())
+      if (!settled && result.marks.turn_completed_ms == null && result.marks.turn_error_ms == null) {
+        const text = reason ? `: ${String(reason)}` : ''
+        finish({ error: `run stream websocket closed before turn completion (code ${code})${text}` })
+      }
+    })
+  })
+}
+
+async function fetchRemoteDeploySessionForTTFAI(page, opts, probe, recorder) {
+  const requested = String(opts.ttfaiTarget || 'auto').trim()
+  const query = new URLSearchParams({ refresh: '1' })
+  if (requested && !['auto', 'remote'].includes(requested.toLowerCase())) {
+    query.set('id', requested)
+  }
+  const finish = recorder.start('ttfai_refresh_remote_deploy_session')
+  const response = await pageFetchJSON(page, `/v1/deploy/remote/session?${query.toString()}`, { method: 'GET' })
+  finish({ status: response.status })
+  const sessions = Array.isArray(response.payload?.sessions) ? response.payload.sessions : []
+  const normalized = requested.toLowerCase()
+  const candidates = sessions.filter((session) => session && typeof session === 'object')
+  const selected = candidates.find((session) => {
+    if (!['auto', 'remote', ''].includes(normalized)) {
+      return [session.id, session.name, session.child_swarm_id].some((value) => String(value || '').trim().toLowerCase() === normalized)
+    }
+    return String(session.status || '').trim().toLowerCase() === 'attached'
+      && String(session.child_swarm_id || '').trim()
+      && String(session.remote_endpoint || session.remote_tailnet_url || '').trim()
+  })
+  probe.remote_deploy_session = selected ? summarizeRemoteSession(selected) : null
+  probe.remote_deploy_session_list = {
+    status: response.status,
+    duration_ms: response.duration_ms,
+    session_count: candidates.length,
+  }
+  return selected || null
+}
+
+async function approveRemoteDeploySessionForTTFAI(page, session, probe, recorder) {
+  if (!session?.id || String(session.status || '').trim().toLowerCase() === 'attached') {
+    return session
+  }
+  if (!String(session.enrollment_id || session.child_swarm_id || '').trim()) {
+    return session
+  }
+  const finish = recorder.start('ttfai_approve_remote_deploy_session')
+  const response = await pageFetchJSON(page, `/v1/deploy/remote/session/${encodeURIComponent(String(session.id))}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  finish({ status: response.status })
+  const approved = response.payload?.session || session
+  probe.remote_deploy_approve = {
+    status: response.status,
+    duration_ms: response.duration_ms,
+    session: summarizeRemoteSession(approved),
+  }
+  return approved
+}
+
+function targetFromRemoteDeploySession(session) {
+  if (!session || typeof session !== 'object') {
+    return null
+  }
+  const swarmID = String(session.child_swarm_id || '').trim()
+  if (!swarmID) {
+    return null
+  }
+  const backendURL = String(session.remote_endpoint || session.remote_tailnet_url || '').trim()
+  return {
+    swarm_id: swarmID,
+    name: String(session.name || session.child_name || swarmID).trim(),
+    role: 'child',
+    relationship: 'child',
+    kind: 'remote',
+    deployment_id: String(session.id || '').trim(),
+    attach_status: String(session.status || '').trim(),
+    online: Boolean(backendURL) && String(session.status || '').trim().toLowerCase() === 'attached',
+    selectable: Boolean(backendURL) && String(session.status || '').trim().toLowerCase() === 'attached',
+    current: false,
+    backend_url: backendURL,
+    desktop_url: backendURL,
+    last_error: String(session.last_error || '').trim(),
+  }
+}
+
+async function runTTFAIProbe(page, opts, summary, recorder) {
+  const probe = {
+    mode: 'existing_child',
+    target_selector: opts.ttfaiTarget,
+    prompt_chars: opts.ttfaiPrompt.length,
+    provider: opts.ttfaiProvider.trim() || 'codex',
+    model: opts.ttfaiModel.trim() || 'gpt-5.5',
+    thinking: opts.ttfaiThinking.trim() || 'high',
+    service_tier: opts.ttfaiServiceTier.trim(),
+    context_mode: opts.ttfaiContextMode.trim(),
+    workspace_path: concreteWorkspaceForTTFAI(opts),
+    target_list: null,
+    remote_deploy_session_list: null,
+    remote_deploy_session: null,
+    remote_deploy_approve: null,
+    target: null,
+    session_create: null,
+    websocket: null,
+    metrics: {},
+    remote_execution_evidence: null,
+  }
+  summary.ttfai_probe = probe
+
+  let remoteDeploySession = await fetchRemoteDeploySessionForTTFAI(page, opts, probe, recorder)
+  remoteDeploySession = await approveRemoteDeploySessionForTTFAI(page, remoteDeploySession, probe, recorder)
+  let remoteDeployTarget = targetFromRemoteDeploySession(remoteDeploySession)
+
+  let finish = recorder.start('ttfai_list_swarm_targets')
+  const targetList = await pageFetchJSON(page, '/v1/swarm/targets', { method: 'GET' })
+  finish({ status: targetList.status })
+  probe.target_list = {
+    status: targetList.status,
+    duration_ms: targetList.duration_ms,
+    target_count: Array.isArray(targetList.payload?.targets) ? targetList.payload.targets.length : 0,
+  }
+  let target = null
+  let mode = ''
+  const requested = String(opts.ttfaiTarget || 'auto').trim().toLowerCase()
+  if (remoteDeployTarget && (!requested || requested === 'auto' || requested === 'remote' || requested === String(remoteDeployTarget.deployment_id || '').trim().toLowerCase() || requested === String(remoteDeployTarget.swarm_id || '').trim().toLowerCase() || requested === String(remoteDeployTarget.name || '').trim().toLowerCase())) {
+    target = remoteDeployTarget
+    mode = 'remote-deploy-session'
+  } else {
+    const selected = chooseTTFAITarget(targetList.payload?.targets || [], opts.ttfaiTarget)
+    target = selected.target
+    mode = selected.mode
+  }
+  probe.target = summarizeSwarmTarget(target)
+  probe.target_selection_mode = mode
+  console.log(`TTFAI_TARGET=${probe.target?.name || probe.target?.swarm_id || '<unknown>'} (${probe.target?.kind || 'unknown'})`)
+
+  const sessionPayload = {
+    title: `TTFAI diagnostic ${timestamp()}`,
+    workspace_path: probe.workspace_path,
+    host_workspace_path: probe.workspace_path,
+    runtime_workspace_path: probe.workspace_path,
+    workspace_name: path.basename(probe.workspace_path),
+    mode: 'auto',
+    agent_name: 'swarm',
+    metadata: {
+      diagnostic: 'ttfai_probe',
+      source: 'diagnose-remote-deploy-live-ui',
+      target_swarm_id: probe.target?.swarm_id || '',
+    },
+    preference: {
+      provider: probe.provider,
+      model: probe.model,
+      thinking: probe.thinking,
+      service_tier: probe.service_tier || undefined,
+      context_mode: probe.context_mode || undefined,
+    },
+  }
+
+  finish = recorder.start('ttfai_create_routed_session')
+  const create = await pageFetchJSON(page, `/v1/sessions?swarm_id=${encodeURIComponent(probe.target?.swarm_id || '')}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sessionPayload),
+  })
+  finish({ status: create.status })
+  const session = create.payload?.session
+  if (!session?.id) {
+    fail('TTFAI session create response did not include a session id')
+  }
+  probe.session_create = {
+    status: create.status,
+    duration_ms: create.duration_ms,
+    session_id: String(session.id),
+    session_title: String(session.title || ''),
+    warning: redactSensitive(create.payload?.warning || ''),
+  }
+
+  const instructions = [
+    'This is a latency diagnostic. Reply to the user prompt directly.',
+    'Do not call tools. Do not browse files. Do not add commentary.',
+    'Keep the response as short as possible.',
+  ].join('\n')
+
+  finish = recorder.start('ttfai_run_stream')
+  const websocket = await runTTFAIWebSocketProbe(page, {
+    sessionID: String(session.id),
+    prompt: opts.ttfaiPrompt,
+    instructions,
+    timeoutMs: opts.ttfaiTimeoutMs,
+    toolScope: buildTTFAIToolScope(),
+    desktopURL: summary.desktop_url,
+  })
+  websocket.events = (websocket.events || []).map((event) => ({
+    ...event,
+    summary: event.summary ? redactSensitive(event.summary) : event.summary,
+    error: event.error ? redactSensitive(event.error) : event.error,
+    delta_preview: event.delta_preview ? redactSensitive(event.delta_preview) : event.delta_preview,
+    message_preview: event.message_preview ? redactSensitive(event.message_preview) : event.message_preview,
+  }))
+  probe.websocket = websocket
+  probe.metrics = buildTTFAIMetrics(probe)
+  finish({ ok: websocket.ok, run_id: websocket.run_id || '' })
+  if (!websocket.ok) {
+    fail(websocket.error || 'TTFAI probe failed')
+  }
+  if (opts.ttfaiVerifySSHTarget.trim()) {
+    finish = recorder.start('ttfai_verify_remote_child_execution')
+    const evidence = await verifyTTFAIRemoteChildEvidence(opts, probe, summary.artifact_dir_abs || process.cwd())
+    probe.remote_execution_evidence = evidence
+    finish({ verified: Boolean(evidence.verified), skipped: Boolean(evidence.skipped) })
+    if (!evidence.verified) {
+      fail(`TTFAI probe completed but remote child execution could not be verified: ${evidence.reason || evidence.artifact || 'missing evidence'}`)
+    }
+  }
+  summary.ok = true
+  summary.result = 'ttfai_probe_ok'
+  console.log(`TTFAI_METRICS=${JSON.stringify(probe.metrics)}`)
 }
 
 function fieldByLabel(page, label) {
@@ -1042,6 +1822,9 @@ async function main() {
     configure_only: opts.configureOnly,
     preflight_only: opts.preflightOnly,
     wait_for_manual_auth: opts.waitForManualAuth,
+    ttfai_probe_requested: opts.ttfaiProbe,
+    ttfai_probe: null,
+    artifact_dir_abs: artifactDir,
     started_at: new Date().toISOString(),
     finished_at: '',
     total_ms: 0,
@@ -1137,6 +1920,12 @@ async function main() {
     let finish = recorder.start('open_live_swarm_dashboard')
     await page.goto(settingsURL.toString(), { waitUntil: 'domcontentloaded', timeout: 60000 })
     await unlockDesktopVaultIfNeeded(page, opts, summary)
+    if (opts.ttfaiProbe) {
+      finish({ mode: 'ttfai_probe' })
+      await runTTFAIProbe(page, opts, summary, recorder)
+      await maybeScreenshot(page, artifactDir, '01-ttfai-probe', summary)
+      return
+    }
     const dashboardAdd = await findUsableLocator(page, candidates(page, 'dashboardAdd'), 'Add swarm dashboard button', 60000)
     finish()
     await maybeScreenshot(page, artifactDir, '01-dashboard', summary)
