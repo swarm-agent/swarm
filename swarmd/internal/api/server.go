@@ -3259,10 +3259,39 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, settings)
 	case http.MethodPost:
-		var settings uisettings.UISettings
-		if err := decodeJSON(r, &settings); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
+		}
+		_ = r.Body.Close()
+		var settings uisettings.UISettings
+		if err := decodeJSONBytes(body, &settings); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		var raw struct {
+			Chat struct {
+				ShowHeader   *bool `json:"show_header"`
+				ThinkingTags *bool `json:"thinking_tags"`
+			} `json:"chat"`
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if raw.Chat.ShowHeader == nil || raw.Chat.ThinkingTags == nil {
+			current, err := s.uiSettings.Get()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if raw.Chat.ShowHeader == nil {
+				settings.Chat.ShowHeader = current.Chat.ShowHeader
+			}
+			if raw.Chat.ThinkingTags == nil {
+				settings.Chat.ThinkingTags = current.Chat.ThinkingTags
+			}
 		}
 		saved, err := s.uiSettings.Set(settings)
 		if err != nil {

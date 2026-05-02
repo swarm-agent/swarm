@@ -167,7 +167,7 @@ func (s *Service) publishUpdated(settings UISettings) error {
 }
 
 func defaultUISettings() UISettings {
-	return uiSettingsFromRecord(pebblestore.UISettingsRecord{})
+	return uiSettingsFromRecord(pebblestore.DefaultUISettingsRecord())
 }
 
 func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
@@ -249,7 +249,9 @@ func inputRecordFromSettings(settings InputSettings) *pebblestore.UIInputSetting
 func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRecord {
 	return &pebblestore.UIChatSettingsRecord{
 		ShowHeader:            settings.ShowHeader,
+		ShowHeaderSet:         true,
 		ThinkingTags:          settings.ThinkingTags,
+		ThinkingTagsSet:       true,
 		DefaultNewSessionMode: strings.TrimSpace(settings.DefaultNewSessionMode),
 		ToolStream: pebblestore.UIChatToolStreamSettingsRecord{
 			ShowAnchor:    settings.ToolStream.ShowAnchor,

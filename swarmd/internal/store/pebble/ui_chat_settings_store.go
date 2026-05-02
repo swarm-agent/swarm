@@ -59,7 +59,9 @@ type UIChatToolStreamSettingsRecord struct {
 
 type UIChatSettingsRecord struct {
 	ShowHeader            bool                           `json:"show_header"`
+	ShowHeaderSet         bool                           `json:"-"`
 	ThinkingTags          bool                           `json:"thinking_tags"`
+	ThinkingTagsSet       bool                           `json:"-"`
 	DefaultNewSessionMode string                         `json:"default_new_session_mode,omitempty"`
 	ToolStream            UIChatToolStreamSettingsRecord `json:"tool_stream,omitempty"`
 	UpdatedAt             int64                          `json:"updated_at"`
@@ -127,9 +129,12 @@ func (s *UISettingsStore) Get() (UISettingsRecord, bool, error) {
 }
 
 func (s *UISettingsStore) Update(patch UISettingsPatch) (UISettingsRecord, error) {
-	record, _, err := s.Get()
+	record, ok, err := s.Get()
 	if err != nil {
 		return UISettingsRecord{}, err
+	}
+	if !ok {
+		record = DefaultUISettingsRecord()
 	}
 	if patch.Theme != nil {
 		record.Theme = *patch.Theme
@@ -159,7 +164,42 @@ func (s *UISettingsStore) Update(patch UISettingsPatch) (UISettingsRecord, error
 	return record, nil
 }
 
+func DefaultUISettingsRecord() UISettingsRecord {
+	return normalizeUISettingsRecord(UISettingsRecord{
+		Theme: UIThemeSettingsRecord{
+			ActiveID: "crimson",
+		},
+		Chat: UIChatSettingsRecord{
+			ShowHeader:            true,
+			ShowHeaderSet:         true,
+			ThinkingTags:          true,
+			ThinkingTagsSet:       true,
+			DefaultNewSessionMode: "auto",
+			ToolStream: UIChatToolStreamSettingsRecord{
+				ShowAnchor:    true,
+				PulseFrames:   []string{"·", "•", "◦", "•"},
+				RunningSymbol: "•",
+				SuccessSymbol: "✓",
+				ErrorSymbol:   "✕",
+			},
+		},
+		Swarming: UISwarmingSettingsRecord{
+			Title:  "Swarming",
+			Status: "swarming",
+		},
+		Swarm: UISwarmSettingsRecord{
+			Name: "Local",
+		},
+	})
+}
+
 func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
+	if !record.Chat.ShowHeaderSet && record.Chat.UpdatedAt == 0 {
+		record.Chat.ShowHeader = true
+	}
+	if !record.Chat.ThinkingTagsSet && record.Chat.UpdatedAt == 0 {
+		record.Chat.ThinkingTags = true
+	}
 	if record.UpdatedAt < 0 {
 		record.UpdatedAt = 0
 	}
