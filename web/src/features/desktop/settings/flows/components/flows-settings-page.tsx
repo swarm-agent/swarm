@@ -1,4 +1,4 @@
-import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Bot, ChevronDown, Clock, MapPin, MoreHorizontal, Plus, Search, Workflow } from 'lucide-react'
 import { Button } from '../../../../../components/ui/button'
@@ -10,15 +10,20 @@ import {
   createFlow,
   deleteFlow,
   fetchFlows,
+  fetchFlowSwarmTargets,
+  fetchFlowWorkspaces,
   flowsQueryKey,
   runFlowNow,
   type CreateFlowInput,
   type FlowSummaryRecord,
+  type FlowSwarmTarget,
   type FlowTaskStep,
+  type FlowWorkspaceEntry,
 } from '../api'
 
 type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
 type FlowMode = 'One-shot background job' | 'Scheduled background job' | 'Manual one-shot'
+type FlowAgentKind = 'agent' | 'subagent' | 'background'
 type ScheduleCadence = 'Daily' | 'Weekly' | 'Monthly' | 'On demand'
 
 interface FlowTask {
@@ -63,21 +68,40 @@ interface FlowDefinition {
 
 interface AddFlowForm {
   name: string
+  agentKind: FlowAgentKind
   agent: string
-  target: string
+  targetKey: string
   scheduleCadence: ScheduleCadence
   scheduleTime: string
   scheduleDay: string
   scheduleDate: string
-  workspace: string
-  location: string
+  workspacePath: string
   context: string
   mode: FlowMode
   task: string
 }
 
-const formWorkspaceOptions = ['.', 'swarm-go', 'desktop-ui', 'infra']
-const formLocationOptions = ['current workspace on laptop', 'release workspace', 'docs workspace', 'ops workspace']
+const flowSwarmTargetsQueryKey = ['flows', 'swarm-targets'] as const
+const flowWorkspacesQueryKey = ['flows', 'workspaces'] as const
+
+interface FlowTargetOption {
+  key: string
+  label: string
+  helper: string
+  target: FlowSwarmTarget
+}
+
+interface FlowWorkspaceOption {
+  key: string
+  label: string
+  helper: string
+  workspace: FlowWorkspaceEntry
+}
+const flowAgentKindOptions: Array<{ value: FlowAgentKind; label: string }> = [
+  { value: 'agent', label: 'Primary' },
+  { value: 'subagent', label: 'Subagent' },
+  { value: 'background', label: 'Background' },
+]
 const scheduleCadenceOptions: ScheduleCadence[] = ['Daily', 'Weekly', 'Monthly', 'On demand']
 const scheduleDayOptions = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const scheduleDateOptions = Array.from({ length: 31 }, (_, index) => String(index + 1))
@@ -90,18 +114,18 @@ const scheduleTimeOptions = Array.from({ length: 48 }, (_, index) => {
 })
 
 const defaultAddFlowForm: AddFlowForm = {
-  name: 'Nightly AGENTS.md memory refresh',
+  name: '',
+  agentKind: 'background',
   agent: 'memory',
-  target: 'local',
-  scheduleCadence: 'Daily',
+  targetKey: '',
+  scheduleCadence: 'On demand',
   scheduleTime: '12:00 AM',
   scheduleDay: 'Mon',
   scheduleDate: '1',
-  workspace: '.',
-  location: 'current workspace on laptop',
-  context: 'plan → approval → execute',
-  mode: 'Scheduled background job',
-  task: 'Read git diffs and update AGENTS.md to be more accurate.',
+  workspacePath: '',
+  context: 'target-owned schedule',
+  mode: 'Manual one-shot',
+  task: '',
 }
 
 const statusLabels: Record<FlowStatus, string> = {
@@ -176,6 +200,72 @@ function clockLabelToHHMM(value: string): string {
     hour += 12
   }
   return `${String(hour).padStart(2, '0')}:${minute}`
+}
+
+function targetOptionKey(target: FlowSwarmTarget): string {
+  const swarmID = target.swarm_id?.trim()
+  if (swarmID) {
+    return `swarm:${swarmID}`
+  }
+  const deploymentID = target.deployment_id?.trim()
+  if (deploymentID) {
+    return `deployment:${deploymentID}`
+  }
+  return `target:${target.kind}:${target.name}`
+}
+
+function targetOptionLabel(target: FlowSwarmTarget): string {
+  const name = target.name?.trim() || target.swarm_id?.trim() || target.kind
+  const role = target.role?.trim()
+  const relationship = target.relationship?.trim()
+  const parts = [name, role, relationship].filter(Boolean)
+  return target.current ? `${parts.join(' / ')} (current)` : parts.join(' / ')
+}
+
+function targetOptionHelper(target: FlowSwarmTarget): string {
+  return [target.kind, target.online ? 'online' : 'offline', target.selectable ? 'selectable' : 'not selectable', target.swarm_id]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+    .join(' • ')
+}
+
+function targetToSelection(target?: FlowSwarmTarget): CreateFlowInput['target'] {
+  if (!target) {
+    return {}
+  }
+  return {
+    swarm_id: target.swarm_id?.trim() || undefined,
+    kind: target.kind?.trim() || undefined,
+    deployment_id: target.deployment_id?.trim() || undefined,
+    name: target.name?.trim() || undefined,
+  }
+}
+
+function workspaceOptionKey(workspace: FlowWorkspaceEntry): string {
+  return workspace.path
+}
+
+function workspaceOptionLabel(workspace: FlowWorkspaceEntry): string {
+  const name = workspace.workspaceName?.trim()
+  return name ? `${name} — ${workspace.path}` : workspace.path
+}
+
+function workspaceOptionHelper(workspace: FlowWorkspaceEntry): string {
+  const linkedCount = workspace.replicationLinks.length
+  const directoryCount = workspace.directories.length
+  return [workspace.active ? 'active' : '', linkedCount ? `${linkedCount} linked swarm${linkedCount === 1 ? '' : 's'}` : '', directoryCount ? `${directoryCount} director${directoryCount === 1 ? 'y' : 'ies'}` : '']
+    .filter(Boolean)
+    .join(' • ')
+}
+
+function initialAddFlowForm(targetOptions: FlowTargetOption[], workspaceOptions: FlowWorkspaceOption[]): AddFlowForm {
+  const target = targetOptions.find((option) => option.target.current && option.target.selectable) ?? targetOptions.find((option) => option.target.selectable) ?? targetOptions[0]
+  const workspace = workspaceOptions.find((option) => option.workspace.active) ?? workspaceOptions[0]
+  return {
+    ...defaultAddFlowForm,
+    targetKey: target?.key ?? '',
+    workspacePath: workspace?.key ?? '',
+  }
 }
 
 function hhmmToDisplay(value: string): string {
@@ -336,24 +426,24 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
   }
 }
 
-function formToCreateInput(form: AddFlowForm): CreateFlowInput {
+function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[]): CreateFlowInput {
   const cadence = form.scheduleCadence === 'On demand' ? 'on_demand' : form.scheduleCadence.toLowerCase()
-  const targetName = form.target.trim()
-  const isLocalTarget = targetName.toLowerCase() === 'local'
-  const workspacePath = form.workspace.trim() || '.'
+  const targetOption = targets.find((option) => option.key === form.targetKey)
+  const workspaceOption = workspaces.find((option) => option.key === form.workspacePath)
+  const workspacePath = workspaceOption?.workspace.path.trim() || form.workspacePath.trim()
+  const task = form.task.trim() || 'Run the configured task prompt.'
   return {
     name: form.name.trim() || 'Untitled flow',
     enabled: form.scheduleCadence !== 'On demand',
-    target: {
-      kind: isLocalTarget ? 'self' : undefined,
-      name: isLocalTarget ? undefined : targetName || undefined,
-    },
+    target: targetToSelection(targetOption?.target),
     agent: {
-      target_kind: 'background',
-      target_name: form.agent.trim() || 'memory',
+      target_kind: form.agentKind,
+      target_name: form.agent.trim() || (form.agentKind === 'agent' ? 'swarm' : 'memory'),
     },
     workspace: {
       workspace_path: workspacePath,
+      host_workspace_path: workspacePath,
+      cwd: workspacePath,
     },
     schedule: {
       cadence,
@@ -366,11 +456,11 @@ function formToCreateInput(form: AddFlowForm): CreateFlowInput {
       mode: 'once',
     },
     intent: {
-      prompt: form.task.trim() || 'Run the configured task prompt.',
+      prompt: task,
       mode: form.context.trim(),
       tasks: [
-        { id: 'context', title: 'Prepare run context', detail: `Target ${form.target || 'local'} in ${form.location || 'the selected workspace'}.`, action: 'read' },
-        { id: 'task', title: 'Run agent task', detail: form.task.trim() || 'Run the configured task prompt.', action: 'propose' },
+        { id: 'context', title: 'Prepare run context', detail: `Target ${targetOption?.label || 'selected swarm'} in ${workspacePath || 'the selected workspace'}.`, action: 'read' },
+        { id: 'task', title: 'Run agent task', detail: task, action: 'propose' },
       ],
     },
   }
@@ -423,8 +513,31 @@ function FilterSelect({ value, onChange, options, label }: { value: string; onCh
   )
 }
 
-function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: () => void; onAdd: (input: CreateFlowInput) => void; busy?: boolean }) {
-  const [form, setForm] = useState<AddFlowForm>(defaultAddFlowForm)
+function AddFlowModal({
+  open,
+  onClose,
+  onAdd,
+  busy,
+  targetOptions,
+  workspaceOptions,
+  loadingOptions,
+}: {
+  open: boolean
+  onClose: () => void
+  onAdd: (input: CreateFlowInput) => void
+  busy?: boolean
+  targetOptions: FlowTargetOption[]
+  workspaceOptions: FlowWorkspaceOption[]
+  loadingOptions?: boolean
+}) {
+  const initialForm = useMemo(() => initialAddFlowForm(targetOptions, workspaceOptions), [targetOptions, workspaceOptions])
+  const [form, setForm] = useState<AddFlowForm>(initialForm)
+
+  useEffect(() => {
+    if (open) {
+      setForm(initialForm)
+    }
+  }, [initialForm, open])
 
   if (!open) {
     return null
@@ -434,12 +547,27 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
     setForm((current) => ({ ...current, [field]: event.target.value }))
   }
 
+  const updateAgentKind = (event: ChangeEvent<HTMLSelectElement>) => {
+    const agentKind = event.target.value as FlowAgentKind
+    setForm((current) => ({
+      ...current,
+      agentKind,
+      agent: current.agent.trim() || (agentKind === 'agent' ? 'swarm' : 'memory'),
+    }))
+  }
+
   const schedulePreview = buildScheduleLabel(form)
+  const selectedTarget = targetOptions.find((option) => option.key === form.targetKey)
+  const selectedWorkspace = workspaceOptions.find((option) => option.key === form.workspacePath)
+  const canSubmit = Boolean(selectedTarget && selectedWorkspace && form.task.trim()) && !busy
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    onAdd(formToCreateInput(form))
-    setForm(defaultAddFlowForm)
+    if (!canSubmit) {
+      return
+    }
+    onAdd(formToCreateInput(form, targetOptions, workspaceOptions))
+    setForm(initialForm)
   }
 
   return (
@@ -463,33 +591,33 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
                 <Input data-testid="flows-add-name" value={form.name} onChange={update('name')} className={fieldClass} />
               </label>
               <label className="flex flex-col gap-2">
-                <span className={labelClass}>Agent/profile</span>
-                <select data-testid="flows-add-agent" value={form.agent} onChange={update('agent')} className={fieldClass}>
-                  <option value="memory">memory</option>
-                  <option value="swarm">swarm</option>
-                  <option value="explorer">explorer</option>
-                  <option value="parallel">parallel</option>
+                <span className={labelClass}>Agent kind</span>
+                <select data-testid="flows-add-agent-kind" value={form.agentKind} onChange={updateAgentKind} className={fieldClass}>
+                  {flowAgentKindOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </label>
               <label className="flex flex-col gap-2">
-                <span className={labelClass}>Target</span>
-                <select data-testid="flows-add-target" value={form.target} onChange={update('target')} className={fieldClass}>
-                  <option>local</option>
-                  <option>laptop</option>
-                  <option>container</option>
+                <span className={labelClass}>Agent/profile</span>
+                <Input data-testid="flows-add-agent" value={form.agent} onChange={update('agent')} placeholder={form.agentKind === 'agent' ? 'swarm' : 'memory'} className={fieldClass} />
+                <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">Primary, subagent, and background profiles are supported.</span>
+              </label>
+              <label className="flex flex-col gap-2">
+                <span className={labelClass}>Target swarm</span>
+                <select data-testid="flows-add-target" value={form.targetKey} onChange={update('targetKey')} className={fieldClass} disabled={loadingOptions || !targetOptions.length}>
+                  {targetOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                 </select>
+                <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">
+                  {loadingOptions ? 'Loading linked swarms…' : selectedTarget?.helper || 'No linked swarm targets returned by the controller.'}
+                </span>
               </label>
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Workspace</span>
-                <select data-testid="flows-add-workspace" value={form.workspace} onChange={update('workspace')} className={fieldClass}>
-                  {formWorkspaceOptions.map((workspace) => <option key={workspace}>{workspace}</option>)}
+                <select data-testid="flows-add-workspace" value={form.workspacePath} onChange={update('workspacePath')} className={fieldClass} disabled={loadingOptions || !workspaceOptions.length}>
+                  {workspaceOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                 </select>
-              </label>
-              <label className="flex flex-col gap-2">
-                <span className={labelClass}>Location</span>
-                <select value={form.location} onChange={update('location')} className={fieldClass}>
-                  {formLocationOptions.map((location) => <option key={location}>{location}</option>)}
-                </select>
+                <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">
+                  {loadingOptions ? 'Loading real workspaces…' : selectedWorkspace?.helper || 'No workspace records returned by the controller.'}
+                </span>
               </label>
               <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 md:col-span-2 md:grid-cols-[1fr_1fr_1fr]">
                 <div className="md:col-span-3">
@@ -550,7 +678,7 @@ function AddFlowModal({ open, onClose, onAdd, busy }: { open: boolean; onClose: 
             <p className="text-xs text-[var(--app-text-muted)]">Targets keep accepted assignments and schedule locally.</p>
             <div className="flex items-center gap-2">
               <Button variant="ghost" className="rounded-xl" onClick={onClose} disabled={busy}>Cancel</Button>
-              <Button data-testid="flows-add-submit" type="submit" variant="primary" className="rounded-xl" disabled={busy}>{busy ? 'Adding…' : 'Add Flow'}</Button>
+              <Button data-testid="flows-add-submit" type="submit" variant="primary" className="rounded-xl" disabled={!canSubmit}>{busy ? 'Adding…' : 'Add Flow'}</Button>
             </div>
           </div>
         </form>
@@ -646,6 +774,8 @@ function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefi
 export function FlowsSettingsPage() {
   const queryClient = useQueryClient()
   const flowsQuery = useQuery({ queryKey: flowsQueryKey, queryFn: ({ signal }) => fetchFlows(signal) })
+  const swarmTargetsQuery = useQuery({ queryKey: flowSwarmTargetsQueryKey, queryFn: fetchFlowSwarmTargets })
+  const flowWorkspacesQuery = useQuery({ queryKey: flowWorkspacesQueryKey, queryFn: fetchFlowWorkspaces })
   const flows = useMemo(() => (flowsQuery.data ?? []).map(recordToFlow), [flowsQuery.data])
   const [workspaceFilter, setWorkspaceFilter] = useState('all')
   const [agentFilter, setAgentFilter] = useState('all')
@@ -656,6 +786,33 @@ export function FlowsSettingsPage() {
   const [busyID, setBusyID] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const targetOptions = useMemo<FlowTargetOption[]>(() => {
+    const seen = new Set<string>()
+    return (swarmTargetsQuery.data ?? [])
+      .filter((target) => target.selectable || target.current)
+      .map((target) => ({ key: targetOptionKey(target), label: targetOptionLabel(target), helper: targetOptionHelper(target), target }))
+      .filter((option) => {
+        if (!option.key || seen.has(option.key)) {
+          return false
+        }
+        seen.add(option.key)
+        return true
+      })
+  }, [swarmTargetsQuery.data])
+  const addWorkspaceOptions = useMemo<FlowWorkspaceOption[]>(() => {
+    const seen = new Set<string>()
+    return (flowWorkspacesQuery.data ?? [])
+      .map((workspace) => ({ key: workspaceOptionKey(workspace), label: workspaceOptionLabel(workspace), helper: workspaceOptionHelper(workspace), workspace }))
+      .filter((option) => {
+        if (!option.key || seen.has(option.key)) {
+          return false
+        }
+        seen.add(option.key)
+        return true
+      })
+  }, [flowWorkspacesQuery.data])
+  const loadingAddFlowOptions = swarmTargetsQuery.isLoading || flowWorkspacesQuery.isLoading
 
   const workspaces = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.workspace)))], [flows])
   const agents = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.agentType)))], [flows])
@@ -777,6 +934,11 @@ export function FlowsSettingsPage() {
       ) : null}
       {flowsQuery.isLoading ? (
         <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">Loading flows…</div>
+      ) : null}
+      {swarmTargetsQuery.isError || flowWorkspacesQuery.isError ? (
+        <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning)]">
+          Add Flow selectors could not load real controller targets/workspaces. Refresh after the controller endpoints recover.
+        </div>
       ) : null}
 
       <section className={cn(surfaceClass, 'flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3')}>
@@ -921,7 +1083,15 @@ export function FlowsSettingsPage() {
         </div>
       </section>
 
-      <AddFlowModal open={addOpen} onClose={() => setAddOpen(false)} onAdd={(input) => void addFlow(input)} busy={saving} />
+      <AddFlowModal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onAdd={(input) => void addFlow(input)}
+        busy={saving}
+        targetOptions={targetOptions}
+        workspaceOptions={addWorkspaceOptions}
+        loadingOptions={loadingAddFlowOptions}
+      />
     </div>
   )
 }

@@ -65,6 +65,13 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 	if strings.TrimSpace(record.ChildSwarmID) == "" || strings.TrimSpace(record.ChildBackendURL) == "" {
 		return nil, false, errors.New("routed session is missing child route details")
 	}
+	flowRouteDiagLog("routed_session_target_lookup",
+		"session_id", record.SessionID,
+		"route_child_swarm_id", record.ChildSwarmID,
+		"route_child_backend_url_present", strings.TrimSpace(record.ChildBackendURL) != "",
+		"route_host_workspace_path", record.HostWorkspacePath,
+		"route_runtime_workspace_path", record.RuntimeWorkspacePath,
+	)
 	target := &swarmTarget{
 		SwarmID:      strings.TrimSpace(record.ChildSwarmID),
 		Name:         strings.TrimSpace(record.ChildSwarmID),
@@ -183,6 +190,14 @@ func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	log.Printf("proxy routed session request session_id=%q method=%s path=%q source=%s swarm_id=%q backend_url=%q", strings.TrimSpace(sessionID), r.Method, r.URL.Path, routeSource, strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL))
+	flowRouteDiagLog("routed_session_proxy",
+		"session_id", sessionID,
+		"method", r.Method,
+		"path", r.URL.Path,
+		"source", routeSource,
+		"target_swarm_id", target.SwarmID,
+		"target_backend_url_present", strings.TrimSpace(target.BackendURL) != "",
+	)
 	if err := s.proxyRequestToSwarmTarget(w, r, *target); err != nil {
 		log.Printf("proxy routed session failed session_id=%q method=%s path=%q source=%s swarm_id=%q elapsed_ms=%d err=%v", strings.TrimSpace(sessionID), r.Method, r.URL.Path, routeSource, strings.TrimSpace(target.SwarmID), time.Since(startedAt).Milliseconds(), err)
 		writeError(w, http.StatusBadGateway, err)
@@ -667,9 +682,14 @@ func (s *Server) createSessionFromRequest(req sessionCreateRequest, overrideMeta
 }
 
 func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest, overrideMetadata map[string]any, allowWorktree bool, sessionIDOverride string) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {
+	createMetadata := mergeSessionCreateMetadata(req.Metadata, overrideMetadata)
+	workspacePath := strings.TrimSpace(req.HostWorkspacePath)
+	if _, hosted := sessionruntime.HostedSessionFromMetadata(createMetadata); hosted {
+		workspacePath = firstNonEmpty(strings.TrimSpace(req.RuntimeWorkspacePath), workspacePath)
+	}
 	createOptions := sessionruntime.CreateSessionOptions{
 		Title:         req.Title,
-		WorkspacePath: strings.TrimSpace(req.HostWorkspacePath),
+		WorkspacePath: workspacePath,
 		WorkspaceName: req.WorkspaceName,
 		Mode:          req.Mode,
 		Preference: &pebblestore.ModelPreference{
@@ -714,7 +734,7 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		"title_pending": true,
 		"agent_name":    agentName,
 		"agent_mode":    strings.TrimSpace(profile.Mode),
-	}, mergeSessionCreateMetadata(req.Metadata, overrideMetadata))
+	}, createMetadata)
 	warning := ""
 	if allowWorktree {
 		nextWarning, worktreeErr := s.applySessionCreateWorktree(&createOptions, sessionID, requestedWorktreeMode)

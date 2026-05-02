@@ -53,7 +53,8 @@ Live instance:
   --config <path>              swarm.conf for desktop_port discovery. Default: XDG config.
 
 Flow settings:
-  --agent <name>               Saved background agent profile on target. Default: memory.
+  --agent <name>               Agent/profile name on target. Default: memory.
+  --agent-kind <kind>          agent/primary, subagent, or background. Default: background.
   --workspace <path|.>         Workspace sent to Flow create. Default: .
   --target-kind <kind>         self, local, remote, or another target kind. Default depends on phase.
   --target-name <name>         Match target display name for API target phases.
@@ -109,6 +110,7 @@ function parseArgs(argv) {
     url: process.env.SWARM_DESKTOP_URL || '',
     configPath: process.env.SWARM_CONFIG || '',
     agent: process.env.SWARM_FLOW_AGENT || 'memory',
+    agentKind: process.env.SWARM_FLOW_AGENT_KIND || 'background',
     workspace: process.env.SWARM_FLOW_WORKSPACE || '.',
     targetKind: process.env.SWARM_FLOW_TARGET_KIND || '',
     targetName: process.env.SWARM_FLOW_TARGET_NAME || '',
@@ -150,6 +152,10 @@ function parseArgs(argv) {
         break
       case '--agent':
         opts.agent = requireValue(argv, index, arg)
+        index += 1
+        break
+      case '--agent-kind':
+        opts.agentKind = requireValue(argv, index, arg)
         index += 1
         break
       case '--workspace':
@@ -230,6 +236,7 @@ function parseArgs(argv) {
     fail('--phase must be host, container, ssh, or target')
   }
   opts.agent = String(opts.agent || '').trim() || 'memory'
+  opts.agentKind = normalizeAgentKind(opts.agentKind)
   opts.workspace = String(opts.workspace || '').trim() || '.'
   opts.targetKind = String(opts.targetKind || '').trim().toLowerCase()
   opts.targetName = String(opts.targetName || '').trim()
@@ -239,6 +246,17 @@ function parseArgs(argv) {
     opts.scheduleDelayMinutes = 1
   }
   return opts
+}
+
+function normalizeAgentKind(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === 'primary') {
+    return 'agent'
+  }
+  if (['agent', 'subagent', 'background'].includes(normalized)) {
+    return normalized
+  }
+  fail('--agent-kind must be agent/primary, subagent, or background')
 }
 
 function timestamp() {
@@ -879,13 +897,13 @@ async function runFlowNowViaAPI(page, flowID, summary, label) {
   return payload
 }
 
-function baseCreateInput({ name, target, agent, workspace, prompt, cadence, scheduleTime }) {
+function baseCreateInput({ name, target, agent, agentKind, workspace, prompt, cadence, scheduleTime }) {
   const scheduled = cadence !== 'on_demand'
   return {
     name,
     enabled: scheduled,
     target: flowTargetSelection(target),
-    agent: { target_kind: 'background', target_name: agent },
+    agent: { target_kind: agentKind || 'background', target_name: agent },
     workspace: { workspace_path: workspace },
     schedule: scheduled
       ? { cadence, time: scheduleTime, timezone: 'UTC' }
@@ -910,6 +928,7 @@ async function runAPITargetSmoke(page, opts, summary, recorder) {
       name,
       target,
       agent: opts.agent,
+      agentKind: opts.agentKind,
       workspace: opts.workspace,
       prompt: opts.prompt,
       cadence: 'on_demand',
@@ -930,6 +949,7 @@ async function runAPITargetSmoke(page, opts, summary, recorder) {
       name,
       target,
       agent: opts.agent,
+      agentKind: opts.agentKind,
       workspace: opts.workspace,
       prompt: opts.schedulePrompt,
       cadence: 'daily',

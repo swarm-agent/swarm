@@ -13,6 +13,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/flow"
+	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -305,6 +306,100 @@ func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T
 		t.Fatalf("get route ok=%v err=%v", ok, err)
 	}
 	if route.ChildSwarmID != "target-swarm-1" || route.RuntimeWorkspacePath != "/workspaces/swarm-go" || route.HostWorkspacePath != hostWorkspace {
+		t.Fatalf("route = %+v", route)
+	}
+}
+
+func TestPeerFlowReportMirrorsRemoteChildSessionWithCanonicalTargetIdentity(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	hostWorkspace := filepath.Join(t.TempDir(), "swarm-go")
+	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	if _, err := server.workspace.AddReplicationLink(hostWorkspace, pebblestore.WorkspaceReplicationLink{
+		ID:                  "swarm-child-4-e2727893",
+		TargetKind:          "remote",
+		TargetSwarmID:       "child-4-swarm",
+		TargetSwarmName:     "swarm child 4",
+		TargetWorkspacePath: "/workspaces/swarm-go",
+		ReplicationMode:     workspaceruntime.ReplicationModeBundle,
+		Writable:            true,
+	}); err != nil {
+		t.Fatalf("add replication link: %v", err)
+	}
+	server.SetRemoteDeployService(&fakeRemoteDeployService{sessions: []remotedeploy.Session{{
+		ID:             "swarm-child-4-e2727893",
+		Name:           "swarm child 4",
+		Status:         "attached",
+		ChildSwarmID:   "child-4-swarm",
+		RemoteEndpoint: "http://child-4.example:7781",
+	}}})
+	assignment := testAPIFlowAssignment("flow-child-4-report", 9)
+	assignment.Target = flow.TargetSelection{SwarmID: "child-4-swarm", Kind: "remote", DeploymentID: "swarm-child-4-e2727893", Name: "swarm child 4"}
+	assignment.Workspace = flow.WorkspaceContext{WorkspacePath: hostWorkspace, RuntimeWorkspacePath: "/workspaces/swarm-go", HostWorkspacePath: hostWorkspace}
+	if _, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
+		t.Fatalf("put definition: %v", err)
+	}
+
+	reportedSession := pebblestore.SessionSnapshot{
+		ID:            "session-child-4-report",
+		WorkspacePath: "/workspaces/swarm-go",
+		WorkspaceName: "swarm-go",
+		Title:         "raw child title should not win",
+		Mode:          "auto",
+		Metadata: map[string]any{
+			"source":              "raw-child",
+			"target_display_name": "stale child label",
+			"runtime_state":       "standby",
+		},
+		CreatedAt: time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC).UnixMilli(),
+		UpdatedAt: time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC).UnixMilli(),
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, flowPeerReportPath, jsonReader(t, flowRunReportRequest{
+		Summary: pebblestore.FlowRunSummaryRecord{
+			RunID:         "run-child-4-report",
+			FlowID:        assignment.FlowID,
+			Revision:      assignment.Revision,
+			ScheduledAt:   time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+			StartedAt:     time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC),
+			Status:        pebblestore.FlowRunStatusRunning,
+			SessionID:     "session-child-4-report",
+			TargetSwarmID: "child-4-swarm",
+		},
+		Session: &reportedSession,
+	}))
+	req.Header.Set(peerAuthSwarmIDHeader, "child-4-swarm")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	session, ok, err := server.sessions.GetSession("session-child-4-report")
+	if err != nil || !ok {
+		t.Fatalf("get mirrored session ok=%v err=%v", ok, err)
+	}
+	if session.WorkspacePath != hostWorkspace || session.Title != "Memory sweep" {
+		t.Fatalf("session = %+v", session)
+	}
+	if session.Metadata["source"] != "flow" || session.Metadata["lineage_kind"] != "flow" || session.Metadata["swarm_target_name"] != "swarm child 4" || session.Metadata["target_display_name"] != "swarm child 4" {
+		t.Fatalf("canonical identity metadata = %+v", session.Metadata)
+	}
+	if session.Metadata["swarm_target_kind"] != "remote" || session.Metadata["swarm_target_deployment_id"] != "swarm-child-4-e2727893" || session.Metadata[sessionruntime.HostedSessionMetadataChildSwarmID] != "child-4-swarm" {
+		t.Fatalf("target metadata = %+v", session.Metadata)
+	}
+	createdPayload := requireSessionCreatedPayload(t, server, "session-child-4-report")
+	if createdPayload.Metadata["source"] != "flow" || createdPayload.Metadata["swarm_target_name"] != "swarm child 4" || createdPayload.WorkspacePath != hostWorkspace {
+		t.Fatalf("created payload = %+v", createdPayload)
+	}
+	route, ok, err := server.sessionRoutes.Get("session-child-4-report")
+	if err != nil || !ok {
+		t.Fatalf("get route ok=%v err=%v", ok, err)
+	}
+	if route.ChildSwarmID != "child-4-swarm" || route.ChildBackendURL != "http://child-4.example:7781" || route.HostWorkspacePath != hostWorkspace || route.RuntimeWorkspacePath != "/workspaces/swarm-go" {
 		t.Fatalf("route = %+v", route)
 	}
 }

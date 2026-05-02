@@ -369,6 +369,60 @@ func TestSessionsListWithSwarmIDReadsHostWithoutProxy(t *testing.T) {
 	}
 }
 
+func TestRoutedFlowSessionFetchReturnsCanonicalHostMirror(t *testing.T) {
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	sessionID := "session-flow-routed"
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{
+		ID:            sessionID,
+		WorkspacePath: "/host/workspace",
+		WorkspaceName: "workspace",
+		Title:         "Flow smoke",
+		Mode:          sessionruntime.ModeAuto,
+		Metadata: map[string]any{
+			"source":            "flow",
+			"lineage_kind":      "flow",
+			"owner_transport":   "flow_scheduler",
+			"flow_id":           "flow-routed",
+			"swarm_target_name": "swarm child 4",
+			sessionruntime.HostedSessionMetadataEnabled:              true,
+			sessionruntime.HostedSessionMetadataHostSwarmID:          "host-swarm-id",
+			sessionruntime.HostedSessionMetadataChildSwarmID:         "child-swarm",
+			sessionruntime.HostedSessionMetadataHostWorkspacePath:    "/host/workspace",
+			sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: "/runtime/workspace",
+		},
+		CreatedAt: 1,
+		UpdatedAt: 2,
+	}); err != nil {
+		t.Fatalf("store flow mirror: %v", err)
+	}
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
+		SessionID:            sessionID,
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      "http://127.0.0.1:1",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/runtime/workspace",
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID, nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Session.WorkspacePath != "/host/workspace" || payload.Session.Metadata["swarm_target_name"] != "swarm child 4" || payload.Session.Metadata["source"] != "flow" {
+		t.Fatalf("session payload = %+v", payload.Session)
+	}
+}
+
 func TestRoutedSessionPreferenceReadFromHostWithoutProxy(t *testing.T) {
 	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
 	sessionID := seedRoutedSession(t, sessionSvc)

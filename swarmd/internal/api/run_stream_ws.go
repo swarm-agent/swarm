@@ -631,11 +631,6 @@ func decodeRunStreamInbound(raw []byte) (runStreamInboundMessage, error) {
 func (s *Server) handleRunStreamStart(conn *transportws.Conn, sessionID string, inbound runStreamInboundMessage) {
 	startedAt := time.Now()
 	log.Printf("run stream start received session_id=%s compact=%t background=%t target_kind=%q target_name=%q last_seq=%d", sessionID, inbound.RunRequest.Compact, inbound.RunRequest.Background, strings.TrimSpace(inbound.RunRequest.TargetKind), strings.TrimSpace(inbound.RunRequest.TargetName), inbound.LastSeq)
-	if s.sessionHasActiveRun(sessionID) {
-		log.Printf("run stream start rejected session_id=%s err=%s elapsed_ms=%d", sessionID, runruntime.ErrSessionAlreadyActive, time.Since(startedAt).Milliseconds())
-		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: runruntime.ErrSessionAlreadyActive.Error(), Message: "run rejected"})
-		return
-	}
 	if inbound.RunRequest.Prompt == "" && !inbound.RunRequest.Compact {
 		log.Printf("run stream start rejected session_id=%s err=%s elapsed_ms=%d", sessionID, "prompt is required", time.Since(startedAt).Milliseconds())
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: "prompt is required"})
@@ -703,28 +698,6 @@ func (s *Server) handleRunStreamStart(conn *transportws.Conn, sessionID string, 
 		OwnerTransport: "background_api",
 	})
 	s.streamRunFrames(conn, state.runID, sub, replay)
-}
-
-type sessionLifecycleReader interface {
-	GetSessionLifecycle(sessionID string) (pebblestore.SessionLifecycleSnapshot, bool, error)
-}
-
-func (s *Server) sessionHasActiveRun(sessionID string) bool {
-	if s == nil || s.runner == nil {
-		return false
-	}
-	reader, ok := s.runner.(sessionLifecycleReader)
-	if !ok || reader == nil {
-		return false
-	}
-	snapshot, ok, err := reader.GetSessionLifecycle(strings.TrimSpace(sessionID))
-	if err != nil || !ok {
-		if err != nil {
-			log.Printf("run stream active lifecycle check failed session_id=%s err=%v", sessionID, err)
-		}
-		return false
-	}
-	return snapshot.Active
 }
 
 func (s *Server) handleRunStreamResume(conn *transportws.Conn, sessionID string, inbound runStreamInboundMessage) {

@@ -120,6 +120,10 @@ function isTerminalSessionStatus(payload: RunStreamEventMessage): boolean {
   return normalized === 'idle' || normalized === 'error'
 }
 
+function isSessionAlreadyActiveRunError(message: string): boolean {
+  return message.trim().toLowerCase() === 'session already has an active run'
+}
+
 export class DesktopRunStreamController {
   private readonly entries = new Map<string, SessionControllerEntry>()
 
@@ -389,8 +393,21 @@ export class DesktopRunStreamController {
 
         if (type === 'error') {
           const message = String(payload.error ?? 'Run stream failed')
+          if (entry.pendingStart) {
+            this.options.onResumeFailure(entry.sessionId, message, ts)
+            this.rejectPendingStart(entry, new Error(message))
+            entry.desiredRunId = null
+            this.cancelReconnect(entry)
+            this.closeSocket(entry, true)
+            this.maybeDeleteEntry(entry)
+            return
+          }
+          if (entry.desiredRunId && isSessionAlreadyActiveRunError(message)) {
+            this.options.onReconnectPending(entry.sessionId, message, ts)
+            this.refreshEntry(entry, message)
+            return
+          }
           this.options.onResumeFailure(entry.sessionId, message, ts)
-          this.rejectPendingStart(entry, new Error(message))
           entry.desiredRunId = null
           this.cancelReconnect(entry)
           this.closeSocket(entry, true)

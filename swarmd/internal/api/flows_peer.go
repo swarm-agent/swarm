@@ -39,6 +39,7 @@ func (s *Server) SetFlowStore(flowStore *pebblestore.FlowStore) {
 }
 
 func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
+	peerSwarmID, _ := extractPeerAuth(r)
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -60,6 +61,18 @@ func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	targetSwarmID := s.flowPeerApplyTargetSwarmID(command)
+	flowRouteDiagLog("peer_apply_received",
+		"peer_header_swarm_id", peerSwarmID,
+		"flow_id", command.FlowID,
+		"assignment_flow_id", command.Assignment.FlowID,
+		"command_id", command.CommandID,
+		"action", command.Action,
+		"apply_target_swarm_id", targetSwarmID,
+		"command_assignment_target_swarm_id", command.Assignment.Target.SwarmID,
+		"command_assignment_target_kind", command.Assignment.Target.Kind,
+		"command_assignment_target_deployment_id", command.Assignment.Target.DeploymentID,
+		"command_assignment_target_name", command.Assignment.Target.Name,
+	)
 	now := time.Now().UTC()
 	var (
 		ack      flow.AssignmentAck
@@ -156,6 +169,25 @@ func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCo
 	key := command.IdempotencyKey()
 	now := time.Now().UTC()
 	targetSelection := targetSelectionForOutbox(command, target, resolved)
+	flowRouteDiagLog("controller_enqueue_assignment",
+		"flow_id", command.FlowID,
+		"assignment_flow_id", command.Assignment.FlowID,
+		"command_id", command.CommandID,
+		"action", command.Action,
+		"resolved_swarm_id", resolved.SwarmID,
+		"resolved_kind", resolved.Kind,
+		"resolved_deployment_id", resolved.DeploymentID,
+		"resolved_name", resolved.Name,
+		"target_swarm_id", target.SwarmID,
+		"target_kind", target.Kind,
+		"target_deployment_id", target.DeploymentID,
+		"target_name", target.Name,
+		"target_backend_url_present", strings.TrimSpace(target.BackendURL) != "",
+		"target_selection_swarm_id", targetSelection.SwarmID,
+		"target_selection_kind", targetSelection.Kind,
+		"target_selection_deployment_id", targetSelection.DeploymentID,
+		"target_selection_name", targetSelection.Name,
+	)
 	command.Assignment.Target = targetSelection
 	record := pebblestore.FlowOutboxCommandRecord{
 		CommandID:     key.CommandID,
@@ -237,6 +269,18 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 		updated, state, err := s.markFlowAssignmentPending(record, flow.AssignmentTargetOffline, reason, nil)
 		return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, PendingSync: true}, err
 	}
+	flowRouteDiagLog("controller_deliver_assignment",
+		"flow_id", record.FlowID,
+		"command_id", record.CommandID,
+		"action", record.Command.Action,
+		"record_target_swarm_id", record.TargetSwarmID,
+		"record_target_kind", record.Target.Kind,
+		"record_target_name", record.Target.Name,
+		"target_swarm_id", target.SwarmID,
+		"target_kind", target.Kind,
+		"target_name", target.Name,
+		"target_backend_url_present", strings.TrimSpace(target.BackendURL) != "",
+	)
 	var resp flowAssignmentApplyResponse
 	deliverErr := s.postPeerJSONToSwarmTarget(ctx, target, flowPeerApplyPath, record.Command, &resp)
 	if deliverErr != nil {

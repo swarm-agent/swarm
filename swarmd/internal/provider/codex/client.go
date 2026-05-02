@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -44,6 +45,7 @@ const (
 	transportRetryAttempts                     = 2
 	transportRetryBaseDelay                    = 300 * time.Millisecond
 	startedWebsocketStreamRetryLimit           = 3
+	maxPromptCacheKeyLength                    = 64
 	codexTransportMetadataKey                  = "_swarm_transport"
 	codexConnectedViaWSMetadataKey             = "_swarm_connected_via_websocket"
 	codexTransportWebsocket                    = "websocket"
@@ -465,7 +467,7 @@ func buildRequestPayload(req Request) ([]byte, error) {
 			"verbosity": defaultCodexTextVerbosity,
 		},
 	}
-	if sessionID := strings.TrimSpace(req.SessionID); sessionID != "" {
+	if sessionID := codexPromptCacheKey(req.SessionID); sessionID != "" {
 		body["prompt_cache_key"] = sessionID
 	}
 	if strings.TrimSpace(req.Instructions) != "" {
@@ -491,6 +493,18 @@ func buildRequestPayload(req Request) ([]byte, error) {
 		body["include"] = []string{includeReasoningEncryptedContentPath}
 	}
 	return json.Marshal(body)
+}
+
+func codexPromptCacheKey(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	if len(sessionID) <= maxPromptCacheKeyLength {
+		return sessionID
+	}
+	sum := sha256.Sum256([]byte(sessionID))
+	return fmt.Sprintf("%x", sum)
 }
 
 func normalizeCodexRequestTools(tools []ToolDefinition) []ToolDefinition {

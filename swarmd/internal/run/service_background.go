@@ -633,8 +633,10 @@ func buildBackgroundRunMetadata(existing map[string]any, targetKind, targetName 
 	}
 	metadata["launch_mode"] = "background"
 	metadata["background"] = true
-	metadata["target_kind"] = strings.TrimSpace(targetKind)
-	metadata["target_name"] = strings.TrimSpace(targetName)
+	if !metadataMarksFlowRun(metadata) {
+		metadata["target_kind"] = strings.TrimSpace(targetKind)
+		metadata["target_name"] = strings.TrimSpace(targetName)
+	}
 	metadata["execution_context"] = map[string]any{
 		"workspace_path":       strings.TrimSpace(ctx.WorkspacePath),
 		"cwd":                  strings.TrimSpace(ctx.CWD),
@@ -644,4 +646,28 @@ func buildBackgroundRunMetadata(existing map[string]any, targetKind, targetName 
 		"worktree_base_branch": strings.TrimSpace(ctx.WorktreeBaseBranch),
 	}
 	return metadata
+}
+
+func metadataMarksFlowRun(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	return strings.EqualFold(metadataText(metadata, "source"), "flow") ||
+		strings.EqualFold(metadataText(metadata, "lineage_kind"), "flow") ||
+		strings.EqualFold(metadataText(metadata, "owner_transport"), "flow_scheduler") ||
+		metadataText(metadata, "flow_id") != ""
+}
+
+func metadataText(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }

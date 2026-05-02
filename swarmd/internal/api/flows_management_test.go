@@ -100,6 +100,39 @@ func TestFlowManagementCreateListHistoryAndStatus(t *testing.T) {
 	}
 }
 
+func TestFlowManagementCreateNormalizesPrimaryAgentAlias(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	server.runner = &fakeFlowRunService{}
+	req := flowManagementCreateRequest{
+		FlowID:  "flow-primary-alias",
+		Name:    "Primary alias flow",
+		Enabled: boolPtr(false),
+		Target:  flow.TargetSelection{Kind: "self"},
+		Agent:   flow.AgentSelection{TargetKind: "primary", TargetName: "swarm"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath: t.TempDir(),
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Run swarm."},
+	}
+
+	createRec := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/flows", jsonReader(t, req))
+	createReq.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	accepted, ok, err := flows.GetAcceptedAssignment("flow-primary-alias")
+	if err != nil || !ok {
+		t.Fatalf("accepted ok=%v err=%v", ok, err)
+	}
+	if accepted.Agent.TargetKind != "agent" || accepted.Agent.TargetName != "swarm" {
+		t.Fatalf("accepted agent = %+v", accepted.Agent)
+	}
+}
+
 func TestFlowManagementRunNowAndDelete(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)

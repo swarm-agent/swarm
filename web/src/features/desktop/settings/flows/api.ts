@@ -1,4 +1,7 @@
 import { requestJson } from '../../../../app/api'
+import { fetchSwarmTargets, type SwarmTarget, type SwarmTargetsResponse } from '../../swarm/api/swarm-targets'
+import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
+import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 
 export type FlowAssignmentStatus = 'accepted' | 'duplicate' | 'rejected' | 'out_of_order' | 'pending_sync' | 'target_offline' | 'target_unusable'
 export type FlowRunStatus = 'claimed' | 'running' | 'success' | 'skipped' | 'review' | 'failed'
@@ -10,6 +13,9 @@ export interface FlowTargetSelection {
   name?: string
 }
 
+export type FlowSwarmTarget = SwarmTarget
+export type FlowWorkspaceEntry = WorkspaceEntry
+
 export interface FlowAgentSelection {
   target_kind: string
   target_name: string
@@ -17,6 +23,8 @@ export interface FlowAgentSelection {
 
 export interface FlowWorkspaceContext {
   workspace_path?: string
+  host_workspace_path?: string
+  runtime_workspace_path?: string
   cwd?: string
   worktree_mode?: string
 }
@@ -169,6 +177,15 @@ export async function fetchFlows(signal?: AbortSignal): Promise<FlowSummaryRecor
     signal,
   })
   return Array.isArray(response.flows) ? response.flows : []
+}
+
+export async function fetchFlowSwarmTargets(): Promise<FlowSwarmTarget[]> {
+  const response: SwarmTargetsResponse = await fetchSwarmTargets()
+  return Array.isArray(response.targets) ? response.targets : []
+}
+
+export async function fetchFlowWorkspaces(): Promise<FlowWorkspaceEntry[]> {
+  return listWorkspaces(200)
 }
 
 export async function createFlow(input: CreateFlowInput): Promise<FlowDetailRecord> {

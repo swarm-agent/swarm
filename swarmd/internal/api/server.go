@@ -2185,6 +2185,18 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		responseSessions := make([]sessionSummaryResponse, 0, len(sessions))
 		for _, session := range sessions {
+			if flowRouteDiagMetadataMarksFlow(session.Metadata) {
+				flowRouteDiagLog("sessions_list_flow_session",
+					"session_id", session.ID,
+					"flow_id", flowRouteDiagMetadataValue(session.Metadata, "flow_id"),
+					"workspace_path", session.WorkspacePath,
+					"metadata_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "target_swarm_id"),
+					"metadata_swarm_target_swarm_id", flowRouteDiagMetadataValue(session.Metadata, "swarm_target_swarm_id"),
+					"metadata_routed_child_swarm_id", flowRouteDiagMetadataValue(session.Metadata, sessionruntime.HostedSessionMetadataChildSwarmID),
+					"metadata_target_kind", flowRouteDiagMetadataValue(session.Metadata, "target_kind"),
+					"metadata_target_name", flowRouteDiagMetadataValue(session.Metadata, "target_name"),
+				)
+			}
 			pendingPermissionCount := 0
 			if s.perm != nil {
 				summary, err := s.perm.Summary(session.ID)
@@ -3130,6 +3142,13 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	if session, ok, err := s.localCanonicalSessionForRoutedFetch(sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if ok {
+		s.writeSessionSnapshot(w, session)
+		return
+	}
 	if s.proxyRoutedSessionRequest(w, r, sessionID) {
 		return
 	}
@@ -3145,6 +3164,45 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.writeSessionSnapshot(w, session)
+}
+
+func (s *Server) localCanonicalSessionForRoutedFetch(sessionID string) (pebblestore.SessionSnapshot, bool, error) {
+	if s == nil || s.sessions == nil || s.sessionRoutes == nil {
+		return pebblestore.SessionSnapshot{}, false, nil
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return pebblestore.SessionSnapshot{}, false, nil
+	}
+	if _, ok, err := s.sessionRoutes.Get(sessionID); err != nil {
+		return pebblestore.SessionSnapshot{}, false, err
+	} else if !ok {
+		return pebblestore.SessionSnapshot{}, false, nil
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return pebblestore.SessionSnapshot{}, ok, err
+	}
+	if !sessionHasCanonicalFlowMirrorMetadata(session.Metadata) {
+		return pebblestore.SessionSnapshot{}, false, nil
+	}
+	return session, true, nil
+}
+
+func sessionHasCanonicalFlowMirrorMetadata(metadata map[string]any) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	return strings.TrimSpace(fmt.Sprint(metadata["flow_id"])) != "" &&
+		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["source"])), "flow") &&
+		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["lineage_kind"])), "flow") &&
+		strings.EqualFold(strings.TrimSpace(fmt.Sprint(metadata["owner_transport"])), "flow_scheduler") &&
+		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath])) != "" &&
+		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath])) != "" &&
+		strings.TrimSpace(fmt.Sprint(metadata[sessionruntime.HostedSessionMetadataChildSwarmID])) != ""
+}
+
+func (s *Server) writeSessionSnapshot(w http.ResponseWriter, session pebblestore.SessionSnapshot) {
 	fields := gitStatusResponseForSession(session)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true,

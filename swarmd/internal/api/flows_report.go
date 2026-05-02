@@ -64,9 +64,21 @@ func (s *Server) handlePeerFlowReport(w http.ResponseWriter, r *http.Request) {
 	}
 	peerSwarmID, _ := extractPeerAuth(r)
 	summary := req.Summary
+	payloadTargetSwarmID := strings.TrimSpace(summary.TargetSwarmID)
 	if strings.TrimSpace(peerSwarmID) != "" {
 		summary.TargetSwarmID = strings.TrimSpace(peerSwarmID)
 	}
+	flowRouteDiagLog("controller_report_received",
+		"flow_id", summary.FlowID,
+		"run_id", summary.RunID,
+		"session_id", summary.SessionID,
+		"payload_target_swarm_id", payloadTargetSwarmID,
+		"peer_header_swarm_id", peerSwarmID,
+		"final_target_swarm_id", summary.TargetSwarmID,
+		"reported_session_metadata_target_swarm_id", flowRouteDiagSessionMetadataValue(req.Session, "target_swarm_id"),
+		"reported_session_metadata_swarm_target_swarm_id", flowRouteDiagSessionMetadataValue(req.Session, "swarm_target_swarm_id"),
+		"reported_session_metadata_routed_child_swarm_id", flowRouteDiagSessionMetadataValue(req.Session, sessionruntime.HostedSessionMetadataChildSwarmID),
+	)
 	summary = flowReportSummaryPayload(summary)
 	stored, err := s.flows.PutMirroredRunSummary(summary)
 	if err != nil {
@@ -142,129 +154,44 @@ func (s *Server) reportFlowRunSummaryNonFatal(ctx context.Context, summary pebbl
 }
 
 func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSummaryRecord, reportedSession *pebblestore.SessionSnapshot, reportedMessages []pebblestore.MessageSnapshot) error {
-	if s == nil || s.sessions == nil {
+	if s == nil || s.sessions == nil || s.flows == nil {
 		return nil
 	}
-	sessionID := strings.TrimSpace(summary.SessionID)
 	flowID := strings.TrimSpace(summary.FlowID)
-	if sessionID == "" || flowID == "" {
+	if strings.TrimSpace(summary.SessionID) == "" || flowID == "" {
 		return nil
 	}
 	definition, ok, err := s.flows.GetDefinition(flowID)
 	if err != nil || !ok {
 		return err
 	}
-	target, targetFound := s.resolveFlowMirrorTarget(summary, definition.Assignment.Target)
-	targetSwarmID := firstNonEmpty(strings.TrimSpace(summary.TargetSwarmID), strings.TrimSpace(target.SwarmID), strings.TrimSpace(definition.Assignment.Target.SwarmID))
-	workspaceContext := definition.Assignment.Workspace
-	workspacePath := firstNonEmpty(strings.TrimSpace(workspaceContext.HostWorkspacePath), strings.TrimSpace(workspaceContext.WorkspacePath))
-	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(workspaceContext.RuntimeWorkspacePath), strings.TrimSpace(workspaceContext.WorkspacePath))
-	if reportedSession != nil && strings.TrimSpace(reportedSession.WorkspacePath) != "" {
-		runtimeWorkspacePath = strings.TrimSpace(reportedSession.WorkspacePath)
+	mirror, ok, err := s.buildCanonicalFlowSessionMirror(summary, definition, reportedSession, reportedMessages)
+	if err != nil || !ok {
+		return err
 	}
-	if translated := s.resolveControllerFlowWorkspacePath(runtimeWorkspacePath, targetSwarmID, definition.Assignment.Target); translated != "" {
-		workspacePath = translated
-	}
-	if workspacePath == "" {
-		return nil
-	}
-	createdAt := summary.StartedAt.UnixMilli()
-	if createdAt <= 0 {
-		createdAt = summary.ScheduledAt.UnixMilli()
-	}
-	if createdAt <= 0 {
-		createdAt = time.Now().UnixMilli()
-	}
-	updatedAt := summary.FinishedAt.UnixMilli()
-	if updatedAt <= 0 {
-		updatedAt = createdAt
-	}
-	metadata := map[string]any(nil)
-	if reportedSession != nil {
-		metadata = cloneFlowReportMetadata(reportedSession.Metadata)
-	}
-	if metadata == nil {
-		metadata = make(map[string]any, 16)
-	}
-	metadata["background"] = true
-	metadata["flow_id"] = flowID
-	metadata["flow_revision"] = summary.Revision
-	metadata["lineage_kind"] = "flow"
-	metadata["owner_transport"] = "flow_scheduler"
-	metadata["source"] = "flow"
-	metadata["target_kind"] = strings.TrimSpace(definition.Assignment.Agent.TargetKind)
-	metadata["target_name"] = strings.TrimSpace(definition.Assignment.Agent.TargetName)
-	metadata["flow_agent_kind"] = strings.TrimSpace(definition.Assignment.Agent.TargetKind)
-	metadata["flow_agent_name"] = strings.TrimSpace(definition.Assignment.Agent.TargetName)
-	metadata["target_swarm_id"] = targetSwarmID
-	metadata["swarm_target_swarm_id"] = targetSwarmID
-	metadata["workspace_context"] = definition.Assignment.Workspace
-	if _, ok := metadata["runtime_state"]; !ok {
-		metadata["runtime_state"] = "standby"
-	}
-	metadata["title_pending"] = false
-	metadata["title_locked"] = true
-	metadata["title_source"] = flowSessionTitleSourceTask
-	if _, ok := metadata["run_now"]; !ok {
-		metadata["run_now"] = strings.Contains(strings.ToLower(strings.TrimSpace(summary.RunID)), "run_now")
-	}
-	if targetName := firstNonEmpty(strings.TrimSpace(target.Name), strings.TrimSpace(definition.Assignment.Target.Name)); targetName != "" {
-		metadata["swarm_target_name"] = targetName
-	}
-	if targetKind := firstNonEmpty(strings.TrimSpace(target.Kind), strings.TrimSpace(definition.Assignment.Target.Kind)); targetKind != "" {
-		metadata["swarm_target_kind"] = targetKind
-	}
-	if deploymentID := firstNonEmpty(strings.TrimSpace(target.DeploymentID), strings.TrimSpace(definition.Assignment.Target.DeploymentID)); deploymentID != "" {
-		metadata["swarm_target_deployment_id"] = deploymentID
-	}
-	if runtimeWorkspacePath != "" {
-		metadata["swarm_target_workspace_path"] = runtimeWorkspacePath
-		metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] = runtimeWorkspacePath
-	}
-	if workspacePath != "" {
-		metadata["host_workspace_path"] = workspacePath
-		metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] = workspacePath
-	}
-	if hostSwarmID := strings.TrimSpace(s.flowLocalSwarmID()); hostSwarmID != "" {
-		metadata[sessionruntime.HostedSessionMetadataHostSwarmID] = hostSwarmID
-	}
-	if targetSwarmID != "" {
-		metadata[sessionruntime.HostedSessionMetadataChildSwarmID] = targetSwarmID
-	}
-	if !summary.ScheduledAt.IsZero() {
-		metadata["scheduled_at"] = summary.ScheduledAt.UTC().Format(time.RFC3339Nano)
-	}
-	if runID := strings.TrimSpace(summary.RunID); runID != "" {
-		metadata["mirrored_flow_run_id"] = runID
-	}
-	mirroredSession := pebblestore.SessionSnapshot{
-		ID:            sessionID,
-		WorkspacePath: workspacePath,
-		WorkspaceName: filepath.Base(workspacePath),
-		Title:         flowRunSessionTitle(definition.Assignment),
-		Mode:          sessionruntime.ModeAuto,
-		Metadata:      metadata,
-		CreatedAt:     createdAt,
-		UpdatedAt:     updatedAt,
-	}
-	if reportedSession != nil {
-		mirroredSession = *reportedSession
-		mirroredSession.ID = sessionID
-		mirroredSession.WorkspacePath = workspacePath
-		mirroredSession.WorkspaceName = filepath.Base(workspacePath)
-		mirroredSession.Title = flowRunSessionTitle(definition.Assignment)
-		mirroredSession.Mode = firstNonEmpty(strings.TrimSpace(mirroredSession.Mode), sessionruntime.ModeAuto)
-		mirroredSession.Metadata = metadata
-		if mirroredSession.CreatedAt <= 0 {
-			mirroredSession.CreatedAt = createdAt
-		}
-		if mirroredSession.UpdatedAt <= 0 {
-			mirroredSession.UpdatedAt = updatedAt
-		}
-	}
-	storedSession, sessionCreatedEvent, err := s.sessions.StoreMirroredSessionWithEvent(mirroredSession)
+	storedSession, sessionCreatedEvent, err := s.sessions.StoreMirroredSessionWithEvent(mirror.Session)
 	if err != nil {
 		return err
+	}
+	if mirror.HasRoute && s.sessionRoutes != nil {
+		route := mirror.Route
+		route.CreatedAt = storedSession.CreatedAt
+		if route.UpdatedAt <= 0 {
+			route.UpdatedAt = storedSession.UpdatedAt
+		}
+		flowRouteDiagLog("controller_persist_session_route",
+			"flow_id", summary.FlowID,
+			"run_id", summary.RunID,
+			"session_id", route.SessionID,
+			"route_child_swarm_id", route.ChildSwarmID,
+			"route_child_backend_url_present", strings.TrimSpace(route.ChildBackendURL) != "",
+			"stored_metadata_target_swarm_id", flowRouteDiagMetadataValue(storedSession.Metadata, "target_swarm_id"),
+			"stored_metadata_swarm_target_swarm_id", flowRouteDiagMetadataValue(storedSession.Metadata, "swarm_target_swarm_id"),
+			"stored_metadata_routed_child_swarm_id", flowRouteDiagMetadataValue(storedSession.Metadata, sessionruntime.HostedSessionMetadataChildSwarmID),
+		)
+		if _, err := s.sessionRoutes.Put(route); err != nil {
+			return err
+		}
 	}
 	if s.hub != nil {
 		if sessionCreatedEvent != nil {
@@ -279,42 +206,18 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 			}
 		}
 	}
-	for _, message := range reportedMessages {
-		if strings.TrimSpace(message.SessionID) == "" {
-			message.SessionID = sessionID
-		}
-		if !strings.EqualFold(strings.TrimSpace(message.SessionID), sessionID) || message.GlobalSeq == 0 {
-			continue
-		}
+	for _, message := range mirror.ReportedMessages {
 		if _, err := s.sessions.StoreMirroredMessage(storedSession, message); err != nil {
 			return err
 		}
 	}
-	if reportedSession != nil && reportedSession.Lifecycle != nil {
-		lifecycle := *reportedSession.Lifecycle
-		lifecycle.SessionID = sessionID
+	if mirror.ReportedLifecycle != nil {
+		lifecycle := *mirror.ReportedLifecycle
 		if err := s.sessions.StoreMirroredLifecycle(lifecycle); err != nil {
 			return err
 		}
 		if lifecycleEvent, err := mirroredLifecycleEvent(lifecycle); err == nil && lifecycleEvent != nil && s.hub != nil {
 			s.hub.Publish(*lifecycleEvent)
-		}
-	}
-	if targetFound && strings.TrimSpace(target.BackendURL) != "" && s.sessionRoutes != nil {
-		routeUpdatedAt := storedSession.UpdatedAt
-		if routeUpdatedAt <= 0 {
-			routeUpdatedAt = updatedAt
-		}
-		if _, err := s.sessionRoutes.Put(pebblestore.SessionRouteRecord{
-			SessionID:            sessionID,
-			ChildSwarmID:         targetSwarmID,
-			ChildBackendURL:      strings.TrimSpace(target.BackendURL),
-			HostWorkspacePath:    workspacePath,
-			RuntimeWorkspacePath: firstNonEmpty(runtimeWorkspacePath, workspacePath),
-			CreatedAt:            storedSession.CreatedAt,
-			UpdatedAt:            routeUpdatedAt,
-		}); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -399,6 +302,14 @@ func (s *Server) resolveFlowMirrorTarget(summary pebblestore.FlowRunSummaryRecor
 	selection = normalizeFlowTargetSelection(selection)
 	for _, candidate := range targets {
 		if flowTargetMatchesSelection(candidate, selection) {
+			flowRouteDiagLog("controller_resolve_flow_mirror_target",
+				"summary_target_swarm_id", summary.TargetSwarmID,
+				"assignment_target_swarm_id", selection.SwarmID,
+				"candidate_swarm_id", candidate.SwarmID,
+				"candidate_kind", candidate.Kind,
+				"candidate_name", candidate.Name,
+				"candidate_backend_url_present", strings.TrimSpace(candidate.BackendURL) != "",
+			)
 			return candidate, true
 		}
 	}

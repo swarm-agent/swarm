@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
+	runruntime "swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -461,9 +462,19 @@ func currentFlowTargetSelection(r *http.Request) flow.TargetSelection {
 }
 
 func normalizeManagementAgentSelection(agent flow.AgentSelection) flow.AgentSelection {
-	agent.TargetKind = strings.TrimSpace(agent.TargetKind)
+	agent.TargetKind = normalizeFlowAgentTargetKind(agent.TargetKind)
 	agent.TargetName = strings.TrimSpace(agent.TargetName)
 	return agent
+}
+
+func normalizeFlowAgentTargetKind(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "primary":
+		return runruntime.RunTargetKindAgent
+	default:
+		return runruntime.NormalizeRunTargetKind(value)
+	}
 }
 
 func normalizeManagementWorkspace(workspace flow.WorkspaceContext) flow.WorkspaceContext {

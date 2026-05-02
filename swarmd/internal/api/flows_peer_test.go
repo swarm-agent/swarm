@@ -385,7 +385,11 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 	}
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	sessionSvc.SetLocalSwarmIDResolver(func() string { return "host-swarm-id" })
-	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, nil)
+	modelStore := pebblestore.NewModelStore(store)
+	if _, err := modelStore.SetGlobalPreference("test-provider", "test-model", "medium"); err != nil {
+		t.Fatalf("set model preference: %v", err)
+	}
+	modelSvc := modelruntime.NewService(modelStore, eventLog, nil)
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
 	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
 	flows := pebblestore.NewFlowStore(store)

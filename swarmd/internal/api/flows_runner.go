@@ -155,6 +155,21 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	if descriptor, ok := s.flowHostedSessionDescriptor(assignment); ok {
 		metadata = descriptor.WithMetadata(metadata)
 	}
+	flowRouteDiagLog("target_run_create_session",
+		"flow_id", assignment.FlowID,
+		"run_id", runID,
+		"session_id", sessionID,
+		"assignment_target_swarm_id", assignment.Target.SwarmID,
+		"assignment_target_kind", assignment.Target.Kind,
+		"assignment_target_name", assignment.Target.Name,
+		"flow_local_swarm_id", s.flowLocalSwarmID(),
+		"metadata_target_swarm_id", flowRouteDiagMetadataValue(metadata, "target_swarm_id"),
+		"metadata_swarm_target_swarm_id", flowRouteDiagMetadataValue(metadata, "swarm_target_swarm_id"),
+		"metadata_routed_child_swarm_id", flowRouteDiagMetadataValue(metadata, sessionruntime.HostedSessionMetadataChildSwarmID),
+		"metadata_routed_host_swarm_id", flowRouteDiagMetadataValue(metadata, sessionruntime.HostedSessionMetadataHostSwarmID),
+		"metadata_source", flowRouteDiagMetadataValue(metadata, "source"),
+		"metadata_owner_transport", flowRouteDiagMetadataValue(metadata, "owner_transport"),
+	)
 	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(assignment.Workspace.RuntimeWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath))
 	hostWorkspacePath := firstNonEmpty(strings.TrimSpace(assignment.Workspace.HostWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath))
 	sessionReq := sessionCreateRequest{
@@ -277,6 +292,14 @@ func (s *Server) putFlowRunSummary(start flow.RunStart, startedAt, finishedAt ti
 	if errText != "" {
 		summary = strings.TrimSpace(errText)
 	}
+	targetSwarmID := s.flowLocalSwarmID()
+	flowRouteDiagLog("target_put_run_summary",
+		"flow_id", start.FlowID,
+		"run_id", start.RunID,
+		"session_id", start.SessionID,
+		"status", status,
+		"target_swarm_id", targetSwarmID,
+	)
 	record, err := s.flows.PutTargetRun(pebblestore.FlowRunSummaryRecord{
 		RunID:         strings.TrimSpace(start.RunID),
 		FlowID:        strings.TrimSpace(start.FlowID),
@@ -288,7 +311,7 @@ func (s *Server) putFlowRunSummary(start flow.RunStart, startedAt, finishedAt ti
 		Status:        status,
 		Summary:       summary,
 		SessionID:     strings.TrimSpace(start.SessionID),
-		TargetSwarmID: s.flowLocalSwarmID(),
+		TargetSwarmID: targetSwarmID,
 	})
 	if err != nil {
 		return err
@@ -341,9 +364,29 @@ func (s *Server) flowRunSessionPreference(assignment flow.Assignment) (pref stru
 		return pref, err
 	}
 	pref.Provider = strings.TrimSpace(profile.Provider)
-	pref.Model = strings.TrimSpace(profile.Model)
-	pref.Thinking = strings.TrimSpace(profile.Thinking)
+	if pref.Model == "" {
+		pref.Model = strings.TrimSpace(profile.Model)
+	}
+	if pref.Thinking == "" {
+		pref.Thinking = strings.TrimSpace(profile.Thinking)
+	}
 	if pref.Provider == "" || pref.Model == "" || pref.Thinking == "" {
+		if s != nil && s.model != nil {
+			global, globalErr := s.model.GetGlobalPreference()
+			if globalErr != nil {
+				return pref, fmt.Errorf("flow agent %q execution preference is not configured on target: %w", strings.TrimSpace(assignment.Agent.TargetName), globalErr)
+			}
+			pref.Provider = firstNonEmpty(pref.Provider, strings.TrimSpace(global.Provider))
+			pref.Model = firstNonEmpty(pref.Model, strings.TrimSpace(global.Model))
+			pref.Thinking = firstNonEmpty(pref.Thinking, strings.TrimSpace(global.Thinking))
+			pref.ServiceTier = strings.TrimSpace(global.ServiceTier)
+			pref.ContextMode = strings.TrimSpace(global.ContextMode)
+		}
+	}
+	if pref.Provider == "" || pref.Model == "" || pref.Thinking == "" {
+		if runruntime.NormalizeRunTargetKind(assignment.Agent.TargetKind) == runruntime.RunTargetKindAgent {
+			return pref, nil
+		}
 		return pref, fmt.Errorf("flow agent %q execution preference is not configured on target", strings.TrimSpace(assignment.Agent.TargetName))
 	}
 	return pref, nil
@@ -425,6 +468,8 @@ func flowRunPrompt(intent flow.PromptIntent) string {
 }
 
 func flowRunMetadata(assignment flow.Assignment, scheduledAt time.Time, runNow bool) map[string]any {
+	targetKind := strings.TrimSpace(assignment.Target.Kind)
+	targetName := strings.TrimSpace(assignment.Target.Name)
 	metadata := map[string]any{
 		"runtime_state":     "standby",
 		"title_pending":     false,
@@ -437,13 +482,29 @@ func flowRunMetadata(assignment flow.Assignment, scheduledAt time.Time, runNow b
 		"scheduled_at":      scheduledAt.UTC().Format(time.RFC3339Nano),
 		"run_now":           runNow,
 		"background":        true,
-		"target_kind":       strings.TrimSpace(assignment.Agent.TargetKind),
-		"target_name":       strings.TrimSpace(assignment.Agent.TargetName),
+		"target_kind":       targetKind,
+		"target_name":       targetName,
+		"flow_agent_kind":   strings.TrimSpace(assignment.Agent.TargetKind),
+		"flow_agent_name":   strings.TrimSpace(assignment.Agent.TargetName),
 		"owner_transport":   "flow_scheduler",
 		"workspace_context": assignment.Workspace,
 	}
 	if targetSwarmID := strings.TrimSpace(assignment.Target.SwarmID); targetSwarmID != "" {
 		metadata["target_swarm_id"] = targetSwarmID
+		metadata["swarm_target_swarm_id"] = targetSwarmID
+	}
+	if targetName != "" {
+		metadata["swarm_target_name"] = targetName
+		metadata["target_display_name"] = targetName
+	}
+	if targetKind != "" {
+		metadata["swarm_target_kind"] = targetKind
+	}
+	if deploymentID := strings.TrimSpace(assignment.Target.DeploymentID); deploymentID != "" {
+		metadata["swarm_target_deployment_id"] = deploymentID
+	}
+	if runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(assignment.Workspace.RuntimeWorkspacePath), strings.TrimSpace(assignment.Workspace.WorkspacePath)); runtimeWorkspacePath != "" {
+		metadata["swarm_target_workspace_path"] = runtimeWorkspacePath
 	}
 	return metadata
 }

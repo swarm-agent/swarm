@@ -8,11 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/flow"
 	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -25,6 +28,14 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 		expectedAgent  string
 		expectedPreset string
 	}{
+		{
+			name:           "primary swarm agent",
+			agent:          flow.AgentSelection{TargetKind: runruntime.RunTargetKindAgent, TargetName: "swarm"},
+			expectedKind:   runruntime.RunTargetKindAgent,
+			expectedName:   "swarm",
+			expectedAgent:  "swarm",
+			expectedPreset: "",
+		},
 		{
 			name:           "saved subagent",
 			agent:          flow.AgentSelection{TargetKind: runruntime.RunTargetKindSubagent, TargetName: "flow-test"},
@@ -44,6 +55,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, flows := newFlowPeerTestServer(t)
+			ensureFlowPrimaryAgentRunnable(t, server)
 			ensureFlowTestAgent(t, server)
 			if tc.expectedAgent == "memory" {
 				ensureFlowMemoryAgentRunnable(t, server)
@@ -98,11 +110,17 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if session.Metadata["flow_id"] != assignment.FlowID || session.Metadata["flow_revision"] != float64(assignment.Revision) {
 				t.Fatalf("session flow metadata = %+v", session.Metadata)
 			}
+			if session.Metadata["target_kind"] != assignment.Target.Kind || session.Metadata["target_name"] != assignment.Target.Name {
+				t.Fatalf("session target metadata = %+v", session.Metadata)
+			}
+			if session.Metadata["swarm_target_name"] != assignment.Target.Name || session.Metadata["target_display_name"] != assignment.Target.Name || session.Metadata["swarm_target_kind"] != assignment.Target.Kind || session.Metadata["swarm_target_swarm_id"] != assignment.Target.SwarmID {
+				t.Fatalf("session sidebar target metadata = %+v", session.Metadata)
+			}
+			if session.Metadata["flow_agent_kind"] != assignment.Agent.TargetKind || session.Metadata["flow_agent_name"] != assignment.Agent.TargetName {
+				t.Fatalf("session flow agent metadata = %+v", session.Metadata)
+			}
 			if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask || session.Metadata["source"] != "flow" {
 				t.Fatalf("session title metadata = %+v", session.Metadata)
-			}
-			if session.Metadata["workspace_id"] == nil || session.Metadata["agent_name"] != "swarm" {
-				t.Fatalf("session create metadata was not preserved: %+v", session.Metadata)
 			}
 			profile, err := server.flowRunAgentProfile(assignment.Agent)
 			if err != nil {
@@ -110,6 +128,9 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			}
 			if profile.Name != tc.expectedAgent {
 				t.Fatalf("profile name = %q, want %q", profile.Name, tc.expectedAgent)
+			}
+			if session.Metadata["workspace_id"] == nil || session.Metadata["agent_name"] != "swarm" {
+				t.Fatalf("session create metadata was not preserved: %+v", session.Metadata)
 			}
 			preset := ""
 			if profile.ToolContract != nil {
@@ -119,6 +140,61 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 				t.Fatalf("profile tool preset = %q, want %q", preset, tc.expectedPreset)
 			}
 		})
+	}
+}
+
+func TestTargetLocalFlowRunnerHostedSessionStoresRuntimeWorkspace(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowPrimaryAgentRunnable(t, server)
+	ensureFlowMemoryAgentRunnable(t, server)
+	server.SetSwarmService(fakeRoutedSwarmService{
+		state: swarmruntime.LocalState{
+			Node:    swarmruntime.LocalNodeState{SwarmID: "child-swarm", Name: "swarm child", Role: "child"},
+			Pairing: swarmruntime.PairingState{ParentSwarmID: "host-swarm-id"},
+		},
+		token: "peer-token",
+	})
+	server.SetStartupConfigPath(writeFlowReportStartupConfig(t, startupconfig.FileConfig{
+		Child:         true,
+		ParentSwarmID: "host-swarm-id",
+		RemoteDeploy:  startupconfig.RemoteDeployBootstrap{HostAPIBaseURL: "http://127.0.0.1:1"},
+	}))
+	server.runner = &fakeFlowRunService{}
+
+	assignment := testAPIFlowAssignment("flow-hosted-runtime", 1)
+	assignment.Target = flow.TargetSelection{SwarmID: "child-swarm", Kind: "remote", DeploymentID: "remote-1", Name: "swarm child"}
+	assignment.Agent = flow.AgentSelection{
+		TargetKind: runruntime.RunTargetKindBackground,
+		TargetName: "memory",
+	}
+	assignment.Workspace = flow.WorkspaceContext{
+		WorkspacePath:        "/host/workspace",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/workspaces/swarm",
+		CWD:                  "/workspaces/swarm",
+		WorktreeMode:         runruntime.RunWorktreeModeOff,
+	}
+	accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})
+	if err != nil {
+		t.Fatalf("put accepted assignment: %v", err)
+	}
+
+	start, err := server.runAcceptedFlow(t.Context(), accepted, flow.RunRequest{FlowID: assignment.FlowID, Revision: assignment.Revision, ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("run accepted flow: %v", err)
+	}
+	session, ok, err := server.sessions.GetSession(start.SessionID)
+	if err != nil || !ok {
+		t.Fatalf("get session ok=%v err=%v", ok, err)
+	}
+	if session.WorkspacePath != "/workspaces/swarm" {
+		t.Fatalf("session workspace path = %q, want child runtime path", session.WorkspacePath)
+	}
+	if session.Metadata["swarm_target_name"] != "swarm child" || session.Metadata["target_display_name"] != "swarm child" || session.Metadata["swarm_target_kind"] != "remote" || session.Metadata["swarm_target_deployment_id"] != "remote-1" {
+		t.Fatalf("session sidebar target metadata = %+v", session.Metadata)
+	}
+	if session.Metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != "/host/workspace" || session.Metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] != "/workspaces/swarm" || session.Metadata[sessionruntime.HostedSessionMetadataChildSwarmID] != "child-swarm" {
+		t.Fatalf("hosted metadata = %+v", session.Metadata)
 	}
 }
 
@@ -256,6 +332,28 @@ func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
 	}
 	if !strings.Contains(runs[0].RunID, sanitizeFlowRunIDPart(command.CommandID)) {
 		t.Fatalf("run id %q does not include command id %q", runs[0].RunID, command.CommandID)
+	}
+}
+
+func ensureFlowPrimaryAgentRunnable(t *testing.T, server *Server) {
+	t.Helper()
+	if server == nil || server.agents == nil {
+		t.Fatal("agent service not configured")
+	}
+	enabled := true
+	_, _, _, err := server.agents.Upsert(agentruntime.UpsertInput{
+		Name:        "swarm",
+		Mode:        agentruntime.ModePrimary,
+		Provider:    "test-provider",
+		Model:       "test-model",
+		Thinking:    "medium",
+		ProviderSet: true,
+		ModelSet:    true,
+		ThinkingSet: true,
+		Enabled:     &enabled,
+	})
+	if err != nil {
+		t.Fatalf("upsert swarm agent runtime preferences: %v", err)
 	}
 }
 

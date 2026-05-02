@@ -121,6 +121,44 @@ func TestBuildRequestPayloadIncludesCodexParityFields(t *testing.T) {
 	}
 }
 
+func TestBuildRequestPayloadHashesLongPromptCacheKey(t *testing.T) {
+	longSessionID := strings.Repeat("session-", 15)
+	payload, err := buildRequestPayload(Request{
+		Model:     "gpt-5.3-codex",
+		SessionID: longSessionID,
+		Input: []map[string]any{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "input_text",
+						"text": "hello",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestPayload error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	cacheKey := strings.TrimSpace(asString(decoded["prompt_cache_key"]))
+	if cacheKey == "" {
+		t.Fatal("prompt_cache_key was omitted")
+	}
+	if cacheKey == longSessionID {
+		t.Fatal("prompt_cache_key was not hashed")
+	}
+	if len(cacheKey) > maxPromptCacheKeyLength {
+		t.Fatalf("prompt_cache_key length = %d, want <= %d", len(cacheKey), maxPromptCacheKeyLength)
+	}
+}
+
 func TestBuildRequestPayloadOmitsReasoningIncludeWhenThinkingOff(t *testing.T) {
 	payload, err := buildRequestPayload(Request{
 		Model:    "gpt-5.3-codex",

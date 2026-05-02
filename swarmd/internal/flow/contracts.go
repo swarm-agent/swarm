@@ -86,7 +86,7 @@ type TargetStatusProvider interface {
 type AgentSelection struct {
 	// TargetKind and TargetName are forwarded to the target daemon's run service.
 	// For saved background profiles this is target_kind="background" and the
-	// saved profile name. Do not copy or store the profile tool contract here.
+	// saved profile name. Do not copy or store profile execution settings here.
 	TargetKind string `json:"target_kind"`
 	TargetName string `json:"target_name"`
 }
