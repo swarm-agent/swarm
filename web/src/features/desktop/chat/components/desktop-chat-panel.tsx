@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ListChecks, LoaderCircle, Menu, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
+import { ListChecks, LoaderCircle, Menu, Minimize2, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -476,13 +476,6 @@ function normalizeSessionMode(mode: string): SessionMode {
   return mode.trim().toLowerCase() === 'auto' ? 'auto' : 'plan'
 }
 
-function executionSettingLabel(profile: AgentStateRecord['profiles'][number] | null): string {
-  if (!profile || profile.exitPlanModeEnabled) {
-    return ''
-  }
-  return profile.executionSetting === 'readwrite' ? 'readwrite' : 'read'
-}
-
 function desiredSessionModeForAgent(
   profile: AgentStateRecord['profiles'][number] | null,
   currentMode: string,
@@ -517,7 +510,7 @@ function formatContextUsageBadgeLabel(usage: DesktopSessionRecord['usage'] | nul
   const window = usage.contextWindow
   const remaining = Math.max(0, Math.min(window, usage.remainingTokens))
   const leftPercent = Math.max(0, Math.min(100, Math.round((remaining * 100) / window)))
-  return `${leftPercent}% left`
+  return `${leftPercent}%`
 }
 
 function formatContextUsageTooltip(usage: DesktopSessionRecord['usage'] | null): string {
@@ -897,8 +890,6 @@ export function DesktopChatPanel({
   const effectiveSessionMode = selectedPrimaryAgentProfile?.exitPlanModeEnabled
     ? sessionMode
     : agentDerivedMode
-  const selectedExecutionSettingLabel = executionSettingLabel(selectedPrimaryAgentProfile)
-
   const resolvedModelOptions = useMemo(() => modelOptions, [modelOptions])
 
   const selectedModelKey = activePreferenceRecord.preference.provider && activePreferenceRecord.preference.model
@@ -2268,17 +2259,10 @@ export function DesktopChatPanel({
             <div className="border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
               <div className="flex min-w-0 items-center gap-2">
                 <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                  {selectedPrimaryAgentProfile?.exitPlanModeEnabled ? (
-                    <ModePicker
-                      mode={sessionMode === 'auto' ? 'auto' : 'plan'}
-                      onSelect={handleModeChange}
-                    />
-                  ) : selectedPrimaryAgentProfile ? (
-                    <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
-                      <span className="text-[var(--app-text-subtle)]">Execution:</span>
-                      <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{selectedExecutionSettingLabel}</span>
-                    </span>
-                  ) : null}
+                  <ModePicker
+                    mode={sessionMode === 'auto' ? 'auto' : 'plan'}
+                    onSelect={handleModeChange}
+                  />
 
                   <AgentPicker
                     currentAgent={currentSessionAgent}
@@ -2330,31 +2314,9 @@ export function DesktopChatPanel({
                     </div>
                   ) : null}
 
-                  {contextBadgeLabel ? (
-                    <span
-                      title={contextBadgeTooltip || undefined}
-                      className="inline-flex min-h-6 items-center whitespace-nowrap rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)]"
-                    >
-                      {contextBadgeLabel}
-                    </span>
-                  ) : selectedContextWindow > 0 ? (
-                    <span
-                      title={`${formatContextWindow(selectedContextWindow)} total context window`}
-                      className="inline-flex min-h-6 items-center whitespace-nowrap rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)]"
-                    >
-                      {formatContextWindow(selectedContextWindow)} ctx
-                    </span>
-                  ) : null}
-
-                  <button
-                    type="button"
-                    className="inline-flex min-h-6 items-center whitespace-nowrap rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50"
-                    onClick={() => {
-                      void handleCompact(composer)
-                    }}
-                    disabled={!sessionId || canStop || submitting}
-                  >
-                    Compact
+                  <button type="button" onClick={() => { void handleCompact(composer) }} disabled={!sessionId || canStop || submitting} title={contextBadgeTooltip ? `${contextBadgeTooltip} · Click to compact` : 'Compact conversation'} className="inline-flex min-h-6 items-center gap-1 rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">
+                    <span>{contextBadgeLabel || (selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx')}</span>
+                    <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />
                   </button>
 
                   {showRunTimer ? (
