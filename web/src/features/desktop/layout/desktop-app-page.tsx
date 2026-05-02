@@ -2762,8 +2762,13 @@ export function DesktopAppPage() {
                 <Menu size={18} className="shrink-0 text-[var(--app-text-muted)]" />
                 <span className="truncate text-sm font-semibold text-[var(--app-text)]">Chats</span>
               </div>
-              <Button variant="ghost" className="h-10 w-10 p-0" onClick={() => setMobileSidebarOpen(false)} aria-label="Close sidebar">
-                <X size={18} />
+              <Button
+                variant="ghost"
+                className="h-11 w-11 rounded-full bg-transparent p-0 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                onClick={() => setMobileSidebarOpen(false)}
+                aria-label="Close sidebar"
+              >
+                <X size={21} strokeWidth={2.5} />
               </Button>
             </div>
             <div className="min-h-0 flex-1">{sidebarContent}</div>
