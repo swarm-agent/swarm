@@ -2050,8 +2050,8 @@ export function DesktopChatPanel({
   }, [composer, sessionId, setSessionDraft, workspacePath])
 
   return (
-    <Card className="flex flex-col h-full w-full flex-1 min-h-0 min-w-0 overflow-hidden rounded-none border-0 bg-[var(--app-surface)]">
-      <header className="shrink-0 flex min-h-[60px] items-center gap-2 border-b border-[var(--app-border)] px-3 py-2 sm:h-[60px] sm:px-4 sm:py-0">
+    <Card className="flex h-full w-full flex-1 min-h-0 min-w-0 flex-col overflow-hidden rounded-none border-0 bg-[var(--app-surface)]">
+      <header className="shrink-0 flex min-h-[60px] items-center gap-2 border-b border-[var(--app-border)] px-3 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
         <div className="min-w-0 flex-1">
           <div className="sm:hidden">
             <div className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-muted)]" title={workspaceName || workspacePath}>
@@ -2121,7 +2121,7 @@ export function DesktopChatPanel({
         </div>
       </header>
 
-      <div ref={scrollerRef} onScroll={persistScrollState} className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden bg-[var(--app-bg-alt)] px-6 py-5">
+      <div ref={scrollerRef} onScroll={persistScrollState} className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain bg-[var(--app-bg-alt)] px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-6 sm:py-5">
         {loadingMessages && messages.length === 0 ? (
           <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text-muted)]">Loading conversation…</div>
         ) : null}
@@ -2242,7 +2242,7 @@ export function DesktopChatPanel({
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-6 py-5">
+      <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 pb-[max(var(--app-safe-area-bottom),8px)] pt-4 sm:px-6 sm:py-5">
         <div className="grid gap-3">
           {panelError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{panelError}</div> : null}
           {permissionError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{permissionError}</div> : null}

@@ -64,6 +64,7 @@ const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] it
 const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
 const SIDEBAR_ACTION_BOX_CLASS = 'grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center border-0 bg-transparent p-0 font-inherit'
 const SIDEBAR_ACTION_BUTTON_CLASS = `${SIDEBAR_ACTION_BOX_CLASS} text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]`
+const PWA_DEBUG_QUERY_PARAM = 'pwaDebug'
 const UPDATE_PROGRESS_STEP_TITLES = [
   'Start update helper',
   'Stop Swarm backend',
@@ -78,6 +79,46 @@ function SidebarActionRail({ children, className }: { children: ReactNode; class
 
 function SidebarActionRailSpacer() {
   return <span aria-hidden="true" className={SIDEBAR_ACTION_BOX_CLASS} />
+}
+
+function PwaLayoutDebugOverlay() {
+  const readSnapshot = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return [] as Array<[string, string]>
+    }
+    const standalone = 'standalone' in window.navigator && Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone)
+    const displayStandalone = window.matchMedia?.('(display-mode: standalone)').matches ?? false
+    const rootStyle = window.getComputedStyle(document.documentElement)
+    return [
+      ['standalone', String(standalone)],
+      ['display-mode', String(displayStandalone)],
+      ['innerHeight', String(window.innerHeight)],
+      ['visualViewport', String(window.visualViewport?.height ?? 'n/a')],
+      ['clientHeight', String(document.documentElement.clientHeight)],
+      ['sat', rootStyle.getPropertyValue('--sat').trim() || 'n/a'],
+      ['sab', rootStyle.getPropertyValue('--sab').trim() || 'n/a'],
+    ]
+  }, [])
+  const [snapshot, setSnapshot] = useState(readSnapshot)
+
+  useEffect(() => {
+    const update = () => setSnapshot(readSnapshot())
+    update()
+    window.addEventListener('resize', update)
+    window.visualViewport?.addEventListener('resize', update)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.visualViewport?.removeEventListener('resize', update)
+    }
+  }, [readSnapshot])
+
+  return (
+    <div className="pointer-events-none fixed bottom-2 left-2 z-[9999] rounded-lg border border-[var(--app-border)] bg-black/75 px-2 py-1 font-mono text-[10px] leading-tight text-white shadow-lg">
+      {snapshot.map(([label, value]) => (
+        <div key={label}>{label}: {value}</div>
+      ))}
+    </div>
+  )
 }
 
 interface SidebarWorkspaceLayout {
@@ -1266,6 +1307,7 @@ export function DesktopAppPage() {
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
   const routeWorkspaceSlug = (workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
   const routeSessionId = (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
+  const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: workspacesLoading } = useWorkspaceLauncher()
   const connectionState = useDesktopStore((state) => state.connectionState)
   const liveSessions = useDesktopStore((state) => state.sessions)
@@ -2702,12 +2744,12 @@ export function DesktopAppPage() {
     : 0
 
   return (
-    <div className="flex absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
+    <div className="fixed inset-0 flex h-[100dvh] min-h-[-webkit-fill-available] w-screen overflow-hidden bg-[var(--app-bg)] p-0 text-[var(--app-text)]">
       <aside data-testid="desktop-workspace-sidebar" className={cn('hidden shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] sm:flex', sidebarCollapsed ? 'sm:w-[56px]' : 'sm:w-[320px]')}>
         {sidebarContent}
       </aside>
       {mobileSidebarOpen ? (
-        <div className="absolute inset-0 z-40 flex sm:hidden" aria-modal="true" role="dialog">
+        <div className="absolute inset-0 z-40 flex sm:hidden pt-[var(--app-safe-area-top)] pr-[var(--app-safe-area-right)] pb-[var(--app-safe-area-bottom)] pl-[var(--app-safe-area-left)]" aria-modal="true" role="dialog">
           <button
             type="button"
             className="absolute inset-0 bg-[var(--app-backdrop)]"
@@ -2729,7 +2771,7 @@ export function DesktopAppPage() {
         </div>
       ) : null}
 
-      <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden">
+      <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden sm:pr-[var(--app-safe-area-right)] sm:pl-[var(--app-safe-area-left)]">
         {routeSessionId && routeSessionPending && !selectedSession ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
@@ -3008,6 +3050,7 @@ export function DesktopAppPage() {
         onClose={closeGitPanel}
       />
       <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
+      {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}
 
     </div>
   )

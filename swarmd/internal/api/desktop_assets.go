@@ -75,7 +75,7 @@ func serveDesktopAsset(w http.ResponseWriter, r *http.Request, distDir string, s
 	fullPath := filepath.Join(distDir, filepath.FromSlash(relPath))
 	if fileInfo, err := os.Stat(fullPath); err == nil && !fileInfo.IsDir() {
 		setDesktopAssetHeaders(w, relPath)
-		if contentType := mime.TypeByExtension(filepath.Ext(relPath)); contentType != "" {
+		if contentType := desktopAssetContentType(relPath); contentType != "" {
 			w.Header().Set("Content-Type", contentType)
 		}
 		if shouldServeCompressedDesktopAsset(r, relPath) {
@@ -108,11 +108,23 @@ func serveDesktopIndex(w http.ResponseWriter, r *http.Request, staticFS fs.FS) {
 }
 
 func setDesktopAssetHeaders(w http.ResponseWriter, relPath string) {
+	if isRootServiceWorker(relPath) {
+		w.Header().Set("Cache-Control", desktopDocumentCacheControl)
+		w.Header().Set("Service-Worker-Allowed", "/")
+		return
+	}
 	if isImmutableDesktopAsset(relPath) {
 		w.Header().Set("Cache-Control", desktopAssetImmutableCacheControl)
 		return
 	}
 	w.Header().Set("Cache-Control", desktopDocumentCacheControl)
+}
+
+func desktopAssetContentType(relPath string) string {
+	if strings.EqualFold(filepath.Ext(relPath), ".webmanifest") {
+		return "application/manifest+json"
+	}
+	return mime.TypeByExtension(filepath.Ext(relPath))
 }
 
 func shouldServeCompressedDesktopAsset(r *http.Request, relPath string) bool {
@@ -134,4 +146,9 @@ func isCompressibleDesktopAsset(relPath string) bool {
 func isImmutableDesktopAsset(relPath string) bool {
 	cleanPath := path.Clean("/" + strings.TrimSpace(relPath))
 	return strings.HasPrefix(cleanPath, "/assets/")
+}
+
+func isRootServiceWorker(relPath string) bool {
+	cleanPath := path.Clean("/" + strings.TrimSpace(relPath))
+	return cleanPath == "/sw.js"
 }
