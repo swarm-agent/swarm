@@ -44,6 +44,7 @@ interface FrameSample {
   bottomGap: number
   transform: string
   itemType: string
+  itemKey: string
 }
 
 function json(response: unknown): string {
@@ -333,6 +334,7 @@ async function installBrowserStreamControls(page: Page): Promise<void> {
         bottomGap: scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight,
         transform: row.style.transform,
         itemType: row.getAttribute('data-render-item-type') || '',
+        itemKey: row.getAttribute('data-render-item-key') || '',
       };
     };
   })()`)
@@ -413,11 +415,17 @@ test('desktop streaming markdown finalizes without a last-frame position jitter'
     assert(last, 'expected frame samples')
     assert.equal(last.itemType, 'message', `expected final row to be stored message; samples=${JSON.stringify(samples, null, 2)}`)
 
+    const liveKey = before[before.length - 1]?.itemKey ?? ''
+    const finalKey = last.itemKey
+    const swapIndex = samples.findIndex((sample) => sample.itemType === 'message' && sample.itemKey === liveKey)
     const topJump = maxConsecutiveDelta(samples, 'top')
     const bottomJump = maxConsecutiveDelta(samples, 'bottom')
     const scrollJump = maxConsecutiveDelta(after, 'scrollTop')
     const diagnostics = JSON.stringify(samples, null, 2)
 
+    assert.ok(liveKey !== '', `expected live assistant row key before finalization\n${diagnostics}`)
+    assert.equal(finalKey, liveKey, `final assistant message did not reuse live row virtualizer key\n${diagnostics}`)
+    assert.ok(swapIndex >= 0, `expected sampled frame where stored message reused live key\n${diagnostics}`)
     assert.ok(topJump <= 1, `last message top jittered by ${topJump}px\n${diagnostics}`)
     assert.ok(bottomJump <= 1, `last message bottom jittered by ${bottomJump}px\n${diagnostics}`)
     assert.ok(scrollJump <= 1, `scrollTop jittered after finalization by ${scrollJump}px\n${diagnostics}`)
