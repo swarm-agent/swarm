@@ -8,13 +8,12 @@ interface AgentPickerProps {
   selectedPrimaryAgent: string
   agents: AgentProfileRecord[]
   onSelect: (agent: string) => void
-  onOpenSettings: () => void
   dropdownAlign?: 'left' | 'right'
 }
 
 const DROPDOWN_VIEWPORT_GUTTER = 8
 
-export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSelect, onOpenSettings, dropdownAlign = 'right' }: AgentPickerProps) {
+export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSelect, dropdownAlign = 'right' }: AgentPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
@@ -34,11 +33,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
     }
   }
   const selectedProfile = agents.find((agent) => agent.name === selectedPrimaryAgent)
-  const currentProfile = agents.find((agent) => agent.name === currentAgent)
   const displayLabel = currentAgent || selectedProfile?.name || selectedPrimaryAgent
-  const executionProfile = currentProfile ?? selectedProfile
-  const showExecutionStatus = Boolean(executionProfile && !executionProfile.exitPlanModeEnabled)
-  const executionValue = executionProfile?.executionSetting || 'unset'
 
   const updatePosition = useCallback(() => {
     if (!triggerRef.current || typeof window === 'undefined') {
@@ -175,16 +170,6 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
         <span className="max-w-[100px] truncate">{displayLabel}</span>
         <ChevronDown size={12} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
       </button>
-      {showExecutionStatus ? (
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="ml-2 inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)]"
-        >
-          <span className="text-[var(--app-text-subtle)]">Execution:</span>
-          <span className="font-semibold text-[var(--app-primary)]">{executionValue}</span>
-        </button>
-      ) : null}
       {dropdown}
     </div>
   )

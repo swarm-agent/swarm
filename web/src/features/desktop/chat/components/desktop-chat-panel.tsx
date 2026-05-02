@@ -476,6 +476,13 @@ function normalizeSessionMode(mode: string): SessionMode {
   return mode.trim().toLowerCase() === 'auto' ? 'auto' : 'plan'
 }
 
+function executionSettingLabel(profile: AgentStateRecord['profiles'][number] | null): string {
+  if (!profile || profile.exitPlanModeEnabled) {
+    return ''
+  }
+  return profile.executionSetting === 'readwrite' ? 'readwrite' : 'read'
+}
+
 function desiredSessionModeForAgent(
   profile: AgentStateRecord['profiles'][number] | null,
   currentMode: string,
@@ -926,6 +933,7 @@ export function DesktopChatPanel({
   const effectiveSessionMode = selectedPrimaryAgentProfile?.exitPlanModeEnabled
     ? sessionMode
     : agentDerivedMode
+  const selectedExecutionSettingLabel = executionSettingLabel(selectedPrimaryAgentProfile)
   const resolvedModelOptions = useMemo(() => modelOptions, [modelOptions])
 
   const selectedModelKey = activePreferenceRecord.preference.provider && activePreferenceRecord.preference.model
@@ -2302,10 +2310,21 @@ export function DesktopChatPanel({
               {/* DESKTOP LAYOUT (>= 1000px; thinking/fast collapse from 1000px to 1100px) */}
               <div className="hidden min-[1000px]:flex min-w-0 items-center gap-2 justify-between">
                 <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                  <ModePicker
-                    mode={sessionMode === 'auto' ? 'auto' : 'plan'}
-                    onSelect={handleModeChange}
-                  />
+                  {selectedPrimaryAgentProfile?.exitPlanModeEnabled ? (
+                    <ModePicker
+                      mode={sessionMode === 'auto' ? 'auto' : 'plan'}
+                      onSelect={handleModeChange}
+                    />
+                  ) : selectedPrimaryAgentProfile ? (
+                    <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
+                      <span className="text-[var(--app-text-subtle)]">
+                        Execution:
+                      </span>
+                      <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">
+                        {selectedExecutionSettingLabel}
+                      </span>
+                    </span>
+                  ) : null}
 
                   <AgentPicker
                     currentAgent={currentSessionAgent}
@@ -2314,7 +2333,6 @@ export function DesktopChatPanel({
                     onSelect={(value) => {
                       void handleAgentSelect(value)
                     }}
-                    onOpenSettings={() => onOpenSettingsTab('agents')}
                   />
 
                   <ModelPicker
@@ -2408,7 +2426,7 @@ export function DesktopChatPanel({
                 {mobileSettingsOpen ? (
                   <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
                     <ModePicker mode={sessionMode === 'auto' ? 'auto' : 'plan'} onSelect={handleModeChange} />
-                    <AgentPicker currentAgent={currentSessionAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={(value) => { void handleAgentSelect(value) }} onOpenSettings={() => onOpenSettingsTab('agents')} dropdownAlign="left" />
+                    <AgentPicker currentAgent={currentSessionAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={(value) => { void handleAgentSelect(value) }} dropdownAlign="left" />
                     <ModelPicker options={resolvedModelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={handleModelChange} openSignal={modelPickerOpenSignal} />
                     <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={handleThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={(enabled) => { void handleThinkingTagsToggle(enabled) }} tagsBusy={thinkingTagsSaving} />
                     {fastSupported ? <ThinkingPicker value={fastValue} options={FAST_ON_OFF_OPTIONS} onSelect={handleFastChange} label="Fast" /> : null}
