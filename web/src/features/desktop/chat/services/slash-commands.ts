@@ -4,6 +4,7 @@ export type DesktopSlashCommandState = 'ready' | 'coming-soon'
 
 export type DesktopSlashCommandAction =
   | { kind: 'open-settings'; tab: SettingsTabID }
+  | { kind: 'open-quick-settings'; tab: Extract<SettingsTabID, 'permissions' | 'themes' | 'worktrees'> }
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
@@ -78,11 +79,11 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'worktrees',
     command: '/worktrees',
     aliases: ['/wt'],
-    hint: 'Open worktree settings',
-    actionLabel: 'Open Settings → Worktrees',
-    tips: ['/worktrees', '/wt', 'Open the current worktrees settings'],
+    hint: 'Open worktree quick settings',
+    actionLabel: 'Open Worktrees Quick Settings',
+    tips: ['/worktrees', '/wt', 'Open the current worktrees quick settings'],
     state: 'ready',
-    action: { kind: 'open-settings', tab: 'worktrees' },
+    action: { kind: 'open-quick-settings', tab: 'worktrees' },
   },
   {
     id: 'workspace',
@@ -178,11 +179,11 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'permissions',
     command: '/permissions',
     aliases: [],
-    hint: 'Open permission policy and modal controls',
-    actionLabel: 'Open Settings → Permissions',
+    hint: 'Open permission policy quick settings',
+    actionLabel: 'Open Permissions Quick Settings',
     tips: ['/permissions', 'Review always-allow and always-deny rules', 'Explain how a tool request will resolve'],
     state: 'ready',
-    action: { kind: 'open-permissions' },
+    action: { kind: 'open-quick-settings', tab: 'permissions' },
   },
   {
     id: 'plan',
@@ -218,11 +219,11 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'theme',
     command: '/theme',
     aliases: ['/themes'],
-    hint: 'Open theme settings',
-    actionLabel: 'Open Settings → Themes',
+    hint: 'Open theme quick settings',
+    actionLabel: 'Open Theme Quick Settings',
     tips: ['/theme', '/themes', 'Set the desktop theme or workspace overrides'],
     state: 'ready',
-    action: { kind: 'open-settings', tab: 'themes' },
+    action: { kind: 'open-quick-settings', tab: 'themes' },
   },
   {
     id: 'voice',

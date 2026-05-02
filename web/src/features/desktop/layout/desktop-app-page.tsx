@@ -18,6 +18,7 @@ import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/serv
 import { prefetchSessionRuntimeData, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopSessionRecord } from '../types/realtime'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
+import { DesktopQuickSettingsModal, type QuickSettingsTabID } from '../settings/components/desktop-quick-settings-modal'
 import { DesktopChatPanel } from '../chat/components/desktop-chat-panel'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
 import { syncWorkspaceOverviewSession } from '../../workspaces/launcher/services/workspace-overview-cache'
@@ -1324,6 +1325,7 @@ export function DesktopAppPage() {
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [gitPanel, setGitPanel] = useState<GitPanelState | null>(null)
+  const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
@@ -2019,6 +2021,7 @@ export function DesktopAppPage() {
   }, [navigate, setActiveSession, setActiveWorkspacePath, workspaceSlugByPath])
 
   const handleOpenSettingsTab = useCallback((tab: SettingsTabID) => {
+    setQuickSettingsTab(null)
     if (routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab } })
       return
@@ -2026,9 +2029,13 @@ export function DesktopAppPage() {
     void navigate({ to: '/settings', search: { tab } })
   }, [navigate, routeWorkspaceSlug])
 
+  const handleOpenQuickSettings = useCallback((tab: QuickSettingsTabID) => {
+    setQuickSettingsTab(tab)
+  }, [])
+
   const handleOpenPermissions = useCallback(() => {
-    handleOpenSettingsTab('permissions')
-  }, [handleOpenSettingsTab])
+    handleOpenQuickSettings('permissions')
+  }, [handleOpenQuickSettings])
 
   const handleOpenSwarmDashboard = useCallback(() => {
     handleOpenSettingsTab('swarm')
@@ -2814,6 +2821,7 @@ export function DesktopAppPage() {
             session={selectedSession}
             onSessionCreated={handleSessionCreated}
             onOpenSettingsTab={handleOpenSettingsTab}
+            onOpenQuickSettings={handleOpenQuickSettings}
             onOpenPermissions={handleOpenPermissions}
             onOpenWorkspaceLauncher={handleOpenWorkspaceLauncher}
             onOpenSidebarMenu={handleOpenMobileSidebar}
@@ -2830,6 +2838,12 @@ export function DesktopAppPage() {
           </div>
         )}
       </main>
+
+      <DesktopQuickSettingsModal
+        tab={quickSettingsTab}
+        onClose={() => setQuickSettingsTab(null)}
+        onOpenFullSettings={handleOpenSettingsTab}
+      />
 
       {todoModal ? (
         <WorkspaceTodoModal

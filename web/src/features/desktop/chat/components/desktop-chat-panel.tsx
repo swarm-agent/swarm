@@ -67,6 +67,7 @@ import {
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from '../services/slash-commands'
 import { appendPendingUserMessage, createPendingUserMessage, removePendingUserMessage } from '../services/message-cache'
 import type { SettingsTabID } from '../../settings/types/settings-tabs'
+import type { QuickSettingsTabID } from '../../settings/components/desktop-quick-settings-modal'
 import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
 
 const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
@@ -261,6 +262,7 @@ interface DesktopChatPanelProps {
   session: DesktopSessionRecord | null
   onSessionCreated: (session: DesktopSessionRecord) => void
   onOpenSettingsTab: (tab: SettingsTabID) => void
+  onOpenQuickSettings: (tab: QuickSettingsTabID) => void
   onOpenPermissions: () => void
   onOpenWorkspaceLauncher: () => void
   onOpenSidebarMenu: () => void
@@ -718,6 +720,7 @@ export function DesktopChatPanel({
   session,
   onSessionCreated,
   onOpenSettingsTab,
+  onOpenQuickSettings,
   onOpenPermissions,
   onOpenWorkspaceLauncher,
   onOpenSidebarMenu,
@@ -1791,6 +1794,10 @@ export function DesktopChatPanel({
         onOpenSettingsTab(command.action.tab)
         setSessionDraft(sessionId ?? `__workspace__:${workspacePath}`, '')
         return
+      case 'open-quick-settings':
+        onOpenQuickSettings(command.action.tab)
+        setSessionDraft(sessionId ?? `__workspace__:${workspacePath}`, '')
+        return
       case 'open-permissions':
         onOpenPermissions()
         setSessionDraft(sessionId ?? `__workspace__:${workspacePath}`, '')
@@ -1836,7 +1843,7 @@ export function DesktopChatPanel({
       default:
         return
     }
-  }, [activePreferenceRecord.preference, canStop, composer, handleCompact, handlePreferenceChange, onOpenPermissions, onOpenSettingsTab, onOpenWorkspaceLauncher, onStartNewSession, openCommitModal, openPlanModal, sessionId, setSessionDraft, submitting, workspaceName, workspacePath])
+  }, [activePreferenceRecord.preference, canStop, composer, handleCompact, handlePreferenceChange, onOpenPermissions, onOpenQuickSettings, onOpenSettingsTab, onOpenWorkspaceLauncher, onStartNewSession, openCommitModal, openPlanModal, sessionId, setSessionDraft, submitting, workspaceName, workspacePath])
 
   const handleSlashInsert = useCallback((command: DesktopSlashCommand) => {
     setSessionDraft(sessionId ?? `__workspace__:${workspacePath}`, `${command.command} `)
