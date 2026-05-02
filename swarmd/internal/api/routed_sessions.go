@@ -169,7 +169,9 @@ func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadGateway, err)
 		return true
 	}
+	routeSource := "stored"
 	if !ok {
+		routeSource = "request"
 		target, err = s.currentRemoteSwarmTargetForRequest(r)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err)
@@ -179,6 +181,7 @@ func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Reques
 			return false
 		}
 	}
+	log.Printf("proxy routed session request session_id=%q method=%s path=%q source=%s swarm_id=%q backend_url=%q", strings.TrimSpace(sessionID), r.Method, r.URL.Path, routeSource, strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL))
 	if err := s.proxyRequestToSwarmTarget(w, r, *target); err != nil {
 		writeError(w, http.StatusBadGateway, err)
 	}

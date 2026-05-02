@@ -3130,6 +3130,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	if s.proxyRoutedSessionRequest(w, r, sessionID) {
+		return
+	}
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

@@ -2,6 +2,10 @@ function trimTrailingSeparators(value: string): string {
   return value.replace(/[\\/]+$/, '')
 }
 
+function normalizeWorkspacePathForComparison(value: string): string {
+  return trimTrailingSeparators(value.trim()).replace(/\\/g, '/')
+}
+
 export function basenameFromWorkspacePath(value: string): string {
   const trimmed = trimTrailingSeparators(value.trim())
   if (!trimmed) {
@@ -28,12 +32,24 @@ export function inferHostWorkspacePathFromDetachedWorktree(workspacePath: string
 export function canonicalSessionWorkspacePath(input: {
   workspacePath: string
   hostedHostWorkspacePath?: string
+  hostedRuntimeWorkspacePath?: string
+  preferHostedRuntimeWorkspacePath?: boolean
   worktreeEnabled?: boolean
   worktreeRootPath?: string
 }): string {
+  const workspacePath = input.workspacePath.trim()
+  const hostedRuntimeWorkspacePath = input.hostedRuntimeWorkspacePath?.trim() ?? ''
+  if (input.preferHostedRuntimeWorkspacePath && hostedRuntimeWorkspacePath) {
+    return hostedRuntimeWorkspacePath
+  }
+
   const hostedHostWorkspacePath = input.hostedHostWorkspacePath?.trim() ?? ''
   if (hostedHostWorkspacePath) {
     return hostedHostWorkspacePath
+  }
+
+  if (hostedRuntimeWorkspacePath && normalizeWorkspacePathForComparison(workspacePath) === normalizeWorkspacePathForComparison(hostedRuntimeWorkspacePath)) {
+    return hostedRuntimeWorkspacePath
   }
 
   const worktreeRootPath = input.worktreeRootPath?.trim() ?? ''
@@ -41,8 +57,8 @@ export function canonicalSessionWorkspacePath(input: {
     return worktreeRootPath
   }
 
-  const inferredHostWorkspacePath = inferHostWorkspacePathFromDetachedWorktree(input.workspacePath)
-  return inferredHostWorkspacePath || input.workspacePath.trim()
+  const inferredHostWorkspacePath = inferHostWorkspacePathFromDetachedWorktree(workspacePath)
+  return inferredHostWorkspacePath || workspacePath
 }
 
 export function canonicalSessionWorkspaceName(workspaceName: string, workspacePath: string, canonicalWorkspacePath: string): string {

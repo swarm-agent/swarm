@@ -245,10 +245,25 @@ export function applyDesktopChatRouteToSession(session: DesktopSessionRecord, ro
   if (!route?.swarmId) {
     return session
   }
+
+  const runtimeWorkspacePath = session.runtimeWorkspacePath || route.runtimeWorkspacePath || session.workspacePath
+  const routeIsHydratedFromRemote = Boolean(
+    runtimeWorkspacePath
+    && session.workspacePath
+    && route.runtimeWorkspacePath.trim() === runtimeWorkspacePath.trim()
+    && session.workspacePath.trim() === runtimeWorkspacePath.trim(),
+  )
+  if (routeIsHydratedFromRemote) {
+    return {
+      ...session,
+      runtimeWorkspacePath,
+    }
+  }
+
   return {
     ...session,
     workspacePath: route.hostWorkspacePath || session.workspacePath,
     workspaceName: route.hostWorkspaceName || session.workspaceName,
-    runtimeWorkspacePath: session.runtimeWorkspacePath || route.runtimeWorkspacePath || session.workspacePath,
+    runtimeWorkspacePath,
   }
 }

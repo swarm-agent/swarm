@@ -99,11 +99,21 @@ export interface WorkspaceOverviewWorkspaceWire extends WorkspaceEntryWire {
   todo_summary?: WorkspaceTodoSummaryWire
 }
 
+export interface WorkspaceOverviewSwarmTargetWire {
+  swarm_id?: string
+  name?: string
+  role?: string
+  relationship?: string
+  kind?: string
+  current?: boolean
+}
+
 export interface WorkspaceOverviewResponseWire {
   ok?: boolean
   current_workspace?: WorkspaceResolutionWire | null
   workspaces?: WorkspaceOverviewWorkspaceWire[]
   directories?: WorkspaceDiscoverEntryWire[]
+  swarm_target?: WorkspaceOverviewSwarmTargetWire | null
 }
 
 export interface WorkspaceOverviewWorkspace extends WorkspaceEntry {
@@ -111,11 +121,21 @@ export interface WorkspaceOverviewWorkspace extends WorkspaceEntry {
   todoSummary?: WorkspaceTodoSummary
 }
 
+export interface WorkspaceOverviewSwarmTarget {
+  swarmId: string
+  name: string
+  role: string
+  relationship: string
+  kind: string
+  current: boolean
+}
+
 export interface WorkspaceOverviewResponse {
   ok: boolean
   currentWorkspace: WorkspaceResolution | null
   workspaces: WorkspaceOverviewWorkspace[]
   discovered: WorkspaceDiscoverEntry[]
+  swarmTarget: WorkspaceOverviewSwarmTarget | null
 }
 
 function normalizeSessionStatus(status: string): DesktopSessionRecord['live']['status'] {
@@ -128,6 +148,33 @@ function normalizeSessionStatus(status: string): DesktopSessionRecord['live']['s
     default:
       return 'idle'
   }
+}
+
+function mapOverviewSwarmTarget(target: WorkspaceOverviewSwarmTargetWire | null | undefined): WorkspaceOverviewSwarmTarget | null {
+  if (!target || typeof target !== 'object') {
+    return null
+  }
+  const swarmId = String(target.swarm_id ?? '').trim()
+  return {
+    swarmId,
+    name: String(target.name ?? '').trim(),
+    role: String(target.role ?? '').trim(),
+    relationship: String(target.relationship ?? '').trim(),
+    kind: String(target.kind ?? '').trim(),
+    current: Boolean(target.current),
+  }
+}
+
+function overviewPrefersRuntimeWorkspacePaths(response: WorkspaceOverviewResponseWire): boolean {
+  const target = mapOverviewSwarmTarget(response.swarm_target)
+  if (!target) {
+    return false
+  }
+  if (target.kind === 'self') {
+    return false
+  }
+  const relationship = target.relationship.trim().toLowerCase()
+  return relationship !== '' && relationship !== 'self'
 }
 
 function mapOverviewPermission(permission: WorkspaceOverviewPermissionWire): DesktopPermissionRecord {
@@ -150,7 +197,7 @@ function mapOverviewPermission(permission: WorkspaceOverviewPermissionWire): Des
   }
 }
 
-function mapOverviewSession(session: WorkspaceOverviewSessionWire): DesktopSessionRecord {
+function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntimeWorkspacePath = false): DesktopSessionRecord {
   const pendingPermissions = Array.isArray(session.pending_permissions)
     ? session.pending_permissions.map(mapOverviewPermission).filter((entry) => entry.id && entry.sessionId)
     : []
@@ -197,6 +244,8 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire): DesktopSessi
   const canonicalWorkspacePath = canonicalSessionWorkspacePath({
     workspacePath,
     hostedHostWorkspacePath,
+    hostedRuntimeWorkspacePath,
+    preferHostedRuntimeWorkspacePath: preferRuntimeWorkspacePath,
     worktreeEnabled,
     worktreeRootPath,
   })
@@ -270,19 +319,24 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire): DesktopSessi
   }
 }
 
-function mapOverviewWorkspace(workspace: WorkspaceOverviewWorkspaceWire): WorkspaceOverviewWorkspace {
+function mapOverviewWorkspace(workspace: WorkspaceOverviewWorkspaceWire, preferRuntimeWorkspacePath: boolean): WorkspaceOverviewWorkspace {
   return {
     ...mapWorkspaceEntry(workspace),
-    sessions: Array.isArray(workspace.sessions) ? workspace.sessions.map(mapOverviewSession).filter((session) => session.id) : [],
+    sessions: Array.isArray(workspace.sessions)
+      ? workspace.sessions.map((session) => mapOverviewSession(session, preferRuntimeWorkspacePath)).filter((session) => session.id)
+      : [],
     todoSummary: mapWorkspaceTodoSummary(workspace.todo_summary),
   }
 }
 
 export function mapWorkspaceOverviewResponse(response: WorkspaceOverviewResponseWire): WorkspaceOverviewResponse {
+  const swarmTarget = mapOverviewSwarmTarget(response.swarm_target)
+  const preferRuntimeWorkspacePath = overviewPrefersRuntimeWorkspacePaths(response)
   return {
     ok: Boolean(response.ok),
     currentWorkspace: response.current_workspace ? mapWorkspaceResolution(response.current_workspace) : null,
-    workspaces: Array.isArray(response.workspaces) ? response.workspaces.map(mapOverviewWorkspace) : [],
+    workspaces: Array.isArray(response.workspaces) ? response.workspaces.map((workspace) => mapOverviewWorkspace(workspace, preferRuntimeWorkspacePath)) : [],
     discovered: Array.isArray(response.directories) ? response.directories.map(mapWorkspaceDiscoverEntry) : [],
+    swarmTarget,
   }
 }

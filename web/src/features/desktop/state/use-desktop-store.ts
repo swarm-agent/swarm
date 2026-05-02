@@ -1834,6 +1834,7 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
       const nextWorkspacePath = canonicalSessionWorkspacePath({
         workspacePath: rawWorkspacePath,
         hostedHostWorkspacePath,
+        hostedRuntimeWorkspacePath,
         worktreeEnabled,
         worktreeRootPath,
       })

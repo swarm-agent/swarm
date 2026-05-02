@@ -72,6 +72,16 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if currentTarget != nil && !strings.EqualFold(strings.TrimSpace(currentTarget.Relationship), "self") {
+		if strings.TrimSpace(currentTarget.BackendURL) == "" {
+			writeError(w, http.StatusBadGateway, errors.New("selected swarm target is missing backend_url"))
+			return
+		}
+		if err := s.handleWorkspaceOverviewForRemoteTarget(w, r, *currentTarget); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+		}
+		return
+	}
 	if s.workspace == nil {
 		writeError(w, http.StatusInternalServerError, errServiceNotConfigured("workspace service"))
 		return

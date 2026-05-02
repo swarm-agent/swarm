@@ -436,6 +436,7 @@ function mapSession(session: SessionWire): DesktopSessionRecord {
   const canonicalWorkspacePath = canonicalSessionWorkspacePath({
     workspacePath,
     hostedHostWorkspacePath,
+    hostedRuntimeWorkspacePath,
     worktreeEnabled,
     worktreeRootPath,
   });
@@ -540,7 +541,7 @@ export async function fetchSession(
 
   const route = loadDesktopChatRouteForSession(normalizedSessionId);
   const response = await requestJson<{ session?: SessionWire }>(
-    `/v1/sessions/${encodeURIComponent(normalizedSessionId)}`,
+    withDesktopChatRoute(`/v1/sessions/${encodeURIComponent(normalizedSessionId)}`, route),
   );
   const mapped = applyDesktopChatRouteToSession(
     mapSession(response.session ?? {}),

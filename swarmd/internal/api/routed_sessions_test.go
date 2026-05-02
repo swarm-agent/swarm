@@ -127,6 +127,76 @@ func TestRoutedSessionMessagesReloadFromHostWithoutProxy(t *testing.T) {
 	}
 }
 
+func TestRoutedSessionGetUsesStoredRouteWithoutSwarmID(t *testing.T) {
+	server, _, _, routeStore := newRoutedSessionTestServer(t)
+	var hits atomic.Int32
+	var requestPath atomic.Value
+	var requestQuery atomic.Value
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		requestPath.Store(r.URL.Path)
+		requestQuery.Store(r.URL.RawQuery)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"session": map[string]any{
+				"id":             "session-routed",
+				"title":          "Remote child session",
+				"workspace_path": "/workspaces/swarm",
+				"workspace_name": "child swarm",
+				"mode":           "auto",
+				"created_at":     1,
+				"updated_at":     2,
+				"metadata": map[string]any{
+					"swarm_routed_session":                true,
+					"swarm_routed_host_workspace_path":    "/host/workspace",
+					"swarm_routed_runtime_workspace_path": "/workspaces/swarm",
+				},
+			},
+		})
+	}))
+	defer child.Close()
+
+	sessionID := "session-routed"
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
+		SessionID:            sessionID,
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      child.URL,
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/workspaces/swarm",
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID, nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("child hits = %d, want 1", hits.Load())
+	}
+	if got, _ := requestPath.Load().(string); got != "/v1/sessions/"+sessionID {
+		t.Fatalf("child path = %q, want %q", got, "/v1/sessions/"+sessionID)
+	}
+	if got, _ := requestQuery.Load().(string); got != "" {
+		t.Fatalf("child query = %q, want empty", got)
+	}
+	var payload struct {
+		Session struct {
+			WorkspacePath string `json:"workspace_path"`
+			WorkspaceName string `json:"workspace_name"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Session.WorkspacePath != "/workspaces/swarm" || payload.Session.WorkspaceName != "child swarm" {
+		t.Fatalf("session identity = %q/%q, want remote child", payload.Session.WorkspacePath, payload.Session.WorkspaceName)
+	}
+}
+
 func TestRoutedSessionMessagePostUsesStoredRouteWithoutSwarmID(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	var hits atomic.Int32
