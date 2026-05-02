@@ -51,6 +51,8 @@ const (
 	remoteImageDeliveryArchive      = "archive"
 	remoteImageDeliveryRegistry     = "registry"
 	legacyRemoteCredentialsFileName = "remote-child.credentials.env"
+	remoteContainerRuntimeUID       = "65534"
+	remoteContainerRuntimeGID       = "65534"
 )
 
 type ContainerPackageSelection struct {
@@ -3173,6 +3175,8 @@ desktop_port=%s
 peer_transport_port=%s
 offline_mode=%s
 ts_hostname=%s
+container_runtime_uid=%s
+container_runtime_gid=%s
 mkdir -p "$remote_root" "$config_home/swarm" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
 cd "$remote_root"
 as_root() {
@@ -3188,6 +3192,14 @@ runtime_cmd() {
   else
     as_root docker "$@"
   fi
+}
+repair_workspace_mount_permissions() {
+  local target="${1:-}"
+  if [ -z "$target" ] || [ ! -e "$target" ]; then
+    return 0
+  fi
+  as_root chown -R "${container_runtime_uid}:${container_runtime_gid}" "$target" >/dev/null 2>&1 || true
+  as_root chmod -R u+rwX "$target" >/dev/null 2>&1 || true
 }
 addr_port() {
   local addr="${1:-}"
@@ -3415,7 +3427,7 @@ rm -f "$backup_start_script"
 printf 'REMOTE_UPDATE_STATE=replaced\n'
 printf '%s=%%s\n' "$remote_url"
 printf 'REMOTE_UPDATE_ENDPOINT=%%s\n' "$remote_url"
-`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(backupStartScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(imageArchiveName), shellQuote(runtimeArchiveName), shellQuote(runtimeMountRoot), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(backupName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), imageVerification, shellQuote(remoteRoot), shellQuote(runtimeMountRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(backupStartScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(imageArchiveName), shellQuote(runtimeArchiveName), shellQuote(runtimeMountRoot), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(backupName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), shellQuote(remoteContainerRuntimeUID), shellQuote(remoteContainerRuntimeGID), imageVerification, shellQuote(remoteRoot), shellQuote(runtimeMountRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
 }
 
 func remoteStartupConfigPath(record pebblestore.RemoteDeploySessionRecord) string {
@@ -4850,14 +4862,14 @@ func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string 
 		}
 		targetPath := firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces")
 		appendMountTarget(targetPath)
-		payloadExtract += fmt.Sprintf("as_root mkdir -p %s\nas_root chown \"${remote_user}:${remote_group}\" %s >/dev/null 2>&1 || true\ntar -xzf %s -C %s\n", shellQuote(targetPath), shellQuote(targetPath), shellQuote(payload.ArchiveName), shellQuote(targetPath))
+		payloadExtract += fmt.Sprintf("as_root mkdir -p %s\ntar -xzf %s -C %s\nrepair_workspace_mount_permissions %s\n", shellQuote(targetPath), shellQuote(payload.ArchiveName), shellQuote(targetPath), shellQuote(targetPath))
 		for _, directory := range payload.Directories {
 			if directory.ArchiveName == "" {
 				continue
 			}
 			directoryTargetPath := firstNonEmpty(strings.TrimSpace(directory.TargetPath), targetPath)
 			appendMountTarget(directoryTargetPath)
-			payloadExtract += fmt.Sprintf("as_root mkdir -p %s\nas_root chown \"${remote_user}:${remote_group}\" %s >/dev/null 2>&1 || true\ntar -xzf %s -C %s\n", shellQuote(directoryTargetPath), shellQuote(directoryTargetPath), shellQuote(directory.ArchiveName), shellQuote(directoryTargetPath))
+			payloadExtract += fmt.Sprintf("as_root mkdir -p %s\ntar -xzf %s -C %s\nrepair_workspace_mount_permissions %s\n", shellQuote(directoryTargetPath), shellQuote(directory.ArchiveName), shellQuote(directoryTargetPath), shellQuote(directoryTargetPath))
 		}
 	}
 	mountArgs := ""
@@ -4893,8 +4905,8 @@ tailscale_proxy_addr=%s
 desktop_port=%s
 peer_transport_port=%s
 offline_mode=%s
-remote_user="$(id -un)"
-remote_group="$(id -gn)"
+container_runtime_uid=%s
+container_runtime_gid=%s
 cd "$remote_root"
 
 as_root() {
@@ -4911,6 +4923,14 @@ runtime_cmd() {
   else
     as_root docker "$@"
   fi
+}
+repair_workspace_mount_permissions() {
+  local target="${1:-}"
+  if [ -z "$target" ] || [ ! -e "$target" ]; then
+    return 0
+  fi
+  as_root chown -R "${container_runtime_uid}:${container_runtime_gid}" "$target" >/dev/null 2>&1 || true
+  as_root chmod -R u+rwX "$target" >/dev/null 2>&1 || true
 }
 addr_port() {
   local addr="${1:-}"
@@ -5165,7 +5185,7 @@ log_timer_step "wait_for_bootstrap_signal" "$step_started_ms"
 printf '%%s\n' "$log_output"
 printf 'TAILSCALE_AUTH_URL=%%s\n' "$auth_url"
 printf '%s=%%s\n' "$remote_url"
-`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(legacyCredentialsFile), shellQuote(bootstrapSecretFile), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(runtimeArchiveName), shellQuote(runtimeMountRoot), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), imageVerification, payloadExtract, shellQuote(remoteRoot), shellQuote(runtimeMountRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(legacyCredentialsFile), shellQuote(bootstrapSecretFile), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(runtimeArchiveName), shellQuote(runtimeMountRoot), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), shellQuote(remoteContainerRuntimeUID), shellQuote(remoteContainerRuntimeGID), imageVerification, payloadExtract, shellQuote(remoteRoot), shellQuote(runtimeMountRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
 }
 
 func remoteBundleStartScript(record *pebblestore.RemoteDeploySessionRecord, childCfgText string, tailscaleAuthKey string, syncVaultPassword string) (string, error) {
