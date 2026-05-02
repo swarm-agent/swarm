@@ -164,6 +164,7 @@ func (s *Server) retireStaleSessionRoutesForChild(childSwarmID, childBackendURL 
 }
 
 func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Request, sessionID string) bool {
+	startedAt := time.Now()
 	target, ok, err := s.routedSessionTarget(sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -183,8 +184,11 @@ func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Reques
 	}
 	log.Printf("proxy routed session request session_id=%q method=%s path=%q source=%s swarm_id=%q backend_url=%q", strings.TrimSpace(sessionID), r.Method, r.URL.Path, routeSource, strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL))
 	if err := s.proxyRequestToSwarmTarget(w, r, *target); err != nil {
+		log.Printf("proxy routed session failed session_id=%q method=%s path=%q source=%s swarm_id=%q elapsed_ms=%d err=%v", strings.TrimSpace(sessionID), r.Method, r.URL.Path, routeSource, strings.TrimSpace(target.SwarmID), time.Since(startedAt).Milliseconds(), err)
 		writeError(w, http.StatusBadGateway, err)
+		return true
 	}
+	log.Printf("proxy routed session completed session_id=%q method=%s path=%q source=%s swarm_id=%q elapsed_ms=%d", strings.TrimSpace(sessionID), r.Method, r.URL.Path, routeSource, strings.TrimSpace(target.SwarmID), time.Since(startedAt).Milliseconds())
 	return true
 }
 
