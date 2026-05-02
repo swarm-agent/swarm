@@ -32,6 +32,13 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
         return profile.mode || 'Agent'
     }
   }
+  const agentMode = (profile: AgentProfileRecord) => (profile.mode || 'primary').trim().toLowerCase()
+  const primaryAgents = agents.filter((profile) => agentMode(profile) === 'primary')
+  const subagentAgents = agents.filter((profile) => agentMode(profile) === 'subagent')
+  const otherAgents = agents.filter((profile) => {
+    const mode = agentMode(profile)
+    return mode !== 'primary' && mode !== 'subagent'
+  })
   const selectedProfile = agents.find((agent) => agent.name === selectedPrimaryAgent)
   const displayLabel = currentAgent || selectedProfile?.name || selectedPrimaryAgent
 
@@ -124,33 +131,47 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
               Select Agent
             </span>
           </div>
-          <div className="max-h-[240px] overflow-y-auto py-1">
-            {agents.map((profile) => {
-              const isSelected = profile.name === selectedPrimaryAgent
-              return (
-                <button
-                  key={profile.name}
-                  type="button"
-                  onClick={() => handleSelect(profile.name)}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition ${
-                    isSelected
-                      ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]'
-                      : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'
-                  }`}
-                >
-                  {isSelected ? (
-                    <Check size={14} className="shrink-0 text-[var(--app-primary)]" />
-                  ) : (
-                    <span className="w-[14px] shrink-0" />
-                  )}
-                  <Bot size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
-                  <span className="min-w-0 flex-1 truncate">{profileLabel(profile)}</span>
-                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">
-                    {profileModeLabel(profile)}
-                  </span>
-                </button>
-              )
-            })}
+          <div className="max-h-[280px] overflow-y-auto py-1">
+            {[
+              { label: 'Primary', profiles: primaryAgents },
+              { label: 'Subagent', profiles: subagentAgents },
+              { label: 'Other', profiles: otherAgents },
+            ].filter((section) => section.profiles.length > 0).map((section, sectionIndex) => (
+              <div
+                key={section.label}
+                className={sectionIndex === 0 ? '' : 'mt-1 border-t border-[var(--app-border)] pt-1'}
+              >
+                <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
+                  {section.label}
+                </div>
+                {section.profiles.map((profile) => {
+                  const isSelected = profile.name === selectedPrimaryAgent
+                  return (
+                    <button
+                      key={profile.name}
+                      type="button"
+                      onClick={() => handleSelect(profile.name)}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition ${
+                        isSelected
+                          ? 'bg-[var(--app-surface-subtle)] text-[var(--app-text)]'
+                          : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'
+                      }`}
+                    >
+                      {isSelected ? (
+                        <Check size={14} className="shrink-0 text-[var(--app-primary)]" />
+                      ) : (
+                        <span className="w-[14px] shrink-0" />
+                      )}
+                      <Bot size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 flex-1 truncate">{profileLabel(profile)}</span>
+                      <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">
+                        {profileModeLabel(profile)}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
           </div>
         </div>
       </div>
