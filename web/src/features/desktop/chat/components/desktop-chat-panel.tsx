@@ -2416,19 +2416,8 @@ export function DesktopChatPanel({
               <span>{pendingPermissionCount > 1 ? `${pendingPermissionCount} pending` : '1 pending'}</span>
             </button>
           ) : null}
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-9 w-9 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0 text-[var(--app-text)] hover:border-[var(--app-border-accent)] sm:h-10 sm:w-10"
-            onClick={openCommitModal}
-            disabled={!sessionId || submitting || canStop}
-            aria-label="Save changes"
-            title="Save / commit changes"
-          >
-            <Save size={18} />
-          </Button>
           {showRunTimer ? (
-            <div className="inline-flex h-9 items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 text-xs font-medium tabular-nums text-[var(--app-text-muted)] sm:h-10">
+            <div className="inline-flex h-9 shrink-0 items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 text-xs font-medium tabular-nums text-[var(--app-text-muted)] sm:h-10">
               <Clock3 size={14} />
               {runTimerLabel}
             </div>
@@ -2436,12 +2425,23 @@ export function DesktopChatPanel({
           <Button
             size="sm"
             variant="ghost"
-            className="h-9 w-9 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0 text-[var(--app-text)] hover:border-[var(--app-border-accent)] sm:hidden"
+            className="h-11 w-11 shrink-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0 text-[var(--app-text)] hover:border-[var(--app-border-accent)] sm:h-10 sm:w-10"
+            onClick={openCommitModal}
+            disabled={!sessionId || submitting || canStop}
+            aria-label="Save changes"
+            title="Save / commit changes"
+          >
+            <Save size={22} />
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-11 w-11 shrink-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0 text-[var(--app-text)] hover:border-[var(--app-border-accent)] sm:hidden"
             onClick={onOpenSidebarMenu}
             aria-label="Open sidebar"
             title="Open sidebar"
           >
-            <Menu size={18} />
+            <Menu size={24} />
           </Button>
         </div>
       </header>
