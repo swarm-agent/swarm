@@ -11,6 +11,44 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestManageAgentCreatePublishesAgentEvent(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	published := make([]pebblestore.EventEnvelope, 0, 1)
+	agents.SetEventPublisher(func(event pebblestore.EventEnvelope) {
+		published = append(published, event)
+	})
+	rt := NewRuntime(2)
+	rt.SetManageAgentService(agents)
+	results := rt.ExecuteBatch(context.Background(), workspace, []Call{{
+		CallID:    "manage-agent-create-publishes",
+		Name:      "manage-agent",
+		Arguments: mustManageAgentArgsJSON(t, map[string]any{"action": "create", "confirm": true, "agent": "evented", "content": map[string]any{"name": "evented", "mode": "subagent", "prompt": "Handle events.", "execution_setting": "readwrite"}}),
+	}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if errText := strings.TrimSpace(results[0].Error); errText != "" {
+		t.Fatalf("unexpected manage-agent error: %s", errText)
+	}
+	if len(published) != 1 {
+		t.Fatalf("published event count = %d, want 1", len(published))
+	}
+	if published[0].Stream != "system:agent" || published[0].EventType != "agent.profile.created" {
+		t.Fatalf("published event = %s %s, want system:agent agent.profile.created", published[0].Stream, published[0].EventType)
+	}
+}
+
 func TestManageAgentCreateAcceptsToolContractWhenServiceConfigured(t *testing.T) {
 	workspace := t.TempDir()
 	store, err := pebblestore.Open(filepath.Join(workspace, "state.pebble"))

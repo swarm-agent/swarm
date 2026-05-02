@@ -50,6 +50,55 @@ func TestRequestStreamReadyInterruptCoalescesBurst(t *testing.T) {
 	}
 }
 
+func TestAgentStreamEventUpdatesRuntimeState(t *testing.T) {
+	a := newStreamTestApp()
+	defer a.screen.Fini()
+
+	state := client.AgentState{
+		Profiles: []client.AgentProfile{
+			{Name: "swarm", Mode: "primary", Enabled: true, ExecutionSetting: "readwrite", ExitPlanModeEnabled: boolPtr(false)},
+			{Name: "reviewer", Mode: "subagent", Enabled: true},
+		},
+		ActivePrimary: "swarm",
+		Version:       2,
+	}
+	raw, err := json.Marshal(map[string]any{"state": state, "version": state.Version})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if !a.applySessionStreamEvent(client.StreamEventEnvelope{EventType: "agent.profile.created", Payload: raw}) {
+		t.Fatal("expected agent stream event to report changes")
+	}
+	if got := a.homeModel.ActiveAgentExecutionSetting; got != "readwrite" {
+		t.Fatalf("active agent execution = %q, want readwrite", got)
+	}
+	if a.homeModel.ActiveAgentExitPlanMode {
+		t.Fatalf("active agent exit plan mode = true, want false")
+	}
+	if !sameStringSet(a.homeModel.Subagents, []string{"reviewer"}) {
+		t.Fatalf("subagents = %#v, want reviewer", a.homeModel.Subagents)
+	}
+	if meta := a.chat.Meta(); !sameStringSet(meta.Subagents, []string{"reviewer"}) {
+		t.Fatalf("chat meta subagents = %#v, want reviewer", meta.Subagents)
+	}
+
+	state.Profiles[1].Mode = "primary"
+	state.Version = 3
+	raw, err = json.Marshal(map[string]any{"state": state, "version": state.Version})
+	if err != nil {
+		t.Fatalf("marshal update payload: %v", err)
+	}
+	if !a.applySessionStreamEvent(client.StreamEventEnvelope{EventType: "agent.profile.updated", Payload: raw}) {
+		t.Fatal("expected agent stream update to report changes")
+	}
+	if len(a.homeModel.Subagents) != 0 {
+		t.Fatalf("subagents after mode update = %#v, want none", a.homeModel.Subagents)
+	}
+	if meta := a.chat.Meta(); len(meta.Subagents) != 0 {
+		t.Fatalf("chat meta subagents after mode update = %#v, want none", meta.Subagents)
+	}
+}
+
 func TestConsumeSessionStreamEventsDrainsBurst(t *testing.T) {
 	a := newStreamTestApp()
 	defer a.screen.Fini()

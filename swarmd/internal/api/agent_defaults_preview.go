@@ -119,7 +119,7 @@ func (s *Server) applyUtilityAIToBuiltIns(state agentruntime.State, utilityProvi
 			profile = defaultProfile
 		}
 		enabled := profile.Enabled
-		_, _, event, err := s.agents.Upsert(agentruntime.UpsertInput{
+		_, _, _, err := s.agents.Upsert(agentruntime.UpsertInput{
 			Name:                profile.Name,
 			Mode:                profile.Mode,
 			Description:         profile.Description,
@@ -139,17 +139,11 @@ func (s *Server) applyUtilityAIToBuiltIns(state agentruntime.State, utilityProvi
 		if err != nil {
 			return state, err
 		}
-		if event != nil && s.hub != nil {
-			s.hub.Publish(*event)
-		}
 		updated = true
 		if strings.EqualFold(strings.TrimSpace(profile.Mode), agentruntime.ModeSubagent) && !strings.EqualFold(strings.TrimSpace(state.ActiveSubagent[name]), profile.Name) {
-			_, _, event, err = s.agents.SetActiveSubagent(name, profile.Name)
+			_, _, _, err = s.agents.SetActiveSubagent(name, profile.Name)
 			if err != nil {
 				return state, err
-			}
-			if event != nil && s.hub != nil {
-				s.hub.Publish(*event)
 			}
 			updated = true
 		}

@@ -167,7 +167,6 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 	}
 	hasUtilityOverride := req.UtilityProvider != nil || req.UtilityModel != nil || req.UtilityThinking != nil || req.OverwriteExplicit != nil
 	var state agentruntime.State
-	var event *pebblestore.EventEnvelope
 	var err error
 	if hasUtilityOverride {
 		state, err = s.agents.ListState(2000)
@@ -190,13 +189,10 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 		overwriteExplicit := req.OverwriteExplicit != nil && *req.OverwriteExplicit
 		state, err = s.applyUtilityAIToBuiltIns(state, provider, model, thinking, overwriteExplicit)
 	} else {
-		state, _, event, err = s.agents.RestoreDefaults()
+		state, _, _, err = s.agents.RestoreDefaults()
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
-		}
-		if event != nil && s.hub != nil {
-			s.hub.Publish(*event)
 		}
 		state, err = s.applyProviderDefaultsToBuiltIns(state)
 	}
@@ -223,13 +219,10 @@ func (s *Server) handleAgentDefaultsResetV2(w http.ResponseWriter, r *http.Reque
 		methodNotAllowed(w)
 		return
 	}
-	state, version, event, err := s.agents.ResetDefaults()
+	state, version, _, err := s.agents.ResetDefaults()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
-	}
-	if event != nil && s.hub != nil {
-		s.hub.Publish(*event)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                        true,
@@ -272,13 +265,10 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		activePrimary, version, event, err := s.agents.ActivatePrimary(req.Name)
+		activePrimary, version, _, err := s.agents.ActivatePrimary(req.Name)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
-		}
-		if event != nil && s.hub != nil {
-			s.hub.Publish(*event)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":             true,
@@ -335,13 +325,10 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodPut:
-			profile, version, event, err := s.agents.AssignCustomTool(agentName, toolName)
+			profile, version, _, err := s.agents.AssignCustomTool(agentName, toolName)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
-			}
-			if event != nil && s.hub != nil {
-				s.hub.Publish(*event)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":        true,
@@ -350,13 +337,10 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 				"version":   version,
 			})
 		case http.MethodDelete:
-			profile, version, event, err := s.agents.UnassignCustomTool(agentName, toolName)
+			profile, version, _, err := s.agents.UnassignCustomTool(agentName, toolName)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
-			}
-			if event != nil && s.hub != nil {
-				s.hub.Publish(*event)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":        true,
@@ -435,7 +419,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			}
 			storedCustomTools = append(storedCustomTools, stored)
 		}
-		profile, version, event, err := s.agents.Upsert(agentruntime.UpsertInput{
+		profile, version, _, err := s.agents.Upsert(agentruntime.UpsertInput{
 			Name:                name,
 			Mode:                req.Mode,
 			Description:         req.Description,
@@ -455,9 +439,6 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if event != nil && s.hub != nil {
-			s.hub.Publish(*event)
-		}
 		assignedCustomTools := normalizeUniqueCustomToolNames(req.AssignCustomTools)
 		if len(assignedCustomTools) == 0 && len(storedCustomTools) > 0 {
 			assignedCustomTools = make([]string, 0, len(storedCustomTools))
@@ -466,13 +447,10 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, toolName := range assignedCustomTools {
-			profile, version, event, err = s.agents.AssignCustomTool(name, toolName)
+			profile, version, _, err = s.agents.AssignCustomTool(name, toolName)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
-			}
-			if event != nil && s.hub != nil {
-				s.hub.Publish(*event)
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -483,13 +461,10 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			"assigned_custom_tools": assignedCustomTools,
 		})
 	case http.MethodDelete:
-		result, version, event, err := s.agents.Delete(name)
+		result, version, _, err := s.agents.Delete(name)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
-		}
-		if event != nil && s.hub != nil {
-			s.hub.Publish(*event)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":             true,

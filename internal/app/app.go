@@ -821,7 +821,7 @@ func (a *App) runSessionEventStream(ctx context.Context) {
 		return
 	}
 	lastSeen := a.streamSeq.Load()
-	channels := []string{"swarm:*", "session:*", "ui:*", "workspace:*"}
+	channels := []string{"swarm:*", "session:*", "ui:*", "workspace:*", "system:agent"}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -884,6 +884,8 @@ func (a *App) applySessionStreamEvent(event client.StreamEventEnvelope) bool {
 	switch eventType {
 	case "swarm.enrollment.pending", "swarm.enrollment.approved", "swarm.enrollment.rejected", "notification.created", "notification.updated":
 		return a.applySwarmStreamEvent(event)
+	case "agent.profile.created", "agent.profile.updated", "agent.profile.deleted", "agent.active.updated", "agent.defaults.restored", "agent.defaults.reset", "agent.state.synced", "agent.custom_tool.created", "agent.custom_tool.updated", "agent.custom_tool.deleted", "agent.custom_tool.assigned", "agent.custom_tool.unassigned", "agent.active_subagent.updated", "agent.active_subagent.deleted":
+		return a.applyAgentStreamEvent(event)
 	case "session.title.updated":
 		var payload struct {
 			SessionID string `json:"session_id"`
@@ -1210,6 +1212,113 @@ func (a *App) applySwarmStreamEvent(event client.StreamEventEnvelope) bool {
 	default:
 		return false
 	}
+}
+
+func (a *App) applyAgentStreamEvent(event client.StreamEventEnvelope) bool {
+	if a == nil {
+		return false
+	}
+	state := decodeAgentStateFromStreamEvent(event)
+	if len(state.Profiles) == 0 {
+		if a.api == nil {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		fetched, err := a.api.ListAgents(ctx, 500)
+		if err != nil {
+			return false
+		}
+		state = fetched
+	}
+	changed := a.applyAgentStateToRuntime(state)
+	if a.home.AgentsModalVisible() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		hints := make([]string, 0, len(state.Profiles)+2)
+		hints = append(hints, a.homeModel.ModelProvider)
+		for _, profile := range state.Profiles {
+			hints = append(hints, profile.Provider)
+		}
+		resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
+		a.home.SetAgentsModalData(mapAgentsModalData(
+			state,
+			resolvedModels,
+			strings.TrimSpace(a.homeModel.ModelProvider),
+			strings.TrimSpace(a.homeModel.ModelName),
+			strings.TrimSpace(a.homeModel.ThinkingLevel),
+		))
+		a.home.SetAgentsModalLoading(false)
+		changed = true
+	}
+	return changed
+}
+
+func decodeAgentStateFromStreamEvent(event client.StreamEventEnvelope) client.AgentState {
+	if len(event.Payload) == 0 {
+		return client.AgentState{}
+	}
+	var payload struct {
+		State client.AgentState `json:"state"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return client.AgentState{}
+	}
+	return payload.State
+}
+
+func (a *App) applyAgentStateToRuntime(state client.AgentState) bool {
+	activeAgent, executionSetting, exitPlanMode, runtimeKnown := activeAgentRuntime(state)
+	subagents := chatMentionSubagentNames(state)
+	changed := false
+	if strings.TrimSpace(a.homeModel.ActiveAgent) != strings.TrimSpace(activeAgent) ||
+		strings.TrimSpace(a.homeModel.ActiveAgentExecutionSetting) != strings.TrimSpace(executionSetting) ||
+		a.homeModel.ActiveAgentExitPlanMode != exitPlanMode ||
+		a.homeModel.ActiveAgentRuntimeKnown != runtimeKnown ||
+		!sameStringSet(a.homeModel.Subagents, subagents) {
+		next := a.homeModel
+		next.ActiveAgent = activeAgent
+		next.ActiveAgentExecutionSetting = executionSetting
+		next.ActiveAgentExitPlanMode = exitPlanMode
+		next.ActiveAgentRuntimeKnown = runtimeKnown
+		next.Subagents = append([]string(nil), subagents...)
+		a.homeModel = next
+		a.home.SetModel(next)
+		changed = true
+	}
+	if a.chat != nil {
+		meta := a.chat.Meta()
+		if !sameStringSet(meta.Subagents, subagents) {
+			meta.Subagents = append([]string(nil), subagents...)
+			a.chat.SetMeta(meta)
+			changed = true
+		}
+		a.syncChatAgentRuntime()
+	}
+	return changed
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]int, len(left))
+	for _, value := range left {
+		seen[strings.ToLower(strings.TrimSpace(value))]++
+	}
+	for _, value := range right {
+		key := strings.ToLower(strings.TrimSpace(value))
+		seen[key]--
+		if seen[key] < 0 {
+			return false
+		}
+	}
+	for _, count := range seen {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) applySharedChatRuntimeEvent(event client.StreamEventEnvelope) bool {

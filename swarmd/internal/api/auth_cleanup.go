@@ -102,7 +102,7 @@ func (s *Server) cleanupProviderAfterCredentialDeletion(ctx context.Context, pro
 			if !strings.EqualFold(strings.TrimSpace(profile.Provider), provider) {
 				continue
 			}
-			_, _, event, err := s.agents.Upsert(agentruntime.UpsertInput{
+			_, _, _, err := s.agents.Upsert(agentruntime.UpsertInput{
 				Name:        profile.Name,
 				Provider:    "",
 				Model:       "",
@@ -115,9 +115,6 @@ func (s *Server) cleanupProviderAfterCredentialDeletion(ctx context.Context, pro
 				return cleanup, fmt.Errorf("reset agent %s to inherit after credential delete: %w", profile.Name, err)
 			}
 			cleanup.ResetAgents = append(cleanup.ResetAgents, profile.Name)
-			if event != nil && s.hub != nil {
-				s.hub.Publish(*event)
-			}
 		}
 		sort.Strings(cleanup.ResetAgents)
 	}

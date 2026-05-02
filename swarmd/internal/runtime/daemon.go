@@ -151,6 +151,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	codexClient := codex.NewClient(authStore)
 	toolRuntime := tool.NewRuntime(8)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	agentSvc.SetEventPublisher(hub.Publish)
 	modelCatalog := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
 	modelSvc := model.NewServiceWithFavorites(
 		pebblestore.NewModelStore(store),

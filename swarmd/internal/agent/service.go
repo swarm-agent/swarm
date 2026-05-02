@@ -19,9 +19,10 @@ const (
 )
 
 type Service struct {
-	store  *pebblestore.AgentStore
-	events *pebblestore.EventLog
-	mu     sync.Mutex
+	store   *pebblestore.AgentStore
+	events  *pebblestore.EventLog
+	publish func(pebblestore.EventEnvelope)
+	mu      sync.Mutex
 }
 
 type State struct {
@@ -66,6 +67,13 @@ func NewService(store *pebblestore.AgentStore, events *pebblestore.EventLog) *Se
 		store:  store,
 		events: events,
 	}
+}
+
+func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {
+	if s == nil {
+		return
+	}
+	s.publish = publish
 }
 
 func (s *Service) EnsureDefaults() error {
@@ -449,6 +457,9 @@ func (s *Service) ListCustomTools(limit int) ([]pebblestore.AgentCustomToolDefin
 }
 
 func (s *Service) PutCustomTool(definition pebblestore.AgentCustomToolDefinition) (pebblestore.AgentCustomToolDefinition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	definition = pebblestore.NormalizeAgentCustomToolDefinition(definition)
 	if definition.Name == "" {
 		return pebblestore.AgentCustomToolDefinition{}, errors.New("custom tool name is required")
@@ -459,24 +470,66 @@ func (s *Service) PutCustomTool(definition pebblestore.AgentCustomToolDefinition
 	if definition.Command == "" {
 		return pebblestore.AgentCustomToolDefinition{}, errors.New("custom tool command is required")
 	}
+	eventType := "agent.custom_tool.created"
+	if _, ok, err := s.store.GetCustomTool(definition.Name); err != nil {
+		return pebblestore.AgentCustomToolDefinition{}, err
+	} else if ok {
+		eventType = "agent.custom_tool.updated"
+	}
 	definition.UpdatedAt = time.Now().UnixMilli()
 	if err := s.store.PutCustomTool(definition); err != nil {
+		return pebblestore.AgentCustomToolDefinition{}, err
+	}
+	version, err := s.bumpVersionLocked()
+	if err != nil {
+		return pebblestore.AgentCustomToolDefinition{}, err
+	}
+	state, err := s.currentStateLocked(2000)
+	if err != nil {
+		return pebblestore.AgentCustomToolDefinition{}, err
+	}
+	if _, err := s.appendEventLocked(eventType, definition.Name, map[string]any{
+		"custom_tool": definition,
+		"state":       state,
+		"version":     version,
+	}); err != nil {
 		return pebblestore.AgentCustomToolDefinition{}, err
 	}
 	return definition, nil
 }
 
 func (s *Service) DeleteCustomTool(name string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	name = pebblestore.NormalizeAgentCustomToolName(name)
 	if name == "" {
 		return false, errors.New("custom tool name is required")
 	}
-	if _, ok, err := s.store.GetCustomTool(name); err != nil {
+	definition, ok, err := s.store.GetCustomTool(name)
+	if err != nil {
 		return false, err
-	} else if !ok {
+	}
+	if !ok {
 		return false, nil
 	}
 	if err := s.store.DeleteCustomTool(name); err != nil {
+		return false, err
+	}
+	version, err := s.bumpVersionLocked()
+	if err != nil {
+		return false, err
+	}
+	state, err := s.currentStateLocked(2000)
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.appendEventLocked("agent.custom_tool.deleted", name, map[string]any{
+		"deleted":     name,
+		"custom_tool": definition,
+		"state":       state,
+		"version":     version,
+	}); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -523,10 +576,15 @@ func (s *Service) AssignCustomTool(agentName, toolName string) (pebblestore.Agen
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
+	state, err := s.currentStateLocked(2000)
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
 	env, err := s.appendEventLocked("agent.custom_tool.assigned", agentName, map[string]any{
 		"agent":     agentName,
 		"tool_name": toolName,
 		"profile":   profile,
+		"state":     state,
 		"version":   version,
 	})
 	if err != nil {
@@ -571,10 +629,15 @@ func (s *Service) UnassignCustomTool(agentName, toolName string) (pebblestore.Ag
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
+	state, err := s.currentStateLocked(2000)
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
 	env, err := s.appendEventLocked("agent.custom_tool.unassigned", agentName, map[string]any{
 		"agent":     agentName,
 		"tool_name": toolName,
 		"profile":   profile,
+		"state":     state,
 		"version":   version,
 	})
 	if err != nil {
@@ -656,9 +719,18 @@ func (s *Service) Upsert(input UpsertInput) (pebblestore.AgentProfile, int64, *p
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
 	}
+	state, err := s.currentStateLocked(2000)
+	if err != nil {
+		return pebblestore.AgentProfile{}, 0, nil, err
+	}
+	eventType := "agent.profile.updated"
+	if !ok {
+		eventType = "agent.profile.created"
+	}
 
-	env, err := s.appendEventLocked("agent.profile.updated", profile.Name, map[string]any{
+	env, err := s.appendEventLocked(eventType, profile.Name, map[string]any{
 		"profile": profile,
+		"state":   state,
 		"version": version,
 	})
 	if err != nil {
@@ -696,8 +768,13 @@ func (s *Service) ActivatePrimary(name string) (string, int64, *pebblestore.Even
 	if err != nil {
 		return "", 0, nil, err
 	}
+	state, err := s.currentStateLocked(2000)
+	if err != nil {
+		return "", 0, nil, err
+	}
 	env, err := s.appendEventLocked("agent.active.updated", name, map[string]any{
 		"active_primary": name,
+		"state":          state,
 		"version":        version,
 	})
 	if err != nil {
@@ -774,9 +851,14 @@ func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEn
 		Deleted:       name,
 		ActivePrimary: activePrimary,
 	}
+	state, err := s.currentStateLocked(2000)
+	if err != nil {
+		return DeleteResult{}, 0, nil, err
+	}
 	env, err := s.appendEventLocked("agent.profile.deleted", name, map[string]any{
 		"deleted":        result.Deleted,
 		"active_primary": result.ActivePrimary,
+		"state":          state,
 		"version":        version,
 	})
 	if err != nil {
@@ -830,6 +912,7 @@ func (s *Service) RestoreDefaults() (State, int64, *pebblestore.EventEnvelope, e
 		"restored":        restored,
 		"active_primary":  state.ActivePrimary,
 		"active_subagent": state.ActiveSubagent,
+		"state":           state,
 		"version":         version,
 	})
 	if err != nil {
@@ -921,6 +1004,7 @@ func (s *Service) ResetDefaults() (State, int64, *pebblestore.EventEnvelope, err
 		"deleted_tools":    deletedTools,
 		"active_primary":   state.ActivePrimary,
 		"active_subagent":  state.ActiveSubagent,
+		"state":            state,
 		"version":          version,
 	})
 	if err != nil {
@@ -1035,10 +1119,15 @@ func (s *Service) SetActiveSubagent(purpose, name string) (map[string]string, in
 	if err != nil {
 		return nil, 0, nil, err
 	}
+	state, err := s.currentStateLocked(2000)
+	if err != nil {
+		return nil, 0, nil, err
+	}
 	env, err := s.appendEventLocked("agent.active_subagent.updated", purpose, map[string]any{
 		"purpose":         purpose,
 		"agent":           name,
 		"active_subagent": assignments,
+		"state":           state,
 		"version":         version,
 	})
 	if err != nil {
@@ -1066,9 +1155,14 @@ func (s *Service) DeleteActiveSubagent(purpose string) (map[string]string, int64
 	if err != nil {
 		return nil, 0, nil, err
 	}
+	state, err := s.currentStateLocked(2000)
+	if err != nil {
+		return nil, 0, nil, err
+	}
 	env, err := s.appendEventLocked("agent.active_subagent.deleted", purpose, map[string]any{
 		"purpose":         purpose,
 		"active_subagent": assignments,
+		"state":           state,
 		"version":         version,
 	})
 	if err != nil {
@@ -1416,5 +1510,12 @@ func (s *Service) appendEventLocked(eventType, entityID string, payload any) (pe
 	if err != nil {
 		return pebblestore.EventEnvelope{}, err
 	}
-	return s.events.Append("system:agent", eventType, strings.TrimSpace(entityID), raw, "", "")
+	env, err := s.events.Append("system:agent", eventType, strings.TrimSpace(entityID), raw, "", "")
+	if err != nil {
+		return pebblestore.EventEnvelope{}, err
+	}
+	if s.publish != nil {
+		s.publish(env)
+	}
+	return env, nil
 }

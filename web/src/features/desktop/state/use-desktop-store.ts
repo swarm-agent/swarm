@@ -21,7 +21,7 @@ import {
   fetchSessionUsageSummary,
 } from '../chat/queries/chat-queries'
 import { gitStatusQueryKey } from '../git/api'
-import { sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
+import { agentStateQueryOptions, sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
@@ -1666,6 +1666,12 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
     }
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }
+  if (eventType.startsWith('agent.')) {
+    deferDesktopCacheMutation('agent state invalidate', () => {
+      void queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey })
+    })
+    return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
+  }
   if (eventType === 'ui.settings.updated') {
     const nextSettings = payload as UISettingsWire
     const previousSettings = queryClient.getQueryData<UISettingsWire>(uiSettingsQueryKey())
@@ -2723,6 +2729,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'workspace:*', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'workspace_git:*', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'system:worktrees', last_seen_seq: get().lastGlobalSeq }))
+        socket.send(JSON.stringify({ type: 'subscribe', channel: 'system:agent', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'workspace_todo:*', last_seen_seq: get().lastGlobalSeq }))
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'swarm:*', last_seen_seq: get().lastGlobalSeq }))
         deferDesktopCacheMutation('workspace overview refresh on realtime connect', () => {
