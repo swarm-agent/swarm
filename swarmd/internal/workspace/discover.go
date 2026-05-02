@@ -125,6 +125,9 @@ func workspaceDiscoverRoots(requested []string) []string {
 		}
 		return roots
 	}
+	if workspaceRoot, ok := remoteChildWorkspaceRoot(); ok {
+		add(workspaceRoot)
+	}
 	home, err := os.UserHomeDir()
 	if err == nil && strings.TrimSpace(home) != "" {
 		add(home)

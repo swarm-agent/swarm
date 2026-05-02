@@ -654,6 +654,9 @@ func resolveBrowsePath(input string) (string, error) {
 }
 
 func resolveBrowseHomePath() (string, error) {
+	if workspaceRoot, ok := remoteChildWorkspaceRoot(); ok {
+		return workspaceRoot, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
@@ -662,6 +665,24 @@ func resolveBrowseHomePath() (string, error) {
 		return "", fmt.Errorf("home directory is unavailable")
 	}
 	return resolvePath(home)
+}
+
+var remoteChildWorkspaceRootPath = "/workspaces"
+
+func remoteChildWorkspaceRoot() (string, bool) {
+	workspaceRoot := strings.TrimSpace(remoteChildWorkspaceRootPath)
+	if workspaceRoot == "" {
+		return "", false
+	}
+	info, err := os.Stat(workspaceRoot)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	resolved, err := resolvePath(workspaceRoot)
+	if err != nil {
+		return "", false
+	}
+	return resolved, true
 }
 
 func filesystemRootPath(path string) string {
