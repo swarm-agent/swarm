@@ -33,9 +33,15 @@ export interface TaskToolRow {
   currentToolMs: number;
 }
 
+export interface SearchToolLineMatch {
+  line: number;
+  text: string;
+}
+
 export interface SearchToolLineGroup {
   query: string;
   lines: number[];
+  matches: SearchToolLineMatch[];
   extraLineCount: number;
 }
 

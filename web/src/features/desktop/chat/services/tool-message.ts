@@ -662,7 +662,7 @@ function buildSearchFileModeGroups(
       const query = jsonStr(item, "query");
       const matchCount = Math.max(1, jsonNum(item, "count"));
       const queryGroups: SearchToolLineGroup[] = [
-        { query, lines: [], extraLineCount: 0 },
+        { query, lines: [], matches: [], extraLineCount: 0 },
       ];
       return {
         path,
@@ -685,7 +685,12 @@ function buildSearchContentFileGroups(
       queryOrder: string[];
       queryMap: Map<
         string,
-        { query: string; lines: number[]; seen: Set<number> }
+        {
+          query: string;
+          lines: number[];
+          matches: { line: number; text: string }[];
+          seen: Set<number>;
+        }
       >;
     }
   >();
@@ -708,15 +713,19 @@ function buildSearchContentFileGroups(
 
     let queryGroup = fileGroup.queryMap.get(queryKey);
     if (!queryGroup) {
-      queryGroup = { query, lines: [], seen: new Set<number>() };
+      queryGroup = { query, lines: [], matches: [], seen: new Set<number>() };
       fileGroup.queryMap.set(queryKey, queryGroup);
       fileGroup.queryOrder.push(queryKey);
     }
 
     if (!queryGroup.query && query) queryGroup.query = query;
+    const text = jsonStr(item, "text");
     if (line > 0 && !queryGroup.seen.has(line)) {
       queryGroup.seen.add(line);
       queryGroup.lines.push(line);
+      queryGroup.matches.push({ line, text });
+    } else if (line <= 0 && text) {
+      queryGroup.matches.push({ line: 0, text });
     }
   }
 
@@ -729,7 +738,11 @@ function buildSearchContentFileGroups(
         return {
           query: queryGroup?.query ?? "",
           lines: allLines.slice(0, 6),
-          extraLineCount: Math.max(0, allLines.length - 6),
+          matches: (queryGroup?.matches ?? []).slice(0, 6),
+          extraLineCount: Math.max(
+            0,
+            Math.max(allLines.length, queryGroup?.matches.length ?? 0) - 6,
+          ),
         };
       },
     );

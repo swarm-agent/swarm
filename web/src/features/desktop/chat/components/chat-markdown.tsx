@@ -177,7 +177,7 @@ function TaskRowsView({ rows, nowMs }: { rows: TaskToolRow[]; nowMs: number }) {
   );
 }
 
-function SearchSummaryChips({
+function SearchSummaryLine({
   toolMessage,
 }: {
   toolMessage: StructuredToolMessage;
@@ -185,56 +185,60 @@ function SearchSummaryChips({
   const data = toolMessage.searchData;
   if (!data) return null;
 
-  const chips: string[] = [];
-  if (data.queryCount > 1) chips.push(`${data.queryCount} queries`);
-  if (data.count > 0)
-    chips.push(
+  const parts: string[] = [];
+  if (data.queryCount > 1) parts.push(`${data.queryCount} queries`);
+  if (data.count > 0) {
+    parts.push(
       `${data.count} ${data.mode === "files" ? (data.count === 1 ? "file" : "files") : data.count === 1 ? "match" : "matches"}`,
     );
-  if (data.totalMatched > data.count) chips.push(`${data.totalMatched} total`);
-  if (data.path) chips.push(data.path);
-  if (data.timedOut) chips.push("timed out");
-  else if (data.truncated) chips.push("partial");
-  if (chips.length === 0) return null;
+  }
+  if (data.totalMatched > data.count) parts.push(`${data.totalMatched} total`);
+  if (data.timedOut) parts.push("timed out");
+  else if (data.truncated) parts.push("partial results");
+
+  const summary = parts.length > 0 ? parts.join(" · ") : "no matches";
 
   return (
-    <div className="mt-2 flex flex-wrap gap-1.5">
-      {chips.map((chip) => (
-        <span
-          key={chip}
-          className="rounded-full border border-[var(--app-border)] bg-[var(--app-background)] px-2 py-0.5 text-[10px] text-[var(--app-text-subtle)]"
-        >
-          {chip}
-        </span>
-      ))}
+    <div className="mt-1 text-[11px] leading-5 text-[var(--app-text-subtle)]">
+      {summary}
+      {data.path ? <span className="hidden sm:inline"> · {data.path}</span> : null}
     </div>
   );
 }
 
 function SearchLineList({ group }: { group: SearchToolLineGroup }) {
   const [expanded, setExpanded] = useState(false);
-  const visibleLines = expanded ? group.lines : group.lines.slice(0, 4);
-  const hiddenCount = Math.max(
-    0,
-    group.lines.length -
-      visibleLines.length +
-      (expanded ? 0 : group.extraLineCount),
-  );
-  const showExpand = group.lines.length > 4 || group.extraLineCount > 0;
+  const displayMatches = group.matches.length > 0;
+  const items = displayMatches ? group.matches : group.lines.map((line) => ({ line, text: "" }));
+  const visibleItems = expanded ? items : items.slice(0, 3);
+  const hiddenCount = Math.max(0, items.length - visibleItems.length + (expanded ? 0 : group.extraLineCount));
+  const showExpand = items.length > 3 || group.extraLineCount > 0;
 
   return (
-    <div className="mt-1 text-[11px] leading-[18px] text-[var(--app-text-muted)]">
-      <div className="flex flex-wrap gap-x-2 gap-y-1">
-        <span className="font-medium text-[var(--app-text)] break-all">
-          {group.query || "match"}
-        </span>
-        <span className="text-[var(--app-text-subtle)]">
-          {visibleLines.length > 0 ? visibleLines.join(", ") : "file match"}
-          {!expanded && group.extraLineCount > 0
-            ? ` +${group.extraLineCount} more`
-            : ""}
-        </span>
+    <div className="mt-2 min-w-0 text-[12px] leading-5 text-[var(--app-text-muted)]">
+      <div className="mb-1 font-sans text-[11px] font-medium text-[var(--app-text-subtle)]">
+        {group.query || "match"}
       </div>
+      {visibleItems.length > 0 ? (
+        <div className="space-y-1">
+          {visibleItems.map((item, index) => (
+            <div key={`${item.line}:${index}`} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-2">
+              {item.line > 0 ? (
+                <span className="select-none font-mono text-[11px] text-[var(--app-text-subtle)]">
+                  {item.line}
+                </span>
+              ) : (
+                <span />
+              )}
+              <span className="min-w-0 whitespace-pre-wrap break-words font-mono text-[var(--app-text-muted)] [overflow-wrap:anywhere]">
+                {item.text || (item.line > 0 ? "line match" : "file match")}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="font-mono text-[var(--app-text-subtle)]">file match</div>
+      )}
       {showExpand ? (
         <button
           type="button"
@@ -242,8 +246,8 @@ function SearchLineList({ group }: { group: SearchToolLineGroup }) {
           className="mt-1 text-[11px] text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:underline"
         >
           {expanded
-            ? "collapse lines"
-            : `show more lines${hiddenCount > 0 ? ` (${hiddenCount})` : ""}`}
+            ? "collapse matches"
+            : `show ${hiddenCount > 0 ? hiddenCount : "more"} more`}
         </button>
       ) : null}
     </div>
@@ -260,19 +264,19 @@ function SearchFileSection({
   const [expanded, setExpanded] = useState(false);
   const visibleGroups = expanded
     ? file.queryGroups
-    : file.queryGroups.slice(0, 3);
+    : file.queryGroups.slice(0, 2);
   const hiddenGroupCount = Math.max(
     0,
     file.queryGroups.length -
       visibleGroups.length +
       (expanded ? 0 : file.extraQueryCount),
   );
-  const showExpand = file.queryGroups.length > 3 || file.extraQueryCount > 0;
+  const showExpand = file.queryGroups.length > 2 || file.extraQueryCount > 0;
 
   return (
-    <div className="border-l-[1.5px] border-[var(--app-border)] pl-3 py-1">
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[12px]">
-        <span className="font-mono text-[var(--app-text)] break-all">
+    <div className="min-w-0 border-t border-[var(--app-border)] py-2 first:border-t-0 first:pt-0 last:pb-0">
+      <div className="grid min-w-0 gap-1 text-[12px] sm:flex sm:items-baseline sm:gap-2">
+        <span className="min-w-0 break-words font-mono text-[var(--app-text)] [overflow-wrap:anywhere]">
           {file.path}
         </span>
         <span className="text-[10px] text-[var(--app-text-subtle)]">
@@ -319,10 +323,10 @@ function SearchToolView({
   const sections = useMemo(() => visibleFiles, [visibleFiles]);
 
   return (
-    <div className="mt-2">
-      <SearchSummaryChips toolMessage={toolMessage} />
+    <div className="mt-2 min-w-0">
+      <SearchSummaryLine toolMessage={toolMessage} />
       {sections.length > 0 ? (
-        <div className="mt-2 space-y-2 font-mono">
+        <div className="mt-2 min-w-0 font-mono">
           {sections.map((file, index) => (
             <SearchFileSection
               key={`${file.path}:${index}`}
@@ -370,10 +374,10 @@ export function ToolMessageView({
       className={
         isGroupItem
           ? "py-2 border-t border-[var(--app-border)] first:border-0 first:pt-0"
-          : "p-3 mb-2 bg-[var(--app-surface-subtle)] border border-[var(--app-border)] rounded-md"
+          : "p-3 mb-2 min-w-0 bg-[var(--app-surface-subtle)] border border-[var(--app-border)] rounded-md"
       }
     >
-      <div className="flex items-center gap-2 text-xs">
+      <div className="flex min-w-0 items-center gap-2 text-xs">
         <ToolIcon size={14} className="text-[var(--app-text-muted)] shrink-0" />
         <span className="font-semibold text-[var(--app-text)] truncate">
           {toolMessage.summary || toolMessage.tool || "tool"}
@@ -396,7 +400,7 @@ export function ToolMessageView({
           />
         </div>
       </div>
-      <div className="pl-[22px]">
+      <div className="min-w-0 pl-[22px]">
         {toolMessage.error ? (
           <div className="mt-1 break-words text-[12px] text-[var(--app-danger)]">
             {toolMessage.error}

@@ -375,6 +375,41 @@ function testBashToolMessageShowsAlwaysAllowedScriptCommand(): void {
   )
 }
 
+function testSearchToolPreservesContentMatchText(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'search',
+    callId: 'call_search_1',
+    argumentsText: JSON.stringify({ query: 'SearchToolView', path: 'web/src' }),
+    outputText: JSON.stringify({
+      tool: 'search',
+      search_mode: 'content',
+      path: 'web/src',
+      count: 1,
+      total_matched: 1,
+      matches: [
+        {
+          path: 'web/src/features/desktop/chat/components/chat-markdown.tsx',
+          query: 'SearchToolView',
+          line: 307,
+          text: 'function SearchToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {',
+        },
+      ],
+    }),
+  })
+
+  assert(Boolean(message), 'expected structured search tool message')
+  const match = message?.searchData?.files[0]?.queryGroups[0]?.matches[0]
+  assert(match?.line === 307, `unexpected search match line: ${match?.line}`)
+  assert(
+    match?.text.includes('function SearchToolView') === true,
+    `missing search match text: ${match?.text}`,
+  )
+  assert(
+    message?.previewLines.length === 0,
+    `search tool should use rich search data, got preview lines: ${message?.previewLines.join(' | ')}`,
+  )
+}
+
 function testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads(): void {
   const deltaPayload = JSON.stringify({
     tool: 'task',
@@ -452,6 +487,7 @@ function main(): void {
   testTaskRowsMapReasoningToThinkingWithoutPreviewLeak();
   testTaskRowsHideAssistantPreviewText();
   testBashToolMessageShowsAlwaysAllowedScriptCommand();
+  testSearchToolPreservesContentMatchText();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   console.log("tool-message tests passed");
 }
