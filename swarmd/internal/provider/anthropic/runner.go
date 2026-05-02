@@ -176,7 +176,10 @@ func buildAnthropicTools(definitions []provideriface.ToolDefinition) ([]anthropi
 		if name == "" {
 			continue
 		}
-		schema := sanitizeAnthropicToolSchema(definition.Parameters)
+		schema, err := sanitizeAnthropicToolSchema(definition.Parameters)
+		if err != nil {
+			return nil, false, fmt.Errorf("sanitize anthropic tool schema %q: %w", name, err)
+		}
 		tool := anthropicapi.ToolParam{
 			Name:         name,
 			Description:  anthropicapi.String(strings.TrimSpace(definition.Description)),
@@ -190,73 +193,21 @@ func buildAnthropicTools(definitions []provideriface.ToolDefinition) ([]anthropi
 	return tools, enablePromptCaching, nil
 }
 
-func sanitizeAnthropicToolSchema(parameters map[string]any) anthropicapi.ToolInputSchemaParam {
-	cleaned, ok := sanitizeAnthropicToolSchemaValue(parameters).(map[string]any)
-	if !ok {
-		cleaned = map[string]any{}
+func sanitizeAnthropicToolSchema(parameters map[string]any) (anthropicapi.ToolInputSchemaParam, error) {
+	// The non-beta Messages API uses ToolInputSchemaParam, while the SDK's
+	// exported compatibility transformer is BetaToolInputSchema. The beta and
+	// non-beta schema params have the same JSON shape, so marshal the official
+	// SDK-transformed schema back to a map and attach it as non-beta ExtraFields.
+	transformed := anthropicapi.BetaToolInputSchema(parameters)
+	encoded, err := json.Marshal(transformed)
+	if err != nil {
+		return anthropicapi.ToolInputSchemaParam{}, err
 	}
-	properties := cleaned["properties"]
-	delete(cleaned, "properties")
-	required := schemaStringSlice(cleaned["required"])
-	delete(cleaned, "required")
-	return anthropicapi.ToolInputSchemaParam{
-		Type:        "object",
-		Properties:  properties,
-		Required:    required,
-		ExtraFields: cleaned,
+	var fullSchema map[string]any
+	if err := json.Unmarshal(encoded, &fullSchema); err != nil {
+		return anthropicapi.ToolInputSchemaParam{}, err
 	}
-}
-
-func sanitizeAnthropicToolSchemaValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(typed))
-		for key, item := range typed {
-			out[key] = sanitizeAnthropicToolSchemaValue(item)
-		}
-		return out
-	case []map[string]any:
-		out := make([]map[string]any, 0, len(typed))
-		for _, item := range typed {
-			cleaned, ok := sanitizeAnthropicToolSchemaValue(item).(map[string]any)
-			if ok {
-				out = append(out, cleaned)
-			}
-		}
-		return out
-	case []any:
-		out := make([]any, 0, len(typed))
-		for _, item := range typed {
-			out = append(out, sanitizeAnthropicToolSchemaValue(item))
-		}
-		return out
-	default:
-		return value
-	}
-}
-
-func schemaStringSlice(value any) []string {
-	switch typed := value.(type) {
-	case []string:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if item = strings.TrimSpace(item); item != "" {
-				out = append(out, item)
-			}
-		}
-		return out
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			text := strings.TrimSpace(fmt.Sprintf("%v", item))
-			if text != "" {
-				out = append(out, text)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
+	return anthropicapi.ToolInputSchemaParam{ExtraFields: fullSchema}, nil
 }
 
 func buildAnthropicMessages(input []map[string]any) ([]anthropicapi.MessageParam, error) {
