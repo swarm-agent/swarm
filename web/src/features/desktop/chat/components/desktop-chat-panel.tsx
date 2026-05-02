@@ -326,7 +326,7 @@ function nearBottom(element: HTMLDivElement): boolean {
 }
 
 type RenderItem =
-  | { type: 'message'; message: ChatMessageRecord }
+  | { type: 'message'; message: ChatMessageRecord; virtualKey?: string }
   | { type: 'live-tool'; toolMessage: NonNullable<ChatMessageRecord['toolMessage']> }
   | { type: 'live-assistant'; id: string; content: string }
 
@@ -336,7 +336,7 @@ function renderItemKey(item: RenderItem | undefined, index: number): string {
   }
   switch (item.type) {
     case 'message':
-      return item.message.id
+      return item.virtualKey ?? item.message.id
     case 'live-tool':
       return `live-tool:${item.toolMessage.callId || item.toolMessage.tool || 'active'}`
     case 'live-assistant':
@@ -750,6 +750,7 @@ export function DesktopChatPanel({
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const shouldStickToBottomRef = useRef(true)
   const scrollToLatestFrameRef = useRef<number | null>(null)
+  const liveAssistantHandoffRef = useRef<{ sessionId: string; content: string; key: string } | null>(null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
@@ -1097,6 +1098,7 @@ export function DesktopChatPanel({
   const lifecycleActive = Boolean(lifecycle?.active)
   const lifecycleRunId = lifecycleActive ? lifecycle?.runId?.trim() ?? '' : ''
   const liveRunId = liveSession?.live.runId?.trim() ?? ''
+  const liveAssistantDraftKey = `live-assistant:${liveRunId || 'draft'}`
   const reconnectingRun = !lifecycleActive
     && lifecyclePhase === ''
     && liveRunId !== ''
@@ -1110,8 +1112,8 @@ export function DesktopChatPanel({
   const runTimerLabel = showRunTimer ? formatDurationCompact(timerNow - lifecycleStartedAt) : reconnectingRun ? 'Reconnecting…' : ''
   const composerDisabled = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
   const runActive = canStop || submitting || lifecycleActive
-  const showDictationButton = !runActive
-  const dictationButtonDisabled = composerDisabled || !dictationSupported
+  const showDictationButton = !runActive && dictationSupported
+  const dictationButtonDisabled = composerDisabled
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : composer
@@ -1127,7 +1129,20 @@ export function DesktopChatPanel({
   const agentTodoSummary = metadataTodoSummary(metadataRecord(liveSession?.metadata))
   const agentTodoBadgeLabel = formatAgentTodoBadge(agentTodoSummary)
   const renderItems = useMemo(() => {
-    const items: RenderItem[] = displayedMessages.map((message) => ({ type: 'message', message }))
+    const handoff = liveAssistantHandoffRef.current
+    const lastDisplayedMessage = displayedMessages.at(-1)
+    const handoffMessageId = handoff
+      && handoff.sessionId === sessionId
+      && !shouldRenderLiveAssistantDraft
+      && lastDisplayedMessage?.role === 'assistant'
+      && lastDisplayedMessage.content === handoff.content
+      ? lastDisplayedMessage.id
+      : ''
+    const items: RenderItem[] = displayedMessages.map((message) => ({
+      type: 'message',
+      message,
+      virtualKey: message.id === handoffMessageId ? handoff?.key : undefined,
+    }))
     for (const segment of retainedAssistantSegments) {
       if (segment.content.trim() !== '') {
         items.push({ type: 'live-assistant', id: segment.id, content: segment.content })
@@ -1137,15 +1152,17 @@ export function DesktopChatPanel({
       items.push({ type: 'live-tool', toolMessage: liveToolMessage })
     }
     if (shouldRenderLiveAssistantDraft) {
-      items.push({ type: 'live-assistant', id: 'live-assistant:draft', content: liveAssistantDraft })
+      items.push({ type: 'live-assistant', id: liveAssistantDraftKey, content: liveAssistantDraft })
     }
     return items
-  }, [displayedMessages, liveAssistantDraft, liveToolMessage, retainedAssistantSegments, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
+  }, [displayedMessages, liveAssistantDraft, liveAssistantDraftKey, liveToolMessage, retainedAssistantSegments, sessionId, shouldRenderLiveAssistantDraft, shouldRenderLiveToolMessage])
   const renderMeasurementKey = useMemo(
     () => renderItems.map((item) => {
       switch (item.type) {
         case 'message':
-          return `m:${item.message.id}:${item.message.content.length}`
+          return item.virtualKey
+            ? `la:${item.message.content.length}`
+            : `m:${item.message.id}:${item.message.content.length}`
         case 'live-tool':
           return `lt:${item.toolMessage.callId || item.toolMessage.tool}:${item.toolMessage.output.length}:${item.toolMessage.completedOutput.length}:${item.toolMessage.taskRows.length}`
         case 'live-assistant':
@@ -1542,6 +1559,14 @@ export function DesktopChatPanel({
       }
     })
   }, [commitModal.status, commitModal.targetSessionId, trackedCommitSession])
+
+  useEffect(() => {
+    if (sessionId && shouldRenderLiveAssistantDraft && liveAssistantDraft !== '') {
+      liveAssistantHandoffRef.current = { sessionId, content: liveAssistantDraft, key: liveAssistantDraftKey }
+    } else if (!sessionId) {
+      liveAssistantHandoffRef.current = null
+    }
+  }, [liveAssistantDraft, liveAssistantDraftKey, sessionId, shouldRenderLiveAssistantDraft])
 
   useEffect(() => {
     if (shouldStickToBottomRef.current) {
@@ -2421,7 +2446,7 @@ export function DesktopChatPanel({
         </div>
       </header>
 
-      <div ref={scrollerRef} onScroll={persistScrollState} className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain bg-[var(--app-bg-alt)] px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-6 sm:py-5">
+      <div ref={scrollerRef} data-testid="desktop-chat-scroller" onScroll={persistScrollState} className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain bg-[var(--app-bg-alt)] px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-6 sm:py-5">
         {loadingMessages && messages.length === 0 ? (
           <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text-muted)]">Loading conversation…</div>
         ) : null}
@@ -2447,6 +2472,8 @@ export function DesktopChatPanel({
                   key={virtualItem.key}
                   ref={rowVirtualizer.measureElement}
                   data-index={virtualItem.index}
+                  data-testid="desktop-chat-row"
+                  data-render-item-type={item.type}
                   className="absolute left-0 top-0 w-full py-2 flex justify-start"
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                 >
@@ -2463,6 +2490,8 @@ export function DesktopChatPanel({
                   key={virtualItem.key}
                   ref={rowVirtualizer.measureElement}
                   data-index={virtualItem.index}
+                  data-testid="desktop-chat-row"
+                  data-render-item-type={item.type}
                   className="absolute left-0 top-0 w-full py-2 flex justify-start"
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                 >
@@ -2486,6 +2515,8 @@ export function DesktopChatPanel({
                   key={virtualItem.key}
                   ref={rowVirtualizer.measureElement}
                   data-index={virtualItem.index}
+                  data-testid="desktop-chat-row"
+                  data-render-item-type={item.type}
                   className="absolute left-0 top-0 w-full py-2 flex justify-end"
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                   data-global-seq={message.globalSeq}
@@ -2505,6 +2536,8 @@ export function DesktopChatPanel({
                   key={virtualItem.key}
                   ref={rowVirtualizer.measureElement}
                   data-index={virtualItem.index}
+                  data-testid="desktop-chat-row"
+                  data-render-item-type={item.type}
                   className="absolute left-0 top-0 w-full py-2 flex justify-start"
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                   data-global-seq={message.globalSeq}
@@ -2524,6 +2557,8 @@ export function DesktopChatPanel({
                 key={virtualItem.key}
                 ref={rowVirtualizer.measureElement}
                 data-index={virtualItem.index}
+                data-testid="desktop-chat-row"
+                data-render-item-type={item.type}
                 className="absolute left-0 top-0 w-full py-2 flex justify-start"
                 style={{ transform: `translateY(${virtualItem.start}px)` }}
                 data-global-seq={message.globalSeq}
