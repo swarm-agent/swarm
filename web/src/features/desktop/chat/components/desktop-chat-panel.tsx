@@ -875,14 +875,14 @@ export function DesktopChatPanel({
   const virtualItems = rowVirtualizer.getVirtualItems()
 
   const selectableAgents = useMemo(
-    () => agentState.profiles.filter((profile) => profile.name.trim() !== ''),
+    () => agentState.profiles.filter((profile) => profile.enabled),
     [agentState.profiles],
   )
   const mentionSubagents = useMemo(
-    () => normalizeMentionSubagents(selectableAgents
+    () => normalizeMentionSubagents(agentState.profiles
       .filter((profile) => profile.enabled && profile.mode === 'subagent')
       .map((profile) => profile.name)),
-    [selectableAgents],
+    [agentState.profiles],
   )
   const mentionPaletteIsActive = useMemo(() => mentionPaletteActive(composer, mentionSubagents), [composer, mentionSubagents])
   const mentionPaletteMatches = useMemo(
