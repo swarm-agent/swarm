@@ -264,7 +264,7 @@ func TestWorkspaceBootstrapPrefersStandaloneChildWorkspaceForNestedLink(t *testi
 
 func newWorkspaceBootstrapTestServer(t *testing.T, eventLog *pebblestore.EventLog, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service) *api.Server {
 	t.Helper()
-	server := api.NewServer("test", nil, nil, nil, nil, sessionSvc, workspaceSvc, discoverySvc, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := api.NewServer("test", nil, nil, nil, nil, sessionSvc, workspaceSvc, discoverySvc, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
 	cfg.SwarmMode = true

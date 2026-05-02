@@ -69,3 +69,30 @@ func TestWorkspaceDiscoverRootsHonorsExplicitRoots(t *testing.T) {
 		t.Fatalf("roots = %#v, want only explicit root %q", roots, root)
 	}
 }
+
+func TestListKnownRegistersMountedRemoteChildWorkspaces(t *testing.T) {
+	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
+	project := filepath.Join(workspaceRoot, "swarm")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatalf("mkdir mounted workspace: %v", err)
+	}
+	withRemoteChildWorkspaceRootPath(t, workspaceRoot)
+
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+
+	entries, err := svc.ListKnown(200)
+	if err != nil {
+		t.Fatalf("ListKnown: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1: %#v", len(entries), entries)
+	}
+	if entries[0].Path != project {
+		t.Fatalf("entry path = %q, want %q", entries[0].Path, project)
+	}
+	if entries[0].WorkspaceName != "swarm" {
+		t.Fatalf("entry name = %q, want swarm", entries[0].WorkspaceName)
+	}
+}

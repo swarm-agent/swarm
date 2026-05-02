@@ -121,7 +121,7 @@ func newCopiedSessionHandler(tb testing.TB, sessionCount int) (http.Handler, fun
 	}
 
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	server := api.NewServer("test", nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server := api.NewServer("test", nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
 	return server.Handler(), func() {
 		_ = store.Close()
 	}

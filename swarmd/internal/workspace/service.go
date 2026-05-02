@@ -362,6 +362,9 @@ func (s *Service) Delete(path string) (Resolution, error) {
 }
 
 func (s *Service) ListKnown(limit int) ([]Entry, error) {
+	if err := s.ensureRemoteChildWorkspaceEntries(); err != nil {
+		return nil, err
+	}
 	entries, err := s.store.List(limit)
 	if err != nil {
 		return nil, err
@@ -683,6 +686,45 @@ func remoteChildWorkspaceRoot() (string, bool) {
 		return "", false
 	}
 	return resolved, true
+}
+
+func (s *Service) ensureRemoteChildWorkspaceEntries() error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	workspaceRoot, ok := remoteChildWorkspaceRoot()
+	if !ok {
+		return nil
+	}
+	entries, err := s.store.List(100000)
+	if err != nil {
+		return err
+	}
+	known := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		path := filepath.Clean(strings.TrimSpace(entry.Path))
+		if path != "" && path != "." {
+			known[path] = struct{}{}
+		}
+	}
+	dirs, err := os.ReadDir(workspaceRoot)
+	if err != nil {
+		return err
+	}
+	for _, dir := range dirs {
+		name := strings.TrimSpace(dir.Name())
+		if name == "" || strings.HasPrefix(name, ".") || !dir.IsDir() {
+			continue
+		}
+		workspacePath := filepath.Join(workspaceRoot, name)
+		if _, ok := known[filepath.Clean(workspacePath)]; ok {
+			continue
+		}
+		if _, err := s.Add(workspacePath, defaultWorkspaceName(workspacePath), "", false); err != nil {
+			return fmt.Errorf("register mounted remote child workspace %q: %w", workspacePath, err)
+		}
+	}
+	return nil
 }
 
 func filesystemRootPath(path string) string {
