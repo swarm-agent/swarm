@@ -702,6 +702,33 @@ export function DesktopChatPanel({
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [modelPickerOpenSignal, setModelPickerOpenSignal] = useState(0)
+  const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
+  const mobileSettingsRef = useRef<HTMLDivElement>(null)
+  const mobileSettingsTriggerRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!mobileSettingsOpen) return
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (
+        mobileSettingsRef.current?.contains(target) ||
+        mobileSettingsTriggerRef.current?.contains(target) ||
+        !document.getElementById('root')?.contains(target)
+      ) {
+        return
+      }
+      setMobileSettingsOpen(false)
+    }
+    const handleEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileSettingsOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [mobileSettingsOpen])
 
   useEffect(() => {
     const storedRoute = sessionId
@@ -2231,7 +2258,7 @@ export function DesktopChatPanel({
               onSelect={handleSlashSelect}
             />
           ) : null}
-          <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
+          <div className="relative rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
             <div className="flex items-end gap-3 px-4 py-3 lg:py-2.5">
               <div className="min-w-0 flex-1">
                 <Textarea
@@ -2263,7 +2290,8 @@ export function DesktopChatPanel({
             ) : null}
 
             <div className="border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
-              <div className="flex min-w-0 items-center gap-2">
+              {/* DESKTOP LAYOUT (>= 1100px) */}
+              <div className="hidden min-[1100px]:flex min-w-0 items-center gap-2 justify-between">
                 <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                   <ModePicker
                     mode={sessionMode === 'auto' ? 'auto' : 'plan'}
@@ -2308,8 +2336,78 @@ export function DesktopChatPanel({
                     />
                   ) : null}
 
+                  <button type="button" onClick={() => { void handleCompact(composer) }} disabled={!sessionId || canStop || submitting} title={contextBadgeTooltip ? `${contextBadgeTooltip} · Click to compact` : 'Compact conversation'} className="inline-flex min-h-6 items-center gap-1 rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">
+                    <span>{contextBadgeLabel || (selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx')}</span>
+                    <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />
+                  </button>
+                </div>
+
+                <div className="flex shrink-0 items-center gap-2">
                   {showRoutePicker ? (
-                    <div className="lg:hidden">
+                    <RoutePicker
+                      currentRoute={activeChatRoute}
+                      routes={routeOptions}
+                      onSelect={handleRouteChange}
+                      disabled={composerDisabled || canStop}
+                      title={sessionId ? 'Changing the route starts a new session in this workspace.' : 'Route this chat through the host or a linked child swarm.'}
+                    />
+                  ) : null}
+
+                  <Button
+                    size="sm"
+                    className="h-10 w-10 shrink-0 rounded-xl border border-transparent bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]"
+                    onClick={() => {
+                      if (canStop) {
+                        void handleStop()
+                        return
+                      }
+                      pinToLatest()
+                      void handleSubmit()
+                    }}
+                    disabled={!canStop && (submitting || composer.trim() === '' || !canSendWithSelectedPreference)}
+                    aria-label={canStop ? 'Stop run' : 'Send message'}
+                  >
+                    {canStop ? <Square size={18} /> : submitting ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}
+                  </Button>
+                </div>
+              </div>
+
+              {/* MOBILE 1-ROW COMPACT LAYOUT (< 1100px) */}
+              <div className="flex w-full min-w-0 relative min-[1100px]:hidden">
+                {mobileSettingsOpen ? (
+                  <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
+                    <ModePicker mode={sessionMode === 'auto' ? 'auto' : 'plan'} onSelect={handleModeChange} />
+                    <AgentPicker currentAgent={currentSessionAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={(value) => { void handleAgentSelect(value) }} onOpenSettings={() => onOpenSettingsTab('agents')} />
+                    <ModelPicker options={resolvedModelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={handleModelChange} openSignal={modelPickerOpenSignal} />
+                    <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={handleThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={(enabled) => { void handleThinkingTagsToggle(enabled) }} tagsBusy={thinkingTagsSaving} />
+                    {fastSupported ? <ThinkingPicker value={fastValue} options={FAST_ON_OFF_OPTIONS} onSelect={handleFastChange} label="Fast" /> : null}
+                    {showRoutePicker ? (
+                      <div className="pt-2 mt-1 border-t border-[var(--app-border)] flex w-full [&>div]:w-full [&>div>button]:w-full">
+                        <RoutePicker currentRoute={activeChatRoute} routes={routeOptions} onSelect={handleRouteChange} disabled={composerDisabled || canStop} title={sessionId ? 'Changing the route starts a new session in this workspace.' : 'Route this chat through the host or a linked child swarm.'} />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="flex w-full min-w-0 items-center gap-1.5 sm:gap-2 justify-between">
+                  {/* The Summary/Settings Quick Toggle */}
+                  <button 
+                    ref={mobileSettingsTriggerRef}
+                    type="button" 
+                    onClick={() => setMobileSettingsOpen(!mobileSettingsOpen)} 
+                    className="flex min-w-0 flex-[2] items-center gap-2 h-10 rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-2 sm:px-3 shadow-sm text-left hover:bg-[var(--app-surface-hover)] transition"
+                  >
+                    <span className="truncate block w-full min-w-0 text-[11px] sm:text-[12px] font-medium text-[var(--app-text)] leading-tight">
+                      {currentSessionAgent} <span className="font-normal text-[var(--app-text-muted)] ml-1">{resolvedModelOptions.find(o => o.key === selectedModelKey)?.label?.split(' ')[0] || 'Model'}</span>
+                    </span>
+                  </button>
+
+                  <button type="button" onClick={() => { void handleCompact(composer) }} disabled={!sessionId || canStop || submitting} title={contextBadgeTooltip ? `${contextBadgeTooltip} · Click to compact` : 'Compact conversation'} className="inline-flex h-10 min-w-0 max-w-[48px] sm:min-w-[40px] sm:max-w-none px-1.5 sm:px-2.5 items-center justify-center rounded-xl bg-[var(--app-surface-subtle)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50 shrink-1 sm:shrink-0 border border-[var(--app-border)] text-[var(--app-text-muted)] hover:text-[var(--app-text)] font-medium tabular-nums text-[10px] sm:text-[11px]">
+                    <span className="truncate min-w-0 w-full text-center">{contextBadgeLabel || '100%'}</span>
+                  </button>
+
+                  {showRoutePicker ? (
+                    <div className="flex min-w-0 flex-[1] sm:flex-none">
                       <RoutePicker
                         currentRoute={activeChatRoute}
                         routes={routeOptions}
@@ -2320,41 +2418,23 @@ export function DesktopChatPanel({
                     </div>
                   ) : null}
 
-                  <button type="button" onClick={() => { void handleCompact(composer) }} disabled={!sessionId || canStop || submitting} title={contextBadgeTooltip ? `${contextBadgeTooltip} · Click to compact` : 'Compact conversation'} className="inline-flex min-h-6 items-center gap-1 rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">
-                    <span>{contextBadgeLabel || (selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx')}</span>
-                    <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />
-                  </button>
-
+                  <Button
+                    size="sm"
+                    className="h-10 w-10 shrink-0 rounded-xl border border-transparent bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]"
+                    onClick={() => {
+                      if (canStop) {
+                        void handleStop()
+                        return
+                      }
+                      pinToLatest()
+                      void handleSubmit()
+                    }}
+                    disabled={!canStop && (submitting || composer.trim() === '' || !canSendWithSelectedPreference)}
+                    aria-label={canStop ? 'Stop run' : 'Send message'}
+                  >
+                    {canStop ? <Square size={18} /> : submitting ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}
+                  </Button>
                 </div>
-
-                {showRoutePicker ? (
-                  <div className="hidden shrink-0 lg:flex">
-                    <RoutePicker
-                      currentRoute={activeChatRoute}
-                      routes={routeOptions}
-                      onSelect={handleRouteChange}
-                      disabled={composerDisabled || canStop}
-                      title={sessionId ? 'Changing the route starts a new session in this workspace.' : 'Route this chat through the host or a linked child swarm.'}
-                    />
-                  </div>
-                ) : null}
-
-                <Button
-                  size="sm"
-                  className="h-10 w-10 shrink-0 rounded-xl border border-transparent bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]"
-                  onClick={() => {
-                    if (canStop) {
-                      void handleStop()
-                      return
-                    }
-                    pinToLatest()
-                    void handleSubmit()
-                  }}
-                  disabled={!canStop && (submitting || composer.trim() === '' || !canSendWithSelectedPreference)}
-                  aria-label={canStop ? 'Stop run' : 'Send message'}
-                >
-                  {canStop ? <Square size={18} /> : submitting ? <LoaderCircle size={18} className="animate-spin" /> : <Send size={20} />}
-                </Button>
               </div>
             </div>
           </div>
