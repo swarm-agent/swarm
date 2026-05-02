@@ -28,7 +28,7 @@ export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, 
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
-  const [position, setPosition] = useState<{ top: number; right: number; width: number } | null>(null)
+  const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null)
 
   const selectedRoute = useMemo(
     () => routes.find((route) => route.id === currentRoute.id) ?? currentRoute,
@@ -47,7 +47,7 @@ export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, 
 
     setPosition({
       top: rect.top - 8,
-      right: Math.max(VIEWPORT_GUTTER, window.innerWidth - rect.right),
+      left: Math.max(VIEWPORT_GUTTER, Math.min(rect.left, window.innerWidth - VIEWPORT_GUTTER - width)),
       width,
     })
   }, [])
@@ -107,7 +107,7 @@ export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, 
       style={{
         position: 'fixed',
         bottom: `${window.innerHeight - position.top}px`,
-        right: `${position.right}px`,
+        left: `${position.left}px`,
         width: `${position.width}px`,
         zIndex: 9999,
       }}
