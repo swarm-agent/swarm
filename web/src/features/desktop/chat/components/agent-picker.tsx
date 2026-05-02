@@ -9,15 +9,16 @@ interface AgentPickerProps {
   agents: AgentProfileRecord[]
   onSelect: (agent: string) => void
   onOpenSettings: () => void
+  dropdownAlign?: 'left' | 'right'
 }
 
 const DROPDOWN_VIEWPORT_GUTTER = 8
 
-export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSelect, onOpenSettings }: AgentPickerProps) {
+export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSelect, onOpenSettings, dropdownAlign = 'right' }: AgentPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
-  const [position, setPosition] = useState<{ top: number; right: number; minWidth: number; maxWidth: number } | null>(null)
+  const [position, setPosition] = useState<{ top: number; left?: number; right?: number; minWidth: number; maxWidth: number } | null>(null)
 
   const profileLabel = (profile: AgentProfileRecord) => profile.name === 'swarm' ? 'Swarm' : profile.name
   const profileModeLabel = (profile: AgentProfileRecord) => {
@@ -50,11 +51,14 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
 
     setPosition({
       top: rect.top - 8,
-      right: Math.max(DROPDOWN_VIEWPORT_GUTTER, window.innerWidth - rect.right),
+      left: dropdownAlign === 'left'
+        ? Math.min(Math.max(DROPDOWN_VIEWPORT_GUTTER, rect.left), Math.max(DROPDOWN_VIEWPORT_GUTTER, window.innerWidth - maxWidth - DROPDOWN_VIEWPORT_GUTTER))
+        : undefined,
+      right: dropdownAlign === 'right' ? Math.max(DROPDOWN_VIEWPORT_GUTTER, window.innerWidth - rect.right) : undefined,
       minWidth: Math.min(rect.width, maxWidth),
       maxWidth,
     })
-  }, [])
+  }, [dropdownAlign])
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) {
@@ -110,7 +114,8 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
       style={{
         position: 'fixed',
         bottom: `${window.innerHeight - position.top}px`,
-        right: `${position.right}px`,
+        left: position.left === undefined ? undefined : `${position.left}px`,
+        right: position.right === undefined ? undefined : `${position.right}px`,
         minWidth: `${position.minWidth}px`,
         maxWidth: `${position.maxWidth}px`,
         zIndex: 9999,
