@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ListChecks, LoaderCircle, Menu, Minimize2, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
+import { Clock3, ListChecks, LoaderCircle, Menu, Minimize2, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -2066,6 +2066,12 @@ export function DesktopChatPanel({
           >
             <Save size={18} />
           </Button>
+          {showRunTimer ? (
+            <div className="inline-flex h-9 items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 text-xs font-medium tabular-nums text-[var(--app-text-muted)] sm:h-10">
+              <Clock3 size={14} />
+              {runTimerLabel}
+            </div>
+          ) : null}
           <Button
             size="sm"
             variant="ghost"
@@ -2319,11 +2325,6 @@ export function DesktopChatPanel({
                     <Minimize2 size={12} className="text-[var(--app-text-subtle)]" />
                   </button>
 
-                  {showRunTimer ? (
-                    <span className="inline-flex min-h-6 items-center whitespace-nowrap rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)]">
-                      {runTimerLabel}
-                    </span>
-                  ) : null}
                 </div>
 
                 {showRoutePicker ? (
