@@ -68,6 +68,7 @@ export interface StructuredToolMessage {
   tool: string;
   callId: string;
   target: string | null;
+  commandText: string;
   argumentsText: string;
   argumentsJson?: Record<string, unknown> | null;
   output: string;

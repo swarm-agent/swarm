@@ -358,7 +358,7 @@ function testTaskRowsHideAssistantPreviewText(): void {
   assert(message?.taskRows[0]?.previewText === '', `assistant preview should be hidden: ${message?.taskRows[0]?.previewText}`)
 }
 
-function testBashToolMessageShowsAlwaysAllowedScriptCommand(): void {
+function testBashToolMessageShowsCommandAsMetadata(): void {
   const command = './scripts/check.sh --fast'
   const message = buildStructuredToolMessage({
     tool: 'bash',
@@ -368,10 +368,15 @@ function testBashToolMessageShowsAlwaysAllowedScriptCommand(): void {
   })
 
   assert(Boolean(message), 'expected structured bash tool message')
-  assert(message?.summary === `bash ${command}`, `unexpected bash summary: ${message?.summary}`)
+  assert(message?.summary === 'bash', `unexpected bash summary: ${message?.summary}`)
+  assert(message?.commandText === command, `missing bash command metadata: ${message?.commandText}`)
   assert(
-    message?.previewLines.includes(`$ ${command}`) === true,
-    `missing bash command preview: ${message?.previewLines.join(' | ')}`,
+    message?.previewLines.includes(`$ ${command}`) === false,
+    `command should not be quoted in preview lines: ${message?.previewLines.join(' | ')}`,
+  )
+  assert(
+    message?.previewLines.includes('ok') === true,
+    `missing bash output preview: ${message?.previewLines.join(' | ')}`,
   )
 }
 
@@ -486,7 +491,7 @@ function main(): void {
   testEditToolPreservesFullExpandedDiff();
   testTaskRowsMapReasoningToThinkingWithoutPreviewLeak();
   testTaskRowsHideAssistantPreviewText();
-  testBashToolMessageShowsAlwaysAllowedScriptCommand();
+  testBashToolMessageShowsCommandAsMetadata();
   testSearchToolPreservesContentMatchText();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   console.log("tool-message tests passed");

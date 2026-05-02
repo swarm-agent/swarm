@@ -58,11 +58,13 @@ const PREVIEW_LIMIT = 8;
 function PreviewLinesView({
   lines,
   compact = true,
+  commandText = "",
 }: {
   lines: string[];
   compact?: boolean;
+  commandText?: string;
 }) {
-  if (lines.length === 0) return null;
+  if (lines.length === 0 && !commandText) return null;
 
   const isLarge = lines.length > PREVIEW_LIMIT;
   const [expanded, setExpanded] = useState(false);
@@ -70,15 +72,20 @@ function PreviewLinesView({
 
   return (
     <div className={compact
-      ? "mt-1 font-mono text-[11px] leading-[18px] text-[var(--app-text-muted)] border-l-[1.5px] border-[var(--app-border)] pl-3 ml-1 py-0.5"
-      : "mt-2 space-y-1.5"}
+      ? "mt-1 min-w-0 py-0.5 font-mono text-[11px] leading-[18px] text-[var(--app-text-muted)]"
+      : "mt-2 min-w-0 space-y-1.5"}
     >
+      {commandText ? (
+        <div className="mb-1 min-w-0 text-[11px] leading-5 text-[var(--app-text-muted)]">
+          <span className="whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]">{commandText}</span>
+        </div>
+      ) : null}
       {display.map((line, i) => (
         <div
           key={i}
           className={compact
-            ? "whitespace-pre-wrap break-all"
-            : "whitespace-pre-wrap break-words rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-[12px] leading-5 text-[var(--app-text)]"}
+            ? "whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+            : "whitespace-pre-wrap break-words rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]"}
         >
           {line}
         </div>
@@ -422,8 +429,12 @@ export function ToolMessageView({
         {!toolMessage.editDiff &&
         toolMessage.tool !== "search" &&
         !(toolMessage.tool === "task" && toolMessage.taskRows.length > 0) &&
-        toolMessage.previewLines.length > 0 ? (
-          <PreviewLinesView lines={toolMessage.previewLines} compact={toolMessage.tool !== 'exit_plan_mode' && toolMessage.tool !== 'permission'} />
+        (toolMessage.previewLines.length > 0 || toolMessage.commandText) ? (
+          <PreviewLinesView
+            lines={toolMessage.previewLines}
+            commandText={toolMessage.commandText}
+            compact={toolMessage.tool !== 'exit_plan_mode' && toolMessage.tool !== 'permission'}
+          />
         ) : null}
       </div>
     </div>

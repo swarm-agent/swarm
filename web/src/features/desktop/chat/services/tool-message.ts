@@ -168,23 +168,19 @@ function summarizeToolOutput(
       return "edit";
     }
     case "bash": {
-      const command =
-        jsonStr(outputJson, "command") || jsonStr(argumentsJson, "command");
       const exitCode = hasJsonKey(outputJson, "exit_code")
         ? jsonNum(outputJson, "exit_code")
         : null;
       const timedOut = jsonBool(outputJson, "timed_out");
       const truncated = jsonBool(outputJson, "truncated");
       const binarySuppressed = jsonBool(outputJson, "binary_suppressed");
-      let s = "bash";
-      if (command) s += " " + clamp(command, 80);
       const notes: string[] = [];
       if (timedOut) notes.push("timed out");
       else if (typeof exitCode === "number" && exitCode !== 0)
         notes.push("failed");
       if (truncated) notes.push("partial output");
       if (binarySuppressed) notes.push("binary output hidden");
-      return summaryWithNotes(s, notes);
+      return summaryWithNotes("bash", notes);
     }
     case "grep": {
       const pattern =
@@ -775,11 +771,6 @@ function extractPreviewLines(
   switch (tool) {
     case "bash": {
       const lines: string[] = [];
-      const command =
-        jsonStr(outputJson, "command") || jsonStr(argumentsJson, "command");
-      if (command) {
-        pushPreviewLine(lines, `$ ${command}`, 6);
-      }
       const stdout =
         jsonStr(outputJson, "output") ||
         jsonStr(outputJson, "stdout") ||
@@ -1397,6 +1388,10 @@ export function buildStructuredToolMessage(
     tool: toolName,
     callId: String(input.callId ?? "").trim(),
     target: resolveToolTarget(argumentsJson),
+    commandText:
+      toolName.toLowerCase() === "bash"
+        ? jsonStr(outputJson, "command") || jsonStr(argumentsJson, "command")
+        : "",
     argumentsText,
     argumentsJson,
     output: outputText,
