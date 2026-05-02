@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -96,6 +97,68 @@ func TestSanitizeAnthropicToolSchemaMovesUnsupportedConstraintsToDescription(t *
 	assertContains(t, encoded, `format: regex`)
 	assertContains(t, encoded, `pattern: ^[a-z]+$`)
 	assertContains(t, encoded, `minItems: 2`)
+}
+
+func TestBuildRequestPlacesPromptCacheControlsAtOfficialBreakpoints(t *testing.T) {
+	tools, _, err := buildAnthropicTools([]provideriface.ToolDefinition{
+		{Name: "read", Description: "Read", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+		{Name: "write", Description: "Write", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+	})
+	if err != nil {
+		t.Fatalf("build tools: %v", err)
+	}
+	params := anthropicapiMessageParamsForCacheTest(tools, buildAnthropicSystem("system prompt"))
+	encoded := mustMarshalJSON(t, params)
+	if got := strings.Count(encoded, `"cache_control"`); got != 2 {
+		t.Fatalf("cache_control count = %d, want 2: %s", got, encoded)
+	}
+
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	toolList := decoded["tools"].([]any)
+	firstTool := toolList[0].(map[string]any)
+	if _, ok := firstTool["cache_control"]; ok {
+		t.Fatalf("only the last tool should carry cache_control: %v", firstTool)
+	}
+	lastTool := toolList[len(toolList)-1].(map[string]any)
+	if _, ok := lastTool["cache_control"]; !ok {
+		t.Fatalf("last tool missing cache_control: %v", lastTool)
+	}
+	if _, ok := decoded["cache_control"]; !ok {
+		t.Fatalf("top-level cache_control missing: %v", decoded)
+	}
+	systemBlocks := decoded["system"].([]any)
+	if _, ok := systemBlocks[0].(map[string]any)["cache_control"]; ok {
+		t.Fatalf("system block should not carry explicit cache_control: %v", systemBlocks[0])
+	}
+}
+
+func anthropicapiMessageParamsForCacheTest(tools []anthropicapi.ToolUnionParam, system []anthropicapi.TextBlockParam) anthropicapi.MessageNewParams {
+	params := anthropicapi.MessageNewParams{
+		Model:     anthropicapi.Model("claude-test"),
+		MaxTokens: 1024,
+		Messages:  []anthropicapi.MessageParam{anthropicapi.NewUserMessage(anthropicapi.NewTextBlock("hello"))},
+		System:    system,
+		Tools:     tools,
+	}
+	if len(system) > 0 || len(tools) > 0 {
+		applyAnthropicPromptCaching(&params, tools)
+	}
+	return params
+}
+
+func TestBuildAnthropicContentBlocksDoNotEmitPerMessageCacheControls(t *testing.T) {
+	blocks, err := buildAnthropicContentBlocks([]any{
+		map[string]any{"type": "input_text", "text": "hello"},
+		map[string]any{"type": "text", "text": "world"},
+	})
+	if err != nil {
+		t.Fatalf("build blocks: %v", err)
+	}
+	encoded := mustMarshalJSON(t, blocks)
+	assertNotContains(t, encoded, `"cache_control"`)
 }
 
 func TestBuildAnthropicToolsSanitizesWebFetchRuntimeSchema(t *testing.T) {

@@ -141,7 +141,7 @@ func (r *Runner) buildRequest(req provideriface.Request) (anthropicapi.Client, s
 		params.ServiceTier = serviceTier
 	}
 	if enablePromptCaching {
-		params.CacheControl = newEphemeralCacheControl()
+		applyAnthropicPromptCaching(&params, tools)
 	}
 	client := anthropicapi.NewClient(anthropicClientOptions(strings.TrimSpace(record.APIKey))...)
 	return client, modelName, params, nil
@@ -154,15 +154,26 @@ func anthropicClientOptions(apiKey string) []option.RequestOption {
 	}
 }
 
+func applyAnthropicPromptCaching(params *anthropicapi.MessageNewParams, tools []anthropicapi.ToolUnionParam) {
+	if params == nil {
+		return
+	}
+	params.CacheControl = newEphemeralCacheControl()
+	if len(tools) == 0 {
+		return
+	}
+	lastTool := tools[len(tools)-1].OfTool
+	if lastTool != nil {
+		lastTool.CacheControl = newEphemeralCacheControl()
+	}
+}
+
 func buildAnthropicSystem(instructions string) []anthropicapi.TextBlockParam {
 	instructions = strings.TrimSpace(instructions)
 	if instructions == "" {
 		return nil
 	}
-	return []anthropicapi.TextBlockParam{{
-		Text:         instructions,
-		CacheControl: newEphemeralCacheControl(),
-	}}
+	return []anthropicapi.TextBlockParam{{Text: instructions}}
 }
 
 func buildAnthropicTools(definitions []provideriface.ToolDefinition) ([]anthropicapi.ToolUnionParam, bool, error) {
@@ -181,11 +192,10 @@ func buildAnthropicTools(definitions []provideriface.ToolDefinition) ([]anthropi
 			return nil, false, fmt.Errorf("sanitize anthropic tool schema %q: %w", name, err)
 		}
 		tool := anthropicapi.ToolParam{
-			Name:         name,
-			Description:  anthropicapi.String(strings.TrimSpace(definition.Description)),
-			InputSchema:  schema,
-			Type:         anthropicapi.ToolTypeCustom,
-			CacheControl: newEphemeralCacheControl(),
+			Name:        name,
+			Description: anthropicapi.String(strings.TrimSpace(definition.Description)),
+			InputSchema: schema,
+			Type:        anthropicapi.ToolTypeCustom,
 		}
 		tools = append(tools, anthropicapi.ToolUnionParam{OfTool: &tool})
 		enablePromptCaching = true
@@ -229,10 +239,9 @@ func buildAnthropicMessages(input []map[string]any) ([]anthropicapi.MessageParam
 					name, _ := stringField(current, "name")
 					arguments, _ := stringField(current, "arguments")
 					block := anthropicapi.ToolUseBlockParam{
-						ID:           strings.TrimSpace(callID),
-						Name:         firstNonEmpty(strings.TrimSpace(name), "tool"),
-						Input:        parseJSONValue(arguments),
-						CacheControl: newEphemeralCacheControl(),
+						ID:    strings.TrimSpace(callID),
+						Name:  firstNonEmpty(strings.TrimSpace(name), "tool"),
+						Input: parseJSONValue(arguments),
 					}
 					blocks = append(blocks, anthropicapi.ContentBlockParamUnion{OfToolUse: &block})
 				}
@@ -251,9 +260,8 @@ func buildAnthropicMessages(input []map[string]any) ([]anthropicapi.MessageParam
 					callID, _ := stringField(current, "call_id")
 					output, _ := stringField(current, "output")
 					block := anthropicapi.ToolResultBlockParam{
-						ToolUseID:    strings.TrimSpace(callID),
-						Content:      []anthropicapi.ToolResultBlockParamContentUnion{{OfText: &anthropicapi.TextBlockParam{Text: strings.TrimSpace(output), CacheControl: newEphemeralCacheControl()}}},
-						CacheControl: newEphemeralCacheControl(),
+						ToolUseID: strings.TrimSpace(callID),
+						Content:   []anthropicapi.ToolResultBlockParamContentUnion{{OfText: &anthropicapi.TextBlockParam{Text: strings.TrimSpace(output)}}},
 					}
 					if payload := decodeJSONMap(output); payload != nil {
 						if errText := strings.TrimSpace(stringFieldDefault(payload, "error")); errText != "" {
@@ -292,7 +300,7 @@ func buildAnthropicContentBlocks(content any) ([]anthropicapi.ContentBlockParamU
 		if text == "" {
 			return nil, nil
 		}
-		return []anthropicapi.ContentBlockParamUnion{{OfText: &anthropicapi.TextBlockParam{Text: text, CacheControl: newEphemeralCacheControl()}}}, nil
+		return []anthropicapi.ContentBlockParamUnion{{OfText: &anthropicapi.TextBlockParam{Text: text}}}, nil
 	case []map[string]any:
 		return buildAnthropicContentBlocksFromMaps(typed)
 	case []any:
@@ -321,10 +329,10 @@ func buildAnthropicContentBlocksFromMaps(items []map[string]any) ([]anthropicapi
 			if text == "" {
 				continue
 			}
-			blocks = append(blocks, anthropicapi.ContentBlockParamUnion{OfText: &anthropicapi.TextBlockParam{Text: text, CacheControl: newEphemeralCacheControl()}})
+			blocks = append(blocks, anthropicapi.ContentBlockParamUnion{OfText: &anthropicapi.TextBlockParam{Text: text}})
 		default:
 			if text, _ := stringField(item, "text"); strings.TrimSpace(text) != "" {
-				blocks = append(blocks, anthropicapi.ContentBlockParamUnion{OfText: &anthropicapi.TextBlockParam{Text: strings.TrimSpace(text), CacheControl: newEphemeralCacheControl()}})
+				blocks = append(blocks, anthropicapi.ContentBlockParamUnion{OfText: &anthropicapi.TextBlockParam{Text: strings.TrimSpace(text)}})
 			}
 		}
 	}
