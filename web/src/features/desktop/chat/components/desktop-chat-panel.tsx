@@ -2412,6 +2412,11 @@ export function DesktopChatPanel({
                     <ModelPicker options={resolvedModelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={handleModelChange} openSignal={modelPickerOpenSignal} />
                     <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={handleThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={(enabled) => { void handleThinkingTagsToggle(enabled) }} tagsBusy={thinkingTagsSaving} />
                     {fastSupported ? <ThinkingPicker value={fastValue} options={FAST_ON_OFF_OPTIONS} onSelect={handleFastChange} label="Fast" /> : null}
+                    {showRoutePicker ? (
+                      <div className="pt-2 mt-1 border-t border-[var(--app-border)] flex w-full [&>div]:w-full [&>div>button]:w-full">
+                        <RoutePicker currentRoute={activeChatRoute} routes={routeOptions} onSelect={handleRouteChange} disabled={composerDisabled || canStop} title={sessionId ? 'Changing the route starts a new session in this workspace.' : 'Route this chat through the host or a linked child swarm.'} />
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 

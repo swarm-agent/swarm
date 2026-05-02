@@ -17,7 +17,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
-  const [position, setPosition] = useState<{ top: number; left: number; minWidth: number; maxWidth: number } | null>(null)
+  const [position, setPosition] = useState<{ top: number; right: number; minWidth: number; maxWidth: number } | null>(null)
 
   const profileLabel = (profile: AgentProfileRecord) => profile.name === 'swarm' ? 'Swarm' : profile.name
   const profileModeLabel = (profile: AgentProfileRecord) => {
@@ -47,11 +47,10 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
 
     const rect = triggerRef.current.getBoundingClientRect()
     const maxWidth = Math.max(160, window.innerWidth - DROPDOWN_VIEWPORT_GUTTER * 2)
-    const preferredWidth = Math.min(Math.max(rect.width, 260), maxWidth)
 
     setPosition({
       top: rect.top - 8,
-      left: Math.max(DROPDOWN_VIEWPORT_GUTTER, Math.min(rect.left, window.innerWidth - DROPDOWN_VIEWPORT_GUTTER - preferredWidth)),
+      right: Math.max(DROPDOWN_VIEWPORT_GUTTER, window.innerWidth - rect.right),
       minWidth: Math.min(rect.width, maxWidth),
       maxWidth,
     })
@@ -111,7 +110,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
       style={{
         position: 'fixed',
         bottom: `${window.innerHeight - position.top}px`,
-        left: `${position.left}px`,
+        right: `${position.right}px`,
         minWidth: `${position.minWidth}px`,
         maxWidth: `${position.maxWidth}px`,
         zIndex: 9999,
