@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1335,17 +1339,17 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	if err := BuildSwarmTUI(profile); err != nil {
 		return err
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Checking desktop web build prerequisites.", "")
-	if err := EnsureWebPrereqs(profile); err != nil {
+	webNeedsRebuild, err := DevFrontendAssetsNeedRebuild(profile)
+	if err != nil {
 		return err
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Building desktop web assets.", "")
-	if err := BuildWebAssets(profile); err != nil {
-		return err
-	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing desktop web assets.", "")
-	if err := InstallDesktopAssets(profile); err != nil {
-		return err
+	if webNeedsRebuild {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Building desktop web assets after frontend source changes.", "")
+		if err := BuildAndInstallWebAssets(profile); err != nil {
+			return err
+		}
+	} else {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Desktop web assets are current.", "")
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Staging dev container image binaries.", "")
 	if err := devmode.SyncStagedContainerBinaries(profile.Root, profile.BinDir); err != nil {
@@ -1426,9 +1430,23 @@ func BuildWebAssets(profile Profile) error {
 	return nil
 }
 
+func BuildAndInstallWebAssets(profile Profile) error {
+	if err := EnsureWebPrereqs(profile); err != nil {
+		return err
+	}
+	if err := BuildWebAssets(profile); err != nil {
+		return err
+	}
+	return InstallDesktopAssets(profile)
+}
+
 func InstallDesktopAssets(profile Profile) error {
 	if strings.TrimSpace(profile.WebDir) == "" {
 		return errors.New("desktop asset install requires a source checkout")
+	}
+	fingerprint, err := frontendSourceFingerprint(profile.WebDir)
+	if err != nil {
+		return err
 	}
 	sourceDir := filepath.Join(profile.WebDir, "dist")
 	if _, err := os.Stat(filepath.Join(sourceDir, "index.html")); err != nil {
@@ -1440,7 +1458,10 @@ func InstallDesktopAssets(profile Profile) error {
 	if err := copyDir(sourceDir, profile.WebDistDir); err != nil {
 		return err
 	}
-	return writeCompressedDesktopAssets(profile.WebDistDir)
+	if err := writeCompressedDesktopAssets(profile.WebDistDir); err != nil {
+		return err
+	}
+	return writeFrontendSourceFingerprint(profile.WebDistDir, fingerprint)
 }
 
 func EnsureWebDistReady(profile Profile) error {
@@ -1450,8 +1471,50 @@ func EnsureWebDistReady(profile Profile) error {
 	return nil
 }
 
+func DevFrontendAssetsNeedRebuild(profile Profile) (bool, error) {
+	if strings.TrimSpace(profile.WebDir) == "" {
+		return false, errors.New("desktop dev asset freshness check requires a source checkout")
+	}
+	if _, err := os.Stat(filepath.Join(profile.WebDistDir, "index.html")); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	current, err := frontendSourceFingerprint(profile.WebDir)
+	if err != nil {
+		return false, err
+	}
+	installed, err := readFrontendSourceFingerprint(profile.WebDistDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return current != installed, nil
+}
+
+func EnsureDevFrontendAssetsCurrent(profile Profile) error {
+	if !profile.Startup.DevMode {
+		return nil
+	}
+	needsRebuild, err := DevFrontendAssetsNeedRebuild(profile)
+	if err != nil {
+		return err
+	}
+	if !needsRebuild {
+		return nil
+	}
+	fmt.Fprintln(os.Stdout, "Rebuilding desktop web assets after frontend source changes...")
+	return BuildAndInstallWebAssets(profile)
+}
+
 func RunDesktop(profile Profile, port int) error {
 	frontendURL := desktopFrontendURL(profile, port)
+	if err := EnsureDevFrontendAssetsCurrent(profile); err != nil {
+		return err
+	}
 	if err := EnsureWebDistReady(profile); err != nil {
 		return err
 	}
@@ -1607,13 +1670,7 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 		return err
 	}
 	if includeWeb {
-		if err := EnsureWebPrereqs(profile); err != nil {
-			return err
-		}
-		if err := BuildWebAssets(profile); err != nil {
-			return err
-		}
-		if err := InstallDesktopAssets(profile); err != nil {
+		if err := BuildAndInstallWebAssets(profile); err != nil {
 			return err
 		}
 	}
@@ -1763,6 +1820,121 @@ func envOrString(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+const frontendSourceFingerprintFile = ".swarm-frontend-source-fingerprint"
+
+func frontendSourceFingerprint(webDir string) (string, error) {
+	webDir = strings.TrimSpace(webDir)
+	if webDir == "" {
+		return "", errors.New("web dir is required")
+	}
+	webDir = filepath.Clean(webDir)
+	h := sha256.New()
+	paths := []string{
+		filepath.Join(webDir, "index.html"),
+		filepath.Join(webDir, "package.json"),
+		filepath.Join(webDir, "package-lock.json"),
+		filepath.Join(webDir, "tsconfig.json"),
+		filepath.Join(webDir, "vite.config.ts"),
+		filepath.Join(webDir, "public"),
+		filepath.Join(webDir, "src"),
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", err
+		}
+		if info.IsDir() {
+			if err := hashDirectoryForFrontendFingerprint(h, path, webDir); err != nil {
+				return "", err
+			}
+			continue
+		}
+		if err := hashFileForFrontendFingerprint(h, path, webDir); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16], nil
+}
+
+func hashDirectoryForFrontendFingerprint(h io.Writer, rootPath, webDir string) error {
+	entries := make([]string, 0, 128)
+	if err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if name == "node_modules" || name == "dist" || strings.HasPrefix(name, ".") {
+				if path == rootPath {
+					return nil
+				}
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		entries = append(entries, path)
+		return nil
+	}); err != nil {
+		return err
+	}
+	sort.Strings(entries)
+	for _, path := range entries {
+		if err := hashFileForFrontendFingerprint(h, path, webDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hashFileForFrontendFingerprint(h io.Writer, path, webDir string) error {
+	rel, err := filepath.Rel(webDir, path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return nil
+	}
+	if _, err := io.WriteString(h, filepath.ToSlash(rel)); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(h, fmt.Sprintf("\n%d\n", info.Size())); err != nil {
+		return err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := io.Copy(h, file); err != nil {
+		return err
+	}
+	_, err = io.WriteString(h, "\n")
+	return err
+}
+
+func readFrontendSourceFingerprint(webDistDir string) (string, error) {
+	body, err := os.ReadFile(filepath.Join(webDistDir, frontendSourceFingerprintFile))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(body)), nil
+}
+
+func writeFrontendSourceFingerprint(webDistDir, fingerprint string) error {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		return nil
+	}
+	return os.WriteFile(filepath.Join(webDistDir, frontendSourceFingerprintFile), []byte(fingerprint+"\n"), 0o644)
 }
 
 func copyDir(sourceDir, targetDir string) error {

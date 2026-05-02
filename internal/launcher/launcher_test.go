@@ -44,6 +44,56 @@ func TestWriteCompressedDesktopAssetsCreatesGzipFiles(t *testing.T) {
 	}
 }
 
+func TestDevFrontendAssetsNeedRebuildDetectsSourceChanges(t *testing.T) {
+	webDir := t.TempDir()
+	webDistDir := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(filepath.Join(webDir, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<div id=\"root\"></div>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "package.json"), []byte(`{"scripts":{"build":"vite build"}}`), 0o644); err != nil {
+		t.Fatalf("write package: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "src", "main.tsx"), []byte("console.log('one')"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.MkdirAll(webDistDir, 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(webDistDir, "index.html"), []byte("built"), 0o644); err != nil {
+		t.Fatalf("write dist index: %v", err)
+	}
+	fingerprint, err := frontendSourceFingerprint(webDir)
+	if err != nil {
+		t.Fatalf("frontendSourceFingerprint: %v", err)
+	}
+	if err := writeFrontendSourceFingerprint(webDistDir, fingerprint); err != nil {
+		t.Fatalf("writeFrontendSourceFingerprint: %v", err)
+	}
+
+	profile := Profile{WebDir: webDir, WebDistDir: webDistDir}
+	needs, err := DevFrontendAssetsNeedRebuild(profile)
+	if err != nil {
+		t.Fatalf("DevFrontendAssetsNeedRebuild: %v", err)
+	}
+	if needs {
+		t.Fatal("DevFrontendAssetsNeedRebuild = true before source change")
+	}
+
+	if err := os.WriteFile(filepath.Join(webDir, "src", "main.tsx"), []byte("console.log('two')"), 0o644); err != nil {
+		t.Fatalf("rewrite source: %v", err)
+	}
+	needs, err = DevFrontendAssetsNeedRebuild(profile)
+	if err != nil {
+		t.Fatalf("DevFrontendAssetsNeedRebuild after source change: %v", err)
+	}
+	if !needs {
+		t.Fatal("DevFrontendAssetsNeedRebuild = false after source change")
+	}
+}
+
 func TestEnvMapIncludesInstalledLibDirInLDLibraryPath(t *testing.T) {
 	xdgRoot := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", filepath.Join(xdgRoot, "data"))
