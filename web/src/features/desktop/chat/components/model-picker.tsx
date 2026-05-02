@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Check, Star } from 'lucide-react'
+import { ChevronDown, Check, Cpu, Star } from 'lucide-react'
 import type { ModelOptionRecord } from '../types/chat'
 import { displayModelName, formatContextWindow, effectiveContextWindow } from '../services/model-options'
 
@@ -295,7 +295,7 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0 }: 
         onClick={() => setOpen((prev) => !prev)}
         className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition"
       >
-        <span className="text-[var(--app-text-subtle)]">Model</span>
+        <Cpu size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
         <span className="max-w-[140px] truncate">{displayLabel}</span>
         <ChevronDown size={12} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
       </button>

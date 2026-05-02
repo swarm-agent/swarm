@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Check, User } from 'lucide-react'
+import { Bot, ChevronDown, Check } from 'lucide-react'
 import type { AgentProfileRecord } from '../types/chat'
 
 interface AgentPickerProps {
@@ -143,7 +143,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
                   ) : (
                     <span className="w-[14px] shrink-0" />
                   )}
-                  <User size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
+                  <Bot size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
                   <span className="min-w-0 flex-1 truncate">{profileLabel(profile)}</span>
                   <span className="shrink-0 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">
                     {profileModeLabel(profile)}
@@ -166,7 +166,7 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSele
         onClick={() => setOpen((prev) => !prev)}
         className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)]"
       >
-        <span className="text-[var(--app-text-subtle)]">Agent</span>
+        <Bot size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
         <span className="max-w-[100px] truncate">{displayLabel}</span>
         <ChevronDown size={12} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
       </button>

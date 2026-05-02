@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Check } from 'lucide-react'
+import { ChevronDown, Check, Lightbulb, Zap } from 'lucide-react'
 
 interface ThinkingPickerProps {
   value: string
@@ -34,6 +34,7 @@ export function ThinkingPicker({
 
   const normalizedValue = normalizeThinkingValue(value)
   const displayLabel = normalizedValue
+  const PickerIcon = label.toLowerCase() === 'fast' ? Zap : Lightbulb
   const showTagsToggle = typeof tagsEnabled === 'boolean' && typeof onToggleTags === 'function'
 
   useLayoutEffect(() => {
@@ -134,6 +135,7 @@ export function ThinkingPicker({
                   ) : (
                     <span className="w-[14px] shrink-0" />
                   )}
+                  <PickerIcon size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
                   <span className="truncate">{normalizedOption}</span>
                 </button>
               )
@@ -169,7 +171,7 @@ export function ThinkingPicker({
         onClick={() => setOpen((prev) => !prev)}
         className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition"
       >
-        <span className="text-[var(--app-text-subtle)]">{label}</span>
+        <PickerIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
         <span className="truncate">{displayLabel}</span>
         <ChevronDown size={12} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
       </button>

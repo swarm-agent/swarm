@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Check } from 'lucide-react'
+import { ChevronDown, Check, ChevronsUp, NotepadText } from 'lucide-react'
 
 interface ModePickerProps {
   mode: 'plan' | 'auto'
@@ -16,6 +16,7 @@ export function ModePicker({ mode, onSelect }: ModePickerProps) {
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null)
 
   const modes: Array<'plan' | 'auto'> = ['plan', 'auto']
+  const ModeIcon = mode === 'plan' ? NotepadText : ChevronsUp
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) {
@@ -98,6 +99,7 @@ export function ModePicker({ mode, onSelect }: ModePickerProps) {
           <div className="py-1">
             {modes.map((m) => {
               const isSelected = m === mode
+              const OptionIcon = m === 'plan' ? NotepadText : ChevronsUp
               return (
                 <button
                   key={m}
@@ -114,6 +116,7 @@ export function ModePicker({ mode, onSelect }: ModePickerProps) {
                   ) : (
                     <span className="w-[14px] shrink-0" />
                   )}
+                  <OptionIcon size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
                   <span className="truncate uppercase tracking-wider text-xs font-medium">{m}</span>
                 </button>
               )
@@ -133,7 +136,7 @@ export function ModePicker({ mode, onSelect }: ModePickerProps) {
         onClick={() => setOpen((prev) => !prev)}
         className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition"
       >
-        <span className="text-[var(--app-text-subtle)]">Mode:</span>
+        <ModeIcon size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
         <span className="uppercase tracking-wider font-semibold text-[var(--app-primary)]">{mode}</span>
         <ChevronDown size={12} className={`text-[var(--app-text-subtle)] ${open ? 'rotate-180 transition-transform' : 'transition-transform'}`} />
       </button>
