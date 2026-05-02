@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Clock3, ListChecks, LoaderCircle, Menu, Minimize2, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
+import { Clock3, ListChecks, LoaderCircle, Menu, Mic, Minimize2, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -72,6 +72,96 @@ import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/type
 const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 const FAST_ON_OFF_OPTIONS = ['off', 'on']
 const TODO_DRAG_MIME = 'application/x-swarm-workspace-todo'
+const DICTATION_RESTART_DELAY_MS = 180
+const DICTATION_FINAL_FLUSH_MS = 450
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+
+type SpeechRecognitionWindow = Window & typeof globalThis & {
+  SpeechRecognition?: SpeechRecognitionConstructor
+  webkitSpeechRecognition?: SpeechRecognitionConstructor
+}
+
+type SpeechRecognitionAlternativeLike = {
+  transcript: string
+  confidence?: number
+}
+
+type SpeechRecognitionResultLike = {
+  readonly isFinal: boolean
+  readonly length: number
+  [index: number]: SpeechRecognitionAlternativeLike | undefined
+}
+
+type SpeechRecognitionResultListLike = {
+  readonly length: number
+  [index: number]: SpeechRecognitionResultLike | undefined
+}
+
+type SpeechRecognitionResultEventLike = Event & {
+  readonly resultIndex: number
+  readonly results: SpeechRecognitionResultListLike
+}
+
+type SpeechRecognitionErrorEventLike = Event & {
+  readonly error?: string
+  readonly message?: string
+}
+
+type SpeechRecognitionLike = {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  maxAlternatives: number
+  onstart: ((event: Event) => void) | null
+  onend: ((event: Event) => void) | null
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null
+  onresult: ((event: SpeechRecognitionResultEventLike) => void) | null
+  start: () => void
+  stop: () => void
+  abort: () => void
+}
+
+function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const speechWindow = window as SpeechRecognitionWindow
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null
+}
+
+function appendDictationText(base: string, addition: string): string {
+  const normalizedAddition = addition.replace(/\s+/g, ' ').trim()
+  if (!normalizedAddition) {
+    return base
+  }
+  const trimmedBaseEnd = base.replace(/[ \t]+$/g, '')
+  if (!trimmedBaseEnd) {
+    return normalizedAddition
+  }
+  const needsSpace = !/[\s\n]$/.test(trimmedBaseEnd) && !/^[,.;:!?]/.test(normalizedAddition)
+  return `${trimmedBaseEnd}${needsSpace ? ' ' : ''}${normalizedAddition}`
+}
+
+function speechRecognitionErrorMessage(error: string, message = ''): string {
+  switch (error) {
+    case 'not-allowed':
+      return 'Microphone permission was denied.'
+    case 'service-not-allowed':
+      return 'Browser speech recognition is blocked in this context. Try Safari/Chrome over HTTPS.'
+    case 'audio-capture':
+      return 'No microphone was found for browser dictation.'
+    case 'network':
+      return 'Browser speech recognition hit a network error.'
+    case 'no-speech':
+      return 'No speech detected yet; still listening.'
+    case 'language-not-supported':
+      return 'This browser does not support speech recognition for the selected language.'
+    default:
+      return message.trim() || 'Browser speech recognition failed.'
+  }
+}
+
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
   activePrimary: 'swarm',
@@ -660,6 +750,20 @@ export function DesktopChatPanel({
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const shouldStickToBottomRef = useRef(true)
   const scrollToLatestFrameRef = useRef<number | null>(null)
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const dictationEnabledRef = useRef(false)
+  const dictationCanRunRef = useRef(false)
+  const dictationRestartTimerRef = useRef<number | null>(null)
+  const dictationBaseDraftRef = useRef('')
+  const dictationFinalTranscriptRef = useRef('')
+  const dictationInterimTranscriptRef = useRef('')
+  const dictationManualStopRef = useRef(false)
+  const dictationAcceptLateResultRef = useRef(false)
+  const dictationStartingRef = useRef(false)
+  const [dictationSupported, setDictationSupported] = useState(false)
+  const [dictationEnabled, setDictationEnabled] = useState(false)
+  const [dictationListening, setDictationListening] = useState(false)
+  const [dictationError, setDictationError] = useState<string | null>(null)
 
   const {
     data: agentState = EMPTY_AGENT_STATE,
@@ -705,6 +809,10 @@ export function DesktopChatPanel({
   const activePreferenceRecord = sessionId ? sessionPreference : draftPreference
 
   const composer = useDesktopStore((state) => state.getSessionDraft(sessionId, workspacePath))
+  const composerDraftKey = sessionId ?? draftSessionKey
+  const setComposerDraft = useCallback((value: string) => {
+    setSessionDraft(composerDraftKey, value)
+  }, [composerDraftKey, setSessionDraft])
   const slashPalette = useMemo(() => buildDesktopSlashPaletteState(composer), [composer])
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
@@ -715,6 +823,169 @@ export function DesktopChatPanel({
   const mobileSettingsTriggerRef = useRef<HTMLButtonElement>(null)
   const intermediateSettingsRef = useRef<HTMLDivElement>(null)
   const intermediateSettingsTriggerRef = useRef<HTMLButtonElement>(null)
+
+  const clearDictationRestartTimer = useCallback(() => {
+    if (dictationRestartTimerRef.current === null) {
+      return
+    }
+    window.clearTimeout(dictationRestartTimerRef.current)
+    dictationRestartTimerRef.current = null
+  }, [])
+
+  const commitDictationDraft = useCallback((includeInterim = true) => {
+    const nextDraft = appendDictationText(
+      appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current),
+      includeInterim ? dictationInterimTranscriptRef.current : '',
+    )
+    dictationBaseDraftRef.current = nextDraft
+    dictationFinalTranscriptRef.current = ''
+    dictationInterimTranscriptRef.current = ''
+    setComposerDraft(nextDraft)
+    return nextDraft
+  }, [setComposerDraft])
+
+  const stopDictation = useCallback((commitDraft = true, acceptLateResults = false) => {
+    dictationEnabledRef.current = false
+    dictationAcceptLateResultRef.current = acceptLateResults
+    dictationManualStopRef.current = true
+    dictationStartingRef.current = false
+    setDictationEnabled(false)
+    setDictationListening(false)
+    clearDictationRestartTimer()
+    if (commitDraft) {
+      commitDictationDraft(true)
+    }
+    const recognition = recognitionRef.current
+    if (!recognition) {
+      return
+    }
+    try {
+      recognition.stop()
+    } catch {
+      try {
+        recognition.abort()
+      } catch {
+        // Browser implementations throw here when recognition is already stopped.
+      }
+    }
+  }, [clearDictationRestartTimer, commitDictationDraft])
+
+  const startDictationRecognition = useCallback((recognition: SpeechRecognitionLike) => {
+    if (!dictationEnabledRef.current || !dictationCanRunRef.current || dictationStartingRef.current) {
+      return
+    }
+    dictationStartingRef.current = true
+    dictationManualStopRef.current = false
+    try {
+      recognition.start()
+    } catch (error) {
+      dictationStartingRef.current = false
+      const message = error instanceof Error && error.message.trim()
+        ? error.message
+        : 'Browser speech recognition could not start.'
+      setDictationError(message)
+    }
+  }, [])
+
+  const handleDictationToggle = useCallback(() => {
+    if (dictationEnabledRef.current) {
+      stopDictation(true)
+      return
+    }
+
+    const Recognition = getSpeechRecognitionConstructor()
+    if (!Recognition) {
+      setDictationSupported(false)
+      setDictationError('Browser speech recognition is not available here.')
+      return
+    }
+
+    setDictationSupported(true)
+    setDictationError(null)
+    const recognition = new Recognition()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.maxAlternatives = 1
+    recognition.lang = typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'en-US'
+    recognition.onstart = () => {
+      dictationStartingRef.current = false
+      setDictationListening(true)
+      setDictationError(null)
+    }
+    recognition.onresult = (event) => {
+      if (!dictationEnabledRef.current && !dictationAcceptLateResultRef.current) {
+        return
+      }
+      let interimTranscript = ''
+      let finalTranscript = ''
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index]
+        const transcript = result?.[0]?.transcript ?? ''
+        if (!transcript) {
+          continue
+        }
+        if (result?.isFinal) {
+          finalTranscript += transcript
+        } else {
+          interimTranscript += transcript
+        }
+      }
+      if (finalTranscript) {
+        dictationFinalTranscriptRef.current = appendDictationText(dictationFinalTranscriptRef.current, finalTranscript)
+      }
+      dictationInterimTranscriptRef.current = interimTranscript
+      const nextDraft = appendDictationText(
+        appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current),
+        dictationInterimTranscriptRef.current,
+      )
+      setComposerDraft(nextDraft)
+    }
+    recognition.onerror = (event) => {
+      dictationStartingRef.current = false
+      const error = event.error ?? ''
+      if (error === 'no-speech' && dictationEnabledRef.current) {
+        setDictationError(null)
+        return
+      }
+      setDictationError(speechRecognitionErrorMessage(error, event.message))
+      if (error === 'not-allowed' || error === 'service-not-allowed' || error === 'audio-capture' || error === 'language-not-supported') {
+        dictationEnabledRef.current = false
+        setDictationEnabled(false)
+      }
+    }
+    recognition.onend = () => {
+      dictationStartingRef.current = false
+      setDictationListening(false)
+      if (!dictationEnabledRef.current || dictationManualStopRef.current || !dictationCanRunRef.current) {
+        return
+      }
+      clearDictationRestartTimer()
+      dictationRestartTimerRef.current = window.setTimeout(() => {
+        dictationRestartTimerRef.current = null
+        if (recognitionRef.current && dictationEnabledRef.current && dictationCanRunRef.current) {
+          startDictationRecognition(recognitionRef.current)
+        }
+      }, DICTATION_RESTART_DELAY_MS)
+    }
+
+    recognitionRef.current = recognition
+    dictationCanRunRef.current = true
+    dictationAcceptLateResultRef.current = false
+    dictationBaseDraftRef.current = composer
+    dictationFinalTranscriptRef.current = ''
+    dictationInterimTranscriptRef.current = ''
+    dictationEnabledRef.current = true
+    setDictationEnabled(true)
+    startDictationRecognition(recognition)
+  }, [clearDictationRestartTimer, composer, setComposerDraft, startDictationRecognition, stopDictation])
+
+  useEffect(() => {
+    setDictationSupported(getSpeechRecognitionConstructor() !== null)
+  }, [])
+
+  useEffect(() => () => {
+    stopDictation(false)
+  }, [stopDictation])
 
   useEffect(() => {
     if (!mobileSettingsOpen && !intermediateSettingsOpen) return
@@ -838,6 +1109,19 @@ export function DesktopChatPanel({
   const showRunTimer = lifecycleActive && lifecycleStartedAt > 0
   const runTimerLabel = showRunTimer ? formatDurationCompact(timerNow - lifecycleStartedAt) : reconnectingRun ? 'Reconnecting…' : ''
   const composerDisabled = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
+  const runActive = canStop || submitting || lifecycleActive
+  const showDictationButton = !runActive
+  const dictationButtonDisabled = composerDisabled || !dictationSupported
+  const dictationComposer = dictationEnabled
+    ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
+    : composer
+  useEffect(() => {
+    dictationCanRunRef.current = showDictationButton && !composerDisabled
+    if (!dictationCanRunRef.current && dictationEnabledRef.current) {
+      stopDictation(true)
+    }
+  }, [composerDisabled, showDictationButton, stopDictation])
+
   const contextBadgeLabel = formatContextUsageBadgeLabel(liveSession?.usage ?? null)
   const contextBadgeTooltip = formatContextUsageTooltip(liveSession?.usage ?? null)
   const agentTodoSummary = metadataTodoSummary(metadataRecord(liveSession?.metadata))
@@ -909,7 +1193,6 @@ export function DesktopChatPanel({
     }
   }, [mentionPaletteMatches, mentionSelectionIndex])
 
-  const mentionDraftKey = sessionId ?? draftSessionKey
   const resolvedSessionAgent = useMemo(
     () => resolveSessionEffectiveAgentName(liveSession ?? session, agentState.activePrimary),
     [agentState.activePrimary, liveSession, session],
@@ -1555,8 +1838,17 @@ export function DesktopChatPanel({
   }, [composer, defaultChatRoute, draftSessionKey, onStartNewSession, routeOptions, sessionId, setSessionDraft, workspaceName, workspacePath])
 
   const handleSubmit = useCallback(async () => {
-    const prompt = composer.trim()
-    if (!prompt || submitting) {
+    if (submitting) {
+      return
+    }
+    if (dictationEnabledRef.current) {
+      stopDictation(false, true)
+      await new Promise((resolve) => window.setTimeout(resolve, DICTATION_FINAL_FLUSH_MS))
+      commitDictationDraft(true)
+      dictationAcceptLateResultRef.current = false
+    }
+    const prompt = useDesktopStore.getState().getSessionDraft(sessionId, workspacePath).trim()
+    if (!prompt) {
       return
     }
 
@@ -1621,7 +1913,7 @@ export function DesktopChatPanel({
         void queryClient.invalidateQueries({ queryKey: sessionMessagesQueryKey(targetSession.id) })
       }
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, composer, currentSessionAgent, mentionSubagents, onSessionCreated, queryClient, session, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, currentSessionAgent, mentionSubagents, onSessionCreated, queryClient, session, sessionId, stopDictation, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {
@@ -1964,8 +2256,8 @@ export function DesktopChatPanel({
     const trimmedStart = composer.replace(/^[\s\t\r\n]+/, '')
     const leadingWhitespace = composer.slice(0, composer.length - trimmedStart.length)
     const nextDraft = `${leadingWhitespace}@${normalizedName} `
-    setSessionDraft(mentionDraftKey, nextDraft)
-  }, [composer, mentionDraftKey, setSessionDraft])
+    setComposerDraft(nextDraft)
+  }, [composer, setComposerDraft])
 
   const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionPaletteIsActive && mentionPaletteMatches.length > 0) {
@@ -2254,6 +2546,7 @@ export function DesktopChatPanel({
         <div className="grid gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
           {panelError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{panelError}</div> : null}
           {permissionError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{permissionError}</div> : null}
+          {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">{dictationError}</div> : null}
           {lastSavedRulePreview ? <div className="rounded-xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-3 py-2 text-sm text-[var(--app-success)]">Always apply saved: {lastSavedRulePreview}</div> : null}
           {!lifecycleActive && (lifecyclePhase === 'cancelled' || lifecyclePhase === 'canceled') ? (
             <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">
@@ -2279,8 +2572,15 @@ export function DesktopChatPanel({
             <div className="flex items-end gap-3 px-4 py-3 lg:py-2.5">
               <div className="min-w-0 flex-1">
                 <Textarea
-                  value={composer}
-                  onChange={(event) => setSessionDraft(mentionDraftKey, event.target.value)}
+                  value={dictationComposer}
+                  onChange={(event) => {
+                    if (dictationEnabledRef.current) {
+                      dictationBaseDraftRef.current = event.target.value
+                      dictationFinalTranscriptRef.current = ''
+                      dictationInterimTranscriptRef.current = ''
+                    }
+                    setComposerDraft(event.target.value)
+                  }}
                   onKeyDown={handleComposerKeyDown}
                   onDragOver={(event) => {
                     const hasTodo = Array.from(event.dataTransfer.types).includes(TODO_DRAG_MIME) || Array.from(event.dataTransfer.types).includes('text/plain')
@@ -2292,10 +2592,25 @@ export function DesktopChatPanel({
                   }}
                   onDrop={handleComposerDrop}
                   placeholder={placeholder}
-                  className="min-h-[56px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!ring-0 focus:!shadow-none focus:!border-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!shadow-none focus-visible:!border-0 hover:!border-0 disabled:bg-transparent lg:min-h-[52px]"
+                  className={showDictationButton ? "min-h-[56px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 pr-12 !shadow-none !outline-none !ring-0 focus:!ring-0 focus:!shadow-none focus:!border-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!shadow-none focus-visible:!border-0 hover:!border-0 disabled:bg-transparent lg:min-h-[52px]" : "min-h-[56px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!ring-0 focus:!shadow-none focus:!border-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!shadow-none focus-visible:!border-0 hover:!border-0 disabled:bg-transparent lg:min-h-[52px]"}
                   rows={2}
                   disabled={composerDisabled}
                 />
+                {showDictationButton ? (
+                  <button
+                    type="button"
+                    onClick={handleDictationToggle}
+                    disabled={dictationButtonDisabled}
+                    aria-pressed={dictationEnabled}
+                    aria-label={dictationEnabled ? 'Stop microphone dictation' : 'Start microphone dictation'}
+                    title={dictationSupported ? (dictationEnabled ? 'Stop dictation' : 'Start dictation') : 'Speech recognition is not available in this browser'}
+                    className={dictationEnabled
+                      ? 'absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-sm transition hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50'
+                      : 'absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50'}
+                  >
+                    <Mic size={17} className={dictationListening ? 'animate-pulse' : undefined} />
+                  </button>
+                ) : null}
               </div>
 
             </div>
