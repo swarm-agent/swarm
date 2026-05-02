@@ -146,7 +146,7 @@ export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, 
   ) : null
 
   return (
-    <div className="inline-flex min-w-0 items-center">
+    <div className="inline-flex min-w-0 max-w-full items-center">
       <button
         ref={triggerRef}
         type="button"
@@ -155,7 +155,7 @@ export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, 
         title={title}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex h-10 min-w-0 sm:max-w-[220px] items-center gap-1.5 sm:gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 sm:px-3 text-sm font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+        className="inline-flex h-10 min-w-0 max-w-full sm:max-w-[220px] items-center gap-1.5 sm:gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 sm:px-3 text-sm font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
           <RouteIcon route={selectedRoute} className="shrink-0 text-[var(--app-text-subtle)]" />

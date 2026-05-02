@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Clock3, ListChecks, LoaderCircle, Menu, Minimize2, Save, Send, ShieldAlert, Sparkles, Square } from 'lucide-react'
+import { Clock3, ListChecks, LoaderCircle, Menu, Minimize2, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -703,24 +703,33 @@ export function DesktopChatPanel({
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [modelPickerOpenSignal, setModelPickerOpenSignal] = useState(0)
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
+  const [intermediateSettingsOpen, setIntermediateSettingsOpen] = useState(false)
   const mobileSettingsRef = useRef<HTMLDivElement>(null)
   const mobileSettingsTriggerRef = useRef<HTMLButtonElement>(null)
+  const intermediateSettingsRef = useRef<HTMLDivElement>(null)
+  const intermediateSettingsTriggerRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
-    if (!mobileSettingsOpen) return
+    if (!mobileSettingsOpen && !intermediateSettingsOpen) return
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node
       if (
         mobileSettingsRef.current?.contains(target) ||
         mobileSettingsTriggerRef.current?.contains(target) ||
+        intermediateSettingsRef.current?.contains(target) ||
+        intermediateSettingsTriggerRef.current?.contains(target) ||
         !document.getElementById('root')?.contains(target)
       ) {
         return
       }
       setMobileSettingsOpen(false)
+      setIntermediateSettingsOpen(false)
     }
     const handleEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileSettingsOpen(false)
+      if (event.key === 'Escape') {
+        setMobileSettingsOpen(false)
+        setIntermediateSettingsOpen(false)
+      }
     }
     document.addEventListener('mousedown', handleClickOutside)
     document.addEventListener('keydown', handleEscape)
@@ -728,7 +737,7 @@ export function DesktopChatPanel({
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [mobileSettingsOpen])
+  }, [mobileSettingsOpen, intermediateSettingsOpen])
 
   useEffect(() => {
     const storedRoute = sessionId
@@ -2290,8 +2299,8 @@ export function DesktopChatPanel({
             ) : null}
 
             <div className="border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
-              {/* DESKTOP LAYOUT (>= 1100px) */}
-              <div className="hidden min-[1100px]:flex min-w-0 items-center gap-2 justify-between">
+              {/* DESKTOP LAYOUT (>= 1000px; thinking/fast collapse from 1000px to 1100px) */}
+              <div className="hidden min-[1000px]:flex min-w-0 items-center gap-2 justify-between">
                 <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                   <ModePicker
                     mode={sessionMode === 'auto' ? 'auto' : 'plan'}
@@ -2315,26 +2324,48 @@ export function DesktopChatPanel({
                     openSignal={modelPickerOpenSignal}
                   />
 
-                  <ThinkingPicker
-                    value={normalizedThinking}
-                    options={THINKING_OPTIONS}
-                    onSelect={handleThinkingChange}
-                    label="Thinking"
-                    tagsEnabled={thinkingTagsEnabled}
-                    onToggleTags={(enabled) => {
-                      void handleThinkingTagsToggle(enabled)
-                    }}
-                    tagsBusy={thinkingTagsSaving}
-                  />
-
-                  {fastSupported ? (
+                  <div className="hidden min-[1100px]:contents">
                     <ThinkingPicker
-                      value={fastValue}
-                      options={FAST_ON_OFF_OPTIONS}
-                      onSelect={handleFastChange}
-                      label="Fast"
+                      value={normalizedThinking}
+                      options={THINKING_OPTIONS}
+                      onSelect={handleThinkingChange}
+                      label="Thinking"
+                      tagsEnabled={thinkingTagsEnabled}
+                      onToggleTags={(enabled) => {
+                        void handleThinkingTagsToggle(enabled)
+                      }}
+                      tagsBusy={thinkingTagsSaving}
                     />
-                  ) : null}
+
+                    {fastSupported ? (
+                      <ThinkingPicker
+                        value={fastValue}
+                        options={FAST_ON_OFF_OPTIONS}
+                        onSelect={handleFastChange}
+                        label="Fast"
+                      />
+                    ) : null}
+                  </div>
+
+                  <div className="relative hidden min-[1000px]:block min-[1100px]:hidden">
+                    {intermediateSettingsOpen ? (
+                      <div ref={intermediateSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[260px] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
+                        <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={handleThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={(enabled) => { void handleThinkingTagsToggle(enabled) }} tagsBusy={thinkingTagsSaving} />
+                        {fastSupported ? <ThinkingPicker value={fastValue} options={FAST_ON_OFF_OPTIONS} onSelect={handleFastChange} label="Fast" /> : null}
+                      </div>
+                    ) : null}
+                    <button
+                      ref={intermediateSettingsTriggerRef}
+                      type="button"
+                      onClick={() => setIntermediateSettingsOpen(!intermediateSettingsOpen)}
+                      title="Thinking and speed settings"
+                      aria-haspopup="menu"
+                      aria-expanded={intermediateSettingsOpen}
+                      className="inline-flex h-10 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    >
+                      <span className="truncate">{normalizedThinking}</span>
+                    </button>
+                  </div>
 
                   <button type="button" onClick={() => { void handleCompact(composer) }} disabled={!sessionId || canStop || submitting} title={contextBadgeTooltip ? `${contextBadgeTooltip} · Click to compact` : 'Compact conversation'} className="inline-flex min-h-6 items-center gap-1 rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">
                     <span>{contextBadgeLabel || (selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx')}</span>
@@ -2372,8 +2403,8 @@ export function DesktopChatPanel({
                 </div>
               </div>
 
-              {/* MOBILE 1-ROW COMPACT LAYOUT (< 1100px) */}
-              <div className="flex w-full min-w-0 relative min-[1100px]:hidden">
+              {/* MOBILE 1-ROW COMPACT LAYOUT (< 1000px) */}
+              <div className="flex w-full min-w-0 relative min-[1000px]:hidden">
                 {mobileSettingsOpen ? (
                   <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
                     <ModePicker mode={sessionMode === 'auto' ? 'auto' : 'plan'} onSelect={handleModeChange} />
@@ -2389,25 +2420,30 @@ export function DesktopChatPanel({
                   </div>
                 ) : null}
 
-                <div className="flex w-full min-w-0 items-center gap-1.5 sm:gap-2 justify-between">
+                <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_minmax(0,0.7fr)_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_minmax(0,0.7fr)_40px] sm:gap-2">
                   {/* The Summary/Settings Quick Toggle */}
                   <button 
                     ref={mobileSettingsTriggerRef}
                     type="button" 
                     onClick={() => setMobileSettingsOpen(!mobileSettingsOpen)} 
-                    className="flex min-w-0 flex-[2] items-center gap-2 h-10 rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-2 sm:px-3 shadow-sm text-left hover:bg-[var(--app-surface-hover)] transition"
+                    className="flex h-10 min-w-0 items-center gap-1.5 overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-2 shadow-sm text-left hover:bg-[var(--app-surface-hover)] transition"
+                    title="Open mode, agent, model, thinking, and speed settings"
                   >
-                    <span className="truncate block w-full min-w-0 text-[11px] sm:text-[12px] font-medium text-[var(--app-text)] leading-tight">
-                      {currentSessionAgent} <span className="font-normal text-[var(--app-text-muted)] ml-1">{resolvedModelOptions.find(o => o.key === selectedModelKey)?.label?.split(' ')[0] || 'Model'}</span>
+                    <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
+                    <span className="flex min-w-0 flex-col leading-tight">
+                      <span className="truncate text-[11px] sm:text-[12px] font-medium text-[var(--app-text)]">{currentSessionAgent}</span>
+                      <span className="truncate text-[10px] text-[var(--app-text-muted)]">
+                        {sessionMode === 'auto' ? 'auto' : 'plan'} · {resolvedModelOptions.find(o => o.key === selectedModelKey)?.label || 'Model'} · {normalizedThinking}{fastSupported ? ` · fast ${fastValue}` : ''}
+                      </span>
                     </span>
                   </button>
 
-                  <button type="button" onClick={() => { void handleCompact(composer) }} disabled={!sessionId || canStop || submitting} title={contextBadgeTooltip ? `${contextBadgeTooltip} · Click to compact` : 'Compact conversation'} className="inline-flex h-10 min-w-0 max-w-[48px] sm:min-w-[40px] sm:max-w-none px-1.5 sm:px-2.5 items-center justify-center rounded-xl bg-[var(--app-surface-subtle)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50 shrink-1 sm:shrink-0 border border-[var(--app-border)] text-[var(--app-text-muted)] hover:text-[var(--app-text)] font-medium tabular-nums text-[10px] sm:text-[11px]">
-                    <span className="truncate min-w-0 w-full text-center">{contextBadgeLabel || '100%'}</span>
+                  <button type="button" onClick={() => { void handleCompact(composer) }} disabled={!sessionId || canStop || submitting} title={contextBadgeTooltip ? `${contextBadgeTooltip} · Click to compact` : 'Compact conversation'} className="inline-flex h-10 min-w-0 items-center justify-center rounded-xl bg-[var(--app-surface-subtle)] px-1.5 sm:px-2.5 transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50 border border-[var(--app-border)] text-[var(--app-text-muted)] hover:text-[var(--app-text)] font-medium tabular-nums text-[10px] sm:text-[11px]">
+                    <span className="truncate min-w-0 w-full text-center">{contextBadgeLabel || 'ctx'}</span>
                   </button>
 
                   {showRoutePicker ? (
-                    <div className="flex min-w-0 flex-[1] sm:flex-none">
+                    <div className="flex min-w-0 overflow-hidden [&>div]:w-full [&>div>button]:w-full">
                       <RoutePicker
                         currentRoute={activeChatRoute}
                         routes={routeOptions}
