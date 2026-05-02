@@ -2242,8 +2242,8 @@ export function DesktopChatPanel({
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 pb-[max(var(--app-safe-area-bottom),8px)] pt-4 sm:px-6 sm:py-5">
-        <div className="grid gap-3">
+      <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]">
+        <div className="grid gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
           {panelError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{panelError}</div> : null}
           {permissionError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{permissionError}</div> : null}
           {lastSavedRulePreview ? <div className="rounded-xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-3 py-2 text-sm text-[var(--app-success)]">Always apply saved: {lastSavedRulePreview}</div> : null}
