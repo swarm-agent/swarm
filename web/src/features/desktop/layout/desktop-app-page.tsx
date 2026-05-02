@@ -2744,7 +2744,7 @@ export function DesktopAppPage() {
     : 0
 
   return (
-    <div className="fixed inset-0 flex h-[100dvh] min-h-[-webkit-fill-available] w-screen overflow-hidden bg-[var(--app-bg)] p-0 text-[var(--app-text)]">
+    <div className="absolute inset-0 flex h-full min-h-0 w-full overflow-hidden bg-[var(--app-surface)] p-0 text-[var(--app-text)]">
       <aside data-testid="desktop-workspace-sidebar" className={cn('hidden shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] sm:flex', sidebarCollapsed ? 'sm:w-[56px]' : 'sm:w-[320px]')}>
         {sidebarContent}
       </aside>
