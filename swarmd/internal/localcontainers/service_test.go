@@ -3,6 +3,7 @@ package localcontainers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -139,5 +140,47 @@ func TestFetchProductionImageMetadataRejectsInvalidSize(t *testing.T) {
 	_, err := FetchProductionImageMetadata(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "image_size_bytes is invalid") {
 		t.Fatalf("FetchProductionImageMetadata() error = %v, want invalid image_size_bytes", err)
+	}
+}
+
+func TestAppendLocalContainerUserArgsAddsPodmanKeepIDAndRuntimeUserEnv(t *testing.T) {
+	uid := hostRuntimeUID()
+	gid := hostRuntimeGID()
+	if uid <= 0 || gid <= 0 {
+		t.Skip("test requires non-root host uid/gid")
+	}
+	got := appendLocalContainerUserArgs("podman", []string{
+		"--add-host", "host.containers.internal:10.0.2.2",
+		"--user", "65534:65534",
+		"-e", "SWARM_RUNTIME_UID=65534",
+		"--userns=auto",
+	})
+	want := []string{
+		"--add-host", "host.containers.internal:10.0.2.2",
+		"--userns=keep-id",
+		"--user", "0:0",
+		"-e", fmt.Sprintf("SWARM_RUNTIME_UID=%d", uid),
+		"-e", fmt.Sprintf("SWARM_RUNTIME_GID=%d", gid),
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("appendLocalContainerUserArgs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestAppendLocalContainerUserArgsAddsDockerRuntimeUserEnvWithoutUserNS(t *testing.T) {
+	uid := hostRuntimeUID()
+	gid := hostRuntimeGID()
+	if uid <= 0 || gid <= 0 {
+		t.Skip("test requires non-root host uid/gid")
+	}
+	got := appendLocalContainerUserArgs("docker", []string{"--add-host", "host.docker.internal:host-gateway"})
+	want := []string{
+		"--add-host", "host.docker.internal:host-gateway",
+		"--user", "0:0",
+		"-e", fmt.Sprintf("SWARM_RUNTIME_UID=%d", uid),
+		"-e", fmt.Sprintf("SWARM_RUNTIME_GID=%d", gid),
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("appendLocalContainerUserArgs() = %#v, want %#v", got, want)
 	}
 }

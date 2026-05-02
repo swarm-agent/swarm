@@ -283,6 +283,7 @@ func (s *Service) replaceRuntimeContainer(ctx context.Context, record pebblestor
 			extraRunArgs = normalizeRunArgs(inspectedRunArgs)
 		}
 	}
+	extraRunArgs = appendLocalContainerUserArgs(runtimeName, extraRunArgs)
 	backupName := replacementBackupContainerName(containerName)
 	if backupName != containerName {
 		_ = remover(ctx, runtimeName, backupName)

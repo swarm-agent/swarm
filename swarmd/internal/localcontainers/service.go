@@ -738,7 +738,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Container, err
 		return Container{}, runtimeErr
 	}
 	mounts = append(mounts, runtimeMounts...)
-	extraRunArgs := normalizeRunArgs(input.ExtraRunArgs)
+	extraRunArgs := appendLocalContainerUserArgs(runtimeName, normalizeRunArgs(input.ExtraRunArgs))
 	if runtimeName == "podman" && preparedNetwork.Name != "" && preparedNetwork.Gateway != "" {
 		extraRunArgs = append(extraRunArgs, "--add-host", fmt.Sprintf("host.containers.internal:%s", preparedNetwork.Gateway))
 	}
@@ -1176,6 +1176,14 @@ type runOptions struct {
 	Mounts        []Mount
 	Env           []string
 	ExtraRunArgs  []string
+}
+
+func hostRuntimeUID() int {
+	return os.Getuid()
+}
+
+func hostRuntimeGID() int {
+	return os.Getgid()
 }
 
 func detectAvailableRuntimes() []string {
@@ -2664,6 +2672,77 @@ func normalizeRunArgs(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func appendLocalContainerUserArgs(runtimeName string, values []string) []string {
+	uid := hostRuntimeUID()
+	gid := hostRuntimeGID()
+	if uid <= 0 || gid <= 0 {
+		return append([]string(nil), values...)
+	}
+	out := removeLocalContainerUserArgs(values)
+	if normalizeRuntimeSelection(runtimeName) == "podman" {
+		out = append(out, "--userns=keep-id")
+	}
+	out = append(out,
+		"--user", "0:0",
+		"-e", fmt.Sprintf("SWARM_RUNTIME_UID=%d", uid),
+		"-e", fmt.Sprintf("SWARM_RUNTIME_GID=%d", gid),
+	)
+	return out
+}
+
+func removeLocalContainerUserArgs(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for i := 0; i < len(values); i++ {
+		value := strings.TrimSpace(values[i])
+		if value == "" {
+			continue
+		}
+		switch {
+		case value == "--user" || value == "-u":
+			i++
+			continue
+		case strings.HasPrefix(value, "--user=") || strings.HasPrefix(value, "-u="):
+			continue
+		case value == "--userns":
+			i++
+			continue
+		case strings.HasPrefix(value, "--userns="):
+			continue
+		case value == "-e" || value == "--env":
+			if i+1 < len(values) && isLocalContainerUserEnv(values[i+1]) {
+				i++
+				continue
+			}
+		case strings.HasPrefix(value, "-e="):
+			if isLocalContainerUserEnv(strings.TrimPrefix(value, "-e=")) {
+				continue
+			}
+		case strings.HasPrefix(value, "--env="):
+			if isLocalContainerUserEnv(strings.TrimPrefix(value, "--env=")) {
+				continue
+			}
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func isLocalContainerUserEnv(value string) bool {
+	key, _, ok := strings.Cut(strings.TrimSpace(value), "=")
+	if !ok {
+		key = strings.TrimSpace(value)
+	}
+	switch strings.ToUpper(key) {
+	case "SWARM_RUNTIME_UID", "SWARM_RUNTIME_GID":
+		return true
+	default:
+		return false
+	}
 }
 
 func PrepareRuntimeNetwork(ctx context.Context, runtimeName, networkName string) (RuntimeNetwork, error) {

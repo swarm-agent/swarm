@@ -52,24 +52,44 @@ is_true() {
   esac
 }
 
+runtime_uid() {
+  printf '%s' "${SWARM_RUNTIME_UID:-65534}" | awk '/^[0-9]+$/ { print; exit }'
+}
+
+runtime_gid() {
+  printf '%s' "${SWARM_RUNTIME_GID:-65534}" | awk '/^[0-9]+$/ { print; exit }'
+}
+
 ensure_runtime_permissions() {
   runtime_config_home="${XDG_CONFIG_HOME:-${SWARM_RUNTIME_HOME}/.config}"
   runtime_data_home="${XDG_DATA_HOME:-${SWARM_RUNTIME_HOME}/.local/share}"
   runtime_state_home="${XDG_STATE_HOME:-${SWARM_RUNTIME_HOME}/.local/state}"
+  runtime_uid_value="$(runtime_uid)"
+  runtime_gid_value="$(runtime_gid)"
+  if [ -z "${runtime_uid_value}" ] || [ -z "${runtime_gid_value}" ]; then
+    echo "[swarm-container] SWARM_RUNTIME_UID and SWARM_RUNTIME_GID must be numeric" >&2
+    exit 1
+  fi
   mkdir -p "${SWARM_RUNTIME_HOME}" "${runtime_config_home}" "${runtime_data_home}" "${runtime_state_home}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")" /workspaces
   # /workspaces is an intentional host-shared mount boundary; do not rewrite ownership.
-  chown -R nobody:nogroup "${SWARM_RUNTIME_HOME}" "${runtime_config_home}" "${runtime_data_home}" "${runtime_state_home}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")"
+  chown -R "${runtime_uid_value}:${runtime_gid_value}" "${SWARM_RUNTIME_HOME}" "${runtime_config_home}" "${runtime_data_home}" "${runtime_state_home}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")"
 }
 
 run_as_swarm_user() {
   runtime_config_home="${XDG_CONFIG_HOME:-${SWARM_RUNTIME_HOME}/.config}"
   runtime_data_home="${XDG_DATA_HOME:-${SWARM_RUNTIME_HOME}/.local/share}"
   runtime_state_home="${XDG_STATE_HOME:-${SWARM_RUNTIME_HOME}/.local/state}"
+  runtime_uid_value="$(runtime_uid)"
+  runtime_gid_value="$(runtime_gid)"
+  if [ -z "${runtime_uid_value}" ] || [ -z "${runtime_gid_value}" ]; then
+    echo "[swarm-container] SWARM_RUNTIME_UID and SWARM_RUNTIME_GID must be numeric" >&2
+    exit 1
+  fi
   HOME="${SWARM_RUNTIME_HOME}" \
   XDG_CONFIG_HOME="${runtime_config_home}" \
   XDG_DATA_HOME="${runtime_data_home}" \
   XDG_STATE_HOME="${runtime_state_home}" \
-  setpriv --reuid=nobody --regid=nogroup --clear-groups "$@"
+  setpriv --reuid="${runtime_uid_value}" --regid="${runtime_gid_value}" --clear-groups "$@"
 }
 
 start_swarmd() {
