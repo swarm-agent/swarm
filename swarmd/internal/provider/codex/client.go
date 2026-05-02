@@ -28,6 +28,7 @@ import (
 
 const (
 	responsesURL                               = "https://chatgpt.com/backend-api/codex/responses"
+	openAIResponsesURL                         = "https://api.openai.com/v1/responses"
 	openAIBetaHeader                           = "OpenAI-Beta"
 	responsesWebsocketBetaHeaderV2             = "responses_websockets=2026-02-06"
 	originatorHeader                           = "originator"
@@ -46,6 +47,7 @@ const (
 	codexTransportMetadataKey                  = "_swarm_transport"
 	codexConnectedViaWSMetadataKey             = "_swarm_connected_via_websocket"
 	codexTransportWebsocket                    = "websocket"
+	codexTransportResponsesHTTP                = "responses_http"
 )
 
 var (
@@ -54,12 +56,13 @@ var (
 )
 
 type Client struct {
-	authStore   *pebblestore.AuthStore
-	httpClient  *http.Client
-	earlyExpiry time.Duration
-	sendWSFn    func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
-	wsMu        sync.Mutex
-	wsSessions  map[string]*cachedWebsocketSession
+	authStore       *pebblestore.AuthStore
+	httpClient      *http.Client
+	earlyExpiry     time.Duration
+	sendWSFn        func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
+	responsesAPIURL string
+	wsMu            sync.Mutex
+	wsSessions      map[string]*cachedWebsocketSession
 }
 
 type startedWebsocketStreamError struct {
@@ -232,9 +235,10 @@ func NewClient(authStore *pebblestore.AuthStore) *Client {
 		authStore: authStore,
 		// Long-running response streams must be governed by per-request contexts
 		// (run service deadlines), not a global client timeout.
-		httpClient:  &http.Client{},
-		earlyExpiry: 5 * time.Minute,
-		wsSessions:  make(map[string]*cachedWebsocketSession),
+		httpClient:      &http.Client{},
+		earlyExpiry:     5 * time.Minute,
+		responsesAPIURL: openAIResponsesURL,
+		wsSessions:      make(map[string]*cachedWebsocketSession),
 	}
 }
 
@@ -517,6 +521,10 @@ func reasoningPayload(thinking string) map[string]any {
 }
 
 func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
+	if record.Type != pebblestore.CodexAuthTypeOAuth {
+		return c.sendOpenAIResponses(ctx, record, payload, onEvent)
+	}
+
 	sendWS := c.sendWSFn
 	if sendWS == nil {
 		sendWS = c.sendWebsocket
@@ -580,6 +588,58 @@ func shouldRetryTransportStatus(statusCode int, decoded map[string]any) bool {
 	default:
 		return statusCode >= http.StatusInternalServerError && statusCode <= 599
 	}
+}
+
+func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.CodexAuthRecord, payload []byte, onEvent func(StreamEvent)) (map[string]any, int, error) {
+	apiURL := strings.TrimSpace(c.responsesAPIURL)
+	if apiURL == "" {
+		apiURL = openAIResponsesURL
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, 0, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+bearerToken(record))
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set(userAgentHeader, defaultCodexTransportUserAgent)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexResponseBodyBytes))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	if resp.StatusCode >= 400 {
+		return annotateCodexTransportMetadata(map[string]any{
+			"raw_body": sanitizeDiagnosticText(string(body)),
+		}, codexTransportResponsesHTTP, false), resp.StatusCode, nil
+	}
+
+	decoded, err := parseOpenAIResponsesBody(body, resp.Header.Get("Content-Type"), onEvent)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return annotateCodexTransportMetadata(decoded, codexTransportResponsesHTTP, false), resp.StatusCode, nil
+}
+
+func parseOpenAIResponsesBody(body []byte, contentType string, onEvent func(StreamEvent)) (map[string]any, error) {
+	if strings.Contains(strings.ToLower(contentType), "text/event-stream") || bytes.Contains(body, []byte("data:")) {
+		return parseEventStreamWithCallback(body, onEvent)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode openai responses body: %w", err)
+	}
+	return decoded, nil
+}
+
+func parseEventStreamWithCallback(body []byte, onEvent func(StreamEvent)) (map[string]any, error) {
+	return parseEventStreamReader(bytes.NewReader(body), onEvent)
 }
 
 func shouldRetryWebsocketTransportError(err error) bool {
