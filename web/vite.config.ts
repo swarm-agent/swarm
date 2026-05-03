@@ -17,6 +17,10 @@ export default defineConfig({
         changeOrigin: false,
         ws: true,
       },
+      '/v3': {
+        target: backendTarget,
+        changeOrigin: false,
+      },
       '/healthz': backendTarget,
       '/readyz': backendTarget,
       '/desktop': backendTarget,
