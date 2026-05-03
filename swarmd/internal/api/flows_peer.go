@@ -38,6 +38,13 @@ func (s *Server) SetFlowStore(flowStore *pebblestore.FlowStore) {
 	s.flows = flowStore
 }
 
+func (s *Server) SetVideoThreadStore(store *pebblestore.VideoThreadStore) {
+	if s == nil {
+		return
+	}
+	s.videoThreads = store
+}
+
 func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
 	peerSwarmID, _ := extractPeerAuth(r)
 	if r.Method != http.MethodPost {

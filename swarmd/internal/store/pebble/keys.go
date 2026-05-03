@@ -28,6 +28,7 @@ const (
 	KeyWorkspaceCurrent                = "workspace/current"
 	KeyWorkspaceEntryPrefix            = "workspace/entry/"
 	KeyWorkspaceTodoItemPrefix         = "workspace_todo/item/"
+	KeyVideoThreadPrefix               = "video/thread/"
 	KeyModelCatalogMeta                = "model_catalog/meta"
 	KeyAgentProfilePrefix              = "agent/profile/"
 	KeyAgentCustomToolPrefix           = "agent/custom_tool/"
@@ -121,6 +122,14 @@ func SessionLifecyclePrefix() string {
 
 func KeyWorkspaceEntry(path string) string {
 	return KeyWorkspaceEntryPrefix + keyPart(path)
+}
+
+func KeyVideoThread(threadID string) string {
+	return KeyVideoThreadPrefix + keyPart(threadID)
+}
+
+func VideoThreadPrefix() string {
+	return KeyVideoThreadPrefix
 }
 
 func KeyWorktreeConfig(workspacePath string) string {

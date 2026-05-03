@@ -93,6 +93,7 @@ type Server struct {
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	sessionRoutes               *pebblestore.SessionRouteStore
 	flows                       *pebblestore.FlowStore
+	videoThreads                *pebblestore.VideoThreadStore
 	mode                        string
 	dataDir                     string
 	startupConfigPath           string
