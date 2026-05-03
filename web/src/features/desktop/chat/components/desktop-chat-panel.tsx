@@ -1958,7 +1958,7 @@ export function DesktopChatPanel({
         void queryClient.invalidateQueries({ queryKey: sessionMessagesQueryKey(targetSession.id) })
       }
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, currentSessionAgent, mentionSubagents, onSessionCreated, queryClient, session, sessionId, stopDictation, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, currentSessionAgent, effectiveSessionMode, mentionSubagents, onSessionCreated, queryClient, session, sessionId, stopDictation, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {
