@@ -50,18 +50,14 @@ type runStreamInboundMessage struct {
 }
 
 type runStreamControlMessage struct {
-	Type           string `json:"type"`
-	OK             bool   `json:"ok,omitempty"`
-	SessionID      string `json:"session_id,omitempty"`
-	RunID          string `json:"run_id,omitempty"`
-	LastSeq        uint64 `json:"last_seq,omitempty"`
-	EarliestSeq    uint64 `json:"earliest_seq,omitempty"`
-	Error          string `json:"error,omitempty"`
-	Message        string `json:"message,omitempty"`
-	Background     bool   `json:"background,omitempty"`
-	TargetKind     string `json:"target_kind,omitempty"`
-	TargetName     string `json:"target_name,omitempty"`
-	OwnerTransport string `json:"owner_transport,omitempty"`
+	Type        string `json:"type"`
+	OK          bool   `json:"ok,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	RunID       string `json:"run_id,omitempty"`
+	LastSeq     uint64 `json:"last_seq,omitempty"`
+	EarliestSeq uint64 `json:"earliest_seq,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
 type runStreamKeepaliveMessage struct {
@@ -544,18 +540,13 @@ func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if remoteTarget != nil {
-		startedAt := time.Now()
-		log.Printf("run stream websocket proxy start session_id=%s swarm_id=%q backend_url=%q", sessionID, strings.TrimSpace(remoteTarget.SwarmID), strings.TrimSpace(remoteTarget.BackendURL))
 		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
-			log.Printf("run stream websocket proxy failed session_id=%s swarm_id=%q elapsed_ms=%d err=%v", sessionID, strings.TrimSpace(remoteTarget.SwarmID), time.Since(startedAt).Milliseconds(), err)
 			if errors.Is(err, transportws.ErrUpgradeRequired) {
 				writeError(w, http.StatusUpgradeRequired, errors.New("websocket upgrade required"))
 				return
 			}
 			writeError(w, http.StatusBadGateway, err)
-			return
 		}
-		log.Printf("run stream websocket proxy finished session_id=%s swarm_id=%q elapsed_ms=%d", sessionID, strings.TrimSpace(remoteTarget.SwarmID), time.Since(startedAt).Milliseconds())
 		return
 	}
 	if s.runner == nil {
@@ -629,47 +620,44 @@ func decodeRunStreamInbound(raw []byte) (runStreamInboundMessage, error) {
 }
 
 func (s *Server) handleRunStreamStart(conn *transportws.Conn, sessionID string, inbound runStreamInboundMessage) {
-	startedAt := time.Now()
-	log.Printf("run stream start received session_id=%s compact=%t background=%t target_kind=%q target_name=%q last_seq=%d", sessionID, inbound.RunRequest.Compact, inbound.RunRequest.Background, strings.TrimSpace(inbound.RunRequest.TargetKind), strings.TrimSpace(inbound.RunRequest.TargetName), inbound.LastSeq)
 	if inbound.RunRequest.Prompt == "" && !inbound.RunRequest.Compact {
-		log.Printf("run stream start rejected session_id=%s err=%s elapsed_ms=%d", sessionID, "prompt is required", time.Since(startedAt).Milliseconds())
+		log.Printf("run stream start rejected session_id=%s err=%s", sessionID, "prompt is required")
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: "prompt is required"})
 		return
 	}
 	if normalized := runruntime.NormalizeRunTargetKind(inbound.RunRequest.TargetKind); inbound.RunRequest.TargetKind != "" && normalized == "" {
-		log.Printf("run stream start rejected session_id=%s err=%s target_kind=%q elapsed_ms=%d", sessionID, "unsupported target_kind", strings.TrimSpace(inbound.RunRequest.TargetKind), time.Since(startedAt).Milliseconds())
+		log.Printf("run stream start rejected session_id=%s err=%s", sessionID, "unsupported target_kind")
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: fmt.Sprintf("unsupported target_kind %q", inbound.RunRequest.TargetKind)})
 		return
 	}
 	state, err := s.runStreams.newRun(sessionID)
 	if err != nil {
-		log.Printf("run stream start allocation failed session_id=%s err=%v elapsed_ms=%d", sessionID, err, time.Since(startedAt).Milliseconds())
+		log.Printf("run stream start allocation failed session_id=%s err=%v", sessionID, err)
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
 		return
 	}
 	if state == nil {
-		log.Printf("run stream start allocation failed session_id=%s err=%s elapsed_ms=%d", sessionID, "unable to allocate run stream", time.Since(startedAt).Milliseconds())
+		log.Printf("run stream start allocation failed session_id=%s err=%s", sessionID, "unable to allocate run stream")
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: "unable to allocate run stream"})
 		return
 	}
-	log.Printf("run stream start allocated session_id=%s run_id=%s elapsed_ms=%d", sessionID, state.runID, time.Since(startedAt).Milliseconds())
 	_, sub, replay, err := s.runStreams.subscribe(state.runID, inbound.LastSeq)
 	if err != nil {
-		log.Printf("run stream subscribe failed session_id=%s run_id=%s err=%v elapsed_ms=%d", sessionID, state.runID, err, time.Since(startedAt).Milliseconds())
+		log.Printf("run stream subscribe failed session_id=%s run_id=%s err=%v", sessionID, state.runID, err)
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, RunID: state.runID, Error: err.Error()})
 		return
 	}
-	log.Printf("run stream start subscribed session_id=%s run_id=%s replay_frames=%d elapsed_ms=%d", sessionID, state.runID, len(replay), time.Since(startedAt).Milliseconds())
 	defer s.runStreams.unsubscribe(state.runID, sub.id)
 	started := s.startRunStreamExecution(state.runID, sessionID, inbound)
-	go func(runID string) {
-		if startErr := <-started; startErr != nil {
-			log.Printf("run stream async start failed session_id=%s run_id=%s err=%v elapsed_ms=%d", sessionID, runID, startErr, time.Since(startedAt).Milliseconds())
-			return
+	if startErr := <-started; startErr != nil {
+		log.Printf("run stream start failed session_id=%s run_id=%s err=%v", sessionID, state.runID, startErr)
+		status := runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, RunID: state.runID, Error: startErr.Error()}
+		if errors.Is(startErr, runruntime.ErrSessionAlreadyActive) {
+			status.Message = "run rejected"
 		}
-		log.Printf("run stream lifecycle acknowledged session_id=%s run_id=%s elapsed_ms=%d", sessionID, runID, time.Since(startedAt).Milliseconds())
-	}(state.runID)
-	log.Printf("run stream start dispatched session_id=%s run_id=%s elapsed_ms=%d", sessionID, state.runID, time.Since(startedAt).Milliseconds())
+		s.sendRunStreamControl(conn, status)
+		return
+	}
 	if inbound.RunRequest.Background {
 		raw, err := json.Marshal(map[string]any{
 			"ok":              true,
@@ -687,15 +675,11 @@ func (s *Server) handleRunStreamStart(conn *transportws.Conn, sessionID string, 
 		return
 	}
 	s.sendRunStreamControl(conn, runStreamControlMessage{
-		Type:           "run.accepted",
-		OK:             true,
-		SessionID:      sessionID,
-		RunID:          state.runID,
-		LastSeq:        inbound.LastSeq,
-		Background:     false,
-		TargetKind:     strings.TrimSpace(inbound.RunRequest.TargetKind),
-		TargetName:     strings.TrimSpace(inbound.RunRequest.TargetName),
-		OwnerTransport: "background_api",
+		Type:      "run.accepted",
+		OK:        true,
+		SessionID: sessionID,
+		RunID:     state.runID,
+		LastSeq:   inbound.LastSeq,
 	})
 	s.streamRunFrames(conn, state.runID, sub, replay)
 }
@@ -845,7 +829,6 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStreamInboundMessage) <-chan error {
-	startedAt := time.Now()
 	started := make(chan error, 1)
 	if s == nil || s.runner == nil || s.runStreams == nil {
 		started <- errors.New("run service is not configured")
@@ -873,14 +856,12 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 		defer runCancel()
 
 		startSignaled := false
-		log.Printf("run stream execution begin session_id=%s run_id=%s target_kind=%q target_name=%q", sessionID, runID, strings.TrimSpace(inbound.RunRequest.TargetKind), strings.TrimSpace(inbound.RunRequest.TargetName))
 		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, inbound.RunRequest, runruntime.RunStartMeta{
 			RunID:          runID,
 			OwnerTransport: "background_api",
 		}, func(event runruntime.StreamEvent) {
 			if !startSignaled && strings.EqualFold(strings.TrimSpace(event.Type), runruntime.StreamEventSessionLifecycle) && event.Lifecycle != nil && event.Lifecycle.Active {
 				startSignaled = true
-				log.Printf("run stream execution lifecycle active session_id=%s run_id=%s elapsed_ms=%d", sessionID, runID, time.Since(startedAt).Milliseconds())
 				select {
 				case started <- nil:
 				default:
@@ -889,7 +870,6 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 			s.runStreams.publishRuntimeEvent(runID, event)
 		})
 		if err != nil {
-			log.Printf("run stream execution failed session_id=%s run_id=%s start_signaled=%t elapsed_ms=%d err=%v", sessionID, runID, startSignaled, time.Since(startedAt).Milliseconds(), err)
 			if !startSignaled {
 				select {
 				case started <- err:
@@ -900,7 +880,6 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 			return
 		}
 		if !startSignaled {
-			log.Printf("run stream execution finished without lifecycle acknowledgement session_id=%s run_id=%s elapsed_ms=%d", sessionID, runID, time.Since(startedAt).Milliseconds())
 			select {
 			case started <- errors.New("run started without lifecycle acknowledgement"):
 			default:
@@ -911,7 +890,6 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 		}
 		streamResult := result
 		streamResult.ToolMessages = nil
-		log.Printf("run stream execution completed session_id=%s run_id=%s events=%d elapsed_ms=%d", sessionID, runID, len(result.Events), time.Since(startedAt).Milliseconds())
 		s.runStreams.publishCompleted(runID, sessionID, streamResult)
 	}()
 	return started

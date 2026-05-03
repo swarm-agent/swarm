@@ -32,7 +32,6 @@ export type RunStreamEventMessage = {
   background?: boolean
   target_kind?: string
   target_name?: string
-  owner_transport?: string
   usage_summary?: {
     session_id?: string
     provider?: string
@@ -73,11 +72,6 @@ type ResumeRequest = {
   lastSeq: number
 }
 
-type StartResolver = {
-  resolve: (accepted: DesktopRunAccepted) => void
-  reject: (error: Error) => void
-}
-
 type SessionControllerEntry = {
   sessionId: string
   desiredRunId: string | null
@@ -89,8 +83,6 @@ type SessionControllerEntry = {
   closingSocket: WebSocket | null
   livenessTimer: number | null
   lastActivityAt: number
-  pendingStart: DesktopBackgroundRunStartOptions | null
-  startResolver: StartResolver | null
 }
 
 type DesktopRunStreamControllerOptions = {
@@ -152,37 +144,14 @@ export class DesktopRunStreamController {
   }
 
   async start(options: DesktopBackgroundRunStartOptions): Promise<DesktopRunAccepted> {
-    if (options.background) {
-      const accepted = await startSessionRun(options)
-      const sessionId = options.sessionId.trim()
-      const runId = accepted.run_id?.trim() ?? ''
-      if (!runId) {
-        throw new Error('Run start response did not include a run id')
-      }
-      void this.ensure(sessionId, runId)
-      return accepted
-    }
-
+    const accepted = await startSessionRun(options)
     const sessionId = options.sessionId.trim()
-    if (!sessionId) {
-      throw new Error('session id is required')
+    const runId = accepted.run_id?.trim() ?? ''
+    if (!runId) {
+      throw new Error('Run start response did not include a run id')
     }
-    const prompt = options.prompt.trim()
-    if (!prompt && !options.compact) {
-      throw new Error('prompt is required')
-    }
-
-    console.info(`[desktop-run-controller] websocket start opening session=${sessionId}`)
-    return new Promise<DesktopRunAccepted>((resolve, reject) => {
-      const entry = this.getOrCreateEntry(sessionId)
-      this.cancelReconnect(entry)
-      this.clearLiveness(entry)
-      this.closeSocket(entry, false)
-      entry.desiredRunId = null
-      entry.pendingStart = options
-      entry.startResolver = { resolve, reject }
-      void this.openStart(entry)
-    })
+    void this.ensure(sessionId, runId)
+    return accepted
   }
 
   async stop(sessionId: string, runId: string): Promise<void> {
@@ -225,7 +194,6 @@ export class DesktopRunStreamController {
       return
     }
     entry.desiredRunId = null
-    this.rejectPendingStart(entry, new Error('run stream closed'))
     this.cancelReconnect(entry)
     this.clearLiveness(entry)
     this.closeSocket(entry, true)
@@ -256,42 +224,9 @@ export class DesktopRunStreamController {
       closingSocket: null,
       livenessTimer: null,
       lastActivityAt: 0,
-      pendingStart: null,
-      startResolver: null,
     }
     this.entries.set(sessionId, created)
     return created
-  }
-
-  private async openStart(entry: SessionControllerEntry): Promise<void> {
-    const startOptions = entry.pendingStart
-    if (!startOptions) {
-      return
-    }
-    entry.generation += 1
-    const generation = entry.generation
-
-    try {
-      const socket = await openRunStream(entry.sessionId)
-      if (entry.generation !== generation || entry.pendingStart !== startOptions) {
-        socket.close()
-        return
-      }
-      entry.socket = socket
-      entry.socketRunId = null
-      this.attachSocket(entry, socket, generation)
-      this.noteActivity(entry, generation)
-      if (socket.readyState === WebSocket.OPEN) {
-        this.sendStart(entry, socket, startOptions)
-      }
-    } catch (error) {
-      if (entry.generation !== generation) {
-        return
-      }
-      this.rejectPendingStart(entry, error instanceof Error ? error : new Error('Failed to open run stream'))
-      this.closeSocket(entry, true)
-      this.maybeDeleteEntry(entry)
-    }
   }
 
   private async open(entry: SessionControllerEntry, resumeRequest: ResumeRequest): Promise<void> {
@@ -330,11 +265,7 @@ export class DesktopRunStreamController {
       }
       this.noteActivity(entry, generation)
       this.cancelReconnect(entry)
-      if (entry.pendingStart) {
-        this.sendStart(entry, socket, entry.pendingStart)
-      } else {
-        this.sendResume(entry, socket)
-      }
+      this.sendResume(entry, socket)
     })
 
     socket.addEventListener('message', (event) => {
@@ -348,32 +279,6 @@ export class DesktopRunStreamController {
         const ts = Date.now()
         this.options.onFrame(entry.sessionId, payload, ts)
 
-        if (type === 'run.accepted') {
-          const runId = String(payload.run_id ?? '').trim()
-          if (!runId) {
-            this.rejectPendingStart(entry, new Error('Run start response did not include a run id'))
-            this.closeSocket(entry, true)
-            this.maybeDeleteEntry(entry)
-            return
-          }
-          console.info(`[desktop-run-controller] websocket start accepted session=${entry.sessionId} run=${runId}`)
-          entry.desiredRunId = runId
-          entry.socketRunId = runId
-          entry.reconnectAttempt = 0
-          this.cancelReconnect(entry)
-          this.resolvePendingStart(entry, {
-            ok: payload.ok,
-            session_id: payload.session_id,
-            run_id: runId,
-            status: 'accepted',
-            background: payload.background,
-            target_kind: payload.target_kind,
-            target_name: payload.target_name,
-            owner_transport: payload.owner_transport,
-          })
-          return
-        }
-
         if (type === 'resume.accepted') {
           entry.reconnectAttempt = 0
           this.cancelReconnect(entry)
@@ -383,7 +288,6 @@ export class DesktopRunStreamController {
         if (type === 'resume.error') {
           const message = String(payload.error ?? 'Run stream replay window expired')
           this.options.onResumeFailure(entry.sessionId, message, ts)
-          this.rejectPendingStart(entry, new Error(message))
           entry.desiredRunId = null
           this.cancelReconnect(entry)
           this.closeSocket(entry, true)
@@ -432,16 +336,7 @@ export class DesktopRunStreamController {
     })
 
     socket.addEventListener('error', () => {
-      if (entry.generation !== generation || entry.socket !== socket) {
-        return
-      }
-      if (entry.pendingStart) {
-        this.rejectPendingStart(entry, new Error('socket error'))
-        this.closeSocket(entry, true)
-        this.maybeDeleteEntry(entry)
-        return
-      }
-      if (!entry.desiredRunId) {
+      if (entry.generation !== generation || entry.socket !== socket || !entry.desiredRunId) {
         return
       }
       const ts = Date.now()
@@ -462,9 +357,6 @@ export class DesktopRunStreamController {
       entry.socket = null
       entry.socketRunId = null
       if (!entry.desiredRunId) {
-        if (entry.pendingStart) {
-          this.rejectPendingStart(entry, new Error('socket closed before run start was accepted'))
-        }
         this.maybeDeleteEntry(entry)
         return
       }
@@ -472,44 +364,6 @@ export class DesktopRunStreamController {
       this.options.onReconnectPending(entry.sessionId, 'socket closed', ts)
       this.scheduleReconnect(entry, 'socket closed')
     })
-  }
-
-  private sendStart(entry: SessionControllerEntry, socket: WebSocket, options: DesktopBackgroundRunStartOptions): void {
-    try {
-      console.info(`[desktop-run-controller] websocket start sending session=${entry.sessionId}`)
-      socket.send(JSON.stringify({
-        type: 'run.start',
-        prompt: options.prompt.trim(),
-        agent_name: options.agentName?.trim() ?? '',
-        instructions: options.instructions?.trim() ?? '',
-        compact: Boolean(options.compact),
-        background: Boolean(options.background),
-        target_kind: options.targetKind?.trim() ?? '',
-        target_name: options.targetName?.trim() ?? '',
-        tool_scope: options.toolScope,
-        execution_context: options.executionContext,
-      }))
-    } catch (error) {
-      this.rejectPendingStart(entry, error instanceof Error ? error : new Error('Failed to send run start'))
-      this.closeSocket(entry, true)
-      this.maybeDeleteEntry(entry)
-    }
-  }
-
-  private resolvePendingStart(entry: SessionControllerEntry, accepted: DesktopRunAccepted): void {
-    const resolver = entry.startResolver
-    entry.pendingStart = null
-    entry.startResolver = null
-    resolver?.resolve(accepted)
-  }
-
-  private rejectPendingStart(entry: SessionControllerEntry, error: Error): void {
-    const resolver = entry.startResolver
-    entry.pendingStart = null
-    entry.startResolver = null
-    if (resolver) {
-      resolver.reject(error)
-    }
   }
 
   private sendResume(entry: SessionControllerEntry, socket: WebSocket): void {
@@ -566,11 +420,11 @@ export class DesktopRunStreamController {
 
   private armLiveness(entry: SessionControllerEntry, generation: number): void {
     this.clearLiveness(entry)
-    if (!entry.desiredRunId && !entry.pendingStart) {
+    if (!entry.desiredRunId) {
       return
     }
     const timer = window.setTimeout(() => {
-      if (entry.generation !== generation || entry.livenessTimer !== timer || !entry.desiredRunId || entry.pendingStart) {
+      if (entry.generation !== generation || entry.livenessTimer !== timer || !entry.desiredRunId) {
         return
       }
       const ts = Date.now()
@@ -643,7 +497,7 @@ export class DesktopRunStreamController {
   }
 
   private maybeDeleteEntry(entry: SessionControllerEntry): void {
-    if (entry.desiredRunId || entry.pendingStart || entry.startResolver || entry.socket || entry.reconnectTimer !== null || entry.closingSocket || entry.livenessTimer !== null) {
+    if (entry.desiredRunId || entry.socket || entry.reconnectTimer !== null || entry.closingSocket || entry.livenessTimer !== null) {
       return
     }
     this.entries.delete(entry.sessionId)
