@@ -297,15 +297,6 @@ export class DesktopRunStreamController {
 
         if (type === 'error') {
           const message = String(payload.error ?? 'Run stream failed')
-          if (entry.pendingStart) {
-            this.options.onResumeFailure(entry.sessionId, message, ts)
-            this.rejectPendingStart(entry, new Error(message))
-            entry.desiredRunId = null
-            this.cancelReconnect(entry)
-            this.closeSocket(entry, true)
-            this.maybeDeleteEntry(entry)
-            return
-          }
           if (entry.desiredRunId && isSessionAlreadyActiveRunError(message)) {
             this.options.onReconnectPending(entry.sessionId, message, ts)
             this.refreshEntry(entry, message)
