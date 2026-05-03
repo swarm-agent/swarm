@@ -133,6 +133,62 @@ func TestFlowsV2RejectsNonHostTargets(t *testing.T) {
 	}
 }
 
+func TestFlowsV2AllowsAnyEnabledSavedProfileForAnyAgentKind(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		agent      flow.AgentSelection
+		wantMode   string
+		wantRunner bool
+	}{
+		{name: "subagent profile as background", agent: flow.AgentSelection{TargetKind: "background", TargetName: "memory"}, wantMode: "subagent", wantRunner: true},
+		{name: "subagent profile as primary", agent: flow.AgentSelection{TargetKind: "agent", TargetName: "memory"}, wantMode: "subagent"},
+		{name: "primary profile as background", agent: flow.AgentSelection{TargetKind: "background", TargetName: "swarm"}, wantMode: "primary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := newFlowPeerTestServer(t)
+			ensureFlowMemoryAgentRunnable(t, server)
+			ensureFlowPrimaryAgentRunnable(t, server)
+			runner := &fakeFlowRunService{}
+			server.runner = runner
+			workspacePath := t.TempDir()
+			req := flowV2CreateRequest{
+				FlowID:        "flow-v2-any-agent-kind",
+				Name:          "Any saved profile kind",
+				Target:        flow.TargetSelection{Kind: "self"},
+				Agent:         tc.agent,
+				Workspace:     flow.WorkspaceContext{WorkspacePath: workspacePath},
+				Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
+				CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+				Intent:        flow.PromptIntent{Prompt: "Run saved profile."},
+			}
+			rec := httptest.NewRecorder()
+			reqHTTP := httptest.NewRequest(http.MethodPost, "/v2/flows", jsonReader(t, req))
+			reqHTTP.Header.Set("Content-Type", "application/json")
+			server.Handler().ServeHTTP(rec, reqHTTP)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			var payload flowV2MutationResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode create: %v", err)
+			}
+			if payload.Flow.AgentDetail == nil || payload.Flow.AgentDetail.Name != tc.agent.TargetName || payload.Flow.AgentDetail.Mode != tc.wantMode {
+				t.Fatalf("agent detail = %+v", payload.Flow.AgentDetail)
+			}
+			if tc.wantRunner {
+				runRec := httptest.NewRecorder()
+				server.Handler().ServeHTTP(runRec, httptest.NewRequest(http.MethodPost, "/v2/flows/flow-v2-any-agent-kind/run-now", nil))
+				if runRec.Code != http.StatusAccepted {
+					t.Fatalf("run-now status = %d body=%s", runRec.Code, runRec.Body.String())
+				}
+				if runner.lastRequest.TargetKind != tc.agent.TargetKind || runner.lastRequest.TargetName != tc.agent.TargetName {
+					t.Fatalf("runner request = %+v", runner.lastRequest)
+				}
+			}
+		})
+	}
+}
+
 func TestFlowsV2RejectsUnknownAgentProfile(t *testing.T) {
 	server, _ := newFlowPeerTestServer(t)
 	req := flowV2CreateRequest{

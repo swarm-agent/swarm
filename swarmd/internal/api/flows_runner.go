@@ -397,19 +397,11 @@ func (s *Server) flowRunAgentProfile(agent flow.AgentSelection) (pebblestore.Age
 		return pebblestore.AgentProfile{}, errors.New("agent service not configured")
 	}
 	name := strings.TrimSpace(agent.TargetName)
-	switch runruntime.NormalizeRunTargetKind(agent.TargetKind) {
-	case runruntime.RunTargetKindAgent:
-		return s.agents.ResolvePrimary(name)
-	case runruntime.RunTargetKindSubagent:
-		return s.agents.ResolveSubagent(name)
-	case runruntime.RunTargetKindBackground:
-		if strings.EqualFold(name, "memory") {
-			return s.agents.ResolveSubagent(name)
-		}
-		return s.agents.ResolveBackground(name)
-	default:
+	kind := runruntime.NormalizeRunTargetKind(agent.TargetKind)
+	if kind != runruntime.RunTargetKindAgent && kind != runruntime.RunTargetKindSubagent && kind != runruntime.RunTargetKindBackground {
 		return pebblestore.AgentProfile{}, fmt.Errorf("unsupported target_kind %q", strings.TrimSpace(agent.TargetKind))
 	}
+	return s.agents.ResolveAgent(name)
 }
 
 func (s *Server) flowHostedSessionDescriptor(assignment flow.Assignment) (sessionruntime.HostedSessionDescriptor, bool) {

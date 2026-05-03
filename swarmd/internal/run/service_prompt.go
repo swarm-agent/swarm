@@ -197,19 +197,11 @@ func (s *Service) resolveAgentProfile(name, targetKind string) (pebblestore.Agen
 	switch targetKind {
 	case "", RunTargetKindAgent:
 		return s.resolveAgent(name)
-	case RunTargetKindSubagent:
+	case RunTargetKindSubagent, RunTargetKindBackground:
 		if s.agents == nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("subagent %q cannot resolve without agent service", strings.TrimSpace(name))
+			return pebblestore.AgentProfile{}, fmt.Errorf("targeted agent %q cannot resolve without agent service", strings.TrimSpace(name))
 		}
-		return s.agents.ResolveSubagent(name)
-	case RunTargetKindBackground:
-		if s.agents == nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("background agent %q cannot resolve without agent service", strings.TrimSpace(name))
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "memory") {
-			return s.agents.ResolveSubagent(name)
-		}
-		return s.agents.ResolveBackground(name)
+		return s.agents.ResolveAgent(name)
 	default:
 		return pebblestore.AgentProfile{}, fmt.Errorf("unsupported target_kind %q", strings.TrimSpace(targetKind))
 	}

@@ -384,18 +384,11 @@ func (s *Server) flowV2AgentDetail(agent flow.AgentSelection) (*pebblestore.Agen
 }
 
 func flowV2ProfileMatchesTargetKind(profile pebblestore.AgentProfile, targetKind string) bool {
-	mode := strings.ToLower(strings.TrimSpace(profile.Mode))
 	kind := normalizeFlowAgentTargetKind(targetKind)
-	switch kind {
-	case runruntime.RunTargetKindAgent:
-		return mode == "primary" || mode == "agent" || mode == ""
-	case runruntime.RunTargetKindSubagent:
-		return mode == "subagent"
-	case runruntime.RunTargetKindBackground:
-		return mode == "background"
-	default:
+	if kind != runruntime.RunTargetKindAgent && kind != runruntime.RunTargetKindSubagent && kind != runruntime.RunTargetKindBackground {
 		return false
 	}
+	return profile.Enabled
 }
 
 func (s *Server) flowV2Summary(r *http.Request, definition pebblestore.FlowDefinitionRecord) (flowV2Summary, error) {
