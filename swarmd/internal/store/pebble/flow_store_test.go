@@ -185,8 +185,75 @@ func TestFlowStoreRejectsRuntimeAgentFieldsInDefinitionJSON(t *testing.T) {
 	if err := store.PutBytes(KeyFlowDefinition("bad-flow"), badJSON); err != nil {
 		t.Fatalf("put raw bad definition: %v", err)
 	}
-	if _, _, err := flows.GetDefinition("bad-flow"); err == nil {
-		t.Fatal("GetDefinition accepted runtime-only agent fields from durable JSON")
+	loadedBad, ok, err := flows.GetDefinition("bad-flow")
+	if err != nil || !ok {
+		t.Fatalf("get repaired bad definition ok=%v err=%v", ok, err)
+	}
+	if loadedBad.Assignment.Agent.ProfileName != "memory" || loadedBad.Assignment.Agent.ProfileMode != "background" {
+		t.Fatalf("repaired runtime-only bad definition agent = %+v", loadedBad.Assignment.Agent)
+	}
+}
+
+func TestFlowStoreRepairsLegacyAgentPayloadWithRuntimeAndModelFields(t *testing.T) {
+	store := openFlowTestStore(t)
+	flows := NewFlowStore(store)
+	legacyJSON := []byte(`{"flow_id":"legacy-flow","revision":3,"assignment":{"flow_id":"legacy-flow","revision":3,"name":"Legacy","enabled":true,"target":{"swarm_id":"target-1","kind":"remote","name":"Laptop"},"agent":{"target_kind":"background","target_name":"memory","model":"gpt-5","service_tier":"priority"},"workspace":{"workspace_path":"workspace/project"},"schedule":{"cadence":"on_demand","timezone":"UTC"},"catch_up_policy":{"mode":"once"},"intent":{"prompt":"repair me"}},"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}`)
+	if err := store.PutBytes(KeyFlowDefinition("legacy-flow"), legacyJSON); err != nil {
+		t.Fatalf("put raw legacy definition: %v", err)
+	}
+	loaded, ok, err := flows.GetDefinition("legacy-flow")
+	if err != nil || !ok {
+		t.Fatalf("get repaired definition ok=%v err=%v", ok, err)
+	}
+	if loaded.Assignment.Agent.ProfileName != "memory" || loaded.Assignment.Agent.ProfileMode != "background" {
+		t.Fatalf("repaired agent = %+v", loaded.Assignment.Agent)
+	}
+	payload, ok, err := store.GetBytes(KeyFlowDefinition("legacy-flow"))
+	if err != nil || !ok {
+		t.Fatalf("get repaired payload ok=%v err=%v", ok, err)
+	}
+	assertFlowAgentPayloadRepaired(t, payload)
+}
+
+func TestFlowStoreRepairsLegacyOutboxAgentPayloadWithRuntimeFields(t *testing.T) {
+	store := openFlowTestStore(t)
+	flows := NewFlowStore(store)
+	legacyJSON := []byte(`{"command_id":"flow-6699b3e358c33c74-1-install-0cb0a20bc6e2","flow_id":"flow-6699b3e358c33c74","revision":1,"target_swarm_id":"target-1","target":{"swarm_id":"target-1","kind":"remote"},"command":{"command_id":"flow-6699b3e358c33c74-1-install-0cb0a20bc6e2","flow_id":"flow-6699b3e358c33c74","revision":1,"action":"install","created_at":"2025-01-01T00:00:00Z","assignment":{"flow_id":"flow-6699b3e358c33c74","revision":1,"name":"Legacy outbox","enabled":true,"target":{"swarm_id":"target-1","kind":"remote"},"agent":{"target_kind":"background","target_name":"memory","model":"gpt-5","service_tier":"priority"},"workspace":{"workspace_path":"workspace/project"},"schedule":{"cadence":"on_demand","timezone":"UTC"},"catch_up_policy":{"mode":"once"},"intent":{"prompt":"repair outbox"}}},"status":"pending","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}`)
+	commandID := "flow-6699b3e358c33c74-1-install-0cb0a20bc6e2"
+	if err := store.PutBytes(KeyFlowOutbox(commandID), legacyJSON); err != nil {
+		t.Fatalf("put raw legacy outbox: %v", err)
+	}
+	if err := store.PutBytes(KeyFlowOutboxStatus(FlowOutboxStatusPending, 0, commandID), []byte(KeyFlowOutbox(commandID))); err != nil {
+		t.Fatalf("put outbox status index: %v", err)
+	}
+	loaded, ok, err := flows.GetOutboxCommand(commandID)
+	if err != nil || !ok {
+		t.Fatalf("get repaired outbox ok=%v err=%v", ok, err)
+	}
+	if loaded.Command.Assignment.Agent.ProfileName != "memory" || loaded.Command.Assignment.Agent.ProfileMode != "background" {
+		t.Fatalf("repaired outbox agent = %+v", loaded.Command.Assignment.Agent)
+	}
+	payload, ok, err := store.GetBytes(KeyFlowOutbox(commandID))
+	if err != nil || !ok {
+		t.Fatalf("get repaired outbox payload ok=%v err=%v", ok, err)
+	}
+	assertFlowAgentPayloadRepaired(t, payload)
+	listed, err := flows.ListOutboxCommands(FlowOutboxStatusPending, 10)
+	if err != nil {
+		t.Fatalf("list repaired outbox: %v", err)
+	}
+	if len(listed) != 1 || listed[0].CommandID != commandID || listed[0].Command.Assignment.Agent.ProfileName != "memory" {
+		t.Fatalf("listed repaired outbox = %+v", listed)
+	}
+}
+
+func assertFlowAgentPayloadRepaired(t *testing.T, payload []byte) {
+	t.Helper()
+	if strings.Contains(string(payload), "target_kind") || strings.Contains(string(payload), "target_name") || strings.Contains(string(payload), "service_tier") || strings.Contains(string(payload), "model") {
+		t.Fatalf("repaired payload still contains legacy agent fields: %s", payload)
+	}
+	if !strings.Contains(string(payload), `"profile_name":"memory"`) || !strings.Contains(string(payload), `"profile_mode":"background"`) {
+		t.Fatalf("repaired payload missing durable agent selector: %s", payload)
 	}
 }
 

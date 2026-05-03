@@ -21,8 +21,8 @@ import (
 
 func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testing.T) {
 	for _, tc := range []struct {
-		name           string
-		agent          flow.AgentSelection
+		name                string
+		agent               flow.AgentSelection
 		expectedKind        string
 		expectedName        string
 		expectedAgent       string
@@ -124,7 +124,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if err != nil {
 				t.Fatalf("resolve flow run agent: %v", err)
 			}
-			if session.Metadata["flow_agent_kind"] != resolvedAgent.RuntimeTargetKind || session.Metadata["flow_agent_name"] != resolvedAgent.RuntimeTargetName {
+			if session.Metadata["flow_agent_kind"] != flowAgentMetadataKind(assignment.Agent, resolvedAgent) || session.Metadata["flow_agent_name"] != flowAgentMetadataName(assignment.Agent, resolvedAgent) {
 				t.Fatalf("session flow agent metadata = %+v", session.Metadata)
 			}
 			if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask || session.Metadata["source"] != "flow" {

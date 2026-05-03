@@ -358,6 +358,8 @@ func (s *Server) flowRunFinished(result runruntime.RunResult, sessionID, runID s
 
 type resolvedFlowRunAgent struct {
 	Profile           pebblestore.AgentProfile
+	SavedProfileMode  string
+	SavedProfileName  string
 	RuntimeTargetKind string
 	RuntimeTargetName string
 }
@@ -434,7 +436,34 @@ func (s *Server) resolveFlowRunAgent(agent flow.AgentSelection) (resolvedFlowRun
 	if runtimeTargetName == "" {
 		return resolvedFlowRunAgent{}, errors.New("saved agent profile name is required")
 	}
-	return resolvedFlowRunAgent{Profile: profile, RuntimeTargetKind: runtimeTargetKind, RuntimeTargetName: runtimeTargetName}, nil
+	return resolvedFlowRunAgent{
+		Profile:           profile,
+		SavedProfileMode:  profileMode,
+		SavedProfileName:  runtimeTargetName,
+		RuntimeTargetKind: runtimeTargetKind,
+		RuntimeTargetName: runtimeTargetName,
+	}, nil
+}
+
+func flowAgentMetadataKind(agent flow.AgentSelection, resolvedAgent resolvedFlowRunAgent) string {
+	if mode := flow.NormalizeAgentProfileMode(strings.TrimSpace(resolvedAgent.SavedProfileMode)); mode != "" {
+		return mode
+	}
+	if mode := flow.NormalizeAgentProfileMode(strings.TrimSpace(resolvedAgent.Profile.Mode)); mode != "" {
+		return mode
+	}
+	if mode := flow.NormalizeAgentProfileMode(strings.TrimSpace(agent.ProfileMode)); mode != "" {
+		return mode
+	}
+	return strings.TrimSpace(agent.ProfileMode)
+}
+
+func flowAgentMetadataName(agent flow.AgentSelection, resolvedAgent resolvedFlowRunAgent) string {
+	return firstNonEmpty(
+		strings.TrimSpace(resolvedAgent.SavedProfileName),
+		strings.TrimSpace(resolvedAgent.Profile.Name),
+		strings.TrimSpace(agent.ProfileName),
+	)
 }
 
 func (s *Server) flowHostedSessionDescriptor(assignment flow.Assignment) (sessionruntime.HostedSessionDescriptor, bool) {
@@ -509,8 +538,8 @@ func flowRunMetadata(assignment flow.Assignment, resolvedAgent resolvedFlowRunAg
 		"background":        true,
 		"target_kind":       targetKind,
 		"target_name":       targetName,
-		"flow_agent_kind":   resolvedAgent.RuntimeTargetKind,
-		"flow_agent_name":   resolvedAgent.RuntimeTargetName,
+		"flow_agent_kind":   flowAgentMetadataKind(assignment.Agent, resolvedAgent),
+		"flow_agent_name":   flowAgentMetadataName(assignment.Agent, resolvedAgent),
 		"owner_transport":   "flow_scheduler",
 		"workspace_context": assignment.Workspace,
 	}

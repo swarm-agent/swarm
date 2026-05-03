@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Bot, ChevronDown, Clock, MapPin, MoreHorizontal, Plus, Search, Workflow } from 'lucide-react'
+import { ArrowLeft, Bot, ChevronDown, Clock, MapPin, MoreHorizontal, Plus, Search, ShieldCheck, Workflow } from 'lucide-react'
 import { Button } from '../../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../../components/ui/dialog'
 import { Input } from '../../../../../components/ui/input'
@@ -15,15 +15,16 @@ import {
   flowsQueryKey,
   runFlowNow,
   type CreateFlowInput,
+  type FlowAgentProfile,
   type FlowSummaryRecord,
   type FlowSwarmTarget,
   type FlowTaskStep,
   type FlowWorkspaceEntry,
 } from '../api'
+import { agentStateQueryOptions } from '../../../../queries/query-options'
 
 type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
 type FlowMode = 'One-shot background job' | 'Scheduled background job' | 'Manual one-shot'
-type FlowAgentKind = 'agent' | 'subagent' | 'background'
 type ScheduleCadence = 'Daily' | 'Weekly' | 'Monthly' | 'On demand'
 
 interface FlowTask {
@@ -48,7 +49,6 @@ interface FlowDefinition {
   location: string
   target: string
   agent: string
-  agentType: string
   schedule: string
   startTime: string
   lastRun: string
@@ -68,8 +68,7 @@ interface FlowDefinition {
 
 interface AddFlowForm {
   name: string
-  agentKind: FlowAgentKind
-  agent: string
+  agentKey: string
   targetKey: string
   scheduleCadence: ScheduleCadence
   scheduleTime: string
@@ -97,11 +96,15 @@ interface FlowWorkspaceOption {
   helper: string
   workspace: FlowWorkspaceEntry
 }
-const flowAgentKindOptions: Array<{ value: FlowAgentKind; label: string }> = [
-  { value: 'agent', label: 'Primary' },
-  { value: 'subagent', label: 'Subagent' },
-  { value: 'background', label: 'Background' },
-]
+
+interface FlowAgentOption {
+  key: string
+  label: string
+  helper: string
+  contractSummary: string
+  profile: FlowAgentProfile
+}
+
 const scheduleCadenceOptions: ScheduleCadence[] = ['Daily', 'Weekly', 'Monthly', 'On demand']
 const scheduleDayOptions = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const scheduleDateOptions = Array.from({ length: 31 }, (_, index) => String(index + 1))
@@ -115,8 +118,7 @@ const scheduleTimeOptions = Array.from({ length: 48 }, (_, index) => {
 
 const defaultAddFlowForm: AddFlowForm = {
   name: '',
-  agentKind: 'background',
-  agent: 'memory',
+  agentKey: '',
   targetKey: '',
   scheduleCadence: 'On demand',
   scheduleTime: '12:00 AM',
@@ -258,11 +260,50 @@ function workspaceOptionHelper(workspace: FlowWorkspaceEntry): string {
     .join(' • ')
 }
 
-function initialAddFlowForm(targetOptions: FlowTargetOption[], workspaceOptions: FlowWorkspaceOption[]): AddFlowForm {
+function agentOptionKey(profile: FlowAgentProfile): string {
+  return `${profile.name.trim().toLowerCase()}::${profile.mode.trim().toLowerCase()}`
+}
+
+function agentOptionLabel(profile: FlowAgentProfile): string {
+  return profile.name.trim() || 'Unnamed agent'
+}
+
+function agentOptionHelper(profile: FlowAgentProfile): string {
+  const parts = [profile.mode.trim(), profile.provider.trim(), profile.model.trim()].filter(Boolean)
+  return parts.join(' • ')
+}
+
+function agentContractSummary(profile: FlowAgentProfile): string {
+  const toolScope = profile.toolScope
+  if (!toolScope) {
+    return 'No explicit contract restrictions saved'
+  }
+  const parts: string[] = []
+  if (toolScope.preset.trim()) {
+    parts.push(`preset ${toolScope.preset.trim()}`)
+  }
+  if (toolScope.allowTools.length) {
+    parts.push(`${toolScope.allowTools.length} allowed tool${toolScope.allowTools.length === 1 ? '' : 's'}`)
+  }
+  if (toolScope.denyTools.length) {
+    parts.push(`${toolScope.denyTools.length} denied tool${toolScope.denyTools.length === 1 ? '' : 's'}`)
+  }
+  if (toolScope.bashPrefixes.length) {
+    parts.push(`${toolScope.bashPrefixes.length} bash prefix${toolScope.bashPrefixes.length === 1 ? '' : 'es'}`)
+  }
+  if (toolScope.inheritPolicy) {
+    parts.push('inherits policy')
+  }
+  return parts.join(' • ') || 'Custom contract configured'
+}
+
+function initialAddFlowForm(targetOptions: FlowTargetOption[], workspaceOptions: FlowWorkspaceOption[], agentOptions: FlowAgentOption[]): AddFlowForm {
   const target = targetOptions.find((option) => option.target.current && option.target.selectable) ?? targetOptions.find((option) => option.target.selectable) ?? targetOptions[0]
   const workspace = workspaceOptions.find((option) => option.workspace.active) ?? workspaceOptions[0]
+  const agent = agentOptions[0]
   return {
     ...defaultAddFlowForm,
+    agentKey: agent?.key ?? '',
     targetKey: target?.key ?? '',
     workspacePath: workspace?.key ?? '',
   }
@@ -319,7 +360,7 @@ function cadenceLabel(cadence: string): ScheduleCadence {
 }
 
 function scheduleLabelFromRecord(record: FlowSummaryRecord): string {
-  const schedule = record.definition.assignment.schedule
+  const schedule = record.definition.schedule
   const cadence = cadenceLabel(schedule.cadence)
   if (cadence === 'On demand') {
     return 'On demand'
@@ -341,7 +382,7 @@ function statusFromRecord(record: FlowSummaryRecord): FlowStatus {
   if (record.last_run?.status === 'review') {
     return 'needs_review'
   }
-  if (!record.definition.assignment.enabled) {
+  if (!record.definition.enabled) {
     return record.history_count > 0 ? 'paused' : 'draft'
   }
   const statuses = record.assignment_statuses ?? []
@@ -352,7 +393,7 @@ function statusFromRecord(record: FlowSummaryRecord): FlowStatus {
 }
 
 function modeFromRecord(record: FlowSummaryRecord): FlowMode {
-  const cadence = cadenceLabel(record.definition.assignment.schedule.cadence)
+  const cadence = cadenceLabel(record.definition.schedule.cadence)
   if (cadence === 'On demand') {
     return 'Manual one-shot'
   }
@@ -384,7 +425,7 @@ function normalizeTask(task: FlowTaskStep, index: number): FlowTask {
 }
 
 function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
-  const assignment = record.definition.assignment
+  const assignment = record.definition
   const history = record.last_run ? [record.last_run] : []
   const runs = history.map((run): FlowRun => ({
     id: run.run_id,
@@ -393,10 +434,9 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
     status: normalizeRunStatus(run.status),
     summary: run.summary || run.status,
   }))
-  const workspace = record.workspace_detail?.workspace_path?.trim() || assignment.workspace.workspace_path?.trim() || 'workspace'
+  const workspace = record.workspace_detail?.workspace_path?.trim() || assignment.workspace.workspace_path?.trim() || assignment.workspace.host_workspace_path?.trim() || 'workspace'
   const target = record.target_detail?.name?.trim() || record.target_detail?.swarm_id?.trim() || assignment.target.name?.trim() || assignment.target.swarm_id?.trim() || assignment.target.kind?.trim() || 'local'
-  const agent = record.agent_detail?.name?.trim() || assignment.agent.target_name?.trim() || 'memory'
-  const agentType = record.agent_detail?.mode?.trim() || assignment.agent.target_kind?.trim() || 'background'
+  const agent = record.agent_detail?.name?.trim() || assignment.agent.profile_name?.trim() || 'unknown agent'
   const tasks = assignment.intent.tasks?.length
     ? assignment.intent.tasks.map(normalizeTask)
     : [{ id: `${assignment.flow_id}-prompt`, title: 'Run prompt', detail: assignment.intent.prompt || 'Run configured prompt.', action: 'propose' as const }]
@@ -407,12 +447,11 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
     location: assignment.workspace.cwd?.trim() || workspace,
     target,
     agent,
-    agentType,
     schedule: scheduleLabelFromRecord(record),
     startTime: assignment.schedule.time ? hhmmToDisplay(assignment.schedule.time) : 'Manual',
     lastRun: record.last_run ? isoDisplay(record.last_run.started_at || record.last_run.scheduled_at) : 'Never',
     lastRunMeta: record.history_count ? `${record.history_count} runs` : '',
-    nextRun: record.definition.next_due_at ? isoDisplay(record.definition.next_due_at) : '—',
+    nextRun: assignment.next_due_at ? isoDisplay(assignment.next_due_at) : '—',
     nextRunMeta: record.assignment_statuses?.some((status) => status.pending_sync) ? 'pending sync' : '',
     totalRuns: record.history_count,
     status: statusFromRecord(record),
@@ -426,10 +465,11 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
   }
 }
 
-function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[]): CreateFlowInput {
+function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[], agents: FlowAgentOption[]): CreateFlowInput {
   const cadence = form.scheduleCadence === 'On demand' ? 'on_demand' : form.scheduleCadence.toLowerCase()
   const targetOption = targets.find((option) => option.key === form.targetKey)
   const workspaceOption = workspaces.find((option) => option.key === form.workspacePath)
+  const agentOption = agents.find((option) => option.key === form.agentKey)
   const workspacePath = workspaceOption?.workspace.path.trim() || form.workspacePath.trim()
   const task = form.task.trim() || 'Run the configured task prompt.'
   return {
@@ -437,8 +477,8 @@ function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], works
     enabled: form.scheduleCadence !== 'On demand',
     target: targetToSelection(targetOption?.target),
     agent: {
-      target_kind: form.agentKind,
-      target_name: form.agent.trim() || (form.agentKind === 'agent' ? 'swarm' : 'memory'),
+      profile_name: agentOption?.profile.name.trim() || '',
+      profile_mode: agentOption?.profile.mode.trim() || undefined,
     },
     workspace: {
       workspace_path: workspacePath,
@@ -520,6 +560,7 @@ function AddFlowModal({
   busy,
   targetOptions,
   workspaceOptions,
+  agentOptions,
   loadingOptions,
 }: {
   open: boolean
@@ -528,9 +569,10 @@ function AddFlowModal({
   busy?: boolean
   targetOptions: FlowTargetOption[]
   workspaceOptions: FlowWorkspaceOption[]
+  agentOptions: FlowAgentOption[]
   loadingOptions?: boolean
 }) {
-  const initialForm = useMemo(() => initialAddFlowForm(targetOptions, workspaceOptions), [targetOptions, workspaceOptions])
+  const initialForm = useMemo(() => initialAddFlowForm(targetOptions, workspaceOptions, agentOptions), [agentOptions, targetOptions, workspaceOptions])
   const [form, setForm] = useState<AddFlowForm>(initialForm)
 
   useEffect(() => {
@@ -547,26 +589,18 @@ function AddFlowModal({
     setForm((current) => ({ ...current, [field]: event.target.value }))
   }
 
-  const updateAgentKind = (event: ChangeEvent<HTMLSelectElement>) => {
-    const agentKind = event.target.value as FlowAgentKind
-    setForm((current) => ({
-      ...current,
-      agentKind,
-      agent: current.agent.trim() || (agentKind === 'agent' ? 'swarm' : 'memory'),
-    }))
-  }
-
   const schedulePreview = buildScheduleLabel(form)
   const selectedTarget = targetOptions.find((option) => option.key === form.targetKey)
   const selectedWorkspace = workspaceOptions.find((option) => option.key === form.workspacePath)
-  const canSubmit = Boolean(selectedTarget && selectedWorkspace && form.task.trim()) && !busy
+  const selectedAgent = agentOptions.find((option) => option.key === form.agentKey)
+  const canSubmit = Boolean(selectedTarget && selectedWorkspace && selectedAgent && form.task.trim()) && !busy
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (!canSubmit) {
       return
     }
-    onAdd(formToCreateInput(form, targetOptions, workspaceOptions))
+    onAdd(formToCreateInput(form, targetOptions, workspaceOptions, agentOptions))
     setForm(initialForm)
   }
 
@@ -590,16 +624,14 @@ function AddFlowModal({
                 <span className={labelClass}>Flow name</span>
                 <Input data-testid="flows-add-name" value={form.name} onChange={update('name')} className={fieldClass} />
               </label>
-              <label className="flex flex-col gap-2">
-                <span className={labelClass}>Agent kind</span>
-                <select data-testid="flows-add-agent-kind" value={form.agentKind} onChange={updateAgentKind} className={fieldClass}>
-                  {flowAgentKindOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              <label className="flex flex-col gap-2 md:col-span-2">
+                <span className={labelClass}>Agent</span>
+                <select data-testid="flows-add-agent" value={form.agentKey} onChange={update('agentKey')} className={fieldClass} disabled={loadingOptions || !agentOptions.length}>
+                  {agentOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                 </select>
-              </label>
-              <label className="flex flex-col gap-2">
-                <span className={labelClass}>Agent/profile</span>
-                <Input data-testid="flows-add-agent" value={form.agent} onChange={update('agent')} placeholder={form.agentKind === 'agent' ? 'swarm' : 'memory'} className={fieldClass} />
-                <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">Primary, subagent, and background profiles are supported.</span>
+                <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">
+                  {loadingOptions ? 'Loading saved agents…' : selectedAgent?.helper || 'No enabled saved agents returned by the controller.'}
+                </span>
               </label>
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Target swarm</span>
@@ -654,6 +686,14 @@ function AddFlowModal({
                     </select>
                   </label>
                 ) : null}
+              </div>
+              <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 md:col-span-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-[var(--app-text)]">
+                  <ShieldCheck size={14} className="text-[var(--app-text-muted)]" />
+                  Agent contract
+                </div>
+                <div className="mt-2 text-sm text-[var(--app-text)]">{selectedAgent?.contractSummary || 'Select a saved agent to view its contract.'}</div>
+                <div className="mt-1 text-xs text-[var(--app-text-muted)]">{selectedAgent?.profile.description?.trim() || 'Flows use the saved agent contract directly.'}</div>
               </div>
               <label className="flex flex-col gap-2 md:col-span-2">
                 <span className={labelClass}>Execution context</span>
@@ -714,7 +754,7 @@ function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefi
       <section className="grid gap-x-10 gap-y-6 border-b border-[var(--app-border)] pb-8 md:grid-cols-3">
         {[
           ['Target', flow.target],
-          ['Agent', `${flow.agentType} / ${flow.agent}`],
+          ['Agent', flow.agent],
           ['Schedule', flow.schedule],
           ['Workspace', flow.workspace],
           ['Location', flow.location],
@@ -776,6 +816,7 @@ export function FlowsSettingsPage() {
   const flowsQuery = useQuery({ queryKey: flowsQueryKey, queryFn: ({ signal }) => fetchFlows(signal) })
   const swarmTargetsQuery = useQuery({ queryKey: flowSwarmTargetsQueryKey, queryFn: fetchFlowSwarmTargets })
   const flowWorkspacesQuery = useQuery({ queryKey: flowWorkspacesQueryKey, queryFn: fetchFlowWorkspaces })
+  const agentStateQuery = useQuery(agentStateQueryOptions())
   const flows = useMemo(() => (flowsQuery.data ?? []).map(recordToFlow), [flowsQuery.data])
   const [workspaceFilter, setWorkspaceFilter] = useState('all')
   const [agentFilter, setAgentFilter] = useState('all')
@@ -812,23 +853,43 @@ export function FlowsSettingsPage() {
         return true
       })
   }, [flowWorkspacesQuery.data])
-  const loadingAddFlowOptions = swarmTargetsQuery.isLoading || flowWorkspacesQuery.isLoading
+  const savedAgentOptions = useMemo<FlowAgentOption[]>(() => {
+    const seen = new Set<string>()
+    return (agentStateQuery.data?.profiles ?? [])
+      .filter((profile) => profile.enabled && profile.name.trim() !== '')
+      .map((profile) => ({
+        key: agentOptionKey(profile),
+        label: agentOptionLabel(profile),
+        helper: agentOptionHelper(profile),
+        contractSummary: agentContractSummary(profile),
+        profile,
+      }))
+      .filter((option) => {
+        if (!option.key || seen.has(option.key)) {
+          return false
+        }
+        seen.add(option.key)
+        return true
+      })
+      .sort((left, right) => left.label.localeCompare(right.label))
+  }, [agentStateQuery.data?.profiles])
+  const loadingAddFlowOptions = swarmTargetsQuery.isLoading || flowWorkspacesQuery.isLoading || agentStateQuery.isLoading
 
   const workspaces = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.workspace)))], [flows])
-  const agents = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.agentType)))], [flows])
+  const agents = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.agent)))], [flows])
   const statuses = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.status)))], [flows])
 
   const workspaceOptions = workspaces.map((workspace) => ({ value: workspace, label: workspace === 'all' ? 'All workspaces' : workspace }))
-  const agentOptions = agents.map((agent) => ({ value: agent, label: agent === 'all' ? 'All agents' : agent }))
+  const agentFilterOptions = agents.map((agent) => ({ value: agent, label: agent === 'all' ? 'All agents' : agent }))
   const statusOptions = statuses.map((status) => ({ value: status, label: status === 'all' ? 'All statuses' : statusLabels[status as FlowStatus] }))
 
   const filteredFlows = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
     return flows.filter((flow) => {
       const workspaceMatch = workspaceFilter === 'all' || flow.workspace === workspaceFilter
-      const agentMatch = agentFilter === 'all' || flow.agentType === agentFilter
+      const agentMatch = agentFilter === 'all' || flow.agent === agentFilter
       const statusMatch = statusFilter === 'all' || flow.status === statusFilter
-      const queryMatch = !normalizedQuery || [flow.name, flow.agent, flow.agentType, flow.workspace, flow.target, flow.task, flow.schedule].some((value) => value.toLowerCase().includes(normalizedQuery))
+      const queryMatch = !normalizedQuery || [flow.name, flow.agent, flow.workspace, flow.target, flow.task, flow.schedule].some((value) => value.toLowerCase().includes(normalizedQuery))
       return workspaceMatch && agentMatch && statusMatch && queryMatch
     })
   }, [agentFilter, flows, query, statusFilter, workspaceFilter])
@@ -935,9 +996,9 @@ export function FlowsSettingsPage() {
       {flowsQuery.isLoading ? (
         <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">Loading flows…</div>
       ) : null}
-      {swarmTargetsQuery.isError || flowWorkspacesQuery.isError ? (
+      {swarmTargetsQuery.isError || flowWorkspacesQuery.isError || agentStateQuery.isError ? (
         <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning)]">
-          Add Flow selectors could not load real controller targets/workspaces. Refresh after the controller endpoints recover.
+          Add Flow selectors could not load real controller targets, workspaces, or saved agents. Refresh after the controller endpoints recover.
         </div>
       ) : null}
 
@@ -967,7 +1028,7 @@ export function FlowsSettingsPage() {
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <FilterSelect label="Workspace filter" value={workspaceFilter} onChange={setWorkspaceFilter} options={workspaceOptions} />
-              <FilterSelect label="Agent filter" value={agentFilter} onChange={setAgentFilter} options={agentOptions} />
+              <FilterSelect label="Agent filter" value={agentFilter} onChange={setAgentFilter} options={agentFilterOptions} />
               <FilterSelect label="Status filter" value={statusFilter} onChange={setStatusFilter} options={statusOptions} />
             </div>
           </div>
@@ -986,7 +1047,7 @@ export function FlowsSettingsPage() {
                   <span className="truncate text-xs text-[var(--app-text-muted)]">{event.day}</span>
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium text-[var(--app-text)]">{event.flow.name}</span>
-                    <span className="mt-1 block truncate text-xs text-[var(--app-text-muted)]">{event.flow.workspace} / {event.flow.agentType} / {event.meta}</span>
+                    <span className="mt-1 block truncate text-xs text-[var(--app-text-muted)]">{event.flow.workspace} / {event.flow.agent} / {event.meta}</span>
                   </span>
                   <span className="justify-self-end"><StatusBadge status={event.flow.status} /></span>
                 </button>
@@ -1025,7 +1086,7 @@ export function FlowsSettingsPage() {
               <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search flows" className="h-9 min-h-9 rounded-xl border-[var(--app-border)] bg-[var(--app-surface-subtle)] py-0 pl-8 pr-3 text-xs focus-visible:ring-0 focus-visible:ring-offset-0" />
             </label>
             <FilterSelect label="Workspace filter" value={workspaceFilter} onChange={setWorkspaceFilter} options={workspaceOptions} />
-            <FilterSelect label="Agent filter" value={agentFilter} onChange={setAgentFilter} options={agentOptions} />
+            <FilterSelect label="Agent filter" value={agentFilter} onChange={setAgentFilter} options={agentFilterOptions} />
             <FilterSelect label="Status filter" value={statusFilter} onChange={setStatusFilter} options={statusOptions} />
           </div>
         </div>
@@ -1055,7 +1116,7 @@ export function FlowsSettingsPage() {
                   <td className="px-4 py-4 align-top">
                     <div className="max-w-[300px] rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] p-3">
                       <div className="flex items-center gap-2 text-xs text-[var(--app-text)]"><MapPin size={13} className="text-[var(--app-text-muted)]" /> {flow.workspace} <span className="text-[var(--app-text-subtle)]">/ {flow.target}</span></div>
-                      <div className="mt-2 flex items-center gap-2 text-xs text-[var(--app-text)]"><Bot size={13} className="text-[var(--app-text-muted)]" /> {flow.agentType} <span className="text-[var(--app-text-subtle)]">/ {flow.agent}</span></div>
+                      <div className="mt-2 flex items-center gap-2 text-xs text-[var(--app-text)]"><Bot size={13} className="text-[var(--app-text-muted)]" /> {flow.agent}</div>
                       <div className="mt-2 flex items-center gap-2 text-xs text-[var(--app-text)]"><Clock size={13} className="text-[var(--app-text-muted)]" /> {flow.schedule}</div>
                     </div>
                   </td>
@@ -1090,6 +1151,7 @@ export function FlowsSettingsPage() {
         busy={saving}
         targetOptions={targetOptions}
         workspaceOptions={addWorkspaceOptions}
+        agentOptions={savedAgentOptions}
         loadingOptions={loadingAddFlowOptions}
       />
     </div>

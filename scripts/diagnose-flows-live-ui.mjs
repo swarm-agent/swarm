@@ -37,7 +37,8 @@ function usage() {
 
 Live Flows smoke harness. It drives the real desktop UI with Playwright, uses
 same-origin browser fetches for backend assertions, and writes a diagnostic
-summary that shows exactly which phase failed.
+summary that shows exactly which phase failed. It targets the canonical `/v3/flows`
+API only.
 
 Default phase:
   host                         UI create local/self Flow, Run now, verify session/history, then API scheduled smoke.
@@ -53,8 +54,8 @@ Live instance:
   --config <path>              swarm.conf for desktop_port discovery. Default: XDG config.
 
 Flow settings:
-  --agent <name>               Agent/profile name on target. Default: memory.
-  --agent-kind <kind>          agent/primary, subagent, or background. Default: background.
+  --agent <name>               Saved agent profile name on target. Default: memory.
+  --agent-kind <kind>          Saved profile mode (primary, subagent, background). Default: background.
   --workspace <path|.>         Workspace sent to Flow create. Default: .
   --target-kind <kind>         self, local, remote, or another target kind. Default depends on phase.
   --target-name <name>         Match target display name for API target phases.
@@ -327,7 +328,7 @@ function requestPath(url) {
 
 function isInterestingURL(url) {
   const pathAndQuery = requestPath(url)
-  return pathAndQuery.startsWith('/v1/flows')
+  return pathAndQuery.startsWith('/v3/flows')
     || pathAndQuery.startsWith('/v1/sessions')
     || pathAndQuery.startsWith('/v1/swarm/targets')
     || pathAndQuery.startsWith('/v1/auth/desktop/session')
@@ -408,9 +409,14 @@ function summarizeFlowDetail(value) {
   }
   return {
     definition: summarizeDefinition(value.definition),
+    target_detail: summarizeTarget(value.target_detail),
+    workspace_detail: summarizeWorkspace(value.workspace_detail),
+    agent_detail: summarizeAgentDetail(value.agent_detail),
     assignment_statuses: Array.isArray(value.assignment_statuses) ? value.assignment_statuses.map(summarizeAssignmentStatus) : [],
     outbox: Array.isArray(value.outbox) ? value.outbox.map(summarizeOutbox) : [],
     history: Array.isArray(value.history) ? value.history.map(summarizeRun) : [],
+    history_count: Number(value.history_count || 0),
+    last_run: summarizeRun(value.last_run),
   }
 }
 
@@ -420,6 +426,9 @@ function summarizeFlowSummary(value) {
   }
   return {
     definition: summarizeDefinition(value.definition),
+    target_detail: summarizeTarget(value.target_detail),
+    workspace_detail: summarizeWorkspace(value.workspace_detail),
+    agent_detail: summarizeAgentDetail(value.agent_detail),
     assignment_statuses: Array.isArray(value.assignment_statuses) ? value.assignment_statuses.map(summarizeAssignmentStatus) : [],
     last_run: summarizeRun(value.last_run),
     history_count: Number(value.history_count || 0),
@@ -430,17 +439,18 @@ function summarizeDefinition(value) {
   if (!value || typeof value !== 'object') {
     return null
   }
-  const assignment = value.assignment && typeof value.assignment === 'object' ? value.assignment : {}
   return {
-    flow_id: String(value.flow_id || assignment.flow_id || ''),
-    revision: Number(value.revision || assignment.revision || 0),
-    name: String(assignment.name || ''),
-    enabled: Boolean(assignment.enabled),
-    target: assignment.target || null,
-    agent: assignment.agent || null,
-    workspace: assignment.workspace || null,
-    schedule: assignment.schedule || null,
+    flow_id: String(value.flow_id || ''),
+    revision: Number(value.revision || 0),
+    name: String(value.name || ''),
+    enabled: Boolean(value.enabled),
+    target: value.target || null,
+    agent: value.agent || null,
+    workspace: value.workspace || null,
+    schedule: value.schedule || null,
     next_due_at: String(value.next_due_at || ''),
+    created_at: String(value.created_at || ''),
+    updated_at: String(value.updated_at || ''),
     deleted_at: String(value.deleted_at || ''),
   }
 }
@@ -550,8 +560,32 @@ function summarizeTarget(value) {
   }
 }
 
+function summarizeWorkspace(value) {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  return {
+    workspace_path: String(value.workspace_path || ''),
+    host_workspace_path: String(value.host_workspace_path || ''),
+    runtime_workspace_path: String(value.runtime_workspace_path || ''),
+    cwd: String(value.cwd || ''),
+    worktree_mode: String(value.worktree_mode || ''),
+  }
+}
+
+function summarizeAgentDetail(value) {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  return {
+    name: String(value.name || ''),
+    mode: String(value.mode || ''),
+    enabled: Boolean(value.enabled),
+  }
+}
+
 function flowIDFromDetail(detail) {
-  return String(detail?.definition?.flow_id || detail?.definition?.assignment?.flow_id || '').trim()
+  return String(detail?.definition?.flow_id || '').trim()
 }
 
 function flowIDFromCreatePayload(payload) {
@@ -674,7 +708,7 @@ async function createHostFlowViaUI(page, opts, summary, recorder) {
   await selectOptionIfPresent(page.locator(selectors.addCadence), 'On demand', 'cadence')
   await page.locator(selectors.addTask).fill(opts.prompt)
 
-  const createResponsePromise = page.waitForResponse((response) => requestPath(response.url()) === '/v1/flows' && response.request().method() === 'POST', { timeout: 60000 })
+  const createResponsePromise = page.waitForResponse((response) => requestPath(response.url()) === '/v3/flows' && response.request().method() === 'POST', { timeout: 60000 })
   await page.locator(selectors.addSubmit).click()
   const createResponse = await createResponsePromise
   const createPayload = await createResponse.json().catch(() => null)
@@ -695,7 +729,7 @@ async function createHostFlowViaUI(page, opts, summary, recorder) {
 
 async function runFlowNowFromDetail(page, flowID, flowName, opts, summary, recorder) {
   const finish = recorder.start('host.ui.run_now', { flow_id: flowID })
-  const responsePromise = page.waitForResponse((response) => requestPath(response.url()) === `/v1/flows/${encodeURIComponent(flowID)}/run-now` && response.request().method() === 'POST', { timeout: opts.runTimeoutMs })
+  const responsePromise = page.waitForResponse((response) => requestPath(response.url()) === `/v3/flows/${encodeURIComponent(flowID)}/run-now` && response.request().method() === 'POST', { timeout: opts.runTimeoutMs })
   await page.locator(selectors.runNow).click()
   const response = await responsePromise
   const payload = await response.json().catch(() => null)
@@ -717,8 +751,8 @@ async function verifyFlowRunVisible(page, flowID, flowName, timeoutMs, summary, 
   let last = null
   while (Date.now() < deadline) {
     const [statusPayload, historyPayload, sessionsPayload] = await Promise.all([
-      pageJSON(page, `/v1/flows/${encodeURIComponent(flowID)}/status?limit=50`, {}, summary).catch((error) => ({ error: error.message })),
-      pageJSON(page, `/v1/flows/${encodeURIComponent(flowID)}/history?limit=20`, {}, summary).catch((error) => ({ error: error.message })),
+      pageJSON(page, `/v3/flows/${encodeURIComponent(flowID)}/status?limit=50`, {}, summary).catch((error) => ({ error: error.message })),
+      pageJSON(page, `/v3/flows/${encodeURIComponent(flowID)}/history?limit=20`, {}, summary).catch((error) => ({ error: error.message })),
       pageJSON(page, '/v1/sessions?limit=100', {}, summary).catch((error) => ({ error: error.message })),
     ])
     const history = Array.isArray(historyPayload.history) ? historyPayload.history : []
@@ -875,7 +909,7 @@ function nextScheduleTime(delayMinutes) {
 }
 
 async function createFlowViaAPI(page, input, summary, label) {
-  const payload = await pageJSON(page, '/v1/flows', {
+  const payload = await pageJSON(page, '/v3/flows', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -891,10 +925,18 @@ async function createFlowViaAPI(page, input, summary, label) {
 }
 
 async function runFlowNowViaAPI(page, flowID, summary, label) {
-  const payload = await pageJSON(page, `/v1/flows/${encodeURIComponent(flowID)}/run-now`, { method: 'POST' }, summary)
+  const payload = await pageJSON(page, `/v3/flows/${encodeURIComponent(flowID)}/run-now`, { method: 'POST' }, summary)
   summary.observations[`${label}.run_now_response`] = compactPayload(payload)
   assertDeliverResultAccepted(payload, `${label} run-now`)
   return payload
+}
+
+function normalizeProfileMode(agentKind) {
+  const value = String(agentKind || '').trim().toLowerCase().replace(/-/g, '_')
+  if (value === 'agent') {
+    return 'primary'
+  }
+  return value || 'background'
 }
 
 function baseCreateInput({ name, target, agent, agentKind, workspace, prompt, cadence, scheduleTime }) {
@@ -903,8 +945,8 @@ function baseCreateInput({ name, target, agent, agentKind, workspace, prompt, ca
     name,
     enabled: scheduled,
     target: flowTargetSelection(target),
-    agent: { target_kind: agentKind || 'background', target_name: agent },
-    workspace: { workspace_path: workspace },
+    agent: { profile_name: agent, profile_mode: normalizeProfileMode(agentKind) },
+    workspace: { workspace_path: workspace, host_workspace_path: workspace },
     schedule: scheduled
       ? { cadence, time: scheduleTime, timezone: 'UTC' }
       : { cadence: 'on_demand', timezone: 'UTC' },
@@ -974,7 +1016,7 @@ async function waitForScheduledRun(page, flowID, flowName, due, timeoutMs, summa
 async function cleanupCreatedFlows(page, summary) {
   for (const flowID of [...summary.created_flows].reverse()) {
     try {
-      await pageJSON(page, `/v1/flows/${encodeURIComponent(flowID)}`, { method: 'DELETE' }, summary)
+      await pageJSON(page, `/v3/flows/${encodeURIComponent(flowID)}`, { method: 'DELETE' }, summary)
       summary.cleaned_flows.push(flowID)
     } catch (error) {
       summary.cleanup_errors.push({ flow_id: flowID, error: error instanceof Error ? error.message : String(error) })

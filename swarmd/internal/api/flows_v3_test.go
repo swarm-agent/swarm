@@ -1,36 +1,55 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
-	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/flow"
-	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestFlowsV3CreateListGetAndUpdate(t *testing.T) {
+func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
-	ensureFlowMemoryAgentRunnable(t, server)
-	server.remoteDeploys = &fakeFlowRemoteDeployService{sessions: []remotedeploy.Session{{
-		ID:             "pc-child-remote",
-		Name:           "pc child",
-		Status:         "attached",
-		RemoteEndpoint: "http://child.example",
-		ChildSwarmID:   "child-remote",
-	}}}
+	ensureFlowTestAgent(t, server)
+	ensureFlowPrimaryAgentRunnable(t, server)
+	runner := &fakeFlowRunService{}
+	server.runner = runner
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != flowPeerApplyPath {
+			http.NotFound(w, r)
+			return
+		}
+		var command flow.AssignmentCommand
+		if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+			t.Fatalf("decode child command: %v", err)
+		}
+		ack, inserted, err := server.applyFlowAssignmentCommandLocally(r.Context(), command, "child-remote")
+		if err != nil {
+			t.Fatalf("apply child command: %v", err)
+		}
+		writeJSON(w, http.StatusOK, flowAssignmentApplyResponse{OK: true, Ack: ack, Inserted: inserted})
+	}))
+	defer child.Close()
+	server.SetRemoteDeployService(&fakeRemoteDeployService{sessions: []remotedeploy.Session{{
+		ID:               "pc-child-remote",
+		Name:             "pc child",
+		Status:           "attached",
+		ChildSwarmID:     "child-remote",
+		RemoteTailnetURL: child.URL,
+		RemoteEndpoint:   child.URL,
+	}}})
 	req := flowV3UpsertRequest{
 		FlowID:  "flow-v3-remote",
 		Name:    "Remote V3 flow",
 		Enabled: boolPtr(true),
 		Target:  flow.TargetSelection{SwarmID: "child-remote", Kind: "remote", DeploymentID: "pc-child-remote", Name: "pc child"},
-		Agent:   flow.AgentSelection{ProfileName: "memory", ProfileMode: "subagent"},
+		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
 		Workspace: flow.WorkspaceContext{
 			WorkspacePath: t.TempDir(),
 		},
@@ -45,24 +64,27 @@ func TestFlowsV3CreateListGetAndUpdate(t *testing.T) {
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
 	}
-	var createPayload flowV3RecordResponse
+	var createPayload flowV3MutationResponse
 	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
 		t.Fatalf("decode create: %v", err)
 	}
-	if createPayload.Definition.FlowID != "flow-v3-remote" || createPayload.Definition.Agent.ProfileName != "memory" || createPayload.Definition.Agent.ProfileMode != "subagent" {
-		t.Fatalf("definition = %+v", createPayload.Definition)
+	if createPayload.Flow.Definition.FlowID != "flow-v3-remote" || createPayload.Flow.Definition.Agent.ProfileName != "flow-test" || createPayload.Flow.Definition.Agent.ProfileMode != "subagent" {
+		t.Fatalf("definition = %+v", createPayload.Flow.Definition)
 	}
-	if createPayload.TargetDetail == nil || createPayload.TargetDetail.SwarmID != "child-remote" || createPayload.TargetDetail.Kind != "remote" {
-		t.Fatalf("target detail = %+v", createPayload.TargetDetail)
+	if createPayload.Result == nil || !createPayload.Result.Delivered {
+		t.Fatalf("create result = %+v", createPayload.Result)
 	}
-	if createPayload.AgentDetail == nil || createPayload.AgentDetail.Name != "memory" || createPayload.AgentDetail.Mode != agentruntime.ModeSubagent {
-		t.Fatalf("agent detail = %+v", createPayload.AgentDetail)
+	if createPayload.Flow.TargetDetail == nil || createPayload.Flow.TargetDetail.SwarmID != "child-remote" || createPayload.Flow.TargetDetail.Kind != "remote" {
+		t.Fatalf("target detail = %+v", createPayload.Flow.TargetDetail)
+	}
+	if createPayload.Flow.AgentDetail == nil || createPayload.Flow.AgentDetail.Name != "flow-test" || createPayload.Flow.AgentDetail.Mode != agentruntime.ModeSubagent {
+		t.Fatalf("agent detail = %+v", createPayload.Flow.AgentDetail)
 	}
 	definition, ok, err := flows.GetDefinition("flow-v3-remote")
 	if err != nil || !ok {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
-	if definition.Assignment.Agent.ProfileName != "memory" || definition.Assignment.Agent.ProfileMode != "subagent" {
+	if definition.Assignment.Agent.ProfileName != "flow-test" || definition.Assignment.Agent.ProfileMode != "subagent" {
 		t.Fatalf("stored assignment agent = %+v", definition.Assignment.Agent)
 	}
 	listRec := httptest.NewRecorder()
@@ -108,15 +130,15 @@ func TestFlowsV3CreateListGetAndUpdate(t *testing.T) {
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status = %d body=%s", updateRec.Code, updateRec.Body.String())
 	}
-	var updatePayload flowV3RecordResponse
+	var updatePayload flowV3MutationResponse
 	if err := json.Unmarshal(updateRec.Body.Bytes(), &updatePayload); err != nil {
 		t.Fatalf("decode update: %v", err)
 	}
-	if updatePayload.Definition.Name != "Remote V3 flow updated" || updatePayload.Definition.Enabled {
-		t.Fatalf("updated definition = %+v", updatePayload.Definition)
+	if updatePayload.Flow.Definition.Name != "Remote V3 flow updated" || updatePayload.Flow.Definition.Enabled {
+		t.Fatalf("updated definition = %+v", updatePayload.Flow.Definition)
 	}
-	if updatePayload.Definition.Agent.ProfileName != "swarm" || updatePayload.Definition.Agent.ProfileMode != "primary" {
-		t.Fatalf("updated agent = %+v", updatePayload.Definition.Agent)
+	if updatePayload.Flow.Definition.Agent.ProfileName != "swarm" || updatePayload.Flow.Definition.Agent.ProfileMode != "primary" {
+		t.Fatalf("updated agent = %+v", updatePayload.Flow.Definition.Agent)
 	}
 	updatedDefinition, ok, err := flows.GetDefinition("flow-v3-remote")
 	if err != nil || !ok {
@@ -127,6 +149,76 @@ func TestFlowsV3CreateListGetAndUpdate(t *testing.T) {
 	}
 	if updatedDefinition.Assignment.Agent.ProfileName != "swarm" || updatedDefinition.Assignment.Agent.ProfileMode != "primary" {
 		t.Fatalf("updated stored agent = %+v", updatedDefinition.Assignment.Agent)
+	}
+	if _, err := flows.PutMirroredRunSummary(pebblestore.FlowRunSummaryRecord{
+		RunID:         "run-v3-1",
+		FlowID:        "flow-v3-remote",
+		Revision:      2,
+		ScheduledAt:   time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+		StartedAt:     time.Date(2025, 1, 2, 9, 0, 1, 0, time.UTC),
+		FinishedAt:    time.Date(2025, 1, 2, 9, 0, 3, 0, time.UTC),
+		Status:        pebblestore.FlowRunStatusSuccess,
+		Summary:       "done",
+		TargetSwarmID: "child-remote",
+	}); err != nil {
+		t.Fatalf("put mirrored summary: %v", err)
+	}
+	historyRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(historyRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-remote/history", nil))
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("history status = %d body=%s", historyRec.Code, historyRec.Body.String())
+	}
+	var historyPayload flowV3HistoryResponse
+	if err := json.Unmarshal(historyRec.Body.Bytes(), &historyPayload); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(historyPayload.History) != 1 || historyPayload.History[0].RunID != "run-v3-1" {
+		t.Fatalf("history payload = %+v", historyPayload)
+	}
+	statusRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(statusRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-remote/status", nil))
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status code = %d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var statusPayload flowV3StatusResponse
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusPayload); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if len(statusPayload.AssignmentStatuses) == 0 || len(statusPayload.History) != 1 {
+		t.Fatalf("status payload = %+v", statusPayload)
+	}
+	runRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(runRec, httptest.NewRequest(http.MethodPost, "/v3/flows/flow-v3-remote/run-now", nil))
+	if runRec.Code != http.StatusAccepted {
+		t.Fatalf("run-now status = %d body=%s", runRec.Code, runRec.Body.String())
+	}
+	if runner.lastRequest.TargetKind != "agent" || runner.lastRequest.TargetName != "swarm" {
+		t.Fatalf("runner request = %+v", runner.lastRequest)
+	}
+	var runPayload flowV3MutationResponse
+	if err := json.Unmarshal(runRec.Body.Bytes(), &runPayload); err != nil {
+		t.Fatalf("decode run now: %v", err)
+	}
+	if runPayload.Run == nil || runPayload.Run.CommandID == "" || runPayload.Run.PendingSync {
+		t.Fatalf("run payload = %+v", runPayload)
+	}
+	deleteRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/v3/flows/flow-v3-remote", nil))
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	var deletePayload flowV3MutationResponse
+	if err := json.Unmarshal(deleteRec.Body.Bytes(), &deletePayload); err != nil {
+		t.Fatalf("decode delete: %v", err)
+	}
+	if deletePayload.Flow.Definition.FlowID != "flow-v3-remote" || deletePayload.Flow.Definition.DeletedAt.IsZero() {
+		t.Fatalf("delete payload = %+v", deletePayload.Flow.Definition)
+	}
+	if _, ok, err := flows.GetDefinition("flow-v3-remote"); err != nil || ok {
+		t.Fatalf("definition after delete ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := flows.GetAcceptedAssignment("flow-v3-remote"); err != nil || ok {
+		t.Fatalf("accepted after delete ok=%v err=%v", ok, err)
 	}
 }
 
@@ -177,50 +269,6 @@ func TestFlowsV3RejectsUnknownDisabledAndMismatchedAgents(t *testing.T) {
 	}
 }
 
-type fakeFlowRemoteDeployService struct {
-	sessions []remotedeploy.Session
-}
-
-func (f *fakeFlowRemoteDeployService) List(context.Context) ([]remotedeploy.Session, error) {
-	return append([]remotedeploy.Session(nil), f.sessions...), nil
-}
-
-func (f *fakeFlowRemoteDeployService) ListCached(context.Context) ([]remotedeploy.Session, error) {
-	return append([]remotedeploy.Session(nil), f.sessions...), nil
-}
-
-func (f *fakeFlowRemoteDeployService) Get(context.Context, string, bool) (remotedeploy.Session, error) {
-	return remotedeploy.Session{}, nil
-}
-
-func (f *fakeFlowRemoteDeployService) Create(context.Context, remotedeploy.CreateSessionInput) (remotedeploy.Session, error) {
-	return remotedeploy.Session{}, nil
-}
-
-func (f *fakeFlowRemoteDeployService) Delete(context.Context, remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error) {
-	return localcontainers.DeleteResult{}, nil
-}
-
-func (f *fakeFlowRemoteDeployService) Start(context.Context, remotedeploy.StartSessionInput) (remotedeploy.Session, error) {
-	return remotedeploy.Session{}, nil
-}
-
-func (f *fakeFlowRemoteDeployService) RunUpdateJob(context.Context, remotedeploy.UpdateJobInput) (remotedeploy.UpdateJobResult, error) {
-	return remotedeploy.UpdateJobResult{}, nil
-}
-
-func (f *fakeFlowRemoteDeployService) Approve(context.Context, remotedeploy.ApproveSessionInput) (remotedeploy.Session, error) {
-	return remotedeploy.Session{}, nil
-}
-
-func (f *fakeFlowRemoteDeployService) ChildStatus(context.Context, remotedeploy.ChildStatusInput) (remotedeploy.Session, error) {
-	return remotedeploy.Session{}, nil
-}
-
-func (f *fakeFlowRemoteDeployService) SyncCredentialBundle(context.Context, remotedeploy.SyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error) {
-	return deployruntime.ContainerSyncCredentialBundle{}, nil
-}
-
 func TestFlowsV3RejectsMissingTargetAndBadTarget(t *testing.T) {
 	server, _ := newFlowPeerTestServer(t)
 	ensureFlowPrimaryAgentRunnable(t, server)
@@ -255,4 +303,8 @@ func TestFlowsV3RejectsMissingTargetAndBadTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }

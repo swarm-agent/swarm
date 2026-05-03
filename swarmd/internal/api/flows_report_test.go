@@ -158,6 +158,9 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	if session.Metadata["flow_id"] != assignment.FlowID || session.Metadata["target_swarm_id"] != "target-swarm-1" || session.Metadata["swarm_target_name"] != "pc container" {
 		t.Fatalf("metadata = %+v", session.Metadata)
 	}
+	if session.Metadata["flow_agent_kind"] != "subagent" || session.Metadata["flow_agent_name"] != "memory" {
+		t.Fatalf("flow agent metadata = %+v", session.Metadata)
+	}
 	events, err := server.events.ReadFrom(1, 20)
 	if err != nil {
 		t.Fatalf("read events: %v", err)
@@ -391,6 +394,9 @@ func TestPeerFlowReportMirrorsRemoteChildSessionWithCanonicalTargetIdentity(t *t
 	if session.Metadata["swarm_target_kind"] != "remote" || session.Metadata["swarm_target_deployment_id"] != "swarm-child-4-e2727893" || session.Metadata[sessionruntime.HostedSessionMetadataChildSwarmID] != "child-4-swarm" {
 		t.Fatalf("target metadata = %+v", session.Metadata)
 	}
+	if session.Metadata["flow_agent_kind"] != "subagent" || session.Metadata["flow_agent_name"] != "memory" {
+		t.Fatalf("flow agent metadata = %+v", session.Metadata)
+	}
 	createdPayload := requireSessionCreatedPayload(t, server, "session-child-4-report")
 	if createdPayload.Metadata["source"] != "flow" || createdPayload.Metadata["swarm_target_name"] != "swarm child 4" || createdPayload.WorkspacePath != hostWorkspace {
 		t.Fatalf("created payload = %+v", createdPayload)
@@ -401,6 +407,38 @@ func TestPeerFlowReportMirrorsRemoteChildSessionWithCanonicalTargetIdentity(t *t
 	}
 	if route.ChildSwarmID != "child-4-swarm" || route.ChildBackendURL != "http://child-4.example:7781" || route.HostWorkspacePath != hostWorkspace || route.RuntimeWorkspacePath != "/workspaces/swarm-go" {
 		t.Fatalf("route = %+v", route)
+	}
+}
+
+func TestCanonicalFlowMirrorMetadataUsesSavedProfileIdentityNotRuntimeTargetIdentity(t *testing.T) {
+	resolved := resolvedFlowRunAgent{
+		SavedProfileMode:  "background",
+		SavedProfileName:  "memory",
+		RuntimeTargetKind: "subagent",
+		RuntimeTargetName: "swarm",
+	}
+	metadata := canonicalFlowMirrorMetadata(nil, flow.Assignment{
+		FlowID:   "flow-metadata",
+		Revision: 4,
+		Target:   flow.TargetSelection{SwarmID: "child-4-swarm", Kind: "remote", Name: "swarm child 4", DeploymentID: "deploy-4"},
+		Agent:    flow.AgentSelection{ProfileName: "memory", ProfileMode: "background", TargetKind: "subagent", TargetName: "swarm"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath:        "/host/workspace",
+			HostWorkspacePath:    "/host/workspace",
+			RuntimeWorkspacePath: "/workspaces/swarm",
+		},
+	}, resolved, pebblestore.FlowRunSummaryRecord{
+		RunID:         "run-flow-metadata",
+		FlowID:        "flow-metadata",
+		Revision:      4,
+		ScheduledAt:   time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+		TargetSwarmID: "child-4-swarm",
+	}, swarmTarget{SwarmID: "child-4-swarm", Kind: "remote", Name: "swarm child 4", DeploymentID: "deploy-4"}, true, "child-4-swarm", "/host/workspace", "/workspaces/swarm", "host-swarm-id")
+	if metadata["flow_agent_kind"] != "background" || metadata["flow_agent_name"] != "memory" {
+		t.Fatalf("saved profile metadata = %+v", metadata)
+	}
+	if metadata["flow_agent_kind"] == resolved.RuntimeTargetKind || metadata["flow_agent_name"] == resolved.RuntimeTargetName {
+		t.Fatalf("runtime launch identity leaked into durable metadata = %+v", metadata)
 	}
 }
 

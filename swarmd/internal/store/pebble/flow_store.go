@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -152,10 +153,18 @@ func (s *FlowStore) GetDefinition(flowID string) (FlowDefinitionRecord, bool, er
 	if flowID == "" {
 		return FlowDefinitionRecord{}, false, errors.New("flow_id is required")
 	}
-	var record FlowDefinitionRecord
-	ok, err := s.store.GetJSON(KeyFlowDefinition(flowID), &record)
+	payload, ok, err := s.store.GetBytes(KeyFlowDefinition(flowID))
 	if err != nil || !ok {
 		return FlowDefinitionRecord{}, ok, err
+	}
+	record, repaired, err := decodeFlowDefinitionRecordPayload(payload)
+	if err != nil {
+		return FlowDefinitionRecord{}, false, fmt.Errorf("decode flow definition: %w", err)
+	}
+	if repaired {
+		if err := s.store.PutJSON(KeyFlowDefinition(flowID), record); err != nil {
+			return FlowDefinitionRecord{}, false, err
+		}
 	}
 	return normalizeFlowDefinitionRecord(record), true, nil
 }
@@ -168,12 +177,17 @@ func (s *FlowStore) ListDefinitions(limit int) ([]FlowDefinitionRecord, error) {
 		limit = 200
 	}
 	out := make([]FlowDefinitionRecord, 0, min(limit, 16))
-	err := s.store.IteratePrefix(FlowDefinitionPrefix(), limit, func(_ string, value []byte) error {
-		var record FlowDefinitionRecord
-		if err := json.Unmarshal(value, &record); err != nil {
+	err := s.store.IteratePrefix(FlowDefinitionPrefix(), limit, func(key string, value []byte) error {
+		record, repaired, err := decodeFlowDefinitionRecordPayload(value)
+		if err != nil {
 			return fmt.Errorf("decode flow definition: %w", err)
 		}
 		record = normalizeFlowDefinitionRecord(record)
+		if repaired {
+			if err := s.store.PutJSON(key, record); err != nil {
+				return err
+			}
+		}
 		if record.FlowID != "" {
 			out = append(out, record)
 		}
@@ -309,10 +323,23 @@ func (s *FlowStore) GetOutboxCommand(commandID string) (FlowOutboxCommandRecord,
 	if s == nil || s.store == nil {
 		return FlowOutboxCommandRecord{}, false, errors.New("flow store is not configured")
 	}
-	var record FlowOutboxCommandRecord
-	ok, err := s.store.GetJSON(KeyFlowOutbox(commandID), &record)
+	commandID = strings.TrimSpace(commandID)
+	if commandID == "" {
+		return FlowOutboxCommandRecord{}, false, errors.New("command_id is required")
+	}
+	key := KeyFlowOutbox(commandID)
+	payload, ok, err := s.store.GetBytes(key)
 	if err != nil || !ok {
 		return FlowOutboxCommandRecord{}, ok, err
+	}
+	record, repaired, err := decodeFlowOutboxCommandRecordPayload(payload)
+	if err != nil {
+		return FlowOutboxCommandRecord{}, false, fmt.Errorf("decode flow outbox command: %w", err)
+	}
+	if repaired {
+		if err := s.store.PutJSON(key, record); err != nil {
+			return FlowOutboxCommandRecord{}, false, err
+		}
 	}
 	return normalizeFlowOutboxCommandRecord(record), true, nil
 }
@@ -345,10 +372,18 @@ func (s *FlowStore) ListOutboxCommands(status string, limit int) ([]FlowOutboxCo
 		if recordKey == "" {
 			return nil
 		}
-		var record FlowOutboxCommandRecord
-		ok, err := s.store.GetJSON(recordKey, &record)
+		payload, ok, err := s.store.GetBytes(recordKey)
 		if err != nil || !ok {
 			return err
+		}
+		record, repaired, err := decodeFlowOutboxCommandRecordPayload(payload)
+		if err != nil {
+			return fmt.Errorf("decode flow outbox command: %w", err)
+		}
+		if repaired {
+			if err := s.store.PutJSON(recordKey, record); err != nil {
+				return err
+			}
 		}
 		out = append(out, normalizeFlowOutboxCommandRecord(record))
 		return nil
@@ -849,6 +884,212 @@ func (s *FlowStore) listRunSummaries(prefix string, limit int) ([]FlowRunSummary
 		return nil
 	})
 	return out, err
+}
+
+func decodeFlowDefinitionRecordPayload(payload []byte) (FlowDefinitionRecord, bool, error) {
+	var record FlowDefinitionRecord
+	if err := json.Unmarshal(payload, &record); err == nil {
+		return normalizeFlowDefinitionRecord(record), false, nil
+	}
+	repaired, repairedOK, repairErr := repairLegacyFlowDefinitionPayload(payload)
+	if repairErr != nil {
+		return FlowDefinitionRecord{}, false, repairErr
+	}
+	if !repairedOK {
+		var zero FlowDefinitionRecord
+		if err := json.Unmarshal(payload, &zero); err != nil {
+			return FlowDefinitionRecord{}, false, err
+		}
+		return normalizeFlowDefinitionRecord(zero), false, nil
+	}
+	if err := json.Unmarshal(repaired, &record); err != nil {
+		return FlowDefinitionRecord{}, false, err
+	}
+	return normalizeFlowDefinitionRecord(record), true, nil
+}
+
+func decodeFlowOutboxCommandRecordPayload(payload []byte) (FlowOutboxCommandRecord, bool, error) {
+	var record FlowOutboxCommandRecord
+	if err := json.Unmarshal(payload, &record); err == nil {
+		return normalizeFlowOutboxCommandRecord(record), false, nil
+	}
+	repaired, repairedOK, repairErr := repairLegacyFlowOutboxCommandPayload(payload)
+	if repairErr != nil {
+		return FlowOutboxCommandRecord{}, false, repairErr
+	}
+	if !repairedOK {
+		var zero FlowOutboxCommandRecord
+		if err := json.Unmarshal(payload, &zero); err != nil {
+			return FlowOutboxCommandRecord{}, false, err
+		}
+		return normalizeFlowOutboxCommandRecord(zero), false, nil
+	}
+	if err := json.Unmarshal(repaired, &record); err != nil {
+		return FlowOutboxCommandRecord{}, false, err
+	}
+	return normalizeFlowOutboxCommandRecord(record), true, nil
+}
+
+func repairLegacyFlowOutboxCommandPayload(payload []byte) ([]byte, bool, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, false, err
+	}
+	commandRaw, ok := raw["command"]
+	if !ok {
+		return nil, false, nil
+	}
+	repairedCommand, repaired, err := repairLegacyFlowAssignmentCommandPayload(commandRaw)
+	if err != nil {
+		return nil, false, err
+	}
+	if !repaired {
+		return nil, false, nil
+	}
+	raw["command"] = repairedCommand
+	repairedPayload, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	return repairedPayload, true, nil
+}
+
+func repairLegacyFlowAssignmentCommandPayload(payload []byte) ([]byte, bool, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, false, err
+	}
+	assignmentRaw, ok := raw["assignment"]
+	if !ok {
+		return nil, false, nil
+	}
+	repairedAssignment, repaired, err := repairLegacyFlowAssignmentPayload(assignmentRaw)
+	if err != nil {
+		return nil, false, err
+	}
+	if !repaired {
+		return nil, false, nil
+	}
+	raw["assignment"] = repairedAssignment
+	repairedPayload, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	return repairedPayload, true, nil
+}
+
+func repairLegacyFlowDefinitionPayload(payload []byte) ([]byte, bool, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, false, err
+	}
+	assignmentRaw, ok := raw["assignment"]
+	if !ok {
+		return nil, false, nil
+	}
+	repairedAssignment, repaired, err := repairLegacyFlowAssignmentPayload(assignmentRaw)
+	if err != nil {
+		return nil, false, err
+	}
+	if !repaired {
+		return nil, false, nil
+	}
+	raw["assignment"] = repairedAssignment
+	updatedPayload, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	return updatedPayload, true, nil
+}
+
+func repairLegacyFlowAssignmentPayload(payload []byte) ([]byte, bool, error) {
+	var assignment map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &assignment); err != nil {
+		return nil, false, err
+	}
+	agentRaw, ok := assignment["agent"]
+	if !ok {
+		return nil, false, nil
+	}
+	repairedAgent, repaired, err := repairLegacyFlowAgentPayload(agentRaw)
+	if err != nil {
+		return nil, false, err
+	}
+	if !repaired {
+		return nil, false, nil
+	}
+	assignment["agent"] = repairedAgent
+	updatedAssignment, err := json.Marshal(assignment)
+	if err != nil {
+		return nil, false, err
+	}
+	return updatedAssignment, true, nil
+}
+
+func repairLegacyFlowAgentPayload(payload []byte) ([]byte, bool, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, false, err
+	}
+	var profileName string
+	if value, ok := raw["profile_name"]; ok {
+		_ = json.Unmarshal(value, &profileName)
+		profileName = strings.TrimSpace(profileName)
+	}
+	var profileMode string
+	if value, ok := raw["profile_mode"]; ok {
+		_ = json.Unmarshal(value, &profileMode)
+		profileMode = flow.NormalizeAgentProfileMode(profileMode)
+	}
+	var targetName string
+	if value, ok := raw["target_name"]; ok {
+		_ = json.Unmarshal(value, &targetName)
+		delete(raw, "target_name")
+	}
+	var targetKind string
+	if value, ok := raw["target_kind"]; ok {
+		_ = json.Unmarshal(value, &targetKind)
+		delete(raw, "target_kind")
+	}
+	for _, key := range []string{"model", "service_tier", "provider", "thinking", "prompt", "tool_scope", "tool_contract", "execution_setting", "exit_plan_mode_enabled", "enabled", "protected", "updated_at"} {
+		delete(raw, key)
+	}
+	if profileName == "" || profileMode == "" {
+		inferredName, inferredMode, ok := inferLegacyFlowAgentProfile(targetName, targetKind)
+		if !ok {
+			return nil, false, fmt.Errorf("legacy flow agent payload is missing recoverable durable profile identity")
+		}
+		if profileName == "" {
+			profileName = inferredName
+		}
+		if profileMode == "" {
+			profileMode = inferredMode
+		}
+	}
+	encodedName, err := json.Marshal(profileName)
+	if err != nil {
+		return nil, false, err
+	}
+	raw["profile_name"] = encodedName
+	encodedMode, err := json.Marshal(profileMode)
+	if err != nil {
+		return nil, false, err
+	}
+	raw["profile_mode"] = encodedMode
+	repaired, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	return repaired, !bytes.Equal(bytes.TrimSpace(payload), bytes.TrimSpace(repaired)), nil
+}
+
+func inferLegacyFlowAgentProfile(targetName, targetKind string) (string, string, bool) {
+	name := strings.TrimSpace(targetName)
+	mode := flow.NormalizeAgentProfileMode(targetKind)
+	if name == "" || mode == "" {
+		return "", "", false
+	}
+	return name, mode, true
 }
 
 func normalizeFlowDefinitionRecord(record FlowDefinitionRecord) FlowDefinitionRecord {

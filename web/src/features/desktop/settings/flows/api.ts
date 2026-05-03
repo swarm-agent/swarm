@@ -2,6 +2,7 @@ import { requestJson } from '../../../../app/api'
 import { fetchSwarmTargets, type SwarmTarget, type SwarmTargetsResponse } from '../../swarm/api/swarm-targets'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
+import type { AgentProfileRecord } from '../../../desktop/chat/types/chat'
 
 export type FlowAssignmentStatus = 'accepted' | 'duplicate' | 'rejected' | 'out_of_order' | 'pending_sync' | 'target_offline' | 'target_unusable'
 export type FlowRunStatus = 'claimed' | 'running' | 'success' | 'skipped' | 'review' | 'failed'
@@ -15,6 +16,7 @@ export interface FlowTargetSelection {
 
 export type FlowSwarmTarget = SwarmTarget
 export type FlowWorkspaceEntry = WorkspaceEntry
+export type FlowAgentProfile = AgentProfileRecord
 
 export interface FlowAgentProfileDetail {
   name: string
@@ -24,8 +26,8 @@ export interface FlowAgentProfileDetail {
 }
 
 export interface FlowAgentSelection {
-  target_kind: string
-  target_name: string
+  profile_name: string
+  profile_mode?: string
 }
 
 export interface FlowWorkspaceContext {
@@ -62,7 +64,7 @@ export interface FlowPromptIntent {
   tasks?: FlowTaskStep[]
 }
 
-export interface FlowAssignment {
+export interface FlowDefinitionRecord {
   flow_id: string
   revision: number
   name: string
@@ -73,15 +75,9 @@ export interface FlowAssignment {
   schedule: FlowScheduleSpec
   catch_up_policy: FlowCatchUpPolicy
   intent: FlowPromptIntent
-}
-
-export interface FlowDefinitionRecord {
-  flow_id: string
-  revision: number
-  assignment: FlowAssignment
   next_due_at?: string
-  created_at: string
-  updated_at: string
+  created_at?: string
+  updated_at?: string
   deleted_at?: string
 }
 
@@ -117,6 +113,16 @@ export interface FlowRunSummaryRecord {
   report_error?: string
 }
 
+export interface FlowOutboxCommandRecord {
+  command_id: string
+  flow_id: string
+  revision: number
+  target_swarm_id: string
+  status: string
+  attempt_count?: number
+  last_error?: string
+}
+
 export interface FlowWorkspaceDetail {
   workspace_path: string
   host_workspace_path?: string
@@ -133,15 +139,14 @@ export interface FlowSummaryRecord {
   assignment_statuses?: FlowAssignmentStatusRecord[]
   last_run?: FlowRunSummaryRecord | null
   history_count: number
+  history?: FlowRunSummaryRecord[]
+  outbox?: FlowOutboxCommandRecord[]
 }
 
-export interface FlowDetailRecord {
-  definition: FlowDefinitionRecord
-  target_detail?: FlowSwarmTarget | null
-  agent_detail?: FlowAgentProfileDetail | null
-  workspace_detail?: FlowWorkspaceDetail | null
+export interface FlowDetailRecord extends FlowSummaryRecord {
   assignment_statuses: FlowAssignmentStatusRecord[]
   history: FlowRunSummaryRecord[]
+  outbox: FlowOutboxCommandRecord[]
 }
 
 export interface FlowListResponse {
@@ -149,14 +154,54 @@ export interface FlowListResponse {
   flows: FlowSummaryRecord[]
 }
 
-export interface FlowCreateResponse {
+export interface FlowMutationResponse {
   ok: boolean
   flow: FlowDetailRecord
+  result?: {
+    pending_sync?: boolean
+    delivered?: boolean
+    outbox?: FlowOutboxCommandRecord
+    assignment_state?: FlowAssignmentStatusRecord
+    ack?: {
+      status?: string
+      reason?: string
+    }
+  }
+  run?: {
+    command_id: string
+    pending_sync: boolean
+    reason?: string
+  }
+}
+
+export interface FlowHistoryResponse {
+  ok: boolean
+  flow_id: string
+  history: FlowRunSummaryRecord[]
+}
+
+export interface FlowStatusResponse {
+  ok: boolean
+  flow_id: string
+  assignment_statuses: FlowAssignmentStatusRecord[]
+  outbox: FlowOutboxCommandRecord[]
+  history: FlowRunSummaryRecord[]
 }
 
 export interface FlowRunNowResponse {
   ok: boolean
-  run: {
+  flow: FlowDetailRecord
+  result?: {
+    pending_sync?: boolean
+    delivered?: boolean
+    outbox?: FlowOutboxCommandRecord
+    assignment_state?: FlowAssignmentStatusRecord
+    ack?: {
+      status?: string
+      reason?: string
+    }
+  }
+  run?: {
     command_id: string
     pending_sync: boolean
     reason?: string
@@ -176,7 +221,7 @@ export interface CreateFlowInput {
 }
 
 export async function fetchFlows(signal?: AbortSignal): Promise<FlowSummaryRecord[]> {
-  const response = await requestJson<FlowListResponse>('/v2/flows?limit=200', {
+  const response = await requestJson<FlowListResponse>('/v3/flows?limit=200', {
     cache: 'no-store',
     signal,
   })
@@ -193,7 +238,7 @@ export async function fetchFlowWorkspaces(): Promise<FlowWorkspaceEntry[]> {
 }
 
 export async function createFlow(input: CreateFlowInput): Promise<FlowDetailRecord> {
-  const response = await requestJson<FlowCreateResponse>('/v2/flows', {
+  const response = await requestJson<FlowMutationResponse>('/v3/flows', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -204,13 +249,13 @@ export async function createFlow(input: CreateFlowInput): Promise<FlowDetailReco
 }
 
 export async function deleteFlow(flowID: string): Promise<void> {
-  await requestJson(`/v2/flows/${encodeURIComponent(flowID)}`, {
+  await requestJson(`/v3/flows/${encodeURIComponent(flowID)}`, {
     method: 'DELETE',
   })
 }
 
 export async function runFlowNow(flowID: string): Promise<FlowRunNowResponse> {
-  return requestJson<FlowRunNowResponse>(`/v2/flows/${encodeURIComponent(flowID)}/run-now`, {
+  return requestJson<FlowRunNowResponse>(`/v3/flows/${encodeURIComponent(flowID)}/run-now`, {
     method: 'POST',
   })
 }

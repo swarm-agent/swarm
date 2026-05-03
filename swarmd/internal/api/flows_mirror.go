@@ -92,7 +92,11 @@ func (s *Server) buildCanonicalFlowSessionMirror(summary pebblestore.FlowRunSumm
 	if reportedSession != nil {
 		metadata = cloneFlowReportMetadata(reportedSession.Metadata)
 	}
-	metadata = canonicalFlowMirrorMetadata(metadata, assignment, summary, target, targetFound, targetSwarmID, hostWorkspacePath, runtimeWorkspacePath, s.flowLocalSwarmID())
+	resolvedAgent, err := s.resolveFlowRunAgent(assignment.Agent)
+	if err != nil {
+		return flowSessionMirror{}, false, err
+	}
+	metadata = canonicalFlowMirrorMetadata(metadata, assignment, resolvedAgent, summary, target, targetFound, targetSwarmID, hostWorkspacePath, runtimeWorkspacePath, s.flowLocalSwarmID())
 
 	mirroredSession := pebblestore.SessionSnapshot{
 		ID:            sessionID,
@@ -140,7 +144,7 @@ func (s *Server) buildCanonicalFlowSessionMirror(summary pebblestore.FlowRunSumm
 	return mirror, true, nil
 }
 
-func canonicalFlowMirrorMetadata(metadata map[string]any, assignment flow.Assignment, summary pebblestore.FlowRunSummaryRecord, target swarmTarget, targetFound bool, targetSwarmID, hostWorkspacePath, runtimeWorkspacePath, hostSwarmID string) map[string]any {
+func canonicalFlowMirrorMetadata(metadata map[string]any, assignment flow.Assignment, resolvedAgent resolvedFlowRunAgent, summary pebblestore.FlowRunSummaryRecord, target swarmTarget, targetFound bool, targetSwarmID, hostWorkspacePath, runtimeWorkspacePath, hostSwarmID string) map[string]any {
 	if metadata == nil {
 		metadata = make(map[string]any, 24)
 	}
@@ -152,8 +156,8 @@ func canonicalFlowMirrorMetadata(metadata map[string]any, assignment flow.Assign
 	metadata["source"] = "flow"
 	metadata["target_kind"] = firstNonEmpty(strings.TrimSpace(target.Kind), strings.TrimSpace(assignment.Target.Kind))
 	metadata["target_name"] = firstNonEmpty(strings.TrimSpace(target.Name), strings.TrimSpace(assignment.Target.Name))
-	metadata["flow_agent_kind"] = strings.TrimSpace(assignment.Agent.TargetKind)
-	metadata["flow_agent_name"] = strings.TrimSpace(assignment.Agent.TargetName)
+	metadata["flow_agent_kind"] = flowAgentMetadataKind(assignment.Agent, resolvedAgent)
+	metadata["flow_agent_name"] = flowAgentMetadataName(assignment.Agent, resolvedAgent)
 	metadata["target_swarm_id"] = strings.TrimSpace(targetSwarmID)
 	metadata["swarm_target_swarm_id"] = strings.TrimSpace(targetSwarmID)
 	metadata["workspace_context"] = assignment.Workspace

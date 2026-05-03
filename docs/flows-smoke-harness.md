@@ -1,6 +1,6 @@
 # Flows smoke harness
 
-Use this when validating the distributed Flows path in small, debuggable increments.
+Use this when validating the canonical `/v3/flows` path in small, debuggable increments.
 
 ## Time increments
 
@@ -22,7 +22,7 @@ What it checks:
 1. Opens `/flow` in the real desktop UI through Playwright.
 2. Creates a local/self Flow through the Add Flow modal.
 3. Clicks **Run now** in the Flow detail view.
-4. Polls `/v1/flows/{id}/history`, `/v1/flows/{id}/status`, and `/v1/sessions` until the mirrored run and session are visible.
+4. Polls `/v3/flows/{id}/history`, `/v3/flows/{id}/status`, and `/v1/sessions` until the mirrored run and session are visible.
 5. Creates a second self-target scheduled Flow through the API at the next minute and waits for it to fire.
 6. Writes `tmp/flows-smoke-diagnostics/<timestamp>/summary.json` and screenshots.
 7. Deletes created diagnostic Flows unless `--keep-flows` is passed.

@@ -1,9 +1,12 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +18,7 @@ const flowV3Path = "/v3/flows"
 
 type flowV3Definition struct {
 	FlowID        string                `json:"flow_id"`
+	Revision      int64                 `json:"revision"`
 	Name          string                `json:"name"`
 	Enabled       bool                  `json:"enabled"`
 	Target        flow.TargetSelection  `json:"target"`
@@ -23,12 +27,36 @@ type flowV3Definition struct {
 	Schedule      flow.ScheduleSpec     `json:"schedule"`
 	CatchUpPolicy flow.CatchUpPolicy    `json:"catch_up_policy"`
 	Intent        flow.PromptIntent     `json:"intent"`
+	NextDueAt     time.Time             `json:"next_due_at,omitempty"`
+	CreatedAt     time.Time             `json:"created_at,omitempty"`
+	UpdatedAt     time.Time             `json:"updated_at,omitempty"`
+	DeletedAt     time.Time             `json:"deleted_at,omitempty"`
+}
+
+type flowV3RunNowView struct {
+	CommandID   string `json:"command_id"`
+	PendingSync bool   `json:"pending_sync"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+type flowV3WorkspaceDetail struct {
+	WorkspacePath        string `json:"workspace_path"`
+	HostWorkspacePath    string `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath string `json:"runtime_workspace_path,omitempty"`
+	CWD                  string `json:"cwd,omitempty"`
+	WorktreeMode         string `json:"worktree_mode,omitempty"`
 }
 
 type flowV3Record struct {
-	Definition   flowV3Definition          `json:"definition"`
-	TargetDetail *swarmTarget              `json:"target_detail,omitempty"`
-	AgentDetail  *pebblestore.AgentProfile `json:"agent_detail,omitempty"`
+	Definition         flowV3Definition                         `json:"definition"`
+	TargetDetail       *swarmTarget                             `json:"target_detail,omitempty"`
+	AgentDetail        *pebblestore.AgentProfile                `json:"agent_detail,omitempty"`
+	WorkspaceDetail    *flowV3WorkspaceDetail                   `json:"workspace_detail,omitempty"`
+	AssignmentStatuses []pebblestore.FlowAssignmentStatusRecord `json:"assignment_statuses,omitempty"`
+	LastRun            *pebblestore.FlowRunSummaryRecord        `json:"last_run,omitempty"`
+	HistoryCount       int                                      `json:"history_count,omitempty"`
+	History            []pebblestore.FlowRunSummaryRecord       `json:"history,omitempty"`
+	Outbox             []pebblestore.FlowOutboxCommandRecord    `json:"outbox,omitempty"`
 }
 
 type flowV3RecordResponse struct {
@@ -39,6 +67,27 @@ type flowV3RecordResponse struct {
 type flowV3ListResponse struct {
 	OK    bool           `json:"ok"`
 	Flows []flowV3Record `json:"flows"`
+}
+
+type flowV3MutationResponse struct {
+	OK     bool                         `json:"ok"`
+	Flow   flowV3Record                 `json:"flow"`
+	Result *flowAssignmentDeliverResult `json:"result,omitempty"`
+	Run    *flowV3RunNowView            `json:"run,omitempty"`
+}
+
+type flowV3HistoryResponse struct {
+	OK      bool                               `json:"ok"`
+	FlowID  string                             `json:"flow_id"`
+	History []pebblestore.FlowRunSummaryRecord `json:"history"`
+}
+
+type flowV3StatusResponse struct {
+	OK                 bool                                     `json:"ok"`
+	FlowID             string                                   `json:"flow_id"`
+	AssignmentStatuses []pebblestore.FlowAssignmentStatusRecord `json:"assignment_statuses"`
+	Outbox             []pebblestore.FlowOutboxCommandRecord    `json:"outbox"`
+	History            []pebblestore.FlowRunSummaryRecord       `json:"history"`
 }
 
 type flowV3UpsertRequest struct {
@@ -73,6 +122,19 @@ func (s *Server) handleFlowsV3(w http.ResponseWriter, r *http.Request) {
 		s.handleFlowV3ByID(w, r, flowID)
 		return
 	}
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "history":
+			s.handleFlowV3History(w, r, flowID)
+			return
+		case "status":
+			s.handleFlowV3Status(w, r, flowID)
+			return
+		case "run-now":
+			s.handleFlowV3RunNow(w, r, flowID)
+			return
+		}
+	}
 	writeError(w, http.StatusNotFound, fmt.Errorf("unsupported flow v3 path %q", r.URL.Path))
 }
 
@@ -91,7 +153,7 @@ func (s *Server) handleFlowsV3Collection(w http.ResponseWriter, r *http.Request)
 		}
 		items := make([]flowV3Record, 0, len(definitions))
 		for _, definition := range definitions {
-			item, err := s.flowV3RecordForDefinition(r, definition)
+			item, err := s.flowV3Summary(r, definition)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
@@ -105,12 +167,12 @@ func (s *Server) handleFlowsV3Collection(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		record, err := s.createFlowV3(r, req)
+		record, result, err := s.createFlowV3(r, req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, flowV3RecordResponse{OK: true, flowV3Record: record})
+		writeJSON(w, http.StatusCreated, flowV3MutationResponse{OK: true, Flow: record, Result: &result})
 	default:
 		methodNotAllowed(w)
 	}
@@ -135,79 +197,213 @@ func (s *Server) handleFlowV3ByID(w http.ResponseWriter, r *http.Request, flowID
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		record, err := s.updateFlowV3(r, flowID, req)
+		record, result, err := s.updateFlowV3(r, flowID, req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, flowV3RecordResponse{OK: true, flowV3Record: record})
+		writeJSON(w, http.StatusOK, flowV3MutationResponse{OK: true, Flow: record, Result: &result})
+	case http.MethodDelete:
+		record, result, err := s.deleteFlowV3(r, flowID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, flowV3MutationResponse{OK: true, Flow: record, Result: &result})
 	default:
 		methodNotAllowed(w)
 	}
 }
 
-func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3Record, error) {
+func (s *Server) handleFlowV3History(w http.ResponseWriter, r *http.Request, flowID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	limit, err := positiveQueryLimit(r, 100)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	history, err := s.flows.ListMirroredRunSummaries(flowID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, flowV3HistoryResponse{OK: true, FlowID: flowID, History: history})
+}
+
+func (s *Server) handleFlowV3Status(w http.ResponseWriter, r *http.Request, flowID string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	limit, err := positiveQueryLimit(r, 100)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	statuses, err := s.flows.ListAssignmentStatuses(flowID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	outbox, err := s.flows.ListOutboxCommands("", limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	history, err := s.flows.ListMirroredRunSummaries(flowID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, flowV3StatusResponse{OK: true, FlowID: flowID, AssignmentStatuses: statuses, Outbox: flowV3OutboxForFlow(outbox, flowID), History: history})
+}
+
+func (s *Server) handleFlowV3RunNow(w http.ResponseWriter, r *http.Request, flowID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	definition, ok, err := s.flows.GetDefinition(flowID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("flow %q was not found", flowID))
+		return
+	}
+	commandID := newFlowCommandID(flowID, definition.Revision, flow.CommandRunNow)
+	command := flow.AssignmentCommand{CommandID: commandID, FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandRunNow, CreatedAt: time.Now().UTC(), Assignment: definition.Assignment}
+	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	record, _, detailErr := s.flowV3Detail(r, flowID)
+	if detailErr != nil {
+		writeError(w, http.StatusInternalServerError, detailErr)
+		return
+	}
+	run := flowV3RunNowResultView(result)
+	writeJSON(w, http.StatusAccepted, flowV3MutationResponse{OK: true, Flow: record, Result: &result, Run: &run})
+}
+
+func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, error) {
 	flowID := strings.TrimSpace(req.FlowID)
 	if flowID == "" {
 		flowID = "flow-" + randomHex(8)
 	}
 	if _, exists, err := s.flows.GetDefinition(flowID); err != nil {
-		return flowV3Record{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	} else if exists {
-		return flowV3Record{}, fmt.Errorf("flow %q already exists", flowID)
+		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q already exists", flowID)
 	}
 	assignment, err := s.flowV3AssignmentFromRequest(r, req, nil, flowID, 1)
 	if err != nil {
-		return flowV3Record{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	now := time.Now().UTC()
 	nextDueAt, _, err := flow.NextFire(assignment, now)
 	if err != nil {
-		return flowV3Record{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	definition, err := s.flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt})
 	if err != nil {
-		return flowV3Record{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	command := flow.AssignmentCommand{CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandInstall), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandInstall, CreatedAt: now, Assignment: definition.Assignment}
-	if _, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command); err != nil {
-		if cleanupErr := s.flows.DeleteDefinition(definition.FlowID); cleanupErr != nil {
-			return flowV3Record{}, fmt.Errorf("%w; cleanup flow definition: %v", err, cleanupErr)
-		}
-		return flowV3Record{}, err
-	}
-	return s.flowV3RecordForDefinition(r, definition)
-}
-
-func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRequest) (flowV3Record, error) {
-	existing, ok, err := s.flows.GetDefinition(flowID)
+	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
 	if err != nil {
-		return flowV3Record{}, err
+		if cleanupErr := s.flows.DeleteDefinition(definition.FlowID); cleanupErr != nil {
+			return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("%w; cleanup flow definition: %v", err, cleanupErr)
+		}
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+	}
+	record, ok, err := s.flowV3Detail(r, definition.FlowID)
+	if err != nil {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	if !ok {
-		return flowV3Record{}, fmt.Errorf("flow %q was not found", flowID)
+		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q was not found after create", definition.FlowID)
+	}
+	return record, result, nil
+}
+
+func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, error) {
+	existing, ok, err := s.flows.GetDefinition(flowID)
+	if err != nil {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+	}
+	if !ok {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q was not found", flowID)
 	}
 	assignment, err := s.flowV3AssignmentFromRequest(r, req, &existing.Assignment, flowID, existing.Revision+1)
 	if err != nil {
-		return flowV3Record{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	now := time.Now().UTC()
 	nextDueAt, _, err := flow.NextFire(assignment, now)
 	if err != nil {
-		return flowV3Record{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	updatedDefinition, err := s.flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt, CreatedAt: existing.CreatedAt})
 	if err != nil {
-		return flowV3Record{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	command := flow.AssignmentCommand{CommandID: newFlowCommandID(updatedDefinition.FlowID, updatedDefinition.Revision, flow.CommandUpdate), FlowID: updatedDefinition.FlowID, Revision: updatedDefinition.Revision, Action: flow.CommandUpdate, CreatedAt: now, Assignment: updatedDefinition.Assignment}
-	if _, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command); err != nil {
+	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
+	if err != nil {
 		if _, restoreErr := s.flows.PutDefinition(existing); restoreErr != nil {
-			return flowV3Record{}, fmt.Errorf("%w; restore previous flow definition: %v", err, restoreErr)
+			return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("%w; restore previous flow definition: %v", err, restoreErr)
 		}
-		return flowV3Record{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
-	return s.flowV3RecordForDefinition(r, updatedDefinition)
+	record, ok, err := s.flowV3Detail(r, updatedDefinition.FlowID)
+	if err != nil {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+	}
+	if !ok {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q was not found after update", updatedDefinition.FlowID)
+	}
+	return record, result, nil
+}
+
+func (s *Server) deleteFlowV3(r *http.Request, flowID string) (flowV3Record, flowAssignmentDeliverResult, error) {
+	definition, ok, err := s.flows.GetDefinition(flowID)
+	if err != nil {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+	}
+	if !ok {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q was not found", flowID)
+	}
+	deletedDefinition := definition
+	deletedDefinition.DeletedAt = time.Now().UTC()
+	command := flow.AssignmentCommand{CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandDelete), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandDelete, CreatedAt: deletedDefinition.DeletedAt, Assignment: definition.Assignment}
+	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
+	if err != nil {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+	}
+	if result.PendingSync {
+		if _, err := s.flows.PutDefinition(deletedDefinition); err != nil {
+			return flowV3Record{}, flowAssignmentDeliverResult{}, err
+		}
+		record, _, err := s.flowV3Detail(r, definition.FlowID)
+		return record, result, err
+	}
+	if err := s.flows.DeleteDefinition(definition.FlowID); err != nil {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+	}
+	if err := s.flows.DeleteAcceptedAssignment(definition.FlowID); err != nil {
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+	}
+	statuses, _ := s.flows.ListAssignmentStatuses(definition.FlowID, 100)
+	outbox, _ := s.flows.ListOutboxCommands("", 100)
+	history, _ := s.flows.ListMirroredRunSummaries(definition.FlowID, 100)
+	record, err := s.flowV3RecordForDefinition(r, deletedDefinition, statuses, history, flowV3OutboxForFlow(outbox, definition.FlowID))
+	return record, result, err
 }
 
 func (s *Server) flowV3Detail(r *http.Request, flowID string) (flowV3Record, bool, error) {
@@ -215,11 +411,35 @@ func (s *Server) flowV3Detail(r *http.Request, flowID string) (flowV3Record, boo
 	if err != nil || !ok {
 		return flowV3Record{}, ok, err
 	}
-	record, err := s.flowV3RecordForDefinition(r, definition)
+	statuses, err := s.flows.ListAssignmentStatuses(flowID, 100)
+	if err != nil {
+		return flowV3Record{}, false, err
+	}
+	history, err := s.flows.ListMirroredRunSummaries(flowID, 100)
+	if err != nil {
+		return flowV3Record{}, false, err
+	}
+	outbox, err := s.flows.ListOutboxCommands("", 100)
+	if err != nil {
+		return flowV3Record{}, false, err
+	}
+	record, err := s.flowV3RecordForDefinition(r, definition, statuses, history, flowV3OutboxForFlow(outbox, flowID))
 	return record, true, err
 }
 
-func (s *Server) flowV3RecordForDefinition(r *http.Request, definition pebblestore.FlowDefinitionRecord) (flowV3Record, error) {
+func (s *Server) flowV3Summary(r *http.Request, definition pebblestore.FlowDefinitionRecord) (flowV3Record, error) {
+	statuses, err := s.flows.ListAssignmentStatuses(definition.FlowID, 20)
+	if err != nil {
+		return flowV3Record{}, err
+	}
+	history, err := s.flows.ListMirroredRunSummaries(definition.FlowID, 20)
+	if err != nil {
+		return flowV3Record{}, err
+	}
+	return s.flowV3RecordForDefinition(r, definition, statuses, history, nil)
+}
+
+func (s *Server) flowV3RecordForDefinition(r *http.Request, definition pebblestore.FlowDefinitionRecord, statuses []pebblestore.FlowAssignmentStatusRecord, history []pebblestore.FlowRunSummaryRecord, outbox []pebblestore.FlowOutboxCommandRecord) (flowV3Record, error) {
 	targetDetail, err := s.flowV3TargetDetail(r, definition.Assignment.Target)
 	if err != nil {
 		return flowV3Record{}, err
@@ -228,9 +448,15 @@ func (s *Server) flowV3RecordForDefinition(r *http.Request, definition pebblesto
 	if err != nil {
 		return flowV3Record{}, err
 	}
+	var lastRun *pebblestore.FlowRunSummaryRecord
+	if len(history) > 0 {
+		copy := history[0]
+		lastRun = &copy
+	}
 	return flowV3Record{
 		Definition: flowV3Definition{
 			FlowID:        strings.TrimSpace(definition.Assignment.FlowID),
+			Revision:      firstNonZeroInt64(definition.Revision, definition.Assignment.Revision),
 			Name:          strings.TrimSpace(definition.Assignment.Name),
 			Enabled:       definition.Assignment.Enabled,
 			Target:        normalizeFlowTargetSelection(definition.Assignment.Target),
@@ -239,9 +465,19 @@ func (s *Server) flowV3RecordForDefinition(r *http.Request, definition pebblesto
 			Schedule:      normalizeManagementSchedule(definition.Assignment.Schedule),
 			CatchUpPolicy: flow.NormalizeCatchUpPolicy(definition.Assignment.CatchUpPolicy),
 			Intent:        normalizeManagementIntent(definition.Assignment.Intent),
+			NextDueAt:     definition.NextDueAt,
+			CreatedAt:     definition.CreatedAt,
+			UpdatedAt:     definition.UpdatedAt,
+			DeletedAt:     definition.DeletedAt,
 		},
-		TargetDetail: targetDetail,
-		AgentDetail:  agentDetail,
+		TargetDetail:       targetDetail,
+		AgentDetail:        agentDetail,
+		WorkspaceDetail:    flowV3WorkspaceDetailFromContext(definition.Assignment.Workspace),
+		AssignmentStatuses: append([]pebblestore.FlowAssignmentStatusRecord(nil), statuses...),
+		LastRun:            lastRun,
+		HistoryCount:       len(history),
+		History:            append([]pebblestore.FlowRunSummaryRecord(nil), history...),
+		Outbox:             append([]pebblestore.FlowOutboxCommandRecord(nil), outbox...),
 	}, nil
 }
 
@@ -447,4 +683,91 @@ func flowV3HasCatchUpPolicyInput(policy flow.CatchUpPolicy) bool {
 
 func flowV3HasIntentInput(intent flow.PromptIntent) bool {
 	return intent.Prompt != "" || intent.Mode != "" || len(intent.Tasks) > 0
+}
+
+func flowV3OutboxForFlow(records []pebblestore.FlowOutboxCommandRecord, flowID string) []pebblestore.FlowOutboxCommandRecord {
+	flowID = strings.TrimSpace(flowID)
+	out := make([]pebblestore.FlowOutboxCommandRecord, 0, len(records))
+	for _, record := range records {
+		if strings.EqualFold(strings.TrimSpace(record.FlowID), flowID) {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func flowV3RunNowResultView(result flowAssignmentDeliverResult) flowV3RunNowView {
+	return flowV3RunNowView{CommandID: strings.TrimSpace(result.Outbox.CommandID), PendingSync: result.PendingSync, Reason: firstNonEmpty(strings.TrimSpace(result.Ack.Reason), strings.TrimSpace(result.AssignmentState.Reason), strings.TrimSpace(result.Outbox.LastError))}
+}
+
+func flowV3WorkspaceDetailFromContext(workspace flow.WorkspaceContext) *flowV3WorkspaceDetail {
+	workspace = normalizeManagementWorkspace(workspace)
+	if workspace.WorkspacePath == "" && workspace.HostWorkspacePath == "" && workspace.RuntimeWorkspacePath == "" && workspace.CWD == "" {
+		return nil
+	}
+	return &flowV3WorkspaceDetail{WorkspacePath: workspace.WorkspacePath, HostWorkspacePath: workspace.HostWorkspacePath, RuntimeWorkspacePath: workspace.RuntimeWorkspacePath, CWD: workspace.CWD, WorktreeMode: workspace.WorktreeMode}
+}
+
+func positiveQueryLimit(r *http.Request, defaultLimit int) (int, error) {
+	limit := defaultLimit
+	if r != nil && r.URL != nil {
+		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed <= 0 {
+				return 0, errors.New("limit must be a positive integer")
+			}
+			limit = parsed
+		}
+	}
+	return limit, nil
+}
+
+func normalizeManagementAgentSelection(agent flow.AgentSelection) flow.AgentSelection {
+	agent.ProfileName = strings.TrimSpace(agent.ProfileName)
+	agent.ProfileMode = flow.NormalizeAgentProfileMode(agent.ProfileMode)
+	return flow.NormalizeAgentSelection(agent)
+}
+
+func normalizeManagementWorkspace(workspace flow.WorkspaceContext) flow.WorkspaceContext {
+	workspace.WorkspacePath = strings.TrimSpace(workspace.WorkspacePath)
+	workspace.HostWorkspacePath = strings.TrimSpace(workspace.HostWorkspacePath)
+	workspace.RuntimeWorkspacePath = strings.TrimSpace(workspace.RuntimeWorkspacePath)
+	workspace.CWD = strings.TrimSpace(workspace.CWD)
+	workspace.WorktreeMode = strings.TrimSpace(workspace.WorktreeMode)
+	return workspace
+}
+
+func normalizeManagementSchedule(schedule flow.ScheduleSpec) flow.ScheduleSpec {
+	schedule.Cadence = flow.NormalizeCadence(schedule.Cadence)
+	schedule.Time = strings.TrimSpace(schedule.Time)
+	schedule.Weekday = strings.TrimSpace(schedule.Weekday)
+	schedule.Timezone = strings.TrimSpace(schedule.Timezone)
+	return schedule
+}
+
+func normalizeManagementIntent(intent flow.PromptIntent) flow.PromptIntent {
+	intent.Prompt = strings.TrimSpace(intent.Prompt)
+	intent.Mode = strings.TrimSpace(intent.Mode)
+	for index := range intent.Tasks {
+		intent.Tasks[index].ID = strings.TrimSpace(intent.Tasks[index].ID)
+		intent.Tasks[index].Title = strings.TrimSpace(intent.Tasks[index].Title)
+		intent.Tasks[index].Detail = strings.TrimSpace(intent.Tasks[index].Detail)
+		intent.Tasks[index].Action = strings.TrimSpace(intent.Tasks[index].Action)
+	}
+	return intent
+}
+
+func newFlowCommandID(flowID string, revision int64, action flow.CommandAction) string {
+	return fmt.Sprintf("%s-%d-%s-%s", strings.TrimSpace(flowID), revision, strings.TrimSpace(string(action)), randomHex(6))
+}
+
+func randomHex(n int) string {
+	if n <= 0 {
+		n = 8
+	}
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
