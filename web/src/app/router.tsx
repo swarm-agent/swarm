@@ -4,6 +4,8 @@ import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-
 const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
 const DesktopAppPage = lazyRouteComponent(() => import('../features/desktop/layout/desktop-app-page'), 'DesktopAppPage')
 const DesktopSettingsPage = lazyRouteComponent(() => import('../features/desktop/settings/components/desktop-settings-page'), 'DesktopSettingsPage')
+const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/swarm-tools-page'), 'SwarmToolsPage')
+const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
 const FlowRedirectRoute = lazyRouteComponent(() => import('./flow-redirect-route'), 'FlowRedirectRoute')
 
 function validateWorkspaceParams(params: Record<string, unknown>): { workspaceSlug: string } {
@@ -39,6 +41,18 @@ const settingsRoute = createRoute({
   component: DesktopSettingsPage,
 })
 
+const toolsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/tools',
+  component: SwarmToolsPage,
+})
+
+const videoToolRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/tools/video',
+  component: VideoToolPage,
+})
+
 const flowRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/flow',
@@ -67,7 +81,32 @@ const workspaceSettingsRoute = createRoute({
   component: DesktopSettingsPage,
 })
 
-const routeTree = rootRoute.addChildren([indexRoute, settingsRoute, flowRoute, workspaceRoute, workspaceSessionRoute, workspaceSettingsRoute])
+const workspaceToolsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/tools',
+  parseParams: validateWorkspaceParams,
+  component: SwarmToolsPage,
+})
+
+const workspaceVideoToolRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/tools/video',
+  parseParams: validateWorkspaceParams,
+  component: VideoToolPage,
+})
+
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  settingsRoute,
+  toolsRoute,
+  videoToolRoute,
+  flowRoute,
+  workspaceRoute,
+  workspaceSessionRoute,
+  workspaceSettingsRoute,
+  workspaceToolsRoute,
+  workspaceVideoToolRoute,
+])
 
 export const router = createRouter({
   routeTree,

@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, ListChecks, LoaderCircle, Menu, Plus, RefreshCcw, Settings, X, XCircle } from 'lucide-react'
+import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, ListChecks, LoaderCircle, Menu, Plus, RefreshCcw, Settings, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -2041,6 +2041,21 @@ export function DesktopAppPage() {
     handleOpenSettingsTab('swarm')
   }, [handleOpenSettingsTab])
 
+  const handleOpenTools = useCallback(() => {
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
+    if (workspacePath) {
+      const workspaceSlug = workspaceSlugByPath.get(workspacePath)
+        ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: selectedWorkspace?.workspaceName ?? '' })
+      void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug } })
+      return
+    }
+    void navigate({ to: '/tools' })
+  }, [navigate, routeWorkspaceSlug, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, workspaceSlugByPath])
+
   useEffect(() => {
     if (!updateAvailable) {
       return
@@ -2560,7 +2575,15 @@ export function DesktopAppPage() {
                     {workspaceMenuOpen ? <ChevronDown size={14} strokeWidth={1.8} className="shrink-0 rotate-180" /> : <ChevronDown size={14} strokeWidth={1.8} className="shrink-0" />}
                   </button>
                   <SidebarActionRail>
-                    <SidebarActionRailSpacer />
+                    <button
+                      type="button"
+                      className={SIDEBAR_ACTION_BUTTON_CLASS}
+                      onClick={handleOpenTools}
+                      aria-label="Open Swarm Tools"
+                      title="Tools"
+                    >
+                      <LayoutGrid size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
                     <button
                       type="button"
                       className={SIDEBAR_ACTION_BUTTON_CLASS}
