@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
-	runruntime "swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -352,12 +351,13 @@ func (s *Server) assignmentFromManagementRequest(r *http.Request, req flowManage
 	if assignment.Target.SwarmID == "" && assignment.Target.Kind == "" && assignment.Target.Name == "" && assignment.Target.DeploymentID == "" {
 		assignment.Target = currentFlowTargetSelection(r)
 	}
-	if assignment.Agent.TargetKind == "" {
-		assignment.Agent.TargetKind = "background"
+	if assignment.Agent.ProfileName == "" {
+		assignment.Agent.ProfileName = "memory"
 	}
-	if assignment.Agent.TargetName == "" {
-		assignment.Agent.TargetName = "memory"
+	if assignment.Agent.ProfileMode == "" {
+		assignment.Agent.ProfileMode = "background"
 	}
+	assignment.Agent = flow.NormalizeAgentSelection(assignment.Agent)
 	if assignment.Workspace.WorkspacePath == "" || assignment.Workspace.WorkspacePath == "." {
 		if s.workspace != nil {
 			if current, ok, err := s.workspace.CurrentBinding(); err != nil {
@@ -462,19 +462,9 @@ func currentFlowTargetSelection(r *http.Request) flow.TargetSelection {
 }
 
 func normalizeManagementAgentSelection(agent flow.AgentSelection) flow.AgentSelection {
-	agent.TargetKind = normalizeFlowAgentTargetKind(agent.TargetKind)
-	agent.TargetName = strings.TrimSpace(agent.TargetName)
-	return agent
-}
-
-func normalizeFlowAgentTargetKind(raw string) string {
-	value := strings.ToLower(strings.TrimSpace(raw))
-	switch value {
-	case "primary":
-		return runruntime.RunTargetKindAgent
-	default:
-		return runruntime.NormalizeRunTargetKind(value)
-	}
+	agent.ProfileName = strings.TrimSpace(agent.ProfileName)
+	agent.ProfileMode = flow.NormalizeAgentProfileMode(agent.ProfileMode)
+	return flow.NormalizeAgentSelection(agent)
 }
 
 func normalizeManagementWorkspace(workspace flow.WorkspaceContext) flow.WorkspaceContext {

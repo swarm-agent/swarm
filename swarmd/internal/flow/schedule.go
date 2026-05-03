@@ -98,8 +98,15 @@ func ValidateAssignment(assignment Assignment) error {
 	if assignment.Revision <= 0 {
 		return errors.New("revision is required")
 	}
-	if strings.TrimSpace(assignment.Agent.TargetKind) == "" || strings.TrimSpace(assignment.Agent.TargetName) == "" {
-		return errors.New("agent target_kind and target_name are required")
+	assignment.Agent = NormalizeAgentSelection(assignment.Agent)
+	if strings.TrimSpace(assignment.Agent.ProfileName) == "" {
+		return errors.New("agent profile_name is required")
+	}
+	if strings.TrimSpace(assignment.Agent.ProfileMode) == "" {
+		return errors.New("agent profile_mode is required")
+	}
+	if assignment.Agent.TargetKind == "" || assignment.Agent.TargetName == "" {
+		return errors.New("agent profile_mode must resolve to a runtime target")
 	}
 	if strings.TrimSpace(assignment.Intent.Prompt) == "" && len(assignment.Intent.Tasks) == 0 {
 		return errors.New("flow intent prompt or tasks are required")

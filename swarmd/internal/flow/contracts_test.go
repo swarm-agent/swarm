@@ -69,3 +69,36 @@ func TestFlowAssignmentDoesNotExposeRequestTimeToolOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentSelectionMarshalsDurableProfileFieldsOnly(t *testing.T) {
+	agent := NormalizeAgentSelection(AgentSelection{ProfileName: " swarm ", ProfileMode: "primary"})
+	payload, err := agent.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	if string(payload) != `{"profile_name":"swarm","profile_mode":"primary"}` {
+		t.Fatalf("marshal payload = %s", payload)
+	}
+}
+
+func TestAgentSelectionRejectsRuntimeFieldsOnUnmarshal(t *testing.T) {
+	for _, body := range []string{
+		`{"profile_name":"swarm","profile_mode":"primary","target_kind":"agent"}`,
+		`{"profile_name":"swarm","profile_mode":"primary","target_name":"swarm"}`,
+	} {
+		var agent AgentSelection
+		if err := agent.UnmarshalJSON([]byte(body)); err == nil {
+			t.Fatalf("UnmarshalJSON(%s) succeeded, want error", body)
+		}
+	}
+}
+
+func TestNormalizeAgentSelectionDerivesRuntimeFields(t *testing.T) {
+	agent := NormalizeAgentSelection(AgentSelection{ProfileName: " memory ", ProfileMode: "subagent"})
+	if agent.ProfileName != "memory" || agent.ProfileMode != "subagent" {
+		t.Fatalf("normalized durable agent = %+v", agent)
+	}
+	if agent.TargetKind != "subagent" || agent.TargetName != "memory" {
+		t.Fatalf("derived runtime agent = %+v", agent)
+	}
+}

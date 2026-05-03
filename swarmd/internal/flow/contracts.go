@@ -2,7 +2,9 @@ package flow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -16,8 +18,8 @@ import (
 //   - later controller downtime must not prevent accepted target-local schedules from firing.
 //
 // These interfaces intentionally do not expose request-time tool overrides. A Flow
-// selects a saved agent profile by TargetKind/TargetName, and the target daemon must
-// resolve that saved profile locally when it launches the run.
+// durably selects a saved agent profile by profile_name/profile_mode, and runtime
+// target_kind/target_name are derived from that durable selector.
 
 type CommandAction string
 
@@ -84,11 +86,52 @@ type TargetStatusProvider interface {
 }
 
 type AgentSelection struct {
-	// TargetKind and TargetName are forwarded to the target daemon's run service.
-	// For saved background profiles this is target_kind="background" and the
-	// saved profile name. Do not copy or store profile execution settings here.
-	TargetKind string `json:"target_kind"`
-	TargetName string `json:"target_name"`
+	ProfileName string `json:"profile_name"`
+	ProfileMode string `json:"profile_mode"`
+
+	// Runtime launch-only fields derived from ProfileName/ProfileMode.
+	TargetKind string `json:"-"`
+	TargetName string `json:"-"`
+}
+
+func (a AgentSelection) MarshalJSON() ([]byte, error) {
+	type durableAgentSelection struct {
+		ProfileName string `json:"profile_name"`
+		ProfileMode string `json:"profile_mode"`
+	}
+	return json.Marshal(durableAgentSelection{
+		ProfileName: strings.TrimSpace(a.ProfileName),
+		ProfileMode: NormalizeAgentProfileMode(a.ProfileMode),
+	})
+}
+
+func (a *AgentSelection) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for key := range raw {
+		switch key {
+		case "profile_name", "profile_mode":
+		case "target_kind", "target_name":
+			return fmt.Errorf("agent %s is runtime-only and must not be stored; use profile_name/profile_mode", key)
+		default:
+			return fmt.Errorf("json: unknown field %q", key)
+		}
+	}
+	type durableAgentSelection struct {
+		ProfileName string `json:"profile_name"`
+		ProfileMode string `json:"profile_mode"`
+	}
+	var decoded durableAgentSelection
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*a = NormalizeAgentSelection(AgentSelection{
+		ProfileName: decoded.ProfileName,
+		ProfileMode: decoded.ProfileMode,
+	})
+	return nil
 }
 
 type WorkspaceContext struct {
@@ -230,6 +273,40 @@ type RunStart struct {
 // from the target's saved agent profile contract.
 type FlowRunner interface {
 	RunAcceptedFlow(ctx context.Context, assignment AcceptedAssignment, request RunRequest) (RunStart, error)
+}
+
+func NormalizeAgentProfileMode(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	value = strings.ReplaceAll(value, "-", "_")
+	switch value {
+	case "agent":
+		return "primary"
+	case "primary", "subagent", "background":
+		return value
+	default:
+		return value
+	}
+}
+
+func RuntimeTargetKindForProfileMode(profileMode string) string {
+	switch NormalizeAgentProfileMode(profileMode) {
+	case "primary":
+		return "agent"
+	case "subagent":
+		return "subagent"
+	case "background":
+		return "background"
+	default:
+		return ""
+	}
+}
+
+func NormalizeAgentSelection(agent AgentSelection) AgentSelection {
+	agent.ProfileName = strings.TrimSpace(agent.ProfileName)
+	agent.ProfileMode = NormalizeAgentProfileMode(agent.ProfileMode)
+	agent.TargetKind = RuntimeTargetKindForProfileMode(agent.ProfileMode)
+	agent.TargetName = agent.ProfileName
+	return agent
 }
 
 func firstNonEmpty(values ...string) string {

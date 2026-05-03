@@ -19,7 +19,7 @@ func TestFlowManagementCreateListHistoryAndStatus(t *testing.T) {
 		Name:    "API flow",
 		Enabled: boolPtr(true),
 		Target:  flow.TargetSelection{Kind: "self", Name: "host-swarm"},
-		Agent:   flow.AgentSelection{TargetKind: "background", TargetName: "memory"},
+		Agent:   flow.AgentSelection{ProfileName: "memory", ProfileMode: "background"},
 		Workspace: flow.WorkspaceContext{
 			WorkspacePath: t.TempDir(),
 		},
@@ -108,7 +108,7 @@ func TestFlowManagementCreateNormalizesPrimaryAgentAlias(t *testing.T) {
 		Name:    "Primary alias flow",
 		Enabled: boolPtr(false),
 		Target:  flow.TargetSelection{Kind: "self"},
-		Agent:   flow.AgentSelection{TargetKind: "primary", TargetName: "swarm"},
+		Agent:   flow.AgentSelection{ProfileName: "swarm", ProfileMode: "primary"},
 		Workspace: flow.WorkspaceContext{
 			WorkspacePath: t.TempDir(),
 		},
@@ -139,7 +139,7 @@ func TestFlowManagementRunNowAndDelete(t *testing.T) {
 	runner := &fakeFlowRunService{}
 	server.runner = runner
 	assignment := testAPIFlowAssignment("flow-api-run", 1)
-	assignment.Agent = flow.AgentSelection{TargetKind: "subagent", TargetName: "flow-test"}
+	assignment.Agent = flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"}
 	assignment.Workspace.WorkspacePath = t.TempDir()
 	definition, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment})
 	if err != nil {

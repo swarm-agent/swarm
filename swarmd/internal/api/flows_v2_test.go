@@ -23,7 +23,7 @@ func TestFlowsV2HostOnlyCreateListRunNowAndDelete(t *testing.T) {
 		Name:          "Host V2 flow",
 		Enabled:       boolPtr(true),
 		Target:        flow.TargetSelection{Kind: "self", Name: "host-swarm"},
-		Agent:         flow.AgentSelection{TargetKind: "subagent", TargetName: "flow-test"},
+		Agent:         flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
 		Workspace:     flow.WorkspaceContext{WorkspacePath: workspacePath, HostWorkspacePath: workspacePath, CWD: workspacePath},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
@@ -115,7 +115,7 @@ func TestFlowsV2RejectsNonHostTargets(t *testing.T) {
 		FlowID:        "flow-v2-remote",
 		Name:          "Remote V2 flow",
 		Target:        flow.TargetSelection{SwarmID: "not-host", Kind: "remote", Name: "other"},
-		Agent:         flow.AgentSelection{TargetKind: "background", TargetName: "memory"},
+		Agent:         flow.AgentSelection{ProfileName: "memory", ProfileMode: "background"},
 		Workspace:     flow.WorkspaceContext{WorkspacePath: t.TempDir()},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
@@ -133,16 +133,17 @@ func TestFlowsV2RejectsNonHostTargets(t *testing.T) {
 	}
 }
 
-func TestFlowsV2AllowsAnyEnabledSavedProfileForAnyAgentKind(t *testing.T) {
+func TestFlowsV2RequiresConsistentSavedProfileSelection(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		agent      flow.AgentSelection
-		wantMode   string
-		wantRunner bool
+		name           string
+		agent          flow.AgentSelection
+		wantCreateCode int
+		wantMode       string
+		wantRunner     bool
 	}{
-		{name: "subagent profile as background", agent: flow.AgentSelection{TargetKind: "background", TargetName: "memory"}, wantMode: "subagent", wantRunner: true},
-		{name: "subagent profile as primary", agent: flow.AgentSelection{TargetKind: "agent", TargetName: "memory"}, wantMode: "subagent"},
-		{name: "primary profile as background", agent: flow.AgentSelection{TargetKind: "background", TargetName: "swarm"}, wantMode: "primary"},
+		{name: "subagent profile selector", agent: flow.AgentSelection{ProfileName: "memory", ProfileMode: "subagent"}, wantCreateCode: http.StatusCreated, wantMode: "subagent", wantRunner: true},
+		{name: "primary profile selector", agent: flow.AgentSelection{ProfileName: "swarm", ProfileMode: "primary"}, wantCreateCode: http.StatusCreated, wantMode: "primary", wantRunner: true},
+		{name: "mismatched profile mode is rejected", agent: flow.AgentSelection{ProfileName: "memory", ProfileMode: "background"}, wantCreateCode: http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := newFlowPeerTestServer(t)
@@ -152,8 +153,8 @@ func TestFlowsV2AllowsAnyEnabledSavedProfileForAnyAgentKind(t *testing.T) {
 			server.runner = runner
 			workspacePath := t.TempDir()
 			req := flowV2CreateRequest{
-				FlowID:        "flow-v2-any-agent-kind",
-				Name:          "Any saved profile kind",
+				FlowID:        "flow-v2-saved-profile",
+				Name:          "Saved profile selector",
 				Target:        flow.TargetSelection{Kind: "self"},
 				Agent:         tc.agent,
 				Workspace:     flow.WorkspaceContext{WorkspacePath: workspacePath},
@@ -165,23 +166,27 @@ func TestFlowsV2AllowsAnyEnabledSavedProfileForAnyAgentKind(t *testing.T) {
 			reqHTTP := httptest.NewRequest(http.MethodPost, "/v2/flows", jsonReader(t, req))
 			reqHTTP.Header.Set("Content-Type", "application/json")
 			server.Handler().ServeHTTP(rec, reqHTTP)
-			if rec.Code != http.StatusCreated {
-				t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+			if rec.Code != tc.wantCreateCode {
+				t.Fatalf("create status = %d want %d body=%s", rec.Code, tc.wantCreateCode, rec.Body.String())
+			}
+			if tc.wantCreateCode != http.StatusCreated {
+				return
 			}
 			var payload flowV2MutationResponse
 			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 				t.Fatalf("decode create: %v", err)
 			}
-			if payload.Flow.AgentDetail == nil || payload.Flow.AgentDetail.Name != tc.agent.TargetName || payload.Flow.AgentDetail.Mode != tc.wantMode {
+			if payload.Flow.AgentDetail == nil || payload.Flow.AgentDetail.Name != tc.agent.ProfileName || payload.Flow.AgentDetail.Mode != tc.wantMode {
 				t.Fatalf("agent detail = %+v", payload.Flow.AgentDetail)
 			}
 			if tc.wantRunner {
 				runRec := httptest.NewRecorder()
-				server.Handler().ServeHTTP(runRec, httptest.NewRequest(http.MethodPost, "/v2/flows/flow-v2-any-agent-kind/run-now", nil))
+				server.Handler().ServeHTTP(runRec, httptest.NewRequest(http.MethodPost, "/v2/flows/flow-v2-saved-profile/run-now", nil))
 				if runRec.Code != http.StatusAccepted {
 					t.Fatalf("run-now status = %d body=%s", runRec.Code, runRec.Body.String())
 				}
-				if runner.lastRequest.TargetKind != tc.agent.TargetKind || runner.lastRequest.TargetName != tc.agent.TargetName {
+				normalizedAgent := flow.NormalizeAgentSelection(tc.agent)
+				if runner.lastRequest.TargetKind != normalizedAgent.TargetKind || runner.lastRequest.TargetName != normalizedAgent.TargetName {
 					t.Fatalf("runner request = %+v", runner.lastRequest)
 				}
 			}
@@ -195,7 +200,7 @@ func TestFlowsV2RejectsUnknownAgentProfile(t *testing.T) {
 		FlowID:        "flow-v2-missing-agent",
 		Name:          "Missing agent V2 flow",
 		Target:        flow.TargetSelection{Kind: "self"},
-		Agent:         flow.AgentSelection{TargetKind: "background", TargetName: "does-not-exist"},
+		Agent:         flow.AgentSelection{ProfileName: "does-not-exist", ProfileMode: "background"},
 		Workspace:     flow.WorkspaceContext{WorkspacePath: t.TempDir()},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},

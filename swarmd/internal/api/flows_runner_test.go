@@ -30,7 +30,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 	}{
 		{
 			name:           "primary swarm agent",
-			agent:          flow.AgentSelection{TargetKind: runruntime.RunTargetKindAgent, TargetName: "swarm"},
+			agent:          flow.AgentSelection{ProfileName: "swarm", ProfileMode: "primary"},
 			expectedKind:   runruntime.RunTargetKindAgent,
 			expectedName:   "swarm",
 			expectedAgent:  "swarm",
@@ -38,7 +38,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 		},
 		{
 			name:           "saved subagent",
-			agent:          flow.AgentSelection{TargetKind: runruntime.RunTargetKindSubagent, TargetName: "flow-test"},
+			agent:          flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
 			expectedKind:   runruntime.RunTargetKindSubagent,
 			expectedName:   "flow-test",
 			expectedAgent:  "flow-test",
@@ -46,7 +46,7 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 		},
 		{
 			name:           "memory background alias",
-			agent:          flow.AgentSelection{TargetKind: runruntime.RunTargetKindBackground, TargetName: "memory"},
+			agent:          flow.AgentSelection{ProfileName: "memory", ProfileMode: "background"},
 			expectedKind:   runruntime.RunTargetKindBackground,
 			expectedName:   "memory",
 			expectedAgent:  "memory",
@@ -116,7 +116,8 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if session.Metadata["swarm_target_name"] != assignment.Target.Name || session.Metadata["target_display_name"] != assignment.Target.Name || session.Metadata["swarm_target_kind"] != assignment.Target.Kind || session.Metadata["swarm_target_swarm_id"] != assignment.Target.SwarmID {
 				t.Fatalf("session sidebar target metadata = %+v", session.Metadata)
 			}
-			if session.Metadata["flow_agent_kind"] != assignment.Agent.TargetKind || session.Metadata["flow_agent_name"] != assignment.Agent.TargetName {
+			normalizedAgent := flow.NormalizeAgentSelection(assignment.Agent)
+			if session.Metadata["flow_agent_kind"] != normalizedAgent.TargetKind || session.Metadata["flow_agent_name"] != normalizedAgent.TargetName {
 				t.Fatalf("session flow agent metadata = %+v", session.Metadata)
 			}
 			if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask || session.Metadata["source"] != "flow" {
@@ -164,8 +165,8 @@ func TestTargetLocalFlowRunnerHostedSessionStoresRuntimeWorkspace(t *testing.T) 
 	assignment := testAPIFlowAssignment("flow-hosted-runtime", 1)
 	assignment.Target = flow.TargetSelection{SwarmID: "child-swarm", Kind: "remote", DeploymentID: "remote-1", Name: "swarm child"}
 	assignment.Agent = flow.AgentSelection{
-		TargetKind: runruntime.RunTargetKindBackground,
-		TargetName: "memory",
+		ProfileName: "memory",
+		ProfileMode: "background",
 	}
 	assignment.Workspace = flow.WorkspaceContext{
 		WorkspacePath:        "/host/workspace",
@@ -233,7 +234,7 @@ func TestRunAcceptedFlowNowUsesTargetLocalAcceptedAssignment(t *testing.T) {
 	runner := &fakeFlowRunService{}
 	server.runner = runner
 	assignment := testAPIFlowAssignment("flow-run-now", 5)
-	assignment.Agent = flow.AgentSelection{TargetKind: runruntime.RunTargetKindSubagent, TargetName: "flow-test"}
+	assignment.Agent = flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"}
 	assignment.Workspace.WorkspacePath = t.TempDir()
 	assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
 	if _, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment}); err != nil {
@@ -247,7 +248,8 @@ func TestRunAcceptedFlowNowUsesTargetLocalAcceptedAssignment(t *testing.T) {
 	if start.FlowID != assignment.FlowID || start.Revision != assignment.Revision {
 		t.Fatalf("start = %+v", start)
 	}
-	if runner.lastRequest.TargetKind != assignment.Agent.TargetKind || runner.lastRequest.TargetName != assignment.Agent.TargetName {
+	normalizedAgent := flow.NormalizeAgentSelection(assignment.Agent)
+	if runner.lastRequest.TargetKind != normalizedAgent.TargetKind || runner.lastRequest.TargetName != normalizedAgent.TargetName {
 		t.Fatalf("run request = %+v", runner.lastRequest)
 	}
 	session, ok, err := server.sessions.GetSession(start.SessionID)
@@ -277,7 +279,7 @@ func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
 	runner := &fakeFlowRunService{started: started, block: unblock}
 	server.runner = runner
 	assignment := testAPIFlowAssignment("flow-run-now-replay", 7)
-	assignment.Agent = flow.AgentSelection{TargetKind: runruntime.RunTargetKindSubagent, TargetName: "flow-test"}
+	assignment.Agent = flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"}
 	assignment.Workspace.WorkspacePath = t.TempDir()
 	assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
 	accepted, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment})

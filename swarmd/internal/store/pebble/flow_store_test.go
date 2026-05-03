@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,8 +29,11 @@ func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
+	if loaded.Assignment.Agent.ProfileName != "memory" || loaded.Assignment.Agent.ProfileMode != "background" {
+		t.Fatalf("loaded durable agent = %+v", loaded.Assignment.Agent)
+	}
 	if loaded.Assignment.Agent.TargetKind != "background" || loaded.Assignment.Agent.TargetName != "memory" {
-		t.Fatalf("loaded agent = %+v", loaded.Assignment.Agent)
+		t.Fatalf("loaded derived agent = %+v", loaded.Assignment.Agent)
 	}
 
 	if _, err := flows.PutAssignmentStatus(FlowAssignmentStatusRecord{
@@ -141,6 +145,48 @@ func TestFlowSchedulerStoreListsAcceptedDueAndSchedulesNext(t *testing.T) {
 	}
 	if len(nextDue) != 1 || !nextDue[0].DueAt.Equal(time.Date(2025, 1, 3, 9, 0, 0, 0, time.UTC)) {
 		t.Fatalf("next due = %+v", nextDue)
+	}
+}
+
+func TestFlowStoreRejectsRuntimeAgentFieldsInDefinitionJSON(t *testing.T) {
+	store := openFlowTestStore(t)
+	flows := NewFlowStore(store)
+	assignment := testFlowAssignment("flow-runtime-agent", 1)
+	assignment.Agent = flow.AgentSelection{ProfileName: "memory", ProfileMode: "background", TargetKind: "background", TargetName: "memory"}
+
+	definition, err := flows.PutDefinition(FlowDefinitionRecord{Assignment: assignment})
+	if err != nil {
+		t.Fatalf("put definition: %v", err)
+	}
+	loaded, ok, err := flows.GetDefinition(definition.FlowID)
+	if err != nil || !ok {
+		t.Fatalf("get definition ok=%v err=%v", ok, err)
+	}
+	if loaded.Assignment.Agent.ProfileName != "memory" || loaded.Assignment.Agent.ProfileMode != "background" {
+		t.Fatalf("loaded durable agent = %+v", loaded.Assignment.Agent)
+	}
+	if loaded.Assignment.Agent.TargetKind != "background" || loaded.Assignment.Agent.TargetName != "memory" {
+		t.Fatalf("loaded derived agent = %+v", loaded.Assignment.Agent)
+	}
+	payload, ok, err := store.GetBytes(KeyFlowDefinition(definition.FlowID))
+	if err != nil || !ok {
+		t.Fatalf("get raw definition ok=%v err=%v", ok, err)
+	}
+	if string(payload) == "" {
+		t.Fatal("raw definition payload was empty")
+	}
+	if strings.Contains(string(payload), "target_kind") || strings.Contains(string(payload), "target_name") {
+		t.Fatalf("raw definition leaked runtime agent fields: %s", payload)
+	}
+	if !strings.Contains(string(payload), `"profile_name":"memory"`) || !strings.Contains(string(payload), `"profile_mode":"background"`) {
+		t.Fatalf("raw definition missing durable profile selector: %s", payload)
+	}
+	badJSON := []byte(`{"flow_id":"bad-flow","revision":1,"assignment":{"flow_id":"bad-flow","revision":1,"name":"Bad","enabled":true,"target":{"swarm_id":"target-1","kind":"remote"},"agent":{"target_kind":"background","target_name":"memory"},"workspace":{"workspace_path":"workspace/project"},"schedule":{"cadence":"on_demand","timezone":"UTC"},"catch_up_policy":{"mode":"once"},"intent":{"prompt":"x"}}}`)
+	if err := store.PutBytes(KeyFlowDefinition("bad-flow"), badJSON); err != nil {
+		t.Fatalf("put raw bad definition: %v", err)
+	}
+	if _, _, err := flows.GetDefinition("bad-flow"); err == nil {
+		t.Fatal("GetDefinition accepted runtime-only agent fields from durable JSON")
 	}
 }
 
@@ -272,7 +318,7 @@ func testFlowAssignment(flowID string, revision int64) flow.Assignment {
 			Kind:    "remote",
 			Name:    "Laptop",
 		},
-		Agent: flow.AgentSelection{TargetKind: "background", TargetName: "memory"},
+		Agent: flow.AgentSelection{ProfileName: "memory", ProfileMode: "background"},
 		Workspace: flow.WorkspaceContext{
 			WorkspacePath: filepath.Join("workspace", "project"),
 		},

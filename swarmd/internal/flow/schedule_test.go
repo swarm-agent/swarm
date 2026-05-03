@@ -148,7 +148,7 @@ func testScheduleAssignment(schedule ScheduleSpec) Assignment {
 		Revision: 1,
 		Name:     "Schedule test",
 		Enabled:  true,
-		Agent:    AgentSelection{TargetKind: "background", TargetName: "memory"},
+		Agent:    AgentSelection{ProfileName: "memory", ProfileMode: "background"},
 		Schedule: schedule,
 		Intent:   PromptIntent{Prompt: "Run schedule test"},
 	}

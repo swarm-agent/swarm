@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
-	runruntime "swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -364,31 +363,34 @@ func (s *Server) flowV2AgentDetail(agent flow.AgentSelection) (*pebblestore.Agen
 		return nil, errors.New("agent service not configured")
 	}
 	agent = normalizeManagementAgentSelection(agent)
-	if agent.TargetKind == "" {
-		agent.TargetKind = "background"
+	if agent.ProfileMode == "" {
+		agent.ProfileMode = "background"
 	}
-	if agent.TargetName == "" {
-		return nil, errors.New("agent target_name is required")
+	agent = flow.NormalizeAgentSelection(agent)
+	if agent.ProfileName == "" {
+		return nil, errors.New("agent profile_name is required")
 	}
 	state, err := s.agents.ListState(2000)
 	if err != nil {
 		return nil, err
 	}
 	for _, profile := range state.Profiles {
-		if strings.EqualFold(strings.TrimSpace(profile.Name), agent.TargetName) && flowV2ProfileMatchesTargetKind(profile, agent.TargetKind) {
+		if strings.EqualFold(strings.TrimSpace(profile.Name), agent.ProfileName) && flowV2ProfileMatchesSelection(profile, agent) {
 			copy := profile
 			return &copy, nil
 		}
 	}
-	return nil, fmt.Errorf("saved agent profile %q with kind %q was not found", agent.TargetName, agent.TargetKind)
+	return nil, fmt.Errorf("saved agent profile %q with mode %q was not found", agent.ProfileName, agent.ProfileMode)
 }
 
-func flowV2ProfileMatchesTargetKind(profile pebblestore.AgentProfile, targetKind string) bool {
-	kind := normalizeFlowAgentTargetKind(targetKind)
-	if kind != runruntime.RunTargetKindAgent && kind != runruntime.RunTargetKindSubagent && kind != runruntime.RunTargetKindBackground {
+func flowV2ProfileMatchesSelection(profile pebblestore.AgentProfile, agent flow.AgentSelection) bool {
+	if !profile.Enabled {
 		return false
 	}
-	return profile.Enabled
+	if normalizedMode := flow.NormalizeAgentProfileMode(profile.Mode); normalizedMode != "" && normalizedMode != flow.NormalizeAgentProfileMode(agent.ProfileMode) {
+		return false
+	}
+	return true
 }
 
 func (s *Server) flowV2Summary(r *http.Request, definition pebblestore.FlowDefinitionRecord) (flowV2Summary, error) {

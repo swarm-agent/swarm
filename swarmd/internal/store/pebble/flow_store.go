@@ -130,6 +130,9 @@ func (s *FlowStore) PutDefinition(record FlowDefinitionRecord) (FlowDefinitionRe
 	if record.Revision <= 0 {
 		return FlowDefinitionRecord{}, errors.New("flow revision is required")
 	}
+	if err := flow.ValidateAssignment(record.Assignment); err != nil {
+		return FlowDefinitionRecord{}, err
+	}
 	now := time.Now().UTC()
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = now
@@ -982,8 +985,7 @@ func normalizeFlowAssignment(record flow.Assignment) flow.Assignment {
 	record.Target.Kind = strings.TrimSpace(record.Target.Kind)
 	record.Target.DeploymentID = strings.TrimSpace(record.Target.DeploymentID)
 	record.Target.Name = strings.TrimSpace(record.Target.Name)
-	record.Agent.TargetKind = strings.TrimSpace(record.Agent.TargetKind)
-	record.Agent.TargetName = strings.TrimSpace(record.Agent.TargetName)
+	record.Agent = flow.NormalizeAgentSelection(record.Agent)
 	record.Workspace.WorkspacePath = strings.TrimSpace(record.Workspace.WorkspacePath)
 	record.Workspace.HostWorkspacePath = strings.TrimSpace(record.Workspace.HostWorkspacePath)
 	record.Workspace.RuntimeWorkspacePath = strings.TrimSpace(record.Workspace.RuntimeWorkspacePath)

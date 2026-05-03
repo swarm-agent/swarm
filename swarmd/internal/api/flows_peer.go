@@ -50,12 +50,9 @@ func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
 	}
 	var command flow.AssignmentCommand
 	if err := decodeJSON(r, &command); err != nil {
-		if strings.Contains(err.Error(), "unknown field") {
-			var fallback map[string]any
-			if fallbackErr := decodeLenientJSON(r, &fallback); fallbackErr == nil {
-				writeError(w, http.StatusConflict, fmt.Errorf("peer flow protocol mismatch: %w", err))
-				return
-			}
+		if strings.Contains(err.Error(), "unknown field") || strings.Contains(err.Error(), "runtime-only") {
+			writeError(w, http.StatusConflict, fmt.Errorf("peer flow protocol mismatch: %w", err))
+			return
 		}
 		writeError(w, http.StatusBadRequest, err)
 		return

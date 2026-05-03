@@ -421,7 +421,7 @@ func testAPIFlowAssignment(flowID string, revision int64) flow.Assignment {
 		Name:     "Memory sweep",
 		Enabled:  true,
 		Target:   flow.TargetSelection{SwarmID: "host-swarm-id", Kind: "self", Name: "host-swarm"},
-		Agent:    flow.AgentSelection{TargetKind: "background", TargetName: "memory"},
+		Agent:    flow.AgentSelection{ProfileName: "memory", ProfileMode: "background"},
 		Workspace: flow.WorkspaceContext{
 			WorkspacePath: filepath.Join("workspace", "project"),
 		},
