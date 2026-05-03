@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Pause, Play, Sparkles } from 'lucide-react'
@@ -303,6 +303,13 @@ function timelineDuration(layout: TimelineLayoutSegment[]): number {
   return layout.reduce((duration, segment) => segment.visible && segment.duration > 0 ? Math.max(duration, segment.timelineEnd) : duration, 0)
 }
 
+function timelineTrackWidth(duration: number): number {
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return 720
+  }
+  return Math.max(720, Math.ceil(duration * 24))
+}
+
 function activeTimelineSegment(layout: TimelineLayoutSegment[], playhead: number): TimelineLayoutSegment | null {
   const visible = layout.filter((segment) => segment.visible && segment.duration > 0 && segment.timelineEnd > segment.timelineStart)
   if (visible.length === 0) {
@@ -465,6 +472,7 @@ export function VideoToolPage() {
   const [playhead, setPlayhead] = useState(0)
   const [clipDurations, setClipDurations] = useState<Record<string, number>>({})
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const videoElementsRef = useRef<Map<string, HTMLVideoElement>>(new Map())
   const playheadRef = useRef(0)
   const playbackStartRef = useRef(0)
@@ -518,7 +526,11 @@ export function VideoToolPage() {
   const selectedFolderPath = threadFolderPath(selectedThread)
   const timelineSegments = useMemo(() => buildTimelineSegments(selectedThread, selectedClips, clipDurations), [clipDurations, selectedClips, selectedThread])
   const timelineLayout = useMemo(() => layoutTimelineSegments(timelineSegments), [timelineSegments])
+  const visibleTimelineLayout = useMemo(() => timelineLayout.filter((segment) => segment.visible && segment.duration > 0), [timelineLayout])
+  const hiddenTimelineLayout = useMemo(() => timelineLayout.filter((segment) => !segment.visible), [timelineLayout])
   const movieDuration = useMemo(() => timelineDuration(timelineLayout), [timelineLayout])
+  const timelineTrackWidthPx = useMemo(() => timelineTrackWidth(movieDuration), [movieDuration])
+  const playheadX = movieDuration > 0 ? Math.min(timelineTrackWidthPx, Math.max(0, (playhead / movieDuration) * timelineTrackWidthPx)) : 0
   const activeSegment = useMemo(() => activeTimelineSegment(timelineLayout, playhead), [playhead, timelineLayout])
   const selectedClip = selectedClips.find((clip) => clip.id === selectedClipId) ?? selectedClips[0] ?? null
 
@@ -852,6 +864,32 @@ export function VideoToolPage() {
     playbackStartRef.current = performance.now()
   }, [movieDuration])
 
+  const handleTimelinePointer = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (movieDuration <= 0) {
+      return
+    }
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = Math.max(0, Math.min(timelineTrackWidthPx, event.clientX - bounds.left))
+    handleSeek((x / timelineTrackWidthPx) * movieDuration)
+  }, [handleSeek, movieDuration, timelineTrackWidthPx])
+
+  useEffect(() => {
+    const scroller = timelineScrollRef.current
+    if (!scroller || movieDuration <= 0) {
+      return
+    }
+    const leftPadding = 96
+    const rightPadding = 160
+    const playheadPosition = playheadX
+    if (playheadPosition < scroller.scrollLeft + leftPadding) {
+      scroller.scrollLeft = Math.max(0, playheadPosition - leftPadding)
+      return
+    }
+    if (playheadPosition > scroller.scrollLeft + scroller.clientWidth - rightPadding) {
+      scroller.scrollLeft = Math.min(scroller.scrollWidth - scroller.clientWidth, playheadPosition - scroller.clientWidth + rightPadding)
+    }
+  }, [movieDuration, playheadX])
+
   const handleStartChat = useCallback(async () => {
     if (!selectedThread || !routeWorkspaceSlug) {
       return
@@ -1020,7 +1058,7 @@ export function VideoToolPage() {
             <section>
               <div className="mb-3 flex items-center justify-between gap-3">
                 <h2 className="text-sm font-semibold text-[var(--app-text)]">Timeline EDL</h2>
-                <span className="text-xs text-[var(--app-text-muted)]">{formatTimelineTime(movieDuration)} visible · {timelineSegments.length} segment{timelineSegments.length === 1 ? '' : 's'}</span>
+                <span className="text-xs text-[var(--app-text-muted)]">{formatTimelineTime(movieDuration)} visible · {visibleTimelineLayout.length} included · {hiddenTimelineLayout.length} hidden</span>
               </div>
 
               <div className="border-y border-[var(--app-border)] py-4">
@@ -1029,50 +1067,95 @@ export function VideoToolPage() {
                   <span>{formatTimelineTime(movieDuration)}</span>
                 </div>
 
-                <div className="overflow-x-auto pb-2">
-                  <div className="flex min-w-[720px] gap-2">
-                    {timelineLayout.map((segment, index) => {
-                      const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
-                      const width = `${Math.max(120, Math.round((segment.duration / Math.max(movieDuration || segment.duration, 1)) * 720))}px`
-                      return (
-                        <div
-                          key={segment.id}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => {
-                            setSelectedClipId(segment.clipId)
-                            if (segment.visible) {
-                              handleSeek(segment.timelineStart)
-                            }
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                              event.preventDefault()
+                <div ref={timelineScrollRef} className="overflow-x-auto pb-2">
+                  <div className="relative h-44 min-w-full" style={{ width: `${timelineTrackWidthPx}px` }}>
+                    <div
+                      role="slider"
+                      tabIndex={0}
+                      aria-label="Scaled movie timeline"
+                      aria-valuemin={0}
+                      aria-valuemax={movieDuration}
+                      aria-valuenow={Math.min(playhead, Math.max(0, movieDuration))}
+                      onPointerDown={handleTimelinePointer}
+                      onPointerMove={(event) => {
+                        if (event.buttons === 1) {
+                          handleTimelinePointer(event)
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'ArrowLeft') {
+                          event.preventDefault()
+                          handleSeek(playhead - 1)
+                        }
+                        if (event.key === 'ArrowRight') {
+                          event.preventDefault()
+                          handleSeek(playhead + 1)
+                        }
+                      }}
+                      className="absolute inset-x-0 top-0 h-24 cursor-pointer overflow-hidden border border-[var(--app-border)] bg-[var(--app-bg)]"
+                    >
+                      {visibleTimelineLayout.length === 0 ? (
+                        <div className="grid h-full place-items-center text-sm text-[var(--app-text-muted)]">No included clips with loaded duration yet.</div>
+                      ) : visibleTimelineLayout.map((segment, visibleIndex) => {
+                        const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
+                        const left = movieDuration > 0 ? (segment.timelineStart / movieDuration) * timelineTrackWidthPx : 0
+                        const width = movieDuration > 0 ? (segment.duration / movieDuration) * timelineTrackWidthPx : 0
+                        return (
+                          <button
+                            key={segment.id}
+                            type="button"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={() => {
                               setSelectedClipId(segment.clipId)
-                              if (segment.visible) {
-                                handleSeek(segment.timelineStart)
-                              }
-                            }
-                          }}
-                          className={`min-w-[120px] cursor-pointer border px-3 py-3 transition ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-55'} ${selectedClip?.id === segment.clipId ? 'outline outline-1 outline-[var(--app-primary)]' : ''}`}
-                          style={{ width }}
-                        >
-                          <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--app-text-subtle)]">
-                            <span>{String(index + 1).padStart(2, '0')}</span>
-                            <span>{formatTimelineTime(segment.duration)}</span>
-                          </div>
-                          <p className="mt-3 truncate text-sm font-medium text-[var(--app-text)]">{clip?.name ?? segment.clipId}</p>
-                          <p className="mt-1 truncate text-xs text-[var(--app-text-muted)]">start {formatTimelineTime(segment.timelineStart)} · source {formatTimelineTime(segment.sourceStart)}</p>
-                          <div className="mt-3 flex flex-wrap items-center gap-2">
-                            <Button variant={segment.visible ? 'outline' : 'ghost'} className="h-7 rounded-lg px-2 text-xs" onClick={(event) => { event.stopPropagation(); void handleToggleSegment(segment.clipId) }} disabled={reordering}>
-                              {segment.visible ? 'In' : 'Out'}
+                              handleSeek(segment.timelineStart)
+                            }}
+                            className={`absolute top-0 h-full overflow-hidden border-r border-black/30 bg-[var(--app-surface)] text-left transition hover:bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface))] ${selectedClip?.id === segment.clipId ? 'outline outline-1 outline-[var(--app-primary)]' : ''}`}
+                            style={{ left: `${left}px`, width: `${Math.max(1, width)}px` }}
+                          >
+                            <div className="flex h-full flex-col justify-between px-2 py-2">
+                              <div className="flex items-center justify-between gap-2 text-[10px] text-[var(--app-text-subtle)]">
+                                <span>{String(visibleIndex + 1).padStart(2, '0')}</span>
+                                <span className="tabular-nums">{formatTimelineTime(segment.duration)}</span>
+                              </div>
+                              <div className="min-w-0">
+                                <p className="truncate text-xs font-medium text-[var(--app-text)]">{clip?.name ?? segment.clipId}</p>
+                                <p className="truncate text-[10px] text-[var(--app-text-muted)]">{formatTimelineTime(segment.timelineStart)} – {formatTimelineTime(segment.timelineEnd)}</p>
+                              </div>
+                            </div>
+                          </button>
+                        )
+                      })}
+                      <div className="pointer-events-none absolute top-0 h-full w-0.5 bg-[var(--app-primary)] shadow-[0_0_0_1px_rgba(0,0,0,0.35)]" style={{ left: `${playheadX}px` }} />
+                    </div>
+
+                    <div className="absolute inset-x-0 top-28 flex items-center gap-2">
+                      {timelineLayout.map((segment, index) => {
+                        const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
+                        return (
+                          <div key={`${segment.id}-controls`} className={`flex min-w-[180px] max-w-[260px] items-center gap-2 border px-2 py-2 text-xs ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-60'}`}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedClipId(segment.clipId)
+                                if (segment.visible) {
+                                  handleSeek(segment.timelineStart)
+                                }
+                              }}
+                              className="min-w-0 flex-1 text-left"
+                            >
+                              <span className="block truncate font-medium text-[var(--app-text)]">{clip?.name ?? segment.clipId}</span>
+                              <span className="block text-[10px] text-[var(--app-text-muted)]">{segment.visible ? 'Included' : 'Hidden'} · {formatTimelineTime(segment.duration)}</span>
+                            </button>
+                            <Button variant={segment.visible ? 'outline' : 'ghost'} className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleToggleSegment(segment.clipId)} disabled={reordering}>
+                              {segment.visible ? <Eye size={13} /> : <EyeOff size={13} />}
+                              {segment.visible ? 'Included' : 'Hidden'}
                             </Button>
-                            <Button variant="outline" className="h-7 rounded-lg px-2 text-xs" onClick={(event) => { event.stopPropagation(); void handleMoveClip(-1, segment.clipId) }} disabled={reordering || index === 0}>Left</Button>
-                            <Button variant="outline" className="h-7 rounded-lg px-2 text-xs" onClick={(event) => { event.stopPropagation(); void handleMoveClip(1, segment.clipId) }} disabled={reordering || index === timelineSegments.length - 1}>Right</Button>
+                            <Button variant="outline" className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleMoveClip(-1, segment.clipId)} disabled={reordering || index === 0}>←</Button>
+                            <Button variant="outline" className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleMoveClip(1, segment.clipId)} disabled={reordering || index === timelineSegments.length - 1}>→</Button>
                           </div>
-                        </div>
-                      )
-                    })}
+                        )
+                      })}
+                    </div>
                   </div>
                 </div>
               </div>
