@@ -29,29 +29,34 @@ type videoScanClip struct {
 	ModifiedAt int64  `json:"modified_at"`
 }
 
-func scanAcceptedVideoClips(folderPath string) ([]videoScanClip, error) {
+func resolveVideoFolderPath(folderPath string) (string, error) {
 	folderPath = strings.TrimSpace(folderPath)
 	if folderPath == "" {
-		return nil, errors.New("folder path is required")
+		return "", errors.New("folder path is required")
 	}
 	absFolderPath, err := filepath.Abs(folderPath)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	folderPath, err = filepath.EvalSymlinks(absFolderPath)
-	if err != nil {
-		return nil, err
-	}
+	folderPath = filepath.Clean(absFolderPath)
 	info, err := os.Stat(folderPath)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	if !info.IsDir() {
-		return nil, errors.New("folder path must be a directory")
+		return "", errors.New("folder path must be a directory")
+	}
+	return folderPath, nil
+}
+
+func scanAcceptedVideoClips(folderPath string) (string, []videoScanClip, error) {
+	folderPath, err := resolveVideoFolderPath(folderPath)
+	if err != nil {
+		return "", nil, err
 	}
 	entries, err := os.ReadDir(folderPath)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	clips := make([]videoScanClip, 0, len(entries))
 	for _, entry := range entries {
@@ -68,7 +73,7 @@ func scanAcceptedVideoClips(folderPath string) ([]videoScanClip, error) {
 		}
 		entryInfo, err := entry.Info()
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		clipPath := filepath.Join(folderPath, name)
 		clips = append(clips, videoScanClip{
@@ -88,7 +93,7 @@ func scanAcceptedVideoClips(folderPath string) ([]videoScanClip, error) {
 		}
 		return leftName < rightName
 	})
-	return clips, nil
+	return folderPath, clips, nil
 }
 
 func (s *Server) handleWorkspaceVideoScan(w http.ResponseWriter, r *http.Request) {
@@ -104,25 +109,10 @@ func (s *Server) handleWorkspaceVideoScan(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	clips, err := scanAcceptedVideoClips(req.FolderPath)
+	resolvedFolderPath, clips, err := scanAcceptedVideoClips(req.FolderPath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
-	}
-	resolvedFolderPath := ""
-	if len(clips) > 0 {
-		resolvedFolderPath = filepath.Dir(clips[0].Path)
-	} else {
-		resolvedFolderPath, err = filepath.Abs(strings.TrimSpace(req.FolderPath))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		resolvedFolderPath, err = filepath.EvalSymlinks(resolvedFolderPath)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":             true,
