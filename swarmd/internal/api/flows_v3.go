@@ -76,6 +76,8 @@ type flowV3MutationResponse struct {
 	Run    *flowV3RunNowView            `json:"run,omitempty"`
 }
 
+const flowIntentModeOneShotBackground = "one_shot_background"
+
 type flowV3HistoryResponse struct {
 	OK      bool                               `json:"ok"`
 	FlowID  string                             `json:"flow_id"`
@@ -167,12 +169,12 @@ func (s *Server) handleFlowsV3Collection(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		record, result, err := s.createFlowV3(r, req)
+		record, result, run, err := s.createFlowV3(r, req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, flowV3MutationResponse{OK: true, Flow: record, Result: &result})
+		writeJSON(w, http.StatusCreated, flowV3MutationResponse{OK: true, Flow: record, Result: &result, Run: run})
 	default:
 		methodNotAllowed(w)
 	}
@@ -291,45 +293,59 @@ func (s *Server) handleFlowV3RunNow(w http.ResponseWriter, r *http.Request, flow
 	writeJSON(w, http.StatusAccepted, flowV3MutationResponse{OK: true, Flow: record, Result: &result, Run: &run})
 }
 
-func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, error) {
+func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, *flowV3RunNowView, error) {
 	flowID := strings.TrimSpace(req.FlowID)
 	if flowID == "" {
 		flowID = "flow-" + randomHex(8)
 	}
 	if _, exists, err := s.flows.GetDefinition(flowID); err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
 	} else if exists {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q already exists", flowID)
+		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, fmt.Errorf("flow %q already exists", flowID)
 	}
 	assignment, err := s.flowV3AssignmentFromRequest(r, req, nil, flowID, 1)
 	if err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
 	}
 	now := time.Now().UTC()
 	nextDueAt, _, err := flow.NextFire(assignment, now)
 	if err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
 	}
 	definition, err := s.flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt})
 	if err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
 	}
 	command := flow.AssignmentCommand{CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandInstall), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandInstall, CreatedAt: now, Assignment: definition.Assignment}
 	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
 	if err != nil {
 		if cleanupErr := s.flows.DeleteDefinition(definition.FlowID); cleanupErr != nil {
-			return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("%w; cleanup flow definition: %v", err, cleanupErr)
+			return flowV3Record{}, flowAssignmentDeliverResult{}, nil, fmt.Errorf("%w; cleanup flow definition: %v", err, cleanupErr)
 		}
-		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
+	}
+	var run *flowV3RunNowView
+	if shouldAutoRunCreatedFlow(definition.Assignment, result) {
+		runCommand := flow.AssignmentCommand{CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandRunNow), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandRunNow, CreatedAt: time.Now().UTC(), Assignment: definition.Assignment}
+		runResult, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), runCommand)
+		if err != nil {
+			return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
+		}
+		runView := flowV3RunNowResultView(runResult)
+		run = &runView
 	}
 	record, ok, err := s.flowV3Detail(r, definition.FlowID)
 	if err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
 	}
 	if !ok {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q was not found after create", definition.FlowID)
+		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, fmt.Errorf("flow %q was not found after create", definition.FlowID)
 	}
-	return record, result, nil
+	return record, result, run, nil
+}
+
+func shouldAutoRunCreatedFlow(assignment flow.Assignment, installResult flowAssignmentDeliverResult) bool {
+	return !installResult.PendingSync && flow.NormalizeCadence(assignment.Schedule.Cadence) == flow.CadenceOnDemand && strings.EqualFold(strings.TrimSpace(assignment.Intent.Mode), flowIntentModeOneShotBackground)
 }
 
 func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, error) {

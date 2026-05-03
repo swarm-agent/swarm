@@ -74,6 +74,9 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	if createPayload.Result == nil || !createPayload.Result.Delivered {
 		t.Fatalf("create result = %+v", createPayload.Result)
 	}
+	if createPayload.Run != nil {
+		t.Fatalf("manual on-demand create unexpectedly started run: %+v", createPayload.Run)
+	}
 	if createPayload.Flow.TargetDetail == nil || createPayload.Flow.TargetDetail.SwarmID != "child-remote" || createPayload.Flow.TargetDetail.Kind != "remote" {
 		t.Fatalf("target detail = %+v", createPayload.Flow.TargetDetail)
 	}
@@ -219,6 +222,54 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	}
 	if _, ok, err := flows.GetAcceptedAssignment("flow-v3-remote"); err != nil || ok {
 		t.Fatalf("accepted after delete ok=%v err=%v", ok, err)
+	}
+}
+
+func TestFlowsV3OneShotBackgroundCreateStartsRunNow(t *testing.T) {
+	server, _ := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	runner := &fakeFlowRunService{}
+	server.runner = runner
+	workspace := t.TempDir()
+	req := flowV3UpsertRequest{
+		FlowID:  "flow-v3-one-shot",
+		Name:    "One-shot V3 flow",
+		Enabled: boolPtr(true),
+		Target:  flow.TargetSelection{Kind: "self"},
+		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath: workspace,
+			CWD:           workspace,
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Run once immediately.", Mode: flowIntentModeOneShotBackground},
+	}
+	rec := httptest.NewRecorder()
+	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(rec, reqHTTP)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload flowV3MutationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if payload.Result == nil || !payload.Result.Delivered || payload.Result.PendingSync {
+		t.Fatalf("install result = %+v", payload.Result)
+	}
+	if payload.Run == nil || payload.Run.CommandID == "" || payload.Run.PendingSync {
+		t.Fatalf("run payload = %+v", payload.Run)
+	}
+	if got := runner.callCount(); got != 1 {
+		t.Fatalf("runner call count = %d, want 1", got)
+	}
+	if runner.lastRequest.TargetKind != "subagent" || runner.lastRequest.TargetName != "flow-test" || !runner.lastRequest.Background {
+		t.Fatalf("runner request = %+v", runner.lastRequest)
+	}
+	if payload.Flow.LastRun == nil || payload.Flow.LastRun.Status != pebblestore.FlowRunStatusSuccess || payload.Flow.LastRun.SessionID == "" {
+		t.Fatalf("last run = %+v", payload.Flow.LastRun)
 	}
 }
 

@@ -126,7 +126,7 @@ const defaultAddFlowForm: AddFlowForm = {
   scheduleDate: '1',
   workspacePath: '',
   context: 'target-owned schedule',
-  mode: 'Manual one-shot',
+  mode: 'One-shot background job',
   task: '',
 }
 
@@ -465,8 +465,10 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
   }
 }
 
-function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[], agents: FlowAgentOption[]): CreateFlowInput {
-  const cadence = form.scheduleCadence === 'On demand' ? 'on_demand' : form.scheduleCadence.toLowerCase()
+export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[], agents: FlowAgentOption[]): CreateFlowInput {
+  const isManualOneShot = form.mode === 'Manual one-shot'
+  const isOneShotBackground = form.mode === 'One-shot background job'
+  const cadence = isManualOneShot || isOneShotBackground ? 'on_demand' : form.scheduleCadence === 'On demand' ? 'on_demand' : form.scheduleCadence.toLowerCase()
   const targetOption = targets.find((option) => option.key === form.targetKey)
   const workspaceOption = workspaces.find((option) => option.key === form.workspacePath)
   const agentOption = agents.find((option) => option.key === form.agentKey)
@@ -474,7 +476,7 @@ function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], works
   const task = form.task.trim() || 'Run the configured task prompt.'
   return {
     name: form.name.trim() || 'Untitled flow',
-    enabled: form.scheduleCadence !== 'On demand',
+    enabled: !isManualOneShot,
     target: targetToSelection(targetOption?.target),
     agent: {
       profile_name: agentOption?.profile.name.trim() || '',
@@ -497,7 +499,7 @@ function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], works
     },
     intent: {
       prompt: task,
-      mode: form.context.trim(),
+      mode: isOneShotBackground ? 'one_shot_background' : form.context.trim(),
       tasks: [
         { id: 'context', title: 'Prepare run context', detail: `Target ${targetOption?.label || 'selected swarm'} in ${workspacePath || 'the selected workspace'}.`, action: 'read' },
         { id: 'task', title: 'Run agent task', detail: task, action: 'propose' },
