@@ -37,7 +37,7 @@ func TestRunAcceptedFlowNowInitialSessionSnapshotUsesFlowNameTitle(t *testing.T)
 		WorkspaceName: "project",
 		Mode:          "auto",
 		Preference:    &pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"},
-		Metadata:      flowRunMetadata(accepted.Assignment, start.ScheduledAt, false),
+		Metadata:      flowRunMetadata(accepted.Assignment, resolvedFlowRunAgent{RuntimeTargetKind: flow.RuntimeTargetKindForProfileMode(accepted.Assignment.Agent.ProfileMode), RuntimeTargetName: accepted.Assignment.Agent.ProfileName}, start.ScheduledAt, false),
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)

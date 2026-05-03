@@ -147,11 +147,15 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 		runID = flowRunID(assignment.FlowID, assignment.Revision, scheduledAt, request.RunNow)
 	}
 	sessionID := flowSessionID(runID)
-	pref, err := s.flowRunSessionPreference(assignment)
+	resolvedAgent, err := s.resolveFlowRunAgent(assignment.Agent)
 	if err != nil {
 		return flow.RunStart{}, err
 	}
-	metadata := flowRunMetadata(assignment, scheduledAt, request.RunNow)
+	pref, err := s.flowRunSessionPreference(resolvedAgent)
+	if err != nil {
+		return flow.RunStart{}, err
+	}
+	metadata := flowRunMetadata(assignment, resolvedAgent, scheduledAt, request.RunNow)
 	if descriptor, ok := s.flowHostedSessionDescriptor(assignment); ok {
 		metadata = descriptor.WithMetadata(metadata)
 	}
@@ -179,7 +183,7 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 		RuntimeWorkspacePath: runtimeWorkspacePath,
 		WorkspaceName:        filepath.Base(runtimeWorkspacePath),
 		Mode:                 sessionruntime.ModeAuto,
-		AgentName:            "",
+		AgentName:            resolvedAgent.RuntimeTargetName,
 		WorktreeMode:         strings.TrimSpace(assignment.Workspace.WorktreeMode),
 		Metadata:             metadata,
 	}
@@ -206,8 +210,8 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	}
 	runReq := runruntime.RunRequest{
 		Prompt:     flowRunPrompt(assignment.Intent),
-		TargetKind: strings.TrimSpace(assignment.Agent.TargetKind),
-		TargetName: strings.TrimSpace(assignment.Agent.TargetName),
+		TargetKind: resolvedAgent.RuntimeTargetKind,
+		TargetName: resolvedAgent.RuntimeTargetName,
 		Background: true,
 		ExecutionContext: &runruntime.RunExecutionContext{
 			WorkspacePath: runtimeWorkspacePath,
@@ -352,17 +356,20 @@ func (s *Server) flowRunFinished(result runruntime.RunResult, sessionID, runID s
 	return !lifecycle.Active
 }
 
-func (s *Server) flowRunSessionPreference(assignment flow.Assignment) (pref struct {
+type resolvedFlowRunAgent struct {
+	Profile           pebblestore.AgentProfile
+	RuntimeTargetKind string
+	RuntimeTargetName string
+}
+
+func (s *Server) flowRunSessionPreference(agent resolvedFlowRunAgent) (pref struct {
 	Provider    string
 	Model       string
 	Thinking    string
 	ServiceTier string
 	ContextMode string
 }, err error) {
-	profile, err := s.flowRunAgentProfile(assignment.Agent)
-	if err != nil {
-		return pref, err
-	}
+	profile := agent.Profile
 	pref.Provider = strings.TrimSpace(profile.Provider)
 	if pref.Model == "" {
 		pref.Model = strings.TrimSpace(profile.Model)
@@ -374,7 +381,7 @@ func (s *Server) flowRunSessionPreference(assignment flow.Assignment) (pref stru
 		if s != nil && s.model != nil {
 			global, globalErr := s.model.GetGlobalPreference()
 			if globalErr != nil {
-				return pref, fmt.Errorf("flow agent %q execution preference is not configured on target: %w", strings.TrimSpace(assignment.Agent.TargetName), globalErr)
+				return pref, fmt.Errorf("flow agent %q execution preference is not configured on target: %w", agent.RuntimeTargetName, globalErr)
 			}
 			pref.Provider = firstNonEmpty(pref.Provider, strings.TrimSpace(global.Provider))
 			pref.Model = firstNonEmpty(pref.Model, strings.TrimSpace(global.Model))
@@ -384,30 +391,50 @@ func (s *Server) flowRunSessionPreference(assignment flow.Assignment) (pref stru
 		}
 	}
 	if pref.Provider == "" || pref.Model == "" || pref.Thinking == "" {
-		if runruntime.NormalizeRunTargetKind(assignment.Agent.TargetKind) == runruntime.RunTargetKindAgent {
+		if runruntime.NormalizeRunTargetKind(agent.RuntimeTargetKind) == runruntime.RunTargetKindAgent {
 			return pref, nil
 		}
-		return pref, fmt.Errorf("flow agent %q execution preference is not configured on target", strings.TrimSpace(assignment.Agent.TargetName))
+		return pref, fmt.Errorf("flow agent %q execution preference is not configured on target", agent.RuntimeTargetName)
 	}
 	return pref, nil
 }
 
 func (s *Server) flowRunAgentProfile(agent flow.AgentSelection) (pebblestore.AgentProfile, error) {
-	if s == nil || s.agents == nil {
-		return pebblestore.AgentProfile{}, errors.New("agent service not configured")
-	}
-	agent = flow.NormalizeAgentSelection(agent)
-	if strings.TrimSpace(agent.ProfileName) == "" {
-		return pebblestore.AgentProfile{}, errors.New("agent profile_name is required")
-	}
-	if strings.TrimSpace(agent.ProfileMode) == "" {
-		return pebblestore.AgentProfile{}, errors.New("agent profile_mode is required")
-	}
-	profile, err := s.agents.ResolveAgent(agent.ProfileName)
+	resolved, err := s.resolveFlowRunAgent(agent)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}
-	return profile, nil
+	return resolved.Profile, nil
+}
+
+func (s *Server) resolveFlowRunAgent(agent flow.AgentSelection) (resolvedFlowRunAgent, error) {
+	if s == nil || s.agents == nil {
+		return resolvedFlowRunAgent{}, errors.New("agent service not configured")
+	}
+	agent = flow.NormalizeAgentSelection(agent)
+	if strings.TrimSpace(agent.ProfileName) == "" {
+		return resolvedFlowRunAgent{}, errors.New("agent profile_name is required")
+	}
+	if strings.TrimSpace(agent.ProfileMode) == "" {
+		return resolvedFlowRunAgent{}, errors.New("agent profile_mode is required")
+	}
+	profile, err := s.agents.ResolveAgent(agent.ProfileName)
+	if err != nil {
+		return resolvedFlowRunAgent{}, err
+	}
+	profileMode := flow.NormalizeAgentProfileMode(profile.Mode)
+	if profileMode == "" {
+		return resolvedFlowRunAgent{}, fmt.Errorf("saved agent profile %q mode %q does not resolve to a runtime target", profile.Name, strings.TrimSpace(profile.Mode))
+	}
+	runtimeTargetKind := flow.RuntimeTargetKindForProfileMode(profileMode)
+	if runtimeTargetKind == "" {
+		return resolvedFlowRunAgent{}, fmt.Errorf("saved agent profile %q mode %q does not resolve to a runtime target", profile.Name, profileMode)
+	}
+	runtimeTargetName := strings.TrimSpace(profile.Name)
+	if runtimeTargetName == "" {
+		return resolvedFlowRunAgent{}, errors.New("saved agent profile name is required")
+	}
+	return resolvedFlowRunAgent{Profile: profile, RuntimeTargetKind: runtimeTargetKind, RuntimeTargetName: runtimeTargetName}, nil
 }
 
 func (s *Server) flowHostedSessionDescriptor(assignment flow.Assignment) (sessionruntime.HostedSessionDescriptor, bool) {
@@ -465,7 +492,7 @@ func flowRunPrompt(intent flow.PromptIntent) string {
 	return strings.Join(parts, "\n")
 }
 
-func flowRunMetadata(assignment flow.Assignment, scheduledAt time.Time, runNow bool) map[string]any {
+func flowRunMetadata(assignment flow.Assignment, resolvedAgent resolvedFlowRunAgent, scheduledAt time.Time, runNow bool) map[string]any {
 	targetKind := strings.TrimSpace(assignment.Target.Kind)
 	targetName := strings.TrimSpace(assignment.Target.Name)
 	metadata := map[string]any{
@@ -482,8 +509,8 @@ func flowRunMetadata(assignment flow.Assignment, scheduledAt time.Time, runNow b
 		"background":        true,
 		"target_kind":       targetKind,
 		"target_name":       targetName,
-		"flow_agent_kind":   strings.TrimSpace(assignment.Agent.TargetKind),
-		"flow_agent_name":   strings.TrimSpace(assignment.Agent.TargetName),
+		"flow_agent_kind":   resolvedAgent.RuntimeTargetKind,
+		"flow_agent_name":   resolvedAgent.RuntimeTargetName,
 		"owner_transport":   "flow_scheduler",
 		"workspace_context": assignment.Workspace,
 	}

@@ -23,34 +23,38 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 	for _, tc := range []struct {
 		name           string
 		agent          flow.AgentSelection
-		expectedKind   string
-		expectedName   string
-		expectedAgent  string
-		expectedPreset string
+		expectedKind        string
+		expectedName        string
+		expectedAgent       string
+		expectedPreset      string
+		expectedSessionMode string
 	}{
 		{
-			name:           "primary swarm agent",
-			agent:          flow.AgentSelection{ProfileName: "swarm", ProfileMode: "primary"},
-			expectedKind:   runruntime.RunTargetKindAgent,
-			expectedName:   "swarm",
-			expectedAgent:  "swarm",
-			expectedPreset: "",
+			name:                "primary swarm agent",
+			agent:               flow.AgentSelection{ProfileName: "swarm", ProfileMode: "primary"},
+			expectedKind:        runruntime.RunTargetKindAgent,
+			expectedName:        "swarm",
+			expectedAgent:       "swarm",
+			expectedPreset:      "",
+			expectedSessionMode: sessionruntime.ModeAuto,
 		},
 		{
-			name:           "saved subagent",
-			agent:          flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
-			expectedKind:   runruntime.RunTargetKindSubagent,
-			expectedName:   "flow-test",
-			expectedAgent:  "flow-test",
-			expectedPreset: "",
+			name:                "saved subagent",
+			agent:               flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+			expectedKind:        runruntime.RunTargetKindSubagent,
+			expectedName:        "flow-test",
+			expectedAgent:       "flow-test",
+			expectedPreset:      "",
+			expectedSessionMode: sessionruntime.ModePlan,
 		},
 		{
-			name:           "memory background alias",
-			agent:          flow.AgentSelection{ProfileName: "memory", ProfileMode: "background"},
-			expectedKind:   runruntime.RunTargetKindBackground,
-			expectedName:   "memory",
-			expectedAgent:  "memory",
-			expectedPreset: "background_commit",
+			name:                "memory saved profile derives subagent target",
+			agent:               flow.AgentSelection{ProfileName: "memory", ProfileMode: "background", TargetKind: "agent", TargetName: "swarm"},
+			expectedKind:        runruntime.RunTargetKindSubagent,
+			expectedName:        "memory",
+			expectedAgent:       "memory",
+			expectedPreset:      "background_commit",
+			expectedSessionMode: sessionruntime.ModePlan,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -116,8 +120,11 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if session.Metadata["swarm_target_name"] != assignment.Target.Name || session.Metadata["target_display_name"] != assignment.Target.Name || session.Metadata["swarm_target_kind"] != assignment.Target.Kind || session.Metadata["swarm_target_swarm_id"] != assignment.Target.SwarmID {
 				t.Fatalf("session sidebar target metadata = %+v", session.Metadata)
 			}
-			normalizedAgent := flow.NormalizeAgentSelection(assignment.Agent)
-			if session.Metadata["flow_agent_kind"] != normalizedAgent.TargetKind || session.Metadata["flow_agent_name"] != normalizedAgent.TargetName {
+			resolvedAgent, err := server.resolveFlowRunAgent(assignment.Agent)
+			if err != nil {
+				t.Fatalf("resolve flow run agent: %v", err)
+			}
+			if session.Metadata["flow_agent_kind"] != resolvedAgent.RuntimeTargetKind || session.Metadata["flow_agent_name"] != resolvedAgent.RuntimeTargetName {
 				t.Fatalf("session flow agent metadata = %+v", session.Metadata)
 			}
 			if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask || session.Metadata["source"] != "flow" {
@@ -130,8 +137,14 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if profile.Name != tc.expectedAgent {
 				t.Fatalf("profile name = %q, want %q", profile.Name, tc.expectedAgent)
 			}
-			if session.Metadata["workspace_id"] == nil || session.Metadata["agent_name"] != "swarm" {
+			if session.Metadata["workspace_id"] == nil || session.Metadata["agent_name"] != tc.expectedAgent {
 				t.Fatalf("session create metadata was not preserved: %+v", session.Metadata)
+			}
+			if session.Mode != tc.expectedSessionMode {
+				t.Fatalf("session mode = %q, want %q for profile %q", session.Mode, tc.expectedSessionMode, tc.expectedAgent)
+			}
+			if tc.expectedAgent == "memory" && session.Preference.Provider != "test-provider" {
+				t.Fatalf("session preference = %+v", session.Preference)
 			}
 			preset := ""
 			if profile.ToolContract != nil {
@@ -258,6 +271,9 @@ func TestRunAcceptedFlowNowUsesTargetLocalAcceptedAssignment(t *testing.T) {
 	}
 	if session.Title != "Memory sweep" {
 		t.Fatalf("run-now session title = %q, want flow name", session.Title)
+	}
+	if session.Metadata["agent_name"] != "flow-test" {
+		t.Fatalf("run-now session agent metadata = %+v", session.Metadata)
 	}
 	if session.Metadata["title_pending"] != false || session.Metadata["title_locked"] != true || session.Metadata["title_source"] != flowSessionTitleSourceTask || session.Metadata["source"] != "flow" {
 		t.Fatalf("run-now title metadata = %+v", session.Metadata)
