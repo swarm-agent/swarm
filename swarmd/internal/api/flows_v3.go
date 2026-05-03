@@ -76,8 +76,6 @@ type flowV3MutationResponse struct {
 	Run    *flowV3RunNowView            `json:"run,omitempty"`
 }
 
-const flowIntentModeOneShotBackground = "one_shot_background"
-
 type flowV3HistoryResponse struct {
 	OK      bool                               `json:"ok"`
 	FlowID  string                             `json:"flow_id"`
@@ -169,12 +167,12 @@ func (s *Server) handleFlowsV3Collection(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		record, result, run, err := s.createFlowV3(r, req)
+		record, result, err := s.createFlowV3(r, req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, flowV3MutationResponse{OK: true, Flow: record, Result: &result, Run: run})
+		writeJSON(w, http.StatusCreated, flowV3MutationResponse{OK: true, Flow: record, Result: &result})
 	default:
 		methodNotAllowed(w)
 	}
@@ -293,59 +291,85 @@ func (s *Server) handleFlowV3RunNow(w http.ResponseWriter, r *http.Request, flow
 	writeJSON(w, http.StatusAccepted, flowV3MutationResponse{OK: true, Flow: record, Result: &result, Run: &run})
 }
 
-func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, *flowV3RunNowView, error) {
+func (s *Server) createFlowV3(r *http.Request, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, error) {
 	flowID := strings.TrimSpace(req.FlowID)
 	if flowID == "" {
 		flowID = "flow-" + randomHex(8)
 	}
 	if _, exists, err := s.flows.GetDefinition(flowID); err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	} else if exists {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, fmt.Errorf("flow %q already exists", flowID)
+		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q already exists", flowID)
 	}
 	assignment, err := s.flowV3AssignmentFromRequest(r, req, nil, flowID, 1)
 	if err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	now := time.Now().UTC()
 	nextDueAt, _, err := flow.NextFire(assignment, now)
 	if err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	definition, err := s.flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment, NextDueAt: nextDueAt})
 	if err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	command := flow.AssignmentCommand{CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandInstall), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandInstall, CreatedAt: now, Assignment: definition.Assignment}
-	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
+	result, err := s.createFlowV3InstallResult(r, command)
 	if err != nil {
 		if cleanupErr := s.flows.DeleteDefinition(definition.FlowID); cleanupErr != nil {
-			return flowV3Record{}, flowAssignmentDeliverResult{}, nil, fmt.Errorf("%w; cleanup flow definition: %v", err, cleanupErr)
+			return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("%w; cleanup flow definition: %v", err, cleanupErr)
 		}
-		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
-	}
-	var run *flowV3RunNowView
-	if shouldAutoRunCreatedFlow(definition.Assignment, result) {
-		runCommand := flow.AssignmentCommand{CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandRunNow), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandRunNow, CreatedAt: time.Now().UTC(), Assignment: definition.Assignment}
-		runResult, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), runCommand)
-		if err != nil {
-			return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
-		}
-		runView := flowV3RunNowResultView(runResult)
-		run = &runView
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	record, ok, err := s.flowV3Detail(r, definition.FlowID)
 	if err != nil {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, err
+		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	if !ok {
-		return flowV3Record{}, flowAssignmentDeliverResult{}, nil, fmt.Errorf("flow %q was not found after create", definition.FlowID)
+		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q was not found after create", definition.FlowID)
 	}
-	return record, result, run, nil
+	return record, result, nil
 }
 
-func shouldAutoRunCreatedFlow(assignment flow.Assignment, installResult flowAssignmentDeliverResult) bool {
-	return !installResult.PendingSync && flow.NormalizeCadence(assignment.Schedule.Cadence) == flow.CadenceOnDemand && strings.EqualFold(strings.TrimSpace(assignment.Intent.Mode), flowIntentModeOneShotBackground)
+func (s *Server) createFlowV3InstallResult(r *http.Request, command flow.AssignmentCommand) (flowAssignmentDeliverResult, error) {
+	target, resolved, resolveErr := s.resolveFlowAssignmentTarget(r.Context(), command.Assignment.Target)
+	if resolveErr != nil && strings.TrimSpace(resolved.SwarmID) == "" {
+		return s.queuePendingFlowAssignmentCommand(command, resolveErr)
+	}
+	record, err := s.enqueueFlowAssignmentCommandForTarget(command, target, resolved)
+	if err != nil {
+		return flowAssignmentDeliverResult{}, err
+	}
+	return s.deliverFlowAssignmentOutboxCommand(r.Context(), record, target)
+}
+
+func (s *Server) queuePendingFlowAssignmentCommand(command flow.AssignmentCommand, deliverErr error) (flowAssignmentDeliverResult, error) {
+	reason := strings.TrimSpace(firstNonEmpty(errString(deliverErr), "flow assignment delivery is pending"))
+	selection := normalizeFlowTargetSelection(command.Assignment.Target)
+	record, err := s.enqueueFlowAssignmentCommandForTarget(command, swarmTarget{}, flow.ResolvedTarget{
+		Selection:    selection,
+		SwarmID:      strings.TrimSpace(selection.SwarmID),
+		Name:         strings.TrimSpace(selection.Name),
+		Kind:         strings.TrimSpace(selection.Kind),
+		DeploymentID: strings.TrimSpace(selection.DeploymentID),
+		LastError:    reason,
+	})
+	if err != nil {
+		return flowAssignmentDeliverResult{}, err
+	}
+	updated, state, err := s.markFlowAssignmentPending(record, flow.AssignmentTargetUnusable, reason, nil)
+	if err != nil {
+		return flowAssignmentDeliverResult{}, err
+	}
+	return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, PendingSync: true}, nil
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRequest) (flowV3Record, flowAssignmentDeliverResult, error) {

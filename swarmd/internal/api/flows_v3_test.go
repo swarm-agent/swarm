@@ -225,8 +225,8 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	}
 }
 
-func TestFlowsV3OneShotBackgroundCreateStartsRunNow(t *testing.T) {
-	server, _ := newFlowPeerTestServer(t)
+func TestFlowsV3CreateDoesNotAutoRunOnDemandFlow(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)
 	runner := &fakeFlowRunService{}
 	server.runner = runner
@@ -243,7 +243,7 @@ func TestFlowsV3OneShotBackgroundCreateStartsRunNow(t *testing.T) {
 		},
 		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
 		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
-		Intent:        flow.PromptIntent{Prompt: "Run once immediately.", Mode: flowIntentModeOneShotBackground},
+		Intent:        flow.PromptIntent{Prompt: "Run once immediately.", Mode: "one_shot_background"},
 	}
 	rec := httptest.NewRecorder()
 	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
@@ -259,17 +259,105 @@ func TestFlowsV3OneShotBackgroundCreateStartsRunNow(t *testing.T) {
 	if payload.Result == nil || !payload.Result.Delivered || payload.Result.PendingSync {
 		t.Fatalf("install result = %+v", payload.Result)
 	}
-	if payload.Run == nil || payload.Run.CommandID == "" || payload.Run.PendingSync {
-		t.Fatalf("run payload = %+v", payload.Run)
+	if payload.Run != nil {
+		t.Fatalf("create unexpectedly returned run payload: %+v", payload.Run)
 	}
-	if got := runner.callCount(); got != 1 {
-		t.Fatalf("runner call count = %d, want 1", got)
+	if got := runner.callCount(); got != 0 {
+		t.Fatalf("runner call count = %d, want 0", got)
 	}
-	if runner.lastRequest.TargetKind != "subagent" || runner.lastRequest.TargetName != "flow-test" || !runner.lastRequest.Background {
-		t.Fatalf("runner request = %+v", runner.lastRequest)
+	definition, ok, err := flows.GetDefinition("flow-v3-one-shot")
+	if err != nil || !ok {
+		t.Fatalf("get definition ok=%v err=%v", ok, err)
 	}
-	if payload.Flow.LastRun == nil || payload.Flow.LastRun.Status != pebblestore.FlowRunStatusSuccess || payload.Flow.LastRun.SessionID == "" {
-		t.Fatalf("last run = %+v", payload.Flow.LastRun)
+	if definition.Assignment.Intent.Mode != "one_shot_background" {
+		t.Fatalf("stored intent mode = %q", definition.Assignment.Intent.Mode)
+	}
+	if payload.Flow.LastRun != nil {
+		t.Fatalf("last run = %+v, want nil after create-only save", payload.Flow.LastRun)
+	}
+}
+
+func TestFlowsV3CreatePersistsPendingSyncWhenTargetIsUnavailable(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
+		SwarmID:      "child-offline",
+		Name:         "offline child",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "pc-offline",
+		Online:       false,
+		Selectable:   false,
+		LastError:    "child is stopped",
+	}}})
+	req := flowV3UpsertRequest{
+		FlowID:  "flow-v3-pending-sync",
+		Name:    "Pending sync flow",
+		Enabled: boolPtr(true),
+		Target:  flow.TargetSelection{SwarmID: "child-offline", Kind: "local", DeploymentID: "pc-offline", Name: "offline child"},
+		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath: t.TempDir(),
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Wait until child returns."},
+	}
+	rec := httptest.NewRecorder()
+	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(rec, reqHTTP)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload flowV3MutationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if payload.Result == nil || !payload.Result.PendingSync || payload.Result.Delivered {
+		t.Fatalf("create result = %+v", payload.Result)
+	}
+	if payload.Result.AssignmentState.Status != flow.AssignmentTargetOffline {
+		t.Fatalf("assignment state = %+v", payload.Result.AssignmentState)
+	}
+	if len(payload.Flow.Outbox) != 1 || payload.Flow.Outbox[0].Status != pebblestore.FlowOutboxStatusPending {
+		t.Fatalf("flow outbox = %+v", payload.Flow.Outbox)
+	}
+	if len(payload.Flow.AssignmentStatuses) == 0 || !payload.Flow.AssignmentStatuses[0].PendingSync {
+		t.Fatalf("assignment statuses = %+v", payload.Flow.AssignmentStatuses)
+	}
+	definition, ok, err := flows.GetDefinition("flow-v3-pending-sync")
+	if err != nil || !ok {
+		t.Fatalf("get definition ok=%v err=%v", ok, err)
+	}
+	if definition.Assignment.Name != "Pending sync flow" {
+		t.Fatalf("stored definition = %+v", definition.Assignment)
+	}
+	pending, err := flows.ListOutboxCommands(pebblestore.FlowOutboxStatusPending, 10)
+	if err != nil {
+		t.Fatalf("list pending outbox: %v", err)
+	}
+	if len(pending) != 1 || pending[0].FlowID != "flow-v3-pending-sync" {
+		t.Fatalf("pending outbox = %+v", pending)
+	}
+	status, ok, err := flows.GetAssignmentStatus("flow-v3-pending-sync", "child-offline")
+	if err != nil || !ok {
+		t.Fatalf("get assignment status ok=%v err=%v", ok, err)
+	}
+	if !status.PendingSync || status.Status != flow.AssignmentTargetOffline {
+		t.Fatalf("stored assignment status = %+v", status)
+	}
+	getRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-pending-sync", nil))
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var getPayload flowV3RecordResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if len(getPayload.Outbox) != 1 || getPayload.Outbox[0].Status != pebblestore.FlowOutboxStatusPending {
+		t.Fatalf("get outbox = %+v", getPayload.Outbox)
 	}
 }
 
