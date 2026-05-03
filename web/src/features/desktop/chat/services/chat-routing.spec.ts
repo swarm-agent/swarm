@@ -84,3 +84,20 @@ test('routed local host mirror session remains grouped under host workspace', ()
   assert.equal(mapped.workspaceName, 'host swarm')
   assert.equal(mapped.runtimeWorkspacePath, '/workspaces/swarm')
 })
+
+test('flow sessions preserve their own workspace identity under routed child hydration', () => {
+  const mapped = applyDesktopChatRouteToSession(sessionRecord({
+    title: 'Memory sweep',
+    workspacePath: '/workspaces/swarm',
+    workspaceName: 'child swarm',
+    metadata: {
+      source: 'flow',
+      lineage_kind: 'flow',
+      flow_id: 'flow-1',
+    },
+  }), remoteRoute)
+
+  assert.equal(mapped.workspacePath, '/workspaces/swarm')
+  assert.equal(mapped.workspaceName, 'child swarm')
+  assert.equal(mapped.runtimeWorkspacePath, '/workspaces/swarm')
+})

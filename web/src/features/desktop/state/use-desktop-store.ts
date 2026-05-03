@@ -44,6 +44,7 @@ import type { VaultStatus } from '../vault/types'
 import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/workspace-overview'
 import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
+import { mergeSessionRecords } from './session-records'
 import { appendLiveAssistantSegment } from './live-assistant-segments'
 import { clearNotifications as clearDurableNotifications, fetchNotifications, fetchNotificationSummary, updateNotification } from '../notifications/api'
 import type { DurableNotificationRecord, NotificationSummaryRecord } from '../notifications/types'
@@ -1041,53 +1042,6 @@ function ensureSession(state: DesktopStoreState, sessionId: string): DesktopSess
     pendingPermissions: [],
     pendingPermissionCount: 0,
     usage: null,
-  }
-}
-
-function mergeSessionRecords(existing: DesktopSessionRecord | null, incoming: DesktopSessionRecord): DesktopSessionRecord {
-  if (!existing) {
-    return incoming
-  }
-
-  return {
-    ...incoming,
-    title: incoming.title || existing.title,
-    workspacePath: incoming.workspacePath || existing.workspacePath,
-    workspaceName: incoming.workspaceName || existing.workspaceName,
-    mode: incoming.mode || existing.mode || 'auto',
-    messageCount: Math.max(existing.messageCount, incoming.messageCount),
-    updatedAt: Math.max(existing.updatedAt, incoming.updatedAt),
-    createdAt:
-      existing.createdAt > 0 && incoming.createdAt > 0
-        ? Math.min(existing.createdAt, incoming.createdAt)
-        : Math.max(existing.createdAt, incoming.createdAt),
-    permissionsHydrated: incoming.permissionsHydrated || existing.permissionsHydrated,
-    runtimeWorkspacePath: incoming.runtimeWorkspacePath || existing.runtimeWorkspacePath || incoming.workspacePath || existing.workspacePath,
-    worktreeEnabled: incoming.worktreeEnabled ?? existing.worktreeEnabled ?? false,
-    worktreeRootPath: incoming.worktreeRootPath || existing.worktreeRootPath || '',
-    worktreeBaseBranch: incoming.worktreeBaseBranch || existing.worktreeBaseBranch || '',
-    worktreeBranch: incoming.worktreeBranch || existing.worktreeBranch || '',
-    gitBranch: incoming.gitBranch || existing.gitBranch || '',
-    metadata: incoming.metadata ?? existing.metadata,
-    gitHasGit: incoming.gitHasGit ?? existing.gitHasGit ?? false,
-    gitClean: incoming.gitClean ?? existing.gitClean ?? false,
-    gitDirtyCount: incoming.gitDirtyCount ?? existing.gitDirtyCount ?? 0,
-    gitStagedCount: incoming.gitStagedCount ?? existing.gitStagedCount ?? 0,
-    gitModifiedCount: incoming.gitModifiedCount ?? existing.gitModifiedCount ?? 0,
-    gitUntrackedCount: incoming.gitUntrackedCount ?? existing.gitUntrackedCount ?? 0,
-    gitConflictCount: incoming.gitConflictCount ?? existing.gitConflictCount ?? 0,
-    gitAheadCount: incoming.gitAheadCount ?? existing.gitAheadCount ?? 0,
-    gitBehindCount: incoming.gitBehindCount ?? existing.gitBehindCount ?? 0,
-    gitCommitDetected: incoming.gitCommitDetected ?? existing.gitCommitDetected ?? false,
-    gitCommitCount: incoming.gitCommitCount ?? existing.gitCommitCount ?? 0,
-    gitCommittedFileCount: incoming.gitCommittedFileCount ?? existing.gitCommittedFileCount ?? 0,
-    gitCommittedAdditions: incoming.gitCommittedAdditions ?? existing.gitCommittedAdditions ?? 0,
-    gitCommittedDeletions: incoming.gitCommittedDeletions ?? existing.gitCommittedDeletions ?? 0,
-    lifecycle: incoming.lifecycle ?? existing.lifecycle,
-    live: incoming.live,
-    pendingPermissions: incoming.pendingPermissions,
-    pendingPermissionCount: incoming.pendingPermissionCount,
-    usage: incoming.usage ?? existing.usage,
   }
 }
 

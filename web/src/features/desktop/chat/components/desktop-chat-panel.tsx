@@ -227,8 +227,37 @@ function lineageAgentName(label: string): string {
   return candidate !== '' && !candidate.includes(' ') ? candidate : ''
 }
 
-function resolveSessionEffectiveAgentName(session: DesktopSessionRecord | null | undefined, fallbackPrimary: string): string {
+function isFlowSessionMetadata(metadata: Record<string, unknown> | null): boolean {
+  return metadataString(metadata, 'source').toLowerCase() === 'flow'
+    || metadataString(metadata, 'lineage_kind').toLowerCase() === 'flow'
+    || metadataString(metadata, 'flow_id') !== ''
+}
+
+function resolveFlowSessionAgentName(metadata: Record<string, unknown> | null): string {
+  const flowAgentName = metadataString(metadata, 'flow_agent_name')
+  if (flowAgentName) {
+    return flowAgentName
+  }
+  const agentName = metadataString(metadata, 'agent_name')
+  if (agentName) {
+    return agentName
+  }
+  const lineageLabel = lineageAgentName(metadataString(metadata, 'lineage_label'))
+  if (lineageLabel) {
+    return lineageLabel
+  }
+  return ''
+}
+
+export function sessionUsesReadOnlyFlowIdentity(session: DesktopSessionRecord | null | undefined): boolean {
+  return isFlowSessionMetadata(metadataRecord(session?.metadata))
+}
+
+export function resolveSessionEffectiveAgentName(session: DesktopSessionRecord | null | undefined, fallbackPrimary: string): string {
   const metadata = metadataRecord(session?.metadata)
+  if (isFlowSessionMetadata(metadata)) {
+    return resolveFlowSessionAgentName(metadata) || 'flow'
+  }
   const explicitSubagent = metadataString(metadata, 'subagent')
   if (explicitSubagent) {
     return explicitSubagent
@@ -1230,6 +1259,10 @@ export function DesktopChatPanel({
     () => resolveSessionEffectiveAgentName(liveSession ?? session, agentState.activePrimary),
     [agentState.activePrimary, liveSession, session],
   )
+  const isFlowSession = useMemo(
+    () => sessionUsesReadOnlyFlowIdentity(liveSession ?? session),
+    [liveSession, session],
+  )
   const selectedPrimaryAgentProfile = useMemo(
     () => selectableAgents.find((profile) => profile.name === selectedPrimaryAgent) ?? null,
     [selectableAgents, selectedPrimaryAgent],
@@ -1238,9 +1271,11 @@ export function DesktopChatPanel({
     () => selectableAgents.find((profile) => profile.name === agentState.activePrimary.trim()) ?? null,
     [agentState.activePrimary, selectableAgents],
   )
-  const activeModeSourceProfile = selectedPrimaryAgentProfile ?? currentPrimaryAgentProfile
+  const activeModeSourceProfile = isFlowSession ? null : (selectedPrimaryAgentProfile ?? currentPrimaryAgentProfile)
   const agentDerivedMode = useMemo(
-    () => desiredSessionModeForAgent(activeModeSourceProfile, liveSession?.mode ?? session?.mode ?? draftSessionMode ?? 'plan'),
+    () => activeModeSourceProfile
+      ? desiredSessionModeForAgent(activeModeSourceProfile, liveSession?.mode ?? session?.mode ?? draftSessionMode ?? 'plan')
+      : normalizeSessionMode(liveSession?.mode ?? session?.mode ?? draftSessionMode ?? 'plan'),
     [activeModeSourceProfile, draftSessionMode, liveSession?.mode, session?.mode],
   )
   const sessionMode = sessionId
@@ -1336,6 +1371,9 @@ export function DesktopChatPanel({
   }, [scrollToLatest])
 
   useEffect(() => {
+    if (isFlowSession) {
+      return
+    }
     if (selectableAgents.length === 0) {
       if (selectedPrimaryAgent !== 'swarm') {
         setSelectedPrimaryAgent('swarm')
@@ -1356,17 +1394,21 @@ export function DesktopChatPanel({
     if (nextSelectedAgent !== selectedPrimaryAgent) {
       setSelectedPrimaryAgent(nextSelectedAgent)
     }
-  }, [agentState.activePrimary, liveSession, selectableAgents, selectedPrimaryAgent, session])
+  }, [agentState.activePrimary, isFlowSession, liveSession, selectableAgents, selectedPrimaryAgent, session])
 
   useEffect(() => {
     if (!sessionId) {
+      return
+    }
+    if (isFlowSession) {
+      setCurrentSessionAgent(resolvedSessionAgent || 'flow')
       return
     }
     const nextAgent = selectableAgents.some((profile) => profile.name === resolvedSessionAgent)
       ? resolvedSessionAgent
       : agentState.activePrimary.trim() || selectableAgents[0]?.name || 'swarm'
     setCurrentSessionAgent(nextAgent)
-  }, [agentState.activePrimary, selectableAgents, resolvedSessionAgent, sessionId])
+  }, [agentState.activePrimary, isFlowSession, selectableAgents, resolvedSessionAgent, sessionId])
 
   useEffect(() => {
     if (sessionId) {
@@ -1376,7 +1418,7 @@ export function DesktopChatPanel({
   }, [selectedPrimaryAgent, sessionId])
 
   useEffect(() => {
-    if (!activeModeSourceProfile) {
+    if (isFlowSession || !activeModeSourceProfile) {
       return
     }
     const nextMode = desiredSessionModeForAgent(activeModeSourceProfile, liveSession?.mode ?? session?.mode ?? draftSessionMode)
@@ -1417,10 +1459,10 @@ export function DesktopChatPanel({
       }
     }
     setSessionDraftMode(draftSessionKey, nextMode)
-  }, [activeModeSourceProfile, draftSessionKey, draftSessionMode, liveSession?.mode, session?.mode, sessionId, setSessionDraftMode])
+  }, [activeModeSourceProfile, draftSessionKey, draftSessionMode, isFlowSession, liveSession?.mode, session?.mode, sessionId, setSessionDraftMode])
 
   useEffect(() => {
-    if (!sessionId || !activeModeSourceProfile) {
+    if (!sessionId || isFlowSession || !activeModeSourceProfile) {
       lastAutoModeSyncRef.current = ''
       return
     }
@@ -1457,10 +1499,10 @@ export function DesktopChatPanel({
       lastAutoModeSyncRef.current = ''
       setPanelError(error instanceof Error ? error.message : 'Failed to update session mode')
     })
-  }, [activeModeSourceProfile, draftSessionMode, liveSession?.mode, session?.mode, sessionId])
+  }, [activeModeSourceProfile, draftSessionMode, isFlowSession, liveSession?.mode, session?.mode, sessionId])
 
   useEffect(() => {
-    if (!selectedPrimaryAgentProfile) {
+    if (isFlowSession || !selectedPrimaryAgentProfile) {
       return
     }
     const effectiveAgent = resolveSessionEffectiveAgentName(liveSession ?? session, agentState.activePrimary).trim()
@@ -1487,9 +1529,12 @@ export function DesktopChatPanel({
       lastActivatedAgentRef.current = ''
       setPanelError(error instanceof Error ? error.message : 'Failed to activate agent')
     })
-  }, [agentState.activePrimary, liveSession, selectedPrimaryAgentProfile, session])
+  }, [agentState.activePrimary, isFlowSession, liveSession, selectedPrimaryAgentProfile, session])
 
   const handleAgentSelect = useCallback(async (value: string) => {
+    if (isFlowSession) {
+      return
+    }
     const nextAgent = value.trim() || 'swarm'
     const previousAgent = currentSessionAgent
     setPanelError(null)
@@ -1510,7 +1555,7 @@ export function DesktopChatPanel({
       setCurrentSessionAgent(previousAgent)
       setPanelError(error instanceof Error ? error.message : 'Failed to update session agent')
     }
-  }, [currentSessionAgent, liveSession?.metadata, sessionId, upsertSession])
+  }, [currentSessionAgent, isFlowSession, liveSession?.metadata, sessionId, upsertSession])
 
   useEffect(() => {
     setPanelError(null)
@@ -2680,7 +2725,16 @@ export function DesktopChatPanel({
               {/* DESKTOP LAYOUT (>= 1000px; thinking/fast collapse from 1000px to 1100px) */}
               <div className="hidden min-[1000px]:flex min-w-0 items-center gap-2 justify-between">
                 <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                  {selectedPrimaryAgentProfile?.exitPlanModeEnabled ? (
+                  {isFlowSession ? (
+                    <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
+                      <span className="text-[var(--app-text-subtle)]">
+                        Flow agent:
+                      </span>
+                      <span className="font-semibold text-[var(--app-text)]">
+                        {currentSessionAgent || 'flow'}
+                      </span>
+                    </span>
+                  ) : selectedPrimaryAgentProfile?.exitPlanModeEnabled ? (
                     <ModePicker
                       mode={sessionMode === 'auto' ? 'auto' : 'plan'}
                       onSelect={handleModeChange}
@@ -2696,14 +2750,16 @@ export function DesktopChatPanel({
                     </span>
                   ) : null}
 
-                  <AgentPicker
-                    currentAgent={currentSessionAgent}
-                    selectedPrimaryAgent={selectedPrimaryAgent}
-                    agents={selectableAgents}
-                    onSelect={(value) => {
-                      void handleAgentSelect(value)
-                    }}
-                  />
+                  {!isFlowSession ? (
+                    <AgentPicker
+                      currentAgent={currentSessionAgent}
+                      selectedPrimaryAgent={selectedPrimaryAgent}
+                      agents={selectableAgents}
+                      onSelect={(value) => {
+                        void handleAgentSelect(value)
+                      }}
+                    />
+                  ) : null}
 
                   <ModelPicker
                     options={resolvedModelOptions}
@@ -2797,8 +2853,8 @@ export function DesktopChatPanel({
               <div className="flex w-full min-w-0 relative min-[1000px]:hidden">
                 {mobileSettingsOpen ? (
                   <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
-                    <ModePicker mode={sessionMode === 'auto' ? 'auto' : 'plan'} onSelect={handleModeChange} />
-                    <AgentPicker currentAgent={currentSessionAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={(value) => { void handleAgentSelect(value) }} dropdownAlign="left" />
+                    {!isFlowSession ? <ModePicker mode={sessionMode === 'auto' ? 'auto' : 'plan'} onSelect={handleModeChange} /> : null}
+                    {!isFlowSession ? <AgentPicker currentAgent={currentSessionAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={(value) => { void handleAgentSelect(value) }} dropdownAlign="left" /> : null}
                     <ModelPicker options={resolvedModelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={handleModelChange} openSignal={modelPickerOpenSignal} />
                     <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={handleThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={(enabled) => { void handleThinkingTagsToggle(enabled) }} tagsBusy={thinkingTagsSaving} />
                     {fastSupported ? <ThinkingPicker value={fastValue} options={FAST_ON_OFF_OPTIONS} onSelect={handleFastChange} label="Fast" /> : null}
@@ -2816,7 +2872,7 @@ export function DesktopChatPanel({
                   >
                     <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
                     <span className="flex min-w-0 flex-col leading-tight">
-                      <span className="truncate text-[11px] sm:text-[12px] font-medium text-[var(--app-text)]">{currentSessionAgent}</span>
+                      <span className="truncate text-[11px] sm:text-[12px] font-medium text-[var(--app-text)]">{isFlowSession ? 'Flow' : currentSessionAgent}</span>
                       <span className="truncate text-[10px] text-[var(--app-text-muted)]">
                         {sessionMode === 'auto' ? 'auto' : 'plan'} · {resolvedModelOptions.find(o => o.key === selectedModelKey)?.label || 'Model'} · {normalizedThinking}{fastSupported ? ` · fast ${fastValue}` : ''}
                       </span>

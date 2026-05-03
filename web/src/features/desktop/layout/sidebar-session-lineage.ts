@@ -65,18 +65,22 @@ function sessionLineageLabel(metadata: Record<string, unknown> | null): string {
   ))
 }
 
+function sessionHasFlowIdentity(metadata: Record<string, unknown> | null): boolean {
+  return metadataString(metadata, 'source').toLowerCase() === 'flow'
+    || metadataString(metadata, 'lineage_kind').toLowerCase() === 'flow'
+    || metadataString(metadata, 'flow_id') !== ''
+}
+
 function sessionHasBackgroundLineage(metadata: Record<string, unknown> | null): boolean {
   const background = metadata?.background === true
   const launchMode = metadataString(metadata, 'launch_mode').toLowerCase()
   const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
   const targetKind = metadataString(metadata, 'target_kind').toLowerCase()
-  return background || launchMode === 'background' || lineageKind === 'background_agent' || lineageKind === 'flow' || targetKind === 'background'
+  return background || launchMode === 'background' || lineageKind === 'background_agent' || sessionHasFlowIdentity(metadata) || targetKind === 'background'
 }
 
 function sessionBackgroundBadge(metadata: Record<string, unknown> | null): string {
-  const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
-  const source = metadataString(metadata, 'source').toLowerCase()
-  return lineageKind === 'flow' || source === 'flow' ? 'flow' : 'background'
+  return sessionHasFlowIdentity(metadata) ? 'flow' : 'background'
 }
 
 export function sessionBackgroundInfo(session: DesktopSessionRecord, fallbackTargetLabel = ''): SidebarSessionBackgroundInfo | null {
@@ -107,6 +111,9 @@ export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSe
   const lineageKind = metadataString(metadata, 'lineage_kind').toLowerCase()
   const lineageLabel = sessionLineageLabel(metadata)
   const subagent = resolvedSubagent || requestedSubagent
+  if (sessionHasFlowIdentity(metadata)) {
+    return { kind: 'background', label: 'flow' }
+  }
   if (subagent || lineageKind === 'delegated_subagent') {
     return { kind: 'subagent', label: lineageLabel || '@subagent' }
   }

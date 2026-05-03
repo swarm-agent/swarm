@@ -171,3 +171,32 @@ test('session lineage keeps real subagent children labeled as subagents', () => 
   assert.equal(sessionParentSessionID(session), 'parent-session')
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@parallel' })
 })
+
+test('flow child sessions never collapse into fake subagent lineage even when requested_subagent metadata exists', () => {
+  const session = makeSession({
+    id: 'flow-child-session',
+    metadata: {
+      parent_session_id: 'parent-session',
+      source: 'flow',
+      lineage_kind: 'flow',
+      flow_id: 'flow-123',
+      requested_subagent: 'memory',
+    },
+    lifecycle: {
+      sessionId: 'flow-child-session',
+      runId: 'run-flow-child',
+      active: false,
+      phase: 'completed',
+      startedAt: 1,
+      endedAt: 2,
+      updatedAt: 2,
+      generation: 1,
+      stopReason: null,
+      error: null,
+      ownerTransport: 'flow_scheduler',
+    },
+  })
+
+  assert.equal(sessionParentSessionID(session), 'parent-session')
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'flow' })
+})

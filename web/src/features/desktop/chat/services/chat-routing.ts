@@ -241,6 +241,16 @@ export function applyDesktopChatRoute(url: URL, route: DesktopChatRoute | null |
   return url
 }
 
+function isFlowSessionMetadata(metadata: Record<string, unknown> | null | undefined): boolean {
+  if (!metadata || typeof metadata !== 'object') {
+    return false
+  }
+  const source = typeof metadata.source === 'string' ? metadata.source.trim().toLowerCase() : ''
+  const lineageKind = typeof metadata.lineage_kind === 'string' ? metadata.lineage_kind.trim().toLowerCase() : ''
+  const flowID = typeof metadata.flow_id === 'string' ? metadata.flow_id.trim() : ''
+  return source === 'flow' || lineageKind === 'flow' || flowID !== ''
+}
+
 export function applyDesktopChatRouteToSession(session: DesktopSessionRecord, route: DesktopChatRoute | null | undefined): DesktopSessionRecord {
   if (!route?.swarmId) {
     return session
@@ -262,8 +272,12 @@ export function applyDesktopChatRouteToSession(session: DesktopSessionRecord, ro
 
   return {
     ...session,
-    workspacePath: route.hostWorkspacePath || session.workspacePath,
-    workspaceName: route.hostWorkspaceName || session.workspaceName,
+    workspacePath: isFlowSessionMetadata(session.metadata)
+      ? (session.workspacePath || route.hostWorkspacePath)
+      : (route.hostWorkspacePath || session.workspacePath),
+    workspaceName: isFlowSessionMetadata(session.metadata)
+      ? (session.workspaceName || route.hostWorkspaceName)
+      : (route.hostWorkspaceName || session.workspaceName),
     runtimeWorkspacePath,
   }
 }
