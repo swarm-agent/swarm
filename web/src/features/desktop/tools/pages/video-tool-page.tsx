@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Film, FolderOpen, GripVertical, ListVideo, Loader2, Music2, Play, Sparkles } from 'lucide-react'
+import { ArrowLeft, Film, FolderOpen, GripVertical, ListVideo, Loader2, Music2, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -197,6 +197,11 @@ function clipWidth(clip: VideoClip): string {
   return `${width}%`
 }
 
+function clipMediaUrl(threadId: string, clipId: string): string {
+  const search = new URLSearchParams({ clip_id: clipId })
+  return `/v1/workspace/video/threads/${encodeURIComponent(threadId)}/clips/media?${search.toString()}`
+}
+
 async function scanVideoFolder(workspacePath: string, folderPath: string): Promise<{ folderPath: string; clips: VideoClip[] }> {
   const response = await requestJson<VideoScanResponse>('/v1/workspace/video/scan', {
     method: 'POST',
@@ -298,6 +303,7 @@ export function VideoToolPage() {
   const [addingFolderPath, setAddingFolderPath] = useState<string | null>(null)
   const [createError, setCreateError] = useState<string | null>(null)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [reordering, setReordering] = useState(false)
   const [startingChat, setStartingChat] = useState(false)
 
@@ -347,7 +353,19 @@ export function VideoToolPage() {
 
   const selectedClips = useMemo(() => orderedClips(selectedThread), [selectedThread])
   const selectedFolderPath = threadFolderPath(selectedThread)
-  const primaryClip = selectedClips[0] ?? null
+  const selectedClip = selectedClips.find((clip) => clip.id === selectedClipId) ?? selectedClips[0] ?? null
+  const selectedClipMediaUrl = selectedThread && selectedClip ? clipMediaUrl(selectedThread.id, selectedClip.id) : ''
+
+  useEffect(() => {
+    if (!selectedThread) {
+      setSelectedClipId(null)
+      return
+    }
+    if (selectedClipId && selectedClips.some((clip) => clip.id === selectedClipId)) {
+      return
+    }
+    setSelectedClipId(selectedClips[0]?.id ?? null)
+  }, [selectedClipId, selectedClips, selectedThread])
 
   const handleBack = useMemo(() => {
     if (selectedThread) {
@@ -449,6 +467,7 @@ export function VideoToolPage() {
         return [createdThread, ...withoutCreated]
       })
       setSelectedThreadId(createdThread.id)
+      setSelectedClipId(createdThread.videoClipOrder[0] ?? createdThread.videoClips[0]?.id ?? null)
       setPickerOpen(false)
       await queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
     } catch (error) {
@@ -474,6 +493,7 @@ export function VideoToolPage() {
       const updatedThread = await updateVideoThreadOrder(selectedThread, reordered)
       queryClient.setQueryData<VideoThreadRecord[]>(['video-tool-threads', selectedWorkspacePath], (current = []) => current.map((thread) => thread.id === updatedThread.id ? updatedThread : thread))
       setSelectedThreadId(updatedThread.id)
+      setSelectedClipId((current) => current && reordered.some((clip) => clip.id === current) ? current : reordered[0]?.id ?? null)
       await queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : String(error))
@@ -573,21 +593,25 @@ export function VideoToolPage() {
                   </div>
                 </div>
 
-                <div className="relative grid aspect-video min-h-[340px] place-items-center overflow-hidden border border-[var(--app-border)] bg-[linear-gradient(135deg,color-mix(in_srgb,var(--app-surface)_88%,black),color-mix(in_srgb,var(--app-bg)_92%,black))]">
-                  <div className="absolute left-4 top-4 text-xs text-white/55">16:9 · preview</div>
-                  <div className="text-center">
-                    <Film className="mx-auto text-white/45" size={42} strokeWidth={1.5} />
-                    <p className="mt-3 text-sm font-medium text-white/80">{primaryClip?.name || 'Video sits here'}</p>
-                    {primaryClip ? <p className="mt-1 text-xs text-white/45">{formatBytes(primaryClip.sizeBytes)}</p> : null}
-                  </div>
-                  <div className="absolute bottom-0 left-0 right-0 flex items-center gap-3 border-t border-white/10 bg-black/35 px-4 py-3 text-white">
-                    <button className="grid h-8 w-8 place-items-center rounded-full bg-white text-black" type="button" aria-label="Play preview">
-                      <Play size={14} fill="currentColor" />
-                    </button>
-                    <div className="h-1 flex-1 bg-white/20">
-                      <div className="h-full w-[38%] bg-white" />
+                <div className="relative aspect-video min-h-[340px] overflow-hidden border border-[var(--app-border)] bg-black">
+                  {selectedClip && selectedClipMediaUrl ? (
+                    <video
+                      key={selectedClip.id}
+                      className="h-full w-full bg-black object-contain"
+                      controls
+                      preload="metadata"
+                      src={selectedClipMediaUrl}
+                    />
+                  ) : (
+                    <div className="grid h-full place-items-center text-center">
+                      <div>
+                        <Film className="mx-auto text-white/45" size={42} strokeWidth={1.5} />
+                        <p className="mt-3 text-sm font-medium text-white/80">No clip selected</p>
+                      </div>
                     </div>
-                    <span className="text-xs tabular-nums text-white/65">00:14 / 00:38</span>
+                  )}
+                  <div className="pointer-events-none absolute left-4 top-4 rounded bg-black/55 px-2 py-1 text-xs text-white/70">
+                    {selectedClip ? selectedClip.name : '16:9 · preview'}
                   </div>
                 </div>
               </div>
@@ -604,14 +628,19 @@ export function VideoToolPage() {
                   {selectedClips.length === 0 ? (
                     <div className="py-4 text-sm text-[var(--app-text-muted)]">No accepted clips are stored in this video thread yet.</div>
                   ) : selectedClips.map((clip, index) => (
-                    <div key={clip.id} className="flex items-center gap-3 py-3">
+                    <button
+                      key={clip.id}
+                      type="button"
+                      onClick={() => setSelectedClipId(clip.id)}
+                      className={`flex w-full items-center gap-3 py-3 text-left transition ${selectedClip?.id === clip.id ? 'bg-[color-mix(in_srgb,var(--app-primary)_8%,transparent)]' : ''}`}
+                    >
                       <span className="w-8 shrink-0 text-xs font-semibold text-[var(--app-primary)]">{String(index + 1).padStart(2, '0')}</span>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm text-[var(--app-text)]">{clip.name}</p>
                         <p className="mt-1 text-xs text-[var(--app-text-muted)]">{formatBytes(clip.sizeBytes)} · Modified {formatStartedAt(clip.modifiedAt)}</p>
                       </div>
                       <GripVertical size={14} className="text-[var(--app-text-subtle)]" />
-                    </div>
+                    </button>
                   ))}
                 </div>
               </aside>
@@ -637,7 +666,16 @@ export function VideoToolPage() {
                     {selectedClips.map((clip, index) => (
                       <div
                         key={clip.id}
-                        className="min-w-[120px] border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedClipId(clip.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            setSelectedClipId(clip.id)
+                          }
+                        }}
+                        className={`min-w-[120px] cursor-pointer border px-3 py-3 transition ${selectedClip?.id === clip.id ? 'border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]'}`}
                         style={{ width: clipWidth(clip) }}
                       >
                         <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--app-text-subtle)]">
