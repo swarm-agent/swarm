@@ -48,6 +48,30 @@ async function withFetchStub(run: (calls: Array<{ input: RequestInfo | URL; init
         headers: { 'Content-Type': 'application/json' },
       })
     }
+    if (url === '/v3/flows/flow-ui' && (!init?.method || init.method === 'GET')) {
+      return new Response(JSON.stringify({
+        ok: true,
+        definition: {
+          flow_id: 'flow-ui',
+          revision: 1,
+          name: 'UI flow',
+          enabled: true,
+          target: { kind: 'self', name: 'local' },
+          agent: { profile_name: 'memory', profile_mode: 'background' },
+          workspace: { workspace_path: '.' },
+          schedule: { cadence: 'daily', time: '09:00', timezone: 'UTC' },
+          catch_up_policy: { mode: 'once' },
+          intent: { prompt: 'refresh memory' },
+        },
+        assignment_statuses: [],
+        history: [],
+        outbox: [],
+        history_count: 0,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     if (url === '/v3/flows/flow-ui/run-now' && init?.method === 'POST') {
       return new Response(JSON.stringify({ ok: true, flow: { definition: { flow_id: 'flow-ui', revision: 1, name: 'UI flow', enabled: true, target: { kind: 'self', name: 'local' }, agent: { profile_name: 'memory', profile_mode: 'background' }, workspace: { workspace_path: '.' }, schedule: { cadence: 'daily', time: '09:00', timezone: 'UTC' }, catch_up_policy: { mode: 'once' }, intent: { prompt: 'refresh memory' } }, assignment_statuses: [], history: [], outbox: [], history_count: 0 }, run: { command_id: 'cmd-run', pending_sync: false } }), {
         status: 202,
@@ -71,7 +95,7 @@ async function withFetchStub(run: (calls: Array<{ input: RequestInfo | URL; init
 }
 
 test('flows API uses canonical v3 endpoints', async () => {
-  const { createFlow, deleteFlow, fetchFlows, runFlowNow } = await import('./api')
+  const { createFlow, deleteFlow, fetchFlow, fetchFlows, runFlowNow } = await import('./api')
 
   await withFetchStub(async (calls) => {
     await fetchFlows()
@@ -86,6 +110,7 @@ test('flows API uses canonical v3 endpoints', async () => {
       intent: { prompt: 'refresh memory' },
     }
     await createFlow(input)
+    await fetchFlow('flow-ui')
     await runFlowNow('flow-ui')
     await deleteFlow('flow-ui')
 
@@ -96,9 +121,10 @@ test('flows API uses canonical v3 endpoints', async () => {
     const createBody = JSON.parse(String(calls[1]?.init?.body ?? '{}')) as Record<string, unknown>
     assert.equal(createBody.name, 'UI flow')
     assert.deepEqual(createBody.agent, { profile_name: 'memory', profile_mode: 'background' })
-    assert.equal(String(calls[2]?.input), '/v3/flows/flow-ui/run-now')
-    assert.equal(calls[2]?.init?.method, 'POST')
-    assert.equal(String(calls[3]?.input), '/v3/flows/flow-ui')
-    assert.equal(calls[3]?.init?.method, 'DELETE')
+    assert.equal(String(calls[2]?.input), '/v3/flows/flow-ui')
+    assert.equal(calls[3]?.init?.method, 'POST')
+    assert.equal(String(calls[3]?.input), '/v3/flows/flow-ui/run-now')
+    assert.equal(String(calls[4]?.input), '/v3/flows/flow-ui')
+    assert.equal(calls[4]?.init?.method, 'DELETE')
   })
 })

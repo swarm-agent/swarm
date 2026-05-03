@@ -44,21 +44,20 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
     agentKey: 'missile::subagent',
     targetKey: 'target',
     scheduleCadence: 'Daily' as const,
-    scheduleTime: '9:00 AM',
+    scheduleTimes: ['9:00 AM'],
     scheduleDay: 'Mon',
     scheduleDate: '1',
     timezone: 'America/New_York',
     workspacePath: workspace.path,
-    context: 'target-owned schedule',
     task: 'Run once',
   }
 
-  const manual = formToCreateInput({ ...baseForm, mode: 'Manual one-shot' }, targets, workspaces, agents)
+  const manual = formToCreateInput({ ...baseForm, scheduleCadence: 'On demand' }, targets, workspaces, agents)
   assert.equal(manual.enabled, false)
   assert.equal(manual.schedule.cadence, 'on_demand')
   assert.equal(manual.intent.mode, 'target-owned schedule')
 
-  const scheduled = formToCreateInput({ ...baseForm, mode: 'Scheduled background job' }, targets, workspaces, agents)
+  const scheduled = formToCreateInput(baseForm, targets, workspaces, agents)
   assert.equal(scheduled.enabled, true)
   assert.equal(scheduled.schedule.cadence, 'daily')
   assert.deepEqual(scheduled.schedule.times, ['09:00'])

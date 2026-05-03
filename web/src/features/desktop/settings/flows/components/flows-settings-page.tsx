@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Bot, ChevronDown, Clock, MapPin, MoreHorizontal, Plus, Search, ShieldCheck, Workflow } from 'lucide-react'
+import { ArrowLeft, Bot, ChevronDown, Clock, MapPin, MoreHorizontal, Plus, Search, Workflow } from 'lucide-react'
 import { Button } from '../../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../../components/ui/dialog'
 import { Input } from '../../../../../components/ui/input'
@@ -9,6 +9,7 @@ import { cn } from '../../../../../lib/cn'
 import {
   createFlow,
   deleteFlow,
+  fetchFlow,
   fetchFlows,
   fetchFlowSwarmTargets,
   fetchFlowWorkspaces,
@@ -16,6 +17,7 @@ import {
   runFlowNow,
   type CreateFlowInput,
   type FlowAgentProfile,
+  type FlowDetailRecord,
   type FlowSummaryRecord,
   type FlowSwarmTarget,
   type FlowTaskStep,
@@ -63,6 +65,8 @@ interface FlowDefinition {
   task: string
   tasks: FlowTask[]
   runs: FlowRun[]
+  assignmentStatuses: Array<{ label: string; detail: string; pendingSync: boolean }>
+  outbox: Array<{ commandID: string; status: string; detail: string }>
   raw: FlowSummaryRecord
 }
 
@@ -71,13 +75,11 @@ interface AddFlowForm {
   agentKey: string
   targetKey: string
   scheduleCadence: ScheduleCadence
-  scheduleTime: string
+  scheduleTimes: string[]
   scheduleDay: string
   scheduleDate: string
   timezone: string
   workspacePath: string
-  context: string
-  mode: FlowMode
   task: string
 }
 
@@ -122,13 +124,11 @@ const defaultAddFlowForm: AddFlowForm = {
   agentKey: '',
   targetKey: '',
   scheduleCadence: 'On demand',
-  scheduleTime: '12:00 AM',
+  scheduleTimes: ['12:00 AM'],
   scheduleDay: 'Mon',
   scheduleDate: '1',
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   workspacePath: '',
-  context: 'target-owned schedule',
-  mode: 'Manual one-shot',
   task: '',
 }
 
@@ -180,13 +180,14 @@ function buildScheduleLabel(form: AddFlowForm) {
   if (form.scheduleCadence === 'On demand') {
     return 'On demand'
   }
+  const timesLabel = form.scheduleTimes.join(', ')
   if (form.scheduleCadence === 'Weekly') {
-    return `Weekly on ${form.scheduleDay} ${form.scheduleTime} (${form.timezone})`
+    return `Weekly on ${form.scheduleDay} ${timesLabel} (${form.timezone})`
   }
   if (form.scheduleCadence === 'Monthly') {
-    return `Monthly on day ${form.scheduleDate} ${form.scheduleTime} (${form.timezone})`
+    return `Monthly on day ${form.scheduleDate} ${timesLabel} (${form.timezone})`
   }
-  return `Daily at ${form.scheduleTime} (${form.timezone})`
+  return `Daily at ${timesLabel} (${form.timezone})`
 }
 
 function clockLabelToHHMM(value: string): string {
@@ -430,7 +431,7 @@ function normalizeTask(task: FlowTaskStep, index: number): FlowTask {
 
 function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
   const assignment = record.definition
-  const history = record.last_run ? [record.last_run] : []
+  const history = Array.isArray(record.history) && record.history.length ? record.history : record.last_run ? [record.last_run] : []
   const runs = history.map((run): FlowRun => ({
     id: run.run_id,
     startedAt: isoDisplay(run.started_at || run.scheduled_at),
@@ -444,6 +445,16 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
   const tasks = assignment.intent.tasks?.length
     ? assignment.intent.tasks.map(normalizeTask)
     : [{ id: `${assignment.flow_id}-prompt`, title: 'Run prompt', detail: assignment.intent.prompt || 'Run configured prompt.', action: 'propose' as const }]
+  const assignmentStatuses = (record.assignment_statuses ?? []).map((status) => ({
+    label: status.target.swarm_id || status.target.name || status.target_swarm_id || 'target',
+    detail: [status.status, status.reason].filter(Boolean).join(' • ') || status.status,
+    pendingSync: status.pending_sync,
+  }))
+  const outbox = (record.outbox ?? []).map((command) => ({
+    commandID: command.command_id,
+    status: command.status,
+    detail: command.last_error?.trim() || `${command.attempt_count ?? 0} attempts`,
+  }))
   return {
     id: assignment.flow_id,
     name: assignment.name || assignment.flow_id,
@@ -465,12 +476,14 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
     task: assignment.intent.prompt || tasks.map((task) => task.title).join(', '),
     tasks,
     runs,
+    assignmentStatuses,
+    outbox,
     raw: record,
   }
 }
 
 export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[], agents: FlowAgentOption[]): CreateFlowInput {
-  const isOnDemand = form.mode === 'Manual one-shot' || form.scheduleCadence === 'On demand'
+  const isOnDemand = form.scheduleCadence === 'On demand'
   const cadence = isOnDemand ? 'on_demand' : form.scheduleCadence.toLowerCase()
   const targetOption = targets.find((option) => option.key === form.targetKey)
   const workspaceOption = workspaces.find((option) => option.key === form.workspacePath)
@@ -492,8 +505,8 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
     },
     schedule: {
       cadence,
-      time: cadence === 'on_demand' ? undefined : clockLabelToHHMM(form.scheduleTime),
-      times: cadence === 'on_demand' ? undefined : [clockLabelToHHMM(form.scheduleTime)],
+      time: cadence === 'on_demand' ? undefined : clockLabelToHHMM(form.scheduleTimes[0] || '12:00 AM'),
+      times: cadence === 'on_demand' ? undefined : form.scheduleTimes.map((value) => clockLabelToHHMM(value)),
       weekday: cadence === 'weekly' ? form.scheduleDay : undefined,
       month_day: cadence === 'monthly' ? Number(form.scheduleDate) : undefined,
       timezone: form.timezone.trim() || 'UTC',
@@ -503,7 +516,7 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
     },
     intent: {
       prompt: task,
-      mode: form.context.trim(),
+      mode: 'target-owned schedule',
       tasks: [
         { id: 'context', title: 'Prepare run context', detail: `Target ${targetOption?.label || 'selected swarm'} in ${workspacePath || 'the selected workspace'}.`, action: 'read' },
         { id: 'task', title: 'Run agent task', detail: task, action: 'propose' },
@@ -559,6 +572,8 @@ function FilterSelect({ value, onChange, options, label }: { value: string; onCh
   )
 }
 
+const maxScheduleTimes = 8
+
 function AddFlowModal({
   open,
   onClose,
@@ -594,11 +609,35 @@ function AddFlowModal({
   const update = (field: keyof AddFlowForm) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     setForm((current) => ({ ...current, [field]: event.target.value }))
   }
+  const updateScheduleTime = (index: number) => (event: ChangeEvent<HTMLSelectElement>) => {
+    setForm((current) => ({
+      ...current,
+      scheduleTimes: current.scheduleTimes.map((value, currentIndex) => (currentIndex === index ? event.target.value : value)),
+    }))
+  }
+  const addScheduleTime = () => {
+    setForm((current) => {
+      if (current.scheduleTimes.length >= maxScheduleTimes) {
+        return current
+      }
+      return { ...current, scheduleTimes: [...current.scheduleTimes, current.scheduleTimes[current.scheduleTimes.length - 1] || '12:00 AM'] }
+    })
+  }
+  const removeScheduleTime = (index: number) => {
+    setForm((current) => {
+      const remaining = current.scheduleTimes.filter((_, currentIndex) => currentIndex !== index)
+      return {
+        ...current,
+        scheduleTimes: remaining.length ? remaining : ['12:00 AM'],
+      }
+    })
+  }
 
   const schedulePreview = buildScheduleLabel(form)
   const selectedTarget = targetOptions.find((option) => option.key === form.targetKey)
   const selectedWorkspace = workspaceOptions.find((option) => option.key === form.workspacePath)
   const selectedAgent = agentOptions.find((option) => option.key === form.agentKey)
+  const isScheduled = form.scheduleCadence !== 'On demand'
   const canSubmit = Boolean(selectedTarget && selectedWorkspace && selectedAgent && form.task.trim()) && !busy
 
   const submit = (event: FormEvent) => {
@@ -684,14 +723,34 @@ function AddFlowModal({
                     </select>
                   </label>
                 ) : null}
-                {form.scheduleCadence !== 'On demand' ? (
+                {isScheduled ? (
                   <>
-                    <label className="flex flex-col gap-2">
-                      <span className="text-xs text-[var(--app-text-muted)]">Time</span>
-                      <select value={form.scheduleTime} onChange={update('scheduleTime')} className={fieldClass}>
-                        {scheduleTimeOptions.map((time) => <option key={time}>{time}</option>)}
-                      </select>
-                    </label>
+                    <div className="flex flex-col gap-2 md:col-span-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs text-[var(--app-text-muted)]">Times</span>
+                        <button
+                          type="button"
+                          onClick={addScheduleTime}
+                          disabled={form.scheduleTimes.length >= maxScheduleTimes}
+                          className="text-xs font-medium text-[var(--app-primary)] disabled:cursor-not-allowed disabled:text-[var(--app-text-subtle)]"
+                        >
+                          Add time
+                        </button>
+                      </div>
+                      <div className="grid gap-2">
+                        {form.scheduleTimes.map((time, index) => (
+                          <div key={`${time}-${index}`} className="flex items-center gap-2">
+                            <select value={time} onChange={updateScheduleTime(index)} className={cn(fieldClass, 'flex-1')}>
+                              {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                            </select>
+                            <Button type="button" variant="ghost" className="rounded-xl" onClick={() => removeScheduleTime(index)} disabled={form.scheduleTimes.length === 1}>
+                              Remove
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="text-[11px] text-[var(--app-text-muted)]">Up to {maxScheduleTimes} times per day. Saved times are normalized and deduplicated.</div>
+                    </div>
                     <label className="flex flex-col gap-2">
                       <span className="text-xs text-[var(--app-text-muted)]">Timezone</span>
                       <Input value={form.timezone} onChange={update('timezone')} className={fieldClass} />
@@ -699,25 +758,6 @@ function AddFlowModal({
                   </>
                 ) : null}
               </div>
-              <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 md:col-span-2">
-                <div className="flex items-center gap-2 text-sm font-medium text-[var(--app-text)]">
-                  <ShieldCheck size={14} className="text-[var(--app-text-muted)]" />
-                  Agent contract
-                </div>
-                <div className="mt-2 text-sm text-[var(--app-text)]">{selectedAgent?.contractSummary || 'Select a saved agent to view its contract.'}</div>
-                <div className="mt-1 text-xs text-[var(--app-text-muted)]">{selectedAgent?.profile.description?.trim() || 'Flows use the saved agent contract directly.'}</div>
-              </div>
-              <label className="flex flex-col gap-2 md:col-span-2">
-                <span className={labelClass}>Execution context</span>
-                <Input value={form.context} onChange={update('context')} className={fieldClass} />
-              </label>
-              <label className="flex flex-col gap-2 md:col-span-2">
-                <span className={labelClass}>Launch mode</span>
-                <select value={form.mode} onChange={update('mode')} className={fieldClass}>
-                  <option>Scheduled background job</option>
-                  <option>Manual one-shot</option>
-                </select>
-              </label>
               <label className="flex flex-col gap-2 md:col-span-2">
                 <span className={labelClass}>Task</span>
                 <textarea data-testid="flows-add-task" value={form.task} onChange={update('task')} rows={4} className="resize-none rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-sm leading-6 text-[var(--app-text)] outline-none transition hover:border-[var(--app-border-strong)] focus:border-[var(--app-border-accent)] focus:ring-2 focus:ring-[var(--app-focus-ring)]" />
@@ -770,6 +810,9 @@ function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefi
           ['Workspace', flow.workspace],
           ['Location', flow.location],
           ['Context', flow.context],
+          ['Next due', flow.nextRun],
+          ['Saved status', statusLabels[flow.status]],
+          ['Saved runs', String(flow.totalRuns)],
         ].map(([label, value]) => (
           <div key={label}>
             <div className={labelClass}>{label}</div>
@@ -780,6 +823,30 @@ function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefi
 
       <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div>
+          <div className="mb-6 grid gap-4 md:grid-cols-2">
+            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+              <div className={labelClass}>Assignment status</div>
+              <div data-testid="flows-detail-assignment-status" className="mt-3 space-y-3">
+                {flow.assignmentStatuses.length ? flow.assignmentStatuses.map((status) => (
+                  <div key={`${status.label}-${status.detail}`} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2">
+                    <div className="text-sm font-medium text-[var(--app-text)]">{status.label}</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">{status.detail}{status.pendingSync ? ' • pending sync' : ''}</div>
+                  </div>
+                )) : <div className="text-sm text-[var(--app-text-muted)]">No assignment status mirrored yet.</div>}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+              <div className={labelClass}>Outbox</div>
+              <div data-testid="flows-detail-outbox" className="mt-3 space-y-3">
+                {flow.outbox.length ? flow.outbox.map((command) => (
+                  <div key={command.commandID} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2">
+                    <div className="text-sm font-medium text-[var(--app-text)]">{command.commandID}</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">{command.status} • {command.detail}</div>
+                  </div>
+                )) : <div className="text-sm text-[var(--app-text-muted)]">No pending outbox commands.</div>}
+              </div>
+            </div>
+          </div>
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-[var(--app-text)]">Tasks inside this flow</h2>
@@ -828,6 +895,7 @@ export function FlowsSettingsPage() {
   const swarmTargetsQuery = useQuery({ queryKey: flowSwarmTargetsQueryKey, queryFn: fetchFlowSwarmTargets })
   const flowWorkspacesQuery = useQuery({ queryKey: flowWorkspacesQueryKey, queryFn: fetchFlowWorkspaces })
   const agentStateQuery = useQuery(agentStateQueryOptions())
+  const [selectedFlowRecord, setSelectedFlowRecord] = useState<FlowDetailRecord | null>(null)
   const flows = useMemo(() => (flowsQuery.data ?? []).map(recordToFlow), [flowsQuery.data])
   const [workspaceFilter, setWorkspaceFilter] = useState('all')
   const [agentFilter, setAgentFilter] = useState('all')
@@ -905,7 +973,38 @@ export function FlowsSettingsPage() {
     })
   }, [agentFilter, flows, query, statusFilter, workspaceFilter])
 
-  const selectedFlow = selectedFlowID ? flows.find((flow) => flow.id === selectedFlowID) ?? null : null
+  const selectedFlow = useMemo(() => {
+    if (selectedFlowRecord && selectedFlowID === selectedFlowRecord.definition.flow_id) {
+      return recordToFlow(selectedFlowRecord)
+    }
+    return selectedFlowID ? flows.find((flow) => flow.id === selectedFlowID) ?? null : null
+  }, [flows, selectedFlowID, selectedFlowRecord])
+
+  useEffect(() => {
+    if (!selectedFlowID) {
+      setSelectedFlowRecord(null)
+      return
+    }
+    if (selectedFlowRecord?.definition.flow_id === selectedFlowID) {
+      return
+    }
+    let cancelled = false
+    void fetchFlow(selectedFlowID)
+      .then((detail) => {
+        if (!cancelled) {
+          setSelectedFlowRecord(detail)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load flow detail')
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedFlowID, selectedFlowRecord])
+
   const reviewCount = flows.filter((flow) => flow.status === 'needs_review').length
   const draftCount = flows.filter((flow) => flow.status === 'draft').length
   const pausedCount = flows.filter((flow) => flow.status === 'paused').length
@@ -941,8 +1040,11 @@ export function FlowsSettingsPage() {
     try {
       const detail = await createFlow(input)
       setAddOpen(false)
+      setSelectedFlowRecord(detail)
       setSelectedFlowID(detail.definition.flow_id)
       await refreshFlows()
+      const refreshed = await fetchFlow(detail.definition.flow_id)
+      setSelectedFlowRecord(refreshed)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create flow')
     } finally {
@@ -956,6 +1058,7 @@ export function FlowsSettingsPage() {
     try {
       await runFlowNow(id)
       await refreshFlows()
+      setSelectedFlowRecord(await fetchFlow(id))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to run flow')
     } finally {
@@ -968,6 +1071,7 @@ export function FlowsSettingsPage() {
     setError(null)
     try {
       await deleteFlow(id)
+      setSelectedFlowRecord(null)
       setSelectedFlowID(null)
       await refreshFlows()
     } catch (err) {
@@ -981,7 +1085,7 @@ export function FlowsSettingsPage() {
     return (
       <>
         {error ? <div data-testid="flows-error" className="mb-4 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
-        <FlowDetail flow={selectedFlow} onBack={() => setSelectedFlowID(null)} onRunNow={handleRunNow} onDelete={handleDelete} busy={busyID === selectedFlow.id} />
+        <FlowDetail flow={selectedFlow} onBack={() => { setSelectedFlowRecord(null); setSelectedFlowID(null) }} onRunNow={handleRunNow} onDelete={handleDelete} busy={busyID === selectedFlow.id} />
       </>
     )
   }

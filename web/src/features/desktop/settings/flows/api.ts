@@ -150,6 +150,10 @@ export interface FlowDetailRecord extends FlowSummaryRecord {
   outbox: FlowOutboxCommandRecord[]
 }
 
+export interface FlowDetailResponse extends FlowDetailRecord {
+  ok: boolean
+}
+
 export interface FlowListResponse {
   ok: boolean
   flows: FlowSummaryRecord[]
@@ -227,6 +231,13 @@ export async function fetchFlows(signal?: AbortSignal): Promise<FlowSummaryRecor
     signal,
   })
   return Array.isArray(response.flows) ? response.flows : []
+}
+
+export async function fetchFlow(flowID: string, signal?: AbortSignal): Promise<FlowDetailRecord> {
+  return requestJson<FlowDetailResponse>(`/v3/flows/${encodeURIComponent(flowID)}`, {
+    cache: 'no-store',
+    signal,
+  })
 }
 
 export async function fetchFlowSwarmTargets(): Promise<FlowSwarmTarget[]> {
