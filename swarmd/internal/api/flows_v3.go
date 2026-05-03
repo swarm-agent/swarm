@@ -589,8 +589,8 @@ func (s *Server) flowV3AssignmentFromRequest(r *http.Request, req flowV3UpsertRe
 	if schedule.Cadence == "" {
 		schedule.Cadence = flow.CadenceOnDemand
 	}
-	if schedule.Timezone == "" && flow.NormalizeCadence(schedule.Cadence) != flow.CadenceOnDemand {
-		schedule.Timezone = "UTC"
+	if schedule.Timezone == "" && base != nil && flow.NormalizeCadence(schedule.Cadence) != flow.CadenceOnDemand {
+		schedule.Timezone = strings.TrimSpace(base.Schedule.Timezone)
 	}
 	catchUpPolicy := flow.NormalizeCatchUpPolicy(req.CatchUpPolicy)
 	if !flowV3HasCatchUpPolicyInput(catchUpPolicy) && base != nil {
@@ -714,7 +714,7 @@ func flowV3HasWorkspaceInput(workspace flow.WorkspaceContext) bool {
 }
 
 func flowV3HasScheduleInput(schedule flow.ScheduleSpec) bool {
-	return schedule.Cadence != "" || schedule.Time != "" || schedule.Weekday != "" || schedule.MonthDay != 0 || schedule.Timezone != ""
+	return schedule.Cadence != "" || schedule.Time != "" || len(schedule.Times) > 0 || schedule.Weekday != "" || schedule.MonthDay != 0 || schedule.Timezone != ""
 }
 
 func flowV3HasCatchUpPolicyInput(policy flow.CatchUpPolicy) bool {
@@ -778,10 +778,8 @@ func normalizeManagementWorkspace(workspace flow.WorkspaceContext) flow.Workspac
 }
 
 func normalizeManagementSchedule(schedule flow.ScheduleSpec) flow.ScheduleSpec {
-	schedule.Cadence = flow.NormalizeCadence(schedule.Cadence)
-	schedule.Time = strings.TrimSpace(schedule.Time)
+	schedule = flow.NormalizeScheduleSpec(schedule)
 	schedule.Weekday = strings.TrimSpace(schedule.Weekday)
-	schedule.Timezone = strings.TrimSpace(schedule.Timezone)
 	return schedule
 }
 

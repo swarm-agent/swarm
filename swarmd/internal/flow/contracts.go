@@ -143,11 +143,12 @@ type WorkspaceContext struct {
 }
 
 type ScheduleSpec struct {
-	Cadence  string `json:"cadence"`
-	Time     string `json:"time,omitempty"`
-	Weekday  string `json:"weekday,omitempty"`
-	MonthDay int    `json:"month_day,omitempty"`
-	Timezone string `json:"timezone"`
+	Cadence  string   `json:"cadence"`
+	Time     string   `json:"time,omitempty"`
+	Times    []string `json:"times,omitempty"`
+	Weekday  string   `json:"weekday,omitempty"`
+	MonthDay int      `json:"month_day,omitempty"`
+	Timezone string   `json:"timezone"`
 }
 
 type CatchUpPolicy struct {

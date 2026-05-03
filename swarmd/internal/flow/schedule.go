@@ -3,6 +3,7 @@ package flow
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ const (
 	CatchUpSkip = "skip"
 	CatchUpOnce = "once"
 	CatchUpAll  = "all"
+
+	maxScheduleTimes = 8
 )
 
 func NormalizeCadence(cadence string) string {
@@ -58,7 +61,8 @@ func NormalizeCatchUpPolicy(policy CatchUpPolicy) CatchUpPolicy {
 }
 
 func ValidateSchedule(spec ScheduleSpec) error {
-	cadence := NormalizeCadence(spec.Cadence)
+	spec = NormalizeScheduleSpec(spec)
+	cadence := spec.Cadence
 	switch cadence {
 	case CadenceDaily, CadenceWeekly, CadenceMonthly:
 	case CadenceOnDemand:
@@ -74,7 +78,7 @@ func ValidateSchedule(spec ScheduleSpec) error {
 	if _, err := time.LoadLocation(strings.TrimSpace(spec.Timezone)); err != nil {
 		return fmt.Errorf("load schedule timezone: %w", err)
 	}
-	if _, _, err := parseScheduleClock(spec.Time); err != nil {
+	if _, err := normalizedScheduleTimes(spec); err != nil {
 		return err
 	}
 	switch cadence {
@@ -166,68 +170,91 @@ func nextFireAfter(assignment Assignment, after time.Time) (time.Time, bool, err
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("load schedule timezone: %w", err)
 	}
-	hour, minute, err := parseScheduleClock(assignment.Schedule.Time)
+	times, err := normalizedScheduleTimes(assignment.Schedule)
 	if err != nil {
 		return time.Time{}, false, err
 	}
 	localAfter := after.In(loc)
 	switch cadence {
 	case CadenceDaily:
-		return nextDailyFire(localAfter, after, loc, hour, minute), true, nil
+		return nextDailyFire(localAfter, after, loc, times), true, nil
 	case CadenceWeekly:
 		weekday, err := parseWeekday(assignment.Schedule.Weekday)
 		if err != nil {
 			return time.Time{}, false, err
 		}
-		return nextWeeklyFire(localAfter, after, loc, weekday, hour, minute), true, nil
+		return nextWeeklyFire(localAfter, after, loc, weekday, times), true, nil
 	case CadenceMonthly:
-		return nextMonthlyFire(localAfter, after, loc, assignment.Schedule.MonthDay, hour, minute), true, nil
+		return nextMonthlyFire(localAfter, after, loc, assignment.Schedule.MonthDay, times), true, nil
 	default:
 		return time.Time{}, false, fmt.Errorf("unsupported schedule cadence %q", assignment.Schedule.Cadence)
 	}
 }
 
-func nextDailyFire(localAfter time.Time, after time.Time, loc *time.Location, hour, minute int) time.Time {
+func nextDailyFire(localAfter time.Time, after time.Time, loc *time.Location, times []scheduleClock) time.Time {
 	year, month, day := localAfter.Date()
-	candidate := localWallTimeAtOrAfter(year, month, day, hour, minute, loc)
-	if !candidate.After(after) {
-		localNext := localAfter.AddDate(0, 0, 1)
-		year, month, day = localNext.Date()
-		candidate = localWallTimeAtOrAfter(year, month, day, hour, minute, loc)
+	candidate := nextDayCandidate(year, month, day, after, loc, times)
+	if !candidate.IsZero() {
+		return candidate
 	}
-	return candidate.UTC()
+	localNext := localAfter.AddDate(0, 0, 1)
+	year, month, day = localNext.Date()
+	return firstScheduleTimeForDate(year, month, day, loc, times)
 }
 
-func nextWeeklyFire(localAfter time.Time, after time.Time, loc *time.Location, weekday time.Weekday, hour, minute int) time.Time {
+func nextWeeklyFire(localAfter time.Time, after time.Time, loc *time.Location, weekday time.Weekday, times []scheduleClock) time.Time {
 	daysUntil := (int(weekday) - int(localAfter.Weekday()) + 7) % 7
 	localCandidate := localAfter.AddDate(0, 0, daysUntil)
 	year, month, day := localCandidate.Date()
-	candidate := localWallTimeAtOrAfter(year, month, day, hour, minute, loc)
-	if !candidate.After(after) {
-		localCandidate = localCandidate.AddDate(0, 0, 7)
-		year, month, day = localCandidate.Date()
-		candidate = localWallTimeAtOrAfter(year, month, day, hour, minute, loc)
+	candidate := nextDayCandidate(year, month, day, after, loc, times)
+	if !candidate.IsZero() {
+		return candidate
 	}
-	return candidate.UTC()
+	localCandidate = localCandidate.AddDate(0, 0, 7)
+	year, month, day = localCandidate.Date()
+	return firstScheduleTimeForDate(year, month, day, loc, times)
 }
 
-func nextMonthlyFire(localAfter time.Time, after time.Time, loc *time.Location, monthDay, hour, minute int) time.Time {
+func nextMonthlyFire(localAfter time.Time, after time.Time, loc *time.Location, monthDay int, times []scheduleClock) time.Time {
 	year, month, _ := localAfter.Date()
-	candidate := monthlyWallTime(year, month, monthDay, hour, minute, loc)
-	if !candidate.After(after) {
-		nextMonth := time.Date(year, month, 1, 0, 0, 0, 0, loc).AddDate(0, 1, 0)
-		year, month, _ = nextMonth.Date()
-		candidate = monthlyWallTime(year, month, monthDay, hour, minute, loc)
+	candidate := nextMonthlyCandidate(year, month, monthDay, after, loc, times)
+	if !candidate.IsZero() {
+		return candidate
 	}
-	return candidate.UTC()
+	nextMonth := time.Date(year, month, 1, 0, 0, 0, 0, loc).AddDate(0, 1, 0)
+	year, month, _ = nextMonth.Date()
+	return firstScheduleTimeForMonth(year, month, monthDay, loc, times)
 }
 
-func monthlyWallTime(year int, month time.Month, monthDay, hour, minute int, loc *time.Location) time.Time {
+func nextDayCandidate(year int, month time.Month, day int, after time.Time, loc *time.Location, times []scheduleClock) time.Time {
+	for _, clock := range times {
+		candidate := localWallTimeAtOrAfter(year, month, day, clock.Hour, clock.Minute, loc)
+		if candidate.After(after) {
+			return candidate.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+func nextMonthlyCandidate(year int, month time.Month, monthDay int, after time.Time, loc *time.Location, times []scheduleClock) time.Time {
 	day := monthDay
 	if maxDay := daysInMonth(year, month); day > maxDay {
 		day = maxDay
 	}
-	return localWallTimeAtOrAfter(year, month, day, hour, minute, loc)
+	return nextDayCandidate(year, month, day, after, loc, times)
+}
+
+func firstScheduleTimeForDate(year int, month time.Month, day int, loc *time.Location, times []scheduleClock) time.Time {
+	first := times[0]
+	return localWallTimeAtOrAfter(year, month, day, first.Hour, first.Minute, loc).UTC()
+}
+
+func firstScheduleTimeForMonth(year int, month time.Month, monthDay int, loc *time.Location, times []scheduleClock) time.Time {
+	day := monthDay
+	if maxDay := daysInMonth(year, month); day > maxDay {
+		day = maxDay
+	}
+	return firstScheduleTimeForDate(year, month, day, loc, times)
 }
 
 func localWallTimeAtOrAfter(year int, month time.Month, day int, hour int, minute int, loc *time.Location) time.Time {
@@ -250,6 +277,77 @@ func localWallTimeAtOrAfter(year int, month time.Month, day int, hour int, minut
 		}
 	}
 	return candidate.UTC()
+}
+
+type scheduleClock struct {
+	Raw    string
+	Hour   int
+	Minute int
+}
+
+func normalizedScheduleTimes(spec ScheduleSpec) ([]scheduleClock, error) {
+	rawTimes := make([]string, 0, len(spec.Times)+1)
+	for _, value := range spec.Times {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			rawTimes = append(rawTimes, trimmed)
+		}
+	}
+	if trimmed := strings.TrimSpace(spec.Time); trimmed != "" {
+		rawTimes = append(rawTimes, trimmed)
+	}
+	if len(rawTimes) == 0 {
+		return nil, errors.New("schedule time is required")
+	}
+	if len(rawTimes) > maxScheduleTimes {
+		return nil, fmt.Errorf("schedule times must contain at most %d entries", maxScheduleTimes)
+	}
+	seen := make(map[string]struct{}, len(rawTimes))
+	clocks := make([]scheduleClock, 0, len(rawTimes))
+	for _, raw := range rawTimes {
+		hour, minute, err := parseScheduleClock(raw)
+		if err != nil {
+			return nil, err
+		}
+		normalized := fmt.Sprintf("%02d:%02d", hour, minute)
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		clocks = append(clocks, scheduleClock{Raw: normalized, Hour: hour, Minute: minute})
+	}
+	sort.Slice(clocks, func(i, j int) bool {
+		if clocks[i].Hour != clocks[j].Hour {
+			return clocks[i].Hour < clocks[j].Hour
+		}
+		return clocks[i].Minute < clocks[j].Minute
+	})
+	return clocks, nil
+}
+
+func NormalizeScheduleSpec(spec ScheduleSpec) ScheduleSpec {
+	spec.Cadence = NormalizeCadence(spec.Cadence)
+	spec.Time = strings.TrimSpace(spec.Time)
+	for index := range spec.Times {
+		spec.Times[index] = strings.TrimSpace(spec.Times[index])
+	}
+	spec.Weekday = strings.TrimSpace(spec.Weekday)
+	spec.Timezone = strings.TrimSpace(spec.Timezone)
+	if spec.Cadence == CadenceOnDemand {
+		return spec
+	}
+	clocks, err := normalizedScheduleTimes(spec)
+	if err != nil {
+		return spec
+	}
+	spec.Times = make([]string, 0, len(clocks))
+	for _, clock := range clocks {
+		spec.Times = append(spec.Times, clock.Raw)
+	}
+	if len(spec.Times) > 0 {
+		spec.Time = spec.Times[0]
+	}
+	return spec
 }
 
 func parseScheduleClock(value string) (int, int, error) {

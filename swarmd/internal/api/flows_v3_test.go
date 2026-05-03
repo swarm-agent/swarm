@@ -277,6 +277,56 @@ func TestFlowsV3CreateDoesNotAutoRunOnDemandFlow(t *testing.T) {
 	}
 }
 
+func TestFlowsV3CreateSchedulesMultipleTimesAndPreservesTimezone(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	req := flowV3UpsertRequest{
+		FlowID:  "flow-v3-multi-time",
+		Name:    "Multi-time flow",
+		Enabled: boolPtr(true),
+		Target:  flow.TargetSelection{Kind: "self"},
+		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath: t.TempDir(),
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceDaily, Times: []string{"17:00", "09:00"}, Timezone: "America/New_York"},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Run twice daily."},
+	}
+	rec := httptest.NewRecorder()
+	reqHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(rec, reqHTTP)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload flowV3MutationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if payload.Flow.Definition.Schedule.Timezone != "America/New_York" {
+		t.Fatalf("schedule timezone = %q", payload.Flow.Definition.Schedule.Timezone)
+	}
+	if len(payload.Flow.Definition.Schedule.Times) != 2 {
+		t.Fatalf("schedule times = %+v", payload.Flow.Definition.Schedule.Times)
+	}
+	if !(payload.Flow.Definition.Schedule.Times[0] == "09:00" && payload.Flow.Definition.Schedule.Times[1] == "17:00") &&
+		!(payload.Flow.Definition.Schedule.Times[0] == "17:00" && payload.Flow.Definition.Schedule.Times[1] == "09:00") {
+		t.Fatalf("schedule times = %+v", payload.Flow.Definition.Schedule.Times)
+	}
+	definition, ok, err := flows.GetDefinition("flow-v3-multi-time")
+	if err != nil || !ok {
+		t.Fatalf("get definition ok=%v err=%v", ok, err)
+	}
+	if len(definition.Assignment.Schedule.Times) != 2 {
+		t.Fatalf("stored schedule times = %+v", definition.Assignment.Schedule.Times)
+	}
+	if !(definition.Assignment.Schedule.Times[0] == "09:00" && definition.Assignment.Schedule.Times[1] == "17:00") &&
+		!(definition.Assignment.Schedule.Times[0] == "17:00" && definition.Assignment.Schedule.Times[1] == "09:00") {
+		t.Fatalf("stored schedule times = %+v", definition.Assignment.Schedule.Times)
+	}
+}
+
 func TestFlowsV3CreatePersistsPendingSyncWhenTargetIsUnavailable(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)

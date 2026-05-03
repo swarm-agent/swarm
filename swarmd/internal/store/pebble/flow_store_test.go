@@ -35,6 +35,9 @@ func TestFlowStoreControllerRecordsRoundTripAndOrdering(t *testing.T) {
 	if loaded.Assignment.Agent.TargetKind != "background" || loaded.Assignment.Agent.TargetName != "memory" {
 		t.Fatalf("loaded derived agent = %+v", loaded.Assignment.Agent)
 	}
+	if len(loaded.Assignment.Schedule.Times) != 1 || loaded.Assignment.Schedule.Times[0] != "09:00" {
+		t.Fatalf("loaded normalized schedule times = %+v", loaded.Assignment.Schedule.Times)
+	}
 
 	if _, err := flows.PutAssignmentStatus(FlowAssignmentStatusRecord{
 		FlowID:           "flow-1",
@@ -145,6 +148,35 @@ func TestFlowSchedulerStoreListsAcceptedDueAndSchedulesNext(t *testing.T) {
 	}
 	if len(nextDue) != 1 || !nextDue[0].DueAt.Equal(time.Date(2025, 1, 3, 9, 0, 0, 0, time.UTC)) {
 		t.Fatalf("next due = %+v", nextDue)
+	}
+}
+
+func TestFlowStoreNormalizesPersistedScheduleTimes(t *testing.T) {
+	store := openFlowTestStore(t)
+	flows := NewFlowStore(store)
+	assignment := testFlowAssignment("flow-times", 1)
+	assignment.Schedule.Time = "17:00"
+	assignment.Schedule.Times = []string{"17:00", "09:00", "17:00"}
+
+	definition, err := flows.PutDefinition(FlowDefinitionRecord{Assignment: assignment})
+	if err != nil {
+		t.Fatalf("put definition: %v", err)
+	}
+	if len(definition.Assignment.Schedule.Times) != 2 || definition.Assignment.Schedule.Times[0] != "09:00" || definition.Assignment.Schedule.Times[1] != "17:00" {
+		t.Fatalf("definition normalized schedule times = %+v", definition.Assignment.Schedule.Times)
+	}
+	if definition.Assignment.Schedule.Time != "09:00" {
+		t.Fatalf("definition normalized schedule time = %q", definition.Assignment.Schedule.Time)
+	}
+	loaded, ok, err := flows.GetDefinition(definition.FlowID)
+	if err != nil || !ok {
+		t.Fatalf("get definition ok=%v err=%v", ok, err)
+	}
+	if len(loaded.Assignment.Schedule.Times) != 2 || loaded.Assignment.Schedule.Times[0] != "09:00" || loaded.Assignment.Schedule.Times[1] != "17:00" {
+		t.Fatalf("loaded normalized schedule times = %+v", loaded.Assignment.Schedule.Times)
+	}
+	if loaded.Assignment.Schedule.Time != "09:00" {
+		t.Fatalf("loaded normalized schedule time = %q", loaded.Assignment.Schedule.Time)
 	}
 }
 

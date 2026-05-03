@@ -41,6 +41,7 @@ export interface FlowWorkspaceContext {
 export interface FlowScheduleSpec {
   cadence: string
   time?: string
+  times?: string[]
   weekday?: string
   month_day?: number
   timezone: string

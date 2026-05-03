@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { formToCreateInput } from './flows-settings-page'
 import type { FlowAgentProfile, FlowSwarmTarget, FlowWorkspaceEntry } from '../api'
 
-test('formToCreateInput differentiates one-shot background from manual one-shot', () => {
+test('formToCreateInput maps manual and scheduled flows without auto-run intent', () => {
   const target: FlowSwarmTarget = { swarm_id: 'local-swarm', kind: 'self', name: 'Local', online: true, selectable: true, current: true }
   const workspace: FlowWorkspaceEntry = {
     path: '/tmp/workspace',
@@ -47,18 +47,21 @@ test('formToCreateInput differentiates one-shot background from manual one-shot'
     scheduleTime: '9:00 AM',
     scheduleDay: 'Mon',
     scheduleDate: '1',
+    timezone: 'America/New_York',
     workspacePath: workspace.path,
     context: 'target-owned schedule',
     task: 'Run once',
   }
 
-  const oneShot = formToCreateInput({ ...baseForm, mode: 'One-shot background job' }, targets, workspaces, agents)
-  assert.equal(oneShot.enabled, true)
-  assert.equal(oneShot.schedule.cadence, 'on_demand')
-  assert.equal(oneShot.intent.mode, 'one_shot_background')
-
   const manual = formToCreateInput({ ...baseForm, mode: 'Manual one-shot' }, targets, workspaces, agents)
   assert.equal(manual.enabled, false)
   assert.equal(manual.schedule.cadence, 'on_demand')
   assert.equal(manual.intent.mode, 'target-owned schedule')
+
+  const scheduled = formToCreateInput({ ...baseForm, mode: 'Scheduled background job' }, targets, workspaces, agents)
+  assert.equal(scheduled.enabled, true)
+  assert.equal(scheduled.schedule.cadence, 'daily')
+  assert.deepEqual(scheduled.schedule.times, ['09:00'])
+  assert.equal(scheduled.schedule.timezone, 'America/New_York')
+  assert.equal(scheduled.intent.mode, 'target-owned schedule')
 })

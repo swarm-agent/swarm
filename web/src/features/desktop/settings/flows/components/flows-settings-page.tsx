@@ -24,7 +24,7 @@ import {
 import { agentStateQueryOptions } from '../../../../queries/query-options'
 
 type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
-type FlowMode = 'One-shot background job' | 'Scheduled background job' | 'Manual one-shot'
+type FlowMode = 'Scheduled background job' | 'Manual one-shot'
 type ScheduleCadence = 'Daily' | 'Weekly' | 'Monthly' | 'On demand'
 
 interface FlowTask {
@@ -74,6 +74,7 @@ interface AddFlowForm {
   scheduleTime: string
   scheduleDay: string
   scheduleDate: string
+  timezone: string
   workspacePath: string
   context: string
   mode: FlowMode
@@ -124,9 +125,10 @@ const defaultAddFlowForm: AddFlowForm = {
   scheduleTime: '12:00 AM',
   scheduleDay: 'Mon',
   scheduleDate: '1',
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   workspacePath: '',
   context: 'target-owned schedule',
-  mode: 'One-shot background job',
+  mode: 'Manual one-shot',
   task: '',
 }
 
@@ -179,12 +181,12 @@ function buildScheduleLabel(form: AddFlowForm) {
     return 'On demand'
   }
   if (form.scheduleCadence === 'Weekly') {
-    return `Weekly on ${form.scheduleDay} ${form.scheduleTime}`
+    return `Weekly on ${form.scheduleDay} ${form.scheduleTime} (${form.timezone})`
   }
   if (form.scheduleCadence === 'Monthly') {
-    return `Monthly on day ${form.scheduleDate} ${form.scheduleTime}`
+    return `Monthly on day ${form.scheduleDate} ${form.scheduleTime} (${form.timezone})`
   }
-  return `Daily at ${form.scheduleTime}`
+  return `Daily at ${form.scheduleTime} (${form.timezone})`
 }
 
 function clockLabelToHHMM(value: string): string {
@@ -365,14 +367,16 @@ function scheduleLabelFromRecord(record: FlowSummaryRecord): string {
   if (cadence === 'On demand') {
     return 'On demand'
   }
-  const time = hhmmToDisplay(schedule.time ?? '')
+  const rawTimes = Array.isArray(schedule.times) && schedule.times.length ? schedule.times : schedule.time ? [schedule.time] : []
+  const timeLabel = rawTimes.map((value) => hhmmToDisplay(value)).join(', ')
+  const timezoneSuffix = schedule.timezone ? ` (${schedule.timezone})` : ''
   if (cadence === 'Weekly') {
-    return `Weekly on ${schedule.weekday || 'Mon'} ${time}`
+    return `Weekly on ${schedule.weekday || 'Mon'} ${timeLabel}${timezoneSuffix}`
   }
   if (cadence === 'Monthly') {
-    return `Monthly on day ${schedule.month_day || 1} ${time}`
+    return `Monthly on day ${schedule.month_day || 1} ${timeLabel}${timezoneSuffix}`
   }
-  return `Daily at ${time}`
+  return `Daily at ${timeLabel}${timezoneSuffix}`
 }
 
 function statusFromRecord(record: FlowSummaryRecord): FlowStatus {
@@ -466,9 +470,8 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
 }
 
 export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[], agents: FlowAgentOption[]): CreateFlowInput {
-  const isManualOneShot = form.mode === 'Manual one-shot'
-  const isOneShotBackground = form.mode === 'One-shot background job'
-  const cadence = isManualOneShot || isOneShotBackground ? 'on_demand' : form.scheduleCadence === 'On demand' ? 'on_demand' : form.scheduleCadence.toLowerCase()
+  const isOnDemand = form.mode === 'Manual one-shot' || form.scheduleCadence === 'On demand'
+  const cadence = isOnDemand ? 'on_demand' : form.scheduleCadence.toLowerCase()
   const targetOption = targets.find((option) => option.key === form.targetKey)
   const workspaceOption = workspaces.find((option) => option.key === form.workspacePath)
   const agentOption = agents.find((option) => option.key === form.agentKey)
@@ -476,7 +479,7 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
   const task = form.task.trim() || 'Run the configured task prompt.'
   return {
     name: form.name.trim() || 'Untitled flow',
-    enabled: !isManualOneShot,
+    enabled: !isOnDemand,
     target: targetToSelection(targetOption?.target),
     agent: {
       profile_name: agentOption?.profile.name.trim() || '',
@@ -490,16 +493,17 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
     schedule: {
       cadence,
       time: cadence === 'on_demand' ? undefined : clockLabelToHHMM(form.scheduleTime),
+      times: cadence === 'on_demand' ? undefined : [clockLabelToHHMM(form.scheduleTime)],
       weekday: cadence === 'weekly' ? form.scheduleDay : undefined,
       month_day: cadence === 'monthly' ? Number(form.scheduleDate) : undefined,
-      timezone: 'UTC',
+      timezone: form.timezone.trim() || 'UTC',
     },
     catch_up_policy: {
       mode: 'once',
     },
     intent: {
       prompt: task,
-      mode: isOneShotBackground ? 'one_shot_background' : form.context.trim(),
+      mode: form.context.trim(),
       tasks: [
         { id: 'context', title: 'Prepare run context', detail: `Target ${targetOption?.label || 'selected swarm'} in ${workspacePath || 'the selected workspace'}.`, action: 'read' },
         { id: 'task', title: 'Run agent task', detail: task, action: 'propose' },
@@ -681,12 +685,18 @@ function AddFlowModal({
                   </label>
                 ) : null}
                 {form.scheduleCadence !== 'On demand' ? (
-                  <label className="flex flex-col gap-2">
-                    <span className="text-xs text-[var(--app-text-muted)]">Time</span>
-                    <select value={form.scheduleTime} onChange={update('scheduleTime')} className={fieldClass}>
-                      {scheduleTimeOptions.map((time) => <option key={time}>{time}</option>)}
-                    </select>
-                  </label>
+                  <>
+                    <label className="flex flex-col gap-2">
+                      <span className="text-xs text-[var(--app-text-muted)]">Time</span>
+                      <select value={form.scheduleTime} onChange={update('scheduleTime')} className={fieldClass}>
+                        {scheduleTimeOptions.map((time) => <option key={time}>{time}</option>)}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-2">
+                      <span className="text-xs text-[var(--app-text-muted)]">Timezone</span>
+                      <Input value={form.timezone} onChange={update('timezone')} className={fieldClass} />
+                    </label>
+                  </>
                 ) : null}
               </div>
               <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 md:col-span-2">
@@ -705,7 +715,6 @@ function AddFlowModal({
                 <span className={labelClass}>Launch mode</span>
                 <select value={form.mode} onChange={update('mode')} className={fieldClass}>
                   <option>Scheduled background job</option>
-                  <option>One-shot background job</option>
                   <option>Manual one-shot</option>
                 </select>
               </label>

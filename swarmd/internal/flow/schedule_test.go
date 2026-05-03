@@ -53,6 +53,53 @@ func TestNextFireDailyWeeklyMonthlyAndOnDemand(t *testing.T) {
 	}
 }
 
+func TestNextFireHandlesMultipleTimesPerDay(t *testing.T) {
+	assignment := testScheduleAssignment(ScheduleSpec{Cadence: "Daily", Times: []string{"09:00", "17:00"}, Timezone: "UTC"})
+	next, ok, err := NextFire(assignment, time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC))
+	if err != nil || !ok {
+		t.Fatalf("multi-time next ok=%v err=%v", ok, err)
+	}
+	if want := time.Date(2025, 1, 2, 17, 0, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("multi-time same-day next = %s want %s", next, want)
+	}
+	next, ok, err = NextFire(assignment, time.Date(2025, 1, 2, 18, 0, 0, 0, time.UTC))
+	if err != nil || !ok {
+		t.Fatalf("multi-time rollover ok=%v err=%v", ok, err)
+	}
+	if want := time.Date(2025, 1, 3, 9, 0, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("multi-time rollover next = %s want %s", next, want)
+	}
+}
+
+func TestValidateScheduleTimes(t *testing.T) {
+	if err := ValidateSchedule(ScheduleSpec{Cadence: "daily", Timezone: "UTC", Times: []string{"09:00", "17:30"}}); err != nil {
+		t.Fatalf("validate multi-times: %v", err)
+	}
+	normalized := NormalizeScheduleSpec(ScheduleSpec{Cadence: "Daily", Time: "17:30", Times: []string{"09:00", "17:30", "09:00"}, Timezone: " UTC "})
+	if normalized.Cadence != CadenceDaily {
+		t.Fatalf("normalized cadence = %q", normalized.Cadence)
+	}
+	if normalized.Timezone != "UTC" {
+		t.Fatalf("normalized timezone = %q", normalized.Timezone)
+	}
+	if len(normalized.Times) != 2 || normalized.Times[0] != "09:00" || normalized.Times[1] != "17:30" {
+		t.Fatalf("normalized times = %+v", normalized.Times)
+	}
+	if normalized.Time != "09:00" {
+		t.Fatalf("normalized time = %q", normalized.Time)
+	}
+	if err := ValidateSchedule(ScheduleSpec{Cadence: "daily", Timezone: "UTC", Times: []string{"09:00", "25:00"}}); err == nil {
+		t.Fatal("expected invalid time to fail validation")
+	}
+	tooMany := make([]string, maxScheduleTimes+1)
+	for i := range tooMany {
+		tooMany[i] = "09:00"
+	}
+	if err := ValidateSchedule(ScheduleSpec{Cadence: "daily", Timezone: "UTC", Times: tooMany}); err == nil {
+		t.Fatal("expected too many times to fail validation")
+	}
+}
+
 func TestNextFireHandlesDSTGapAndFold(t *testing.T) {
 	gap := testScheduleAssignment(ScheduleSpec{Cadence: "Daily", Time: "02:30", Timezone: "America/New_York"})
 	next, ok, err := NextFire(gap, time.Date(2024, 3, 10, 6, 0, 0, 0, time.UTC))
