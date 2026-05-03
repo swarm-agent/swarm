@@ -751,6 +751,7 @@ export function DesktopChatPanel({
   const [defaultNewSessionMode, setDefaultNewSessionMode] = useState<'auto' | 'plan'>('auto')
 
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const shouldStickToBottomRef = useRef(true)
   const scrollToLatestFrameRef = useRef<number | null>(null)
   const liveAssistantHandoffRef = useRef<{ sessionId: string; content: string; key: string } | null>(null)
@@ -1120,6 +1121,18 @@ export function DesktopChatPanel({
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : composer
+  useEffect(() => {
+    const textarea = composerTextareaRef.current
+    if (!textarea) {
+      return
+    }
+    textarea.style.height = '40px'
+    if (dictationComposer.trim() === '') {
+      return
+    }
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 40), 112)
+    textarea.style.height = `${nextHeight}px`
+  }, [dictationComposer])
   useEffect(() => {
     dictationCanRunRef.current = showDictationButton && !composerDisabled
     if (!dictationCanRunRef.current && dictationEnabledRef.current) {
@@ -2365,12 +2378,6 @@ export function DesktopChatPanel({
     setResolvingPermissionIds(new Set())
   }, [sessionId])
 
-  const placeholder = mentionPaletteIsActive
-    ? 'Pick a subagent, then keep typing the task…'
-    : sessionId
-      ? 'Reply to this conversation…'
-      : `Start a new conversation in ${workspaceName || workspacePath}`
-
   const handleComposerDrop = useCallback((event: ReactDragEvent<HTMLTextAreaElement>) => {
     const todoText = event.dataTransfer.getData(TODO_DRAG_MIME).trim() || event.dataTransfer.getData('text/plain').trim()
     if (!todoText) {
@@ -2616,9 +2623,10 @@ export function DesktopChatPanel({
             />
           ) : null}
           <div className="relative rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] transition-colors focus-within:border-[var(--app-border-accent)]">
-            <div className="flex items-end gap-3 px-4 py-3 lg:py-2.5">
+            <div className="flex items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5">
               <div className="min-w-0 flex-1">
                 <Textarea
+                  ref={composerTextareaRef}
                   value={dictationComposer}
                   onChange={(event) => {
                     if (dictationEnabledRef.current) {
@@ -2638,9 +2646,9 @@ export function DesktopChatPanel({
                     event.dataTransfer.dropEffect = 'copy'
                   }}
                   onDrop={handleComposerDrop}
-                  placeholder={placeholder}
-                  className={showDictationButton ? "min-h-[56px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 pr-12 !shadow-none !outline-none !ring-0 focus:!ring-0 focus:!shadow-none focus:!border-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!shadow-none focus-visible:!border-0 hover:!border-0 disabled:bg-transparent lg:min-h-[52px]" : "min-h-[56px] resize-none !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!ring-0 focus:!shadow-none focus:!border-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!shadow-none focus-visible:!border-0 hover:!border-0 disabled:bg-transparent lg:min-h-[52px]"}
-                  rows={2}
+                  placeholder=""
+                  className={showDictationButton ? "!min-h-[40px] max-h-28 resize-none overflow-y-auto !rounded-none !border-0 !border-none bg-transparent px-0 py-0 pr-12 !shadow-none !outline-none !ring-0 focus:!ring-0 focus:!shadow-none focus:!border-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!shadow-none focus-visible:!border-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]" : "!min-h-[40px] max-h-28 resize-none overflow-y-auto !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!ring-0 focus:!shadow-none focus:!border-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!shadow-none focus-visible:!border-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"}
+                  rows={1}
                   disabled={composerDisabled}
                 />
                 {showDictationButton ? (

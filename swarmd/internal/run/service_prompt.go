@@ -440,9 +440,13 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		executionSetting = "unset"
 	}
 
-	lines := []string{"Current session mode: " + mode + "."}
+	lines := []string{
+		"Current session mode: " + mode + ".",
+		"The current session mode above is authoritative for this turn and supersedes any earlier transcript text, tool output, or UI guidance that described a different mode.",
+		"Session mode can be changed between turns; do not treat an earlier auto/plan state as permanent.",
+	}
 	if exitPlanModeEnabled {
-		lines = append(lines, "Current agent runtime contract: plan -> auto.")
+		lines = append(lines, "Current agent runtime contract: plan -> auto (exit_plan_mode transitions an approved plan turn to auto; it does not make auto mode irreversible).")
 	} else {
 		lines = append(lines, "Current agent runtime contract: "+executionSetting+".")
 	}
@@ -497,6 +501,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		if exitPlanModeEnabled {
 			lines = append(lines,
 				"Keep refining the plan with plan_manage as needed. Call exit_plan_mode only when you want approval to leave plan mode. After approval, execution continues in auto on the same active plan/checklist, and plan_manage can still update it.",
+				"Because the current session mode is plan, you may call exit_plan_mode when the plan is actionable even if earlier transcript text says the session already exited plan mode or that exit_plan_mode cannot be called from auto.",
 			)
 		}
 	} else {

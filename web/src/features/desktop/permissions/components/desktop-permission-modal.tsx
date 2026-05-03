@@ -150,13 +150,23 @@ function ModalShell({
   }
 
   return (
-    <Dialog role="dialog" aria-modal="true" aria-label={title} className="z-[80] p-3 sm:p-4">
+    <Dialog
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      className="z-[80] p-1.5 pt-[calc(var(--app-safe-area-top)_+_0.375rem)] sm:p-4"
+    >
       <DialogBackdrop onClick={handleRequestClose} />
-      <DialogPanel className={cn('flex min-h-0 max-h-[calc(100vh-18px)] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100vh-32px)]', widthClassName)}>
-        <div className="shrink-0 flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-5 py-3">
-          <div className="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <h2 className="text-base font-semibold tracking-tight text-[var(--app-text)]">{title}</h2>
-            {subtitle?.trim() ? <span className="text-sm text-[var(--app-text-muted)]">{subtitle}</span> : null}
+      <DialogPanel
+        className={cn(
+          'flex min-h-0 max-h-[calc(100dvh_-_var(--app-safe-area-top)_-_var(--app-safe-area-bottom)_-_12px)] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100vh-32px)]',
+          widthClassName,
+        )}
+      >
+        <div className="shrink-0 flex items-start justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2.5 sm:items-center sm:gap-3 sm:px-5 sm:py-3">
+          <div className="min-w-0 flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-1">
+            <h2 className="text-sm font-semibold tracking-tight text-[var(--app-text)] sm:text-base">{title}</h2>
+            {subtitle?.trim() ? <span className="text-xs leading-5 text-[var(--app-text-muted)] sm:text-sm">{subtitle}</span> : null}
             {showSessionMeta ? (
               <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
                 <span>mode {sessionMode.trim() || 'plan'}</span>
@@ -168,7 +178,7 @@ function ModalShell({
           </div>
           <ModalCloseButton onClick={handleRequestClose} aria-label="Close permission modal" />
         </div>
-        <div className={cn('min-h-0 flex-1 overflow-auto px-5 py-4', bodyClassName)}>{children}</div>
+        <div className={cn('min-h-0 flex-1 overflow-auto px-3 py-3 sm:px-5 sm:py-4', bodyClassName)}>{children}</div>
         {footer}
       </DialogPanel>
     </Dialog>
@@ -186,8 +196,11 @@ function PermissionActionBar({
   loading,
   approveLabel = 'Approve',
   denyLabel = 'Deny',
-  children,
-  shortcutHint = 'Enter approves · Esc denies · Shift+Enter adds a newline',
+  note,
+  onNoteChange,
+  noteLabel = 'Optional note',
+  notePlaceholder = 'Optional note to send back with this action…',
+  shortcutHint = 'Enter approves · Esc denies',
 }: {
   onApprove: () => void
   onDeny: () => void
@@ -199,31 +212,82 @@ function PermissionActionBar({
   loading: boolean
   approveLabel?: string
   denyLabel?: string
-  children?: React.ReactNode
+  note?: string
+  onNoteChange?: (value: string) => void
+  noteLabel?: string
+  notePlaceholder?: string
   shortcutHint?: string
 }) {
+  const [noteOpen, setNoteOpen] = useState(false)
+  const showPersistentGroup = showPersistentActions && (onAlwaysDeny || onAlwaysAllow)
+  const showNoteToggle = Boolean(onNoteChange)
+  const hasNote = Boolean(note?.trim())
+
   return (
-    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-5 py-3">
-      {children ? <div className="mb-3">{children}</div> : null}
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="ghost" onClick={onDeny} disabled={loading} title="Esc">
-          {denyLabel}
-        </Button>
-        {showPersistentActions && onAlwaysDeny ? (
-          <Button type="button" variant="outline" onClick={onAlwaysDeny} disabled={loading}>
-            {alwaysDenyLabel}
+    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 pb-[max(0.5rem,var(--app-safe-area-bottom))] sm:px-5 sm:py-3 sm:pb-3">
+      {showNoteToggle ? (
+        <div className="mb-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setNoteOpen((current) => !current)}
+            className="min-h-8 px-2.5 text-xs"
+            aria-expanded={noteOpen}
+          >
+            {noteOpen ? 'Hide note' : hasNote ? 'Edit note' : 'Add note'}
           </Button>
-        ) : null}
-        {showPersistentActions && onAlwaysAllow ? (
-          <Button type="button" variant="outline" onClick={onAlwaysAllow} disabled={loading}>
-            {alwaysAllowLabel}
-          </Button>
-        ) : null}
-        <Button type="button" variant="primary" onClick={onApprove} disabled={loading} title="Enter">
+          {noteOpen ? (
+            <label className="mt-2 grid gap-1.5">
+              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{noteLabel}</span>
+              <Textarea
+                value={note ?? ''}
+                onChange={(event) => onNoteChange?.(event.target.value)}
+                placeholder={notePlaceholder}
+                className="min-h-11 resize-none bg-[var(--app-bg-alt)] sm:min-h-[3.5rem]"
+                rows={2}
+              />
+            </label>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="flex touch-manipulation flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+        <Button
+          type="button"
+          variant="primary"
+          onClick={onApprove}
+          disabled={loading}
+          title="Enter"
+          className="order-1 w-full sm:order-4 sm:w-auto"
+        >
           {approveLabel}
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={onDeny}
+          disabled={loading}
+          title="Esc"
+          className="order-2 w-full sm:order-1 sm:w-auto"
+        >
+          {denyLabel}
+        </Button>
+        {showPersistentGroup ? (
+          <div className="order-3 grid grid-cols-2 gap-2 sm:contents">
+            {onAlwaysDeny ? (
+              <Button type="button" variant="outline" onClick={onAlwaysDeny} disabled={loading} className="w-full sm:order-2 sm:w-auto">
+                {alwaysDenyLabel}
+              </Button>
+            ) : null}
+            {onAlwaysAllow ? (
+              <Button type="button" variant="outline" onClick={onAlwaysAllow} disabled={loading} className="w-full sm:order-3 sm:w-auto">
+                {alwaysAllowLabel}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
-      {shortcutHint ? <div className="mt-2 text-right text-[11px] text-[var(--app-text-subtle)]">{shortcutHint}</div> : null}
+      {shortcutHint ? <div className="mt-1.5 hidden text-center text-[11px] text-[var(--app-text-subtle)] sm:block sm:text-right">{shortcutHint}</div> : null}
     </div>
   )
 }
@@ -305,8 +369,8 @@ function GenericPermissionModal({
       title="Permission request"
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(860px,calc(100vw-18px))] sm:w-[min(920px,calc(100vw-32px))]"
-      bodyClassName="py-3"
+      widthClassName="w-full sm:w-[min(920px,calc(100vw-32px))]"
+      bodyClassName="py-2.5 sm:py-3"
       showSessionMeta={false}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
@@ -314,7 +378,7 @@ function GenericPermissionModal({
       shortcutsDisabled={loading}
     >
       <div className="grid gap-3">
-        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2.5 text-sm">
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2.5 text-sm leading-6">
           <ChatMarkdown content={body} />
         </div>
         {persistentAllowed ? (
@@ -329,7 +393,7 @@ function GenericPermissionModal({
             value={note}
             onChange={(event) => setNote(event.target.value)}
             placeholder="Optional note…"
-            className="min-h-[72px] resize-y bg-[var(--app-bg-alt)]"
+            className="min-h-[56px] resize-y bg-[var(--app-bg-alt)] sm:min-h-[72px]"
             rows={2}
           />
         </label>
@@ -400,29 +464,27 @@ function ExitPlanModal({
       subtitle={payload.planId ? `Plan ${payload.planId}` : 'Approve this request to leave plan mode and continue execution'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1120px,calc(100vw-48px))]"
+      widthClassName="w-full sm:w-[min(1120px,calc(100vw-48px))]"
       bodyClassName="overflow-y-auto"
       footer={
-        <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')}>
-          <Textarea
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            placeholder="Optional note to send back with this action…"
-            className="min-h-[3.5rem] resize-none bg-[var(--app-bg-alt)]"
-            rows={2}
-          />
-        </PermissionActionBar>
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          note={note}
+          onNoteChange={setNote}
+        />
       }
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className="flex h-full min-h-0 flex-col gap-3 sm:gap-4">
         <section className="flex min-h-0 flex-1 flex-col gap-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
             <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Plan</span>
-            <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
+            <Button type="button" variant="outline" size="sm" className="min-h-8 px-2.5" onClick={() => void handleCopy()}>
               {copyState === 'copied' ? (
                 <Check className="size-4" />
               ) : copyState === 'error' ? (
@@ -498,21 +560,18 @@ function PlanUpdateModal({
       subtitle={payload.planId ? `Plan ${payload.planId}` : 'Approve this request to revise an existing plan'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1120px,calc(100vw-48px))]"
+      widthClassName="w-full sm:w-[min(1120px,calc(100vw-48px))]"
       bodyClassName="overflow-y-auto"
       footer={
-        <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Approve update">
-          <label className="grid gap-2">
-            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Message to agent</span>
-            <Textarea
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-              placeholder="Optional note to send back with this action…"
-              className="min-h-[3.5rem] resize-none bg-[var(--app-bg-alt)]"
-              rows={2}
-            />
-          </label>
-        </PermissionActionBar>
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          approveLabel="Approve update"
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+        />
       }
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
@@ -612,28 +671,25 @@ function ManageTodosModal({
       subtitle="Approve this request to update workspace todos"
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1120px,calc(100vw-48px))]"
+      widthClassName="w-full sm:w-[min(1120px,calc(100vw-48px))]"
       bodyClassName="overflow-y-auto"
       footer={
-        <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')}>
-          <label className="grid gap-2">
-            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Message to agent</span>
-            <Textarea
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-              placeholder="Type a note to send back with this action…"
-              className="min-h-[3.5rem] resize-none bg-[var(--app-bg-alt)]"
-              rows={2}
-            />
-          </label>
-        </PermissionActionBar>
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+          notePlaceholder="Type a note to send back with this action…"
+        />
       }
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className="flex h-full min-h-0 flex-col gap-3 sm:gap-4">
         <section className="flex min-h-0 flex-1 flex-col gap-3">
           <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task preview</span>
           <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4 pr-5">
@@ -747,31 +803,31 @@ function AskUserModal({
       subtitle="Answer the questions below, then submit your response"
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1140px,calc(100vw-48px))]"
+      widthClassName="w-full sm:w-[min(1140px,calc(100vw-48px))]"
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void submit('approve')}
       onDenyShortcut={() => void submit('deny')}
       shortcutsDisabled={loading}
     >
-      <div className="grid gap-5">
+      <div className="grid gap-3 sm:gap-5">
         {payload.context.trim() ? (
-          <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 sm:rounded-2xl sm:p-4">
             <ChatMarkdown content={payload.context} />
           </div>
         ) : null}
 
-        <div className="grid gap-4">
+        <div className="grid gap-3 sm:gap-4">
           {payload.questions.map((question, index) => {
             const selected = answers[question.id] ?? ''
             const selectedIsCustom = selected === '__custom__'
             return (
-              <section key={question.id} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                <div className="mb-3">
+              <section key={question.id} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:rounded-2xl sm:p-4">
+                <div className="mb-2.5 sm:mb-3">
                   <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
                     {question.header || `Question ${index + 1}`}
                     {question.required ? ' · required' : ''}
                   </div>
-                  <div className="mt-2 rounded-xl bg-[var(--app-bg-alt)] p-3">
+                  <div className="mt-2 rounded-lg bg-[var(--app-bg-alt)] p-2.5 sm:rounded-xl sm:p-3">
                     <ChatMarkdown content={question.question} />
                   </div>
                 </div>
@@ -784,7 +840,7 @@ function AskUserModal({
                         key={`${question.id}:${option.value}:${option.label}`}
                         type="button"
                         className={cn(
-                          'grid gap-1 rounded-2xl border px-4 py-3 text-left transition',
+                          'grid gap-1 rounded-xl border px-3 py-2.5 text-left transition sm:rounded-2xl sm:px-4 sm:py-3',
                           isSelected
                             ? 'border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]'
                             : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-bg-alt)]',
@@ -805,7 +861,7 @@ function AskUserModal({
                       value={customInputs[question.id] ?? ''}
                       onChange={(event) => setCustomInputs((current) => ({ ...current, [question.id]: event.target.value }))}
                       placeholder="Type your response…"
-                      className="min-h-[110px] resize-y bg-[var(--app-bg-alt)]"
+                      className="min-h-[88px] resize-y bg-[var(--app-bg-alt)] sm:min-h-[110px]"
                       rows={3}
                     />
                   </label>
@@ -861,7 +917,7 @@ function WorkspaceScopeModal({
       subtitle={`${payload.accessLabel} · ${permissionDisplayToolName(payload.toolName || permission.toolName)}`}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1120px,calc(100vw-48px))]"
+      widthClassName="w-full sm:w-[min(1120px,calc(100vw-48px))]"
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.sessionAllow.decision))}
       onDenyShortcut={() => void resolve('deny', '')}
@@ -899,7 +955,7 @@ function WorkspaceScopeModal({
             <Button
               type="button"
               variant="primary"
-              className="mt-4"
+              className="mt-4 w-full sm:w-auto"
               onClick={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.sessionAllow.decision))}
               disabled={loading}
             >
@@ -921,7 +977,7 @@ function WorkspaceScopeModal({
             <Button
               type="button"
               variant="ghost"
-              className="mt-4"
+              className="mt-4 w-full sm:w-auto"
               onClick={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.addToWorkspace.decision))}
               disabled={loading || !payload.addToWorkspace.available}
             >
@@ -931,8 +987,8 @@ function WorkspaceScopeModal({
         </div>
       </div>
 
-      <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--app-border)] px-6 py-4">
-        <Button type="button" variant="ghost" onClick={() => void resolve('deny', '')} disabled={loading}>
+      <div className="flex flex-col gap-2 border-t border-[var(--app-border)] px-3 py-2.5 pb-[max(0.625rem,var(--app-safe-area-bottom))] sm:flex-row sm:justify-end sm:px-6 sm:py-4 sm:pb-4">
+        <Button type="button" variant="ghost" className="w-full sm:w-auto" onClick={() => void resolve('deny', '')} disabled={loading}>
           Deny
         </Button>
       </div>
@@ -980,20 +1036,17 @@ function TaskLaunchModal({
       subtitle={payload.subtitle || 'Review the delegated task before spawning subagents'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(1080px,calc(100vw-24px))] sm:w-[min(1140px,calc(100vw-48px))]"
+      widthClassName="w-full sm:w-[min(1140px,calc(100vw-48px))]"
       footer={
-        <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Launch subagents">
-          <label className="grid gap-2">
-            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Message to agent</span>
-            <Textarea
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-              placeholder="Optional note to send back with this action…"
-              className="min-h-[3.5rem] resize-none bg-[var(--app-bg-alt)]"
-              rows={2}
-            />
-          </label>
-        </PermissionActionBar>
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          approveLabel="Launch subagents"
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+        />
       }
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
@@ -1699,7 +1752,7 @@ function AgentChangeModal({
       subtitle={payload.subtitle || 'Review this manage-agent change before it is applied'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-[min(960px,calc(100vw-24px))] sm:w-[min(1040px,calc(100vw-48px))]"
+      widthClassName="w-full sm:w-[min(1040px,calc(100vw-48px))]"
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
       onDenyShortcut={() => void resolve('deny')}

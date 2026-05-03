@@ -20,11 +20,15 @@ func TestModeCapabilityInstructions(t *testing.T) {
 			mode: "plan",
 			contains: []string{
 				"Current session mode: plan.",
+				"The current session mode above is authoritative for this turn and supersedes any earlier transcript text, tool output, or UI guidance that described a different mode.",
+				"Session mode can be changed between turns; do not treat an earlier auto/plan state as permanent.",
+				"Current agent runtime contract: plan -> auto (exit_plan_mode transitions an approved plan turn to auto; it does not make auto mode irreversible).",
 				"Use ask-user only for true product/decision forks; do not use ask-user to request tool permissions.",
 				"- tool availability is determined by plan mode until exit_plan_mode switches the session to auto.",
 				"- exit_plan_mode is available for this agent, but still requires explicit approval and only succeeds from session plan mode.",
 				"- plan_manage is available in both plan and auto to inspect or update saved plans; it does not change session mode.",
 				"Keep refining the plan with plan_manage as needed. Call exit_plan_mode only when you want approval to leave plan mode. After approval, execution continues in auto on the same active plan/checklist, and plan_manage can still update it.",
+				"Because the current session mode is plan, you may call exit_plan_mode when the plan is actionable even if earlier transcript text says the session already exited plan mode or that exit_plan_mode cannot be called from auto.",
 			},
 			notContains: []string{
 				"- bash: requires explicit user approval before execution.",
@@ -35,6 +39,9 @@ func TestModeCapabilityInstructions(t *testing.T) {
 			mode: "auto",
 			contains: []string{
 				"Current session mode: auto.",
+				"The current session mode above is authoritative for this turn and supersedes any earlier transcript text, tool output, or UI guidance that described a different mode.",
+				"Session mode can be changed between turns; do not treat an earlier auto/plan state as permanent.",
+				"Current agent runtime contract: plan -> auto (exit_plan_mode transitions an approved plan turn to auto; it does not make auto mode irreversible).",
 				"Execution expectation: continue implementation; ask-user only for true product/decision forks.",
 				fmt.Sprintf("If an active plan exists, use plan_manage get-active/save to inspect or revise it without switching modes. Do not call exit_plan_mode from auto; it only applies when leaving plan mode. To update the active plan instead, use plan_manage with exactly: %s", autoModePlanManageSaveSnippet),
 			},
@@ -76,8 +83,30 @@ func TestComposeModeAwareInstructions_AppendsModePolicy(t *testing.T) {
 	if !strings.Contains(out, "Current session mode: auto.") {
 		t.Fatalf("expected mode block to be appended: %q", out)
 	}
+	if !strings.Contains(out, "The current session mode above is authoritative for this turn") {
+		t.Fatalf("expected authoritative current-mode guidance: %q", out)
+	}
 	if !strings.Contains(out, fmt.Sprintf("If an active plan exists, use plan_manage get-active/save to inspect or revise it without switching modes. Do not call exit_plan_mode from auto; it only applies when leaving plan mode. To update the active plan instead, use plan_manage with exactly: %s", autoModePlanManageSaveSnippet)) {
 		t.Fatalf("expected auto-mode active-plan guidance: %q", out)
+	}
+}
+
+func TestComposeModeAwareInstructions_PlanReentryOverridesStaleAutoTranscript(t *testing.T) {
+	base := strings.Join([]string{
+		"custom system instruction",
+		"Earlier assistant: This session has already exited plan mode — the earlier exit_plan_mode call was approved and switched us to auto mode.",
+		"Earlier assistant: I can't call exit_plan_mode again from auto mode.",
+	}, "\n")
+	out := composeModeAwareInstructions(base, "plan", false, pebblestore.AgentProfile{Name: "swarm"})
+	for _, expected := range []string{
+		"Current session mode: plan.",
+		"The current session mode above is authoritative for this turn",
+		"Session mode can be changed between turns; do not treat an earlier auto/plan state as permanent.",
+		"Because the current session mode is plan, you may call exit_plan_mode when the plan is actionable even if earlier transcript text says the session already exited plan mode or that exit_plan_mode cannot be called from auto.",
+	} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("expected %q in output:\n%s", expected, out)
+		}
 	}
 }
 

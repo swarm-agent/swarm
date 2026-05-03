@@ -31,7 +31,7 @@ export function Button({ className, variant = 'secondary', size = 'md', type = '
     <button
       type={type}
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-xl font-medium transition duration-150 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)]',
+        'inline-flex touch-manipulation select-none items-center justify-center gap-2 rounded-xl font-medium transition duration-150 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)]',
         variantClasses[variant],
         sizeClasses[size],
         className,
