@@ -67,6 +67,8 @@ func (s *Server) registerFlowRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/flows/", s.handleFlows)
 	mux.HandleFunc("/v2/flows", s.handleFlowsV2)
 	mux.HandleFunc("/v2/flows/", s.handleFlowsV2)
+	mux.HandleFunc("/v3/flows", s.handleFlowsV3)
+	mux.HandleFunc("/v3/flows/", s.handleFlowsV3)
 }
 
 func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
