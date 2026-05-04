@@ -1,20 +1,26 @@
 package imagegen
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
-	googleai "google.golang.org/genai"
 	"swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-type googleGeminiImageClient struct{}
+type googleGeminiImageClient struct {
+	httpClient *http.Client
+	baseURL    string
+}
 
 type GeminiImageGenerationRequest struct {
 	APIKey      string
@@ -45,7 +51,59 @@ type GeminiGeneratedImage struct {
 	MIMEType    string
 }
 
-func (googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiImageGenerationRequest) (GeminiImageGenerationResult, error) {
+type geminiGenerateContentRequest struct {
+	Contents         []geminiRESTContent        `json:"contents"`
+	GenerationConfig geminiRESTGenerationConfig `json:"generationConfig"`
+}
+
+type geminiRESTContent struct {
+	Role  string           `json:"role,omitempty"`
+	Parts []geminiRESTPart `json:"parts,omitempty"`
+}
+
+type geminiRESTPart struct {
+	Text       string                `json:"text,omitempty"`
+	Thought    bool                  `json:"thought,omitempty"`
+	InlineData *geminiRESTInlineData `json:"inlineData,omitempty"`
+}
+
+type geminiRESTInlineData struct {
+	MIMEType string `json:"mimeType,omitempty"`
+	Data     string `json:"data,omitempty"`
+}
+
+type geminiRESTGenerationConfig struct {
+	ResponseModalities []string              `json:"responseModalities,omitempty"`
+	ThinkingConfig     map[string]any        `json:"thinkingConfig,omitempty"`
+	ImageConfig        geminiRESTImageConfig `json:"imageConfig,omitempty"`
+}
+
+type geminiRESTImageConfig struct {
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	ImageSize   string `json:"imageSize,omitempty"`
+}
+
+type geminiGenerateContentResponse struct {
+	ResponseID    string                `json:"responseId,omitempty"`
+	ModelVersion  string                `json:"modelVersion,omitempty"`
+	Candidates    []geminiRESTCandidate `json:"candidates,omitempty"`
+	UsageMetadata map[string]any        `json:"usageMetadata,omitempty"`
+}
+
+type geminiRESTCandidate struct {
+	Content *geminiRESTContent `json:"content,omitempty"`
+}
+
+type geminiRESTErrorResponse struct {
+	Error *struct {
+		Code    int             `json:"code,omitempty"`
+		Message string          `json:"message,omitempty"`
+		Status  string          `json:"status,omitempty"`
+		Details json.RawMessage `json:"details,omitempty"`
+	} `json:"error,omitempty"`
+}
+
+func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiImageGenerationRequest) (GeminiImageGenerationResult, error) {
 	apiKey := strings.TrimSpace(req.APIKey)
 	if apiKey == "" {
 		return GeminiImageGenerationResult{}, errors.New("Google API key is required for Gemini image generation")
@@ -59,44 +117,110 @@ func (googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiImag
 		return GeminiImageGenerationResult{}, errors.New("prompt is required")
 	}
 
-	client, err := googleai.NewClient(ctx, &googleai.ClientConfig{APIKey: apiKey, Backend: googleai.BackendGeminiAPI})
-	if err != nil {
-		return GeminiImageGenerationResult{}, fmt.Errorf("create Gemini client: %w", err)
-	}
-	config := &googleai.GenerateContentConfig{
-		ResponseModalities: []string{"TEXT", "IMAGE"},
-		ImageConfig: &googleai.ImageConfig{
-			AspectRatio: req.AspectRatio,
-			ImageSize:   req.ImageSize,
+	result := GeminiImageGenerationResult{ProviderResponse: map[string]any{
+		"provider":      ProviderGoogleGemini,
+		"model":         modelID,
+		"aspect_ratio":  req.AspectRatio,
+		"image_size":    req.ImageSize,
+		"stream_method": "REST generateContent non-stream",
+		"transport":     "rest",
+		"cost":          geminiCostUnavailable(),
+	}}
+	emitGenerateEvent(req.OnEvent, GenerateStreamEvent{Type: "generating", OutputIndex: req.OutputIndex, SequenceNumber: 1})
+
+	requestBody := geminiGenerateContentRequest{
+		Contents: []geminiRESTContent{{
+			Role:  "user",
+			Parts: []geminiRESTPart{{Text: prompt}},
+		}},
+		GenerationConfig: geminiRESTGenerationConfig{
+			ResponseModalities: []string{"IMAGE"},
+			ThinkingConfig:     map[string]any{"includeThoughts": true},
+			ImageConfig: geminiRESTImageConfig{
+				AspectRatio: strings.TrimSpace(req.AspectRatio),
+				ImageSize:   strings.TrimSpace(req.ImageSize),
+			},
 		},
-		ThinkingConfig: &googleai.ThinkingConfig{IncludeThoughts: true},
+	}
+	encodedBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return GeminiImageGenerationResult{}, fmt.Errorf("marshal Gemini REST request: %w", err)
 	}
 
-	result := GeminiImageGenerationResult{
-		ProviderResponse: map[string]any{
-			"provider":      ProviderGoogleGemini,
-			"model":         modelID,
-			"aspect_ratio":  req.AspectRatio,
-			"image_size":    req.ImageSize,
-			"stream_method": "GenerateContentStream",
-			"cost":          geminiCostUnavailable(),
-		},
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, geminiGenerateContentURL(c.baseURL, modelID, apiKey), bytes.NewReader(encodedBody))
+	if err != nil {
+		return GeminiImageGenerationResult{}, fmt.Errorf("create Gemini REST request: %w", err)
 	}
-	sequence := 0
-	for response, err := range client.Models.GenerateContentStream(ctx, modelID, googleai.Text(prompt), config) {
-		if err != nil {
-			return GeminiImageGenerationResult{}, fmt.Errorf("Gemini image generation stream failed: %w", err)
-		}
-		sequence++
-		mergeGeminiImageResponse(&result, response, req.OutputIndex, sequence, req.OnEvent)
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpClient := c.httpClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
 	}
+	response, err := httpClient.Do(httpReq)
+	if err != nil {
+		return GeminiImageGenerationResult{}, fmt.Errorf("Gemini REST generateContent request failed: %w", err)
+	}
+	defer response.Body.Close()
+
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
+	if err != nil {
+		return GeminiImageGenerationResult{}, fmt.Errorf("read Gemini REST generateContent response: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return GeminiImageGenerationResult{}, geminiRESTHTTPError(response.StatusCode, responseBody)
+	}
+
+	var decoded geminiGenerateContentResponse
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+		return GeminiImageGenerationResult{}, fmt.Errorf("decode Gemini REST generateContent response: %w", err)
+	}
+	mergeGeminiImageResponse(&result, decoded, req.OutputIndex, 1, req.OnEvent)
 	if result.ChunkCount == 0 {
-		return GeminiImageGenerationResult{}, errors.New("Gemini returned no streamed response chunks")
+		return GeminiImageGenerationResult{}, errors.New("Gemini REST generateContent returned no response candidates")
 	}
 	finalizeGeminiProviderResponse(&result)
 	return result, nil
 }
 
+func geminiGenerateContentURL(baseURL, modelID, apiKey string) string {
+	base := strings.TrimSpace(baseURL)
+	if base == "" {
+		base = "https://generativelanguage.googleapis.com/v1beta"
+	}
+	base = strings.TrimRight(base, "/")
+	modelPath := strings.TrimSpace(modelID)
+	if !strings.HasPrefix(modelPath, "models/") && !strings.HasPrefix(modelPath, "tunedModels/") {
+		modelPath = "models/" + modelPath
+	}
+	parts := strings.Split(modelPath, "/")
+	for index, part := range parts {
+		parts[index] = url.PathEscape(part)
+	}
+	return base + "/" + strings.Join(parts, "/") + ":generateContent?key=" + url.QueryEscape(apiKey)
+}
+
+func geminiRESTHTTPError(statusCode int, responseBody []byte) error {
+	var decoded geminiRESTErrorResponse
+	if err := json.Unmarshal(responseBody, &decoded); err == nil && decoded.Error != nil {
+		message := strings.TrimSpace(decoded.Error.Message)
+		if message == "" {
+			message = strings.TrimSpace(decoded.Error.Status)
+		}
+		if message != "" {
+			return fmt.Errorf("Gemini REST generateContent failed: http_status=%d api_status=%q message=%q", statusCode, decoded.Error.Status, message)
+		}
+	}
+	body := strings.TrimSpace(string(responseBody))
+	if len(body) > 1000 {
+		body = body[:1000] + "…"
+	}
+	if body == "" {
+		return fmt.Errorf("Gemini REST generateContent failed: http_status=%d", statusCode)
+	}
+	return fmt.Errorf("Gemini REST generateContent failed: http_status=%d body=%q", statusCode, body)
+}
 func (s *Service) generateGoogleGemini(ctx context.Context, req GenerateRequest, count int, prompt string) (GenerateResult, error) {
 	if s.geminiImageClient == nil {
 		imageGenerationLogf("stage=preflight provider=%q reason=gemini_client_nil will_save=false", ProviderGoogleGemini)
@@ -211,8 +335,11 @@ func (s *Service) generateGeminiSlotsParallel(ctx context.Context, apiKey, model
 	return results, nil
 }
 
-func mergeGeminiImageResponse(result *GeminiImageGenerationResult, response *googleai.GenerateContentResponse, outputIndex, sequence int, onEvent func(GenerateStreamEvent)) {
-	if result == nil || response == nil {
+func mergeGeminiImageResponse(result *GeminiImageGenerationResult, response geminiGenerateContentResponse, outputIndex, sequence int, onEvent func(GenerateStreamEvent)) {
+	if result == nil {
+		return
+	}
+	if len(response.Candidates) == 0 {
 		return
 	}
 	result.ChunkCount++
@@ -225,18 +352,16 @@ func mergeGeminiImageResponse(result *GeminiImageGenerationResult, response *goo
 		result.ProviderResponse["model_version"] = response.ModelVersion
 	}
 	if response.UsageMetadata != nil {
-		result.Usage = usageMetadataMap(response.UsageMetadata)
+		result.Usage = cloneStringAnyMap(response.UsageMetadata)
+		result.Usage["available"] = true
 		result.ProviderResponse["usage_metadata"] = result.Usage
 		result.ProviderResponse["cost"] = geminiCostUnavailable()
 	}
 	for _, candidate := range response.Candidates {
-		if candidate == nil || candidate.Content == nil {
+		if candidate.Content == nil {
 			continue
 		}
 		for partIndex, part := range candidate.Content.Parts {
-			if part == nil {
-				continue
-			}
 			if text := strings.TrimSpace(part.Text); text != "" {
 				if part.Thought {
 					result.Thinking = append(result.Thinking, text)
@@ -246,7 +371,7 @@ func mergeGeminiImageResponse(result *GeminiImageGenerationResult, response *goo
 					emitGenerateEvent(onEvent, GenerateStreamEvent{Type: "text", OutputIndex: outputIndex, SequenceNumber: sequence, PartialImageIndex: partIndex, Text: text})
 				}
 			}
-			if part.InlineData == nil || len(part.InlineData.Data) == 0 || part.Thought {
+			if part.InlineData == nil || strings.TrimSpace(part.InlineData.Data) == "" || part.Thought {
 				continue
 			}
 			mimeType := strings.TrimSpace(part.InlineData.MIMEType)
@@ -256,11 +381,15 @@ func mergeGeminiImageResponse(result *GeminiImageGenerationResult, response *goo
 			if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
 				continue
 			}
-			decoded := append([]byte(nil), part.InlineData.Data...)
-			imageGenerationLogf("stage=stream_image_part_received provider=%q output_index=%d sequence=%d part_index=%d mime_type=%q detected_mime=%q bytes=%d magic_hex=%q thought=%t", ProviderGoogleGemini, outputIndex, sequence, partIndex, mimeType, detectImageMIME(decoded), len(decoded), imageMagicHex(decoded), part.Thought)
-			image := GeminiGeneratedImage{Base64Image: base64.StdEncoding.EncodeToString(decoded), DecodedPNG: decoded, MIMEType: mimeType}
+			decoded, err := base64.StdEncoding.DecodeString(part.InlineData.Data)
+			if err != nil {
+				imageGenerationLogf("stage=rest_image_part_decode_failed provider=%q output_index=%d sequence=%d part_index=%d mime_type=%q reason=%q", ProviderGoogleGemini, outputIndex, sequence, partIndex, mimeType, err.Error())
+				continue
+			}
+			imageGenerationLogf("stage=rest_image_part_received provider=%q output_index=%d sequence=%d part_index=%d mime_type=%q detected_mime=%q bytes=%d magic_hex=%q thought=%t", ProviderGoogleGemini, outputIndex, sequence, partIndex, mimeType, detectImageMIME(decoded), len(decoded), imageMagicHex(decoded), part.Thought)
+			image := GeminiGeneratedImage{Base64Image: part.InlineData.Data, DecodedPNG: decoded, MIMEType: mimeType}
 			result.Images = append(result.Images, image)
-			chunkID := fmt.Sprintf("chunk-%d-part-%d", sequence, partIndex)
+			chunkID := fmt.Sprintf("rest-%d-part-%d", sequence, partIndex)
 			result.RealImageChunkIDs = append(result.RealImageChunkIDs, chunkID)
 			emitGenerateEvent(onEvent, GenerateStreamEvent{Type: "image", ItemID: chunkID, OutputIndex: outputIndex, SequenceNumber: sequence, PartialImageIndex: len(result.Images) - 1, OutputFormat: imageFormatFromMIME(mimeType), MIMEType: mimeType})
 		}
@@ -268,6 +397,16 @@ func mergeGeminiImageResponse(result *GeminiImageGenerationResult, response *goo
 	emitGenerateEvent(onEvent, GenerateStreamEvent{Type: "generating", OutputIndex: outputIndex, SequenceNumber: sequence})
 }
 
+func cloneStringAnyMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	output := make(map[string]any, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
+}
 func finalizeGeminiProviderResponse(result *GeminiImageGenerationResult) {
 	if result == nil {
 		return
@@ -358,7 +497,7 @@ func summarizeGeminiProviderResponses(responses []map[string]any) map[string]any
 func summarizeGeminiCosts(responses []map[string]any) map[string]any {
 	return map[string]any{
 		"available": false,
-		"reason":    "Google GenAI GenerateContentStream returned usage metadata but no exact dollar charge field; dollar cost was not estimated.",
+		"reason":    "Gemini REST generateContent returned usage metadata but no exact dollar charge field; dollar cost was not estimated.",
 	}
 }
 
@@ -368,23 +507,6 @@ func geminiCostUnavailable() map[string]any {
 		"reason":    "exact dollar charge not returned by Google GenAI response",
 	}
 }
-
-func usageMetadataMap(usage *googleai.GenerateContentResponseUsageMetadata) map[string]any {
-	if usage == nil {
-		return nil
-	}
-	encoded, err := json.Marshal(usage)
-	if err != nil {
-		return map[string]any{"available": true, "marshal_error": err.Error()}
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		return map[string]any{"available": true, "unmarshal_error": err.Error()}
-	}
-	decoded["available"] = true
-	return decoded
-}
-
 func (s *Service) recordImageGenerationMetadata(thread pebblestore.ImageThreadSnapshot, providerResponse map[string]any, assets []GeneratedAsset) (pebblestore.ImageThreadSnapshot, error) {
 	if s == nil || s.imageThreads == nil || len(assets) == 0 {
 		return thread, nil

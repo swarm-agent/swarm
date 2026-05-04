@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"swarm/packages/swarmd/internal/imagegen"
 )
@@ -76,11 +77,14 @@ func (s *Server) handleImageGenerationsStream(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
+	var sendMu sync.Mutex
 	send := func(event string, payload any) {
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			encoded = []byte(`{"ok":false,"error":"encode stream event"}`)
 		}
+		sendMu.Lock()
+		defer sendMu.Unlock()
 		_, _ = fmt.Fprintf(w, "event: %s\n", event)
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
 		flusher.Flush()
