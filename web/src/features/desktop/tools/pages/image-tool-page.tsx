@@ -1,8 +1,9 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, ChevronLeft, ChevronRight, FolderOpen, Image, Moon, Sparkles, TriangleAlert } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, FolderOpen, Image, Moon, Sparkles, TriangleAlert, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
+import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Select } from '../../../../components/ui/select'
 import { Textarea } from '../../../../components/ui/textarea'
 import { apiFetch, requestJson } from '../../../../app/api'
@@ -288,6 +289,18 @@ function formatStartedAt(value: number): string {
   }).format(new Date(value))
 }
 
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return 'Size unavailable'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = value
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+}
+
 function extractGeminiChargeInfo(providerResponse: unknown): GeminiChargeInfo | null {
   if (!isRecord(providerResponse)) return null
   const cost = providerResponse.cost
@@ -374,6 +387,8 @@ export function ImageToolPage() {
   const [activeGenerationCount, setActiveGenerationCount] = useState(1)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [selectedImageAssetId, setSelectedImageAssetId] = useState<string | null>(null)
+  const [imageLightboxOpen, setImageLightboxOpen] = useState(false)
+  const [lightboxNaturalSize, setLightboxNaturalSize] = useState<{ width: number; height: number } | null>(null)
   const followLivePreviewRef = useRef(false)
   const [selectedImageModel, setSelectedImageModel] = useState<string>(IMAGE_MODEL_OPTIONS[0]?.id ?? '')
   const [selectedOpenAIImageSize, setSelectedOpenAIImageSize] = useState('auto')
@@ -458,6 +473,9 @@ export function ImageToolPage() {
     ? orderedImageAssets.findIndex((asset) => asset.id === selectedImageAsset.id)
     : -1
   const activePreviewNumber = selectedImageAssetIndex >= 0 ? selectedImageAssetIndex + 1 : 1
+  const selectedImageSource = selectedImageAsset && selectedThread
+    ? selectedImageAsset.url ?? imageAssetURL(selectedThread.id, selectedImageAsset.id)
+    : ''
   const selectedModelOption = IMAGE_MODEL_OPTIONS.find((option) => option.id === selectedImageModel) ?? IMAGE_MODEL_OPTIONS[0]
   const selectedProviderStatus = (imageProvidersQuery.data ?? []).find((provider) => provider.id === selectedModelOption.provider)
   const selectedProviderReady = selectedProviderStatus?.ready === true
@@ -554,6 +572,13 @@ export function ImageToolPage() {
     applyWorkspaceTheme(blackModeEnabled ? 'black' : userThemeId)
   }, [blackModeEnabled, userThemeId])
 
+  useEffect(() => {
+    if (!selectedImageAsset) {
+      setImageLightboxOpen(false)
+    }
+    setLightboxNaturalSize(null)
+  }, [selectedImageAsset])
+
   const handleBackToWorkspace = useMemo(() => {
     if (routeWorkspaceSlug) {
       if (activeSessionId) {
@@ -615,6 +640,26 @@ export function ImageToolPage() {
     setSelectedLivePreviewId(null)
     setSelectedImageAssetId(orderedImageAssets[nextIndex].id)
   }, [orderedImageAssets, selectedImageAssetIndex])
+
+  useEffect(() => {
+    if (!imageLightboxOpen) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setImageLightboxOpen(false)
+      } else if (event.key === 'ArrowLeft') {
+        handlePreviousPreview()
+      } else if (event.key === 'ArrowRight') {
+        handleNextPreview()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleNextPreview, handlePreviousPreview, imageLightboxOpen])
+
+  const openImageLightbox = useCallback(() => {
+    if (!selectedImageAsset) return
+    setImageLightboxOpen(true)
+  }, [selectedImageAsset])
 
   const handleRevealImageStorage = useCallback(async (assetId?: string) => {
     if (!selectedThread) return
@@ -905,7 +950,10 @@ export function ImageToolPage() {
                           </div>
                         ) : selectedImageAsset ? (
                           <div className="grid h-full min-h-0 w-full grid-rows-[minmax(0,1fr)_auto] items-center gap-2 p-2 text-center">
-                            <img src={selectedImageAsset.url ?? imageAssetURL(selectedThread.id, selectedImageAsset.id)} alt={selectedImageAsset.name} className="h-full min-h-0 w-full object-contain" />
+                            <button type="button" className="group relative grid h-full min-h-0 w-full cursor-zoom-in place-items-center overflow-hidden" onClick={openImageLightbox} aria-label="Open image fullscreen">
+                              <img src={selectedImageSource} alt={selectedImageAsset.name} className="h-full min-h-0 w-full object-contain transition duration-150 group-hover:scale-[1.01]" />
+                              <span className="pointer-events-none absolute bottom-3 right-3 rounded-full border border-white/20 bg-black/60 px-3 py-1 text-xs font-medium text-white opacity-0 shadow-lg transition group-hover:opacity-100">Click for fullscreen</span>
+                            </button>
                             <div>
                               <p className="text-sm font-semibold tracking-[-0.04em] text-[var(--app-text)]">{selectedImageAsset.name}</p>
                               <p className="mt-1 break-all text-[10px] leading-4 text-[var(--app-text-muted)]">{selectedImageAsset.path}</p>
@@ -1116,6 +1164,82 @@ export function ImageToolPage() {
             )}
           </section>
         </main>
+        {imageLightboxOpen && selectedThread && selectedImageAsset ? (
+          <Dialog className="z-[80] p-0">
+            <DialogBackdrop className="bg-black/90" onClick={() => setImageLightboxOpen(false)} />
+            <DialogPanel
+              className="h-[100dvh] max-h-none w-screen max-w-none rounded-none border-0 bg-black p-0 text-white"
+              style={{ height: '100dvh', maxHeight: 'none', width: '100vw' }}
+            >
+              <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]">
+                <div className="relative z-10 flex items-center justify-between gap-3 border-b border-white/10 bg-black/70 px-4 py-3 backdrop-blur">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-white/50">Fullscreen preview</p>
+                    <h2 className="mt-1 truncate text-sm font-semibold text-white">{selectedImageAsset.name}</h2>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="hidden rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs text-white/75 sm:inline-flex">
+                      {activePreviewNumber} / {orderedImageAssets.length}
+                    </span>
+                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={() => void handleRevealImageStorage(selectedImageAsset.id)} disabled={revealingStorage}>
+                      <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Show file'}
+                    </Button>
+                    <Button variant="outline" className="h-11 w-11 rounded-full border-white/20 bg-white/10 px-0 text-white hover:bg-white/20" onClick={() => setImageLightboxOpen(false)} aria-label="Close fullscreen preview">
+                      <X size={24} strokeWidth={2.4} />
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="relative flex min-h-0 justify-center overflow-auto px-4 py-4 sm:px-8 sm:py-6">
+                  <Button variant="outline" className="absolute left-3 top-1/2 z-10 h-12 w-12 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15" onClick={handlePreviousPreview} disabled={orderedImageAssets.length <= 1} aria-label="Previous image">
+                    <ChevronLeft size={24} />
+                  </Button>
+                  <img
+                    key={selectedImageAsset.id}
+                    src={selectedImageSource}
+                    alt={selectedImageAsset.name}
+                    className="h-auto w-auto max-w-full select-none object-contain shadow-2xl shadow-black/70"
+                    onLoad={(event) => setLightboxNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+                  />
+                  <Button variant="outline" className="absolute right-3 top-1/2 z-10 h-12 w-12 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15" onClick={handleNextPreview} disabled={orderedImageAssets.length <= 1} aria-label="Next image">
+                    <ChevronRight size={24} />
+                  </Button>
+                </div>
+
+                <div className="border-t border-white/10 bg-black/80 px-3 py-3 backdrop-blur">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-white/60">
+                    <span>Session images</span>
+                    <span>{lightboxNaturalSize ? `${lightboxNaturalSize.width} × ${lightboxNaturalSize.height}px` : 'Resolution loading…'} · {formatBytes(selectedImageAsset.sizeBytes)}</span>
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {orderedImageAssets.map((asset, index) => {
+                      const selected = asset.id === selectedImageAsset.id
+                      const imageSrc = asset.url ?? imageAssetURL(selectedThread.id, asset.id)
+                      return (
+                        <button
+                          key={asset.id}
+                          type="button"
+                          onClick={() => {
+                            followLivePreviewRef.current = false
+                            setSelectedLivePreviewId(null)
+                            setSelectedImageAssetId(asset.id)
+                          }}
+                          className={['group min-w-[92px] max-w-[92px] rounded-xl border bg-white/5 p-1.5 text-left transition hover:bg-white/10', selected ? 'border-white ring-1 ring-white' : 'border-white/15'].join(' ')}
+                          aria-pressed={selected}
+                        >
+                          <div className="grid aspect-square place-items-center overflow-hidden rounded-lg bg-white/5">
+                            <img src={imageSrc} alt={asset.name} className="h-full w-full object-contain" />
+                          </div>
+                          <p className="mt-1 truncate text-[10px] font-medium text-white/80">{index + 1}. {asset.name}</p>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            </DialogPanel>
+          </Dialog>
+        ) : null}
       </div>
     </div>
   )
