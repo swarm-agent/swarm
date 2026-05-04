@@ -188,7 +188,6 @@ Safe local throwaway areas:
 - `.swarm/`
 - `.tools/`
 - `.tmp-tools/`
-- `sandbox-cache/`
 
 Rules for scratch usage:
 - Treat these paths as local-only piles, not canonical product storage.

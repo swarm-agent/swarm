@@ -1283,7 +1283,7 @@ func RunCtl(profile Profile, rawArgs []string, auth bool) error {
 			break
 		}
 	}
-	if args[0] != "sandbox_command" && !hasAddr {
+	if !hasAddr {
 		args = append(args, "--addr", profile.URL)
 	}
 	return RunForeground(ctlPath, args, profile.EnvList(extraEnv))

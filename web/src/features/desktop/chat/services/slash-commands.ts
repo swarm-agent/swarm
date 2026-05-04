@@ -196,16 +196,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'open-plan-modal' },
   },
   {
-    id: 'sandbox',
-    command: '/sandbox',
-    aliases: [],
-    hint: 'Sandbox controls are not available yet',
-    actionLabel: 'Coming soon',
-    tips: ['/sandbox status', '/sandbox on', 'Coming later'],
-    state: 'coming-soon',
-    action: { kind: 'show-help' },
-  },
-  {
     id: 'sessions',
     command: '/sessions',
     aliases: [],

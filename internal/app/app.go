@@ -123,8 +123,6 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/quit", Hint: "Exit swarmtui"},
 		{Command: "/reload", Hint: "Reload home state from swarmd"},
 		{Command: "/rebuild", Hint: "Rebuild the active lane, then exit swarmtui"},
-		// Temporarily hidden from the UI surface.
-		// {Command: "/sandbox", Hint: "Open sandbox setup modal (global ON/OFF)", QuickTips: []string{"/sandbox on", "/sandbox off", "/sandbox status"}},
 		{Command: "/sessions", Hint: "Open recent sessions modal"},
 		{Command: "/swarm", Hint: "Show swarm dashboard, pairing state, and approvals", QuickTips: []string{"/swarm status", "/swarm pending", "/swarm approve <id>", "/swarm reject <id>", "/swarm role master", "/swarm set <name>"}},
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
@@ -1832,7 +1830,6 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			(a.home.AuthModalVisible() ||
 				a.home.VaultModalVisible() ||
 				a.home.WorkspaceModalVisible() ||
-				a.home.SandboxModalVisible() ||
 				a.home.WorktreesModalVisible() ||
 				a.home.ModelsModalVisible() ||
 				a.home.AgentsModalVisible() ||
@@ -1849,7 +1846,6 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			(a.home.AuthModalVisible() ||
 				a.home.VaultModalVisible() ||
 				a.home.WorkspaceModalVisible() ||
-				a.home.SandboxModalVisible() ||
 				a.home.WorktreesModalVisible() ||
 				a.home.ModelsModalVisible() ||
 				a.home.AgentsModalVisible() ||
@@ -1914,7 +1910,6 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 		a.home.AuthModalVisible() ||
 		a.home.VaultModalVisible() ||
 		a.home.WorkspaceModalVisible() ||
-		a.home.SandboxModalVisible() ||
 		a.home.WorktreesModalVisible() ||
 		a.home.ModelsModalVisible() ||
 		a.home.AgentsModalVisible() ||
@@ -2057,9 +2052,6 @@ func (a *App) executeCommand(raw string) {
 		a.handleAddDirectoryCommand(args)
 	case "mcp":
 		a.handleMCPCommand(args)
-	// Temporarily hidden from the UI surface.
-	// case "sandbox":
-	// 	a.handleSandboxCommand(args)
 	case "permissions":
 		a.handlePermissionsCommand(args)
 	case "output":
@@ -2125,9 +2117,6 @@ func (a *App) showHelp() {
 		"/add-dir [path]   (open workspace linked-directory flow)",
 		"/workspace scan [query]",
 		"/mcp   (deferred: MCP management needs Swarm Sync; Exa search can use the built-in free Exa MCP server)",
-		// Temporarily hidden from the UI surface.
-		// "/sandbox   (open sandbox setup modal)",
-		// "/sandbox [on|off|status]",
 		"/output   (open full bash output viewer)",
 		"/permissions [on|off]   (toggle global permission prompts)",
 		"/permissions show   (show global permission policy)",
@@ -3932,10 +3921,6 @@ func (a *App) consumeHomeActions() {
 			a.handleWorkspaceModalAction(action)
 			processed = true
 		}
-		if action, ok := a.home.PopSandboxModalAction(); ok {
-			a.handleSandboxModalAction(action)
-			processed = true
-		}
 		if action, ok := a.home.PopWorktreesModalAction(); ok {
 			a.handleWorktreesModalAction(action)
 			processed = true
@@ -4329,7 +4314,6 @@ func (a *App) backgroundModalOrCommandOpen() bool {
 	return a.home.SessionsModalVisible() ||
 		a.home.AuthModalVisible() ||
 		a.home.WorkspaceModalVisible() ||
-		a.home.SandboxModalVisible() ||
 		a.home.WorktreesModalVisible() ||
 		a.home.ModelsModalVisible() ||
 		a.home.AgentsModalVisible() ||
@@ -4806,52 +4790,6 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		a.openKeybindsModal()
 	default:
 		a.home.SetWorkspaceModalLoading(false)
-	}
-}
-
-func (a *App) handleSandboxModalAction(action ui.SandboxModalAction) {
-	if !a.home.SandboxModalVisible() {
-		return
-	}
-	switch action.Kind {
-	case ui.SandboxModalActionRefresh:
-		a.refreshSandboxModalData("Running sandbox preflight...", true)
-	case ui.SandboxModalActionSetEnabled:
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		status, err := a.api.SetSandboxEnabled(ctx, action.Enabled)
-		a.home.SetSandboxModalData(mapSandboxModalData(status))
-		a.home.SetSandboxModalLoading(false)
-		if err != nil {
-			a.home.SetSandboxModalError(fmt.Sprintf("sandbox update failed: %v", err))
-			a.showToast(ui.ToastError, fmt.Sprintf("sandbox update failed: %v", err))
-			return
-		}
-		label := "OFF"
-		if status.Enabled {
-			label = "ON"
-		}
-		a.home.SetSandboxModalStatus(fmt.Sprintf("Sandbox: %s", label))
-		a.showToast(ui.ToastSuccess, fmt.Sprintf("Sandbox %s (global)", label))
-	case ui.SandboxModalActionCopySetup:
-		command := strings.TrimSpace(action.Command)
-		if command == "" {
-			a.home.SetSandboxModalLoading(false)
-			a.home.SetSandboxModalError("Copy failed. Run: swarm sandbox_command")
-			a.showToast(ui.ToastError, "Copy failed. Run: swarm sandbox_command")
-			return
-		}
-		if err := copyTextToClipboard(command); err != nil {
-			a.home.SetSandboxModalLoading(false)
-			a.home.SetSandboxModalError("Copy failed. Run: swarm sandbox_command")
-			a.showToast(ui.ToastError, "Copy failed. Run: swarm sandbox_command")
-			return
-		}
-		a.home.SetSandboxModalLoading(false)
-		a.home.SetSandboxModalStatus("Copied sandbox setup commands")
-		a.showToast(ui.ToastSuccess, "Copied sandbox setup commands")
-	default:
-		a.home.SetSandboxModalLoading(false)
 	}
 }
 
@@ -5592,7 +5530,6 @@ func (a *App) openWorkspaceModal() ([]client.WorkspaceEntry, error) {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
-	a.home.HideSandboxModal()
 	a.home.HideWorktreesModal()
 	a.home.HideMCPModal()
 	a.home.HideModelsModal()
@@ -5605,28 +5542,11 @@ func (a *App) openWorkspaceModal() ([]client.WorkspaceEntry, error) {
 	return a.loadWorkspaceModalEntries("Loading workspace manager...")
 }
 
-func (a *App) openSandboxModal() {
-	a.home.ClearCommandOverlay()
-	a.home.HideSessionsModal()
-	a.home.HideAuthModal()
-	a.home.HideWorkspaceModal()
-	a.home.HideWorktreesModal()
-	a.home.HideMCPModal()
-	a.home.HideModelsModal()
-	a.home.HideAgentsModal()
-	a.home.HideVoiceModal()
-	a.home.HideThemeModal()
-	a.home.HideKeybindsModal()
-	a.home.ShowSandboxModal()
-	a.refreshSandboxModalData("Loading sandbox status...", false)
-}
-
 func (a *App) openWorktreesModal() {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
-	a.home.HideSandboxModal()
 	a.home.HideMCPModal()
 	a.home.HideModelsModal()
 	a.home.HideAgentsModal()
@@ -5642,7 +5562,6 @@ func (a *App) openMCPModal() {
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
-	a.home.HideSandboxModal()
 	a.home.HideWorktreesModal()
 	a.home.HideModelsModal()
 	a.home.HideAgentsModal()
@@ -5673,38 +5592,6 @@ func (a *App) refreshMCPModalData(statusHint string) {
 	a.home.SetMCPModalData(mapMCPModalServers(servers))
 	a.home.SetMCPModalLoading(false)
 	a.home.SetMCPModalStatus(fmt.Sprintf("mcp servers loaded: %d", len(servers)))
-}
-
-func (a *App) refreshSandboxModalData(statusHint string, forcePreflight bool) {
-	if !a.home.SandboxModalVisible() {
-		return
-	}
-	if strings.TrimSpace(statusHint) != "" {
-		a.home.SetSandboxModalStatus(statusHint)
-	}
-	a.home.SetSandboxModalLoading(true)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	var (
-		status client.SandboxStatus
-		err    error
-	)
-	if forcePreflight {
-		status, err = a.api.PreflightSandbox(ctx)
-	} else {
-		status, err = a.api.GetSandboxStatus(ctx)
-	}
-	if err != nil {
-		a.home.SetSandboxModalLoading(false)
-		a.home.SetSandboxModalError(fmt.Sprintf("sandbox status failed: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("sandbox status failed: %v", err))
-		return
-	}
-	a.home.SetSandboxModalData(mapSandboxModalData(status))
-	a.home.SetSandboxModalLoading(false)
-	a.home.SetSandboxModalStatus(fmt.Sprintf("sandbox %s (ready=%t)", onOffLabel(status.Enabled), status.Ready))
 }
 
 func (a *App) refreshWorktreesModalData(statusHint string) {
@@ -5775,7 +5662,6 @@ func (a *App) loadWorkspaceModalEntries(statusHint string) ([]client.WorkspaceEn
 func (a *App) openAuthModal() {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
-	a.home.HideSandboxModal()
 	a.home.HideWorktreesModal()
 	a.home.HideWorkspaceModal()
 	a.home.HideMCPModal()
@@ -5793,7 +5679,6 @@ func (a *App) openAgentsModal() {
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
-	a.home.HideSandboxModal()
 	a.home.HideWorktreesModal()
 	a.home.HideMCPModal()
 	a.home.HideModelsModal()
@@ -6312,48 +6197,6 @@ func (a *App) handleAddDirectoryCommand(args []string) {
 func (a *App) handleMCPCommand(args []string) {
 	a.home.ClearCommandOverlay()
 	a.home.SetStatus("MCP management is deferred until Swarm Sync integration; Exa search can use the built-in free Exa MCP server")
-}
-
-func (a *App) handleSandboxCommand(args []string) {
-	if a.home == nil {
-		return
-	}
-	a.openSandboxModal()
-	if len(args) == 0 {
-		return
-	}
-
-	sub := strings.ToLower(strings.TrimSpace(args[0]))
-	switch sub {
-	case "status", "open":
-		a.refreshSandboxModalData("Running sandbox preflight...", true)
-	case "on", "enable":
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		status, err := a.api.SetSandboxEnabled(ctx, true)
-		a.home.SetSandboxModalData(mapSandboxModalData(status))
-		if err != nil {
-			a.home.SetSandboxModalError(fmt.Sprintf("sandbox enable failed: %v", err))
-			a.showToast(ui.ToastError, fmt.Sprintf("sandbox enable failed: %v", err))
-			return
-		}
-		a.home.SetSandboxModalStatus("Sandbox ON")
-		a.showToast(ui.ToastSuccess, "Sandbox ON (global)")
-	case "off", "disable":
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		status, err := a.api.SetSandboxEnabled(ctx, false)
-		a.home.SetSandboxModalData(mapSandboxModalData(status))
-		if err != nil {
-			a.home.SetSandboxModalError(fmt.Sprintf("sandbox disable failed: %v", err))
-			a.showToast(ui.ToastError, fmt.Sprintf("sandbox disable failed: %v", err))
-			return
-		}
-		a.home.SetSandboxModalStatus("Sandbox OFF")
-		a.showToast(ui.ToastSuccess, "Sandbox OFF (global)")
-	default:
-		a.home.SetSandboxModalStatus("usage: /sandbox [on|off|status]")
-	}
 }
 
 func (a *App) handleWorktreesCommand(args []string) {
@@ -7949,7 +7792,6 @@ func (a *App) workspaceCycleHotkeyBlocked() bool {
 		a.home.AuthDefaultsInfoVisible() ||
 		a.home.SessionsModalVisible() ||
 		a.home.WorkspaceModalVisible() ||
-		a.home.SandboxModalVisible() ||
 		a.home.WorktreesModalVisible() ||
 		a.home.ModelsModalVisible() ||
 		a.home.AgentsModalVisible() ||
@@ -8345,30 +8187,6 @@ func applyHomeModelResolved(next model.HomeModel, resolved client.ModelResolved)
 
 func homeModelDisplayLabel(next model.HomeModel) string {
 	return model.DisplayModelLabel(next.ModelProvider, next.ModelName, next.ServiceTier, next.ContextMode)
-}
-
-func mapSandboxModalData(status client.SandboxStatus) ui.SandboxModalData {
-	checks := make([]ui.SandboxModalCheck, 0, len(status.Checks))
-	for _, check := range status.Checks {
-		checks = append(checks, ui.SandboxModalCheck{
-			Name:   strings.TrimSpace(check.Name),
-			OK:     check.OK,
-			Detail: strings.TrimSpace(check.Detail),
-		})
-	}
-	remediation := make([]string, 0, len(status.Remediation))
-	for _, line := range status.Remediation {
-		remediation = append(remediation, strings.TrimSpace(line))
-	}
-	return ui.SandboxModalData{
-		Enabled:      status.Enabled,
-		UpdatedAt:    status.UpdatedAt,
-		Ready:        status.Ready,
-		Summary:      strings.TrimSpace(status.Summary),
-		Checks:       checks,
-		Remediation:  remediation,
-		SetupCommand: strings.TrimSpace(status.SetupCommand),
-	}
 }
 
 func mapWorktreesModalData(settings client.WorktreeSettings, resolvedBranch string) ui.WorktreesModalData {

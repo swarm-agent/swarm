@@ -37,7 +37,6 @@ func (a *App) openKeybindsModal() {
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
-	a.home.HideSandboxModal()
 	a.home.HideWorktreesModal()
 	a.home.HideMCPModal()
 	a.home.HideModelsModal()

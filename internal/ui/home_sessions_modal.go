@@ -29,7 +29,6 @@ func (p *HomePage) OpenSessionsModal(items []ChatSessionPaletteItem, query strin
 		p.vaultModal.Visible ||
 		p.authDefaultsInfoModal.Visible ||
 		p.workspaceModal.Visible ||
-		p.sandboxModal.Visible ||
 		p.worktreesModal.Visible ||
 		p.mcpModal.Visible ||
 		p.modelsModal.Visible ||

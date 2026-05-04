@@ -6,7 +6,6 @@ dist
 .tmp
 .tmp-tools
 tmp
-sandbox-cache
 .tools/go
 .tools/bin
 

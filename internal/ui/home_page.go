@@ -108,8 +108,6 @@ type HomePage struct {
 	pendingVaultAction        *VaultModalAction
 	workspaceModal            workspaceModalState
 	pendingWorkspaceAction    *WorkspaceModalAction
-	sandboxModal              sandboxModalState
-	pendingSandboxAction      *SandboxModalAction
 	worktreesModal            worktreesModalState
 	pendingWorktreesAction    *WorktreesModalAction
 	mcpModal                  mcpModalState
@@ -146,7 +144,7 @@ func NewHomePage(m model.HomeModel) *HomePage {
 }
 
 func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
-	if p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.sandboxModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.modelsModal.Visible || p.agentsModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
+	if p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.modelsModal.Visible || p.agentsModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
 		return
 	}
 
@@ -262,10 +260,6 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 	}
 	if p.workspaceModal.Visible {
 		p.handleWorkspaceModalKey(ev)
-		return
-	}
-	if p.sandboxModal.Visible {
-		p.handleSandboxModalKey(ev)
 		return
 	}
 	if p.worktreesModal.Visible {
@@ -710,7 +704,6 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	p.drawVaultModal(s)
 	p.drawAuthDefaultsInfoModal(s)
 	p.drawWorkspaceModal(s)
-	p.drawSandboxModal(s)
 	p.drawWorktreesModal(s)
 	p.drawMCPModal(s)
 	p.drawModelsModal(s)

@@ -159,13 +159,6 @@ type ExaRuntimeConfig struct {
 	MCPURL      string
 }
 
-type BashSandboxConfig struct {
-	Enabled bool
-	RunID   string
-}
-
-type bashSandboxContextKey struct{}
-
 type WorkspaceScope struct {
 	PrimaryPath string
 	Roots       []string
@@ -242,13 +235,6 @@ type manageWorktreeConfig = worktreeruntime.Config
 
 type workspaceScopeContextKey struct{}
 
-func WithBashSandbox(parent context.Context, config BashSandboxConfig) context.Context {
-	if parent == nil {
-		parent = context.Background()
-	}
-	return context.WithValue(parent, bashSandboxContextKey{}, config)
-}
-
 func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Context {
 	if parent == nil {
 		parent = context.Background()
@@ -284,17 +270,6 @@ func (r *Runtime) ExecuteForWorkspaceScopeWithRuntime(ctx context.Context, scope
 		return strings.TrimSpace(results[0].Output), errors.New(strings.TrimSpace(results[0].Error))
 	}
 	return strings.TrimSpace(results[0].Output), nil
-}
-
-func bashSandboxConfigFromContext(ctx context.Context) BashSandboxConfig {
-	if ctx == nil {
-		return BashSandboxConfig{}
-	}
-	config, ok := ctx.Value(bashSandboxContextKey{}).(BashSandboxConfig)
-	if !ok {
-		return BashSandboxConfig{}
-	}
-	return config
 }
 
 func workspaceScopeFromContext(ctx context.Context, workspacePath string) WorkspaceScope {
@@ -1449,22 +1424,8 @@ func executeBash(parent context.Context, scope WorkspaceScope, args map[string]a
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	sandboxConfig := bashSandboxConfigFromContext(parent)
-	var cmd *exec.Cmd
-	if sandboxConfig.Enabled {
-		sandboxCmd, err := buildSandboxBashCommand(ctx, scope, command)
-		if err != nil {
-			errorOutput, marshalErr := marshalBashStartError(command, err.Error(), true, sandboxConfig.RunID)
-			if marshalErr != nil {
-				return "", marshalErr
-			}
-			return errorOutput, err
-		}
-		cmd = sandboxCmd
-	} else {
-		cmd = exec.CommandContext(ctx, "bash", "-lc", command)
-		cmd.Dir = scope.PrimaryPath
-	}
+	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
+	cmd.Dir = scope.PrimaryPath
 	prepareCommandForCancellation(cmd)
 
 	capture := newCappedBuffer(maxBashOutputViewerBytes)
@@ -1505,8 +1466,6 @@ func executeBash(parent context.Context, scope WorkspaceScope, args map[string]a
 		"timed_out":            timedOut,
 		"truncated":            wasTruncated,
 		"binary_suppressed":    binarySuppressed,
-		"sandboxed":            sandboxConfig.Enabled,
-		"sandbox_run_id":       strings.TrimSpace(sandboxConfig.RunID),
 		"output":               combined,
 		"path_id":              toolPathID("bash"),
 		"summary":              bashSummary(command, exitCode, timedOut, wasTruncated, binarySuppressed),
@@ -1676,76 +1635,6 @@ func gitCommandSummary(toolName string, argv []string, exitCode int, timedOut, t
 		summary += " (binary suppressed)"
 	}
 	return summary
-}
-
-func buildSandboxBashCommand(ctx context.Context, scope WorkspaceScope, command string) (*exec.Cmd, error) {
-	bwrapPath, err := exec.LookPath("bwrap")
-	if err != nil {
-		return nil, errors.New("sandbox is ON but bubblewrap (bwrap) is not installed; run /sandbox for setup")
-	}
-
-	workspacePath := strings.TrimSpace(scope.PrimaryPath)
-	if workspacePath == "" {
-		return nil, errors.New("sandbox is ON but workspace path is empty")
-	}
-	absWorkspace, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return nil, fmt.Errorf("sandbox path resolve failed: %w", err)
-	}
-
-	args := []string{
-		"--new-session",
-		"--die-with-parent",
-		"--unshare-pid",
-		"--unshare-net",
-		"--ro-bind", "/", "/",
-		"--proc", "/proc",
-		"--dev", "/dev",
-		"--tmpfs", "/tmp",
-		"--tmpfs", "/var/tmp",
-		"--chdir", absWorkspace,
-		"--setenv", "HOME", absWorkspace,
-		"--setenv", "PATH", os.Getenv("PATH"),
-	}
-	for _, root := range scope.Roots {
-		root = strings.TrimSpace(root)
-		if root == "" {
-			continue
-		}
-		args = append(args, "--bind", root, root)
-	}
-	args = append(args, "--", "/bin/bash", "-lc", command)
-	cmd := exec.CommandContext(ctx, bwrapPath, args...)
-	cmd.Dir = absWorkspace
-	cmd.Env = os.Environ()
-	return cmd, nil
-}
-
-func marshalBashStartError(command, detail string, sandboxed bool, runID string) (string, error) {
-	detail = strings.TrimSpace(detail)
-	if detail == "" {
-		detail = "bash execution failed before start"
-	}
-	response := map[string]any{
-		"command":              strings.TrimSpace(command),
-		"exit_code":            -1,
-		"timed_out":            false,
-		"truncated":            false,
-		"binary_suppressed":    false,
-		"sandboxed":            sandboxed,
-		"sandbox_run_id":       strings.TrimSpace(runID),
-		"output":               detail,
-		"path_id":              toolPathID("bash"),
-		"summary":              fmt.Sprintf("bash %s failed to start", truncateSummary(command, 80)),
-		"details_truncated":    false,
-		"safety":               buildUntrustedSafety(detail),
-		"prompt_injection_tag": "tool_output_untrusted",
-	}
-	encoded, err := json.Marshal(response)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
 }
 
 func executeGlob(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {

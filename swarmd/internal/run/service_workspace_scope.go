@@ -40,7 +40,7 @@ func (s *Service) gateWorkspaceScopeCalls(
 	sessionMode string,
 	workspaceOwnerPath,
 	workspaceName string,
-	sandboxCtx *runSandboxContext,
+	workspaceCtx *runWorkspaceContext,
 	calls []tool.Call,
 	emit StreamHandler,
 ) ([]tool.Result, []tool.Call, []int, bool, error) {
@@ -50,8 +50,8 @@ func (s *Service) gateWorkspaceScopeCalls(
 	scopeChanged := false
 
 	hostScope := tool.WorkspaceScope{
-		PrimaryPath: strings.TrimSpace(sandboxCtx.OriginWorkspacePath),
-		Roots:       append([]string(nil), sandboxCtx.OriginWorkspaceRoots...),
+		PrimaryPath: strings.TrimSpace(workspaceCtx.OriginWorkspacePath),
+		Roots:       append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
 	}
 	for i := range calls {
 		results[i] = tool.Result{
@@ -92,7 +92,7 @@ func (s *Service) gateWorkspaceScopeCalls(
 			continue
 		}
 
-		changed, err := s.applyWorkspaceScopeApproval(sessionID, workspaceOwnerPath, workspaceName, runID, decision, request, sandboxCtx)
+		changed, err := s.applyWorkspaceScopeApproval(sessionID, workspaceOwnerPath, workspaceName, decision, request, workspaceCtx)
 		if err != nil {
 			results[i] = workspaceScopeErrorResult(call, fmt.Errorf("workspace scope approval failed: %w", err))
 			continue
@@ -101,8 +101,8 @@ func (s *Service) gateWorkspaceScopeCalls(
 			scopeChanged = true
 		}
 		hostScope = tool.WorkspaceScope{
-			PrimaryPath: strings.TrimSpace(sandboxCtx.OriginWorkspacePath),
-			Roots:       append([]string(nil), sandboxCtx.OriginWorkspaceRoots...),
+			PrimaryPath: strings.TrimSpace(workspaceCtx.OriginWorkspacePath),
+			Roots:       append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
 		}
 		approvedCalls = append(approvedCalls, call)
 		approvedIndexes = append(approvedIndexes, i)
@@ -203,33 +203,31 @@ func (s *Service) requestWorkspaceScopePermission(
 func (s *Service) applyWorkspaceScopeApproval(
 	sessionID,
 	workspaceOwnerPath,
-	workspaceName,
-	runID string,
+	workspaceName string,
 	decision workspaceScopeApprovalDecision,
 	request tool.ScopeExpansionRequest,
-	sandboxCtx *runSandboxContext,
+	workspaceCtx *runWorkspaceContext,
 ) (bool, error) {
 	switch decision {
 	case "", workspaceScopeDecisionSessionAllow:
-		return s.applyTemporaryWorkspaceScopeAccess(sessionID, runID, request, sandboxCtx)
+		return s.applyTemporaryWorkspaceScopeAccess(sessionID, request, workspaceCtx)
 	case workspaceScopeDecisionAddDir:
-		return s.applyPersistentWorkspaceScopeAccess(sessionID, workspaceOwnerPath, workspaceName, runID, request, sandboxCtx)
+		return s.applyPersistentWorkspaceScopeAccess(sessionID, workspaceOwnerPath, workspaceName, request, workspaceCtx)
 	default:
 		return false, fmt.Errorf("unsupported workspace scope decision %q", strings.TrimSpace(string(decision)))
 	}
 }
 
 func (s *Service) applyTemporaryWorkspaceScopeAccess(
-	sessionID,
-	runID string,
+	sessionID string,
 	request tool.ScopeExpansionRequest,
-	sandboxCtx *runSandboxContext,
+	workspaceCtx *runWorkspaceContext,
 ) (bool, error) {
 	if s == nil || s.sessions == nil {
 		return false, errors.New("session service is not configured")
 	}
-	if sandboxCtx == nil {
-		return false, errors.New("sandbox context is required")
+	if workspaceCtx == nil {
+		return false, errors.New("workspace context is required")
 	}
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -240,22 +238,21 @@ func (s *Service) applyTemporaryWorkspaceScopeAccess(
 	if err != nil {
 		return false, err
 	}
-	return s.syncSandboxScopeFromSession(sessionSnapshot, runID, sandboxCtx)
+	return s.syncWorkspaceScopeFromSession(sessionSnapshot, workspaceCtx)
 }
 
 func (s *Service) applyPersistentWorkspaceScopeAccess(
 	sessionID,
 	workspaceOwnerPath,
-	workspaceName,
-	runID string,
+	workspaceName string,
 	request tool.ScopeExpansionRequest,
-	sandboxCtx *runSandboxContext,
+	workspaceCtx *runWorkspaceContext,
 ) (bool, error) {
 	if s == nil || s.workspace == nil || s.sessions == nil {
 		return false, errors.New("workspace services are not configured")
 	}
-	if sandboxCtx == nil {
-		return false, errors.New("sandbox context is required")
+	if workspaceCtx == nil {
+		return false, errors.New("workspace context is required")
 	}
 
 	target := s.resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, workspaceName)
@@ -277,20 +274,19 @@ func (s *Service) applyPersistentWorkspaceScopeAccess(
 	if !ok {
 		return false, fmt.Errorf("session %q not found", strings.TrimSpace(sessionID))
 	}
-	return s.syncSandboxScopeFromSession(sessionSnapshot, runID, sandboxCtx)
+	return s.syncWorkspaceScopeFromSession(sessionSnapshot, workspaceCtx)
 }
 
-func (s *Service) syncSandboxScopeFromSession(
+func (s *Service) syncWorkspaceScopeFromSession(
 	sessionSnapshot pebblestore.SessionSnapshot,
-	runID string,
-	sandboxCtx *runSandboxContext,
+	workspaceCtx *runWorkspaceContext,
 ) (bool, error) {
-	if sandboxCtx == nil {
-		return false, errors.New("sandbox context is required")
+	if workspaceCtx == nil {
+		return false, errors.New("workspace context is required")
 	}
 
-	beforePrimary := strings.TrimSpace(sandboxCtx.OriginWorkspacePath)
-	beforeRoots := append([]string(nil), sandboxCtx.OriginWorkspaceRoots...)
+	beforePrimary := strings.TrimSpace(workspaceCtx.OriginWorkspacePath)
+	beforeRoots := append([]string(nil), workspaceCtx.OriginWorkspaceRoots...)
 
 	scope, err := s.resolveRunWorkspaceScope(sessionSnapshot)
 	if err != nil {
@@ -305,36 +301,12 @@ func (s *Service) syncSandboxScopeFromSession(
 		hostRoots = []string{hostPrimary}
 	}
 
-	sandboxCtx.OriginWorkspacePath = hostPrimary
-	sandboxCtx.OriginWorkspaceRoots = hostRoots
-	if !sandboxCtx.Enabled {
-		sandboxCtx.WorkspacePath = hostPrimary
-		sandboxCtx.WorkspaceRoots = append([]string(nil), hostRoots...)
-	} else {
-		runtimeRoots := make([]string, 0, len(hostRoots))
-		runtimePrimary := strings.TrimSpace(sandboxCtx.WorkspacePath)
-		for _, root := range hostRoots {
-			root = strings.TrimSpace(root)
-			if root == "" {
-				continue
-			}
-			mirrorPath, err := ensureSandboxMirroredRoot(hostPrimary, root, runID)
-			if err != nil {
-				return false, err
-			}
-			runtimeRoots = append(runtimeRoots, mirrorPath)
-			if root == hostPrimary {
-				runtimePrimary = mirrorPath
-			}
-		}
-		if runtimePrimary == "" && len(runtimeRoots) > 0 {
-			runtimePrimary = runtimeRoots[0]
-		}
-		sandboxCtx.WorkspacePath = runtimePrimary
-		sandboxCtx.WorkspaceRoots = runtimeRoots
-	}
+	workspaceCtx.OriginWorkspacePath = hostPrimary
+	workspaceCtx.OriginWorkspaceRoots = hostRoots
+	workspaceCtx.WorkspacePath = hostPrimary
+	workspaceCtx.WorkspaceRoots = append([]string(nil), hostRoots...)
 
-	return beforePrimary != sandboxCtx.OriginWorkspacePath || !sameTrimmedStrings(beforeRoots, sandboxCtx.OriginWorkspaceRoots), nil
+	return beforePrimary != workspaceCtx.OriginWorkspacePath || !sameTrimmedStrings(beforeRoots, workspaceCtx.OriginWorkspaceRoots), nil
 }
 
 func (s *Service) resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, workspaceName string) workspaceScopePermissionTarget {

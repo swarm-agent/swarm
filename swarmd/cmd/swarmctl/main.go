@@ -19,8 +19,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	sandboxruntime "swarm/packages/swarmd/internal/sandbox"
 )
 
 const (
@@ -48,8 +46,6 @@ func main() {
 		err = cmdContext(os.Args[2:])
 	case "session":
 		err = cmdSession(os.Args[2:])
-	case "sandbox_command":
-		err = cmdSandboxCommand(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -74,7 +70,6 @@ func usage() {
 	fmt.Println("  swarmctl model catalog get --provider codex [--model MODEL] [--limit N] [--addr URL]")
 	fmt.Println("  swarmctl workspace resolve [--cwd PATH] [--addr URL]")
 	fmt.Println("  swarmctl context sources [--cwd PATH] [--addr URL]")
-	fmt.Println("  swarmctl sandbox_command")
 	fmt.Println("  swarmctl session list [--limit N] [--addr URL]")
 	fmt.Println("  swarmctl session create [--title TEXT] [--workspace-path PATH] [--workspace-name NAME] [--addr URL]")
 	fmt.Println("  swarmctl session get --id SESSION_ID [--addr URL]")
@@ -83,14 +78,6 @@ func usage() {
 	fmt.Println("  swarmctl session run --id SESSION_ID --prompt TEXT [--addr URL]")
 	fmt.Println("")
 	fmt.Println("Auth token for protected APIs can be passed with env: SWARMD_TOKEN=<token>")
-}
-
-func cmdSandboxCommand(args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("usage: swarmctl sandbox_command")
-	}
-	fmt.Println(sandboxruntime.SetupCommandText())
-	return nil
 }
 
 func cmdHealth(args []string) error {

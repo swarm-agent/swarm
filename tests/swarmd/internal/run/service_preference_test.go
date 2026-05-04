@@ -3,9 +3,6 @@ package run
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -513,46 +510,5 @@ func TestResolvePreferenceAppliesCodexRuntimeOverridesToSupportedModels(t *testi
 	}
 	if resolved.ContextWindow != 0 {
 		t.Fatalf("resolved non-gpt-5.4 context window = %d, want 0", resolved.ContextWindow)
-	}
-}
-
-func TestPrepareSandboxWorkspace_AllowsReadOnlySourceDirectories(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix permissions semantics are required for this test")
-	}
-
-	workspace := t.TempDir()
-	sourceRoot := filepath.Join(workspace, ".cache", "go", "mod", "github.com", "!data!dog", "zstd@v1.4.5")
-	if err := os.MkdirAll(filepath.Join(sourceRoot, ".circleci"), 0o755); err != nil {
-		t.Fatalf("create source tree: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, ".circleci", "config.yml"), []byte("version: 2.1\n"), 0o644); err != nil {
-		t.Fatalf("write source file: %v", err)
-	}
-	if err := os.Chmod(sourceRoot, 0o555); err != nil {
-		t.Fatalf("chmod source root read-only: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(sourceRoot, 0o755)
-	})
-
-	worktree, cleanup, err := prepareSandboxWorkspace(workspace, "run_test")
-	if err != nil {
-		t.Fatalf("prepare sandbox workspace: %v", err)
-	}
-	t.Cleanup(cleanup)
-
-	destinationNested := filepath.Join(worktree, ".cache", "go", "mod", "github.com", "!data!dog", "zstd@v1.4.5", ".circleci")
-	if _, statErr := os.Stat(destinationNested); statErr != nil {
-		t.Fatalf("stat destination nested directory: %v", statErr)
-	}
-
-	destinationParent := filepath.Dir(destinationNested)
-	parentInfo, err := os.Stat(destinationParent)
-	if err != nil {
-		t.Fatalf("stat destination parent directory: %v", err)
-	}
-	if parentInfo.Mode().Perm()&0o200 == 0 {
-		t.Fatalf("destination parent directory is not owner-writable: mode=%#o", parentInfo.Mode().Perm())
 	}
 }

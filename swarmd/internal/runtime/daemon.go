@@ -40,7 +40,6 @@ import (
 	"swarm/packages/swarmd/internal/provider/registry"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	"swarm/packages/swarmd/internal/run"
-	sandboxruntime "swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -205,7 +204,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	)
 	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath)
 	remoteDeploySvc := remotedeploy.NewService(pebblestore.NewRemoteDeploySessionStore(store), swarmSvc, swarmStore, localContainerSvc, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD)
-	sandboxSvc := sandboxruntime.NewService(pebblestore.NewSandboxStore(store), events)
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
 	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), events)
@@ -295,7 +293,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
 	runSvc.SetWorkspaceService(workspaceSvc)
-	runSvc.SetSandboxService(sandboxSvc)
 	runSvc.SetWorktreeService(worktreeSvc)
 	runSvc.SetEventPublisher(hub.Publish)
 
@@ -343,7 +340,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
 	apiServer.SetDataDir(cfg.DataDir)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)
-	apiServer.SetSandboxService(sandboxSvc)
 	apiServer.SetWorktreeService(worktreeSvc)
 	apiServer.SetMCPService(mcpSvc)
 	apiServer.SetVoiceService(voiceSvc)

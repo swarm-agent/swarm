@@ -29,7 +29,6 @@ coverage.out
 /.runtime/
 /.swarm/
 /.tmp/
-/sandbox-cache/
 
 # Web build/runtime outputs
 /web/node_modules/

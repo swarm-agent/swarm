@@ -21,7 +21,6 @@ const (
 	KeyVoiceProfileActiveSTT           = "voice/profile_active/stt"
 	KeyModelPrefGlobal                 = "model_pref/global/default"
 	KeyModelFavoritePrefix             = "model_favorite/"
-	KeySandboxGlobalState              = "sandbox/global/state"
 	KeyWorktreeGlobalConfig            = "worktree/global/config"
 	KeyWorktreeConfigPrefix            = "worktree/config/"
 	KeyMCPServerPrefix                 = "mcp/server/"

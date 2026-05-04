@@ -22,7 +22,6 @@ type providerToolInvokerConfig struct {
 	workspaceOriginPath  string
 	workspaceOriginRoots []string
 	workspaceName        string
-	sandboxEnabled       bool
 	emit                 StreamHandler
 	policy               *permission.Policy
 	agentProfile         pebblestore.AgentProfile
@@ -170,15 +169,14 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 				if len(originRoots) == 0 {
 					originRoots = append([]string(nil), config.workspaceRoots...)
 				}
-				sandboxCtx := runSandboxContext{
-					Enabled:              config.sandboxEnabled,
+				workspaceCtx := runWorkspaceContext{
 					WorkspacePath:        config.workspacePath,
 					WorkspaceRoots:       append([]string(nil), config.workspaceRoots...),
 					OriginWorkspacePath:  strings.TrimSpace(firstNonEmptyString(config.workspaceOriginPath, config.workspacePath)),
 					OriginWorkspaceRoots: originRoots,
 				}
-				if len(sandboxCtx.OriginWorkspaceRoots) == 0 && strings.TrimSpace(sandboxCtx.OriginWorkspacePath) != "" {
-					sandboxCtx.OriginWorkspaceRoots = []string{sandboxCtx.OriginWorkspacePath}
+				if len(workspaceCtx.OriginWorkspaceRoots) == 0 && strings.TrimSpace(workspaceCtx.OriginWorkspacePath) != "" {
+					workspaceCtx.OriginWorkspaceRoots = []string{workspaceCtx.OriginWorkspacePath}
 				}
 				scopeResults, scopeApprovedCalls, _, _, scopeErr := s.gateWorkspaceScopeCalls(
 					ctx,
@@ -187,9 +185,9 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					config.runID,
 					config.step,
 					config.sessionMode,
-					sandboxCtx.OriginWorkspacePath,
+					workspaceCtx.OriginWorkspacePath,
 					config.workspaceName,
-					&sandboxCtx,
+					&workspaceCtx,
 					[]tool.Call{call},
 					config.emit,
 				)
@@ -199,15 +197,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 				if len(scopeApprovedCalls) == 0 && len(scopeResults) > 0 {
 					result = scopeResults[0]
 				} else if len(scopeApprovedCalls) > 0 {
-					runtimeCtx := tool.WithBashSandbox(ctx, tool.BashSandboxConfig{
-						Enabled: sandboxCtx.Enabled,
-						RunID:   config.runID,
+					runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
+						PrimaryPath: workspaceCtx.WorkspacePath,
+						Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
 					})
-					runtimeCtx = tool.WithWorkspaceScope(runtimeCtx, tool.WorkspaceScope{
-						PrimaryPath: sandboxCtx.WorkspacePath,
-						Roots:       append([]string(nil), sandboxCtx.WorkspaceRoots...),
-					})
-					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, sandboxCtx.WorkspacePath, scopeApprovedCalls, func(_ int, current tool.Call, progress tool.Progress) {
+					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, current tool.Call, progress tool.Progress) {
 						if config.emit == nil {
 							return
 						}

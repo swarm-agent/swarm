@@ -190,7 +190,6 @@ check_build_context() {
   require_dockerignore_line ".tmp"
   require_dockerignore_line ".tmp-tools"
   require_dockerignore_line "tmp"
-  require_dockerignore_line "sandbox-cache"
   require_dockerignore_line ".tools/go"
   require_dockerignore_line ".tools/bin"
   require_dockerignore_line "web/node_modules"

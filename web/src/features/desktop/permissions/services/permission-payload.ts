@@ -1410,7 +1410,7 @@ export function prettyPermissionArguments(raw: string): string {
 function permissionPreferredArgumentKeys(toolName: string): string[] {
   switch (normalizePermissionToolName(toolName)) {
     case 'bash':
-      return ['command', 'workdir', 'justification', 'sandbox_permissions', 'prefix_rule', 'timeout_ms', 'yield_time_ms', 'max_output_tokens', 'shell', 'login', 'tty']
+      return ['command', 'workdir', 'justification', 'prefix_rule', 'timeout_ms', 'yield_time_ms', 'max_output_tokens', 'shell', 'login', 'tty']
     case 'read':
       return ['path', 'line_start', 'max_lines']
     case 'write':
@@ -1468,8 +1468,6 @@ function permissionArgumentLabel(key: string): string {
       return 'Working directory'
     case 'justification':
       return 'Justification'
-    case 'sandbox_permissions':
-      return 'Sandbox permissions'
     case 'prefix_rule':
       return 'Prefix rule'
     case 'timeout_ms':

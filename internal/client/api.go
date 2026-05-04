@@ -715,22 +715,6 @@ type SessionUsageSummary struct {
 	UpdatedAt          int64  `json:"updated_at"`
 }
 
-type SandboxCheck struct {
-	Name   string `json:"name"`
-	OK     bool   `json:"ok"`
-	Detail string `json:"detail"`
-}
-
-type SandboxStatus struct {
-	Enabled      bool           `json:"enabled"`
-	UpdatedAt    int64          `json:"updated_at"`
-	Ready        bool           `json:"ready"`
-	Summary      string         `json:"summary"`
-	Checks       []SandboxCheck `json:"checks"`
-	Remediation  []string       `json:"remediation"`
-	SetupCommand string         `json:"setup_command"`
-}
-
 type WorktreeSettings struct {
 	WorkspacePath    string `json:"workspace_path,omitempty"`
 	Enabled          bool   `json:"enabled"`
@@ -2292,48 +2276,6 @@ func (c *API) ContextSources(ctx context.Context, cwd string) (ContextReport, er
 		return ContextReport{}, err
 	}
 	return resp.Report, nil
-}
-
-func (c *API) GetSandboxStatus(ctx context.Context) (SandboxStatus, error) {
-	var resp struct {
-		OK      bool          `json:"ok"`
-		Sandbox SandboxStatus `json:"sandbox"`
-	}
-	if err := c.getJSON(ctx, "/v1/sandbox", &resp, true); err != nil {
-		return SandboxStatus{}, err
-	}
-	return resp.Sandbox, nil
-}
-
-func (c *API) PreflightSandbox(ctx context.Context) (SandboxStatus, error) {
-	var resp struct {
-		OK      bool          `json:"ok"`
-		Sandbox SandboxStatus `json:"sandbox"`
-	}
-	if err := c.postJSON(ctx, "/v1/sandbox/preflight", map[string]any{}, &resp, true); err != nil {
-		return SandboxStatus{}, err
-	}
-	return resp.Sandbox, nil
-}
-
-func (c *API) SetSandboxEnabled(ctx context.Context, enabled bool) (SandboxStatus, error) {
-	req := map[string]bool{"enabled": enabled}
-	var resp struct {
-		OK      bool          `json:"ok"`
-		Reason  string        `json:"reason"`
-		Sandbox SandboxStatus `json:"sandbox"`
-	}
-	if err := c.postJSON(ctx, "/v1/sandbox", req, &resp, true); err != nil {
-		return SandboxStatus{}, err
-	}
-	if !resp.OK {
-		reason := strings.TrimSpace(resp.Reason)
-		if reason == "" {
-			reason = "sandbox prerequisites are not ready"
-		}
-		return resp.Sandbox, errors.New(reason)
-	}
-	return resp.Sandbox, nil
 }
 
 func (c *API) GetWorktreeSettings(ctx context.Context, workspacePath string) (WorktreeSettings, error) {

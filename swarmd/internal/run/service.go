@@ -22,7 +22,6 @@ import (
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
-	sandboxruntime "swarm/packages/swarmd/internal/sandbox"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -94,18 +93,12 @@ type Service struct {
 	agents       *agentruntime.Service
 	discovery    *discovery.Service
 	workspace    *workspaceruntime.Service
-	sandbox      sandboxService
 	worktrees    worktreeService
 	events       *pebblestore.EventLog
 	eventPublish func(pebblestore.EventEnvelope)
 	runCounter   atomic.Uint64
 	lifecycleMu  sync.Mutex
 	activeRuns   map[string]*activeSessionRun
-}
-
-type sandboxService interface {
-	IsEnabled() (bool, error)
-	GetStatus() (sandboxruntime.Status, error)
 }
 
 type worktreeService interface {
@@ -314,8 +307,7 @@ type PermissionFeedback struct {
 
 type StreamHandler func(event StreamEvent)
 
-type runSandboxContext struct {
-	Enabled              bool
+type runWorkspaceContext struct {
 	WorkspacePath        string
 	WorkspaceRoots       []string
 	OriginWorkspacePath  string
@@ -354,13 +346,6 @@ func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
 		return
 	}
 	s.workspace = workspaceSvc
-}
-
-func (s *Service) SetSandboxService(sandboxSvc sandboxService) {
-	if s == nil {
-		return
-	}
-	s.sandbox = sandboxSvc
 }
 
 func (s *Service) SetWorktreeService(worktreeSvc worktreeService) {
@@ -850,17 +835,13 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		sessionSnapshot = updatedSession
 	}
-	sandboxCtx, sandboxCleanup, err := s.resolveRunSandboxContext(resolvedExecutionContext, runID)
-	if err != nil {
-		return RunResult{}, err
-	}
-	defer sandboxCleanup()
+	workspaceCtx := resolveRunWorkspaceContext(resolvedExecutionContext)
 
 	baseInstructions := s.composeInstructionsForScope(tool.WorkspaceScope{
-		PrimaryPath: sandboxCtx.WorkspacePath,
-		Roots:       append([]string(nil), sandboxCtx.WorkspaceRoots...),
+		PrimaryPath: workspaceCtx.WorkspacePath,
+		Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
 	}, agentProfile, options.Instructions)
-	baseInstructions = appendSandboxRuntimeContext(baseInstructions, sandboxCtx.Enabled, sandboxCtx.WorkspacePath, sandboxCtx.WorkspaceRoots)
+	baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 
 	runFailed := true
 	defer func() {
@@ -1413,7 +1394,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			ContextMode:       resolvedPreference.Preference.ContextMode,
 			ContextWindow:     resolvedPreference.ContextWindow,
 			ParallelToolCalls: true,
-			WorkspacePath:     sandboxCtx.WorkspacePath,
+			WorkspacePath:     workspaceCtx.WorkspacePath,
 			ToolInvoker: s.newProviderToolInvoker(providerToolInvokerConfig{
 				sessionID:            sessionID,
 				permissionSessionID:  permissionSessionID,
@@ -1421,12 +1402,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				step:                 step,
 				sessionMode:          executionMode,
 				agentProfile:         agentProfile,
-				workspacePath:        sandboxCtx.WorkspacePath,
-				workspaceRoots:       append([]string(nil), sandboxCtx.WorkspaceRoots...),
-				workspaceOriginPath:  sandboxCtx.OriginWorkspacePath,
-				workspaceOriginRoots: append([]string(nil), sandboxCtx.OriginWorkspaceRoots...),
+				workspacePath:        workspaceCtx.WorkspacePath,
+				workspaceRoots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+				workspaceOriginPath:  workspaceCtx.OriginWorkspacePath,
+				workspaceOriginRoots: append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
 				workspaceName:        sessionSnapshot.WorkspaceName,
-				sandboxEnabled:       sandboxCtx.Enabled,
 				emit:                 emit,
 				policy:               compiledPolicy,
 			}),
@@ -1444,7 +1424,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			"agent_profile_name":  strings.TrimSpace(agentProfile.Name),
 			"background":          options.Background,
 			"routed_session":      sessionSnapshot.Metadata["swarm_routed_session"],
-			"workspace_path":      sandboxCtx.WorkspacePath,
+			"workspace_path":      workspaceCtx.WorkspacePath,
 			"execution_mode":      executionMode,
 			"tool_choice":         stepRequest.ToolChoice,
 			"parallel_tool_calls": stepRequest.ParallelToolCalls,
@@ -1733,9 +1713,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			runID,
 			step,
 			executionMode,
-			sandboxCtx.OriginWorkspacePath,
+			workspaceCtx.OriginWorkspacePath,
 			sessionSnapshot.WorkspaceName,
-			&sandboxCtx,
+			&workspaceCtx,
 			runtimeCalls,
 			emit,
 		)
@@ -1775,21 +1755,17 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		if scopeChanged {
 			baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
-				PrimaryPath: sandboxCtx.WorkspacePath,
-				Roots:       append([]string(nil), sandboxCtx.WorkspaceRoots...),
+				PrimaryPath: workspaceCtx.WorkspacePath,
+				Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
 			}, agentProfile, options.Instructions)
-			baseInstructions = appendSandboxRuntimeContext(baseInstructions, sandboxCtx.Enabled, sandboxCtx.WorkspacePath, sandboxCtx.WorkspaceRoots)
+			baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 		}
 
-		runtimeCtx := tool.WithBashSandbox(ctx, tool.BashSandboxConfig{
-			Enabled: sandboxCtx.Enabled,
-			RunID:   runID,
+		runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
+			PrimaryPath: workspaceCtx.WorkspacePath,
+			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
 		})
-		runtimeCtx = tool.WithWorkspaceScope(runtimeCtx, tool.WorkspaceScope{
-			PrimaryPath: sandboxCtx.WorkspacePath,
-			Roots:       append([]string(nil), sandboxCtx.WorkspaceRoots...),
-		})
-		executedResults := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, sandboxCtx.WorkspacePath, scopeApprovedCalls, func(_ int, call tool.Call, progress tool.Progress) {
+		executedResults := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, call tool.Call, progress tool.Progress) {
 			if strings.ToLower(strings.TrimSpace(progress.Stage)) != "output" {
 				return
 			}

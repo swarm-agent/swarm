@@ -320,7 +320,7 @@ func permissionRenderLinesContainRequestSummary(lines []chatRenderLine) bool {
 func permissionPreferredArgumentKeys(toolName string) []string {
 	switch toolName {
 	case "bash":
-		return []string{"command", "workdir", "justification", "sandbox_permissions", "prefix_rule", "timeout_ms", "yield_time_ms", "max_output_tokens", "shell", "login", "tty"}
+		return []string{"command", "workdir", "justification", "prefix_rule", "timeout_ms", "yield_time_ms", "max_output_tokens", "shell", "login", "tty"}
 	case "read":
 		return []string{"path", "line_start", "max_lines"}
 	case "write":

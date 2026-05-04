@@ -33,7 +33,6 @@ import (
 	"swarm/packages/swarmd/internal/provider/registry"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
-	sandboxruntime "swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -72,7 +71,6 @@ type Server struct {
 	sessions                    *sessionruntime.Service
 	workspace                   *workspace.Service
 	discovery                   *discovery.Service
-	sandbox                     sandboxService
 	worktrees                   worktreeService
 	mcp                         mcpService
 	security                    *security.Service
@@ -226,12 +224,6 @@ type notificationService interface {
 	UpsertSystemNotification(record pebblestore.NotificationRecord) (pebblestore.NotificationRecord, bool, error)
 }
 
-type sandboxService interface {
-	GetStatus() (sandboxruntime.Status, error)
-	Preflight() (sandboxruntime.Status, error)
-	SetEnabled(enabled bool) (sandboxruntime.Status, *pebblestore.EventEnvelope, error)
-}
-
 type worktreeService interface {
 	GetConfig(workspacePath string) (worktreeruntime.Config, error)
 	SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
@@ -304,13 +296,6 @@ func (s *Server) BypassPermissions() bool {
 		return false
 	}
 	return s.bypassPermissions
-}
-
-func (s *Server) SetSandboxService(sandboxSvc sandboxService) {
-	if s == nil {
-		return
-	}
-	s.sandbox = sandboxSvc
 }
 
 func (s *Server) SetWorktreeService(worktreeSvc worktreeService) {
@@ -621,81 +606,6 @@ func (s *Server) handleSystemShutdown(w http.ResponseWriter, r *http.Request) {
 		"ok":            true,
 		"shutting_down": true,
 		"reason":        reason,
-	})
-}
-
-func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
-	if s.sandbox == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("sandbox service not configured"))
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		status, err := s.sandbox.GetStatus()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":      true,
-			"sandbox": status,
-		})
-	case http.MethodPost:
-		var req struct {
-			Enabled *bool `json:"enabled"`
-		}
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if req.Enabled == nil {
-			writeError(w, http.StatusBadRequest, errors.New("enabled is required"))
-			return
-		}
-		status, event, err := s.sandbox.SetEnabled(*req.Enabled)
-		if err != nil {
-			var notReady *sandboxruntime.ErrNotReady
-			if errors.As(err, &notReady) {
-				writeJSON(w, http.StatusOK, map[string]any{
-					"ok":      false,
-					"reason":  strings.TrimSpace(notReady.Error()),
-					"sandbox": status,
-				})
-				return
-			}
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		if event != nil {
-			s.hub.Publish(*event)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":      true,
-			"sandbox": status,
-		})
-	default:
-		methodNotAllowed(w)
-	}
-}
-
-func (s *Server) handleSandboxPreflight(w http.ResponseWriter, r *http.Request) {
-	if s.sandbox == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("sandbox service not configured"))
-		return
-	}
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	status, err := s.sandbox.Preflight()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"sandbox": status,
 	})
 }
 

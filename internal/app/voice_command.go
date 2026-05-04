@@ -47,7 +47,6 @@ func (a *App) openVoiceModal() {
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
 	a.home.HideWorkspaceModal()
-	a.home.HideSandboxModal()
 	a.home.HideWorktreesModal()
 	a.home.HideMCPModal()
 	a.home.HideModelsModal()

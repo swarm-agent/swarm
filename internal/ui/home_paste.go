@@ -67,10 +67,6 @@ func (p *HomePage) handlePromptPasteKey(ev *tcell.EventKey) bool {
 		p.handleWorkspaceModalKey(ev)
 		return true
 	}
-	if p.sandboxModal.Visible {
-		p.handleSandboxModalKey(ev)
-		return true
-	}
 	if p.worktreesModal.Visible {
 		p.handleWorktreesModalKey(ev)
 		return true
