@@ -68,6 +68,7 @@ type ImageGenerationResult struct {
 	RevisedPrompt    string
 	Base64Image      string
 	DecodedPNG       []byte
+	MIMEType         string
 	PartialImages    []ImageGenerationPartialImage
 	ProviderResponse map[string]any
 	Results          []ImageGenerationResult

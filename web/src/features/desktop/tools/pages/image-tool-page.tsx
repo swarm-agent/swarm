@@ -88,6 +88,7 @@ type ImageGenerationResponse = {
   result?: {
     assets?: Array<ImageAssetWire & { url?: string }>
     partials?: ImageGenerationPartial[]
+    provider_response?: Record<string, unknown>
     target?: {
       thread?: ImageThreadWire
     }
@@ -105,6 +106,8 @@ type LiveGenerationEvent = {
   size?: string
   quality?: string
   background?: string
+  text?: string
+  thinking?: string
 }
 
 type LiveGenerationPreview = {
@@ -112,6 +115,12 @@ type LiveGenerationPreview = {
   index: number
   dataUrl: string
   label: string
+}
+
+type GeminiChargeInfo = {
+  label: string
+  detail: string
+  hasCharge: boolean
 }
 
 type ImageThumbnailItem =
@@ -125,7 +134,10 @@ const IMAGE_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.imageTool.blackMode'
 const DEFAULT_IMAGE_SESSION_TITLE = 'Swarm image session'
 
 const IMAGE_MODEL_OPTIONS = [
-  { id: 'codex-image-gen', provider: 'codex_openai', model: 'gpt-5.5', label: 'Codex Image Gen', helper: 'OAuth only. Uses Codex/ChatGPT OAuth image generation. API-key image generation is not enabled yet.', kind: 'codex-image-gen' }
+  { id: 'codex-image-gen', provider: 'codex_openai', model: 'gpt-5.5', label: 'Codex Image Gen', helper: 'OAuth only. Uses Codex/ChatGPT OAuth image generation.', kind: 'codex-image-gen' },
+  { id: 'gemini-nano-banana-2', provider: 'google_gemini', model: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2', helper: 'Google API key. Fast Gemini image generation with real streaming.', kind: 'google-gemini' },
+  { id: 'gemini-nano-banana-pro', provider: 'google_gemini', model: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro', helper: 'Google API key. Pro Gemini image generation.', kind: 'google-gemini' },
+  { id: 'gemini-nano-banana', provider: 'google_gemini', model: 'gemini-2.5-flash-image', label: 'Nano Banana', helper: 'Google API key. Supports 512, 1K, 2K, and 4K output sizes.', kind: 'google-gemini' },
 ] as const
 
 const OPENAI_IMAGE_SIZE_OPTIONS = [
@@ -135,7 +147,25 @@ const OPENAI_IMAGE_SIZE_OPTIONS = [
   { id: '1024x1536', label: 'Portrait', helper: '1024 × 1536', aspectRatio: '2:3', size: '1.5 MP' },
 ]
 
-const FINAL_IMAGE_COUNT_OPTIONS = [1, 2, 3] as const
+const FINAL_IMAGE_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const
+
+const GOOGLE_GEMINI_ASPECT_RATIO_OPTIONS = [
+  { id: '1:1', label: 'Square', helper: '1:1' },
+  { id: '16:9', label: 'Wide', helper: '16:9' },
+  { id: '9:16', label: 'Story', helper: '9:16' },
+  { id: '3:2', label: 'Landscape', helper: '3:2' },
+  { id: '2:3', label: 'Portrait', helper: '2:3' },
+  { id: '4:3', label: 'Classic', helper: '4:3' },
+  { id: '3:4', label: 'Poster', helper: '3:4' },
+  { id: '21:9', label: 'Cinema', helper: '21:9' },
+] as const
+
+const GOOGLE_GEMINI_IMAGE_SIZE_OPTIONS = [
+  { id: '512', label: '512', helper: 'Flash 2.5 only' },
+  { id: '1K', label: '1K', helper: 'Default' },
+  { id: '2K', label: '2K', helper: 'Higher resolution' },
+  { id: '4K', label: '4K', helper: 'Highest resolution' },
+] as const
 
 function livePreviewSlotKey(value: { item_id?: string; output_index?: number }): string {
   const itemId = String(value.item_id ?? '').trim()
@@ -257,6 +287,29 @@ function formatStartedAt(value: number): string {
   }).format(new Date(value))
 }
 
+function extractGeminiChargeInfo(providerResponse: unknown): GeminiChargeInfo | null {
+  if (!isRecord(providerResponse)) return null
+  const cost = providerResponse.cost
+  if (!isRecord(cost)) return null
+  if (cost.available === true) {
+    const amount = typeof cost.amount_usd === 'number' ? `$${cost.amount_usd.toFixed(4)}` : 'Google charge returned'
+    return { label: amount, detail: 'Google returned charge metadata for this generation.', hasCharge: true }
+  }
+  const usage = providerResponse.usage_metadata
+  const usageCount = Array.isArray(usage) ? usage.length : isRecord(usage) && usage.available ? 1 : 0
+  if (usageCount > 0) {
+    return { label: 'Usage recorded', detail: String(cost.reason ?? 'Google returned usage metadata but no exact dollar charge.'), hasCharge: false }
+  }
+  return null
+}
+
+function latestSessionChargeInfo(thread: ImageThreadRecord | null): GeminiChargeInfo | null {
+  if (!thread?.metadata) return null
+  const latest = thread.metadata.last_image_generation
+  if (!isRecord(latest)) return null
+  return extractGeminiChargeInfo(latest.provider_response)
+}
+
 async function fetchImageThreads(workspacePath: string): Promise<ImageThreadRecord[]> {
   const search = new URLSearchParams({ workspace_path: workspacePath })
   const response = await requestJson<{ threads?: ImageThreadWire[] }>(`/v1/workspace/image/threads?${search.toString()}`)
@@ -323,9 +376,12 @@ export function ImageToolPage() {
   const followLivePreviewRef = useRef(false)
   const [selectedImageModel, setSelectedImageModel] = useState<string>(IMAGE_MODEL_OPTIONS[0]?.id ?? '')
   const [selectedOpenAIImageSize, setSelectedOpenAIImageSize] = useState('auto')
-  const [selectedGoogleAspectRatio] = useState('1:1')
-  const [selectedGoogleImageSize] = useState('1K')
+  const [selectedGoogleAspectRatio, setSelectedGoogleAspectRatio] = useState('1:1')
+  const [selectedGoogleImageSize, setSelectedGoogleImageSize] = useState('1K')
   const [promptText, setPromptText] = useState('')
+  const [liveGenerationText, setLiveGenerationText] = useState('')
+  const [liveGenerationThinking, setLiveGenerationThinking] = useState('')
+  const [lastGeminiChargeInfo, setLastGeminiChargeInfo] = useState<GeminiChargeInfo | null>(null)
   const [blackModeEnabled, setBlackModeEnabled] = useState(() => {
     if (typeof window === 'undefined') {
       return false
@@ -403,18 +459,21 @@ export function ImageToolPage() {
   const selectedModelOption = IMAGE_MODEL_OPTIONS.find((option) => option.id === selectedImageModel) ?? IMAGE_MODEL_OPTIONS[0]
   const selectedProviderStatus = (imageProvidersQuery.data ?? []).find((provider) => provider.id === selectedModelOption.provider)
   const selectedProviderReady = selectedProviderStatus?.ready === true
+  const isGoogleGeminiModel = selectedModelOption.provider === 'google_gemini'
   const selectedProviderWarning = selectedProviderStatus
     ? selectedProviderReady
       ? ''
-      : selectedProviderStatus.reason || 'Codex Image Gen requires Codex/ChatGPT OAuth before it can generate images.'
+      : selectedProviderStatus.reason || (isGoogleGeminiModel ? 'Connect a Google API key before using Gemini image generation.' : 'Codex Image Gen requires Codex/ChatGPT OAuth before it can generate images.')
     : imageProvidersQuery.isLoading
-      ? 'Checking Codex OAuth status…'
-      : 'Codex Image Gen requires Codex/ChatGPT OAuth before it can generate images.'
+      ? (isGoogleGeminiModel ? 'Checking Google API-key status…' : 'Checking Codex OAuth status…')
+      : (isGoogleGeminiModel ? 'Connect a Google API key before using Gemini image generation.' : 'Codex Image Gen requires Codex/ChatGPT OAuth before it can generate images.')
   const selectedProviderUnavailableReason = selectedProviderWarning || 'Image provider is unavailable'
-  const isGoogleImagenModel = false
   const selectedOpenAISizeOption = OPENAI_IMAGE_SIZE_OPTIONS.find((option) => option.id === selectedOpenAIImageSize) ?? OPENAI_IMAGE_SIZE_OPTIONS[0]
-  const selectedShapeLabel = isGoogleImagenModel ? selectedGoogleAspectRatio : selectedOpenAISizeOption.aspectRatio
-  const selectedSizeLabel = isGoogleImagenModel ? selectedGoogleImageSize : selectedOpenAIImageSize
+  const selectedShapeLabel = isGoogleGeminiModel ? selectedGoogleAspectRatio : selectedOpenAISizeOption.aspectRatio
+  const selectedSizeLabel = isGoogleGeminiModel ? selectedGoogleImageSize : selectedOpenAIImageSize
+  const selectedCountOptions = isGoogleGeminiModel ? FINAL_IMAGE_COUNT_OPTIONS : FINAL_IMAGE_COUNT_OPTIONS.filter((count) => count <= 3)
+  const selectedSessionChargeInfo = latestSessionChargeInfo(selectedThread)
+  const displayedChargeInfo = lastGeminiChargeInfo ?? selectedSessionChargeInfo
   const selectedModelLabel = selectedModelOption.label
   const canGenerateImage = Boolean(selectedThread && promptText.trim() && selectedProviderReady && !generatingImage)
   const generationSlotCount = generatingImage ? activeGenerationCount : selectedFinalImageCount
@@ -458,6 +517,18 @@ export function ImageToolPage() {
       : generatingImage
         ? `Generating ${generationSlotCount} image${generationSlotCount === 1 ? '' : 's'} · ${orderedImageAssets.length} saved`
         : `Image 1 of ${Math.max(orderedImageAssets.length, 1)}`
+
+  useEffect(() => {
+    if (!isGoogleGeminiModel && selectedFinalImageCount > 3) {
+      setSelectedFinalImageCount(3)
+    }
+  }, [isGoogleGeminiModel, selectedFinalImageCount])
+
+  useEffect(() => {
+    if (selectedGoogleImageSize === '512' && selectedModelOption.model !== 'gemini-2.5-flash-image') {
+      setSelectedGoogleImageSize('1K')
+    }
+  }, [selectedGoogleImageSize, selectedModelOption.model])
 
   useEffect(() => {
     if (orderedImageAssets.length === 0) {
@@ -577,6 +648,9 @@ export function ImageToolPage() {
     setGeneratingImage(true)
     setGenerationStage('queued')
     setLivePreviews([])
+    setLiveGenerationText('')
+    setLiveGenerationThinking('')
+    setLastGeminiChargeInfo(null)
     followLivePreviewRef.current = true
     setSelectedImageAssetId(null)
     setSelectedLivePreviewId(null)
@@ -590,11 +664,11 @@ export function ImageToolPage() {
           model: selectedModelOption.model,
           prompt: requestedPrompt,
           count: requestedImageCount,
-          // partial_images are progression frames per final output, not final image count.
-          partial_images: 3,
-          size: isGoogleImagenModel ? selectedGoogleImageSize : selectedOpenAIImageSize,
-          settings: isGoogleImagenModel
-            ? { aspect_ratio: selectedGoogleAspectRatio, size: selectedGoogleImageSize }
+          // partial_images are Codex progression frames per final output; Gemini ignores this and streams real SDK chunks.
+          partial_images: isGoogleGeminiModel ? 0 : 3,
+          size: isGoogleGeminiModel ? selectedGoogleAspectRatio : selectedOpenAIImageSize,
+          settings: isGoogleGeminiModel
+            ? { aspect_ratio: selectedGoogleAspectRatio, image_size: selectedGoogleImageSize }
             : { size: selectedOpenAIImageSize },
           target: {
             kind: 'workspace_image_session',
@@ -644,6 +718,17 @@ export function ImageToolPage() {
             }
           }
         }
+        if (eventName === 'text' && payload.event?.text) {
+          setGenerationStage((stage) => (stage === 'partial' ? stage : 'generating'))
+          setLiveGenerationText((current) => current + payload.event?.text)
+        }
+        if (eventName === 'thinking' && payload.event?.thinking) {
+          setGenerationStage((stage) => (stage === 'partial' ? stage : 'generating'))
+          setLiveGenerationThinking((current) => current + payload.event?.thinking)
+        }
+        if (eventName === 'image' || payload.event?.type === 'image') {
+          setGenerationStage('generating')
+        }
         if (eventName === 'completed' && payload.result) {
           finalResponse = { result: payload.result }
           const finalPartials = (payload.result.partials ?? [])
@@ -686,6 +771,8 @@ export function ImageToolPage() {
         const withoutUpdated = current.filter((thread) => thread.id !== updatedThread.id)
         return [updatedThread, ...withoutUpdated]
       })
+      const chargeInfo = extractGeminiChargeInfo(completedResponse.result?.provider_response)
+      setLastGeminiChargeInfo(chargeInfo)
       const generatedAssets = completedResponse.result?.assets ?? []
       const generatedAssetId = generatedAssets[generatedAssets.length - 1]?.id ?? updatedThread.imageAssetOrder[updatedThread.imageAssetOrder.length - 1]
       followLivePreviewRef.current = false
@@ -703,7 +790,7 @@ export function ImageToolPage() {
     } finally {
       setGeneratingImage(false)
     }
-  }, [isGoogleImagenModel, promptText, queryClient, selectedFinalImageCount, selectedGoogleAspectRatio, selectedGoogleImageSize, selectedOpenAIImageSize, selectedModelOption.model, selectedModelOption.provider, selectedProviderReady, selectedProviderUnavailableReason, selectedThread, selectedWorkspacePath])
+  }, [isGoogleGeminiModel, promptText, queryClient, selectedFinalImageCount, selectedGoogleAspectRatio, selectedGoogleImageSize, selectedOpenAIImageSize, selectedModelOption.model, selectedModelOption.provider, selectedProviderReady, selectedProviderUnavailableReason, selectedThread, selectedWorkspacePath])
 
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
@@ -827,7 +914,7 @@ export function ImageToolPage() {
                             <Sparkles className="animate-pulse text-[var(--app-primary)]" size={56} strokeWidth={1.35} />
                             <div className="max-w-md">
                               <p className="text-2xl font-semibold tracking-[-0.055em] text-[var(--app-text)]">Generating…</p>
-                              <p className="mt-3 text-sm leading-6 text-[var(--app-text-muted)]">Waiting for the first streamed partial image from OpenAI.</p>
+                              <p className="mt-3 text-sm leading-6 text-[var(--app-text-muted)]">{isGoogleGeminiModel ? 'Waiting for Gemini streamed chunks and final image data.' : 'Waiting for the first streamed partial image from OpenAI.'}</p>
                             </div>
                           </div>
                         ) : (
@@ -911,7 +998,14 @@ export function ImageToolPage() {
 
                     <div className="grid min-w-0 gap-3 sm:grid-cols-[1.25fr_1fr]">
                       <div className="grid grid-cols-2 gap-2">
-                        {OPENAI_IMAGE_SIZE_OPTIONS.map((option) => (
+                        {isGoogleGeminiModel ? GOOGLE_GEMINI_ASPECT_RATIO_OPTIONS.map((option) => (
+                          <button key={option.id} type="button" onClick={() => setSelectedGoogleAspectRatio(option.id)} className={['relative flex flex-col justify-center rounded-xl border p-2.5 text-left transition-all', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-text-muted)]'].join(' ')}>
+                            <span className="text-xs font-bold">{option.label}</span>
+                            <span className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Gemini aspect</span>
+                            <span className="mt-0.5 text-[9px] text-[var(--app-text-subtle)]">{option.helper}</span>
+                            <div className={['absolute right-2 top-2 rounded-sm border', option.id === '1:1' ? 'h-4 w-4' : option.id === '16:9' || option.id === '21:9' || option.id === '3:2' || option.id === '4:3' ? 'h-3 w-5' : 'h-5 w-3', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-primary)] bg-[var(--app-primary)]/20' : 'border-[var(--app-border)] bg-[var(--app-surface)]'].join(' ')} />
+                          </button>
+                        )) : OPENAI_IMAGE_SIZE_OPTIONS.map((option) => (
                           <button key={option.id} type="button" onClick={() => setSelectedOpenAIImageSize(option.id)} className={['relative flex flex-col justify-center rounded-xl border p-2.5 text-left transition-all', selectedOpenAIImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-text-muted)]'].join(' ')}>
                             <span className="text-xs font-bold">{option.label}</span>
                             <span className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">{option.helper}</span>
@@ -924,9 +1018,9 @@ export function ImageToolPage() {
                       <div className="flex flex-col gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
                         <div className="flex flex-col gap-1">
                           <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">MODEL</span>
-                          <Select className="h-8 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={!selectedProviderReady}>
+                          <Select className="h-8 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={generatingImage}>
                             {IMAGE_MODEL_OPTIONS.map((option) => (
-                              <option key={option.id} value={option.id} disabled={!selectedProviderReady}>{option.label} · OAuth only</option>
+                              <option key={option.id} value={option.id}>{option.label} · {option.provider === 'google_gemini' ? 'Google API key' : 'OAuth only'}</option>
                             ))}
                           </Select>
                         </div>
@@ -938,6 +1032,22 @@ export function ImageToolPage() {
                           </div>
                         ) : null}
 
+                        {isGoogleGeminiModel ? (
+                          <label className="flex flex-col gap-1">
+                            <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">GEMINI IMAGE SIZE</span>
+                            <Select
+                              className="h-8 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium"
+                              value={selectedGoogleImageSize}
+                              onChange={(event) => setSelectedGoogleImageSize(event.target.value)}
+                              disabled={generatingImage}
+                            >
+                              {GOOGLE_GEMINI_IMAGE_SIZE_OPTIONS.map((option) => (
+                                <option key={option.id} value={option.id} disabled={option.id === '512' && selectedModelOption.model !== 'gemini-2.5-flash-image'}>{option.label} · {option.helper}</option>
+                              ))}
+                            </Select>
+                          </label>
+                        ) : null}
+
                         <label className="flex flex-col gap-1">
                           <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">QUANTITY</span>
                           <Select
@@ -946,11 +1056,19 @@ export function ImageToolPage() {
                             onChange={(event) => setSelectedFinalImageCount(Number(event.target.value) as (typeof FINAL_IMAGE_COUNT_OPTIONS)[number])}
                             disabled={generatingImage}
                           >
-                            {FINAL_IMAGE_COUNT_OPTIONS.map((count) => (
+                            {selectedCountOptions.map((count) => (
                               <option key={count} value={count}>{count} final image{count === 1 ? '' : 's'}</option>
                             ))}
                           </Select>
                         </label>
+
+                        {isGoogleGeminiModel && (liveGenerationThinking || liveGenerationText || displayedChargeInfo) ? (
+                          <div className="space-y-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-[10px] leading-snug text-[var(--app-text-muted)]">
+                            {liveGenerationThinking ? <p><b className="text-[var(--app-text)]">Thinking:</b> {liveGenerationThinking}</p> : null}
+                            {liveGenerationText ? <p><b className="text-[var(--app-text)]">Gemini:</b> {liveGenerationText}</p> : null}
+                            {displayedChargeInfo ? <p><b className={displayedChargeInfo.hasCharge ? 'text-[var(--app-success)]' : 'text-[var(--app-text)]'}>{displayedChargeInfo.label}</b> · {displayedChargeInfo.detail}</p> : null}
+                          </div>
+                        ) : null}
 
                         <Button className="mt-auto h-10 w-full rounded-xl bg-[var(--app-primary)] text-white shadow-sm transition hover:bg-[var(--app-primary)]/90 disabled:bg-[var(--app-surface-hover)] disabled:text-[var(--app-text-muted)]" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()}>
                           <Sparkles size={14} className="mr-2" />

@@ -148,8 +148,11 @@ func (s *Server) handleImageAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contentType := "image/png"
-	if strings.EqualFold(asset.Extension, "jpg") || strings.EqualFold(asset.Extension, "jpeg") {
+	switch strings.ToLower(strings.TrimSpace(asset.Extension)) {
+	case "jpg", "jpeg":
 		contentType = "image/jpeg"
+	case "webp":
+		contentType = "image/webp"
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, no-store")

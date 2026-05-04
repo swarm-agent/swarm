@@ -21,23 +21,36 @@ import (
 )
 
 const (
-	ProviderCodexOpenAI     = "codex_openai"
-	ProviderGoogleImagen    = "google_imagen"
-	TargetWorkspaceImage    = "workspace_image_session"
-	defaultCodexImageModel  = "gpt-5.5"
-	generatedImageExtension = ".png"
-	assetPathMetadataKey    = "tool_storage_path"
-	assetURLBase            = "/v1/image/assets"
+	ProviderCodexOpenAI       = "codex_openai"
+	ProviderGoogleGemini      = "google_gemini"
+	TargetWorkspaceImage      = "workspace_image_session"
+	defaultCodexImageModel    = "gpt-5.5"
+	defaultGeminiImageModel   = "gemini-3.1-flash-image-preview"
+	generatedImageExtension   = ".png"
+	assetPathMetadataKey      = "tool_storage_path"
+	assetURLBase              = "/v1/image/assets"
+	geminiMaxParallelRequests = 10
 )
+
+var geminiImageModels = []string{
+	"gemini-3.1-flash-image-preview",
+	"gemini-3-pro-image-preview",
+	"gemini-2.5-flash-image",
+}
 
 type CodexImageClient interface {
 	GenerateImage(ctx context.Context, req codex.ImageGenerationRequest) (codex.ImageGenerationResult, error)
 }
 
+type GeminiImageClient interface {
+	GenerateImage(ctx context.Context, req GeminiImageGenerationRequest) (GeminiImageGenerationResult, error)
+}
+
 type Service struct {
-	codexClient  CodexImageClient
-	authStore    *pebblestore.AuthStore
-	imageThreads *pebblestore.ImageThreadStore
+	codexClient       CodexImageClient
+	geminiImageClient GeminiImageClient
+	authStore         *pebblestore.AuthStore
+	imageThreads      *pebblestore.ImageThreadStore
 }
 
 type GenerateRequest struct {
@@ -60,9 +73,12 @@ type GenerateStreamEvent struct {
 	PartialImageIndex int    `json:"partial_image_index,omitempty"`
 	PartialImageB64   string `json:"partial_image_b64,omitempty"`
 	OutputFormat      string `json:"output_format,omitempty"`
+	MIMEType          string `json:"mime_type,omitempty"`
 	Size              string `json:"size,omitempty"`
 	Quality           string `json:"quality,omitempty"`
 	Background        string `json:"background,omitempty"`
+	Text              string `json:"text,omitempty"`
+	Thinking          string `json:"thinking,omitempty"`
 }
 
 type GenerationTarget struct {
@@ -123,7 +139,14 @@ type imageSession struct {
 }
 
 func NewService(codexClient CodexImageClient, authStore *pebblestore.AuthStore, imageThreads *pebblestore.ImageThreadStore) *Service {
-	return &Service{codexClient: codexClient, authStore: authStore, imageThreads: imageThreads}
+	return &Service{codexClient: codexClient, geminiImageClient: googleGeminiImageClient{}, authStore: authStore, imageThreads: imageThreads}
+}
+
+func (s *Service) SetGeminiImageClient(client GeminiImageClient) {
+	if s == nil {
+		return
+	}
+	s.geminiImageClient = client
 }
 
 func ProviderResponseFromError(err error) (map[string]any, bool) {
@@ -160,7 +183,28 @@ func (s *Service) Capabilities(context.Context) (Capabilities, error) {
 			codexStatus.Ready = true
 		}
 	}
-	return Capabilities{Providers: []ProviderStatus{codexStatus}}, nil
+	geminiStatus := ProviderStatus{
+		ID:           ProviderGoogleGemini,
+		Label:        "Google Gemini / Nano Banana",
+		DefaultModel: defaultGeminiImageModel,
+		Models:       append([]string(nil), geminiImageModels...),
+	}
+	if s == nil || s.geminiImageClient == nil || s.authStore == nil {
+		geminiStatus.Ready = false
+		geminiStatus.Reason = "google gemini image provider is not configured"
+	} else {
+		record, ok, err := s.authStore.GetActiveCredential("google")
+		if err != nil {
+			return Capabilities{}, fmt.Errorf("read google auth: %w", err)
+		}
+		if !ok || strings.TrimSpace(record.APIKey) == "" {
+			geminiStatus.Ready = false
+			geminiStatus.Reason = "connect a Google API key to enable Gemini image generation"
+		} else {
+			geminiStatus.Ready = true
+		}
+	}
+	return Capabilities{Providers: []ProviderStatus{codexStatus, geminiStatus}}, nil
 }
 
 func (s *Service) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {
@@ -175,8 +219,8 @@ func (s *Service) Generate(ctx context.Context, req GenerateRequest) (GenerateRe
 	switch provider {
 	case ProviderCodexOpenAI:
 		return s.generateCodexOpenAI(ctx, req, count, partialImages, prompt)
-	case ProviderGoogleImagen:
-		return GenerateResult{}, errors.New("Google Imagen generation is not implemented yet")
+	case ProviderGoogleGemini:
+		return s.generateGoogleGemini(ctx, req, count, prompt)
 	default:
 		return GenerateResult{}, fmt.Errorf("unsupported image provider %q", provider)
 	}
@@ -187,12 +231,19 @@ func normalizeGenerateRequest(req GenerateRequest) (provider string, count int, 
 	if provider == "" || provider == "openai" || provider == "codex" {
 		provider = ProviderCodexOpenAI
 	}
+	if provider == "google" || provider == "gemini" || provider == "nano_banana" {
+		provider = ProviderGoogleGemini
+	}
 	count = req.Count
 	if count == 0 {
 		count = 1
 	}
-	if count < 1 || count > 3 {
-		return "", 0, 0, "", errors.New("count must be between 1 and 3")
+	maxCount := 3
+	if provider == ProviderGoogleGemini {
+		maxCount = geminiMaxParallelRequests
+	}
+	if count < 1 || count > maxCount {
+		return "", 0, 0, "", fmt.Errorf("count must be between 1 and %d", maxCount)
 	}
 	partialImages = req.PartialImages
 	if partialImages < 0 {
@@ -371,17 +422,22 @@ func (s *Service) saveGeneratedImages(session imageSession, finalImages []codex.
 	assets := make([]GeneratedAsset, 0, len(finalImages))
 	for index, finalImage := range finalImages {
 		assetID := newAssetID()
+		mimeType := finalImageMIME(finalImage)
+		ext := extensionFromMIME(mimeType)
+		if ext == "" {
+			return nil, pebblestore.ImageThreadSnapshot{}, fmt.Errorf("unsupported generated image MIME type %q", mimeType)
+		}
 		baseName := imageAssetBaseName(index, finalImage, assetID)
-		fileName := uniqueAssetFilename(storagePath, baseName, generatedImageExtension)
+		fileName := uniqueAssetFilename(storagePath, baseName, ext)
 		targetPath := filepath.Join(storagePath, fileName)
-		imageGenerationLogf("stage=file_write_attempt thread_id=%q image_index=%d asset_id=%q output_index=%d call_id=%q png_bytes=%d target_path=%q", thread.ID, index+1, assetID, finalImage.OutputIndex, finalImage.CallID, len(finalImage.DecodedPNG), targetPath)
+		imageGenerationLogf("stage=file_write_attempt thread_id=%q image_index=%d asset_id=%q output_index=%d call_id=%q mime_type=%q detected_mime=%q image_bytes=%d target_path=%q", thread.ID, index+1, assetID, finalImage.OutputIndex, finalImage.CallID, mimeType, detectImageMIME(finalImage.DecodedPNG), len(finalImage.DecodedPNG), targetPath)
 		if !pathWithinRoot(storagePath, targetPath) {
 			imageGenerationLogf("stage=file_write_rejected thread_id=%q image_index=%d reason=path_escapes_storage storage_path=%q target_path=%q will_update_db=false", thread.ID, index+1, storagePath, targetPath)
 			return nil, pebblestore.ImageThreadSnapshot{}, errors.New("generated image path escapes managed session storage")
 		}
 		info, err := writePrivateFileAtomic(targetPath, finalImage.DecodedPNG)
 		if err != nil {
-			imageGenerationLogf("stage=file_write_failed thread_id=%q image_index=%d reason=%q png_bytes=%d target_path=%q will_update_db=false", thread.ID, index+1, err.Error(), len(finalImage.DecodedPNG), targetPath)
+			imageGenerationLogf("stage=file_write_failed thread_id=%q image_index=%d reason=%q mime_type=%q image_bytes=%d target_path=%q will_update_db=false", thread.ID, index+1, err.Error(), mimeType, len(finalImage.DecodedPNG), targetPath)
 			return nil, pebblestore.ImageThreadSnapshot{}, fmt.Errorf("save generated image %d: %w", index+1, err)
 		}
 		imageGenerationLogf("stage=file_write_done thread_id=%q image_index=%d asset_id=%q size_bytes=%d target_path=%q", thread.ID, index+1, assetID, info.Size(), targetPath)
@@ -390,7 +446,7 @@ func (s *Service) saveGeneratedImages(session imageSession, finalImages []codex.
 				ID:         assetID,
 				Name:       fileName,
 				Path:       targetPath,
-				Extension:  strings.TrimPrefix(generatedImageExtension, "."),
+				Extension:  strings.TrimPrefix(ext, "."),
 				SizeBytes:  info.Size(),
 				ModifiedAt: info.ModTime().UnixMilli(),
 			},
@@ -720,6 +776,109 @@ func firstNonEmpty(values ...string) string {
 
 func looksLikePNG(data []byte) bool {
 	return len(data) >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G' && data[4] == '\r' && data[5] == '\n' && data[6] == 0x1a && data[7] == '\n'
+}
+
+func looksLikeJPEG(data []byte) bool {
+	return len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff
+}
+
+func looksLikeWebP(data []byte) bool {
+	return len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP"
+}
+
+func detectImageMIME(data []byte) string {
+	switch {
+	case looksLikePNG(data):
+		return "image/png"
+	case looksLikeJPEG(data):
+		return "image/jpeg"
+	case looksLikeWebP(data):
+		return "image/webp"
+	default:
+		return "unknown"
+	}
+}
+
+func imageMagicHex(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	limit := len(data)
+	if limit > 16 {
+		limit = 16
+	}
+	return hex.EncodeToString(data[:limit])
+}
+
+func dumpInvalidGeneratedImage(storagePath, provider string, outputIndex, imageIndex int, data []byte) (string, error) {
+	storagePath = filepath.Clean(strings.TrimSpace(storagePath))
+	if storagePath == "." || storagePath == "" {
+		return "", errors.New("image session storage path is required")
+	}
+	if len(data) == 0 {
+		return "", errors.New("image data is empty")
+	}
+	debugDir := filepath.Join(storagePath, "debug")
+	if !pathWithinRoot(storagePath, debugDir) {
+		return "", errors.New("debug image path escapes managed session storage")
+	}
+	if err := os.MkdirAll(debugDir, appstorage.PrivateDirPerm); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(debugDir, appstorage.PrivateDirPerm); err != nil {
+		return "", err
+	}
+	ext := extensionFromMIME(detectImageMIME(data))
+	if ext == "" {
+		ext = ".bin"
+	}
+	baseName := fmt.Sprintf("invalid-%s-output-%02d-image-%02d-%d", sanitizeFilename(provider), outputIndex+1, imageIndex+1, time.Now().UnixMilli())
+	fileName := uniqueAssetFilename(debugDir, baseName, ext)
+	targetPath := filepath.Join(debugDir, fileName)
+	if !pathWithinRoot(storagePath, targetPath) {
+		return "", errors.New("debug image dump path escapes managed session storage")
+	}
+	if _, err := writePrivateFileAtomic(targetPath, data); err != nil {
+		return "", err
+	}
+	return targetPath, nil
+}
+
+func supportedGeneratedImageMIME(declaredMIME, detectedMIME string) string {
+	detectedMIME = strings.ToLower(strings.TrimSpace(detectedMIME))
+	declaredMIME = strings.ToLower(strings.TrimSpace(declaredMIME))
+	if extensionFromMIME(detectedMIME) != "" {
+		return detectedMIME
+	}
+	if extensionFromMIME(declaredMIME) != "" && declaredMIME == detectedMIME {
+		return declaredMIME
+	}
+	return ""
+}
+
+func finalImageMIME(finalImage codex.ImageGenerationResult) string {
+	declaredMIME := strings.TrimSpace(finalImage.MIMEType)
+	detectedMIME := detectImageMIME(finalImage.DecodedPNG)
+	if mimeType := supportedGeneratedImageMIME(declaredMIME, detectedMIME); mimeType != "" {
+		return mimeType
+	}
+	if declaredMIME != "" {
+		return declaredMIME
+	}
+	return detectedMIME
+}
+
+func extensionFromMIME(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ""
+	}
 }
 
 func uniqueAssetFilename(dir, base, ext string) string {
