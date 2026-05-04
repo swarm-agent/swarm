@@ -129,6 +129,7 @@ type ImageThumbnailItem =
   | { id: string; kind: 'pending'; asset: null; preview: null; label: string; meta: string }
 
 type GenerationStage = 'idle' | 'queued' | 'generating' | 'partial' | 'final' | 'error'
+type GenerationControlMode = 'manual' | 'ai'
 
 const IMAGE_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.imageTool.blackMode'
 const DEFAULT_IMAGE_SESSION_TITLE = 'Swarm image session'
@@ -379,6 +380,7 @@ export function ImageToolPage() {
   const [selectedGoogleAspectRatio, setSelectedGoogleAspectRatio] = useState('1:1')
   const [selectedGoogleImageSize, setSelectedGoogleImageSize] = useState('1K')
   const [promptText, setPromptText] = useState('')
+  const [generationControlMode, setGenerationControlMode] = useState<GenerationControlMode>('manual')
   const [liveGenerationText, setLiveGenerationText] = useState('')
   const [liveGenerationThinking, setLiveGenerationThinking] = useState('')
   const [lastGeminiChargeInfo, setLastGeminiChargeInfo] = useState<GeminiChargeInfo | null>(null)
@@ -868,8 +870,8 @@ export function ImageToolPage() {
                 </div>
               </div>
             ) : (
-              <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden">
-                <div className="flex min-h-0 flex-1 flex-col border border-[var(--app-border)] bg-[var(--app-surface)]">
+              <div className="grid min-h-full gap-3 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(0,1fr)_360px] xl:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_400px]">
+                <div className="flex min-h-[520px] flex-col overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)] xl:min-h-0">
                   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-3 py-2">
                     <div className="min-w-0">
                       <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--app-text-subtle)]">Generation area</p>
@@ -984,29 +986,57 @@ export function ImageToolPage() {
                   </div>
                 </div>
 
-                <div className="shrink-0 border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                  <div className="grid min-w-0 items-stretch gap-4 lg:grid-cols-[minmax(300px,1fr)_minmax(0,2.8fr)]">
-                    <div className="flex h-full min-h-0 flex-col">
+                <aside className="min-h-0 overflow-y-auto border border-[var(--app-border)] bg-[var(--app-surface)] p-3 xl:h-full">
+                  <div className="flex min-h-full flex-col gap-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--app-text-subtle)]">Controls</p>
+                        <h3 className="mt-1 text-lg font-semibold tracking-[-0.045em] text-[var(--app-text)]">Prompt studio</h3>
+                      </div>
+                      <div className="grid grid-cols-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 text-[10px] font-bold uppercase tracking-[0.14em]">
+                        <button
+                          type="button"
+                          className={['rounded-lg px-3 py-1.5 transition', generationControlMode === 'manual' ? 'bg-[var(--app-primary)] text-white shadow-sm' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]'].join(' ')}
+                          onClick={() => setGenerationControlMode('manual')}
+                        >
+                          Manual
+                        </button>
+                        <button
+                          type="button"
+                          className={['rounded-lg px-3 py-1.5 transition', generationControlMode === 'ai' ? 'bg-[var(--app-primary)] text-white shadow-sm' : 'text-[var(--app-text-subtle)] opacity-70'].join(' ')}
+                          disabled
+                          title="AI prompt mode coming soon"
+                        >
+                          AI soon
+                        </button>
+                      </div>
+                    </div>
+
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Prompt</span>
                       <Textarea
-                        rows={2}
-                        className="min-h-14 h-full flex-1 w-full resize-none rounded-xl border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-xs leading-5 focus:ring-1 focus:ring-[var(--app-primary)]"
+                        rows={8}
+                        className="min-h-40 w-full resize-none rounded-xl border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm leading-6 focus:ring-1 focus:ring-[var(--app-primary)] xl:min-h-48"
                         value={promptText}
                         onChange={(event) => setPromptText(event.target.value)}
                         placeholder="Make me a swarm cube"
                       />
-                    </div>
+                    </label>
 
-                    <div className="grid min-w-0 gap-3 sm:grid-cols-[1.25fr_1fr]">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Shape</span>
+                        <span className="text-[10px] text-[var(--app-text-muted)]">{isGoogleGeminiModel ? 'Gemini aspect' : 'Output size'}</span>
+                      </div>
                       <div className="grid grid-cols-2 gap-2">
                         {isGoogleGeminiModel ? GOOGLE_GEMINI_ASPECT_RATIO_OPTIONS.map((option) => (
-                          <button key={option.id} type="button" onClick={() => setSelectedGoogleAspectRatio(option.id)} className={['relative flex flex-col justify-center rounded-xl border p-2.5 text-left transition-all', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-text-muted)]'].join(' ')}>
+                          <button key={option.id} type="button" onClick={() => setSelectedGoogleAspectRatio(option.id)} className={['relative flex flex-col justify-center rounded-xl border p-2.5 text-left transition-all', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-text-muted)]'].join(' ')} disabled={generatingImage}>
                             <span className="text-xs font-bold">{option.label}</span>
-                            <span className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Gemini aspect</span>
-                            <span className="mt-0.5 text-[9px] text-[var(--app-text-subtle)]">{option.helper}</span>
+                            <span className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">{option.helper}</span>
                             <div className={['absolute right-2 top-2 rounded-sm border', option.id === '1:1' ? 'h-4 w-4' : option.id === '16:9' || option.id === '21:9' || option.id === '3:2' || option.id === '4:3' ? 'h-3 w-5' : 'h-5 w-3', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-primary)] bg-[var(--app-primary)]/20' : 'border-[var(--app-border)] bg-[var(--app-surface)]'].join(' ')} />
                           </button>
                         )) : OPENAI_IMAGE_SIZE_OPTIONS.map((option) => (
-                          <button key={option.id} type="button" onClick={() => setSelectedOpenAIImageSize(option.id)} className={['relative flex flex-col justify-center rounded-xl border p-2.5 text-left transition-all', selectedOpenAIImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-text-muted)]'].join(' ')}>
+                          <button key={option.id} type="button" onClick={() => setSelectedOpenAIImageSize(option.id)} className={['relative flex flex-col justify-center rounded-xl border p-2.5 text-left transition-all', selectedOpenAIImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-text-muted)]'].join(' ')} disabled={generatingImage}>
                             <span className="text-xs font-bold">{option.label}</span>
                             <span className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">{option.helper}</span>
                             <span className="mt-0.5 text-[9px] text-[var(--app-text-subtle)]">{option.aspectRatio} · {option.size}</span>
@@ -1014,29 +1044,31 @@ export function ImageToolPage() {
                           </button>
                         ))}
                       </div>
+                    </div>
 
-                      <div className="flex flex-col gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-                        <div className="flex flex-col gap-1">
-                          <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">MODEL</span>
-                          <Select className="h-8 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={generatingImage}>
-                            {IMAGE_MODEL_OPTIONS.map((option) => (
-                              <option key={option.id} value={option.id}>{option.label} · {option.provider === 'google_gemini' ? 'Google API key' : 'OAuth only'}</option>
-                            ))}
-                          </Select>
+                    <div className="flex flex-col gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">MODEL</span>
+                        <Select className="h-9 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={generatingImage}>
+                          {IMAGE_MODEL_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>{option.label} · {option.provider === 'google_gemini' ? 'Google API key' : 'OAuth only'}</option>
+                          ))}
+                        </Select>
+                      </div>
+
+                      {!selectedProviderReady ? (
+                        <div className="flex items-start gap-2 rounded-lg border border-[var(--app-warning)]/40 bg-[var(--app-warning)]/10 px-2.5 py-2 text-[10px] leading-snug text-[var(--app-text)]">
+                          <TriangleAlert size={14} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
+                          <span>{selectedProviderWarning}</span>
                         </div>
+                      ) : null}
 
-                        {!selectedProviderReady ? (
-                          <div className="flex items-start gap-2 rounded-lg border border-[var(--app-warning)]/40 bg-[var(--app-warning)]/10 px-2.5 py-2 text-[10px] leading-snug text-[var(--app-text)]">
-                            <TriangleAlert size={14} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
-                            <span>{selectedProviderWarning}</span>
-                          </div>
-                        ) : null}
-
+                      <div className="grid grid-cols-2 gap-2">
                         {isGoogleGeminiModel ? (
                           <label className="flex flex-col gap-1">
-                            <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">GEMINI IMAGE SIZE</span>
+                            <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">SIZE</span>
                             <Select
-                              className="h-8 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium"
+                              className="h-9 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium"
                               value={selectedGoogleImageSize}
                               onChange={(event) => setSelectedGoogleImageSize(event.target.value)}
                               disabled={generatingImage}
@@ -1051,7 +1083,7 @@ export function ImageToolPage() {
                         <label className="flex flex-col gap-1">
                           <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">QUANTITY</span>
                           <Select
-                            className="h-8 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium"
+                            className="h-9 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium"
                             value={String(selectedFinalImageCount)}
                             onChange={(event) => setSelectedFinalImageCount(Number(event.target.value) as (typeof FINAL_IMAGE_COUNT_OPTIONS)[number])}
                             disabled={generatingImage}
@@ -1061,23 +1093,25 @@ export function ImageToolPage() {
                             ))}
                           </Select>
                         </label>
-
-                        {isGoogleGeminiModel && (liveGenerationThinking || liveGenerationText || displayedChargeInfo) ? (
-                          <div className="space-y-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-2 text-[10px] leading-snug text-[var(--app-text-muted)]">
-                            {liveGenerationThinking ? <p><b className="text-[var(--app-text)]">Thinking:</b> {liveGenerationThinking}</p> : null}
-                            {liveGenerationText ? <p><b className="text-[var(--app-text)]">Gemini:</b> {liveGenerationText}</p> : null}
-                            {displayedChargeInfo ? <p><b className={displayedChargeInfo.hasCharge ? 'text-[var(--app-success)]' : 'text-[var(--app-text)]'}>{displayedChargeInfo.label}</b> · {displayedChargeInfo.detail}</p> : null}
-                          </div>
-                        ) : null}
-
-                        <Button className="mt-auto h-10 w-full rounded-xl bg-[var(--app-primary)] text-white shadow-sm transition hover:bg-[var(--app-primary)]/90 disabled:bg-[var(--app-surface-hover)] disabled:text-[var(--app-text-muted)]" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()}>
-                          <Sparkles size={14} className="mr-2" />
-                          <b>{generatingImage ? 'GENERATING…' : `GENERATE ${selectedFinalImageCount}`}</b>
-                        </Button>
                       </div>
                     </div>
+
+                    {isGoogleGeminiModel && (liveGenerationThinking || liveGenerationText || displayedChargeInfo) ? (
+                      <div className="space-y-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-2 text-[10px] leading-snug text-[var(--app-text-muted)]">
+                        {liveGenerationThinking ? <p><b className="text-[var(--app-text)]">Thinking:</b> {liveGenerationThinking}</p> : null}
+                        {liveGenerationText ? <p><b className="text-[var(--app-text)]">Gemini:</b> {liveGenerationText}</p> : null}
+                        {displayedChargeInfo ? <p><b className={displayedChargeInfo.hasCharge ? 'text-[var(--app-success)]' : 'text-[var(--app-text)]'}>{displayedChargeInfo.label}</b> · {displayedChargeInfo.detail}</p> : null}
+                      </div>
+                    ) : null}
+
+                    <div className="mt-auto pt-1">
+                      <Button className="h-11 w-full rounded-xl bg-[var(--app-primary)] text-white shadow-sm transition hover:bg-[var(--app-primary)]/90 disabled:bg-[var(--app-surface-hover)] disabled:text-[var(--app-text-muted)]" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()}>
+                        <Sparkles size={14} className="mr-2" />
+                        <b>{generatingImage ? 'GENERATING…' : `GENERATE ${selectedFinalImageCount}`}</b>
+                      </Button>
+                    </div>
                   </div>
-                </div>
+                </aside>
               </div>
             )}
           </section>
