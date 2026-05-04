@@ -1,7 +1,7 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, ChevronLeft, ChevronRight, FolderOpen, Image, Moon, Sparkles, TriangleAlert, X } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Clipboard, Download, ExternalLink, FolderOpen, Image, Link2, Moon, Sparkles, TriangleAlert, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Select } from '../../../../components/ui/select'
@@ -301,6 +301,26 @@ function formatBytes(value: number): string {
   return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
 }
 
+function imageSessionPath(thread: ImageThreadRecord | null): string {
+  return thread?.imageFolders[0] ?? ''
+}
+
+function imageDownloadName(asset: ImageAsset): string {
+  const name = asset.name.trim()
+  if (name) return name
+  const ext = asset.extension.trim()
+  return ext ? `generated-image.${ext.replace(/^\./, '')}` : 'generated-image'
+}
+
+async function copyTextToClipboard(value: string): Promise<void> {
+  const text = value.trim()
+  if (!text) throw new Error('Nothing to copy')
+  if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+    throw new Error('Clipboard unavailable')
+  }
+  await navigator.clipboard.writeText(text)
+}
+
 function extractGeminiChargeInfo(providerResponse: unknown): GeminiChargeInfo | null {
   if (!isRecord(providerResponse)) return null
   const cost = providerResponse.cost
@@ -369,14 +389,21 @@ export function ImageToolPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const matchRoute = useMatchRoute()
+  const workspaceImageToolSessionMatch = matchRoute({ to: '/$workspaceSlug/tools/image/$imageSessionId', fuzzy: false })
   const workspaceImageToolMatch = matchRoute({ to: '/$workspaceSlug/tools/image', fuzzy: false })
-  const routeWorkspaceSlug = workspaceImageToolMatch ? workspaceImageToolMatch.workspaceSlug.trim() : ''
+  const rootImageToolSessionMatch = matchRoute({ to: '/tools/image/$imageSessionId', fuzzy: false })
+  const routeWorkspaceSlug = workspaceImageToolSessionMatch ? workspaceImageToolSessionMatch.workspaceSlug.trim() : workspaceImageToolMatch ? workspaceImageToolMatch.workspaceSlug.trim() : ''
+  const routeImageSessionId = workspaceImageToolSessionMatch ? workspaceImageToolSessionMatch.imageSessionId.trim() : rootImageToolSessionMatch ? rootImageToolSessionMatch.imageSessionId.trim() : ''
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const activeWorkspacePath = useDesktopStore((state) => state.activeWorkspacePath)
 
   const [createError, setCreateError] = useState<string | null>(null)
   const [generationError, setGenerationError] = useState<string | null>(null)
   const [revealingStorage, setRevealingStorage] = useState(false)
+  const [lastStoragePath, setLastStoragePath] = useState('')
+  const [pathCopyStatus, setPathCopyStatus] = useState('')
+  const [sessionLinkCopyStatus, setSessionLinkCopyStatus] = useState('')
+  const [imageActionStatus, setImageActionStatus] = useState('')
   const [newSessionTitle, setNewSessionTitle] = useState('')
   const [creatingSession, setCreatingSession] = useState(false)
   const [generatingImage, setGeneratingImage] = useState(false)
@@ -443,6 +470,13 @@ export function ImageToolPage() {
   const imageThreads = imageThreadsQuery.data ?? []
 
   useEffect(() => {
+    if (!routeImageSessionId) return
+    if (imageThreads.some((thread) => thread.id === routeImageSessionId) && selectedThreadId !== routeImageSessionId) {
+      setSelectedThreadId(routeImageSessionId)
+    }
+  }, [imageThreads, routeImageSessionId, selectedThreadId])
+
+  useEffect(() => {
     if (!selectedThreadId) return
     if (!imageThreads.some((thread) => thread.id === selectedThreadId)) {
       setSelectedThreadId(null)
@@ -475,6 +509,12 @@ export function ImageToolPage() {
   const activePreviewNumber = selectedImageAssetIndex >= 0 ? selectedImageAssetIndex + 1 : 1
   const selectedImageSource = selectedImageAsset && selectedThread
     ? selectedImageAsset.url ?? imageAssetURL(selectedThread.id, selectedImageAsset.id)
+    : ''
+  const selectedSessionStoragePath = imageSessionPath(selectedThread)
+  const selectedAssetFilePath = selectedImageAsset?.path ?? ''
+  const selectedCopyFilePath = selectedAssetFilePath || selectedSessionStoragePath
+  const selectedSessionURL = selectedThread
+    ? `${typeof window !== 'undefined' ? window.location.origin : ''}${routeWorkspaceSlug ? `/${routeWorkspaceSlug}/tools/image/${selectedThread.id}` : `/tools/image/${selectedThread.id}`}`
     : ''
   const selectedModelOption = IMAGE_MODEL_OPTIONS.find((option) => option.id === selectedImageModel) ?? IMAGE_MODEL_OPTIONS[0]
   const selectedProviderStatus = (imageProvidersQuery.data ?? []).find((provider) => provider.id === selectedModelOption.provider)
@@ -614,6 +654,11 @@ export function ImageToolPage() {
         return [createdThread, ...withoutCreated]
       })
       setSelectedThreadId(createdThread.id)
+      if (routeWorkspaceSlug) {
+        void navigate({ to: '/$workspaceSlug/tools/image/$imageSessionId', params: { workspaceSlug: routeWorkspaceSlug, imageSessionId: createdThread.id } })
+      } else {
+        void navigate({ to: '/tools/image/$imageSessionId', params: { imageSessionId: createdThread.id } })
+      }
       setNewSessionTitle('')
       await queryClient.invalidateQueries({ queryKey: ['image-tool-threads', selectedWorkspacePath] })
     } catch (error) {
@@ -621,7 +666,7 @@ export function ImageToolPage() {
     } finally {
       setCreatingSession(false)
     }
-  }, [newSessionTitle, queryClient, selectedWorkspaceName, selectedWorkspacePath])
+  }, [navigate, newSessionTitle, queryClient, routeWorkspaceSlug, selectedWorkspaceName, selectedWorkspacePath])
 
   const handlePreviousPreview = useCallback(() => {
     if (orderedImageAssets.length === 0) return
@@ -665,16 +710,73 @@ export function ImageToolPage() {
     if (!selectedThread) return
     setRevealingStorage(true)
     setGenerationError(null)
+    setImageActionStatus('')
     try {
       const search = new URLSearchParams({ thread_id: selectedThread.id })
       if (assetId) search.set('asset_id', assetId)
-      await requestJson<{ ok?: boolean; path?: string; method?: string }>(`/v1/image/storage/reveal?${search.toString()}`, { method: 'POST' })
+      const result = await requestJson<{ ok?: boolean; path?: string; method?: string }>(`/v1/image/storage/reveal?${search.toString()}`, { method: 'POST' })
+      const resolvedPath = String(result.path ?? '').trim()
+      if (resolvedPath) {
+        setLastStoragePath(resolvedPath)
+        setPathCopyStatus(assetId ? 'File path resolved.' : 'Folder path resolved.')
+      }
     } catch (error) {
       setGenerationError(error instanceof Error ? error.message : String(error))
     } finally {
       setRevealingStorage(false)
     }
   }, [selectedThread])
+
+  const handleCopyFilePath = useCallback(async (path: string) => {
+    setGenerationError(null)
+    setPathCopyStatus('')
+    try {
+      await copyTextToClipboard(path)
+      setPathCopyStatus('Copied filepath.')
+      setImageActionStatus('')
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
+  const handleCopySessionLink = useCallback(async () => {
+    setGenerationError(null)
+    setSessionLinkCopyStatus('')
+    try {
+      await copyTextToClipboard(selectedSessionURL)
+      setSessionLinkCopyStatus('Copied session URL.')
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : String(error))
+    }
+  }, [selectedSessionURL])
+
+  const handleOpenSelectedImage = useCallback(() => {
+    if (!selectedImageSource) return
+    window.open(selectedImageSource, '_blank', 'noopener,noreferrer')
+  }, [selectedImageSource])
+
+  const handleDownloadSelectedImage = useCallback(async () => {
+    if (!selectedImageAsset || !selectedImageSource) return
+    setGenerationError(null)
+    setImageActionStatus('')
+    try {
+      const response = await fetch(selectedImageSource)
+      if (!response.ok) throw new Error(`Download failed with status ${response.status}`)
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = imageDownloadName(selectedImageAsset)
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      window.URL.revokeObjectURL(url)
+      setImageActionStatus('Download started.')
+      setPathCopyStatus('')
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : String(error))
+    }
+  }, [selectedImageAsset, selectedImageSource])
 
   const handleGenerateImage = useCallback(async () => {
     if (!selectedThread) {
@@ -829,6 +931,13 @@ export function ImageToolPage() {
         setSelectedImageAssetId(generatedAssetId)
       }
       setSelectedThreadId(updatedThread.id)
+      if (!routeImageSessionId) {
+        if (routeWorkspaceSlug) {
+          void navigate({ to: '/$workspaceSlug/tools/image/$imageSessionId', params: { workspaceSlug: routeWorkspaceSlug, imageSessionId: updatedThread.id } })
+        } else {
+          void navigate({ to: '/tools/image/$imageSessionId', params: { imageSessionId: updatedThread.id } })
+        }
+      }
       setPromptText('')
       await queryClient.invalidateQueries({ queryKey: ['image-tool-threads', selectedWorkspacePath] })
     } catch (error) {
@@ -837,7 +946,7 @@ export function ImageToolPage() {
     } finally {
       setGeneratingImage(false)
     }
-  }, [isGoogleGeminiModel, promptText, queryClient, selectedFinalImageCount, selectedGoogleAspectRatio, selectedGoogleImageSize, selectedOpenAIImageSize, selectedModelOption.model, selectedModelOption.provider, selectedProviderReady, selectedProviderUnavailableReason, selectedThread, selectedWorkspacePath])
+  }, [isGoogleGeminiModel, navigate, promptText, queryClient, routeImageSessionId, routeWorkspaceSlug, selectedFinalImageCount, selectedGoogleAspectRatio, selectedGoogleImageSize, selectedOpenAIImageSize, selectedModelOption.model, selectedModelOption.provider, selectedProviderReady, selectedProviderUnavailableReason, selectedThread, selectedWorkspacePath])
 
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
@@ -874,7 +983,14 @@ export function ImageToolPage() {
               subtitle: String(thread.imageAssets.length) + ' asset' + (thread.imageAssets.length === 1 ? '' : 's') + ' · ' + formatStartedAt(thread.createdAt),
             }))}
             selectedSessionId={selectedThread?.id ?? null}
-            onSelectSession={setSelectedThreadId}
+            onSelectSession={(threadId) => {
+              setSelectedThreadId(threadId)
+              if (routeWorkspaceSlug) {
+                void navigate({ to: '/$workspaceSlug/tools/image/$imageSessionId', params: { workspaceSlug: routeWorkspaceSlug, imageSessionId: threadId } })
+              } else {
+                void navigate({ to: '/tools/image/$imageSessionId', params: { imageSessionId: threadId } })
+              }
+            }}
             emptySessionsMessage="No image sessions yet. Start session to get started."
             defaultSessionTitle="Image Thread"
           >
@@ -882,17 +998,28 @@ export function ImageToolPage() {
               <div className="min-h-0 overflow-y-auto py-3">
                 <p className="mb-2 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Current image session</p>
                 <div className="pt-3">
-                <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-                  <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
-                  <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedThread.workspacePath}</p>
-                  <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
-                    <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Folders</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageFolders.length}</div></div>
-                    <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Assets</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageAssets.length}</div></div>
+                  <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                    <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
+                    <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedThread.workspacePath}</p>
+                    {selectedSessionURL ? <p className="mt-2 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">URL: {selectedSessionURL}</p> : null}
+                    <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
+                      <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Folders</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageFolders.length}</div></div>
+                      <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Assets</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageAssets.length}</div></div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
+                        <Clipboard size={13} />Copy filepath
+                      </Button>
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCopySessionLink()} disabled={!selectedSessionURL}>
+                        <Link2 size={13} />Copy URL
+                      </Button>
+                    </div>
+                    <Button variant="outline" className="mt-2 h-8 w-full rounded-xl px-3 text-xs" onClick={() => void handleRevealImageStorage()} disabled={revealingStorage}>
+                      <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Reveal local folder'}
+                    </Button>
+                    {(pathCopyStatus || sessionLinkCopyStatus) ? <p className="mt-2 text-[10px] text-[var(--app-text-muted)]">{pathCopyStatus || sessionLinkCopyStatus}</p> : null}
+                    {(lastStoragePath || selectedSessionStoragePath) ? <p className="mt-2 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">{lastStoragePath || selectedSessionStoragePath}</p> : null}
                   </div>
-                  <Button variant="outline" className="mt-3 h-8 w-full rounded-xl px-3 text-xs" onClick={() => void handleRevealImageStorage()} disabled={revealingStorage}>
-                    <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Show stored files'}
-                  </Button>
-                </div>
                 </div>
               </div>
             ) : null}
@@ -922,7 +1049,20 @@ export function ImageToolPage() {
                       <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--app-text-subtle)]">Generation area</p>
                       <h2 className="mt-1 truncate text-xl font-semibold tracking-[-0.045em] text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-[var(--app-text-muted)]">
+                    <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-[var(--app-text-muted)]">
+                      {selectedImageAsset ? (
+                        <>
+                          <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleDownloadSelectedImage()}>
+                            <Download size={13} />Download
+                          </Button>
+                          <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
+                            <Clipboard size={13} />Copy filepath
+                          </Button>
+                          <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={handleOpenSelectedImage}>
+                            <ExternalLink size={13} />Open full-res
+                          </Button>
+                        </>
+                      ) : null}
                       <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1">{selectedModelLabel}</span>
                       <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1">{selectedShapeLabel}</span>
                       <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1">{selectedSizeLabel}</span>
@@ -1177,12 +1317,21 @@ export function ImageToolPage() {
                     <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-white/50">Fullscreen preview</p>
                     <h2 className="mt-1 truncate text-sm font-semibold text-white">{selectedImageAsset.name}</h2>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                     <span className="hidden rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs text-white/75 sm:inline-flex">
                       {activePreviewNumber} / {orderedImageAssets.length}
                     </span>
+                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={() => void handleDownloadSelectedImage()}>
+                      <Download size={13} />Download
+                    </Button>
+                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
+                      <Clipboard size={13} />Copy filepath
+                    </Button>
+                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={handleOpenSelectedImage}>
+                      <ExternalLink size={13} />Open full-res
+                    </Button>
                     <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={() => void handleRevealImageStorage(selectedImageAsset.id)} disabled={revealingStorage}>
-                      <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Show file'}
+                      <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Reveal local'}
                     </Button>
                     <Button variant="outline" className="h-11 w-11 rounded-full border-white/20 bg-white/10 px-0 text-white hover:bg-white/20" onClick={() => setImageLightboxOpen(false)} aria-label="Close fullscreen preview">
                       <X size={24} strokeWidth={2.4} />
@@ -1211,6 +1360,12 @@ export function ImageToolPage() {
                     <span>Session images</span>
                     <span>{lightboxNaturalSize ? `${lightboxNaturalSize.width} × ${lightboxNaturalSize.height}px` : 'Resolution loading…'} · {formatBytes(selectedImageAsset.sizeBytes)}</span>
                   </div>
+                  {(pathCopyStatus || imageActionStatus || lastStoragePath) ? (
+                    <div className="mb-2 space-y-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-[10px] text-white/55">
+                      {(pathCopyStatus || imageActionStatus) ? <p>{pathCopyStatus || imageActionStatus}</p> : null}
+                      {lastStoragePath ? <p className="break-all">{lastStoragePath}</p> : null}
+                    </div>
+                  ) : null}
                   <div className="flex gap-2 overflow-x-auto pb-1">
                     {orderedImageAssets.map((asset, index) => {
                       const selected = asset.id === selectedImageAsset.id

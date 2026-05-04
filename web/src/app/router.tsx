@@ -14,6 +14,17 @@ function validateWorkspaceParams(params: Record<string, unknown>): { workspaceSl
   return { workspaceSlug }
 }
 
+function validateImageToolParams(params: Record<string, unknown>): { imageSessionId: string } {
+  const imageSessionId = typeof params.imageSessionId === 'string' ? params.imageSessionId.trim() : ''
+  return { imageSessionId }
+}
+
+function validateWorkspaceImageToolParams(params: Record<string, unknown>): { workspaceSlug: string; imageSessionId: string } {
+  const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
+  const imageSessionId = typeof params.imageSessionId === 'string' ? params.imageSessionId.trim() : ''
+  return { workspaceSlug, imageSessionId }
+}
+
 function validateWorkspaceSessionParams(params: Record<string, unknown>): { workspaceSlug: string; sessionId: string } {
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
   const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : ''
@@ -57,6 +68,13 @@ const videoToolRoute = createRoute({
 const imageToolRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tools/image',
+  component: ImageToolPage,
+})
+
+const imageToolSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/tools/image/$imageSessionId',
+  parseParams: validateImageToolParams,
   component: ImageToolPage,
 })
 
@@ -109,12 +127,20 @@ const workspaceImageToolRoute = createRoute({
   component: ImageToolPage,
 })
 
+const workspaceImageToolSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/tools/image/$imageSessionId',
+  parseParams: validateWorkspaceImageToolParams,
+  component: ImageToolPage,
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   settingsRoute,
   toolsRoute,
   videoToolRoute,
   imageToolRoute,
+  imageToolSessionRoute,
   flowRoute,
   workspaceRoute,
   workspaceSessionRoute,
@@ -122,6 +148,7 @@ const routeTree = rootRoute.addChildren([
   workspaceToolsRoute,
   workspaceVideoToolRoute,
   workspaceImageToolRoute,
+  workspaceImageToolSessionRoute,
 ])
 
 export const router = createRouter({
