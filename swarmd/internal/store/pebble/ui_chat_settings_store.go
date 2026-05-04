@@ -86,6 +86,14 @@ type UIUpdateSettingsRecord struct {
 	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
 }
 
+type UIToolImageSettingsRecord struct {
+	DefaultModel string `json:"default_model,omitempty"`
+}
+
+type UIToolSettingsRecord struct {
+	Image UIToolImageSettingsRecord `json:"image,omitempty"`
+}
+
 type UISettingsRecord struct {
 	Theme     UIThemeSettingsRecord    `json:"theme,omitempty"`
 	Input     UIInputSettingsRecord    `json:"input,omitempty"`
@@ -93,6 +101,7 @@ type UISettingsRecord struct {
 	Swarming  UISwarmingSettingsRecord `json:"swarming,omitempty"`
 	Swarm     UISwarmSettingsRecord    `json:"swarm,omitempty"`
 	Updates   UIUpdateSettingsRecord   `json:"updates,omitempty"`
+	Tools     UIToolSettingsRecord     `json:"tools,omitempty"`
 	UpdatedAt int64                    `json:"updated_at"`
 }
 
@@ -103,6 +112,7 @@ type UISettingsPatch struct {
 	Swarming *UISwarmingSettingsRecord
 	Swarm    *UISwarmSettingsRecord
 	Updates  *UIUpdateSettingsRecord
+	Tools    *UIToolSettingsRecord
 }
 
 type UISettingsStore struct {
@@ -153,6 +163,9 @@ func (s *UISettingsStore) Update(patch UISettingsPatch) (UISettingsRecord, error
 	}
 	if patch.Updates != nil {
 		record.Updates = *patch.Updates
+	}
+	if patch.Tools != nil {
+		record.Tools = *patch.Tools
 	}
 	record.UpdatedAt = time.Now().UnixMilli()
 	record.Chat.UpdatedAt = record.UpdatedAt
@@ -236,6 +249,7 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		record.Swarm.Name = "Local"
 	}
 	record.Swarm.RemoteSSHTargets = normalizeRemoteSSHTargets(record.Swarm.RemoteSSHTargets)
+	record.Tools.Image.DefaultModel = strings.TrimSpace(record.Tools.Image.DefaultModel)
 	return record
 }
 

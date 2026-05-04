@@ -9,8 +9,9 @@ import { Textarea } from '../../../../components/ui/textarea'
 import { apiFetch, requestJson } from '../../../../app/api'
 import { useDesktopStore } from '../../state/use-desktop-store'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
-import { uiSettingsQueryOptions } from '../../../queries/query-options'
-import { normalizeGlobalThemeSettings } from '../../settings/swarm/types/swarm-settings'
+import { uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { normalizeGlobalThemeSettings, normalizeImageDefaultModel, type UISettingsWire } from '../../settings/swarm/types/swarm-settings'
+import { saveImageDefaultModel } from '../../settings/swarm/mutations/save-image-default-model'
 import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { applyWorkspaceTheme, createWorkspaceThemeStyle } from '../../../workspaces/launcher/services/workspace-theme'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
@@ -122,6 +123,11 @@ type GeminiChargeInfo = {
   label: string
   detail: string
   hasCharge: boolean
+}
+
+type ConnectedImageModelOption = (typeof IMAGE_MODEL_OPTIONS)[number] & {
+  providerLabel: string
+  providerReady: boolean
 }
 
 type ImageThumbnailItem =
@@ -418,6 +424,10 @@ export function ImageToolPage() {
   const [lightboxNaturalSize, setLightboxNaturalSize] = useState<{ width: number; height: number } | null>(null)
   const followLivePreviewRef = useRef(false)
   const [selectedImageModel, setSelectedImageModel] = useState<string>(IMAGE_MODEL_OPTIONS[0]?.id ?? '')
+  const [imageDefaultSaving, setImageDefaultSaving] = useState(false)
+  const [imageDefaultStatus, setImageDefaultStatus] = useState('')
+  const [imageDefaultMenuOpen, setImageDefaultMenuOpen] = useState(false)
+  const appliedImageDefaultRef = useRef('')
   const [selectedOpenAIImageSize, setSelectedOpenAIImageSize] = useState('auto')
   const [selectedGoogleAspectRatio, setSelectedGoogleAspectRatio] = useState('1:1')
   const [selectedGoogleImageSize, setSelectedGoogleImageSize] = useState('1K')
@@ -520,6 +530,22 @@ export function ImageToolPage() {
   const selectedSessionURL = selectedThread
     ? `${typeof window !== 'undefined' ? window.location.origin : ''}${selectedWorkspaceSlug ? `/${selectedWorkspaceSlug}/tools/image/${selectedThread.id}` : `/tools/image/${selectedThread.id}`}`
     : ''
+  const connectedImageModelOptions = useMemo<ConnectedImageModelOption[]>(() => {
+    const providers = imageProvidersQuery.data ?? []
+    return IMAGE_MODEL_OPTIONS.flatMap((option) => {
+      const providerStatus = providers.find((provider) => provider.id === option.provider)
+      if (providerStatus?.ready !== true) return []
+      const providerModels = Array.isArray(providerStatus.models) ? providerStatus.models : []
+      if (providerModels.length > 0 && !providerModels.includes(option.model)) return []
+      return [{ ...option, providerLabel: providerStatus.label || option.provider, providerReady: true }]
+    })
+  }, [imageProvidersQuery.data])
+  const savedImageDefaultModel = normalizeImageDefaultModel(uiSettingsQuery.data)
+  const savedDefaultIsConnected = connectedImageModelOptions.some((option) => option.id === savedImageDefaultModel)
+  const activeImageDefaultModel = savedDefaultIsConnected
+    ? savedImageDefaultModel
+    : connectedImageModelOptions[0]?.id ?? ''
+  const activeImageDefaultOption = connectedImageModelOptions.find((option) => option.id === activeImageDefaultModel) ?? null
   const selectedModelOption = IMAGE_MODEL_OPTIONS.find((option) => option.id === selectedImageModel) ?? IMAGE_MODEL_OPTIONS[0]
   const selectedProviderStatus = (imageProvidersQuery.data ?? []).find((provider) => provider.id === selectedModelOption.provider)
   const selectedProviderReady = selectedProviderStatus?.ready === true
@@ -574,6 +600,13 @@ export function ImageToolPage() {
       : generatingImage
         ? 'live:pending:0'
         : null
+  useEffect(() => {
+    if (!activeImageDefaultModel || imageDefaultSaving) return
+    if (appliedImageDefaultRef.current === activeImageDefaultModel) return
+    appliedImageDefaultRef.current = activeImageDefaultModel
+    setSelectedImageModel(activeImageDefaultModel)
+  }, [activeImageDefaultModel, imageDefaultSaving])
+
   useEffect(() => {
     if (!isGoogleGeminiModel && selectedFinalImageCount > 3) {
       setSelectedFinalImageCount(3)
@@ -663,6 +696,29 @@ export function ImageToolPage() {
       setCreatingSession(false)
     }
   }, [navigate, newSessionTitle, queryClient, selectedWorkspaceName, selectedWorkspacePath, selectedWorkspaceSlug])
+
+  const handleDefaultImageModelChange = useCallback(async (modelId: string) => {
+    const option = connectedImageModelOptions.find((candidate) => candidate.id === modelId)
+    if (!option) return
+    const currentSettings = uiSettingsQuery.data
+    if (!currentSettings) return
+    setImageDefaultSaving(true)
+    setImageDefaultStatus('Saving default…')
+    setGenerationError(null)
+    try {
+      const saved = await saveImageDefaultModel({ current: currentSettings, defaultModel: option.id })
+      queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey(), saved)
+      appliedImageDefaultRef.current = option.id
+      setSelectedImageModel(option.id)
+      setImageDefaultMenuOpen(false)
+      setImageDefaultStatus('Default saved.')
+    } catch (error) {
+      setImageDefaultStatus('Default could not be saved.')
+      setGenerationError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setImageDefaultSaving(false)
+    }
+  }, [connectedImageModelOptions, queryClient, uiSettingsQuery.data])
 
   const handleWorkspaceChange = useCallback((workspacePath: string) => {
     const workspace = workspaces.find((entry) => entry.path === workspacePath)
@@ -981,20 +1037,70 @@ export function ImageToolPage() {
             onCreateTitleChange={setNewSessionTitle}
             createPlaceholder={DEFAULT_IMAGE_SESSION_TITLE}
             createPrefix={(
-              <label className="block">
-                <span className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Workspace</span>
-                <Select
-                  className="mt-2 h-9 min-h-9 rounded-none border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0 font-mono text-[12px]"
-                  value={selectedWorkspacePath}
-                  onChange={(event) => handleWorkspaceChange(event.currentTarget.value)}
-                  disabled={workspacesQuery.isLoading || workspaces.length === 0 || creatingSession || generatingImage}
-                >
-                  {workspaces.length === 0 ? <option value="">No workspaces</option> : null}
-                  {workspaces.map((workspace) => (
-                    <option key={workspace.path} value={workspace.path}>{workspace.workspaceName || workspace.path}</option>
-                  ))}
-                </Select>
-              </label>
+              <div className="space-y-3">
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Workspace</span>
+                  <Select
+                    className="mt-2 h-9 min-h-9 rounded-none border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0 font-mono text-[12px]"
+                    value={selectedWorkspacePath}
+                    onChange={(event) => handleWorkspaceChange(event.currentTarget.value)}
+                    disabled={workspacesQuery.isLoading || workspaces.length === 0 || creatingSession || generatingImage}
+                  >
+                    {workspaces.length === 0 ? <option value="">No workspaces</option> : null}
+                    {workspaces.map((workspace) => (
+                      <option key={workspace.path} value={workspace.path}>{workspace.workspaceName || workspace.path}</option>
+                    ))}
+                  </Select>
+                </label>
+
+                <div className="block">
+                  <span className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Default image model</span>
+                  <div className="relative mt-2">
+                    <button
+                      type="button"
+                      className="min-h-[52px] w-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 text-left font-mono text-[12px] text-[var(--app-text)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={() => setImageDefaultMenuOpen((open) => !open)}
+                      disabled={imageProvidersQuery.isLoading || uiSettingsQuery.isLoading || imageDefaultSaving || connectedImageModelOptions.length === 0 || generatingImage}
+                      aria-haspopup="listbox"
+                      aria-expanded={imageDefaultMenuOpen}
+                    >
+                      {activeImageDefaultOption ? (
+                        <span className="block">
+                          <span className="block truncate text-[12px] font-semibold text-[var(--app-text)]">{activeImageDefaultOption.label}</span>
+                          <span className="mt-1 block truncate text-[10px] text-[var(--app-text-subtle)]">{activeImageDefaultOption.providerLabel}</span>
+                        </span>
+                      ) : (
+                        <span className="block text-[11px] text-[var(--app-text-subtle)]">No connected image providers</span>
+                      )}
+                    </button>
+
+                    {imageDefaultMenuOpen && connectedImageModelOptions.length > 0 ? (
+                      <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-20 max-h-56 overflow-y-auto border border-[var(--app-border)] bg-[var(--app-bg)] shadow-xl" role="listbox">
+                        {connectedImageModelOptions.map((option) => {
+                          const selected = option.id === activeImageDefaultModel
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              role="option"
+                              aria-selected={selected}
+                              className={`w-full px-2 py-2 text-left font-mono hover:bg-[var(--app-surface-hover)] ${selected ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)]'}`}
+                              onClick={() => void handleDefaultImageModelChange(option.id)}
+                              disabled={imageDefaultSaving}
+                            >
+                              <span className="block truncate text-[12px] font-semibold text-[var(--app-text)]">{option.label}</span>
+                              <span className="mt-1 block truncate text-[10px] text-[var(--app-text-subtle)]">{option.providerLabel}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                  <p className="mt-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+                    {imageDefaultStatus || (connectedImageModelOptions.length > 0 ? 'Connected providers only. This DB-backed default auto-selects in the generator.' : 'Connect Codex OAuth or a Google API key to enable image defaults.')}
+                  </p>
+                </div>
+              </div>
             )}
             onCreate={() => void handleCreateSession()}
             creating={creatingSession}

@@ -86,6 +86,14 @@ type UpdateSettings struct {
 	LocalContainerWarningDismissed bool `json:"local_container_warning_dismissed,omitempty"`
 }
 
+type ToolImageSettings struct {
+	DefaultModel string `json:"default_model,omitempty"`
+}
+
+type ToolSettings struct {
+	Image ToolImageSettings `json:"image,omitempty"`
+}
+
 type UISettings struct {
 	Theme     ThemeSettings    `json:"theme,omitempty"`
 	Input     InputSettings    `json:"input,omitempty"`
@@ -93,6 +101,7 @@ type UISettings struct {
 	Swarming  SwarmingSettings `json:"swarming,omitempty"`
 	Swarm     SwarmSettings    `json:"swarm,omitempty"`
 	Updates   UpdateSettings   `json:"updates,omitempty"`
+	Tools     ToolSettings     `json:"tools,omitempty"`
 	UpdatedAt int64            `json:"updated_at"`
 }
 
@@ -139,6 +148,7 @@ func (s *Service) Set(settings UISettings) (UISettings, error) {
 		Swarming: swarmingRecordFromSettings(settings.Swarming),
 		Swarm:    swarmRecordFromSettings(settings.Swarm),
 		Updates:  updateRecordFromSettings(settings.Updates),
+		Tools:    toolRecordFromSettings(settings.Tools),
 	})
 	if err != nil {
 		return UISettings{}, fmt.Errorf("persist ui settings: %w", err)
@@ -203,6 +213,11 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		},
 		Updates: UpdateSettings{
 			LocalContainerWarningDismissed: record.Updates.LocalContainerWarningDismissed,
+		},
+		Tools: ToolSettings{
+			Image: ToolImageSettings{
+				DefaultModel: strings.TrimSpace(record.Tools.Image.DefaultModel),
+			},
 		},
 		UpdatedAt: record.UpdatedAt,
 	}
@@ -280,6 +295,14 @@ func swarmRecordFromSettings(settings SwarmSettings) *pebblestore.UISwarmSetting
 func updateRecordFromSettings(settings UpdateSettings) *pebblestore.UIUpdateSettingsRecord {
 	return &pebblestore.UIUpdateSettingsRecord{
 		LocalContainerWarningDismissed: settings.LocalContainerWarningDismissed,
+	}
+}
+
+func toolRecordFromSettings(settings ToolSettings) *pebblestore.UIToolSettingsRecord {
+	return &pebblestore.UIToolSettingsRecord{
+		Image: pebblestore.UIToolImageSettingsRecord{
+			DefaultModel: strings.TrimSpace(settings.Image.DefaultModel),
+		},
 	}
 }
 

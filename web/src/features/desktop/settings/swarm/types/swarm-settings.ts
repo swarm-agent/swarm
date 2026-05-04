@@ -21,6 +21,14 @@ export interface UIUpdateSettingsWire {
   local_container_warning_dismissed?: boolean
 }
 
+export interface UIToolImageSettingsWire {
+  default_model?: string
+}
+
+export interface UIToolSettingsWire {
+  image?: UIToolImageSettingsWire
+}
+
 export interface UIChatSettingsWire {
   show_header?: boolean
   thinking_tags?: boolean
@@ -40,6 +48,7 @@ export interface UISettingsWire {
   swarming?: UISwarmingSettingsWire
   swarm?: UISwarmSettingsWire
   updates?: UIUpdateSettingsWire
+  tools?: UIToolSettingsWire
   updated_at?: number
 }
 
@@ -98,6 +107,23 @@ export function withLocalContainerUpdateWarningDismissed(current: UISettingsWire
     updates: {
       ...(current.updates ?? {}),
       local_container_warning_dismissed: dismissed,
+    },
+  }
+}
+
+export function normalizeImageDefaultModel(payload?: UISettingsWire | null): string {
+  return typeof payload?.tools?.image?.default_model === 'string' ? payload.tools.image.default_model.trim() : ''
+}
+
+export function withImageDefaultModel(current: UISettingsWire, defaultModel: string): UISettingsWire {
+  return {
+    ...current,
+    tools: {
+      ...(current.tools ?? {}),
+      image: {
+        ...(current.tools?.image ?? {}),
+        default_model: defaultModel.trim(),
+      },
     },
   }
 }

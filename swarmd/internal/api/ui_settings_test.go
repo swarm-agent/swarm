@@ -76,6 +76,49 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	}
 }
 
+func TestUISettingsPostPersistsImageDefaultModel(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-image-default.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	reqBody := []byte(`{"tools":{"image":{"default_model":"gemini-nano-banana-pro"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Tools.Image.DefaultModel != "gemini-nano-banana-pro" {
+		t.Fatalf("image default model = %q, want gemini-nano-banana-pro", response.Tools.Image.DefaultModel)
+	}
+
+	loaded, err := settingsSvc.Get()
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if loaded.Tools.Image.DefaultModel != "gemini-nano-banana-pro" {
+		t.Fatalf("persisted image default model = %q, want gemini-nano-banana-pro", loaded.Tools.Image.DefaultModel)
+	}
+}
+
 func TestUISettingsPostPreservesExistingThinkingTagsWhenThemeOnlyPayloadSent(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-theme-only.pebble"))
 	if err != nil {
