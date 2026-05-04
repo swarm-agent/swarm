@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Moon, Pause, Play, Plus, Sparkles } from 'lucide-react'
+import { ArrowLeft, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Moon, Pause, Play, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -15,6 +15,7 @@ import { browseWorkspacePath } from '../../../workspaces/launcher/queries/browse
 import { resolveWorkspaceBySlug } from '../../../workspaces/launcher/services/workspace-route'
 import { applyWorkspaceTheme, createWorkspaceThemeStyle } from '../../../workspaces/launcher/services/workspace-theme'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
+import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
 
 export type VideoClip = {
   id: string
@@ -1045,133 +1046,68 @@ export function VideoToolPage() {
         ) : null}
 
         <main className="flex min-h-0 flex-1 overflow-hidden py-5">
-            <aside className="mr-5 flex w-[276px] shrink-0 flex-col border-r border-[var(--app-border)] pr-4 font-mono text-[12px] text-[var(--app-text-muted)]">
-              <div className="mb-4 flex items-center justify-between gap-2">
-                <button type="button" onClick={handleBackToWorkspace} className="flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                  <ArrowLeft size={14} />
-                  <span className="truncate">{routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setBlackModeEnabled((enabled) => !enabled)}
-                  style={darkOverrideButtonStyle}
-                  className={`grid h-9 w-9 shrink-0 place-items-center border ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}
-                  aria-label="Toggle dark mode override for this page"
-                  aria-pressed={blackModeEnabled}
-                  title="Toggle dark mode override for this page"
-                >
-                  <Moon size={15} aria-hidden="true" />
-                </button>
-              </div>
-
-              <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                <div className="flex items-center gap-2 text-[var(--app-text)]">
-                  <span className="grid h-8 w-8 place-items-center border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-primary)]">
-                    <Film size={16} strokeWidth={1.8} />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--app-text-subtle)]">Tool</p>
-                    <h1 className="truncate text-sm font-semibold">Video</h1>
-                  </div>
-                </div>
-                <p className="mt-3 text-[11px] leading-5 text-[var(--app-text-muted)]">
-                  Video sessions are DB-backed movie threads. Originals stay untouched.
-                </p>
-              </div>
-
-              <div className="mt-4 border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Start new video session</p>
-                <input
-                  value={newSessionTitle}
-                  onChange={(event) => setNewSessionTitle(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault()
-                      void handleCreateBlankSession()
-                    }
-                  }}
-                  placeholder={DEFAULT_VIDEO_SESSION_TITLE}
-                  className="mt-3 h-9 w-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-[12px] text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-subtle)] focus:border-[var(--app-primary)]"
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleCreateBlankSession()}
-                  disabled={creatingBlankSession || !selectedWorkspacePath}
-                  className="mt-2 flex h-9 w-full items-center justify-center gap-2 border border-[var(--app-border)] bg-transparent px-2 text-[12px] font-medium text-[var(--app-text)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {creatingBlankSession ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-                  {creatingBlankSession ? 'Starting…' : 'Start session'}
-                </button>
-              </div>
-
-              <div className="mt-4 border-y border-[var(--app-border)] py-3">
-                <div className="mb-2 flex items-center justify-between px-2">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Video sessions</p>
-                  {videoThreadsQuery.isLoading ? <Loader2 size={12} className="animate-spin" /> : null}
-                </div>
-                <div className="max-h-[236px] overflow-y-auto pr-1">
-                  {videoThreads.length === 0 && !videoThreadsQuery.isLoading ? (
-                    <div className="px-2 py-3 text-[11px] leading-5 text-[var(--app-text-subtle)]">
-                      No video sessions yet. Start session to get started.
-                    </div>
-                  ) : (
-                    videoThreads.map((thread) => (
-                      <button
-                        key={thread.id}
-                        type="button"
-                        onClick={() => setSelectedThreadId(thread.id)}
-                        className={`mb-1 w-full px-2 py-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] ${selectedThread?.id === thread.id ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : ''}`}
-                      >
-                        <span className="block truncate text-[12px] font-medium">{thread.title || 'Video Thread'}</span>
-                        <span className="mt-1 block truncate text-[10px] text-[var(--app-text-subtle)]">
-                          {thread.videoClips.length} clip{thread.videoClips.length === 1 ? '' : 's'} · {formatStartedAt(thread.createdAt)}
-                        </span>
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-col gap-1 border-b border-[var(--app-border)] pb-3">
-                <button type="button" onClick={handleOpenPicker} disabled={!selectedThread} className="flex min-h-[30px] items-center justify-between gap-2 px-2 text-left disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                  <span className="flex min-w-0 items-center gap-2"><FolderOpen size={14} /><span className="truncate">Add folder</span></span>
-                  <span className="text-[10px] text-[var(--app-text-subtle)]">source</span>
-                </button>
-                <button type="button" onClick={() => void handleStartChat()} disabled={!selectedThread || startingChat || !routeWorkspaceSlug} className="flex min-h-[30px] items-center justify-between gap-2 px-2 text-left disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                  <span className="flex min-w-0 items-center gap-2"><Sparkles size={14} /><span className="truncate">Start chat</span></span>
-                  <span className="text-[10px] text-[var(--app-text-subtle)]">child</span>
-                </button>
-                </div>
-
+            <SwarmToolSidebar
+              backLabel={routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}
+              onBack={handleBackToWorkspace}
+              darkModeEnabled={blackModeEnabled}
+              onToggleDarkMode={() => setBlackModeEnabled((enabled) => !enabled)}
+              darkModeStyle={darkOverrideButtonStyle}
+              darkModeActiveClassName="border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]"
+              toolIcon={<Film size={16} strokeWidth={1.8} />}
+              toolTitle="Video"
+              toolDescription="Video sessions are DB-backed movie threads. Originals stay untouched."
+              createLabel="Start new video session"
+              createTitle={newSessionTitle}
+              onCreateTitleChange={setNewSessionTitle}
+              createPlaceholder={DEFAULT_VIDEO_SESSION_TITLE}
+              onCreate={() => void handleCreateBlankSession()}
+              creating={creatingBlankSession}
+              createDisabled={!selectedWorkspacePath}
+              sessionsLabel="Video sessions"
+              sessionsLoading={videoThreadsQuery.isLoading}
+              sessions={videoThreads.map((thread) => ({
+                id: thread.id,
+                title: thread.title || 'Video Thread',
+                subtitle: String(thread.videoClips.length) + ' clip' + (thread.videoClips.length === 1 ? '' : 's') + ' · ' + formatStartedAt(thread.createdAt),
+              }))}
+              selectedSessionId={selectedThread?.id ?? null}
+              onSelectSession={setSelectedThreadId}
+              emptySessionsMessage="No video sessions yet. Start session to get started."
+              defaultSessionTitle="Video Thread"
+              actions={[
+                { id: 'add-folder', label: 'Add folder', icon: <FolderOpen size={14} />, suffix: 'source', onClick: handleOpenPicker, disabled: !selectedThread },
+                { id: 'start-chat', label: 'Start chat', icon: <Sparkles size={14} />, suffix: 'child', onClick: () => void handleStartChat(), disabled: !selectedThread || startingChat || !routeWorkspaceSlug },
+              ]}
+            >
               {selectedThread ? (
-              <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
-                <p className="mb-2 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Current movie</p>
-                <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-                  <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{selectedThread.title || 'Video thread'}</h2>
-                  <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedFolderPath || 'No source folder yet'}</p>
-                  <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
-                    <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Length</div><div className="mt-1 tabular-nums text-[var(--app-text)]">{formatTimelineTime(movieDuration)}</div></div>
-                    <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Clips</div><div className="mt-1 text-[var(--app-text)]">{visibleTimelineLayout.length}/{timelineSegments.length}</div></div>
+                <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
+                  <p className="mb-2 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Current movie</p>
+                  <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                    <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{selectedThread.title || 'Video thread'}</h2>
+                    <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedFolderPath || 'No source folder yet'}</p>
+                    <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
+                      <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Length</div><div className="mt-1 tabular-nums text-[var(--app-text)]">{formatTimelineTime(movieDuration)}</div></div>
+                      <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Clips</div><div className="mt-1 text-[var(--app-text)]">{visibleTimelineLayout.length}/{timelineSegments.length}</div></div>
+                    </div>
+                  </div>
+
+                  <p className="mb-2 mt-4 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>
+                  <div className="flex flex-col gap-1">
+                    {timelineSegments.length === 0 ? <div className="px-2 py-3 text-[11px] text-[var(--app-text-subtle)]">No clips yet.</div> : timelineSegments.map((segment, index) => {
+                      const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
+                      const layoutSegment = timelineLayoutByClipId.get(segment.clipId)
+                      return (
+                        <button key={segment.id + '-sidebar'} type="button" onClick={() => { setSelectedClipId(segment.clipId); if (layoutSegment?.visible) handleSeek(layoutSegment.timelineStart) }} className={['grid grid-cols-[24px_minmax(0,1fr)_18px] items-center gap-2 px-2 py-1.5 text-left hover:bg-[var(--app-surface-hover)]', selectedClip?.id === segment.clipId ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : '', segment.visible ? '' : 'opacity-55'].filter(Boolean).join(' ')}>
+                          <span className="text-[10px] text-[var(--app-text-subtle)]">{String(index + 1).padStart(2, '0')}</span>
+                          <span className="min-w-0 truncate">{clip?.name ?? segment.clipId}</span>
+                          {segment.visible ? <Eye size={13} className="text-[var(--app-primary)]" /> : <EyeOff size={13} className="text-[var(--app-text-subtle)]" />}
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
-
-                <p className="mb-2 mt-4 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>
-                <div className="flex flex-col gap-1">
-                  {timelineSegments.length === 0 ? <div className="px-2 py-3 text-[11px] text-[var(--app-text-subtle)]">No clips yet.</div> : timelineSegments.map((segment, index) => {
-                    const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
-                    const layoutSegment = timelineLayoutByClipId.get(segment.clipId)
-                    return (
-                      <button key={`${segment.id}-sidebar`} type="button" onClick={() => { setSelectedClipId(segment.clipId); if (layoutSegment?.visible) handleSeek(layoutSegment.timelineStart) }} className={`grid grid-cols-[24px_minmax(0,1fr)_18px] items-center gap-2 px-2 py-1.5 text-left hover:bg-[var(--app-surface-hover)] ${selectedClip?.id === segment.clipId ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : ''} ${segment.visible ? '' : 'opacity-55'}`}>
-                        <span className="text-[10px] text-[var(--app-text-subtle)]">{String(index + 1).padStart(2, '0')}</span>
-                        <span className="min-w-0 truncate">{clip?.name ?? segment.clipId}</span>
-                        {segment.visible ? <Eye size={13} className="text-[var(--app-primary)]" /> : <EyeOff size={13} className="text-[var(--app-text-subtle)]" />}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
               ) : null}
-            </aside>
+            </SwarmToolSidebar>
 
             <section className="flex min-w-0 flex-1 flex-col overflow-y-auto">
               <div className="mb-4 flex items-center justify-between gap-3 lg:hidden">

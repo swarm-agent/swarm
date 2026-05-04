@@ -352,6 +352,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
 	apiServer.SetFlowStore(flowStore)
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
+	apiServer.SetImageThreadStore(pebblestore.NewImageThreadStore(store))
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetSwarmService(swarmSvc)
 	apiServer.SetContainerProfileService(containerProfileSvc)

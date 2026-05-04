@@ -94,6 +94,7 @@ type Server struct {
 	sessionRoutes               *pebblestore.SessionRouteStore
 	flows                       *pebblestore.FlowStore
 	videoThreads                *pebblestore.VideoThreadStore
+	imageThreads                *pebblestore.ImageThreadStore
 	mode                        string
 	dataDir                     string
 	startupConfigPath           string

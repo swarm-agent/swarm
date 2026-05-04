@@ -6,6 +6,7 @@ const DesktopAppPage = lazyRouteComponent(() => import('../features/desktop/layo
 const DesktopSettingsPage = lazyRouteComponent(() => import('../features/desktop/settings/components/desktop-settings-page'), 'DesktopSettingsPage')
 const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/swarm-tools-page'), 'SwarmToolsPage')
 const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
+const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
 const FlowRedirectRoute = lazyRouteComponent(() => import('./flow-redirect-route'), 'FlowRedirectRoute')
 
 function validateWorkspaceParams(params: Record<string, unknown>): { workspaceSlug: string } {
@@ -53,6 +54,12 @@ const videoToolRoute = createRoute({
   component: VideoToolPage,
 })
 
+const imageToolRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/tools/image',
+  component: ImageToolPage,
+})
+
 const flowRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/flow',
@@ -95,17 +102,26 @@ const workspaceVideoToolRoute = createRoute({
   component: VideoToolPage,
 })
 
+const workspaceImageToolRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/tools/image',
+  parseParams: validateWorkspaceParams,
+  component: ImageToolPage,
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   settingsRoute,
   toolsRoute,
   videoToolRoute,
+  imageToolRoute,
   flowRoute,
   workspaceRoute,
   workspaceSessionRoute,
   workspaceSettingsRoute,
   workspaceToolsRoute,
   workspaceVideoToolRoute,
+  workspaceImageToolRoute,
 ])
 
 export const router = createRouter({

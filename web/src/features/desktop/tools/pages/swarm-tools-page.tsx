@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Film, Sparkles } from 'lucide-react'
+import { ArrowLeft, Film, Image, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { cn } from '../../../../lib/cn'
@@ -11,6 +11,7 @@ type ToolCard = {
   name: string
   description: string
   status: string
+  icon: 'video' | 'image'
 }
 
 const toolCards: ToolCard[] = [
@@ -19,6 +20,14 @@ const toolCards: ToolCard[] = [
     name: 'Video Tool',
     description: 'Organize clips, drafts, and future FFmpeg sessions with a dedicated Swarm helper.',
     status: 'First tool',
+    icon: 'video',
+  },
+  {
+    id: 'image',
+    name: 'Image Tool',
+    description: 'Create DB-backed image sessions ready for future boards, assets, and generation flows.',
+    status: 'Outline',
+    icon: 'image',
   },
 ]
 
@@ -53,12 +62,12 @@ export function SwarmToolsPage() {
   }, [activeSessionId, navigate, routeWorkspaceSlug, toolsRouteMatch])
 
   const openTool = (toolID: string) => {
-    if (toolID !== 'video') return
+    if (toolID !== 'video' && toolID !== 'image') return
     if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/tools/video', params: { workspaceSlug: routeWorkspaceSlug } })
+      void navigate({ to: toolID === 'video' ? '/$workspaceSlug/tools/video' : '/$workspaceSlug/tools/image', params: { workspaceSlug: routeWorkspaceSlug } })
       return
     }
-    void navigate({ to: '/tools/video' })
+    void navigate({ to: toolID === 'video' ? '/tools/video' : '/tools/image' })
   }
 
   return (
@@ -102,7 +111,7 @@ export function SwarmToolsPage() {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <span className="grid h-12 w-12 place-items-center rounded-2xl border border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]">
-                      <Film size={22} strokeWidth={1.8} />
+                      {tool.icon === 'video' ? <Film size={22} strokeWidth={1.8} /> : <Image size={22} strokeWidth={1.8} />}
                     </span>
                     <span className="rounded-full border border-[var(--app-border)] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
                       {tool.status}
