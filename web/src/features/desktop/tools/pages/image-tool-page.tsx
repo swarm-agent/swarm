@@ -1,7 +1,7 @@
-import { type CSSProperties, useCallback, useEffect, useMemo, useState } from 'react'
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, ChevronLeft, ChevronRight, Clock3, Image, Moon, Sparkles } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, FolderOpen, Image, Moon, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
 import { Textarea } from '../../../../components/ui/textarea'
@@ -96,6 +96,8 @@ type ImageGenerationResponse = {
 
 type LiveGenerationEvent = {
   type?: string
+  item_id?: string
+  output_index?: number
   partial_image_b64?: string
   partial_image_index?: number
   sequence_number?: number
@@ -111,6 +113,11 @@ type LiveGenerationPreview = {
   dataUrl: string
   label: string
 }
+
+type ImageThumbnailItem =
+  | { id: string; kind: 'asset'; asset: ImageAsset; preview: null; label: string; meta: string }
+  | { id: string; kind: 'live'; asset: null; preview: LiveGenerationPreview; label: string; meta: string }
+  | { id: string; kind: 'pending'; asset: null; preview: null; label: string; meta: string }
 
 type GenerationStage = 'idle' | 'queued' | 'generating' | 'partial' | 'final' | 'error'
 
@@ -128,6 +135,8 @@ const OPENAI_IMAGE_SIZE_OPTIONS = [
   { id: '1024x1536', label: 'Portrait', helper: '1024 × 1536', aspectRatio: '2:3' },
 ]
 
+const FINAL_IMAGE_COUNT_OPTIONS = [1, 2, 3] as const
+
 const GOOGLE_IMAGE_ASPECT_RATIO_OPTIONS = [
   { id: '1:1', label: 'Square', helper: 'Default' },
   { id: '3:4', label: 'Portrait', helper: 'Media' },
@@ -141,16 +150,24 @@ const GOOGLE_IMAGE_SIZE_OPTIONS = [
   { id: '2K', label: '2K', helper: 'Standard/Ultra only' },
 ]
 
+function livePreviewSlotKey(value: { item_id?: string; output_index?: number }): string {
+  const itemId = String(value.item_id ?? '').trim()
+  if (itemId) return `item:${itemId}`
+  if (typeof value.output_index === 'number' && value.output_index >= 0) return `output:${value.output_index}`
+  return 'output:0'
+}
+
 function livePreviewFromEvent(event: LiveGenerationEvent): LiveGenerationPreview | null {
   const base64 = String(event.partial_image_b64 ?? '').trim()
   if (!base64) return null
-  const index = typeof event.partial_image_index === 'number' ? event.partial_image_index : 0
+  const slotIndex = typeof event.output_index === 'number' && event.output_index >= 0 ? event.output_index : 0
+  const partialIndex = typeof event.partial_image_index === 'number' ? event.partial_image_index : 0
   const format = String(event.output_format ?? 'png').trim() || 'png'
   return {
-    id: `${typeof event.sequence_number === 'number' ? event.sequence_number : Date.now()}-${index}`,
-    index,
+    id: livePreviewSlotKey(event),
+    index: slotIndex,
     dataUrl: `data:image/${format};base64,${base64}`,
-    label: `Partial ${index + 1}`,
+    label: `Image ${slotIndex + 1} preview ${partialIndex + 1}`,
   }
 }
 
@@ -158,28 +175,20 @@ function livePreviewFromPartial(partial: ImageGenerationPartial): LiveGeneration
   const dataUrl = String(partial.data_url ?? '').trim()
   const base64 = String(partial.base64_image ?? '').trim()
   if (!dataUrl && !base64) return null
-  const index = typeof partial.partial_image_index === 'number' ? partial.partial_image_index : 0
+  const slotIndex = typeof partial.output_index === 'number' && partial.output_index >= 0 ? partial.output_index : 0
+  const partialIndex = typeof partial.partial_image_index === 'number' ? partial.partial_image_index : 0
   const format = String(partial.output_format ?? 'png').trim() || 'png'
   return {
-    id: `final-partial-${typeof partial.sequence_number === 'number' ? partial.sequence_number : index}`,
-    index,
+    id: livePreviewSlotKey(partial),
+    index: slotIndex,
     dataUrl: dataUrl || `data:image/${format};base64,${base64}`,
-    label: `Partial ${index + 1}`,
+    label: `Image ${slotIndex + 1} preview ${partialIndex + 1}`,
   }
 }
 
 function mergeLivePreview(current: LiveGenerationPreview[], next: LiveGenerationPreview): LiveGenerationPreview[] {
-  const withoutSameIndex = current.filter((preview) => preview.index !== next.index)
-  return [...withoutSameIndex, next].sort((a, b) => a.index - b.index)
-}
-
-function generationTimeline(stage: GenerationStage, partialCount: number) {
-  return [
-    { id: 'queued', label: 'Queued', status: stage === 'idle' ? 'Ready' : 'Done', detail: 'Prompt and settings locked in' },
-    { id: 'generating', label: 'Generating', status: stage === 'generating' ? 'Live' : stage === 'partial' || stage === 'final' ? 'Done' : 'Next', detail: 'OpenAI image generation tool is running' },
-    { id: 'partial', label: 'Preview', status: stage === 'partial' ? 'Live' : stage === 'final' ? 'Done' : partialCount > 0 ? 'Ready' : 'Waiting', detail: partialCount > 0 ? `${partialCount} streamed partial image${partialCount === 1 ? '' : 's'}` : 'Waiting for first partial image' },
-    { id: 'final', label: 'Final', status: stage === 'final' ? 'Ready' : stage === 'error' ? 'Blocked' : 'Waiting', detail: stage === 'final' ? 'Final PNG stored in managed session storage' : 'Waiting for completed result' },
-  ]
+  const withoutSameSlot = current.filter((preview) => preview.id !== next.id)
+  return [...withoutSameSlot, next].sort((a, b) => a.index - b.index)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -332,14 +341,18 @@ export function ImageToolPage() {
 
   const [createError, setCreateError] = useState<string | null>(null)
   const [generationError, setGenerationError] = useState<string | null>(null)
+  const [revealingStorage, setRevealingStorage] = useState(false)
   const [newSessionTitle, setNewSessionTitle] = useState('')
   const [creatingSession, setCreatingSession] = useState(false)
   const [generatingImage, setGeneratingImage] = useState(false)
   const [generationStage, setGenerationStage] = useState<GenerationStage>('idle')
   const [livePreviews, setLivePreviews] = useState<LiveGenerationPreview[]>([])
   const [selectedLivePreviewId, setSelectedLivePreviewId] = useState<string | null>(null)
+  const [selectedFinalImageCount, setSelectedFinalImageCount] = useState<(typeof FINAL_IMAGE_COUNT_OPTIONS)[number]>(1)
+  const [activeGenerationCount, setActiveGenerationCount] = useState(1)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [selectedImageAssetId, setSelectedImageAssetId] = useState<string | null>(null)
+  const followLivePreviewRef = useRef(false)
   const [selectedImageModel, setSelectedImageModel] = useState<string>(IMAGE_MODEL_OPTIONS[0]?.id ?? '')
   const [selectedOpenAIImageSize, setSelectedOpenAIImageSize] = useState('auto')
   const [selectedGoogleAspectRatio, setSelectedGoogleAspectRatio] = useState('1:1')
@@ -411,8 +424,8 @@ export function ImageToolPage() {
   }, [selectedThread])
 
   const selectedImageAsset = useMemo(() => {
-    if (orderedImageAssets.length === 0) return null
-    return orderedImageAssets.find((asset) => asset.id === selectedImageAssetId) ?? orderedImageAssets[0]
+    if (orderedImageAssets.length === 0 || !selectedImageAssetId) return null
+    return orderedImageAssets.find((asset) => asset.id === selectedImageAssetId) ?? null
   }, [orderedImageAssets, selectedImageAssetId])
 
   const selectedImageAssetIndex = selectedImageAsset
@@ -435,10 +448,47 @@ export function ImageToolPage() {
     ? selectedGoogleSizeOption.label + ' · ' + selectedGoogleAspectRatio
     : selectedOpenAISizeOption.helper
   const canGenerateImage = Boolean(selectedThread && promptText.trim() && selectedProviderReady && !generatingImage)
+  const generationSlotCount = generatingImage ? activeGenerationCount : selectedFinalImageCount
   const activeLivePreview = selectedLivePreviewId
-    ? livePreviews.find((preview) => preview.id === selectedLivePreviewId) ?? livePreviews[livePreviews.length - 1] ?? null
-    : livePreviews[livePreviews.length - 1] ?? null
-  const timelineItems = generationTimeline(generationStage, livePreviews.length)
+    ? livePreviews.find((preview) => preview.id === selectedLivePreviewId) ?? null
+    : null
+  const thumbnailItems: ImageThumbnailItem[] = [
+    ...orderedImageAssets.map((asset, index) => ({
+      id: `asset:${asset.id}`,
+      kind: 'asset' as const,
+      asset,
+      preview: null,
+      label: asset.name || `Image ${index + 1}`,
+      meta: `Saved ${index + 1}`,
+    })),
+    ...(generatingImage
+      ? Array.from({ length: generationSlotCount }, (_, index) => index)
+        .filter((index) => !livePreviews.some((preview) => preview.index === index))
+        .map((index) => ({ id: `live:pending:${index}`, kind: 'pending' as const, asset: null, preview: null, label: `Image ${index + 1}`, meta: 'Waiting for preview' }))
+      : []),
+    ...livePreviews.map((preview) => ({
+      id: `live:${preview.id}`,
+      kind: 'live' as const,
+      asset: null,
+      preview,
+      label: preview.label,
+      meta: generatingImage ? 'Generating' : 'Preview',
+    })),
+  ]
+  const selectedThumbnailId = activeLivePreview
+    ? `live:${activeLivePreview.id}`
+    : selectedImageAsset
+      ? `asset:${selectedImageAsset.id}`
+      : generatingImage
+        ? 'live:pending:0'
+        : null
+  const previewCountLabel = activeLivePreview
+    ? `Generating image ${activeLivePreview.index + 1} of ${generationSlotCount} · ${orderedImageAssets.length} saved`
+    : selectedImageAsset
+      ? `Image ${activePreviewNumber} of ${orderedImageAssets.length}`
+      : generatingImage
+        ? `Generating ${generationSlotCount} image${generationSlotCount === 1 ? '' : 's'} · ${orderedImageAssets.length} saved`
+        : `Image 1 of ${Math.max(orderedImageAssets.length, 1)}`
 
   useEffect(() => {
     if (orderedImageAssets.length === 0) {
@@ -447,10 +497,13 @@ export function ImageToolPage() {
       }
       return
     }
+    if (generatingImage && selectedImageAssetId === null) {
+      return
+    }
     if (!selectedImageAssetId || !orderedImageAssets.some((asset) => asset.id === selectedImageAssetId)) {
       setSelectedImageAssetId(orderedImageAssets[0].id)
     }
-  }, [orderedImageAssets, selectedImageAssetId])
+  }, [generatingImage, orderedImageAssets, selectedImageAssetId])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -507,6 +560,8 @@ export function ImageToolPage() {
     if (orderedImageAssets.length === 0) return
     const currentIndex = selectedImageAssetIndex >= 0 ? selectedImageAssetIndex : 0
     const nextIndex = (currentIndex - 1 + orderedImageAssets.length) % orderedImageAssets.length
+    followLivePreviewRef.current = false
+    setSelectedLivePreviewId(null)
     setSelectedImageAssetId(orderedImageAssets[nextIndex].id)
   }, [orderedImageAssets, selectedImageAssetIndex])
 
@@ -514,8 +569,25 @@ export function ImageToolPage() {
     if (orderedImageAssets.length === 0) return
     const currentIndex = selectedImageAssetIndex >= 0 ? selectedImageAssetIndex : 0
     const nextIndex = (currentIndex + 1) % orderedImageAssets.length
+    followLivePreviewRef.current = false
+    setSelectedLivePreviewId(null)
     setSelectedImageAssetId(orderedImageAssets[nextIndex].id)
   }, [orderedImageAssets, selectedImageAssetIndex])
+
+  const handleRevealImageStorage = useCallback(async (assetId?: string) => {
+    if (!selectedThread) return
+    setRevealingStorage(true)
+    setGenerationError(null)
+    try {
+      const search = new URLSearchParams({ thread_id: selectedThread.id })
+      if (assetId) search.set('asset_id', assetId)
+      await requestJson<{ ok?: boolean; path?: string; method?: string }>(`/v1/image/storage/reveal?${search.toString()}`, { method: 'POST' })
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRevealingStorage(false)
+    }
+  }, [selectedThread])
 
   const handleGenerateImage = useCallback(async () => {
     if (!selectedThread) {
@@ -530,9 +602,13 @@ export function ImageToolPage() {
       setGenerationError(selectedProviderUnavailableReason)
       return
     }
+    const requestedImageCount = selectedFinalImageCount
+    setActiveGenerationCount(requestedImageCount)
     setGeneratingImage(true)
     setGenerationStage('queued')
     setLivePreviews([])
+    followLivePreviewRef.current = true
+    setSelectedImageAssetId(null)
     setSelectedLivePreviewId(null)
     setGenerationError(null)
     try {
@@ -543,7 +619,8 @@ export function ImageToolPage() {
           provider: selectedModelOption.provider,
           model: selectedModelOption.model,
           prompt: promptText.trim(),
-          count: 1,
+          count: requestedImageCount,
+          // partial_images are progression frames per final output, not final image count.
           partial_images: 3,
           size: isGoogleImagenModel ? selectedGoogleImageSize : selectedOpenAIImageSize,
           settings: isGoogleImagenModel
@@ -576,9 +653,10 @@ export function ImageToolPage() {
         }
         const dataText = dataLines.join('\n').trim()
         if (!dataText) return
-        const payload = JSON.parse(dataText) as { ok?: boolean; error?: string; event?: LiveGenerationEvent; result?: ImageGenerationResponse['result'] }
+        const payload = JSON.parse(dataText) as { ok?: boolean; error?: string; http_status?: number; event?: LiveGenerationEvent; result?: ImageGenerationResponse['result'] }
         if (eventName === 'error' || payload.ok === false) {
-          throw new Error(payload.error || 'Image generation failed')
+          const status = typeof payload.http_status === 'number' ? payload.http_status : null
+          throw new Error(`${payload.error || 'Image generation failed'}${status ? ` (status ${status})` : ''}`)
         }
         if (eventName === 'started' || payload.event?.type === 'started') {
           setGenerationStage('generating')
@@ -591,7 +669,9 @@ export function ImageToolPage() {
           if (preview) {
             setGenerationStage('partial')
             setLivePreviews((current) => mergeLivePreview(current, preview))
-            setSelectedLivePreviewId(preview.id)
+            if (followLivePreviewRef.current) {
+              setSelectedLivePreviewId(preview.id)
+            }
           }
         }
         if (eventName === 'completed' && payload.result) {
@@ -600,8 +680,11 @@ export function ImageToolPage() {
             .map(livePreviewFromPartial)
             .filter((preview): preview is LiveGenerationPreview => Boolean(preview))
           if (finalPartials.length > 0) {
-            setLivePreviews(finalPartials)
-            setSelectedLivePreviewId(finalPartials[finalPartials.length - 1].id)
+            const collapsedPartials = finalPartials.reduce((current, preview) => mergeLivePreview(current, preview), [] as LiveGenerationPreview[])
+            setLivePreviews(collapsedPartials)
+            if (followLivePreviewRef.current) {
+              setSelectedLivePreviewId(collapsedPartials[collapsedPartials.length - 1]?.id ?? null)
+            }
           }
           setGenerationStage('final')
         }
@@ -633,7 +716,11 @@ export function ImageToolPage() {
         const withoutUpdated = current.filter((thread) => thread.id !== updatedThread.id)
         return [updatedThread, ...withoutUpdated]
       })
-      const generatedAssetId = completedResponse.result?.assets?.[0]?.id ?? updatedThread.imageAssetOrder[updatedThread.imageAssetOrder.length - 1]
+      const generatedAssets = completedResponse.result?.assets ?? []
+      const generatedAssetId = generatedAssets[generatedAssets.length - 1]?.id ?? updatedThread.imageAssetOrder[updatedThread.imageAssetOrder.length - 1]
+      followLivePreviewRef.current = false
+      setLivePreviews([])
+      setSelectedLivePreviewId(null)
       if (generatedAssetId) {
         setSelectedImageAssetId(generatedAssetId)
       }
@@ -645,7 +732,7 @@ export function ImageToolPage() {
     } finally {
       setGeneratingImage(false)
     }
-  }, [isGoogleImagenModel, promptText, queryClient, selectedGoogleAspectRatio, selectedGoogleImageSize, selectedOpenAIImageSize, selectedModelOption.model, selectedModelOption.provider, selectedProviderReady, selectedProviderUnavailableReason, selectedThread, selectedWorkspacePath])
+  }, [isGoogleImagenModel, promptText, queryClient, selectedFinalImageCount, selectedGoogleAspectRatio, selectedGoogleImageSize, selectedOpenAIImageSize, selectedModelOption.model, selectedModelOption.provider, selectedProviderReady, selectedProviderUnavailableReason, selectedThread, selectedWorkspacePath])
 
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
@@ -697,6 +784,9 @@ export function ImageToolPage() {
                     <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Folders</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageFolders.length}</div></div>
                     <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Assets</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageAssets.length}</div></div>
                   </div>
+                  <Button variant="outline" className="mt-3 h-8 w-full rounded-xl px-3 text-xs" onClick={() => void handleRevealImageStorage()} disabled={revealingStorage}>
+                    <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Show stored files'}
+                  </Button>
                 </div>
                 </div>
               </div>
@@ -737,7 +827,7 @@ export function ImageToolPage() {
                   <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto]">
                     <div className="relative grid min-h-[340px] place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_34%),var(--app-bg)] px-5 py-6">
                       <div className="absolute left-4 top-4 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">
-                        Image {activePreviewNumber} of {Math.max(orderedImageAssets.length, 1)}
+                        {previewCountLabel}
                       </div>
                       <div className="absolute right-4 top-4 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">
                         {generatingImage ? generationStage === 'partial' ? 'Streaming partial image' : 'Generating…' : 'Carousel preview'}
@@ -785,20 +875,52 @@ export function ImageToolPage() {
                     </div>
 
                     <div className="border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3">
-                      <div className="mb-2 flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">
-                        <Clock3 size={13} />Progression / iterations
+                      <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">
+                        <span>Session images</span>
+                        <span>{orderedImageAssets.length} saved</span>
                       </div>
-                      <div className="grid gap-2 md:grid-cols-3">
-                        {timelineItems.map((iteration, index) => (
-                          <div key={iteration.id} className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[10px] text-[var(--app-text-subtle)]">{String(index + 1).padStart(2, '0')}</span>
-                              <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] text-[var(--app-text-muted)]">{iteration.status}</span>
-                            </div>
-                            <p className="mt-2 text-sm font-medium text-[var(--app-text)]">{iteration.label}</p>
-                            <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{iteration.detail}</p>
+                      <div className="flex gap-2 overflow-x-auto pb-1">
+                        {thumbnailItems.length > 0 ? thumbnailItems.map((item) => {
+                          const selected = item.id === selectedThumbnailId
+                          const imageSrc = item.kind === 'asset'
+                            ? item.asset.url ?? imageAssetURL(selectedThread.id, item.asset.id)
+                            : item.kind === 'live'
+                              ? item.preview.dataUrl
+                              : ''
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => {
+                                if (item.kind === 'asset') {
+                                  followLivePreviewRef.current = false
+                                  setSelectedLivePreviewId(null)
+                                  setSelectedImageAssetId(item.asset.id)
+                                } else if (item.kind === 'live') {
+                                  followLivePreviewRef.current = true
+                                  setSelectedImageAssetId(null)
+                                  setSelectedLivePreviewId(item.preview.id)
+                                }
+                              }}
+                              className={['group min-w-[112px] max-w-[112px] border bg-[var(--app-bg)] p-2 text-left transition hover:bg-[var(--app-surface-hover)]', selected ? 'border-[var(--app-border-accent)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)]'].join(' ')}
+                              aria-pressed={selected}
+                            >
+                              <div className="grid aspect-square place-items-center overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
+                                {imageSrc ? (
+                                  <img src={imageSrc} alt={item.label} className="h-full w-full object-cover" />
+                                ) : (
+                                  <Sparkles className="animate-pulse text-[var(--app-primary)]" size={24} strokeWidth={1.4} />
+                                )}
+                              </div>
+                              <p className="mt-2 truncate text-xs font-medium text-[var(--app-text)]">{item.label}</p>
+                              <p className="mt-0.5 truncate text-[10px] text-[var(--app-text-subtle)]">{item.meta}</p>
+                            </button>
+                          )
+                        }) : (
+                          <div className="min-w-full rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] px-4 py-5 text-center text-xs text-[var(--app-text-muted)]">
+                            Generated images will populate this scrollable carousel as they are saved.
                           </div>
-                        ))}
+                        )}
                       </div>
                     </div>
                   </div>
@@ -866,6 +988,17 @@ export function ImageToolPage() {
                                   </button>
                                 ))}
                               </div>
+                              <div className="mt-3">
+                                <p className="text-xs font-medium text-[var(--app-text-muted)]">Final images</p>
+                                <div className="mt-1.5 grid grid-cols-3 gap-2">
+                                  {FINAL_IMAGE_COUNT_OPTIONS.map((count) => (
+                                    <button key={count} type="button" disabled={generatingImage} onClick={() => setSelectedFinalImageCount(count)} className={['border px-3 py-2 text-center transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60', selectedFinalImageCount === count ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
+                                      <span className="block text-xs font-semibold">{count}</span>
+                                      <span className="mt-0.5 block truncate text-[10px]">final</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -874,10 +1007,10 @@ export function ImageToolPage() {
 
                     <div className="grid gap-2 border-t border-dashed border-[var(--app-border)] pt-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                       <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-[11px] leading-5 text-[var(--app-text-subtle)]">
-                        {selectedProviderReady ? selectedSizeDisplayLabel + '. Uses gpt-image-1.5 through ChatGPT/Codex OAuth. Only GPT image generation is supported for now.' : selectedProviderUnavailableReason}
+                        {selectedProviderReady ? selectedSizeDisplayLabel + `. Generates ${selectedFinalImageCount} final image${selectedFinalImageCount === 1 ? '' : 's'} with up to 3 streamed progression previews per final image.` : selectedProviderUnavailableReason}
                       </div>
                       <Button className="h-11 w-full rounded-xl px-4 sm:w-auto" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()}>
-                        <Sparkles size={15} />{generatingImage ? 'Generating…' : 'Generate 1 image'}
+                        <Sparkles size={15} />{generatingImage ? 'Generating…' : `Generate ${selectedFinalImageCount} image${selectedFinalImageCount === 1 ? '' : 's'}`}
                       </Button>
                     </div>
                   </div>

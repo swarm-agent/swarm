@@ -56,11 +56,12 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 	}
 	result, err := s.imageGen.Generate(r.Context(), req)
 	if err != nil {
-		body := map[string]any{"ok": false, "error": err.Error(), "code": "400"}
+		status := imageGenerationErrorStatus(err)
+		body := map[string]any{"ok": false, "error": err.Error(), "code": fmt.Sprintf("%d", status)}
 		if providerResponse, ok := imagegen.ProviderResponseFromError(err); ok {
 			body["provider_response"] = providerResponse
 		}
-		writeJSON(w, http.StatusBadRequest, body)
+		writeJSON(w, status, body)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
@@ -89,14 +90,30 @@ func (s *Server) handleImageGenerationsStream(w http.ResponseWriter, r *http.Req
 	}
 	result, err := s.imageGen.Generate(r.Context(), req)
 	if err != nil {
-		body := map[string]any{"ok": false, "error": err.Error(), "code": "400"}
+		status := imageGenerationErrorStatus(err)
+		body := map[string]any{"ok": false, "error": err.Error(), "code": fmt.Sprintf("%d", status)}
 		if providerResponse, ok := imagegen.ProviderResponseFromError(err); ok {
 			body["provider_response"] = providerResponse
 		}
+		body["http_status"] = status
 		send("error", body)
 		return
 	}
 	send("completed", map[string]any{"ok": true, "result": result})
+}
+
+func imageGenerationErrorStatus(err error) int {
+	if err == nil {
+		return http.StatusBadRequest
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "timeout") || strings.Contains(message, "deadline exceeded") || strings.Contains(message, "context canceled") {
+		return http.StatusGatewayTimeout
+	}
+	if strings.Contains(message, "status=502") || strings.Contains(message, "status=503") || strings.Contains(message, "status=504") || strings.Contains(message, "transport=") {
+		return http.StatusBadGateway
+	}
+	return http.StatusBadRequest
 }
 
 func (s *Server) handleImageAssets(w http.ResponseWriter, r *http.Request) {

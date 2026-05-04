@@ -517,6 +517,7 @@ export function VideoToolPage() {
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [reordering, setReordering] = useState(false)
   const [startingChat, setStartingChat] = useState(false)
+  const [revealingStorage, setRevealingStorage] = useState(false)
   const [blackModeEnabled, setBlackModeEnabled] = useState(() => {
     if (typeof window === 'undefined') {
       return false
@@ -799,6 +800,21 @@ export function VideoToolPage() {
     void loadBrowser(selectedWorkspacePath || '')
   }, [browser, browserLoading, loadBrowser, pickerOpen, selectedWorkspacePath])
 
+  const handleRevealVideoStorage = useCallback(async (clipId?: string) => {
+    if (!selectedThread) return
+    setRevealingStorage(true)
+    setCreateError(null)
+    try {
+      const search = new URLSearchParams({ thread_id: selectedThread.id })
+      if (clipId) search.set('clip_id', clipId)
+      await requestJson<{ ok?: boolean; path?: string; method?: string }>(`/v1/workspace/video/storage/reveal?${search.toString()}`, { method: 'POST' })
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRevealingStorage(false)
+    }
+  }, [selectedThread])
+
   const handleOpenPicker = useCallback(() => {
     setCreateError(null)
     setBrowser(null)
@@ -1076,6 +1092,7 @@ export function VideoToolPage() {
               defaultSessionTitle="Video Thread"
               actions={[
                 { id: 'add-folder', label: 'Add folder', icon: <FolderOpen size={14} />, suffix: 'source', onClick: handleOpenPicker, disabled: !selectedThread },
+                { id: 'show-files', label: revealingStorage ? 'Opening…' : 'Show files', icon: <FolderOpen size={14} />, suffix: 'local', onClick: () => void handleRevealVideoStorage(), disabled: !selectedThread || revealingStorage },
                 { id: 'start-chat', label: 'Start chat', icon: <Sparkles size={14} />, suffix: 'child', onClick: () => void handleStartChat(), disabled: !selectedThread || startingChat || !routeWorkspaceSlug },
               ]}
             >
@@ -1089,6 +1106,9 @@ export function VideoToolPage() {
                       <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Length</div><div className="mt-1 tabular-nums text-[var(--app-text)]">{formatTimelineTime(movieDuration)}</div></div>
                       <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Clips</div><div className="mt-1 text-[var(--app-text)]">{visibleTimelineLayout.length}/{timelineSegments.length}</div></div>
                     </div>
+                    <Button variant="outline" className="mt-3 h-8 w-full rounded-xl px-3 text-xs" onClick={() => void handleRevealVideoStorage()} disabled={revealingStorage}>
+                      <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Show stored files'}
+                    </Button>
                   </div>
 
                   <p className="mb-2 mt-4 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>

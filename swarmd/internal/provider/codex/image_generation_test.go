@@ -79,6 +79,91 @@ func TestParseImageGenerationResultSkipsGeneratingCallAndUsesCompletedCall(t *te
 	}
 }
 
+func TestBuildImageGenerationPayloadSupportsCountAndPartialPreviewSemantics(t *testing.T) {
+	payload, err := buildImageGenerationPayload(ImageGenerationRequest{Model: "gpt-5.5", Prompt: "draw cats", Count: 3, PartialImages: 9})
+	if err != nil {
+		t.Fatalf("buildImageGenerationPayload: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if decoded["parallel_tool_calls"] != true {
+		t.Fatalf("parallel_tool_calls = %#v, want true for multi-image generation", decoded["parallel_tool_calls"])
+	}
+	instructions := asString(decoded["instructions"])
+	if !strings.Contains(instructions, "exactly 3 completed images") {
+		t.Fatalf("instructions = %q, want exact final image count", instructions)
+	}
+	input := asSlice(decoded["input"])
+	inputItem, ok := input[0].(map[string]any)
+	if !ok {
+		t.Fatalf("input = %#v", decoded["input"])
+	}
+	content := asSlice(inputItem["content"])
+	contentItem, ok := content[0].(map[string]any)
+	if !ok || !strings.Contains(asString(contentItem["text"]), "Create 3 distinct final images") {
+		t.Fatalf("input content = %#v, want distinct final image request", inputItem["content"])
+	}
+	tools := asSlice(decoded["tools"])
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v", decoded["tools"])
+	}
+	tool, ok := tools[0].(map[string]any)
+	if !ok || intFromAny(tool["partial_images"], -1) != 3 {
+		t.Fatalf("image tool = %#v, want partial_images clamped to 3", tool)
+	}
+}
+
+func TestParseImageGenerationResultReturnsAllCompletedCalls(t *testing.T) {
+	payload := base64.StdEncoding.EncodeToString(testPNGBytes())
+	result, err := parseImageGenerationResult(map[string]any{
+		"id":    "resp_multi",
+		"model": "gpt-5.5",
+		"output": []any{
+			map[string]any{
+				"type":           "image_generation_call",
+				"id":             "ig_1",
+				"status":         "completed",
+				"revised_prompt": "first",
+				"result":         payload,
+			},
+			map[string]any{
+				"type":           "image_generation_call",
+				"id":             "ig_2",
+				"status":         "completed",
+				"revised_prompt": "second",
+				"result":         payload,
+			},
+			map[string]any{
+				"type":           "image_generation_call",
+				"id":             "ig_3",
+				"status":         "completed",
+				"revised_prompt": "third",
+				"result":         payload,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("parseImageGenerationResult: %v", err)
+	}
+	if len(result.Results) != 3 {
+		t.Fatalf("results len = %d, want 3", len(result.Results))
+	}
+	for i, image := range result.Results {
+		if image.CallID == "" || image.OutputIndex != i || !looksLikePNG(image.DecodedPNG) {
+			t.Fatalf("result[%d] = %#v", i, image)
+		}
+	}
+	if result.CallID != "ig_1" || result.RevisedPrompt != "first" {
+		t.Fatalf("primary result = %#v, want first output for compatibility", result)
+	}
+	summary := asSlice(result.ProviderResponse["image_generation_results"])
+	if len(summary) != 3 {
+		t.Fatalf("provider response image_generation_results = %#v, want 3 metadata entries", result.ProviderResponse["image_generation_results"])
+	}
+}
+
 func TestParseImageGenerationResultReportsIncompleteCallOnlyAfterScanningAllItems(t *testing.T) {
 	_, err := parseImageGenerationResult(map[string]any{
 		"output": []any{map[string]any{
