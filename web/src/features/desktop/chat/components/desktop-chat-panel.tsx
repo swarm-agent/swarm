@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, Clock3, ListChecks, LoaderCircle, Menu, Mic, Minimize2, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
+import { Clock3, ListChecks, LoaderCircle, Menu, Mic, Minimize2, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -852,11 +852,8 @@ export function DesktopChatPanel({
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [modelPickerOpenSignal, setModelPickerOpenSignal] = useState(0)
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
-  const [intermediateSettingsOpen, setIntermediateSettingsOpen] = useState(false)
   const mobileSettingsRef = useRef<HTMLDivElement>(null)
   const mobileSettingsTriggerRef = useRef<HTMLButtonElement>(null)
-  const intermediateSettingsRef = useRef<HTMLDivElement>(null)
-  const intermediateSettingsTriggerRef = useRef<HTMLButtonElement>(null)
 
   const clearDictationRestartTimer = useCallback(() => {
     if (dictationRestartTimerRef.current === null) {
@@ -1022,25 +1019,21 @@ export function DesktopChatPanel({
   }, [stopDictation])
 
   useEffect(() => {
-    if (!mobileSettingsOpen && !intermediateSettingsOpen) return
+    if (!mobileSettingsOpen) return
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node
       if (
         mobileSettingsRef.current?.contains(target) ||
         mobileSettingsTriggerRef.current?.contains(target) ||
-        intermediateSettingsRef.current?.contains(target) ||
-        intermediateSettingsTriggerRef.current?.contains(target) ||
         !document.getElementById('root')?.contains(target)
       ) {
         return
       }
       setMobileSettingsOpen(false)
-      setIntermediateSettingsOpen(false)
     }
     const handleEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         setMobileSettingsOpen(false)
-        setIntermediateSettingsOpen(false)
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -1049,7 +1042,7 @@ export function DesktopChatPanel({
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [mobileSettingsOpen, intermediateSettingsOpen])
+  }, [mobileSettingsOpen])
 
   useEffect(() => {
     const storedRoute = sessionId
@@ -2768,50 +2761,26 @@ export function DesktopChatPanel({
                     openSignal={modelPickerOpenSignal}
                   />
 
-                  <div className="hidden min-[1100px]:contents">
+                  <ThinkingPicker
+                    value={normalizedThinking}
+                    options={THINKING_OPTIONS}
+                    onSelect={handleThinkingChange}
+                    label="Thinking"
+                    tagsEnabled={thinkingTagsEnabled}
+                    onToggleTags={(enabled) => {
+                      void handleThinkingTagsToggle(enabled)
+                    }}
+                    tagsBusy={thinkingTagsSaving}
+                  />
+
+                  {fastSupported ? (
                     <ThinkingPicker
-                      value={normalizedThinking}
-                      options={THINKING_OPTIONS}
-                      onSelect={handleThinkingChange}
-                      label="Thinking"
-                      tagsEnabled={thinkingTagsEnabled}
-                      onToggleTags={(enabled) => {
-                        void handleThinkingTagsToggle(enabled)
-                      }}
-                      tagsBusy={thinkingTagsSaving}
+                      value={fastValue}
+                      options={FAST_ON_OFF_OPTIONS}
+                      onSelect={handleFastChange}
+                      label="Fast"
                     />
-
-                    {fastSupported ? (
-                      <ThinkingPicker
-                        value={fastValue}
-                        options={FAST_ON_OFF_OPTIONS}
-                        onSelect={handleFastChange}
-                        label="Fast"
-                      />
-                    ) : null}
-                  </div>
-
-                  <div className="relative hidden min-[1000px]:block min-[1100px]:hidden">
-                    <button
-                      ref={intermediateSettingsTriggerRef}
-                      type="button"
-                      onClick={() => setIntermediateSettingsOpen(!intermediateSettingsOpen)}
-                      title="Thinking and speed settings"
-                      aria-haspopup="menu"
-                      aria-expanded={intermediateSettingsOpen}
-                      className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)]"
-                    >
-                      <Sparkles size={13} className="shrink-0 text-[var(--app-text-subtle)]" />
-                      <span className="max-w-[4.75rem] truncate">{normalizedThinking}</span>
-                      <ChevronDown size={12} className={intermediateSettingsOpen ? 'shrink-0 rotate-180 transition-transform' : 'shrink-0 transition-transform'} />
-                    </button>
-                    {intermediateSettingsOpen ? (
-                      <div ref={intermediateSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[260px] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
-                        <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={handleThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={(enabled) => { void handleThinkingTagsToggle(enabled) }} tagsBusy={thinkingTagsSaving} />
-                        {fastSupported ? <ThinkingPicker value={fastValue} options={FAST_ON_OFF_OPTIONS} onSelect={handleFastChange} label="Fast" /> : null}
-                      </div>
-                    ) : null}
-                  </div>
+                  ) : null}
 
                   <button type="button" onClick={() => { void handleCompact(composer) }} disabled={!sessionId || canStop || submitting} title={contextBadgeTooltip ? `${contextBadgeTooltip} · Click to compact` : 'Compact conversation'} className="inline-flex min-h-6 items-center gap-1 rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-medium tabular-nums text-[var(--app-text)] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">
                     <span>{contextBadgeLabel || (selectedContextWindow > 0 ? `${formatContextWindow(selectedContextWindow)} ctx` : 'ctx')}</span>
