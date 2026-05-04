@@ -1067,7 +1067,6 @@ export function DesktopChatPanel({
       setThinkingTagsEnabled(normalizeThinkingTagsEnabled(settings))
       setDefaultNewSessionMode(normalizeDefaultNewSessionMode(settings.chat?.default_new_session_mode))
     } catch {
-      setThinkingTagsEnabled(true)
       setDefaultNewSessionMode('auto')
     }
   }, [])

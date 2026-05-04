@@ -5,6 +5,16 @@ export async function getUISettings(): Promise<UISettingsWire> {
   return requestJson<UISettingsWire>('/v1/ui/settings')
 }
 
+export async function patchUISettings(patch: Partial<UISettingsWire>): Promise<UISettingsWire> {
+  return requestJson<UISettingsWire>('/v1/ui/settings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(patch),
+  })
+}
+
 function normalizeRemoteSSHTarget(value: string): string {
   return value.trim()
 }
@@ -21,17 +31,10 @@ export async function saveRemoteSSHTarget(input: { current: UISettingsWire; targ
     .filter((value, index, array) => value && array.indexOf(value) === index)
     .slice(0, 8)
 
-  return requestJson<UISettingsWire>('/v1/ui/settings', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
+  return patchUISettings({
+    swarm: {
+      ...(input.current.swarm ?? {}),
+      remote_ssh_targets: deduped,
     },
-    body: JSON.stringify({
-      ...input.current,
-      swarm: {
-        ...(input.current.swarm ?? {}),
-        remote_ssh_targets: deduped,
-      },
-    }),
   })
 }

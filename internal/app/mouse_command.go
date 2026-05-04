@@ -39,7 +39,7 @@ func (a *App) applyMouseSetting(enabled bool) {
 	a.setMouseCapture(enabled)
 	a.mouseHintShown = false
 
-	if err := saveAppConfig(a.api, a.config); err != nil {
+	if err := saveInputSettings(a.api, a.config.Input); err != nil {
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus(fmt.Sprintf("mouse capture %s (settings save failed: %v)", enabledLabel(enabled), err))
 		a.showToast(ui.ToastWarning, fmt.Sprintf("mouse capture %s, but settings save failed", enabledLabel(enabled)))

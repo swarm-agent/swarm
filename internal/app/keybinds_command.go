@@ -63,7 +63,7 @@ func (a *App) persistKeybindConfig(statusHint string) {
 
 func (a *App) saveKeybindConfig(statusHint string, showToast bool) error {
 	a.config.Input.Keybinds = a.activeKeyBindings().SerializeOverrides()
-	if err := saveAppConfig(a.api, a.config); err != nil {
+	if err := saveInputSettings(a.api, a.config.Input); err != nil {
 		return err
 	}
 	statusHint = strings.TrimSpace(statusHint)

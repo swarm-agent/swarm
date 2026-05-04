@@ -1,5 +1,4 @@
-import { requestJson } from '../../../../../app/api'
-import { getUISettings } from '../queries/get-ui-settings'
+import { getUISettings, patchUISettings } from '../queries/get-ui-settings'
 import { type UISettingsWire } from '../types/swarm-settings'
 
 export async function saveGlobalThemeSettings(themeId: string): Promise<UISettingsWire> {
@@ -14,13 +13,7 @@ export async function saveGlobalThemeSettings(themeId: string): Promise<UISettin
     },
   }
 
-  const response = await requestJson<UISettingsWire>('/v1/ui/settings', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
+  return patchUISettings({
+    theme: payload.theme,
   })
-
-  return response
 }

@@ -239,7 +239,7 @@ func (a *App) applyThemeOption(option ui.ThemeOption, persist, showFeedback bool
 }
 
 func (a *App) saveThemeConfig() error {
-	return saveAppConfig(a.api, a.config)
+	return saveThemeSettings(a.api, a.config.UI)
 }
 
 func (a *App) applyEffectiveTheme() {

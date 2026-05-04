@@ -179,6 +179,89 @@ func saveAppConfig(api *client.API, cfg AppConfig) error {
 	return nil
 }
 
+func updateUISettings(api *client.API, mutate func(*client.UISettings)) error {
+	if api == nil {
+		return fmt.Errorf("ui settings client not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), uiSettingsRequestLimit)
+	defer cancel()
+	if strings.TrimSpace(api.Token()) == "" {
+		if err := api.EnsureLocalAuth(ctx); err != nil {
+			return fmt.Errorf("bootstrap ui settings auth: %w", err)
+		}
+	}
+	settings, err := api.GetUISettings(ctx)
+	if err != nil {
+		return fmt.Errorf("load ui settings: %w", err)
+	}
+	if mutate != nil {
+		mutate(&settings)
+	}
+	if _, err := api.UpdateUISettings(ctx, settings); err != nil {
+		return fmt.Errorf("persist ui settings: %w", err)
+	}
+	return nil
+}
+
+func saveThemeSettings(api *client.API, uiCfg UIConfig) error {
+	return updateUISettings(api, func(settings *client.UISettings) {
+		theme := strings.TrimSpace(uiCfg.Theme)
+		if theme == "" {
+			theme = defaultThemeID
+		}
+		settings.Theme.ActiveID = theme
+		settings.Theme.CustomThemes = make([]client.UIThemeCustomTheme, 0, len(uiCfg.CustomThemes))
+		for _, item := range uiCfg.CustomThemes {
+			id := strings.TrimSpace(item.ID)
+			if id == "" {
+				continue
+			}
+			settings.Theme.CustomThemes = append(settings.Theme.CustomThemes, client.UIThemeCustomTheme{
+				ID:      id,
+				Name:    strings.TrimSpace(item.Name),
+				Palette: clientThemePaletteFromApp(item.Palette),
+			})
+		}
+	})
+}
+
+func saveInputSettings(api *client.API, inputCfg InputConfig) error {
+	return updateUISettings(api, func(settings *client.UISettings) {
+		settings.Input.MouseEnabled = inputCfg.MouseEnabled
+		settings.Input.Keybinds = sanitizeConfigKeybindMap(inputCfg.Keybinds)
+	})
+}
+
+func saveHeaderSetting(api *client.API, enabled bool) error {
+	return updateUISettings(api, func(settings *client.UISettings) {
+		settings.Chat.ShowHeader = enabled
+	})
+}
+
+func saveThinkingTagsSetting(api *client.API, enabled bool) error {
+	return updateUISettings(api, func(settings *client.UISettings) {
+		settings.Chat.ThinkingTags = enabled
+	})
+}
+
+func saveDefaultNewSessionModeSetting(api *client.API, mode string) error {
+	return updateUISettings(api, func(settings *client.UISettings) {
+		settings.Chat.DefaultNewSessionMode = emptyFallback(strings.TrimSpace(mode), "auto")
+	})
+}
+
+func saveSwarmNameSetting(api *client.API, name string) error {
+	return updateUISettings(api, func(settings *client.UISettings) {
+		settings.Swarm.Name = emptyFallback(strings.TrimSpace(name), defaultSwarmName)
+	})
+}
+
+func saveUpdateWarningDismissedSetting(api *client.API, dismissed bool) error {
+	return updateUISettings(api, func(settings *client.UISettings) {
+		settings.Updates.LocalContainerWarningDismissed = dismissed
+	})
+}
+
 func appConfigFromUISettings(settings client.UISettings) AppConfig {
 	cfg := defaultAppConfig()
 

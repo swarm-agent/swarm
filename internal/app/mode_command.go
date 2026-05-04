@@ -48,7 +48,7 @@ func (a *App) applyDefaultNewSessionModeSetting(mode string) {
 	if a.home != nil {
 		a.home.SetSessionMode(mode)
 	}
-	if err := saveAppConfig(a.api, a.config); err != nil {
+	if err := saveDefaultNewSessionModeSetting(a.api, mode); err != nil {
 		a.home.SetStatus(fmt.Sprintf("default new chat mode %s (settings save failed: %v)", mode, err))
 		return
 	}

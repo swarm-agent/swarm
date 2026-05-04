@@ -78,7 +78,7 @@ func (a *App) applySwarmNameSetting(name string) {
 	}
 
 	a.home.SetCommandOverlay(a.swarmStatusLines())
-	if err := saveAppConfig(a.api, a.config); err != nil {
+	if err := saveSwarmNameSetting(a.api, name); err != nil {
 		a.home.SetStatus(fmt.Sprintf("swarm name updated to %q (settings save failed: %v)", name, err))
 		return
 	}

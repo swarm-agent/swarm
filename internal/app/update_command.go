@@ -197,7 +197,7 @@ func (a *App) confirmPendingLocalContainerUpdate(dismiss bool) {
 	}
 	if dismiss && remoteDeployUpdateSessionCount(pending.RemoteSessions) == 0 {
 		a.config.Updates.LocalContainerWarningDismissed = true
-		if err := saveAppConfig(a.api, a.config); err != nil {
+		if err := saveUpdateWarningDismissedSetting(a.api, true); err != nil {
 			a.home.SetStatus(fmt.Sprintf("update warning dismissed for this run (settings save failed: %v)", err))
 		} else {
 			a.home.SetStatus("container image update warning dismissed")

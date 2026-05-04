@@ -59,7 +59,7 @@ func (a *App) applyHeaderSetting(enabled bool) {
 	}
 
 	a.home.SetCommandOverlay(a.headerStatusLines())
-	if err := saveAppConfig(a.api, a.config); err != nil {
+	if err := saveHeaderSetting(a.api, enabled); err != nil {
 		a.home.SetStatus(fmt.Sprintf("chat header %s (settings save failed: %v)", enabledLabel(enabled), err))
 		return
 	}
@@ -73,7 +73,7 @@ func (a *App) applyThinkingTagsSetting(enabled bool) {
 	}
 
 	a.home.SetCommandOverlay(a.thinkingTagsStatusLines())
-	if err := saveAppConfig(a.api, a.config); err != nil {
+	if err := saveThinkingTagsSetting(a.api, enabled); err != nil {
 		a.home.SetStatus(fmt.Sprintf("thinking tags %s (settings save failed: %v)", enabledLabel(enabled), err))
 		return
 	}
