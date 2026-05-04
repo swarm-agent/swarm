@@ -234,6 +234,7 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	result, err := s.runner.RunTurnStreaming(ctx, session.ID, runReq, runruntime.RunStartMeta{
 		RunID:          runID,
 		OwnerTransport: "flow_scheduler",
+		AllowSubagent:  resolvedAgent.RuntimeTargetKind == runruntime.RunTargetKindSubagent,
 	}, func(event runruntime.StreamEvent) {
 		if strings.TrimSpace(event.SessionID) == "" {
 			event.SessionID = session.ID

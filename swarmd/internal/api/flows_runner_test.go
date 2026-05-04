@@ -100,6 +100,9 @@ func TestTargetLocalFlowRunnerLaunchesSavedAgentProfileWithoutToolScope(t *testi
 			if runner.lastMeta.OwnerTransport != "flow_scheduler" || runner.lastMeta.RunID == "" {
 				t.Fatalf("run meta = %+v", runner.lastMeta)
 			}
+			if got, want := runner.lastMeta.AllowSubagent, tc.expectedKind == runruntime.RunTargetKindSubagent; got != want {
+				t.Fatalf("AllowSubagent = %v, want %v for target kind %q", got, want, tc.expectedKind)
+			}
 			session, ok, err := server.sessions.GetSession(start.SessionID)
 			if err != nil || !ok {
 				t.Fatalf("get session ok=%v err=%v", ok, err)
