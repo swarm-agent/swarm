@@ -6,15 +6,15 @@ import { canonicalSessionWorkspacePath } from './session-workspace'
 test('canonical session workspace defaults hosted routed sessions to host workspace path', () => {
   assert.equal(canonicalSessionWorkspacePath({
     workspacePath: '/workspaces/swarm',
-    hostedHostWorkspacePath: '/home/dev/swarm',
+    hostedHostWorkspacePath: '/workspaces/host-swarm',
     hostedRuntimeWorkspacePath: '/workspaces/swarm',
-  }), '/home/dev/swarm')
+  }), '/workspaces/host-swarm')
 })
 
 test('canonical session workspace can prefer hosted runtime workspace path for remote child overviews', () => {
   assert.equal(canonicalSessionWorkspacePath({
     workspacePath: '/workspaces/swarm',
-    hostedHostWorkspacePath: '/home/dev/swarm',
+    hostedHostWorkspacePath: '/workspaces/host-swarm',
     hostedRuntimeWorkspacePath: '/workspaces/swarm',
     preferHostedRuntimeWorkspacePath: true,
   }), '/workspaces/swarm')

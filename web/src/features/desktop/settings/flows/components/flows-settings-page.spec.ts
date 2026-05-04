@@ -44,7 +44,7 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
     agentKey: 'missile::subagent',
     targetKey: 'target',
     scheduleCadence: 'Daily' as const,
-    scheduleTimes: ['9:00 AM'],
+    scheduleTimes: ['9:00 AM', '5:30 PM'],
     scheduleDay: 'Mon',
     scheduleDate: '1',
     timezone: 'America/New_York',
@@ -60,7 +60,20 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
   const scheduled = formToCreateInput(baseForm, targets, workspaces, agents)
   assert.equal(scheduled.enabled, true)
   assert.equal(scheduled.schedule.cadence, 'daily')
-  assert.deepEqual(scheduled.schedule.times, ['09:00'])
+  assert.equal(scheduled.schedule.time, '09:00')
+  assert.deepEqual(scheduled.schedule.times, ['09:00', '17:30'])
   assert.equal(scheduled.schedule.timezone, 'America/New_York')
   assert.equal(scheduled.intent.mode, 'target-owned schedule')
+
+  const weekly = formToCreateInput({ ...baseForm, scheduleCadence: 'Weekly' }, targets, workspaces, agents)
+  assert.equal(weekly.schedule.cadence, 'weekly')
+  assert.equal(weekly.schedule.time, '09:00')
+  assert.deepEqual(weekly.schedule.times, ['09:00'])
+  assert.equal(weekly.schedule.weekday, 'Mon')
+
+  const monthly = formToCreateInput({ ...baseForm, scheduleCadence: 'Monthly', scheduleDate: '15' }, targets, workspaces, agents)
+  assert.equal(monthly.schedule.cadence, 'monthly')
+  assert.equal(monthly.schedule.time, '09:00')
+  assert.deepEqual(monthly.schedule.times, ['09:00'])
+  assert.equal(monthly.schedule.month_day, 15)
 })

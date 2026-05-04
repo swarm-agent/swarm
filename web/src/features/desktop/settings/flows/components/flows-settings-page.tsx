@@ -118,6 +118,71 @@ const scheduleTimeOptions = Array.from({ length: 48 }, (_, index) => {
   const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12
   return `${hour12}:${minute} ${period}`
 })
+const maxDailyScheduleTimes = 8
+
+const fallbackTimeZones = [
+  'UTC',
+  'America/Los_Angeles',
+  'America/Denver',
+  'America/Chicago',
+  'America/New_York',
+  'America/Sao_Paulo',
+  'Europe/London',
+  'Europe/Berlin',
+  'Europe/Paris',
+  'Europe/Madrid',
+  'Asia/Dubai',
+  'Asia/Kolkata',
+  'Asia/Singapore',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+] as const
+
+type IntlWithSupportedValues = typeof Intl & { supportedValuesOf?: (key: 'timeZone') => string[] }
+
+function userTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+}
+
+function availableTimeZones(): string[] {
+  const detected = userTimeZone()
+  const supported = (Intl as IntlWithSupportedValues).supportedValuesOf?.('timeZone') ?? []
+  return Array.from(new Set([detected, 'UTC', ...supported, ...fallbackTimeZones]))
+    .filter(Boolean)
+    .sort((left, right) => {
+      if (left === detected) return -1
+      if (right === detected) return 1
+      if (left === 'UTC') return -1
+      if (right === 'UTC') return 1
+      return left.localeCompare(right)
+    })
+}
+
+const timezoneOptions = availableTimeZones()
+
+function timeInZone(timezone: string, now = new Date()): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      timeZone: timezone,
+      timeZoneName: 'short',
+    }).format(now)
+  } catch {
+    return 'time unavailable'
+  }
+}
+
+function scheduleTimesForCadence(form: AddFlowForm): string[] {
+  if (form.scheduleCadence === 'On demand') {
+    return []
+  }
+  if (form.scheduleCadence === 'Daily') {
+    return form.scheduleTimes.length ? form.scheduleTimes : ['12:00 AM']
+  }
+  return [form.scheduleTimes[0] || '12:00 AM']
+}
 
 const defaultAddFlowForm: AddFlowForm = {
   name: '',
@@ -127,7 +192,7 @@ const defaultAddFlowForm: AddFlowForm = {
   scheduleTimes: ['12:00 AM'],
   scheduleDay: 'Mon',
   scheduleDate: '1',
-  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  timezone: userTimeZone(),
   workspacePath: '',
   task: '',
 }
@@ -178,16 +243,17 @@ const labelClass = 'text-[11px] font-medium uppercase tracking-[0.16em] text-[va
 
 function buildScheduleLabel(form: AddFlowForm) {
   if (form.scheduleCadence === 'On demand') {
-    return 'On demand'
+    return 'Runs only when you start it manually.'
   }
-  const timesLabel = form.scheduleTimes.join(', ')
+  const times = scheduleTimesForCadence(form)
+  const timesLabel = times.join(', ')
   if (form.scheduleCadence === 'Weekly') {
-    return `Weekly on ${form.scheduleDay} ${timesLabel} (${form.timezone})`
+    return `Every ${form.scheduleDay} at ${timesLabel} (${form.timezone})`
   }
   if (form.scheduleCadence === 'Monthly') {
-    return `Monthly on day ${form.scheduleDate} ${timesLabel} (${form.timezone})`
+    return `Monthly on day ${form.scheduleDate} at ${timesLabel} (${form.timezone})`
   }
-  return `Daily at ${timesLabel} (${form.timezone})`
+  return `Every day at ${timesLabel} (${form.timezone})`
 }
 
 function clockLabelToHHMM(value: string): string {
@@ -485,6 +551,7 @@ function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
 export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[], agents: FlowAgentOption[]): CreateFlowInput {
   const isOnDemand = form.scheduleCadence === 'On demand'
   const cadence = isOnDemand ? 'on_demand' : form.scheduleCadence.toLowerCase()
+  const selectedTimes = scheduleTimesForCadence(form).map((value) => clockLabelToHHMM(value))
   const targetOption = targets.find((option) => option.key === form.targetKey)
   const workspaceOption = workspaces.find((option) => option.key === form.workspacePath)
   const agentOption = agents.find((option) => option.key === form.agentKey)
@@ -505,8 +572,8 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
     },
     schedule: {
       cadence,
-      time: cadence === 'on_demand' ? undefined : clockLabelToHHMM(form.scheduleTimes[0] || '12:00 AM'),
-      times: cadence === 'on_demand' ? undefined : form.scheduleTimes.map((value) => clockLabelToHHMM(value)),
+      time: cadence === 'on_demand' ? undefined : selectedTimes[0],
+      times: cadence === 'on_demand' ? undefined : selectedTimes,
       weekday: cadence === 'weekly' ? form.scheduleDay : undefined,
       month_day: cadence === 'monthly' ? Number(form.scheduleDate) : undefined,
       timezone: form.timezone.trim() || 'UTC',
@@ -572,8 +639,6 @@ function FilterSelect({ value, onChange, options, label }: { value: string; onCh
   )
 }
 
-const maxScheduleTimes = 8
-
 function AddFlowModal({
   open,
   onClose,
@@ -595,19 +660,37 @@ function AddFlowModal({
 }) {
   const initialForm = useMemo(() => initialAddFlowForm(targetOptions, workspaceOptions, agentOptions), [agentOptions, targetOptions, workspaceOptions])
   const [form, setForm] = useState<AddFlowForm>(initialForm)
+  const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
     if (open) {
       setForm(initialForm)
+      setNow(new Date())
     }
   }, [initialForm, open])
+
+  useEffect(() => {
+    if (!open) {
+      return undefined
+    }
+    const interval = window.setInterval(() => setNow(new Date()), 1000)
+    return () => window.clearInterval(interval)
+  }, [open])
 
   if (!open) {
     return null
   }
 
   const update = (field: keyof AddFlowForm) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    setForm((current) => ({ ...current, [field]: event.target.value }))
+    const value = event.target.value
+    setForm((current) => {
+      if (field === 'scheduleCadence') {
+        const nextCadence = value as ScheduleCadence
+        const nextTimes = nextCadence === 'Daily' ? current.scheduleTimes : [current.scheduleTimes[0] || '12:00 AM']
+        return { ...current, scheduleCadence: nextCadence, scheduleTimes: nextTimes }
+      }
+      return { ...current, [field]: value }
+    })
   }
   const updateScheduleTime = (index: number) => (event: ChangeEvent<HTMLSelectElement>) => {
     setForm((current) => ({
@@ -617,7 +700,7 @@ function AddFlowModal({
   }
   const addScheduleTime = () => {
     setForm((current) => {
-      if (current.scheduleTimes.length >= maxScheduleTimes) {
+      if (current.scheduleCadence !== 'Daily' || current.scheduleTimes.length >= maxDailyScheduleTimes) {
         return current
       }
       return { ...current, scheduleTimes: [...current.scheduleTimes, current.scheduleTimes[current.scheduleTimes.length - 1] || '12:00 AM'] }
@@ -638,6 +721,10 @@ function AddFlowModal({
   const selectedWorkspace = workspaceOptions.find((option) => option.key === form.workspacePath)
   const selectedAgent = agentOptions.find((option) => option.key === form.agentKey)
   const isScheduled = form.scheduleCadence !== 'On demand'
+  const supportsMultipleTimes = form.scheduleCadence === 'Daily'
+  const selectedTimezoneNow = timeInZone(form.timezone, now)
+  const detectedTimezone = userTimeZone()
+  const localTimezoneNow = timeInZone(detectedTimezone, now)
   const canSubmit = Boolean(selectedTarget && selectedWorkspace && selectedAgent && form.task.trim()) && !busy
 
   const submit = (event: FormEvent) => {
@@ -696,68 +783,100 @@ function AddFlowModal({
                   {loadingOptions ? 'Loading real workspaces…' : selectedWorkspace?.helper || 'No workspace records returned by the controller.'}
                 </span>
               </label>
-              <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 md:col-span-2 md:grid-cols-[1fr_1fr_1fr]">
-                <div className="md:col-span-3">
-                  <div className={labelClass}>Schedule</div>
-                  <div className="mt-1 text-xs text-[var(--app-text-muted)]">{schedulePreview}</div>
+              <section className="grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 md:col-span-2" aria-label="Schedule">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <div className={labelClass}>Schedule</div>
+                    <div className="mt-1 text-sm font-medium text-[var(--app-text)]">{schedulePreview}</div>
+                    <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
+                      Pick the recurrence first. Only daily flows can run multiple times per day; weekly and monthly flows run once on their selected day.
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-xs text-[var(--app-text-muted)] md:min-w-[220px]">
+                    <div className="font-medium text-[var(--app-text)]">Now: {localTimezoneNow}</div>
+                    <div className="mt-0.5">Your timezone: {detectedTimezone}</div>
+                  </div>
                 </div>
-                <label className="flex flex-col gap-2">
-                  <span className="text-xs text-[var(--app-text-muted)]">Cadence</span>
-                  <select data-testid="flows-add-cadence" value={form.scheduleCadence} onChange={update('scheduleCadence')} className={fieldClass}>
-                    {scheduleCadenceOptions.map((cadence) => <option key={cadence}>{cadence}</option>)}
-                  </select>
-                </label>
-                {form.scheduleCadence === 'Weekly' ? (
+
+                <div className="grid gap-3 md:grid-cols-3">
                   <label className="flex flex-col gap-2">
-                    <span className="text-xs text-[var(--app-text-muted)]">Day</span>
-                    <select value={form.scheduleDay} onChange={update('scheduleDay')} className={fieldClass}>
-                      {scheduleDayOptions.map((day) => <option key={day}>{day}</option>)}
+                    <span className="text-xs text-[var(--app-text-muted)]">Repeats</span>
+                    <select data-testid="flows-add-cadence" value={form.scheduleCadence} onChange={update('scheduleCadence')} className={fieldClass}>
+                      {scheduleCadenceOptions.map((cadence) => <option key={cadence}>{cadence}</option>)}
                     </select>
                   </label>
-                ) : null}
-                {form.scheduleCadence === 'Monthly' ? (
-                  <label className="flex flex-col gap-2">
-                    <span className="text-xs text-[var(--app-text-muted)]">Day of month</span>
-                    <select value={form.scheduleDate} onChange={update('scheduleDate')} className={fieldClass}>
-                      {scheduleDateOptions.map((date) => <option key={date}>{date}</option>)}
-                    </select>
-                  </label>
-                ) : null}
+                  {form.scheduleCadence === 'Weekly' ? (
+                    <label className="flex flex-col gap-2">
+                      <span className="text-xs text-[var(--app-text-muted)]">Run on</span>
+                      <select value={form.scheduleDay} onChange={update('scheduleDay')} className={fieldClass}>
+                        {scheduleDayOptions.map((day) => <option key={day}>{day}</option>)}
+                      </select>
+                    </label>
+                  ) : null}
+                  {form.scheduleCadence === 'Monthly' ? (
+                    <label className="flex flex-col gap-2">
+                      <span className="text-xs text-[var(--app-text-muted)]">Run on day</span>
+                      <select value={form.scheduleDate} onChange={update('scheduleDate')} className={fieldClass}>
+                        {scheduleDateOptions.map((date) => <option key={date}>{date}</option>)}
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+
                 {isScheduled ? (
                   <>
-                    <div className="flex flex-col gap-2 md:col-span-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-xs text-[var(--app-text-muted)]">Times</span>
-                        <button
-                          type="button"
-                          onClick={addScheduleTime}
-                          disabled={form.scheduleTimes.length >= maxScheduleTimes}
-                          className="text-xs font-medium text-[var(--app-primary)] disabled:cursor-not-allowed disabled:text-[var(--app-text-subtle)]"
-                        >
-                          Add time
-                        </button>
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.75fr)]">
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs text-[var(--app-text-muted)]">{supportsMultipleTimes ? 'Run times' : 'Run time'}</span>
+                          {supportsMultipleTimes ? (
+                            <button
+                              type="button"
+                              onClick={addScheduleTime}
+                              disabled={form.scheduleTimes.length >= maxDailyScheduleTimes}
+                              className="text-xs font-medium text-[var(--app-primary)] disabled:cursor-not-allowed disabled:text-[var(--app-text-subtle)]"
+                            >
+                              Add daily run time
+                            </button>
+                          ) : null}
+                        </div>
+                        <div className="grid gap-2">
+                          {scheduleTimesForCadence(form).map((time, index) => (
+                            <div key={`${form.scheduleCadence}-${time}-${index}`} className="flex items-center gap-2">
+                              <select value={time} onChange={updateScheduleTime(index)} className={cn(fieldClass, 'flex-1')}>
+                                {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                              </select>
+                              {supportsMultipleTimes ? (
+                                <Button type="button" variant="ghost" className="rounded-xl" onClick={() => removeScheduleTime(index)} disabled={form.scheduleTimes.length === 1}>
+                                  Remove
+                                </Button>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="text-[11px] leading-4 text-[var(--app-text-muted)]">
+                          {supportsMultipleTimes
+                            ? `Daily flows can run up to ${maxDailyScheduleTimes} times per day. Use this for agents that should check in repeatedly.`
+                            : 'Need several runs in one day? Choose Daily instead. Weekly and monthly schedules intentionally run once on their selected day.'}
+                        </div>
                       </div>
-                      <div className="grid gap-2">
-                        {form.scheduleTimes.map((time, index) => (
-                          <div key={`${time}-${index}`} className="flex items-center gap-2">
-                            <select value={time} onChange={updateScheduleTime(index)} className={cn(fieldClass, 'flex-1')}>
-                              {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
-                            </select>
-                            <Button type="button" variant="ghost" className="rounded-xl" onClick={() => removeScheduleTime(index)} disabled={form.scheduleTimes.length === 1}>
-                              Remove
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="text-[11px] text-[var(--app-text-muted)]">Up to {maxScheduleTimes} times per day. Saved times are normalized and deduplicated.</div>
+                      <label className="flex flex-col gap-2">
+                        <span className="text-xs text-[var(--app-text-muted)]">Timezone</span>
+                        <select data-testid="flows-add-timezone" value={form.timezone} onChange={update('timezone')} className={fieldClass}>
+                          {timezoneOptions.map((timezone) => (
+                            <option key={timezone} value={timezone}>{timezone}</option>
+                          ))}
+                        </select>
+                        <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">Selected timezone now: {selectedTimezoneNow}</span>
+                      </label>
                     </div>
-                    <label className="flex flex-col gap-2">
-                      <span className="text-xs text-[var(--app-text-muted)]">Timezone</span>
-                      <Input value={form.timezone} onChange={update('timezone')} className={fieldClass} />
-                    </label>
                   </>
-                ) : null}
-              </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-xs leading-5 text-[var(--app-text-muted)]">
+                    On-demand flows do not have a clock schedule. You can still run them manually from the flow detail page.
+                  </div>
+                )}
+              </section>
               <label className="flex flex-col gap-2 md:col-span-2">
                 <span className={labelClass}>Task</span>
                 <textarea data-testid="flows-add-task" value={form.task} onChange={update('task')} rows={4} className="resize-none rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-sm leading-6 text-[var(--app-text)] outline-none transition hover:border-[var(--app-border-strong)] focus:border-[var(--app-border-accent)] focus:ring-2 focus:ring-[var(--app-focus-ring)]" />

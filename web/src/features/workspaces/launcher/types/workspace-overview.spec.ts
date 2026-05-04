@@ -35,7 +35,7 @@ function responseForTarget(kind: string, relationship: string): WorkspaceOvervie
         message_count: 1,
         metadata: {
           swarm_routed_session: true,
-          swarm_routed_host_workspace_path: '/home/dev/swarm',
+          swarm_routed_host_workspace_path: '/workspaces/host-swarm',
           swarm_routed_runtime_workspace_path: '/workspaces/swarm',
         },
         session_status: 'idle',
@@ -57,6 +57,6 @@ test('self workspace overview keeps routed mirror sessions under host workspace 
   const overview = mapWorkspaceOverviewResponse(responseForTarget('self', 'self'))
 
   assert.equal(overview.swarmTarget?.kind, 'self')
-  assert.equal(overview.workspaces[0]?.sessions[0]?.workspacePath, '/home/dev/swarm')
+  assert.equal(overview.workspaces[0]?.sessions[0]?.workspacePath, '/workspaces/host-swarm')
   assert.equal(overview.workspaces[0]?.sessions[0]?.runtimeWorkspacePath, '/workspaces/swarm')
 })

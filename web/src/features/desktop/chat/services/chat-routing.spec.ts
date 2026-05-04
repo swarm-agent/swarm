@@ -8,7 +8,7 @@ const remoteRoute: DesktopChatRoute = {
   id: 'swarm:child-swarm:/workspaces/swarm',
   label: 'child swarm',
   swarmId: 'child-swarm',
-  hostWorkspacePath: '/home/dev/swarm',
+  hostWorkspacePath: '/workspaces/host-swarm',
   hostWorkspaceName: 'host swarm',
   runtimeWorkspacePath: '/workspaces/swarm',
 }
@@ -76,11 +76,11 @@ test('routed session hydration preserves remote child workspace identity', () =>
 
 test('routed local host mirror session remains grouped under host workspace', () => {
   const mapped = applyDesktopChatRouteToSession(sessionRecord({
-    workspacePath: '/home/dev/swarm',
+    workspacePath: '/workspaces/host-swarm',
     workspaceName: 'host swarm',
   }), remoteRoute)
 
-  assert.equal(mapped.workspacePath, '/home/dev/swarm')
+  assert.equal(mapped.workspacePath, '/workspaces/host-swarm')
   assert.equal(mapped.workspaceName, 'host swarm')
   assert.equal(mapped.runtimeWorkspacePath, '/workspaces/swarm')
 })
