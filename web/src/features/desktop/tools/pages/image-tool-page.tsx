@@ -11,7 +11,7 @@ import { useDesktopStore } from '../../state/use-desktop-store'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
 import { normalizeGlobalThemeSettings } from '../../settings/swarm/types/swarm-settings'
-import { resolveWorkspaceBySlug } from '../../../workspaces/launcher/services/workspace-route'
+import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { applyWorkspaceTheme, createWorkspaceThemeStyle } from '../../../workspaces/launcher/services/workspace-theme'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
@@ -456,8 +456,12 @@ export function ImageToolPage() {
     return workspaces[0] ?? null
   }, [activeWorkspacePath, routeWorkspaceSlug, workspaces])
 
+  const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(workspaces), [workspaces])
   const selectedWorkspacePath = selectedWorkspace?.path ?? ''
   const selectedWorkspaceName = selectedWorkspace?.workspaceName ?? ''
+  const selectedWorkspaceSlug = selectedWorkspace
+    ? workspaceSlugByPath.get(selectedWorkspace.path) ?? workspaceRouteSlugBase(selectedWorkspace)
+    : ''
   const userThemeId = selectedWorkspace?.themeId?.trim() || normalizeGlobalThemeSettings(uiSettingsQuery.data).activeId
   const darkOverrideButtonStyle = useMemo(() => createWorkspaceThemeStyle(userThemeId, '--image-tool-user-theme') as CSSProperties, [userThemeId])
 
@@ -514,7 +518,7 @@ export function ImageToolPage() {
   const selectedAssetFilePath = selectedImageAsset?.path ?? ''
   const selectedCopyFilePath = selectedAssetFilePath || selectedSessionStoragePath
   const selectedSessionURL = selectedThread
-    ? `${typeof window !== 'undefined' ? window.location.origin : ''}${routeWorkspaceSlug ? `/${routeWorkspaceSlug}/tools/image/${selectedThread.id}` : `/tools/image/${selectedThread.id}`}`
+    ? `${typeof window !== 'undefined' ? window.location.origin : ''}${selectedWorkspaceSlug ? `/${selectedWorkspaceSlug}/tools/image/${selectedThread.id}` : `/tools/image/${selectedThread.id}`}`
     : ''
   const selectedModelOption = IMAGE_MODEL_OPTIONS.find((option) => option.id === selectedImageModel) ?? IMAGE_MODEL_OPTIONS[0]
   const selectedProviderStatus = (imageProvidersQuery.data ?? []).find((provider) => provider.id === selectedModelOption.provider)
@@ -646,8 +650,8 @@ export function ImageToolPage() {
         return [createdThread, ...withoutCreated]
       })
       setSelectedThreadId(createdThread.id)
-      if (routeWorkspaceSlug) {
-        void navigate({ to: '/$workspaceSlug/tools/image/$imageSessionId', params: { workspaceSlug: routeWorkspaceSlug, imageSessionId: createdThread.id } })
+      if (selectedWorkspaceSlug) {
+        void navigate({ to: '/$workspaceSlug/tools/image/$imageSessionId', params: { workspaceSlug: selectedWorkspaceSlug, imageSessionId: createdThread.id } })
       } else {
         void navigate({ to: '/tools/image/$imageSessionId', params: { imageSessionId: createdThread.id } })
       }
@@ -658,7 +662,19 @@ export function ImageToolPage() {
     } finally {
       setCreatingSession(false)
     }
-  }, [navigate, newSessionTitle, queryClient, routeWorkspaceSlug, selectedWorkspaceName, selectedWorkspacePath])
+  }, [navigate, newSessionTitle, queryClient, selectedWorkspaceName, selectedWorkspacePath, selectedWorkspaceSlug])
+
+  const handleWorkspaceChange = useCallback((workspacePath: string) => {
+    const workspace = workspaces.find((entry) => entry.path === workspacePath)
+    if (!workspace) return
+    const workspaceSlug = workspaceSlugByPath.get(workspace.path) ?? workspaceRouteSlugBase(workspace)
+    setCreateError(null)
+    setGenerationError(null)
+    setSelectedThreadId(null)
+    setSelectedImageAssetId(null)
+    setSelectedLivePreviewId(null)
+    void navigate({ to: '/$workspaceSlug/tools/image', params: { workspaceSlug } })
+  }, [navigate, workspaceSlugByPath, workspaces])
 
   const handlePreviousPreview = useCallback(() => {
     if (orderedImageAssets.length === 0) return
@@ -964,6 +980,22 @@ export function ImageToolPage() {
             createTitle={newSessionTitle}
             onCreateTitleChange={setNewSessionTitle}
             createPlaceholder={DEFAULT_IMAGE_SESSION_TITLE}
+            createPrefix={(
+              <label className="block">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Workspace</span>
+                <Select
+                  className="mt-2 h-9 min-h-9 rounded-none border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0 font-mono text-[12px]"
+                  value={selectedWorkspacePath}
+                  onChange={(event) => handleWorkspaceChange(event.currentTarget.value)}
+                  disabled={workspacesQuery.isLoading || workspaces.length === 0 || creatingSession || generatingImage}
+                >
+                  {workspaces.length === 0 ? <option value="">No workspaces</option> : null}
+                  {workspaces.map((workspace) => (
+                    <option key={workspace.path} value={workspace.path}>{workspace.workspaceName || workspace.path}</option>
+                  ))}
+                </Select>
+              </label>
+            )}
             onCreate={() => void handleCreateSession()}
             creating={creatingSession}
             createDisabled={!selectedWorkspacePath}
@@ -977,8 +1009,8 @@ export function ImageToolPage() {
             selectedSessionId={selectedThread?.id ?? null}
             onSelectSession={(threadId) => {
               setSelectedThreadId(threadId)
-              if (routeWorkspaceSlug) {
-                void navigate({ to: '/$workspaceSlug/tools/image/$imageSessionId', params: { workspaceSlug: routeWorkspaceSlug, imageSessionId: threadId } })
+              if (selectedWorkspaceSlug) {
+                void navigate({ to: '/$workspaceSlug/tools/image/$imageSessionId', params: { workspaceSlug: selectedWorkspaceSlug, imageSessionId: threadId } })
               } else {
                 void navigate({ to: '/tools/image/$imageSessionId', params: { imageSessionId: threadId } })
               }

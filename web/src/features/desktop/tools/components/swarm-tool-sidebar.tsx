@@ -30,6 +30,7 @@ type SwarmToolSidebarProps = {
   createTitle: string
   onCreateTitleChange: (value: string) => void
   createPlaceholder: string
+  createPrefix?: ReactNode
   onCreate: () => void
   creating: boolean
   createDisabled?: boolean
@@ -60,6 +61,7 @@ export function SwarmToolSidebar({
   createTitle,
   onCreateTitleChange,
   createPlaceholder,
+  createPrefix,
   onCreate,
   creating,
   createDisabled,
@@ -111,6 +113,7 @@ export function SwarmToolSidebar({
       </div>
 
       <div className="mt-4 border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+        {createPrefix ? <div className="mb-3">{createPrefix}</div> : null}
         <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">{createLabel}</p>
         <input
           value={createTitle}
