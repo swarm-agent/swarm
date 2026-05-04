@@ -1,4 +1,4 @@
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, ChevronLeft, ChevronRight, Clipboard, Download, ExternalLink, FolderOpen, Image, Link2, Moon, Sparkles, TriangleAlert, X } from 'lucide-react'
@@ -279,6 +279,8 @@ export function ImageToolPage() {
   const [imageLightboxOpen, setImageLightboxOpen] = useState(false)
   const [lightboxNaturalSize, setLightboxNaturalSize] = useState<{ width: number; height: number } | null>(null)
   const followLivePreviewRef = useRef(false)
+  const selectedThumbnailButtonRef = useRef<HTMLButtonElement | null>(null)
+  const thumbnailScrollerRef = useRef<HTMLDivElement | null>(null)
   const [selectedImageModel, setSelectedImageModel] = useState<string>(IMAGE_MODEL_OPTIONS[0]?.id ?? '')
   const [imageDefaultSaving, setImageDefaultSaving] = useState(false)
   const [imageDefaultStatus, setImageDefaultStatus] = useState('')
@@ -456,6 +458,40 @@ export function ImageToolPage() {
       : generatingImage
         ? 'live:pending:0'
         : null
+
+  const handleSelectThumbnail = useCallback((item: ImageThumbnailItem) => {
+    if (item.kind === 'asset') {
+      followLivePreviewRef.current = false
+      setSelectedLivePreviewId(null)
+      setSelectedImageAssetId(item.asset.id)
+    } else if (item.kind === 'live') {
+      followLivePreviewRef.current = true
+      setSelectedImageAssetId(null)
+      setSelectedLivePreviewId(item.preview.id)
+    }
+  }, [])
+
+  const handleOpenThumbnail = useCallback((item: ImageThumbnailItem) => {
+    handleSelectThumbnail(item)
+    if (item.kind === 'asset') {
+      setImageLightboxOpen(true)
+    }
+  }, [handleSelectThumbnail])
+
+  useEffect(() => {
+    if (!selectedThumbnailId) return
+    selectedThumbnailButtonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+  }, [selectedThumbnailId, thumbnailItems.length])
+
+  const handleThumbnailWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    const scroller = thumbnailScrollerRef.current
+    if (!scroller || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
+    const canScrollHorizontally = scroller.scrollWidth > scroller.clientWidth
+    if (!canScrollHorizontally) return
+    scroller.scrollLeft += event.deltaY
+    event.preventDefault()
+  }, [])
+
   useEffect(() => {
     if (!activeImageDefaultModel || imageDefaultSaving) return
     if (appliedImageDefaultRef.current === activeImageDefaultModel) return
@@ -1057,9 +1093,6 @@ export function ImageToolPage() {
 
                   <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto]">
                     <div className="relative grid min-h-0 place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_34%),var(--app-bg)] px-2 py-2 sm:px-4 sm:py-4">
-                      <Button variant="outline" className="absolute left-4 top-1/2 h-10 w-10 -translate-y-1/2 rounded-full px-0" onClick={handlePreviousPreview} disabled={orderedImageAssets.length <= 1} aria-label="Previous image">
-                        <ChevronLeft size={18} />
-                      </Button>
                       <div className="grid h-full min-h-0 w-full place-items-center overflow-hidden border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-surface)_0%,var(--app-bg)_52%,var(--app-surface-hover)_100%)] shadow-2xl shadow-black/10">
                         {activeLivePreview ? (
                           <div className="relative flex h-full min-h-0 w-full items-center justify-center p-2 text-center">
@@ -1097,17 +1130,14 @@ export function ImageToolPage() {
                           </div>
                         )}
                       </div>
-                      <Button variant="outline" className="absolute right-4 top-1/2 h-10 w-10 -translate-y-1/2 rounded-full px-0" onClick={handleNextPreview} disabled={orderedImageAssets.length <= 1} aria-label="Next image">
-                        <ChevronRight size={18} />
-                      </Button>
                     </div>
 
                     <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
-                      <div className="mb-1.5 flex items-center justify-between gap-3 text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">
+                      <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">
                         <span>Session images</span>
-                        <span>{orderedImageAssets.length} saved</span>
+                        <span>{orderedImageAssets.length} saved · hover or click to preview</span>
                       </div>
-                      <div className="flex gap-2 overflow-x-auto pb-1">
+                      <div ref={thumbnailScrollerRef} onWheel={handleThumbnailWheel} className="flex snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain scroll-smooth pb-2 pr-2 [scrollbar-gutter:stable]">
                         {thumbnailItems.length > 0 ? thumbnailItems.map((item) => {
                           const selected = item.id === selectedThumbnailId
                           const imageSrc = item.kind === 'asset'
@@ -1118,19 +1148,11 @@ export function ImageToolPage() {
                           return (
                             <button
                               key={item.id}
+                              ref={selected ? selectedThumbnailButtonRef : null}
                               type="button"
-                              onClick={() => {
-                                if (item.kind === 'asset') {
-                                  followLivePreviewRef.current = false
-                                  setSelectedLivePreviewId(null)
-                                  setSelectedImageAssetId(item.asset.id)
-                                } else if (item.kind === 'live') {
-                                  followLivePreviewRef.current = true
-                                  setSelectedImageAssetId(null)
-                                  setSelectedLivePreviewId(item.preview.id)
-                                }
-                              }}
-                              className={['group min-w-[112px] max-w-[112px] border bg-[var(--app-bg)] p-2 text-left transition hover:bg-[var(--app-surface-hover)]', selected ? 'border-[var(--app-border-accent)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)]'].join(' ')}
+                              onClick={() => handleOpenThumbnail(item)}
+                              onMouseEnter={() => handleSelectThumbnail(item)}
+                              className={['group min-w-[112px] max-w-[112px] snap-start border bg-[var(--app-bg)] p-2 text-left transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]', selected ? 'border-[var(--app-border-accent)] ring-2 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)]'].join(' ')}
                               aria-pressed={selected}
                             >
                               <div className="grid aspect-square place-items-center overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
@@ -1327,7 +1349,8 @@ export function ImageToolPage() {
                     key={selectedImageAsset.id}
                     src={selectedImageSource}
                     alt={selectedImageAsset.name}
-                    className="h-auto w-auto max-w-full select-none object-contain shadow-2xl shadow-black/70"
+                    className={`h-auto w-auto max-w-full select-none object-contain shadow-2xl shadow-black/70 ${orderedImageAssets.length > 1 ? 'cursor-pointer' : ''}`}
+                    onClick={orderedImageAssets.length > 1 ? handleNextPreview : undefined}
                     onLoad={(event) => setLightboxNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
                   />
                   <Button variant="outline" className="absolute right-3 top-1/2 z-10 h-12 w-12 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15" onClick={handleNextPreview} disabled={orderedImageAssets.length <= 1} aria-label="Next image">
