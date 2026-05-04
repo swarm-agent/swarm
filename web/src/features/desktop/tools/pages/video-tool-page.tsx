@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Moon, Pause, Play, Sparkles } from 'lucide-react'
+import { ArrowLeft, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Moon, Pause, Play, Plus, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -76,6 +76,7 @@ type TimelineLayoutSegment = TimelineSegment & {
 
 const TIMELINE_METADATA_KEY = 'timelineSegments'
 const VIDEO_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.videoTool.blackMode'
+const DEFAULT_VIDEO_SESSION_TITLE = 'Swarm launch video'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object'
@@ -393,7 +394,7 @@ async function createVideoThread(input: {
   title: string
   workspacePath: string
   workspaceName: string
-  folderPath: string
+  folderPath?: string
   clips: VideoClip[]
 }): Promise<VideoThreadRecord> {
   const response = await requestJson<{ thread?: VideoThreadWire }>('/v1/workspace/video/threads', {
@@ -403,7 +404,7 @@ async function createVideoThread(input: {
       title: input.title,
       workspace_path: input.workspacePath,
       workspace_name: input.workspaceName,
-      video_folders: [input.folderPath],
+      video_folders: input.folderPath ? [input.folderPath] : [],
       video_clips: input.clips,
       video_clip_order: input.clips.map((clip) => clip.id),
     }),
@@ -415,26 +416,34 @@ async function createVideoThread(input: {
   return thread
 }
 
-async function updateVideoThreadTimeline(thread: VideoThreadRecord, segments: TimelineSegment[]): Promise<VideoThreadRecord> {
-  const metadata = {
-    ...(thread.metadata ?? {}),
-    [TIMELINE_METADATA_KEY]: serializeTimelineSegments(segments),
-  }
-  const response = await requestJson<{ thread?: VideoThreadWire }>(`/v1/workspace/video/threads/${encodeURIComponent(thread.id)}`, {
+async function updateVideoThread(input: VideoThreadRecord): Promise<VideoThreadRecord> {
+  const response = await requestJson<{ thread?: VideoThreadWire }>(`/v1/workspace/video/threads/${encodeURIComponent(input.id)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      video_folders: thread.videoFolders,
-      video_clips: thread.videoClips,
-      video_clip_order: segments.map((segment) => segment.clipId),
-      metadata,
+      title: input.title,
+      video_folders: input.videoFolders,
+      video_clips: input.videoClips,
+      video_clip_order: input.videoClipOrder,
+      metadata: input.metadata,
     }),
   })
-  const updated = mapVideoThread(response.thread ?? {})
-  if (!updated) {
+  const thread = mapVideoThread(response.thread ?? {})
+  if (!thread) {
     throw new Error('Video thread update returned no thread')
   }
-  return updated
+  return thread
+}
+
+async function updateVideoThreadTimeline(thread: VideoThreadRecord, segments: TimelineSegment[]): Promise<VideoThreadRecord> {
+  return updateVideoThread({
+    ...thread,
+    videoClipOrder: segments.map((segment) => segment.clipId),
+    metadata: {
+      ...(thread.metadata ?? {}),
+      [TIMELINE_METADATA_KEY]: serializeTimelineSegments(segments),
+    },
+  })
 }
 
 function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
@@ -468,6 +477,8 @@ export function VideoToolPage() {
   const [browserScanError, setBrowserScanError] = useState<string | null>(null)
   const [addingFolderPath, setAddingFolderPath] = useState<string | null>(null)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [newSessionTitle, setNewSessionTitle] = useState('')
+  const [creatingBlankSession, setCreatingBlankSession] = useState(false)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [reordering, setReordering] = useState(false)
@@ -702,20 +713,6 @@ export function VideoToolPage() {
     return () => window.cancelAnimationFrame(frame)
   }, [isPlaying, timelineLayout])
 
-  const handleBack = useMemo(() => {
-    if (selectedThread) {
-      return () => setSelectedThreadId(null)
-    }
-    if (routeWorkspaceSlug) {
-      return () => {
-        void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug: routeWorkspaceSlug } })
-      }
-    }
-    return () => {
-      void navigate({ to: '/tools' })
-    }
-  }, [navigate, routeWorkspaceSlug, selectedThread])
-
   const handleBackToWorkspace = useMemo(() => {
     if (routeWorkspaceSlug) {
       if (activeSessionId) {
@@ -777,6 +774,36 @@ export function VideoToolPage() {
     setPickerOpen(true)
   }, [])
 
+  const handleCreateBlankSession = useCallback(async () => {
+    if (!selectedWorkspacePath || !selectedWorkspaceName) {
+      setCreateError('Select a workspace before starting a video session.')
+      return
+    }
+    const title = newSessionTitle.trim() || DEFAULT_VIDEO_SESSION_TITLE
+    setCreatingBlankSession(true)
+    setCreateError(null)
+    try {
+      const createdThread = await createVideoThread({
+        title,
+        workspacePath: selectedWorkspacePath,
+        workspaceName: selectedWorkspaceName,
+        clips: [],
+      })
+      queryClient.setQueryData<VideoThreadRecord[]>(['video-tool-threads', selectedWorkspacePath], (current = []) => {
+        const withoutCreated = current.filter((thread) => thread.id !== createdThread.id)
+        return [createdThread, ...withoutCreated]
+      })
+      setSelectedThreadId(createdThread.id)
+      setSelectedClipId(null)
+      setNewSessionTitle('')
+      await queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCreatingBlankSession(false)
+    }
+  }, [newSessionTitle, queryClient, selectedWorkspaceName, selectedWorkspacePath])
+
   const handleAddFolder = useCallback(async (folderPath: string) => {
     if (!selectedWorkspacePath || !selectedWorkspaceName) {
       setCreateError('Select a workspace before starting a video session.')
@@ -790,6 +817,31 @@ export function VideoToolPage() {
         setCreateError('That folder has no accepted video files yet.')
         return
       }
+
+      if (selectedThread) {
+        const metadata = { ...(selectedThread.metadata ?? {}) }
+        delete metadata[TIMELINE_METADATA_KEY]
+        const folderSet = new Set(selectedThread.videoFolders)
+        folderSet.add(scanned.folderPath)
+        const existingClipIds = new Set(selectedThread.videoClips.map((clip) => clip.id))
+        const existingClipPaths = new Set(selectedThread.videoClips.map((clip) => clip.path))
+        const clipsToAdd = scanned.clips.filter((clip) => !existingClipIds.has(clip.id) && !existingClipPaths.has(clip.path))
+        const orderedExistingClipIds = orderedClips(selectedThread).map((clip) => clip.id)
+        const updatedThread = await updateVideoThread({
+          ...selectedThread,
+          videoFolders: Array.from(folderSet),
+          videoClips: [...selectedThread.videoClips, ...clipsToAdd],
+          videoClipOrder: [...orderedExistingClipIds, ...clipsToAdd.map((clip) => clip.id)],
+          metadata,
+        })
+        queryClient.setQueryData<VideoThreadRecord[]>(['video-tool-threads', selectedWorkspacePath], (current = []) => current.map((thread) => thread.id === updatedThread.id ? updatedThread : thread))
+        setSelectedThreadId(updatedThread.id)
+        setSelectedClipId(clipsToAdd[0]?.id ?? updatedThread.videoClipOrder[0] ?? updatedThread.videoClips[0]?.id ?? null)
+        setPickerOpen(false)
+        await queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
+        return
+      }
+
       const createdThread = await createVideoThread({
         title: videoSessionTitle(scanned.folderPath),
         workspacePath: selectedWorkspacePath,
@@ -810,7 +862,7 @@ export function VideoToolPage() {
     } finally {
       setAddingFolderPath(null)
     }
-  }, [queryClient, selectedWorkspaceName, selectedWorkspacePath])
+  }, [queryClient, selectedThread, selectedWorkspaceName, selectedWorkspacePath])
 
   const persistTimelineSegments = useCallback(async (segments: TimelineSegment[], options?: { silent?: boolean }) => {
     if (!selectedThread) {
@@ -951,44 +1003,20 @@ export function VideoToolPage() {
     }
   }, [navigate, routeWorkspaceSlug, selectedClips, selectedFolderPath, selectedThread, selectedWorkspaceName, setActiveSession, setActiveWorkspacePath, upsertSession])
   return (
-    <div className={`absolute inset-0 bg-[var(--app-bg)] text-[var(--app-text)] ${selectedThread ? 'overflow-hidden' : 'overflow-y-auto'}`}>
-      <div className={`mx-auto flex w-full flex-col ${selectedThread ? 'h-full max-w-none px-4 py-4 sm:px-5 sm:py-5' : 'min-h-full max-w-7xl px-6 py-6 sm:px-8 sm:py-8'}`}>
-        {!selectedThread ? (
-          <header className="flex flex-col gap-5 border-b border-[var(--app-border)] pb-6 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <Button variant="ghost" className="mb-5 h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBack}>
-                <ArrowLeft size={15} />
-                Back to tools
-              </Button>
-              <div className="flex items-center gap-3">
-                <span className="grid h-11 w-11 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-primary)] shadow-sm">
-                  <Film size={20} strokeWidth={1.8} />
-                </span>
-                <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--app-text-subtle)]">Swarm Tools</p>
-                  <h1 className="mt-1 text-3xl font-semibold tracking-[-0.055em] text-[var(--app-text)]">Video Tool</h1>
-                </div>
-              </div>
-            </div>
-            <Button variant="outline" className="h-10 rounded-xl" onClick={handleBackToWorkspace}>
-              {routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Back to workspace') : 'Back to launcher'}
-            </Button>
-          </header>
-        ) : null}
-
+    <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
+      <div className="mx-auto flex h-full w-full max-w-none flex-col px-4 py-4 sm:px-5 sm:py-5">
         {createError ? (
-          <div className="mt-6 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm text-[var(--app-text)]">
+          <div className="mb-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm text-[var(--app-text)]">
             {createError}
           </div>
         ) : null}
 
-        {selectedThread ? (
-          <main className="flex min-h-0 flex-1 overflow-hidden py-5">
-            <aside className="mr-5 hidden w-[276px] shrink-0 flex-col border-r border-[var(--app-border)] pr-4 font-mono text-[12px] text-[var(--app-text-muted)] lg:flex">
+        <main className="flex min-h-0 flex-1 overflow-hidden py-5">
+            <aside className="mr-5 flex w-[276px] shrink-0 flex-col border-r border-[var(--app-border)] pr-4 font-mono text-[12px] text-[var(--app-text-muted)]">
               <div className="mb-4 flex items-center justify-between gap-2">
-                <button type="button" onClick={handleBack} className="flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                <button type="button" onClick={handleBackToWorkspace} className="flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
                   <ArrowLeft size={14} />
-                  <span className="truncate">Tools</span>
+                  <span className="truncate">{routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}</span>
                 </button>
                 <button
                   type="button"
@@ -1014,30 +1042,80 @@ export function VideoToolPage() {
                   </div>
                 </div>
                 <p className="mt-3 text-[11px] leading-5 text-[var(--app-text-muted)]">
-                  Folder-backed movie thread. The canvas and timeline are one metadata-only player.
+                  Video sessions are DB-backed movie threads. Originals stay untouched.
                 </p>
               </div>
 
-              <div className="mt-4 flex flex-col gap-1 border-y border-[var(--app-border)] py-3">
-                <button type="button" onClick={handleOpenPicker} className="flex min-h-[30px] items-center justify-between gap-2 px-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                  <span className="flex min-w-0 items-center gap-2"><FolderOpen size={14} /><span className="truncate">Add folder</span></span>
-                  <span className="text-[10px] text-[var(--app-text-subtle)]">new</span>
-                </button>
-                <button type="button" onClick={() => void handleStartChat()} disabled={startingChat || !routeWorkspaceSlug} className="flex min-h-[30px] items-center justify-between gap-2 px-2 text-left disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                  <span className="flex min-w-0 items-center gap-2"><Sparkles size={14} /><span className="truncate">Start chat</span></span>
-                  <span className="text-[10px] text-[var(--app-text-subtle)]">child</span>
-                </button>
-                <button type="button" onClick={handleBackToWorkspace} className="flex min-h-[30px] items-center justify-between gap-2 px-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                  <span className="truncate">{routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}</span>
-                  <span className="text-[10px] text-[var(--app-text-subtle)]">↵</span>
+              <div className="mt-4 border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Start new video session</p>
+                <input
+                  value={newSessionTitle}
+                  onChange={(event) => setNewSessionTitle(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      void handleCreateBlankSession()
+                    }
+                  }}
+                  placeholder={DEFAULT_VIDEO_SESSION_TITLE}
+                  className="mt-3 h-9 w-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-[12px] text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-subtle)] focus:border-[var(--app-primary)]"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleCreateBlankSession()}
+                  disabled={creatingBlankSession || !selectedWorkspacePath}
+                  className="mt-2 flex h-9 w-full items-center justify-center gap-2 border border-[var(--app-border)] bg-transparent px-2 text-[12px] font-medium text-[var(--app-text)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {creatingBlankSession ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                  {creatingBlankSession ? 'Starting…' : 'Start session'}
                 </button>
               </div>
 
+              <div className="mt-4 border-y border-[var(--app-border)] py-3">
+                <div className="mb-2 flex items-center justify-between px-2">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Video sessions</p>
+                  {videoThreadsQuery.isLoading ? <Loader2 size={12} className="animate-spin" /> : null}
+                </div>
+                <div className="max-h-[236px] overflow-y-auto pr-1">
+                  {videoThreads.length === 0 && !videoThreadsQuery.isLoading ? (
+                    <div className="px-2 py-3 text-[11px] leading-5 text-[var(--app-text-subtle)]">
+                      No video sessions yet. Start session to get started.
+                    </div>
+                  ) : (
+                    videoThreads.map((thread) => (
+                      <button
+                        key={thread.id}
+                        type="button"
+                        onClick={() => setSelectedThreadId(thread.id)}
+                        className={`mb-1 w-full px-2 py-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] ${selectedThread?.id === thread.id ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : ''}`}
+                      >
+                        <span className="block truncate text-[12px] font-medium">{thread.title || 'Video Thread'}</span>
+                        <span className="mt-1 block truncate text-[10px] text-[var(--app-text-subtle)]">
+                          {thread.videoClips.length} clip{thread.videoClips.length === 1 ? '' : 's'} · {formatStartedAt(thread.createdAt)}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-col gap-1 border-b border-[var(--app-border)] pb-3">
+                <button type="button" onClick={handleOpenPicker} disabled={!selectedThread} className="flex min-h-[30px] items-center justify-between gap-2 px-2 text-left disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                  <span className="flex min-w-0 items-center gap-2"><FolderOpen size={14} /><span className="truncate">Add folder</span></span>
+                  <span className="text-[10px] text-[var(--app-text-subtle)]">source</span>
+                </button>
+                <button type="button" onClick={() => void handleStartChat()} disabled={!selectedThread || startingChat || !routeWorkspaceSlug} className="flex min-h-[30px] items-center justify-between gap-2 px-2 text-left disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                  <span className="flex min-w-0 items-center gap-2"><Sparkles size={14} /><span className="truncate">Start chat</span></span>
+                  <span className="text-[10px] text-[var(--app-text-subtle)]">child</span>
+                </button>
+                </div>
+
+              {selectedThread ? (
               <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
                 <p className="mb-2 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Current movie</p>
                 <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
                   <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{selectedThread.title || 'Video thread'}</h2>
-                  <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedFolderPath}</p>
+                  <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedFolderPath || 'No source folder yet'}</p>
                   <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
                     <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Length</div><div className="mt-1 tabular-nums text-[var(--app-text)]">{formatTimelineTime(movieDuration)}</div></div>
                     <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Clips</div><div className="mt-1 text-[var(--app-text)]">{visibleTimelineLayout.length}/{timelineSegments.length}</div></div>
@@ -1059,18 +1137,31 @@ export function VideoToolPage() {
                   })}
                 </div>
               </div>
+              ) : null}
             </aside>
 
             <section className="flex min-w-0 flex-1 flex-col overflow-y-auto">
               <div className="mb-4 flex items-center justify-between gap-3 lg:hidden">
-                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBack}><ArrowLeft size={15} />Tools</Button>
+                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBackToWorkspace}><ArrowLeft size={15} />{routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}</Button>
                 <div className="flex items-center gap-2">
                   <Button variant="outline" style={darkOverrideButtonStyle} className={`h-8 w-8 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
-                  <Button variant="ghost" className="h-8 rounded-xl px-2 text-xs text-[var(--app-text-muted)]" onClick={handleOpenPicker}><FolderOpen size={14} />Add folder</Button>
-                  <Button className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartChat()} disabled={startingChat || !routeWorkspaceSlug}><Sparkles size={14} />{startingChat ? 'Starting…' : 'Start chat'}</Button>
+                  <Button variant="ghost" className="h-8 rounded-xl px-2 text-xs text-[var(--app-text-muted)]" onClick={handleOpenPicker} disabled={!selectedThread}><FolderOpen size={14} />Add folder</Button>
+                  <Button className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartChat()} disabled={!selectedThread || startingChat || !routeWorkspaceSlug}><Sparkles size={14} />{startingChat ? 'Starting…' : 'Start chat'}</Button>
                 </div>
               </div>
 
+              {!selectedThread ? (
+                <div className="grid min-h-full place-items-center border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] px-6 py-16 text-center">
+                  <div className="max-w-sm">
+                    <Film className="mx-auto text-[var(--app-primary)]" size={42} strokeWidth={1.5} />
+                    <h2 className="mt-5 text-2xl font-semibold tracking-[-0.05em] text-[var(--app-text)]">Start session to get started</h2>
+                    <p className="mt-3 text-sm leading-6 text-[var(--app-text-muted)]">
+                      Name a video session in the sidebar, then add folders and clips inside that session.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <>
               <div className="relative aspect-video min-h-[360px] overflow-hidden border border-[var(--app-border)] bg-black lg:min-h-[480px]">
                 <canvas ref={canvasRef} width={1920} height={1080} className="h-full w-full bg-black object-contain" />
                 {timelineSegments.length === 0 ? (
@@ -1141,61 +1232,10 @@ export function VideoToolPage() {
                   })}
                 </div>
               </section>
+              </>
+              )}
             </section>
           </main>
-        ) : (
-          <main className="grid flex-1 gap-8 py-8 lg:grid-cols-[minmax(0,1fr)_320px]">
-            <section className="grid place-items-center">
-              <button
-                type="button"
-                onClick={handleOpenPicker}
-                className="flex aspect-square w-full max-w-sm flex-col items-center justify-center border border-dashed border-[var(--app-border)] bg-transparent p-8 text-center transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface)]"
-              >
-                <FolderOpen size={34} strokeWidth={1.6} className="text-[var(--app-primary)]" />
-                <h2 className="mt-5 text-xl font-semibold tracking-[-0.04em] text-[var(--app-text)]">Add a folder with videos in it.</h2>
-                <p className="mt-2 text-sm text-[var(--app-text-muted)]">Swarm will make a swarm-video folder and leave the originals untouched.</p>
-              </button>
-            </section>
-
-            <aside className="rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5">
-              <div className="flex items-start justify-between gap-3 border-b border-[var(--app-border)] pb-4">
-                <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">History</p>
-                  <h2 className="mt-1 text-lg font-semibold tracking-[-0.03em] text-[var(--app-text)]">Prior video threads</h2>
-                </div>
-                <Button variant="outline" className="h-8 rounded-lg px-3" onClick={handleOpenPicker}>New</Button>
-              </div>
-              <div className="mt-4 flex flex-col gap-3">
-                {videoThreadsQuery.isLoading ? (
-                  <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
-                    <Loader2 size={14} className="animate-spin" />
-                    Loading video threads…
-                  </div>
-                ) : videoThreads.length === 0 ? (
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] px-4 py-5 text-sm text-[var(--app-text-muted)]">
-                    No prior video threads in this workspace yet.
-                  </div>
-                ) : (
-                  videoThreads.map((thread) => {
-                    const folder = threadFolderPath(thread)
-                    return (
-                      <button
-                        key={thread.id}
-                        type="button"
-                        onClick={() => setSelectedThreadId(thread.id)}
-                        className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] px-4 py-3 text-left transition hover:border-[var(--app-border-strong)]"
-                      >
-                        <div className="min-w-0 truncate text-sm font-medium text-[var(--app-text)]">{thread.title || 'Video Thread'}</div>
-                        <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{folder}</div>
-                        <div className="mt-2 text-[11px] text-[var(--app-text-subtle)]">Started {formatStartedAt(thread.createdAt)} · {thread.videoClips.length} clip{thread.videoClips.length === 1 ? '' : 's'}</div>
-                      </button>
-                    )
-                  })
-                )}
-              </div>
-            </aside>
-          </main>
-        )}
       </div>
 
       {pickerOpen ? (
@@ -1204,9 +1244,9 @@ export function VideoToolPage() {
           <DialogPanel className="mx-auto mt-[6vh] flex h-[min(84vh,860px)] w-[min(980px,calc(100vw-24px))] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(1040px,calc(100vw-48px))]">
             <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4 sm:px-6">
               <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">New video thread</p>
+                <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">Video session source</p>
                 <h2 className="mt-1 text-xl font-semibold tracking-[-0.04em] text-[var(--app-text)]">Choose a folder</h2>
-                <p className="mt-2 text-sm text-[var(--app-text-muted)]">Pick the folder that should define this DB-backed video page.</p>
+                <p className="mt-2 text-sm text-[var(--app-text-muted)]">Pick a folder to add source clips to the selected video session.</p>
               </div>
               <ModalCloseButton onClick={() => setPickerOpen(false)} aria-label="Close video folder picker" />
             </div>
@@ -1249,7 +1289,7 @@ export function VideoToolPage() {
                       </div>
                       {browserClips.length > 0 ? (
                         <Button className="rounded-xl" onClick={() => void handleAddFolder(browser.resolvedPath)} disabled={addingFolderPath === browser.resolvedPath || !selectedWorkspacePath}>
-                          {addingFolderPath === browser.resolvedPath ? 'Creating…' : 'Create video page from selected folder'}
+                          {addingFolderPath === browser.resolvedPath ? (selectedThread ? 'Adding…' : 'Creating…') : (selectedThread ? 'Add selected folder to session' : 'Create video session from selected folder')}
                         </Button>
                       ) : null}
                     </div>
