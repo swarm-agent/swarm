@@ -18,14 +18,14 @@ const toolCards: ToolCard[] = [
   {
     id: 'video',
     name: 'Video Tool',
-    description: 'Organize clips and drafts with DB-backed sessions; tool files live under this workspace’s .swarm/tools area.',
+    description: 'Organize clips and drafts with DB-backed sessions; tool files live in Swarm’s private app-managed workspace bucket.',
     status: 'First tool',
     icon: 'video',
   },
   {
     id: 'image',
     name: 'Image Tool',
-    description: 'Create DB-backed image sessions with generated assets stored in this workspace’s .swarm/tools area.',
+    description: 'Create DB-backed image sessions with generated assets stored in Swarm’s private app-managed workspace bucket.',
     status: 'Outline',
     icon: 'image',
   },
@@ -90,7 +90,7 @@ export function SwarmToolsPage() {
             </div>
           </div>
           <p className="max-w-xl text-sm leading-6 text-[var(--app-text-muted)]">
-            Small, focused helpers with their own per-workspace storage under .swarm/tools, separate from main chat history.
+            Small, focused helpers with private per-workspace app storage outside the repository, separate from main chat history.
           </p>
         </header>
 

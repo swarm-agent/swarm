@@ -1055,7 +1055,7 @@ export function VideoToolPage() {
               darkModeActiveClassName="border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]"
               toolIcon={<Film size={16} strokeWidth={1.8} />}
               toolTitle="Video"
-              toolDescription="Video sessions are DB-backed movie threads. Originals stay untouched; generated tool files use the workspace .swarm/tools area."
+              toolDescription="Video sessions are DB-backed movie threads. Originals stay untouched; generated tool files use Swarm’s private app-managed workspace bucket."
               createLabel="Start new video session"
               createTitle={newSessionTitle}
               onCreateTitleChange={setNewSessionTitle}

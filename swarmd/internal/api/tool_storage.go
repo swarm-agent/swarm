@@ -3,9 +3,9 @@ package api
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
+
+	"swarm/packages/swarmd/internal/appstorage"
 )
 
 func ensureWorkspaceToolStorage(workspacePath string, toolKind string, threadID string) (string, error) {
@@ -18,12 +18,8 @@ func ensureWorkspaceToolStorage(workspacePath string, toolKind string, threadID 
 	if toolKind == "" || threadID == "" {
 		return "", errors.New("tool storage path requires tool kind and thread id")
 	}
-	absWorkspacePath, err := filepath.Abs(workspacePath)
+	storagePath, err := appstorage.WorkspaceDataDir(workspacePath, "tools", toolKind, "sessions", threadID)
 	if err != nil {
-		return "", err
-	}
-	storagePath := filepath.Join(filepath.Clean(absWorkspacePath), ".swarm", "tools", toolKind, "sessions", threadID)
-	if err := os.MkdirAll(storagePath, 0o755); err != nil {
 		return "", fmt.Errorf("create workspace tool storage: %w", err)
 	}
 	return storagePath, nil

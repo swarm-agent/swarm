@@ -62,15 +62,26 @@ func (s *Server) handleWorkspaceVideoThreads(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusBadRequest, errors.New("workspace path is required"))
 			return
 		}
+		threadID := session.NewSessionID()
+		storagePath, err := ensureWorkspaceToolStorage(workspacePath, "video", threadID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		metadata := req.Metadata
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["tool_storage_path"] = storagePath
 		thread, err := s.videoThreads.Create(pebblestore.VideoThreadSnapshot{
-			ID:             session.NewSessionID(),
+			ID:             threadID,
 			WorkspacePath:  workspacePath,
 			WorkspaceName:  strings.TrimSpace(req.WorkspaceName),
 			Title:          strings.TrimSpace(req.Title),
-			VideoFolders:   req.VideoFolders,
+			VideoFolders:   append([]string{storagePath}, req.VideoFolders...),
 			VideoClips:     req.VideoClips,
 			VideoClipOrder: req.VideoClipOrder,
-			Metadata:       req.Metadata,
+			Metadata:       metadata,
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)

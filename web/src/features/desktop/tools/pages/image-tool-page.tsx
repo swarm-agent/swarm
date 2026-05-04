@@ -161,7 +161,7 @@ async function createImageThread(input: {
       metadata: {
         tool_kind: 'image',
         session_schema_version: 1,
-        storage_area: '.swarm/tools/image/sessions',
+        storage_area: 'app_managed_workspace_bucket/tools/image/sessions',
       },
     }),
   })
@@ -305,7 +305,7 @@ export function ImageToolPage() {
             darkModeActiveClassName="border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]"
             toolIcon={<Image size={16} strokeWidth={1.8} />}
             toolTitle="Image"
-            toolDescription="Swarm image sessions store generated assets in this workspace’s .swarm/tools/image area, separate from chat history."
+            toolDescription="Swarm image sessions store generated assets in Swarm’s private app-managed workspace bucket, outside the repository."
             createLabel="Start new image session"
             createTitle={newSessionTitle}
             onCreateTitleChange={setNewSessionTitle}
@@ -363,7 +363,7 @@ export function ImageToolPage() {
                   <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--app-text-subtle)]">Image session started</p>
                   <h2 className="mt-3 text-3xl font-semibold tracking-[-0.055em] text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
                   <p className="mt-4 text-sm leading-6 text-[var(--app-text-muted)]">
-                    The DB-backed image session exists and is selected. Generated image files for this session will live under the workspace .swarm/tools/image storage area.
+                    The DB-backed image session exists and is selected. Generated image files for this session will live in Swarm’s private app-managed workspace bucket, outside the repository.
                   </p>
                 </div>
               </div>
