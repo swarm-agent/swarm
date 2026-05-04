@@ -50,7 +50,31 @@ func TestParseImageGenerationResultDecodesCompletedCall(t *testing.T) {
 	}
 }
 
-func TestParseImageGenerationResultSkipsGeneratingCallAndUsesCompletedCall(t *testing.T) {
+func TestParseImageGenerationResultAcceptsGeneratingCallWithValidImageResult(t *testing.T) {
+	payload := base64.StdEncoding.EncodeToString(testPNGBytes())
+	result, err := parseImageGenerationResult(map[string]any{
+		"id":    "resp_generating_result",
+		"model": "gpt-5.5",
+		"output": []any{map[string]any{
+			"type":           "image_generation_call",
+			"id":             "ig_generating",
+			"status":         "generating",
+			"revised_prompt": "final prompt",
+			"result":         payload,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("parseImageGenerationResult: %v", err)
+	}
+	if result.ResponseID != "resp_generating_result" || result.CallID != "ig_generating" || result.RevisedPrompt != "final prompt" || !looksLikePNG(result.DecodedPNG) {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(result.Results) != 1 || result.Results[0].CallID != "ig_generating" {
+		t.Fatalf("results = %#v, want generating status result promoted as final", result.Results)
+	}
+}
+
+func TestParseImageGenerationResultSkipsGeneratingCallWithoutResultAndUsesCompletedCall(t *testing.T) {
 	payload := base64.StdEncoding.EncodeToString(testPNGBytes())
 	result, err := parseImageGenerationResult(map[string]any{
 		"id":    "resp_2",

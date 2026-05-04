@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/imagegenlog"
 	"swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -277,23 +277,23 @@ func (s *Service) generateCodexOpenAI(ctx context.Context, req GenerateRequest, 
 	}, nil
 }
 
-func completedCodexImages(generated codex.ImageGenerationResult, expectedCount int, fallbackPNG []byte) ([]codex.ImageGenerationResult, error) {
+func completedCodexImages(generated codex.ImageGenerationResult, expectedCount int, streamRecoveryPNG []byte) ([]codex.ImageGenerationResult, error) {
 	finals := generated.Results
 	if len(finals) == 0 && len(generated.DecodedPNG) > 0 {
 		finals = []codex.ImageGenerationResult{generated}
 	}
-	if len(finals) == 0 && len(fallbackPNG) > 0 {
+	if len(finals) == 0 && len(streamRecoveryPNG) > 0 {
 		finals = []codex.ImageGenerationResult{{
 			ResponseID:       generated.ResponseID,
 			Model:            generated.Model,
-			CallID:           firstNonEmpty(generated.CallID, "stream_frame_fallback"),
+			CallID:           firstNonEmpty(generated.CallID, "stream_frame_recovery"),
 			OutputIndex:      generated.OutputIndex,
 			RevisedPrompt:    generated.RevisedPrompt,
-			DecodedPNG:       fallbackPNG,
+			DecodedPNG:       streamRecoveryPNG,
 			PartialImages:    generated.PartialImages,
 			ProviderResponse: generated.ProviderResponse,
 		}}
-		imageGenerationLogf("stage=final_validation_fallback source=latest_stream_frame fallback_png_bytes=%d result_count=0", len(fallbackPNG))
+		imageGenerationLogf("stage=final_validation_stream_recovery source=latest_stream_frame stream_recovery_png_bytes=%d result_count=0", len(streamRecoveryPNG))
 	}
 	if len(finals) == 0 {
 		return nil, errors.New("codex image generation returned no final PNG image data to save")
@@ -684,51 +684,8 @@ func settingString(settings map[string]any, key string) string {
 	return strings.TrimSpace(fmt.Sprint(settings[key]))
 }
 
-var imageGenerationDiagnosticLogMu sync.Mutex
-
 func imageGenerationLogf(format string, args ...any) {
-	message := fmt.Sprintf("[swarmd.imagegen] "+format, args...)
-	log.Print(message)
-	appendImageGenerationDiagnosticLog(message)
-}
-
-func appendImageGenerationDiagnosticLog(message string) {
-	path, err := imageGenerationDiagnosticsLogPath()
-	if err != nil {
-		log.Printf("[swarmd.imagegen] stage=diagnostic_log_path_failed reason=%q", err.Error())
-		return
-	}
-	line := time.Now().Format(time.RFC3339Nano) + " " + message + "\n"
-
-	imageGenerationDiagnosticLogMu.Lock()
-	defer imageGenerationDiagnosticLogMu.Unlock()
-
-	if err := os.MkdirAll(filepath.Dir(path), appstorage.PrivateDirPerm); err != nil {
-		log.Printf("[swarmd.imagegen] stage=diagnostic_log_write_failed reason=%q path=%q", err.Error(), path)
-		return
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, appstorage.PrivateFilePerm)
-	if err != nil {
-		log.Printf("[swarmd.imagegen] stage=diagnostic_log_write_failed reason=%q path=%q", err.Error(), path)
-		return
-	}
-	if err := file.Chmod(appstorage.PrivateFilePerm); err != nil {
-		log.Printf("[swarmd.imagegen] stage=diagnostic_log_chmod_failed reason=%q path=%q", err.Error(), path)
-	}
-	if _, err := file.WriteString(line); err != nil {
-		log.Printf("[swarmd.imagegen] stage=diagnostic_log_write_failed reason=%q path=%q", err.Error(), path)
-	}
-	if err := file.Close(); err != nil {
-		log.Printf("[swarmd.imagegen] stage=diagnostic_log_close_failed reason=%q path=%q", err.Error(), path)
-	}
-}
-
-func imageGenerationDiagnosticsLogPath() (string, error) {
-	dir, err := appstorage.DataDir("main")
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "imagegen.log"), nil
+	imagegenlog.Printf("", format, args...)
 }
 
 func providerResponseShape(response map[string]any) string {

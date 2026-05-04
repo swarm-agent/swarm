@@ -6,15 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
-	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/imagegenlog"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -327,10 +322,6 @@ func parseImageGenerationResult(decoded map[string]any) (ImageGenerationResult, 
 		status := strings.TrimSpace(asString(item["status"]))
 		result := strings.TrimSpace(asString(item["result"]))
 		codexImageGenerationLogf("stage=parse_output_item output_index=%d id=%q call_id=%q status=%q has_result=%t result_chars=%d keys=%q", outputIndex, strings.TrimSpace(asString(item["id"])), strings.TrimSpace(asString(item["call_id"])), status, result != "", len(result), strings.Join(sortedMapKeys(item), ","))
-		if status != "" && !strings.EqualFold(status, "completed") {
-			pendingStatuses = append(pendingStatuses, status)
-			continue
-		}
 		if result == "" {
 			if status == "" {
 				pendingStatuses = append(pendingStatuses, "missing status")
@@ -339,6 +330,9 @@ func parseImageGenerationResult(decoded map[string]any) (ImageGenerationResult, 
 			}
 			codexImageGenerationLogf("stage=parse_output_item_missing_result output_index=%d status=%q keys=%q", outputIndex, status, strings.Join(sortedMapKeys(item), ","))
 			continue
+		}
+		if status != "" && !strings.EqualFold(status, "completed") {
+			codexImageGenerationLogf("stage=parse_output_item_result_status_accepted output_index=%d status=%q result_chars=%d", outputIndex, status, len(result))
 		}
 		parsed, err := parseCompletedImageGenerationCall(responseID, model, outputIndex, item, result, partialImages, decoded)
 		if err != nil {
@@ -590,51 +584,8 @@ func collectImageGenerationEvents(responseObj map[string]any, completed bool) []
 	return events
 }
 
-var codexImageGenerationDiagnosticLogMu sync.Mutex
-
 func codexImageGenerationLogf(format string, args ...any) {
-	message := fmt.Sprintf("[swarmd.codex.imagegen] "+format, args...)
-	log.Print(message)
-	appendCodexImageGenerationDiagnosticLog(message)
-}
-
-func appendCodexImageGenerationDiagnosticLog(message string) {
-	path, err := codexImageGenerationDiagnosticsLogPath()
-	if err != nil {
-		log.Printf("[swarmd.codex.imagegen] stage=diagnostic_log_path_failed reason=%q", err.Error())
-		return
-	}
-	line := time.Now().Format(time.RFC3339Nano) + " " + message + "\n"
-
-	codexImageGenerationDiagnosticLogMu.Lock()
-	defer codexImageGenerationDiagnosticLogMu.Unlock()
-
-	if err := os.MkdirAll(filepath.Dir(path), appstorage.PrivateDirPerm); err != nil {
-		log.Printf("[swarmd.codex.imagegen] stage=diagnostic_log_write_failed reason=%q path=%q", err.Error(), path)
-		return
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, appstorage.PrivateFilePerm)
-	if err != nil {
-		log.Printf("[swarmd.codex.imagegen] stage=diagnostic_log_write_failed reason=%q path=%q", err.Error(), path)
-		return
-	}
-	if err := file.Chmod(appstorage.PrivateFilePerm); err != nil {
-		log.Printf("[swarmd.codex.imagegen] stage=diagnostic_log_chmod_failed reason=%q path=%q", err.Error(), path)
-	}
-	if _, err := file.WriteString(line); err != nil {
-		log.Printf("[swarmd.codex.imagegen] stage=diagnostic_log_write_failed reason=%q path=%q", err.Error(), path)
-	}
-	if err := file.Close(); err != nil {
-		log.Printf("[swarmd.codex.imagegen] stage=diagnostic_log_close_failed reason=%q path=%q", err.Error(), path)
-	}
-}
-
-func codexImageGenerationDiagnosticsLogPath() (string, error) {
-	dir, err := appstorage.DataDir("main")
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "imagegen.log"), nil
+	imagegenlog.Printf("codex", format, args...)
 }
 
 func pluralSuffix(count int) string {

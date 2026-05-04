@@ -192,7 +192,40 @@ func TestGenerateRejectsPartialOnlyResultWithoutSaving(t *testing.T) {
 	}
 }
 
-func TestGenerateFallsBackToLatestValidStreamFrameWhenFinalResultMissing(t *testing.T) {
+func TestGenerateUsesProviderResultWithGeneratingStatusWithoutStreamRecovery(t *testing.T) {
+	dataHome := filepath.Join(t.TempDir(), "data")
+	client := &fakeCodexImageClient{result: codex.ImageGenerationResult{
+		CallID:           "ig_generating",
+		DecodedPNG:       testPNGBytes(),
+		ProviderResponse: map[string]any{"id": "resp_generating", "status": "generating"},
+	}}
+	svc, _, threadID, storagePath := newImageServiceTestHarnessWithDataHome(t, dataHome, client)
+	logPath := filepath.Join(dataHome, "swarmd", "main", "imagegen.log")
+
+	result, err := svc.Generate(context.Background(), GenerateRequest{
+		Provider: ProviderCodexOpenAI,
+		Model:    "gpt-5.5",
+		Prompt:   "make a square",
+		Count:    1,
+		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(result.Assets) != 1 {
+		t.Fatalf("assets len = %d, want 1 provider-result asset", len(result.Assets))
+	}
+	assertSavedPNG(t, storagePath, result.Assets[0].Path)
+	assertImageGenerationLogContains(t, logPath,
+		"[swarmd.imagegen] stage=provider_call_done",
+		"result_count=0 decoded_png_bytes=12",
+		"[swarmd.imagegen] stage=file_write_done",
+		"[swarmd.imagegen] stage=success",
+	)
+	assertImageGenerationLogExcludes(t, logPath, "stage=final_validation_stream_recovery")
+}
+
+func TestGenerateRecoversLatestValidStreamFrameWhenFinalResultMissing(t *testing.T) {
 	preview := base64.StdEncoding.EncodeToString(testPNGBytes())
 	client := &fakeCodexImageClient{
 		result: codex.ImageGenerationResult{PartialImages: []codex.ImageGenerationPartialImage{{Base64Image: preview, OutputIndex: 0}}},
@@ -223,7 +256,7 @@ func TestGenerateFallsBackToLatestValidStreamFrameWhenFinalResultMissing(t *test
 		t.Fatalf("Generate: %v", err)
 	}
 	if len(result.Assets) != 1 {
-		t.Fatalf("assets len = %d, want 1 fallback asset", len(result.Assets))
+		t.Fatalf("assets len = %d, want 1 stream recovery asset", len(result.Assets))
 	}
 	assertSavedPNG(t, storagePath, result.Assets[0].Path)
 	updated, ok, err := threads.Get(threadID)
@@ -231,7 +264,7 @@ func TestGenerateFallsBackToLatestValidStreamFrameWhenFinalResultMissing(t *test
 		t.Fatalf("get thread: ok=%v err=%v", ok, err)
 	}
 	if len(updated.ImageAssets) != 1 {
-		t.Fatalf("thread assets = %#v, want fallback stream frame persisted", updated.ImageAssets)
+		t.Fatalf("thread assets = %#v, want recovered stream frame persisted", updated.ImageAssets)
 	}
 }
 
@@ -432,6 +465,19 @@ func assertSavedPNG(t *testing.T, storagePath string, assetPath string) {
 	}
 	if !looksLikePNG(got) {
 		t.Fatalf("written bytes are not png: %q", string(got))
+	}
+}
+
+func assertImageGenerationLogExcludes(t *testing.T, logPath string, substrings ...string) {
+	t.Helper()
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read imagegen log %q: %v", logPath, err)
+	}
+	for _, substring := range substrings {
+		if strings.Contains(string(content), substring) {
+			t.Fatalf("imagegen log unexpectedly contains %q\nlog:\n%s", substring, string(content))
+		}
 	}
 }
 
