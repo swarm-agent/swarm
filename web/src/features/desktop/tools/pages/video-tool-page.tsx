@@ -16,13 +16,33 @@ import { resolveWorkspaceBySlug } from '../../../workspaces/launcher/services/wo
 import { applyWorkspaceTheme, createWorkspaceThemeStyle } from '../../../workspaces/launcher/services/workspace-theme'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 
-type VideoClip = {
+export type VideoClip = {
   id: string
   name: string
   path: string
   extension: string
   sizeBytes: number
   modifiedAt: number
+}
+
+type VideoClipWire = {
+  id?: string
+  name?: string
+  path?: string
+  extension?: string
+  size_bytes?: number
+  sizeBytes?: number
+  modified_at?: number
+  modifiedAt?: number
+}
+
+type VideoClipRequest = {
+  id: string
+  name: string
+  path: string
+  extension: string
+  size_bytes: number
+  modified_at: number
 }
 
 type VideoThreadRecord = {
@@ -42,7 +62,7 @@ type VideoScanResponse = {
   ok?: boolean
   workspace_path?: string
   folder_path?: string
-  clips?: VideoClip[]
+  clips?: VideoClipWire[]
 }
 
 type VideoThreadWire = {
@@ -51,7 +71,7 @@ type VideoThreadWire = {
   workspace_path?: string
   workspace_name?: string
   video_folders?: string[]
-  video_clips?: VideoClip[]
+  video_clips?: VideoClipWire[]
   video_clip_order?: string[]
   metadata?: Record<string, unknown>
   created_at?: number
@@ -88,39 +108,52 @@ function metadataStringArray(value: unknown): string[] {
     : []
 }
 
+function mapVideoClip(entry: unknown): VideoClip | null {
+  if (!isRecord(entry)) {
+    return null
+  }
+  const id = String(entry.id ?? '').trim()
+  const name = String(entry.name ?? '').trim()
+  const path = String(entry.path ?? '').trim()
+  if (!id || !name || !path) {
+    return null
+  }
+  return {
+    id,
+    name,
+    path,
+    extension: String(entry.extension ?? '').trim(),
+    sizeBytes: typeof entry.size_bytes === 'number'
+      ? entry.size_bytes
+      : typeof entry.sizeBytes === 'number'
+        ? entry.sizeBytes
+        : 0,
+    modifiedAt: typeof entry.modified_at === 'number'
+      ? entry.modified_at
+      : typeof entry.modifiedAt === 'number'
+        ? entry.modifiedAt
+        : 0,
+  }
+}
+
 function metadataClips(value: unknown): VideoClip[] {
   if (!Array.isArray(value)) {
     return []
   }
   return value
-    .map((entry) => {
-      if (!isRecord(entry)) {
-        return null
-      }
-      const id = String(entry.id ?? '').trim()
-      const name = String(entry.name ?? '').trim()
-      const path = String(entry.path ?? '').trim()
-      if (!id || !name || !path) {
-        return null
-      }
-      return {
-        id,
-        name,
-        path,
-        extension: String(entry.extension ?? '').trim(),
-        sizeBytes: typeof entry.size_bytes === 'number'
-          ? entry.size_bytes
-          : typeof entry.sizeBytes === 'number'
-            ? entry.sizeBytes
-            : 0,
-        modifiedAt: typeof entry.modified_at === 'number'
-          ? entry.modified_at
-          : typeof entry.modifiedAt === 'number'
-            ? entry.modifiedAt
-            : 0,
-      } satisfies VideoClip
-    })
+    .map(mapVideoClip)
     .filter((entry): entry is VideoClip => Boolean(entry))
+}
+
+export function serializeVideoClipForRequest(clip: VideoClip): VideoClipRequest {
+  return {
+    id: clip.id,
+    name: clip.name,
+    path: clip.path,
+    extension: clip.extension,
+    size_bytes: clip.sizeBytes,
+    modified_at: clip.modifiedAt,
+  }
 }
 
 function mapVideoThread(wire: VideoThreadWire): VideoThreadRecord | null {
@@ -378,7 +411,7 @@ async function scanVideoFolder(workspacePath: string, folderPath: string): Promi
   })
   return {
     folderPath: String(response.folder_path ?? folderPath).trim(),
-    clips: Array.isArray(response.clips) ? response.clips : [],
+    clips: metadataClips(response.clips),
   }
 }
 
@@ -405,7 +438,7 @@ async function createVideoThread(input: {
       workspace_path: input.workspacePath,
       workspace_name: input.workspaceName,
       video_folders: input.folderPath ? [input.folderPath] : [],
-      video_clips: input.clips,
+      video_clips: input.clips.map(serializeVideoClipForRequest),
       video_clip_order: input.clips.map((clip) => clip.id),
     }),
   })
@@ -423,7 +456,7 @@ async function updateVideoThread(input: VideoThreadRecord): Promise<VideoThreadR
     body: JSON.stringify({
       title: input.title,
       video_folders: input.videoFolders,
-      video_clips: input.videoClips,
+      video_clips: input.videoClips.map(serializeVideoClipForRequest),
       video_clip_order: input.videoClipOrder,
       metadata: input.metadata,
     }),
