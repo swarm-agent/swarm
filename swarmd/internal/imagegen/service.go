@@ -131,7 +131,7 @@ func (s *Service) SetImageThreadStore(store *pebblestore.ImageThreadStore) {
 func (s *Service) Capabilities(context.Context) (Capabilities, error) {
 	codexStatus := ProviderStatus{
 		ID:            ProviderCodexOpenAI,
-		Label:         "OpenAI GPT Image via Codex",
+		Label:         "GPT Image 1.5 via Codex",
 		DefaultModel:  defaultCodexImageModel,
 		Models:        []string{defaultCodexImageModel},
 		RequiresOAuth: true,
@@ -151,15 +151,7 @@ func (s *Service) Capabilities(context.Context) (Capabilities, error) {
 			codexStatus.Ready = true
 		}
 	}
-	imagenStatus := ProviderStatus{
-		ID:           ProviderGoogleImagen,
-		Label:        "Google Imagen",
-		Ready:        false,
-		Reason:       "Google Imagen generation is not implemented yet",
-		DefaultModel: "imagen-4.0-generate-preview-06-06",
-		Models:       []string{"imagen-4.0-generate-preview-06-06"},
-	}
-	return Capabilities{Providers: []ProviderStatus{codexStatus, imagenStatus}}, nil
+	return Capabilities{Providers: []ProviderStatus{codexStatus}}, nil
 }
 
 func (s *Service) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {

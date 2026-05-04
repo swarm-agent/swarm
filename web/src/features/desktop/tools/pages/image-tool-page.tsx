@@ -118,8 +118,7 @@ const IMAGE_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.imageTool.blackMode'
 const DEFAULT_IMAGE_SESSION_TITLE = 'Swarm image session'
 
 const IMAGE_MODEL_OPTIONS = [
-  { id: 'codex-openai-gpt-image', provider: 'codex_openai', model: 'gpt-5.5', label: 'GPT Image via Codex', helper: 'Uses Codex OAuth and OpenAI Responses image_generation', kind: 'openai-gpt-image' },
-  { id: 'google-imagen', provider: 'google_imagen', model: 'imagen-4.0-generate-preview-06-06', label: 'Imagen (Google)', helper: 'Uses Google aspect ratio + 1K/2K', kind: 'google-imagen' },
+  { id: 'codex-gpt-image-1-5', provider: 'codex_openai', model: 'gpt-5.5', label: 'GPT Image 1.5 (Codex)', helper: 'Uses ChatGPT/Codex OAuth and OpenAI Responses image_generation. Only GPT image provider currently supported.', kind: 'openai-gpt-image' }
 ] as const
 
 const OPENAI_IMAGE_SIZE_OPTIONS = [
@@ -424,14 +423,14 @@ export function ImageToolPage() {
   const selectedProviderStatus = (imageProvidersQuery.data ?? []).find((provider) => provider.id === selectedModelOption.provider)
   const selectedProviderReady = selectedProviderStatus?.ready === true
   const selectedProviderUnavailableReason = selectedProviderStatus?.reason || 'Image provider is unavailable'
-  const isGoogleImagenModel = selectedModelOption.kind === 'google-imagen'
+  const isGoogleImagenModel = false
   const selectedOpenAISizeOption = OPENAI_IMAGE_SIZE_OPTIONS.find((option) => option.id === selectedOpenAIImageSize) ?? OPENAI_IMAGE_SIZE_OPTIONS[0]
   const selectedGoogleSizeOption = GOOGLE_IMAGE_SIZE_OPTIONS.find((option) => option.id === selectedGoogleImageSize) ?? GOOGLE_IMAGE_SIZE_OPTIONS[0]
   const selectedShapeLabel = isGoogleImagenModel ? selectedGoogleAspectRatio : selectedOpenAISizeOption.aspectRatio
   const selectedSizeLabel = isGoogleImagenModel ? selectedGoogleImageSize : selectedOpenAIImageSize
   const previewAspectClass = imagePreviewAspectClass(selectedShapeLabel)
   const selectedModelLabel = selectedModelOption.label
-  const selectedProviderControlLabel = isGoogleImagenModel ? 'Google Imagen controls' : 'OpenAI GPT Image controls'
+  const selectedProviderControlLabel = isGoogleImagenModel ? 'Google Imagen controls' : 'GPT Image 1.5 via Codex controls'
   const selectedSizeDisplayLabel = isGoogleImagenModel
     ? selectedGoogleSizeOption.label + ' · ' + selectedGoogleAspectRatio
     : selectedOpenAISizeOption.helper
@@ -875,7 +874,7 @@ export function ImageToolPage() {
 
                     <div className="grid gap-2 border-t border-dashed border-[var(--app-border)] pt-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                       <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-[11px] leading-5 text-[var(--app-text-subtle)]">
-                        {selectedProviderReady ? selectedSizeDisplayLabel + '. Manual single-image path. Advanced controls later.' : selectedProviderUnavailableReason}
+                        {selectedProviderReady ? selectedSizeDisplayLabel + '. Uses gpt-image-1.5 through ChatGPT/Codex OAuth. Only GPT image generation is supported for now.' : selectedProviderUnavailableReason}
                       </div>
                       <Button className="h-11 w-full rounded-xl px-4 sm:w-auto" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()}>
                         <Sparkles size={15} />{generatingImage ? 'Generating…' : 'Generate 1 image'}
