@@ -257,25 +257,6 @@ function mapImageThread(wire: ImageThreadWire): ImageThreadRecord | null {
   }
 }
 
-function imagePreviewAspectClass(aspectRatio: string): string {
-  switch (aspectRatio) {
-    case '2:3':
-      return 'aspect-[2/3]'
-    case '3:2':
-      return 'aspect-[3/2]'
-    case '3:4':
-      return 'aspect-[3/4]'
-    case '4:3':
-      return 'aspect-[4/3]'
-    case '9:16':
-      return 'aspect-[9/16]'
-    case '16:9':
-      return 'aspect-[16/9]'
-    default:
-      return 'aspect-square'
-  }
-}
-
 function formatStartedAt(value: number): string {
   if (!value) {
     return 'Date unavailable'
@@ -441,7 +422,6 @@ export function ImageToolPage() {
   const selectedGoogleSizeOption = GOOGLE_IMAGE_SIZE_OPTIONS.find((option) => option.id === selectedGoogleImageSize) ?? GOOGLE_IMAGE_SIZE_OPTIONS[0]
   const selectedShapeLabel = isGoogleImagenModel ? selectedGoogleAspectRatio : selectedOpenAISizeOption.aspectRatio
   const selectedSizeLabel = isGoogleImagenModel ? selectedGoogleImageSize : selectedOpenAIImageSize
-  const previewAspectClass = imagePreviewAspectClass(selectedShapeLabel)
   const selectedModelLabel = selectedModelOption.label
   const selectedProviderControlLabel = isGoogleImagenModel ? 'Google Imagen controls' : 'GPT Image 1.5 via Codex controls'
   const selectedSizeDisplayLabel = isGoogleImagenModel
@@ -810,9 +790,9 @@ export function ImageToolPage() {
                 </div>
               </div>
             ) : (
-              <div className="flex min-h-full flex-col gap-4">
-                <div className="flex min-h-[460px] flex-1 flex-col border border-[var(--app-border)] bg-[var(--app-surface)]">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+              <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden">
+                <div className="flex min-h-0 flex-1 flex-col border border-[var(--app-border)] bg-[var(--app-surface)]">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-3 py-2">
                     <div className="min-w-0">
                       <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--app-text-subtle)]">Generation area</p>
                       <h2 className="mt-1 truncate text-xl font-semibold tracking-[-0.045em] text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
@@ -825,7 +805,7 @@ export function ImageToolPage() {
                   </div>
 
                   <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto]">
-                    <div className="relative grid min-h-[340px] place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_34%),var(--app-bg)] px-5 py-6">
+                    <div className="relative grid min-h-0 place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_34%),var(--app-bg)] px-2 py-2 sm:px-4 sm:py-4">
                       <div className="absolute left-4 top-4 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">
                         {previewCountLabel}
                       </div>
@@ -835,17 +815,17 @@ export function ImageToolPage() {
                       <Button variant="outline" className="absolute left-4 top-1/2 h-10 w-10 -translate-y-1/2 rounded-full px-0" onClick={handlePreviousPreview} disabled={orderedImageAssets.length <= 1} aria-label="Previous image">
                         <ChevronLeft size={18} />
                       </Button>
-                      <div className={`grid ${previewAspectClass} max-h-[68vh] w-full max-w-[760px] place-items-center overflow-hidden border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-surface)_0%,var(--app-bg)_52%,var(--app-surface-hover)_100%)] shadow-2xl shadow-black/10`}>
+                      <div className="grid h-full min-h-0 w-full place-items-center overflow-hidden border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-surface)_0%,var(--app-bg)_52%,var(--app-surface-hover)_100%)] shadow-2xl shadow-black/10">
                         {activeLivePreview ? (
-                          <div className="relative flex h-full w-full flex-col items-center justify-center gap-3 p-4 text-center">
-                            <img src={activeLivePreview.dataUrl} alt={activeLivePreview.label} className="max-h-full max-w-full object-contain" />
+                          <div className="relative flex h-full min-h-0 w-full items-center justify-center p-2 text-center">
+                            <img src={activeLivePreview.dataUrl} alt={activeLivePreview.label} className="h-full w-full object-contain" />
                             <div className="absolute bottom-3 left-3 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">
                               {activeLivePreview.label} · generating
                             </div>
                           </div>
                         ) : selectedImageAsset ? (
-                          <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-4 text-center">
-                            <img src={selectedImageAsset.url ?? imageAssetURL(selectedThread.id, selectedImageAsset.id)} alt={selectedImageAsset.name} className="max-h-full max-w-full object-contain" />
+                          <div className="grid h-full min-h-0 w-full grid-rows-[minmax(0,1fr)_auto] items-center gap-2 p-2 text-center">
+                            <img src={selectedImageAsset.url ?? imageAssetURL(selectedThread.id, selectedImageAsset.id)} alt={selectedImageAsset.name} className="h-full min-h-0 w-full object-contain" />
                             <div>
                               <p className="text-sm font-semibold tracking-[-0.04em] text-[var(--app-text)]">{selectedImageAsset.name}</p>
                               <p className="mt-1 break-all text-[10px] leading-4 text-[var(--app-text-muted)]">{selectedImageAsset.path}</p>
@@ -874,8 +854,8 @@ export function ImageToolPage() {
                       </Button>
                     </div>
 
-                    <div className="border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3">
-                      <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">
+                    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
+                      <div className="mb-1.5 flex items-center justify-between gap-3 text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">
                         <span>Session images</span>
                         <span>{orderedImageAssets.length} saved</span>
                       </div>
@@ -907,7 +887,7 @@ export function ImageToolPage() {
                             >
                               <div className="grid aspect-square place-items-center overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
                                 {imageSrc ? (
-                                  <img src={imageSrc} alt={item.label} className="h-full w-full object-cover" />
+                                  <img src={imageSrc} alt={item.label} className="h-full w-full object-contain" />
                                 ) : (
                                   <Sparkles className="animate-pulse text-[var(--app-primary)]" size={24} strokeWidth={1.4} />
                                 )}
@@ -926,91 +906,76 @@ export function ImageToolPage() {
                   </div>
                 </div>
 
-                <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-                  <div className="grid gap-4">
-                    <div className="grid gap-4">
-                      <label className="block text-xs font-medium text-[var(--app-text-muted)]">
-                        Prompt
-                        <Textarea
-                          className="mt-1.5 min-h-[132px] resize-none text-sm"
-                          value={promptText}
-                          onChange={(event) => setPromptText(event.target.value)}
-                          placeholder="Describe the image you want to generate…"
-                        />
+                <div className="shrink-0 border border-[var(--app-border)] bg-[var(--app-surface)] p-2">
+                  <div className="grid min-w-0 gap-2 lg:grid-cols-[minmax(220px,0.9fr)_minmax(0,1.5fr)_auto] lg:items-end">
+                    <label className="block min-w-0 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+                      Prompt
+                      <Textarea
+                        rows={2}
+                        className="mt-1 max-h-16 min-h-14 resize-none rounded-lg px-2.5 py-1.5 text-xs leading-5"
+                        value={promptText}
+                        onChange={(event) => setPromptText(event.target.value)}
+                        placeholder="Describe the image…"
+                      />
+                    </label>
+
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(160px,0.8fr)_minmax(0,1.2fr)] sm:items-end">
+                      <label className="block min-w-0 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+                        Model
+                        <Select className="mt-1 min-h-8 rounded-lg px-2 py-1 text-xs" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)}>
+                          {IMAGE_MODEL_OPTIONS.map((option) => {
+                            const provider = (imageProvidersQuery.data ?? []).find((entry) => entry.id === option.provider)
+                            return <option key={option.id} value={option.id}>{option.label}{provider?.ready === false ? ' (unavailable)' : ''}</option>
+                          })}
+                        </Select>
                       </label>
 
-                      <div className="grid min-w-0 gap-3">
-                        <label className="block min-w-0 text-xs font-medium text-[var(--app-text-muted)]">
-                          Image Model
-                          <Select className="mt-1.5 min-w-0 truncate" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)}>
-                            {IMAGE_MODEL_OPTIONS.map((option) => {
-                              const provider = (imageProvidersQuery.data ?? []).find((entry) => entry.id === option.provider)
-                              return <option key={option.id} value={option.id}>{option.label}{provider?.ready === false ? ' (unavailable)' : ''}</option>
-                            })}
-                          </Select>
-                        </label>
-
-                        <div className="min-w-0">
-                          <p className="text-[11px] text-[var(--app-text-subtle)]">{selectedProviderControlLabel}</p>
-                          {isGoogleImagenModel ? (
-                            <div className="mt-1.5 grid gap-3">
-                              <div>
-                                <p className="text-xs font-medium text-[var(--app-text-muted)]">Aspect ratio</p>
-                                <div className="mt-1.5 grid grid-cols-3 gap-2 sm:grid-cols-5">
-                                  {GOOGLE_IMAGE_ASPECT_RATIO_OPTIONS.map((option) => (
-                                    <button key={option.id} type="button" onClick={() => setSelectedGoogleAspectRatio(option.id)} className={['min-w-0 border px-2 py-2 text-center transition hover:bg-[var(--app-surface-hover)]', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
-                                      <span className="block text-xs font-semibold">{option.id}</span>
-                                      <span className="mt-0.5 block truncate text-[10px]">{option.label}</span>
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                              <div>
-                                <p className="text-xs font-medium text-[var(--app-text-muted)]">Image size</p>
-                                <div className="mt-1.5 grid grid-cols-2 gap-2">
-                                  {GOOGLE_IMAGE_SIZE_OPTIONS.map((option) => (
-                                    <button key={option.id} type="button" onClick={() => setSelectedGoogleImageSize(option.id)} className={['border px-3 py-2 text-center transition hover:bg-[var(--app-surface-hover)]', selectedGoogleImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
-                                      <span className="block text-xs font-semibold">{option.label}</span>
-                                      <span className="mt-0.5 block truncate text-[10px]">{option.helper}</span>
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
+                      <div className="min-w-0">
+                        <p className="mb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">{selectedProviderControlLabel}</p>
+                        {isGoogleImagenModel ? (
+                          <div className="grid gap-1.5 sm:grid-cols-[minmax(0,1fr)_auto]">
+                            <div className="grid grid-cols-5 gap-1">
+                              {GOOGLE_IMAGE_ASPECT_RATIO_OPTIONS.map((option) => (
+                                <button key={option.id} type="button" onClick={() => setSelectedGoogleAspectRatio(option.id)} className={['min-w-0 border px-1.5 py-1 text-center text-[10px] transition hover:bg-[var(--app-surface-hover)]', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
+                                  {option.id}
+                                </button>
+                              ))}
                             </div>
-                          ) : (
-                            <div className="mt-1.5">
-                              <p className="text-xs font-medium text-[var(--app-text-muted)]">Output size</p>
-                              <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-2 2xl:grid-cols-4">
-                                {OPENAI_IMAGE_SIZE_OPTIONS.map((option) => (
-                                  <button key={option.id} type="button" onClick={() => setSelectedOpenAIImageSize(option.id)} className={['min-w-0 border px-3 py-2 text-center transition hover:bg-[var(--app-surface-hover)]', selectedOpenAIImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
-                                    <span className="block text-xs font-semibold">{option.label}</span>
-                                    <span className="mt-0.5 block truncate text-[10px]">{option.helper}</span>
-                                  </button>
-                                ))}
-                              </div>
-                              <div className="mt-3">
-                                <p className="text-xs font-medium text-[var(--app-text-muted)]">Final images</p>
-                                <div className="mt-1.5 grid grid-cols-3 gap-2">
-                                  {FINAL_IMAGE_COUNT_OPTIONS.map((count) => (
-                                    <button key={count} type="button" disabled={generatingImage} onClick={() => setSelectedFinalImageCount(count)} className={['border px-3 py-2 text-center transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60', selectedFinalImageCount === count ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
-                                      <span className="block text-xs font-semibold">{count}</span>
-                                      <span className="mt-0.5 block truncate text-[10px]">final</span>
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
+                            <div className="grid grid-cols-2 gap-1">
+                              {GOOGLE_IMAGE_SIZE_OPTIONS.map((option) => (
+                                <button key={option.id} type="button" onClick={() => setSelectedGoogleImageSize(option.id)} className={['border px-2 py-1 text-center text-[10px] transition hover:bg-[var(--app-surface-hover)]', selectedGoogleImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
+                                  {option.label}
+                                </button>
+                              ))}
                             </div>
-                          )}
-                        </div>
+                          </div>
+                        ) : (
+                          <div className="grid gap-1.5 sm:grid-cols-[minmax(0,1fr)_auto]">
+                            <div className="grid grid-cols-4 gap-1">
+                              {OPENAI_IMAGE_SIZE_OPTIONS.map((option) => (
+                                <button key={option.id} type="button" onClick={() => setSelectedOpenAIImageSize(option.id)} title={option.helper} className={['min-w-0 border px-1.5 py-1 text-center text-[10px] transition hover:bg-[var(--app-surface-hover)]', selectedOpenAIImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
+                                  <span className="block truncate">{option.label}</span>
+                                </button>
+                              ))}
+                            </div>
+                            <div className="grid grid-cols-3 gap-1">
+                              {FINAL_IMAGE_COUNT_OPTIONS.map((count) => (
+                                <button key={count} type="button" disabled={generatingImage} onClick={() => setSelectedFinalImageCount(count)} className={['border px-2 py-1 text-center text-[10px] transition hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60', selectedFinalImageCount === count ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
+                                  {count}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    <div className="grid gap-2 border-t border-dashed border-[var(--app-border)] pt-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                      <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-[11px] leading-5 text-[var(--app-text-subtle)]">
-                        {selectedProviderReady ? selectedSizeDisplayLabel + `. Generates ${selectedFinalImageCount} final image${selectedFinalImageCount === 1 ? '' : 's'} with up to 3 streamed progression previews per final image.` : selectedProviderUnavailableReason}
+                    <div className="grid gap-1 sm:grid-cols-[minmax(0,1fr)_auto] lg:block">
+                      <div className="truncate rounded-lg border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[10px] text-[var(--app-text-subtle)] lg:mb-1.5 lg:max-w-56" title={selectedProviderReady ? selectedSizeDisplayLabel + `. Generates ${selectedFinalImageCount} final image${selectedFinalImageCount === 1 ? '' : 's'}.` : selectedProviderUnavailableReason}>
+                        {selectedProviderReady ? selectedSizeDisplayLabel + ` · ${selectedFinalImageCount} final` : selectedProviderUnavailableReason}
                       </div>
-                      <Button className="h-11 w-full rounded-xl px-4 sm:w-auto" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()}>
-                        <Sparkles size={15} />{generatingImage ? 'Generating…' : `Generate ${selectedFinalImageCount} image${selectedFinalImageCount === 1 ? '' : 's'}`}
+                      <Button className="h-9 w-full rounded-lg px-3 text-xs sm:w-auto lg:w-full" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()}>
+                        <Sparkles size={14} />{generatingImage ? 'Generating…' : `Generate ${selectedFinalImageCount}`}
                       </Button>
                     </div>
                   </div>

@@ -473,7 +473,7 @@ func buildRequestPayload(req Request) ([]byte, error) {
 		"model":  modelID,
 		"stream": true,
 		"store":  false,
-		"input":  req.Input,
+		"input":  sanitizeCodexRequestInput(req.Input),
 		"text": map[string]any{
 			"verbosity": defaultCodexTextVerbosity,
 		},
@@ -523,6 +523,21 @@ func normalizeCodexRequestTools(tools []ToolDefinition) []ToolDefinition {
 	for _, tool := range tools {
 		tool.Parameters = sanitizeCodexToolParameters(tool.Parameters)
 		out = append(out, tool)
+	}
+	return out
+}
+
+func sanitizeCodexRequestInput(input []map[string]any) []map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(input))
+	for _, item := range input {
+		cloned := cloneMapAny(item)
+		if strings.EqualFold(strings.TrimSpace(asString(cloned["type"])), "function_call") {
+			delete(cloned, "metadata")
+		}
+		out = append(out, cloned)
 	}
 	return out
 }

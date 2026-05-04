@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,58 @@ import (
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestBuildRequestPayloadRemovesFunctionCallMetadata(t *testing.T) {
+	originalMetadata := map[string]any{"phase": "commentary"}
+	input := []map[string]any{
+		{
+			"type":      "function_call",
+			"call_id":   "call_1",
+			"name":      "read",
+			"arguments": "{}",
+			"metadata":  originalMetadata,
+		},
+		{
+			"type":    "function_call_output",
+			"call_id": "call_1",
+			"output":  "ok",
+		},
+	}
+
+	payload, err := buildRequestPayload(Request{
+		Model: "gpt-5.3-codex",
+		Input: input,
+	})
+	if err != nil {
+		t.Fatalf("buildRequestPayload error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	decodedInput := asSlice(decoded["input"])
+	if len(decodedInput) != 2 {
+		t.Fatalf("input length = %d, want 2", len(decodedInput))
+	}
+	callInput, ok := decodedInput[0].(map[string]any)
+	if !ok {
+		t.Fatalf("input[0] = %#v, want object", decodedInput[0])
+	}
+	if _, ok := callInput["metadata"]; ok {
+		t.Fatalf("input[0].metadata = %#v, want omitted", callInput["metadata"])
+	}
+	outputInput, ok := decodedInput[1].(map[string]any)
+	if !ok {
+		t.Fatalf("input[1] = %#v, want object", decodedInput[1])
+	}
+	if got := strings.TrimSpace(asString(outputInput["type"])); got != "function_call_output" {
+		t.Fatalf("input[1].type = %q, want function_call_output", got)
+	}
+	if input[0]["metadata"] == nil {
+		t.Fatal("source function_call metadata was mutated")
+	}
+}
 
 func TestSendRoutesAPIKeyAuthToOpenAIResponsesHTTP(t *testing.T) {
 	var gotAuth string
