@@ -140,7 +140,7 @@ func (s *Service) SetImageThreadStore(store *pebblestore.ImageThreadStore) {
 func (s *Service) Capabilities(context.Context) (Capabilities, error) {
 	codexStatus := ProviderStatus{
 		ID:            ProviderCodexOpenAI,
-		Label:         "GPT Image 1.5 via Codex",
+		Label:         "Codex Image Gen (OAuth only)",
 		DefaultModel:  defaultCodexImageModel,
 		Models:        []string{defaultCodexImageModel},
 		RequiresOAuth: true,

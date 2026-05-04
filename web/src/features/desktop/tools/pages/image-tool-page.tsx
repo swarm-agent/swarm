@@ -1,7 +1,7 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, ChevronLeft, ChevronRight, FolderOpen, Image, Moon, Sparkles } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, FolderOpen, Image, Moon, Sparkles, TriangleAlert } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
 import { Textarea } from '../../../../components/ui/textarea'
@@ -125,7 +125,7 @@ const IMAGE_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.imageTool.blackMode'
 const DEFAULT_IMAGE_SESSION_TITLE = 'Swarm image session'
 
 const IMAGE_MODEL_OPTIONS = [
-  { id: 'codex-gpt-image-1-5', provider: 'codex_openai', model: 'gpt-5.5', label: 'GPT Image 1.5', helper: 'Uses ChatGPT/Codex OAuth and OpenAI Responses image_generation. Only GPT image provider currently supported.', kind: 'openai-gpt-image' }
+  { id: 'codex-image-gen', provider: 'codex_openai', model: 'gpt-5.5', label: 'Codex Image Gen', helper: 'OAuth only. Uses Codex/ChatGPT OAuth image generation. API-key image generation is not enabled yet.', kind: 'codex-image-gen' }
 ] as const
 
 const OPENAI_IMAGE_SIZE_OPTIONS = [
@@ -403,7 +403,14 @@ export function ImageToolPage() {
   const selectedModelOption = IMAGE_MODEL_OPTIONS.find((option) => option.id === selectedImageModel) ?? IMAGE_MODEL_OPTIONS[0]
   const selectedProviderStatus = (imageProvidersQuery.data ?? []).find((provider) => provider.id === selectedModelOption.provider)
   const selectedProviderReady = selectedProviderStatus?.ready === true
-  const selectedProviderUnavailableReason = selectedProviderStatus?.reason || 'Image provider is unavailable'
+  const selectedProviderWarning = selectedProviderStatus
+    ? selectedProviderReady
+      ? ''
+      : selectedProviderStatus.reason || 'Codex Image Gen requires Codex/ChatGPT OAuth before it can generate images.'
+    : imageProvidersQuery.isLoading
+      ? 'Checking Codex OAuth status…'
+      : 'Codex Image Gen requires Codex/ChatGPT OAuth before it can generate images.'
+  const selectedProviderUnavailableReason = selectedProviderWarning || 'Image provider is unavailable'
   const isGoogleImagenModel = false
   const selectedOpenAISizeOption = OPENAI_IMAGE_SIZE_OPTIONS.find((option) => option.id === selectedOpenAIImageSize) ?? OPENAI_IMAGE_SIZE_OPTIONS[0]
   const selectedShapeLabel = isGoogleImagenModel ? selectedGoogleAspectRatio : selectedOpenAISizeOption.aspectRatio
@@ -564,6 +571,7 @@ export function ImageToolPage() {
       setGenerationError(selectedProviderUnavailableReason)
       return
     }
+    const requestedPrompt = promptText.trim()
     const requestedImageCount = selectedFinalImageCount
     setActiveGenerationCount(requestedImageCount)
     setGeneratingImage(true)
@@ -580,7 +588,7 @@ export function ImageToolPage() {
         body: JSON.stringify({
           provider: selectedModelOption.provider,
           model: selectedModelOption.model,
-          prompt: promptText.trim(),
+          prompt: requestedPrompt,
           count: requestedImageCount,
           // partial_images are progression frames per final output, not final image count.
           partial_images: 3,
@@ -687,6 +695,7 @@ export function ImageToolPage() {
         setSelectedImageAssetId(generatedAssetId)
       }
       setSelectedThreadId(updatedThread.id)
+      setPromptText('')
       await queryClient.invalidateQueries({ queryKey: ['image-tool-threads', selectedWorkspacePath] })
     } catch (error) {
       setGenerationStage('error')
@@ -915,12 +924,19 @@ export function ImageToolPage() {
                       <div className="flex flex-col gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
                         <div className="flex flex-col gap-1">
                           <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">MODEL</span>
-                          <Select className="h-8 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)}>
+                          <Select className="h-8 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={!selectedProviderReady}>
                             {IMAGE_MODEL_OPTIONS.map((option) => (
-                              <option key={option.id} value={option.id}>{option.label}</option>
+                              <option key={option.id} value={option.id} disabled={!selectedProviderReady}>{option.label} · OAuth only</option>
                             ))}
                           </Select>
                         </div>
+
+                        {!selectedProviderReady ? (
+                          <div className="flex items-start gap-2 rounded-lg border border-[var(--app-warning)]/40 bg-[var(--app-warning)]/10 px-2.5 py-2 text-[10px] leading-snug text-[var(--app-text)]">
+                            <TriangleAlert size={14} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
+                            <span>{selectedProviderWarning}</span>
+                          </div>
+                        ) : null}
 
                         <label className="flex flex-col gap-1">
                           <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">QUANTITY</span>
