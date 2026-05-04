@@ -304,7 +304,7 @@ export function ImageToolPage() {
             darkModeActiveClassName="border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]"
             toolIcon={<Image size={16} strokeWidth={1.8} />}
             toolTitle="Image"
-            toolDescription="Image sessions are DB-backed tool workspaces ready for sources, boards, and generation metadata."
+            toolDescription="Swarm images will be placed in this workspace’s .swarm folder. You can access them at any time and manage them here."
             createLabel="Start new image session"
             createTitle={newSessionTitle}
             onCreateTitleChange={setNewSessionTitle}
