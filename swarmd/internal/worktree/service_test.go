@@ -1,0 +1,103 @@
+package worktree
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"swarm/packages/swarmd/internal/appstorage"
+)
+
+func TestDeterministicSessionWorktreePathUsesPrivateWorkspaceCache(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "state"))
+
+	repoRoot := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+
+	got, err := deterministicSessionWorktreePath(repoRoot, "ws_abc123")
+	if err != nil {
+		t.Fatalf("deterministicSessionWorktreePath: %v", err)
+	}
+	wantRoot, err := appstorage.WorkspaceCacheDir(repoRoot, "worktrees")
+	if err != nil {
+		t.Fatalf("WorkspaceCacheDir: %v", err)
+	}
+	want := filepath.Join(wantRoot, "ws_abc123")
+	if got != want {
+		t.Fatalf("worktree path = %q, want %q", got, want)
+	}
+	if strings.Contains(got, filepath.Join(repoRoot, ".swarm", "worktrees")) {
+		t.Fatalf("worktree path uses workspace-local .swarm path: %q", got)
+	}
+	info, err := os.Stat(wantRoot)
+	if err != nil {
+		t.Fatalf("stat cache root: %v", err)
+	}
+	if gotPerm := info.Mode().Perm(); gotPerm != appstorage.PrivateDirPerm {
+		t.Fatalf("cache root permissions = %#o, want %#o", gotPerm, appstorage.PrivateDirPerm)
+	}
+}
+
+func TestDeterministicSessionWorktreePathRejectsUnsafeWorkspaceID(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+	repoRoot := filepath.Join(t.TempDir(), "repo")
+
+	if _, err := deterministicSessionWorktreePath(repoRoot, "../escape"); err == nil {
+		t.Fatal("expected unsafe workspace id to fail")
+	}
+	if _, err := deterministicSessionWorktreePath(repoRoot, "ws_escape/path"); err == nil {
+		t.Fatal("expected workspace id with slash to fail")
+	}
+}
+
+func TestParseWorktreeListAndManagedPathFilter(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "managed")
+	inside := filepath.Join(root, "ws_abc123")
+	outside := filepath.Join(t.TempDir(), "repo")
+	output := strings.Join([]string{
+		"worktree " + outside,
+		"HEAD 1111111",
+		"branch refs/heads/dev",
+		"",
+		"worktree " + inside,
+		"HEAD 2222222",
+		"branch refs/heads/agent/abc123",
+		"",
+	}, "\n")
+
+	entries := parseWorktreeList(output)
+	if len(entries) != 2 {
+		t.Fatalf("entry count = %d, want 2", len(entries))
+	}
+	if !pathWithinRoot(root, entries[1].Path) {
+		t.Fatalf("expected managed path under root: %q in %q", entries[1].Path, root)
+	}
+	if pathWithinRoot(root, entries[0].Path) {
+		t.Fatalf("unexpected arbitrary repo path accepted as managed: %q", entries[0].Path)
+	}
+}
+
+func TestEnsureWorktreeParentUsesPrivatePermissions(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+	repoRoot := filepath.Join(t.TempDir(), "repo")
+
+	if err := ensureWorktreeParent(repoRoot); err != nil {
+		t.Fatalf("ensureWorktreeParent: %v", err)
+	}
+	parent, err := worktreeCacheRoot(repoRoot)
+	if err != nil {
+		t.Fatalf("worktreeCacheRoot: %v", err)
+	}
+	info, err := os.Stat(parent)
+	if err != nil {
+		t.Fatalf("stat worktree parent: %v", err)
+	}
+	if got := info.Mode().Perm(); got != appstorage.PrivateDirPerm {
+		t.Fatalf("worktree parent permissions = %#o, want %#o", got, appstorage.PrivateDirPerm)
+	}
+}

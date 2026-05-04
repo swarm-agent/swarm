@@ -25,6 +25,7 @@ import (
 	"unicode/utf8"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -107,7 +108,7 @@ const (
 	maxWebFetchTotalTextChars           = 1000000
 	maxWebResultTextChars               = 8000
 	maxWebResponseBytes                 = 8 * 1024 * 1024
-	defaultWebDownloadDir               = ".swarm/downloads"
+	defaultWebDownloadSubdir            = "downloads"
 	defaultExaSearchURL                 = "https://api.exa.ai/search"
 	defaultExaContentsURL               = "https://api.exa.ai/contents"
 	fffSearchHelperBinaryName           = "swarm-fff-search"
@@ -606,7 +607,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "webdownload",
-			Description: "Download full URL contents via Exa /contents to workspace files when context would be too large",
+			Description: "Download full URL contents via Exa /contents to files when context would be too large; omitted output_dir uses the managed private workspace cache",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -627,7 +628,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"output_dir": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative output directory (default .swarm/downloads)",
+						"description": "Workspace-relative or scoped absolute output directory. When omitted, uses the managed private workspace cache downloads bucket.",
 					},
 					"filename_mode": map[string]any{
 						"type":        "string",
@@ -3407,15 +3408,9 @@ func (r *Runtime) executeWebDownload(parent context.Context, scope WorkspaceScop
 	}
 
 	outputDirArg := strings.TrimSpace(asString(args["output_dir"]))
-	if outputDirArg == "" {
-		outputDirArg = defaultWebDownloadDir
-	}
-	outputDirPath, err := resolveWorkspacePath(scope, outputDirArg)
+	outputDirPath, outputDirLabel, err := resolveWebDownloadOutputDir(scope, outputDirArg)
 	if err != nil {
 		return "", err
-	}
-	if err := os.MkdirAll(outputDirPath, 0o755); err != nil {
-		return "", fmt.Errorf("create download directory: %w", err)
 	}
 
 	timeout := resolveWebTimeout(args["timeout_ms"], defaultWebFetchTimeout, maxWebFetchTimeout)
@@ -3455,18 +3450,20 @@ func (r *Runtime) executeWebDownload(parent context.Context, scope WorkspaceScop
 		fileName := webDownloadFilename(item.URL, i, filenameMode)
 		targetPath := filepath.Join(outputDirPath, fileName)
 		text := strings.TrimSpace(sanitizeForToolOutput(item.Text))
-		if err := os.WriteFile(targetPath, []byte(text), 0o644); err != nil {
-			entry["error"] = fmt.Sprintf("write failed: %v", err)
-			writeErrors = append(writeErrors, fmt.Sprintf("%s: %v", strings.TrimSpace(item.URL), err))
+		data := []byte(text)
+		var writeErr error
+		if outputDirArg == "" {
+			writeErr = appstorage.WritePrivateFile(targetPath, data)
+		} else {
+			writeErr = os.WriteFile(targetPath, data, 0o644)
+		}
+		if writeErr != nil {
+			entry["error"] = fmt.Sprintf("write failed: %v", writeErr)
+			writeErrors = append(writeErrors, fmt.Sprintf("%s: %v", strings.TrimSpace(item.URL), writeErr))
 			manifest = append(manifest, entry)
 			continue
 		}
-		relPath, _ := filepath.Rel(scope.PrimaryPath, targetPath)
-		relPath = filepath.ToSlash(strings.TrimSpace(relPath))
-		if relPath == "" {
-			relPath = filepath.ToSlash(targetPath)
-		}
-		entry["file_path"] = relPath
+		entry["file_path"] = displayWebDownloadFilePath(scope, targetPath)
 		entry["bytes_written"] = len(text)
 		successCount++
 		if safetyBuilder.Len() > 0 {
@@ -3509,7 +3506,7 @@ func (r *Runtime) executeWebDownload(parent context.Context, scope WorkspaceScop
 		"timed_out":                 timedOut,
 		"truncated_urls":            truncatedURLs,
 		"details_truncated":         detailsTruncated,
-		"output_dir":                filepath.ToSlash(strings.TrimSpace(outputDirArg)),
+		"output_dir":                outputDirLabel,
 		"filename_mode":             filenameMode,
 		"manifest":                  manifest,
 		"statuses":                  statusRecords,
@@ -3544,6 +3541,37 @@ func (r *Runtime) executeWebDownload(parent context.Context, scope WorkspaceScop
 		return string(encoded), errors.New("webdownload returned no successful records")
 	}
 	return string(encoded), nil
+}
+
+func resolveWebDownloadOutputDir(scope WorkspaceScope, outputDirArg string) (string, string, error) {
+	outputDirArg = strings.TrimSpace(outputDirArg)
+	if outputDirArg == "" {
+		path, err := appstorage.WorkspaceCacheDir(scope.PrimaryPath, defaultWebDownloadSubdir)
+		if err != nil {
+			return "", "", err
+		}
+		return path, filepath.ToSlash(path), nil
+	}
+	path, err := resolveWorkspacePath(scope, outputDirArg)
+	if err != nil {
+		return "", "", err
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return "", "", fmt.Errorf("create download directory: %w", err)
+	}
+	return path, filepath.ToSlash(outputDirArg), nil
+}
+
+func displayWebDownloadFilePath(scope WorkspaceScope, targetPath string) string {
+	if primary := strings.TrimSpace(scope.PrimaryPath); primary != "" {
+		if relPath, err := filepath.Rel(primary, targetPath); err == nil {
+			relPath = filepath.ToSlash(strings.TrimSpace(relPath))
+			if relPath != "" && relPath != "." && !strings.HasPrefix(relPath, "../") && relPath != ".." {
+				return relPath
+			}
+		}
+	}
+	return filepath.ToSlash(targetPath)
 }
 
 func webDownloadFilename(rawURL string, index int, mode string) string {

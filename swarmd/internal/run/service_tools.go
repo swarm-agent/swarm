@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -1598,7 +1599,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			if currentToolMS <= 0 && launch.CurrentToolStarted > 0 && strings.TrimSpace(launch.CurrentTool) != "" {
 				currentToolMS = maxInt64(0, time.Now().UnixMilli()-launch.CurrentToolStarted)
 			}
-			launchRows = append(launchRows, map[string]any{
+			launchRow := map[string]any{
 				"launch_index":         launch.LaunchIndex,
 				"requested_subagent":   strings.TrimSpace(launch.RequestedSubagent),
 				"subagent":             strings.TrimSpace(launch.ResolvedSubagent),
@@ -1619,7 +1620,14 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"tool_failed":          launch.ToolFailed,
 				"tool_order":           append([]string(nil), launch.ToolOrder...),
 				"error":                strings.TrimSpace(launch.Error),
-			})
+			}
+			if reportFile := strings.TrimSpace(launch.ReportFile); reportFile != "" {
+				launchRow["report_file"] = reportFile
+			}
+			if reportPersistErr := strings.TrimSpace(launch.ReportPersistErr); reportPersistErr != "" {
+				launchRow["report_persist_err"] = reportPersistErr
+			}
+			launchRows = append(launchRows, launchRow)
 		}
 		if len(launchRows) > 0 {
 			entry["launches"] = launchRows
@@ -1791,7 +1799,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if outcome.ReportChars > reportMaxChars {
 			outcome.ReportTruncated = true
 			outcome.ReportExcerpt = truncateRunes(report, reportMaxChars)
-			if path, writeErr := persistTaskReport(parentSession.WorkspacePath, outcome.ResolvedSubagent, description, report); writeErr != nil {
+			if path, writeErr := persistTaskReport(parentSession.WorkspacePath, parentSession.ID, fmt.Sprintf("%s-launch-%d", taskCallID, outcome.LaunchIndex), outcome.ResolvedSubagent, description, report); writeErr != nil {
 				outcome.ReportPersistErr = strings.TrimSpace(writeErr.Error())
 			} else {
 				outcome.ReportFile = strings.TrimSpace(path)
@@ -1912,6 +1920,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if reportExcerpt != "" {
 			launchPayload["report_excerpt"] = reportExcerpt
 			launchPayload["report"] = reportExcerpt
+		}
+		if reportFile := strings.TrimSpace(launch.ReportFile); reportFile != "" {
+			launchPayload["report_file"] = reportFile
+		}
+		if reportPersistErr := strings.TrimSpace(launch.ReportPersistErr); reportPersistErr != "" {
+			launchPayload["report_persist_err"] = reportPersistErr
 		}
 		launchPayloads = append(launchPayloads, launchPayload)
 		outcomes[i] = launch
@@ -2302,24 +2316,27 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 	return disabled
 }
 
-func persistTaskReport(workspacePath, subagentName, description, content string) (string, error) {
+func persistTaskReport(workspacePath, sessionID, launchID, subagentName, description, content string) (string, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return "", errors.New("workspace path is empty")
 	}
-	reportDir := filepath.Join(workspacePath, ".swarm", "subagent-reports")
-	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+	safeSessionID := sanitizeTaskReportName(sessionID)
+	if safeSessionID == "" {
+		return "", errors.New("session id is empty")
+	}
+	safeLaunchID := sanitizeTaskReportName(launchID)
+	if safeLaunchID == "" {
+		return "", errors.New("launch id is empty")
+	}
+
+	reportDir, err := appstorage.WorkspaceDataDir(workspacePath, "reports", safeSessionID)
+	if err != nil {
 		return "", fmt.Errorf("create report directory: %w", err)
 	}
+	reportPath := filepath.Join(reportDir, safeLaunchID+".md")
 
-	stamp := time.Now().UTC().Format("20060102-150405")
-	safeAgent := sanitizeTaskReportName(subagentName)
-	if safeAgent == "" {
-		safeAgent = "subagent"
-	}
-	filename := fmt.Sprintf("%s-%s.md", stamp, safeAgent)
-	reportPath := filepath.Join(reportDir, filename)
-
+	generatedAt := time.Now().UTC()
 	var b strings.Builder
 	b.WriteString("# Subagent Report\n\n")
 	b.WriteString("- subagent: ")
@@ -2329,24 +2346,16 @@ func persistTaskReport(workspacePath, subagentName, description, content string)
 	b.WriteString(strings.TrimSpace(description))
 	b.WriteString("\n")
 	b.WriteString("- generated_at_utc: ")
-	b.WriteString(time.Now().UTC().Format(time.RFC3339))
+	b.WriteString(generatedAt.Format(time.RFC3339))
 	b.WriteString("\n\n---\n\n")
 	b.WriteString(strings.TrimSpace(content))
 	b.WriteString("\n")
 
-	if err := os.WriteFile(reportPath, []byte(b.String()), 0o644); err != nil {
+	if err := appstorage.WritePrivateFile(reportPath, []byte(b.String())); err != nil {
 		return "", fmt.Errorf("write report file: %w", err)
 	}
 
-	relPath, err := filepath.Rel(workspacePath, reportPath)
-	if err != nil {
-		return reportPath, nil
-	}
-	relPath = strings.TrimSpace(filepath.ToSlash(relPath))
-	if relPath == "" {
-		return reportPath, nil
-	}
-	return relPath, nil
+	return filepath.ToSlash(filepath.Join("reports", safeSessionID, safeLaunchID+".md")), nil
 }
 
 func sanitizeTaskReportName(value string) string {

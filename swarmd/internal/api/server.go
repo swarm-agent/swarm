@@ -230,6 +230,8 @@ type worktreeService interface {
 	AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error)
 	AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
+	ListManaged(workspacePath string) ([]worktreeruntime.ManagedWorktree, error)
+	PruneManaged(workspacePath string) (worktreeruntime.PruneResult, error)
 }
 
 type mcpService interface {
@@ -628,9 +630,15 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		managed, err := s.worktrees.ListManaged(workspacePath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":        true,
 			"worktrees": config,
+			"managed":   managed,
 		})
 	case http.MethodPost:
 		var req struct {
@@ -680,12 +688,22 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if event != nil {
+		if event != nil && s.hub != nil {
 			s.hub.Publish(*event)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":        true,
 			"worktrees": config,
+		})
+	case http.MethodDelete:
+		result, err := s.worktrees.PruneManaged(workspacePath)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":     true,
+			"result": result,
 		})
 	default:
 		methodNotAllowed(w)

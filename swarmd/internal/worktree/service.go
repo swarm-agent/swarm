@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"swarm/packages/swarmd/internal/appstorage"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
@@ -30,7 +31,10 @@ const (
 
 const detachedWorkspaceFallbackWarning = "Opened without git worktree support; use a git repository and make sure git is installed for the app to work properly."
 
-var nonBranchSlugRune = regexp.MustCompile(`[^a-z0-9]+`)
+var (
+	nonBranchSlugRune      = regexp.MustCompile(`[^a-z0-9]+`)
+	validWorktreeWorkspace = regexp.MustCompile(`^ws_[a-z0-9]+$`)
+)
 
 func DetachedWorkspaceFallbackWarning(err error) string {
 	if err == nil {
@@ -61,6 +65,21 @@ type Allocation struct {
 	BaseBranch    string `json:"base_branch"`
 	BranchName    string `json:"branch_name,omitempty"`
 	WorkspaceID   string `json:"workspace_id,omitempty"`
+}
+
+type ManagedWorktree struct {
+	Path        string `json:"path"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	Branch      string `json:"branch,omitempty"`
+	Detached    bool   `json:"detached,omitempty"`
+	Exists      bool   `json:"exists"`
+	Managed     bool   `json:"managed"`
+}
+
+type PruneResult struct {
+	Root    string   `json:"root"`
+	Removed []string `json:"removed,omitempty"`
+	Skipped []string `json:"skipped,omitempty"`
 }
 
 type Service struct {
@@ -179,18 +198,24 @@ func (s *Service) allocateSessionWorkspace(workspacePath string, useCurrentBranc
 
 	workspaceID := sessionWorkspaceID(sessionID)
 	branchName := effectiveWorktreeBranchName(configuredBranchName, sessionID)
-	worktreePath := deterministicSessionWorktreePath(repoRoot, workspaceID)
+	worktreePath, err := deterministicSessionWorktreePath(repoRoot, workspaceID)
+	if err != nil {
+		return Allocation{}, err
+	}
+	if err := ensureWorktreeParent(repoRoot); err != nil {
+		return Allocation{}, err
+	}
 	if _, statErr := os.Stat(worktreePath); statErr == nil {
 		return Allocation{}, fmt.Errorf("target worktree path %q already exists", worktreePath)
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return Allocation{}, fmt.Errorf("check target worktree path: %w", statErr)
 	}
-	if err := ensureWorktreeParent(repoRoot); err != nil {
-		return Allocation{}, err
-	}
 	if _, err := runGit(repoRoot, "worktree", "add", "-b", branchName, worktreePath, effectiveBranch); err != nil {
 		_ = os.RemoveAll(worktreePath)
 		return Allocation{}, fmt.Errorf("create session worktree: %w", err)
+	}
+	if err := os.Chmod(worktreePath, appstorage.PrivateDirPerm); err != nil {
+		return Allocation{}, fmt.Errorf("set worktree directory permissions: %w", err)
 	}
 	return Allocation{
 		WorkspacePath: worktreePath,
@@ -218,6 +243,90 @@ func (s *Service) AllocateTaskWorkspace(workspacePath, baseBranch, nameSeed stri
 		baseBranch = branch
 	}
 	return s.allocateSessionWorkspace(workspacePath, false, baseBranch, "", nameSeed)
+}
+
+func (s *Service) ListManaged(workspacePath string) ([]ManagedWorktree, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return nil, errors.New("workspace path is required")
+	}
+	repoRoot, err := resolveRepositoryRoot(workspacePath)
+	if err != nil {
+		return nil, err
+	}
+	root, err := worktreeCacheRoot(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+		return []ManagedWorktree{}, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("stat managed worktree root: %w", err)
+	}
+	output, err := runGit(repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("list git worktrees: %w", err)
+	}
+	entries := parseWorktreeList(output)
+	managed := make([]ManagedWorktree, 0)
+	for _, entry := range entries {
+		path := filepath.Clean(strings.TrimSpace(entry.Path))
+		if path == "" || !pathWithinRoot(root, path) {
+			continue
+		}
+		managed = append(managed, ManagedWorktree{
+			Path:        path,
+			WorkspaceID: filepath.Base(path),
+			Branch:      entry.Branch,
+			Detached:    entry.Detached,
+			Exists:      pathExists(path),
+			Managed:     true,
+		})
+	}
+	return managed, nil
+}
+
+func (s *Service) PruneManaged(workspacePath string) (PruneResult, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return PruneResult{}, errors.New("workspace path is required")
+	}
+	repoRoot, err := resolveRepositoryRoot(workspacePath)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	root, err := worktreeCacheRoot(repoRoot)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+		return PruneResult{Root: root}, nil
+	} else if err != nil {
+		return PruneResult{}, fmt.Errorf("stat managed worktree root: %w", err)
+	}
+	entries, err := s.ListManaged(repoRoot)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	result := PruneResult{Root: root}
+	for _, entry := range entries {
+		path := filepath.Clean(strings.TrimSpace(entry.Path))
+		if path == "" || !pathWithinRoot(root, path) {
+			result.Skipped = append(result.Skipped, path)
+			continue
+		}
+		if entry.Exists {
+			result.Skipped = append(result.Skipped, path)
+			continue
+		}
+		if _, err := runGit(repoRoot, "worktree", "remove", "--force", path); err != nil {
+			if _, pruneErr := runGit(repoRoot, "worktree", "prune"); pruneErr != nil {
+				return result, fmt.Errorf("remove managed worktree metadata %q: %w", path, err)
+			}
+		}
+		result.Removed = append(result.Removed, path)
+	}
+	return result, nil
 }
 
 func (s *Service) AttachBranch(workspacePath, sessionID, title string) (string, error) {
@@ -261,7 +370,13 @@ func (s *Service) MoveWorkspaceToTitle(workspacePath, sessionID, title string) (
 	if err != nil {
 		return "", err
 	}
-	targetPath := deterministicWorktreePath(repoRoot, sessionID, title)
+	targetPath, err := deterministicWorktreePath(repoRoot, sessionID, title)
+	if err != nil {
+		return "", err
+	}
+	if err := ensureWorktreeParent(repoRoot); err != nil {
+		return "", err
+	}
 	if sameCleanPath(workspacePath, targetPath) {
 		return workspacePath, nil
 	}
@@ -272,6 +387,9 @@ func (s *Service) MoveWorkspaceToTitle(workspacePath, sessionID, title string) (
 	}
 	if _, err := runGit(repoRoot, "worktree", "move", workspacePath, targetPath); err != nil {
 		return "", fmt.Errorf("move worktree path: %w", err)
+	}
+	if err := os.Chmod(targetPath, appstorage.PrivateDirPerm); err != nil {
+		return "", fmt.Errorf("set worktree directory permissions: %w", err)
 	}
 	return targetPath, nil
 }
@@ -388,6 +506,69 @@ func resolveBranchCommit(repoRoot, baseBranch string) (string, error) {
 	return "", fmt.Errorf("resolve base branch %q: %w", baseBranch, err)
 }
 
+type gitWorktreeListEntry struct {
+	Path     string
+	Branch   string
+	Detached bool
+}
+
+func parseWorktreeList(output string) []gitWorktreeListEntry {
+	var entries []gitWorktreeListEntry
+	var current *gitWorktreeListEntry
+	flush := func() {
+		if current == nil || strings.TrimSpace(current.Path) == "" {
+			current = nil
+			return
+		}
+		entries = append(entries, *current)
+		current = nil
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(line, "worktree ") {
+			flush()
+			current = &gitWorktreeListEntry{Path: strings.TrimSpace(strings.TrimPrefix(line, "worktree "))}
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "branch "):
+			current.Branch = strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+		case line == "detached":
+			current.Detached = true
+		}
+	}
+	flush()
+	return entries
+}
+
+func pathWithinRoot(root, target string) bool {
+	root = filepath.Clean(strings.TrimSpace(root))
+	target = filepath.Clean(strings.TrimSpace(target))
+	if root == "." || root == "" || target == "." || target == "" {
+		return false
+	}
+	if target == root {
+		return true
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func resolveEffectiveBaseBranch(workspacePath string, useCurrentBranch bool, configuredBaseBranch string) (string, error) {
 	if useCurrentBranch {
 		branch, err := currentBranch(workspacePath)
@@ -407,22 +588,25 @@ func resolveEffectiveBaseBranch(workspacePath string, useCurrentBranch bool, con
 }
 
 func ensureWorktreeParent(repoRoot string) error {
-	parent := filepath.Join(repoRoot, ".swarm", "worktrees")
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if _, err := worktreeCacheRoot(repoRoot); err != nil {
 		return fmt.Errorf("create worktree parent directory: %w", err)
 	}
 	return nil
 }
 
 func reserveWorktreePath(repoRoot, nameSeed string) (string, error) {
-	if err := ensureWorktreeParent(repoRoot); err != nil {
-		return "", err
+	parent, err := worktreeCacheRoot(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("create worktree parent directory: %w", err)
 	}
-	parent := filepath.Join(repoRoot, ".swarm", "worktrees")
 	prefix := "worktree-" + worktreePathSlug(nameSeed) + "-"
 	temporary, err := os.MkdirTemp(parent, prefix)
 	if err != nil {
 		return "", fmt.Errorf("allocate worktree path: %w", err)
+	}
+	if err := os.Chmod(temporary, appstorage.PrivateDirPerm); err != nil {
+		_ = os.RemoveAll(temporary)
+		return "", fmt.Errorf("set temporary worktree path permissions: %w", err)
 	}
 	if err := os.Remove(temporary); err != nil {
 		return "", fmt.Errorf("prepare worktree path: %w", err)
@@ -430,12 +614,23 @@ func reserveWorktreePath(repoRoot, nameSeed string) (string, error) {
 	return temporary, nil
 }
 
-func deterministicSessionWorktreePath(repoRoot, workspaceID string) string {
+func worktreeCacheRoot(repoRoot string) (string, error) {
+	return appstorage.WorkspaceCacheDir(repoRoot, "worktrees")
+}
+
+func deterministicSessionWorktreePath(repoRoot, workspaceID string) (string, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
 		workspaceID = "ws_session"
 	}
-	return filepath.Join(repoRoot, ".swarm", "worktrees", workspaceID)
+	if !validWorktreeWorkspace.MatchString(workspaceID) {
+		return "", fmt.Errorf("invalid worktree workspace id %q", workspaceID)
+	}
+	parent, err := worktreeCacheRoot(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, workspaceID), nil
 }
 
 func sessionWorkspaceID(sessionID string) string {
@@ -482,7 +677,7 @@ func effectiveWorktreeBranchName(configuredBranchName, sessionID string) string 
 	return prefix + "/" + shortID
 }
 
-func deterministicWorktreePath(repoRoot, sessionID, title string) string {
+func deterministicWorktreePath(repoRoot, sessionID, title string) (string, error) {
 	return deterministicSessionWorktreePath(repoRoot, sessionWorkspaceID(sessionID))
 }
 

@@ -7860,9 +7860,6 @@ func (a *App) userFacingSessionPath(workspacePath string, worktreeEnabled bool, 
 			return displayPath(root)
 		}
 	}
-	if root := inferWorktreeRepoRoot(workspacePath); root != "" {
-		return displayPath(root)
-	}
 	return displayPath(workspacePath)
 }
 
@@ -7879,31 +7876,7 @@ func displayPath(path string) string {
 }
 
 func collapseWorktreeDisplayPath(path string) string {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" {
-		return ""
-	}
-	if root := inferWorktreeRepoRoot(trimmed); root != "" {
-		return root
-	}
-	return trimmed
-}
-
-func inferWorktreeRepoRoot(path string) string {
-	clean := filepath.Clean(strings.TrimSpace(path))
-	if clean == "" {
-		return ""
-	}
-	needle := string(filepath.Separator) + ".swarm" + string(filepath.Separator) + "worktrees" + string(filepath.Separator)
-	index := strings.Index(clean, needle)
-	if index <= 0 {
-		return ""
-	}
-	root := strings.TrimSpace(clean[:index])
-	if root == "" {
-		return ""
-	}
-	return root
+	return strings.TrimSpace(path)
 }
 
 func directoryNameForPath(path string) string {

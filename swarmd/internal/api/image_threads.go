@@ -65,17 +65,13 @@ func (s *Server) handleWorkspaceImageThreads(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		metadata := req.Metadata
-		if metadata == nil {
-			metadata = map[string]any{}
-		}
-		metadata["tool_storage_path"] = storagePath
+		metadata := ensureManagedToolStorageMetadata(req.Metadata, storagePath)
 		thread, err := s.imageThreads.Create(pebblestore.ImageThreadSnapshot{
 			ID:              threadID,
 			WorkspacePath:   workspacePath,
 			WorkspaceName:   strings.TrimSpace(req.WorkspaceName),
 			Title:           strings.TrimSpace(req.Title),
-			ImageFolders:    append([]string{storagePath}, req.ImageFolders...),
+			ImageFolders:    ensureManagedToolStorageFolders(workspacePath, storagePath, req.ImageFolders),
 			ImageAssets:     req.ImageAssets,
 			ImageAssetOrder: req.ImageAssetOrder,
 			Metadata:        metadata,
@@ -131,7 +127,9 @@ func (s *Server) handleWorkspaceImageThread(w http.ResponseWriter, r *http.Reque
 			thread.Title = strings.TrimSpace(*req.Title)
 		}
 		if req.ImageFolders != nil {
-			thread.ImageFolders = req.ImageFolders
+			if storagePath, ok := thread.Metadata["tool_storage_path"].(string); ok && strings.TrimSpace(storagePath) != "" {
+				thread.ImageFolders = ensureManagedToolStorageFolders(thread.WorkspacePath, storagePath, req.ImageFolders)
+			}
 		}
 		if req.ImageAssets != nil {
 			thread.ImageAssets = req.ImageAssets
@@ -140,7 +138,9 @@ func (s *Server) handleWorkspaceImageThread(w http.ResponseWriter, r *http.Reque
 			thread.ImageAssetOrder = req.ImageAssetOrder
 		}
 		if req.Metadata != nil {
-			thread.Metadata = req.Metadata
+			if storagePath, ok := thread.Metadata["tool_storage_path"].(string); ok && strings.TrimSpace(storagePath) != "" {
+				thread.Metadata = ensureManagedToolStorageMetadata(req.Metadata, storagePath)
+			}
 		}
 		thread, err = s.imageThreads.Update(thread)
 		if err != nil {

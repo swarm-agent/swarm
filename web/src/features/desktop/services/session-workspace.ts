@@ -15,20 +15,6 @@ export function basenameFromWorkspacePath(value: string): string {
   return segments[segments.length - 1] ?? ''
 }
 
-export function inferHostWorkspacePathFromDetachedWorktree(workspacePath: string): string {
-  const trimmed = trimTrailingSeparators(workspacePath.trim())
-  if (!trimmed) {
-    return ''
-  }
-  const normalized = trimmed.replace(/\\/g, '/')
-  const marker = '/.swarm/worktrees/'
-  const markerIndex = normalized.indexOf(marker)
-  if (markerIndex <= 0) {
-    return ''
-  }
-  return trimTrailingSeparators(trimmed.slice(0, markerIndex))
-}
-
 export function canonicalSessionWorkspacePath(input: {
   workspacePath: string
   hostedHostWorkspacePath?: string
@@ -57,8 +43,7 @@ export function canonicalSessionWorkspacePath(input: {
     return worktreeRootPath
   }
 
-  const inferredHostWorkspacePath = inferHostWorkspacePathFromDetachedWorktree(workspacePath)
-  return inferredHostWorkspacePath || workspacePath
+  return workspacePath
 }
 
 export function canonicalSessionWorkspaceName(workspaceName: string, workspacePath: string, canonicalWorkspacePath: string): string {

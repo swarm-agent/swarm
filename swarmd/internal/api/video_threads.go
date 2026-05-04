@@ -68,17 +68,13 @@ func (s *Server) handleWorkspaceVideoThreads(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		metadata := req.Metadata
-		if metadata == nil {
-			metadata = map[string]any{}
-		}
-		metadata["tool_storage_path"] = storagePath
+		metadata := ensureManagedToolStorageMetadata(req.Metadata, storagePath)
 		thread, err := s.videoThreads.Create(pebblestore.VideoThreadSnapshot{
 			ID:             threadID,
 			WorkspacePath:  workspacePath,
 			WorkspaceName:  strings.TrimSpace(req.WorkspaceName),
 			Title:          strings.TrimSpace(req.Title),
-			VideoFolders:   append([]string{storagePath}, req.VideoFolders...),
+			VideoFolders:   ensureManagedToolStorageFolders(workspacePath, storagePath, req.VideoFolders),
 			VideoClips:     req.VideoClips,
 			VideoClipOrder: req.VideoClipOrder,
 			Metadata:       metadata,
@@ -138,7 +134,9 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 			thread.Title = strings.TrimSpace(*req.Title)
 		}
 		if req.VideoFolders != nil {
-			thread.VideoFolders = req.VideoFolders
+			if storagePath, ok := thread.Metadata["tool_storage_path"].(string); ok && strings.TrimSpace(storagePath) != "" {
+				thread.VideoFolders = ensureManagedToolStorageFolders(thread.WorkspacePath, storagePath, req.VideoFolders)
+			}
 		}
 		if req.VideoClips != nil {
 			thread.VideoClips = req.VideoClips
@@ -147,7 +145,9 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 			thread.VideoClipOrder = req.VideoClipOrder
 		}
 		if req.Metadata != nil {
-			thread.Metadata = req.Metadata
+			if storagePath, ok := thread.Metadata["tool_storage_path"].(string); ok && strings.TrimSpace(storagePath) != "" {
+				thread.Metadata = ensureManagedToolStorageMetadata(req.Metadata, storagePath)
+			}
 		}
 		thread, err = s.videoThreads.Update(thread)
 		if err != nil {

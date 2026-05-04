@@ -702,7 +702,7 @@ func TestSyncKnownWorkspaceSelectionForPathKeepsDirectoryModeWhenCWDIsNotWorkspa
 func TestCommitExecutionContextUsesCurrentWorktreePath(t *testing.T) {
 	a := &App{}
 	summary := model.SessionSummary{
-		WorkspacePath:      "/repo/.swarm/worktrees/ws_123",
+		WorkspacePath:      "/cache/swarmd/workspaces/repo-abc123/worktrees/ws_123",
 		WorktreeEnabled:    true,
 		WorktreeRootPath:   "/repo",
 		WorktreeBranch:     "agent/123",
@@ -713,10 +713,10 @@ func TestCommitExecutionContextUsesCurrentWorktreePath(t *testing.T) {
 	if ctx == nil {
 		t.Fatalf("commitExecutionContext() = nil")
 	}
-	if got := strings.TrimSpace(ctx.WorkspacePath); got != "/repo/.swarm/worktrees/ws_123" {
+	if got := strings.TrimSpace(ctx.WorkspacePath); got != "/cache/swarmd/workspaces/repo-abc123/worktrees/ws_123" {
 		t.Fatalf("WorkspacePath = %q, want worktree path", got)
 	}
-	if got := strings.TrimSpace(ctx.CWD); got != "/repo/.swarm/worktrees/ws_123" {
+	if got := strings.TrimSpace(ctx.CWD); got != "/cache/swarmd/workspaces/repo-abc123/worktrees/ws_123" {
 		t.Fatalf("CWD = %q, want worktree path", got)
 	}
 	if got := strings.TrimSpace(ctx.WorktreeRootPath); got != "/repo" {
