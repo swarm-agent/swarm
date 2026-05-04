@@ -258,6 +258,36 @@ function testManageTodosBatchShowsOnlyChangedItems(): void {
   );
 }
 
+function testManageImageGenerateShowsSessionRefs(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage-image",
+    callId: "call_image_1",
+    outputText: JSON.stringify({
+      status: "completed",
+      tool: "manage-image",
+      thread_id: "thread_1",
+      open_url: "swarm://tools/image/sessions/thread_1",
+      provider: "google_gemini",
+      model: "gemini-test",
+      requested_count: 2,
+      saved_count: 2,
+      assets: [
+        { asset_id: "asset_1", url: "/v1/image/assets?thread_id=thread_1&asset_id=asset_1" },
+      ],
+    }),
+  });
+  assert(Boolean(message), "expected structured manage-image message");
+  assert(
+    message?.summary === "manage-image · completed · 2 images · google_gemini/gemini-test · session thread_1",
+    `unexpected manage-image summary: ${message?.summary}`,
+  );
+  assert(message?.target === "swarm://tools/image/sessions/thread_1", `unexpected image target: ${message?.target}`);
+  assert(
+    message?.previewLines.includes("open: swarm://tools/image/sessions/thread_1") === true,
+    `missing image open url: ${message?.previewLines.join(" | ")}`,
+  );
+}
+
 function testManageTodosAgentListShowsOnlyCurrentSession(): void {
   const message = buildStructuredToolMessage({
     tool: "manage_todos",
@@ -487,6 +517,7 @@ function main(): void {
   testManageTodosListShowsItems();
   testManageTodosSummaryShowsCounts();
   testManageTodosBatchShowsOnlyChangedItems();
+  testManageImageGenerateShowsSessionRefs();
   testManageTodosAgentListShowsOnlyCurrentSession();
   testEditToolPreservesFullExpandedDiff();
   testTaskRowsMapReasoningToThinkingWithoutPreviewLeak();

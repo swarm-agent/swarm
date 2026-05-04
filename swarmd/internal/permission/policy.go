@@ -464,6 +464,8 @@ func normalizePolicyToolName(name string) string {
 		return "exit_plan_mode"
 	case "managetheme":
 		return "manage_theme"
+	case "manageimage":
+		return "manage_image"
 	default:
 		return name
 	}
@@ -643,6 +645,11 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
 	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme":
+		return PolicyDecisionAllow
+	case "manage_image":
+		if ShouldApproveManageImage(toolArguments) {
+			return PolicyDecisionAsk
+		}
 		return PolicyDecisionAllow
 	case "plan_manage":
 		if ShouldApprovePlanManageUpdate(toolArguments) {

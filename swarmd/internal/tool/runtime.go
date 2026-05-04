@@ -28,6 +28,7 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
+	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
@@ -149,6 +150,8 @@ type Runtime struct {
 	todos             manageTodoService
 	uiSettings        manageThemeUISettingsService
 	themeWorkspace    manageThemeWorkspaceService
+	imageGen          manageImageService
+	imageThreads      manageImageThreadService
 }
 
 type ExaRuntimeConfig struct {
@@ -197,6 +200,16 @@ type manageAgentService interface {
 	Delete(name string) (agentruntime.DeleteResult, int64, *pebblestore.EventEnvelope, error)
 	SetActiveSubagent(purpose, name string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
 	DeleteActiveSubagent(purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
+}
+
+type manageImageService interface {
+	Capabilities(context.Context) (imagegen.Capabilities, error)
+	Generate(context.Context, imagegen.GenerateRequest) (imagegen.GenerateResult, error)
+}
+
+type manageImageThreadService interface {
+	Create(pebblestore.ImageThreadSnapshot) (pebblestore.ImageThreadSnapshot, error)
+	Get(threadID string) (pebblestore.ImageThreadSnapshot, bool, error)
 }
 
 type manageTodoService interface {
@@ -312,8 +325,9 @@ type Result struct {
 }
 
 type Progress struct {
-	Stage  string `json:"stage"`
-	Output string `json:"output,omitempty"`
+	Stage    string         `json:"stage"`
+	Output   string         `json:"output,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type BatchResultHandler func(index int, call Call, result Result)
@@ -367,6 +381,14 @@ func (r *Runtime) SetManageThemeServices(uiSettings manageThemeUISettingsService
 	}
 	r.uiSettings = uiSettings
 	r.themeWorkspace = workspace
+}
+
+func (r *Runtime) SetManageImageServices(imageGen manageImageService, imageThreads manageImageThreadService) {
+	if r == nil {
+		return
+	}
+	r.imageGen = imageGen
+	r.imageThreads = imageThreads
 }
 
 func (r *Runtime) Definitions() []Definition {
@@ -835,6 +857,30 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		{
 			Type:        "function",
+			Name:        "manage-image",
+			Description: "Inspect available image generation providers/models and run background workspace image generation jobs into durable host-managed image sessions; supports inspect/generate and returns compact session/asset refs only, never raw image bytes",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action":       map[string]any{"type": "string", "description": "Action: inspect|generate"},
+					"prompt":       map[string]any{"type": "string", "description": "Image generation prompt for generate"},
+					"count":        map[string]any{"type": "integer", "description": "Number of images to generate; defaults to 1 and is provider-limited"},
+					"provider":     map[string]any{"type": "string", "description": "Optional provider id or alias; defaults to first ready/default provider"},
+					"model":        map[string]any{"type": "string", "description": "Optional provider model; defaults to provider default"},
+					"size":         map[string]any{"type": "string", "description": "Optional size/aspect ratio hint, provider-specific"},
+					"thread_id":    map[string]any{"type": "string", "description": "Optional existing image session/thread id; omitted creates a durable workspace image session"},
+					"title":        map[string]any{"type": "string", "description": "Optional new session title when creating a thread"},
+					"purpose":      map[string]any{"type": "string", "description": "Optional purpose metadata for the image session"},
+					"settings":     map[string]any{"type": "object", "description": "Optional provider-specific settings such as aspect_ratio or image_size"},
+					"aspect_ratio": map[string]any{"type": "string", "description": "Optional top-level provider-specific aspect ratio setting"},
+					"image_size":   map[string]any{"type": "string", "description": "Optional top-level provider-specific image size setting"},
+				},
+				"required":             []string{"action"},
+				"additionalProperties": true,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "manage-theme",
 			Description: "Inspect and manage builtin/custom themes through existing UI settings and workspace theme mutation paths; supports inspect/list/get/create/update/delete/set, and mutating actions return approval-ready previews unless confirm=true",
 			Parameters: map[string]any{
@@ -1186,6 +1232,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return executeManageSkill(scope, args)
 	case "manage-agent", "manage_agent":
 		return r.executeManageAgent(scope, args)
+	case "manage-image", "manage_image":
+		return r.executeManageImage(ctx, scope, args, onProgress)
 	case "manage-theme", "manage_theme":
 		return r.executeManageTheme(scope, args)
 	case "manage-worktree", "manage_worktree":
@@ -5598,6 +5646,21 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 	}
 }
 
+func (r *Runtime) executeManageImage(ctx context.Context, scope WorkspaceScope, args map[string]any, onProgress func(Progress)) (string, error) {
+	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
+	if action == "" {
+		action = "inspect"
+	}
+	switch action {
+	case "inspect", "providers", "capabilities":
+		return r.manageImageInspect(ctx, scope)
+	case "generate":
+		return r.manageImageGenerate(ctx, scope, args, onProgress)
+	default:
+		return "", fmt.Errorf("manage-image action %q is unsupported", action)
+	}
+}
+
 func (r *Runtime) executeManageTheme(scope WorkspaceScope, args map[string]any) (string, error) {
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	if action == "" {
@@ -7445,7 +7508,7 @@ func manageAgentToolGroup(name string) string {
 		return "conversation_control"
 	case "git_status", "git_diff", "git_add", "git_commit":
 		return "git_commit"
-	case "skill-use", "skill_use", "manage-skill", "manage_skill", "manage-agent", "manage_agent", "manage-theme", "manage_theme", "manage-worktree", "manage_worktree", "manage_todos":
+	case "skill-use", "skill_use", "manage-skill", "manage_skill", "manage-agent", "manage_agent", "manage-image", "manage_image", "manage-theme", "manage_theme", "manage-worktree", "manage_worktree", "manage_todos":
 		return "management"
 	default:
 		return "other"
@@ -7981,6 +8044,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_skill"
 	case "manage-agent", "manage_agent":
 		return "manage_agent"
+	case "manage-image", "manage_image":
+		return "manage_image"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
@@ -8004,6 +8069,8 @@ func stubToolPathID(name string) string {
 		return "tool.manage-skill.v1"
 	case "manage_agent":
 		return "tool.manage-agent.v1"
+	case "manage_image":
+		return "tool.manage-image.v1"
 	case "manage_worktree":
 		return "tool.manage-worktree.v1"
 	case "manage_todos":
@@ -8430,6 +8497,8 @@ func toolPathID(name string) string {
 		return "tool.manage-skill.v1"
 	case "manage-agent", "manage_agent":
 		return "tool.manage-agent.v1"
+	case "manage-image", "manage_image":
+		return "tool.manage-image.v1"
 	case "manage-worktree", "manage_worktree":
 		return "tool.manage-worktree.v1"
 	case "manage-todos", "manage_todos":

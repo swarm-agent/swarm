@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from "react";
-import { CheckCircle2, XCircle, LoaderCircle } from "lucide-react";
+import { ArrowRight, CheckCircle2, XCircle, LoaderCircle } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
@@ -315,6 +315,39 @@ function SearchFileSection({
   );
 }
 
+function toolJsonString(record: Record<string, unknown> | null | undefined, key: string): string {
+  const value = record?.[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function ImageToolAction({ toolMessage }: { toolMessage: StructuredToolMessage }) {
+  const outputJson = parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const argsJson = toolMessage.argumentsJson ?? null;
+  const threadId = toolJsonString(outputJson, "thread_id") || toolJsonString(argsJson, "thread_id");
+  if (!threadId) return null;
+  const href = `/tools/image/${encodeURIComponent(threadId)}`;
+  return (
+    <a
+      href={href}
+      className="mt-2 inline-flex h-8 items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-medium text-[var(--app-text)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]"
+    >
+      <ArrowRight size={13} />
+      Open image session
+    </a>
+  );
+}
+
+function parseToolJSON(value: string): Record<string, unknown> | null {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
 function SearchToolView({
   toolMessage,
 }: {
@@ -435,6 +468,9 @@ export function ToolMessageView({
             commandText={toolMessage.commandText}
             compact={toolMessage.tool !== 'exit_plan_mode' && toolMessage.tool !== 'permission'}
           />
+        ) : null}
+        {toolMessage.tool.trim().toLowerCase() === 'manage-image' || toolMessage.tool.trim().toLowerCase() === 'manage_image' ? (
+          <ImageToolAction toolMessage={toolMessage} />
         ) : null}
       </div>
     </div>

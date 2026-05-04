@@ -112,6 +112,23 @@ export interface AgentChangeField {
   value: string
 }
 
+export interface ManageImagePayload {
+  title: string
+  subtitle: string
+  summary: string
+  action: string
+  prompt: string
+  count: number
+  provider: string
+  model: string
+  size: string
+  threadId: string
+  purpose: string
+  hostExecution: string
+  transcriptPolicy: string
+  approvedArguments: Record<string, unknown>
+}
+
 export interface AgentToolInventoryTool {
   name: string
   description: string
@@ -154,7 +171,7 @@ export interface AgentChangePayload {
   changes: AgentChangeField[]
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change'
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -353,6 +370,8 @@ export function normalizePermissionToolName(raw: string): string {
       return 'exit_plan_mode'
     case 'managetodos':
       return 'manage_todos'
+    case 'manageimage':
+      return 'manage_image'
     default:
       return name
   }
@@ -428,6 +447,8 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
       return 'generic'
     case 'manage_todos':
       return 'manage-todos'
+    case 'manage_image':
+      return 'manage-image'
     case 'ask_user':
       return 'ask-user'
     case 'task':
@@ -457,6 +478,8 @@ export function permissionDisplayToolName(raw: string): string {
       return 'exit_plan_mode'
     case 'manage_todos':
       return 'manage_todos'
+    case 'manage_image':
+      return 'manage-image'
     default:
       return normalized
   }
@@ -620,6 +643,41 @@ export function parseManageTodosPermission(permission: DesktopPermissionRecord):
     isBatch: false,
     batchRows: [],
     summaryLine: '',
+    approvedArguments,
+  }
+}
+
+export function parseManageImagePermission(permission: DesktopPermissionRecord): ManageImagePayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const action = mapStringArg(payload, 'action') || 'generate'
+  const count = Math.max(1, mapNumberArg(payload, 'count') || 1)
+  const provider = mapStringArg(payload, 'provider') || 'default'
+  const model = mapStringArg(payload, 'model') || 'default'
+  const prompt = mapStringArg(payload, 'prompt')
+  const threadId = mapStringArg(payload, 'thread_id')
+  const size = mapStringArg(payload, 'size') || mapStringArg(payload, 'aspect_ratio') || mapStringArg(payload, 'image_size')
+  const purpose = mapStringArg(payload, 'purpose') || mapStringArg(payload, 'title')
+  const approvedArguments = mapObjectArg(payload, 'approved_arguments')
+  const title = action.trim().toLowerCase() === 'inspect' ? 'Inspect Image Models' : 'Approve Image Generation'
+  const threadSummary = threadId ? `append to image session ${threadId}` : 'create a new image session'
+  const summary = mapStringArg(payload, 'approval_summary')
+    || (action.trim().toLowerCase() === 'inspect'
+      ? 'Inspect available image generation providers and models.'
+      : `Generate ${count} image${count === 1 ? '' : 's'} with ${provider}/${model} and ${threadSummary}.`)
+  return {
+    title,
+    subtitle: action.trim().toLowerCase() === 'inspect' ? 'Provider/model discovery only' : 'Provider calls run on the workspace-owning host daemon',
+    summary,
+    action,
+    prompt,
+    count,
+    provider,
+    model,
+    size,
+    threadId,
+    purpose,
+    hostExecution: mapStringArg(payload, 'host_execution'),
+    transcriptPolicy: mapStringArg(payload, 'transcript_policy'),
     approvedArguments,
   }
 }

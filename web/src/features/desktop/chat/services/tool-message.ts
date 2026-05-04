@@ -108,7 +108,7 @@ function resolveToolTarget(
   if (!argumentsJson) {
     return null;
   }
-  for (const key of ["path", "url", "command", "session_id", "cwd"]) {
+  for (const key of ["path", "url", "open_url", "thread_id", "command", "session_id", "cwd"]) {
     const value = argumentsJson[key];
     if (typeof value === "string" && value.trim() !== "") {
       return value.trim();
@@ -324,6 +324,23 @@ function summarizeToolOutput(
       if (launchCount > 1) parts.push(`(${launchCount} launches)`);
       if (status) parts.push("(" + status + ")");
       return parts.length ? "task " + parts.join(" ") : "task";
+    }
+    case "manage-image":
+    case "manage_image": {
+      const action = jsonStr(effective, "action");
+      const status = jsonStr(effective, "status");
+      const threadId = jsonStr(effective, "thread_id");
+      const provider = jsonStr(effective, "provider");
+      const model = jsonStr(effective, "model");
+      const requestedCount = jsonNum(effective, "requested_count");
+      const savedCount = jsonNum(effective, "saved_count");
+      if (action === "inspect") return "manage-image inspect";
+      const parts = ["manage-image"];
+      if (status) parts.push(status);
+      if (savedCount > 0 || requestedCount > 0) parts.push(`${savedCount || requestedCount} image${(savedCount || requestedCount) === 1 ? "" : "s"}`);
+      if (provider || model) parts.push([provider, model].filter(Boolean).join("/"));
+      if (threadId) parts.push(`session ${threadId}`);
+      return parts.join(" · ");
     }
     case "manage_todos": {
       const action = jsonStr(effective, "action");
@@ -859,6 +876,26 @@ function extractPreviewLines(
       }
       return out;
     }
+    case "manage-image":
+    case "manage_image": {
+      const out: string[] = [];
+      const threadId = jsonStr(effective, "thread_id");
+      const openUrl = jsonStr(effective, "open_url");
+      const provider = jsonStr(effective, "provider");
+      const model = jsonStr(effective, "model");
+      const savedCount = jsonNum(effective, "saved_count");
+      const requestedCount = jsonNum(effective, "requested_count");
+      if (threadId) pushPreviewLine(out, `image session: ${threadId}`, 6);
+      if (openUrl) pushPreviewLine(out, `open: ${openUrl}`, 6);
+      if (provider || model) pushPreviewLine(out, `model: ${[provider, model].filter(Boolean).join(" / ")}`, 6);
+      if (savedCount > 0 || requestedCount > 0) pushPreviewLine(out, `saved: ${savedCount} / ${requestedCount || savedCount}`, 6);
+      for (const asset of jsonObjectSlice(effective, "assets").slice(0, 2)) {
+        const assetId = jsonStr(asset, "asset_id");
+        const url = jsonStr(asset, "url");
+        pushPreviewLine(out, `asset: ${[assetId, url].filter(Boolean).join(" · ")}`, 6);
+      }
+      return out;
+    }
     case "manage_todos": {
       const out: string[] = [];
       for (const line of buildManageTodosPreviewLines(effective, 6)) {
@@ -1387,7 +1424,7 @@ export function buildStructuredToolMessage(
     pathId: "run.tool-history.v2",
     tool: toolName,
     callId: String(input.callId ?? "").trim(),
-    target: resolveToolTarget(argumentsJson),
+    target: resolveToolTarget(argumentsJson) ?? resolveToolTarget(outputJson),
     commandText:
       toolName.toLowerCase() === "bash"
         ? jsonStr(outputJson, "command") || jsonStr(argumentsJson, "command")

@@ -21,6 +21,7 @@ import {
   parseAskUserPermission,
   parseExitPlanPermission,
   parseManageTodosPermission,
+  parseManageImagePermission,
   parsePlanUpdatePermission,
   parseTaskLaunchPermission,
   parseWorkspaceScopePermission,
@@ -724,6 +725,111 @@ function ManageTodosModal({
         </section>
       </div>
     </ModalShell>
+  )
+}
+
+function ManageImageModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) {
+    return null
+  }
+
+  const payload = parseManageImagePermission(permission)
+  const resolve = async (action: 'approve' | 'deny') => {
+    setLoading(true)
+    try {
+      await onResolve(
+        action,
+        note.trim(),
+        action === 'approve' && Object.keys(payload.approvedArguments).length > 0
+          ? payload.approvedArguments
+          : undefined,
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title}
+      subtitle={payload.subtitle}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(980px,calc(100vw-48px))]"
+      bodyClassName="overflow-y-auto"
+      footer={
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          approveLabel={payload.action.trim().toLowerCase() === 'inspect' ? 'Allow inspect' : 'Generate images'}
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+          notePlaceholder="Optional note about this image request…"
+        />
+      }
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid gap-4">
+        <section className="rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] p-4">
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Request</div>
+          <p className="mt-2 text-sm leading-6 text-[var(--app-text)]">{payload.summary}</p>
+        </section>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <ImagePermissionField label="Action" value={payload.action || 'generate'} />
+          <ImagePermissionField label="Count" value={String(payload.count)} />
+          <ImagePermissionField label="Provider" value={payload.provider} />
+          <ImagePermissionField label="Model" value={payload.model} />
+          <ImagePermissionField label="Size/aspect" value={payload.size || 'provider default'} />
+          <ImagePermissionField label="Image session" value={payload.threadId || 'new session'} mono />
+        </div>
+
+        {payload.purpose ? <ImagePermissionField label="Purpose/title" value={payload.purpose} /> : null}
+        {payload.prompt ? (
+          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Prompt</div>
+            <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[var(--app-text)]">{payload.prompt}</div>
+          </section>
+        ) : null}
+
+        <section className="grid gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm leading-6 text-[var(--app-text-muted)]">
+          <div>{payload.hostExecution || 'The workspace-owning daemon executes provider calls and writes durable host image session storage.'}</div>
+          <div>{payload.transcriptPolicy || 'The agent transcript receives compact IDs/URLs/asset refs only, never raw image bytes.'}</div>
+        </section>
+      </div>
+    </ModalShell>
+  )
+}
+
+function ImagePermissionField({ label, value, mono = false }: { label: string, value: string, mono?: boolean }) {
+  return (
+    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+      <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{label}</div>
+      <div className={cn('mt-2 break-words text-sm text-[var(--app-text)]', mono && 'font-mono')}>{value || 'n/a'}</div>
+    </section>
   )
 }
 
@@ -1861,6 +1967,9 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   }
   if (kind === 'ask-user') {
     return <AskUserModal {...props} />
+  }
+  if (kind === 'manage-image') {
+    return <ManageImageModal {...props} />
   }
   if (kind === 'task-launch') {
     return <TaskLaunchModal {...props} />

@@ -205,12 +205,17 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 						if config.emit == nil {
 							return
 						}
-						if strings.ToLower(strings.TrimSpace(progress.Stage)) != "output" {
+						stage := strings.ToLower(strings.TrimSpace(progress.Stage))
+						if stage != "output" && stage != "image" {
 							return
 						}
 						delta := progress.Output
 						if delta == "" {
 							return
+						}
+						metadata := map[string]any(nil)
+						if len(progress.Metadata) > 0 {
+							metadata = cloneGenericMap(progress.Metadata)
 						}
 						config.emit(StreamEvent{
 							Type:     StreamEventToolDelta,
@@ -218,6 +223,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 							ToolName: strings.TrimSpace(current.Name),
 							CallID:   strings.TrimSpace(current.CallID),
 							Output:   truncateRunes(delta, maxToolDeltaChars),
+							Metadata: metadata,
 						})
 					}, nil)
 					if len(executed) > 0 {

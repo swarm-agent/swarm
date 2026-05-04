@@ -69,6 +69,7 @@ import { appendPendingUserMessage, createPendingUserMessage, removePendingUserMe
 import type { SettingsTabID } from '../../settings/types/settings-tabs'
 import type { QuickSettingsTabID } from '../../settings/components/desktop-quick-settings-modal'
 import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
+import { ImageSessionSidebar, type ImageSessionSidebarState } from '../../tools/components/image-session-sidebar'
 
 const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 const FAST_ON_OFF_OPTIONS = ['off', 'on']
@@ -360,6 +361,57 @@ type RenderItem =
   | { type: 'message'; message: ChatMessageRecord; virtualKey?: string }
   | { type: 'live-tool'; toolMessage: NonNullable<ChatMessageRecord['toolMessage']> }
   | { type: 'live-assistant'; id: string; content: string }
+
+function jsonStringValue(record: Record<string, unknown> | null | undefined, key: string): string {
+  const value = record?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function jsonNumberValue(record: Record<string, unknown> | null | undefined, key: string): number | undefined {
+  const value = record?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function imageSidebarStateFromToolMessage(toolMessage: NonNullable<ChatMessageRecord['toolMessage']> | null | undefined): ImageSessionSidebarState | null {
+  if (!toolMessage) {
+    return null
+  }
+  const toolName = toolMessage.tool.trim().toLowerCase()
+  if (toolName !== 'manage-image' && toolName !== 'manage_image') {
+    return null
+  }
+  const outputJson = toolMessage.output.trim()
+    ? metadataRecord(safeParseJson(toolMessage.output))
+    : metadataRecord(safeParseJson(toolMessage.completedOutput))
+  const argsJson = metadataRecord(toolMessage.argumentsJson)
+  const threadId = jsonStringValue(outputJson, 'thread_id') || jsonStringValue(argsJson, 'thread_id')
+  if (!threadId) {
+    return null
+  }
+  const status = jsonStringValue(outputJson, 'status') || (toolMessage.state === 'running' ? 'generating' : toolMessage.state)
+  return {
+    open: true,
+    threadId,
+    title: jsonStringValue(argsJson, 'title') || jsonStringValue(argsJson, 'purpose') || 'Image generation',
+    provider: jsonStringValue(outputJson, 'provider') || jsonStringValue(argsJson, 'provider'),
+    model: jsonStringValue(outputJson, 'model') || jsonStringValue(argsJson, 'model'),
+    requestedCount: jsonNumberValue(outputJson, 'requested_count') ?? jsonNumberValue(argsJson, 'count'),
+    savedCount: jsonNumberValue(outputJson, 'saved_count'),
+    status,
+  }
+}
+
+function safeParseJson(value: string): unknown {
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return null
+  }
+  try {
+    return JSON.parse(trimmed) as unknown
+  } catch {
+    return null
+  }
+}
 
 function renderItemKey(item: RenderItem | undefined, index: number): string {
   if (!item) {
@@ -778,6 +830,7 @@ export function DesktopChatPanel({
   const [thinkingTagsEnabled, setThinkingTagsEnabled] = useState(true)
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false)
   const [defaultNewSessionMode, setDefaultNewSessionMode] = useState<'auto' | 'plan'>('auto')
+  const [imageSidebar, setImageSidebar] = useState<ImageSessionSidebarState | null>(null)
 
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -1160,6 +1213,32 @@ export function DesktopChatPanel({
       stopDictation(true)
     }
   }, [composerDisabled, showDictationButton, stopDictation])
+
+  useEffect(() => {
+    if (!liveToolMessage) {
+      return
+    }
+    const sidebarState = imageSidebarStateFromToolMessage(liveToolMessage)
+    if (sidebarState) {
+      setImageSidebar((current) => ({
+        ...sidebarState,
+        workspacePath: current?.threadId === sidebarState.threadId ? current.workspacePath : workspacePath,
+        workspaceName: current?.threadId === sidebarState.threadId ? current.workspaceName : workspaceName,
+      }))
+    }
+  }, [liveToolMessage, workspaceName, workspacePath])
+
+  useEffect(() => {
+    for (let index = displayedMessages.length - 1; index >= 0; index -= 1) {
+      const sidebarState = imageSidebarStateFromToolMessage(displayedMessages[index]?.toolMessage)
+      if (sidebarState) {
+        setImageSidebar((current) => current?.threadId === sidebarState.threadId && current.open
+          ? { ...current, ...sidebarState, workspacePath: current.workspacePath || workspacePath, workspaceName: current.workspaceName || workspaceName }
+          : { ...sidebarState, workspacePath, workspaceName })
+        return
+      }
+    }
+  }, [displayedMessages, workspaceName, workspacePath])
 
   const contextBadgeLabel = formatContextUsageBadgeLabel(liveSession?.usage ?? null)
   const contextBadgeTooltip = formatContextUsageTooltip(liveSession?.usage ?? null)
@@ -2426,7 +2505,8 @@ export function DesktopChatPanel({
   }, [composer, sessionId, setSessionDraft, workspacePath])
 
   return (
-    <Card className="flex h-full w-full flex-1 min-h-0 min-w-0 flex-col overflow-hidden rounded-none border-0 bg-[var(--app-surface)]">
+    <Card className="flex h-full w-full flex-1 min-h-0 min-w-0 flex-row overflow-hidden rounded-none border-0 bg-[var(--app-surface)]">
+      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
       <header className="shrink-0 flex min-h-[60px] items-center gap-2 border-b border-[var(--app-border)] px-3 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
         <div className="min-w-0 flex-1">
           <div className="sm:hidden">
@@ -2885,6 +2965,9 @@ export function DesktopChatPanel({
           </div>
         </div>
       </div>
+
+      </div>
+      <ImageSessionSidebar state={imageSidebar} onClose={() => setImageSidebar(null)} />
 
       <DesktopPermissionModal
         open={Boolean(activePermission)}

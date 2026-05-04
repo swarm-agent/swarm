@@ -2431,6 +2431,8 @@ func canonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
+	case "manage-image", "manage_image":
+		return "manage_image"
 	default:
 		return strings.ToLower(strings.TrimSpace(name))
 	}
@@ -2476,6 +2478,11 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	switch toolName {
 	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme":
 		return toolName, false
+	case "manage_image":
+		if shouldApproveManageImage(arguments) {
+			return "image_generation", true
+		}
+		return "manage_image", false
 	case "plan_manage":
 		if permission.ShouldApprovePlanManageUpdate(arguments) {
 			return "plan_update", true

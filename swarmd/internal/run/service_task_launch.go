@@ -261,6 +261,16 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 			return arguments
 		}
 		return string(raw)
+	case "manage_image":
+		payload, err := s.buildManageImagePermissionPayload(sessionID, call)
+		if err != nil {
+			return arguments
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return arguments
+		}
+		return string(raw)
 	case "plan_manage":
 		payload, ok, err := s.buildPlanManagePermissionPayload(sessionID, call)
 		if err != nil || !ok {

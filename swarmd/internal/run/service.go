@@ -1766,12 +1766,17 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
 		})
 		executedResults := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, call tool.Call, progress tool.Progress) {
-			if strings.ToLower(strings.TrimSpace(progress.Stage)) != "output" {
+			stage := strings.ToLower(strings.TrimSpace(progress.Stage))
+			if stage != "output" && stage != "image" {
 				return
 			}
 			delta := progress.Output
 			if delta == "" {
 				return
+			}
+			metadata := map[string]any(nil)
+			if len(progress.Metadata) > 0 {
+				metadata = cloneGenericMap(progress.Metadata)
 			}
 			emit(StreamEvent{
 				Type:     StreamEventToolDelta,
@@ -1779,6 +1784,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				ToolName: strings.TrimSpace(call.Name),
 				CallID:   strings.TrimSpace(call.CallID),
 				Output:   truncateRunes(delta, maxToolDeltaChars),
+				Metadata: metadata,
 			})
 		}, func(index int, call tool.Call, result tool.Result) {
 			if strings.TrimSpace(result.CallID) == "" {
