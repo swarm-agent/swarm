@@ -407,7 +407,7 @@ export function ImageToolPage() {
   const [newSessionTitle, setNewSessionTitle] = useState('')
   const [creatingSession, setCreatingSession] = useState(false)
   const [generatingImage, setGeneratingImage] = useState(false)
-  const [generationStage, setGenerationStage] = useState<GenerationStage>('idle')
+  const [, setGenerationStage] = useState<GenerationStage>('idle')
   const [livePreviews, setLivePreviews] = useState<LiveGenerationPreview[]>([])
   const [selectedLivePreviewId, setSelectedLivePreviewId] = useState<string | null>(null)
   const [selectedFinalImageCount, setSelectedFinalImageCount] = useState<(typeof FINAL_IMAGE_COUNT_OPTIONS)[number]>(1)
@@ -570,14 +570,6 @@ export function ImageToolPage() {
       : generatingImage
         ? 'live:pending:0'
         : null
-  const previewCountLabel = activeLivePreview
-    ? `Generating image ${activeLivePreview.index + 1} of ${generationSlotCount} · ${orderedImageAssets.length} saved`
-    : selectedImageAsset
-      ? `Image ${activePreviewNumber} of ${orderedImageAssets.length}`
-      : generatingImage
-        ? `Generating ${generationSlotCount} image${generationSlotCount === 1 ? '' : 's'} · ${orderedImageAssets.length} saved`
-        : `Image 1 of ${Math.max(orderedImageAssets.length, 1)}`
-
   useEffect(() => {
     if (!isGoogleGeminiModel && selectedFinalImageCount > 3) {
       setSelectedFinalImageCount(3)
@@ -1050,6 +1042,9 @@ export function ImageToolPage() {
                       <h2 className="mt-1 truncate text-xl font-semibold tracking-[-0.045em] text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
                     </div>
                     <div className="flex flex-wrap items-center justify-end gap-2 text-xs text-[var(--app-text-muted)]">
+                      <span className="inline-flex h-8 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-xs font-medium">{selectedModelLabel}</span>
+                      <span className="inline-flex h-8 min-w-12 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-xs font-medium">{selectedShapeLabel}</span>
+                      <span className="inline-flex h-8 min-w-12 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-xs font-medium">{selectedSizeLabel}</span>
                       {selectedImageAsset ? (
                         <>
                           <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleDownloadSelectedImage()}>
@@ -1063,20 +1058,11 @@ export function ImageToolPage() {
                           </Button>
                         </>
                       ) : null}
-                      <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1">{selectedModelLabel}</span>
-                      <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1">{selectedShapeLabel}</span>
-                      <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1">{selectedSizeLabel}</span>
                     </div>
                   </div>
 
                   <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto]">
                     <div className="relative grid min-h-0 place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_34%),var(--app-bg)] px-2 py-2 sm:px-4 sm:py-4">
-                      <div className="absolute left-4 top-4 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">
-                        {previewCountLabel}
-                      </div>
-                      <div className="absolute right-4 top-4 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">
-                        {generatingImage ? generationStage === 'partial' ? 'Streaming partial image' : 'Generating…' : 'Carousel preview'}
-                      </div>
                       <Button variant="outline" className="absolute left-4 top-1/2 h-10 w-10 -translate-y-1/2 rounded-full px-0" onClick={handlePreviousPreview} disabled={orderedImageAssets.length <= 1} aria-label="Previous image">
                         <ChevronLeft size={18} />
                       </Button>
