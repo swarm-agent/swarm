@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"swarm/packages/swarmd/internal/appstorage"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -19,11 +20,15 @@ type Service struct {
 }
 
 type Resolution struct {
-	RequestedPath string `json:"requested_path"`
-	ResolvedPath  string `json:"resolved_path"`
-	WorkspacePath string `json:"workspace_path"`
-	WorkspaceName string `json:"workspace_name"`
-	ThemeID       string `json:"theme_id,omitempty"`
+	RequestedPath          string `json:"requested_path"`
+	ResolvedPath           string `json:"resolved_path"`
+	WorkspacePath          string `json:"workspace_path"`
+	WorkspaceName          string `json:"workspace_name"`
+	ThemeID                string `json:"theme_id,omitempty"`
+	ManagedDataPath        string `json:"managed_data_path,omitempty"`
+	ManagedCachePath       string `json:"managed_cache_path,omitempty"`
+	ManagedStatePath       string `json:"managed_state_path,omitempty"`
+	ManagedWorkspaceBucket string `json:"managed_workspace_bucket,omitempty"`
 }
 
 type Entry struct {
@@ -42,13 +47,17 @@ type Entry struct {
 }
 
 type Scope struct {
-	RequestedPath string   `json:"requested_path"`
-	ResolvedPath  string   `json:"resolved_path"`
-	WorkspacePath string   `json:"workspace_path"`
-	WorkspaceName string   `json:"workspace_name"`
-	ThemeID       string   `json:"theme_id,omitempty"`
-	Directories   []string `json:"directories"`
-	Matched       bool     `json:"matched"`
+	RequestedPath          string   `json:"requested_path"`
+	ResolvedPath           string   `json:"resolved_path"`
+	WorkspacePath          string   `json:"workspace_path"`
+	WorkspaceName          string   `json:"workspace_name"`
+	ThemeID                string   `json:"theme_id,omitempty"`
+	Directories            []string `json:"directories"`
+	Matched                bool     `json:"matched"`
+	ManagedDataPath        string   `json:"managed_data_path,omitempty"`
+	ManagedCachePath       string   `json:"managed_cache_path,omitempty"`
+	ManagedStatePath       string   `json:"managed_state_path,omitempty"`
+	ManagedWorkspaceBucket string   `json:"managed_workspace_bucket,omitempty"`
 }
 
 type BrowseEntry struct {
@@ -94,13 +103,7 @@ func (s *Service) Resolve(cwd string) (Resolution, error) {
 	if err != nil {
 		return Resolution{}, err
 	}
-	return Resolution{
-		RequestedPath: cwd,
-		ResolvedPath:  scope.ResolvedPath,
-		WorkspacePath: scope.WorkspacePath,
-		WorkspaceName: scope.WorkspaceName,
-		ThemeID:       scope.ThemeID,
-	}, nil
+	return resolutionFromScope(cwd, scope), nil
 }
 
 func (s *Service) Select(path string) (Resolution, error) {
@@ -124,13 +127,7 @@ func (s *Service) Select(path string) (Resolution, error) {
 	if _, err := s.store.SetCurrent(resolved, name); err != nil {
 		return Resolution{}, fmt.Errorf("persist workspace selection: %w", err)
 	}
-	return Resolution{
-		RequestedPath: path,
-		ResolvedPath:  resolved,
-		WorkspacePath: entry.Path,
-		WorkspaceName: name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-	}, nil
+	return resolutionForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
 }
 
 func (s *Service) Add(path, name, themeID string, makeCurrent bool) (Resolution, error) {
@@ -164,13 +161,7 @@ func (s *Service) Add(path, name, themeID string, makeCurrent bool) (Resolution,
 	if !ok {
 		return Resolution{}, fmt.Errorf("workspace not found after save for path %q", resolved)
 	}
-	return Resolution{
-		RequestedPath: path,
-		ResolvedPath:  resolved,
-		WorkspacePath: entry.Path,
-		WorkspaceName: name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-	}, nil
+	return resolutionForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
 }
 
 func (s *Service) AddDirectory(path, directory string) (Resolution, error) {
@@ -194,13 +185,7 @@ func (s *Service) AddDirectory(path, directory string) (Resolution, error) {
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	return Resolution{
-		RequestedPath: directory,
-		ResolvedPath:  targetPath,
-		WorkspacePath: entry.Path,
-		WorkspaceName: name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-	}, nil
+	return resolutionForWorkspace(directory, targetPath, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
 }
 
 func (s *Service) RemoveDirectory(path, directory string) (Resolution, error) {
@@ -221,13 +206,7 @@ func (s *Service) RemoveDirectory(path, directory string) (Resolution, error) {
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	return Resolution{
-		RequestedPath: directory,
-		ResolvedPath:  targetPath,
-		WorkspacePath: entry.Path,
-		WorkspaceName: name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-	}, nil
+	return resolutionForWorkspace(directory, targetPath, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
 }
 
 func (s *Service) Rename(path, name string) (Resolution, error) {
@@ -250,13 +229,7 @@ func (s *Service) Rename(path, name string) (Resolution, error) {
 	if err != nil {
 		return Resolution{}, fmt.Errorf("rename workspace: %w", err)
 	}
-	return Resolution{
-		RequestedPath: path,
-		ResolvedPath:  entry.Path,
-		WorkspacePath: entry.Path,
-		WorkspaceName: entry.Name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-	}, nil
+	return resolutionForWorkspace(path, entry.Path, entry.Path, entry.Name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
 }
 
 func (s *Service) SetThemeID(path, themeID string) (Resolution, error) {
@@ -272,13 +245,7 @@ func (s *Service) SetThemeID(path, themeID string) (Resolution, error) {
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	resolution := Resolution{
-		RequestedPath: path,
-		ResolvedPath:  entry.Path,
-		WorkspacePath: entry.Path,
-		WorkspaceName: name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-	}
+	resolution := resolutionForWorkspace(path, entry.Path, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID))
 	if err := s.publishThemeUpdated(resolution); err != nil {
 		return Resolution{}, err
 	}
@@ -322,13 +289,7 @@ func (s *Service) Move(path string, delta int) (Resolution, error) {
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	return Resolution{
-		RequestedPath: path,
-		ResolvedPath:  entry.Path,
-		WorkspacePath: entry.Path,
-		WorkspaceName: name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-	}, nil
+	return resolutionForWorkspace(path, entry.Path, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
 }
 
 func (s *Service) Delete(path string) (Resolution, error) {
@@ -352,13 +313,7 @@ func (s *Service) Delete(path string) (Resolution, error) {
 	if err := s.store.Delete(resolved); err != nil {
 		return Resolution{}, fmt.Errorf("delete workspace: %w", err)
 	}
-	return Resolution{
-		RequestedPath: path,
-		ResolvedPath:  resolved,
-		WorkspacePath: resolved,
-		WorkspaceName: name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-	}, nil
+	return resolutionForWorkspace(path, resolved, resolved, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
 }
 
 func (s *Service) ListKnown(limit int) ([]Entry, error) {
@@ -406,13 +361,7 @@ func (s *Service) CurrentBinding() (Resolution, bool, error) {
 	if !ok {
 		return Resolution{}, false, nil
 	}
-	return Resolution{
-		RequestedPath: binding.Path,
-		ResolvedPath:  binding.Path,
-		WorkspacePath: binding.Path,
-		WorkspaceName: binding.Name,
-		ThemeID:       "",
-	}, true, nil
+	return resolutionForWorkspace(binding.Path, binding.Path, binding.Path, binding.Name, ""), true, nil
 }
 
 func (s *Service) ScopeForPath(path string) (Scope, error) {
@@ -444,15 +393,7 @@ func (s *Service) ScopeForPath(path string) (Scope, error) {
 		}
 	}
 	if bestIndex < 0 {
-		return Scope{
-			RequestedPath: path,
-			ResolvedPath:  resolved,
-			WorkspacePath: resolved,
-			WorkspaceName: defaultWorkspaceName(resolved),
-			ThemeID:       "",
-			Directories:   []string{resolved},
-			Matched:       false,
-		}, nil
+		return scopeForWorkspace(path, resolved, resolved, defaultWorkspaceName(resolved), "", []string{resolved}, false), nil
 	}
 
 	entry := entries[bestIndex]
@@ -464,15 +405,7 @@ func (s *Service) ScopeForPath(path string) (Scope, error) {
 	if len(directories) == 0 {
 		directories = []string{entry.Path}
 	}
-	return Scope{
-		RequestedPath: path,
-		ResolvedPath:  resolved,
-		WorkspacePath: entry.Path,
-		WorkspaceName: name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-		Directories:   directories,
-		Matched:       true,
-	}, nil
+	return scopeForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID), directories, true), nil
 }
 
 func (s *Service) ScopeForWorkspace(path string) (Scope, error) {
@@ -495,15 +428,7 @@ func (s *Service) ScopeForWorkspace(path string) (Scope, error) {
 	if len(directories) == 0 {
 		directories = []string{entry.Path}
 	}
-	return Scope{
-		RequestedPath: path,
-		ResolvedPath:  resolved,
-		WorkspacePath: entry.Path,
-		WorkspaceName: name,
-		ThemeID:       normalizeWorkspaceThemeID(entry.ThemeID),
-		Directories:   directories,
-		Matched:       true,
-	}, nil
+	return scopeForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID), directories, true), nil
 }
 
 func (s *Service) Browse(path string) (BrowseResult, error) {
@@ -815,4 +740,86 @@ func pathWithinRoot(root, target string) bool {
 		return true
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func resolutionFromScope(requestedPath string, scope Scope) Resolution {
+	return Resolution{
+		RequestedPath:          requestedPath,
+		ResolvedPath:           scope.ResolvedPath,
+		WorkspacePath:          scope.WorkspacePath,
+		WorkspaceName:          scope.WorkspaceName,
+		ThemeID:                scope.ThemeID,
+		ManagedDataPath:        scope.ManagedDataPath,
+		ManagedCachePath:       scope.ManagedCachePath,
+		ManagedStatePath:       scope.ManagedStatePath,
+		ManagedWorkspaceBucket: scope.ManagedWorkspaceBucket,
+	}
+}
+
+func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceName, themeID string) Resolution {
+	managed := managedStorageForWorkspace(workspacePath)
+	return Resolution{
+		RequestedPath:          requestedPath,
+		ResolvedPath:           resolvedPath,
+		WorkspacePath:          workspacePath,
+		WorkspaceName:          workspaceName,
+		ThemeID:                themeID,
+		ManagedDataPath:        managed.dataPath,
+		ManagedCachePath:       managed.cachePath,
+		ManagedStatePath:       managed.statePath,
+		ManagedWorkspaceBucket: managed.bucket,
+	}
+}
+
+func scopeForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceName, themeID string, directories []string, matched bool) Scope {
+	managed := managedStorageForWorkspace(workspacePath)
+	return Scope{
+		RequestedPath:          requestedPath,
+		ResolvedPath:           resolvedPath,
+		WorkspacePath:          workspacePath,
+		WorkspaceName:          workspaceName,
+		ThemeID:                themeID,
+		Directories:            directories,
+		Matched:                matched,
+		ManagedDataPath:        managed.dataPath,
+		ManagedCachePath:       managed.cachePath,
+		ManagedStatePath:       managed.statePath,
+		ManagedWorkspaceBucket: managed.bucket,
+	}
+}
+
+type managedWorkspaceStorage struct {
+	dataPath  string
+	cachePath string
+	statePath string
+	bucket    string
+}
+
+func managedStorageForWorkspace(workspacePath string) managedWorkspaceStorage {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return managedWorkspaceStorage{}
+	}
+	bucket, err := appstorage.WorkspaceBucketName(workspacePath)
+	if err != nil {
+		return managedWorkspaceStorage{}
+	}
+	dataPath, err := appstorage.WorkspaceDataDir(workspacePath)
+	if err != nil {
+		return managedWorkspaceStorage{}
+	}
+	cachePath, err := appstorage.WorkspaceCacheDir(workspacePath)
+	if err != nil {
+		return managedWorkspaceStorage{}
+	}
+	statePath, err := appstorage.WorkspaceStateDir(workspacePath)
+	if err != nil {
+		return managedWorkspaceStorage{}
+	}
+	return managedWorkspaceStorage{
+		dataPath:  dataPath,
+		cachePath: cachePath,
+		statePath: statePath,
+		bucket:    bucket,
+	}
 }
