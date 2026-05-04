@@ -5,13 +5,22 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/appstorage"
 )
 
-var appendMu sync.Mutex
+var (
+	appendMu sync.Mutex
+
+	secretValuePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)([?&](?:key|api[_-]?key|apikey|google[_-]?api[_-]?key|x-goog-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|token)=)([^&\s"'\\]+)`),
+		regexp.MustCompile(`(?i)\b(authorization\s*[:=]\s*bearer\s+)([A-Za-z0-9._~+/=-]+)`),
+		regexp.MustCompile(`(?i)\b((?:api[_-]?key|apikey|google[_-]?api[_-]?key|x-goog-api-key|access[_-]?token|refresh[_-]?token|id[_-]?token|token)\s*[:=]\s*["']?)([^"',\s}\\]+)`),
+	}
+)
 
 // Printf writes an image generation diagnostic line to both the daemon log and
 // the durable image generation diagnostic file. Keep payload bytes out of the
@@ -21,13 +30,14 @@ func Printf(component, format string, args ...any) {
 	if component != "" {
 		prefix = "[swarmd." + component + ".imagegen]"
 	}
-	message := fmt.Sprintf(prefix+" "+format, args...)
+	message := sanitizeMessage(fmt.Sprintf(prefix+" "+format, args...))
 	log.Print(message)
 	Append(message)
 }
 
 // Append writes a preformatted diagnostic message to the shared imagegen log.
 func Append(message string) {
+	message = sanitizeMessage(message)
 	path, err := Path()
 	if err != nil {
 		log.Printf("[swarmd.imagegen] stage=diagnostic_log_path_failed reason=%q", err.Error())
@@ -58,6 +68,13 @@ func Append(message string) {
 	if _, err := file.WriteString(line); err != nil {
 		log.Printf("[swarmd.imagegen] stage=diagnostic_log_write_failed reason=%q path=%q", err.Error(), path)
 	}
+}
+
+func sanitizeMessage(message string) string {
+	for _, pattern := range secretValuePatterns {
+		message = pattern.ReplaceAllString(message, `${1}[REDACTED]`)
+	}
+	return message
 }
 
 // Path returns the durable image generation diagnostics log path.
