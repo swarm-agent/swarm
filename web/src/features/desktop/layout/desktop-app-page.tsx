@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, ListChecks, LoaderCircle, Menu, Plus, RefreshCcw, Settings, X, XCircle } from 'lucide-react'
+import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -47,6 +47,7 @@ import { fetchSession } from '../chat/queries/chat-queries'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
+import { fetchFlows, flowsQueryKey, setFlowEnabled, type FlowSummaryRecord } from '../settings/flows/api'
 import {
   sessionBackgroundInfo,
   sessionChildDescriptor,
@@ -170,6 +171,18 @@ interface LocalContainerUpdateConfirmState {
 interface GitPanelState {
   workspacePath: string
   workspaceName: string
+}
+
+type SidebarFlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
+
+interface SidebarFlowRow {
+  id: string
+  name: string
+  agent: string
+  enabled: boolean
+  status: SidebarFlowStatus
+  detail: string
+  raw: FlowSummaryRecord
 }
 
 function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onClose: () => void }) {
@@ -573,6 +586,76 @@ function swarmTargetInitials(target: SwarmTarget): string {
     ? `${parts[0]?.[0] ?? ''}${parts[1]?.[0] ?? ''}`
     : label.slice(0, 2)
   return initials.toUpperCase() || '?'
+}
+
+function flowAgentLabel(record: FlowSummaryRecord): string {
+  return record.agent_detail?.name?.trim()
+    || record.definition.agent.profile_name?.trim()
+    || 'unassigned'
+}
+
+function sidebarFlowStatus(record: FlowSummaryRecord): SidebarFlowStatus {
+  if (record.last_run?.status === 'failed') return 'failed'
+  if (record.last_run?.status === 'review') return 'needs_review'
+  if (!record.definition.enabled) return record.history_count > 0 ? 'paused' : 'draft'
+  const statuses = record.assignment_statuses ?? []
+  if (statuses.some((status) => status.pending_sync || status.status === 'target_offline' || status.status === 'target_unusable')) {
+    return 'needs_review'
+  }
+  return 'active'
+}
+
+function sidebarFlowStatusLabel(status: SidebarFlowStatus): string {
+  switch (status) {
+    case 'active':
+      return 'active'
+    case 'paused':
+      return 'paused'
+    case 'draft':
+      return 'draft'
+    case 'needs_review':
+      return 'review'
+    case 'failed':
+      return 'failed'
+  }
+}
+
+function sidebarFlowDotClass(status: SidebarFlowStatus): string {
+  switch (status) {
+    case 'active':
+      return 'bg-[var(--app-success)]'
+    case 'needs_review':
+      return 'bg-[var(--app-warning)]'
+    case 'failed':
+      return 'bg-[var(--app-danger)]'
+    default:
+      return 'bg-[var(--app-text-subtle)]'
+  }
+}
+
+function sidebarFlowDetail(record: FlowSummaryRecord): string {
+  const workspace = record.workspace_detail?.workspace_path?.trim()
+    || record.definition.workspace.workspace_path?.trim()
+    || record.definition.workspace.host_workspace_path?.trim()
+    || 'workspace'
+  const target = record.target_detail?.name?.trim()
+    || record.definition.target.name?.trim()
+    || record.definition.target.swarm_id?.trim()
+    || record.definition.target.kind?.trim()
+    || 'target'
+  return `${fallbackWorkspaceNameFromPath(workspace)} · ${target}`
+}
+
+function sidebarFlowRow(record: FlowSummaryRecord): SidebarFlowRow {
+  return {
+    id: record.definition.flow_id,
+    name: record.definition.name?.trim() || record.definition.flow_id,
+    agent: flowAgentLabel(record),
+    enabled: record.definition.enabled,
+    status: sidebarFlowStatus(record),
+    detail: sidebarFlowDetail(record),
+    raw: record,
+  }
 }
 
 function sessionPendingPermissionCount(session: DesktopSessionRecord): number {
@@ -1331,6 +1414,9 @@ export function DesktopAppPage() {
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
   const [swarmMenu, setSwarmMenu] = useState<SwarmTargetMenuState>({ open: false })
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const [flowMenuOpen, setFlowMenuOpen] = useState(false)
+  const [flowBusyID, setFlowBusyID] = useState<string | null>(null)
+  const [flowMenuError, setFlowMenuError] = useState<string | null>(null)
   const [updateRunning, setUpdateRunning] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [updateProgress, setUpdateProgress] = useState<DesktopUpdateProgressState>({ open: false, job: null, startedAt: null })
@@ -1468,6 +1554,11 @@ export function DesktopAppPage() {
     refetchInterval: SWARM_TARGET_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: true,
   })
+  const flowsQuery = useQuery({
+    queryKey: flowsQueryKey,
+    queryFn: ({ signal }) => fetchFlows(signal),
+    staleTime: 15_000,
+  })
   const updateStatusQuery = useQuery({
     queryKey: ['desktop-update-status'] as const,
     queryFn: () => fetchDesktopUpdateStatus(),
@@ -1525,6 +1616,10 @@ export function DesktopAppPage() {
   }, [localSwarmTargets.length, remoteSwarmTargets, selfSwarmTargets.length, sortedSwarmTargets])
   const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} remote${swarmTargetCounts.offline > 0 ? ` · ${swarmTargetCounts.offline} offline` : ''}`
   const workspaceCount = mergedSidebarWorkspaceEntries.length
+  const sidebarFlows = useMemo(() => (flowsQuery.data ?? []).map(sidebarFlowRow), [flowsQuery.data])
+  const flowCount = sidebarFlows.length
+  const activeFlowCount = sidebarFlows.filter((flow) => flow.enabled).length
+  const flowSummary = flowsQuery.isLoading ? 'loading flows' : `${flowCount} flows${activeFlowCount !== flowCount ? ` · ${activeFlowCount} active` : ''}`
   const swarmTopologySignature = useMemo(
     () => swarmTargets
       .map((target) => [
@@ -2029,6 +2124,26 @@ export function DesktopAppPage() {
     void navigate({ to: '/settings', search: { tab } })
   }, [navigate, routeWorkspaceSlug])
 
+  const handleOpenFlowsSettings = useCallback(() => {
+    setFlowMenuOpen(false)
+    setWorkspaceMenuOpen(false)
+    handleOpenSettingsTab('flows')
+  }, [handleOpenSettingsTab])
+
+  const handleToggleFlowEnabled = useCallback(async (flow: SidebarFlowRow) => {
+    if (flowBusyID) return
+    setFlowBusyID(flow.id)
+    setFlowMenuError(null)
+    try {
+      await setFlowEnabled(flow.id, !flow.enabled)
+      await queryClient.invalidateQueries({ queryKey: flowsQueryKey })
+    } catch (error) {
+      setFlowMenuError(error instanceof Error ? error.message : 'Failed to update flow')
+    } finally {
+      setFlowBusyID(null)
+    }
+  }, [flowBusyID, queryClient])
+
   const handleOpenQuickSettings = useCallback((tab: QuickSettingsTabID) => {
     setQuickSettingsTab(tab)
   }, [])
@@ -2235,6 +2350,18 @@ export function DesktopAppPage() {
     }))
   }, [])
 
+  const handleToggleWorkspaceMenu = useCallback(() => {
+    setSwarmMenu({ open: false })
+    setFlowMenuOpen(false)
+    setWorkspaceMenuOpen((open) => !open)
+  }, [])
+
+  const handleToggleFlowMenu = useCallback(() => {
+    setSwarmMenu({ open: false })
+    setWorkspaceMenuOpen(false)
+    setFlowMenuOpen((open) => !open)
+  }, [])
+
   useEffect(() => {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
@@ -2250,6 +2377,7 @@ export function DesktopAppPage() {
 
   const openSwarmMenu = useCallback(() => {
     setWorkspaceMenuOpen(false)
+    setFlowMenuOpen(false)
     setSwarmMenu((current) => ({ open: !current.open }))
   }, [])
 
@@ -2560,19 +2688,27 @@ export function DesktopAppPage() {
                   </button>
                 </div>
 
-                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4 text-[11px] text-[var(--app-text-subtle)]')}>
+                <div className="grid min-h-7 min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_52px] items-center gap-2.5 pr-4 text-[11px] text-[var(--app-text-subtle)]">
                   <button
                     type="button"
                     className="flex min-h-[22px] min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                    onClick={() => {
-                      setSwarmMenu({ open: false })
-                      setWorkspaceMenuOpen((open) => !open)
-                    }}
+                    onClick={handleToggleWorkspaceMenu}
                     aria-expanded={workspaceMenuOpen}
                     aria-label={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspace list`}
                   >
                     <span className="truncate">{workspaceCount} workspaces</span>
                     {workspaceMenuOpen ? <ChevronDown size={14} strokeWidth={1.8} className="shrink-0 rotate-180" /> : <ChevronDown size={14} strokeWidth={1.8} className="shrink-0" />}
+                  </button>
+                  <button
+                    type="button"
+                    className="flex min-h-[22px] min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    onClick={handleToggleFlowMenu}
+                    aria-expanded={flowMenuOpen}
+                    aria-label={`${flowMenuOpen ? 'Collapse' : 'Expand'} flow list`}
+                    title={flowSummary}
+                  >
+                    <span className="truncate">{flowCount} flows</span>
+                    {flowsQuery.isFetching ? <LoaderCircle size={12} strokeWidth={1.8} className="shrink-0 animate-spin" /> : flowMenuOpen ? <ChevronDown size={14} strokeWidth={1.8} className="shrink-0 rotate-180" /> : <ChevronDown size={14} strokeWidth={1.8} className="shrink-0" />}
                   </button>
                   <SidebarActionRail>
                     <button
@@ -2638,6 +2774,58 @@ export function DesktopAppPage() {
                 >
                   <Home size={14} className="shrink-0" />
                   Workspace settings
+                </button>
+              </div>
+            ) : null}
+
+            {flowMenuOpen ? (
+              <div className="mt-2 flex flex-col border border-[var(--app-border)] bg-[var(--app-surface)] p-1 font-mono">
+                <div className="grid grid-cols-[minmax(0,1fr)_minmax(64px,0.7fr)_58px] gap-2 px-[7px] py-1.5 text-[9px] uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
+                  <span>Flow</span>
+                  <span>Agent</span>
+                  <span className="text-right">Run</span>
+                </div>
+                {flowsQuery.isLoading ? (
+                  <div className="px-2 py-2 text-[11px] text-[var(--app-text-subtle)]">Loading flows…</div>
+                ) : flowsQuery.isError ? (
+                  <div className="px-2 py-2 text-[11px] text-[var(--app-warning)]">Flows unavailable.</div>
+                ) : sidebarFlows.length === 0 ? (
+                  <div className="px-2 py-2 text-[11px] text-[var(--app-text-subtle)]">No flows yet.</div>
+                ) : sidebarFlows.slice(0, 8).map((flow) => {
+                  const busy = flowBusyID === flow.id
+                  return (
+                    <div key={flow.id} className="group grid min-h-[34px] grid-cols-[minmax(0,1fr)_minmax(64px,0.7fr)_58px] items-center gap-2 px-[7px] py-[5px] text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                      <button type="button" className="min-w-0 text-left" onClick={handleOpenFlowsSettings} title={flow.detail}>
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', sidebarFlowDotClass(flow.status))} />
+                          <span className="truncate text-[var(--app-text)]">{flow.name}</span>
+                        </span>
+                        <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]">{sidebarFlowStatusLabel(flow.status)} · {flow.detail}</span>
+                      </button>
+                      <span className="truncate text-[10px]" title={flow.agent}>{flow.agent}</span>
+                      <button
+                        type="button"
+                        className="justify-self-end rounded border border-[var(--app-border)] px-1.5 py-1 text-[9px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-progress disabled:opacity-60"
+                        onClick={() => { void handleToggleFlowEnabled(flow) }}
+                        disabled={Boolean(flowBusyID)}
+                        aria-label={`${flow.enabled ? 'Pause' : 'Start'} ${flow.name}`}
+                        title={flow.enabled ? 'Pause flow' : 'Start flow'}
+                      >
+                        {busy ? <LoaderCircle size={11} className="animate-spin" /> : flow.enabled ? <Pause size={11} /> : <Play size={11} />}
+                      </button>
+                    </div>
+                  )
+                })}
+                {sidebarFlows.length > 8 ? <div className="px-2 py-1 text-[10px] text-[var(--app-text-subtle)]">+{sidebarFlows.length - 8} more in Flow settings</div> : null}
+                {flowMenuError ? <div className="mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
+                <div className="my-1 h-px bg-[var(--app-border)]" />
+                <button
+                  type="button"
+                  className="flex min-h-[30px] items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  onClick={handleOpenFlowsSettings}
+                >
+                  <Workflow size={14} className="shrink-0" />
+                  Add / manage flows
                 </button>
               </div>
             ) : null}

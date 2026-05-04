@@ -225,6 +225,18 @@ export interface CreateFlowInput {
   intent: FlowPromptIntent
 }
 
+export interface UpdateFlowInput {
+  flow_id?: string
+  name?: string
+  enabled?: boolean
+  target?: FlowTargetSelection
+  agent?: FlowAgentSelection
+  workspace?: FlowWorkspaceContext
+  schedule?: Partial<FlowScheduleSpec>
+  catch_up_policy?: Partial<FlowCatchUpPolicy>
+  intent?: Partial<FlowPromptIntent>
+}
+
 export async function fetchFlows(signal?: AbortSignal): Promise<FlowSummaryRecord[]> {
   const response = await requestJson<FlowListResponse>('/v3/flows?limit=200', {
     cache: 'no-store',
@@ -258,6 +270,21 @@ export async function createFlow(input: CreateFlowInput): Promise<FlowDetailReco
     body: JSON.stringify(input),
   })
   return response.flow
+}
+
+export async function updateFlow(flowID: string, input: UpdateFlowInput): Promise<FlowDetailRecord> {
+  const response = await requestJson<FlowMutationResponse>(`/v3/flows/${encodeURIComponent(flowID)}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  })
+  return response.flow
+}
+
+export async function setFlowEnabled(flowID: string, enabled: boolean): Promise<FlowDetailRecord> {
+  return updateFlow(flowID, { enabled })
 }
 
 export async function deleteFlow(flowID: string): Promise<void> {
