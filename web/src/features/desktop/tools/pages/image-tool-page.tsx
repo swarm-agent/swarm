@@ -1,8 +1,10 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Image, Moon, Sparkles } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Clock3, Image, Moon, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
+import { Select } from '../../../../components/ui/select'
+import { Textarea } from '../../../../components/ui/textarea'
 import { requestJson } from '../../../../app/api'
 import { useDesktopStore } from '../../state/use-desktop-store'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
@@ -62,6 +64,38 @@ type ImageThreadWire = {
 const IMAGE_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.imageTool.blackMode'
 const DEFAULT_IMAGE_SESSION_TITLE = 'Swarm image session'
 
+const IMAGE_MODEL_OPTIONS = [
+  { id: 'openai-gpt-image-mock', label: 'GPT Image (OpenAI mock)', helper: 'Uses OpenAI size enum', kind: 'openai-gpt-image' },
+  { id: 'google-imagen-mock', label: 'Imagen (Google mock)', helper: 'Uses Google aspect ratio + 1K/2K', kind: 'google-imagen' },
+] as const
+
+const OPENAI_IMAGE_SIZE_OPTIONS = [
+  { id: 'auto', label: 'Auto', helper: 'Model chooses', aspectRatio: '1:1' },
+  { id: '1024x1024', label: 'Square', helper: '1024 × 1024', aspectRatio: '1:1' },
+  { id: '1536x1024', label: 'Landscape', helper: '1536 × 1024', aspectRatio: '3:2' },
+  { id: '1024x1536', label: 'Portrait', helper: '1024 × 1536', aspectRatio: '2:3' },
+]
+
+const GOOGLE_IMAGE_ASPECT_RATIO_OPTIONS = [
+  { id: '1:1', label: 'Square', helper: 'Default' },
+  { id: '3:4', label: 'Portrait', helper: 'Media' },
+  { id: '4:3', label: 'Landscape', helper: 'Photo' },
+  { id: '9:16', label: 'Story', helper: 'Mobile' },
+  { id: '16:9', label: 'Wide', helper: 'Landscape' },
+]
+
+const GOOGLE_IMAGE_SIZE_OPTIONS = [
+  { id: '1K', label: '1K', helper: 'Default' },
+  { id: '2K', label: '2K', helper: 'Standard/Ultra only' },
+]
+
+const MOCK_IMAGE_ITERATIONS = [
+  { id: 'draft', label: 'Draft', status: 'Ready', detail: 'Prompt and settings locked in' },
+  { id: 'generate', label: 'Generate', status: 'Next', detail: 'One image will be created' },
+  { id: 'review', label: 'Review', status: 'Waiting', detail: 'Pick a result for iteration' },
+]
+
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object'
 }
@@ -120,6 +154,25 @@ function mapImageThread(wire: ImageThreadWire): ImageThreadRecord | null {
     metadata: isRecord(wire.metadata) ? wire.metadata : undefined,
     createdAt: typeof wire.created_at === 'number' ? wire.created_at : 0,
     updatedAt: typeof wire.updated_at === 'number' ? wire.updated_at : 0,
+  }
+}
+
+function imagePreviewAspectClass(aspectRatio: string): string {
+  switch (aspectRatio) {
+    case '2:3':
+      return 'aspect-[2/3]'
+    case '3:2':
+      return 'aspect-[3/2]'
+    case '3:4':
+      return 'aspect-[3/4]'
+    case '4:3':
+      return 'aspect-[4/3]'
+    case '9:16':
+      return 'aspect-[9/16]'
+    case '16:9':
+      return 'aspect-[16/9]'
+    default:
+      return 'aspect-square'
   }
 }
 
@@ -185,6 +238,12 @@ export function ImageToolPage() {
   const [newSessionTitle, setNewSessionTitle] = useState('')
   const [creatingSession, setCreatingSession] = useState(false)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
+  const [selectedImageAssetId, setSelectedImageAssetId] = useState<string | null>(null)
+  const [selectedImageModel, setSelectedImageModel] = useState<string>(IMAGE_MODEL_OPTIONS[0]?.id ?? '')
+  const [selectedOpenAIImageSize, setSelectedOpenAIImageSize] = useState('auto')
+  const [selectedGoogleAspectRatio, setSelectedGoogleAspectRatio] = useState('1:1')
+  const [selectedGoogleImageSize, setSelectedGoogleImageSize] = useState('1K')
+  const [promptText, setPromptText] = useState('')
   const [blackModeEnabled, setBlackModeEnabled] = useState(() => {
     if (typeof window === 'undefined') {
       return false
@@ -234,6 +293,50 @@ export function ImageToolPage() {
     if (!selectedThreadId) return null
     return imageThreads.find((thread) => thread.id === selectedThreadId) ?? null
   }, [imageThreads, selectedThreadId])
+
+  const orderedImageAssets = useMemo(() => {
+    if (!selectedThread) return []
+    const assetsById = new Map(selectedThread.imageAssets.map((asset) => [asset.id, asset]))
+    const orderedAssets = selectedThread.imageAssetOrder
+      .map((assetId) => assetsById.get(assetId))
+      .filter((asset): asset is ImageAsset => Boolean(asset))
+    const orderedIds = new Set(orderedAssets.map((asset) => asset.id))
+    return [...orderedAssets, ...selectedThread.imageAssets.filter((asset) => !orderedIds.has(asset.id))]
+  }, [selectedThread])
+
+  const selectedImageAsset = useMemo(() => {
+    if (orderedImageAssets.length === 0) return null
+    return orderedImageAssets.find((asset) => asset.id === selectedImageAssetId) ?? orderedImageAssets[0]
+  }, [orderedImageAssets, selectedImageAssetId])
+
+  const selectedImageAssetIndex = selectedImageAsset
+    ? orderedImageAssets.findIndex((asset) => asset.id === selectedImageAsset.id)
+    : -1
+  const activePreviewNumber = selectedImageAssetIndex >= 0 ? selectedImageAssetIndex + 1 : 1
+  const selectedModelOption = IMAGE_MODEL_OPTIONS.find((option) => option.id === selectedImageModel) ?? IMAGE_MODEL_OPTIONS[0]
+  const isGoogleImagenModel = selectedModelOption.kind === 'google-imagen'
+  const selectedOpenAISizeOption = OPENAI_IMAGE_SIZE_OPTIONS.find((option) => option.id === selectedOpenAIImageSize) ?? OPENAI_IMAGE_SIZE_OPTIONS[0]
+  const selectedGoogleSizeOption = GOOGLE_IMAGE_SIZE_OPTIONS.find((option) => option.id === selectedGoogleImageSize) ?? GOOGLE_IMAGE_SIZE_OPTIONS[0]
+  const selectedShapeLabel = isGoogleImagenModel ? selectedGoogleAspectRatio : selectedOpenAISizeOption.aspectRatio
+  const selectedSizeLabel = isGoogleImagenModel ? selectedGoogleImageSize : selectedOpenAIImageSize
+  const previewAspectClass = imagePreviewAspectClass(selectedShapeLabel)
+  const selectedModelLabel = selectedModelOption.label
+  const selectedProviderControlLabel = isGoogleImagenModel ? 'Google Imagen controls' : 'OpenAI GPT Image controls'
+  const selectedSizeDisplayLabel = isGoogleImagenModel
+    ? selectedGoogleSizeOption.label + ' · ' + selectedGoogleAspectRatio
+    : selectedOpenAISizeOption.helper
+
+  useEffect(() => {
+    if (orderedImageAssets.length === 0) {
+      if (selectedImageAssetId !== null) {
+        setSelectedImageAssetId(null)
+      }
+      return
+    }
+    if (!selectedImageAssetId || !orderedImageAssets.some((asset) => asset.id === selectedImageAssetId)) {
+      setSelectedImageAssetId(orderedImageAssets[0].id)
+    }
+  }, [orderedImageAssets, selectedImageAssetId])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -286,6 +389,20 @@ export function ImageToolPage() {
     }
   }, [newSessionTitle, queryClient, selectedWorkspaceName, selectedWorkspacePath])
 
+  const handlePreviousPreview = useCallback(() => {
+    if (orderedImageAssets.length === 0) return
+    const currentIndex = selectedImageAssetIndex >= 0 ? selectedImageAssetIndex : 0
+    const nextIndex = (currentIndex - 1 + orderedImageAssets.length) % orderedImageAssets.length
+    setSelectedImageAssetId(orderedImageAssets[nextIndex].id)
+  }, [orderedImageAssets, selectedImageAssetIndex])
+
+  const handleNextPreview = useCallback(() => {
+    if (orderedImageAssets.length === 0) return
+    const currentIndex = selectedImageAssetIndex >= 0 ? selectedImageAssetIndex : 0
+    const nextIndex = (currentIndex + 1) % orderedImageAssets.length
+    setSelectedImageAssetId(orderedImageAssets[nextIndex].id)
+  }, [orderedImageAssets, selectedImageAssetIndex])
+
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
       <div className="mx-auto flex h-full w-full max-w-none flex-col px-4 py-4 sm:px-5 sm:py-5">
@@ -326,8 +443,9 @@ export function ImageToolPage() {
             defaultSessionTitle="Image Thread"
           >
             {selectedThread ? (
-              <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
+              <div className="min-h-0 overflow-y-auto py-3">
                 <p className="mb-2 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Current image session</p>
+                <div className="pt-3">
                 <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
                   <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
                   <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedThread.workspacePath}</p>
@@ -335,6 +453,7 @@ export function ImageToolPage() {
                     <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Folders</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageFolders.length}</div></div>
                     <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Assets</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageAssets.length}</div></div>
                   </div>
+                </div>
                 </div>
               </div>
             ) : null}
@@ -357,14 +476,151 @@ export function ImageToolPage() {
                 </div>
               </div>
             ) : (
-              <div className="grid min-h-full place-items-center border border-[var(--app-border)] bg-[var(--app-surface)] px-6 py-16 text-center">
-                <div className="max-w-lg">
-                  <Sparkles className="mx-auto text-[var(--app-primary)]" size={44} strokeWidth={1.5} />
-                  <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--app-text-subtle)]">Image session started</p>
-                  <h2 className="mt-3 text-3xl font-semibold tracking-[-0.055em] text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
-                  <p className="mt-4 text-sm leading-6 text-[var(--app-text-muted)]">
-                    The DB-backed image session exists and is selected. Generated image files for this session will live in Swarm’s private app-managed workspace bucket, outside the repository.
-                  </p>
+              <div className="flex min-h-full flex-col gap-4">
+                <div className="flex min-h-[460px] flex-1 flex-col border border-[var(--app-border)] bg-[var(--app-surface)]">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--app-text-subtle)]">Generation area</p>
+                      <h2 className="mt-1 truncate text-xl font-semibold tracking-[-0.045em] text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-[var(--app-text-muted)]">
+                      <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1">{selectedModelLabel}</span>
+                      <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1">{selectedShapeLabel}</span>
+                      <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1">{selectedSizeLabel}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto]">
+                    <div className="relative grid min-h-[340px] place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_34%),var(--app-bg)] px-5 py-6">
+                      <div className="absolute left-4 top-4 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">
+                        Image {activePreviewNumber} of {Math.max(orderedImageAssets.length, 1)}
+                      </div>
+                      <div className="absolute right-4 top-4 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">
+                        Carousel preview
+                      </div>
+                      <Button variant="outline" className="absolute left-4 top-1/2 h-10 w-10 -translate-y-1/2 rounded-full px-0" onClick={handlePreviousPreview} disabled={orderedImageAssets.length <= 1} aria-label="Previous image">
+                        <ChevronLeft size={18} />
+                      </Button>
+                      <div className={`grid ${previewAspectClass} max-h-[68vh] w-full max-w-[760px] place-items-center overflow-hidden border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-surface)_0%,var(--app-bg)_52%,var(--app-surface-hover)_100%)] shadow-2xl shadow-black/10`}>
+                        {selectedImageAsset ? (
+                          <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-8 text-center">
+                            <Image className="text-[var(--app-primary)]" size={52} strokeWidth={1.35} />
+                            <div>
+                              <p className="text-lg font-semibold tracking-[-0.04em] text-[var(--app-text)]">{selectedImageAsset.name}</p>
+                              <p className="mt-2 break-all text-xs leading-5 text-[var(--app-text-muted)]">{selectedImageAsset.path}</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
+                            <Sparkles className="text-[var(--app-primary)]" size={56} strokeWidth={1.35} />
+                            <div className="max-w-md">
+                              <p className="text-2xl font-semibold tracking-[-0.055em] text-[var(--app-text)]">Your generated image will appear here</p>
+                              <p className="mt-3 text-sm leading-6 text-[var(--app-text-muted)]">Choose a prompt, model, and model-specific output shape below. AI generation hookup comes next.</p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <Button variant="outline" className="absolute right-4 top-1/2 h-10 w-10 -translate-y-1/2 rounded-full px-0" onClick={handleNextPreview} disabled={orderedImageAssets.length <= 1} aria-label="Next image">
+                        <ChevronRight size={18} />
+                      </Button>
+                    </div>
+
+                    <div className="border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3">
+                      <div className="mb-2 flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">
+                        <Clock3 size={13} />Progression / iterations
+                      </div>
+                      <div className="grid gap-2 md:grid-cols-3">
+                        {MOCK_IMAGE_ITERATIONS.map((iteration, index) => (
+                          <div key={iteration.id} className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] text-[var(--app-text-subtle)]">{String(index + 1).padStart(2, '0')}</span>
+                              <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] text-[var(--app-text-muted)]">{iteration.status}</span>
+                            </div>
+                            <p className="mt-2 text-sm font-medium text-[var(--app-text)]">{iteration.label}</p>
+                            <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{iteration.detail}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+                  <div className="grid gap-4">
+                    <div className="grid gap-4">
+                      <label className="block text-xs font-medium text-[var(--app-text-muted)]">
+                        Prompt
+                        <Textarea
+                          className="mt-1.5 min-h-[132px] resize-none text-sm"
+                          value={promptText}
+                          onChange={(event) => setPromptText(event.target.value)}
+                          placeholder="Describe the image you want to generate…"
+                        />
+                      </label>
+
+                      <div className="grid min-w-0 gap-3">
+                        <label className="block min-w-0 text-xs font-medium text-[var(--app-text-muted)]">
+                          Image Model
+                          <Select className="mt-1.5 min-w-0 truncate" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)}>
+                            {IMAGE_MODEL_OPTIONS.map((option) => (
+                              <option key={option.id} value={option.id}>{option.label}</option>
+                            ))}
+                          </Select>
+                        </label>
+
+                        <div className="min-w-0">
+                          <p className="text-[11px] text-[var(--app-text-subtle)]">{selectedProviderControlLabel}</p>
+                          {isGoogleImagenModel ? (
+                            <div className="mt-1.5 grid gap-3">
+                              <div>
+                                <p className="text-xs font-medium text-[var(--app-text-muted)]">Aspect ratio</p>
+                                <div className="mt-1.5 grid grid-cols-3 gap-2 sm:grid-cols-5">
+                                  {GOOGLE_IMAGE_ASPECT_RATIO_OPTIONS.map((option) => (
+                                    <button key={option.id} type="button" onClick={() => setSelectedGoogleAspectRatio(option.id)} className={['min-w-0 border px-2 py-2 text-center transition hover:bg-[var(--app-surface-hover)]', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
+                                      <span className="block text-xs font-semibold">{option.id}</span>
+                                      <span className="mt-0.5 block truncate text-[10px]">{option.label}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium text-[var(--app-text-muted)]">Image size</p>
+                                <div className="mt-1.5 grid grid-cols-2 gap-2">
+                                  {GOOGLE_IMAGE_SIZE_OPTIONS.map((option) => (
+                                    <button key={option.id} type="button" onClick={() => setSelectedGoogleImageSize(option.id)} className={['border px-3 py-2 text-center transition hover:bg-[var(--app-surface-hover)]', selectedGoogleImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
+                                      <span className="block text-xs font-semibold">{option.label}</span>
+                                      <span className="mt-0.5 block truncate text-[10px]">{option.helper}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="mt-1.5">
+                              <p className="text-xs font-medium text-[var(--app-text-muted)]">Output size</p>
+                              <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-2 2xl:grid-cols-4">
+                                {OPENAI_IMAGE_SIZE_OPTIONS.map((option) => (
+                                  <button key={option.id} type="button" onClick={() => setSelectedOpenAIImageSize(option.id)} className={['min-w-0 border px-3 py-2 text-center transition hover:bg-[var(--app-surface-hover)]', selectedOpenAIImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]'].join(' ')}>
+                                    <span className="block text-xs font-semibold">{option.label}</span>
+                                    <span className="mt-0.5 block truncate text-[10px]">{option.helper}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-2 border-t border-dashed border-[var(--app-border)] pt-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                      <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-[11px] leading-5 text-[var(--app-text-subtle)]">
+                        {selectedSizeDisplayLabel}. Manual single-image path. Advanced controls later.
+                      </div>
+                      <Button className="h-11 w-full rounded-xl px-4 sm:w-auto" disabled>
+                        <Sparkles size={15} />Generate 1 image
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
