@@ -232,26 +232,29 @@ function PermissionActionBar({
             variant="ghost"
             size="sm"
             onClick={() => setNoteOpen((current) => !current)}
-            className="min-h-8 px-2.5 text-xs"
+            className="min-h-8 px-2.5 text-xs sm:hidden"
             aria-expanded={noteOpen}
           >
             {noteOpen ? 'Hide note' : hasNote ? 'Edit note' : 'Add note'}
           </Button>
-          {noteOpen ? (
-            <label className="mt-2 grid gap-1.5">
-              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{noteLabel}</span>
-              <Textarea
-                value={note ?? ''}
-                onChange={(event) => onNoteChange?.(event.target.value)}
-                placeholder={notePlaceholder}
-                className="min-h-11 resize-none bg-[var(--app-bg-alt)] sm:min-h-[3.5rem]"
-                rows={2}
-              />
-            </label>
-          ) : null}
+          <label className={cn('mt-2 gap-1.5 sm:mt-0 sm:grid', noteOpen ? 'grid' : 'hidden')}>
+            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{noteLabel}</span>
+            <Textarea
+              value={note ?? ''}
+              onChange={(event) => onNoteChange?.(event.target.value)}
+              placeholder={notePlaceholder}
+              className="min-h-11 resize-none bg-[var(--app-bg-alt)] sm:min-h-[3.5rem]"
+              rows={2}
+            />
+          </label>
         </div>
       ) : null}
-      <div className="flex touch-manipulation flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+      <div
+        className={cn(
+          'flex touch-manipulation flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end',
+          showNoteToggle ? (noteOpen ? 'pt-3 sm:pt-4' : 'sm:pt-4') : null,
+        )}
+      >
         <Button
           type="button"
           variant="primary"
