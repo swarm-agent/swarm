@@ -24,6 +24,7 @@ import (
 	containerprofiles "swarm/packages/swarmd/internal/containerprofiles"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/imagegen"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	"swarm/packages/swarmd/internal/lock"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
@@ -348,7 +349,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
 	apiServer.SetFlowStore(flowStore)
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
-	apiServer.SetImageThreadStore(pebblestore.NewImageThreadStore(store))
+	imageThreadStore := pebblestore.NewImageThreadStore(store)
+	apiServer.SetImageGenerationService(imagegen.NewService(codexClient, authStore, imageThreadStore))
+	apiServer.SetImageThreadStore(imageThreadStore)
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetSwarmService(swarmSvc)
 	apiServer.SetContainerProfileService(containerProfileSvc)

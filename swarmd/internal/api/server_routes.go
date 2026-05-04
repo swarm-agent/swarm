@@ -101,6 +101,9 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/image/providers", s.handleImageGenerationProviders)
+	mux.HandleFunc("/v1/image/generations", s.handleImageGenerations)
+	mux.HandleFunc("/v1/image/assets", s.handleImageAssets)
 	mux.HandleFunc("/v1/model", s.handleModelPreference)
 	mux.HandleFunc("/v1/model/catalog", s.handleModelCatalog)
 	mux.HandleFunc("/v1/models/favorites", s.handleModelFavorites)

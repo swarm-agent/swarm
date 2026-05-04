@@ -214,16 +214,27 @@ type AssistantMessage struct {
 type StreamEventType string
 
 const (
-	StreamEventOutputTextDelta       StreamEventType = "response.output_text.delta"
-	StreamEventReasoningSummaryDelta StreamEventType = "response.reasoning_summary_text.delta"
-	StreamEventAssistantCommentary   StreamEventType = "response.assistant_commentary.delta"
+	StreamEventOutputTextDelta              StreamEventType = "response.output_text.delta"
+	StreamEventReasoningSummaryDelta        StreamEventType = "response.reasoning_summary_text.delta"
+	StreamEventAssistantCommentary          StreamEventType = "response.assistant_commentary.delta"
+	StreamEventImageGenerationPartialImage  StreamEventType = "response.image_generation_call.partial_image"
+	StreamEventImageGenerationCallCompleted StreamEventType = "response.image_generation_call.completed"
 )
 
 type StreamEvent struct {
-	Type         StreamEventType
-	Delta        string
-	Phase        provideriface.AssistantPhase
-	ReasoningKey string
+	Type              StreamEventType
+	Delta             string
+	Phase             provideriface.AssistantPhase
+	ReasoningKey      string
+	ItemID            string
+	OutputIndex       int
+	SequenceNumber    int
+	PartialImageIndex int
+	PartialImageB64   string
+	OutputFormat      string
+	Size              string
+	Quality           string
+	Background        string
 }
 
 type tokenRefresh struct {
@@ -1014,6 +1025,9 @@ func normalizeCodexWebsocketToolParameters(decoded map[string]any) {
 		if !ok {
 			continue
 		}
+		if strings.TrimSpace(asString(tool["type"])) == "image_generation" {
+			continue
+		}
 		parameters, _ := tool["parameters"].(map[string]any)
 		tool["parameters"] = sanitizeCodexToolParameters(parameters)
 	}
@@ -1151,14 +1165,17 @@ func parseEventStream(body []byte) (map[string]any, error) {
 }
 
 type streamDecodeState struct {
-	completedResponse map[string]any
-	lastObject        map[string]any
-	outputText        string
-	reasoningSummary  map[string]string
-	reasoningOrder    []string
-	outputItems       []map[string]any
-	outputItemPos     map[string]int
-	sawPayload        bool
+	completedResponse       map[string]any
+	lastObject              map[string]any
+	outputText              string
+	reasoningSummary        map[string]string
+	reasoningOrder          []string
+	outputItems             []map[string]any
+	outputItemPos           map[string]int
+	imageGenerationResults  map[string]string
+	imageGenerationPartials []map[string]any
+	rawEvents               []map[string]any
+	sawPayload              bool
 }
 
 func processResponseStreamEvent(eventName string, payload string, state *streamDecodeState, onEvent func(StreamEvent)) {
@@ -1178,6 +1195,11 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 		return
 	}
 	state.lastObject = decoded
+	state.rawEvents = append(state.rawEvents, map[string]any{
+		"event":         eventName,
+		"payload_chars": len(payload),
+		"data":          cloneMapAny(decoded),
+	})
 
 	if strings.TrimSpace(eventName) == "" {
 		eventName = asString(decoded["type"])
@@ -1185,6 +1207,16 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 	codexThinkingLogSSEEvent(eventName, decoded, len(payload))
 
 	switch eventName {
+	case "response.image_generation_call.partial_image":
+		recordImageGenerationPartialImageEvent(state, decoded)
+		if onEvent != nil {
+			onEvent(streamEventImageGenerationPartialImage(decoded))
+		}
+	case "response.image_generation_call.completed":
+		completeImageGenerationCallEvent(state, decoded)
+		if onEvent != nil {
+			onEvent(streamEventImageGenerationCompleted(decoded))
+		}
 	case "response.output_text.delta":
 		delta := firstNonEmpty(asString(decoded["delta"]), asString(decoded["text"]), asString(decoded["output_text_delta"]))
 		if delta != "" {
@@ -1274,6 +1306,37 @@ func extractOutputItemFromEvent(decoded map[string]any) map[string]any {
 	return cloneMapAny(item)
 }
 
+func streamEventImageGenerationPartialImage(event map[string]any) StreamEvent {
+	return StreamEvent{
+		Type:              StreamEventImageGenerationPartialImage,
+		ItemID:            strings.TrimSpace(asString(event["item_id"])),
+		OutputIndex:       intFromAny(event["output_index"], -1),
+		SequenceNumber:    intFromAny(event["sequence_number"], -1),
+		PartialImageIndex: intFromAny(event["partial_image_index"], -1),
+		PartialImageB64:   strings.TrimSpace(asString(event["partial_image_b64"])),
+		OutputFormat:      strings.TrimSpace(asString(event["output_format"])),
+		Size:              strings.TrimSpace(asString(event["size"])),
+		Quality:           strings.TrimSpace(asString(event["quality"])),
+		Background:        strings.TrimSpace(asString(event["background"])),
+	}
+}
+
+func streamEventImageGenerationCompleted(event map[string]any) StreamEvent {
+	return StreamEvent{
+		Type:           StreamEventImageGenerationCallCompleted,
+		ItemID:         strings.TrimSpace(asString(event["item_id"])),
+		OutputIndex:    intFromAny(event["output_index"], -1),
+		SequenceNumber: intFromAny(event["sequence_number"], -1),
+	}
+}
+
+func intFromAny(value any, fallback int) int {
+	if number, ok := asInt64(value); ok {
+		return int(number)
+	}
+	return fallback
+}
+
 func outputItemAssistantPhase(item map[string]any) provideriface.AssistantPhase {
 	if len(item) == 0 {
 		return provideriface.AssistantPhaseUnknown
@@ -1292,16 +1355,110 @@ func recordOutputItemEvent(state *streamDecodeState, item map[string]any, event 
 	if state == nil || len(item) == 0 {
 		return
 	}
+	item = cloneMapAny(item)
+	mergeImageGenerationResultIntoItem(state, item, event)
 	if state.outputItemPos == nil {
 		state.outputItemPos = make(map[string]int, 8)
 	}
 	key := outputItemEventKey(item, event, len(state.outputItems))
 	if pos, ok := state.outputItemPos[key]; ok && pos >= 0 && pos < len(state.outputItems) {
-		state.outputItems[pos] = cloneMapAny(item)
+		state.outputItems[pos] = item
 		return
 	}
-	state.outputItems = append(state.outputItems, cloneMapAny(item))
+	state.outputItems = append(state.outputItems, item)
 	state.outputItemPos[key] = len(state.outputItems) - 1
+}
+
+func recordImageGenerationPartialImageEvent(state *streamDecodeState, event map[string]any) {
+	if state == nil || len(event) == 0 {
+		return
+	}
+	partial := cloneMapAny(event)
+	state.imageGenerationPartials = append(state.imageGenerationPartials, partial)
+}
+
+func completeImageGenerationCallEvent(state *streamDecodeState, event map[string]any) {
+	if state == nil || len(event) == 0 {
+		return
+	}
+	key := imageGenerationEventKey(event, -1)
+	if key == "" {
+		return
+	}
+	for pos := range state.outputItems {
+		item := state.outputItems[pos]
+		if !strings.EqualFold(strings.TrimSpace(asString(item["type"])), "image_generation_call") {
+			continue
+		}
+		if imageGenerationOutputItemKey(item, pos) != key {
+			continue
+		}
+		item = cloneMapAny(item)
+		item["status"] = "completed"
+		if result := strings.TrimSpace(imageGenerationResultForKey(state, key)); result != "" && strings.TrimSpace(asString(item["result"])) == "" {
+			item["result"] = result
+		}
+		state.outputItems[pos] = item
+		return
+	}
+}
+
+func mergeImageGenerationResultIntoItem(state *streamDecodeState, item map[string]any, event map[string]any) {
+	if state == nil || len(item) == 0 || !strings.EqualFold(strings.TrimSpace(asString(item["type"])), "image_generation_call") {
+		return
+	}
+	key := imageGenerationOutputItemKey(item, -1)
+	if key == "" {
+		key = imageGenerationEventKey(event, -1)
+	}
+	if key == "" {
+		return
+	}
+	if result := strings.TrimSpace(imageGenerationResultForKey(state, key)); result != "" && strings.TrimSpace(asString(item["result"])) == "" {
+		item["result"] = result
+	}
+	if strings.EqualFold(strings.TrimSpace(asString(event["type"])), "response.image_generation_call.completed") {
+		item["status"] = "completed"
+	}
+}
+
+func imageGenerationResultForKey(state *streamDecodeState, key string) string {
+	if state == nil || state.imageGenerationResults == nil || key == "" {
+		return ""
+	}
+	return state.imageGenerationResults[key]
+}
+
+func imageGenerationEventKey(event map[string]any, fallbackIndex int) string {
+	if len(event) == 0 {
+		return ""
+	}
+	if itemID := strings.TrimSpace(asString(event["item_id"])); itemID != "" {
+		return "id:" + itemID
+	}
+	if outputIndex, ok := asInt64(event["output_index"]); ok {
+		return fmt.Sprintf("output_index:%d", outputIndex)
+	}
+	if fallbackIndex >= 0 {
+		return fmt.Sprintf("idx:%d", fallbackIndex)
+	}
+	return ""
+}
+
+func imageGenerationOutputItemKey(item map[string]any, fallbackIndex int) string {
+	if len(item) == 0 {
+		return ""
+	}
+	if id := strings.TrimSpace(asString(item["id"])); id != "" {
+		return "id:" + id
+	}
+	if callID := strings.TrimSpace(asString(item["call_id"])); callID != "" {
+		return "call_id:" + callID
+	}
+	if fallbackIndex >= 0 {
+		return fmt.Sprintf("output_index:%d", fallbackIndex)
+	}
+	return ""
 }
 
 func outputItemEventKey(item map[string]any, event map[string]any, fallbackIndex int) string {
@@ -1600,10 +1757,26 @@ func mapsToAnySlice(values []map[string]any) []any {
 	return out
 }
 
+func attachRawStreamEvents(responseObj map[string]any, events []map[string]any) {
+	if responseObj == nil || len(events) == 0 {
+		return
+	}
+	responseObj["raw_events"] = mapsToAnySlice(events)
+}
+
+func attachImageGenerationPartials(responseObj map[string]any, partials []map[string]any) {
+	if responseObj == nil || len(partials) == 0 {
+		return
+	}
+	responseObj["image_generation_partials"] = mapsToAnySlice(partials)
+}
+
 func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error) {
 	reasoningSummary := aggregateReasoningStateText(state)
 	if state.completedResponse != nil {
 		mergeOutputItemsIntoResponse(state.completedResponse, state.outputItems)
+		attachImageGenerationPartials(state.completedResponse, state.imageGenerationPartials)
+		attachRawStreamEvents(state.completedResponse, state.rawEvents)
 		if strings.TrimSpace(asString(state.completedResponse["output_text"])) == "" && strings.TrimSpace(state.outputText) != "" {
 			state.completedResponse["output_text"] = state.outputText
 		}
@@ -1617,6 +1790,8 @@ func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error)
 	}
 	if state.lastObject != nil {
 		mergeOutputItemsIntoResponse(state.lastObject, state.outputItems)
+		attachImageGenerationPartials(state.lastObject, state.imageGenerationPartials)
+		attachRawStreamEvents(state.lastObject, state.rawEvents)
 		if strings.TrimSpace(asString(state.lastObject["output_text"])) == "" && strings.TrimSpace(state.outputText) != "" {
 			state.lastObject["output_text"] = state.outputText
 		}
@@ -1632,6 +1807,8 @@ func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error)
 		payload := map[string]any{
 			"output": mapsToAnySlice(state.outputItems),
 		}
+		attachImageGenerationPartials(payload, state.imageGenerationPartials)
+		attachRawStreamEvents(payload, state.rawEvents)
 		if strings.TrimSpace(state.outputText) != "" {
 			payload["output_text"] = state.outputText
 		}
