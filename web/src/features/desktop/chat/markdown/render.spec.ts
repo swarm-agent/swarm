@@ -81,3 +81,30 @@ test('MarkdownRenderer preserves nested list content for desktop session-origin 
   assert.doesNotMatch(html, />ve it:</, 'nested markdown text lost its first characters')
   assert.doesNotMatch(html, />d a second spec later/, 'nested markdown text lost its first characters')
 })
+
+test('MarkdownRenderer preserves underscores inside identifiers and inline code', () => {
+  const content = [
+    'Keep snake_case, SOME_VALUE, and path/to/my_file_name.ts visible.',
+    'Inline code keeps `some_value_name` literal.',
+    'Do not italicize foo_bar_baz or pre_middle_post.',
+  ].join('\n')
+
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
+
+  assert.match(html, /snake_case/)
+  assert.match(html, /SOME_VALUE/)
+  assert.match(html, /my_file_name\.ts/)
+  assert.match(html, /<code[^>]*>\s*some_value_name\s*<\/code>/)
+  assert.match(html, /foo_bar_baz/)
+  assert.match(html, /pre_middle_post/)
+  assert.doesNotMatch(html, /<em>/)
+})
+
+test('MarkdownRenderer still supports underscore emphasis outside identifiers', () => {
+  const content = 'This keeps _intentional emphasis_ while leaving words_with_underscores alone.'
+
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
+
+  assert.match(html, /<em>\s*<span>intentional emphasis<\/span>\s*<\/em>/)
+  assert.match(html, /words_with_underscores/)
+})

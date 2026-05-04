@@ -128,6 +128,42 @@ function parseDelimitedRun(
   }
 }
 
+function isMarkdownWordCharacter(value: string): boolean {
+  return /^[A-Za-z0-9]$/.test(value)
+}
+
+function isValidUnderscoreEmphasisRun(source: string, start: number, end: number): boolean {
+  const previous = start > 0 ? source[start - 1] : ''
+  const firstInner = source[start + 1] ?? ''
+  const lastInner = source[end - 1] ?? ''
+  const next = source[end + 1] ?? ''
+
+  if (!firstInner || /\s/.test(firstInner) || !lastInner || /\s/.test(lastInner)) {
+    return false
+  }
+
+  return !isMarkdownWordCharacter(previous) && !isMarkdownWordCharacter(next)
+}
+
+function parseUnderscoreEmphasisRun(source: string, start: number, autolink = true): { node: MarkdownInlineNode; nextIndex: number } | null {
+  if (source[start] !== '_') return null
+
+  let end = source.indexOf('_', start + 1)
+  while (end > start + 1) {
+    if (isValidUnderscoreEmphasisRun(source, start, end)) {
+      const children = parseInlineNodes(source.slice(start + 1, end), autolink)
+      if (children.length === 0) return null
+      return {
+        node: { type: 'em', children },
+        nextIndex: end + 1,
+      }
+    }
+    end = source.indexOf('_', end + 1)
+  }
+
+  return null
+}
+
 function parseInlineNodes(source: string, autolink = true): MarkdownInlineNode[] {
   const nodes: MarkdownInlineNode[] = []
   let index = 0
@@ -142,9 +178,17 @@ function parseInlineNodes(source: string, autolink = true): MarkdownInlineNode[]
       }
     }
 
-    if (source[index] === '*' || source[index] === '_') {
-      const delimiter = source[index]
-      const emphasis = parseDelimitedRun(source, delimiter, index, (children) => ({ type: 'em', children }), autolink)
+    if (source[index] === '*') {
+      const emphasis = parseDelimitedRun(source, '*', index, (children) => ({ type: 'em', children }), autolink)
+      if (emphasis) {
+        nodes.push(emphasis.node)
+        index = emphasis.nextIndex
+        continue
+      }
+    }
+
+    if (source[index] === '_') {
+      const emphasis = parseUnderscoreEmphasisRun(source, index, autolink)
       if (emphasis) {
         nodes.push(emphasis.node)
         index = emphasis.nextIndex
