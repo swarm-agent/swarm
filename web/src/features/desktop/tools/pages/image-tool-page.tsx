@@ -1,4 +1,4 @@
-import { type CSSProperties, type WheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, ChevronLeft, ChevronRight, Clipboard, Download, ExternalLink, FolderOpen, Image, Link2, Moon, Sparkles, TriangleAlert, X } from 'lucide-react'
@@ -480,17 +480,29 @@ export function ImageToolPage() {
 
   useEffect(() => {
     if (!selectedThumbnailId) return
-    selectedThumbnailButtonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+    const scroller = thumbnailScrollerRef.current
+    const selectedButton = selectedThumbnailButtonRef.current
+    if (!scroller || !selectedButton) return
+    const buttonCenter = selectedButton.offsetLeft + selectedButton.offsetWidth / 2
+    const targetLeft = buttonCenter - scroller.clientWidth / 2
+    scroller.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' })
   }, [selectedThumbnailId, thumbnailItems.length])
 
-  const handleThumbnailWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+  useEffect(() => {
     const scroller = thumbnailScrollerRef.current
-    if (!scroller || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
-    const canScrollHorizontally = scroller.scrollWidth > scroller.clientWidth
-    if (!canScrollHorizontally) return
-    scroller.scrollLeft += event.deltaY
-    event.preventDefault()
-  }, [])
+    if (!scroller) return
+    const handleWheel = (event: globalThis.WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      if (scroller.scrollWidth <= scroller.clientWidth) return
+      const scrollDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
+      scroller.scrollLeft += scrollDelta
+    }
+    scroller.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      scroller.removeEventListener('wheel', handleWheel)
+    }
+  }, [selectedThread?.id])
 
   useEffect(() => {
     if (!activeImageDefaultModel || imageDefaultSaving) return
@@ -1047,7 +1059,7 @@ export function ImageToolPage() {
             ) : null}
           </SwarmToolSidebar>
 
-          <section className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+          <section className="flex min-w-0 flex-1 flex-col overflow-y-auto xl:overflow-hidden">
             <div className="mb-4 flex items-center justify-between gap-3 lg:hidden">
               <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBackToWorkspace}><ArrowLeft size={15} />{routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}</Button>
               <Button variant="outline" style={darkOverrideButtonStyle} className={`h-8 w-8 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
@@ -1065,8 +1077,9 @@ export function ImageToolPage() {
               </div>
             ) : (
               <div className="grid min-h-full gap-3 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(0,1fr)_360px] xl:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_400px]">
-                <div className="flex min-h-[520px] flex-col overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)] xl:min-h-0">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-3 py-2">
+                <div className="grid min-h-[520px] grid-rows-[minmax(0,1fr)_auto] gap-3 overflow-hidden xl:min-h-0">
+                  <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-3 py-2">
                     <div className="min-w-0">
                       <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--app-text-subtle)]">Generation area</p>
                       <h2 className="mt-1 truncate text-xl font-semibold tracking-[-0.045em] text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
@@ -1091,7 +1104,6 @@ export function ImageToolPage() {
                     </div>
                   </div>
 
-                  <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto]">
                     <div className="relative grid min-h-0 place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_34%),var(--app-bg)] px-2 py-2 sm:px-4 sm:py-4">
                       <div className="grid h-full min-h-0 w-full place-items-center overflow-hidden border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-surface)_0%,var(--app-bg)_52%,var(--app-surface-hover)_100%)] shadow-2xl shadow-black/10">
                         {activeLivePreview ? (
@@ -1132,12 +1144,14 @@ export function ImageToolPage() {
                       </div>
                     </div>
 
-                    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
-                      <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">
-                        <span>Session images</span>
-                        <span>{orderedImageAssets.length} saved · hover or click to preview</span>
-                      </div>
-                      <div ref={thumbnailScrollerRef} onWheel={handleThumbnailWheel} className="flex snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain scroll-smooth pb-2 pr-2 [scrollbar-gutter:stable]">
+                  </div>
+
+                  <section className="shrink-0 overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2" aria-label="Session images">
+                    <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">
+                      <span>Session images</span>
+                      <span>{orderedImageAssets.length} saved · hover or click to preview</span>
+                    </div>
+                    <div ref={thumbnailScrollerRef} className="flex max-w-full snap-x snap-mandatory gap-2 overflow-x-scroll overflow-y-hidden overscroll-x-contain scroll-smooth pb-2 pr-2 [scrollbar-gutter:stable]">
                         {thumbnailItems.length > 0 ? thumbnailItems.map((item) => {
                           const selected = item.id === selectedThumbnailId
                           const imageSrc = item.kind === 'asset'
@@ -1171,9 +1185,8 @@ export function ImageToolPage() {
                             Generated images will populate this scrollable carousel as they are saved.
                           </div>
                         )}
-                      </div>
                     </div>
-                  </div>
+                  </section>
                 </div>
 
                 <aside className="min-h-0 overflow-y-auto border border-[var(--app-border)] bg-[var(--app-surface)] p-3 xl:h-full">

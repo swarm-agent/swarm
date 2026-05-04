@@ -275,44 +275,34 @@ func (s *Service) generateCodexOpenAI(ctx context.Context, req GenerateRequest, 
 	}
 	imageGenerationLogf("stage=start provider=%q model=%q thread_id=%q storage_path=%q requested_count=%d partial_images=%d", ProviderCodexOpenAI, modelID, session.thread.ID, session.storagePath, count, partialImages)
 
-	partials := make([]PartialImage, 0, partialImages*count)
-	assets := make([]GeneratedAsset, 0, count)
-	updatedThread := session.thread
-	var providerResponse map[string]any
-	for index := 0; index < count; index++ {
-		streamCapture := newImageStreamFrameCapture(index)
-		imageGenerationLogf("stage=provider_call_start thread_id=%q slot=%d requested_count=%d storage_path=%q", session.thread.ID, index+1, count, session.storagePath)
-		generated, err := s.codexClient.GenerateImage(ctx, codex.ImageGenerationRequest{
-			Model:         modelID,
-			Prompt:        prompt,
-			Size:          firstNonEmpty(req.Size, settingString(req.Settings, "size")),
-			Count:         1,
-			PartialImages: partialImages,
-			OnEvent:       codexImageGenerationEventCallback(req.OnEvent, index, streamCapture),
-		})
-		if err != nil {
-			imageGenerationLogf("stage=provider_call_error thread_id=%q slot=%d reason=%q captured_frames=%d latest_stream_png_bytes=%d will_save=false", session.thread.ID, index+1, err.Error(), streamCapture.FrameCount(), len(streamCapture.LatestPNG()))
-			return GenerateResult{}, err
-		}
-		providerResponse = generated.ProviderResponse
-		mappedPartials := mapCodexPartialImages(generated.PartialImages, index)
-		partials = append(partials, mappedPartials...)
-		imageGenerationLogf("stage=provider_call_done thread_id=%q slot=%d provider_response=%s result_count=%d decoded_png_bytes=%d partials_from_result=%d partials_forwarded=%d captured_frames=%d latest_stream_png_bytes=%d provider_response_keys=%q", session.thread.ID, index+1, providerResponseShape(generated.ProviderResponse), len(generated.Results), len(generated.DecodedPNG), len(generated.PartialImages), len(mappedPartials), streamCapture.FrameCount(), len(streamCapture.LatestPNG()), strings.Join(sortedAnyMapKeys(generated.ProviderResponse), ","))
-		completed, err := completedCodexImages(generated, 1, streamCapture.LatestPNG())
-		if err != nil {
-			imageGenerationLogf("stage=final_validation_failed thread_id=%q slot=%d reason=%q result_count=%d decoded_png_bytes=%d partials_from_result=%d captured_frames=%d latest_stream_png_bytes=%d provider_response=%s provider_response_keys=%q will_save=false", session.thread.ID, index+1, err.Error(), len(generated.Results), len(generated.DecodedPNG), len(generated.PartialImages), streamCapture.FrameCount(), len(streamCapture.LatestPNG()), providerResponseShape(generated.ProviderResponse), strings.Join(sortedAnyMapKeys(generated.ProviderResponse), ","))
-			return GenerateResult{}, err
-		}
-		completed[0].OutputIndex = index
-		slotAssets, slotThread, err := s.saveGeneratedImages(session, completed, ProviderCodexOpenAI, modelID)
-		if err != nil {
-			imageGenerationLogf("stage=slot_save_failed thread_id=%q slot=%d reason=%q final_png_bytes=%d storage_path=%q will_save=false", session.thread.ID, index+1, err.Error(), len(completed[0].DecodedPNG), session.storagePath)
-			return GenerateResult{}, err
-		}
-		assets = append(assets, slotAssets...)
-		updatedThread = slotThread
-		session.thread = slotThread
-		imageGenerationLogf("stage=slot_save_done thread_id=%q slot=%d saved_assets=%d total_saved_assets=%d storage_path=%q image_thread_assets=%d", session.thread.ID, index+1, len(slotAssets), len(assets), session.storagePath, len(updatedThread.ImageAssets))
+	streamCapture := newImageStreamFrameCapture(0)
+	imageGenerationLogf("stage=provider_call_start thread_id=%q requested_count=%d storage_path=%q", session.thread.ID, count, session.storagePath)
+	generated, err := s.codexClient.GenerateImage(ctx, codex.ImageGenerationRequest{
+		Model:         modelID,
+		Prompt:        prompt,
+		Size:          firstNonEmpty(req.Size, settingString(req.Settings, "size")),
+		Count:         count,
+		PartialImages: partialImages,
+		OnEvent:       codexImageGenerationEventCallback(req.OnEvent, 0, streamCapture),
+	})
+	if err != nil {
+		imageGenerationLogf("stage=provider_call_error thread_id=%q reason=%q captured_frames=%d latest_stream_png_bytes=%d will_save=false", session.thread.ID, err.Error(), streamCapture.FrameCount(), len(streamCapture.LatestPNG()))
+		return GenerateResult{}, err
+	}
+	partials := mapCodexPartialImages(generated.PartialImages, 0)
+	imageGenerationLogf("stage=provider_call_done thread_id=%q provider_response=%s result_count=%d decoded_png_bytes=%d partials_from_result=%d partials_forwarded=%d captured_frames=%d latest_stream_png_bytes=%d provider_response_keys=%q", session.thread.ID, providerResponseShape(generated.ProviderResponse), len(generated.Results), len(generated.DecodedPNG), len(generated.PartialImages), len(partials), streamCapture.FrameCount(), len(streamCapture.LatestPNG()), strings.Join(sortedAnyMapKeys(generated.ProviderResponse), ","))
+	completed, err := completedCodexImages(generated, count, streamCapture.LatestPNG())
+	if err != nil {
+		imageGenerationLogf("stage=final_validation_failed thread_id=%q reason=%q result_count=%d decoded_png_bytes=%d partials_from_result=%d captured_frames=%d latest_stream_png_bytes=%d provider_response=%s provider_response_keys=%q will_save=false", session.thread.ID, err.Error(), len(generated.Results), len(generated.DecodedPNG), len(generated.PartialImages), streamCapture.FrameCount(), len(streamCapture.LatestPNG()), providerResponseShape(generated.ProviderResponse), strings.Join(sortedAnyMapKeys(generated.ProviderResponse), ","))
+		return GenerateResult{}, err
+	}
+	for index := range completed {
+		completed[index].OutputIndex = index
+	}
+	assets, updatedThread, err := s.saveGeneratedImages(session, completed, ProviderCodexOpenAI, modelID)
+	if err != nil {
+		imageGenerationLogf("stage=save_failed thread_id=%q reason=%q final_images=%d storage_path=%q will_save=false", session.thread.ID, err.Error(), len(completed), session.storagePath)
+		return GenerateResult{}, err
 	}
 	if len(assets) != count {
 		err := fmt.Errorf("backend saved %d image assets, expected exactly %d", len(assets), count)
@@ -324,7 +314,7 @@ func (s *Service) generateCodexOpenAI(ctx context.Context, req GenerateRequest, 
 		Assets:           assets,
 		Partials:         partials,
 		Target:           &WorkspaceImageSessionTargetInfo{Kind: TargetWorkspaceImage, Thread: updatedThread},
-		ProviderResponse: providerResponse,
+		ProviderResponse: generated.ProviderResponse,
 	}, nil
 }
 

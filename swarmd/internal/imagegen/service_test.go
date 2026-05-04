@@ -100,22 +100,19 @@ func TestGenerateWorkspaceImageSessionBackendWritesOnePNGBeforeSuccess(t *testin
 }
 
 func TestGenerateWorkspaceImageSessionBackendWritesExactlyThreePNGs(t *testing.T) {
-	client := &fakeCodexImageClient{results: []codex.ImageGenerationResult{
-		{
-			CallID:           "ig_1",
-			OutputIndex:      0,
-			RevisedPrompt:    "first",
-			DecodedPNG:       testPNGBytes(),
-			ProviderResponse: map[string]any{"id": "resp_1"},
-			PartialImages: []codex.ImageGenerationPartialImage{{
-				ItemID:            "ig_1",
-				OutputIndex:       0,
-				PartialImageIndex: 2,
-				Base64Image:       "preview",
-			}},
+	client := &fakeCodexImageClient{result: codex.ImageGenerationResult{
+		ProviderResponse: map[string]any{"id": "resp_1"},
+		PartialImages: []codex.ImageGenerationPartialImage{{
+			ItemID:            "ig_1",
+			OutputIndex:       0,
+			PartialImageIndex: 2,
+			Base64Image:       "preview",
+		}},
+		Results: []codex.ImageGenerationResult{
+			{CallID: "ig_1", OutputIndex: 0, RevisedPrompt: "first", DecodedPNG: testPNGBytes(), ProviderResponse: map[string]any{"id": "resp_1"}},
+			{CallID: "ig_2", OutputIndex: 1, RevisedPrompt: "second", DecodedPNG: testPNGBytes(), ProviderResponse: map[string]any{"id": "resp_1"}},
+			{CallID: "ig_3", OutputIndex: 2, RevisedPrompt: "third", DecodedPNG: testPNGBytes(), ProviderResponse: map[string]any{"id": "resp_1"}},
 		},
-		{CallID: "ig_2", OutputIndex: 0, RevisedPrompt: "second", DecodedPNG: testPNGBytes(), ProviderResponse: map[string]any{"id": "resp_2"}},
-		{CallID: "ig_3", OutputIndex: 0, RevisedPrompt: "third", DecodedPNG: testPNGBytes(), ProviderResponse: map[string]any{"id": "resp_3"}},
 	}}
 	svc, threads, threadID, storagePath := newImageServiceTestHarnessWithClient(t, client)
 
@@ -130,13 +127,11 @@ func TestGenerateWorkspaceImageSessionBackendWritesExactlyThreePNGs(t *testing.T
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if len(client.requests) != 3 {
-		t.Fatalf("provider request count = %d, want 3", len(client.requests))
+	if len(client.requests) != 1 {
+		t.Fatalf("provider request count = %d, want 1 parallel-capable request", len(client.requests))
 	}
-	for index, request := range client.requests {
-		if request.Count != 1 || request.PartialImages != 3 {
-			t.Fatalf("provider request[%d] = %#v, want count=1 partial_images=3", index, request)
-		}
+	if client.requests[0].Count != 3 || client.requests[0].PartialImages != 3 {
+		t.Fatalf("provider request = %#v, want count=3 partial_images=3", client.requests[0])
 	}
 	if len(result.Assets) != 3 {
 		t.Fatalf("assets len = %d, want 3", len(result.Assets))
@@ -268,12 +263,11 @@ func TestGenerateRecoversLatestValidStreamFrameWhenFinalResultMissing(t *testing
 	}
 }
 
-func TestGenerateSavesCompletedSlotsBeforeLaterSlotFails(t *testing.T) {
-	client := &fakeCodexImageClient{results: []codex.ImageGenerationResult{
+func TestGenerateRejectsIncompleteMultiImageResponseWithoutSaving(t *testing.T) {
+	client := &fakeCodexImageClient{result: codex.ImageGenerationResult{Results: []codex.ImageGenerationResult{
 		{CallID: "ig_1", DecodedPNG: testPNGBytes()},
 		{CallID: "ig_2", DecodedPNG: testPNGBytes()},
-		{PartialImages: []codex.ImageGenerationPartialImage{{Base64Image: "preview", OutputIndex: 0}}},
-	}}
+	}}}
 	svc, threads, threadID, storagePath := newImageServiceTestHarnessWithClient(t, client)
 
 	_, err := svc.Generate(context.Background(), GenerateRequest{
@@ -283,22 +277,22 @@ func TestGenerateSavesCompletedSlotsBeforeLaterSlotFails(t *testing.T) {
 		Count:    3,
 		Target:   GenerationTarget{Kind: TargetWorkspaceImage, ThreadID: threadID},
 	})
-	if err == nil || !strings.Contains(err.Error(), "no final PNG") {
-		t.Fatalf("Generate error = %v, want third-slot no final PNG error", err)
+	if err == nil || !strings.Contains(err.Error(), "returned 2 final image") {
+		t.Fatalf("Generate error = %v, want multi-image count mismatch", err)
 	}
 	entries, readErr := os.ReadDir(storagePath)
 	if readErr != nil {
 		t.Fatalf("read storage dir: %v", readErr)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("storage dir file count = %d, want first two slots saved", len(entries))
+	if len(entries) != 0 {
+		t.Fatalf("storage dir file count = %d, want 0 after failure", len(entries))
 	}
 	updated, ok, err := threads.Get(threadID)
 	if err != nil || !ok {
 		t.Fatalf("get thread: ok=%v err=%v", ok, err)
 	}
-	if len(updated.ImageAssets) != 2 || len(updated.ImageAssetOrder) != 2 {
-		t.Fatalf("thread assets/order = %#v / %#v, want first two slots persisted", updated.ImageAssets, updated.ImageAssetOrder)
+	if len(updated.ImageAssets) != 0 || len(updated.ImageAssetOrder) != 0 {
+		t.Fatalf("thread assets/order = %#v / %#v, want no persisted assets", updated.ImageAssets, updated.ImageAssetOrder)
 	}
 }
 
