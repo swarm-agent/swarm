@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Boxes, Check, Cloud, Loader2, Plus, Shield, X } from 'lucide-react'
+import { Check, Loader2, Plus, X } from 'lucide-react'
 import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
@@ -55,14 +55,9 @@ interface AddSwarmModalProps {
 type LaunchTarget = 'local' | 'remote'
 type RemoteDeployMethod = 'lan' | 'tailscale'
 type RemoteTailscaleAuthMode = 'manual' | 'key'
-type ReplicationMode = 'bundle' | 'copy'
-
 interface ReplicateWorkspaceDraft {
   workspacePath: string
   selected: boolean
-  writable: boolean
-  replicationMode: ReplicationMode
-  defaultReplicationMode: ReplicationMode
   workspaceName: string
   directories: string[]
 }
@@ -275,23 +270,13 @@ function remoteReachableHostCandidate(target: string): string {
   return ''
 }
 
-function inferReplicationMode(workspace: WorkspaceEntry): ReplicationMode {
-  return workspace.isGitRepo ? 'bundle' : 'copy'
-}
-
 function buildWorkspaceDrafts(workspaces: WorkspaceEntry[]): ReplicateWorkspaceDraft[] {
-  return workspaces.map((workspace) => {
-    const defaultReplicationMode = inferReplicationMode(workspace)
-    return {
-      workspacePath: workspace.path,
-      selected: false,
-      writable: true,
-      replicationMode: defaultReplicationMode,
-      defaultReplicationMode,
-      workspaceName: workspace.workspaceName || workspace.path.split('/').filter(Boolean).pop() || 'workspace',
-      directories: workspace.directories,
-    }
-  })
+  return workspaces.map((workspace) => ({
+    workspacePath: workspace.path,
+    selected: false,
+    workspaceName: workspace.workspaceName || workspace.path.split('/').filter(Boolean).pop() || 'workspace',
+    directories: workspace.directories,
+  }))
 }
 
 function selectedWorkspaceCount(items: ReplicateWorkspaceDraft[]): number {
@@ -350,7 +335,7 @@ function buildRemoteWorkspacePayloads(workspaces: ReplicateWorkspaceDraft[]) {
         workspacePath: sourcePath,
         workspaceName,
         targetPath,
-        mode: workspace.writable ? 'rw' as const : 'ro' as const,
+        mode: 'rw' as const,
         directories: linkedDirectories,
       }
     })
@@ -1057,8 +1042,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         },
         workspaces: selected.map((item) => ({
           sourceWorkspacePath: item.workspacePath,
-          replicationMode: item.replicationMode,
-          writable: item.writable,
+          replicationMode: 'bundle',
+          writable: true,
         })),
         containerPackages: devMode ? buildContainerPackageManifest(containerPackages) : undefined,
       })
@@ -1123,13 +1108,18 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('Remote reachable host is required for LAN / WireGuard deploy.')
       return
     }
-    if (!remotePreflightSession || remotePreflightSession.ssh_session_target?.trim() !== remoteSSHTarget.trim()) {
-      setError('Run the remote preflight check and fix any errors before launching.')
-      return
-    }
-    if (remotePreflightSession.name?.trim() !== swarmName.trim()) {
-      setError('Run remote preflight again after changing the child swarm name.')
-      return
+    let preflightSession = remotePreflightSession
+    if (!preflightSession
+      || preflightSession.ssh_session_target?.trim() !== remoteSSHTarget.trim()
+      || preflightSession.name?.trim() !== swarmName.trim()) {
+      setStatus('Running remote preflight…')
+      try {
+        preflightSession = await runRemotePreflight()
+      } catch (err) {
+        setStatus(null)
+        setError(err instanceof Error ? err.message : 'Remote preflight failed')
+        return
+      }
     }
     if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
       setError('Vault password is required to sync from a vaulted host.')
@@ -1142,7 +1132,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
     setSubmitting(true)
     setError(null)
-    let latestRemoteSession: RemoteDeploySession | null = remotePreflightSession
+    let latestRemoteSession: RemoteDeploySession | null = preflightSession
     let pollLaunchProgress = false
     let launchProgressPoll: Promise<void> | null = null
     const stopLaunchProgressPoll = async () => {
@@ -1152,7 +1142,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       }
     }
     try {
-      const session = remotePreflightSession
+      const session = preflightSession
       setStatus(`Preflight ready: ${session.preflight.summary || `copying ${session.preflight.files_to_copy?.length || 0} files to ${remoteSSHTarget.trim()}`}`)
       const confirmed = window.confirm([
         `Remote host: ${remoteSSHTarget.trim()}`,
@@ -1276,132 +1266,101 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     return null
   }
 
-  const workspaceSelectionCard = (
-    <Card className="grid gap-4 p-5">
-      <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'remote' ? '3. Which workspaces should we send?' : '4. What should we add?'}</div>
-      <div className="grid gap-4">
-        <div className="rounded-2xl border-2 border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,var(--app-surface))] p-5 shadow-sm">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-base font-semibold text-[var(--app-text)]">Workspace selection</div>
-              <div className="mt-1 text-sm text-[var(--app-text-muted)]">
-                {launchTarget === 'remote'
-                  ? 'Pick the workspaces to stage for the remote child. The SSH path sends Git-tracked files from each selected workspace root and any linked directories, and it uses that same selection for package suggestions.'
-                  : 'Pick the workspace first. Swarm scans the selected workspace contents and suggests Ubuntu packages based on what it finds.'}
-              </div>
-            </div>
-            <Badge tone={selectedWorkspaceCountValue > 0 ? 'live' : 'neutral'}>{selectedWorkspaceCountValue} selected</Badge>
-          </div>
+  const panelClassName = 'mx-auto mt-[5vh] flex w-[min(840px,calc(100vw-24px))] max-w-[840px] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(840px,calc(100vw-48px))]'
+  const headerClassName = 'border-b border-[var(--app-border)] px-5 py-4'
+  const bodyClassName = 'flex max-h-[min(78vh,820px)] flex-col gap-3 overflow-y-auto px-5 py-4'
+  const sectionClassName = 'grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-none'
+  const subtlePanelClassName = 'rounded-lg border border-[var(--app-border)] bg-transparent p-3'
+  const optionClassName = (active: boolean, muted = false) => (
+    `rounded-lg border px-3 py-2 text-left transition ${active ? 'border-[var(--app-primary)] bg-transparent text-[var(--app-text)]' : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)]'} ${muted && !active ? 'opacity-80' : ''}`
+  )
+  const availabilityChipClassName = (active: boolean) => (
+    `inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition ${active ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_9%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)]'}`
+  )
 
-          {workspaceDrafts.length === 0 ? (
-            <div className="mt-4 rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-4 text-sm text-[var(--app-text-muted)]">
-              No workspaces available yet.
-            </div>
-          ) : (
-            <div className="mt-4 grid gap-3">
-              {workspaceDrafts.map((workspace) => {
-                const checked = workspace.selected
-                const linkedDirectoryCount = Math.max(0, workspace.directories.length - 1)
-                return (
-                  <label
-                    key={workspace.workspacePath}
-                    className={`block rounded-2xl border p-4 transition ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface)]'}`}
-                  >
-                    <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        data-testid="add-swarm-workspace-checkbox"
-                        data-workspace-path={workspace.workspacePath}
-                        data-workspace-name={workspace.workspaceName}
-                        className="mt-1 h-4 w-4 rounded border-[var(--app-border)]"
-                        checked={checked}
-                        onChange={(event) => {
-                          updateWorkspaceDraft(workspace.workspacePath, (item) => ({
-                            ...item,
-                            selected: event.target.checked,
-                          }))
-                        }}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="truncate text-sm font-semibold text-[var(--app-text)]">{workspace.workspaceName}</div>
-                          {launchTarget === 'local' ? (
-                            <Badge tone={workspace.defaultReplicationMode === 'bundle' ? 'live' : 'neutral'}>
-                              default {workspace.defaultReplicationMode}
-                            </Badge>
-                          ) : (
-                            <Badge tone="neutral">
-                              {linkedDirectoryCount > 0 ? `${linkedDirectoryCount + 1} tracked archives` : 'tracked archive'}
-                            </Badge>
-                          )}
-                          {checked ? (
-                            <Badge tone="live">
-                              <Check size={12} />
-                              selected
-                            </Badge>
-                          ) : null}
-                        </div>
-                        <div className="mt-1 break-all text-xs text-[var(--app-text-muted)]">{workspace.workspacePath}</div>
-                        {workspace.directories.length > 1 ? (
-                          <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-                            {launchTarget === 'remote'
-                              ? `Includes ${linkedDirectoryCount} linked director${linkedDirectoryCount === 1 ? 'y' : 'ies'}. Remote SSH deploy stages each selected directory into its own runtime path for this workspace.`
-                              : `Includes ${workspace.directories.length} linked directories.`}
-                          </div>
-                        ) : null}
-
-                        {checked ? (
-                          <div className="mt-4 grid gap-3 md:grid-cols-2">
-                            {launchTarget === 'local' ? (
-                              <div>
-                                <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Replication mode</div>
-                                <Select
-                                  value={workspace.replicationMode}
-                                  onChange={(event) => {
-                                    const nextMode = event.target.value as ReplicationMode
-                                    updateWorkspaceDraft(workspace.workspacePath, (item) => ({
-                                      ...item,
-                                      replicationMode: nextMode,
-                                    }))
-                                  }}
-                                  className="mt-2"
-                                >
-                                  <option value="bundle">Git bundle</option>
-                                  <option value="copy">Full workspace copy</option>
-                                </Select>
-                              </div>
-                            ) : (
-                              <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-xs text-[var(--app-text-muted)] md:col-span-2">
-                                Remote SSH deploy stages Git-tracked files from this workspace root and any linked directories into dedicated runtime paths.
-                              </div>
-                            )}
-                            <div>
-                              <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">Workspace access</div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  updateWorkspaceDraft(workspace.workspacePath, (item) => ({
-                                    ...item,
-                                    writable: !item.writable,
-                                  }))
-                                }}
-                                className={`mt-2 inline-flex h-10 items-center rounded-xl border px-4 text-sm font-medium transition ${workspace.writable ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'}`}
-                              >
-                                {workspace.writable ? 'Read / Write' : 'Read only'}
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  </label>
-                )
-              })}
-            </div>
-          )}
+  const swarmNameCard = (
+    <Card className={sectionClassName}>
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,320px)] sm:items-end">
+        <div className="grid gap-1">
+          <div className="text-sm font-semibold text-[var(--app-text)]">Name this swarm</div>
+          <div className="text-xs text-[var(--app-text-muted)]">First decision: the child swarm name shown in this group after launch.</div>
         </div>
+        <div className="grid gap-2">
+          <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Child swarm name</label>
+          <Input
+            data-testid="add-swarm-child-name"
+            value={swarmName}
+            onChange={(event) => {
+              invalidateRemotePreflight()
+              setSwarmName(event.target.value)
+            }}
+            disabled={submitting}
+            placeholder={suggestedSwarmName}
+          />
+        </div>
+      </div>
+    </Card>
+  )
 
-        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+  const workspaceSelectionCard = (
+    <Card className={sectionClassName}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="grid gap-1">
+          <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'remote' ? 'Workspaces to send' : 'Workspaces'}</div>
+          <div className="text-xs text-[var(--app-text-muted)]">
+            Select the workspaces to add.
+          </div>
+        </div>
+        <Badge tone={selectedWorkspaceCountValue > 0 ? 'live' : 'neutral'}>{selectedWorkspaceCountValue} selected</Badge>
+      </div>
+
+      {workspaceDrafts.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-transparent px-3 py-4 text-sm text-[var(--app-text-muted)]">
+          No workspaces available yet.
+        </div>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {workspaceDrafts.map((workspace) => {
+            const checked = workspace.selected
+            const linkedDirectoryCount = Math.max(0, workspace.directories.length - 1)
+            return (
+              <label
+                key={workspace.workspacePath}
+                className={`flex min-w-0 items-center gap-3 rounded-xl border px-3 py-2 transition ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_7%,var(--app-surface))]' : 'border-[var(--app-border)] bg-transparent'}`}
+              >
+                <input
+                  type="checkbox"
+                  data-testid="add-swarm-workspace-checkbox"
+                  data-workspace-path={workspace.workspacePath}
+                  data-workspace-name={workspace.workspaceName}
+                  className="h-4 w-4 rounded border-[var(--app-border)]"
+                  checked={checked}
+                  onChange={(event) => {
+                    updateWorkspaceDraft(workspace.workspacePath, (item) => ({
+                      ...item,
+                      selected: event.target.checked,
+                    }))
+                  }}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <div className="truncate text-sm font-medium text-[var(--app-text)]">{workspace.workspaceName}</div>
+                    {linkedDirectoryCount > 0 ? (
+                      <span className="shrink-0 text-xs text-[var(--app-text-muted)]">
+                        {workspace.directories.length} director{workspace.directories.length === 1 ? 'y' : 'ies'}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="truncate text-xs text-[var(--app-text-muted)]">{workspace.workspacePath}</div>
+                </div>
+                {checked ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
+              </label>
+            )
+          })}
+        </div>
+      )}
+
+      <div className={subtlePanelClassName}>
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-[var(--app-text)]">Ubuntu packages</div>
@@ -1493,7 +1452,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             </div>
           )}
         </div>
-      </div>
     </Card>
   )
 
@@ -1502,14 +1460,14 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       <DialogBackdrop onClick={closeModal} />
       <DialogPanel
         data-testid="add-swarm-modal"
-        className="mx-auto mt-[8vh] flex w-[min(880px,calc(100vw-24px))] max-w-[880px] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:w-[min(880px,calc(100vw-48px))]"
+        className={panelClassName}
       >
-        <div className="border-b border-[var(--app-border)] px-6 py-5">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className={headerClassName}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h2 className="text-xl font-semibold text-[var(--app-text)]">Add swarm</h2>
               <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                Choose where it runs, pick the workspace shape, then name the swarm you want to add.
+                Configure a child swarm in one compact flow.
               </p>
             </div>
             <Badge tone={activeRuntimeLabel ? 'live' : 'warning'}>
@@ -1518,7 +1476,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           </div>
         </div>
 
-        <div className="flex max-h-[min(76vh,820px)] flex-col gap-5 overflow-y-auto px-6 py-6">
+        <div className={bodyClassName}>
           {loading ? (
             <Card className="flex items-center gap-3 p-4 text-sm text-[var(--app-text-muted)]">
               <Loader2 size={16} className="animate-spin" />
@@ -1538,25 +1496,22 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             </Card>
           ) : null}
 
-          <Card className="grid gap-4 p-5">
-            <div className="text-sm font-semibold text-[var(--app-text)]">1. Where should this run?</div>
+          {swarmNameCard}
+
+          <Card className={sectionClassName}>
+            <div className="text-sm font-semibold text-[var(--app-text)]">Run target</div>
             <div className="grid gap-3 sm:grid-cols-2">
               <button
                 type="button"
                 data-testid="add-swarm-target-local"
-                className={`rounded-2xl border p-4 text-left transition ${launchTarget === 'local' ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
+                className={optionClassName(launchTarget === 'local')}
                 onClick={() => setLaunchTarget('local')}
                 disabled={submitting}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 text-[var(--app-text-muted)]">
-                      <Boxes size={18} />
-                    </div>
-                    <div>
-                      <div className="text-sm font-semibold text-[var(--app-text)]">Local container</div>
-                      <div className="mt-1 text-xs text-[var(--app-text-muted)]">Launch here and replicate selected workspaces into a child swarm.</div>
-                    </div>
+                  <div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">Local container</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Launch here and replicate selected workspaces into a child swarm.</div>
                   </div>
                   {launchTarget === 'local' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
                 </div>
@@ -1565,19 +1520,14 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               <button
                 type="button"
                 data-testid="add-swarm-target-remote"
-                className={`rounded-2xl border p-4 text-left transition ${launchTarget === 'remote' ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] opacity-75'}`}
+                className={optionClassName(launchTarget === 'remote', true)}
                 onClick={() => setLaunchTarget('remote')}
                 disabled={submitting}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 text-[var(--app-text-muted)]">
-                      <Cloud size={18} />
-                    </div>
-                    <div>
-                      <div className="text-sm font-semibold text-[var(--app-text)]">Remote over SSH</div>
-                      <div className="mt-1 text-xs text-[var(--app-text-muted)]">Prepare the remote image here, ship only the selected workspaces plus config over SSH/SCP, then attach back through the selected transport.</div>
-                    </div>
+                  <div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">Remote over SSH</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Ship selected workspaces and config over SSH, then attach back through the selected transport.</div>
                   </div>
                   {launchTarget === 'remote' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
                 </div>
@@ -1587,9 +1537,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
           {launchTarget === 'local' ? (
             <>
-              <Card className="grid gap-4 p-5">
+              <Card className={sectionClassName}>
                 <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">2. Local runtime</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">Local runtime</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
                     Choose which local container runtime should launch the replicated child swarm.
                   </div>
@@ -1605,7 +1555,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       <button
                         key={runtime}
                         type="button"
-                        className={`rounded-2xl border p-4 text-left transition ${active ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'} ${available ? '' : 'opacity-60'}`}
+                        className={`${optionClassName(active)} ${available ? '' : 'opacity-60'}`}
                         onClick={() => {
                           if (available && !submitting) {
                             setSelectedRuntime(runtime)
@@ -1638,147 +1588,142 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 ) : null}
               </Card>
 
-              <Card className="grid gap-4 p-5">
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,340px)] lg:items-start">
-                  <div className="grid gap-1">
-                    <div className="text-sm font-semibold text-[var(--app-text)]">3. Swarm sync and permissions</div>
-                    <div className="text-xs text-[var(--app-text-muted)]">
-                      Keep this child managed by the current master and choose whether bypass permissions should be enabled in the child.
-                    </div>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-                    <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-medium text-[var(--app-text)]">Swarm Sync</div>
-                          <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                            {syncEnabled ? `Managed sync is enabled for this child (${['credentials', ...(syncAgentsEnabled ? ['agents'] : []), ...(syncCustomToolsEnabled ? ['custom_tools'] : [])].join(', ')}).` : 'This child will keep its own local authority.'}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={syncEnabled}
-                          className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${syncEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
-                          onClick={() => {
-                            if (!submitting) {
-                              invalidateRemotePreflight()
-                              setSyncEnabled((current) => !current)
-                            }
-                          }}
-                          disabled={submitting}
-                        >
-                          <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${syncEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                        </button>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <Card className={sectionClassName}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="grid gap-1">
+                      <div className="text-sm font-semibold text-[var(--app-text)]">Swarm sync</div>
+                      <div className="text-xs text-[var(--app-text-muted)]">
+                        Choose what the child receives from this master.
                       </div>
                     </div>
-
-                    <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="flex items-center gap-2 text-sm font-medium text-[var(--app-text)]">
-                            <Shield size={14} />
-                            Bypass permissions
-                          </div>
-                          <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                            {bypassPermissions ? 'The child starts with bypass permissions enabled.' : 'The child keeps normal permission flow.'}
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={bypassPermissions}
-                          className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${bypassPermissions ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
-                          onClick={() => {
-                            if (!submitting) {
-                              invalidateRemotePreflight()
-                              setBypassPermissions((current) => !current)
-                            }
-                          }}
-                          disabled={submitting}
-                        >
-                          <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${bypassPermissions ? 'translate-x-6' : 'translate-x-1'}`} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {syncEnabled ? (
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
                     <button
                       type="button"
-                      onClick={() => setSyncAgentsEnabled((current) => !current)}
-                      className={`rounded-2xl border px-4 py-3 text-left text-sm transition ${syncAgentsEnabled ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]'}`}
+                      role="switch"
+                      aria-checked={syncEnabled}
+                      className={`relative inline-flex h-6 w-10 shrink-0 items-center rounded-full border transition ${syncEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-transparent'}`}
+                      onClick={() => {
+                        if (!submitting) {
+                          invalidateRemotePreflight()
+                          setSyncEnabled((current) => !current)
+                        }
+                      }}
+                      disabled={submitting}
                     >
-                      <div className="font-medium">Sync agents</div>
-                      <div className="mt-1 text-xs text-[var(--app-text-muted)]">Mirror saved agent profiles into the child.</div>
+                      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition ${syncEnabled ? 'translate-x-5' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className={availabilityChipClassName(syncEnabled)}
+                      onClick={() => {
+                        if (!submitting) {
+                          invalidateRemotePreflight()
+                          setSyncEnabled((current) => !current)
+                        }
+                      }}
+                      disabled={submitting}
+                    >
+                      Credentials
                     </button>
                     <button
                       type="button"
-                      onClick={() => setSyncCustomToolsEnabled((current) => !current)}
-                      className={`rounded-2xl border px-4 py-3 text-left text-sm transition ${syncCustomToolsEnabled ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]'}`}
+                      className={availabilityChipClassName(syncEnabled && syncAgentsEnabled)}
+                      onClick={() => {
+                        if (!submitting) {
+                          invalidateRemotePreflight()
+                          if (!syncEnabled) {
+                            setSyncEnabled(true)
+                            setSyncAgentsEnabled(true)
+                            return
+                          }
+                          setSyncAgentsEnabled((current) => !current)
+                        }
+                      }}
+                      disabled={submitting}
                     >
-                      <div className="font-medium">Sync custom tools</div>
-                      <div className="mt-1 text-xs text-[var(--app-text-muted)]">Mirror custom tool definitions into the child.</div>
+                      Agents
+                    </button>
+                    <button
+                      type="button"
+                      className={availabilityChipClassName(syncEnabled && syncCustomToolsEnabled)}
+                      onClick={() => {
+                        if (!submitting) {
+                          invalidateRemotePreflight()
+                          if (!syncEnabled) {
+                            setSyncEnabled(true)
+                            setSyncCustomToolsEnabled(true)
+                            return
+                          }
+                          setSyncCustomToolsEnabled((current) => !current)
+                        }
+                      }}
+                      disabled={submitting}
+                    >
+                      Custom tools
                     </button>
                   </div>
-                ) : null}
-                {syncEnabled && hostVaultEnabled ? (
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-                    <div className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Vault password</div>
-                    <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-                      Use the host vault password so the child stores synced credentials in its own vault.
-                    </div>
+
+                  {syncEnabled && hostVaultEnabled ? (
                     <Input
                       data-testid="add-swarm-sync-vault-password"
-                      className="mt-3"
                       type="password"
                       value={syncVaultPassword}
                       onChange={(event) => setSyncVaultPassword(event.target.value)}
-                      placeholder="Vault password"
+                      placeholder="Vault password required for credential sync"
                       disabled={submitting}
                     />
+                  ) : null}
+                </Card>
+
+                <Card className={sectionClassName}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="grid gap-1">
+                      <div className="text-sm font-semibold text-[var(--app-text)]">Permissions</div>
+                      <div className="text-xs text-[var(--app-text-muted)]">
+                        Keep the normal permission flow or start with bypass enabled.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={bypassPermissions}
+                      className={`relative inline-flex h-6 w-10 shrink-0 items-center rounded-full border transition ${bypassPermissions ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-transparent'}`}
+                      onClick={() => {
+                        if (!submitting) {
+                          invalidateRemotePreflight()
+                          setBypassPermissions((current) => !current)
+                        }
+                      }}
+                      disabled={submitting}
+                    >
+                      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition ${bypassPermissions ? 'translate-x-5' : 'translate-x-1'}`} />
+                    </button>
                   </div>
-                ) : null}
-              </Card>
+                  <div className="text-xs text-[var(--app-text-muted)]">
+                    {bypassPermissions ? 'Bypass permissions on launch.' : 'Prompt for permission when needed.'}
+                  </div>
+                </Card>
+              </div>
 
               {workspaceSelectionCard}
 
-              <Card className="grid gap-4 p-5">
-                <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">5. Name this swarm</div>
-                  <div className="text-xs text-[var(--app-text-muted)]">
-                    This names the swarm that will appear in the group after launch.
-                  </div>
-                </div>
-
-                <div className="grid gap-2 sm:max-w-[320px]">
-                  <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Child swarm name</label>
-                  <Input
-                    value={swarmName}
-                    onChange={(event) => {
-                      setSwarmName(event.target.value)
-                    }}
-                    disabled={submitting}
-                    placeholder={suggestedSwarmName}
-                  />
-                </div>
-              </Card>
             </>
           ) : null}
 
           {launchTarget === 'remote' ? (
             <>
-              <Card className="grid gap-4 p-5">
+              <Card className={sectionClassName}>
                 <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">2. Remote deploy method</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">Remote deploy method</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
-                    Choose how the remote child should connect back, then run preflight against the SSH target you want to use.
+                    Choose how the remote child connects back. Preflight runs from the footer when you are ready.
                   </div>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px_auto] sm:items-end">
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px] sm:items-end">
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">SSH alias or target</label>
                     <Input
@@ -1811,45 +1756,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       <option value="podman">Podman</option>
                     </Select>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    data-testid="add-swarm-run-preflight"
-                    onClick={() => {
-                      setError(null)
-                      setStatus('Running remote preflight…')
-                      void runRemotePreflight()
-                        .then((session) => {
-                          setStatus(`Preflight passed for ${session.ssh_session_target || remoteSSHTarget.trim()}. Remote host is ready for launch.`)
-                        })
-                        .catch((err) => {
-                          setStatus(null)
-                          setError(err instanceof Error ? err.message : 'Remote preflight failed')
-                        })
-                    }}
-                    disabled={
-                      submitting
-                      || remotePreflightLoading
-                      || configuringMasterLANCallback
-                      || (remotePreflightBlocked && !remotePreflightCanAutofill)
-                      || !remoteSSHTarget.trim()
-                      || !swarmName.trim()
-                      || suggestingPackages
-                    }
-                  >
-                    {(remotePreflightLoading || configuringMasterLANCallback) ? <Loader2 size={14} className="animate-spin" /> : null}
-                    {remotePreflightLoading
-                      ? 'Checking…'
-                      : configuringMasterLANCallback
-                        ? 'Saving this machine’s address…'
-                        : remotePreflightBlocked
-                          ? (remotePreflightCanAutofill
-                              ? 'Use detected address and run preflight'
-                              : (masterLANCallbackGuidance?.title === 'Restart this machine with a LAN / VPN bind address first'
-                                  ? 'Restart this machine with a LAN / VPN bind address first'
-                                  : 'Set this machine’s LAN / VPN address first'))
-                          : 'Run preflight'}
-                  </Button>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -1875,11 +1781,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                         setRemotePreflightError(null)
                         setRemotePreflightGuidance(null)
                       }}
-                      className={`rounded-2xl border p-4 text-left transition ${
-                        remoteDeployMethod === option.id
-                          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]'
-                          : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'
-                      }`}
+                      className={optionClassName(remoteDeployMethod === option.id)}
                       disabled={submitting || remotePreflightLoading}
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -1915,7 +1817,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 ) : null}
 
                 {remoteDeployMethod === 'tailscale' ? (
-                  <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                  <div className={`grid gap-3 ${subtlePanelClassName}`}>
                     <div className="grid gap-1">
                       <div className="text-sm font-semibold text-[var(--app-text)]">Tailscale login</div>
                       <div className="text-xs text-[var(--app-text-muted)]">
@@ -1956,7 +1858,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     )}
                   </div>
                 ) : (
-                  <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                  <div className={`grid gap-3 ${subtlePanelClassName}`}>
                     <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Remote reachable host</label>
                     <Input
                       data-testid="add-swarm-remote-reachable-host"
@@ -2024,7 +1926,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   </div>
                 )}
 
-                <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
+                <div className={`${subtlePanelClassName} text-sm text-[var(--app-text-muted)]`}>
                   <div className="font-medium text-[var(--app-text)]">Preflight summary shown before execution</div>
                   <ul className="mt-3 list-disc space-y-2 pl-5">
                     <li>This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server as payload archives.</li>
@@ -2039,10 +1941,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
               {workspaceSelectionCard}
 
-              <Card className="grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-5">
+              <Card className={sectionClassName}>
                 <div className="flex items-start justify-between gap-4">
                   <div className="grid gap-1">
-                    <div className="text-sm font-semibold text-[var(--app-text)]">4. Remote Swarm Sync</div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">Remote Swarm Sync</div>
                     <div className="text-xs text-[var(--app-text-muted)]">
                       Keep this remote child managed by the current master. The master remains the source of truth for synced auth state.
                     </div>
@@ -2063,13 +1965,13 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${syncEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                   </button>
                 </div>
-                <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm text-[var(--app-text-muted)]">
+                <div className={`${subtlePanelClassName} text-sm text-[var(--app-text-muted)]`}>
                   {syncEnabled
                     ? 'On. The host will bootstrap encrypted managed auth into the remote child and keep later managed updates in sync.'
                     : 'Off. This remote child will keep its own local auth authority.'}
                 </div>
                 {syncEnabled && hostVaultEnabled ? (
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+                  <div className={subtlePanelClassName}>
                     <div className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Vault password</div>
                     <div className="mt-2 text-xs text-[var(--app-text-muted)]">
                       Use the host vault password so the remote child stores synced credentials in its own vault.
@@ -2127,33 +2029,11 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 </div>
               ) : null}
 
-              <Card className="grid gap-4 p-5">
-                <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">5. Name this swarm</div>
-                  <div className="text-xs text-[var(--app-text-muted)]">
-                    This names the swarm that will appear in the group after launch.
-                  </div>
-                </div>
-
-                <div className="grid gap-2 sm:max-w-[320px]">
-                  <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Child swarm name</label>
-                  <Input
-                    data-testid="add-swarm-child-name"
-                    value={swarmName}
-                    onChange={(event) => {
-                      invalidateRemotePreflight()
-                      setSwarmName(event.target.value)
-                    }}
-                    disabled={submitting}
-                    placeholder={suggestedSwarmName}
-                  />
-                </div>
-              </Card>
             </>
           ) : null}
 
-          <Card className="grid gap-4 p-5">
-            <div className="text-sm font-semibold text-[var(--app-text)]">{launchTarget === 'local' ? '6. Ready to add?' : '6. Ready to add?'}</div>
+          <Card className={sectionClassName}>
+            <div className="text-sm font-semibold text-[var(--app-text)]">Ready to add?</div>
             {launchTarget === 'remote' ? (
               <div className="grid gap-2 text-sm text-[var(--app-text-muted)]">
                 <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote over SSH</div>
@@ -2204,13 +2084,24 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   ? !runtimeChoice || !swarmName.trim() || selectedWorkspaceCountValue === 0
                   : !swarmName.trim()
                     || !remoteSSHTarget.trim()
-                    || !remotePreflightSession
                     || remotePreflightLoading
+                    || configuringMasterLANCallback
+                    || (remotePreflightBlocked && !remotePreflightCanAutofill)
                     || (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()))
               }
             >
-              {submitting ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-              {submitting ? 'Working…' : 'Launch and add'}
+              {(submitting || remotePreflightLoading || configuringMasterLANCallback) ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              {submitting
+                ? 'Working…'
+                : launchTarget === 'remote'
+                  ? (configuringMasterLANCallback
+                      ? 'Saving this machine’s address…'
+                      : remotePreflightLoading
+                        ? 'Checking…'
+                        : remotePreflightSession
+                          ? 'Launch and add'
+                          : 'Preflight when Ready')
+                  : 'Launch and add'}
             </Button>
           </div>
         </div>
