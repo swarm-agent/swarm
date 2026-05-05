@@ -48,7 +48,7 @@ func shouldServeDesktopAsset(r *http.Request) bool {
 	if requestPath == "" {
 		return false
 	}
-	if strings.HasPrefix(requestPath, "/v1/") || strings.HasPrefix(requestPath, "/v2/") || strings.HasPrefix(requestPath, "/ws") {
+	if strings.HasPrefix(requestPath, "/v1/") || strings.HasPrefix(requestPath, "/v2/") || strings.HasPrefix(requestPath, "/v3/") || strings.HasPrefix(requestPath, "/ws") {
 		return false
 	}
 	switch requestPath {

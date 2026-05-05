@@ -124,3 +124,27 @@ func TestServeDesktopAssetSetsManifestContentType(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want application/manifest+json", got)
 	}
 }
+
+func TestShouldServeDesktopAssetLeavesAPIRoutesToAPIHandler(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "app route", path: "/swarm-go/settings", want: true},
+		{name: "v1 api", path: "/v1/auth/desktop/session", want: false},
+		{name: "v2 api", path: "/v2/agents", want: false},
+		{name: "v3 api", path: "/v3/flows", want: false},
+		{name: "websocket", path: "/ws", want: false},
+		{name: "health", path: "/healthz", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if got := shouldServeDesktopAsset(req); got != tt.want {
+				t.Fatalf("shouldServeDesktopAsset(%q) = %t, want %t", tt.path, got, tt.want)
+			}
+		})
+	}
+}
