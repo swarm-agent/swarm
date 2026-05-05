@@ -1302,7 +1302,7 @@ function FlowDetail({
             Edit
           </Button>
           <Button data-testid="flows-detail-run-now" variant="outline" className="rounded-xl" onClick={() => onRunNow(flow.id)} disabled={busy}>
-            Run now
+            Run once
           </Button>
           <Button variant="outline" className="rounded-xl" onClick={() => onToggleEnabled(flow)} disabled={busy}>
             {flow.enabled ? 'Stop schedule' : 'Start schedule'}
@@ -1337,7 +1337,6 @@ function FlowDetail({
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-[var(--app-text)]">Tasks inside this flow</h2>
-              <p className="mt-1 text-sm text-[var(--app-text-muted)]">Tasks are sent as durable assignment intent to the target.</p>
             </div>
           </div>
           <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
