@@ -655,11 +655,7 @@ func (d *Daemon) Run() error {
 				log.Printf("warning: deploy child auto-attach failed: %v", err)
 			}
 		}()
-		go func() {
-			if err := d.deployContainers.RecoverLocalDeployments(context.Background()); err != nil {
-				log.Printf("warning: deploy local recovery failed: %v", err)
-			}
-		}()
+		go d.deployContainers.RunLocalDeploymentReconciliationLoop(d.bgCtx)
 		go d.deployContainers.RunManagedCredentialSyncLoop(d.bgCtx)
 	}
 	return d.waitForShutdown()

@@ -49,6 +49,7 @@ const (
 	childLocalTransportSocketPath     = childLocalTransportMountTargetDir + "/api.sock"
 	childLocalTransportBaseURL        = "http://swarm-local-transport"
 	managedCredentialSyncPollInterval = 5 * time.Second
+	localReconcilePollInterval        = 5 * time.Second
 	peerAuthSwarmIDHeader             = "X-Swarm-Peer-ID"
 	peerAuthTokenHeader               = "X-Swarm-Peer-Token"
 	remoteSyncVaultPasswordEnvKey     = "SWARM_REMOTE_SYNC_VAULT_PASSWORD"
@@ -87,6 +88,9 @@ type ContainerDeployment struct {
 	SyncMode            string                        `json:"sync_mode,omitempty"`
 	SyncModules         []string                      `json:"sync_modules,omitempty"`
 	SyncOwnerSwarmID    string                        `json:"sync_owner_swarm_id,omitempty"`
+	SyncLastCheckedAt   int64                         `json:"sync_last_checked_at,omitempty"`
+	SyncLastAppliedAt   int64                         `json:"sync_last_applied_at,omitempty"`
+	SyncLastError       string                        `json:"sync_last_error,omitempty"`
 	ContainerName       string                        `json:"container_name,omitempty"`
 	ContainerID         string                        `json:"container_id,omitempty"`
 	HostAPIBaseURL      string                        `json:"host_api_base_url,omitempty"`
@@ -610,6 +614,11 @@ func (s *Service) Act(ctx context.Context, input ContainerActionInput) (Containe
 		return ContainerDeployment{}, saveErr
 	}
 	if strings.EqualFold(strings.TrimSpace(input.Action), "start") {
+		if strings.TrimSpace(saved.ChildBackendURL) != "" {
+			if err := s.waitForChildReady(ctx, saved.ChildBackendURL, 20*time.Second); err != nil {
+				return mapContainerRecord(saved), err
+			}
+		}
 		if err := s.unlockManagedLocalChildVaultIfNeeded(ctx, saved); err != nil {
 			return mapContainerRecord(saved), err
 		}
@@ -1150,6 +1159,31 @@ func (s *Service) AutoAttachChild(ctx context.Context) error {
 }
 
 func (s *Service) RecoverLocalDeployments(ctx context.Context) error {
+	return s.ReconcileLocalDeployments(ctx)
+}
+
+func (s *Service) RunLocalDeploymentReconciliationLoop(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	if err := s.ReconcileLocalDeployments(ctx); err != nil {
+		log.Printf("warning: deploy local reconciliation failed: %v", err)
+	}
+	ticker := time.NewTicker(localReconcilePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.ReconcileLocalDeployments(ctx); err != nil {
+				log.Printf("warning: deploy local reconciliation failed: %v", err)
+			}
+		}
+	}
+}
+
+func (s *Service) ReconcileLocalDeployments(ctx context.Context) error {
 	if s == nil || s.store == nil || s.containers == nil {
 		return fmt.Errorf("deploy container service is not configured")
 	}
@@ -1164,6 +1198,21 @@ func (s *Service) RecoverLocalDeployments(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	localRecords, err := s.containers.List(ctx)
+	if err != nil {
+		return err
+	}
+	localByID := make(map[string]localcontainers.Container, len(localRecords))
+	localByName := make(map[string]localcontainers.Container, len(localRecords))
+	for _, local := range localRecords {
+		if id := strings.TrimSpace(local.ID); id != "" {
+			localByID[id] = local
+		}
+		if name := strings.TrimSpace(local.ContainerName); name != "" {
+			localByName[name] = local
+		}
+	}
+	var errs []error
 	for _, record := range records {
 		if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.Runtime) == "" || strings.TrimSpace(record.ContainerName) == "" {
 			continue
@@ -1171,19 +1220,160 @@ func (s *Service) RecoverLocalDeployments(ctx context.Context) error {
 		if strings.TrimSpace(record.AttachStatus) != "attached" {
 			continue
 		}
-		if !record.AlwaysOn {
-			continue
+		runtimeChanged := false
+		if local, ok := localByID[strings.TrimSpace(record.ID)]; ok {
+			record, runtimeChanged = applyLocalContainerRuntimeState(record, local)
+		} else if local, ok := localByName[strings.TrimSpace(record.ContainerName)]; ok {
+			record, runtimeChanged = applyLocalContainerRuntimeState(record, local)
 		}
-		if strings.TrimSpace(record.Status) == "running" {
-			continue
+		if runtimeChanged && record.AlwaysOn && !record.SyncEnabled && strings.TrimSpace(record.Status) == "running" {
+			if _, err := s.store.Put(record); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", record.ID, err))
+				continue
+			}
 		}
+		if err := s.reconcileLocalDeployment(ctx, record); err != nil {
+			log.Printf("deploy local reconciliation failed deployment_id=%q container=%q err=%v", record.ID, record.ContainerName, err)
+			errs = append(errs, fmt.Errorf("%s: %w", record.ID, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func applyLocalContainerRuntimeState(record pebblestore.DeployContainerRecord, container localcontainers.Container) (pebblestore.DeployContainerRecord, bool) {
+	updated := false
+	if status := normalizeDeploymentStatus(container.Status); status != "" && status != record.Status {
+		record.Status = status
+		updated = true
+	}
+	if runtimeName := strings.TrimSpace(container.Runtime); runtimeName != "" && runtimeName != record.Runtime {
+		record.Runtime = runtimeName
+		updated = true
+	}
+	if containerName := strings.TrimSpace(container.ContainerName); containerName != "" && containerName != record.ContainerName {
+		record.ContainerName = containerName
+		updated = true
+	}
+	if containerID := strings.TrimSpace(container.ContainerID); containerID != "" && containerID != record.ContainerID {
+		record.ContainerID = containerID
+		updated = true
+	}
+	if hostAPIBaseURL := strings.TrimSpace(container.HostAPIBaseURL); hostAPIBaseURL != "" && hostAPIBaseURL != record.HostAPIBaseURL {
+		record.HostAPIBaseURL = hostAPIBaseURL
+		updated = true
+	}
+	if container.HostPort > 0 && container.HostPort != record.BackendHostPort {
+		record.BackendHostPort = container.HostPort
+		record.DesktopHostPort = container.HostPort + 1
+		updated = true
+	}
+	if image := strings.TrimSpace(container.Image); image != "" && image != record.Image {
+		record.Image = image
+		updated = true
+	}
+	warning := strings.TrimSpace(container.Warning)
+	if warning != record.LastAttachError {
+		record.LastAttachError = warning
+		updated = true
+	}
+	return record, updated
+}
+
+func (s *Service) reconcileLocalDeployment(ctx context.Context, record pebblestore.DeployContainerRecord) error {
+	if record.AlwaysOn && strings.TrimSpace(record.Status) != "running" {
 		log.Printf("deploy startup recovery starting local child deployment_id=%q status=%q attach_status=%q runtime=%q container=%q", record.ID, record.Status, record.AttachStatus, record.Runtime, record.ContainerName)
-		if _, err := s.Act(ctx, ContainerActionInput{ID: record.ID, Action: "start"}); err != nil {
-			log.Printf("deploy startup recovery failed deployment_id=%q container=%q err=%v", record.ID, record.ContainerName, err)
-			continue
+		deployment, err := s.Act(ctx, ContainerActionInput{ID: record.ID, Action: "start"})
+		if err != nil {
+			return err
 		}
 		log.Printf("deploy startup recovery started local child deployment_id=%q container=%q", record.ID, record.ContainerName)
+		record, _, err = s.store.Get(deployment.ID)
+		if err != nil {
+			return err
+		}
 	}
+	if record.SyncEnabled {
+		return s.reconcileLocalDeploymentSync(ctx, record)
+	}
+	return nil
+}
+
+func (s *Service) reconcileLocalDeploymentSync(ctx context.Context, record pebblestore.DeployContainerRecord) error {
+	now := time.Now().UnixMilli()
+	record.SyncLastCheckedAt = now
+	record.SyncLastError = ""
+	syncErr := s.applyLocalDeploymentSyncReconciliation(ctx, &record, now)
+	if syncErr != nil {
+		record.SyncLastError = syncErr.Error()
+	}
+	if _, err := s.store.Put(record); err != nil {
+		if syncErr != nil {
+			return errors.Join(syncErr, err)
+		}
+		return err
+	}
+	return syncErr
+}
+
+func (s *Service) applyLocalDeploymentSyncReconciliation(ctx context.Context, record *pebblestore.DeployContainerRecord, now int64) error {
+	if record == nil {
+		return fmt.Errorf("deploy container record is required")
+	}
+	record.SyncMode = firstNonEmpty(strings.TrimSpace(record.SyncMode), workspaceruntime.ReplicationSyncModeManaged)
+	record.SyncModules = workspaceruntime.NormalizeReplicationSyncModules(record.SyncModules)
+	if len(record.SyncModules) == 0 {
+		record.SyncModules = workspaceruntime.DefaultReplicationSyncModules()
+	}
+	ownerSwarmID := strings.TrimSpace(record.SyncOwnerSwarmID)
+	if ownerSwarmID == "" && s.swarms != nil && s.swarmStore != nil {
+		_, hostState, err := s.resolveBootstrapContext()
+		if err != nil {
+			return err
+		}
+		ownerSwarmID = strings.TrimSpace(hostState.Node.SwarmID)
+		record.SyncOwnerSwarmID = ownerSwarmID
+	}
+	if ownerSwarmID == "" {
+		return fmt.Errorf("sync owner swarm id is not configured")
+	}
+	hostBackendURL := firstNonEmpty(strings.TrimSpace(record.HostBackendURL), strings.TrimSpace(record.HostAPIBaseURL))
+	if workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleCredentials) {
+		record.SyncCredentialURL = firstNonEmpty(strings.TrimSpace(record.SyncCredentialURL), buildDeploymentSyncCredentialURL(hostBackendURL))
+		if strings.TrimSpace(record.SyncBundlePassword) == "" {
+			bundlePassword, err := generateSecretToken(32)
+			if err != nil {
+				return err
+			}
+			record.SyncBundlePassword = bundlePassword
+		}
+		if s.auth != nil {
+			_, exported, err := s.auth.ExportCredentials(record.SyncBundlePassword, "")
+			if err != nil {
+				return err
+			}
+			record.SyncBundleExportCount = exported
+			record.SyncBundleExportedAt = now
+		}
+	} else {
+		record.SyncCredentialURL = ""
+		record.SyncBundlePassword = ""
+		record.SyncBundleExportCount = 0
+		record.SyncBundleExportedAt = 0
+	}
+	if workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleAgents) || workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleCustomTools) {
+		record.SyncAgentURL = firstNonEmpty(strings.TrimSpace(record.SyncAgentURL), buildDeploymentSyncAgentURL(hostBackendURL))
+	} else {
+		record.SyncAgentURL = ""
+	}
+	if record.AlwaysOn && strings.TrimSpace(record.Status) == "running" && strings.TrimSpace(record.ChildBackendURL) != "" {
+		if err := s.waitForChildReady(ctx, record.ChildBackendURL, 20*time.Second); err != nil {
+			return err
+		}
+	}
+	record.SyncLastAppliedAt = now
 	return nil
 }
 
@@ -1489,6 +1679,9 @@ func mapContainerRecord(record pebblestore.DeployContainerRecord) ContainerDeplo
 		SyncMode:            record.SyncMode,
 		SyncModules:         append([]string(nil), record.SyncModules...),
 		SyncOwnerSwarmID:    record.SyncOwnerSwarmID,
+		SyncLastCheckedAt:   record.SyncLastCheckedAt,
+		SyncLastAppliedAt:   record.SyncLastAppliedAt,
+		SyncLastError:       record.SyncLastError,
 		BackendHostPort:     record.BackendHostPort,
 		DesktopHostPort:     record.DesktopHostPort,
 		Image:               record.Image,

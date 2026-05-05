@@ -288,6 +288,20 @@ func NewServiceWithDataDir(store *pebblestore.SwarmLocalContainerStore, deployme
 	}
 }
 
+func (s *Service) SetControlContainerFuncForTest(fn func(context.Context, string, string, string) error) {
+	if s == nil || fn == nil {
+		return
+	}
+	s.controlContainerFn = fn
+}
+
+func (s *Service) SetInspectContainerFuncForTest(fn func(string, string) (string, string, error)) {
+	if s == nil || fn == nil {
+		return
+	}
+	s.inspectContainerFn = fn
+}
+
 func (s *Service) RuntimeStatus(ctx context.Context) (RuntimeStatus, error) {
 	installed := detectAvailableRuntimes()
 	status := RuntimeStatus{PathID: PathRuntimeStatus}
@@ -803,7 +817,11 @@ func (s *Service) Act(ctx context.Context, input ActionInput) (Container, error)
 	if action != "start" && action != "stop" {
 		return Container{}, errors.New("action must be start or stop")
 	}
-	if err := controlContainer(ctx, record.Runtime, action, record.ContainerName); err != nil {
+	controller := controlContainer
+	if s.controlContainerFn != nil {
+		controller = s.controlContainerFn
+	}
+	if err := controller(ctx, record.Runtime, action, record.ContainerName); err != nil {
 		record.Warning = err.Error()
 	} else {
 		record.Warning = ""

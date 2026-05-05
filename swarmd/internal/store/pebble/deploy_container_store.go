@@ -43,6 +43,9 @@ type DeployContainerRecord struct {
 	SyncBundlePassword    string                              `json:"sync_bundle_password,omitempty"`
 	SyncBundleExportedAt  int64                               `json:"sync_bundle_exported_at,omitempty"`
 	SyncBundleExportCount int                                 `json:"sync_bundle_export_count,omitempty"`
+	SyncLastCheckedAt     int64                               `json:"sync_last_checked_at,omitempty"`
+	SyncLastAppliedAt     int64                               `json:"sync_last_applied_at,omitempty"`
+	SyncLastError         string                              `json:"sync_last_error,omitempty"`
 	AttachStatus          string                              `json:"attach_status,omitempty"`
 	VerificationCode      string                              `json:"verification_code,omitempty"`
 	BootstrapSecret       string                              `json:"bootstrap_secret,omitempty"`
@@ -209,6 +212,7 @@ func normalizeDeployContainerRecord(record DeployContainerRecord) DeployContaine
 	record.SyncCredentialURL = strings.TrimSpace(record.SyncCredentialURL)
 	record.SyncAgentURL = strings.TrimSpace(record.SyncAgentURL)
 	record.SyncBundlePassword = strings.TrimSpace(record.SyncBundlePassword)
+	record.SyncLastError = strings.TrimSpace(record.SyncLastError)
 	record.AttachStatus = normalizeDeployAttachStatus(record.AttachStatus)
 	record.VerificationCode = strings.ToUpper(strings.TrimSpace(record.VerificationCode))
 	record.BootstrapSecret = strings.TrimSpace(record.BootstrapSecret)
@@ -250,6 +254,12 @@ func normalizeDeployContainerRecord(record DeployContainerRecord) DeployContaine
 	}
 	if record.SyncBundleExportCount < 0 {
 		record.SyncBundleExportCount = 0
+	}
+	if record.SyncLastCheckedAt < 0 {
+		record.SyncLastCheckedAt = 0
+	}
+	if record.SyncLastAppliedAt < 0 {
+		record.SyncLastAppliedAt = 0
 	}
 	if record.CreatedAt < 0 {
 		record.CreatedAt = 0
