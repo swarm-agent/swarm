@@ -625,6 +625,15 @@ function StatusBadge({ status }: { status: FlowStatus }) {
   )
 }
 
+function StatusOutlineToken({ status }: { status: FlowStatus }) {
+  return (
+    <span className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-transparent px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--app-text-muted)]">
+      <FlowStatusDot status={status} className="h-1.5 w-1.5" />
+      {statusLabels[status]}
+    </span>
+  )
+}
+
 function EnabledToggle({ enabled, disabled, onToggle }: { enabled: boolean; disabled?: boolean; onToggle: () => void }) {
   return (
     <button
@@ -1411,7 +1420,7 @@ export function FlowsSettingsPage() {
                   </td>
                   <td className="px-4 py-4 align-middle">
                     <div className="flex justify-center">
-                      <StatusBadge status={flow.status} />
+                      <StatusOutlineToken status={flow.status} />
                     </div>
                   </td>
                   <td className="px-4 py-4 align-middle">
