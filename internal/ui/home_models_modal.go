@@ -1035,10 +1035,6 @@ func (p *HomePage) drawModelsModal(s tcell.Screen) {
 		return
 	}
 
-	fg, _, _ := p.theme.Text.Decompose()
-	bg := tcell.StyleDefault.Background(tcell.NewRGBColor(0, 0, 0)).Foreground(fg)
-	FillRect(s, Rect{X: 0, Y: 0, W: w, H: h}, bg)
-
 	rectW := w - 4
 	if w < 64 {
 		rectW = w - 2
@@ -1060,6 +1056,7 @@ func (p *HomePage) drawModelsModal(s tcell.Screen) {
 		rectH = h
 	}
 	rect := Rect{X: maxInt(0, (w-rectW)/2), Y: maxInt(0, (h-rectH)/2), W: rectW, H: rectH}
+	FillRect(s, rect, p.theme.Panel)
 	DrawBox(s, rect, p.theme.BorderActive)
 
 	title := "Models"
@@ -1113,11 +1110,7 @@ func (p *HomePage) drawModelsModal(s tcell.Screen) {
 
 	compactLayout := listRect.W < 66 || listRect.H < 8
 	if compactLayout {
-		if p.modelsModal.Focus == modelsModalFocusModels || len(p.modelsModal.Providers) <= 1 {
-			p.drawModelsModalModelPane(s, listRect)
-		} else {
-			p.drawModelsModalProviderPane(s, listRect)
-		}
+		p.drawModelsModalCompactPanes(s, listRect)
 	} else {
 		providerW := maxInt(12, listRect.W/3)
 		if providerW > 24 {
@@ -1141,6 +1134,38 @@ func (p *HomePage) drawModelsModal(s tcell.Screen) {
 
 	if p.modelsModal.AuthEditor != nil {
 		p.drawModelsModalAuthEditor(s, rect)
+	}
+}
+
+func (p *HomePage) drawModelsModalCompactPanes(s tcell.Screen, rect Rect) {
+	if rect.W < 28 || rect.H < 6 {
+		return
+	}
+
+	providerH := minInt(6, maxInt(3, rect.H/3))
+	modelH := rect.H - providerH - 1
+	if modelH < 4 {
+		modelH = maxInt(3, rect.H-4)
+		providerH = rect.H - modelH - 1
+	}
+	if providerH < 3 || modelH < 3 {
+		// If the terminal is extremely short, prefer showing both section headers over
+		// reverting to the old one-pane layout that made providers disappear.
+		providerH = maxInt(2, minInt(3, rect.H/3))
+		modelH = rect.H - providerH - 1
+	}
+	if providerH > 0 {
+		providerRect := Rect{X: rect.X, Y: rect.Y, W: rect.W, H: providerH}
+		p.drawModelsModalProviderPane(s, providerRect)
+	}
+	if modelH > 0 {
+		modelRect := Rect{X: rect.X, Y: rect.Y + maxInt(0, providerH) + 1, W: rect.W, H: modelH}
+		if modelRect.Y < rect.Y+rect.H {
+			if modelRect.Y+modelRect.H > rect.Y+rect.H {
+				modelRect.H = rect.Y + rect.H - modelRect.Y
+			}
+			p.drawModelsModalModelPane(s, modelRect)
+		}
 	}
 }
 
