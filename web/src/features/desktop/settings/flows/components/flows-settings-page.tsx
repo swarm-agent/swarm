@@ -31,7 +31,7 @@ type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
 type FlowMode = 'Scheduled background job' | 'Manual one-shot'
 type ScheduleCadence = 'Daily' | 'Weekly' | 'Monthly' | 'On demand'
 type ScheduleMode = 'guided' | 'cron'
-type DailyScheduleMode = 'once' | 'fixed' | 'times_between' | 'interval_window'
+type DailyScheduleMode = 'once' | 'times_between' | 'interval_window'
 
 interface FlowTask {
   id: string
@@ -86,6 +86,7 @@ interface AddFlowForm {
   dailyIntervalHours: string
   dailyWindowStart: string
   dailyWindowEnd: string
+  highRunCountConfirmed: boolean
   scheduleDay: string
   scheduleDate: string
   timezone: string
@@ -122,7 +123,6 @@ interface FlowAgentOption {
 const scheduleCadenceOptions: ScheduleCadence[] = ['Daily', 'Weekly', 'Monthly']
 const dailyScheduleModeOptions: Array<{ value: DailyScheduleMode; label: string; helper: string }> = [
   { value: 'once', label: 'Once per day', helper: 'One predictable daily run.' },
-  { value: 'fixed', label: 'Fixed times', helper: 'Pick each exact time.' },
   { value: 'times_between', label: 'X times in window', helper: 'Evenly spread runs between two times.' },
   { value: 'interval_window', label: 'Every X hours', helper: 'Repeat on an hourly interval inside a window.' },
 ]
@@ -135,7 +135,8 @@ const scheduleTimeOptions = Array.from({ length: 48 }, (_, index) => {
   const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12
   return `${hour12}:${minute} ${period}`
 })
-const maxDailyScheduleTimes = 8
+const highDailyRunWarningThreshold = 8
+const maxDailyScheduleTimes = 48
 
 const fallbackTimeZones = [
   'UTC',
@@ -199,8 +200,6 @@ function scheduleTimesForCadence(form: AddFlowForm): string[] {
     return [form.scheduleTimes[0] || '12:00 AM']
   }
   switch (form.dailyMode) {
-    case 'fixed':
-      return form.scheduleTimes.length ? form.scheduleTimes : ['12:00 AM']
     case 'times_between':
       return spreadTimesBetween(form.dailyRunCount, form.dailyWindowStart, form.dailyWindowEnd)
     case 'interval_window':
@@ -223,6 +222,7 @@ const defaultAddFlowForm: AddFlowForm = {
   dailyIntervalHours: '2',
   dailyWindowStart: '9:00 AM',
   dailyWindowEnd: '5:00 PM',
+  highRunCountConfirmed: false,
   scheduleDay: 'Mon',
   scheduleDate: '1',
   timezone: userTimeZone(),
@@ -368,31 +368,67 @@ function clockLabelToHHMM(value: string): string {
   return `${String(hour).padStart(2, '0')}:${minute}`
 }
 
+function expandCronField(field: string, min: number, max: number): number[] {
+  const values = new Set<number>()
+  for (const rawPart of field.split(',')) {
+    const part = rawPart.trim()
+    if (!part) {
+      continue
+    }
+    const [rangePart, stepPart] = part.split('/')
+    const step = Math.max(1, Number.parseInt(stepPart || '1', 10) || 1)
+    const [rawStart, rawEnd] = rangePart === '*' ? [String(min), String(max)] : rangePart.split('-')
+    const start = Math.max(min, Number.parseInt(rawStart, 10))
+    const end = Math.min(max, Number.parseInt(rawEnd || rawStart, 10))
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
+      return []
+    }
+    for (let value = start; value <= end; value += step) {
+      values.add(value)
+    }
+  }
+  return Array.from(values).sort((left, right) => left - right)
+}
+
+function cronDayPreview(field: string): string[] {
+  if (field === '*') {
+    return ['Every day']
+  }
+  const dayAliases: Record<string, string> = { '0': 'Sun', '1': 'Mon', '2': 'Tue', '3': 'Wed', '4': 'Thu', '5': 'Fri', '6': 'Sat', '7': 'Sun' }
+  return field.split(',').map((part) => {
+    const trimmed = part.trim()
+    const [rangePart] = trimmed.split('/')
+    if (rangePart.includes('-')) {
+      const [start, end] = rangePart.split('-')
+      return `${dayAliases[start] || start}-${dayAliases[end] || end}`
+    }
+    return dayAliases[rangePart] || rangePart
+  }).filter(Boolean)
+}
+
 function cronPreviewLabels(expression: string): string[] {
   const fields = expression.trim().split(/\s+/)
   if (fields.length !== 5) {
     return ['Enter a 5-field cron expression to preview timing.']
   }
-  const [minuteField, hourField, , , dayField] = fields
-  const minutes = minuteField === '0' ? ['00'] : minuteField.split(',').filter(Boolean).slice(0, 3)
-  const minute = minutes[0] ?? '00'
-  const hours = hourField.split(',').filter(Boolean).slice(0, 4)
-  const days = dayField === '*' ? ['Every day'] : dayField.split(',').filter(Boolean).slice(0, 4)
-  if (!minutes.length || !hours.length) {
+  const [minuteField, hourField, dayOfMonthField, monthField, dayField] = fields
+  const minutes = expandCronField(minuteField, 0, 59)
+  const hours = expandCronField(hourField, 0, 23)
+  const days = cronDayPreview(dayField)
+  if (!minutes.length || !hours.length || !days.length) {
     return ['Preview unavailable for this cron expression.']
   }
   const labels: string[] = []
   for (const day of days) {
     for (const hour of hours) {
-      const parsedHour = Number.parseInt(hour, 10)
-      if (!Number.isFinite(parsedHour) || hour.includes('/') || hour.includes('-') || minute.includes('/') || minute.includes('-')) {
-        return ['Preview will use the cron expression exactly after backend support is wired.']
-      }
-      labels.push(`${day} ${hhmmToDisplay(`${String(parsedHour).padStart(2, '0')}:${minute.padStart(2, '0')}`)}`)
-      if (labels.length >= 5) {
-        return labels
+      for (const minute of minutes) {
+        labels.push(`${day} ${hhmmToDisplay(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`)}`)
+
       }
     }
+  }
+  if (dayOfMonthField !== '*' || monthField !== '*') {
+    labels.push(`Limited by date/month fields: ${dayOfMonthField} ${monthField}`)
   }
   return labels.length ? labels : ['Preview unavailable for this cron expression.']
 }
@@ -831,13 +867,14 @@ function AddFlowModal({
     setForm((current) => {
       if (field === 'scheduleCadence') {
         const nextCadence = value as ScheduleCadence
-        const nextTimes = nextCadence === 'Daily' && current.dailyMode === 'fixed' ? current.scheduleTimes : [current.scheduleTimes[0] || '12:00 AM']
-        return { ...current, scheduleCadence: nextCadence, scheduleTimes: nextTimes }
+        return { ...current, scheduleCadence: nextCadence, scheduleTimes: [current.scheduleTimes[0] || '12:00 AM'], highRunCountConfirmed: false }
       }
       if (field === 'dailyMode') {
         const nextMode = value as DailyScheduleMode
-        const nextTimes = nextMode === 'fixed' ? current.scheduleTimes : [current.scheduleTimes[0] || '12:00 AM']
-        return { ...current, dailyMode: nextMode, scheduleTimes: nextTimes }
+        return { ...current, dailyMode: nextMode, scheduleTimes: [current.scheduleTimes[0] || '12:00 AM'], highRunCountConfirmed: false }
+      }
+      if (field === 'dailyRunCount' || field === 'dailyIntervalHours' || field === 'dailyWindowStart' || field === 'dailyWindowEnd') {
+        return { ...current, [field]: value, highRunCountConfirmed: false }
       }
       return { ...current, [field]: value }
     })
@@ -848,24 +885,6 @@ function AddFlowModal({
       scheduleTimes: current.scheduleTimes.map((value, currentIndex) => (currentIndex === index ? event.target.value : value)),
     }))
   }
-  const addScheduleTime = () => {
-    setForm((current) => {
-      if (current.scheduleCadence !== 'Daily' || current.scheduleTimes.length >= maxDailyScheduleTimes) {
-        return current
-      }
-      return { ...current, scheduleTimes: [...current.scheduleTimes, current.scheduleTimes[current.scheduleTimes.length - 1] || '12:00 AM'] }
-    })
-  }
-  const removeScheduleTime = (index: number) => {
-    setForm((current) => {
-      const remaining = current.scheduleTimes.filter((_, currentIndex) => currentIndex !== index)
-      return {
-        ...current,
-        scheduleTimes: remaining.length ? remaining : ['12:00 AM'],
-      }
-    })
-  }
-
   const toggleScheduleDay = (day: string) => {
     setForm((current) => {
       const selected = selectedScheduleDays(current.scheduleDay)
@@ -878,12 +897,12 @@ function AddFlowModal({
   const selectedTarget = targetOptions.find((option) => option.key === form.targetKey)
   const selectedWorkspace = workspaceOptions.find((option) => option.key === form.workspacePath)
   const selectedAgent = agentOptions.find((option) => option.key === form.agentKey)
-  const supportsMultipleTimes = form.scheduleMode === 'guided' && form.scheduleCadence === 'Daily' && form.dailyMode === 'fixed'
   const guidedScheduleTimes = scheduleTimesForCadence(form)
   const cronPreviewTimes = cronPreviewLabels(form.cronExpression)
   const selectedScheduleDayValues = selectedScheduleDays(form.scheduleDay)
   const selectedTimezoneNow = timeInZone(form.timezone, now)
-  const canSubmit = Boolean(selectedTarget && selectedWorkspace && selectedAgent && form.task.trim()) && (form.scheduleMode !== 'cron' || Boolean(form.cronExpression.trim())) && !busy
+  const needsHighRunCountConfirmation = form.scheduleMode === 'guided' && form.scheduleCadence === 'Daily' && guidedScheduleTimes.length > highDailyRunWarningThreshold
+  const canSubmit = Boolean(selectedTarget && selectedWorkspace && selectedAgent && form.task.trim()) && (form.scheduleMode !== 'cron' || Boolean(form.cronExpression.trim())) && (!needsHighRunCountConfirmation || form.highRunCountConfirmed) && !busy
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -905,7 +924,12 @@ function AddFlowModal({
               <h2 className="mt-1 text-lg font-semibold text-[rgba(255,255,255,0.90)]">Add Flow</h2>
               <p className="mt-1 text-sm text-[rgba(255,255,255,0.55)]">Creates a controller Flow and syncs it to the selected target.</p>
             </div>
-            <ModalCloseButton className="rounded-xl" onClick={onClose} aria-label="Close Add Flow" />
+            <div className="flex items-start gap-3">
+              <div className="whitespace-nowrap rounded-xl border border-[#b87586]/20 bg-[#b87586]/10 px-3 py-2 text-right text-[11px] leading-4 text-[#d7a0ad]">
+                Need complex cron? Ask your agent.
+              </div>
+              <ModalCloseButton className="rounded-xl" onClick={onClose} aria-label="Close Add Flow" />
+            </div>
           </div>
 
           <div className="overflow-y-auto px-5 py-4">
@@ -969,48 +993,24 @@ function AddFlowModal({
                 </div>
 
                 {form.scheduleMode === 'guided' ? (
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <div className="flex flex-col gap-3">
+                  <div className="grid gap-3">
+                    <div className="grid gap-3 md:grid-cols-3">
                       <label className="flex flex-col gap-2">
                         <span className={labelClass}>Frequency</span>
                         <select data-testid="flows-add-cadence" value={form.scheduleCadence} onChange={update('scheduleCadence')} className={fieldClass}>
                           {scheduleCadenceOptions.map((cadence) => <option key={cadence}>{cadence}</option>)}
                         </select>
                       </label>
+
                       {form.scheduleCadence === 'Daily' ? (
                         <label className="flex flex-col gap-2">
                           <span className={labelClass}>Daily mode</span>
                           <select value={form.dailyMode} onChange={update('dailyMode')} className={fieldClass}>
                             {dailyScheduleModeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                           </select>
-                          <span className={helperClass}>{dailyScheduleModeOptions.find((option) => option.value === form.dailyMode)?.helper}</span>
                         </label>
                       ) : null}
-                      {form.scheduleCadence === 'Weekly' ? (
-                        <div className="flex flex-col gap-2">
-                          <div className="flex flex-wrap gap-1.5">
-                            {scheduleDayOptions.map((day) => {
-                              const selected = selectedScheduleDayValues.includes(day)
-                              return (
-                                <button
-                                  key={day}
-                                  type="button"
-                                  onClick={() => toggleScheduleDay(day)}
-                                  className={cn(
-                                    'h-7 rounded-lg border px-2.5 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#b87586]/35',
-                                    selected
-                                      ? 'border-[#b87586]/40 bg-[#b87586]/18 text-[rgba(255,255,255,0.86)]'
-                                      : 'border-[rgba(255,255,255,0.10)] bg-transparent text-[rgba(255,255,255,0.56)] hover:border-[rgba(255,255,255,0.16)] hover:text-[rgba(255,255,255,0.76)]',
-                                  )}
-                                >
-                                  {day}
-                                </button>
-                              )
-                            })}
-                          </div>
-                          <div className={helperClass}>Runs every {formatSelectedDays(form.scheduleDay)} at the selected time.</div>
-                        </div>
-                      ) : null}
+
                       {form.scheduleCadence === 'Monthly' ? (
                         <label className="flex flex-col gap-2">
                           <span className={labelClass}>Run on day</span>
@@ -1019,95 +1019,91 @@ function AddFlowModal({
                           </select>
                         </label>
                       ) : null}
-                    </div>
 
-                    <div className="flex flex-col gap-3">
-                      {form.scheduleCadence === 'Daily' && form.dailyMode === 'times_between' ? (
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <label className="flex flex-col gap-2">
-                            <span className={labelClass}>Runs per day</span>
-                            <input type="number" min="1" max={maxDailyScheduleTimes} value={form.dailyRunCount} onChange={update('dailyRunCount')} className={fieldClass} />
-                          </label>
-                          <div className="grid grid-cols-2 gap-2">
-                            <label className="flex flex-col gap-2">
-                              <span className={labelClass}>Start</span>
-                              <select value={form.dailyWindowStart} onChange={update('dailyWindowStart')} className={fieldClass}>
-                                {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
-                              </select>
-                            </label>
-                            <label className="flex flex-col gap-2">
-                              <span className={labelClass}>End</span>
-                              <select value={form.dailyWindowEnd} onChange={update('dailyWindowEnd')} className={fieldClass}>
-                                {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
-                              </select>
-                            </label>
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {form.scheduleCadence === 'Daily' && form.dailyMode === 'interval_window' ? (
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <label className="flex flex-col gap-2">
-                            <span className={labelClass}>Every</span>
-                            <div className="flex items-center gap-2">
-                              <input type="number" min="1" max="24" value={form.dailyIntervalHours} onChange={update('dailyIntervalHours')} className={cn(fieldClass, 'min-w-0 flex-1')} />
-                              <span className="text-xs text-[rgba(255,255,255,0.55)]">hours</span>
-                            </div>
-                          </label>
-                          <div className="grid grid-cols-2 gap-2">
-                            <label className="flex flex-col gap-2">
-                              <span className={labelClass}>Start</span>
-                              <select value={form.dailyWindowStart} onChange={update('dailyWindowStart')} className={fieldClass}>
-                                {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
-                              </select>
-                            </label>
-                            <label className="flex flex-col gap-2">
-                              <span className={labelClass}>End</span>
-                              <select value={form.dailyWindowEnd} onChange={update('dailyWindowEnd')} className={fieldClass}>
-                                {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
-                              </select>
-                            </label>
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {form.scheduleCadence !== 'Daily' || form.dailyMode === 'once' || form.dailyMode === 'fixed' ? (
-                        <div className="flex flex-col gap-2">
-                          <span className={labelClass}>{form.scheduleCadence === 'Daily' && form.dailyMode === 'fixed' ? 'Fixed times' : 'Run time'}</span>
-                          <div className="grid gap-2">
-                            {guidedScheduleTimes.map((time, index) => (
-                              <div key={`${form.scheduleCadence}-${time}-${index}`} className="flex items-center gap-2">
-                                <select value={time} onChange={updateScheduleTime(index)} className={cn(fieldClass, 'min-w-0 flex-1')}>
-                                  {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
-                                </select>
-                                {form.scheduleCadence === 'Daily' && form.dailyMode === 'fixed' ? (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    className="h-9 rounded-xl border border-[rgba(255,255,255,0.10)] px-3 text-[rgba(255,255,255,0.58)] hover:border-[rgba(255,255,255,0.16)] hover:bg-[rgba(255,255,255,0.035)]"
-                                    onClick={() => removeScheduleTime(index)}
-                                    disabled={!supportsMultipleTimes || form.scheduleTimes.length === 1}
-                                  >
-                                    Remove
-                                  </Button>
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-                          {form.scheduleCadence === 'Daily' && form.dailyMode === 'fixed' ? (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="h-9 justify-start rounded-xl px-0 text-[#c58a99] hover:bg-transparent hover:text-[#d39aaa] disabled:text-[rgba(255,255,255,0.28)]"
-                              onClick={addScheduleTime}
-                              disabled={!supportsMultipleTimes || form.scheduleTimes.length >= maxDailyScheduleTimes}
-                            >
-                              + Add another time
-                            </Button>
-                          ) : null}
-                        </div>
+                      {form.scheduleCadence !== 'Daily' || form.dailyMode === 'once' ? (
+                        <label className="flex flex-col gap-2">
+                          <span className={labelClass}>Run time</span>
+                          <select value={guidedScheduleTimes[0] || '12:00 AM'} onChange={updateScheduleTime(0)} className={fieldClass}>
+                            {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                          </select>
+                        </label>
                       ) : null}
                     </div>
+
+                    {form.scheduleCadence === 'Daily' ? (
+                      <div className={helperClass}>{dailyScheduleModeOptions.find((option) => option.value === form.dailyMode)?.helper}</div>
+                    ) : null}
+
+                    {form.scheduleCadence === 'Weekly' ? (
+                      <div className="flex flex-col gap-2">
+                        <div className="flex flex-wrap gap-1.5">
+                          {scheduleDayOptions.map((day) => {
+                            const selected = selectedScheduleDayValues.includes(day)
+                            return (
+                              <button
+                                key={day}
+                                type="button"
+                                onClick={() => toggleScheduleDay(day)}
+                                className={cn(
+                                  'h-7 rounded-lg border px-2.5 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#b87586]/35',
+                                  selected
+                                    ? 'border-[#b87586]/40 bg-[#b87586]/18 text-[rgba(255,255,255,0.86)]'
+                                    : 'border-[rgba(255,255,255,0.10)] bg-transparent text-[rgba(255,255,255,0.56)] hover:border-[rgba(255,255,255,0.16)] hover:text-[rgba(255,255,255,0.76)]',
+                                )}
+                              >
+                                {day}
+                              </button>
+                            )
+                          })}
+                        </div>
+                        <div className={helperClass}>Runs every {formatSelectedDays(form.scheduleDay)} at the selected time.</div>
+                      </div>
+                    ) : null}
+
+                    {form.scheduleCadence === 'Daily' && form.dailyMode === 'times_between' ? (
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <label className="flex flex-col gap-2">
+                          <span className={labelClass}>Runs per day</span>
+                          <input type="number" min="1" max={maxDailyScheduleTimes} value={form.dailyRunCount} onChange={update('dailyRunCount')} className={fieldClass} />
+                        </label>
+                        <label className="flex flex-col gap-2">
+                          <span className={labelClass}>Start</span>
+                          <select value={form.dailyWindowStart} onChange={update('dailyWindowStart')} className={fieldClass}>
+                            {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-2">
+                          <span className={labelClass}>End</span>
+                          <select value={form.dailyWindowEnd} onChange={update('dailyWindowEnd')} className={fieldClass}>
+                            {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                          </select>
+                        </label>
+                      </div>
+                    ) : null}
+
+                    {form.scheduleCadence === 'Daily' && form.dailyMode === 'interval_window' ? (
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <label className="flex flex-col gap-2">
+                          <span className={labelClass}>Every</span>
+                          <div className="flex items-center gap-2">
+                            <input type="number" min="1" max="24" value={form.dailyIntervalHours} onChange={update('dailyIntervalHours')} className={cn(fieldClass, 'min-w-0 flex-1')} />
+                            <span className="text-xs text-[rgba(255,255,255,0.55)]">hours</span>
+                          </div>
+                        </label>
+                        <label className="flex flex-col gap-2">
+                          <span className={labelClass}>Start</span>
+                          <select value={form.dailyWindowStart} onChange={update('dailyWindowStart')} className={fieldClass}>
+                            {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-2">
+                          <span className={labelClass}>End</span>
+                          <select value={form.dailyWindowEnd} onChange={update('dailyWindowEnd')} className={fieldClass}>
+                            {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                          </select>
+                        </label>
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
                   <div className="grid gap-3">
@@ -1123,6 +1119,20 @@ function AddFlowModal({
                     <div className={helperClass}>Raw cron controls all run timing. Guided frequency, day, and time fields are ignored in this mode.</div>
                   </div>
                 )}
+
+                {needsHighRunCountConfirmation ? (
+                  <label className="flex items-start gap-3 rounded-xl border border-[#b87586]/30 bg-[#b87586]/10 p-3 text-sm text-[rgba(255,255,255,0.78)]">
+                    <input
+                      type="checkbox"
+                      checked={form.highRunCountConfirmed}
+                      onChange={(event) => setForm((current) => ({ ...current, highRunCountConfirmed: event.target.checked }))}
+                      className="mt-0.5 h-4 w-4 accent-[#b87586]"
+                    />
+                    <span>
+                      This will run {guidedScheduleTimes.length} times per day. Yes, I really want to run this many.
+                    </span>
+                  </label>
+                ) : null}
 
                 <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.025)] p-3">
                   <div className={labelClass}>Preview</div>

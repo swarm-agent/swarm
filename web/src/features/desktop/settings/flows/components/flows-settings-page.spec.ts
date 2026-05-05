@@ -45,12 +45,13 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
     targetKey: 'target',
     scheduleMode: 'guided' as const,
     scheduleCadence: 'Daily' as const,
-    dailyMode: 'fixed' as const,
-    scheduleTimes: ['9:00 AM', '5:30 PM'],
+    dailyMode: 'once' as const,
+    scheduleTimes: ['9:00 AM'],
     dailyRunCount: '4',
     dailyIntervalHours: '2',
     dailyWindowStart: '9:00 AM',
     dailyWindowEnd: '5:00 PM',
+    highRunCountConfirmed: false,
     scheduleDay: 'Mon',
     scheduleDate: '1',
     timezone: 'America/New_York',
@@ -68,7 +69,7 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
   assert.equal(scheduled.enabled, true)
   assert.equal(scheduled.schedule.cadence, 'daily')
   assert.equal(scheduled.schedule.time, '09:00')
-  assert.deepEqual(scheduled.schedule.times, ['09:00', '17:30'])
+  assert.deepEqual(scheduled.schedule.times, ['09:00'])
   assert.equal(scheduled.schedule.timezone, 'America/New_York')
   assert.equal(scheduled.intent.mode, 'target-owned schedule')
 
