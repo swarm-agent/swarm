@@ -1376,7 +1376,7 @@ export function FlowsSettingsPage() {
           <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
             <label className="relative w-[148px] shrink-0">
               <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
-              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search flows" className="h-9 min-h-9 rounded-xl border-[var(--app-border)] bg-[var(--app-surface-subtle)] py-0 pl-8 pr-3 text-xs focus-visible:ring-0 focus-visible:ring-offset-0" />
+              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search flows" className="!h-9 !min-h-9 rounded-xl border-[var(--app-border)] bg-[var(--app-surface-subtle)] !py-0 pl-8 pr-3 text-xs leading-none focus-visible:ring-0 focus-visible:ring-offset-0" />
             </label>
             <FilterSelect label="Workspace filter" value={workspaceFilter} onChange={setWorkspaceFilter} options={workspaceOptions} />
             <FilterSelect label="Agent filter" value={agentFilter} onChange={setAgentFilter} options={agentFilterOptions} />
