@@ -340,7 +340,7 @@ func New() (*App, error) {
 		startupCWD:          cwd,
 		activePath:          cwd,
 		workspacePath:       "",
-		selectedChatRouteID: "host",
+		selectedChatRouteID: "",
 		homeModel:           initial,
 		config:              cfg,
 		settingsLabel:       settingsBackendLabel,
@@ -1154,7 +1154,9 @@ func (a *App) applyRemoteUISettings(settings client.UISettings) bool {
 	if a == nil {
 		return false
 	}
+	previousConfig := a.config
 	a.config = appConfigFromUISettings(settings)
+	a.syncSelectedChatRouteAfterSettingsUpdate(previousConfig)
 	if a.keybinds == nil {
 		a.keybinds = ui.NewDefaultKeyBindings()
 	} else {
@@ -7204,11 +7206,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 			preferredWorkspacePath = normalizePath(strings.TrimSpace(a.workspacePath))
 		}
 		next.ChatRoutes = buildChatRoutesForWorkspaces(next.Workspaces, preferredWorkspacePath)
-		selectedRouteID := strings.TrimSpace(a.selectedChatRouteID)
-		if selectedRouteID == "" {
-			selectedRouteID = strings.TrimSpace(a.config.Chat.DefaultWorkspaceRoutes[preferredWorkspacePath])
-		}
-		selectedRouteID = normalizeSelectedRouteID(selectedRouteID, next.ChatRoutes)
+		selectedRouteID := a.resolveSelectedChatRouteIDForWorkspace(preferredWorkspacePath, next.ChatRoutes)
 		a.selectedChatRouteID = selectedRouteID
 		next.SelectedChatRouteID = selectedRouteID
 		activeWorkspacePath := resolveWorkspaceSelectionPath(activePath, next.Workspaces, preferredWorkspacePath)
@@ -7659,9 +7657,82 @@ func normalizeSelectedRouteID(routeID string, routes []model.ChatRoute) string {
 	return "host"
 }
 
+func (a *App) defaultChatRouteIDForWorkspace(workspacePath string) string {
+	if a == nil {
+		return ""
+	}
+	workspacePath = normalizePath(strings.TrimSpace(workspacePath))
+	if workspacePath == "" || len(a.config.Chat.DefaultWorkspaceRoutes) == 0 {
+		return ""
+	}
+	if routeID := strings.TrimSpace(a.config.Chat.DefaultWorkspaceRoutes[workspacePath]); routeID != "" {
+		return routeID
+	}
+	for path, routeID := range a.config.Chat.DefaultWorkspaceRoutes {
+		if pathsEqual(path, workspacePath) {
+			return strings.TrimSpace(routeID)
+		}
+	}
+	return ""
+}
+
+func defaultChatRouteIDFromConfig(cfg AppConfig, workspacePath string) string {
+	workspacePath = normalizePath(strings.TrimSpace(workspacePath))
+	if workspacePath == "" || len(cfg.Chat.DefaultWorkspaceRoutes) == 0 {
+		return ""
+	}
+	if routeID := strings.TrimSpace(cfg.Chat.DefaultWorkspaceRoutes[workspacePath]); routeID != "" {
+		return routeID
+	}
+	for path, routeID := range cfg.Chat.DefaultWorkspaceRoutes {
+		if pathsEqual(path, workspacePath) {
+			return strings.TrimSpace(routeID)
+		}
+	}
+	return ""
+}
+
+func (a *App) resolveSelectedChatRouteIDForWorkspace(workspacePath string, routes []model.ChatRoute) string {
+	selected := ""
+	if a != nil {
+		selected = strings.TrimSpace(a.selectedChatRouteID)
+		if selected == "" {
+			selected = a.defaultChatRouteIDForWorkspace(workspacePath)
+		}
+	}
+	return normalizeSelectedRouteID(selected, routes)
+}
+
+func (a *App) syncSelectedChatRouteAfterSettingsUpdate(previousConfig AppConfig) {
+	if a == nil || len(a.homeModel.ChatRoutes) == 0 {
+		return
+	}
+	workspacePath := strings.TrimSpace(a.activeWorkspacePath())
+	if workspacePath == "" {
+		workspacePath = strings.TrimSpace(a.workspacePath)
+	}
+	if workspacePath == "" {
+		workspacePath = strings.TrimSpace(a.startupCWD)
+	}
+	workspacePath = normalizePath(workspacePath)
+	if workspacePath == "" {
+		return
+	}
+	routes := buildChatRoutesForWorkspaces(a.homeModel.Workspaces, workspacePath)
+	previousDefault := normalizeSelectedRouteID(defaultChatRouteIDFromConfig(previousConfig, workspacePath), routes)
+	currentSelected := normalizeSelectedRouteID(a.selectedChatRouteID, routes)
+	if strings.TrimSpace(a.selectedChatRouteID) != "" && currentSelected != previousDefault {
+		return
+	}
+	nextSelected := normalizeSelectedRouteID(a.defaultChatRouteIDForWorkspace(workspacePath), routes)
+	a.selectedChatRouteID = nextSelected
+	a.homeModel.ChatRoutes = routes
+	a.homeModel.SelectedChatRouteID = nextSelected
+}
+
 func (a *App) selectedChatRouteForWorkspace(workspacePath string) model.ChatRoute {
 	routes := buildChatRoutesForWorkspaces(a.homeModel.Workspaces, workspacePath)
-	selected := normalizeSelectedRouteID(a.selectedChatRouteID, routes)
+	selected := a.resolveSelectedChatRouteIDForWorkspace(workspacePath, routes)
 	for _, route := range routes {
 		if strings.TrimSpace(route.ID) == selected {
 			return route
