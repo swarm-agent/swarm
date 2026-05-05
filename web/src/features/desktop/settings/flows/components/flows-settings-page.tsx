@@ -16,6 +16,8 @@ import {
   fetchFlowWorkspaces,
   flowsQueryKey,
   runFlowNow,
+  setFlowEnabled,
+  updateFlow,
   type CreateFlowInput,
   type FlowAgentProfile,
   type FlowDetailRecord,
@@ -549,6 +551,87 @@ function hhmmToDisplay(value: string): string {
   return `${hour12}:${minute.padStart(2, '0')} ${period}`
 }
 
+function nearestScheduleTimeLabel(value?: string): string {
+  if (!value) {
+    return '12:00 AM'
+  }
+  const label = hhmmToDisplay(value)
+  return scheduleTimeOptions.includes(label) ? label : '12:00 AM'
+}
+
+export function optionKeyForTargetSelection(selection: FlowSummaryRecord['definition']['target'], targets: FlowTargetOption[]): string {
+  const normalized = {
+    swarmID: selection.swarm_id?.trim().toLowerCase() || '',
+    deploymentID: selection.deployment_id?.trim().toLowerCase() || '',
+    kind: selection.kind?.trim().toLowerCase() || '',
+    name: selection.name?.trim().toLowerCase() || '',
+  }
+  return targets.find((option) => {
+    const target = option.target
+    return (
+      (!!normalized.swarmID && target.swarm_id?.trim().toLowerCase() === normalized.swarmID) ||
+      (!!normalized.deploymentID && target.deployment_id?.trim().toLowerCase() === normalized.deploymentID) ||
+      (!!normalized.name && target.name?.trim().toLowerCase() === normalized.name && target.kind?.trim().toLowerCase() === normalized.kind)
+    )
+  })?.key || targets[0]?.key || ''
+}
+
+export function optionKeyForAgentSelection(selection: FlowSummaryRecord['definition']['agent'], agents: FlowAgentOption[]): string {
+  const profileName = selection.profile_name?.trim().toLowerCase() || ''
+  const profileMode = selection.profile_mode?.trim().toLowerCase() || ''
+  return agents.find((option) => {
+    const profile = option.profile
+    return profile.name.trim().toLowerCase() === profileName && (!profileMode || profile.mode.trim().toLowerCase() === profileMode)
+  })?.key || agents[0]?.key || ''
+}
+
+export function optionKeyForWorkspaceContext(workspace: FlowSummaryRecord['definition']['workspace'], workspaces: FlowWorkspaceOption[]): string {
+  const path = workspace.workspace_path?.trim() || workspace.host_workspace_path?.trim() || workspace.cwd?.trim() || ''
+  return workspaces.find((option) => option.workspace.path === path)?.key || path || workspaces[0]?.key || ''
+}
+
+function dailyModeFromTimes(times: string[]): DailyScheduleMode {
+  if (times.length <= 1) {
+    return 'once'
+  }
+  const minutes = times.map(minutesFromClockLabel)
+  const step = minutes[1] - minutes[0]
+  if (step > 0 && minutes.every((value, index) => index === 0 || value - minutes[index - 1] === step) && step % 60 === 0) {
+    return 'interval_window'
+  }
+  return 'times_between'
+}
+
+export function recordToFlowForm(record: FlowSummaryRecord, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[], agents: FlowAgentOption[]): AddFlowForm {
+  const schedule = record.definition.schedule
+  const cadence = cadenceLabel(schedule.cadence)
+  const rawTimes = Array.isArray(schedule.times) && schedule.times.length ? schedule.times : schedule.time ? [schedule.time] : []
+  const scheduleTimes = rawTimes.length ? rawTimes.map(nearestScheduleTimeLabel) : ['12:00 AM']
+  const dailyMode = cadence === 'Daily' ? dailyModeFromTimes(scheduleTimes) : 'once'
+  const dailyIntervalHours = scheduleTimes.length > 1 ? String(Math.max(1, Math.round((minutesFromClockLabel(scheduleTimes[1]) - minutesFromClockLabel(scheduleTimes[0])) / 60))) : defaultAddFlowForm.dailyIntervalHours
+  return {
+    ...defaultAddFlowForm,
+    name: record.definition.name || record.definition.flow_id,
+    agentKey: optionKeyForAgentSelection(record.definition.agent, agents),
+    targetKey: optionKeyForTargetSelection(record.definition.target, targets),
+    scheduleMode: schedule.cron?.trim() ? 'cron' : 'guided',
+    scheduleCadence: cadence,
+    dailyMode,
+    scheduleTimes,
+    dailyRunCount: String(Math.max(1, scheduleTimes.length)),
+    dailyIntervalHours,
+    dailyWindowStart: scheduleTimes[0] || defaultAddFlowForm.dailyWindowStart,
+    dailyWindowEnd: scheduleTimes[scheduleTimes.length - 1] || defaultAddFlowForm.dailyWindowEnd,
+    highRunCountConfirmed: scheduleTimes.length > highDailyRunWarningThreshold,
+    scheduleDay: schedule.weekday || defaultAddFlowForm.scheduleDay,
+    scheduleDate: String(schedule.month_day || defaultAddFlowForm.scheduleDate),
+    timezone: schedule.timezone || defaultAddFlowForm.timezone,
+    cronExpression: schedule.cron?.trim() || defaultAddFlowForm.cronExpression,
+    workspacePath: optionKeyForWorkspaceContext(record.definition.workspace, workspaces),
+    task: record.definition.intent.prompt || '',
+  }
+}
+
 function isoDisplay(value?: string): string {
   if (!value) {
     return '—'
@@ -727,7 +810,7 @@ export function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
   }
 }
 
-export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[], agents: FlowAgentOption[]): CreateFlowInput {
+export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[], workspaces: FlowWorkspaceOption[], agents: FlowAgentOption[], enabled?: boolean): CreateFlowInput {
   const isOnDemand = form.scheduleCadence === 'On demand'
   const cadence = isOnDemand ? 'on_demand' : form.scheduleCadence.toLowerCase()
   const selectedTimes = scheduleTimesForCadence(form).map((value) => clockLabelToHHMM(value))
@@ -739,7 +822,7 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
   const cronExpression = form.scheduleMode === 'cron' ? form.cronExpression.trim() : ''
   return {
     name: form.name.trim() || 'Untitled flow',
-    enabled: !isOnDemand,
+    enabled: enabled ?? !isOnDemand,
     target: targetToSelection(targetOption?.target),
     agent: {
       profile_name: agentOption?.profile.name.trim() || '',
@@ -820,10 +903,13 @@ function FilterSelect({ value, onChange, options, label }: { value: string; onCh
   )
 }
 
-function AddFlowModal({
+function FlowSettingsModal({
   open,
+  mode = 'create',
+  initialForm,
+  enabledOverride,
   onClose,
-  onAdd,
+  onConfirm,
   busy,
   targetOptions,
   workspaceOptions,
@@ -831,24 +917,28 @@ function AddFlowModal({
   loadingOptions,
 }: {
   open: boolean
+  mode?: 'create' | 'edit'
+  initialForm?: AddFlowForm | null
+  enabledOverride?: boolean
   onClose: () => void
-  onAdd: (input: CreateFlowInput) => void
+  onConfirm: (input: CreateFlowInput) => void
   busy?: boolean
   targetOptions: FlowTargetOption[]
   workspaceOptions: FlowWorkspaceOption[]
   agentOptions: FlowAgentOption[]
   loadingOptions?: boolean
 }) {
-  const initialForm = useMemo(() => initialAddFlowForm(targetOptions, workspaceOptions, agentOptions), [agentOptions, targetOptions, workspaceOptions])
-  const [form, setForm] = useState<AddFlowForm>(initialForm)
+  const defaultInitialForm = useMemo(() => initialAddFlowForm(targetOptions, workspaceOptions, agentOptions), [agentOptions, targetOptions, workspaceOptions])
+  const effectiveInitialForm = useMemo(() => initialForm ?? defaultInitialForm, [defaultInitialForm, initialForm])
+  const [form, setForm] = useState<AddFlowForm>(effectiveInitialForm)
   const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
     if (open) {
-      setForm(initialForm)
+      setForm(effectiveInitialForm)
       setNow(new Date())
     }
-  }, [initialForm, open])
+  }, [effectiveInitialForm, open])
 
   useEffect(() => {
     if (!open) {
@@ -909,26 +999,26 @@ function AddFlowModal({
     if (!canSubmit) {
       return
     }
-    onAdd(formToCreateInput(form, targetOptions, workspaceOptions, agentOptions))
-    setForm(initialForm)
+    onConfirm(formToCreateInput(form, targetOptions, workspaceOptions, agentOptions, enabledOverride))
+    setForm(effectiveInitialForm)
   }
 
   return (
-    <Dialog role="dialog" aria-modal="true" aria-label="Add Flow" className="z-[80] p-3 sm:p-5" data-testid="flows-add-modal">
+    <Dialog role="dialog" aria-modal="true" aria-label={mode === 'edit' ? 'Edit Flow' : 'Add Flow'} className="z-[80] p-3 sm:p-5" data-testid="flows-add-modal">
       <DialogBackdrop onClick={busy ? undefined : onClose} />
       <DialogPanel className="w-[min(920px,100%)] gap-0 rounded-[14px] border border-[rgba(255,255,255,0.12)] bg-[#1a1921] p-0 shadow-xl shadow-black/30">
         <form onSubmit={submit} className="flex max-h-[min(820px,calc(100vh-40px))] flex-col">
           <div className="flex items-start justify-between gap-4 border-b border-[rgba(255,255,255,0.10)] px-5 py-4">
             <div>
-              <div className={labelClass}>New scheduled job</div>
-              <h2 className="mt-1 text-lg font-semibold text-[rgba(255,255,255,0.90)]">Add Flow</h2>
-              <p className="mt-1 text-sm text-[rgba(255,255,255,0.55)]">Creates a controller Flow and syncs it to the selected target.</p>
+              <div className={labelClass}>{mode === 'edit' ? 'Flow settings' : 'New scheduled job'}</div>
+              <h2 className="mt-1 text-lg font-semibold text-[rgba(255,255,255,0.90)]">{mode === 'edit' ? 'Edit Flow' : 'Add Flow'}</h2>
+              <p className="mt-1 text-sm text-[rgba(255,255,255,0.55)]">{mode === 'edit' ? 'Updates the controller Flow and syncs the new assignment to the target.' : 'Creates a controller Flow and syncs it to the selected target.'}</p>
             </div>
             <div className="flex items-start gap-3">
               <div className="whitespace-nowrap rounded-xl border border-[#b87586]/20 bg-[#b87586]/10 px-3 py-2 text-right text-[11px] leading-4 text-[#d7a0ad]">
                 Need complex cron? Ask your agent.
               </div>
-              <ModalCloseButton className="rounded-xl" onClick={onClose} aria-label="Close Add Flow" />
+              <ModalCloseButton className="rounded-xl" onClick={onClose} aria-label={mode === 'edit' ? 'Close Edit Flow' : 'Close Add Flow'} />
             </div>
           </div>
 
@@ -1168,7 +1258,7 @@ function AddFlowModal({
             <p className="text-xs text-[rgba(255,255,255,0.55)]">Targets keep accepted assignments and schedule locally.</p>
             <div className="flex items-center gap-2">
               <Button variant="outline" className="rounded-xl border-[rgba(255,255,255,0.13)] bg-transparent text-[rgba(255,255,255,0.70)] hover:border-[rgba(255,255,255,0.20)] hover:bg-[rgba(255,255,255,0.035)]" onClick={onClose} disabled={busy}>Cancel</Button>
-              <Button data-testid="flows-add-submit" type="submit" variant="primary" className="rounded-xl border-[#b87586]/40 bg-[#a86678] text-white hover:bg-[#b87586] active:bg-[#96596a]" disabled={!canSubmit}>{busy ? 'Adding…' : 'Add Flow'}</Button>
+              <Button data-testid="flows-add-submit" type="submit" variant="primary" className="rounded-xl border-[#b87586]/40 bg-[#a86678] text-white hover:bg-[#b87586] active:bg-[#96596a]" disabled={!canSubmit}>{busy ? (mode === 'edit' ? 'Saving…' : 'Adding…') : (mode === 'edit' ? 'Save changes' : 'Add Flow')}</Button>
             </div>
           </div>
         </form>
@@ -1177,7 +1267,23 @@ function AddFlowModal({
   )
 }
 
-function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefinition; onBack: () => void; onRunNow: (id: string) => void; onDelete: (id: string) => void; busy?: boolean }) {
+function FlowDetail({
+  flow,
+  onBack,
+  onRunNow,
+  onDelete,
+  onToggleEnabled,
+  onEdit,
+  busy,
+}: {
+  flow: FlowDefinition
+  onBack: () => void
+  onRunNow: (id: string) => void
+  onDelete: (id: string) => void
+  onToggleEnabled: (flow: FlowDefinition) => void
+  onEdit: (flow: FlowDefinition) => void
+  busy?: boolean
+}) {
   return (
     <div data-testid="flows-detail" className="flex min-h-full flex-col gap-8 pb-10 text-[var(--app-text)]">
       <div className="flex items-center justify-between gap-4 border-b border-[var(--app-border)] pb-5">
@@ -1192,8 +1298,14 @@ function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefi
           <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--app-text-muted)]">{flow.task}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <Button data-testid="flows-detail-edit" variant="outline" className="rounded-xl" onClick={() => onEdit(flow)} disabled={busy}>
+            Edit
+          </Button>
           <Button data-testid="flows-detail-run-now" variant="outline" className="rounded-xl" onClick={() => onRunNow(flow.id)} disabled={busy}>
             Run now
+          </Button>
+          <Button variant="outline" className="rounded-xl" onClick={() => onToggleEnabled(flow)} disabled={busy}>
+            {flow.enabled ? 'Stop schedule' : 'Start schedule'}
           </Button>
           <Button variant="ghost" className="rounded-xl text-[var(--app-danger)]" onClick={() => onDelete(flow.id)} disabled={busy}>
             Delete
@@ -1222,30 +1334,6 @@ function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefi
 
       <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div>
-          <div className="mb-6 grid gap-4 md:grid-cols-2">
-            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-              <div className={labelClass}>Assignment status</div>
-              <div data-testid="flows-detail-assignment-status" className="mt-3 space-y-3">
-                {flow.assignmentStatuses.length ? flow.assignmentStatuses.map((status) => (
-                  <div key={`${status.label}-${status.detail}`} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2">
-                    <div className="text-sm font-medium text-[var(--app-text)]">{status.label}</div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">{status.detail}{status.pendingSync ? ' • pending sync' : ''}</div>
-                  </div>
-                )) : <div className="text-sm text-[var(--app-text-muted)]">No assignment status mirrored yet.</div>}
-              </div>
-            </div>
-            <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-              <div className={labelClass}>Outbox</div>
-              <div data-testid="flows-detail-outbox" className="mt-3 space-y-3">
-                {flow.outbox.length ? flow.outbox.map((command) => (
-                  <div key={command.commandID} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2">
-                    <div className="text-sm font-medium text-[var(--app-text)]">{command.commandID}</div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">{command.status} • {command.detail}</div>
-                  </div>
-                )) : <div className="text-sm text-[var(--app-text-muted)]">No pending outbox commands.</div>}
-              </div>
-            </div>
-          </div>
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-[var(--app-text)]">Tasks inside this flow</h2>
@@ -1310,6 +1398,7 @@ export function FlowsSettingsPage() {
   const [query, setQuery] = useState('')
   const [selectedFlowID, setSelectedFlowIDState] = useState<string | null>(routeFlowID || null)
   const [addOpen, setAddOpen] = useState(false)
+  const [editingFlowRecord, setEditingFlowRecord] = useState<FlowDetailRecord | null>(null)
   const [busyID, setBusyID] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1492,6 +1581,39 @@ export function FlowsSettingsPage() {
     }
   }
 
+  const editFlow = async (input: CreateFlowInput) => {
+    if (!editingFlowRecord) {
+      return
+    }
+    const flowID = editingFlowRecord.definition.flow_id
+    setSaving(true)
+    setError(null)
+    try {
+      const detail = await updateFlow(flowID, input)
+      setEditingFlowRecord(null)
+      setSelectedFlowRecord(detail)
+      setSelectedFlowID(detail.definition.flow_id)
+      await refreshFlows()
+      const refreshed = await fetchFlow(detail.definition.flow_id)
+      setSelectedFlowRecord(refreshed)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update flow')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const openEditFlow = async (flow: FlowDefinition) => {
+    setError(null)
+    try {
+      const detail = selectedFlowRecord?.definition.flow_id === flow.id ? selectedFlowRecord : await fetchFlow(flow.id)
+      setEditingFlowRecord(detail)
+      setSelectedFlowRecord(detail)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load flow settings')
+    }
+  }
+
   const handleRunNow = async (id: string) => {
     setBusyID(id)
     setError(null)
@@ -1506,11 +1628,32 @@ export function FlowsSettingsPage() {
     }
   }
 
+  const handleToggleEnabled = async (flow: FlowDefinition) => {
+    if (busyID) {
+      return
+    }
+    setBusyID(flow.id)
+    setError(null)
+    try {
+      const detail = await setFlowEnabled(flow.id, !flow.enabled)
+      setSelectedFlowRecord((current) => (current?.definition.flow_id === flow.id ? detail : current))
+      await refreshFlows()
+      if (selectedFlowID === flow.id) {
+        setSelectedFlowRecord(await fetchFlow(flow.id))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update flow')
+    } finally {
+      setBusyID(null)
+    }
+  }
+
   const handleDelete = async (id: string) => {
     setBusyID(id)
     setError(null)
     try {
       await deleteFlow(id)
+      setEditingFlowRecord(null)
       setSelectedFlowRecord(null)
       setSelectedFlowID(null)
       await refreshFlows()
@@ -1521,11 +1664,29 @@ export function FlowsSettingsPage() {
     }
   }
 
+  const editInitialForm = useMemo(
+    () => editingFlowRecord ? recordToFlowForm(editingFlowRecord, targetOptions, addWorkspaceOptions, savedAgentOptions) : null,
+    [addWorkspaceOptions, editingFlowRecord, savedAgentOptions, targetOptions],
+  )
+
   if (selectedFlow) {
     return (
       <>
         {error ? <div data-testid="flows-error" className="mb-4 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
-        <FlowDetail flow={selectedFlow} onBack={() => { setSelectedFlowRecord(null); setSelectedFlowID(null) }} onRunNow={handleRunNow} onDelete={handleDelete} busy={busyID === selectedFlow.id} />
+        <FlowDetail flow={selectedFlow} onBack={() => { setSelectedFlowRecord(null); setSelectedFlowID(null); setEditingFlowRecord(null) }} onRunNow={handleRunNow} onDelete={handleDelete} onToggleEnabled={handleToggleEnabled} onEdit={openEditFlow} busy={busyID === selectedFlow.id} />
+        <FlowSettingsModal
+          open={Boolean(editingFlowRecord)}
+          mode="edit"
+          initialForm={editInitialForm}
+          enabledOverride={editingFlowRecord?.definition.enabled}
+          onClose={() => setEditingFlowRecord(null)}
+          onConfirm={(input) => void editFlow(input)}
+          busy={saving}
+          targetOptions={targetOptions}
+          workspaceOptions={addWorkspaceOptions}
+          agentOptions={savedAgentOptions}
+          loadingOptions={loadingAddFlowOptions}
+        />
       </>
     )
   }
@@ -1694,7 +1855,7 @@ export function FlowsSettingsPage() {
                   </td>
                   <td className="px-4 py-4 align-middle">
                     <div className="flex justify-center">
-                      <EnabledToggle enabled={flow.enabled} disabled onToggle={() => undefined} />
+                      <EnabledToggle enabled={flow.enabled} disabled={busyID === flow.id} onToggle={() => { void handleToggleEnabled(flow) }} />
                     </div>
                   </td>
                   <td className="px-5 py-4 align-middle">
@@ -1713,10 +1874,11 @@ export function FlowsSettingsPage() {
         </div>
       </section>
 
-      <AddFlowModal
+      <FlowSettingsModal
         open={addOpen}
+        mode="create"
         onClose={() => setAddOpen(false)}
-        onAdd={(input) => void addFlow(input)}
+        onConfirm={(input) => void addFlow(input)}
         busy={saving}
         targetOptions={targetOptions}
         workspaceOptions={addWorkspaceOptions}
