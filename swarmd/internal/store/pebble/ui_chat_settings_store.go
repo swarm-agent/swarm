@@ -58,13 +58,14 @@ type UIChatToolStreamSettingsRecord struct {
 }
 
 type UIChatSettingsRecord struct {
-	ShowHeader            bool                           `json:"show_header"`
-	ShowHeaderSet         bool                           `json:"-"`
-	ThinkingTags          bool                           `json:"thinking_tags"`
-	ThinkingTagsSet       bool                           `json:"-"`
-	DefaultNewSessionMode string                         `json:"default_new_session_mode,omitempty"`
-	ToolStream            UIChatToolStreamSettingsRecord `json:"tool_stream,omitempty"`
-	UpdatedAt             int64                          `json:"updated_at"`
+	ShowHeader             bool                           `json:"show_header"`
+	ShowHeaderSet          bool                           `json:"-"`
+	ThinkingTags           bool                           `json:"thinking_tags"`
+	ThinkingTagsSet        bool                           `json:"-"`
+	DefaultNewSessionMode  string                         `json:"default_new_session_mode,omitempty"`
+	DefaultWorkspaceRoutes map[string]string              `json:"default_workspace_routes,omitempty"`
+	ToolStream             UIChatToolStreamSettingsRecord `json:"tool_stream,omitempty"`
+	UpdatedAt              int64                          `json:"updated_at"`
 }
 
 type UISwarmingSettingsRecord struct {
@@ -227,6 +228,7 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	} else {
 		record.Chat.DefaultNewSessionMode = normalizeDefaultNewSessionMode(record.Chat.DefaultNewSessionMode)
 	}
+	record.Chat.DefaultWorkspaceRoutes = normalizeDefaultWorkspaceRoutes(record.Chat.DefaultWorkspaceRoutes)
 	if len(record.Chat.ToolStream.PulseFrames) == 0 {
 		record.Chat.ToolStream.PulseFrames = []string{"·", "•", "◦", "•"}
 	}
@@ -251,6 +253,25 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	record.Swarm.RemoteSSHTargets = normalizeRemoteSSHTargets(record.Swarm.RemoteSSHTargets)
 	record.Tools.Image.DefaultModel = strings.TrimSpace(record.Tools.Image.DefaultModel)
 	return record
+}
+
+func normalizeDefaultWorkspaceRoutes(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for workspacePath, routeID := range values {
+		workspacePath = strings.TrimSpace(workspacePath)
+		routeID = strings.TrimSpace(routeID)
+		if workspacePath == "" || routeID == "" {
+			continue
+		}
+		out[workspacePath] = routeID
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func normalizeRemoteSSHTargets(values []string) []string {

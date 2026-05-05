@@ -247,21 +247,30 @@ func normalizeAgentExecutionSetting(setting string) string {
 }
 
 func (p *ChatPage) footerSettingsTokens() []footerToken {
-	swarmLabel := emptyValue(strings.TrimSpace(p.swarmName), "Local")
+	swarmLabel := p.activeSwarmFooterLabel()
 	if p.swarmNotificationCount > 0 {
 		swarmLabel = fmt.Sprintf("%s !%d", swarmLabel, p.swarmNotificationCount)
 	}
+	swarmLabel = clampSwarmNotificationLabel(swarmLabel, p.swarmNotificationCount, 20)
 	primaryStyle := styleForCurrentCellBackground(p.theme.Accent.Bold(true))
 	modeStyle := styleForCurrentCellBackground(p.theme.Secondary.Bold(true))
 	metaStyle := styleForCurrentCellBackground(p.theme.Text)
 	displayedMode := chatDisplayedMode(p.meta, p.sessionMode)
 	return []footerToken{
-		{Text: clampEllipsis(swarmLabel, 20), Style: primaryStyle},
+		{Text: swarmLabel, Style: primaryStyle, Action: "cycle-route"},
 		{Text: displayedMode, Style: modeStyle},
 		{Text: "[a:" + clampEllipsis(emptyValue(strings.TrimSpace(p.meta.Agent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
 		{Text: "[m:" + clampEllipsis(model.DisplayModelLabel(p.modelProvider, p.modelName, p.serviceTier, p.contextMode), 24) + "]", Style: metaStyle, Action: "open-models-modal"},
 		{Text: "[t:" + clampEllipsis(emptyValue(strings.TrimSpace(p.thinkingLevel), "-"), 10) + "]", Style: metaStyle, Action: "cycle-thinking"},
 	}
+}
+
+func (p *ChatPage) activeSwarmFooterLabel() string {
+	label := strings.TrimSpace(p.meta.Route)
+	if label == "" || strings.EqualFold(label, "host") {
+		label = strings.TrimSpace(p.swarmName)
+	}
+	return emptyValue(label, "Local")
 }
 
 func drawFooterTokenRow(s tcell.Screen, x, y, maxWidth int, tokens []footerToken) {
@@ -341,7 +350,7 @@ func (p *ChatPage) footerInfoLine(maxWidth int) string {
 
 	plan := footerPlanLabel(p.meta.Plan)
 	mode := chatDisplayedMode(p.meta, p.sessionMode)
-	swarmLabel := emptyValue(strings.TrimSpace(p.swarmName), "Local")
+	swarmLabel := p.activeSwarmFooterLabel()
 	if p.swarmNotificationCount > 0 {
 		swarmLabel = fmt.Sprintf("%s !%d", swarmLabel, p.swarmNotificationCount)
 	}

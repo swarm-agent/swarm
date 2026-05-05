@@ -11,6 +11,7 @@ const (
 	ChatActionOpenAgentsModal         ChatActionKind = "open-agents-modal"
 	ChatActionOpenModelsModal         ChatActionKind = "open-models-modal"
 	ChatActionCycleThinking           ChatActionKind = "cycle-thinking"
+	ChatActionCycleRoute              ChatActionKind = "cycle-route"
 	ChatActionToggleBypassPermissions ChatActionKind = "toggle-bypass-permissions"
 )
 
@@ -41,6 +42,8 @@ func (p *ChatPage) queueFooterAction(action string) {
 		p.pendingChatAction = &ChatAction{Kind: ChatActionOpenModelsModal}
 	case "cycle-thinking":
 		p.pendingChatAction = &ChatAction{Kind: ChatActionCycleThinking}
+	case "cycle-route":
+		p.pendingChatAction = &ChatAction{Kind: ChatActionCycleRoute}
 	}
 }
 

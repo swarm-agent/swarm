@@ -9,13 +9,33 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
+type WorkspaceReplicationSync struct {
+	Enabled bool
+	Mode    string
+	Modules []string
+}
+
+type WorkspaceReplicationLink struct {
+	ID                  string
+	TargetKind          string
+	TargetSwarmID       string
+	TargetSwarmName     string
+	TargetWorkspacePath string
+	ReplicationMode     string
+	Writable            bool
+	Sync                WorkspaceReplicationSync
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
 type Workspace struct {
-	Name        string
-	Path        string
-	Directories []string
-	ThemeID     string
-	Icon        string
-	Active      bool
+	Name             string
+	Path             string
+	Directories      []string
+	ReplicationLinks []WorkspaceReplicationLink
+	ThemeID          string
+	Icon             string
+	Active           bool
 }
 
 type DirectoryItem struct {
@@ -78,6 +98,14 @@ type BackgroundSessionSummary struct {
 	StartedAtUnixMS     int64
 }
 
+type ChatRoute struct {
+	ID                   string
+	Label                string
+	SwarmID              string
+	HostWorkspacePath    string
+	RuntimeWorkspacePath string
+}
+
 type HomeModel struct {
 	Title                       string
 	Version                     string
@@ -104,6 +132,8 @@ type HomeModel struct {
 	RuleCount                   int
 	SkillCount                  int
 	WorktreesEnabled            bool
+	ChatRoutes                  []ChatRoute
+	SelectedChatRouteID         string
 	Workspaces                  []Workspace
 	Directories                 []DirectoryItem
 	PromptHint                  string

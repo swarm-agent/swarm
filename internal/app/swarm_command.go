@@ -44,10 +44,9 @@ func (a *App) handleSwarmCommand(args []string) {
 			return
 		}
 		a.showSwarmDashboardOverlay(fmt.Sprintf("rejected child %s", enrollment.ChildName))
-	case "set":
+	case "set", "name":
 		if len(args) < 2 {
-			a.home.SetCommandOverlay(a.swarmStatusLines())
-			a.home.SetStatus("usage: /swarm set <name>")
+			a.showSwarmDashboardOverlay(fmt.Sprintf("usage: /swarm %s <name>", sub))
 			return
 		}
 		a.applySwarmNameSetting(strings.Join(args[1:], " "))
@@ -77,12 +76,12 @@ func (a *App) applySwarmNameSetting(name string) {
 		a.chat.SetSwarmName(name)
 	}
 
-	a.home.SetCommandOverlay(a.swarmStatusLines())
+	a.showSwarmDashboardOverlay("saving swarm name...")
 	if err := saveSwarmNameSetting(a.api, name); err != nil {
 		a.home.SetStatus(fmt.Sprintf("swarm name updated to %q (settings save failed: %v)", name, err))
 		return
 	}
-	a.home.SetStatus(fmt.Sprintf("swarm name set to %q", name))
+	a.showSwarmDashboardOverlay(fmt.Sprintf("swarm name set to %q", name))
 }
 
 func (a *App) applySwarmRoleSetting(role string) {
@@ -143,6 +142,7 @@ func (a *App) showSwarmDashboardOverlay(status string) {
 		a.home.SetStatus(fmt.Sprintf("swarm pending enrollments failed: %v", pendingErr))
 		return
 	}
+	dashboardLink := a.swarmDashboardLink()
 	lines := []string{
 		"swarm name: " + a.currentSwarmName(),
 		"swarm role: " + a.currentSwarmRole(),
@@ -151,7 +151,9 @@ func (a *App) showSwarmDashboardOverlay(status string) {
 		fmt.Sprintf("pending enrollments: %d", len(pending)),
 		fmt.Sprintf("trusted peers: %d", len(state.TrustedPeers)),
 		fmt.Sprintf("pending notifications: %d", a.swarmNotificationCount),
-		"usage: /swarm pending | /swarm approve <id> | /swarm reject <id>",
+		"dashboard: " + dashboardLink,
+		"advanced settings: open the desktop dashboard for pairing and replication controls.",
+		"usage: /swarm name <name> | /swarm pending | /swarm approve <id> | /swarm reject <id>",
 	}
 	for _, item := range pending {
 		lines = append(lines, fmt.Sprintf("pending %s  %s  %s", item.ID, emptyFallback(strings.TrimSpace(item.ChildName), "child"), emptyFallback(strings.TrimSpace(item.ChildFingerprint), "fingerprint unavailable")))
@@ -159,8 +161,19 @@ func (a *App) showSwarmDashboardOverlay(status string) {
 	for _, peer := range state.TrustedPeers {
 		lines = append(lines, fmt.Sprintf("trusted %s  %s  %s", emptyFallback(strings.TrimSpace(peer.Relationship), "peer"), emptyFallback(strings.TrimSpace(peer.Name), peer.SwarmID), emptyFallback(strings.TrimSpace(peer.Fingerprint), "fingerprint unavailable")))
 	}
-	a.home.SetCommandOverlay(lines)
+	a.home.ShowSwarmModal("Swarm Dashboard", lines, dashboardLink)
 	a.home.SetStatus(status)
+}
+
+func (a *App) swarmDashboardLink() string {
+	base := defaultDaemonURL
+	if a != nil && a.api != nil {
+		base = strings.TrimRight(strings.TrimSpace(a.api.BaseURL()), "/")
+	}
+	if base == "" {
+		base = defaultDaemonURL
+	}
+	return base + "/desktop"
 }
 
 func isValidSwarmRoleSetting(role string) bool {

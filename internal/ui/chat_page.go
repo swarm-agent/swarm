@@ -58,6 +58,7 @@ const (
 type ChatSessionMeta struct {
 	Workspace             string
 	Path                  string
+	Route                 string
 	Branch                string
 	Dirty                 int
 	Version               string
@@ -1033,6 +1034,9 @@ func (p *ChatPage) HandleKey(ev *tcell.EventKey) {
 		return
 	case p.keybinds.Match(ev, KeybindChatCycleMode):
 		p.queueCycleMode()
+		return
+	case p.keybinds.Match(ev, KeybindGlobalCycleRoute):
+		p.pendingChatAction = &ChatAction{Kind: ChatActionCycleRoute}
 		return
 	case p.keybinds.Match(ev, KeybindChatComplete):
 		if p.commandPaletteActive() && p.completeCommandFromPalette() {

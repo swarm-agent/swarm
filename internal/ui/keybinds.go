@@ -27,6 +27,7 @@ const (
 	KeybindGlobalOpenAgents      KeybindID = "global.open_agents"
 	KeybindGlobalOpenModels      KeybindID = "global.open_models"
 	KeybindGlobalCycleThinking   KeybindID = "global.cycle_thinking"
+	KeybindGlobalCycleRoute      KeybindID = "global.cycle_route"
 	KeybindGlobalVoiceInput      KeybindID = "global.voice_input"
 	KeybindGlobalShowBackground  KeybindID = "global.show_background"
 	KeybindGlobalWorkspacePrev   KeybindID = "global.workspace_prev"
@@ -214,6 +215,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalOpenAgents, Group: "Global", Action: "Open agents modal", Default: "ctrl+a", Aliases: []string{"alt+a"}, Editable: true},
 	{ID: KeybindGlobalOpenModels, Group: "Global", Action: "Open models modal", Default: "ctrl+m", Aliases: []string{"alt+m", "ctrl+enter"}, Editable: true},
 	{ID: KeybindGlobalCycleThinking, Group: "Global", Action: "Cycle thinking", Default: "ctrl+t", Editable: true},
+	{ID: KeybindGlobalCycleRoute, Group: "Global", Action: "Cycle chat route", Default: "alt+r", Editable: true},
 	{ID: KeybindGlobalVoiceInput, Group: "Global", Action: "Voice input capture", Default: "f9", Editable: true},
 	{ID: KeybindGlobalShowBackground, Group: "Global", Action: "Go home", Default: "ctrl+b", Editable: true},
 	{ID: KeybindGlobalWorkspacePrev, Group: "Global", Action: "Cycle workspace previous", Default: "", Editable: true},

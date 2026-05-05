@@ -475,25 +475,46 @@ type AgentUpsertRequest struct {
 	AssignCustomTools   []string                    `json:"assign_custom_tools,omitempty"`
 }
 
+type WorkspaceReplicationSync struct {
+	Enabled bool     `json:"enabled"`
+	Mode    string   `json:"mode,omitempty"`
+	Modules []string `json:"modules,omitempty"`
+}
+
+type WorkspaceReplicationLink struct {
+	ID                  string                   `json:"id"`
+	TargetKind          string                   `json:"target_kind"`
+	TargetSwarmID       string                   `json:"target_swarm_id"`
+	TargetSwarmName     string                   `json:"target_swarm_name"`
+	TargetWorkspacePath string                   `json:"target_workspace_path"`
+	ReplicationMode     string                   `json:"replication_mode"`
+	Writable            bool                     `json:"writable"`
+	Sync                WorkspaceReplicationSync `json:"sync"`
+	CreatedAt           int64                    `json:"created_at"`
+	UpdatedAt           int64                    `json:"updated_at"`
+}
+
 type WorkspaceResolution struct {
-	RequestedPath string `json:"requested_path"`
-	ResolvedPath  string `json:"resolved_path"`
-	WorkspacePath string `json:"workspace_path"`
-	WorkspaceName string `json:"workspace_name"`
-	ThemeID       string `json:"theme_id,omitempty"`
+	RequestedPath    string                     `json:"requested_path"`
+	ResolvedPath     string                     `json:"resolved_path"`
+	WorkspacePath    string                     `json:"workspace_path"`
+	WorkspaceName    string                     `json:"workspace_name"`
+	ThemeID          string                     `json:"theme_id,omitempty"`
+	ReplicationLinks []WorkspaceReplicationLink `json:"replication_links,omitempty"`
 }
 
 type WorkspaceEntry struct {
-	Path           string   `json:"path"`
-	WorkspaceName  string   `json:"workspace_name"`
-	ThemeID        string   `json:"theme_id,omitempty"`
-	Directories    []string `json:"directories"`
-	IsGitRepo      bool     `json:"is_git_repo"`
-	SortIndex      int      `json:"sort_index"`
-	AddedAt        int64    `json:"added_at"`
-	UpdatedAt      int64    `json:"updated_at"`
-	LastSelectedAt int64    `json:"last_selected_at"`
-	Active         bool     `json:"active"`
+	Path             string                     `json:"path"`
+	WorkspaceName    string                     `json:"workspace_name"`
+	ThemeID          string                     `json:"theme_id,omitempty"`
+	Directories      []string                   `json:"directories"`
+	ReplicationLinks []WorkspaceReplicationLink `json:"replication_links,omitempty"`
+	IsGitRepo        bool                       `json:"is_git_repo"`
+	SortIndex        int                        `json:"sort_index"`
+	AddedAt          int64                      `json:"added_at"`
+	UpdatedAt        int64                      `json:"updated_at"`
+	LastSelectedAt   int64                      `json:"last_selected_at"`
+	Active           bool                       `json:"active"`
 }
 
 type WorkspaceOverviewWorkspace struct {
@@ -562,6 +583,7 @@ type SessionCreateOptions struct {
 	WorkspaceName        string
 	Mode                 string
 	AgentName            string
+	SwarmID              string
 	Metadata             map[string]any
 	Preference           ModelPreference
 	WorktreeMode         string
@@ -812,10 +834,11 @@ type UIChatToolStreamSettings struct {
 }
 
 type UIChatSettings struct {
-	ShowHeader            bool                     `json:"show_header"`
-	ThinkingTags          bool                     `json:"thinking_tags"`
-	DefaultNewSessionMode string                   `json:"default_new_session_mode,omitempty"`
-	ToolStream            UIChatToolStreamSettings `json:"tool_stream,omitempty"`
+	ShowHeader             bool                     `json:"show_header"`
+	ThinkingTags           bool                     `json:"thinking_tags"`
+	DefaultNewSessionMode  string                   `json:"default_new_session_mode,omitempty"`
+	DefaultWorkspaceRoutes map[string]string        `json:"default_workspace_routes,omitempty"`
+	ToolStream             UIChatToolStreamSettings `json:"tool_stream,omitempty"`
 }
 
 type UISwarmingSettings struct {
@@ -2485,7 +2508,13 @@ func (c *API) CreateSessionWithOptions(ctx context.Context, options SessionCreat
 		Session SessionSummary `json:"session"`
 		Warning string         `json:"warning,omitempty"`
 	}
-	if err := c.postJSON(ctx, "/v1/sessions", req, &resp, true); err != nil {
+	path := "/v1/sessions"
+	if swarmID := strings.TrimSpace(options.SwarmID); swarmID != "" {
+		query := url.Values{}
+		query.Set("swarm_id", swarmID)
+		path += "?" + query.Encode()
+	}
+	if err := c.postJSON(ctx, path, req, &resp, true); err != nil {
 		return SessionSummary{}, err
 	}
 	resp.Session.Warning = strings.TrimSpace(resp.Warning)

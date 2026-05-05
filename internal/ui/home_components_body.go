@@ -441,20 +441,42 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 }
 
 func (p *HomePage) homeFooterTokens() []footerToken {
-	swarmLabel := emptyValue(strings.TrimSpace(p.swarmName), displayRuntimeMode(p.model.ServerMode))
+	swarmLabel := p.activeSwarmFooterLabel()
 	if p.swarmNotificationCount > 0 {
 		swarmLabel = fmt.Sprintf("%s !%d", swarmLabel, p.swarmNotificationCount)
 	}
+	swarmLabel = clampSwarmNotificationLabel(swarmLabel, p.swarmNotificationCount, 18)
 	primaryStyle := styleForCurrentCellBackground(p.theme.Accent.Bold(true))
 	modeStyle := styleForCurrentCellBackground(p.theme.Secondary.Bold(true))
 	metaStyle := styleForCurrentCellBackground(p.theme.Text)
 	return []footerToken{
-		{Text: clampEllipsis(swarmLabel, 18), Style: primaryStyle},
+		{Text: swarmLabel, Style: primaryStyle, Action: "cycle-route"},
 		{Text: currentDisplayedHomeSessionMode(p), Style: modeStyle},
 		{Text: "[a:" + clampEllipsis(emptyValue(strings.TrimSpace(p.model.ActiveAgent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
 		{Text: "[m:" + clampEllipsis(model.DisplayModelLabel(p.model.ModelProvider, p.model.ModelName, p.model.ServiceTier, p.model.ContextMode), 24) + "]", Style: metaStyle, Action: "open-models-modal"},
 		{Text: "[t:" + clampEllipsis(emptyValue(strings.TrimSpace(p.model.ThinkingLevel), "-"), 10) + "]", Style: metaStyle, Action: "cycle-thinking"},
 	}
+}
+
+func (p *HomePage) activeSwarmFooterLabel() string {
+	label := selectedHomeRouteLabel(p.model)
+	if strings.EqualFold(strings.TrimSpace(label), "host") {
+		label = strings.TrimSpace(p.swarmName)
+	}
+	return emptyValue(strings.TrimSpace(label), displayRuntimeMode(p.model.ServerMode))
+}
+
+func selectedHomeRouteLabel(m model.HomeModel) string {
+	selected := strings.TrimSpace(m.SelectedChatRouteID)
+	for _, route := range m.ChatRoutes {
+		if strings.TrimSpace(route.ID) == selected {
+			return strings.TrimSpace(route.Label)
+		}
+	}
+	if len(m.ChatRoutes) > 0 {
+		return strings.TrimSpace(m.ChatRoutes[0].Label)
+	}
+	return "host"
 }
 
 func (p *HomePage) homeFooterRightLine(maxWidth int) string {

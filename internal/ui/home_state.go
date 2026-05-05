@@ -168,6 +168,8 @@ func (p *HomePage) handleTopTarget(target clickTarget) {
 	case "cycle-thinking":
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionCycleThinking}
 		p.statusLine = "cycling thinking level..."
+	case "cycle-route":
+		p.pendingHomeAction = &HomeAction{Kind: HomeActionCycleRoute}
 	case "open-git", "open-dirty":
 		d := p.primaryDirectory()
 		p.statusLine = homeGitStatusText(d)
@@ -351,6 +353,20 @@ func clampEllipsis(text string, width int) string {
 		return string(runes[:width])
 	}
 	return string(runes[:width-3]) + "..."
+}
+
+func clampSwarmNotificationLabel(label string, count, width int) string {
+	label = strings.TrimSpace(label)
+	if count <= 0 {
+		return clampEllipsis(label, width)
+	}
+	suffix := fmt.Sprintf(" !%d", count)
+	base := strings.TrimSpace(strings.TrimSuffix(label, suffix))
+	baseWidth := width - len([]rune(suffix))
+	if baseWidth < 1 {
+		return clampEllipsis(strings.TrimSpace(suffix), width)
+	}
+	return clampEllipsis(base, baseWidth) + suffix
 }
 
 func displayRuntimeMode(mode string) string {

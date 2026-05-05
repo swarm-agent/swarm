@@ -235,16 +235,17 @@ type App struct {
 	chat   *ui.ChatPage
 	route  string
 
-	api            *client.API
-	startupCWD     string
-	activePath     string
-	workspacePath  string
-	homeModel      model.HomeModel
-	updateStatus   client.UpdateStatus
-	config         AppConfig
-	themePreviewID string
-	settingsLabel  string
-	keybinds       *ui.KeyBindings
+	api                 *client.API
+	startupCWD          string
+	activePath          string
+	workspacePath       string
+	selectedChatRouteID string
+	homeModel           model.HomeModel
+	updateStatus        client.UpdateStatus
+	config              AppConfig
+	themePreviewID      string
+	settingsLabel       string
+	keybinds            *ui.KeyBindings
 
 	lastReloadAt time.Time
 	reloadCh     chan homeReloadResult
@@ -339,6 +340,7 @@ func New() (*App, error) {
 		startupCWD:          cwd,
 		activePath:          cwd,
 		workspacePath:       "",
+		selectedChatRouteID: "host",
 		homeModel:           initial,
 		config:              cfg,
 		settingsLabel:       settingsBackendLabel,
@@ -2631,6 +2633,7 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	}
 
 	workspaceName := a.contextDisplayNameForPath(workspacePath, strings.TrimSpace(a.home.ActiveWorkspaceName()))
+	route := a.selectedChatRouteForWorkspace(workspacePath)
 
 	title := strings.TrimSpace(titleSeed)
 	if title == "" {
@@ -2649,7 +2652,21 @@ func (a *App) openChatSession(titleSeed, initialPrompt string) error {
 	if strings.TrimSpace(preference.Provider) == "" || strings.TrimSpace(preference.Model) == "" || strings.TrimSpace(preference.Thinking) == "" {
 		return errors.New("new sessions require an explicit draft model selection")
 	}
-	session, err := a.api.CreateSession(ctx, title, workspacePath, workspaceName, preference)
+	session, err := a.api.CreateSessionWithOptions(ctx, client.SessionCreateOptions{
+		Title:                title,
+		WorkspacePath:        workspacePath,
+		HostWorkspacePath:    route.HostWorkspacePath,
+		RuntimeWorkspacePath: route.RuntimeWorkspacePath,
+		WorkspaceName:        workspaceName,
+		SwarmID:              route.SwarmID,
+		Preference:           preference,
+		Metadata: map[string]any{
+			"swarm_route_id":                      route.ID,
+			"swarm_routed_child_swarm_id":         route.SwarmID,
+			"swarm_routed_host_workspace_path":    route.HostWorkspacePath,
+			"swarm_routed_runtime_workspace_path": route.RuntimeWorkspacePath,
+		},
+	})
 	if err != nil {
 		return err
 	}
@@ -3007,6 +3024,7 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		Meta: ui.ChatSessionMeta{
 			Workspace:             chatWorkspace,
 			Path:                  chatDisplayPath,
+			Route:                 a.selectedChatRouteLabelForWorkspace(chatPath),
 			Branch:                chatBranch,
 			Dirty:                 chatDirty,
 			Version:               strings.TrimSpace(a.homeModel.Version),
@@ -3805,6 +3823,7 @@ func (a *App) createBackgroundCommitSession(ctx context.Context, parentSessionID
 		WorkspaceName:        workspaceName,
 		Mode:                 "auto",
 		AgentName:            emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
+		SwarmID:              consumeStringMetadata(metadata, "swarm_routed_child_swarm_id"),
 		Metadata:             metadata,
 		Preference:           parentSummary.Preference,
 		WorktreeMode:         strings.TrimSpace(execCtx.WorktreeMode),
@@ -3918,6 +3937,10 @@ func (a *App) consumeHomeActions() {
 		}
 		if action, ok := a.home.PopVaultModalAction(); ok {
 			a.handleVaultModalAction(action)
+			processed = true
+		}
+		if action, ok := a.home.PopSwarmModalAction(); ok {
+			a.handleSwarmModalAction(action)
 			processed = true
 		}
 		if action, ok := a.home.PopWorkspaceModalAction(); ok {
@@ -4305,6 +4328,8 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 		a.openModelsModal("")
 	case ui.ChatActionCycleThinking:
 		a.cycleThinkingLevel()
+	case ui.ChatActionCycleRoute:
+		a.cycleChatRoute()
 	case ui.ChatActionToggleBypassPermissions:
 		a.setPermissionsBypass(!a.homeModel.BypassPermissions)
 	}
@@ -4318,6 +4343,7 @@ func (a *App) backgroundModalOrCommandOpen() bool {
 		a.home.AuthModalVisible() ||
 		a.home.WorkspaceModalVisible() ||
 		a.home.WorktreesModalVisible() ||
+		a.home.SwarmModalVisible() ||
 		a.home.ModelsModalVisible() ||
 		a.home.AgentsModalVisible() ||
 		a.home.VoiceModalVisible() ||
@@ -4380,6 +4406,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.openModelsModal("")
 	case ui.HomeActionCycleThinking:
 		a.cycleThinkingLevel()
+	case ui.HomeActionCycleRoute:
+		a.cycleChatRoute()
 	}
 }
 
@@ -7153,11 +7181,12 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 				directories = []string{entryPath}
 			}
 			next.Workspaces = append(next.Workspaces, model.Workspace{
-				Name:        name,
-				Path:        entryPath,
-				Directories: directories,
-				ThemeID:     strings.TrimSpace(entry.ThemeID),
-				Icon:        workspaceIcon(i),
+				Name:             name,
+				Path:             entryPath,
+				Directories:      directories,
+				ReplicationLinks: modelReplicationLinksFromClient(entry.ReplicationLinks),
+				ThemeID:          strings.TrimSpace(entry.ThemeID),
+				Icon:             workspaceIcon(i),
 			})
 			next.Directories = append(next.Directories, model.DirectoryItem{
 				Name:         name,
@@ -7174,6 +7203,14 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		if preferredWorkspacePath == "" {
 			preferredWorkspacePath = normalizePath(strings.TrimSpace(a.workspacePath))
 		}
+		next.ChatRoutes = buildChatRoutesForWorkspaces(next.Workspaces, preferredWorkspacePath)
+		selectedRouteID := strings.TrimSpace(a.selectedChatRouteID)
+		if selectedRouteID == "" {
+			selectedRouteID = strings.TrimSpace(a.config.Chat.DefaultWorkspaceRoutes[preferredWorkspacePath])
+		}
+		selectedRouteID = normalizeSelectedRouteID(selectedRouteID, next.ChatRoutes)
+		a.selectedChatRouteID = selectedRouteID
+		next.SelectedChatRouteID = selectedRouteID
 		activeWorkspacePath := resolveWorkspaceSelectionPath(activePath, next.Workspaces, preferredWorkspacePath)
 		activeIsWorkspace = activeWorkspacePath != ""
 		activeIsWorkspaceRoot = activeWorkspacePath != "" && pathsEqual(activePath, activeWorkspacePath)
@@ -7570,6 +7607,107 @@ func (a *App) syncKnownWorkspaceSelectionForPath(path string) {
 	}
 	a.refreshGitRealtimeWatcher()
 	a.applyEffectiveTheme()
+}
+
+func buildChatRoutesForWorkspaces(workspaces []model.Workspace, workspacePath string) []model.ChatRoute {
+	workspacePath = normalizePath(strings.TrimSpace(workspacePath))
+	if workspacePath == "" && len(workspaces) > 0 {
+		workspacePath = normalizePath(workspaces[0].Path)
+	}
+	routes := []model.ChatRoute{{
+		ID:                   "host",
+		Label:                "host",
+		HostWorkspacePath:    workspacePath,
+		RuntimeWorkspacePath: workspacePath,
+	}}
+	var active model.Workspace
+	for _, workspace := range workspaces {
+		if pathsEqual(workspace.Path, workspacePath) {
+			active = workspace
+			break
+		}
+	}
+	for _, link := range active.ReplicationLinks {
+		swarmID := strings.TrimSpace(link.TargetSwarmID)
+		runtimePath := strings.TrimSpace(link.TargetWorkspacePath)
+		if swarmID == "" || runtimePath == "" {
+			continue
+		}
+		routeID := "swarm:" + swarmID + ":" + runtimePath
+		label := strings.TrimSpace(link.TargetSwarmName)
+		if label == "" {
+			label = swarmID
+		}
+		routes = append(routes, model.ChatRoute{
+			ID:                   routeID,
+			Label:                label,
+			SwarmID:              swarmID,
+			HostWorkspacePath:    workspacePath,
+			RuntimeWorkspacePath: runtimePath,
+		})
+	}
+	return routes
+}
+
+func normalizeSelectedRouteID(routeID string, routes []model.ChatRoute) string {
+	routeID = strings.TrimSpace(routeID)
+	for _, route := range routes {
+		if strings.TrimSpace(route.ID) == routeID {
+			return routeID
+		}
+	}
+	return "host"
+}
+
+func (a *App) selectedChatRouteForWorkspace(workspacePath string) model.ChatRoute {
+	routes := buildChatRoutesForWorkspaces(a.homeModel.Workspaces, workspacePath)
+	selected := normalizeSelectedRouteID(a.selectedChatRouteID, routes)
+	for _, route := range routes {
+		if strings.TrimSpace(route.ID) == selected {
+			return route
+		}
+	}
+	return routes[0]
+}
+
+func (a *App) selectedChatRouteLabelForWorkspace(workspacePath string) string {
+	route := a.selectedChatRouteForWorkspace(workspacePath)
+	return emptyFallback(strings.TrimSpace(route.Label), "host")
+}
+
+func modelReplicationLinksFromClient(links []client.WorkspaceReplicationLink) []model.WorkspaceReplicationLink {
+	if len(links) == 0 {
+		return nil
+	}
+	out := make([]model.WorkspaceReplicationLink, 0, len(links))
+	for _, link := range links {
+		id := strings.TrimSpace(link.ID)
+		targetSwarmID := strings.TrimSpace(link.TargetSwarmID)
+		targetWorkspacePath := strings.TrimSpace(link.TargetWorkspacePath)
+		if targetSwarmID == "" || targetWorkspacePath == "" {
+			continue
+		}
+		out = append(out, model.WorkspaceReplicationLink{
+			ID:                  id,
+			TargetKind:          strings.TrimSpace(link.TargetKind),
+			TargetSwarmID:       targetSwarmID,
+			TargetSwarmName:     strings.TrimSpace(link.TargetSwarmName),
+			TargetWorkspacePath: targetWorkspacePath,
+			ReplicationMode:     strings.TrimSpace(link.ReplicationMode),
+			Writable:            link.Writable,
+			Sync: model.WorkspaceReplicationSync{
+				Enabled: link.Sync.Enabled,
+				Mode:    strings.TrimSpace(link.Sync.Mode),
+				Modules: append([]string(nil), link.Sync.Modules...),
+			},
+			CreatedAt: link.CreatedAt,
+			UpdatedAt: link.UpdatedAt,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (a *App) activeWorkspacePath() string {

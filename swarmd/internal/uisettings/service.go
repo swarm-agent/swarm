@@ -61,10 +61,11 @@ type ChatToolStreamSettings struct {
 }
 
 type ChatSettings struct {
-	ShowHeader            bool                   `json:"show_header"`
-	ThinkingTags          bool                   `json:"thinking_tags"`
-	DefaultNewSessionMode string                 `json:"default_new_session_mode,omitempty"`
-	ToolStream            ChatToolStreamSettings `json:"tool_stream,omitempty"`
+	ShowHeader             bool                   `json:"show_header"`
+	ThinkingTags           bool                   `json:"thinking_tags"`
+	DefaultNewSessionMode  string                 `json:"default_new_session_mode,omitempty"`
+	DefaultWorkspaceRoutes map[string]string      `json:"default_workspace_routes,omitempty"`
+	ToolStream             ChatToolStreamSettings `json:"tool_stream,omitempty"`
 }
 
 type SwarmingSettings struct {
@@ -192,9 +193,10 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 			Keybinds:     cloneMap(record.Input.Keybinds),
 		},
 		Chat: ChatSettings{
-			ShowHeader:            record.Chat.ShowHeader,
-			ThinkingTags:          record.Chat.ThinkingTags,
-			DefaultNewSessionMode: strings.TrimSpace(record.Chat.DefaultNewSessionMode),
+			ShowHeader:             record.Chat.ShowHeader,
+			ThinkingTags:           record.Chat.ThinkingTags,
+			DefaultNewSessionMode:  strings.TrimSpace(record.Chat.DefaultNewSessionMode),
+			DefaultWorkspaceRoutes: cloneMap(record.Chat.DefaultWorkspaceRoutes),
 			ToolStream: ChatToolStreamSettings{
 				ShowAnchor:    record.Chat.ToolStream.ShowAnchor,
 				PulseFrames:   append([]string(nil), record.Chat.ToolStream.PulseFrames...),
@@ -263,11 +265,12 @@ func inputRecordFromSettings(settings InputSettings) *pebblestore.UIInputSetting
 
 func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRecord {
 	return &pebblestore.UIChatSettingsRecord{
-		ShowHeader:            settings.ShowHeader,
-		ShowHeaderSet:         true,
-		ThinkingTags:          settings.ThinkingTags,
-		ThinkingTagsSet:       true,
-		DefaultNewSessionMode: strings.TrimSpace(settings.DefaultNewSessionMode),
+		ShowHeader:             settings.ShowHeader,
+		ShowHeaderSet:          true,
+		ThinkingTags:           settings.ThinkingTags,
+		ThinkingTagsSet:        true,
+		DefaultNewSessionMode:  strings.TrimSpace(settings.DefaultNewSessionMode),
+		DefaultWorkspaceRoutes: cloneMap(settings.DefaultWorkspaceRoutes),
 		ToolStream: pebblestore.UIChatToolStreamSettingsRecord{
 			ShowAnchor:    settings.ToolStream.ShowAnchor,
 			PulseFrames:   append([]string(nil), settings.ToolStream.PulseFrames...),

@@ -14,6 +14,7 @@ const (
 	HomeActionOpenAgentsModal       HomeActionKind = "open-agents-modal"
 	HomeActionOpenModelsModal       HomeActionKind = "open-models-modal"
 	HomeActionCycleThinking         HomeActionKind = "cycle-thinking"
+	HomeActionCycleRoute            HomeActionKind = "cycle-route"
 	HomeActionSelectWorkspace       HomeActionKind = "select-workspace"
 	HomeActionSetDefaultSessionMode HomeActionKind = "set-default-session-mode"
 )

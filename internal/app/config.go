@@ -41,10 +41,11 @@ type StartupConfig struct {
 }
 
 type ChatConfig struct {
-	ShowHeader            bool
-	ThinkingTags          bool
-	DefaultNewSessionMode string
-	ToolStream            ChatToolStreamConfig
+	ShowHeader             bool
+	ThinkingTags           bool
+	DefaultNewSessionMode  string
+	DefaultWorkspaceRoutes map[string]string
+	ToolStream             ChatToolStreamConfig
 }
 
 type ChatToolStreamConfig struct {
@@ -290,6 +291,7 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 	cfg.Chat.ShowHeader = settings.Chat.ShowHeader
 	cfg.Chat.ThinkingTags = settings.Chat.ThinkingTags
 	cfg.Chat.DefaultNewSessionMode = emptyFallback(strings.TrimSpace(settings.Chat.DefaultNewSessionMode), "auto")
+	cfg.Chat.DefaultWorkspaceRoutes = sanitizeConfigStringMap(settings.Chat.DefaultWorkspaceRoutes)
 	cfg.Chat.ToolStream.ShowAnchor = settings.Chat.ToolStream.ShowAnchor
 	if frames := sanitizeConfigPulseFrames(settings.Chat.ToolStream.PulseFrames); len(frames) > 0 {
 		cfg.Chat.ToolStream.PulseFrames = frames
@@ -322,9 +324,10 @@ func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 			Keybinds:     sanitizeConfigKeybindMap(cfg.Input.Keybinds),
 		},
 		Chat: client.UIChatSettings{
-			ShowHeader:            cfg.Chat.ShowHeader,
-			ThinkingTags:          cfg.Chat.ThinkingTags,
-			DefaultNewSessionMode: emptyFallback(strings.TrimSpace(cfg.Chat.DefaultNewSessionMode), "auto"),
+			ShowHeader:             cfg.Chat.ShowHeader,
+			ThinkingTags:           cfg.Chat.ThinkingTags,
+			DefaultNewSessionMode:  emptyFallback(strings.TrimSpace(cfg.Chat.DefaultNewSessionMode), "auto"),
+			DefaultWorkspaceRoutes: sanitizeConfigStringMap(cfg.Chat.DefaultWorkspaceRoutes),
 			ToolStream: client.UIChatToolStreamSettings{
 				ShowAnchor:    cfg.Chat.ToolStream.ShowAnchor,
 				PulseFrames:   sanitizeConfigPulseFrames(cfg.Chat.ToolStream.PulseFrames),
@@ -467,6 +470,25 @@ func boolPtr(value bool) *bool {
 func stringPtr(value string) *string {
 	v := value
 	return &v
+}
+
+func sanitizeConfigStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func sanitizeConfigPulseFrames(frames []string) []string {
