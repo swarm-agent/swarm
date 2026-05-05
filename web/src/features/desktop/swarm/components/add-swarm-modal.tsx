@@ -613,8 +613,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [selectedRuntime, setSelectedRuntime] = useState<'podman' | 'docker' | ''>('')
   const [swarmName, setSwarmName] = useState('')
   const [syncEnabled, setSyncEnabled] = useState(true)
-  const [syncAgentsEnabled, setSyncAgentsEnabled] = useState(true)
-  const [syncCustomToolsEnabled, setSyncCustomToolsEnabled] = useState(true)
   const [syncVaultPassword, setSyncVaultPassword] = useState('')
   const [bypassPermissions, setBypassPermissions] = useState(false)
   const [alwaysOn, setAlwaysOn] = useState(true)
@@ -802,8 +800,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     setLaunchTarget('local')
     setSelectedRuntime('')
     setSyncEnabled(true)
-    setSyncAgentsEnabled(true)
-    setSyncCustomToolsEnabled(true)
     setSyncVaultPassword('')
     setBypassPermissions(false)
     setAlwaysOn(true)
@@ -1039,11 +1035,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     })
 
     try {
-      const syncModules = [
-        'credentials',
-        ...(syncAgentsEnabled ? ['agents'] : []),
-        ...(syncCustomToolsEnabled ? ['custom_tools'] : []),
-      ]
+      const syncModules = ['credentials', 'agents', 'custom_tools']
       const result = await replicateSwarm({
         mode: 'local',
         swarmName: swarmName.trim(),
@@ -1292,10 +1284,48 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const optionClassName = (active: boolean, muted = false) => (
     `rounded-lg border px-3 py-2 text-left transition ${active ? 'border-[var(--app-primary)] bg-transparent text-[var(--app-text)]' : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)]'} ${muted && !active ? 'opacity-80' : ''}`
   )
-  const availabilityChipClassName = (active: boolean) => (
-    `inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition ${active ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_9%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)]'}`
-  )
-
+  const launchPendingReason = (() => {
+    if (loading) {
+      return 'Loading launch options…'
+    }
+    if (!group?.group.id.trim()) {
+      return 'Waiting for a swarm group.'
+    }
+    if (!swarmName.trim()) {
+      return 'Please enter a swarm name.'
+    }
+    if (launchTarget === 'local') {
+      if (!runtimeChoice) {
+        return runtimeStatus.warning || 'Please choose an available runtime.'
+      }
+      if (selectedWorkspaceCountValue === 0) {
+        return 'Please select a workspace.'
+      }
+      if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
+        return 'Please enter the vault password to enable Swarm Sync.'
+      }
+      return null
+    }
+    if (!remoteSSHTarget.trim()) {
+      return 'Please enter an SSH target.'
+    }
+    if (configuringMasterLANCallback) {
+      return 'Saving this machine’s address…'
+    }
+    if (remotePreflightLoading) {
+      return 'Checking the remote host…'
+    }
+    if (remotePreflightBlocked && !remotePreflightCanAutofill) {
+      return masterLANCallbackGuidance?.title || 'Update this machine’s callback address before preflight.'
+    }
+    if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()) {
+      return 'Please enter the callback host for LAN / WireGuard.'
+    }
+    return null
+  })()
+  const footerStatusText = launchPendingReason || (launchTarget === 'remote'
+    ? `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} and ${containerPackages.length} package${containerPackages.length === 1 ? '' : 's'} configured for the remote deploy.`
+    : `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be replicated using ${runtimeChoice || 'the selected runtime'} with Swarm Sync ${syncEnabled ? 'enabled' : 'disabled'}.`)
   const swarmNameCard = (
     <Card className={sectionClassName}>
       <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,320px)] sm:items-end">
@@ -1902,7 +1932,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <div>
                     <div className="text-sm font-semibold text-[var(--app-text)]">Swarm Sync</div>
                     <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {syncEnabled ? 'Credentials, agents, and tools sync.' : 'Standalone child auth.'}
+                      {syncEnabled ? 'Continuously follows main swarm changes.' : 'Standalone child auth.'}
                     </div>
                   </div>
                   {syncEnabled ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
@@ -1924,9 +1954,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <div className="text-sm font-semibold text-[var(--app-text)]">Permissions</div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">Bypass Permissions</div>
                     <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {bypassPermissions ? 'Bypass enabled at launch.' : 'Prompt when needed.'}
+                      {bypassPermissions ? 'On — skip permission prompts.' : 'Off — prompt when needed.'}
                     </div>
                   </div>
                   {bypassPermissions ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
@@ -1935,44 +1965,28 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             </div>
 
             {syncEnabled ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <button type="button" className={availabilityChipClassName(true)} disabled={submitting || remotePreflightLoading}>Credentials</button>
-                <button
-                  type="button"
-                  className={availabilityChipClassName(syncAgentsEnabled)}
-                  onClick={() => {
-                    if (!submitting && !remotePreflightLoading) {
-                      invalidateRemotePreflight()
-                      setSyncAgentsEnabled((current) => !current)
-                    }
-                  }}
-                  disabled={submitting || remotePreflightLoading}
-                >
-                  Agents
-                </button>
-                <button
-                  type="button"
-                  className={availabilityChipClassName(syncCustomToolsEnabled)}
-                  onClick={() => {
-                    if (!submitting && !remotePreflightLoading) {
-                      invalidateRemotePreflight()
-                      setSyncCustomToolsEnabled((current) => !current)
-                    }
-                  }}
-                  disabled={submitting || remotePreflightLoading}
-                >
-                  Custom tools
-                </button>
+              <div className="rounded-lg border border-[var(--app-border)] bg-transparent p-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="grid gap-1">
+                    <div className="text-sm font-medium text-[var(--app-text)]">What is Swarm Sync?</div>
+                    <div className="text-xs text-[var(--app-text-muted)]">
+                      When credentials, saved agents, or custom tools change on the main swarm, Swarm Sync updates this child automatically.
+                    </div>
+                  </div>
+                  <Badge tone="live">automatic</Badge>
+                </div>
                 {hostVaultEnabled ? (
-                  <Input
-                    data-testid="add-swarm-sync-vault-password"
-                    className="min-w-[220px] flex-1"
-                    type="password"
-                    value={syncVaultPassword}
-                    onChange={(event) => setSyncVaultPassword(event.target.value)}
-                    placeholder="Vault password required for sync"
-                    disabled={submitting || remotePreflightLoading}
-                  />
+                  <div className="mt-3 grid gap-1">
+                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Vault password</label>
+                    <Input
+                      data-testid="add-swarm-sync-vault-password"
+                      type="password"
+                      value={syncVaultPassword}
+                      onChange={(event) => setSyncVaultPassword(event.target.value)}
+                      placeholder="Required to unlock synced credentials"
+                      disabled={submitting || remotePreflightLoading}
+                    />
+                  </div>
                 ) : null}
               </div>
             ) : null}
@@ -2014,9 +2028,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
         <div className="flex flex-col gap-3 border-t border-[var(--app-border)] px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-[var(--app-text-muted)]">
-            {launchTarget === 'remote'
-              ? `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} and ${containerPackages.length} package${containerPackages.length === 1 ? '' : 's'} configured for the remote deploy.`
-              : `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be replicated using ${runtimeChoice || 'the selected runtime'} with Swarm Sync ${syncEnabled ? 'enabled' : 'disabled'}.`}
+            {footerStatusText}
           </div>
           <div className="flex gap-3">
             <Button type="button" variant="outline" onClick={closeModal} disabled={submitting}>Cancel</Button>
@@ -2047,9 +2059,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       : remotePreflightLoading
                         ? 'Checking…'
                         : remotePreflightSession
-                          ? 'Launch and add'
+                          ? 'Launch'
                           : 'Preflight when Ready')
-                  : 'Launch and add'}
+                  : 'Launch'}
             </Button>
           </div>
         </div>
