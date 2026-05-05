@@ -10,9 +10,6 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dial
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { cn } from '../../../lib/cn'
 import { useDesktopStore } from '../state/use-desktop-store'
-import {
-  loadDesktopChatRouteForSession,
-} from '../chat/services/chat-routing'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { prefetchSessionRuntimeData, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
@@ -733,11 +730,6 @@ function metadataString(metadata: Record<string, unknown> | undefined, key: stri
 }
 
 function sessionOriginLabel(session: DesktopSessionRecord, fallbackSwarmName: string): string {
-  const route = loadDesktopChatRouteForSession(session.id)
-  const routeLabel = route?.label?.trim() ?? ''
-  if (routeLabel) {
-    return routeLabel
-  }
   const targetLabel = metadataString(session.metadata, 'swarm_target_name')
     || metadataString(session.metadata, 'target_display_name')
   if (targetLabel) {

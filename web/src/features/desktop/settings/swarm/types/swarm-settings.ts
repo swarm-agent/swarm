@@ -33,6 +33,7 @@ export interface UIChatSettingsWire {
   show_header?: boolean
   thinking_tags?: boolean
   default_new_session_mode?: 'auto' | 'plan'
+  default_workspace_routes?: Record<string, string>
   tool_stream?: Record<string, unknown>
 }
 
@@ -85,6 +86,38 @@ export function normalizeGlobalThemeSettings(payload?: UISettingsWire | null): G
 
 export function normalizeThinkingTagsEnabled(payload?: UISettingsWire | null): boolean {
   return typeof payload?.chat?.thinking_tags === 'boolean' ? payload.chat.thinking_tags : true
+}
+
+export function normalizeDefaultWorkspaceRoutes(payload?: UISettingsWire | null): Record<string, string> {
+  const routes = payload?.chat?.default_workspace_routes
+  if (!routes || typeof routes !== 'object') {
+    return {}
+  }
+  return Object.fromEntries(
+    Object.entries(routes)
+      .map(([workspacePath, routeId]) => [workspacePath.trim(), typeof routeId === 'string' ? routeId.trim() : ''] as const)
+      .filter(([workspacePath, routeId]) => workspacePath !== '' && routeId !== ''),
+  )
+}
+
+export function defaultWorkspaceRouteId(payload: UISettingsWire | null | undefined, workspacePath: string): string {
+  return normalizeDefaultWorkspaceRoutes(payload)[workspacePath.trim()] ?? ''
+}
+
+export function withDefaultWorkspaceRoute(current: UISettingsWire, workspacePath: string, routeId: string): UISettingsWire {
+  const normalizedWorkspacePath = workspacePath.trim()
+  const normalizedRouteId = routeId.trim()
+  const routes = normalizeDefaultWorkspaceRoutes(current)
+  if (normalizedWorkspacePath && normalizedRouteId) {
+    routes[normalizedWorkspacePath] = normalizedRouteId
+  }
+  return {
+    ...current,
+    chat: {
+      ...(current.chat ?? {}),
+      default_workspace_routes: routes,
+    },
+  }
 }
 
 export function withThinkingTagsEnabled(current: UISettingsWire, enabled: boolean): UISettingsWire {

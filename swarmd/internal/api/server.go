@@ -2198,6 +2198,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				hostBackendURL = strings.TrimSpace(resolved)
 			}
 			routeMetadata := map[string]any{
+				"swarm_route_id": "swarm:" + strings.TrimSpace(remoteTarget.SwarmID) + ":" + strings.TrimSpace(req.RuntimeWorkspacePath),
 				sessionruntime.HostedSessionMetadataHostBackendURL:       hostBackendURL,
 				sessionruntime.HostedSessionMetadataChildSwarmID:         strings.TrimSpace(remoteTarget.SwarmID),
 				sessionruntime.HostedSessionMetadataHostWorkspacePath:    strings.TrimSpace(req.HostWorkspacePath),
@@ -3274,26 +3275,40 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var raw struct {
-			Chat struct {
-				ShowHeader   *bool `json:"show_header"`
-				ThinkingTags *bool `json:"thinking_tags"`
+			Chat *struct {
+				ShowHeader             *bool              `json:"show_header"`
+				ThinkingTags           *bool              `json:"thinking_tags"`
+				DefaultNewSessionMode  *string            `json:"default_new_session_mode"`
+				DefaultWorkspaceRoutes *map[string]string `json:"default_workspace_routes"`
+				ToolStream             *struct{}          `json:"tool_stream"`
 			} `json:"chat"`
 		}
 		if err := json.Unmarshal(body, &raw); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if raw.Chat.ShowHeader == nil || raw.Chat.ThinkingTags == nil {
-			current, err := s.uiSettings.Get()
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
+		current, err := s.uiSettings.Get()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if raw.Chat == nil {
+			settings.Chat = current.Chat
+		} else {
 			if raw.Chat.ShowHeader == nil {
 				settings.Chat.ShowHeader = current.Chat.ShowHeader
 			}
 			if raw.Chat.ThinkingTags == nil {
 				settings.Chat.ThinkingTags = current.Chat.ThinkingTags
+			}
+			if raw.Chat.DefaultNewSessionMode == nil {
+				settings.Chat.DefaultNewSessionMode = current.Chat.DefaultNewSessionMode
+			}
+			if raw.Chat.DefaultWorkspaceRoutes == nil {
+				settings.Chat.DefaultWorkspaceRoutes = current.Chat.DefaultWorkspaceRoutes
+			}
+			if raw.Chat.ToolStream == nil {
+				settings.Chat.ToolStream = current.Chat.ToolStream
 			}
 		}
 		saved, err := s.uiSettings.Set(settings)

@@ -1,8 +1,6 @@
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
 
-const DESKTOP_CHAT_ROUTE_STORAGE_KEY = 'swarm.web.desktop.chat.routes.v1'
-
 export interface DesktopChatRoute {
   id: string
   label: string
@@ -13,97 +11,7 @@ export interface DesktopChatRoute {
   runtimeWorkspacePath: string
 }
 
-interface StoredDesktopChatRoute {
-  id?: string
-  label?: string
-  swarm_id?: string | null
-  target_kind?: string
-  host_workspace_path?: string
-  host_workspace_name?: string
-  runtime_workspace_path?: string
-}
-
-interface StoredDesktopChatRoutes {
-  sessions?: Record<string, StoredDesktopChatRoute>
-  workspaces?: Record<string, StoredDesktopChatRoute>
-}
-
-function normalizeStoredRoute(route: StoredDesktopChatRoute | null | undefined): DesktopChatRoute | null {
-  if (!route || typeof route !== 'object') {
-    return null
-  }
-  const hostWorkspacePath = String(route.host_workspace_path ?? '').trim()
-  const runtimeWorkspacePath = String(route.runtime_workspace_path ?? '').trim()
-  if (!hostWorkspacePath || !runtimeWorkspacePath) {
-    return null
-  }
-  const swarmId = String(route.swarm_id ?? '').trim() || null
-  const label = String(route.label ?? '').trim()
-  const id = String(route.id ?? '').trim()
-  return {
-    id: id || desktopChatRouteID(swarmId, runtimeWorkspacePath),
-    label: label || (swarmId ? swarmId : 'host'),
-    swarmId,
-    targetKind: String(route.target_kind ?? '').trim(),
-    hostWorkspacePath,
-    hostWorkspaceName: String(route.host_workspace_name ?? '').trim(),
-    runtimeWorkspacePath,
-  }
-}
-
-function routeToStoredRecord(route: DesktopChatRoute | null | undefined): StoredDesktopChatRoute | null {
-  if (!route) {
-    return null
-  }
-  const hostWorkspacePath = route.hostWorkspacePath.trim()
-  const runtimeWorkspacePath = route.runtimeWorkspacePath.trim()
-  if (!hostWorkspacePath || !runtimeWorkspacePath) {
-    return null
-  }
-  return {
-    id: route.id.trim() || desktopChatRouteID(route.swarmId, runtimeWorkspacePath),
-    label: route.label.trim(),
-    swarm_id: route.swarmId?.trim() || null,
-    target_kind: route.targetKind.trim(),
-    host_workspace_path: hostWorkspacePath,
-    host_workspace_name: route.hostWorkspaceName.trim(),
-    runtime_workspace_path: runtimeWorkspacePath,
-  }
-}
-
-function loadStoredRoutes(): StoredDesktopChatRoutes {
-  if (typeof window === 'undefined') {
-    return {}
-  }
-  const raw = window.sessionStorage.getItem(DESKTOP_CHAT_ROUTE_STORAGE_KEY)
-  if (!raw) {
-    return {}
-  }
-  try {
-    const parsed = JSON.parse(raw) as StoredDesktopChatRoutes
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-function saveStoredRoutes(routes: StoredDesktopChatRoutes): void {
-  if (typeof window === 'undefined') {
-    return
-  }
-  const nextSessions = routes.sessions && Object.keys(routes.sessions).length > 0 ? routes.sessions : undefined
-  const nextWorkspaces = routes.workspaces && Object.keys(routes.workspaces).length > 0 ? routes.workspaces : undefined
-  if (!nextSessions && !nextWorkspaces) {
-    window.sessionStorage.removeItem(DESKTOP_CHAT_ROUTE_STORAGE_KEY)
-    return
-  }
-  window.sessionStorage.setItem(DESKTOP_CHAT_ROUTE_STORAGE_KEY, JSON.stringify({
-    ...(nextSessions ? { sessions: nextSessions } : {}),
-    ...(nextWorkspaces ? { workspaces: nextWorkspaces } : {}),
-  }))
-}
-
-function desktopChatRouteID(swarmId: string | null | undefined, runtimeWorkspacePath: string): string {
+export function desktopChatRouteID(swarmId: string | null | undefined, runtimeWorkspacePath: string): string {
   const normalizedRuntimeWorkspacePath = runtimeWorkspacePath.trim()
   const normalizedSwarmId = swarmId?.trim() ?? ''
   if (!normalizedSwarmId) {
@@ -171,54 +79,32 @@ export function desktopChatRoutesEqual(left: DesktopChatRoute | null | undefined
     && left.runtimeWorkspacePath === right.runtimeWorkspacePath
 }
 
-export function loadDesktopChatRouteForWorkspace(workspacePath: string): DesktopChatRoute | null {
-  const normalizedWorkspacePath = workspacePath.trim()
-  if (!normalizedWorkspacePath) {
-    return null
+export function resolveDesktopChatRouteById(
+  routeOptions: DesktopChatRoute[],
+  routeId: string | null | undefined,
+  fallback?: DesktopChatRoute | null,
+): DesktopChatRoute | null {
+  const normalizedRouteId = routeId?.trim() ?? ''
+  if (normalizedRouteId) {
+    const matched = routeOptions.find((entry) => entry.id === normalizedRouteId)
+    if (matched) {
+      return matched
+    }
   }
-  const routes = loadStoredRoutes()
-  return normalizeStoredRoute(routes.workspaces?.[normalizedWorkspacePath])
+  return fallback ?? routeOptions[0] ?? null
 }
 
-export function saveDesktopChatRouteForWorkspace(workspacePath: string, route: DesktopChatRoute | null | undefined): void {
-  const normalizedWorkspacePath = workspacePath.trim()
-  if (!normalizedWorkspacePath) {
-    return
-  }
-  const routes = loadStoredRoutes()
-  const workspaces = { ...(routes.workspaces ?? {}) }
-  const nextRoute = routeToStoredRecord(route)
-  if (nextRoute) {
-    workspaces[normalizedWorkspacePath] = nextRoute
-  } else {
-    delete workspaces[normalizedWorkspacePath]
-  }
-  saveStoredRoutes({ ...routes, workspaces })
-}
-
-export function loadDesktopChatRouteForSession(sessionId: string): DesktopChatRoute | null {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    return null
-  }
-  const routes = loadStoredRoutes()
-  return normalizeStoredRoute(routes.sessions?.[normalizedSessionId])
-}
-
-export function saveDesktopChatRouteForSession(sessionId: string, route: DesktopChatRoute | null | undefined): void {
-  const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) {
-    return
-  }
-  const routes = loadStoredRoutes()
-  const sessions = { ...(routes.sessions ?? {}) }
-  const nextRoute = routeToStoredRecord(route)
-  if (nextRoute) {
-    sessions[normalizedSessionId] = nextRoute
-  } else {
-    delete sessions[normalizedSessionId]
-  }
-  saveStoredRoutes({ ...routes, sessions })
+export function resolveDesktopChatRouteFromSession(
+  session: DesktopSessionRecord | null | undefined,
+  routeOptions: DesktopChatRoute[],
+  fallback?: DesktopChatRoute | null,
+): DesktopChatRoute | null {
+  const metadata = session?.metadata
+  const metadataRouteId = typeof metadata?.swarm_route_id === 'string' ? metadata.swarm_route_id.trim() : ''
+  const metadataSwarmId = typeof metadata?.swarm_routed_child_swarm_id === 'string' ? metadata.swarm_routed_child_swarm_id.trim() : ''
+  const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim() || (typeof metadata?.swarm_routed_runtime_workspace_path === 'string' ? metadata.swarm_routed_runtime_workspace_path.trim() : '')
+  const derivedRouteId = metadataSwarmId && runtimeWorkspacePath ? desktopChatRouteID(metadataSwarmId, runtimeWorkspacePath) : ''
+  return resolveDesktopChatRouteById(routeOptions, metadataRouteId || derivedRouteId, fallback)
 }
 
 export function withDesktopChatRoute(path: string, route: DesktopChatRoute | null | undefined): string {

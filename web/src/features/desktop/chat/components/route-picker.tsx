@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, Container, Monitor, Server } from 'lucide-react'
+import { Check, ChevronDown, Container, Monitor, Server, Star } from 'lucide-react'
 import type { DesktopChatRoute } from '../services/chat-routing'
 
 interface RoutePickerProps {
   currentRoute: DesktopChatRoute
   routes: DesktopChatRoute[]
   onSelect: (routeId: string) => void
+  defaultRouteId?: string | null
+  onSetDefault?: (routeId: string) => void
+  defaultDisabled?: boolean
   disabled?: boolean
   title?: string
 }
@@ -31,7 +34,7 @@ function routeCaption(route: DesktopChatRoute): string {
   return routeKind(route) === 'remote' ? 'Remote swarm' : 'Local swarm'
 }
 
-export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, title }: RoutePickerProps) {
+export function RoutePicker({ currentRoute, routes, onSelect, defaultRouteId, onSetDefault, defaultDisabled = false, disabled = false, title }: RoutePickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
@@ -108,6 +111,11 @@ export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, 
     setOpen(false)
   }, [onSelect])
 
+  const handleSetDefault = useCallback((event: ReactMouseEvent<HTMLButtonElement>, routeId: string) => {
+    event.stopPropagation()
+    onSetDefault?.(routeId)
+  }, [onSetDefault])
+
   const dropdown = open && position ? createPortal(
     <div
       ref={dropdownRef}
@@ -128,22 +136,44 @@ export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, 
         <div className="py-1">
           {routes.map((route) => {
             const isSelected = route.id === selectedRoute.id
+            const isDefault = route.id === defaultRouteId
+            const canSetDefault = Boolean(onSetDefault) && !isDefault
             return (
-              <button
+              <div
                 key={route.id}
-                type="button"
-                onClick={() => handleSelect(route.id)}
                 className={isSelected
-                  ? 'flex w-full items-center gap-3 bg-[var(--app-surface-subtle)] px-3 py-2.5 text-left text-[var(--app-text)] transition'
-                  : 'flex w-full items-center gap-3 px-3 py-2.5 text-left text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}
+                  ? 'flex w-full items-center gap-1 bg-[var(--app-surface-subtle)] px-1.5 py-1 text-[var(--app-text)] transition'
+                  : 'flex w-full items-center gap-1 px-1.5 py-1 text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}
               >
-                <RouteIcon route={route} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{route.label}</span>
-                  <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">{routeCaption(route)}</span>
-                </span>
-                {isSelected ? <Check size={14} className="shrink-0 text-[var(--app-primary)]" /> : null}
-              </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelect(route.id)}
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-1.5 py-1.5 text-left"
+                >
+                  <RouteIcon route={route} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{route.label}</span>
+                    <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">
+                      {isDefault ? 'Workspace default' : routeCaption(route)}
+                    </span>
+                  </span>
+                  {isSelected ? <Check size={14} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                </button>
+                {onSetDefault ? (
+                  <button
+                    type="button"
+                    onClick={(event) => handleSetDefault(event, route.id)}
+                    disabled={!canSetDefault || defaultDisabled}
+                    title={isDefault ? 'Workspace default' : 'Set as workspace default'}
+                    aria-label={isDefault ? `${route.label} is the workspace default` : `Set ${route.label} as workspace default`}
+                    className={isDefault
+                      ? 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-primary)]'
+                      : 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50'}
+                  >
+                    <Star size={14} fill={isDefault ? 'currentColor' : 'none'} />
+                  </button>
+                ) : null}
+              </div>
             )
           })}
         </div>

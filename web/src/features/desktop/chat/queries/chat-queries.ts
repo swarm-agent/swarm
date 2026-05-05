@@ -19,8 +19,6 @@ import type {
 } from "../types/chat";
 import {
   applyDesktopChatRouteToSession,
-  loadDesktopChatRouteForSession,
-  saveDesktopChatRouteForSession,
   type DesktopChatRoute,
   withDesktopChatRoute,
 } from "../services/chat-routing";
@@ -377,6 +375,28 @@ function mapSessionPlan(
   };
 }
 
+function routeFromSessionMetadata(session: DesktopSessionRecord): DesktopChatRoute | null {
+  const metadata = session.metadata;
+  const swarmId = typeof metadata?.swarm_routed_child_swarm_id === "string" ? metadata.swarm_routed_child_swarm_id.trim() : "";
+  const hostWorkspacePath = typeof metadata?.swarm_routed_host_workspace_path === "string" ? metadata.swarm_routed_host_workspace_path.trim() : session.workspacePath;
+  const runtimeWorkspacePath = typeof metadata?.swarm_routed_runtime_workspace_path === "string" ? metadata.swarm_routed_runtime_workspace_path.trim() : session.runtimeWorkspacePath;
+  if (!swarmId || !runtimeWorkspacePath) {
+    return null;
+  }
+  const id = typeof metadata?.swarm_route_id === "string" && metadata.swarm_route_id.trim()
+    ? metadata.swarm_route_id.trim()
+    : `swarm:${swarmId}:${runtimeWorkspacePath}`;
+  return {
+    id,
+    label: typeof metadata?.swarm_target_name === "string" && metadata.swarm_target_name.trim() ? metadata.swarm_target_name.trim() : swarmId,
+    swarmId,
+    targetKind: typeof metadata?.swarm_target_kind === "string" ? metadata.swarm_target_kind.trim() : "",
+    hostWorkspacePath,
+    hostWorkspaceName: session.workspaceName,
+    runtimeWorkspacePath,
+  };
+}
+
 function mapSession(session: SessionWire): DesktopSessionRecord {
   const lifecycle =
     session.lifecycle && typeof session.lifecycle === "object"
@@ -539,13 +559,13 @@ export async function fetchSession(
     return null;
   }
 
-  const route = loadDesktopChatRouteForSession(normalizedSessionId);
   const response = await requestJson<{ session?: SessionWire }>(
-    withDesktopChatRoute(`/v1/sessions/${encodeURIComponent(normalizedSessionId)}`, route),
+    `/v1/sessions/${encodeURIComponent(normalizedSessionId)}`,
   );
+  const mappedSession = mapSession(response.session ?? {});
   const mapped = applyDesktopChatRouteToSession(
-    mapSession(response.session ?? {}),
-    route,
+    mappedSession,
+    routeFromSessionMetadata(mappedSession),
   );
   mapped.permissionsHydrated = false;
   return mapped.id ? mapped : null;
@@ -689,8 +709,8 @@ export async function updateSessionMode(
 export async function updateSessionMetadata(
   sessionId: string,
   metadata: Record<string, unknown>,
+  route?: DesktopChatRoute | null,
 ): Promise<DesktopSessionRecord> {
-  const route = loadDesktopChatRouteForSession(sessionId);
   const response = await requestJson<{ session?: SessionWire }>(
     `/v1/sessions/${encodeURIComponent(sessionId)}/metadata`,
     {
@@ -703,9 +723,10 @@ export async function updateSessionMetadata(
       }),
     },
   );
+  const mappedSession = mapSession(response.session ?? {});
   return applyDesktopChatRouteToSession(
-    mapSession(response.session ?? {}),
-    route,
+    mappedSession,
+    route ?? routeFromSessionMetadata(mappedSession),
   );
 }
 
@@ -1105,9 +1126,6 @@ export async function createSession(input: {
     mapSession(response.session ?? {}),
     input.route,
   );
-  if (mapped.id) {
-    saveDesktopChatRouteForSession(mapped.id, input.route);
-  }
   return mapped;
 }
 

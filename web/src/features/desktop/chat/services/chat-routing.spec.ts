@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { applyDesktopChatRouteToSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
+import { applyDesktopChatRouteToSession, resolveDesktopChatRouteById, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
 import type { DesktopSessionRecord } from '../../types/realtime'
 
 const remoteRoute: DesktopChatRoute = {
@@ -73,6 +73,20 @@ test('routed session hydration preserves remote child workspace identity', () =>
   assert.equal(mapped.workspacePath, '/workspaces/swarm')
   assert.equal(mapped.workspaceName, 'child swarm')
   assert.equal(mapped.runtimeWorkspacePath, '/workspaces/swarm')
+})
+
+test('workspace defaults resolve by server-backed route id', () => {
+  const hostRoute: DesktopChatRoute = {
+    id: 'host',
+    label: 'host',
+    swarmId: null,
+    targetKind: 'host',
+    hostWorkspacePath: '/workspaces/host-swarm',
+    hostWorkspaceName: 'host swarm',
+    runtimeWorkspacePath: '/workspaces/host-swarm',
+  }
+
+  assert.equal(resolveDesktopChatRouteById([hostRoute, remoteRoute], remoteRoute.id, hostRoute), remoteRoute)
 })
 
 test('routed local host mirror session remains grouped under host workspace', () => {

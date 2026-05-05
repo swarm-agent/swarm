@@ -167,3 +167,59 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenThemeOnlyPayloadSent(t *
 		t.Fatal("response thinking tags = true after theme-only update, want preserved false")
 	}
 }
+
+func TestUISettingsPostPreservesExistingWorkspaceRoutesWhenChatPatchOmitsThem(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-routes.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	_, err = settingsSvc.Set(uisettings.UISettings{
+		Chat: uisettings.ChatSettings{
+			ShowHeader:             true,
+			ThinkingTags:           true,
+			DefaultNewSessionMode:  "plan",
+			DefaultWorkspaceRoutes: map[string]string{"/repo": "swarm:child:/repo"},
+			ToolStream:             uisettings.ChatToolStreamSettings{ShowAnchor: true, RunningSymbol: "•"},
+		},
+		Theme: uisettings.ThemeSettings{ActiveID: "crimson"},
+		Swarm: uisettings.SwarmSettings{Name: "Local"},
+	})
+	if err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	reqBody := []byte(`{"chat":{"default_new_session_mode":"auto"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Chat.DefaultNewSessionMode != "auto" {
+		t.Fatalf("default mode = %q, want auto", response.Chat.DefaultNewSessionMode)
+	}
+	if got := response.Chat.DefaultWorkspaceRoutes["/repo"]; got != "swarm:child:/repo" {
+		t.Fatalf("workspace route = %q, want swarm:child:/repo", got)
+	}
+	if !response.Chat.ToolStream.ShowAnchor || response.Chat.ToolStream.RunningSymbol == "" {
+		t.Fatalf("tool stream was not preserved: %+v", response.Chat.ToolStream)
+	}
+}

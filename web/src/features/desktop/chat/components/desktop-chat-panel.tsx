@@ -14,6 +14,8 @@ import {
   sessionMessagesQueryOptions,
   sessionPreferenceQueryKey,
   sessionPreferenceQueryOptions,
+  uiSettingsQueryKey,
+  uiSettingsQueryOptions,
 } from '../../../queries/query-options'
 import {
   activatePrimaryAgent,
@@ -42,8 +44,8 @@ import { DesktopPermissionModal } from '../../permissions/components/desktop-per
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { saveThinkingTagsSetting } from '../../settings/swarm/mutations/save-thinking-tags-setting'
-import { getUISettings } from '../../settings/swarm/queries/get-ui-settings'
-import { normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled } from '../../settings/swarm/types/swarm-settings'
+import { saveDefaultWorkspaceRoute } from '../../settings/swarm/mutations/save-default-workspace-route'
+import { defaultWorkspaceRouteId, normalizeDefaultNewSessionMode, normalizeThinkingTagsEnabled } from '../../settings/swarm/types/swarm-settings'
 import { countApprovalRequiredPermissions, permissionRequiresApproval } from '../../permissions/services/permission-payload'
 import { DesktopPlanModal } from './desktop-plan-modal'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
@@ -60,9 +62,8 @@ import {
 import {
   buildDesktopChatRouteOptions,
   desktopChatRoutesEqual,
-  loadDesktopChatRouteForSession,
-  loadDesktopChatRouteForWorkspace,
-  saveDesktopChatRouteForWorkspace,
+  resolveDesktopChatRouteById,
+  resolveDesktopChatRouteFromSession,
 } from '../services/chat-routing'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from '../services/slash-commands'
 import { appendPendingUserMessage, createPendingUserMessage, removePendingUserMessage } from '../services/message-cache'
@@ -857,6 +858,7 @@ export function DesktopChatPanel({
   } = useQuery(agentStateQueryOptions())
 
   const { data: modelOptions = [] } = useQuery(modelOptionsQueryOptions())
+  const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
 
   const storedSession = useDesktopStore((state) => (sessionId ? state.sessions[sessionId] ?? null : null))
   const liveSession = useDesktopStore((state) => (sessionId ? state.sessions[sessionId] ?? session : session))
@@ -871,6 +873,7 @@ export function DesktopChatPanel({
   }), [hostSwarmName, workspacePath, workspaceName, workspaceReplicationLinks])
   const defaultChatRoute = routeOptions[0]!
   const [selectedRouteId, setSelectedRouteId] = useState(() => defaultChatRoute?.id ?? 'host')
+  const [draftRouteOverrideId, setDraftRouteOverrideId] = useState<string | null>(null)
 
   const cachedMessages = sessionId ? queryClient.getQueryData<ChatMessageRecord[]>(sessionMessagesQueryOptions(sessionId).queryKey) : undefined
   const cachedPreference = sessionId ? queryClient.getQueryData<ResolvedSessionPreference>(sessionPreferenceQueryOptions(sessionId).queryKey) : undefined
@@ -1097,16 +1100,28 @@ export function DesktopChatPanel({
     }
   }, [mobileSettingsOpen])
 
+  const serverDefaultRouteId = defaultWorkspaceRouteId(uiSettingsQuery.data, workspacePath)
+  const resolvedDefaultRouteId = resolveDesktopChatRouteById(routeOptions, serverDefaultRouteId, defaultChatRoute)?.id ?? defaultChatRoute?.id ?? 'host'
+
   useEffect(() => {
-    const storedRoute = sessionId
-      ? loadDesktopChatRouteForSession(sessionId)
-      : loadDesktopChatRouteForWorkspace(workspacePath)
-    const nextRoute = routeOptions.find((entry) => desktopChatRoutesEqual(entry, storedRoute)) ?? defaultChatRoute
+    setDraftRouteOverrideId(null)
+  }, [workspacePath])
+
+  useEffect(() => {
+    if (sessionId) {
+      setDraftRouteOverrideId(null)
+    }
+  }, [sessionId])
+
+  useEffect(() => {
+    const nextRoute = sessionId && !draftRouteOverrideId
+      ? resolveDesktopChatRouteFromSession(liveSession ?? session, routeOptions, defaultChatRoute)
+      : resolveDesktopChatRouteById(routeOptions, draftRouteOverrideId || serverDefaultRouteId, defaultChatRoute)
     const nextRouteId = nextRoute?.id ?? 'host'
     if (nextRouteId !== selectedRouteId) {
       setSelectedRouteId(nextRouteId)
     }
-  }, [defaultChatRoute, routeOptions, selectedRouteId, sessionId, workspacePath])
+  }, [defaultChatRoute, draftRouteOverrideId, liveSession, routeOptions, selectedRouteId, serverDefaultRouteId, session, sessionId, workspacePath])
 
   const activeChatRoute = useMemo(
     () => routeOptions.find((entry) => entry.id === selectedRouteId) ?? defaultChatRoute,
@@ -1116,13 +1131,13 @@ export function DesktopChatPanel({
 
   const refreshUISettings = useCallback(async () => {
     try {
-      const settings = await getUISettings()
+      const settings = await queryClient.fetchQuery({ ...uiSettingsQueryOptions(), staleTime: 0 })
       setThinkingTagsEnabled(normalizeThinkingTagsEnabled(settings))
       setDefaultNewSessionMode(normalizeDefaultNewSessionMode(settings.chat?.default_new_session_mode))
     } catch {
       setDefaultNewSessionMode('auto')
     }
-  }, [])
+  }, [queryClient])
 
   useEffect(() => {
     setSlashSelectionIndex(0)
@@ -1620,13 +1635,13 @@ export function DesktopChatPanel({
       : {}
     currentMetadata.subagent = nextAgent
     try {
-      const updatedSession = await updateSessionMetadata(sessionId, currentMetadata)
+      const updatedSession = await updateSessionMetadata(sessionId, currentMetadata, activeChatRoute)
       upsertSession(updatedSession)
     } catch (error) {
       setCurrentSessionAgent(previousAgent)
       setPanelError(error instanceof Error ? error.message : 'Failed to update session agent')
     }
-  }, [currentSessionAgent, isFlowSession, liveSession?.metadata, sessionId, upsertSession])
+  }, [activeChatRoute, currentSessionAgent, isFlowSession, liveSession?.metadata, sessionId, upsertSession])
 
   useEffect(() => {
     setPanelError(null)
@@ -1816,7 +1831,7 @@ export function DesktopChatPanel({
         } else {
           delete currentMetadata[COMPACT_THRESHOLD_METADATA_KEY]
         }
-        const updatedSession = await updateSessionMetadata(sessionId, currentMetadata)
+        const updatedSession = await updateSessionMetadata(sessionId, currentMetadata, activeChatRoute)
         upsertSession(updatedSession)
       }
       await submitPrompt({
@@ -1830,7 +1845,7 @@ export function DesktopChatPanel({
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to compact context')
     }
-  }, [canStop, currentSessionAgent, liveSession?.metadata, sessionId, submitPrompt, submitting, upsertSession, workspaceName, workspacePath])
+  }, [activeChatRoute, canStop, currentSessionAgent, liveSession?.metadata, sessionId, submitPrompt, submitting, upsertSession, workspaceName, workspacePath])
 
   const openCommitModal = useCallback(() => {
     setCommitModal((current) => ({
@@ -1904,6 +1919,7 @@ export function DesktopChatPanel({
     setPanelError(null)
     try {
       const updated = await saveThinkingTagsSetting(enabled)
+      queryClient.setQueryData(uiSettingsQueryKey(), updated)
       setThinkingTagsEnabled(normalizeThinkingTagsEnabled(updated))
     } catch (error) {
       setThinkingTagsEnabled(previous)
@@ -1911,7 +1927,7 @@ export function DesktopChatPanel({
     } finally {
       setThinkingTagsSaving(false)
     }
-  }, [thinkingTagsEnabled, thinkingTagsSaving])
+  }, [queryClient, thinkingTagsEnabled, thinkingTagsSaving])
 
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     setSlashSelectionIndex(0)
@@ -1984,19 +2000,43 @@ export function DesktopChatPanel({
     if (!nextRoute) {
       return
     }
+    setDraftRouteOverrideId(nextRoute.id)
     setSelectedRouteId(nextRoute.id)
-    saveDesktopChatRouteForWorkspace(workspacePath, nextRoute)
     if (!sessionId) {
       return
     }
-    const currentSessionRoute = routeOptions.find((entry) => desktopChatRoutesEqual(entry, loadDesktopChatRouteForSession(sessionId))) ?? defaultChatRoute
+    const currentSessionRoute = resolveDesktopChatRouteFromSession(liveSession ?? session, routeOptions, defaultChatRoute)
     if (desktopChatRoutesEqual(currentSessionRoute, nextRoute)) {
       return
     }
     setPanelError(null)
     setSessionDraft(draftSessionKey, composer)
     onStartNewSession(workspacePath, workspaceName)
-  }, [composer, defaultChatRoute, draftSessionKey, onStartNewSession, routeOptions, sessionId, setSessionDraft, workspaceName, workspacePath])
+  }, [composer, defaultChatRoute, draftSessionKey, liveSession, onStartNewSession, routeOptions, session, sessionId, setSessionDraft, workspaceName, workspacePath])
+
+  const handleSetDefaultRoute = useCallback((routeId: string) => {
+    const nextRoute = routeOptions.find((entry) => entry.id === routeId)
+    if (!nextRoute) {
+      return
+    }
+    if (!sessionId && selectedRouteId !== nextRoute.id) {
+      setDraftRouteOverrideId(selectedRouteId)
+    }
+    void (async () => {
+      try {
+        const currentSettings = await queryClient.fetchQuery({ ...uiSettingsQueryOptions(), staleTime: 0 })
+        const updated = await saveDefaultWorkspaceRoute({
+          current: currentSettings,
+          workspacePath,
+          routeId: nextRoute.id,
+        })
+        queryClient.setQueryData(uiSettingsQueryKey(), updated)
+        void queryClient.invalidateQueries({ queryKey: uiSettingsQueryKey() })
+      } catch (error) {
+        setPanelError(error instanceof Error ? error.message : 'Failed to update workspace default route')
+      }
+    })()
+  }, [queryClient, routeOptions, selectedRouteId, sessionId, workspacePath])
 
   const handleSubmit = useCallback(async () => {
     if (submitting) {
@@ -2873,6 +2913,9 @@ export function DesktopChatPanel({
                       currentRoute={activeChatRoute}
                       routes={routeOptions}
                       onSelect={handleRouteChange}
+                      defaultRouteId={resolvedDefaultRouteId}
+                      onSetDefault={handleSetDefaultRoute}
+                      defaultDisabled={composerDisabled || canStop}
                       disabled={composerDisabled || canStop}
                       title={sessionId ? 'Changing the route starts a new session in this workspace.' : 'Route this chat through the host or a linked child swarm.'}
                     />
@@ -2937,6 +2980,9 @@ export function DesktopChatPanel({
                         currentRoute={activeChatRoute}
                         routes={routeOptions}
                         onSelect={handleRouteChange}
+                        defaultRouteId={resolvedDefaultRouteId}
+                        onSetDefault={handleSetDefaultRoute}
+                        defaultDisabled={composerDisabled || canStop}
                         disabled={composerDisabled || canStop}
                         title={sessionId ? 'Changing the route starts a new session in this workspace.' : 'Route this chat through the host or a linked child swarm.'}
                       />

@@ -4,6 +4,7 @@ import test from 'node:test'
 import { saveThinkingTagsSetting } from './save-thinking-tags-setting'
 import { saveSwarmSettings } from './save-swarm-settings'
 import { saveLocalContainerUpdateWarningDismissal } from './save-local-container-update-warning-dismissal'
+import { saveDefaultWorkspaceRoute } from './save-default-workspace-route'
 
 function installFetchMock(handler: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>) {
   const original = globalThis.fetch
@@ -54,6 +55,37 @@ test('saveSwarmSettings sends only swarm name and default mode patch', async () 
     assert.deepEqual(JSON.parse(capturedBody), {
       chat: { default_new_session_mode: 'plan' },
       swarm: { name: 'Desk' },
+    })
+  } finally {
+    restore()
+  }
+})
+
+test('saveDefaultWorkspaceRoute preserves existing chat fields and writes server route default', async () => {
+  let capturedBody = ''
+  const restore = installFetchMock(async (_input, init) => {
+    capturedBody = String(init?.body ?? '')
+    return new Response(JSON.stringify({
+      chat: { thinking_tags: false, default_workspace_routes: { '/repo': 'swarm:child:/repo' } },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  try {
+    const response = await saveDefaultWorkspaceRoute({
+      current: { chat: { thinking_tags: false, default_new_session_mode: 'plan' } },
+      workspacePath: '/repo',
+      routeId: 'swarm:child:/repo',
+    })
+    assert.equal(response.chat?.default_workspace_routes?.['/repo'], 'swarm:child:/repo')
+    assert.deepEqual(JSON.parse(capturedBody), {
+      chat: {
+        thinking_tags: false,
+        default_new_session_mode: 'plan',
+        default_workspace_routes: { '/repo': 'swarm:child:/repo' },
+      },
     })
   } finally {
     restore()

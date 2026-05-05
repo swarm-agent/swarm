@@ -9,7 +9,7 @@ import (
 type SwarmModalActionKind string
 
 const (
-	SwarmModalActionCopyDashboardLink SwarmModalActionKind = "copy-dashboard-link"
+	SwarmModalActionCopyLink SwarmModalActionKind = "copy-link"
 )
 
 type SwarmModalAction struct {
@@ -18,20 +18,20 @@ type SwarmModalAction struct {
 }
 
 type swarmModalState struct {
-	Visible       bool
-	Title         string
-	Lines         []string
-	DashboardLink string
-	Status        string
+	Visible  bool
+	Title    string
+	Lines    []string
+	CopyLink string
+	Status   string
 }
 
-func (p *HomePage) ShowSwarmModal(title string, lines []string, dashboardLink string) {
+func (p *HomePage) ShowSwarmModal(title string, lines []string, copyLink string) {
 	p.swarmModal = swarmModalState{
-		Visible:       true,
-		Title:         emptyValue(strings.TrimSpace(title), "Swarm"),
-		Lines:         append([]string(nil), lines...),
-		DashboardLink: strings.TrimSpace(dashboardLink),
-		Status:        "Esc close • c copy dashboard link",
+		Visible:  true,
+		Title:    emptyValue(strings.TrimSpace(title), "Swarm"),
+		Lines:    append([]string(nil), lines...),
+		CopyLink: strings.TrimSpace(copyLink),
+		Status:   "Esc close",
 	}
 }
 
@@ -69,13 +69,12 @@ func (p *HomePage) handleSwarmModalKey(ev *tcell.EventKey) {
 		return
 	}
 	if ev.Key() == tcell.KeyRune && ev.Rune() == 'c' {
-		link := strings.TrimSpace(p.swarmModal.DashboardLink)
+		link := strings.TrimSpace(p.swarmModal.CopyLink)
 		if link == "" {
-			p.swarmModal.Status = "dashboard link unavailable"
 			return
 		}
-		p.pendingSwarmAction = &SwarmModalAction{Kind: SwarmModalActionCopyDashboardLink, Text: link}
-		p.swarmModal.Status = "copying dashboard link..."
+		p.pendingSwarmAction = &SwarmModalAction{Kind: SwarmModalActionCopyLink, Text: link}
+		p.swarmModal.Status = "copying link..."
 	}
 }
 
@@ -95,6 +94,6 @@ func (p *HomePage) drawSwarmModal(s tcell.Screen) {
 	for i := 0; i < maxRows && i < len(p.swarmModal.Lines); i++ {
 		DrawText(s, rect.X+2, y+i, rect.W-4, p.theme.Text, clampEllipsis(p.swarmModal.Lines[i], rect.W-4))
 	}
-	status := emptyValue(strings.TrimSpace(p.swarmModal.Status), "Esc close • c copy dashboard link")
+	status := emptyValue(strings.TrimSpace(p.swarmModal.Status), "Esc close")
 	DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.TextMuted, clampEllipsis(status, rect.W-4))
 }
