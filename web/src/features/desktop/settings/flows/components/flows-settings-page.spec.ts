@@ -43,11 +43,18 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
     name: 'One shot',
     agentKey: 'missile::subagent',
     targetKey: 'target',
+    scheduleMode: 'guided' as const,
     scheduleCadence: 'Daily' as const,
+    dailyMode: 'fixed' as const,
     scheduleTimes: ['9:00 AM', '5:30 PM'],
+    dailyRunCount: '4',
+    dailyIntervalHours: '2',
+    dailyWindowStart: '9:00 AM',
+    dailyWindowEnd: '5:00 PM',
     scheduleDay: 'Mon',
     scheduleDate: '1',
     timezone: 'America/New_York',
+    cronExpression: '0 9,13,17 * * Mon-Fri',
     workspacePath: workspace.path,
     task: 'Run once',
   }
@@ -70,6 +77,15 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
   assert.equal(weekly.schedule.time, '09:00')
   assert.deepEqual(weekly.schedule.times, ['09:00'])
   assert.equal(weekly.schedule.weekday, 'Mon')
+
+  const multiDayWeekly = formToCreateInput({ ...baseForm, scheduleCadence: 'Weekly', scheduleDay: 'Mon,Wed,Fri' }, targets, workspaces, agents)
+  assert.equal(multiDayWeekly.schedule.weekday, 'Mon,Wed,Fri')
+
+  const exact = formToCreateInput({ ...baseForm, scheduleMode: 'cron', cronExpression: '0 9 * * Mon' }, targets, workspaces, agents)
+  assert.equal(exact.schedule.cron, '0 9 * * Mon')
+
+  const spreadDaily = formToCreateInput({ ...baseForm, dailyMode: 'times_between', dailyRunCount: '4', dailyWindowStart: '9:00 AM', dailyWindowEnd: '5:00 PM' }, targets, workspaces, agents)
+  assert.deepEqual(spreadDaily.schedule.times, ['09:00', '11:40', '14:20', '17:00'])
 
   const monthly = formToCreateInput({ ...baseForm, scheduleCadence: 'Monthly', scheduleDate: '15' }, targets, workspaces, agents)
   assert.equal(monthly.schedule.cadence, 'monthly')

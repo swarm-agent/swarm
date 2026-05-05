@@ -714,7 +714,7 @@ func flowV3HasWorkspaceInput(workspace flow.WorkspaceContext) bool {
 }
 
 func flowV3HasScheduleInput(schedule flow.ScheduleSpec) bool {
-	return schedule.Cadence != "" || schedule.Time != "" || len(schedule.Times) > 0 || schedule.Weekday != "" || schedule.MonthDay != 0 || schedule.Timezone != ""
+	return schedule.Cadence != "" || schedule.Time != "" || len(schedule.Times) > 0 || schedule.Weekday != "" || schedule.MonthDay != 0 || schedule.Timezone != "" || schedule.Cron != ""
 }
 
 func flowV3HasCatchUpPolicyInput(policy flow.CatchUpPolicy) bool {
@@ -780,6 +780,7 @@ func normalizeManagementWorkspace(workspace flow.WorkspaceContext) flow.Workspac
 func normalizeManagementSchedule(schedule flow.ScheduleSpec) flow.ScheduleSpec {
 	schedule = flow.NormalizeScheduleSpec(schedule)
 	schedule.Weekday = strings.TrimSpace(schedule.Weekday)
+	schedule.Cron = strings.TrimSpace(schedule.Cron)
 	return schedule
 }
 

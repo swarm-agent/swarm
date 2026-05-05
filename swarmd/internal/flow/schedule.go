@@ -75,6 +75,9 @@ func ValidateSchedule(spec ScheduleSpec) error {
 	if strings.TrimSpace(spec.Timezone) == "" {
 		return errors.New("schedule timezone is required")
 	}
+	if err := validateCronExpression(spec.Cron); err != nil {
+		return err
+	}
 	if _, err := time.LoadLocation(strings.TrimSpace(spec.Timezone)); err != nil {
 		return fmt.Errorf("load schedule timezone: %w", err)
 	}
@@ -333,6 +336,7 @@ func NormalizeScheduleSpec(spec ScheduleSpec) ScheduleSpec {
 	}
 	spec.Weekday = strings.TrimSpace(spec.Weekday)
 	spec.Timezone = strings.TrimSpace(spec.Timezone)
+	spec.Cron = strings.TrimSpace(spec.Cron)
 	if spec.Cadence == CadenceOnDemand {
 		return spec
 	}
@@ -365,6 +369,18 @@ func parseScheduleClock(value string) (int, int, error) {
 		return 0, 0, errors.New("schedule minute must be between 00 and 59")
 	}
 	return hour, minute, nil
+}
+
+func validateCronExpression(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	fields := strings.Fields(value)
+	if len(fields) != 5 {
+		return errors.New("schedule cron must contain 5 fields")
+	}
+	return nil
 }
 
 func parseWeekday(value string) (time.Weekday, error) {

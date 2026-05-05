@@ -149,6 +149,7 @@ type ScheduleSpec struct {
 	Weekday  string   `json:"weekday,omitempty"`
 	MonthDay int      `json:"month_day,omitempty"`
 	Timezone string   `json:"timezone"`
+	Cron     string   `json:"cron,omitempty"`
 }
 
 type CatchUpPolicy struct {

@@ -30,6 +30,8 @@ import { useDesktopStore } from '../../../state/use-desktop-store'
 type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
 type FlowMode = 'Scheduled background job' | 'Manual one-shot'
 type ScheduleCadence = 'Daily' | 'Weekly' | 'Monthly' | 'On demand'
+type ScheduleMode = 'guided' | 'cron'
+type DailyScheduleMode = 'once' | 'fixed' | 'times_between' | 'interval_window'
 
 interface FlowTask {
   id: string
@@ -76,11 +78,18 @@ interface AddFlowForm {
   name: string
   agentKey: string
   targetKey: string
+  scheduleMode: ScheduleMode
   scheduleCadence: ScheduleCadence
+  dailyMode: DailyScheduleMode
   scheduleTimes: string[]
+  dailyRunCount: string
+  dailyIntervalHours: string
+  dailyWindowStart: string
+  dailyWindowEnd: string
   scheduleDay: string
   scheduleDate: string
   timezone: string
+  cronExpression: string
   workspacePath: string
   task: string
 }
@@ -110,7 +119,13 @@ interface FlowAgentOption {
   profile: FlowAgentProfile
 }
 
-const scheduleCadenceOptions: ScheduleCadence[] = ['Daily', 'Weekly', 'Monthly', 'On demand']
+const scheduleCadenceOptions: ScheduleCadence[] = ['Daily', 'Weekly', 'Monthly']
+const dailyScheduleModeOptions: Array<{ value: DailyScheduleMode; label: string; helper: string }> = [
+  { value: 'once', label: 'Once per day', helper: 'One predictable daily run.' },
+  { value: 'fixed', label: 'Fixed times', helper: 'Pick each exact time.' },
+  { value: 'times_between', label: 'X times in window', helper: 'Evenly spread runs between two times.' },
+  { value: 'interval_window', label: 'Every X hours', helper: 'Repeat on an hourly interval inside a window.' },
+]
 const scheduleDayOptions = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const scheduleDateOptions = Array.from({ length: 31 }, (_, index) => String(index + 1))
 const scheduleTimeOptions = Array.from({ length: 48 }, (_, index) => {
@@ -180,21 +195,38 @@ function scheduleTimesForCadence(form: AddFlowForm): string[] {
   if (form.scheduleCadence === 'On demand') {
     return []
   }
-  if (form.scheduleCadence === 'Daily') {
-    return form.scheduleTimes.length ? form.scheduleTimes : ['12:00 AM']
+  if (form.scheduleCadence !== 'Daily') {
+    return [form.scheduleTimes[0] || '12:00 AM']
   }
-  return [form.scheduleTimes[0] || '12:00 AM']
+  switch (form.dailyMode) {
+    case 'fixed':
+      return form.scheduleTimes.length ? form.scheduleTimes : ['12:00 AM']
+    case 'times_between':
+      return spreadTimesBetween(form.dailyRunCount, form.dailyWindowStart, form.dailyWindowEnd)
+    case 'interval_window':
+      return intervalTimesBetween(form.dailyIntervalHours, form.dailyWindowStart, form.dailyWindowEnd)
+    case 'once':
+    default:
+      return [form.scheduleTimes[0] || '12:00 AM']
+  }
 }
 
 const defaultAddFlowForm: AddFlowForm = {
   name: '',
   agentKey: '',
   targetKey: '',
-  scheduleCadence: 'On demand',
+  scheduleMode: 'guided',
+  scheduleCadence: 'Daily',
+  dailyMode: 'once',
   scheduleTimes: ['12:00 AM'],
+  dailyRunCount: '4',
+  dailyIntervalHours: '2',
+  dailyWindowStart: '9:00 AM',
+  dailyWindowEnd: '5:00 PM',
   scheduleDay: 'Mon',
   scheduleDate: '1',
   timezone: userTimeZone(),
+  cronExpression: '0 9,13,17 * * Mon-Fri',
   workspacePath: '',
   task: '',
 }
@@ -232,22 +264,91 @@ const runStatusClasses: Record<FlowRun['status'], string> = {
 
 const surfaceClass = 'rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm'
 const filterControlClass = 'inline-flex min-h-9 items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 text-xs text-[var(--app-text-muted)] transition hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]'
-const fieldClass = 'h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 text-sm text-[var(--app-text)] outline-none transition hover:border-[var(--app-border-strong)] focus:border-[var(--app-border-accent)] focus:ring-2 focus:ring-[var(--app-focus-ring)]'
-const labelClass = 'text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]'
+const fieldClass = 'h-9 rounded-xl border border-[rgba(255,255,255,0.13)] bg-[rgba(255,255,255,0.045)] px-3 text-sm text-[rgba(255,255,255,0.88)] outline-none transition placeholder:text-[rgba(255,255,255,0.38)] hover:border-[rgba(255,255,255,0.20)] focus:border-[#b87586] focus:ring-1 focus:ring-[#b87586]/25 disabled:cursor-not-allowed disabled:opacity-55'
+const textareaClass = 'min-h-[80px] resize-none rounded-xl border border-[rgba(255,255,255,0.13)] bg-[rgba(255,255,255,0.045)] px-3 py-2 text-sm leading-5 text-[rgba(255,255,255,0.88)] outline-none transition placeholder:text-[rgba(255,255,255,0.38)] hover:border-[rgba(255,255,255,0.20)] focus:border-[#b87586] focus:ring-1 focus:ring-[#b87586]/25'
+const labelClass = 'text-[11px] font-medium uppercase tracking-[0.14em] text-[rgba(255,255,255,0.62)]'
+const helperClass = 'text-[11px] leading-4 text-[rgba(255,255,255,0.55)]'
 
 function buildScheduleLabel(form: AddFlowForm) {
+  if (form.scheduleMode === 'cron') {
+    const expression = form.cronExpression.trim()
+    return expression ? `Raw cron controls timing: ${expression} (${form.timezone})` : 'Raw cron controls all run timing.'
+  }
   if (form.scheduleCadence === 'On demand') {
     return 'Runs only when you start it manually.'
   }
   const times = scheduleTimesForCadence(form)
   const timesLabel = times.join(', ')
   if (form.scheduleCadence === 'Weekly') {
-    return `Every ${form.scheduleDay} at ${timesLabel} (${form.timezone})`
+    return `Every ${formatSelectedDays(form.scheduleDay)} at ${timesLabel} (${form.timezone})`
   }
   if (form.scheduleCadence === 'Monthly') {
     return `Monthly on day ${form.scheduleDate} at ${timesLabel} (${form.timezone})`
   }
   return `Every day at ${timesLabel} (${form.timezone})`
+}
+
+function minutesFromClockLabel(value: string): number {
+  const hhmm = clockLabelToHHMM(value)
+  const [hour, minute] = hhmm.split(':').map(Number)
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return 0
+  }
+  return hour * 60 + minute
+}
+
+function clockLabelFromMinutes(value: number): string {
+  const normalized = ((Math.round(value) % 1440) + 1440) % 1440
+  const hour24 = Math.floor(normalized / 60)
+  const minute = normalized % 60
+  const period = hour24 < 12 ? 'AM' : 'PM'
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12
+  return `${hour12}:${String(minute).padStart(2, '0')} ${period}`
+}
+
+function spreadTimesBetween(runCountValue: string, startValue: string, endValue: string): string[] {
+  const count = Math.max(1, Math.min(maxDailyScheduleTimes, Number.parseInt(runCountValue, 10) || 1))
+  const start = minutesFromClockLabel(startValue)
+  const end = Math.max(start, minutesFromClockLabel(endValue))
+  if (count === 1 || end === start) {
+    return [clockLabelFromMinutes(start)]
+  }
+  const step = (end - start) / (count - 1)
+  return Array.from({ length: count }, (_, index) => clockLabelFromMinutes(start + step * index))
+}
+
+function intervalTimesBetween(intervalValue: string, startValue: string, endValue: string): string[] {
+  const intervalMinutes = Math.max(30, Math.min(24 * 60, (Number.parseInt(intervalValue, 10) || 1) * 60))
+  const start = minutesFromClockLabel(startValue)
+  const end = Math.max(start, minutesFromClockLabel(endValue))
+  const times: string[] = []
+  for (let cursor = start; cursor <= end && times.length < maxDailyScheduleTimes; cursor += intervalMinutes) {
+    times.push(clockLabelFromMinutes(cursor))
+  }
+  return times.length ? times : [clockLabelFromMinutes(start)]
+}
+
+function selectedScheduleDays(value: string): string[] {
+  const selected = value
+    .split(',')
+    .map((day) => day.trim())
+    .filter((day) => scheduleDayOptions.includes(day))
+  return selected.length ? Array.from(new Set(selected)) : ['Mon']
+}
+
+function formatSelectedDays(value: string): string {
+  const days = selectedScheduleDays(value)
+  if (days.length === 1) {
+    return days[0]
+  }
+  if (days.length === 2) {
+    return `${days[0]} and ${days[1]}`
+  }
+  return `${days.slice(0, -1).join(', ')}, and ${days[days.length - 1]}`
+}
+
+function scheduleDayToCron(value: string): string {
+  return selectedScheduleDays(value).join(',')
 }
 
 function clockLabelToHHMM(value: string): string {
@@ -265,6 +366,35 @@ function clockLabelToHHMM(value: string): string {
     hour += 12
   }
   return `${String(hour).padStart(2, '0')}:${minute}`
+}
+
+function cronPreviewLabels(expression: string): string[] {
+  const fields = expression.trim().split(/\s+/)
+  if (fields.length !== 5) {
+    return ['Enter a 5-field cron expression to preview timing.']
+  }
+  const [minuteField, hourField, , , dayField] = fields
+  const minutes = minuteField === '0' ? ['00'] : minuteField.split(',').filter(Boolean).slice(0, 3)
+  const minute = minutes[0] ?? '00'
+  const hours = hourField.split(',').filter(Boolean).slice(0, 4)
+  const days = dayField === '*' ? ['Every day'] : dayField.split(',').filter(Boolean).slice(0, 4)
+  if (!minutes.length || !hours.length) {
+    return ['Preview unavailable for this cron expression.']
+  }
+  const labels: string[] = []
+  for (const day of days) {
+    for (const hour of hours) {
+      const parsedHour = Number.parseInt(hour, 10)
+      if (!Number.isFinite(parsedHour) || hour.includes('/') || hour.includes('-') || minute.includes('/') || minute.includes('-')) {
+        return ['Preview will use the cron expression exactly after backend support is wired.']
+      }
+      labels.push(`${day} ${hhmmToDisplay(`${String(parsedHour).padStart(2, '0')}:${minute.padStart(2, '0')}`)}`)
+      if (labels.length >= 5) {
+        return labels
+      }
+    }
+  }
+  return labels.length ? labels : ['Preview unavailable for this cron expression.']
 }
 
 function targetOptionKey(target: FlowSwarmTarget): string {
@@ -451,7 +581,7 @@ function scheduleLabelFromRecord(record: FlowSummaryRecord): string {
   const timeLabel = rawTimes.map((value) => hhmmToDisplay(value)).join(', ')
   const timezoneSuffix = schedule.timezone ? ` (${schedule.timezone})` : ''
   if (cadence === 'Weekly') {
-    return `Weekly on ${schedule.weekday || 'Mon'} ${timeLabel}${timezoneSuffix}`
+    return `Weekly on ${formatSelectedDays(schedule.weekday || 'Mon')} ${timeLabel}${timezoneSuffix}`
   }
   if (cadence === 'Monthly') {
     return `Monthly on day ${schedule.month_day || 1} ${timeLabel}${timezoneSuffix}`
@@ -570,6 +700,7 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
   const agentOption = agents.find((option) => option.key === form.agentKey)
   const workspacePath = workspaceOption?.workspace.path.trim() || form.workspacePath.trim()
   const task = form.task.trim() || 'Run the configured task prompt.'
+  const cronExpression = form.scheduleMode === 'cron' ? form.cronExpression.trim() : ''
   return {
     name: form.name.trim() || 'Untitled flow',
     enabled: !isOnDemand,
@@ -587,9 +718,10 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
       cadence,
       time: cadence === 'on_demand' ? undefined : selectedTimes[0],
       times: cadence === 'on_demand' ? undefined : selectedTimes,
-      weekday: cadence === 'weekly' ? form.scheduleDay : undefined,
+      weekday: cadence === 'weekly' ? scheduleDayToCron(form.scheduleDay) : undefined,
       month_day: cadence === 'monthly' ? Number(form.scheduleDate) : undefined,
       timezone: form.timezone.trim() || 'UTC',
+      cron: cronExpression || undefined,
     },
     catch_up_policy: {
       mode: 'once',
@@ -699,8 +831,13 @@ function AddFlowModal({
     setForm((current) => {
       if (field === 'scheduleCadence') {
         const nextCadence = value as ScheduleCadence
-        const nextTimes = nextCadence === 'Daily' ? current.scheduleTimes : [current.scheduleTimes[0] || '12:00 AM']
+        const nextTimes = nextCadence === 'Daily' && current.dailyMode === 'fixed' ? current.scheduleTimes : [current.scheduleTimes[0] || '12:00 AM']
         return { ...current, scheduleCadence: nextCadence, scheduleTimes: nextTimes }
+      }
+      if (field === 'dailyMode') {
+        const nextMode = value as DailyScheduleMode
+        const nextTimes = nextMode === 'fixed' ? current.scheduleTimes : [current.scheduleTimes[0] || '12:00 AM']
+        return { ...current, dailyMode: nextMode, scheduleTimes: nextTimes }
       }
       return { ...current, [field]: value }
     })
@@ -729,16 +866,24 @@ function AddFlowModal({
     })
   }
 
+  const toggleScheduleDay = (day: string) => {
+    setForm((current) => {
+      const selected = selectedScheduleDays(current.scheduleDay)
+      const next = selected.includes(day) ? selected.filter((value) => value !== day) : [...selected, day]
+      return { ...current, scheduleDay: (next.length ? next : [day]).join(',') }
+    })
+  }
+
   const schedulePreview = buildScheduleLabel(form)
   const selectedTarget = targetOptions.find((option) => option.key === form.targetKey)
   const selectedWorkspace = workspaceOptions.find((option) => option.key === form.workspacePath)
   const selectedAgent = agentOptions.find((option) => option.key === form.agentKey)
-  const isScheduled = form.scheduleCadence !== 'On demand'
-  const supportsMultipleTimes = form.scheduleCadence === 'Daily'
+  const supportsMultipleTimes = form.scheduleMode === 'guided' && form.scheduleCadence === 'Daily' && form.dailyMode === 'fixed'
+  const guidedScheduleTimes = scheduleTimesForCadence(form)
+  const cronPreviewTimes = cronPreviewLabels(form.cronExpression)
+  const selectedScheduleDayValues = selectedScheduleDays(form.scheduleDay)
   const selectedTimezoneNow = timeInZone(form.timezone, now)
-  const detectedTimezone = userTimeZone()
-  const localTimezoneNow = timeInZone(detectedTimezone, now)
-  const canSubmit = Boolean(selectedTarget && selectedWorkspace && selectedAgent && form.task.trim()) && !busy
+  const canSubmit = Boolean(selectedTarget && selectedWorkspace && selectedAgent && form.task.trim()) && (form.scheduleMode !== 'cron' || Boolean(form.cronExpression.trim())) && !busy
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -750,40 +895,31 @@ function AddFlowModal({
   }
 
   return (
-    <Dialog role="dialog" aria-modal="true" aria-label="Add Flow" className="z-[80] p-4 sm:p-6" data-testid="flows-add-modal">
+    <Dialog role="dialog" aria-modal="true" aria-label="Add Flow" className="z-[80] p-3 sm:p-5" data-testid="flows-add-modal">
       <DialogBackdrop onClick={busy ? undefined : onClose} />
-      <DialogPanel className="w-[min(780px,100%)] gap-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-2xl">
-        <form onSubmit={submit} className="flex max-h-[min(820px,calc(100vh-48px))] flex-col">
-          <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-6 py-5">
+      <DialogPanel className="w-[min(920px,100%)] gap-0 rounded-[14px] border border-[rgba(255,255,255,0.12)] bg-[#1a1921] p-0 shadow-xl shadow-black/30">
+        <form onSubmit={submit} className="flex max-h-[min(820px,calc(100vh-40px))] flex-col">
+          <div className="flex items-start justify-between gap-4 border-b border-[rgba(255,255,255,0.10)] px-5 py-4">
             <div>
               <div className={labelClass}>New scheduled job</div>
-              <h2 className="mt-1 text-lg font-semibold text-[var(--app-text)]">Add Flow</h2>
-              <p className="mt-1 text-sm text-[var(--app-text-muted)]">Creates a controller Flow and syncs it to the selected target.</p>
+              <h2 className="mt-1 text-lg font-semibold text-[rgba(255,255,255,0.90)]">Add Flow</h2>
+              <p className="mt-1 text-sm text-[rgba(255,255,255,0.55)]">Creates a controller Flow and syncs it to the selected target.</p>
             </div>
             <ModalCloseButton className="rounded-xl" onClick={onClose} aria-label="Close Add Flow" />
           </div>
 
-          <div className="overflow-y-auto px-6 py-5">
-            <div className="grid gap-x-8 gap-y-5 md:grid-cols-2">
-              <label className="flex flex-col gap-2 md:col-span-2">
+          <div className="overflow-y-auto px-5 py-4">
+            <div className="grid gap-x-5 gap-y-4 md:grid-cols-2">
+              <label className="flex flex-col gap-2">
                 <span className={labelClass}>Flow name</span>
                 <Input data-testid="flows-add-name" value={form.name} onChange={update('name')} className={fieldClass} />
-              </label>
-              <label className="flex flex-col gap-2 md:col-span-2">
-                <span className={labelClass}>Agent</span>
-                <select data-testid="flows-add-agent" value={form.agentKey} onChange={update('agentKey')} className={fieldClass} disabled={loadingOptions || !agentOptions.length}>
-                  {agentOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-                </select>
-                <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">
-                  {loadingOptions ? 'Loading saved agents…' : selectedAgent?.helper || 'No enabled saved agents returned by the controller.'}
-                </span>
               </label>
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Target swarm</span>
                 <select data-testid="flows-add-target" value={form.targetKey} onChange={update('targetKey')} className={fieldClass} disabled={loadingOptions || !targetOptions.length}>
                   {targetOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                 </select>
-                <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">
+                <span className={helperClass}>
                   {loadingOptions ? 'Loading linked swarms…' : selectedTarget?.helper || 'No linked swarm targets returned by the controller.'}
                 </span>
               </label>
@@ -792,116 +928,237 @@ function AddFlowModal({
                 <select data-testid="flows-add-workspace" value={form.workspacePath} onChange={update('workspacePath')} className={fieldClass} disabled={loadingOptions || !workspaceOptions.length}>
                   {workspaceOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                 </select>
-                <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">
+                <span className={helperClass}>
                   {loadingOptions ? 'Loading real workspaces…' : selectedWorkspace?.helper || 'No workspace records returned by the controller.'}
                 </span>
               </label>
-              <section className="grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 md:col-span-2" aria-label="Schedule">
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <div className={labelClass}>Schedule</div>
-                    <div className="mt-1 text-sm font-medium text-[var(--app-text)]">{schedulePreview}</div>
-                    <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">
-                      Pick the recurrence first. Only daily flows can run multiple times per day; weekly and monthly flows run once on their selected day.
-                    </div>
-                  </div>
-                  <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-xs text-[var(--app-text-muted)] md:min-w-[220px]">
-                    <div className="font-medium text-[var(--app-text)]">Now: {localTimezoneNow}</div>
-                    <div className="mt-0.5">Your timezone: {detectedTimezone}</div>
-                  </div>
+              <label className="flex flex-col gap-2">
+                <span className={labelClass}>Agent</span>
+                <select data-testid="flows-add-agent" value={form.agentKey} onChange={update('agentKey')} className={fieldClass} disabled={loadingOptions || !agentOptions.length}>
+                  {agentOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                </select>
+                <span className={helperClass}>
+                  {loadingOptions ? 'Loading saved agents…' : selectedAgent?.helper || 'No enabled saved agents returned by the controller.'}
+                </span>
+              </label>
+              <section className="grid gap-4 rounded-[14px] border border-[rgba(255,255,255,0.10)] bg-transparent p-3 md:col-span-2" aria-label="Schedule">
+                <div>
+                  <div className={labelClass}>Schedule</div>
+                  <div className="mt-1 text-sm font-medium text-[rgba(255,255,255,0.86)]">{schedulePreview}</div>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-3">
-                  <label className="flex flex-col gap-2">
-                    <span className="text-xs text-[var(--app-text-muted)]">Repeats</span>
-                    <select data-testid="flows-add-cadence" value={form.scheduleCadence} onChange={update('scheduleCadence')} className={fieldClass}>
-                      {scheduleCadenceOptions.map((cadence) => <option key={cadence}>{cadence}</option>)}
-                    </select>
-                  </label>
-                  {form.scheduleCadence === 'Weekly' ? (
-                    <label className="flex flex-col gap-2">
-                      <span className="text-xs text-[var(--app-text-muted)]">Run on</span>
-                      <select value={form.scheduleDay} onChange={update('scheduleDay')} className={fieldClass}>
-                        {scheduleDayOptions.map((day) => <option key={day}>{day}</option>)}
-                      </select>
-                    </label>
-                  ) : null}
-                  {form.scheduleCadence === 'Monthly' ? (
-                    <label className="flex flex-col gap-2">
-                      <span className="text-xs text-[var(--app-text-muted)]">Run on day</span>
-                      <select value={form.scheduleDate} onChange={update('scheduleDate')} className={fieldClass}>
-                        {scheduleDateOptions.map((date) => <option key={date}>{date}</option>)}
-                      </select>
-                    </label>
-                  ) : null}
+                <div className="flex flex-wrap gap-2">
+                  {(['guided', 'cron'] as ScheduleMode[]).map((mode) => {
+                    const selected = form.scheduleMode === mode
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setForm((current) => ({ ...current, scheduleMode: mode }))}
+                        className={cn(
+                          'rounded-xl border px-3 py-2 text-sm transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#b87586]/35',
+                          selected
+                            ? 'border-[#b87586]/45 bg-[#b87586]/16 text-[rgba(255,255,255,0.90)]'
+                            : 'border-[rgba(255,255,255,0.10)] bg-[rgba(255,255,255,0.025)] text-[rgba(255,255,255,0.58)] hover:border-[rgba(255,255,255,0.16)] hover:text-[rgba(255,255,255,0.78)]',
+                        )}
+                      >
+                        {mode === 'guided' ? 'Guided schedule' : 'Raw cron'}
+                      </button>
+                    )
+                  })}
                 </div>
 
-                {isScheduled ? (
-                  <>
-                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.75fr)]">
-                      <div className="flex flex-col gap-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-xs text-[var(--app-text-muted)]">{supportsMultipleTimes ? 'Run times' : 'Run time'}</span>
-                          {supportsMultipleTimes ? (
-                            <button
-                              type="button"
-                              onClick={addScheduleTime}
-                              disabled={form.scheduleTimes.length >= maxDailyScheduleTimes}
-                              className="text-xs font-medium text-[var(--app-primary)] disabled:cursor-not-allowed disabled:text-[var(--app-text-subtle)]"
-                            >
-                              Add daily run time
-                            </button>
-                          ) : null}
+                {form.scheduleMode === 'guided' ? (
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="flex flex-col gap-3">
+                      <label className="flex flex-col gap-2">
+                        <span className={labelClass}>Frequency</span>
+                        <select data-testid="flows-add-cadence" value={form.scheduleCadence} onChange={update('scheduleCadence')} className={fieldClass}>
+                          {scheduleCadenceOptions.map((cadence) => <option key={cadence}>{cadence}</option>)}
+                        </select>
+                      </label>
+                      {form.scheduleCadence === 'Daily' ? (
+                        <label className="flex flex-col gap-2">
+                          <span className={labelClass}>Daily mode</span>
+                          <select value={form.dailyMode} onChange={update('dailyMode')} className={fieldClass}>
+                            {dailyScheduleModeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                          </select>
+                          <span className={helperClass}>{dailyScheduleModeOptions.find((option) => option.value === form.dailyMode)?.helper}</span>
+                        </label>
+                      ) : null}
+                      {form.scheduleCadence === 'Weekly' ? (
+                        <div className="flex flex-col gap-2">
+                          <div className="flex flex-wrap gap-1.5">
+                            {scheduleDayOptions.map((day) => {
+                              const selected = selectedScheduleDayValues.includes(day)
+                              return (
+                                <button
+                                  key={day}
+                                  type="button"
+                                  onClick={() => toggleScheduleDay(day)}
+                                  className={cn(
+                                    'h-7 rounded-lg border px-2.5 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#b87586]/35',
+                                    selected
+                                      ? 'border-[#b87586]/40 bg-[#b87586]/18 text-[rgba(255,255,255,0.86)]'
+                                      : 'border-[rgba(255,255,255,0.10)] bg-transparent text-[rgba(255,255,255,0.56)] hover:border-[rgba(255,255,255,0.16)] hover:text-[rgba(255,255,255,0.76)]',
+                                  )}
+                                >
+                                  {day}
+                                </button>
+                              )
+                            })}
+                          </div>
+                          <div className={helperClass}>Runs every {formatSelectedDays(form.scheduleDay)} at the selected time.</div>
                         </div>
-                        <div className="grid gap-2">
-                          {scheduleTimesForCadence(form).map((time, index) => (
-                            <div key={`${form.scheduleCadence}-${time}-${index}`} className="flex items-center gap-2">
-                              <select value={time} onChange={updateScheduleTime(index)} className={cn(fieldClass, 'flex-1')}>
+                      ) : null}
+                      {form.scheduleCadence === 'Monthly' ? (
+                        <label className="flex flex-col gap-2">
+                          <span className={labelClass}>Run on day</span>
+                          <select value={form.scheduleDate} onChange={update('scheduleDate')} className={fieldClass}>
+                            {scheduleDateOptions.map((date) => <option key={date}>{date}</option>)}
+                          </select>
+                        </label>
+                      ) : null}
+                    </div>
+
+                    <div className="flex flex-col gap-3">
+                      {form.scheduleCadence === 'Daily' && form.dailyMode === 'times_between' ? (
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="flex flex-col gap-2">
+                            <span className={labelClass}>Runs per day</span>
+                            <input type="number" min="1" max={maxDailyScheduleTimes} value={form.dailyRunCount} onChange={update('dailyRunCount')} className={fieldClass} />
+                          </label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="flex flex-col gap-2">
+                              <span className={labelClass}>Start</span>
+                              <select value={form.dailyWindowStart} onChange={update('dailyWindowStart')} className={fieldClass}>
                                 {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
                               </select>
-                              {supportsMultipleTimes ? (
-                                <Button type="button" variant="ghost" className="rounded-xl" onClick={() => removeScheduleTime(index)} disabled={form.scheduleTimes.length === 1}>
-                                  Remove
-                                </Button>
-                              ) : null}
+                            </label>
+                            <label className="flex flex-col gap-2">
+                              <span className={labelClass}>End</span>
+                              <select value={form.dailyWindowEnd} onChange={update('dailyWindowEnd')} className={fieldClass}>
+                                {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                              </select>
+                            </label>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {form.scheduleCadence === 'Daily' && form.dailyMode === 'interval_window' ? (
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="flex flex-col gap-2">
+                            <span className={labelClass}>Every</span>
+                            <div className="flex items-center gap-2">
+                              <input type="number" min="1" max="24" value={form.dailyIntervalHours} onChange={update('dailyIntervalHours')} className={cn(fieldClass, 'min-w-0 flex-1')} />
+                              <span className="text-xs text-[rgba(255,255,255,0.55)]">hours</span>
                             </div>
-                          ))}
+                          </label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="flex flex-col gap-2">
+                              <span className={labelClass}>Start</span>
+                              <select value={form.dailyWindowStart} onChange={update('dailyWindowStart')} className={fieldClass}>
+                                {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                              </select>
+                            </label>
+                            <label className="flex flex-col gap-2">
+                              <span className={labelClass}>End</span>
+                              <select value={form.dailyWindowEnd} onChange={update('dailyWindowEnd')} className={fieldClass}>
+                                {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                              </select>
+                            </label>
+                          </div>
                         </div>
-                        <div className="text-[11px] leading-4 text-[var(--app-text-muted)]">
-                          {supportsMultipleTimes
-                            ? `Daily flows can run up to ${maxDailyScheduleTimes} times per day. Use this for agents that should check in repeatedly.`
-                            : 'Need several runs in one day? Choose Daily instead. Weekly and monthly schedules intentionally run once on their selected day.'}
+                      ) : null}
+
+                      {form.scheduleCadence !== 'Daily' || form.dailyMode === 'once' || form.dailyMode === 'fixed' ? (
+                        <div className="flex flex-col gap-2">
+                          <span className={labelClass}>{form.scheduleCadence === 'Daily' && form.dailyMode === 'fixed' ? 'Fixed times' : 'Run time'}</span>
+                          <div className="grid gap-2">
+                            {guidedScheduleTimes.map((time, index) => (
+                              <div key={`${form.scheduleCadence}-${time}-${index}`} className="flex items-center gap-2">
+                                <select value={time} onChange={updateScheduleTime(index)} className={cn(fieldClass, 'min-w-0 flex-1')}>
+                                  {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
+                                </select>
+                                {form.scheduleCadence === 'Daily' && form.dailyMode === 'fixed' ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    className="h-9 rounded-xl border border-[rgba(255,255,255,0.10)] px-3 text-[rgba(255,255,255,0.58)] hover:border-[rgba(255,255,255,0.16)] hover:bg-[rgba(255,255,255,0.035)]"
+                                    onClick={() => removeScheduleTime(index)}
+                                    disabled={!supportsMultipleTimes || form.scheduleTimes.length === 1}
+                                  >
+                                    Remove
+                                  </Button>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                          {form.scheduleCadence === 'Daily' && form.dailyMode === 'fixed' ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="h-9 justify-start rounded-xl px-0 text-[#c58a99] hover:bg-transparent hover:text-[#d39aaa] disabled:text-[rgba(255,255,255,0.28)]"
+                              onClick={addScheduleTime}
+                              disabled={!supportsMultipleTimes || form.scheduleTimes.length >= maxDailyScheduleTimes}
+                            >
+                              + Add another time
+                            </Button>
+                          ) : null}
                         </div>
-                      </div>
-                      <label className="flex flex-col gap-2">
-                        <span className="text-xs text-[var(--app-text-muted)]">Timezone</span>
-                        <select data-testid="flows-add-timezone" value={form.timezone} onChange={update('timezone')} className={fieldClass}>
-                          {timezoneOptions.map((timezone) => (
-                            <option key={timezone} value={timezone}>{timezone}</option>
-                          ))}
-                        </select>
-                        <span className="text-[11px] leading-4 text-[var(--app-text-muted)]">Selected timezone now: {selectedTimezoneNow}</span>
-                      </label>
+                      ) : null}
                     </div>
-                  </>
+                  </div>
                 ) : (
-                  <div className="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-xs leading-5 text-[var(--app-text-muted)]">
-                    On-demand flows do not have a clock schedule. You can still run them manually from the flow detail page.
+                  <div className="grid gap-3">
+                    <label className="flex flex-col gap-2">
+                      <span className={labelClass}>Cron expression</span>
+                      <input
+                        value={form.cronExpression}
+                        onChange={update('cronExpression')}
+                        className={fieldClass}
+                        placeholder="0 9,13,17 * * Mon-Fri"
+                      />
+                    </label>
+                    <div className={helperClass}>Raw cron controls all run timing. Guided frequency, day, and time fields are ignored in this mode.</div>
                   </div>
                 )}
+
+                <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.025)] p-3">
+                  <div className={labelClass}>Preview</div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {(form.scheduleMode === 'cron' ? cronPreviewTimes : guidedScheduleTimes).map((time, index) => (
+                      <span key={`${time}-${index}`} className="rounded-lg border border-[rgba(255,255,255,0.10)] bg-[rgba(255,255,255,0.035)] px-2.5 py-1 text-xs text-[rgba(255,255,255,0.70)]">
+                        {time}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-3 border-t border-[rgba(255,255,255,0.10)] pt-3 sm:flex-row sm:items-center">
+                  <label className="flex flex-1 flex-col gap-2 sm:max-w-[320px]">
+                    <span className={labelClass}>Timezone</span>
+                    <select data-testid="flows-add-timezone" value={form.timezone} onChange={update('timezone')} className={fieldClass}>
+                      {timezoneOptions.map((timezone) => (
+                        <option key={timezone} value={timezone}>{timezone}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <span className="text-xs text-[rgba(255,255,255,0.55)] sm:pt-6">Currently {selectedTimezoneNow}</span>
+                </div>
               </section>
               <label className="flex flex-col gap-2 md:col-span-2">
                 <span className={labelClass}>Task</span>
-                <textarea data-testid="flows-add-task" value={form.task} onChange={update('task')} rows={4} className="resize-none rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-3 py-2 text-sm leading-6 text-[var(--app-text)] outline-none transition hover:border-[var(--app-border-strong)] focus:border-[var(--app-border-accent)] focus:ring-2 focus:ring-[var(--app-focus-ring)]" />
+                <textarea data-testid="flows-add-task" value={form.task} onChange={update('task')} rows={3} className={textareaClass} />
               </label>
             </div>
           </div>
 
-          <div className="flex items-center justify-between border-t border-[var(--app-border)] px-6 py-4">
-            <p className="text-xs text-[var(--app-text-muted)]">Targets keep accepted assignments and schedule locally.</p>
+          <div className="sticky bottom-0 flex items-center justify-between border-t border-[rgba(255,255,255,0.10)] bg-[#1a1921] px-5 py-3">
+            <p className="text-xs text-[rgba(255,255,255,0.55)]">Targets keep accepted assignments and schedule locally.</p>
             <div className="flex items-center gap-2">
-              <Button variant="ghost" className="rounded-xl" onClick={onClose} disabled={busy}>Cancel</Button>
-              <Button data-testid="flows-add-submit" type="submit" variant="primary" className="rounded-xl" disabled={!canSubmit}>{busy ? 'Adding…' : 'Add Flow'}</Button>
+              <Button variant="outline" className="rounded-xl border-[rgba(255,255,255,0.13)] bg-transparent text-[rgba(255,255,255,0.70)] hover:border-[rgba(255,255,255,0.20)] hover:bg-[rgba(255,255,255,0.035)]" onClick={onClose} disabled={busy}>Cancel</Button>
+              <Button data-testid="flows-add-submit" type="submit" variant="primary" className="rounded-xl border-[#b87586]/40 bg-[#a86678] text-white hover:bg-[#b87586] active:bg-[#96596a]" disabled={!canSubmit}>{busy ? 'Adding…' : 'Add Flow'}</Button>
             </div>
           </div>
         </form>

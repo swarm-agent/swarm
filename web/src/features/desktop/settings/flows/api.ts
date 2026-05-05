@@ -45,6 +45,7 @@ export interface FlowScheduleSpec {
   weekday?: string
   month_day?: number
   timezone: string
+  cron?: string
 }
 
 export interface FlowCatchUpPolicy {
