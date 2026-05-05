@@ -398,7 +398,26 @@ function isoDisplay(value?: string): string {
   if (Number.isNaN(date.getTime()) || date.getTime() <= 0) {
     return '—'
   }
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date)
+  const day = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date)
+  const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(date).replace(/\s+/g, '\u00A0')
+  return `${day} ${time}`
+}
+
+function FlowDateTime({ value, meta }: { value: string; meta?: string }) {
+  if (!value || value === '—' || value === 'Never') {
+    return <div className="text-sm text-[var(--app-text)]">{value || '—'}</div>
+  }
+  const match = value.match(/^(.*)\s(\d{1,2}:\d{2}\u00A0(?:AM|PM))$/)
+  if (!match) {
+    return <div className="whitespace-nowrap text-sm text-[var(--app-text)]">{value}</div>
+  }
+  return (
+    <div className="leading-tight">
+      <div className="whitespace-nowrap text-sm text-[var(--app-text)]">{match[1]}</div>
+      <div className="mt-1 whitespace-nowrap font-mono text-xs text-[var(--app-text-muted)]">{match[2]}</div>
+      {meta ? <div className="mt-1 whitespace-nowrap text-xs text-[var(--app-text-muted)]">{meta}</div> : null}
+    </div>
+  )
 }
 
 function durationLabel(ms?: number): string {
@@ -1362,9 +1381,9 @@ export function FlowsSettingsPage() {
                 <th className="px-4 py-3 font-medium">Last run</th>
                 <th className="px-4 py-3 font-medium">Total</th>
                 <th className="px-4 py-3 font-medium">Next run</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Enabled</th>
-                <th className="px-5 py-3 text-right font-medium">Actions</th>
+                <th className="px-4 py-3 text-center font-medium">Status</th>
+                <th className="px-4 py-3 text-center font-medium">Enabled</th>
+                <th className="px-5 py-3 text-center font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1382,21 +1401,30 @@ export function FlowsSettingsPage() {
                     </button>
                   </td>
                   <td className="px-4 py-4 align-middle">
-                    <div className="text-sm text-[var(--app-text)]">{flow.lastRun}</div>
+                    <FlowDateTime value={flow.lastRun} />
                   </td>
                   <td className="px-4 py-4 align-middle">
                     <div className="font-mono text-sm text-[var(--app-text)]">{flow.totalRuns}</div>
                   </td>
                   <td className="px-4 py-4 align-middle">
-                    <div className="text-sm text-[var(--app-text)]">{flow.nextRun}</div>
-                    {flow.nextRunMeta ? <div className="mt-1 text-xs text-[var(--app-text-muted)]">{flow.nextRunMeta}</div> : null}
+                    <FlowDateTime value={flow.nextRun} meta={flow.nextRunMeta} />
                   </td>
-                  <td className="px-4 py-4 align-middle"><StatusBadge status={flow.status} /></td>
-                  <td className="px-4 py-4 align-middle"><EnabledToggle enabled={flow.enabled} disabled onToggle={() => undefined} /></td>
-                  <td className="px-5 py-4 text-right align-middle">
-                    <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-text-muted)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" aria-label={`Manage ${flow.name}`}>
-                      <MoreHorizontal size={16} />
-                    </button>
+                  <td className="px-4 py-4 align-middle">
+                    <div className="flex justify-center">
+                      <StatusBadge status={flow.status} />
+                    </div>
+                  </td>
+                  <td className="px-4 py-4 align-middle">
+                    <div className="flex justify-center">
+                      <EnabledToggle enabled={flow.enabled} disabled onToggle={() => undefined} />
+                    </div>
+                  </td>
+                  <td className="px-5 py-4 align-middle">
+                    <div className="flex justify-center">
+                      <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-text-muted)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" aria-label={`Manage ${flow.name}`}>
+                        <MoreHorizontal size={16} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               )) : (
