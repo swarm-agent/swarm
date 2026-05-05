@@ -32,6 +32,7 @@ export interface ReplicateSwarmRequest {
   swarmName: string
   runtime?: 'podman' | 'docker' | ''
   bypassPermissions?: boolean
+  alwaysOn?: boolean
   sync: ReplicateSwarmSyncInput
   workspaces: ReplicateSwarmWorkspaceInput[]
   containerPackages?: ReplicateSwarmContainerPackagesInput
@@ -182,6 +183,7 @@ export async function replicateSwarm(input: ReplicateSwarmRequest): Promise<Repl
       swarm_name: input.swarmName,
       runtime: input.runtime,
       bypass_permissions: input.bypassPermissions,
+      always_on: input.alwaysOn,
       sync: {
         enabled: input.sync.enabled,
         mode: input.sync.mode,

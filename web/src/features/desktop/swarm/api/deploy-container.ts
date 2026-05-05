@@ -66,6 +66,7 @@ export interface DeployContainerDeployment {
   last_attach_error?: string
   bootstrap_secret_sent: boolean
   bypass_permissions?: boolean
+  always_on?: boolean
   child_swarm_id?: string
   child_display_name?: string
   child_backend_url?: string
@@ -174,6 +175,7 @@ export interface RemoteDeploySession {
   host_api_base_url?: string
   host_desktop_url?: string
   bypass_permissions?: boolean
+  always_on?: boolean
   sync_enabled?: boolean
   sync_mode?: string
   sync_owner_swarm_id?: string
@@ -204,6 +206,7 @@ export async function createDeployContainer(input: {
   syncEnabled?: boolean
   syncVaultPassword?: string
   bypassPermissions?: boolean
+  alwaysOn?: boolean
   mounts: ContainerProfileMount[]
 }): Promise<DeployContainerDeployment> {
   const response = await requestJson<{ ok?: boolean; deployment?: DeployContainerDeployment }>('/v1/deploy/container/create', {
@@ -221,6 +224,7 @@ export async function createDeployContainer(input: {
       sync_enabled: input.syncEnabled,
       sync_vault_password: input.syncVaultPassword,
       bypass_permissions: input.bypassPermissions,
+      always_on: input.alwaysOn,
       mounts: input.mounts.map((mount) => ({
         source_path: mount.sourcePath,
         target_path: mount.targetPath,
@@ -348,6 +352,7 @@ export async function createRemoteDeploySession(input: {
   imageDeliveryMode?: 'archive' | 'registry'
   syncEnabled?: boolean
   bypassPermissions?: boolean
+  alwaysOn?: boolean
   containerPackages?: DeployContainerPackageManifest
   payloads: Array<{
     sourcePath: string
@@ -377,6 +382,7 @@ export async function createRemoteDeploySession(input: {
       image_delivery_mode: input.imageDeliveryMode,
       sync_enabled: input.syncEnabled,
       bypass_permissions: input.bypassPermissions,
+      always_on: input.alwaysOn,
       container_packages: input.containerPackages ? {
         base_image: input.containerPackages.base_image,
         package_manager: input.containerPackages.package_manager,

@@ -35,6 +35,7 @@ type swarmReplicateRequest struct {
 	SwarmName         string                                 `json:"swarm_name"`
 	Runtime           string                                 `json:"runtime,omitempty"`
 	BypassPermissions bool                                   `json:"bypass_permissions,omitempty"`
+	AlwaysOn          bool                                   `json:"always_on,omitempty"`
 	Sync              swarmReplicateSyncRequest              `json:"sync"`
 	Workspaces        []swarmReplicateWorkspaceRequest       `json:"workspaces"`
 	ContainerPackages swarmReplicateContainerPackagesRequest `json:"container_packages,omitempty"`
@@ -184,6 +185,7 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		Name:               swarmName,
 		Runtime:            strings.TrimSpace(req.Runtime),
 		BypassPermissions:  req.BypassPermissions,
+		AlwaysOn:           req.AlwaysOn,
 		GroupID:            groupID,
 		GroupName:          groupName,
 		GroupNetworkName:   groupNetworkName,

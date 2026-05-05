@@ -75,6 +75,7 @@ func (s *Server) handleDeployContainerCreate(w http.ResponseWriter, r *http.Requ
 		SyncEnabled       bool   `json:"sync_enabled"`
 		SyncVaultPassword string `json:"sync_vault_password,omitempty"`
 		BypassPermissions bool   `json:"bypass_permissions,omitempty"`
+		AlwaysOn          bool   `json:"always_on,omitempty"`
 		ContainerPackages struct {
 			BaseImage      string `json:"base_image,omitempty"`
 			PackageManager string `json:"package_manager,omitempty"`
@@ -109,6 +110,7 @@ func (s *Server) handleDeployContainerCreate(w http.ResponseWriter, r *http.Requ
 		SyncEnabled:       req.SyncEnabled,
 		SyncVaultPassword: req.SyncVaultPassword,
 		BypassPermissions: req.BypassPermissions,
+		AlwaysOn:          req.AlwaysOn,
 		ContainerPackages: deployruntime.ContainerPackageManifest{
 			BaseImage:      req.ContainerPackages.BaseImage,
 			PackageManager: req.ContainerPackages.PackageManager,

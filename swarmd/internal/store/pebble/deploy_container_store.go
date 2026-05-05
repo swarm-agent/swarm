@@ -50,6 +50,7 @@ type DeployContainerRecord struct {
 	BootstrapSecretUsedAt int64                               `json:"bootstrap_secret_used_at,omitempty"`
 	BootstrapSecretSent   bool                                `json:"bootstrap_secret_sent,omitempty"`
 	BypassPermissions     bool                                `json:"bypass_permissions,omitempty"`
+	AlwaysOn              bool                                `json:"always_on,omitempty"`
 	ChildSwarmID          string                              `json:"child_swarm_id,omitempty"`
 	ChildDisplayName      string                              `json:"child_display_name,omitempty"`
 	ChildBackendURL       string                              `json:"child_backend_url,omitempty"`

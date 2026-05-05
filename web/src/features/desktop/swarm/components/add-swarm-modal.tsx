@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, Loader2, Plus, X } from 'lucide-react'
+import { Check, HelpCircle, Loader2, Plus, X } from 'lucide-react'
 import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
@@ -617,6 +617,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [syncCustomToolsEnabled, setSyncCustomToolsEnabled] = useState(true)
   const [syncVaultPassword, setSyncVaultPassword] = useState('')
   const [bypassPermissions, setBypassPermissions] = useState(false)
+  const [alwaysOn, setAlwaysOn] = useState(true)
   const [containerPackageBaseImage, setContainerPackageBaseImage] = useState(FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE)
   const [containerPackageManager, setContainerPackageManager] = useState(FALLBACK_CONTAINER_PACKAGE_MANAGER)
   const [containerPackages, setContainerPackages] = useState<ContainerPackageDraft[]>(DEFAULT_CONTAINER_PACKAGES)
@@ -625,6 +626,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [validatingPackage, setValidatingPackage] = useState(false)
   const [suggestingPackages, setSuggestingPackages] = useState(false)
   const [packageSuggestionError, setPackageSuggestionError] = useState<string | null>(null)
+  const [packagePlatformInfoOpen, setPackagePlatformInfoOpen] = useState(false)
 
   const vault = useDesktopStore((state) => state.vault)
   const runtimeChoice = useMemo(
@@ -804,6 +806,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     setSyncCustomToolsEnabled(true)
     setSyncVaultPassword('')
     setBypassPermissions(false)
+    setAlwaysOn(true)
     setContainerPackageBaseImage(FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE)
     setContainerPackageManager(FALLBACK_CONTAINER_PACKAGE_MANAGER)
     setContainerPackages(DEFAULT_CONTAINER_PACKAGES)
@@ -968,6 +971,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         imageDeliveryMode: remoteImageDeliveryMode,
         syncEnabled,
         bypassPermissions,
+        alwaysOn,
         containerPackages: buildContainerPackageManifest(containerPackages, containerPackageBaseImage, containerPackageManager),
         payloads: selectedRemotePayloads,
       })
@@ -1045,6 +1049,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         swarmName: swarmName.trim(),
         runtime: runtimeChoice,
         bypassPermissions,
+        alwaysOn,
         sync: {
           enabled: syncEnabled,
           mode: 'managed',
@@ -1160,7 +1165,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         `Builder runtime: ${session.preflight.builder_runtime || 'unknown'}`,
         `Remote runtime: ${session.preflight.remote_runtime || 'unknown'}`,
         `Deploy method: ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim()}`}`,
-        'Persistence: user-managed after launch',
+        `Always On: ${alwaysOn ? 'enabled (restart attached child on host startup)' : 'disabled (manual start)'}`,
         `Files copied: ${(session.preflight.files_to_copy || []).join(', ') || 'none'}`,
         `Payloads: ${(session.preflight.payloads || []).map((payload) => `${payload.workspace_name || payload.source_path} (${payload.included_files} tracked files)`).join('; ') || 'none'}`,
         ...(remoteDeployMethod === 'tailscale'
@@ -1174,7 +1179,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           ? `This will deliver generated config/install/start content over SSH stdin, copy a locally built dev Swarm image archive${selectedRemotePayloads.length > 0 ? ' and selected payload archives' : ''} over SSH, then load and launch it on the remote host.`
           : `This will deliver generated config/install/start content over SSH stdin${selectedRemotePayloads.length > 0 ? ' and copy selected payload archives over SSH' : ''}, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
         `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
-        'Swarm will not install persistence on the remote machine in this path.',
+        alwaysOn
+          ? 'Always On is recorded for this child; the host will restart attached local children on Swarm startup. Remote machine boot persistence still depends on the remote owner.'
+          : 'Always On is off; reboot/startup recovery will not automatically restart this child.',
         '',
         'Continue with SSH launch?'
       ].join('\n'))
@@ -1313,6 +1320,77 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     </Card>
   )
 
+  const packagePlatformPanel = (
+    <div className={subtlePanelClassName}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <div className="text-sm font-semibold text-[var(--app-text)]">Package platform</div>
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-[var(--app-border)] text-[var(--app-text-muted)] transition hover:border-[var(--app-primary)] hover:text-[var(--app-text)]"
+            aria-label="Explain package platform"
+            aria-expanded={packagePlatformInfoOpen}
+            onClick={() => setPackagePlatformInfoOpen((current) => !current)}
+          >
+            <HelpCircle size={14} />
+          </button>
+        </div>
+        <Badge tone={containerPackages.length > 0 ? 'live' : 'neutral'}>{containerPackages.length} apt packages</Badge>
+      </div>
+      {packagePlatformInfoOpen ? (
+        <div className="mt-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs leading-5 text-[var(--app-text-muted)]">
+          Package platform controls the container OS image and apt packages installed before your selected workspaces are copied in. Swarm starts with backend-recommended defaults, scans selected workspaces for likely package needs, and lets you add or remove packages when the workspace requires them.
+        </div>
+      ) : null}
+      <div className="mt-2 text-xs text-[var(--app-text-muted)]">
+        Base image <span className="font-medium text-[var(--app-text)]">{containerPackageBaseImage}</span> · manager <span className="font-medium text-[var(--app-text)]">{containerPackageManager}</span>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {containerPackages.slice(0, 18).map((pkg) => (
+          <Badge key={pkg.name} tone={pkg.source === 'user_added' ? 'live' : pkg.source === 'workspace_scan' ? 'warning' : 'neutral'} className="gap-2 pr-1" title={describePackageSource(pkg)}>
+            <span>{pkg.name}</span>
+            <button
+              type="button"
+              onClick={() => removePackage(pkg.name)}
+              className="inline-flex h-5 w-5 items-center justify-center rounded-md text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)]"
+              disabled={submitting || validatingPackage || suggestingPackages || remotePreflightLoading}
+              aria-label={`Remove package ${pkg.name}`}
+            >
+              <X size={12} />
+            </button>
+          </Badge>
+        ))}
+        {containerPackages.length > 18 ? <Badge tone="neutral">+{containerPackages.length - 18} more</Badge> : null}
+      </div>
+      <div className="mt-3 flex gap-2">
+        <Input
+          value={packageInput}
+          onChange={(event) => {
+            setPackageInput(event.target.value)
+            if (packageValidationError) {
+              setPackageValidationError(null)
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              void addPackage()
+            }
+          }}
+          placeholder={suggestingPackages ? 'Scanning selected workspaces…' : 'Add apt package'}
+          disabled={submitting || validatingPackage || remotePreflightLoading}
+        />
+        <Button type="button" variant="secondary" onClick={() => void addPackage()} disabled={submitting || validatingPackage || remotePreflightLoading}>
+          {validatingPackage ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+          Add
+        </Button>
+      </div>
+      {packageValidationError || packageSuggestionError ? (
+        <div className="mt-2 text-xs text-[var(--app-danger)]">{packageValidationError || packageSuggestionError}</div>
+      ) : null}
+    </div>
+  )
+
   const workspaceSelectionCard = (
     <Card className={sectionClassName}>
       <div className="flex items-start justify-between gap-3">
@@ -1371,98 +1449,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         </div>
       )}
 
-      <div className={subtlePanelClassName}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[var(--app-text)]">Ubuntu packages</div>
-              <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                Recommended base packages are always included. Extra suggestions appear after workspace selection, and you can still add your own apt packages manually.
-              </div>
-            </div>
-            <Badge tone={containerPackages.length > 0 ? 'live' : 'neutral'}>{containerPackages.length} packages</Badge>
-          </div>
-          <div className="mt-3 text-xs text-[var(--app-text-muted)]">
-            Base image: <span className="font-medium text-[var(--app-text)]">{containerPackageBaseImage}</span> · Package manager: <span className="font-medium text-[var(--app-text)]">{containerPackageManager}</span>
-          </div>
-          <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)]">
-            <div>
-              {suggestingPackages
-                ? 'Scanning selected workspace contents for package suggestions…'
-                : selectedWorkspaceCountValue > 0
-                  ? 'Workspace-aware package suggestions are included below.'
-                  : 'Select a workspace above to get package suggestions based on its contents.'}
-            </div>
-            {packageSuggestionError ? (
-              <div className="text-[var(--app-danger)]">{packageSuggestionError}</div>
-            ) : null}
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {containerPackages.map((pkg) => (
-              <Badge
-                key={pkg.name}
-                tone={pkg.source === 'user_added' ? 'live' : pkg.source === 'workspace_scan' ? 'warning' : 'neutral'}
-                className="gap-2 pr-1"
-                title={describePackageSource(pkg)}
-              >
-                <span>{pkg.name}</span>
-                <span className="text-[10px] uppercase tracking-[0.12em] opacity-75">
-                  {pkg.source === 'recommended' ? 'base' : pkg.source === 'workspace_scan' ? 'suggested' : 'manual'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => removePackage(pkg.name)}
-                  className="inline-flex h-5 w-5 items-center justify-center rounded-md text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)]"
-                  disabled={submitting || validatingPackage || suggestingPackages}
-                  aria-label={`Remove package ${pkg.name}`}
-                >
-                  <X size={12} />
-                </button>
-              </Badge>
-            ))}
-          </div>
-          <div className="mt-3 grid gap-2">
-            {containerPackages.filter((pkg) => pkg.source === 'workspace_scan' && pkg.reason?.trim()).map((pkg) => (
-              <div key={`${pkg.name}-reason`} className="text-xs text-[var(--app-text-muted)]">
-                <span className="font-medium text-[var(--app-text)]">{pkg.name}:</span> {pkg.reason}
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 flex gap-2">
-            <Input
-              value={packageInput}
-              onChange={(event) => {
-                setPackageInput(event.target.value)
-                if (packageValidationError) {
-                  setPackageValidationError(null)
-                }
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  void addPackage()
-                }
-              }}
-              placeholder="Add apt package and press Enter"
-              disabled={submitting || validatingPackage}
-            />
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => void addPackage()}
-              disabled={submitting || validatingPackage}
-            >
-              {validatingPackage ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-              Add
-            </Button>
-          </div>
-          {packageValidationError ? (
-            <div className="mt-2 text-xs text-[var(--app-danger)]">{packageValidationError}</div>
-          ) : (
-            <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-              Manual packages are validated against the host apt package database before they are added.
-            </div>
-          )}
-        </div>
+      {packagePlatformPanel}
     </Card>
   )
 
@@ -1599,125 +1586,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 ) : null}
               </Card>
 
-              <div className="grid gap-3 lg:grid-cols-2">
-                <Card className={sectionClassName}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="grid gap-1">
-                      <div className="text-sm font-semibold text-[var(--app-text)]">Swarm sync</div>
-                      <div className="text-xs text-[var(--app-text-muted)]">
-                        Choose what the child receives from this master.
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={syncEnabled}
-                      className={`relative inline-flex h-6 w-10 shrink-0 items-center rounded-full border transition ${syncEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-transparent'}`}
-                      onClick={() => {
-                        if (!submitting) {
-                          invalidateRemotePreflight()
-                          setSyncEnabled((current) => !current)
-                        }
-                      }}
-                      disabled={submitting}
-                    >
-                      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition ${syncEnabled ? 'translate-x-5' : 'translate-x-1'}`} />
-                    </button>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className={availabilityChipClassName(syncEnabled)}
-                      onClick={() => {
-                        if (!submitting) {
-                          invalidateRemotePreflight()
-                          setSyncEnabled((current) => !current)
-                        }
-                      }}
-                      disabled={submitting}
-                    >
-                      Credentials
-                    </button>
-                    <button
-                      type="button"
-                      className={availabilityChipClassName(syncEnabled && syncAgentsEnabled)}
-                      onClick={() => {
-                        if (!submitting) {
-                          invalidateRemotePreflight()
-                          if (!syncEnabled) {
-                            setSyncEnabled(true)
-                            setSyncAgentsEnabled(true)
-                            return
-                          }
-                          setSyncAgentsEnabled((current) => !current)
-                        }
-                      }}
-                      disabled={submitting}
-                    >
-                      Agents
-                    </button>
-                    <button
-                      type="button"
-                      className={availabilityChipClassName(syncEnabled && syncCustomToolsEnabled)}
-                      onClick={() => {
-                        if (!submitting) {
-                          invalidateRemotePreflight()
-                          if (!syncEnabled) {
-                            setSyncEnabled(true)
-                            setSyncCustomToolsEnabled(true)
-                            return
-                          }
-                          setSyncCustomToolsEnabled((current) => !current)
-                        }
-                      }}
-                      disabled={submitting}
-                    >
-                      Custom tools
-                    </button>
-                  </div>
-
-                  {syncEnabled && hostVaultEnabled ? (
-                    <Input
-                      data-testid="add-swarm-sync-vault-password"
-                      type="password"
-                      value={syncVaultPassword}
-                      onChange={(event) => setSyncVaultPassword(event.target.value)}
-                      placeholder="Vault password required for credential sync"
-                      disabled={submitting}
-                    />
-                  ) : null}
-                </Card>
-
-                <Card className={sectionClassName}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="grid gap-1">
-                      <div className="text-sm font-semibold text-[var(--app-text)]">Permissions</div>
-                      <div className="text-xs text-[var(--app-text-muted)]">
-                        Keep the normal permission flow or start with bypass enabled.
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={bypassPermissions}
-                      className={`relative inline-flex h-6 w-10 shrink-0 items-center rounded-full border transition ${bypassPermissions ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-transparent'}`}
-                      onClick={() => {
-                        if (!submitting) {
-                          invalidateRemotePreflight()
-                          setBypassPermissions((current) => !current)
-                        }
-                      }}
-                      disabled={submitting}
-                    >
-                      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition ${bypassPermissions ? 'translate-x-5' : 'translate-x-1'}`} />
-                    </button>
-                  </div>
-                  <div className="text-xs text-[var(--app-text-muted)]">
-                    {bypassPermissions ? 'Bypass permissions on launch.' : 'Prompt for permission when needed.'}
-                  </div>
-                </Card>
-              </div>
 
               {workspaceSelectionCard}
 
@@ -1952,54 +1820,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
               {workspaceSelectionCard}
 
-              <Card className={sectionClassName}>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="grid gap-1">
-                    <div className="text-sm font-semibold text-[var(--app-text)]">Remote Swarm Sync</div>
-                    <div className="text-xs text-[var(--app-text-muted)]">
-                      Keep this remote child managed by the current master. The master remains the source of truth for synced auth state.
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={syncEnabled}
-                    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition ${syncEnabled ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
-                    onClick={() => {
-                      if (!submitting) {
-                        invalidateRemotePreflight()
-                        setSyncEnabled((current) => !current)
-                      }
-                    }}
-                    disabled={submitting}
-                  >
-                    <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition ${syncEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                  </button>
-                </div>
-                <div className={`${subtlePanelClassName} text-sm text-[var(--app-text-muted)]`}>
-                  {syncEnabled
-                    ? 'On. The host will bootstrap encrypted managed auth into the remote child and keep later managed updates in sync.'
-                    : 'Off. This remote child will keep its own local auth authority.'}
-                </div>
-                {syncEnabled && hostVaultEnabled ? (
-                  <div className={subtlePanelClassName}>
-                    <div className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Vault password</div>
-                    <div className="mt-2 text-xs text-[var(--app-text-muted)]">
-                      Use the host vault password so the remote child stores synced credentials in its own vault.
-                    </div>
-                    <Input
-                      data-testid="add-swarm-sync-vault-password"
-                      className="mt-3"
-                      type="password"
-                      value={syncVaultPassword}
-                      onChange={(event) => setSyncVaultPassword(event.target.value)}
-                      placeholder="Vault password"
-                      disabled={submitting}
-                    />
-                  </div>
-                ) : null}
-              </Card>
-
               {remotePreflightError ? (
                 <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">
                   <div className="font-medium">{remotePreflightGuidance?.title || 'Remote preflight failed'}</div>
@@ -2021,57 +1841,174 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 </div>
               ) : null}
 
-              {remotePreflightSession ? (
-                <div data-testid="add-swarm-preflight-success" className="rounded-2xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">
-                  <div className="font-medium">Preflight passed</div>
-                  <div className="mt-2 text-[var(--app-text)]">
-                    {remotePreflightSession.preflight.summary || 'Remote host is ready for SSH launch.'}
-                  </div>
-                  <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-2">
-                    <div><span className="font-medium text-[var(--app-text)]">Host:</span> {remotePreflightSession.ssh_session_target || remoteSSHTarget.trim()}</div>
-                    <div><span className="font-medium text-[var(--app-text)]">Deploy method:</span> {remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim() || 'required'}`}</div>
-                    <div><span className="font-medium text-[var(--app-text)]">Builder runtime:</span> {remotePreflightSession.preflight.builder_runtime || 'unknown'}</div>
-                    <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
-                    <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession.preflight.remote_runtime || 'unknown'}</div>
-                    <div><span className="font-medium text-[var(--app-text)]">Disk available:</span> {formatBytes(remotePreflightSession.preflight.remote_disk?.available_bytes)}</div>
-                    <div><span className="font-medium text-[var(--app-text)]">Disk required:</span> {formatBytes(remotePreflightSession.preflight.remote_disk?.required_bytes)}</div>
-                    <div><span className="font-medium text-[var(--app-text)]">Persistence:</span> User-managed after launch</div>
-                  </div>
-                </div>
-              ) : null}
-
             </>
           ) : null}
 
           <Card className={sectionClassName}>
-            <div className="text-sm font-semibold text-[var(--app-text)]">Ready to add?</div>
-            {launchTarget === 'remote' ? (
-              <div className="grid gap-2 text-sm text-[var(--app-text-muted)]">
-                <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote over SSH</div>
-                <div><span className="font-medium text-[var(--app-text)]">SSH target:</span> {remoteSSHTarget.trim() || 'Required'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Deploy method:</span> {remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim() || 'Required'}`}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Preflight:</span> {remotePreflightSession ? 'Passed' : (remotePreflightLoading ? 'Running…' : 'Required before launch')}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Requested runtime:</span> {remoteRuntimeChoice}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Remote runtime:</span> {remotePreflightSession?.preflight.remote_runtime || 'Unknown until preflight'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Disk available:</span> {remotePreflightSession ? formatBytes(remotePreflightSession.preflight.remote_disk?.available_bytes) : 'Unknown until preflight'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Disk required:</span> {remotePreflightSession ? formatBytes(remotePreflightSession.preflight.remote_disk?.required_bytes) : 'Unknown until preflight'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Persistence:</span> User-managed after launch</div>
-                <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Payload archives:</span> {remotePreflightSession ? remotePreflightArchiveCount : selectedRemoteArchiveCount}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Ubuntu packages:</span> {containerPackages.length}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Swarm name:</span> {swarmName.trim() || 'Required'}</div>
+            <div className="flex items-start justify-between gap-3">
+              <div className="grid gap-1">
+                <div className="text-sm font-semibold text-[var(--app-text)]">Ready Check</div>
+                <div className="text-xs text-[var(--app-text-muted)]">
+                  Smart defaults are selected. Adjust only what you need before launch.
+                </div>
               </div>
-            ) : (
-              <div className="grid gap-2 text-sm text-[var(--app-text-muted)]">
-                <div><span className="font-medium text-[var(--app-text)]">Target:</span> Local container</div>
-                <div><span className="font-medium text-[var(--app-text)]">Master:</span> {masterName}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Runtime:</span> {runtimeChoice || 'Unavailable'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Swarm Sync:</span> {syncEnabled ? 'Enabled' : 'Disabled'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Bypass permissions:</span> {bypassPermissions ? 'Enabled' : 'Disabled'}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
-                <div><span className="font-medium text-[var(--app-text)]">Swarm name:</span> {swarmName.trim() || 'Required'}</div>
+              <Badge tone={launchTarget === 'remote' && !remotePreflightSession ? 'warning' : 'live'}>
+                {launchTarget === 'remote'
+                  ? (remotePreflightSession ? 'preflight passed' : 'preflight next')
+                  : (runtimeChoice ? 'ready' : 'runtime required')}
+              </Badge>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-3">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={alwaysOn}
+                data-testid="add-swarm-always-on"
+                className={optionClassName(alwaysOn)}
+                onClick={() => {
+                  if (!submitting && !remotePreflightLoading) {
+                    invalidateRemotePreflight()
+                    setAlwaysOn((current) => !current)
+                  }
+                }}
+                disabled={submitting || remotePreflightLoading}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">Always On</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                      {alwaysOn ? 'Restart attached children on host startup.' : 'Manual start after host restart.'}
+                    </div>
+                  </div>
+                  {alwaysOn ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                </div>
+              </button>
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={syncEnabled}
+                className={optionClassName(syncEnabled)}
+                onClick={() => {
+                  if (!submitting && !remotePreflightLoading) {
+                    invalidateRemotePreflight()
+                    setSyncEnabled((current) => !current)
+                  }
+                }}
+                disabled={submitting || remotePreflightLoading}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">Swarm Sync</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                      {syncEnabled ? 'Credentials, agents, and tools sync.' : 'Standalone child auth.'}
+                    </div>
+                  </div>
+                  {syncEnabled ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                </div>
+              </button>
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={bypassPermissions}
+                className={optionClassName(bypassPermissions)}
+                onClick={() => {
+                  if (!submitting && !remotePreflightLoading) {
+                    invalidateRemotePreflight()
+                    setBypassPermissions((current) => !current)
+                  }
+                }}
+                disabled={submitting || remotePreflightLoading}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">Permissions</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                      {bypassPermissions ? 'Bypass enabled at launch.' : 'Prompt when needed.'}
+                    </div>
+                  </div>
+                  {bypassPermissions ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                </div>
+              </button>
+            </div>
+
+            {syncEnabled ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" className={availabilityChipClassName(true)} disabled={submitting || remotePreflightLoading}>Credentials</button>
+                <button
+                  type="button"
+                  className={availabilityChipClassName(syncAgentsEnabled)}
+                  onClick={() => {
+                    if (!submitting && !remotePreflightLoading) {
+                      invalidateRemotePreflight()
+                      setSyncAgentsEnabled((current) => !current)
+                    }
+                  }}
+                  disabled={submitting || remotePreflightLoading}
+                >
+                  Agents
+                </button>
+                <button
+                  type="button"
+                  className={availabilityChipClassName(syncCustomToolsEnabled)}
+                  onClick={() => {
+                    if (!submitting && !remotePreflightLoading) {
+                      invalidateRemotePreflight()
+                      setSyncCustomToolsEnabled((current) => !current)
+                    }
+                  }}
+                  disabled={submitting || remotePreflightLoading}
+                >
+                  Custom tools
+                </button>
+                {hostVaultEnabled ? (
+                  <Input
+                    data-testid="add-swarm-sync-vault-password"
+                    className="min-w-[220px] flex-1"
+                    type="password"
+                    value={syncVaultPassword}
+                    onChange={(event) => setSyncVaultPassword(event.target.value)}
+                    placeholder="Vault password required for sync"
+                    disabled={submitting || remotePreflightLoading}
+                  />
+                ) : null}
               </div>
-            )}
+            ) : null}
+
+            {launchTarget === 'remote' && remotePreflightSession ? (
+              <div data-testid="add-swarm-preflight-success" className="rounded-lg border border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-3 text-sm text-[var(--app-success)]">
+                <div className="font-medium">Preflight passed</div>
+                <div className="mt-1 text-[var(--app-text)]">{remotePreflightSession.preflight.summary || 'Remote host is ready for SSH launch.'}</div>
+              </div>
+            ) : null}
+
+            <div className="grid gap-2 text-sm text-[var(--app-text-muted)] sm:grid-cols-2">
+              {launchTarget === 'remote' ? (
+                <>
+                  <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote over SSH</div>
+                  <div><span className="font-medium text-[var(--app-text)]">SSH target:</span> {remoteSSHTarget.trim() || 'Required'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Deploy method:</span> {remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim() || 'Required'}`}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Preflight:</span> {remotePreflightSession ? 'Passed' : (remotePreflightLoading ? 'Running…' : 'Required before launch')}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Runtime:</span> {remotePreflightSession?.preflight.remote_runtime || remoteRuntimeChoice}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Disk:</span> {remotePreflightSession ? `${formatBytes(remotePreflightSession.preflight.remote_disk?.available_bytes)} available / ${formatBytes(remotePreflightSession.preflight.remote_disk?.required_bytes)} required` : 'Unknown until preflight'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Payload archives:</span> {remotePreflightSession ? remotePreflightArchiveCount : selectedRemoteArchiveCount}</div>
+                </>
+              ) : (
+                <>
+                  <div><span className="font-medium text-[var(--app-text)]">Target:</span> Local container</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Master:</span> {masterName}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Runtime:</span> {runtimeChoice || 'Unavailable'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
+                </>
+              )}
+              <div><span className="font-medium text-[var(--app-text)]">Always On:</span> {alwaysOn ? 'Enabled' : 'Disabled'}</div>
+              <div><span className="font-medium text-[var(--app-text)]">Swarm Sync:</span> {syncEnabled ? 'Enabled' : 'Disabled'}</div>
+              <div><span className="font-medium text-[var(--app-text)]">Bypass permissions:</span> {bypassPermissions ? 'Enabled' : 'Disabled'}</div>
+              <div><span className="font-medium text-[var(--app-text)]">Swarm name:</span> {swarmName.trim() || 'Required'}</div>
+            </div>
           </Card>
         </div>
 

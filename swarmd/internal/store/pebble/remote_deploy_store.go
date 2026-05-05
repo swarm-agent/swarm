@@ -97,6 +97,7 @@ type RemoteDeploySessionRecord struct {
 	SyncMode                string                         `json:"sync_mode,omitempty"`
 	SyncOwnerSwarmID        string                         `json:"sync_owner_swarm_id,omitempty"`
 	BypassPermissions       bool                           `json:"bypass_permissions,omitempty"`
+	AlwaysOn                bool                           `json:"always_on,omitempty"`
 	ContainerPackages       ContainerPackageManifestRecord `json:"container_packages,omitempty"`
 	SyncCredentialURL       string                         `json:"sync_credential_url,omitempty"`
 	SyncBundlePassword      string                         `json:"sync_bundle_password,omitempty"`

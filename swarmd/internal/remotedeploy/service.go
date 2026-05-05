@@ -94,6 +94,7 @@ type CreateSessionInput struct {
 	ImageDeliveryMode   string
 	SyncEnabled         bool
 	BypassPermissions   bool
+	AlwaysOn            bool
 	ContainerPackages   ContainerPackageManifest
 	Payloads            []PayloadSelection
 }
@@ -246,6 +247,7 @@ type Session struct {
 	HostAPIBaseURL      string                   `json:"host_api_base_url,omitempty"`
 	HostDesktopURL      string                   `json:"host_desktop_url,omitempty"`
 	BypassPermissions   bool                     `json:"bypass_permissions,omitempty"`
+	AlwaysOn            bool                     `json:"always_on,omitempty"`
 	ContainerPackages   ContainerPackageManifest `json:"container_packages,omitempty"`
 	LastError           string                   `json:"last_error,omitempty"`
 	LastRemoteOutput    string                   `json:"last_remote_output,omitempty"`
@@ -571,6 +573,7 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 		SyncMode:                firstNonEmpty(map[bool]string{true: "managed"}[input.SyncEnabled]),
 		SyncOwnerSwarmID:        firstNonEmpty(map[bool]string{true: strings.TrimSpace(hostState.Node.SwarmID)}[input.SyncEnabled]),
 		BypassPermissions:       input.BypassPermissions,
+		AlwaysOn:                input.AlwaysOn,
 		ContainerPackages:       mapRemoteContainerPackageManifest(input.ContainerPackages),
 		SyncCredentialURL:       firstNonEmpty(map[bool]string{true: buildRemoteSyncCredentialURL(masterEndpoint, sessionID)}[input.SyncEnabled]),
 		SessionToken:            sessionToken,
@@ -2740,6 +2743,7 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 		HostAPIBaseURL:      record.HostAPIBaseURL,
 		HostDesktopURL:      record.HostDesktopURL,
 		BypassPermissions:   record.BypassPermissions,
+		AlwaysOn:            record.AlwaysOn,
 		ContainerPackages:   mapRemoteStoredContainerPackageManifest(record.ContainerPackages),
 		LastError:           record.LastError,
 		LastRemoteOutput:    record.LastRemoteOutput,

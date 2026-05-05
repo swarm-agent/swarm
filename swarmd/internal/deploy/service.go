@@ -97,6 +97,7 @@ type ContainerDeployment struct {
 	LastAttachError     string                        `json:"last_attach_error,omitempty"`
 	BootstrapSecretSent bool                          `json:"bootstrap_secret_sent"`
 	BypassPermissions   bool                          `json:"bypass_permissions,omitempty"`
+	AlwaysOn            bool                          `json:"always_on,omitempty"`
 	ChildSwarmID        string                        `json:"child_swarm_id,omitempty"`
 	ChildDisplayName    string                        `json:"child_display_name,omitempty"`
 	ChildBackendURL     string                        `json:"child_backend_url,omitempty"`
@@ -122,6 +123,7 @@ type ContainerCreateInput struct {
 	SyncModules        []string
 	SyncVaultPassword  string
 	BypassPermissions  bool
+	AlwaysOn           bool
 }
 
 type ContainerActionInput struct {
@@ -540,6 +542,7 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 		BootstrapExpiresAt:  now.Add(10 * time.Minute).UnixMilli(),
 		BootstrapSecretSent: true,
 		BypassPermissions:   input.BypassPermissions,
+		AlwaysOn:            input.AlwaysOn,
 		LastAttachError:     strings.TrimSpace(container.Warning),
 		CreatedAt:           container.CreatedAt,
 		UpdatedAt:           container.UpdatedAt,
@@ -1168,6 +1171,9 @@ func (s *Service) RecoverLocalDeployments(ctx context.Context) error {
 		if strings.TrimSpace(record.AttachStatus) != "attached" {
 			continue
 		}
+		if !record.AlwaysOn {
+			continue
+		}
 		if strings.TrimSpace(record.Status) == "running" {
 			continue
 		}
@@ -1490,6 +1496,7 @@ func mapContainerRecord(record pebblestore.DeployContainerRecord) ContainerDeplo
 		LastAttachError:     record.LastAttachError,
 		BootstrapSecretSent: record.BootstrapSecretSent,
 		BypassPermissions:   record.BypassPermissions,
+		AlwaysOn:            record.AlwaysOn,
 		ChildSwarmID:        record.ChildSwarmID,
 		ChildDisplayName:    record.ChildDisplayName,
 		ChildBackendURL:     record.ChildBackendURL,

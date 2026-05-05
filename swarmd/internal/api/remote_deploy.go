@@ -87,6 +87,7 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		ImageDeliveryMode   string `json:"image_delivery_mode,omitempty"`
 		SyncEnabled         bool   `json:"sync_enabled"`
 		BypassPermissions   bool   `json:"bypass_permissions,omitempty"`
+		AlwaysOn            bool   `json:"always_on,omitempty"`
 		ContainerPackages   struct {
 			BaseImage      string `json:"base_image,omitempty"`
 			PackageManager string `json:"package_manager,omitempty"`
@@ -150,6 +151,7 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		ImageDeliveryMode:   req.ImageDeliveryMode,
 		SyncEnabled:         req.SyncEnabled,
 		BypassPermissions:   req.BypassPermissions,
+		AlwaysOn:            req.AlwaysOn,
 		ContainerPackages: remotedeploy.ContainerPackageManifest{
 			BaseImage:      req.ContainerPackages.BaseImage,
 			PackageManager: req.ContainerPackages.PackageManager,
