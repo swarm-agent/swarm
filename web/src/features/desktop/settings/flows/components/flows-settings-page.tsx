@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, Bot, ChevronDown, Clock, MapPin, MoreHorizontal, Plus, Search, Workflow } from 'lucide-react'
 import { Button } from '../../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../../components/ui/dialog'
@@ -495,7 +496,7 @@ function normalizeTask(task: FlowTaskStep, index: number): FlowTask {
   }
 }
 
-function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
+export function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
   const assignment = record.definition
   const history = Array.isArray(record.history) && record.history.length ? record.history : record.last_run ? [record.last_run] : []
   const runs = history.map((run): FlowRun => ({
@@ -1010,6 +1011,13 @@ function FlowDetail({ flow, onBack, onRunNow, onDelete, busy }: { flow: FlowDefi
 
 export function FlowsSettingsPage() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const matchRoute = useMatchRoute()
+  const globalFlowMatch = matchRoute({ to: '/flow/$flowId', fuzzy: false })
+  const workspaceFlowMatch = matchRoute({ to: '/$workspaceSlug/flow', fuzzy: false })
+  const workspaceFlowDetailMatch = matchRoute({ to: '/$workspaceSlug/flow/$flowId', fuzzy: false })
+  const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : '').trim()
+  const routeFlowID = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.flowId : globalFlowMatch ? globalFlowMatch.flowId : '').trim()
   const flowsQuery = useQuery({ queryKey: flowsQueryKey, queryFn: ({ signal }) => fetchFlows(signal) })
   const swarmTargetsQuery = useQuery({ queryKey: flowSwarmTargetsQueryKey, queryFn: fetchFlowSwarmTargets })
   const flowWorkspacesQuery = useQuery({ queryKey: flowWorkspacesQueryKey, queryFn: fetchFlowWorkspaces })
@@ -1020,7 +1028,7 @@ export function FlowsSettingsPage() {
   const [agentFilter, setAgentFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [query, setQuery] = useState('')
-  const [selectedFlowID, setSelectedFlowID] = useState<string | null>(null)
+  const [selectedFlowID, setSelectedFlowIDState] = useState<string | null>(routeFlowID || null)
   const [addOpen, setAddOpen] = useState(false)
   const [busyID, setBusyID] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -1091,6 +1099,27 @@ export function FlowsSettingsPage() {
       return workspaceMatch && agentMatch && statusMatch && queryMatch
     })
   }, [agentFilter, flows, query, statusFilter, workspaceFilter])
+
+  const setSelectedFlowID = useCallback((id: string | null) => {
+    setSelectedFlowIDState(id)
+    if (id) {
+      if (routeWorkspaceSlug) {
+        void navigate({ to: '/$workspaceSlug/flow/$flowId', params: { workspaceSlug: routeWorkspaceSlug, flowId: id } })
+        return
+      }
+      void navigate({ to: '/flow/$flowId', params: { flowId: id } })
+      return
+    }
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/flow', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    void navigate({ to: '/flow' })
+  }, [navigate, routeWorkspaceSlug])
+
+  useEffect(() => {
+    setSelectedFlowIDState(routeFlowID || null)
+  }, [routeFlowID])
 
   const selectedFlow = useMemo(() => {
     if (selectedFlowRecord && selectedFlowID === selectedFlowRecord.definition.flow_id) {
@@ -1214,10 +1243,10 @@ export function FlowsSettingsPage() {
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--app-border)] pb-5">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
-            <Workflow size={14} /> Settings / Flows
+            <Workflow size={14} /> Workspace / Flows
           </div>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--app-text)]">Flows</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">Control scheduled and background agent jobs from real controller data.</p>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">Triage scheduled and background agent jobs from real controller data.</p>
         </div>
         <Button data-testid="flows-add-open" variant="primary" className="rounded-xl" onClick={() => setAddOpen(true)}>
           <Plus size={16} /> Add Flow
@@ -1326,12 +1355,12 @@ export function FlowsSettingsPage() {
         </div>
 
         <div className="overflow-x-auto">
-          <table data-testid="flows-table" className="w-full min-w-[980px] border-collapse text-left">
+          <table data-testid="flows-table" className="w-full min-w-[840px] border-collapse text-left">
             <thead>
               <tr className="border-b border-[var(--app-border)] bg-[var(--app-bg-inset)] text-[11px] uppercase tracking-[0.16em] text-[var(--app-text-muted)]">
                 <th className="px-5 py-3 font-medium">Flow</th>
-                <th className="px-4 py-3 font-medium">Run context</th>
                 <th className="px-4 py-3 font-medium">Last run</th>
+                <th className="px-4 py-3 font-medium">Total</th>
                 <th className="px-4 py-3 font-medium">Next run</th>
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 font-medium">Enabled</th>
@@ -1345,26 +1374,26 @@ export function FlowsSettingsPage() {
                     <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="max-w-[520px] text-left">
                       <div className="truncate text-sm font-medium text-[var(--app-text)]">{flow.name}</div>
                       <div className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--app-text-muted)]">{flow.task}</div>
+                      <div className="mt-3 flex max-w-[680px] flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--app-text-subtle)]">
+                        <span className="inline-flex min-w-0 items-center gap-1.5"><MapPin size={12} className="shrink-0" /> <span className="truncate">{flow.workspace} / {flow.target}</span></span>
+                        <span className="inline-flex min-w-0 items-center gap-1.5"><Bot size={12} className="shrink-0" /> <span className="truncate">{flow.agent}</span></span>
+                        <span className="inline-flex min-w-0 items-center gap-1.5"><Clock size={12} className="shrink-0" /> <span className="truncate">{flow.schedule}</span></span>
+                      </div>
                     </button>
                   </td>
-                  <td className="px-4 py-4 align-top">
-                    <div className="max-w-[300px] rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)] p-3">
-                      <div className="flex items-center gap-2 text-xs text-[var(--app-text)]"><MapPin size={13} className="text-[var(--app-text-muted)]" /> {flow.workspace} <span className="text-[var(--app-text-subtle)]">/ {flow.target}</span></div>
-                      <div className="mt-2 flex items-center gap-2 text-xs text-[var(--app-text)]"><Bot size={13} className="text-[var(--app-text-muted)]" /> {flow.agent}</div>
-                      <div className="mt-2 flex items-center gap-2 text-xs text-[var(--app-text)]"><Clock size={13} className="text-[var(--app-text-muted)]" /> {flow.schedule}</div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-4 align-top">
+                  <td className="px-4 py-4 align-middle">
                     <div className="text-sm text-[var(--app-text)]">{flow.lastRun}</div>
-                    {flow.lastRunMeta ? <div className="mt-1 text-xs text-[var(--app-text-muted)]">{flow.lastRunMeta}</div> : null}
                   </td>
-                  <td className="px-4 py-4 align-top">
+                  <td className="px-4 py-4 align-middle">
+                    <div className="font-mono text-sm text-[var(--app-text)]">{flow.totalRuns}</div>
+                  </td>
+                  <td className="px-4 py-4 align-middle">
                     <div className="text-sm text-[var(--app-text)]">{flow.nextRun}</div>
                     {flow.nextRunMeta ? <div className="mt-1 text-xs text-[var(--app-text-muted)]">{flow.nextRunMeta}</div> : null}
                   </td>
-                  <td className="px-4 py-4 align-top"><StatusBadge status={flow.status} /></td>
-                  <td className="px-4 py-4 align-top"><EnabledToggle enabled={flow.enabled} disabled onToggle={() => undefined} /></td>
-                  <td className="px-5 py-4 text-right align-top">
+                  <td className="px-4 py-4 align-middle"><StatusBadge status={flow.status} /></td>
+                  <td className="px-4 py-4 align-middle"><EnabledToggle enabled={flow.enabled} disabled onToggle={() => undefined} /></td>
+                  <td className="px-5 py-4 text-right align-middle">
                     <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--app-border)] text-[var(--app-text-muted)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" aria-label={`Manage ${flow.name}`}>
                       <MoreHorizontal size={16} />
                     </button>

@@ -1,4 +1,4 @@
-export const SETTINGS_TABS = ['agents', 'auth', 'flows', 'permissions', 'swarm', 'themes', 'vault', 'worktrees'] as const
+export const SETTINGS_TABS = ['agents', 'auth', 'permissions', 'swarm', 'themes', 'vault', 'worktrees'] as const
 
 export type SettingsTabID = (typeof SETTINGS_TABS)[number]
 

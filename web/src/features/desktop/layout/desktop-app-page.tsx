@@ -48,6 +48,7 @@ import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
 import { fetchFlows, flowsQueryKey, setFlowEnabled, type FlowSummaryRecord } from '../settings/flows/api'
+import { FlowsSettingsPage } from '../settings/flows/components/flows-settings-page'
 import {
   sessionBackgroundInfo,
   sessionChildDescriptor,
@@ -1387,10 +1388,13 @@ export function DesktopAppPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const matchRoute = useMatchRoute()
+  const workspaceFlowDetailMatch = matchRoute({ to: '/$workspaceSlug/flow/$flowId', fuzzy: false })
+  const workspaceFlowMatch = matchRoute({ to: '/$workspaceSlug/flow', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
-  const routeWorkspaceSlug = (workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
-  const routeSessionId = (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
+  const isFlowRoute = Boolean(workspaceFlowDetailMatch || workspaceFlowMatch)
+  const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
+  const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: workspacesLoading } = useWorkspaceLauncher()
   const connectionState = useDesktopStore((state) => state.connectionState)
@@ -1620,6 +1624,17 @@ export function DesktopAppPage() {
   const flowCount = sidebarFlows.length
   const activeFlowCount = sidebarFlows.filter((flow) => flow.enabled).length
   const flowSummary = flowsQuery.isLoading ? 'loading flows' : `${flowCount} flows${activeFlowCount !== flowCount ? ` · ${activeFlowCount} active` : ''}`
+  const selectedWorkspaceFlowRows = useMemo(() => {
+    const workspacePath = selectedWorkspacePath?.trim() ?? ''
+    if (!workspacePath) return sidebarFlows
+    return sidebarFlows.filter((flow) => {
+      const flowWorkspace = flow.raw.workspace_detail?.workspace_path?.trim()
+        || flow.raw.definition.workspace.workspace_path?.trim()
+        || flow.raw.definition.workspace.host_workspace_path?.trim()
+        || ''
+      return !flowWorkspace || flowWorkspace === workspacePath
+    })
+  }, [selectedWorkspacePath, sidebarFlows])
   const swarmTopologySignature = useMemo(
     () => swarmTargets
       .map((target) => [
@@ -2127,8 +2142,41 @@ export function DesktopAppPage() {
   const handleOpenFlowsSettings = useCallback(() => {
     setFlowMenuOpen(false)
     setWorkspaceMenuOpen(false)
-    handleOpenSettingsTab('flows')
-  }, [handleOpenSettingsTab])
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/flow', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
+    if (workspacePath) {
+      const workspaceSlug = workspaceSlugByPath.get(workspacePath)
+        ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: selectedWorkspace?.workspaceName ?? '' })
+      void navigate({ to: '/$workspaceSlug/flow', params: { workspaceSlug } })
+      return
+    }
+    void navigate({ to: '/flow' })
+  }, [navigate, routeWorkspaceSlug, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, workspaceSlugByPath])
+
+  const handleOpenFlow = useCallback((flow: SidebarFlowRow) => {
+    setFlowMenuOpen(false)
+    setWorkspaceMenuOpen(false)
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/flow/$flowId', params: { workspaceSlug: routeWorkspaceSlug, flowId: flow.id } })
+      return
+    }
+    const workspacePath = flow.raw.workspace_detail?.workspace_path?.trim()
+      || flow.raw.definition.workspace.workspace_path?.trim()
+      || flow.raw.definition.workspace.host_workspace_path?.trim()
+      || selectedWorkspace?.path
+      || selectedWorkspacePath
+      || ''
+    if (workspacePath) {
+      const workspaceSlug = workspaceSlugByPath.get(workspacePath)
+        ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: fallbackWorkspaceNameFromPath(workspacePath) })
+      void navigate({ to: '/$workspaceSlug/flow/$flowId', params: { workspaceSlug, flowId: flow.id } })
+      return
+    }
+    void navigate({ to: '/flow/$flowId', params: { flowId: flow.id } })
+  }, [navigate, routeWorkspaceSlug, selectedWorkspace?.path, selectedWorkspacePath, workspaceSlugByPath])
 
   const handleToggleFlowEnabled = useCallback(async (flow: SidebarFlowRow) => {
     if (flowBusyID) return
@@ -2795,7 +2843,7 @@ export function DesktopAppPage() {
                   const busy = flowBusyID === flow.id
                   return (
                     <div key={flow.id} className="group grid min-h-[34px] grid-cols-[minmax(0,1fr)_minmax(64px,0.7fr)_58px] items-center gap-2 px-[7px] py-[5px] text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                      <button type="button" className="min-w-0 text-left" onClick={handleOpenFlowsSettings} title={flow.detail}>
+                      <button type="button" className="min-w-0 text-left" onClick={() => handleOpenFlow(flow)} title={flow.detail}>
                         <span className="flex min-w-0 items-center gap-1.5">
                           <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', sidebarFlowDotClass(flow.status))} />
                           <span className="truncate text-[var(--app-text)]">{flow.name}</span>
@@ -2816,7 +2864,7 @@ export function DesktopAppPage() {
                     </div>
                   )
                 })}
-                {sidebarFlows.length > 8 ? <div className="px-2 py-1 text-[10px] text-[var(--app-text-subtle)]">+{sidebarFlows.length - 8} more in Flow settings</div> : null}
+                {sidebarFlows.length > 8 ? <div className="px-2 py-1 text-[10px] text-[var(--app-text-subtle)]">+{sidebarFlows.length - 8} more on the Flow page</div> : null}
                 {flowMenuError ? <div className="mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
                 <div className="my-1 h-px bg-[var(--app-border)]" />
                 <button
@@ -2832,7 +2880,52 @@ export function DesktopAppPage() {
           </div>
           <div className="flex min-h-0 flex-1 flex-col">
             <div ref={sidebarBodyRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
-              {visibleSidebarWorkspaceEntries.map((workspace, index) => {
+              {isFlowRoute ? (
+                <div className="flex min-h-0 flex-1 flex-col gap-2 font-mono">
+                  <div className="flex items-center justify-between gap-2 px-1 py-1">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Flows</div>
+                      <div className="mt-0.5 truncate text-[10px] text-[var(--app-text-subtle)]">{flowSummary}</div>
+                    </div>
+                    <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={handleOpenFlowsSettings} aria-label="Open flow page" title="Open flow page">
+                      <Workflow size={14} strokeWidth={1.8} className="shrink-0" />
+                    </button>
+                  </div>
+                  <div className="grid min-h-0 flex-1 content-start gap-1 overflow-y-auto">
+                    {flowsQuery.isLoading ? (
+                      <div className="px-2 py-2 text-[11px] text-[var(--app-text-subtle)]">Loading flows…</div>
+                    ) : flowsQuery.isError ? (
+                      <div className="px-2 py-2 text-[11px] text-[var(--app-warning)]">Flows unavailable.</div>
+                    ) : selectedWorkspaceFlowRows.length === 0 ? (
+                      <div className="px-2 py-2 text-[11px] text-[var(--app-text-subtle)]">No flows for this workspace yet.</div>
+                    ) : selectedWorkspaceFlowRows.map((flow) => {
+                      const busy = flowBusyID === flow.id
+                      return (
+                        <div key={flow.id} className="group grid min-h-[42px] grid-cols-[minmax(0,1fr)_24px] items-center gap-2 border border-transparent px-2 py-1.5 text-[11px] text-[var(--app-text-muted)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                          <button type="button" className="min-w-0 text-left" onClick={() => handleOpenFlow(flow)} title={flow.detail}>
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', sidebarFlowDotClass(flow.status))} />
+                              <span className="truncate text-[var(--app-text)]">{flow.name}</span>
+                            </span>
+                            <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]">{sidebarFlowStatusLabel(flow.status)} · {flow.agent} · {flow.detail}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="grid h-6 w-6 place-items-center justify-self-end rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-progress disabled:opacity-60"
+                            onClick={() => { void handleToggleFlowEnabled(flow) }}
+                            disabled={Boolean(flowBusyID)}
+                            aria-label={`${flow.enabled ? 'Pause' : 'Start'} ${flow.name}`}
+                            title={flow.enabled ? 'Pause flow' : 'Start flow'}
+                          >
+                            {busy ? <LoaderCircle size={11} className="animate-spin" /> : flow.enabled ? <Pause size={11} /> : <Play size={11} />}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {flowMenuError ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
+                </div>
+              ) : visibleSidebarWorkspaceEntries.map((workspace, index) => {
                 const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
                 const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
                 const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, selectedSession?.id)
@@ -3012,6 +3105,12 @@ export function DesktopAppPage() {
                 We couldn’t find that session in cache or on the server.
               </p>
             </Card>
+          </div>
+        ) : isFlowRoute ? (
+          <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--app-bg)] px-6 py-8">
+            <div className="mx-auto min-h-full w-full max-w-6xl">
+              <FlowsSettingsPage />
+            </div>
           </div>
         ) : routeWorkspaceSlug && !chatWorkspacePath && !workspacesLoading ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">

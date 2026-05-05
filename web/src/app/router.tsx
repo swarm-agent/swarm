@@ -31,6 +31,17 @@ function validateWorkspaceSessionParams(params: Record<string, unknown>): { work
   return { workspaceSlug, sessionId }
 }
 
+function validateFlowParams(params: Record<string, unknown>): { flowId: string } {
+  const flowId = typeof params.flowId === 'string' ? params.flowId.trim() : ''
+  return { flowId }
+}
+
+function validateWorkspaceFlowParams(params: Record<string, unknown>): { workspaceSlug: string; flowId: string } {
+  const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
+  const flowId = typeof params.flowId === 'string' ? params.flowId.trim() : ''
+  return { workspaceSlug, flowId }
+}
+
 function validateSettingsSearch(search: Record<string, unknown>): { tab?: string } {
   const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
   return tab ? { tab } : {}
@@ -84,6 +95,13 @@ const flowRoute = createRoute({
   component: FlowRedirectRoute,
 })
 
+const flowDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/flow/$flowId',
+  parseParams: validateFlowParams,
+  component: FlowRedirectRoute,
+})
+
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug',
@@ -104,6 +122,20 @@ const workspaceSettingsRoute = createRoute({
   parseParams: validateWorkspaceParams,
   validateSearch: validateSettingsSearch,
   component: DesktopSettingsPage,
+})
+
+const workspaceFlowRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/flow',
+  parseParams: validateWorkspaceParams,
+  component: DesktopAppPage,
+})
+
+const workspaceFlowDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/flow/$flowId',
+  parseParams: validateWorkspaceFlowParams,
+  component: DesktopAppPage,
 })
 
 const workspaceToolsRoute = createRoute({
@@ -142,9 +174,12 @@ const routeTree = rootRoute.addChildren([
   imageToolRoute,
   imageToolSessionRoute,
   flowRoute,
+  flowDetailRoute,
   workspaceRoute,
   workspaceSessionRoute,
   workspaceSettingsRoute,
+  workspaceFlowRoute,
+  workspaceFlowDetailRoute,
   workspaceToolsRoute,
   workspaceVideoToolRoute,
   workspaceImageToolRoute,

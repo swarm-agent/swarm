@@ -1,12 +1,5 @@
-import { useEffect } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { FlowsSettingsPage } from '../features/desktop/settings/flows/components/flows-settings-page'
 
 export function FlowRedirectRoute() {
-  const navigate = useNavigate()
-
-  useEffect(() => {
-    void navigate({ to: '/settings', search: { tab: 'flows' }, replace: true })
-  }, [navigate])
-
-  return null
+  return <FlowsSettingsPage />
 }
