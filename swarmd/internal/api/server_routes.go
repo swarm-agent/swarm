@@ -71,6 +71,7 @@ func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/container/runtime", s.handleDeployContainerRuntime)
 	mux.HandleFunc("/v1/deploy/container", s.handleDeployContainers)
 	mux.HandleFunc("/v1/deploy/container/create", s.handleDeployContainerCreate)
+	mux.HandleFunc("/v1/deploy/container/package/defaults", s.handleDeployContainerPackageDefaults)
 	mux.HandleFunc("/v1/deploy/container/package/validate", s.handleDeployContainerPackageValidate)
 	mux.HandleFunc("/v1/deploy/container/package/suggest", s.handleDeployContainerPackageSuggest)
 	mux.HandleFunc("/v1/deploy/container/action", s.handleDeployContainerAction)
@@ -186,6 +187,7 @@ func (s *Server) registerPeerRoutes(mux *http.ServeMux) {
 func (s *Server) registerLocalTransportRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
+	mux.HandleFunc("/v1/deploy/container/package/defaults", s.handleDeployContainerPackageDefaults)
 	mux.HandleFunc("/v1/deploy/container/package/validate", s.handleDeployContainerPackageValidate)
 	mux.HandleFunc("/v1/deploy/container/package/suggest", s.handleDeployContainerPackageSuggest)
 	mux.HandleFunc("/v1/deploy/container/attach/request", s.handleDeployContainerAttachRequest)

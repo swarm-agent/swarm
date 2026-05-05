@@ -1,0 +1,32 @@
+name: check-container-base
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-container-base:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Swarm container Ubuntu base tracks latest LTS
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest="$(curl -fsSL https://releases.ubuntu.com/ | grep -Eo 'href="[0-9]{2}\.04/"' | sed -E 's/.*"([0-9]{2}\.04)\/"/\1/' | sort -Vr | head -n1)"
+          if [[ -z "${latest}" ]]; then
+            echo "failed to resolve latest Ubuntu LTS from ubuntu.com/releases" >&2
+            exit 1
+          fi
+          expected="docker.io/ubuntu:${latest}"
+          actual="$(sed -nE 's/^FROM (docker\.io\/ubuntu:[0-9]{2}\.04)$/\1/p' deploy/container-mvp/Containerfile.base | head -n1)"
+          if [[ "${actual}" != "${expected}" ]]; then
+            echo "container base image is stale: got ${actual:-missing}, want ${expected}" >&2
+            exit 1
+          fi
+          grep -R --fixed-strings "${expected}" swarmd/internal/localcontainers/service.go swarmd/internal/remotedeploy/service.go >/dev/null

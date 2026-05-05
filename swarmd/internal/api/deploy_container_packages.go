@@ -12,9 +12,12 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	deployruntime "swarm/packages/swarmd/internal/deploy"
 )
 
 const (
+	deployContainerPackageDefaultsPathID = "deploy.container.package-defaults.v1"
 	deployContainerPackageValidatePathID = "deploy.container.package-validate.v1"
 	deployContainerPackageSuggestPathID  = "deploy.container.package-suggest.v1"
 	containerPackageWorkspaceSource      = "workspace_scan"
@@ -35,6 +38,20 @@ type deployContainerPackageSuggestion struct {
 
 type deployContainerPackageSuggestionAccumulator struct {
 	Reasons map[string]struct{}
+}
+
+func (s *Server) handleDeployContainerPackageDefaults(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	defaults := deployruntime.ContainerPackageDefaults()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"path_id":         deployContainerPackageDefaultsPathID,
+		"base_image":      defaults.BaseImage,
+		"package_manager": defaults.PackageManager,
+	})
 }
 
 func (s *Server) handleDeployContainerPackageValidate(w http.ResponseWriter, r *http.Request) {

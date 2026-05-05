@@ -46,8 +46,10 @@ const (
 	remoteImageNamePrefix           = "localhost/swarm-remote-child"
 	remoteContainerPrefix           = "swarm-remote-child"
 	remoteImagePrefixEnv            = "SWARM_REMOTE_DEPLOY_IMAGE_PREFIX"
-	remotePackageManager            = "apt"
-	remotePackageBaseImage          = "ubuntu:24.04"
+	RemotePackageManager            = "apt"
+	RemotePackageBaseImage          = "docker.io/ubuntu:26.04"
+	remotePackageManager            = RemotePackageManager
+	remotePackageBaseImage          = RemotePackageBaseImage
 	remoteImageDeliveryArchive      = "archive"
 	remoteImageDeliveryRegistry     = "registry"
 	legacyRemoteCredentialsFileName = "remote-child.credentials.env"

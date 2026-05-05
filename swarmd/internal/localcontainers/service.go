@@ -50,8 +50,10 @@ const (
 	defaultContainerPath      = "/workspaces"
 	containerBackendPort      = startupconfig.DefaultPort
 	containerDesktopPort      = startupconfig.DefaultDesktopPort
-	defaultPackageManager     = "apt"
-	supportedPackageBaseImage = "ubuntu:24.04"
+	DefaultPackageManager     = "apt"
+	SupportedPackageBaseImage = "docker.io/ubuntu:26.04"
+	defaultPackageManager     = DefaultPackageManager
+	supportedPackageBaseImage = SupportedPackageBaseImage
 )
 
 var containerPackageNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]*$`)

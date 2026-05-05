@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-DEFAULT_BASE_VERSION="ubuntu24.04-tailscale-stable-v1"
+DEFAULT_BASE_VERSION="ubuntu26.04-tailscale-stable-v1"
 DEFAULT_SOURCE_REPOSITORY="https://github.com/swarm-agent/swarm"
 IMAGE_CONTRACT="swarm.container.v1"
 

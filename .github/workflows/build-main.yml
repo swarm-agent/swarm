@@ -93,11 +93,11 @@ jobs:
         run: |
           set -euo pipefail
           image_ref="localhost/swarm:${{ steps.version.outputs.version }}"
-          base_ref="localhost/swarm-base:ubuntu24.04-tailscale-stable-v1"
+          base_ref="localhost/swarm-base:ubuntu26.04-tailscale-stable-v1"
           push_args=()
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
             image_ref="ghcr.io/${{ github.repository_owner }}/swarm:${{ steps.version.outputs.version }}"
-            base_ref="ghcr.io/${{ github.repository_owner }}/swarm-base:ubuntu24.04-tailscale-stable-v1"
+            base_ref="ghcr.io/${{ github.repository_owner }}/swarm-base:ubuntu26.04-tailscale-stable-v1"
             push_args+=(--push)
           fi
           ./scripts/build-container-artifact.sh \

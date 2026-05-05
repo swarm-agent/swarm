@@ -34,6 +34,11 @@ export interface DeployContainerPackageManifest {
   packages?: DeployContainerPackageSelection[]
 }
 
+export interface DeployContainerPackageDefaults {
+  baseImage: string
+  packageManager: string
+}
+
 export interface RemoteDeployPayloadDirectory {
   source_path?: string
   target_path?: string
@@ -498,6 +503,16 @@ function mapDeleteResult(record: any): SwarmLocalContainerDeleteResult {
       removedGroupMemberships: typeof item?.removed_group_memberships === 'number' ? item.removed_group_memberships : 0,
       error: String(item?.error ?? '').trim(),
     })) : [],
+  }
+}
+
+export async function fetchDeployContainerPackageDefaults(): Promise<DeployContainerPackageDefaults> {
+  const response = await requestJson<{ ok?: boolean; base_image?: string; package_manager?: string }>(
+    '/v1/deploy/container/package/defaults',
+  )
+  return {
+    baseImage: String(response.base_image ?? '').trim(),
+    packageManager: String(response.package_manager ?? '').trim(),
   }
 }
 

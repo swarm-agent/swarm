@@ -12,6 +12,7 @@ import type { DesktopOnboardingStatus } from '../../onboarding/types'
 import {
   approveRemoteDeploySession,
   createRemoteDeploySession,
+  fetchDeployContainerPackageDefaults,
   fetchRemoteDeploySession,
   fetchRemoteDeploySessions,
   startRemoteDeploySession,
@@ -68,8 +69,8 @@ interface ContainerPackageDraft {
   reason?: string
 }
 
-const CONTAINER_PACKAGE_BASE_IMAGE = 'ubuntu:24.04'
-const CONTAINER_PACKAGE_MANAGER = 'apt'
+const FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE = 'docker.io/ubuntu:26.04'
+const FALLBACK_CONTAINER_PACKAGE_MANAGER = 'apt'
 const REMOTE_IMAGE_DELIVERY_MODE_RELEASE: 'registry' = 'registry'
 const REMOTE_IMAGE_DELIVERY_MODE_DEV: 'archive' = 'archive'
 const REMOTE_LAUNCH_POLL_INTERVAL_MS = 2000
@@ -89,10 +90,10 @@ const DEFAULT_CONTAINER_PACKAGES: ContainerPackageDraft[] = [
   'ripgrep',
 ].map((name) => ({ name, source: 'recommended' as const }))
 
-function buildContainerPackageManifest(packages: ContainerPackageDraft[]) {
+function buildContainerPackageManifest(packages: ContainerPackageDraft[], baseImage: string, packageManager: string) {
   return {
-    base_image: CONTAINER_PACKAGE_BASE_IMAGE,
-    package_manager: CONTAINER_PACKAGE_MANAGER,
+    base_image: baseImage,
+    package_manager: packageManager,
     packages: packages.map((pkg) => ({
       name: pkg.name,
       source: pkg.source,
@@ -616,6 +617,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [syncCustomToolsEnabled, setSyncCustomToolsEnabled] = useState(true)
   const [syncVaultPassword, setSyncVaultPassword] = useState('')
   const [bypassPermissions, setBypassPermissions] = useState(false)
+  const [containerPackageBaseImage, setContainerPackageBaseImage] = useState(FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE)
+  const [containerPackageManager, setContainerPackageManager] = useState(FALLBACK_CONTAINER_PACKAGE_MANAGER)
   const [containerPackages, setContainerPackages] = useState<ContainerPackageDraft[]>(DEFAULT_CONTAINER_PACKAGES)
   const [packageInput, setPackageInput] = useState('')
   const [packageValidationError, setPackageValidationError] = useState<string | null>(null)
@@ -801,6 +804,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     setSyncCustomToolsEnabled(true)
     setSyncVaultPassword('')
     setBypassPermissions(false)
+    setContainerPackageBaseImage(FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE)
+    setContainerPackageManager(FALLBACK_CONTAINER_PACKAGE_MANAGER)
     setContainerPackages(DEFAULT_CONTAINER_PACKAGES)
     setPackageInput('')
     setPackageValidationError(null)
@@ -816,14 +821,20 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       listWorkspaces().catch(() => []),
       fetchSwarmLocalRuntimeStatus().catch(() => FALLBACK_RUNTIME_STATUS),
       getUISettings().catch(() => null),
+      fetchDeployContainerPackageDefaults().catch(() => ({
+        baseImage: FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE,
+        packageManager: FALLBACK_CONTAINER_PACKAGE_MANAGER,
+      })),
       onboardingStatus ? Promise.resolve(onboardingStatus) : fetchDesktopOnboardingStatus().catch(() => null),
     ])
-      .then(([nextWorkspaces, nextRuntimeStatus, nextUISettings, nextOnboardingStatus]) => {
+      .then(([nextWorkspaces, nextRuntimeStatus, nextUISettings, nextPackageDefaults, nextOnboardingStatus]) => {
         if (cancelled) {
           return
         }
         setWorkspaceDrafts(buildWorkspaceDrafts(nextWorkspaces))
         setRuntimeStatus(nextRuntimeStatus)
+        setContainerPackageBaseImage(nextPackageDefaults.baseImage || FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE)
+        setContainerPackageManager(nextPackageDefaults.packageManager || FALLBACK_CONTAINER_PACKAGE_MANAGER)
         setRemoteSessions([])
         setCurrentOnboardingStatus(nextOnboardingStatus)
         const nextSavedTargets = Array.isArray(nextUISettings?.swarm?.remote_ssh_targets)
@@ -957,7 +968,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         imageDeliveryMode: remoteImageDeliveryMode,
         syncEnabled,
         bypassPermissions,
-        containerPackages: buildContainerPackageManifest(containerPackages),
+        containerPackages: buildContainerPackageManifest(containerPackages, containerPackageBaseImage, containerPackageManager),
         payloads: selectedRemotePayloads,
       })
       setRemotePreflightSession(session)
@@ -1045,7 +1056,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           replicationMode: 'bundle',
           writable: true,
         })),
-        containerPackages: devMode ? buildContainerPackageManifest(containerPackages) : undefined,
+        containerPackages: devMode ? buildContainerPackageManifest(containerPackages, containerPackageBaseImage, containerPackageManager) : undefined,
       })
       await finishSuccess(`Added ${result.swarm.name || swarmName.trim()} to the swarm.`)
     } catch (err) {
@@ -1371,7 +1382,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             <Badge tone={containerPackages.length > 0 ? 'live' : 'neutral'}>{containerPackages.length} packages</Badge>
           </div>
           <div className="mt-3 text-xs text-[var(--app-text-muted)]">
-            Base image: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_BASE_IMAGE}</span> · Package manager: <span className="font-medium text-[var(--app-text)]">{CONTAINER_PACKAGE_MANAGER}</span>
+            Base image: <span className="font-medium text-[var(--app-text)]">{containerPackageBaseImage}</span> · Package manager: <span className="font-medium text-[var(--app-text)]">{containerPackageManager}</span>
           </div>
           <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)]">
             <div>
