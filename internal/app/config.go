@@ -501,6 +501,9 @@ func sanitizeConfigKeybindMap(raw map[string]string) map[string]string {
 		if key == "" {
 			continue
 		}
+		if token, err := ui.NormalizeKeybindToken(value); err == nil && token == "enter" {
+			continue
+		}
 		out[key] = value
 	}
 	if len(out) == 0 {

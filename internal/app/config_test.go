@@ -106,6 +106,38 @@ func TestSaveSwarmNameSettingPreservesThinkingTags(t *testing.T) {
 	}
 }
 
+func TestSanitizeConfigKeybindMapDropsBareEnterOverrides(t *testing.T) {
+	got := sanitizeConfigKeybindMap(map[string]string{
+		"global.open_agents": "enter",
+		"global.open_models": " return ",
+		"global.quit":        "ctrl+c",
+	})
+	if _, ok := got["global.open_agents"]; ok {
+		t.Fatal("bare Enter override was preserved")
+	}
+	if _, ok := got["global.open_models"]; ok {
+		t.Fatal("Return alias override was preserved")
+	}
+	if got["global.quit"] != "ctrl+c" {
+		t.Fatalf("global.quit = %q, want ctrl+c", got["global.quit"])
+	}
+}
+
+func TestAppConfigFromUISettingsDropsBareEnterKeybindOverrides(t *testing.T) {
+	cfg := appConfigFromUISettings(client.UISettings{
+		Input: client.UIInputSettings{Keybinds: map[string]string{
+			"global.open_agents": "enter",
+			"global.quit":        "ctrl+c",
+		}},
+	})
+	if _, ok := cfg.Input.Keybinds["global.open_agents"]; ok {
+		t.Fatal("bare Enter keybind override was loaded into app config")
+	}
+	if cfg.Input.Keybinds["global.quit"] != "ctrl+c" {
+		t.Fatalf("global.quit = %q, want ctrl+c", cfg.Input.Keybinds["global.quit"])
+	}
+}
+
 func TestUpdateUISettingsReturnsGetFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {

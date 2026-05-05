@@ -488,6 +488,9 @@ func (k *KeyBindings) Set(id KeybindID, raw string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateEditableKeybindToken(token); err != nil {
+		return err
+	}
 	k.values[id] = token
 	return nil
 }
@@ -718,6 +721,13 @@ func NormalizeKeybindToken(raw string) (string, error) {
 	}
 
 	return composeKeybindToken(base, modsCtrl, modsAlt, modsShift), nil
+}
+
+func validateEditableKeybindToken(token string) error {
+	if token == "enter" {
+		return fmt.Errorf("Enter cannot be assigned as a custom keybind; use reset to restore default Enter actions")
+	}
+	return nil
 }
 
 func FormatKeybindToken(token string) string {
