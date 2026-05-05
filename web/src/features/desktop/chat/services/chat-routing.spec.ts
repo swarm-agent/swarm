@@ -8,6 +8,7 @@ const remoteRoute: DesktopChatRoute = {
   id: 'swarm:child-swarm:/workspaces/swarm',
   label: 'child swarm',
   swarmId: 'child-swarm',
+  targetKind: 'remote',
   hostWorkspacePath: '/workspaces/host-swarm',
   hostWorkspaceName: 'host swarm',
   runtimeWorkspacePath: '/workspaces/swarm',

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, Monitor, Server } from 'lucide-react'
+import { Check, ChevronDown, Container, Monitor, Server } from 'lucide-react'
 import type { DesktopChatRoute } from '../services/chat-routing'
 
 interface RoutePickerProps {
@@ -15,13 +15,20 @@ const VIEWPORT_GUTTER = 8
 const MIN_DROPDOWN_WIDTH = 220
 const MAX_DROPDOWN_WIDTH = 320
 
+function routeKind(route: DesktopChatRoute): 'remote' | 'local' {
+  return route.swarmId && route.targetKind.trim().toLowerCase() === 'remote' ? 'remote' : 'local'
+}
+
 function RouteIcon({ route, className }: { route: DesktopChatRoute; className?: string }) {
-  const Icon = route.swarmId ? Server : Monitor
+  const Icon = !route.swarmId ? Monitor : routeKind(route) === 'remote' ? Server : Container
   return <Icon size={14} className={className} />
 }
 
 function routeCaption(route: DesktopChatRoute): string {
-  return route.swarmId ? 'Linked swarm' : 'Host machine'
+  if (!route.swarmId) {
+    return 'Host machine'
+  }
+  return routeKind(route) === 'remote' ? 'Remote swarm' : 'Local swarm'
 }
 
 export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, title }: RoutePickerProps) {
@@ -146,7 +153,7 @@ export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, 
   ) : null
 
   return (
-    <div className="inline-flex min-w-0 max-w-full items-center">
+    <div className="inline-flex min-w-0 max-w-full items-center sm:w-full">
       <button
         ref={triggerRef}
         type="button"
@@ -155,11 +162,11 @@ export function RoutePicker({ currentRoute, routes, onSelect, disabled = false, 
         title={title}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex h-10 min-w-0 max-w-full sm:max-w-[220px] items-center gap-1.5 sm:gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 sm:px-3 text-sm font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+        className="inline-flex h-10 min-w-0 max-w-[clamp(4rem,24vw,5.75rem)] items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 text-sm font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60 sm:max-w-[220px] sm:gap-2 sm:px-3"
       >
         <span className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
-          <RouteIcon route={selectedRoute} className="shrink-0 text-[var(--app-text-subtle)]" />
-          <span className="truncate min-w-0 w-full text-left">{selectedRoute.label}</span>
+          <RouteIcon route={selectedRoute} className="hidden shrink-0 text-[var(--app-text-subtle)] sm:block" />
+          <span className="min-w-0 max-w-[clamp(2.75rem,18vw,4.5rem)] truncate text-left sm:w-full sm:max-w-none">{selectedRoute.label}</span>
         </span>
         <ChevronDown size={14} className={open ? 'shrink-0 text-[var(--app-text-subtle)] transition-transform rotate-180' : 'shrink-0 text-[var(--app-text-subtle)] transition-transform'} />
       </button>

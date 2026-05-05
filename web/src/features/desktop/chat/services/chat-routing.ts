@@ -7,6 +7,7 @@ export interface DesktopChatRoute {
   id: string
   label: string
   swarmId: string | null
+  targetKind: string
   hostWorkspacePath: string
   hostWorkspaceName: string
   runtimeWorkspacePath: string
@@ -16,6 +17,7 @@ interface StoredDesktopChatRoute {
   id?: string
   label?: string
   swarm_id?: string | null
+  target_kind?: string
   host_workspace_path?: string
   host_workspace_name?: string
   runtime_workspace_path?: string
@@ -42,6 +44,7 @@ function normalizeStoredRoute(route: StoredDesktopChatRoute | null | undefined):
     id: id || desktopChatRouteID(swarmId, runtimeWorkspacePath),
     label: label || (swarmId ? swarmId : 'host'),
     swarmId,
+    targetKind: String(route.target_kind ?? '').trim(),
     hostWorkspacePath,
     hostWorkspaceName: String(route.host_workspace_name ?? '').trim(),
     runtimeWorkspacePath,
@@ -61,6 +64,7 @@ function routeToStoredRecord(route: DesktopChatRoute | null | undefined): Stored
     id: route.id.trim() || desktopChatRouteID(route.swarmId, runtimeWorkspacePath),
     label: route.label.trim(),
     swarm_id: route.swarmId?.trim() || null,
+    target_kind: route.targetKind.trim(),
     host_workspace_path: hostWorkspacePath,
     host_workspace_name: route.hostWorkspaceName.trim(),
     runtime_workspace_path: runtimeWorkspacePath,
@@ -114,6 +118,7 @@ export function buildHostDesktopChatRoute(hostSwarmName: string, workspacePath: 
     id: 'host',
     label: hostSwarmName.trim() || 'host',
     swarmId: null,
+    targetKind: 'host',
     hostWorkspacePath: normalizedWorkspacePath,
     hostWorkspaceName: workspaceName.trim(),
     runtimeWorkspacePath: normalizedWorkspacePath,
@@ -132,6 +137,7 @@ export function buildDesktopChatRouteOptions(input: {
   for (const link of input.replicationLinks) {
     const swarmId = link.targetSwarmId.trim()
     const runtimeWorkspacePath = link.targetWorkspacePath.trim()
+    const targetKind = link.targetKind.trim()
     if (!swarmId || !runtimeWorkspacePath) {
       continue
     }
@@ -144,6 +150,7 @@ export function buildDesktopChatRouteOptions(input: {
       id,
       label: link.targetSwarmName.trim() || swarmId,
       swarmId,
+      targetKind,
       hostWorkspacePath: hostRoute.hostWorkspacePath,
       hostWorkspaceName: hostRoute.hostWorkspaceName,
       runtimeWorkspacePath,

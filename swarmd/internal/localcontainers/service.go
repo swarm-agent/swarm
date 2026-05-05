@@ -301,7 +301,7 @@ func (s *Service) RuntimeStatus(ctx context.Context) (RuntimeStatus, error) {
 		if err := runtimeAvailableInCurrentContext(ctx, candidate); err != nil {
 			message := strings.TrimSpace(err.Error())
 			issues[candidate] = message
-			warnings = append(warnings, fmt.Sprintf("%s is installed but unavailable here: %s", runtimeDisplayName(candidate), message))
+			warnings = append(warnings, runtimeAvailabilityWarning(candidate, message))
 			continue
 		}
 		usable = append(usable, candidate)
@@ -1194,6 +1194,23 @@ func detectAvailableRuntimes() []string {
 		}
 	}
 	return available
+}
+
+func runtimeAvailabilityWarning(runtimeName, message string) string {
+	message = strings.TrimSpace(message)
+	warning := fmt.Sprintf("%s is installed but unavailable here", runtimeDisplayName(runtimeName))
+	if message != "" {
+		warning += ": " + message
+	}
+	if normalizeRuntimeSelection(runtimeName) == "docker" && isDockerSocketPermissionDenied(message) {
+		warning += " This is a local Docker permission issue, not a Swarm container issue. To let Swarm use Docker, start Docker and allow this user to access the Docker socket; on Linux this usually means adding the user to the docker group, then logging out and back in."
+	}
+	return warning
+}
+
+func isDockerSocketPermissionDenied(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "permission denied") && strings.Contains(lower, "docker") && strings.Contains(lower, "docker.sock")
 }
 
 func runtimeAvailableInCurrentContext(parent context.Context, runtimeName string) error {

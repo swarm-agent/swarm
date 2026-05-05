@@ -2909,7 +2909,7 @@ export function DesktopChatPanel({
                   </div>
                 ) : null}
 
-                <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_minmax(0,0.7fr)_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_minmax(0,0.7fr)_40px] sm:gap-2">
+                <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_minmax(0,max-content)_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_minmax(0,0.7fr)_40px] sm:gap-2">
                   {/* The Summary/Settings Quick Toggle */}
                   <button 
                     ref={mobileSettingsTriggerRef}
@@ -2932,7 +2932,7 @@ export function DesktopChatPanel({
                   </button>
 
                   {showRoutePicker ? (
-                    <div className="flex min-w-0 overflow-hidden [&>div]:w-full [&>div>button]:w-full">
+                    <div className="flex min-w-0 overflow-hidden sm:[&>div]:w-full sm:[&>div>button]:w-full">
                       <RoutePicker
                         currentRoute={activeChatRoute}
                         routes={routeOptions}

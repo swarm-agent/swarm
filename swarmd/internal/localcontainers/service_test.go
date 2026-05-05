@@ -143,6 +143,30 @@ func TestFetchProductionImageMetadataRejectsInvalidSize(t *testing.T) {
 	}
 }
 
+func TestRuntimeAvailabilityWarningExplainsDockerSocketPermission(t *testing.T) {
+	message := "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock"
+	got := runtimeAvailabilityWarning("docker", message)
+	for _, needle := range []string{
+		"Docker is installed but unavailable here",
+		message,
+		"local Docker permission issue",
+		"not a Swarm container issue",
+		"allow this user to access the Docker socket",
+		"adding the user to the docker group",
+	} {
+		if !strings.Contains(got, needle) {
+			t.Fatalf("runtimeAvailabilityWarning() missing %q in:\n%s", needle, got)
+		}
+	}
+}
+
+func TestRuntimeAvailabilityWarningDoesNotAddDockerGuidanceForGenericFailure(t *testing.T) {
+	got := runtimeAvailabilityWarning("docker", "Cannot connect to the Docker daemon")
+	if strings.Contains(got, "local Docker permission issue") {
+		t.Fatalf("runtimeAvailabilityWarning() added permission guidance for generic failure:\n%s", got)
+	}
+}
+
 func TestAppendLocalContainerUserArgsAddsPodmanKeepIDAndRuntimeUserEnv(t *testing.T) {
 	uid := hostRuntimeUID()
 	gid := hostRuntimeGID()
