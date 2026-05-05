@@ -25,6 +25,7 @@ import {
   type FlowWorkspaceEntry,
 } from '../api'
 import { agentStateQueryOptions } from '../../../../queries/query-options'
+import { useDesktopStore } from '../../../state/use-desktop-store'
 
 type FlowStatus = 'active' | 'paused' | 'draft' | 'needs_review' | 'failed'
 type FlowMode = 'Scheduled background job' | 'Manual one-shot'
@@ -220,14 +221,6 @@ const statusTextClasses: Record<FlowStatus, string> = {
   draft: 'text-[var(--app-text-muted)]',
   needs_review: 'text-[var(--app-warning)]',
   failed: 'text-[var(--app-danger)]',
-}
-
-const statusBadgeClasses: Record<FlowStatus, string> = {
-  active: 'border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success)]',
-  paused: 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
-  draft: 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
-  needs_review: 'border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] text-[var(--app-warning)]',
-  failed: 'border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger)]',
 }
 
 const runStatusClasses: Record<FlowRun['status'], string> = {
@@ -614,15 +607,6 @@ export function formToCreateInput(form: AddFlowForm, targets: FlowTargetOption[]
 
 function FlowStatusDot({ status, className }: { status: FlowStatus; className?: string }) {
   return <span className={cn('inline-block h-2 w-2 shrink-0 rounded-full', statusDotClasses[status], className)} />
-}
-
-function StatusBadge({ status }: { status: FlowStatus }) {
-  return (
-    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium', statusBadgeClasses[status])}>
-      <FlowStatusDot status={status} className="h-1.5 w-1.5" />
-      {statusLabels[status]}
-    </span>
-  )
 }
 
 function StatusOutlineToken({ status }: { status: FlowStatus }) {
@@ -1046,6 +1030,7 @@ export function FlowsSettingsPage() {
   const workspaceFlowDetailMatch = matchRoute({ to: '/$workspaceSlug/flow/$flowId', fuzzy: false })
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : '').trim()
   const routeFlowID = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.flowId : globalFlowMatch ? globalFlowMatch.flowId : '').trim()
+  const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const flowsQuery = useQuery({ queryKey: flowsQueryKey, queryFn: ({ signal }) => fetchFlows(signal) })
   const swarmTargetsQuery = useQuery({ queryKey: flowSwarmTargetsQueryKey, queryFn: fetchFlowSwarmTargets })
   const flowWorkspacesQuery = useQuery({ queryKey: flowWorkspacesQueryKey, queryFn: fetchFlowWorkspaces })
@@ -1127,6 +1112,18 @@ export function FlowsSettingsPage() {
       return workspaceMatch && agentMatch && statusMatch && queryMatch
     })
   }, [agentFilter, flows, query, statusFilter, workspaceFilter])
+
+  const handleBackToChat = useCallback(() => {
+    if (routeWorkspaceSlug && activeSessionId) {
+      void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: activeSessionId } })
+      return
+    }
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    void navigate({ to: '/' })
+  }, [activeSessionId, navigate, routeWorkspaceSlug])
 
   const setSelectedFlowID = useCallback((id: string | null) => {
     setSelectedFlowIDState(id)
@@ -1276,9 +1273,14 @@ export function FlowsSettingsPage() {
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--app-text)]">Flows</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">Triage scheduled and background agent jobs from real controller data.</p>
         </div>
-        <Button data-testid="flows-add-open" variant="primary" className="rounded-xl" onClick={() => setAddOpen(true)}>
-          <Plus size={16} /> Add Flow
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="outline" className="rounded-xl" onClick={handleBackToChat}>
+            <ArrowLeft size={15} /> Back to chat
+          </Button>
+          <Button data-testid="flows-add-open" variant="outline" className="rounded-xl" onClick={() => setAddOpen(true)}>
+            <Plus size={16} /> Add Flow
+          </Button>
+        </div>
       </header>
 
       {error ? (
@@ -1324,8 +1326,8 @@ export function FlowsSettingsPage() {
             </div>
           </div>
 
-          <div className="mt-5 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-inset)]">
-            <div className="grid grid-cols-[88px_140px_minmax(0,1fr)_120px] gap-3 border-b border-[var(--app-border)] px-4 py-2 text-[11px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
+          <div className="mt-5 border-y border-[var(--app-border)]">
+            <div className="grid grid-cols-[88px_140px_minmax(0,1fr)_120px] gap-3 border-b border-[var(--app-border)] px-0 py-2 text-[11px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
               <div>Time</div>
               <div>Next</div>
               <div>Flow</div>
@@ -1333,14 +1335,14 @@ export function FlowsSettingsPage() {
             </div>
             <div className="divide-y divide-[var(--app-border)]">
               {scheduleItems.length ? scheduleItems.map((event) => (
-                <button key={event.flow.id} type="button" onClick={() => setSelectedFlowID(event.flow.id)} className="grid w-full grid-cols-[88px_140px_minmax(0,1fr)_120px] items-center gap-3 px-4 py-4 text-left transition hover:bg-[var(--app-surface-subtle)]">
+                <button key={event.flow.id} type="button" onClick={() => setSelectedFlowID(event.flow.id)} className="grid w-full grid-cols-[88px_140px_minmax(0,1fr)_120px] items-center gap-3 py-4 text-left transition hover:bg-[var(--app-surface-subtle)]">
                   <span className="font-mono text-sm text-[var(--app-text)]">{event.time}</span>
                   <span className="truncate text-xs text-[var(--app-text-muted)]">{event.day}</span>
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium text-[var(--app-text)]">{event.flow.name}</span>
                     <span className="mt-1 block truncate text-xs text-[var(--app-text-muted)]">{event.flow.workspace} / {event.flow.agent} / {event.meta}</span>
                   </span>
-                  <span className="justify-self-end"><StatusBadge status={event.flow.status} /></span>
+                  <span className="justify-self-end"><StatusOutlineToken status={event.flow.status} /></span>
                 </button>
               )) : <div className="px-4 py-5 text-sm text-[var(--app-text-muted)]">No scheduled flows yet.</div>}
             </div>
@@ -1349,7 +1351,7 @@ export function FlowsSettingsPage() {
 
         <aside className={cn(surfaceClass, 'flex flex-col p-5')}>
           <h2 className="text-base font-semibold text-[var(--app-text)]">Needs attention</h2>
-          <div className="mt-4 flex-1 divide-y divide-[var(--app-border)] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)]">
+          <div className="mt-4 flex-1 divide-y divide-[var(--app-border)] overflow-hidden border-y border-[var(--app-border)]">
             {attentionItems.length ? attentionItems.map((item) => (
               <button key={item.flow.id} type="button" onClick={() => setSelectedFlowID(item.flow.id)} className="flex w-full items-start gap-3 px-3 py-3 text-left transition hover:bg-[var(--app-surface-subtle)]">
                 <FlowStatusDot status={item.dotStatus} className="mt-1" />
@@ -1357,7 +1359,7 @@ export function FlowsSettingsPage() {
                   <span className="block truncate text-sm font-medium text-[var(--app-text)]">{item.flow.name}</span>
                   <span className="mt-1 block truncate text-xs text-[var(--app-text-muted)]">{item.meta}</span>
                 </span>
-                <StatusBadge status={item.flow.status} />
+                <StatusOutlineToken status={item.flow.status} />
               </button>
             )) : <div className="px-4 py-5 text-sm text-[var(--app-text-muted)]">No flows need attention.</div>}
           </div>
@@ -1385,7 +1387,7 @@ export function FlowsSettingsPage() {
         <div className="overflow-x-auto">
           <table data-testid="flows-table" className="w-full min-w-[840px] border-collapse text-left">
             <thead>
-              <tr className="border-b border-[var(--app-border)] bg-[var(--app-bg-inset)] text-[11px] uppercase tracking-[0.16em] text-[var(--app-text-muted)]">
+              <tr className="border-b border-[var(--app-border)] text-[11px] uppercase tracking-[0.16em] text-[var(--app-text-muted)]">
                 <th className="px-5 py-3 font-medium">Flow</th>
                 <th className="px-4 py-3 font-medium">Last run</th>
                 <th className="px-4 py-3 font-medium">Total</th>
