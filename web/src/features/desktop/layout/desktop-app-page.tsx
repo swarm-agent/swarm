@@ -575,20 +575,6 @@ function swarmTargetOpenURL(target: SwarmTarget): string {
   return (target.desktop_url?.trim() || target.backend_url?.trim() || '')
 }
 
-function swarmTargetShortName(target: SwarmTarget): string {
-  const label = (target.name || target.swarm_id || 'swarm').trim()
-  return label.length > 12 ? `${label.slice(0, 11)}…` : label
-}
-
-function swarmTargetInitials(target: SwarmTarget): string {
-  const label = (target.name || target.swarm_id || '?').trim()
-  const parts = label.split(/[\s._-]+/).filter(Boolean)
-  const initials = parts.length >= 2
-    ? `${parts[0]?.[0] ?? ''}${parts[1]?.[0] ?? ''}`
-    : label.slice(0, 2)
-  return initials.toUpperCase() || '?'
-}
-
 function flowAgentLabel(record: FlowSummaryRecord): string {
   return record.agent_detail?.name?.trim()
     || record.definition.agent.profile_name?.trim()
@@ -1619,6 +1605,7 @@ export function DesktopAppPage() {
     return { local, remote, offline }
   }, [localSwarmTargets.length, remoteSwarmTargets, selfSwarmTargets.length, sortedSwarmTargets])
   const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} remote${swarmTargetCounts.offline > 0 ? ` · ${swarmTargetCounts.offline} offline` : ''}`
+  const swarmTargetCountLabel = `${swarmTargets.length} ${swarmTargets.length === 1 ? 'swarm' : 'swarms'}`
   const workspaceCount = mergedSidebarWorkspaceEntries.length
   const sidebarFlows = useMemo(() => (flowsQuery.data ?? []).map(sidebarFlowRow), [flowsQuery.data])
   const flowCount = sidebarFlows.length
@@ -2429,154 +2416,6 @@ export function DesktopAppPage() {
     setSwarmMenu((current) => ({ open: !current.open }))
   }, [])
 
-  const renderSwarmOverflowButton = useCallback((count: number, label = 'more') => {
-    if (count <= 0) return null
-    return (
-      <button
-        type="button"
-        className="h-[18px] shrink-0 rounded border border-[var(--app-border)] px-1 font-inherit text-[9px] leading-none text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-        onClick={openSwarmMenu}
-        aria-expanded={swarmMenu.open}
-        title={`Show ${count} ${label}`}
-      >
-        +{count}
-      </button>
-    )
-  }, [openSwarmMenu, swarmMenu.open])
-
-  const renderSwarmTargetButton = useCallback((target: SwarmTarget, variant: 'pill' | 'plain' | 'avatar' | 'row' | 'tiny' = 'pill') => {
-    const statusLabel = swarmTargetStatusLabel(target)
-    const targetLabel = target.name || target.swarm_id
-    const shortLabel = swarmTargetShortName(target)
-    const openURL = swarmTargetOpenURL(target)
-    const clickHint = target.current || target.kind === 'self'
-      ? 'local master'
-      : target.online && openURL
-        ? 'open in new window'
-        : 'offline'
-    const title = `${targetLabel} · ${swarmKindLabel(target)} · ${statusLabel} · ${clickHint}`
-    const sharedClass = cn(
-      'font-inherit transition-[border-color,background-color,color,opacity] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
-      !target.online && !target.current && 'opacity-65',
-      target.current && 'text-[var(--app-text)]',
-    )
-
-    if (variant === 'avatar') {
-      return (
-        <button
-          key={target.swarm_id}
-          type="button"
-          className={cn(
-            sharedClass,
-            'grid h-[20px] w-[20px] shrink-0 place-items-center rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-[8px] font-semibold uppercase',
-            target.current && 'border-[color-mix(in_srgb,var(--app-success)_62%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-success)_12%,transparent)]',
-            target.kind === 'remote' && !target.current && 'border-[color-mix(in_srgb,var(--app-info)_50%,var(--app-border))]',
-          )}
-          onClick={() => { void handleSelectSwarmTarget(target) }}
-          aria-label={title}
-          title={title}
-        >
-          {swarmTargetInitials(target)}
-        </button>
-      )
-    }
-
-    if (variant === 'plain') {
-      return (
-        <button
-          key={target.swarm_id}
-          type="button"
-          className={cn(sharedClass, 'flex min-w-0 items-center gap-1 border-0 bg-transparent p-0 text-left text-[10px] text-[var(--app-text-muted)]')}
-          onClick={() => { void handleSelectSwarmTarget(target) }}
-          aria-label={title}
-          title={title}
-        >
-          <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-          <span className="truncate">{shortLabel}</span>
-          {!target.current && target.online && openURL ? <ExternalLink size={9} strokeWidth={1.8} className="shrink-0 opacity-70" /> : null}
-        </button>
-      )
-    }
-
-    if (variant === 'row') {
-      return (
-        <button
-          key={target.swarm_id}
-          type="button"
-          className={cn(sharedClass, 'flex min-h-[18px] min-w-0 items-center justify-between gap-2 rounded px-1 text-left text-[10px] text-[var(--app-text-muted)]')}
-          onClick={() => { void handleSelectSwarmTarget(target) }}
-          aria-label={title}
-          title={title}
-        >
-          <span className="flex min-w-0 items-center gap-1.5">
-            <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-            <span className="truncate">{shortLabel}</span>
-          </span>
-          <span className="shrink-0 text-[8px] uppercase text-[var(--app-text-subtle)]">{target.current ? 'here' : target.kind}</span>
-        </button>
-      )
-    }
-
-    if (variant === 'tiny') {
-      return (
-        <button
-          key={target.swarm_id}
-          type="button"
-          className={cn(sharedClass, 'flex h-[18px] min-w-0 shrink-0 items-center gap-1 rounded border border-[var(--app-border)] px-1 text-left text-[9px] text-[var(--app-text-muted)]')}
-          onClick={() => { void handleSelectSwarmTarget(target) }}
-          aria-label={title}
-          title={title}
-        >
-          <span className={cn('h-[4px] w-[4px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-          <span className="max-w-[54px] truncate">{shortLabel}</span>
-        </button>
-      )
-    }
-
-    return (
-      <button
-        key={target.swarm_id}
-        type="button"
-        className={cn(
-          sharedClass,
-          'group flex h-[22px] min-w-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_72%,transparent)] px-1.5 text-left text-[10px] text-[var(--app-text-muted)] hover:border-[var(--app-text-subtle)]',
-          target.current && 'border-[color-mix(in_srgb,var(--app-success)_58%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-success)_10%,transparent)]',
-        )}
-        onClick={() => { void handleSelectSwarmTarget(target) }}
-        aria-label={title}
-        title={title}
-      >
-        <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-        <span className="truncate">{shortLabel}</span>
-        {!target.current && target.online && openURL ? <ExternalLink size={10} strokeWidth={1.8} className="shrink-0 opacity-70" /> : null}
-      </button>
-    )
-  }, [handleSelectSwarmTarget])
-
-  const renderSwarmGroup = useCallback((label: string, targets: SwarmTarget[], variant: 'pill' | 'plain' | 'avatar' | 'row' | 'tiny' = 'tiny', limit = 3) => {
-    const visible = targets.slice(0, limit)
-    return (
-      <div className="flex min-w-0 items-center gap-1">
-        <span className="w-[38px] shrink-0 text-[8px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">{label}</span>
-        <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-          {visible.length > 0 ? visible.map((target) => renderSwarmTargetButton(target, variant)) : <span className="text-[9px] text-[var(--app-text-subtle)]">none</span>}
-          {renderSwarmOverflowButton(targets.length - visible.length, label)}
-        </span>
-      </div>
-    )
-  }, [renderSwarmOverflowButton, renderSwarmTargetButton])
-
-  const renderSwarmTargetRows = useCallback(() => {
-    const currentTargets = selfSwarmTargets.length > 0 ? selfSwarmTargets : sortedSwarmTargets.slice(0, 1)
-    const localAndSelfTargets = [...currentTargets, ...localSwarmTargets]
-    return (
-      <div className="grid gap-0.5">
-        {renderSwarmGroup('Local', localAndSelfTargets, 'plain', 4)}
-        {renderSwarmGroup('Remote', remoteSwarmTargets, 'plain', 4)}
-      </div>
-    )
-  }, [localSwarmTargets, remoteSwarmTargets, renderSwarmGroup, selfSwarmTargets, sortedSwarmTargets])
-
   const sidebarContent = (
     <>
       {sidebarCollapsed ? (
@@ -2674,10 +2513,10 @@ export function DesktopAppPage() {
                         className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                         onClick={handleOpenSwarmDashboard}
                         aria-label="Open swarm settings"
-                        title="Manage swarms"
+                        title={swarmTargetSummary}
                       >
                         <Bot size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                        <span className="min-w-0 truncate">Swarms</span>
+                        <span className="min-w-0 truncate">{swarmTargetCountLabel}</span>
                       </button>
                       <button
                         type="button"
