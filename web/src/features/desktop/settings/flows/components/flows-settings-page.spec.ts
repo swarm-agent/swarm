@@ -84,9 +84,15 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
 
   const exact = formToCreateInput({ ...baseForm, scheduleMode: 'cron', cronExpression: '0 9 * * Mon' }, targets, workspaces, agents)
   assert.equal(exact.schedule.cron, '0 9 * * Mon')
+  assert.equal(exact.schedule.cadence, 'daily')
+  assert.equal(exact.schedule.time, '09:00')
+  assert.deepEqual(exact.schedule.times, ['09:00'])
 
   const spreadDaily = formToCreateInput({ ...baseForm, dailyMode: 'times_between', dailyRunCount: '4', dailyWindowStart: '9:00 AM', dailyWindowEnd: '5:00 PM' }, targets, workspaces, agents)
   assert.deepEqual(spreadDaily.schedule.times, ['09:00', '11:40', '14:20', '17:00'])
+
+  const intervalDaily = formToCreateInput({ ...baseForm, dailyMode: 'interval_window', dailyIntervalHours: '3', dailyWindowStart: '9:00 AM', dailyWindowEnd: '5:00 PM' }, targets, workspaces, agents)
+  assert.deepEqual(intervalDaily.schedule.times, ['09:00', '12:00', '15:00'])
 
   const monthly = formToCreateInput({ ...baseForm, scheduleCadence: 'Monthly', scheduleDate: '15' }, targets, workspaces, agents)
   assert.equal(monthly.schedule.cadence, 'monthly')

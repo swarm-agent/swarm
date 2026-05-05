@@ -327,6 +327,57 @@ func TestFlowsV3CreateSchedulesMultipleTimesAndPreservesTimezone(t *testing.T) {
 	}
 }
 
+func TestFlowsV3CreateAcceptsModalWeeklyMultiDayAndRawCron(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	workspace := t.TempDir()
+	weeklyReq := flowV3UpsertRequest{
+		FlowID:  "flow-v3-weekly-multi-day",
+		Name:    "Weekly multi-day flow",
+		Enabled: boolPtr(true),
+		Target:  flow.TargetSelection{Kind: "self"},
+		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath: workspace,
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceWeekly, Time: "09:00", Times: []string{"09:00"}, Weekday: "Mon,Wed,Fri", Timezone: "UTC"},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Run weekly."},
+	}
+	weeklyRec := httptest.NewRecorder()
+	weeklyHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, weeklyReq))
+	weeklyHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(weeklyRec, weeklyHTTP)
+	if weeklyRec.Code != http.StatusCreated {
+		t.Fatalf("weekly create status = %d body=%s", weeklyRec.Code, weeklyRec.Body.String())
+	}
+	weeklyDefinition, ok, err := flows.GetDefinition("flow-v3-weekly-multi-day")
+	if err != nil || !ok {
+		t.Fatalf("weekly get definition ok=%v err=%v", ok, err)
+	}
+	if weeklyDefinition.Assignment.Schedule.Weekday != "Mon,Wed,Fri" {
+		t.Fatalf("weekly stored weekday = %q", weeklyDefinition.Assignment.Schedule.Weekday)
+	}
+	cronReq := weeklyReq
+	cronReq.FlowID = "flow-v3-raw-cron"
+	cronReq.Name = "Raw cron flow"
+	cronReq.Schedule = flow.ScheduleSpec{Cadence: flow.CadenceDaily, Time: "09:00", Times: []string{"09:00"}, Timezone: "UTC", Cron: "*/20 9-10 * * Mon-Fri"}
+	cronRec := httptest.NewRecorder()
+	cronHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, cronReq))
+	cronHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(cronRec, cronHTTP)
+	if cronRec.Code != http.StatusCreated {
+		t.Fatalf("cron create status = %d body=%s", cronRec.Code, cronRec.Body.String())
+	}
+	cronDefinition, ok, err := flows.GetDefinition("flow-v3-raw-cron")
+	if err != nil || !ok {
+		t.Fatalf("cron get definition ok=%v err=%v", ok, err)
+	}
+	if cronDefinition.Assignment.Schedule.Cron != "*/20 9-10 * * Mon-Fri" {
+		t.Fatalf("cron stored expression = %q", cronDefinition.Assignment.Schedule.Cron)
+	}
+}
+
 func TestFlowsV3CreatePersistsPendingSyncWhenTargetIsUnavailable(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)

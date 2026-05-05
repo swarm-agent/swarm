@@ -19,7 +19,7 @@ const (
 	CatchUpOnce = "once"
 	CatchUpAll  = "all"
 
-	maxScheduleTimes = 8
+	maxScheduleTimes = 48
 )
 
 func NormalizeCadence(cadence string) string {
@@ -64,19 +64,29 @@ func ValidateSchedule(spec ScheduleSpec) error {
 	spec = NormalizeScheduleSpec(spec)
 	cadence := spec.Cadence
 	switch cadence {
-	case CadenceDaily, CadenceWeekly, CadenceMonthly:
-	case CadenceOnDemand:
-		return nil
+	case CadenceDaily, CadenceWeekly, CadenceMonthly, CadenceOnDemand:
 	case "":
 		return errors.New("schedule cadence is required")
 	default:
 		return fmt.Errorf("unsupported schedule cadence %q", spec.Cadence)
 	}
+	if strings.TrimSpace(spec.Cron) != "" {
+		if strings.TrimSpace(spec.Timezone) == "" {
+			return errors.New("schedule timezone is required")
+		}
+		if _, err := time.LoadLocation(strings.TrimSpace(spec.Timezone)); err != nil {
+			return fmt.Errorf("load schedule timezone: %w", err)
+		}
+		if _, err := parseCronExpression(spec.Cron); err != nil {
+			return err
+		}
+		return nil
+	}
+	if cadence == CadenceOnDemand {
+		return nil
+	}
 	if strings.TrimSpace(spec.Timezone) == "" {
 		return errors.New("schedule timezone is required")
-	}
-	if err := validateCronExpression(spec.Cron); err != nil {
-		return err
 	}
 	if _, err := time.LoadLocation(strings.TrimSpace(spec.Timezone)); err != nil {
 		return fmt.Errorf("load schedule timezone: %w", err)
@@ -86,7 +96,7 @@ func ValidateSchedule(spec ScheduleSpec) error {
 	}
 	switch cadence {
 	case CadenceWeekly:
-		if _, err := parseWeekday(spec.Weekday); err != nil {
+		if _, err := parseWeekdays(spec.Weekday); err != nil {
 			return err
 		}
 	case CadenceMonthly:
@@ -166,12 +176,16 @@ func nextFireAfter(assignment Assignment, after time.Time) (time.Time, bool, err
 		return time.Time{}, false, err
 	}
 	cadence := NormalizeCadence(assignment.Schedule.Cadence)
-	if cadence == CadenceOnDemand {
-		return time.Time{}, false, nil
-	}
 	loc, err := time.LoadLocation(strings.TrimSpace(assignment.Schedule.Timezone))
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("load schedule timezone: %w", err)
+	}
+	if strings.TrimSpace(assignment.Schedule.Cron) != "" {
+		next, ok, err := nextCronFire(after, loc, assignment.Schedule.Cron)
+		return next, ok, err
+	}
+	if cadence == CadenceOnDemand {
+		return time.Time{}, false, nil
 	}
 	times, err := normalizedScheduleTimes(assignment.Schedule)
 	if err != nil {
@@ -182,11 +196,11 @@ func nextFireAfter(assignment Assignment, after time.Time) (time.Time, bool, err
 	case CadenceDaily:
 		return nextDailyFire(localAfter, after, loc, times), true, nil
 	case CadenceWeekly:
-		weekday, err := parseWeekday(assignment.Schedule.Weekday)
+		weekdays, err := parseWeekdays(assignment.Schedule.Weekday)
 		if err != nil {
 			return time.Time{}, false, err
 		}
-		return nextWeeklyFire(localAfter, after, loc, weekday, times), true, nil
+		return nextWeeklyFire(localAfter, after, loc, weekdays, times), true, nil
 	case CadenceMonthly:
 		return nextMonthlyFire(localAfter, after, loc, assignment.Schedule.MonthDay, times), true, nil
 	default:
@@ -205,17 +219,19 @@ func nextDailyFire(localAfter time.Time, after time.Time, loc *time.Location, ti
 	return firstScheduleTimeForDate(year, month, day, loc, times)
 }
 
-func nextWeeklyFire(localAfter time.Time, after time.Time, loc *time.Location, weekday time.Weekday, times []scheduleClock) time.Time {
-	daysUntil := (int(weekday) - int(localAfter.Weekday()) + 7) % 7
-	localCandidate := localAfter.AddDate(0, 0, daysUntil)
-	year, month, day := localCandidate.Date()
-	candidate := nextDayCandidate(year, month, day, after, loc, times)
-	if !candidate.IsZero() {
-		return candidate
+func nextWeeklyFire(localAfter time.Time, after time.Time, loc *time.Location, weekdays []time.Weekday, times []scheduleClock) time.Time {
+	for offset := 0; offset <= 7; offset++ {
+		localCandidate := localAfter.AddDate(0, 0, offset)
+		if !weekdaySelected(localCandidate.Weekday(), weekdays) {
+			continue
+		}
+		year, month, day := localCandidate.Date()
+		candidate := nextDayCandidate(year, month, day, after, loc, times)
+		if !candidate.IsZero() {
+			return candidate
+		}
 	}
-	localCandidate = localCandidate.AddDate(0, 0, 7)
-	year, month, day = localCandidate.Date()
-	return firstScheduleTimeForDate(year, month, day, loc, times)
+	return time.Time{}
 }
 
 func nextMonthlyFire(localAfter time.Time, after time.Time, loc *time.Location, monthDay int, times []scheduleClock) time.Time {
@@ -337,7 +353,7 @@ func NormalizeScheduleSpec(spec ScheduleSpec) ScheduleSpec {
 	spec.Weekday = strings.TrimSpace(spec.Weekday)
 	spec.Timezone = strings.TrimSpace(spec.Timezone)
 	spec.Cron = strings.TrimSpace(spec.Cron)
-	if spec.Cadence == CadenceOnDemand {
+	if spec.Cadence == CadenceOnDemand || spec.Cron != "" {
 		return spec
 	}
 	clocks, err := normalizedScheduleTimes(spec)
@@ -371,16 +387,195 @@ func parseScheduleClock(value string) (int, int, error) {
 	return hour, minute, nil
 }
 
-func validateCronExpression(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
+type cronExpression struct {
+	Minutes     map[int]struct{}
+	Hours       map[int]struct{}
+	MonthDays   map[int]struct{}
+	Months      map[int]struct{}
+	Weekdays    map[int]struct{}
+	AnyMonthDay bool
+	AnyWeekday  bool
+}
+
+func nextCronFire(after time.Time, loc *time.Location, expression string) (time.Time, bool, error) {
+	cron, err := parseCronExpression(expression)
+	if err != nil {
+		return time.Time{}, false, err
 	}
-	fields := strings.Fields(value)
+	local := after.In(loc).Truncate(time.Minute).Add(time.Minute)
+	limit := local.AddDate(5, 0, 0)
+	for cursor := local; !cursor.After(limit); cursor = cursor.Add(time.Minute) {
+		if cronMatches(cron, cursor.In(loc)) {
+			return cursor.UTC(), true, nil
+		}
+	}
+	return time.Time{}, false, errors.New("schedule cron has no next fire within 5 years")
+}
+
+func cronMatches(cron cronExpression, local time.Time) bool {
+	if !setContains(cron.Minutes, local.Minute()) || !setContains(cron.Hours, local.Hour()) || !setContains(cron.Months, int(local.Month())) {
+		return false
+	}
+	monthDayMatches := setContains(cron.MonthDays, local.Day())
+	weekdayMatches := setContains(cron.Weekdays, int(local.Weekday()))
+	if cron.AnyMonthDay && cron.AnyWeekday {
+		return true
+	}
+	if cron.AnyMonthDay {
+		return weekdayMatches
+	}
+	if cron.AnyWeekday {
+		return monthDayMatches
+	}
+	return monthDayMatches || weekdayMatches
+}
+
+func setContains(values map[int]struct{}, value int) bool {
+	_, ok := values[value]
+	return ok
+}
+
+func parseCronExpression(value string) (cronExpression, error) {
+	fields := strings.Fields(strings.TrimSpace(value))
 	if len(fields) != 5 {
-		return errors.New("schedule cron must contain 5 fields")
+		return cronExpression{}, errors.New("schedule cron must contain 5 fields")
 	}
-	return nil
+	minutes, _, err := parseCronField(fields[0], 0, 59, nil)
+	if err != nil {
+		return cronExpression{}, fmt.Errorf("schedule cron minute: %w", err)
+	}
+	hours, _, err := parseCronField(fields[1], 0, 23, nil)
+	if err != nil {
+		return cronExpression{}, fmt.Errorf("schedule cron hour: %w", err)
+	}
+	monthDays, anyMonthDay, err := parseCronField(fields[2], 1, 31, nil)
+	if err != nil {
+		return cronExpression{}, fmt.Errorf("schedule cron day-of-month: %w", err)
+	}
+	months, _, err := parseCronField(fields[3], 1, 12, cronMonthAliases())
+	if err != nil {
+		return cronExpression{}, fmt.Errorf("schedule cron month: %w", err)
+	}
+	weekdays, anyWeekday, err := parseCronField(fields[4], 0, 7, cronWeekdayAliases())
+	if err != nil {
+		return cronExpression{}, fmt.Errorf("schedule cron day-of-week: %w", err)
+	}
+	if _, ok := weekdays[7]; ok {
+		delete(weekdays, 7)
+		weekdays[0] = struct{}{}
+	}
+	return cronExpression{Minutes: minutes, Hours: hours, MonthDays: monthDays, Months: months, Weekdays: weekdays, AnyMonthDay: anyMonthDay, AnyWeekday: anyWeekday}, nil
+}
+
+func parseCronField(field string, min int, max int, aliases map[string]int) (map[int]struct{}, bool, error) {
+	values := make(map[int]struct{})
+	any := strings.TrimSpace(field) == "*"
+	for _, rawPart := range strings.Split(field, ",") {
+		part := strings.TrimSpace(rawPart)
+		if part == "" {
+			return nil, false, errors.New("empty field part")
+		}
+		rangePart, step := part, 1
+		if strings.Contains(part, "/") {
+			pieces := strings.Split(part, "/")
+			if len(pieces) != 2 || strings.TrimSpace(pieces[1]) == "" {
+				return nil, false, errors.New("invalid step")
+			}
+			rangePart = strings.TrimSpace(pieces[0])
+			parsedStep, err := strconv.Atoi(strings.TrimSpace(pieces[1]))
+			if err != nil || parsedStep <= 0 {
+				return nil, false, errors.New("step must be a positive integer")
+			}
+			step = parsedStep
+		}
+		start, end := min, max
+		if rangePart == "*" {
+			any = true
+		} else if strings.Contains(rangePart, "-") {
+			pieces := strings.Split(rangePart, "-")
+			if len(pieces) != 2 {
+				return nil, false, errors.New("invalid range")
+			}
+			var err error
+			start, err = parseCronValue(pieces[0], aliases)
+			if err != nil {
+				return nil, false, err
+			}
+			end, err = parseCronValue(pieces[1], aliases)
+			if err != nil {
+				return nil, false, err
+			}
+		} else {
+			parsed, err := parseCronValue(rangePart, aliases)
+			if err != nil {
+				return nil, false, err
+			}
+			start, end = parsed, parsed
+		}
+		if start < min || start > max || end < min || end > max || start > end {
+			return nil, false, fmt.Errorf("value must be between %d and %d", min, max)
+		}
+		for value := start; value <= end; value += step {
+			values[value] = struct{}{}
+		}
+	}
+	if len(values) == 0 {
+		return nil, false, errors.New("field has no values")
+	}
+	return values, any, nil
+}
+
+func parseCronValue(value string, aliases map[string]int) (int, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if aliases != nil {
+		if parsed, ok := aliases[trimmed]; ok {
+			return parsed, nil
+		}
+	}
+	parsed, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("invalid value %q", value)
+	}
+	return parsed, nil
+}
+
+func cronMonthAliases() map[string]int {
+	return map[string]int{"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+}
+
+func cronWeekdayAliases() map[string]int {
+	return map[string]int{"sun": 0, "mon": 1, "tue": 2, "tues": 2, "wed": 3, "thu": 4, "thur": 4, "thurs": 4, "fri": 5, "sat": 6}
+}
+
+func parseWeekdays(value string) ([]time.Weekday, error) {
+	parts := strings.Split(value, ",")
+	weekdays := make([]time.Weekday, 0, len(parts))
+	seen := make(map[time.Weekday]struct{}, len(parts))
+	for _, part := range parts {
+		weekday, err := parseWeekday(part)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[weekday]; ok {
+			continue
+		}
+		seen[weekday] = struct{}{}
+		weekdays = append(weekdays, weekday)
+	}
+	if len(weekdays) == 0 {
+		return nil, errors.New("schedule weekday is required")
+	}
+	sort.Slice(weekdays, func(i, j int) bool { return weekdays[i] < weekdays[j] })
+	return weekdays, nil
+}
+
+func weekdaySelected(value time.Weekday, weekdays []time.Weekday) bool {
+	for _, weekday := range weekdays {
+		if value == weekday {
+			return true
+		}
+	}
+	return false
 }
 
 func parseWeekday(value string) (time.Weekday, error) {

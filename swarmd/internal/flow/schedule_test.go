@@ -91,12 +91,58 @@ func TestValidateScheduleTimes(t *testing.T) {
 	if err := ValidateSchedule(ScheduleSpec{Cadence: "daily", Timezone: "UTC", Times: []string{"09:00", "25:00"}}); err == nil {
 		t.Fatal("expected invalid time to fail validation")
 	}
+	maxTimes := make([]string, maxScheduleTimes)
+	for i := range maxTimes {
+		maxTimes[i] = "09:00"
+	}
+	if err := ValidateSchedule(ScheduleSpec{Cadence: "daily", Timezone: "UTC", Times: maxTimes}); err != nil {
+		t.Fatalf("expected modal max times to validate: %v", err)
+	}
 	tooMany := make([]string, maxScheduleTimes+1)
 	for i := range tooMany {
 		tooMany[i] = "09:00"
 	}
 	if err := ValidateSchedule(ScheduleSpec{Cadence: "daily", Timezone: "UTC", Times: tooMany}); err == nil {
 		t.Fatal("expected too many times to fail validation")
+	}
+}
+
+func TestNextFireHandlesMultiDayWeeklySchedule(t *testing.T) {
+	assignment := testScheduleAssignment(ScheduleSpec{Cadence: "Weekly", Weekday: "Mon,Wed,Fri", Time: "10:00", Timezone: "UTC"})
+	next, ok, err := NextFire(assignment, time.Date(2025, 1, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil || !ok {
+		t.Fatalf("multi-day weekly next ok=%v err=%v", ok, err)
+	}
+	if want := time.Date(2025, 1, 8, 10, 0, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("multi-day weekly next = %s want %s", next, want)
+	}
+}
+
+func TestNextFireUsesCronAsSourceOfTruth(t *testing.T) {
+	assignment := testScheduleAssignment(ScheduleSpec{Cadence: "Daily", Time: "09:00", Times: []string{"09:00"}, Timezone: "UTC", Cron: "*/20 9-10 * * Mon-Fri"})
+	next, ok, err := NextFire(assignment, time.Date(2025, 1, 6, 9, 10, 0, 0, time.UTC))
+	if err != nil || !ok {
+		t.Fatalf("cron next ok=%v err=%v", ok, err)
+	}
+	if want := time.Date(2025, 1, 6, 9, 20, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("cron next = %s want %s", next, want)
+	}
+	assignment.Schedule.Cadence = "On demand"
+	next, ok, err = NextFire(assignment, time.Date(2025, 1, 6, 10, 50, 0, 0, time.UTC))
+	if err != nil || !ok {
+		t.Fatalf("cron on-demand next ok=%v err=%v", ok, err)
+	}
+	if want := time.Date(2025, 1, 7, 9, 0, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("cron on-demand next = %s want %s", next, want)
+	}
+}
+
+func TestValidateScheduleCronIsAuthoritative(t *testing.T) {
+	if err := ValidateSchedule(ScheduleSpec{Cadence: "Weekly", Timezone: "UTC", Cron: "0 9,13,17 * * Mon-Fri"}); err != nil {
+		t.Fatalf("cron without guided weekly weekday/time should validate: %v", err)
+	}
+	if err := ValidateSchedule(ScheduleSpec{Cadence: "Daily", Timezone: "UTC", Cron: "61 9 * * Mon"}); err == nil {
+		t.Fatal("expected invalid cron minute to fail validation")
 	}
 }
 
