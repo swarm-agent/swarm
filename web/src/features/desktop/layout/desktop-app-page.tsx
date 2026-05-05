@@ -2661,222 +2661,250 @@ export function DesktopAppPage() {
                   </SidebarActionRail>
                 </div>
 
-                <div className={cn(SIDEBAR_ACTION_ROW_CLASS, 'mt-[7px] min-h-[30px] pr-4 text-[11px] text-[var(--app-text-subtle)]')}>
-                  <div className="min-w-0" title={swarmTargetSummary}>
-                    {swarmTargets.length > 0 ? renderSwarmTargetRows() : (
+                <div className="mr-4 mt-[7px] grid gap-1 border border-[color-mix(in_srgb,var(--app-border)_62%,transparent)] bg-[var(--app-surface)] p-1 text-[11px] text-[var(--app-text-subtle)]">
+                  <div>
+                    <div
+                      className={cn(
+                        'grid min-h-[30px] w-full grid-cols-[minmax(0,1fr)_28px] items-center rounded-md text-[var(--app-text-muted)]',
+                        swarmMenu.open && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
+                      )}
+                    >
                       <button
                         type="button"
-                        className="flex h-[22px] min-w-0 items-center gap-1.5 overflow-hidden rounded-full border border-[var(--app-border)] px-1.5 text-left font-inherit text-[10px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                        className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                        onClick={handleOpenSwarmDashboard}
+                        aria-label="Open swarm settings"
+                        title="Manage swarms"
+                      >
+                        <Bot size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                        <span className="min-w-0 truncate">Swarms</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                         onClick={openSwarmMenu}
                         aria-expanded={swarmMenu.open}
-                        aria-label="Choose swarm target"
-                        title="Choose swarm target"
+                        aria-label={`${swarmMenu.open ? 'Collapse' : 'Expand'} swarm list`}
+                        title={`${swarmMenu.open ? 'Collapse' : 'Expand'} swarms`}
                       >
-                        <span className="truncate">No swarms</span>
+                        <ChevronDown size={13} strokeWidth={1.8} className={cn('transition-transform', swarmMenu.open && 'rotate-180')} />
                       </button>
-                    )}
-                  </div>
-                  <SidebarActionRail>
-                    <SidebarActionRailSpacer />
-                    <button
-                      type="button"
-                      className={SIDEBAR_ACTION_BUTTON_CLASS}
-                      onClick={handleOpenSwarmDashboard}
-                      aria-label="Add swarm"
-                      title="Add swarm"
-                    >
-                      <Plus size={14} strokeWidth={1.8} className="shrink-0" />
-                    </button>
-                  </SidebarActionRail>
-                </div>
-
-                {swarmMenu.open ? (
-                  <div className="mr-4 mt-1.5 border border-[var(--app-border)] bg-[var(--app-surface)] py-1">
-                    {swarmTargets.map((target) => {
-                      const openURL = swarmTargetOpenURL(target)
-                      const statusLabel = swarmTargetStatusLabel(target)
-                      return (
+                    </div>
+                    {swarmMenu.open ? (
+                      <div className="py-1 pl-5">
+                        {swarmTargets.length === 0 ? (
+                          <div className="px-2 py-1.5 text-[11px] text-[var(--app-text-subtle)]">No swarms.</div>
+                        ) : swarmTargets.map((target) => {
+                          const openURL = swarmTargetOpenURL(target)
+                          const statusLabel = swarmTargetStatusLabel(target)
+                          return (
+                            <button
+                              key={target.swarm_id}
+                              type="button"
+                              onClick={() => { void handleSelectSwarmTarget(target) }}
+                              className={cn(
+                                SIDEBAR_ACTION_ROW_CLASS,
+                                'min-h-[30px] w-full px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                                target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
+                                !target.online && !target.current && 'opacity-65',
+                              )}
+                              title={`${swarmKindLabel(target)} · ${statusLabel}${!target.current && target.online && openURL ? ' · open in new window' : ''}`}
+                            >
+                              <span className="flex min-w-0 items-center gap-2">
+                                <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
+                                <span className="truncate">{target.name}</span>
+                                {!target.current && target.online && openURL ? <ExternalLink size={11} strokeWidth={1.8} className="shrink-0 opacity-70" /> : null}
+                              </span>
+                              <span className="shrink-0 truncate text-right text-[10px] text-[var(--app-text-subtle)]">
+                                {swarmKindLabel(target)} · {statusLabel}
+                              </span>
+                            </button>
+                          )
+                        })}
+                        {swarmSwitchError ? <div className="mx-1 mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
                         <button
-                          key={target.swarm_id}
                           type="button"
-                          onClick={() => { void handleSelectSwarmTarget(target) }}
-                          className={cn(
-                            SIDEBAR_ACTION_ROW_CLASS,
-                            'min-h-[30px] w-full px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
-                            target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
-                            !target.online && !target.current && 'opacity-65',
-                          )}
-                          title={`${swarmKindLabel(target)} · ${statusLabel}${!target.current && target.online && openURL ? ' · open in new window' : ''}`}
+                          className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                          onClick={handleOpenSwarmDashboard}
                         >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-                            <span className="truncate">{target.name}</span>
-                            {!target.current && target.online && openURL ? <ExternalLink size={11} strokeWidth={1.8} className="shrink-0 opacity-70" /> : null}
-                          </span>
-                          <span className="shrink-0 truncate text-right text-[10px] text-[var(--app-text-subtle)]">
-                            {swarmKindLabel(target)} · {statusLabel}
-                          </span>
+                          <Plus size={14} className="shrink-0" />
+                          Add / manage swarms
                         </button>
-                      )
-                    })}
-                    {swarmSwitchError ? <div className="mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[10px] text-[var(--app-warning)]">{swarmSwitchError}</div> : null}
+                      </div>
+                    ) : null}
                   </div>
-                ) : null}
 
-                <div className="relative mr-4 mt-[7px] h-[13px] border-t border-[color-mix(in_srgb,var(--app-border)_54%,transparent)]">
-                  <button
-                    type="button"
-                    className="absolute left-1/2 top-0 grid h-[17px] w-[28px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-[color-mix(in_srgb,var(--app-border)_72%,transparent)] bg-[var(--app-surface)] text-[var(--app-text-subtle)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                    onClick={openSwarmMenu}
-                    aria-expanded={swarmMenu.open}
-                    aria-label="Show swarm target menu"
-                    title="Show swarm target menu"
-                  >
-                    <ChevronDown size={12} strokeWidth={1.8} className={cn('shrink-0', swarmMenu.open && 'rotate-180')} />
-                  </button>
-                </div>
+                  <div>
+                    <div
+                      className={cn(
+                        'grid min-h-[30px] w-full grid-cols-[minmax(0,1fr)_28px] items-center rounded-md text-[var(--app-text-muted)]',
+                        workspaceMenuOpen && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
+                      )}
+                    >
+                      <button
+                        type="button"
+                        className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                        onClick={handleOpenWorkspaceLauncher}
+                        aria-label="Open workspace settings"
+                        title="Workspace settings"
+                      >
+                        <Home size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                        <span className="min-w-0 truncate">{workspaceCount} workspaces</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                        onClick={handleToggleWorkspaceMenu}
+                        aria-expanded={workspaceMenuOpen}
+                        aria-label={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspace list`}
+                        title={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspaces`}
+                      >
+                        <ChevronDown size={13} strokeWidth={1.8} className={cn('transition-transform', workspaceMenuOpen && 'rotate-180')} />
+                      </button>
+                    </div>
+                    {workspaceMenuOpen ? (
+                      <div className="py-1 pl-5">
+                        {mergedSidebarWorkspaceEntries.length === 0 ? (
+                          <div className="px-2 py-1.5 text-[11px] text-[var(--app-text-subtle)]">No saved workspaces.</div>
+                        ) : mergedSidebarWorkspaceEntries.map((workspace) => {
+                          const hidden = workspaceLayout[workspace.path]?.hidden ?? false
+                          return (
+                            <div key={workspace.path} className={cn('group min-h-[30px] px-[7px] py-[5px] text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]', SIDEBAR_ACTION_ROW_CLASS)}>
+                              <button
+                                type="button"
+                                className="flex min-w-0 items-center gap-2 overflow-hidden text-left"
+                                onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)}
+                                title={workspace.path}
+                              >
+                                <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', hidden ? 'bg-[var(--app-text-subtle)]' : 'bg-[var(--app-success)]')} />
+                                <span className={cn('truncate', hidden && 'opacity-60')}>{workspace.workspaceName}</span>
+                              </button>
+                              <SidebarActionRail>
+                                <SidebarActionRailSpacer />
+                                <button
+                                  type="button"
+                                  className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)] opacity-0 hover:bg-[var(--app-surface-active)] group-hover:opacity-100')}
+                                  onClick={(e) => { e.stopPropagation(); toggleWorkspaceHidden(workspace.path) }}
+                                  aria-label={`${hidden ? 'Show' : 'Hide'} ${workspace.workspaceName} in sidebar`}
+                                  title={`${hidden ? 'Show' : 'Hide'} in sidebar`}
+                                >
+                                  {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                                </button>
+                              </SidebarActionRail>
+                            </div>
+                          )
+                        })}
+                        <button
+                          type="button"
+                          className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                          onClick={handleOpenWorkspaceLauncher}
+                        >
+                          <Home size={14} className="shrink-0" />
+                          Workspace settings
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
 
-                <div className="grid min-h-7 min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_52px] items-center gap-2.5 pr-4 text-[11px] text-[var(--app-text-subtle)]">
+                  <div>
+                    <div
+                      className={cn(
+                        'grid min-h-[30px] w-full grid-cols-[minmax(0,1fr)_28px] items-center rounded-md text-[var(--app-text-muted)]',
+                        flowMenuOpen && 'bg-[var(--app-surface-active)] text-[var(--app-text)]',
+                      )}
+                    >
+                      <button
+                        type="button"
+                        className="grid min-h-[30px] min-w-0 grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-l-md px-2 text-left font-inherit hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                        onClick={handleOpenFlowsSettings}
+                        aria-label="Open flow settings"
+                        title={flowSummary}
+                      >
+                        <Workflow size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                        <span className="min-w-0 truncate">{flowCount} flows</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="grid min-h-[30px] place-items-center rounded-r-md hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-progress disabled:opacity-70"
+                        onClick={handleToggleFlowMenu}
+                        disabled={flowsQuery.isFetching}
+                        aria-expanded={flowMenuOpen}
+                        aria-label={`${flowMenuOpen ? 'Collapse' : 'Expand'} flow list`}
+                        title={`${flowMenuOpen ? 'Collapse' : 'Expand'} flows`}
+                      >
+                        {flowsQuery.isFetching ? <LoaderCircle size={11} strokeWidth={1.8} className="animate-spin" /> : <ChevronDown size={13} strokeWidth={1.8} className={cn('transition-transform', flowMenuOpen && 'rotate-180')} />}
+                      </button>
+                    </div>
+                    {flowMenuOpen ? (
+                      <div className="py-1 pl-5">
+                        {flowsQuery.isLoading ? (
+                          <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">Loading flows…</div>
+                        ) : flowsQuery.isError ? (
+                          <div className="px-2 py-2 text-xs text-[var(--app-warning)]">Flows unavailable.</div>
+                        ) : sidebarFlows.length === 0 ? (
+                          <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No flows yet.</div>
+                        ) : sidebarFlows.slice(0, 8).map((flow) => {
+                          const busy = flowBusyID === flow.id
+                          return (
+                            <div key={flow.id} className="group grid min-h-[40px] grid-cols-[minmax(0,1fr)_58px] items-center gap-2 px-[7px] py-1.5 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+                              <button type="button" className="min-w-0 text-left" onClick={() => handleOpenFlow(flow)} title={flow.detail}>
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', sidebarFlowDotClass(flow.status))} />
+                                  <span className="truncate text-[var(--app-text)]">{flow.name}</span>
+                                </span>
+                                <span className="mt-1 block truncate text-[10px] leading-4 text-[var(--app-text-subtle)]">{sidebarFlowStatusLabel(flow.status)} · {flow.agent}</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="justify-self-end rounded border border-[var(--app-border)] px-1.5 py-1 text-[10px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-progress disabled:opacity-60"
+                                onClick={() => { void handleToggleFlowEnabled(flow) }}
+                                disabled={Boolean(flowBusyID)}
+                                aria-label={`${flow.enabled ? 'Pause' : 'Start'} ${flow.name}`}
+                                title={flow.enabled ? 'Pause flow' : 'Start flow'}
+                              >
+                                {busy ? <LoaderCircle size={11} className="animate-spin" /> : flow.enabled ? <Pause size={11} /> : <Play size={11} />}
+                              </button>
+                            </div>
+                          )
+                        })}
+                        {sidebarFlows.length > 8 ? <div className="px-2 py-1 text-[11px] text-[var(--app-text-subtle)]">+{sidebarFlows.length - 8} more on the Flow page</div> : null}
+                        {flowMenuError ? <div className="mx-1 mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
+                        <button
+                          type="button"
+                          className="mt-1 flex min-h-[30px] w-full items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                          onClick={handleOpenFlowsSettings}
+                        >
+                          <Workflow size={14} className="shrink-0" />
+                          Add / manage flows
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
                   <button
                     type="button"
-                    className="flex min-h-[22px] min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                    onClick={handleToggleWorkspaceMenu}
-                    aria-expanded={workspaceMenuOpen}
-                    aria-label={`${workspaceMenuOpen ? 'Collapse' : 'Expand'} workspace list`}
+                    className="grid min-h-[30px] grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    onClick={handleOpenTools}
+                    aria-label="Open Swarm Tools"
+                    title="Tools"
                   >
-                    <span className="truncate">{workspaceCount} workspaces</span>
-                    {workspaceMenuOpen ? <ChevronDown size={14} strokeWidth={1.8} className="shrink-0 rotate-180" /> : <ChevronDown size={14} strokeWidth={1.8} className="shrink-0" />}
+                    <LayoutGrid size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="truncate">Tools</span>
                   </button>
                   <button
                     type="button"
-                    className="flex min-h-[22px] min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent p-0 font-inherit text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                    onClick={handleToggleFlowMenu}
-                    aria-expanded={flowMenuOpen}
-                    aria-label={`${flowMenuOpen ? 'Collapse' : 'Expand'} flow list`}
-                    title={flowSummary}
+                    className="grid min-h-[30px] grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    onClick={() => handleOpenSettingsTab('agents')}
+                    aria-label="Open agent settings"
+                    title="Settings"
                   >
-                    <span className="truncate">{flowCount} flows</span>
-                    {flowsQuery.isFetching ? <LoaderCircle size={12} strokeWidth={1.8} className="shrink-0 animate-spin" /> : flowMenuOpen ? <ChevronDown size={14} strokeWidth={1.8} className="shrink-0 rotate-180" /> : <ChevronDown size={14} strokeWidth={1.8} className="shrink-0" />}
+                    <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                    <span className="truncate">Settings</span>
                   </button>
-                  <SidebarActionRail>
-                    <button
-                      type="button"
-                      className={SIDEBAR_ACTION_BUTTON_CLASS}
-                      onClick={handleOpenTools}
-                      aria-label="Open Swarm Tools"
-                      title="Tools"
-                    >
-                      <LayoutGrid size={14} strokeWidth={1.8} className="shrink-0" />
-                    </button>
-                    <button
-                      type="button"
-                      className={SIDEBAR_ACTION_BUTTON_CLASS}
-                      onClick={() => handleOpenSettingsTab('agents')}
-                      aria-label="Open agent settings"
-                      title="Settings"
-                    >
-                      <Settings size={14} strokeWidth={1.8} className="shrink-0" />
-                    </button>
-                  </SidebarActionRail>
                 </div>
               </div>
             </div>
 
-            {workspaceMenuOpen ? (
-              <div className="mt-2 flex flex-col border border-[var(--app-border)] bg-[var(--app-surface)] p-1 font-mono">
-                {mergedSidebarWorkspaceEntries.length === 0 ? (
-                  <div className="px-2 py-1.5 text-[11px] text-[var(--app-text-subtle)]">No saved workspaces.</div>
-                ) : mergedSidebarWorkspaceEntries.map((workspace) => {
-                  const hidden = workspaceLayout[workspace.path]?.hidden ?? false
-                  return (
-                    <div key={workspace.path} className={cn('group min-h-[30px] px-[7px] py-[5px] text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]', SIDEBAR_ACTION_ROW_CLASS)}>
-                      <button
-                        type="button"
-                        className="flex min-w-0 items-center gap-2 overflow-hidden text-left"
-                        onClick={() => handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)}
-                        title={workspace.path}
-                      >
-                        <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', hidden ? 'bg-[var(--app-text-subtle)]' : 'bg-[var(--app-success)]')} />
-                        <span className={cn('truncate', hidden && 'opacity-60')}>{workspace.workspaceName}</span>
-                      </button>
-                      <SidebarActionRail>
-                        <SidebarActionRailSpacer />
-                        <button
-                          type="button"
-                          className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-text-subtle)] opacity-0 hover:bg-[var(--app-surface-active)] group-hover:opacity-100')}
-                          onClick={(e) => { e.stopPropagation(); toggleWorkspaceHidden(workspace.path) }}
-                          aria-label={`${hidden ? 'Show' : 'Hide'} ${workspace.workspaceName} in sidebar`}
-                          title={`${hidden ? 'Show' : 'Hide'} in sidebar`}
-                        >
-                          {hidden ? <EyeOff size={14} /> : <Eye size={14} />}
-                        </button>
-                      </SidebarActionRail>
-                    </div>
-                  )
-                })}
-                <div className="my-1 h-px bg-[var(--app-border)]" />
-                <button
-                  type="button"
-                  className="flex min-h-[30px] items-center gap-2 px-[7px] py-[5px] text-left text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                  onClick={handleOpenWorkspaceLauncher}
-                >
-                  <Home size={14} className="shrink-0" />
-                  Workspace settings
-                </button>
-              </div>
-            ) : null}
-
-            {flowMenuOpen ? (
-              <div className="mt-2 flex flex-col border border-[var(--app-border)] bg-[var(--app-surface)] p-1 font-mono">
-                <div className="grid grid-cols-[minmax(0,1fr)_minmax(64px,0.7fr)_58px] gap-2 px-[7px] py-1.5 text-[10px] uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
-                  <span>Flow</span>
-                  <span>Agent</span>
-                  <span className="text-right">Run</span>
-                </div>
-                {flowsQuery.isLoading ? (
-                  <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">Loading flows…</div>
-                ) : flowsQuery.isError ? (
-                  <div className="px-2 py-2 text-xs text-[var(--app-warning)]">Flows unavailable.</div>
-                ) : sidebarFlows.length === 0 ? (
-                  <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No flows yet.</div>
-                ) : sidebarFlows.slice(0, 8).map((flow) => {
-                  const busy = flowBusyID === flow.id
-                  return (
-                    <div key={flow.id} className="group grid min-h-[40px] grid-cols-[minmax(0,1fr)_minmax(64px,0.7fr)_58px] items-center gap-2 px-[7px] py-1.5 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-                      <button type="button" className="min-w-0 text-left" onClick={() => handleOpenFlow(flow)} title={flow.detail}>
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', sidebarFlowDotClass(flow.status))} />
-                          <span className="truncate text-[var(--app-text)]">{flow.name}</span>
-                        </span>
-                        <span className="mt-1 block truncate text-[10px] leading-4 text-[var(--app-text-subtle)]">{sidebarFlowStatusLabel(flow.status)} · {flow.detail}</span>
-                      </button>
-                      <span className="truncate text-[11px]" title={flow.agent}>{flow.agent}</span>
-                      <button
-                        type="button"
-                        className="justify-self-end rounded border border-[var(--app-border)] px-1.5 py-1 text-[10px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-progress disabled:opacity-60"
-                        onClick={() => { void handleToggleFlowEnabled(flow) }}
-                        disabled={Boolean(flowBusyID)}
-                        aria-label={`${flow.enabled ? 'Pause' : 'Start'} ${flow.name}`}
-                        title={flow.enabled ? 'Pause flow' : 'Start flow'}
-                      >
-                        {busy ? <LoaderCircle size={11} className="animate-spin" /> : flow.enabled ? <Pause size={11} /> : <Play size={11} />}
-                      </button>
-                    </div>
-                  )
-                })}
-                {sidebarFlows.length > 8 ? <div className="px-2 py-1 text-[11px] text-[var(--app-text-subtle)]">+{sidebarFlows.length - 8} more on the Flow page</div> : null}
-                {flowMenuError ? <div className="mt-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
-                <div className="my-1 h-px bg-[var(--app-border)]" />
-                <button
-                  type="button"
-                  className="flex min-h-[34px] items-center gap-2 px-[7px] py-1.5 text-left text-sm text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                  onClick={handleOpenFlowsSettings}
-                >
-                  <Workflow size={14} className="shrink-0" />
-                  Add / manage flows
-                </button>
-              </div>
-            ) : null}
           </div>
           <div className="flex min-h-0 flex-1 flex-col">
             <div ref={sidebarBodyRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
