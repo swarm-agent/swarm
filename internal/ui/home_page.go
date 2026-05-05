@@ -113,8 +113,10 @@ type HomePage struct {
 	mcpModal                  mcpModalState
 	pendingMCPAction          *MCPModalAction
 	modelsModal               modelsModalState
+	modelsModalTargets        []clickTarget
 	pendingModelsAction       *ModelsModalAction
 	agentsModal               agentsModalState
+	agentsModalTargets        []clickTarget
 	pendingAgentsAction       *AgentsModalAction
 	voiceModal                voiceModalState
 	pendingVoiceAction        *VoiceModalAction
@@ -144,7 +146,18 @@ func NewHomePage(m model.HomeModel) *HomePage {
 }
 
 func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
-	if p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.modelsModal.Visible || p.agentsModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
+	if p == nil || ev == nil {
+		return
+	}
+	if p.modelsModal.Visible {
+		p.handleModelsModalMouse(ev)
+		return
+	}
+	if p.agentsModal.Visible {
+		p.handleAgentsModalMouse(ev)
+		return
+	}
+	if p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
 		return
 	}
 
@@ -418,6 +431,24 @@ func (p *HomePage) ChatOverlayVisible() bool {
 		p.agentsModal.Visible ||
 		p.voiceModal.Visible ||
 		p.themeModal.Visible
+}
+
+func (p *HomePage) HandleChatOverlayMouse(ev *tcell.EventMouse) bool {
+	if p == nil || ev == nil {
+		return false
+	}
+	switch {
+	case p.modelsModal.Visible:
+		p.handleModelsModalMouse(ev)
+		return true
+	case p.agentsModal.Visible:
+		p.handleAgentsModalMouse(ev)
+		return true
+	case p.ChatOverlayVisible():
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *HomePage) HandleChatOverlayKey(ev *tcell.EventKey) bool {

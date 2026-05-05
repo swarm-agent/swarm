@@ -122,6 +122,7 @@ func (p *HomePage) ShowModelsModal() {
 
 func (p *HomePage) HideModelsModal() {
 	p.modelsModal = modelsModalState{}
+	p.modelsModalTargets = p.modelsModalTargets[:0]
 	p.pendingModelsAction = nil
 }
 
@@ -207,6 +208,23 @@ func (p *HomePage) PopModelsModalAction() (ModelsModalAction, bool) {
 	action := *p.pendingModelsAction
 	p.pendingModelsAction = nil
 	return action, true
+}
+
+func (p *HomePage) registerModelsModalTarget(rect Rect, action string, index int, meta string) {
+	if action == "" || rect.W <= 0 || rect.H <= 0 {
+		return
+	}
+	p.modelsModalTargets = append(p.modelsModalTargets, clickTarget{Rect: rect, Action: action, Index: index, Meta: meta})
+}
+
+func (p *HomePage) modelsModalTargetAt(x, y int) (clickTarget, bool) {
+	for i := len(p.modelsModalTargets) - 1; i >= 0; i-- {
+		target := p.modelsModalTargets[i]
+		if target.Rect.Contains(x, y) {
+			return target, true
+		}
+	}
+	return clickTarget{}, false
 }
 
 func (p *HomePage) selectedModelsModalProviderID() string {
@@ -338,6 +356,94 @@ func (p *HomePage) handleModelsModalKey(ev *tcell.EventKey) {
 
 	if ev.Key() == tcell.KeyRune {
 		p.handleModelsModalRune(ev)
+	}
+}
+
+func (p *HomePage) handleModelsModalMouse(ev *tcell.EventMouse) bool {
+	if p == nil || ev == nil || !p.modelsModal.Visible {
+		return false
+	}
+	x, y := ev.Position()
+	buttons := ev.Buttons()
+	if buttons&tcell.WheelUp != 0 || buttons&tcell.WheelDown != 0 {
+		delta := -1
+		if buttons&tcell.WheelDown != 0 {
+			delta = 1
+		}
+		p.handleModelsModalMouseWheel(x, y, delta)
+		return true
+	}
+	if buttons&tcell.Button1 == 0 {
+		return true
+	}
+	target, ok := p.modelsModalTargetAt(x, y)
+	if !ok {
+		return true
+	}
+	p.activateModelsModalTarget(target)
+	return true
+}
+
+func (p *HomePage) handleModelsModalMouseWheel(x, y, delta int) {
+	if delta == 0 || p.modelsModal.AuthEditor != nil {
+		return
+	}
+	target, ok := p.modelsModalTargetAt(x, y)
+	if ok && target.Action == "models-provider" {
+		p.modelsModal.Focus = modelsModalFocusProviders
+	} else if ok && target.Action == "models-model" {
+		p.modelsModal.Focus = modelsModalFocusModels
+	}
+	p.moveModelsModalSelection(delta * 3)
+}
+
+func (p *HomePage) activateModelsModalTarget(target clickTarget) {
+	switch target.Action {
+	case "models-provider":
+		if target.Index < 0 || target.Index >= len(p.modelsModal.Providers) {
+			return
+		}
+		wasSelected := target.Index == p.modelsModal.SelectedProvider
+		p.modelsModal.Focus = modelsModalFocusProviders
+		p.modelsModal.SelectedProvider = target.Index
+		p.modelsModal.reconcileSelections()
+		if wasSelected {
+			p.handleModelsModalEnter()
+		} else if provider, ok := p.selectedModelsModalProvider(); ok {
+			p.modelsModal.Status = fmt.Sprintf("selected provider: %s", strings.ToLower(strings.TrimSpace(provider.ID)))
+			p.modelsModal.Error = ""
+		}
+	case "models-model":
+		if target.Index < 0 || target.Index >= len(p.modelsModal.Models) {
+			return
+		}
+		p.modelsModal.Focus = modelsModalFocusModels
+		p.modelsModal.SelectedModel = target.Index
+		p.handleModelsModalEnter()
+	case "models-search":
+		p.modelsModal.Focus = modelsModalFocusSearch
+		p.modelsModal.Status = "type to search models"
+		p.modelsModal.Error = ""
+	case "models-favorites":
+		p.modelsModal.FavoritesOnly = !p.modelsModal.FavoritesOnly
+		p.modelsModal.Focus = modelsModalFocusModels
+		p.modelsModal.reconcileSelections()
+		if p.modelsModal.FavoritesOnly {
+			p.modelsModal.Status = "Favorites filter: on"
+		} else {
+			p.modelsModal.Status = "Favorites filter: off"
+		}
+		p.modelsModal.Error = ""
+	case "models-auth-api":
+		if p.modelsModal.AuthEditor != nil {
+			p.modelsModal.AuthEditor.Step = modelsModalAuthEditorStepAPIKey
+		}
+	case "models-auth-label":
+		if p.modelsModal.AuthEditor != nil {
+			p.modelsModal.AuthEditor.Step = modelsModalAuthEditorStepLabel
+		}
+	case "models-auth-submit":
+		p.submitModelsModalAuthEditor()
 	}
 }
 
@@ -919,6 +1025,7 @@ func modelKey(providerID, modelID, contextMode string) string {
 }
 
 func (p *HomePage) drawModelsModal(s tcell.Screen) {
+	p.modelsModalTargets = p.modelsModalTargets[:0]
 	if !p.modelsModal.Visible {
 		return
 	}
@@ -991,7 +1098,13 @@ func (p *HomePage) drawModelsModal(s tcell.Screen) {
 		filterState = "on"
 	}
 	matchCount := len(p.modelsFilteredModelIndexes())
-	DrawText(s, rect.X+2, rect.Y+2, rect.W-4, p.theme.TextMuted, fmt.Sprintf("search: %s   favorites: %s   sort: favorites/newest   matches: %d", p.modelsModal.Search, filterState, matchCount))
+	metaLine := fmt.Sprintf("search: %s   favorites: %s   sort: favorites/newest   matches: %d", p.modelsModal.Search, filterState, matchCount)
+	DrawText(s, rect.X+2, rect.Y+2, rect.W-4, p.theme.TextMuted, metaLine)
+	p.registerModelsModalTarget(Rect{X: rect.X + 2, Y: rect.Y + 2, W: minInt(rect.W-4, maxInt(8, utf8.RuneCountInString("search: ")+utf8.RuneCountInString(p.modelsModal.Search))), H: 1}, "models-search", -1, "")
+	favNeedle := "favorites: " + filterState
+	if favX := strings.Index(metaLine, favNeedle); favX >= 0 {
+		p.registerModelsModalTarget(Rect{X: rect.X + 2 + favX, Y: rect.Y + 2, W: utf8.RuneCountInString(favNeedle), H: 1}, "models-favorites", -1, "")
+	}
 
 	listRect := Rect{X: rect.X + 1, Y: rect.Y + 3, W: rect.W - 2, H: rect.H - 6}
 	if listRect.W < 28 || listRect.H < 6 {
@@ -1087,7 +1200,9 @@ func (p *HomePage) drawModelsModalProviderPane(s tcell.Screen, rect Rect) {
 			health = "not runnable"
 		}
 		line := fmt.Sprintf("%s%s [%s]", prefix, provider.ID, health)
-		DrawText(s, rect.X+1, rowY, rect.W-2, style, clampEllipsis(line, rect.W-2))
+		rowRect := Rect{X: rect.X + 1, Y: rowY, W: rect.W - 2, H: 1}
+		DrawText(s, rowRect.X, rowRect.Y, rowRect.W, style, clampEllipsis(line, rowRect.W))
+		p.registerModelsModalTarget(rowRect, "models-provider", providerIdx, provider.ID)
 		rowY++
 	}
 	if len(p.modelsModal.Providers) == 0 {
@@ -1174,7 +1289,9 @@ func (p *HomePage) drawModelsModalModelPane(s tcell.Screen, rect Rect) {
 			active = " [active]"
 		}
 		title := fmt.Sprintf("%s[%s] %s%s", prefix, favorite, model.DisplayName(), active)
+		cardRect := Rect{X: rect.X + 1, Y: rowY, W: rect.W - 2, H: cardHeight}
 		DrawText(s, rect.X+1, rowY, rect.W-2, style, title)
+		p.registerModelsModalTarget(cardRect, "models-model", idx, modelKey(model.Provider, model.Model, model.ContextMode))
 		rowY++
 		if cardHeight > 1 {
 			info := modelsModalFeatureSummary(model)
@@ -1230,7 +1347,9 @@ func (p *HomePage) drawModelsModalAuthEditor(s tcell.Screen, parent Rect) {
 	if editor.Step == modelsModalAuthEditorStepAPIKey {
 		apiPrefix = "> "
 	}
-	DrawText(s, rect.X+2, rect.Y+3, rect.W-4, apiStyle, fmt.Sprintf("%sAPI Key: %s", apiPrefix, apiValue))
+	apiRect := Rect{X: rect.X + 2, Y: rect.Y + 3, W: rect.W - 4, H: 1}
+	DrawText(s, apiRect.X, apiRect.Y, apiRect.W, apiStyle, fmt.Sprintf("%sAPI Key: %s", apiPrefix, apiValue))
+	p.registerModelsModalTarget(apiRect, "models-auth-api", -1, editor.Provider)
 
 	labelValue := "(optional)"
 	labelStyle := p.theme.TextMuted
@@ -1242,9 +1361,13 @@ func (p *HomePage) drawModelsModalAuthEditor(s tcell.Screen, parent Rect) {
 	if editor.Step == modelsModalAuthEditorStepLabel {
 		labelPrefix = "> "
 	}
-	DrawText(s, rect.X+2, rect.Y+5, rect.W-4, labelStyle, fmt.Sprintf("%sName: %s", labelPrefix, labelValue))
+	labelRect := Rect{X: rect.X + 2, Y: rect.Y + 5, W: rect.W - 4, H: 1}
+	DrawText(s, labelRect.X, labelRect.Y, labelRect.W, labelStyle, fmt.Sprintf("%sName: %s", labelPrefix, labelValue))
+	p.registerModelsModalTarget(labelRect, "models-auth-label", -1, editor.Provider)
 	DrawText(s, rect.X+2, rect.Y+7, rect.W-4, p.theme.TextMuted, clampEllipsis("Saved key is set active immediately. Esc cancels.", rect.W-4))
-	DrawText(s, rect.X+2, rect.Y+8, rect.W-4, p.theme.TextMuted, clampEllipsis("Tab/↑/↓ switch field • Enter save", rect.W-4))
+	submitRect := Rect{X: rect.X + 2, Y: rect.Y + 8, W: rect.W - 4, H: 1}
+	DrawText(s, submitRect.X, submitRect.Y, submitRect.W, p.theme.TextMuted, clampEllipsis("Tab/↑/↓ switch field • Enter save", submitRect.W))
+	p.registerModelsModalTarget(submitRect, "models-auth-submit", -1, editor.Provider)
 }
 
 func emptyStringFallback(value, fallback string) string {

@@ -158,6 +158,7 @@ func (p *HomePage) ShowAgentsModal() {
 
 func (p *HomePage) HideAgentsModal() {
 	p.agentsModal = agentsModalState{}
+	p.agentsModalTargets = p.agentsModalTargets[:0]
 	p.pendingAgentsAction = nil
 }
 
@@ -363,6 +364,23 @@ func (p *HomePage) PopAgentsModalAction() (AgentsModalAction, bool) {
 	return action, true
 }
 
+func (p *HomePage) registerAgentsModalTarget(rect Rect, action string, index int, meta string) {
+	if action == "" || rect.W <= 0 || rect.H <= 0 {
+		return
+	}
+	p.agentsModalTargets = append(p.agentsModalTargets, clickTarget{Rect: rect, Action: action, Index: index, Meta: meta})
+}
+
+func (p *HomePage) agentsModalTargetAt(x, y int) (clickTarget, bool) {
+	for i := len(p.agentsModalTargets) - 1; i >= 0; i-- {
+		target := p.agentsModalTargets[i]
+		if target.Rect.Contains(x, y) {
+			return target, true
+		}
+	}
+	return clickTarget{}, false
+}
+
 func (p *HomePage) handleAgentsModalKey(ev *tcell.EventKey) {
 	if p.agentsModal.Editor != nil {
 		p.handleAgentsModalEditorKey(ev)
@@ -532,6 +550,98 @@ func (p *HomePage) handleAgentsModalRune(ev *tcell.EventKey) {
 		p.agentsModal.FilterMode = "subagent"
 		p.agentsModal.reconcileSelections()
 		p.agentsModal.Status = "filter: subagents"
+	}
+}
+
+func (p *HomePage) handleAgentsModalMouse(ev *tcell.EventMouse) bool {
+	if p == nil || ev == nil || !p.agentsModal.Visible {
+		return false
+	}
+	x, y := ev.Position()
+	buttons := ev.Buttons()
+	if buttons&tcell.WheelUp != 0 || buttons&tcell.WheelDown != 0 {
+		delta := -1
+		if buttons&tcell.WheelDown != 0 {
+			delta = 1
+		}
+		p.handleAgentsModalMouseWheel(x, y, delta)
+		return true
+	}
+	if buttons&tcell.Button1 == 0 {
+		return true
+	}
+	target, ok := p.agentsModalTargetAt(x, y)
+	if !ok {
+		return true
+	}
+	p.activateAgentsModalTarget(target)
+	return true
+}
+
+func (p *HomePage) handleAgentsModalMouseWheel(x, y, delta int) {
+	if delta == 0 {
+		return
+	}
+	if p.agentsModal.Editor != nil || p.agentsModal.Focus == agentsModalFocusDetails {
+		p.scrollAgentsModalDetail(delta * 3)
+		return
+	}
+	if target, ok := p.agentsModalTargetAt(x, y); ok {
+		switch target.Action {
+		case "agents-profile":
+			p.agentsModal.Focus = agentsModalFocusProfiles
+		case "agents-detail", "agents-editor-field":
+			p.agentsModal.Focus = agentsModalFocusDetails
+		}
+	}
+	if p.agentsModal.Focus == agentsModalFocusDetails {
+		p.scrollAgentsModalDetail(delta * 3)
+		return
+	}
+	p.agentsModal.Focus = agentsModalFocusProfiles
+	p.moveAgentsModalSelection(delta * 3)
+}
+
+func (p *HomePage) activateAgentsModalTarget(target clickTarget) {
+	switch target.Action {
+	case "agents-profile":
+		if target.Index < 0 || target.Index >= len(p.agentsModal.Profiles) {
+			return
+		}
+		wasSelected := target.Index == p.agentsModal.SelectedProfile && p.agentsModal.Focus == agentsModalFocusProfiles
+		p.agentsModal.Focus = agentsModalFocusProfiles
+		p.agentsModal.SelectedProfile = target.Index
+		p.agentsModal.DetailScroll = 0
+		p.clearAgentsModalDeleteConfirm()
+		if wasSelected {
+			p.handleAgentsModalEnter()
+		} else {
+			p.agentsModal.Status = fmt.Sprintf("selected profile: %s", p.selectedAgentsModalName())
+			p.agentsModal.Error = ""
+		}
+	case "agents-detail":
+		p.agentsModal.Focus = agentsModalFocusDetails
+		if target.Index >= 0 && target.Index < len(p.agentsModal.Profiles) {
+			p.agentsModal.SelectedProfile = target.Index
+		}
+	case "agents-editor-field":
+		editor := p.agentsModal.Editor
+		if editor == nil || target.Index < 0 || target.Index >= len(editor.Fields) {
+			return
+		}
+		editor.Selected = target.Index
+		editor.Editing = true
+		p.agentsModal.Focus = agentsModalFocusDetails
+		p.agentsModal.Status = fmt.Sprintf("editing %s", strings.ToLower(strings.TrimSpace(editor.Fields[target.Index].Label)))
+		p.agentsModal.Error = ""
+	case "agents-unsaved-save":
+		p.resolveAgentsModalUnsavedConfirm(true)
+	case "agents-unsaved-discard":
+		p.resolveAgentsModalUnsavedConfirm(false)
+	case "agents-search":
+		p.agentsModal.Focus = agentsModalFocusSearch
+		p.agentsModal.Status = "type to search agents"
+		p.agentsModal.Error = ""
 	}
 }
 
@@ -1381,6 +1491,7 @@ func agentMatchesQuery(profile AgentModalProfile, query string) bool {
 }
 
 func (p *HomePage) drawAgentsModal(s tcell.Screen) {
+	p.agentsModalTargets = p.agentsModalTargets[:0]
 	if !p.agentsModal.Visible {
 		return
 	}
@@ -1450,7 +1561,9 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 	}
 	meta := fmt.Sprintf("active primary: %s  |  policy version: %d  |  filter: %s", nonEmpty(p.agentsModal.ActivePrimary, "swarm"), p.agentsModal.Version, filter)
 	DrawText(s, rect.X+2, rect.Y+2, rect.W-4, p.theme.TextMuted, clampEllipsis(meta, rect.W-4))
-	DrawText(s, rect.X+2, rect.Y+3, rect.W-4, p.theme.TextMuted, clampEllipsis("search"+searchEdit+": "+p.agentsModal.Search, rect.W-4))
+	searchLine := "search" + searchEdit + ": " + p.agentsModal.Search
+	DrawText(s, rect.X+2, rect.Y+3, rect.W-4, p.theme.TextMuted, clampEllipsis(searchLine, rect.W-4))
+	p.registerAgentsModalTarget(Rect{X: rect.X + 2, Y: rect.Y + 3, W: minInt(rect.W-4, maxInt(8, utf8.RuneCountInString(searchLine))), H: 1}, "agents-search", -1, "")
 
 	bodyRect := Rect{X: rect.X + 1, Y: rect.Y + 4, W: rect.W - 2, H: rect.H - 7}
 	if bodyRect.W < 28 || bodyRect.H < 8 {
@@ -1526,8 +1639,10 @@ func (p *HomePage) drawAgentsModalUnsavedConfirm(s tcell.Screen, modal Rect) {
 	saveX := rect.X + 2
 	discardX := saveX + utf8.RuneCountInString(saveLabel) + 2
 	DrawText(s, saveX, buttonY, rect.W-4, saveStyle, saveLabel)
+	p.registerAgentsModalTarget(Rect{X: saveX, Y: buttonY, W: utf8.RuneCountInString(saveLabel), H: 1}, "agents-unsaved-save", -1, "")
 	if discardX < rect.X+rect.W-2 {
 		DrawText(s, discardX, buttonY, rect.W-(discardX-rect.X)-2, discardStyle, discardLabel)
+		p.registerAgentsModalTarget(Rect{X: discardX, Y: buttonY, W: utf8.RuneCountInString(discardLabel), H: 1}, "agents-unsaved-discard", -1, "")
 	}
 
 	hint := "Left/Right switch • Enter confirm • Esc cancel • y/n quick choice"
@@ -1608,11 +1723,11 @@ func (p *HomePage) drawAgentsModalListPane(s tcell.Screen, rect Rect) {
 			if p.agentsModalProfileIsUtility(profile.Name) {
 				nameLine += "  [Utility AI]"
 			}
-			lines = append(lines, agentsModalRenderLine{Text: clampEllipsis(nameLine, contentW), Style: lineStyle})
+			lines = append(lines, agentsModalRenderLine{Text: clampEllipsis(nameLine, contentW), Style: lineStyle, ProfileIdx: idx, ProfileTarget: true})
 
 			roleLine := fmt.Sprintf("    role: %s", agentsModalRoleSummary(profile, p.agentsModal.ActiveSubagent))
 			for _, line := range wrapAgentsModalWithPrefix("", roleLine, contentW) {
-				lines = append(lines, agentsModalRenderLine{Text: line, Style: metaStyle})
+				lines = append(lines, agentsModalRenderLine{Text: line, Style: metaStyle, ProfileIdx: idx, ProfileTarget: true})
 			}
 
 			modelLabel := agentsModalModelLabel(profile.Model)
@@ -1621,7 +1736,7 @@ func (p *HomePage) drawAgentsModalListPane(s tcell.Screen, rect Rect) {
 			}
 			modeLine := fmt.Sprintf("    mode: %s • model: %s • execution: %s", agentsModalModeLabel(profile.Mode), modelLabel, agentsModalExecutionSettingLabel(profile.ExecutionSetting))
 			for _, line := range wrapAgentsModalWithPrefix("", modeLine, contentW) {
-				lines = append(lines, agentsModalRenderLine{Text: line, Style: metaStyle})
+				lines = append(lines, agentsModalRenderLine{Text: line, Style: metaStyle, ProfileIdx: idx, ProfileTarget: true})
 			}
 		}
 	}
@@ -1654,7 +1769,11 @@ func (p *HomePage) drawAgentsModalListPane(s tcell.Screen, rect Rect) {
 		if lineIdx < 0 || lineIdx >= len(lines) {
 			break
 		}
-		DrawText(s, rect.X+2, rowY, contentW, lines[lineIdx].Style, clampEllipsis(lines[lineIdx].Text, contentW))
+		line := lines[lineIdx]
+		DrawText(s, rect.X+2, rowY, contentW, line.Style, clampEllipsis(line.Text, contentW))
+		if line.ProfileTarget {
+			p.registerAgentsModalTarget(Rect{X: rect.X + 2, Y: rowY, W: contentW, H: 1}, "agents-profile", line.ProfileIdx, "")
+		}
 		rowY++
 	}
 }
@@ -1728,10 +1847,10 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 			entryStart := len(lines)
 			fieldPrefix := fmt.Sprintf("%s %s: ", prefix, field.Label)
 			for _, line := range wrapAgentsModalWithPrefix(fieldPrefix, value, contentWidth) {
-				lines = append(lines, agentsModalRenderLine{Text: line, Style: style})
+				lines = append(lines, agentsModalRenderLine{Text: line, Style: style, FieldIdx: i, FieldTarget: true})
 			}
 			if len(lines) == entryStart {
-				lines = append(lines, agentsModalRenderLine{Text: fieldPrefix, Style: style})
+				lines = append(lines, agentsModalRenderLine{Text: fieldPrefix, Style: style, FieldIdx: i, FieldTarget: true})
 			}
 			optionListStart := -1
 			if i == editor.Selected && len(field.Options) > 0 {
@@ -1854,13 +1973,24 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 		if lineIdx < 0 || lineIdx >= len(lines) {
 			break
 		}
-		DrawText(s, rect.X+2, rowY+i, contentWidth, lines[lineIdx].Style, lines[lineIdx].Text)
+		line := lines[lineIdx]
+		lineY := rowY + i
+		DrawText(s, rect.X+2, lineY, contentWidth, line.Style, line.Text)
+		if line.FieldTarget {
+			p.registerAgentsModalTarget(Rect{X: rect.X + 2, Y: lineY, W: contentWidth, H: 1}, "agents-editor-field", line.FieldIdx, "")
+		} else if line.ProfileTarget {
+			p.registerAgentsModalTarget(Rect{X: rect.X + 2, Y: lineY, W: contentWidth, H: 1}, "agents-detail", line.ProfileIdx, "")
+		}
 	}
 }
 
 type agentsModalRenderLine struct {
-	Text  string
-	Style tcell.Style
+	Text          string
+	Style         tcell.Style
+	ProfileIdx    int
+	ProfileTarget bool
+	FieldIdx      int
+	FieldTarget   bool
 }
 
 func wrapAgentsModalWithPrefix(prefix, body string, width int) []string {

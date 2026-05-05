@@ -531,6 +531,9 @@ func (a *App) Run() error {
 				continue
 			}
 			if a.route == "chat" && a.home != nil && a.home.ChatOverlayVisible() {
+				if a.home.HandleChatOverlayMouse(e) {
+					a.consumeHomeOverlayActions()
+				}
 				dirty = true
 				continue
 			}
