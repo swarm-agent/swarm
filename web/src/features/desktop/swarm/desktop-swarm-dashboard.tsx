@@ -116,6 +116,40 @@ function formatUnderscoreLabel(value: string | null | undefined): string {
   return String(value ?? '').replace(/_/g, ' ')
 }
 
+function swarmRoleLabel(value: string | null | undefined): string {
+  const role = String(value ?? '').trim().toLowerCase()
+  switch (role) {
+    case 'child':
+      return 'Child'
+    case 'controller':
+    case 'parent':
+    case 'master':
+      return 'Master'
+    default:
+      return role ? formatUnderscoreLabel(role) : 'Swarm'
+  }
+}
+
+function remoteTailnetVisitURL(...candidates: Array<string | null | undefined>): string {
+  const raw = candidates.map((candidate) => String(candidate ?? '').trim()).find(Boolean) || ''
+  if (!raw) {
+    return ''
+  }
+  try {
+    const parsed = new URL(raw)
+    if (!parsed.hostname.includes('.ts.net')) {
+      return raw
+    }
+    parsed.port = ''
+    parsed.pathname = ''
+    parsed.search = ''
+    parsed.hash = ''
+    return parsed.toString().replace(/\/$/, '')
+  } catch {
+    return raw
+  }
+}
+
 function discoveredSwarmEndpoint(status: DesktopOnboardingStatus['discoveredSwarms'][number]): string {
   return status.tailnetURL || status.endpoint || status.dnsName || status.ips[0] || 'No endpoint reported'
 }
@@ -910,13 +944,17 @@ export function DesktopSwarmDashboard() {
   const discoveredSwarmsLoading = loading && onboardingStatus === null
   const localSwarmID = onboardingStatus?.config.swarmID || swarmState?.node.swarm_id || ''
   const localSwarmName = onboardingStatus?.config.swarmName || swarmState?.node.name || 'Local swarm'
-  const localGroupEditable = Boolean(group && group.group.hostSwarmID === localSwarmID)
+  const localSwarmRole = onboardingStatus?.config.swarmRole || swarmState?.node.role || (onboardingStatus?.config.child ? 'child' : 'master')
+  const localSwarmRoleLabel = swarmRoleLabel(localSwarmRole)
+  const localIsChild = localSwarmRoleLabel === 'Child'
+  const localGroupEditable = Boolean(group && group.group.hostSwarmID === localSwarmID && !localIsChild)
   const groupDisplayName = group?.group.name.trim() || 'Swarm group'
   const groupNetworkName = group?.group.networkName.trim() || ''
   const currentGroupID = group?.group.id.trim() || ''
   const groupMasterID = group?.group.hostSwarmID || ''
   const groupMasterName = group?.members.find((member) => member.swarmID === groupMasterID)?.name || 'Current master'
-  const localIsMaster = Boolean(localSwarmID && groupMasterID === localSwarmID)
+  const localIsMaster = Boolean(localSwarmID && groupMasterID === localSwarmID && !localIsChild)
+  const masterControlsDisabled = loading || busy || localIsChild || Boolean(group && !localIsMaster)
   const groupNameDirty = groupNameDraft.trim() !== (group?.group.name || '').trim()
   const localNameDirty = localNameDraft.trim() !== localSwarmName.trim()
   const frontendOrigin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -1560,13 +1598,14 @@ export function DesktopSwarmDashboard() {
                       {group ? `${group.members.length} members` : 'No current group returned yet.'}
                     </p>
                     <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-muted)]">
-                      <Badge tone={localIsMaster ? 'live' : 'neutral'}>{localIsMaster ? 'This device is master' : `Master: ${groupMasterName}`}</Badge>
+                      <Badge tone={localIsMaster ? 'live' : localIsChild ? 'warning' : 'neutral'}>This device is {localSwarmRoleLabel}</Badge>
+                      {!localIsMaster ? <Badge tone="neutral">Master: {groupMasterName}</Badge> : null}
                     </div>
                   </div>
                   <div className="flex flex-col items-start gap-2 md:items-end">
                     <Badge tone="neutral">{formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}</Badge>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" data-testid="swarm-dashboard-add-swarm" onClick={openAddSwarm} disabled={loading || busy}>
+                      <Button type="button" data-testid="swarm-dashboard-add-swarm" onClick={openAddSwarm} disabled={masterControlsDisabled} title={localIsChild ? 'Child swarms cannot add other swarms.' : undefined}>
                         <Plus size={14} />
                         Add swarm
                       </Button>
@@ -1583,7 +1622,8 @@ export function DesktopSwarmDashboard() {
                           }
                           openDeleteSwarms(baseDeleteSwarmCandidates.map((candidate) => candidate.selectionID), [])
                         }}
-                        disabled={loading || busy || remoteSessionsLoading || baseDeleteSwarmCandidates.length === 0}
+                        disabled={masterControlsDisabled || remoteSessionsLoading || baseDeleteSwarmCandidates.length === 0}
+                        title={localIsChild ? 'Child swarms cannot delete swarms from the group.' : undefined}
                       >
                         <Trash2 size={14} />
                         {baseDeleteSwarmCandidates.length > 1 ? 'Delete swarms' : 'Delete swarm'}
@@ -1597,7 +1637,8 @@ export function DesktopSwarmDashboard() {
                           }
                           void handleEnableSwarmMode()
                         }}
-                        disabled={loading || busy}
+                        disabled={masterControlsDisabled}
+                        title={localIsChild ? 'Child swarms cannot toggle master Swarm Mode controls.' : undefined}
                       >
                         {isSwarmMode ? 'Turn Off Swarm Mode' : 'Turn On Swarm Mode'}
                       </Button>
@@ -1618,6 +1659,7 @@ export function DesktopSwarmDashboard() {
                     {group.members.map((member) => {
                         const isLocalMember = member.swarmID === localSwarmID
                         const isMasterMember = member.swarmID === groupMasterID || member.membershipRole === 'host'
+                        const memberRoleLabel = isMasterMember ? 'Master' : swarmRoleLabel(member.swarmRole || 'child')
                         const attachedDeployment = groupDeploymentByChildSwarmID.get(member.swarmID) ?? null
                         const attachedRemoteSession = groupRemoteSessionByChildSwarmID.get(member.swarmID) ?? null
                         const attachedContainer = attachedDeployment
@@ -1638,7 +1680,7 @@ export function DesktopSwarmDashboard() {
                           || urlForHostPort(browserProtocol, browserHost, attachedDeployment?.backend_host_port || 0)
                         const childDesktopURL = attachedDeployment?.child_desktop_url
                           || urlForHostPort(browserProtocol, browserHost, attachedDeployment?.desktop_host_port || 0)
-                        const remoteTailnetURL = attachedRemoteSession?.remote_endpoint || attachedRemoteSession?.remote_tailnet_url || ''
+                        const remoteTailnetURL = remoteTailnetVisitURL(attachedRemoteSession?.remote_tailnet_url, attachedRemoteSession?.remote_endpoint)
                         const attachStatus = String(attachedDeployment?.attach_status ?? '').trim()
                         const attachFailed = attachStatus === 'failed'
                         const deploymentRunning = attachedDeployment?.status === 'running' || attachedDeployment?.status === 'attached'
@@ -1656,7 +1698,7 @@ export function DesktopSwarmDashboard() {
                           >
                             <div className={`flex flex-wrap items-center justify-between gap-3 border-b p-3 ${isLocalMember ? 'border-[color-mix(in_oklab,var(--app-primary)_20%,transparent)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}>
                               <div className="flex flex-wrap items-center gap-2 min-w-0">
-                                {isMasterMember ? <Badge tone="live">Master</Badge> : <Badge tone="neutral">Child</Badge>}
+                                <Badge tone={isMasterMember ? 'live' : 'neutral'}>{memberRoleLabel}</Badge>
                                 {isLocalMember ? <Badge tone="live">This device</Badge> : null}
                                 {attachedDeployment ? <Badge tone={attachFailed ? 'warning' : 'live'}>Container</Badge> : null}
                                 {!attachedDeployment && attachedRemoteSession ? <Badge tone={attachedRemoteActive ? 'live' : 'warning'}>Remote</Badge> : null}
@@ -1925,6 +1967,10 @@ export function DesktopSwarmDashboard() {
                                             : 'unknown'}
                                         </span>
                                       </div>
+                                      <div className="flex flex-col gap-1">
+                                        <span className="text-[var(--app-text-muted)]">Role</span>
+                                        <span className="font-medium text-[var(--app-text)]">{memberRoleLabel}</span>
+                                      </div>
                                       <div className="col-span-2 flex flex-col gap-1">
                                         <span className="text-[var(--app-text-muted)]">Child Swarm</span>
                                         <span className="font-medium text-[var(--app-text)] truncate">{member.swarmID}</span>
@@ -1942,7 +1988,7 @@ export function DesktopSwarmDashboard() {
                                       </div>
                                     ) : null}
 
-                                    <AccessURLRow label="Remote Endpoint" url={remoteTailnetURL} />
+                                    <AccessURLRow label="Child Tailscale URL" url={remoteTailnetURL} />
 
                                     {attachedRemoteSession?.last_error ? (
                                       <div className="mt-2 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-[var(--app-warning-text)] text-xs">

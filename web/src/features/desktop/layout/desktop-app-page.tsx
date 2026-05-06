@@ -548,9 +548,23 @@ function swarmKindDotClass(kind: SwarmTarget['kind'] | undefined, online = true)
   return 'bg-[var(--app-success)]'
 }
 
+function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): string {
+  const role = target?.role?.trim().toLowerCase() || ''
+  switch (role) {
+    case 'child':
+      return 'Child'
+    case 'controller':
+    case 'parent':
+    case 'master':
+      return 'Master'
+    default:
+      return role ? role.replace(/_/g, ' ') : 'Swarm'
+  }
+}
+
 function swarmKindLabel(target: SwarmTarget): string {
   if (target.kind === 'self') {
-    return 'Master'
+    return swarmRoleLabel(target)
   }
   return target.kind === 'remote' ? 'remote' : 'local'
 }
@@ -570,7 +584,23 @@ function swarmTargetStatusLabel(target: SwarmTarget): string {
 }
 
 function swarmTargetOpenURL(target: SwarmTarget): string {
-  return (target.desktop_url?.trim() || target.backend_url?.trim() || '')
+  const raw = target.desktop_url?.trim() || target.backend_url?.trim() || ''
+  if (!raw) {
+    return ''
+  }
+  try {
+    const parsed = new URL(raw)
+    if (parsed.hostname.includes('.ts.net')) {
+      parsed.port = ''
+      parsed.pathname = ''
+      parsed.search = ''
+      parsed.hash = ''
+      return parsed.toString().replace(/\/$/, '')
+    }
+  } catch {
+    return raw
+  }
+  return raw
 }
 
 function flowAgentLabel(record: FlowSummaryRecord): string {
@@ -1572,6 +1602,7 @@ export function DesktopAppPage() {
   const swarmTargets = swarmTargetsQuery.data?.targets ?? []
   const currentSwarmTarget = swarmTargets.find((target) => target.current) ?? null
   const swarmName = currentSwarmTarget?.name ?? swarmSettingsQuery.data?.name ?? 'Local'
+  const currentSwarmRoleLabel = swarmRoleLabel(currentSwarmTarget)
   const masterWorkspaceName = selectedWorkspace?.workspaceName ?? routeWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath ?? '')
   const sortedSwarmTargets = useMemo(() => [...swarmTargets]
     .sort((left, right) => {
@@ -2439,7 +2470,7 @@ export function DesktopAppPage() {
                   <div className="min-w-0">
                     <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
                     <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
-                      <strong className="font-medium text-[var(--app-text-muted)]">Master</strong> · {masterWorkspaceName}
+                      <strong className="font-medium text-[var(--app-text-muted)]">{currentSwarmRoleLabel}</strong> · {masterWorkspaceName}
                     </div>
                   </div>
                   <SidebarActionRail className={updateAttentionVisible ? '!w-[78px] !grid-cols-[24px_24px_24px]' : undefined}>
