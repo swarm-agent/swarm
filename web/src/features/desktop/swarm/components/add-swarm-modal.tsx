@@ -190,51 +190,6 @@ function currentGroup(status: DesktopOnboardingStatus | null) {
   return status.groups[0] ?? null
 }
 
-function preferredChildSwarmName(
-  onboardingStatus: DesktopOnboardingStatus | null,
-  groupNames: string[],
-): string {
-  const baseName = preferredChildSwarmBaseName(onboardingStatus)
-  const usedNames = new Set(
-    groupNames
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean),
-  )
-  if (!usedNames.has(baseName.toLowerCase())) {
-    return baseName
-  }
-  let suffix = 2
-  while (usedNames.has(`${baseName} ${suffix}`.toLowerCase())) {
-    suffix += 1
-  }
-  return `${baseName} ${suffix}`
-}
-
-function preferredChildSwarmBaseName(onboardingStatus: DesktopOnboardingStatus | null): string {
-  const swarmName = onboardingStatus?.config.swarmName.trim()
-  if (swarmName) {
-    return `${swarmName} child`
-  }
-  const dnsLabel = firstHostnameLabel(onboardingStatus?.network.tailscale.dnsName)
-  if (dnsLabel) {
-    return `${dnsLabel} child`
-  }
-  return 'New child swarm'
-}
-
-function firstHostnameLabel(value: string | null | undefined): string {
-  const trimmed = String(value ?? '').trim()
-  if (!trimmed) {
-    return ''
-  }
-  const withoutProtocol = trimmed.replace(/^[a-z]+:\/\//i, '')
-  const hostname = withoutProtocol.split('/')[0].trim().replace(/\.+$/, '')
-  if (!hostname) {
-    return ''
-  }
-  return hostname.split('.')[0]?.trim() ?? ''
-}
-
 function remoteReachableHostCandidate(target: string): string {
   const trimmed = String(target ?? '').trim()
   if (!trimmed) {

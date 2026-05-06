@@ -122,6 +122,35 @@ remote_deploy_sync_credential_url =
 EOF
 }
 
+swarm_startup_config_remove_obsolete_keys() {
+  local config_path tmp_path
+  config_path="$(swarm_startup_config_path)"
+  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarm-conf.XXXXXX")"
+  awk '
+    function trim(s) {
+      sub(/^[[:space:]]+/, "", s)
+      sub(/[[:space:]]+$/, "", s)
+      return s
+    }
+    {
+      split_pos = index($0, "=")
+      if (split_pos == 0) {
+        print
+        next
+      }
+      raw_key = trim(substr($0, 1, split_pos - 1))
+      if (raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
+        next
+      }
+      print
+    }
+  ' "${config_path}" >"${tmp_path}"
+  if ! cmp -s "${config_path}" "${tmp_path}"; then
+    cat "${tmp_path}" >"${config_path}"
+  fi
+  rm -f "${tmp_path}"
+}
+
 swarm_startup_config_has_key() {
   local key="${1:-}"
   local config_path
@@ -180,6 +209,7 @@ swarm_startup_config_migrate_legacy() {
   local port_value startup_mode_value dev_mode_value swarm_mode_value child_value network_mode_value advertise_host_value tailscale_url_value
   config_path="$(swarm_startup_config_path)"
   swarm_startup_config_ensure
+  swarm_startup_config_remove_obsolete_keys
 
   port_value="$(swarm_startup_config_raw_value port 2>/dev/null || true)"
   if [[ ! "${port_value}" =~ ^[0-9]+$ ]]; then
@@ -583,7 +613,7 @@ swarm_startup_config_validate() {
       if (raw_key == "") {
         fail(sprintf("invalid startup config %s: line %d: key must be non-empty", config_path, NR))
       }
-      if (raw_key == "webauth_enabled" || raw_key == "swarm_role" || raw_key == "swarm_id" || raw_key == "advertise_mode" || raw_key == "advertise_addr" || raw_key == "onboarding_state" || raw_key == "network_mode" || raw_key == "tailscale_transport_port") {
+      if (raw_key == "webauth_enabled" || raw_key == "swarm_role" || raw_key == "swarm_id" || raw_key == "advertise_mode" || raw_key == "advertise_addr" || raw_key == "onboarding_state" || raw_key == "network_mode" || raw_key == "tailscale_transport_port" || raw_key == "deploy_container_sync_skill_url" || raw_key == "deploy_container_sync_permission_url") {
         next
       }
       if (raw_key == "mode" && raw_value != "lan" && raw_value != "tailscale") {
