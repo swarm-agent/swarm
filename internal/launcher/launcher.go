@@ -45,10 +45,6 @@ type Profile struct {
 	SwarmState  string
 	StateRoot   string
 	DataDir     string
-	CacheDir    string
-	RuntimeDir  string
-	LogDir      string
-	ConfigDir   string
 	DBPath      string
 	LockPath    string
 	ManagerFile string
@@ -213,12 +209,7 @@ func LoadProfile(root, lane string, bypassOverride *bool) (Profile, error) {
 		}
 		root = filepath.Clean(absRoot)
 	}
-	storageRoots, err := defaultDaemonStorageRoots()
-	if err != nil {
-		return Profile{}, err
-	}
-	configDir := filepath.Join(storageRoots.ConfigDir, lane)
-	cfg, err := LoadStartupConfig(filepath.Join(configDir, "swarm.conf"))
+	cfg, err := LoadStartupConfig()
 	if err != nil {
 		return Profile{}, err
 	}
@@ -238,6 +229,14 @@ func LoadProfile(root, lane string, bypassOverride *bool) (Profile, error) {
 	if bypassOverride != nil {
 		bypass = *bypassOverride
 	}
+	stateHome, err := xdgStateHome()
+	if err != nil {
+		return Profile{}, err
+	}
+	configHome, err := xdgConfigHome()
+	if err != nil {
+		return Profile{}, err
+	}
 	dataHome, err := xdgDataHome()
 	if err != nil {
 		return Profile{}, err
@@ -245,11 +244,9 @@ func LoadProfile(root, lane string, bypassOverride *bool) (Profile, error) {
 	startupCWD, _ := os.Getwd()
 	startupCWD = filepath.Clean(startupCWD)
 	installRoot := swarmInstallRoot(dataHome)
-	dataDir := filepath.Join(storageRoots.DataDir, lane)
-	stateRoot := filepath.Join(storageRoots.RuntimeDir, lane)
-	logDir := filepath.Join(storageRoots.LogDir, lane)
-	cacheDir := filepath.Join(storageRoots.CacheDir, lane)
-	swarmState := stateRoot
+	swarmState := filepath.Join(stateHome, "swarm")
+	stateRoot := filepath.Join(swarmState, "swarmd", lane)
+	dataDir := filepath.Join(dataHome, "swarmd", lane)
 	webDir := ""
 	if root != "" {
 		webDir = filepath.Join(root, "web")
@@ -263,23 +260,19 @@ func LoadProfile(root, lane string, bypassOverride *bool) (Profile, error) {
 		URL:         fmt.Sprintf("http://%s:%d", cfg.Host, port),
 		LanePort:    port,
 		DesktopPort: desktopPort,
-		StateHome:   stateRoot,
-		ConfigHome:  configDir,
+		StateHome:   stateHome,
+		ConfigHome:  filepath.Join(configHome, "swarm"),
 		DataHome:    dataHome,
 		SwarmState:  swarmState,
 		StateRoot:   stateRoot,
 		DataDir:     dataDir,
-		CacheDir:    cacheDir,
-		RuntimeDir:  stateRoot,
-		LogDir:      logDir,
-		ConfigDir:   configDir,
 		DBPath:      filepath.Join(dataDir, "swarmd.pebble"),
 		LockPath:    filepath.Join(stateRoot, "swarmd.lock"),
 		ManagerFile: filepath.Join(stateRoot, "swarmd.manager.json"),
 		PIDFile:     filepath.Join(stateRoot, "swarmd.pid"),
-		LogFile:     filepath.Join(logDir, "swarmd.log"),
-		PortsDir:    filepath.Join(stateRoot, "ports"),
-		PortRecord:  filepath.Join(stateRoot, "ports", fmt.Sprintf("swarmd-%s.env", lane)),
+		LogFile:     filepath.Join(stateRoot, "swarmd.log"),
+		PortsDir:    filepath.Join(swarmState, "ports"),
+		PortRecord:  filepath.Join(swarmState, "ports", fmt.Sprintf("swarmd-%s.env", lane)),
 		BinDir:      swarmLaneBinDir(dataHome, lane),
 		ToolBinDir:  swarmToolBinDir(dataHome),
 		LibDir:      swarmLibDir(dataHome),
@@ -298,25 +291,34 @@ func LoadBuildProfile(root, lane string, bypassOverride *bool) (Profile, error) 
 	return LoadProfile(root, lane, bypassOverride)
 }
 
-func LoadStartupConfig(defaultPath string) (StartupConfig, error) {
-	path := strings.TrimSpace(os.Getenv("SWARM_STARTUP_CONFIG"))
-	if path == "" {
-		path = strings.TrimSpace(defaultPath)
-	} else {
-		resolved, err := startupconfig.ResolvePath()
-		if err != nil {
-			return StartupConfig{}, err
-		}
-		path = resolved
-	}
-	if path == "" {
-		return StartupConfig{}, errors.New("startup config path is required")
-	}
-	path, err := validateDaemonRootPath("startup config", path, forbiddenDaemonRoots())
+func LoadStartupConfig() (StartupConfig, error) {
+	path, err := startupconfig.ResolvePath()
 	if err != nil {
 		return StartupConfig{}, err
 	}
 	return startupconfig.Load(path)
+}
+
+func xdgConfigHome() (string, error) {
+	if v := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); v != "" {
+		return filepath.Clean(v), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config"), nil
+}
+
+func xdgStateHome() (string, error) {
+	if v := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); v != "" {
+		return filepath.Clean(v), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "state"), nil
 }
 
 func xdgDataHome() (string, error) {
@@ -341,175 +343,12 @@ func xdgBinHome() (string, error) {
 	return filepath.Join(home, ".local", "bin"), nil
 }
 
-type daemonStorageRoots struct {
-	DataDir    string
-	CacheDir   string
-	RuntimeDir string
-	LogDir     string
-	ConfigDir  string
-}
-
-func defaultDaemonStorageRoots() (daemonStorageRoots, error) {
-	var roots daemonStorageRoots
-	switch runtime.GOOS {
-	case "linux":
-		roots = daemonStorageRoots{
-			DataDir:    "/var/lib/swarmd/manual",
-			CacheDir:   "/var/cache/swarmd/manual",
-			RuntimeDir: "/run/swarmd/manual",
-			LogDir:     "/var/log/swarmd/manual",
-			ConfigDir:  "/etc/swarmd/manual",
-		}
-		applyDaemonRootEnv("STATE_DIRECTORY", &roots.DataDir)
-		applyDaemonRootEnv("CACHE_DIRECTORY", &roots.CacheDir)
-		applyDaemonRootEnv("RUNTIME_DIRECTORY", &roots.RuntimeDir)
-		applyDaemonRootEnv("LOGS_DIRECTORY", &roots.LogDir)
-		applyDaemonRootEnv("CONFIGURATION_DIRECTORY", &roots.ConfigDir)
-	case "darwin":
-		roots = daemonStorageRoots{
-			DataDir:    "/Library/Application Support/Swarm/swarmd/manual",
-			CacheDir:   "/Library/Caches/Swarm/swarmd/manual",
-			RuntimeDir: "/var/run/swarmd/manual",
-			LogDir:     "/Library/Logs/Swarm/swarmd/manual",
-			ConfigDir:  "/Library/Application Support/Swarm/swarmd/config/manual",
-		}
-	default:
-		return daemonStorageRoots{}, fmt.Errorf("unsupported platform %q for swarmd launcher storage roots", runtime.GOOS)
-	}
-	if err := validateDaemonStorageRoots(roots); err != nil {
-		return daemonStorageRoots{}, err
-	}
-	return roots, nil
-}
-
-func applyDaemonRootEnv(key string, dst *string) {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		*dst = value
-	}
-}
-
-func validateDaemonStorageRoots(roots daemonStorageRoots) error {
-	checks := []struct {
-		name string
-		path string
-	}{
-		{name: "data", path: roots.DataDir},
-		{name: "cache", path: roots.CacheDir},
-		{name: "runtime", path: roots.RuntimeDir},
-		{name: "log", path: roots.LogDir},
-		{name: "config", path: roots.ConfigDir},
-	}
-	for _, check := range checks {
-		if _, err := validateDaemonRootPath(check.name, check.path, forbiddenDaemonRoots()); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateDaemonRootPath(name, path string, forbidden []string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" || path == "." {
-		return "", fmt.Errorf("%s root directory is required", name)
-	}
-	if strings.HasPrefix(path, "~") {
-		return "", fmt.Errorf("%s root %q must not use home-relative paths", name, path)
-	}
-	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("%s root %q must be absolute", name, path)
-	}
-	if hasParentPathRef(path) {
-		return "", fmt.Errorf("%s root %q must not contain parent path escapes", name, path)
-	}
-	path = filepath.Clean(path)
-	if path == string(filepath.Separator) {
-		return "", fmt.Errorf("%s root must not be filesystem root", name)
-	}
-	if isUserConveniencePath(path) && !strings.HasPrefix(path, "/Library/") {
-		return "", fmt.Errorf("%s root %q must not be under forbidden user convenience directories", name, path)
-	}
-	for _, forbiddenRoot := range forbidden {
-		forbiddenRoot = filepath.Clean(strings.TrimSpace(forbiddenRoot))
-		if forbiddenRoot == "" || forbiddenRoot == "." || forbiddenRoot == string(filepath.Separator) {
-			continue
-		}
-		if pathWithinRoot(forbiddenRoot, path) {
-			return "", fmt.Errorf("%s root %q must not be under forbidden user/workspace root %q", name, path, forbiddenRoot)
-		}
-		if pathWithinRoot(path, forbiddenRoot) {
-			return "", fmt.Errorf("%s root %q must not be a parent of forbidden user/workspace root %q", name, path, forbiddenRoot)
-		}
-	}
-	return path, nil
-}
-
-func forbiddenDaemonRoots() []string {
-	keys := []string{"HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"}
-	roots := make([]string, 0, len(keys)+8)
-	for _, key := range keys {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			roots = append(roots, value)
-		}
-	}
-	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
-		roots = append(roots,
-			filepath.Join(home, ".local", "share"),
-			filepath.Join(home, ".cache"),
-			filepath.Join(home, ".local", "state"),
-			filepath.Join(home, ".config"),
-			filepath.Join(home, "Library"),
-			filepath.Join(home, "Desktop"),
-			filepath.Join(home, "Documents"),
-			filepath.Join(home, "Downloads"),
-		)
-	}
-	return roots
-}
-
-func hasParentPathRef(path string) bool {
-	for _, part := range strings.Split(path, string(filepath.Separator)) {
-		if part == ".." {
-			return true
-		}
-	}
-	return false
-}
-
-func isUserConveniencePath(path string) bool {
-	parts := strings.Split(filepath.ToSlash(filepath.Clean(path)), "/")
-	for _, part := range parts {
-		switch part {
-		case "Library", "Desktop", "Documents", "Downloads":
-			return true
-		}
-	}
-	return false
-}
-
-func pathWithinRoot(root, path string) bool {
-	root = filepath.Clean(root)
-	path = filepath.Clean(path)
-	if root == path {
-		return true
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
 func (p Profile) EnvMap() map[string]string {
 	env := map[string]string{
 		"SWARM_LANE":               p.Lane,
 		"SWARM_LANE_PORT":          strconv.Itoa(p.LanePort),
 		"SWARM_STATE_HOME":         p.SwarmState,
 		"SWARM_CONFIG_HOME":        p.ConfigHome,
-		"STATE_DIRECTORY":          p.DataDir,
-		"CACHE_DIRECTORY":          p.CacheDir,
-		"RUNTIME_DIRECTORY":        p.StateRoot,
-		"LOGS_DIRECTORY":           p.LogDir,
-		"CONFIGURATION_DIRECTORY":  p.ConfigDir,
 		"SWARM_STARTUP_CONFIG":     p.Startup.Path,
 		"SWARM_STARTUP_MODE":       p.Startup.Mode,
 		"SWARM_BYPASS_PERMISSIONS": boolString(p.Bypass),
@@ -1269,25 +1108,6 @@ func RunBackend(profile Profile, opts StartBackendOptions) error {
 	return cmd.Run()
 }
 
-func ensureDaemonRuntimeDirs(profile Profile) error {
-	checks := []struct {
-		label string
-		path  string
-	}{
-		{label: "data", path: profile.DataDir},
-		{label: "cache", path: profile.CacheDir},
-		{label: "runtime", path: profile.StateRoot},
-		{label: "log", path: profile.LogDir},
-		{label: "config", path: profile.ConfigDir},
-	}
-	for _, check := range checks {
-		if err := os.MkdirAll(check.path, 0o755); err != nil {
-			return fmt.Errorf("cannot create daemon %s directory %s: %w; install/start Swarm as a system service or set absolute safe storage root environment variables", check.label, check.path, err)
-		}
-	}
-	return nil
-}
-
 func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []string, error) {
 	if opts.DesktopPort == 0 {
 		opts.DesktopPort = profile.DesktopPort
@@ -1295,7 +1115,10 @@ func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []st
 	if opts.Bootstrap.HasAny() && profile.Startup.Exists {
 		return "", nil, startupconfig.BootstrapExistingConfigError(profile.Startup.Path)
 	}
-	if err := ensureDaemonRuntimeDirs(profile); err != nil {
+	if err := os.MkdirAll(profile.StateRoot, 0o755); err != nil {
+		return "", nil, err
+	}
+	if err := os.MkdirAll(profile.DataDir, 0o755); err != nil {
 		return "", nil, err
 	}
 	if err := os.MkdirAll(profile.BinDir, 0o755); err != nil {

@@ -38,15 +38,16 @@ type Config struct {
 }
 
 func Parse(args []string) (Config, error) {
-	roots, err := appstorage.DefaultRoots()
-	if err != nil {
-		return Config{}, err
-	}
-	configPath, err := daemonConfigPath(roots)
+	configPath, err := startupconfig.ResolvePath()
 	if err != nil {
 		return Config{}, err
 	}
 	startupCfg, err := startupconfig.Load(configPath)
+	if err != nil {
+		return Config{}, err
+	}
+
+	roots, err := appstorage.DefaultRoots()
 	if err != nil {
 		return Config{}, err
 	}
@@ -142,86 +143,6 @@ func Parse(args []string) (Config, error) {
 	}
 
 	return cfg, nil
-}
-
-func daemonConfigPath(roots appstorage.PlatformRoots) (string, error) {
-	path := ""
-	if strings.TrimSpace(os.Getenv("SWARM_STARTUP_CONFIG")) != "" {
-		resolved, err := startupconfig.ResolvePath()
-		if err != nil {
-			return "", err
-		}
-		path = resolved
-	} else {
-		if strings.TrimSpace(roots.ConfigDir) == "" {
-			return "", errors.New("daemon config root is required")
-		}
-		path = filepath.Join(roots.ConfigDir, "swarm.conf")
-	}
-	return validateDaemonConfigPath(path)
-}
-
-func validateDaemonConfigPath(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", errors.New("daemon config path is required")
-	}
-	if strings.HasPrefix(path, "~") {
-		return "", fmt.Errorf("daemon config path %q must not use home-relative paths", path)
-	}
-	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("daemon config path %q must be absolute", path)
-	}
-	path = filepath.Clean(path)
-	if path == string(filepath.Separator) {
-		return "", errors.New("daemon config path must not be filesystem root")
-	}
-	for _, forbidden := range forbiddenConfigRoots() {
-		forbidden = filepath.Clean(strings.TrimSpace(forbidden))
-		if forbidden == "" || forbidden == "." || forbidden == string(filepath.Separator) {
-			continue
-		}
-		if pathWithinRoot(forbidden, path) {
-			return "", fmt.Errorf("daemon config path %q must not be under forbidden user root %q", path, forbidden)
-		}
-	}
-	return path, nil
-}
-
-func forbiddenConfigRoots() []string {
-	keys := []string{"HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"}
-	roots := make([]string, 0, len(keys)+8)
-	for _, key := range keys {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			roots = append(roots, value)
-		}
-	}
-	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
-		roots = append(roots,
-			filepath.Join(home, ".local", "share"),
-			filepath.Join(home, ".cache"),
-			filepath.Join(home, ".local", "state"),
-			filepath.Join(home, ".config"),
-			filepath.Join(home, "Library"),
-			filepath.Join(home, "Desktop"),
-			filepath.Join(home, "Documents"),
-			filepath.Join(home, "Downloads"),
-		)
-	}
-	return roots
-}
-
-func pathWithinRoot(root, path string) bool {
-	root = filepath.Clean(root)
-	path = filepath.Clean(path)
-	if root == path {
-		return true
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func validateRuntimeMode(mode string) error {

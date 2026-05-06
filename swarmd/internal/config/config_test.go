@@ -7,8 +7,8 @@ import (
 )
 
 func TestParseUsesPlatformRootsByDefault(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "swarm.conf")
-	t.Setenv("SWARM_STARTUP_CONFIG", configPath)
+	configHome := filepath.Join(t.TempDir(), "xdg-config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
 
 	cfg, err := Parse(nil)
 	if err != nil {
@@ -24,21 +24,7 @@ func TestParseUsesPlatformRootsByDefault(t *testing.T) {
 	if cfg.LockPath != filepath.Join("/run/swarmd", "swarmd.lock") {
 		t.Fatalf("LockPath = %q", cfg.LockPath)
 	}
-	if cfg.ConfigPath != configPath {
-		t.Fatalf("ConfigPath = %q", cfg.ConfigPath)
-	}
-}
-
-func TestParseUsesConfigRootByDefault(t *testing.T) {
-	configRoot := filepath.Join(t.TempDir(), "config")
-	t.Setenv("SWARM_STARTUP_CONFIG", "")
-	t.Setenv("CONFIGURATION_DIRECTORY", configRoot)
-
-	cfg, err := Parse(nil)
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
-	}
-	if cfg.ConfigPath != filepath.Join(configRoot, "swarm.conf") {
+	if cfg.ConfigPath != filepath.Join(configHome, "swarm", "swarm.conf") {
 		t.Fatalf("ConfigPath = %q", cfg.ConfigPath)
 	}
 }
@@ -51,7 +37,7 @@ func TestParseUsesSystemdRootOverrides(t *testing.T) {
 	t.Setenv("RUNTIME_DIRECTORY", runtimeRoot)
 	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
 	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
-	t.Setenv("SWARM_STARTUP_CONFIG", filepath.Join(t.TempDir(), "swarm.conf"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
 
 	cfg, err := Parse(nil)
 	if err != nil {
@@ -72,7 +58,7 @@ func TestParseUsesSystemdRootOverrides(t *testing.T) {
 func TestParseRejectsUnsafeSystemdRootOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("SWARM_STARTUP_CONFIG", filepath.Join(t.TempDir(), "swarm.conf"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
 	t.Setenv("STATE_DIRECTORY", filepath.Join(home, ".local", "share", "swarmd"))
 
 	if _, err := Parse(nil); err == nil {
@@ -81,7 +67,8 @@ func TestParseRejectsUnsafeSystemdRootOverride(t *testing.T) {
 }
 
 func TestParsePreservesExplicitRuntimePathFlags(t *testing.T) {
-	t.Setenv("SWARM_STARTUP_CONFIG", filepath.Join(t.TempDir(), "swarm.conf"))
+	configHome := filepath.Join(t.TempDir(), "xdg-config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
 	originalCWD, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd() error = %v", err)
@@ -108,15 +95,5 @@ func TestParsePreservesExplicitRuntimePathFlags(t *testing.T) {
 	}
 	if cfg.LockPath != filepath.Join(cwd, "run", "swarmd.lock") {
 		t.Fatalf("LockPath = %q", cfg.LockPath)
-	}
-}
-
-func TestParseRejectsHomeDerivedStartupConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("SWARM_STARTUP_CONFIG", filepath.Join(home, ".config", "swarm", "swarm.conf"))
-
-	if _, err := Parse(nil); err == nil {
-		t.Fatal("Parse() accepted HOME-derived SWARM_STARTUP_CONFIG")
 	}
 }
