@@ -1620,30 +1620,44 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       id: 'tailscale' as const,
                       title: 'SSH + Tailscale',
                       text: 'Prepare the SSH/Tailscale remote image here, then the child calls back over the master tailnet URL.',
+                      disabled: false,
                     },
-                  ].map((option) => (
-                    <button
-                      key={option.id}
-                      type="button"
-                      data-testid={`add-swarm-method-${option.id}`}
-                      onClick={() => {
-                        setRemoteDeployMethod(option.id)
-                        setRemotePreflightSession(null)
-                        setRemotePreflightError(null)
-                        setRemotePreflightGuidance(null)
-                      }}
-                      className={optionClassName(remoteDeployMethod === option.id)}
-                      disabled={submitting || remotePreflightLoading}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-semibold text-[var(--app-text)]">{option.title}</div>
-                          <div className="mt-1 text-xs text-[var(--app-text-muted)]">{option.text}</div>
+                    {
+                      id: 'lan' as const,
+                      title: 'SSH + LAN / WireGuard',
+                      text: 'This feature is coming soon, please be patient!',
+                      disabled: true,
+                    },
+                  ].map((option) => {
+                    const active = remoteDeployMethod === option.id
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        data-testid={`add-swarm-method-${option.id}`}
+                        onClick={() => {
+                          if (option.disabled) {
+                            return
+                          }
+                          setRemoteDeployMethod(option.id)
+                          setRemotePreflightSession(null)
+                          setRemotePreflightError(null)
+                          setRemotePreflightGuidance(null)
+                        }}
+                        className={`${optionClassName(active, option.disabled)} ${option.disabled ? 'cursor-not-allowed grayscale' : ''}`}
+                        disabled={submitting || remotePreflightLoading || option.disabled}
+                        aria-disabled={option.disabled}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className={`text-sm font-semibold ${option.disabled ? 'text-[var(--app-text-muted)]' : 'text-[var(--app-text)]'}`}>{option.title}</div>
+                            <div className="mt-1 text-xs text-[var(--app-text-muted)]">{option.text}</div>
+                          </div>
+                          {active ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
                         </div>
-                        {remoteDeployMethod === option.id ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
-                      </div>
-                    </button>
-                  ))}
+                      </button>
+                    )
+                  })}
                 </div>
 
                 {savedRemoteSSHTargets.length > 0 ? (
