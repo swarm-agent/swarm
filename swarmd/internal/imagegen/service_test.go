@@ -47,12 +47,10 @@ func (f *fakeCodexImageClient) GenerateImage(_ context.Context, req codex.ImageG
 }
 
 func TestGenerateWorkspaceImageSessionBackendWritesOnePNGBeforeSuccess(t *testing.T) {
-	dataHome := filepath.Join(t.TempDir(), "data")
-	svc, threads, threadID, storagePath := newImageServiceTestHarnessWithDataHome(t, dataHome, &fakeCodexImageClient{result: codex.ImageGenerationResult{
+	svc, threads, threadID, storagePath, logPath := newImageServiceTestHarnessWithLogRoot(t, &fakeCodexImageClient{result: codex.ImageGenerationResult{
 		CallID:     "ig_test/../bad",
 		DecodedPNG: testPNGBytes(),
 	}})
-	logPath := filepath.Join(dataHome, "swarmd", "main", "imagegen.log")
 
 	result, err := svc.Generate(context.Background(), GenerateRequest{
 		Provider: ProviderCodexOpenAI,
@@ -86,7 +84,7 @@ func TestGenerateWorkspaceImageSessionBackendWritesOnePNGBeforeSuccess(t *testin
 		t.Fatalf("thread asset order = %#v, want generated asset", updated.ImageAssetOrder)
 	}
 	if updated.ImageFolders[0] != storagePath {
-		t.Fatalf("image folders = %#v, want app-managed storage first", updated.ImageFolders)
+		t.Fatalf("image folders = %#v, want daemon system-managed storage first", updated.ImageFolders)
 	}
 	if got, ok := updated.Metadata[assetPathMetadataKey].(string); !ok || got != storagePath {
 		t.Fatalf("metadata.%s = %#v, want %q", assetPathMetadataKey, updated.Metadata[assetPathMetadataKey], storagePath)
@@ -188,14 +186,12 @@ func TestGenerateRejectsPartialOnlyResultWithoutSaving(t *testing.T) {
 }
 
 func TestGenerateUsesProviderResultWithGeneratingStatusWithoutStreamRecovery(t *testing.T) {
-	dataHome := filepath.Join(t.TempDir(), "data")
 	client := &fakeCodexImageClient{result: codex.ImageGenerationResult{
 		CallID:           "ig_generating",
 		DecodedPNG:       testPNGBytes(),
 		ProviderResponse: map[string]any{"id": "resp_generating", "status": "generating"},
 	}}
-	svc, _, threadID, storagePath := newImageServiceTestHarnessWithDataHome(t, dataHome, client)
-	logPath := filepath.Join(dataHome, "swarmd", "main", "imagegen.log")
+	svc, _, threadID, storagePath, logPath := newImageServiceTestHarnessWithLogRoot(t, client)
 
 	result, err := svc.Generate(context.Background(), GenerateRequest{
 		Provider: ProviderCodexOpenAI,
@@ -411,12 +407,25 @@ func newImageServiceTestHarness(t *testing.T, result codex.ImageGenerationResult
 
 func newImageServiceTestHarnessWithClient(t *testing.T, client *fakeCodexImageClient) (*Service, *pebblestore.ImageThreadStore, string, string) {
 	t.Helper()
-	return newImageServiceTestHarnessWithDataHome(t, filepath.Join(t.TempDir(), "data"), client)
+	svc, threads, threadID, storagePath, _ := newImageServiceTestHarnessWithLogRoot(t, client)
+	return svc, threads, threadID, storagePath
 }
 
-func newImageServiceTestHarnessWithDataHome(t *testing.T, dataHome string, client *fakeCodexImageClient) (*Service, *pebblestore.ImageThreadStore, string, string) {
+func newImageServiceTestHarnessWithLogRoot(t *testing.T, client *fakeCodexImageClient) (*Service, *pebblestore.ImageThreadStore, string, string, string) {
 	t.Helper()
-	t.Setenv("XDG_DATA_HOME", dataHome)
+	stateRoot := filepath.Join(t.TempDir(), "state")
+	logRoot := filepath.Join(t.TempDir(), "logs")
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
+	t.Setenv("STATE_DIRECTORY", stateRoot)
+	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
+	t.Setenv("LOGS_DIRECTORY", logRoot)
+	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "store.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -438,7 +447,7 @@ func newImageServiceTestHarnessWithDataHome(t *testing.T, dataHome string, clien
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	return NewService(client, nil, threads), threads, threadID, storagePath
+	return NewService(client, nil, threads), threads, threadID, storagePath, filepath.Join(logRoot, "imagegen", "imagegen.log")
 }
 
 func assertSavedPNG(t *testing.T, storagePath string, assetPath string) {

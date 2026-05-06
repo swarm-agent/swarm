@@ -79,9 +79,10 @@ func sanitizeMessage(message string) string {
 
 // Path returns the durable image generation diagnostics log path.
 func Path() (string, error) {
-	dir, err := appstorage.DataDir("main")
+	roots, err := appstorage.DefaultRoots()
 	if err != nil {
 		return "", err
 	}
+	dir := filepath.Join(roots.LogDir, "imagegen")
 	return filepath.Join(dir, "imagegen.log"), nil
 }

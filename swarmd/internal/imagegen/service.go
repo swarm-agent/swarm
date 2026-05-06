@@ -472,7 +472,7 @@ func imageThreadStorageMetadata(existing map[string]any, storagePath string) map
 	metadata[assetPathMetadataKey] = storagePath
 	metadata["tool_kind"] = "image"
 	metadata["session_schema_version"] = 1
-	metadata["storage_area"] = "app_managed_workspace_bucket/tools/image/sessions"
+	metadata["storage_area"] = "daemon_system_managed_data_root/workspaces/tools/image/sessions"
 	return metadata
 }
 

@@ -34,7 +34,7 @@ func (r *Runtime) manageImageInspect(ctx context.Context, scope WorkspaceScope) 
 		"tool":               "manage-image",
 		"ready":              provider != "",
 		"mode":               "background_workspace_image_generation",
-		"storage_semantics":  "host_daemon_managed_workspace_image_session_storage",
+		"storage_semantics":  "daemon_system_managed_data_root_workspace_image_session_storage",
 		"providers":          caps.Providers,
 		"default_provider":   provider,
 		"default_model":      model,
@@ -171,7 +171,7 @@ func (r *Runtime) createManageImageThread(scope WorkspaceScope, args map[string]
 		"tool_storage_path":      storagePath,
 		"tool_kind":              "image",
 		"session_schema_version": 1,
-		"storage_area":           "app_managed_workspace_bucket/tools/image/sessions",
+		"storage_area":           "daemon_system_managed_data_root/workspaces/tools/image/sessions",
 		"created_by_tool":        "manage-image",
 	}
 	if purpose := strings.TrimSpace(asString(args["purpose"])); purpose != "" {

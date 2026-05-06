@@ -10,9 +10,12 @@ import (
 )
 
 func TestDeterministicSessionWorktreePathUsesPrivateWorkspaceCache(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "state"))
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("CACHE_DIRECTORY", cacheRoot)
+	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
+	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
+	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
 
 	repoRoot := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
@@ -34,6 +37,7 @@ func TestDeterministicSessionWorktreePathUsesPrivateWorkspaceCache(t *testing.T)
 	if strings.Contains(got, filepath.Join(repoRoot, ".swarm", "worktrees")) {
 		t.Fatalf("worktree path uses workspace-local .swarm path: %q", got)
 	}
+	assertPathUnderWorktreeTest(t, got, filepath.Join(cacheRoot, appstorage.WorkspacesDir))
 	info, err := os.Stat(wantRoot)
 	if err != nil {
 		t.Fatalf("stat cache root: %v", err)
@@ -44,7 +48,11 @@ func TestDeterministicSessionWorktreePathUsesPrivateWorkspaceCache(t *testing.T)
 }
 
 func TestDeterministicSessionWorktreePathRejectsUnsafeWorkspaceID(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
+	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
+	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
 	repoRoot := filepath.Join(t.TempDir(), "repo")
 
 	if _, err := deterministicSessionWorktreePath(repoRoot, "../escape"); err == nil {
@@ -83,7 +91,12 @@ func TestParseWorktreeListAndManagedPathFilter(t *testing.T) {
 }
 
 func TestEnsureWorktreeParentUsesPrivatePermissions(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("CACHE_DIRECTORY", cacheRoot)
+	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
+	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
+	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
 	repoRoot := filepath.Join(t.TempDir(), "repo")
 
 	if err := ensureWorktreeParent(repoRoot); err != nil {
@@ -93,11 +106,21 @@ func TestEnsureWorktreeParentUsesPrivatePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("worktreeCacheRoot: %v", err)
 	}
+	assertPathUnderWorktreeTest(t, parent, filepath.Join(cacheRoot, appstorage.WorkspacesDir))
 	info, err := os.Stat(parent)
 	if err != nil {
 		t.Fatalf("stat worktree parent: %v", err)
 	}
 	if got := info.Mode().Perm(); got != appstorage.PrivateDirPerm {
 		t.Fatalf("worktree parent permissions = %#o, want %#o", got, appstorage.PrivateDirPerm)
+	}
+}
+
+func assertPathUnderWorktreeTest(t *testing.T, path, prefix string) {
+	t.Helper()
+	path = filepath.Clean(path)
+	prefix = filepath.Clean(prefix)
+	if path != prefix && !strings.HasPrefix(path, prefix+string(filepath.Separator)) {
+		t.Fatalf("path %q is not under %q", path, prefix)
 	}
 }

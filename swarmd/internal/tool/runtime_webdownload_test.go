@@ -16,8 +16,18 @@ import (
 
 func TestWebDownloadDefaultUsesWorkspaceCacheBucket(t *testing.T) {
 	workspaceDir := t.TempDir()
-	cacheHome := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("CACHE_DIRECTORY", cacheRoot)
+	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
+	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
+	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -72,6 +82,9 @@ func TestWebDownloadDefaultUsesWorkspaceCacheBucket(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
 		t.Fatalf("decode output: %v\n%s", err, output)
 	}
+	if !strings.HasPrefix(filepath.Clean(wantDir), filepath.Clean(cacheRoot)+string(filepath.Separator)) {
+		t.Fatalf("download dir = %q, want under daemon cache root %q", wantDir, cacheRoot)
+	}
 	if got := filepath.Clean(decoded["output_dir"].(string)); got != filepath.Clean(wantDir) {
 		t.Fatalf("output_dir = %q, want %q", got, wantDir)
 	}
@@ -84,7 +97,17 @@ func TestWebDownloadDefaultUsesWorkspaceCacheBucket(t *testing.T) {
 
 func TestWebDownloadExplicitOutputDirRemainsWorkspaceRelative(t *testing.T) {
 	workspaceDir := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
+	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
+	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
