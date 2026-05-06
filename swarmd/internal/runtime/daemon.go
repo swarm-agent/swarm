@@ -130,7 +130,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, err
 	}
-	secretStore, err := pebblestore.Open(daemonSecretStorePath(cfg))
+	secretStore, err := pebblestore.Open(filepath.Join(cfg.DataDir, "swarmd-secrets.pebble"))
 	if err != nil {
 		_ = store.Close()
 		_ = lk.Release()
@@ -726,8 +726,4 @@ func shouldEnableLocalTransport(listenAddr string) bool {
 	}
 	host = strings.TrimSpace(strings.Trim(host, "[]"))
 	return host != ""
-}
-
-func daemonSecretStorePath(cfg config.Config) string {
-	return filepath.Join(cfg.DataDir, "swarmd-secrets.pebble")
 }

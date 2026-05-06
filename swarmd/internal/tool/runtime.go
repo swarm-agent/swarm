@@ -629,7 +629,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "webdownload",
-			Description: "Download full URL contents via Exa /contents to files when context would be too large; omitted output_dir uses daemon system-managed workspace cache storage",
+			Description: "Download full URL contents via Exa /contents to files when context would be too large; omitted output_dir uses the managed private workspace cache",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -650,7 +650,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"output_dir": map[string]any{
 						"type":        "string",
-						"description": "Workspace-relative or scoped absolute output directory. When omitted, uses the daemon system-managed workspace cache downloads bucket.",
+						"description": "Workspace-relative or scoped absolute output directory. When omitted, uses the managed private workspace cache downloads bucket.",
 					},
 					"filename_mode": map[string]any{
 						"type":        "string",

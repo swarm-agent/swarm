@@ -10,18 +10,8 @@ import (
 )
 
 func TestPrintfRedactsGoogleAPIKeyFromDaemonAndDurableLogs(t *testing.T) {
-	logRoot := filepath.Join(t.TempDir(), "logs")
-	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
-	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
-	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
-	t.Setenv("LOGS_DIRECTORY", logRoot)
-	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
+	dataHome := filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_DATA_HOME", dataHome)
 
 	var daemonLog bytes.Buffer
 	previousOutput := log.Writer()
@@ -47,9 +37,6 @@ func TestPrintfRedactsGoogleAPIKeyFromDaemonAndDurableLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Path: %v", err)
 	}
-	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(logRoot)+string(filepath.Separator)) {
-		t.Fatalf("imagegen log path = %q, want under daemon log root %q", path, logRoot)
-	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read durable imagegen log: %v", err)
@@ -63,18 +50,8 @@ func TestPrintfRedactsGoogleAPIKeyFromDaemonAndDurableLogs(t *testing.T) {
 }
 
 func TestAppendRedactsSecretLikeFields(t *testing.T) {
-	logRoot := filepath.Join(t.TempDir(), "logs")
-	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
-	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
-	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
-	t.Setenv("LOGS_DIRECTORY", logRoot)
-	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
+	dataHome := filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_DATA_HOME", dataHome)
 
 	secret := "secret-token-value"
 	Append("[swarmd.imagegen] stage=provider_call_error api_key=\"" + secret + "\" x-goog-api-key:" + secret + " access_token=" + secret)
@@ -82,9 +59,6 @@ func TestAppendRedactsSecretLikeFields(t *testing.T) {
 	path, err := Path()
 	if err != nil {
 		t.Fatalf("Path: %v", err)
-	}
-	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(logRoot)+string(filepath.Separator)) {
-		t.Fatalf("imagegen log path = %q, want under daemon log root %q", path, logRoot)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {

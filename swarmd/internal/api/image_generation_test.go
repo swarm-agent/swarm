@@ -19,17 +19,8 @@ import (
 )
 
 func TestHandleImageGenerationsStreamSerializesConcurrentEvents(t *testing.T) {
-	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
-	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
-	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
-	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
-	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
+	xdgDataHome := filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
 
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "image-generation.pebble"))
 	if err != nil {

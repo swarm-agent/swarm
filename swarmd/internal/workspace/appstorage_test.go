@@ -10,13 +10,13 @@ import (
 )
 
 func TestResolveCreatesManagedWorkspaceStorageMetadata(t *testing.T) {
-	dataRoot := filepath.Join(t.TempDir(), "state")
-	cacheRoot := filepath.Join(t.TempDir(), "cache")
-	t.Setenv("STATE_DIRECTORY", dataRoot)
-	t.Setenv("CACHE_DIRECTORY", cacheRoot)
-	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
-	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
-	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
+	xdgRoot := t.TempDir()
+	dataHome := filepath.Join(xdgRoot, "data")
+	cacheHome := filepath.Join(xdgRoot, "cache")
+	stateHome := filepath.Join(xdgRoot, "state")
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_STATE_HOME", stateHome)
 
 	workspacePath := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
@@ -36,9 +36,9 @@ func TestResolveCreatesManagedWorkspaceStorageMetadata(t *testing.T) {
 	if resolution.ManagedWorkspaceBucket == "" {
 		t.Fatalf("managed workspace bucket was not populated")
 	}
-	assertUnder(t, resolution.ManagedDataPath, filepath.Join(dataRoot, "workspaces", resolution.ManagedWorkspaceBucket))
-	assertUnder(t, resolution.ManagedCachePath, filepath.Join(cacheRoot, "workspaces", resolution.ManagedWorkspaceBucket))
-	assertUnder(t, resolution.ManagedStatePath, filepath.Join(dataRoot, "workspaces", resolution.ManagedWorkspaceBucket))
+	assertUnder(t, resolution.ManagedDataPath, filepath.Join(dataHome, "swarmd", "workspaces", resolution.ManagedWorkspaceBucket))
+	assertUnder(t, resolution.ManagedCachePath, filepath.Join(cacheHome, "swarmd", "workspaces", resolution.ManagedWorkspaceBucket))
+	assertUnder(t, resolution.ManagedStatePath, filepath.Join(stateHome, "swarmd", "workspaces", resolution.ManagedWorkspaceBucket))
 	for _, path := range []string{resolution.ManagedDataPath, resolution.ManagedCachePath, resolution.ManagedStatePath} {
 		if strings.Contains(path, filepath.Join(workspacePath, ".swarm")) {
 			t.Fatalf("managed path uses workspace .swarm: %q", path)

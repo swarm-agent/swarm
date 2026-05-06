@@ -15,18 +15,8 @@ import (
 )
 
 func TestHandleWorkspaceImageThreadsCreatesPrivateWorkspaceToolStorage(t *testing.T) {
-	dataRoot := filepath.Join(t.TempDir(), "data")
-	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
-	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
-	t.Setenv("STATE_DIRECTORY", dataRoot)
-	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
-	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
-	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
+	xdgDataHome := filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
 
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "image-threads.pebble"))
 	if err != nil {
@@ -76,7 +66,7 @@ func TestHandleWorkspaceImageThreadsCreatesPrivateWorkspaceToolStorage(t *testin
 	if err != nil {
 		t.Fatalf("WorkspaceDataDir: %v", err)
 	}
-	assertPrivateToolStoragePath(t, workspacePath, dataRoot, wantStoragePath, "image", thread.ID)
+	assertPrivateToolStoragePath(t, workspacePath, xdgDataHome, wantStoragePath, "image", thread.ID)
 	if len(thread.ImageFolders) != 2 || thread.ImageFolders[0] != wantStoragePath || thread.ImageFolders[1] != externalFolder {
 		t.Fatalf("image_folders = %q, want managed path then external folder", thread.ImageFolders)
 	}
@@ -97,18 +87,8 @@ func TestHandleWorkspaceImageThreadsCreatesPrivateWorkspaceToolStorage(t *testin
 }
 
 func TestHandleWorkspaceVideoThreadsCreatesPrivateWorkspaceToolStorage(t *testing.T) {
-	dataRoot := filepath.Join(t.TempDir(), "data")
-	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
-	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
-	t.Setenv("STATE_DIRECTORY", dataRoot)
-	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
-	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
-	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
+	xdgDataHome := filepath.Join(t.TempDir(), "data")
+	t.Setenv("XDG_DATA_HOME", xdgDataHome)
 
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "video-threads.pebble"))
 	if err != nil {
@@ -158,7 +138,7 @@ func TestHandleWorkspaceVideoThreadsCreatesPrivateWorkspaceToolStorage(t *testin
 	if err != nil {
 		t.Fatalf("WorkspaceDataDir: %v", err)
 	}
-	assertPrivateToolStoragePath(t, workspacePath, dataRoot, wantStoragePath, "video", thread.ID)
+	assertPrivateToolStoragePath(t, workspacePath, xdgDataHome, wantStoragePath, "video", thread.ID)
 	if len(thread.VideoFolders) != 2 || thread.VideoFolders[0] != wantStoragePath || thread.VideoFolders[1] != externalFolder {
 		t.Fatalf("video_folders = %q, want managed path then external folder", thread.VideoFolders)
 	}
@@ -244,13 +224,13 @@ func assertVideoThreadUpdateKeepsManagedToolStorage(t *testing.T, server *Server
 	}
 }
 
-func assertPrivateToolStoragePath(t *testing.T, workspacePath, dataRoot, storagePath, toolKind, threadID string) {
+func assertPrivateToolStoragePath(t *testing.T, workspacePath, xdgDataHome, storagePath, toolKind, threadID string) {
 	t.Helper()
 	bucket, err := appstorage.WorkspaceBucketName(workspacePath)
 	if err != nil {
 		t.Fatalf("WorkspaceBucketName: %v", err)
 	}
-	wantPrefix := filepath.Join(dataRoot, appstorage.WorkspacesDir, bucket)
+	wantPrefix := filepath.Join(xdgDataHome, appstorage.AppDirName, appstorage.WorkspacesDir, bucket)
 	wantPath := filepath.Join(wantPrefix, "tools", toolKind, "sessions", threadID)
 	if storagePath != wantPath {
 		t.Fatalf("storage path = %q, want %q", storagePath, wantPath)

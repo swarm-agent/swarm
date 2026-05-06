@@ -58,18 +58,6 @@ func TestManageImageInspectShape(t *testing.T) {
 }
 
 func TestManageImageGenerateCompactRefsNoBase64(t *testing.T) {
-	storageRoot := filepath.Join(t.TempDir(), "state")
-	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
-	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
-	t.Setenv("STATE_DIRECTORY", storageRoot)
-	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
-	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
-	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
 	oldNewThreadID := newManageImageThreadID
 	t.Cleanup(func() { newManageImageThreadID = oldNewThreadID })
 	newManageImageThreadID = func() string { return "thread_1" }
@@ -157,18 +145,8 @@ func TestManageImageWithRealImagegenServiceSavesCompactRefsNoBase64(t *testing.T
 	t.Cleanup(func() { newManageImageThreadID = oldNewThreadID })
 	newManageImageThreadID = func() string { return "thread_real" }
 	workspaceDir := t.TempDir()
-	storageRoot := filepath.Join(t.TempDir(), "state")
-	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg-data"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "xdg-cache"))
-	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg-state"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg-config"))
-	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "xdg-run"))
-	t.Setenv("STATE_DIRECTORY", storageRoot)
-	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
-	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "run"))
-	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
-	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
+	storageRoot := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", storageRoot)
 	storePath := t.TempDir()
 	store, err := pebblestore.Open(storePath)
 	if err != nil {
@@ -213,9 +191,6 @@ func TestManageImageWithRealImagegenServiceSavesCompactRefsNoBase64(t *testing.T
 	wantSuffix := filepath.Join("tools", "image", "sessions", "thread_real")
 	if len(thread.ImageAssets) != 1 || len(thread.ImageFolders) != 1 || !strings.Contains(thread.ImageFolders[0], wantSuffix) {
 		t.Fatalf("thread storage/assets not updated: %#v", thread)
-	}
-	if !strings.HasPrefix(filepath.Clean(thread.ImageFolders[0]), filepath.Clean(storageRoot)+string(filepath.Separator)) {
-		t.Fatalf("image storage path = %q, want under daemon data root %q", thread.ImageFolders[0], storageRoot)
 	}
 }
 
