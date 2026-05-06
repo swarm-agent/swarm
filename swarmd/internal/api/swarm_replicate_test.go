@@ -114,7 +114,7 @@ func TestSwarmReplicatePassesVaultPasswordThroughToDeployCreate(t *testing.T) {
 	}
 }
 
-func TestSwarmReplicateDefaultsSyncModulesToCredentialsOnly(t *testing.T) {
+func TestSwarmReplicateDefaultsSyncModulesToManagedDefaults(t *testing.T) {
 	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
 
 	recorder := postReplicateRequest(t, handler, map[string]any{
@@ -134,8 +134,14 @@ func TestSwarmReplicateDefaultsSyncModulesToCredentialsOnly(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
-	if got, want := fakeDeploy.lastCreateInput.SyncModules, []string{"credentials"}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := fakeDeploy.lastCreateInput.SyncModules, []string{"credentials", "agents", "custom_tools", "skills"}; len(got) != len(want) {
 		t.Fatalf("create sync modules = %#v, want %#v", got, want)
+	} else {
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("create sync modules = %#v, want %#v", got, want)
+			}
+		}
 	}
 }
 

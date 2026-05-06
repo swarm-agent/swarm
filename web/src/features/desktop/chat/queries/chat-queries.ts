@@ -19,6 +19,7 @@ import type {
 } from "../types/chat";
 import {
   applyDesktopChatRouteToSession,
+  desktopChatRouteFromSessionMetadata,
   type DesktopChatRoute,
   withDesktopChatRoute,
 } from "../services/chat-routing";
@@ -376,25 +377,7 @@ function mapSessionPlan(
 }
 
 function routeFromSessionMetadata(session: DesktopSessionRecord): DesktopChatRoute | null {
-  const metadata = session.metadata;
-  const swarmId = typeof metadata?.swarm_routed_child_swarm_id === "string" ? metadata.swarm_routed_child_swarm_id.trim() : "";
-  const hostWorkspacePath = typeof metadata?.swarm_routed_host_workspace_path === "string" ? metadata.swarm_routed_host_workspace_path.trim() : session.workspacePath;
-  const runtimeWorkspacePath = typeof metadata?.swarm_routed_runtime_workspace_path === "string" ? metadata.swarm_routed_runtime_workspace_path.trim() : session.runtimeWorkspacePath;
-  if (!swarmId || !runtimeWorkspacePath) {
-    return null;
-  }
-  const id = typeof metadata?.swarm_route_id === "string" && metadata.swarm_route_id.trim()
-    ? metadata.swarm_route_id.trim()
-    : `swarm:${swarmId}:${runtimeWorkspacePath}`;
-  return {
-    id,
-    label: typeof metadata?.swarm_target_name === "string" && metadata.swarm_target_name.trim() ? metadata.swarm_target_name.trim() : swarmId,
-    swarmId,
-    targetKind: typeof metadata?.swarm_target_kind === "string" ? metadata.swarm_target_kind.trim() : "",
-    hostWorkspacePath,
-    hostWorkspaceName: session.workspaceName,
-    runtimeWorkspacePath,
-  };
+  return desktopChatRouteFromSessionMetadata(session);
 }
 
 function mapSession(session: SessionWire): DesktopSessionRecord {

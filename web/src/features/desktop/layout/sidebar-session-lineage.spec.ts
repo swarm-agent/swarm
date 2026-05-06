@@ -143,7 +143,39 @@ test('flow background sessions expose target label and flow badge for sidebar ro
   })
 
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null })
-  assert.deepEqual(sessionBackgroundInfo(session, 'host'), { active: true, badge: 'flow', targetLabel: 'pc container' })
+  assert.deepEqual(sessionBackgroundInfo(session, 'host'), { active: true, badge: 'flow', targetLabel: 'host' })
+})
+
+test('background sessions prefer resolved route label over target metadata', () => {
+  const session = makeSession({
+    id: 'background-session',
+    metadata: {
+      launch_mode: 'background',
+      target_kind: 'background',
+      swarm_target_name: 'memory',
+      target_display_name: 'memory',
+    },
+    lifecycle: {
+      sessionId: 'background-session',
+      runId: 'run-background',
+      active: true,
+      phase: 'running',
+      startedAt: 1,
+      endedAt: 0,
+      updatedAt: 2,
+      generation: 1,
+      stopReason: null,
+      error: null,
+      ownerTransport: 'background_api',
+    },
+    live: {
+      ...makeSession().live,
+      status: 'running',
+      startedAt: 1,
+    },
+  })
+
+  assert.deepEqual(sessionBackgroundInfo(session, 'Remote Swarm'), { active: true, badge: 'background', targetLabel: 'Remote Swarm' })
 })
 
 test('session lineage keeps real subagent children labeled as subagents', () => {

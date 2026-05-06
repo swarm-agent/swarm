@@ -178,6 +178,7 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 		candidates = append(candidates, valid...)
 		invalidSkills = append(invalidSkills, invalid...)
 	}
+	appendSkillScan(filepath.Join(swarmConfig, managedSkillsDirName), "managed", "swarm-managed-skills", precedenceGlobalCompatible)
 	appendSkillScan(filepath.Join(swarmConfig, "skills"), "user-local", "swarm-user-skills", precedenceUserLocal)
 	appendSkillScan(filepath.Join(homeDir, ".agents", "skills"), "global-compatible", "agents-global-skills", precedenceGlobalCompatible)
 	appendSkillScan(filepath.Join(homeDir, ".claude", "skills"), "user-local", "claude-user-skills", precedenceUserLocal)

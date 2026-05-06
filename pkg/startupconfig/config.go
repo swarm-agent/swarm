@@ -78,6 +78,8 @@ type DeployContainerBootstrap struct {
 	SyncOwnerSwarmID         string
 	SyncCredentialURL        string
 	SyncAgentURL             string
+	SyncSkillURL             string
+	SyncPermissionURL        string
 	DeploymentID             string
 	HostAPIBaseURL           string
 	HostDesktopURL           string
@@ -422,6 +424,8 @@ deploy_container_sync_modules = %s
 deploy_container_sync_owner_swarm_id = %s
 deploy_container_sync_credential_url = %s
 deploy_container_sync_agent_url = %s
+deploy_container_sync_skill_url = %s
+deploy_container_sync_permission_url = %s
 deploy_container_deployment_id = %s
 deploy_container_host_api_base_url = %s
 deploy_container_host_desktop_url = %s
@@ -438,7 +442,7 @@ remote_deploy_sync_enabled = %t
 remote_deploy_sync_mode = %s
 remote_deploy_sync_owner_swarm_id = %s
 remote_deploy_sync_credential_url = %s
-`, cfg.Mode, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.SwarmMode, cfg.Child, cfg.NetworkMode, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
+`, cfg.Mode, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.SwarmMode, cfg.Child, cfg.NetworkMode, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.SyncSkillURL, cfg.DeployContainer.SyncPermissionURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -782,6 +786,20 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			rawSeen[key] = struct{}{}
 			seen["deploy_container_sync_agent_url"] = struct{}{}
 			cfg.DeployContainer.SyncAgentURL = strings.TrimSpace(value)
+		case "deploy_container_sync_skill_url":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["deploy_container_sync_skill_url"] = struct{}{}
+			cfg.DeployContainer.SyncSkillURL = strings.TrimSpace(value)
+		case "deploy_container_sync_permission_url":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["deploy_container_sync_permission_url"] = struct{}{}
+			cfg.DeployContainer.SyncPermissionURL = strings.TrimSpace(value)
 		case "deploy_container_deployment_id":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -1038,6 +1056,8 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			fmt.Sprintf("deploy_container_sync_owner_swarm_id = %s", cfg.DeployContainer.SyncOwnerSwarmID),
 			fmt.Sprintf("deploy_container_sync_credential_url = %s", cfg.DeployContainer.SyncCredentialURL),
 			fmt.Sprintf("deploy_container_sync_agent_url = %s", cfg.DeployContainer.SyncAgentURL),
+			fmt.Sprintf("deploy_container_sync_skill_url = %s", cfg.DeployContainer.SyncSkillURL),
+			fmt.Sprintf("deploy_container_sync_permission_url = %s", cfg.DeployContainer.SyncPermissionURL),
 			fmt.Sprintf("deploy_container_deployment_id = %s", cfg.DeployContainer.DeploymentID),
 			fmt.Sprintf("deploy_container_host_api_base_url = %s", cfg.DeployContainer.HostAPIBaseURL),
 			fmt.Sprintf("deploy_container_host_desktop_url = %s", cfg.DeployContainer.HostDesktopURL),
@@ -1096,12 +1116,12 @@ func validate(cfg FileConfig) error {
 }
 
 func requiredKeys() []string {
-	return []string{startupModeKey, devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "swarm_name", swarmModeKey, "child", bootstrapModeKey, "tailscale_url", "peer_transport_port", "parent_swarm_id", "pairing_state", "deploy_container_enabled", "deploy_container_sync_enabled", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_enabled", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_enabled", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url"}
+	return []string{startupModeKey, devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "swarm_name", swarmModeKey, "child", bootstrapModeKey, "tailscale_url", "peer_transport_port", "parent_swarm_id", "pairing_state", "deploy_container_enabled", "deploy_container_sync_enabled", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_sync_skill_url", "deploy_container_sync_permission_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_enabled", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_enabled", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url"}
 }
 
 func allowsEmptyValue(key string) bool {
 	switch key {
-	case devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id", "parent_swarm_id", "pairing_state", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url":
+	case devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id", "parent_swarm_id", "pairing_state", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_sync_skill_url", "deploy_container_sync_permission_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url":
 		return true
 	default:
 		return false

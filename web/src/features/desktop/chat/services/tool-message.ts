@@ -466,24 +466,43 @@ function expandEditPreviewLines(value: string, truncated: boolean): string[] {
   return lines;
 }
 
+function editDiffHunkFromPayload(
+  payload: Record<string, unknown>,
+  fallbackIndex: number,
+): EditDiffPreview["hunks"][number] | null {
+  const oldPreviewRaw = jsonStr(payload, "old_string_preview");
+  const newPreviewRaw = jsonStr(payload, "new_string_preview");
+  if (!oldPreviewRaw && !newPreviewRaw) return null;
+  const oldTruncated = jsonBool(payload, "old_string_truncated");
+  const newTruncated = jsonBool(payload, "new_string_truncated");
+  return {
+    index: Math.max(1, jsonNum(payload, "index") || fallbackIndex),
+    oldLines: expandEditPreviewLines(oldPreviewRaw || "(empty)", oldTruncated),
+    newLines: expandEditPreviewLines(newPreviewRaw || "(empty)", newTruncated),
+    oldTruncated,
+    newTruncated,
+  };
+}
+
 function extractEditDiff(
   outputJson: Record<string, unknown> | null,
 ): EditDiffPreview | null {
   if (!outputJson) return null;
-  const oldPreviewRaw = jsonStr(outputJson, "old_string_preview");
-  const newPreviewRaw = jsonStr(outputJson, "new_string_preview");
-  if (!oldPreviewRaw && !newPreviewRaw) return null;
-  const oldTruncated = jsonBool(outputJson, "old_string_truncated");
-  const newTruncated = jsonBool(outputJson, "new_string_truncated");
-  const oldLines = expandEditPreviewLines(
-    oldPreviewRaw || "(empty)",
-    oldTruncated,
-  );
-  const newLines = expandEditPreviewLines(
-    newPreviewRaw || "(empty)",
-    newTruncated,
-  );
-  return { oldLines, newLines, oldTruncated, newTruncated };
+  const hunks = jsonObjectSlice(outputJson, "edits")
+    .map((item, index) => editDiffHunkFromPayload(item, index + 1))
+    .filter((hunk): hunk is EditDiffPreview["hunks"][number] => Boolean(hunk));
+  if (hunks.length === 0) {
+    const hunk = editDiffHunkFromPayload(outputJson, 1);
+    if (hunk) hunks.push(hunk);
+  }
+  if (hunks.length === 0) return null;
+  return {
+    oldLines: hunks[0].oldLines,
+    newLines: hunks[0].newLines,
+    oldTruncated: hunks.some((hunk) => hunk.oldTruncated),
+    newTruncated: hunks.some((hunk) => hunk.newTruncated),
+    hunks,
+  };
 }
 
 function previewTextLines(value: string, maxLines: number): string[] {

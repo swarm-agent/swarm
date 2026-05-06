@@ -55,6 +55,7 @@ export interface DeployContainerDeployment {
   group_network_name?: string
   sync_enabled?: boolean
   sync_mode?: string
+  sync_modules?: string[]
   sync_owner_swarm_id?: string
   container_name?: string
   container_id?: string
@@ -204,6 +205,7 @@ export async function createDeployContainer(input: {
   groupName?: string
   groupNetworkName?: string
   syncEnabled?: boolean
+  syncModules?: string[]
   syncVaultPassword?: string
   bypassPermissions?: boolean
   alwaysOn?: boolean
@@ -222,6 +224,7 @@ export async function createDeployContainer(input: {
       group_name: input.groupName,
       group_network_name: input.groupNetworkName,
       sync_enabled: input.syncEnabled,
+      sync_modules: input.syncModules,
       sync_vault_password: input.syncVaultPassword,
       bypass_permissions: input.bypassPermissions,
       always_on: input.alwaysOn,
@@ -236,6 +239,32 @@ export async function createDeployContainer(input: {
   })
   if (!response.deployment) {
     throw new Error('deployment creation response was missing deployment data')
+  }
+  return response.deployment
+}
+
+export async function updateDeployContainerSettings(input: {
+  id: string
+  syncEnabled?: boolean
+  syncModules?: string[]
+  syncVaultPassword?: string
+  bypassPermissions?: boolean
+}): Promise<DeployContainerDeployment> {
+  const response = await requestJson<{ ok?: boolean; deployment?: DeployContainerDeployment }>('/v1/deploy/container/settings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      id: input.id,
+      sync_enabled: input.syncEnabled,
+      sync_modules: input.syncModules,
+      sync_vault_password: input.syncVaultPassword,
+      bypass_permissions: input.bypassPermissions,
+    }),
+  })
+  if (!response.deployment) {
+    throw new Error('deployment settings response was missing deployment data')
   }
   return response.deployment
 }

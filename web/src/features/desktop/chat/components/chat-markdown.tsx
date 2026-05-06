@@ -30,23 +30,36 @@ function formatDuration(ms: number): string {
 function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   const diff = toolMessage.editDiff;
   if (!diff) return null;
+  const hunks = diff.hunks.length > 0
+    ? diff.hunks
+    : [{ index: 1, oldLines: diff.oldLines, newLines: diff.newLines, oldTruncated: diff.oldTruncated, newTruncated: diff.newTruncated }];
+  const showHunkLabels = hunks.length > 1;
 
   return (
-    <div className="mt-1.5 font-mono text-[12px] leading-5">
-      {diff.oldLines.map((line, i) => (
-        <div
-          key={`old-${i}`}
-          className="text-[var(--app-danger)] whitespace-pre-wrap break-all"
-        >
-          - {line}
-        </div>
-      ))}
-      {diff.newLines.map((line, i) => (
-        <div
-          key={`new-${i}`}
-          className="text-[var(--app-success)] whitespace-pre-wrap break-all"
-        >
-          + {line}
+    <div className="mt-1.5 space-y-1.5 font-mono text-[12px] leading-5">
+      {hunks.map((hunk, hunkIndex) => (
+        <div key={`hunk-${hunk.index}-${hunkIndex}`}>
+          {showHunkLabels ? (
+            <div className="text-[11px] uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
+              edit {hunk.index}
+            </div>
+          ) : null}
+          {hunk.oldLines.map((line, i) => (
+            <div
+              key={`old-${hunk.index}-${i}`}
+              className="text-[var(--app-danger)] whitespace-pre-wrap break-all"
+            >
+              - {line}
+            </div>
+          ))}
+          {hunk.newLines.map((line, i) => (
+            <div
+              key={`new-${hunk.index}-${i}`}
+              className="text-[var(--app-success)] whitespace-pre-wrap break-all"
+            >
+              + {line}
+            </div>
+          ))}
         </div>
       ))}
     </div>

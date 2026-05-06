@@ -92,9 +92,9 @@ export function sessionBackgroundInfo(session: DesktopSessionRecord, fallbackTar
     active: session.lifecycle?.active === true || ['starting', 'running', 'blocked'].includes(session.live.status),
     badge: sessionBackgroundBadge(metadata),
     targetLabel: firstNonEmpty(
+      fallbackTargetLabel,
       metadataString(metadata, 'swarm_target_name'),
       metadataString(metadata, 'target_display_name'),
-      fallbackTargetLabel,
       'host',
     ),
   }

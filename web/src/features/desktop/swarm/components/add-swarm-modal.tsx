@@ -670,13 +670,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     [group, hostSwarmID],
   )
 
-  const suggestedSwarmName = useMemo(
-    () => preferredChildSwarmName(
-      currentOnboardingStatus,
-      currentOnboardingStatus?.groups.flatMap((entry) => entry.members.map((member) => member.name)) ?? [],
-    ),
-    [currentOnboardingStatus],
-  )
   const selectedWorkspaceCountValue = useMemo(() => selectedWorkspaceCount(workspaceDrafts), [workspaceDrafts])
   const selectedWorkspacePaths = useMemo(
     () => workspaceDrafts.filter((item) => item.selected).map((item) => item.workspacePath),
@@ -849,11 +842,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         setRemoteReachableHost('')
         setRemoteTailscaleAuthMode('manual')
         setRemoteTailscaleAuthKey('')
-        const nextSuggestedSwarmName = preferredChildSwarmName(
-          nextOnboardingStatus,
-          nextOnboardingStatus?.groups.flatMap((entry) => entry.members.map((member) => member.name)) ?? [],
-        )
-        setSwarmName(nextSuggestedSwarmName)
+        setSwarmName('')
         setSelectedRuntime((nextRuntimeStatus.recommended || '') as 'podman' | 'docker' | '')
         logAddSwarm('modal options loaded', {
           workspaces: nextWorkspaces.length,
@@ -1035,7 +1024,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     })
 
     try {
-      const syncModules = ['credentials', 'agents', 'custom_tools']
+      const syncModules = ['credentials', 'agents', 'custom_tools', 'skills']
       const result = await replicateSwarm({
         mode: 'local',
         swarmName: swarmName.trim(),
@@ -1328,13 +1317,12 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     : `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be replicated using ${runtimeChoice || 'the selected runtime'} with Swarm Sync ${syncEnabled ? 'enabled' : 'disabled'}.`)
   const swarmNameCard = (
     <Card className={sectionClassName}>
-      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,320px)] sm:items-end">
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,320px)] sm:items-center">
         <div className="grid gap-1">
           <div className="text-sm font-semibold text-[var(--app-text)]">Name this swarm</div>
-          <div className="text-xs text-[var(--app-text-muted)]">First decision: the child swarm name shown in this group after launch.</div>
+          <div className="text-xs text-[var(--app-text-muted)]">Choose the display name used to identify this child swarm in the group after launch.</div>
         </div>
         <div className="grid gap-2">
-          <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Child swarm name</label>
           <Input
             data-testid="add-swarm-child-name"
             value={swarmName}
@@ -1343,7 +1331,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               setSwarmName(event.target.value)
             }}
             disabled={submitting}
-            placeholder={suggestedSwarmName}
+            placeholder="Enter a child swarm name"
           />
         </div>
       </div>
@@ -1954,9 +1942,13 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <div className="text-sm font-semibold text-[var(--app-text)]">Bypass Permissions</div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">Permission sync & bypass override</div>
                     <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {bypassPermissions ? 'On — skip permission prompts.' : 'Off — prompt when needed.'}
+                      {!syncEnabled
+                        ? 'Swarm Sync is off — host permission policy will not sync.'
+                        : bypassPermissions
+                          ? 'Bypass override on — host permission policy will not sync to this child.'
+                          : 'Permissions sync on — host policy syncs to this child. Click to enable container bypass override.'}
                     </div>
                   </div>
                   {bypassPermissions ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
@@ -1970,7 +1962,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <div className="grid gap-1">
                     <div className="text-sm font-medium text-[var(--app-text)]">What is Swarm Sync?</div>
                     <div className="text-xs text-[var(--app-text-muted)]">
-                      When credentials, saved agents, or custom tools change on the main swarm, Swarm Sync updates this child automatically.
+                      When credentials, saved agents, custom tools, skills, or host permissions change on the main swarm, Swarm Sync updates this child automatically unless the bypass override is on.
                     </div>
                   </div>
                   <Badge tone="live">automatic</Badge>
@@ -2020,7 +2012,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               )}
               <div><span className="font-medium text-[var(--app-text)]">Always On:</span> {alwaysOn ? 'Enabled' : 'Disabled'}</div>
               <div><span className="font-medium text-[var(--app-text)]">Swarm Sync:</span> {syncEnabled ? 'Enabled' : 'Disabled'}</div>
-              <div><span className="font-medium text-[var(--app-text)]">Bypass permissions:</span> {bypassPermissions ? 'Enabled' : 'Disabled'}</div>
+              <div><span className="font-medium text-[var(--app-text)]">Permissions:</span> {!syncEnabled ? 'Not synced' : bypassPermissions ? 'Bypass override enabled' : 'Synced; bypass override available'}</div>
               <div><span className="font-medium text-[var(--app-text)]">Swarm name:</span> {swarmName.trim() || 'Required'}</div>
             </div>
           </Card>

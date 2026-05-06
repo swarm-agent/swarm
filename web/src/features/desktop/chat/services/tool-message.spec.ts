@@ -334,6 +334,43 @@ function testEditToolPreservesFullExpandedDiff(): void {
   assert(message?.editDiff?.newLines.length === 2, `unexpected new diff lines: ${message?.editDiff?.newLines.join(' | ')}`)
   assert(message?.editDiff?.oldLines[1] === longOld, 'expected full old diff line')
   assert(message?.editDiff?.newLines[1] === longNew, 'expected full new diff line')
+  assert(message?.editDiff?.hunks.length === 1, `expected one edit hunk, got ${message?.editDiff?.hunks.length}`)
+}
+
+function testEditToolShowsMultiEditHunks(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'edit',
+    callId: 'call_edit_2',
+    outputText: JSON.stringify({
+      tool: 'edit',
+      path: '/tmp/demo.txt',
+      edit_count: 2,
+      edits: [
+        {
+          index: 1,
+          old_string_preview: 'first old',
+          new_string_preview: 'first new',
+          old_string_truncated: false,
+          new_string_truncated: false,
+        },
+        {
+          index: 2,
+          old_string_preview: 'second old\\nline',
+          new_string_preview: 'second new',
+          old_string_truncated: true,
+          new_string_truncated: false,
+        },
+      ],
+    }),
+  })
+  assert(Boolean(message), 'expected structured multi-edit tool message')
+  assert(message?.editDiff?.hunks.length === 2, `expected two edit hunks, got ${message?.editDiff?.hunks.length}`)
+  assert(message?.editDiff?.hunks[0]?.oldLines[0] === 'first old', 'expected first old hunk line')
+  assert(message?.editDiff?.hunks[0]?.newLines[0] === 'first new', 'expected first new hunk line')
+  assert(message?.editDiff?.hunks[1]?.oldLines.join(' | ') === 'second old | line ...', `unexpected second old hunk: ${message?.editDiff?.hunks[1]?.oldLines.join(' | ')}`)
+  assert(message?.editDiff?.hunks[1]?.newLines[0] === 'second new', 'expected second new hunk line')
+  assert(message?.editDiff?.oldLines[0] === 'first old', 'expected legacy oldLines to mirror first hunk')
+  assert(message?.editDiff?.oldTruncated === true, 'expected aggregate old truncation flag')
 }
 
 function testTaskRowsMapReasoningToThinkingWithoutPreviewLeak(): void {
@@ -520,6 +557,7 @@ function main(): void {
   testManageImageGenerateShowsSessionRefs();
   testManageTodosAgentListShowsOnlyCurrentSession();
   testEditToolPreservesFullExpandedDiff();
+  testEditToolShowsMultiEditHunks();
   testTaskRowsMapReasoningToThinkingWithoutPreviewLeak();
   testTaskRowsHideAssistantPreviewText();
   testBashToolMessageShowsCommandAsMetadata();

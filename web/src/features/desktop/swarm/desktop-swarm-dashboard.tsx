@@ -34,6 +34,7 @@ import {
   type RemoteDeployPayload,
   type RemoteDeploySession,
   actOnDeployContainer,
+  updateDeployContainerSettings,
   deleteDeployContainers,
   deleteDeployContainersViaHost,
   deleteRemoteDeploySessions,
@@ -241,6 +242,89 @@ interface DeleteSwarmCandidate {
 }
 
 type RemoteDeleteMode = 'teardown' | 'detach'
+
+function ManagedSwarmSettingsDialog({
+  deployment,
+  open,
+  submitting,
+  error,
+  onClose,
+  onSave,
+}: {
+  deployment: DeployContainerDeployment | null
+  open: boolean
+  submitting: boolean
+  error: string | null
+  onClose: () => void
+  onSave: (input: { syncEnabled: boolean; syncModules: string[]; bypassPermissions: boolean }) => void
+}) {
+  const [syncEnabled, setSyncEnabled] = useState(false)
+  const [syncAgents, setSyncAgents] = useState(true)
+  const [syncCustomTools, setSyncCustomTools] = useState(true)
+  const [syncSkills, setSyncSkills] = useState(true)
+  const [bypassPermissions, setBypassPermissions] = useState(false)
+
+  useEffect(() => {
+    if (!deployment || !open) {
+      return
+    }
+    const modules = new Set(deployment.sync_modules ?? ['credentials', 'agents', 'custom_tools', 'skills'])
+    setSyncEnabled(Boolean(deployment.sync_enabled))
+    setSyncAgents(modules.has('agents'))
+    setSyncCustomTools(modules.has('custom_tools'))
+    setSyncSkills(modules.has('skills'))
+    setBypassPermissions(Boolean(deployment.bypass_permissions))
+  }, [deployment, open])
+
+  if (!open || !deployment) {
+    return null
+  }
+
+  const modules = ['credentials', ...(syncAgents ? ['agents'] : []), ...(syncCustomTools ? ['custom_tools'] : []), ...(syncSkills ? ['skills'] : [])]
+
+  return (
+    <Dialog>
+      <DialogBackdrop />
+      <DialogPanel className="mx-auto mt-[10vh] flex w-[min(560px,calc(100vw-24px))] max-w-[560px] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)]">
+        <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-6 py-5">
+          <div>
+            <div className="text-lg font-semibold text-[var(--app-text)]">Managed swarm settings</div>
+            <div className="mt-1 text-sm text-[var(--app-text-muted)]">{deployment.child_display_name || deployment.name}</div>
+          </div>
+          <ModalCloseButton onClick={onClose} disabled={submitting} />
+        </div>
+        <div className="space-y-4 px-6 py-5 text-sm">
+          {error ? <div className="rounded-2xl border border-[color-mix(in_oklab,var(--app-error)_45%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-error)_10%,var(--app-surface))] px-4 py-3 text-[var(--app-error)]">{error}</div> : null}
+          <label className="flex items-center justify-between gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
+            <span>
+              <span className="block font-medium text-[var(--app-text)]">Swarm Sync</span>
+              <span className="block text-xs text-[var(--app-text-muted)]">Mirror selected host state to this managed child.</span>
+            </span>
+            <input type="checkbox" checked={syncEnabled} onChange={(event) => setSyncEnabled(event.target.checked)} />
+          </label>
+          {syncEnabled ? (
+            <div className="grid gap-3 md:grid-cols-3">
+              <label className="rounded-2xl border border-[var(--app-border)] p-3"><input className="mr-2" type="checkbox" checked={syncAgents} onChange={(event) => setSyncAgents(event.target.checked)} />Agents</label>
+              <label className="rounded-2xl border border-[var(--app-border)] p-3"><input className="mr-2" type="checkbox" checked={syncCustomTools} onChange={(event) => setSyncCustomTools(event.target.checked)} />Custom tools</label>
+              <label className="rounded-2xl border border-[var(--app-border)] p-3"><input className="mr-2" type="checkbox" checked={syncSkills} onChange={(event) => setSyncSkills(event.target.checked)} />Skills</label>
+            </div>
+          ) : null}
+          <label className="flex items-center justify-between gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3">
+            <span>
+              <span className="block font-medium text-[var(--app-text)]">Bypass permissions override</span>
+              <span className="block text-xs text-[var(--app-text-muted)]">{bypassPermissions ? 'ON: child bypasses prompts; host policy is not mirrored.' : 'OFF: host-managed permissions mirror host policy and route approvals through the host.'}</span>
+            </span>
+            <input type="checkbox" checked={bypassPermissions} onChange={(event) => setBypassPermissions(event.target.checked)} />
+          </label>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-[var(--app-border)] px-6 py-4">
+          <Button variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button onClick={() => onSave({ syncEnabled, syncModules: syncEnabled ? modules : [], bypassPermissions })} disabled={submitting}>{submitting ? 'Saving…' : 'Save settings'}</Button>
+        </div>
+      </DialogPanel>
+    </Dialog>
+  )
+}
 
 function remoteDeleteCandidateSupportsSSHDelete(candidate: DeleteSwarmCandidate): boolean {
   if (candidate.kind !== 'remote') {
@@ -676,6 +760,9 @@ export function DesktopSwarmDashboard() {
   const [selectedDeleteSwarmContainerIDs, setSelectedDeleteSwarmContainerIDs] = useState<string[]>([])
   const [deleteSwarmRemoteMode, setDeleteSwarmRemoteMode] = useState<RemoteDeleteMode>('teardown')
   const [deleteResult, setDeleteResult] = useState<SwarmLocalContainerDeleteResult | null>(null)
+  const [settingsDeployment, setSettingsDeployment] = useState<DeployContainerDeployment | null>(null)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
 
   const applyCoreDashboardState = (state: SwarmLocalState, onboarding: DesktopOnboardingStatus, nextUISettings: UISettingsWire) => {
     setSwarmState(state)
@@ -1300,6 +1387,30 @@ export function DesktopSwarmDashboard() {
     setStatus(message)
   }
 
+  const handleSaveManagedSwarmSettings = async (input: { syncEnabled: boolean; syncModules: string[]; bypassPermissions: boolean }) => {
+    if (!settingsDeployment) {
+      return
+    }
+    setSettingsSaving(true)
+    setSettingsError(null)
+    try {
+      const updated = await updateDeployContainerSettings({
+        id: settingsDeployment.id,
+        syncEnabled: input.syncEnabled,
+        syncModules: input.syncModules,
+        bypassPermissions: input.bypassPermissions,
+      })
+      setDeployments((current) => current.map((deployment) => (deployment.id === updated.id ? updated : deployment)))
+      setSettingsDeployment(null)
+      setStatus('Managed swarm settings updated.')
+      await refresh()
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : 'Failed to update managed swarm settings')
+    } finally {
+      setSettingsSaving(false)
+    }
+  }
+
   const handleDeploymentAction = async (deployment: DeployContainerDeployment, action: 'start' | 'stop') => {
     setBusy(true)
     setError(null)
@@ -1694,11 +1805,11 @@ export function DesktopSwarmDashboard() {
                                       </div>
                                       <div className="flex flex-col gap-1">
                                         <span className="text-[var(--app-text-muted)]">Swarm Sync</span>
-                                        <span className="font-medium text-[var(--app-text)]">{attachedDeployment.sync_enabled ? (attachedDeployment.sync_mode || 'managed') : 'off'}</span>
+                                        <span className="font-medium text-[var(--app-text)]">{attachedDeployment.sync_enabled ? `${attachedDeployment.sync_mode || 'managed'} (${(attachedDeployment.sync_modules ?? []).join(', ') || 'default'})` : 'off'}</span>
                                       </div>
                                       <div className="flex flex-col gap-1">
                                         <span className="text-[var(--app-text-muted)]">Permissions</span>
-                                        <span className="font-medium text-[var(--app-text)]">{attachedBypassPermissions ? 'Bypassed' : 'Enforced'}</span>
+                                        <span className="font-medium text-[var(--app-text)]">{attachedBypassPermissions ? 'Bypass ON' : 'Host-managed'}</span>
                                       </div>
                                       <div className="flex flex-col gap-1">
                                         <span className="text-[var(--app-text-muted)]">Workspaces</span>
@@ -1711,6 +1822,18 @@ export function DesktopSwarmDashboard() {
                                         </div>
                                       ) : null}
                                     </div>
+
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => {
+                                        setSettingsDeployment(attachedDeployment)
+                                        setSettingsError(null)
+                                      }}
+                                    >
+                                      <Pencil size={14} />
+                                      Edit sync settings
+                                    </Button>
 
                                     {localWorkspaceSummaries.length > 0 ? (
                                       <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3">
@@ -2140,6 +2263,20 @@ export function DesktopSwarmDashboard() {
         onboardingStatus={onboardingStatus}
         onOpenChange={setAddSwarmOpen}
         onComplete={handleAddSwarmComplete}
+      />
+      <ManagedSwarmSettingsDialog
+        deployment={settingsDeployment}
+        open={Boolean(settingsDeployment)}
+        submitting={settingsSaving}
+        error={settingsError}
+        onClose={() => {
+          if (settingsSaving) {
+            return
+          }
+          setSettingsDeployment(null)
+          setSettingsError(null)
+        }}
+        onSave={(input) => void handleSaveManagedSwarmSettings(input)}
       />
       <DeleteContainersModal
         open={deleteContainersOpen}

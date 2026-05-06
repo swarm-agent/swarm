@@ -23,7 +23,9 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	auth "swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/discovery"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
+	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/tailscalehttp"
@@ -43,6 +45,9 @@ const (
 	PathContainerAttachFinalize     = "deploy.container.attach.finalize.v1"
 	PathContainerSyncCredentials    = "deploy.container.sync.credentials.v1"
 	PathContainerSyncAgents         = "deploy.container.sync.agents.v1"
+	PathContainerSyncSkills         = "deploy.container.sync.skills.v1"
+	PathContainerSyncPermissions    = "deploy.container.sync.permissions.v1"
+	PathContainerSettings           = "deploy.container.settings.v1"
 	PathContainerWorkspaceBootstrap = "deploy.container.workspace-bootstrap.v1"
 
 	childLocalTransportMountTargetDir = "/run/swarm-parent-transport"
@@ -91,6 +96,8 @@ type ContainerDeployment struct {
 	SyncLastCheckedAt   int64                         `json:"sync_last_checked_at,omitempty"`
 	SyncLastAppliedAt   int64                         `json:"sync_last_applied_at,omitempty"`
 	SyncLastError       string                        `json:"sync_last_error,omitempty"`
+	SyncSkillURL        string                        `json:"sync_skill_url,omitempty"`
+	SyncPermissionURL   string                        `json:"sync_permission_url,omitempty"`
 	ContainerName       string                        `json:"container_name,omitempty"`
 	ContainerID         string                        `json:"container_id,omitempty"`
 	HostAPIBaseURL      string                        `json:"host_api_base_url,omitempty"`
@@ -133,6 +140,15 @@ type ContainerCreateInput struct {
 type ContainerActionInput struct {
 	ID     string
 	Action string
+}
+
+type ContainerSettingsUpdateInput struct {
+	ID                string
+	SyncEnabled       *bool
+	SyncModules       []string
+	SyncModulesSet    bool
+	SyncVaultPassword string
+	BypassPermissions *bool
 }
 
 type ContainerAttachRequestInput struct {
@@ -219,6 +235,12 @@ type ContainerSyncAgentBundle struct {
 	ExportedAt   int64              `json:"exported_at,omitempty"`
 }
 
+type ContainerSyncSkillBundle = discovery.ManagedSkillBundle
+
+type ContainerSyncPermissionBundle struct {
+	State permission.ManagedPolicyState `json:"state"`
+}
+
 type ContainerAttachState struct {
 	DeploymentID             string `json:"deployment_id"`
 	AttachStatus             string `json:"attach_status"`
@@ -262,6 +284,8 @@ type Service struct {
 	swarmStore                   *pebblestore.SwarmStore
 	auth                         *auth.Service
 	agents                       *agentruntime.Service
+	discovery                    *discovery.Service
+	permission                   *permission.Service
 	workspace                    *workspaceruntime.Service
 	startupPath                  string
 	client                       *http.Client
@@ -273,7 +297,17 @@ type Service struct {
 	agentSnapshotHash            string
 }
 
-func NewService(store *pebblestore.DeployContainerStore, containers *localcontainers.Service, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, authSvc *auth.Service, agentSvc *agentruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath string) *Service {
+func NewService(store *pebblestore.DeployContainerStore, containers *localcontainers.Service, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, authSvc *auth.Service, agentSvc *agentruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath string, extras ...any) *Service {
+	var discoverySvc *discovery.Service
+	var permissionSvc *permission.Service
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case *discovery.Service:
+			discoverySvc = value
+		case *permission.Service:
+			permissionSvc = value
+		}
+	}
 	return &Service{
 		store:                     store,
 		containers:                containers,
@@ -281,6 +315,8 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 		swarmStore:                swarmStore,
 		auth:                      authSvc,
 		agents:                    agentSvc,
+		discovery:                 discoverySvc,
+		permission:                permissionSvc,
 		workspace:                 workspaceSvc,
 		startupPath:               strings.TrimSpace(startupPath),
 		client:                    newBootstrapClient(),
@@ -460,6 +496,8 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 	syncOwnerSwarmID := ""
 	syncCredentialURL := ""
 	syncAgentURL := ""
+	syncSkillURL := ""
+	syncPermissionURL := ""
 	if syncEnabled {
 		syncMode = syncConfig.Mode
 		syncModules = append([]string(nil), syncConfig.Modules...)
@@ -469,6 +507,12 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 		}
 		if workspaceruntime.ReplicationSyncModuleEnabled(syncModules, workspaceruntime.ReplicationSyncModuleAgents) || workspaceruntime.ReplicationSyncModuleEnabled(syncModules, workspaceruntime.ReplicationSyncModuleCustomTools) {
 			syncAgentURL = buildDeploymentSyncAgentURL(hostAPIBaseURL)
+		}
+		if workspaceruntime.ReplicationSyncModuleEnabled(syncModules, workspaceruntime.ReplicationSyncModuleSkills) {
+			syncSkillURL = buildDeploymentSyncSkillURL(hostAPIBaseURL)
+		}
+		if !input.BypassPermissions {
+			syncPermissionURL = buildDeploymentSyncPermissionURL(hostAPIBaseURL)
 		}
 	}
 	extraRunArgs := []string(nil)
@@ -504,6 +548,8 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 			SyncOwnerSwarmID:         syncOwnerSwarmID,
 			SyncCredentialURL:        syncCredentialURL,
 			SyncAgentURL:             syncAgentURL,
+			SyncSkillURL:             syncSkillURL,
+			SyncPermissionURL:        syncPermissionURL,
 			BypassPermissions:        input.BypassPermissions,
 		}),
 	})
@@ -537,6 +583,8 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 		SyncOwnerSwarmID:    syncOwnerSwarmID,
 		SyncCredentialURL:   syncCredentialURL,
 		SyncAgentURL:        syncAgentURL,
+		SyncSkillURL:        syncSkillURL,
+		SyncPermissionURL:   syncPermissionURL,
 		GroupID:             groupID,
 		GroupName:           groupName,
 		WorkspaceBootstrap:  append([]pebblestore.DeployContainerWorkspaceBootstrap(nil), input.WorkspaceBootstrap...),
@@ -580,6 +628,77 @@ func (s *Service) requireManagedSyncVaultPassword(syncVaultPassword string) erro
 		return fmt.Errorf("vault password is required to sync from a vaulted host")
 	}
 	return nil
+}
+
+func (s *Service) UpdateSettings(ctx context.Context, input ContainerSettingsUpdateInput) (ContainerDeployment, error) {
+	if s == nil || s.store == nil {
+		return ContainerDeployment{}, fmt.Errorf("deploy container service is not configured")
+	}
+	record, ok, err := s.store.Get(input.ID)
+	if err != nil {
+		return ContainerDeployment{}, err
+	}
+	if !ok {
+		return ContainerDeployment{}, fmt.Errorf("deploy container not found")
+	}
+	if input.SyncEnabled != nil {
+		record.SyncEnabled = *input.SyncEnabled
+	}
+	if input.BypassPermissions != nil {
+		record.BypassPermissions = *input.BypassPermissions
+	}
+	if record.SyncEnabled {
+		if input.SyncModulesSet {
+			record.SyncModules = workspaceruntime.NormalizeReplicationSyncModules(input.SyncModules)
+		}
+		if len(record.SyncModules) == 0 {
+			record.SyncModules = workspaceruntime.DefaultReplicationSyncModules()
+		}
+		record.SyncMode = firstNonEmpty(record.SyncMode, workspaceruntime.ReplicationSyncModeManaged)
+		if err := s.applyLocalDeploymentSyncReconciliation(ctx, &record, time.Now().UnixMilli()); err != nil {
+			record.SyncLastError = err.Error()
+		} else {
+			record.SyncLastError = ""
+		}
+	} else {
+		record.SyncMode = ""
+		record.SyncModules = nil
+		record.SyncCredentialURL = ""
+		record.SyncAgentURL = ""
+		record.SyncSkillURL = ""
+		record.SyncPermissionURL = ""
+		record.SyncBundlePassword = ""
+		record.SyncBundleExportCount = 0
+		record.SyncBundleExportedAt = 0
+	}
+	if record.SyncEnabled && strings.TrimSpace(input.SyncVaultPassword) != "" {
+		s.rememberPendingSyncVaultPassword(record.ID, strings.TrimSpace(input.SyncVaultPassword), time.Now().Add(10*time.Minute).UnixMilli())
+	}
+	saved, err := s.store.Put(record)
+	if err != nil {
+		return ContainerDeployment{}, err
+	}
+	return mapContainerRecord(saved), nil
+}
+
+func (s *Service) ReconcilePermissionSync(ctx context.Context) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("deploy container service is not configured")
+	}
+	records, err := s.store.List(500)
+	if err != nil {
+		return err
+	}
+	var joined error
+	for _, record := range records {
+		if !record.SyncEnabled || record.BypassPermissions {
+			continue
+		}
+		if err := s.reconcileLocalDeploymentSync(ctx, record); err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	return joined
 }
 
 func (s *Service) Act(ctx context.Context, input ContainerActionInput) (ContainerDeployment, error) {
@@ -1057,6 +1176,63 @@ func (s *Service) SyncAgentBundle(ctx context.Context, input ContainerSyncCreden
 	}, nil
 }
 
+func (s *Service) SyncSkillBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncSkillBundle, error) {
+	if s == nil || s.store == nil || s.discovery == nil {
+		return ContainerSyncSkillBundle{}, fmt.Errorf("deploy container service is not configured")
+	}
+	_ = ctx
+	record, ok, err := s.store.Get(input.DeploymentID)
+	if err != nil {
+		return ContainerSyncSkillBundle{}, err
+	}
+	if !ok {
+		return ContainerSyncSkillBundle{}, fmt.Errorf("deploy container not found")
+	}
+	if subtleTrim(record.BootstrapSecret) == "" || subtleTrim(record.BootstrapSecret) != subtleTrim(input.BootstrapSecret) {
+		return ContainerSyncSkillBundle{}, fmt.Errorf("bootstrap secret mismatch")
+	}
+	if !record.SyncEnabled {
+		return ContainerSyncSkillBundle{}, fmt.Errorf("swarm sync is not enabled for this deployment")
+	}
+	record.SyncModules = workspaceruntime.NormalizeReplicationSyncModules(record.SyncModules)
+	if len(record.SyncModules) == 0 {
+		record.SyncModules = workspaceruntime.DefaultReplicationSyncModules()
+	}
+	if !workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleSkills) {
+		return ContainerSyncSkillBundle{}, fmt.Errorf("skill sync module is not enabled for this deployment")
+	}
+	return s.discovery.ExportManagedSkillBundle()
+}
+
+func (s *Service) SyncPermissionBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncPermissionBundle, error) {
+	if s == nil || s.store == nil || s.permission == nil {
+		return ContainerSyncPermissionBundle{}, fmt.Errorf("deploy container service is not configured")
+	}
+	_ = ctx
+	record, ok, err := s.store.Get(input.DeploymentID)
+	if err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
+	if !ok {
+		return ContainerSyncPermissionBundle{}, fmt.Errorf("deploy container not found")
+	}
+	if subtleTrim(record.BootstrapSecret) == "" || subtleTrim(record.BootstrapSecret) != subtleTrim(input.BootstrapSecret) {
+		return ContainerSyncPermissionBundle{}, fmt.Errorf("bootstrap secret mismatch")
+	}
+	if !record.SyncEnabled {
+		return ContainerSyncPermissionBundle{}, fmt.Errorf("swarm sync is not enabled for this deployment")
+	}
+	state, err := s.permission.ExportPolicyState()
+	if err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
+	state.BypassPermissions = record.BypassPermissions
+	if record.BypassPermissions {
+		state.Policy = permission.DefaultPolicy()
+	}
+	return ContainerSyncPermissionBundle{State: state}, nil
+}
+
 func (s *Service) WorkspaceBootstrap(ctx context.Context, input ContainerWorkspaceBootstrapRequestInput) ([]ContainerWorkspaceBootstrap, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("deploy container service is not configured")
@@ -1368,6 +1544,19 @@ func (s *Service) applyLocalDeploymentSyncReconciliation(ctx context.Context, re
 	} else {
 		record.SyncAgentURL = ""
 	}
+	if workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleSkills) {
+		record.SyncSkillURL = firstNonEmpty(strings.TrimSpace(record.SyncSkillURL), buildDeploymentSyncSkillURL(hostBackendURL))
+	} else {
+		record.SyncSkillURL = ""
+	}
+	if record.BypassPermissions {
+		record.SyncPermissionURL = ""
+	} else {
+		record.SyncPermissionURL = firstNonEmpty(strings.TrimSpace(record.SyncPermissionURL), buildDeploymentSyncPermissionURL(hostBackendURL))
+	}
+	if err := s.pushManagedSyncToChild(ctx, *record); err != nil {
+		return err
+	}
 	if record.AlwaysOn && strings.TrimSpace(record.Status) == "running" && strings.TrimSpace(record.ChildBackendURL) != "" {
 		if err := s.waitForChildReady(ctx, record.ChildBackendURL, 20*time.Second); err != nil {
 			return err
@@ -1496,6 +1685,16 @@ func (s *Service) finalizeApprovedAttach(record *pebblestore.DeployContainerReco
 		} else {
 			record.SyncAgentURL = ""
 		}
+		if workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleSkills) {
+			record.SyncSkillURL = firstNonEmpty(record.SyncSkillURL, buildDeploymentSyncSkillURL(record.HostBackendURL))
+		} else {
+			record.SyncSkillURL = ""
+		}
+		if record.BypassPermissions {
+			record.SyncPermissionURL = ""
+		} else {
+			record.SyncPermissionURL = firstNonEmpty(record.SyncPermissionURL, buildDeploymentSyncPermissionURL(record.HostBackendURL))
+		}
 		if workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleCredentials) {
 			if err := s.requireManagedSyncVaultPassword(syncVaultPassword); err != nil {
 				return err
@@ -1579,6 +1778,8 @@ type containerBootstrapEnvInput struct {
 	SyncOwnerSwarmID         string
 	SyncCredentialURL        string
 	SyncAgentURL             string
+	SyncSkillURL             string
+	SyncPermissionURL        string
 	BypassPermissions        bool
 }
 
@@ -1607,6 +1808,8 @@ func buildChildContainerEnv(input containerBootstrapEnvInput) []string {
 		SyncOwnerSwarmID:         strings.TrimSpace(input.SyncOwnerSwarmID),
 		SyncCredentialURL:        strings.TrimSpace(input.SyncCredentialURL),
 		SyncAgentURL:             strings.TrimSpace(input.SyncAgentURL),
+		SyncSkillURL:             strings.TrimSpace(input.SyncSkillURL),
+		SyncPermissionURL:        strings.TrimSpace(input.SyncPermissionURL),
 		DeploymentID:             strings.TrimSpace(input.DeploymentID),
 		HostAPIBaseURL:           strings.TrimSpace(input.HostAPIBaseURL),
 		HostDesktopURL:           strings.TrimSpace(input.HostDesktopURL),
@@ -1682,6 +1885,8 @@ func mapContainerRecord(record pebblestore.DeployContainerRecord) ContainerDeplo
 		SyncLastCheckedAt:   record.SyncLastCheckedAt,
 		SyncLastAppliedAt:   record.SyncLastAppliedAt,
 		SyncLastError:       record.SyncLastError,
+		SyncSkillURL:        record.SyncSkillURL,
+		SyncPermissionURL:   record.SyncPermissionURL,
 		BackendHostPort:     record.BackendHostPort,
 		DesktopHostPort:     record.DesktopHostPort,
 		Image:               record.Image,
@@ -2445,6 +2650,24 @@ func (s *Service) finalizeChildAttach(cfg startupconfig.FileConfig, state swarmr
 				return err
 			}
 		}
+		if workspaceruntime.ReplicationSyncModuleEnabled(cfg.DeployContainer.SyncModules, workspaceruntime.ReplicationSyncModuleSkills) {
+			bundle, err := s.fetchSyncSkillBundle(context.Background(), cfg, status)
+			if err != nil {
+				return err
+			}
+			if err := s.applyManagedSkillBundle(bundle, cfg.DeployContainer.SyncModules); err != nil {
+				return err
+			}
+		}
+		if !cfg.BypassPermissions {
+			bundle, err := s.fetchSyncPermissionBundle(context.Background(), cfg, status)
+			if err != nil {
+				return err
+			}
+			if err := s.applyManagedPermissionBundle(bundle); err != nil {
+				return err
+			}
+		}
 	}
 	if cfg.DeployContainer.HostDriven {
 		if err := s.applyBootstrapWorkspaces(cfg, status, pairing, finalizeInput.WorkspaceBootstrap); err != nil {
@@ -2474,12 +2697,118 @@ func buildDeploymentSyncAgentURL(hostAPIBaseURL string) string {
 	return hostAPIBaseURL + "/v1/deploy/container/sync/agents"
 }
 
+func buildDeploymentSyncSkillURL(hostAPIBaseURL string) string {
+	hostAPIBaseURL = strings.TrimRight(strings.TrimSpace(hostAPIBaseURL), "/")
+	if hostAPIBaseURL == "" {
+		return ""
+	}
+	return hostAPIBaseURL + "/v1/deploy/container/sync/skills"
+}
+
+func buildDeploymentSyncPermissionURL(hostAPIBaseURL string) string {
+	hostAPIBaseURL = strings.TrimRight(strings.TrimSpace(hostAPIBaseURL), "/")
+	if hostAPIBaseURL == "" {
+		return ""
+	}
+	return hostAPIBaseURL + "/v1/deploy/container/sync/permissions"
+}
+
 func buildDeploymentWorkspaceBootstrapURL(hostAPIBaseURL string) string {
 	hostAPIBaseURL = strings.TrimRight(strings.TrimSpace(hostAPIBaseURL), "/")
 	if hostAPIBaseURL == "" {
 		return ""
 	}
 	return hostAPIBaseURL + "/v1/deploy/container/workspaces/bootstrap"
+}
+
+func (s *Service) fetchSyncSkillBundle(ctx context.Context, cfg startupconfig.FileConfig, status ContainerAttachState) (ContainerSyncSkillBundle, error) {
+	socketPath := strings.TrimSpace(cfg.DeployContainer.LocalTransportSocketPath)
+	endpoint := strings.TrimSpace(cfg.DeployContainer.SyncSkillURL)
+	if socketPath != "" {
+		endpoint = buildDeploymentSyncSkillURL(childLocalTransportBaseURL)
+	} else if endpoint == "" {
+		hostAPIBaseURL := firstNonEmpty(status.HostBackendURL, strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL))
+		endpoint = buildDeploymentSyncSkillURL(hostAPIBaseURL)
+	}
+	if endpoint == "" {
+		return ContainerSyncSkillBundle{}, fmt.Errorf("sync skill url is not configured")
+	}
+	payload, err := json.Marshal(ContainerSyncCredentialRequestInput{DeploymentID: strings.TrimSpace(cfg.DeployContainer.DeploymentID), BootstrapSecret: strings.TrimSpace(cfg.DeployContainer.BootstrapSecret)})
+	if err != nil {
+		return ContainerSyncSkillBundle{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return ContainerSyncSkillBundle{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
+	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
+	if err != nil {
+		return ContainerSyncSkillBundle{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ContainerSyncSkillBundle{}, err
+	}
+	defer resp.Body.Close()
+	var decoded struct {
+		OK     bool                     `json:"ok"`
+		Bundle ContainerSyncSkillBundle `json:"bundle"`
+		Error  string                   `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return ContainerSyncSkillBundle{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ContainerSyncSkillBundle{}, errors.New(firstNonEmpty(decoded.Error, fmt.Sprintf("sync skill fetch failed with status %d", resp.StatusCode)))
+	}
+	return decoded.Bundle, nil
+}
+
+func (s *Service) fetchSyncPermissionBundle(ctx context.Context, cfg startupconfig.FileConfig, status ContainerAttachState) (ContainerSyncPermissionBundle, error) {
+	socketPath := strings.TrimSpace(cfg.DeployContainer.LocalTransportSocketPath)
+	endpoint := strings.TrimSpace(cfg.DeployContainer.SyncPermissionURL)
+	if socketPath != "" {
+		endpoint = buildDeploymentSyncPermissionURL(childLocalTransportBaseURL)
+	} else if endpoint == "" {
+		hostAPIBaseURL := firstNonEmpty(status.HostBackendURL, strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL))
+		endpoint = buildDeploymentSyncPermissionURL(hostAPIBaseURL)
+	}
+	if endpoint == "" {
+		return ContainerSyncPermissionBundle{}, fmt.Errorf("sync permission url is not configured")
+	}
+	payload, err := json.Marshal(ContainerSyncCredentialRequestInput{DeploymentID: strings.TrimSpace(cfg.DeployContainer.DeploymentID), BootstrapSecret: strings.TrimSpace(cfg.DeployContainer.BootstrapSecret)})
+	if err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
+	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
+	if err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
+	defer resp.Body.Close()
+	var decoded struct {
+		OK     bool                          `json:"ok"`
+		Bundle ContainerSyncPermissionBundle `json:"bundle"`
+		Error  string                        `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return ContainerSyncPermissionBundle{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ContainerSyncPermissionBundle{}, errors.New(firstNonEmpty(decoded.Error, fmt.Sprintf("sync permission fetch failed with status %d", resp.StatusCode)))
+	}
+	return decoded.Bundle, nil
 }
 
 func (s *Service) fetchSyncAgentBundle(ctx context.Context, cfg startupconfig.FileConfig, status ContainerAttachState) (ContainerSyncAgentBundle, error) {
@@ -2541,6 +2870,24 @@ func (s *Service) applyManagedAgentBundle(bundle ContainerSyncAgentBundle, modul
 		return nil
 	}
 	_, _, _, err := s.agents.ReplaceManagedState(bundle.State, syncProfiles, syncCustomTools)
+	return err
+}
+
+func (s *Service) applyManagedSkillBundle(bundle ContainerSyncSkillBundle, modules []string) error {
+	if s == nil || s.discovery == nil {
+		return fmt.Errorf("deploy container service is not configured")
+	}
+	if !workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleSkills) {
+		return nil
+	}
+	return s.discovery.ApplyManagedSkillBundle(bundle)
+}
+
+func (s *Service) applyManagedPermissionBundle(bundle ContainerSyncPermissionBundle) error {
+	if s == nil || s.permission == nil {
+		return fmt.Errorf("deploy container service is not configured")
+	}
+	_, err := s.permission.ApplyManagedPolicyState(bundle.State)
 	return err
 }
 
@@ -2623,6 +2970,24 @@ func (s *Service) SyncManagedCredentialsOnce(ctx context.Context) error {
 				return s.recordManagedCredentialSyncFailure(pairing, err)
 			}
 			if err := s.applyManagedAgentBundle(bundle, cfg.DeployContainer.SyncModules); err != nil {
+				return s.recordManagedCredentialSyncFailure(pairing, err)
+			}
+		}
+		if workspaceruntime.ReplicationSyncModuleEnabled(cfg.DeployContainer.SyncModules, workspaceruntime.ReplicationSyncModuleSkills) {
+			bundle, err := s.fetchSyncSkillBundle(ctx, cfg, ContainerAttachState{HostSwarmID: ownerSwarmID})
+			if err != nil {
+				return s.recordManagedCredentialSyncFailure(pairing, err)
+			}
+			if err := s.applyManagedSkillBundle(bundle, cfg.DeployContainer.SyncModules); err != nil {
+				return s.recordManagedCredentialSyncFailure(pairing, err)
+			}
+		}
+		if !cfg.BypassPermissions {
+			bundle, err := s.fetchSyncPermissionBundle(ctx, cfg, ContainerAttachState{HostSwarmID: ownerSwarmID})
+			if err != nil {
+				return s.recordManagedCredentialSyncFailure(pairing, err)
+			}
+			if err := s.applyManagedPermissionBundle(bundle); err != nil {
 				return s.recordManagedCredentialSyncFailure(pairing, err)
 			}
 		}
@@ -2917,6 +3282,83 @@ func (s *Service) fetchRemoteDeploySyncCredentialBundle(ctx context.Context, cfg
 
 func currentRemoteSyncVaultPassword() string {
 	return strings.TrimSpace(os.Getenv(remoteSyncVaultPasswordEnvKey))
+}
+
+func (s *Service) pushManagedSyncToChild(ctx context.Context, record pebblestore.DeployContainerRecord) error {
+	if !record.SyncEnabled {
+		return nil
+	}
+	childURL := strings.TrimRight(strings.TrimSpace(record.ChildBackendURL), "/")
+	if childURL == "" || strings.TrimSpace(record.ChildSwarmID) == "" {
+		return nil
+	}
+	client := s.client
+	if client == nil {
+		client = newBootstrapClient()
+	}
+	if err := s.postChildJSON(ctx, client, record, childURL+"/v1/permissions/bypass", map[string]any{"enabled": record.BypassPermissions}, nil); err != nil {
+		return err
+	}
+	if !record.BypassPermissions {
+		if s.permission == nil {
+			return fmt.Errorf("permission service is not configured")
+		}
+		state, err := s.permission.ExportPolicyState()
+		if err != nil {
+			return err
+		}
+		state.BypassPermissions = false
+		if err := s.postChildJSON(ctx, client, record, childURL+"/v1/permissions/managed/apply", state, nil); err != nil {
+			return err
+		}
+	}
+	if workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleSkills) {
+		if s.discovery == nil {
+			return fmt.Errorf("discovery service is not configured")
+		}
+		bundle, err := s.discovery.ExportManagedSkillBundle()
+		if err != nil {
+			return err
+		}
+		if err := s.postChildJSON(ctx, client, record, childURL+"/v1/deploy/container/managed/skills/apply", bundle, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) postChildJSON(ctx context.Context, client *http.Client, record pebblestore.DeployContainerRecord, endpoint string, payload any, out any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	s.addPeerAuthHeaders(req, strings.TrimSpace(record.ChildSwarmID))
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var decoded struct {
+		OK    bool            `json:"ok"`
+		Error string          `json:"error"`
+		Data  json.RawMessage `json:"data"`
+	}
+	if out == nil {
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return nil
+		}
+	} else if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return errors.New(firstNonEmpty(decoded.Error, fmt.Sprintf("child sync push failed with status %d", resp.StatusCode)))
+	}
+	return nil
 }
 
 func (s *Service) addPeerAuthHeaders(req *http.Request, peerSwarmID string) {

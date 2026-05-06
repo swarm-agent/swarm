@@ -40,6 +40,8 @@ type DeployContainerRecord struct {
 	SyncOwnerSwarmID      string                              `json:"sync_owner_swarm_id,omitempty"`
 	SyncCredentialURL     string                              `json:"sync_credential_url,omitempty"`
 	SyncAgentURL          string                              `json:"sync_agent_url,omitempty"`
+	SyncSkillURL          string                              `json:"sync_skill_url,omitempty"`
+	SyncPermissionURL     string                              `json:"sync_permission_url,omitempty"`
 	SyncBundlePassword    string                              `json:"sync_bundle_password,omitempty"`
 	SyncBundleExportedAt  int64                               `json:"sync_bundle_exported_at,omitempty"`
 	SyncBundleExportCount int                                 `json:"sync_bundle_export_count,omitempty"`
@@ -211,6 +213,8 @@ func normalizeDeployContainerRecord(record DeployContainerRecord) DeployContaine
 	record.SyncOwnerSwarmID = strings.TrimSpace(record.SyncOwnerSwarmID)
 	record.SyncCredentialURL = strings.TrimSpace(record.SyncCredentialURL)
 	record.SyncAgentURL = strings.TrimSpace(record.SyncAgentURL)
+	record.SyncSkillURL = strings.TrimSpace(record.SyncSkillURL)
+	record.SyncPermissionURL = strings.TrimSpace(record.SyncPermissionURL)
 	record.SyncBundlePassword = strings.TrimSpace(record.SyncBundlePassword)
 	record.SyncLastError = strings.TrimSpace(record.SyncLastError)
 	record.AttachStatus = normalizeDeployAttachStatus(record.AttachStatus)

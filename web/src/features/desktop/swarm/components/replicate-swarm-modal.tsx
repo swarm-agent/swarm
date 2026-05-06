@@ -85,6 +85,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
   const [syncMode, setSyncMode] = useState('managed')
   const [syncAgentsEnabled, setSyncAgentsEnabled] = useState(true)
   const [syncCustomToolsEnabled, setSyncCustomToolsEnabled] = useState(true)
+  const [syncSkillsEnabled, setSyncSkillsEnabled] = useState(true)
   const [syncVaultPassword, setSyncVaultPassword] = useState('')
   const [bypassPermissions, setBypassPermissions] = useState(false)
 
@@ -113,6 +114,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
     setSyncMode('managed')
     setSyncAgentsEnabled(true)
     setSyncCustomToolsEnabled(true)
+    setSyncSkillsEnabled(true)
     setSyncVaultPassword('')
     setBypassPermissions(false)
     void Promise.all([
@@ -188,6 +190,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
         'credentials',
         ...(syncAgentsEnabled ? ['agents'] : []),
         ...(syncCustomToolsEnabled ? ['custom_tools'] : []),
+        ...(syncSkillsEnabled ? ['skills'] : []),
       ]
       const result = await replicateSwarm({
         mode: 'local',
@@ -527,7 +530,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
                   </Select>
                 </div>
                 {syncEnabled ? (
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
                     <button
                       type="button"
                       onClick={() => setSyncAgentsEnabled((current) => !current)}
@@ -543,6 +546,14 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
                     >
                       <div className="font-medium">Sync custom tools</div>
                       <div className="mt-1 text-xs text-[var(--app-text-muted)]">Mirror custom tool definitions alongside agent state.</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSyncSkillsEnabled((current) => !current)}
+                      className={`rounded-2xl border px-4 py-3 text-left text-sm transition ${syncSkillsEnabled ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))] text-[var(--app-text)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'}`}
+                    >
+                      <div className="font-medium">Sync skills</div>
+                      <div className="mt-1 text-xs text-[var(--app-text-muted)]">Mirror host skills into the child managed skills directory.</div>
                     </button>
                   </div>
                 ) : null}
@@ -564,14 +575,14 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
 
               <Card className="border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
                 <div className="text-sm font-medium text-[var(--app-text)]">Bypass permissions</div>
-                <p className="mt-1 text-xs text-[var(--app-text-muted)]">Launch the replicated child with tool approval bypass enabled. Task launches and exit-plan-mode approvals still require explicit review.</p>
+                <p className="mt-1 text-xs text-[var(--app-text-muted)]">Use this as the permission authority switch. ON: child bypasses prompts and host policy is not mirrored. OFF: host-managed permissions mirror host policy and route approvals through the host.</p>
                 <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3">
                   <div>
                     <div className="flex items-center gap-2 text-sm font-medium text-[var(--app-text)]">
                       <Shield size={14} />
                       Enable bypass permissions
                     </div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Reflect this on the child swarm and in dashboard metadata.</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Bypass ON makes the child independent; OFF keeps host-managed policy active.</div>
                   </div>
                   <button
                     type="button"
@@ -593,8 +604,8 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
                   <div>Runtime: <span className="font-medium text-[var(--app-text)]">{runtimeChoice || 'Unavailable'}</span></div>
                   <div>Selected workspaces: <span className="font-medium text-[var(--app-text)]">{selectedCount}</span></div>
                   <div>Sync: <span className="font-medium text-[var(--app-text)]">{syncEnabled ? `enabled (${syncMode})` : 'disabled'}</span></div>
-                  <div>Sync modules: <span className="font-medium text-[var(--app-text)]">{syncEnabled ? ['credentials', ...(syncAgentsEnabled ? ['agents'] : []), ...(syncCustomToolsEnabled ? ['custom_tools'] : [])].join(', ') : 'none'}</span></div>
-                  <div>Bypass permissions: <span className="font-medium text-[var(--app-text)]">{bypassPermissions ? 'enabled' : 'disabled'}</span></div>
+                  <div>Sync modules: <span className="font-medium text-[var(--app-text)]">{syncEnabled ? ['credentials', ...(syncAgentsEnabled ? ['agents'] : []), ...(syncCustomToolsEnabled ? ['custom_tools'] : []), ...(syncSkillsEnabled ? ['skills'] : [])].join(', ') : 'none'}</span></div>
+                  <div>Bypass permissions: <span className="font-medium text-[var(--app-text)]">{bypassPermissions ? 'bypass ON; host policy not mirrored' : 'host-managed; host policy mirrored'}</span></div>
                 </div>
               </Card>
             </div>

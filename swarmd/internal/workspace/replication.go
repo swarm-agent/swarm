@@ -19,6 +19,7 @@ const (
 	ReplicationSyncModuleCredentials = "credentials"
 	ReplicationSyncModuleAgents      = "agents"
 	ReplicationSyncModuleCustomTools = "custom_tools"
+	ReplicationSyncModuleSkills      = "skills"
 )
 
 type ReplicationWorkspaceInput struct {
@@ -85,13 +86,15 @@ func NormalizeReplicationSyncModule(raw string) string {
 		return ReplicationSyncModuleAgents
 	case ReplicationSyncModuleCustomTools:
 		return ReplicationSyncModuleCustomTools
+	case ReplicationSyncModuleSkills:
+		return ReplicationSyncModuleSkills
 	default:
 		return ""
 	}
 }
 
 func DefaultReplicationSyncModules() []string {
-	return []string{ReplicationSyncModuleCredentials}
+	return []string{ReplicationSyncModuleCredentials, ReplicationSyncModuleAgents, ReplicationSyncModuleCustomTools, ReplicationSyncModuleSkills}
 }
 
 func NormalizeReplicationSyncModules(values []string) []string {

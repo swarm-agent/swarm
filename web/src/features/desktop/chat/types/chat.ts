@@ -9,11 +9,20 @@ export interface ChatMessageRecord {
   toolMessage?: StructuredToolMessage | null;
 }
 
+export interface EditDiffHunk {
+  index: number;
+  oldLines: string[];
+  newLines: string[];
+  oldTruncated: boolean;
+  newTruncated: boolean;
+}
+
 export interface EditDiffPreview {
   oldLines: string[];
   newLines: string[];
   oldTruncated: boolean;
   newTruncated: boolean;
+  hunks: EditDiffHunk[];
 }
 
 export type ToolMessageState = "done" | "running" | "error";

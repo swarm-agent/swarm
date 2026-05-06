@@ -208,6 +208,7 @@ type permissionService interface {
 	UpsertRule(rule permission.PolicyRule) (permission.PolicyRule, error)
 	RemoveRule(ruleID string) (bool, error)
 	ResetPolicy() (permission.Policy, error)
+	ApplyManagedPolicyState(state permission.ManagedPolicyState) (permission.ManagedPolicyState, error)
 	ExplainTool(mode, toolName, toolArguments string, overlay *permission.Policy) (permission.PolicyExplain, error)
 	ResolveWithPolicy(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
@@ -2198,7 +2199,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				hostBackendURL = strings.TrimSpace(resolved)
 			}
 			routeMetadata := map[string]any{
-				"swarm_route_id": "swarm:" + strings.TrimSpace(remoteTarget.SwarmID) + ":" + strings.TrimSpace(req.RuntimeWorkspacePath),
+				"swarm_route_id":          "swarm:" + strings.TrimSpace(remoteTarget.SwarmID) + ":" + strings.TrimSpace(req.RuntimeWorkspacePath),
+				"swarm_route_label":       firstNonEmpty(strings.TrimSpace(remoteTarget.Name), strings.TrimSpace(remoteTarget.SwarmID)),
+				"swarm_route_target_kind": strings.TrimSpace(remoteTarget.Kind),
 				sessionruntime.HostedSessionMetadataHostBackendURL:       hostBackendURL,
 				sessionruntime.HostedSessionMetadataChildSwarmID:         strings.TrimSpace(remoteTarget.SwarmID),
 				sessionruntime.HostedSessionMetadataHostWorkspacePath:    strings.TrimSpace(req.HostWorkspacePath),
@@ -3688,7 +3691,7 @@ func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 		return loopback && r.Method == http.MethodGet
 	case "/v1/swarm/discovery":
 		return trustedNetwork && r.Method == http.MethodGet
-	case "/v1/deploy/container/attach/child-state", "/v1/deploy/container/attach/request", "/v1/deploy/container/attach/approve", "/v1/deploy/container/attach/finalize", "/v1/deploy/container/sync/credentials", "/v1/deploy/container/sync/agents", "/v1/deploy/container/workspaces/bootstrap", "/v1/deploy/remote/session/sync/credentials":
+	case "/v1/deploy/container/attach/child-state", "/v1/deploy/container/attach/request", "/v1/deploy/container/attach/approve", "/v1/deploy/container/attach/finalize", "/v1/deploy/container/sync/credentials", "/v1/deploy/container/sync/agents", "/v1/deploy/container/sync/skills", "/v1/deploy/container/sync/permissions", "/v1/deploy/container/managed/skills/apply", "/v1/permissions/managed/apply", "/v1/permissions/bypass", "/v1/deploy/container/workspaces/bootstrap", "/v1/deploy/remote/session/sync/credentials":
 		return trustedNetwork && r.Method == http.MethodPost
 	default:
 		return false
@@ -3917,6 +3920,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
+			s.triggerPermissionSyncReconcile()
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rule": rule})
 		default:
 			methodNotAllowed(w)
@@ -3948,7 +3952,25 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.SetBypassPermissions(req.Enabled)
+		s.triggerPermissionSyncReconcile()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bypass_permissions": s.BypassPermissions()})
+		return
+	case path == "/v1/permissions/managed/apply":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		var req permission.ManagedPolicyState
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		state, err := s.perm.ApplyManagedPolicyState(req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
 		return
 	case path == "/v1/permissions/reset":
 		if r.Method != http.MethodPost {
@@ -3960,6 +3982,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		s.triggerPermissionSyncReconcile()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy})
 		return
 	case path == "/v1/permissions/explain":
@@ -3990,9 +4013,29 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if removed {
+			s.triggerPermissionSyncReconcile()
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed, "rule_id": ruleID})
 		return
 	default:
 		writeError(w, http.StatusNotFound, errors.New("permission path not found"))
 	}
+}
+
+func (s *Server) triggerPermissionSyncReconcile() {
+	if s == nil || s.deployContainers == nil {
+		return
+	}
+	reconciler, ok := s.deployContainers.(interface{ ReconcilePermissionSync(context.Context) error })
+	if !ok {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := reconciler.ReconcilePermissionSync(ctx); err != nil {
+			log.Printf("warning: permission sync reconcile failed: %v", err)
+		}
+	}()
 }

@@ -41,6 +41,7 @@ import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISe
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { fetchSession } from '../chat/queries/chat-queries'
+import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, fetchLocalContainerUpdatePlan, startDesktopUpdate, type DesktopUpdateJob, type LocalContainerUpdatePlan } from '../update/api'
@@ -724,16 +725,10 @@ function formatRelativeTime(timestamp: number | null, now: number): string {
   return `${days} day${days === 1 ? '' : 's'} ago`
 }
 
-function metadataString(metadata: Record<string, unknown> | undefined, key: string): string {
-  const value = metadata?.[key]
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function sessionOriginLabel(session: DesktopSessionRecord, fallbackSwarmName: string): string {
-  const targetLabel = metadataString(session.metadata, 'swarm_target_name')
-    || metadataString(session.metadata, 'target_display_name')
-  if (targetLabel) {
-    return targetLabel
+function sessionOriginLabel(session: DesktopSessionRecord, routeOptions: DesktopChatRoute[], fallbackSwarmName: string): string {
+  const route = resolveDesktopChatRouteFromSession(session, routeOptions, null)
+  if (route?.label.trim()) {
+    return route.label.trim()
   }
   const normalizedFallback = fallbackSwarmName.trim()
   return normalizedFallback || 'host'
@@ -1217,6 +1212,7 @@ interface SessionRowProps {
   now: number
   session: DesktopSessionRecord
   fallbackSwarmName: string
+  routeOptions: DesktopChatRoute[]
   depth?: number
   childLabel?: string | null
   childKind?: SidebarSessionNode['kind']
@@ -1227,10 +1223,10 @@ interface SessionRowProps {
   onToggleAgents: (sessionId: string) => void
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, depth = 0, childLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
+function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, depth = 0, childLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
   const session = useDesktopStore((state) => state.sessions[initialSession.id] ?? initialSession)
   const activeSession = sessionIsActive(session)
-  const originLabel = sessionOriginLabel(session, fallbackSwarmName)
+  const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
   const backgroundInfo = sessionBackgroundInfo(session, originLabel)
   const timerLabel = activeSession ? sessionTimerLabel(session, now) : ''
   const bottomLeftLabel = backgroundInfo?.targetLabel || originLabel
@@ -2794,6 +2790,12 @@ export function DesktopAppPage() {
                 const workspaceGitSnapshot = gitSnapshotByPath.get(workspace.path) ?? (workspace.path === selectedGitWorkspacePath ? gitSnapshot : null)
                 const workspaceGitLoading = workspace.path === selectedGitWorkspacePath && gitStatusQuery.isFetching
                 const workspaceGitError = gitRealtimeErrors[workspace.path] ?? (workspace.path === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)
+                const workspaceRouteOptions = buildDesktopChatRouteOptions({
+                  hostSwarmName: swarmName,
+                  workspacePath: workspace.path,
+                  workspaceName: workspace.workspaceName,
+                  replicationLinks: workspace.replicationLinks,
+                })
                 const handleToggleWorkspaceWorktree = () => {
                   if (worktreeBusy) {
                     return
@@ -2862,6 +2864,7 @@ export function DesktopAppPage() {
                               now={sidebarNow}
                               session={node.session}
                               fallbackSwarmName={swarmName}
+                              routeOptions={workspaceRouteOptions}
                               depth={node.depth}
                               childLabel={node.label}
                               childKind={node.kind}

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { applyDesktopChatRouteToSession, resolveDesktopChatRouteById, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
+import { applyDesktopChatRouteToSession, desktopChatRouteFromSessionMetadata, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
 import type { DesktopSessionRecord } from '../../types/realtime'
 
 const remoteRoute: DesktopChatRoute = {
@@ -65,6 +65,69 @@ test('routed session fetch URL includes swarm_id so backend can proxy to child',
     withDesktopChatRoute('/v1/sessions/session-1', remoteRoute),
     '/v1/sessions/session-1?swarm_id=child-swarm',
   )
+})
+
+test('routed session metadata reconstructs route label from server metadata, not target metadata', () => {
+  const route = desktopChatRouteFromSessionMetadata(sessionRecord({
+    workspacePath: '/workspaces/host-swarm',
+    workspaceName: 'host swarm',
+    runtimeWorkspacePath: '/workspaces/swarm',
+    metadata: {
+      swarm_route_id: remoteRoute.id,
+      swarm_route_label: 'Remote Swarm',
+      swarm_route_target_kind: 'remote',
+      swarm_routed_child_swarm_id: 'child-swarm',
+      swarm_routed_host_workspace_path: '/workspaces/host-swarm',
+      swarm_routed_runtime_workspace_path: '/workspaces/swarm',
+      swarm_target_name: 'memory',
+      target_display_name: 'memory',
+    },
+  }))
+
+  assert.equal(route?.id, remoteRoute.id)
+  assert.equal(route?.label, 'Remote Swarm')
+  assert.equal(route?.targetKind, 'remote')
+})
+
+test('routed session route resolution falls back to server metadata when route option is unavailable', () => {
+  const hostRoute: DesktopChatRoute = {
+    id: 'host',
+    label: 'Local Swarm',
+    swarmId: null,
+    targetKind: 'host',
+    hostWorkspacePath: '/workspaces/host-swarm',
+    hostWorkspaceName: 'host swarm',
+    runtimeWorkspacePath: '/workspaces/host-swarm',
+  }
+  const route = resolveDesktopChatRouteFromSession(sessionRecord({
+    workspacePath: '/workspaces/host-swarm',
+    workspaceName: 'host swarm',
+    runtimeWorkspacePath: '/workspaces/swarm',
+    metadata: {
+      swarm_route_id: remoteRoute.id,
+      swarm_route_label: 'Remote Swarm',
+      swarm_routed_child_swarm_id: 'child-swarm',
+      swarm_routed_host_workspace_path: '/workspaces/host-swarm',
+      swarm_routed_runtime_workspace_path: '/workspaces/swarm',
+      swarm_target_name: 'memory',
+    },
+  }), [hostRoute], hostRoute)
+
+  assert.equal(route?.id, remoteRoute.id)
+  assert.equal(route?.label, 'Remote Swarm')
+})
+
+test('routed session route resolution prefers current route option label when available', () => {
+  const route = resolveDesktopChatRouteFromSession(sessionRecord({
+    metadata: {
+      swarm_route_id: remoteRoute.id,
+      swarm_route_label: 'Stale Remote Swarm',
+      swarm_routed_child_swarm_id: 'child-swarm',
+      swarm_routed_runtime_workspace_path: '/workspaces/swarm',
+    },
+  }), [remoteRoute], null)
+
+  assert.equal(route?.label, 'child swarm')
 })
 
 test('routed session hydration preserves remote child workspace identity', () => {

@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -66,16 +69,17 @@ func (s *Server) handleDeployContainerCreate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var req struct {
-		Name              string `json:"name"`
-		Runtime           string `json:"runtime"`
-		Image             string `json:"image"`
-		GroupID           string `json:"group_id"`
-		GroupName         string `json:"group_name"`
-		GroupNetworkName  string `json:"group_network_name"`
-		SyncEnabled       bool   `json:"sync_enabled"`
-		SyncVaultPassword string `json:"sync_vault_password,omitempty"`
-		BypassPermissions bool   `json:"bypass_permissions,omitempty"`
-		AlwaysOn          bool   `json:"always_on,omitempty"`
+		Name              string   `json:"name"`
+		Runtime           string   `json:"runtime"`
+		Image             string   `json:"image"`
+		GroupID           string   `json:"group_id"`
+		GroupName         string   `json:"group_name"`
+		GroupNetworkName  string   `json:"group_network_name"`
+		SyncEnabled       bool     `json:"sync_enabled"`
+		SyncModules       []string `json:"sync_modules,omitempty"`
+		SyncVaultPassword string   `json:"sync_vault_password,omitempty"`
+		BypassPermissions bool     `json:"bypass_permissions,omitempty"`
+		AlwaysOn          bool     `json:"always_on,omitempty"`
 		ContainerPackages struct {
 			BaseImage      string `json:"base_image,omitempty"`
 			PackageManager string `json:"package_manager,omitempty"`
@@ -108,6 +112,7 @@ func (s *Server) handleDeployContainerCreate(w http.ResponseWriter, r *http.Requ
 		GroupName:         req.GroupName,
 		GroupNetworkName:  req.GroupNetworkName,
 		SyncEnabled:       req.SyncEnabled,
+		SyncModules:       req.SyncModules,
 		SyncVaultPassword: req.SyncVaultPassword,
 		BypassPermissions: req.BypassPermissions,
 		AlwaysOn:          req.AlwaysOn,
@@ -138,6 +143,56 @@ func (s *Server) handleDeployContainerCreate(w http.ResponseWriter, r *http.Requ
 		"path_id":    deployruntime.PathContainerCreate,
 		"deployment": deployment,
 	})
+}
+
+func (s *Server) handleDeployContainerSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.deployContainers == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
+		return
+	}
+	var req struct {
+		ID                string   `json:"id"`
+		SyncEnabled       *bool    `json:"sync_enabled,omitempty"`
+		SyncModules       []string `json:"sync_modules,omitempty"`
+		SyncVaultPassword string   `json:"sync_vault_password,omitempty"`
+		BypassPermissions *bool    `json:"bypass_permissions,omitempty"`
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := decodeJSONBytes(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var rawFields map[string]json.RawMessage
+	_ = json.NewDecoder(bytes.NewReader(body)).Decode(&rawFields)
+	_, modulesSet := rawFields["sync_modules"]
+	settingsSvc, ok := s.deployContainers.(interface {
+		UpdateSettings(context.Context, deployruntime.ContainerSettingsUpdateInput) (deployruntime.ContainerDeployment, error)
+	})
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container settings not configured"))
+		return
+	}
+	deployment, err := settingsSvc.UpdateSettings(context.Background(), deployruntime.ContainerSettingsUpdateInput{
+		ID:                req.ID,
+		SyncEnabled:       req.SyncEnabled,
+		SyncModules:       req.SyncModules,
+		SyncModulesSet:    modulesSet,
+		SyncVaultPassword: req.SyncVaultPassword,
+		BypassPermissions: req.BypassPermissions,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSettings, "deployment": deployment, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerSettings, "deployment": deployment})
 }
 
 func (s *Server) handleDeployContainerAction(w http.ResponseWriter, r *http.Request) {
@@ -519,6 +574,91 @@ func (s *Server) handleDeployContainerSyncAgents(w http.ResponseWriter, r *http.
 		"path_id": deployruntime.PathContainerSyncAgents,
 		"bundle":  bundle,
 	})
+}
+
+func (s *Server) handleDeployContainerSyncSkills(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.deployContainers == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
+		return
+	}
+	var req struct {
+		DeploymentID    string `json:"deployment_id"`
+		BootstrapSecret string `json:"bootstrap_secret"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	syncSvc, ok := s.deployContainers.(interface {
+		SyncSkillBundle(context.Context, deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncSkillBundle, error)
+	})
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container skill sync not configured"))
+		return
+	}
+	bundle, err := syncSvc.SyncSkillBundle(context.Background(), deployruntime.ContainerSyncCredentialRequestInput{DeploymentID: req.DeploymentID, BootstrapSecret: req.BootstrapSecret})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSyncSkills, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerSyncSkills, "bundle": bundle})
+}
+
+func (s *Server) handleDeployContainerSyncPermissions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.deployContainers == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
+		return
+	}
+	var req struct {
+		DeploymentID    string `json:"deployment_id"`
+		BootstrapSecret string `json:"bootstrap_secret"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	syncSvc, ok := s.deployContainers.(interface {
+		SyncPermissionBundle(context.Context, deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncPermissionBundle, error)
+	})
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container permission sync not configured"))
+		return
+	}
+	bundle, err := syncSvc.SyncPermissionBundle(context.Background(), deployruntime.ContainerSyncCredentialRequestInput{DeploymentID: req.DeploymentID, BootstrapSecret: req.BootstrapSecret})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSyncPermissions, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerSyncPermissions, "bundle": bundle})
+}
+
+func (s *Server) handleDeployContainerManagedSkillsApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.discovery == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("discovery service not configured"))
+		return
+	}
+	var bundle deployruntime.ContainerSyncSkillBundle
+	if err := decodeJSON(r, &bundle); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.discovery.ApplyManagedSkillBundle(bundle); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSyncSkills, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerSyncSkills})
 }
 
 func (s *Server) handleDeployContainerWorkspaceBootstrap(w http.ResponseWriter, r *http.Request) {

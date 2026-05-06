@@ -94,17 +94,38 @@ export function resolveDesktopChatRouteById(
   return fallback ?? routeOptions[0] ?? null
 }
 
+function sessionMetadataString(metadata: Record<string, unknown> | null | undefined, key: string): string {
+  const value = metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecord | null | undefined): DesktopChatRoute | null {
+  const metadata = session?.metadata
+  const metadataSwarmId = sessionMetadataString(metadata, 'swarm_routed_child_swarm_id')
+  const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim() || sessionMetadataString(metadata, 'swarm_routed_runtime_workspace_path')
+  if (!metadataSwarmId || !runtimeWorkspacePath) {
+    return null
+  }
+  const id = sessionMetadataString(metadata, 'swarm_route_id') || desktopChatRouteID(metadataSwarmId, runtimeWorkspacePath)
+  return {
+    id,
+    label: sessionMetadataString(metadata, 'swarm_route_label') || metadataSwarmId,
+    swarmId: metadataSwarmId,
+    targetKind: sessionMetadataString(metadata, 'swarm_route_target_kind') || sessionMetadataString(metadata, 'swarm_target_kind'),
+    hostWorkspacePath: sessionMetadataString(metadata, 'swarm_routed_host_workspace_path') || session?.workspacePath?.trim() || '',
+    hostWorkspaceName: session?.workspaceName?.trim() || '',
+    runtimeWorkspacePath,
+  }
+}
+
 export function resolveDesktopChatRouteFromSession(
   session: DesktopSessionRecord | null | undefined,
   routeOptions: DesktopChatRoute[],
   fallback?: DesktopChatRoute | null,
 ): DesktopChatRoute | null {
-  const metadata = session?.metadata
-  const metadataRouteId = typeof metadata?.swarm_route_id === 'string' ? metadata.swarm_route_id.trim() : ''
-  const metadataSwarmId = typeof metadata?.swarm_routed_child_swarm_id === 'string' ? metadata.swarm_routed_child_swarm_id.trim() : ''
-  const runtimeWorkspacePath = session?.runtimeWorkspacePath?.trim() || (typeof metadata?.swarm_routed_runtime_workspace_path === 'string' ? metadata.swarm_routed_runtime_workspace_path.trim() : '')
-  const derivedRouteId = metadataSwarmId && runtimeWorkspacePath ? desktopChatRouteID(metadataSwarmId, runtimeWorkspacePath) : ''
-  return resolveDesktopChatRouteById(routeOptions, metadataRouteId || derivedRouteId, fallback)
+  const metadataRoute = desktopChatRouteFromSessionMetadata(session)
+  const matchedRoute = metadataRoute ? routeOptions.find((entry) => entry.id === metadataRoute.id) ?? null : null
+  return matchedRoute ?? metadataRoute ?? fallback ?? routeOptions[0] ?? null
 }
 
 export function withDesktopChatRoute(path: string, route: DesktopChatRoute | null | undefined): string {

@@ -203,7 +203,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		cfg.ConfigPath,
 		cfg.DataDir,
 	)
-	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath)
+	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc)
 	remoteDeploySvc := remotedeploy.NewService(pebblestore.NewRemoteDeploySessionStore(store), swarmSvc, swarmStore, localContainerSvc, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD)
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)

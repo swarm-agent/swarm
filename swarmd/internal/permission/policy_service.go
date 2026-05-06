@@ -10,6 +10,12 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+type ManagedPolicyState struct {
+	Policy            Policy `json:"policy"`
+	BypassPermissions bool   `json:"bypass_permissions"`
+	ExportedAt        int64  `json:"exported_at,omitempty"`
+}
+
 func (s *Service) CurrentPolicy() (Policy, error) {
 	if s == nil {
 		return DefaultPolicy(), nil
@@ -17,6 +23,40 @@ func (s *Service) CurrentPolicy() (Policy, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.loadPolicyLocked()
+}
+
+func (s *Service) ExportPolicyState() (ManagedPolicyState, error) {
+	policy, err := s.CurrentPolicy()
+	if err != nil {
+		return ManagedPolicyState{}, err
+	}
+	return ManagedPolicyState{
+		Policy:            NormalizePolicy(policy),
+		BypassPermissions: s.BypassPermissions(),
+		ExportedAt:        time.Now().UnixMilli(),
+	}, nil
+}
+
+func (s *Service) ApplyManagedPolicyState(state ManagedPolicyState) (ManagedPolicyState, error) {
+	if s == nil {
+		return ManagedPolicyState{}, errors.New("permission service is not configured")
+	}
+	policy := NormalizePolicy(state.Policy)
+	if policy.UpdatedAt <= 0 {
+		policy.UpdatedAt = time.Now().UnixMilli()
+	}
+	s.mu.Lock()
+	if err := s.persistPolicyLocked(policy); err != nil {
+		s.mu.Unlock()
+		return ManagedPolicyState{}, err
+	}
+	s.mu.Unlock()
+	s.SetBypassPermissions(state.BypassPermissions)
+	return ManagedPolicyState{
+		Policy:            policy,
+		BypassPermissions: s.BypassPermissions(),
+		ExportedAt:        time.Now().UnixMilli(),
+	}, nil
 }
 
 func (s *Service) ExplainTool(mode, toolName, toolArguments string, overlay *Policy) (PolicyExplain, error) {
