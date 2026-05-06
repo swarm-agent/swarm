@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Clock3, ListChecks, LoaderCircle, Menu, Mic, Minimize2, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
+import { ChevronDown, Clock3, Home, ListChecks, LoaderCircle, Menu, Mic, Minimize2, Plus, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -908,8 +908,11 @@ export function DesktopChatPanel({
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [modelPickerOpenSignal, setModelPickerOpenSignal] = useState(0)
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
+  const [mobileQuickCommandsOpen, setMobileQuickCommandsOpen] = useState(false)
   const mobileSettingsRef = useRef<HTMLDivElement>(null)
   const mobileSettingsTriggerRef = useRef<HTMLButtonElement>(null)
+  const mobileQuickCommandsRef = useRef<HTMLDivElement>(null)
+  const mobileQuickCommandsTriggerRef = useRef<HTMLButtonElement>(null)
 
   const clearDictationRestartTimer = useCallback(() => {
     if (dictationRestartTimerRef.current === null) {
@@ -1075,21 +1078,25 @@ export function DesktopChatPanel({
   }, [stopDictation])
 
   useEffect(() => {
-    if (!mobileSettingsOpen) return
+    if (!mobileSettingsOpen && !mobileQuickCommandsOpen) return
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node
       if (
         mobileSettingsRef.current?.contains(target) ||
         mobileSettingsTriggerRef.current?.contains(target) ||
+        mobileQuickCommandsRef.current?.contains(target) ||
+        mobileQuickCommandsTriggerRef.current?.contains(target) ||
         !document.getElementById('root')?.contains(target)
       ) {
         return
       }
       setMobileSettingsOpen(false)
+      setMobileQuickCommandsOpen(false)
     }
     const handleEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         setMobileSettingsOpen(false)
+        setMobileQuickCommandsOpen(false)
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
@@ -1098,7 +1105,7 @@ export function DesktopChatPanel({
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [mobileSettingsOpen])
+  }, [mobileSettingsOpen, mobileQuickCommandsOpen])
 
   const serverDefaultRouteId = defaultWorkspaceRouteId(uiSettingsQuery.data, workspacePath)
   const resolvedDefaultRouteId = resolveDesktopChatRouteById(routeOptions, serverDefaultRouteId, defaultChatRoute)?.id ?? defaultChatRoute?.id ?? 'host'
@@ -1858,6 +1865,23 @@ export function DesktopChatPanel({
     }))
   }, [])
 
+  const handleMobileQuickCommand = useCallback((command: 'new-session' | 'change-workspace' | 'save') => {
+    setMobileQuickCommandsOpen(false)
+    switch (command) {
+      case 'new-session':
+        onStartNewSession(workspacePath, workspaceName)
+        return
+      case 'change-workspace':
+        onOpenWorkspaceLauncher()
+        return
+      case 'save':
+        openCommitModal()
+        return
+      default:
+        return
+    }
+  }, [onOpenWorkspaceLauncher, onStartNewSession, openCommitModal, workspaceName, workspacePath])
+
   const openPlanModal = useCallback(async () => {
     if (!sessionId) {
       setPlanModal({
@@ -2593,17 +2617,71 @@ export function DesktopChatPanel({
               {runTimerLabel}
             </div>
           ) : null}
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-11 w-11 shrink-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0 text-[var(--app-text)] hover:border-[var(--app-border-accent)] sm:h-10 sm:w-10"
-            onClick={openCommitModal}
-            disabled={!sessionId || submitting || canStop}
-            aria-label="Save changes"
-            title="Save / commit changes"
-          >
-            <Save size={22} />
-          </Button>
+          <div className="relative shrink-0">
+            <button
+              ref={mobileQuickCommandsTriggerRef}
+              type="button"
+              className="inline-flex h-11 min-w-11 touch-manipulation select-none items-center justify-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 text-[var(--app-text)] transition duration-150 hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-subtle)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)] sm:h-10 sm:min-w-10"
+              onClick={() => {
+                setMobileSettingsOpen(false)
+                setMobileQuickCommandsOpen((open) => !open)
+              }}
+              aria-expanded={mobileQuickCommandsOpen}
+              aria-haspopup="menu"
+              aria-label="Open quick actions"
+              title="Quick actions"
+            >
+              <ListChecks size={21} />
+              <ChevronDown size={14} className="text-[var(--app-text-subtle)]" />
+            </button>
+            {mobileQuickCommandsOpen ? (
+              <div
+                ref={mobileQuickCommandsRef}
+                role="menu"
+                aria-label="Quick actions"
+                className="absolute right-0 top-[calc(100%+0.5rem)] z-50 w-56 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 text-sm shadow-[var(--shadow-panel)]"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => handleMobileQuickCommand('new-session')}
+                  disabled={submitting || canStop}
+                >
+                  <Plus size={17} className="shrink-0 text-[var(--app-text-subtle)]" />
+                  <span className="min-w-0">
+                    <span className="block font-medium">New session</span>
+                    <span className="block text-xs text-[var(--app-text-muted)]">Start fresh here</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
+                  onClick={() => handleMobileQuickCommand('change-workspace')}
+                >
+                  <Home size={17} className="shrink-0 text-[var(--app-text-subtle)]" />
+                  <span className="min-w-0">
+                    <span className="block font-medium">Change workspace</span>
+                    <span className="block text-xs text-[var(--app-text-muted)]">Open workspace picker</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => handleMobileQuickCommand('save')}
+                  disabled={!sessionId || submitting || canStop}
+                >
+                  <Save size={17} className="shrink-0 text-[var(--app-text-subtle)]" />
+                  <span className="min-w-0">
+                    <span className="block font-medium">Save changes</span>
+                    <span className="block text-xs text-[var(--app-text-muted)]">Commit this session</span>
+                  </span>
+                </button>
+              </div>
+            ) : null}
+          </div>
           <Button
             size="sm"
             variant="ghost"

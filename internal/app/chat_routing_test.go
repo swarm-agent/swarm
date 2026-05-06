@@ -130,3 +130,43 @@ func TestRemoteUISettingsUpdateKeepsExplicitSelection(t *testing.T) {
 		t.Fatalf("selected route ID = %q, want explicit %q", app.selectedChatRouteID, testRemoteRouteID)
 	}
 }
+
+func TestSessionRouteLabelUsesSessionMetadata(t *testing.T) {
+	app := &App{homeModel: model.HomeModel{Workspaces: testRoutingWorkspaces()}}
+	metadata := map[string]any{
+		"swarm_route_id":                      testRemoteRouteID,
+		"swarm_routed_child_swarm_id":         "child-swarm",
+		"swarm_routed_host_workspace_path":    testWorkspacePath,
+		"swarm_routed_runtime_workspace_path": "/workspaces/swarm-go",
+	}
+
+	label := app.sessionRouteLabelForWorkspace(testWorkspacePath, metadata)
+	if label != "Child Desk" {
+		t.Fatalf("session route label = %q, want Child Desk", label)
+	}
+}
+
+func TestSessionRouteLabelUsesMetadataLabelWhenRouteListMissing(t *testing.T) {
+	app := &App{}
+	metadata := map[string]any{
+		"swarm_route_id":    testRemoteRouteID,
+		"swarm_route_label": "Child Desk",
+	}
+
+	label := app.sessionRouteLabelForWorkspace(testWorkspacePath, metadata)
+	if label != "Child Desk" {
+		t.Fatalf("session route label = %q, want Child Desk", label)
+	}
+}
+
+func TestSessionRouteLabelFallsBackToSelectedRoute(t *testing.T) {
+	app := &App{
+		selectedChatRouteID: testRemoteRouteID,
+		homeModel:           model.HomeModel{Workspaces: testRoutingWorkspaces()},
+	}
+
+	label := app.sessionRouteLabelForWorkspace(testWorkspacePath, nil)
+	if label != "Child Desk" {
+		t.Fatalf("session route label = %q, want selected route label", label)
+	}
+}

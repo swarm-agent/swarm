@@ -2809,6 +2809,7 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		serviceTier,
 		contextMode,
 		contextWindow,
+		summary.Metadata,
 	)
 }
 
@@ -2959,7 +2960,7 @@ func normalizeAppSessionMode(mode string) string {
 	}
 }
 
-func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName, sessionMode, worktreeBranch string, worktreeEnabled bool, worktreeRootPath, initialPrompt, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int) error {
+func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName, sessionMode, worktreeBranch string, worktreeEnabled bool, worktreeRootPath, initialPrompt, modelProvider, modelName, thinkingLevel, serviceTier, contextMode string, contextWindow int, sessionMetadata map[string]any) error {
 	dir := a.home.ActiveDirectory()
 	chatWorkspace := strings.TrimSpace(workspaceName)
 	chatPath := strings.TrimSpace(workspacePath)
@@ -3026,7 +3027,7 @@ func (a *App) openChatView(sessionID, sessionTitle, workspacePath, workspaceName
 		Meta: ui.ChatSessionMeta{
 			Workspace:             chatWorkspace,
 			Path:                  chatDisplayPath,
-			Route:                 a.selectedChatRouteLabelForWorkspace(chatPath),
+			Route:                 a.sessionRouteLabelForWorkspace(chatPath, sessionMetadata),
 			Branch:                chatBranch,
 			Dirty:                 chatDirty,
 			Version:               strings.TrimSpace(a.homeModel.Version),
@@ -7744,6 +7745,62 @@ func (a *App) selectedChatRouteForWorkspace(workspacePath string) model.ChatRout
 func (a *App) selectedChatRouteLabelForWorkspace(workspacePath string) string {
 	route := a.selectedChatRouteForWorkspace(workspacePath)
 	return emptyFallback(strings.TrimSpace(route.Label), "host")
+}
+
+func (a *App) sessionRouteLabelForWorkspace(workspacePath string, metadata map[string]any) string {
+	if route, ok := a.sessionRouteFromMetadata(workspacePath, metadata); ok {
+		return emptyFallback(strings.TrimSpace(route.Label), "host")
+	}
+	return a.selectedChatRouteLabelForWorkspace(workspacePath)
+}
+
+func (a *App) sessionRouteFromMetadata(workspacePath string, metadata map[string]any) (model.ChatRoute, bool) {
+	if len(metadata) == 0 {
+		return model.ChatRoute{}, false
+	}
+	routeID := consumeStringMetadata(metadata, "swarm_route_id")
+	label := consumeStringMetadata(metadata, "swarm_route_label")
+	if routeID != "" || label != "" {
+		if routeID == "" {
+			routeID = "host"
+		}
+		if routeID == "host" {
+			return model.ChatRoute{ID: "host", Label: emptyFallback(label, "host")}, true
+		}
+	}
+
+	hostWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_host_workspace_path")
+	runtimeWorkspacePath := consumeStringMetadata(metadata, "swarm_routed_runtime_workspace_path")
+	childSwarmID := consumeStringMetadata(metadata, "swarm_routed_child_swarm_id")
+	routes := buildChatRoutesForWorkspaces(a.homeModel.Workspaces, firstNonEmpty(hostWorkspacePath, workspacePath))
+	for _, route := range routes {
+		if routeID != "" && strings.TrimSpace(route.ID) == routeID {
+			return route, true
+		}
+		if childSwarmID != "" && strings.TrimSpace(route.SwarmID) == childSwarmID {
+			if runtimeWorkspacePath == "" || pathsEqual(route.RuntimeWorkspacePath, runtimeWorkspacePath) {
+				return route, true
+			}
+		}
+	}
+	if label != "" {
+		return model.ChatRoute{ID: routeID, Label: label, SwarmID: childSwarmID, HostWorkspacePath: hostWorkspacePath, RuntimeWorkspacePath: runtimeWorkspacePath}, true
+	}
+	if childSwarmID != "" {
+		return model.ChatRoute{ID: routeID, Label: childSwarmID, SwarmID: childSwarmID, HostWorkspacePath: hostWorkspacePath, RuntimeWorkspacePath: runtimeWorkspacePath}, true
+	}
+	if routeID != "" && !strings.EqualFold(routeID, "host") {
+		return model.ChatRoute{ID: routeID, Label: routeIDSwarmLabel(routeID)}, true
+	}
+	return model.ChatRoute{}, false
+}
+
+func routeIDSwarmLabel(routeID string) string {
+	parts := strings.SplitN(strings.TrimSpace(routeID), ":", 3)
+	if len(parts) >= 2 && strings.EqualFold(parts[0], "swarm") && strings.TrimSpace(parts[1]) != "" {
+		return strings.TrimSpace(parts[1])
+	}
+	return strings.TrimSpace(routeID)
 }
 
 func modelReplicationLinksFromClient(links []client.WorkspaceReplicationLink) []model.WorkspaceReplicationLink {
