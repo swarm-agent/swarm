@@ -176,6 +176,15 @@ func (cfg FileConfig) ApplyBootstrap(flags BootstrapFlags) (FileConfig, error) {
 }
 
 func ResolvePath() (string, error) {
+	if path := strings.TrimSpace(os.Getenv("SWARM_STARTUP_CONFIG")); path != "" {
+		if strings.HasPrefix(path, "~") {
+			return "", fmt.Errorf("SWARM_STARTUP_CONFIG %q must be absolute and must not use home-relative paths", path)
+		}
+		if !filepath.IsAbs(path) {
+			return "", fmt.Errorf("SWARM_STARTUP_CONFIG %q must be absolute", path)
+		}
+		return filepath.Clean(path), nil
+	}
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve user config directory: %w", err)

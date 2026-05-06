@@ -5,11 +5,15 @@ REPO="swarm-agent/swarm"
 DEFAULT_VERSION=""
 INSTALL_VERSION=""
 ARTIFACT_ROOT=""
+INSTALL_SYSTEM_SERVICE=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  sh install.sh [--version <tag>] [--artifact-root <path>]
+  sh install.sh [--version <tag>] [--artifact-root <path>] [--install-systemd-service]
+
+Options:
+  --install-systemd-service  install the runtime under system paths and enable swarmd.service
 
 EOF
 }
@@ -23,6 +27,10 @@ while [ "$#" -gt 0 ]; do
     --artifact-root)
       ARTIFACT_ROOT="${2:-}"
       shift 2
+      ;;
+    --install-systemd-service)
+      INSTALL_SYSTEM_SERVICE=1
+      shift
       ;;
     -h|--help)
       usage
@@ -94,19 +102,37 @@ print_ok() {
   printf 'ok\n'
 }
 
+system_bin_home() {
+  printf '%s\n' "/usr/local/bin"
+}
+
+system_data_home() {
+  printf '%s\n' "/usr/local/share"
+}
+
 bin_home() {
-  if [ -n "${XDG_BIN_HOME:-}" ]; then
+  if [ "$INSTALL_SYSTEM_SERVICE" = "1" ]; then
+    system_bin_home
+  elif [ -n "${XDG_BIN_HOME:-}" ]; then
     printf '%s\n' "$XDG_BIN_HOME"
-  else
+  elif [ -n "${HOME:-}" ]; then
     printf '%s/.local/bin\n' "$HOME"
+  else
+    echo "HOME is required unless XDG_BIN_HOME is set" >&2
+    return 1
   fi
 }
 
 data_home() {
-  if [ -n "${XDG_DATA_HOME:-}" ]; then
+  if [ "$INSTALL_SYSTEM_SERVICE" = "1" ]; then
+    system_data_home
+  elif [ -n "${XDG_DATA_HOME:-}" ]; then
     printf '%s\n' "$XDG_DATA_HOME"
-  else
+  elif [ -n "${HOME:-}" ]; then
     printf '%s/.local/share\n' "$HOME"
+  else
+    echo "HOME is required unless XDG_DATA_HOME is set" >&2
+    return 1
   fi
 }
 
@@ -174,6 +200,14 @@ current_shell_name() {
 print_path_refresh_instructions() {
   target="$(bin_home)"
 
+  if [ "$INSTALL_SYSTEM_SERVICE" = "1" ]; then
+    printf '\nSwarm system service installed.\n'
+    printf 'Daemon data roots are managed by systemd under /var/lib/swarmd, /var/cache/swarmd, /run/swarmd, /var/log/swarmd, and /etc/swarmd.\n'
+    printf '\nCheck service status:\n'
+    printf '  systemctl status swarmd.service\n'
+    return 0
+  fi
+
   if bin_home_on_path; then
     printf '\nStart Swarm:\n  swarm\n'
     return 0
@@ -200,7 +234,139 @@ print_path_refresh_instructions() {
   printf '  %s\n' "$target/swarm"
 }
 
+warn_legacy_daemon_data() {
+  found=""
+  append_legacy_path() {
+    candidate="$1"
+    if [ -n "$candidate" ] && [ -e "$candidate" ]; then
+      if [ -n "$found" ]; then
+        found="$(printf '%s\n%s' "$found" "$candidate")"
+      else
+        found="$candidate"
+      fi
+    fi
+  }
+
+  if [ -n "${HOME:-}" ]; then
+    append_legacy_path "$HOME/.local/share/swarmd"
+    append_legacy_path "$HOME/.local/state/swarmd"
+    append_legacy_path "$HOME/.cache/swarmd"
+    append_legacy_path "$HOME/.config/swarmd"
+  fi
+  if [ -n "${XDG_DATA_HOME:-}" ]; then
+    append_legacy_path "$XDG_DATA_HOME/swarmd"
+  fi
+  if [ -n "${XDG_STATE_HOME:-}" ]; then
+    append_legacy_path "$XDG_STATE_HOME/swarmd"
+  fi
+  if [ -n "${XDG_CACHE_HOME:-}" ]; then
+    append_legacy_path "$XDG_CACHE_HOME/swarmd"
+  fi
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    append_legacy_path "$XDG_CONFIG_HOME/swarmd"
+  fi
+
+  if [ -n "$found" ]; then
+    printf '\nwarning: legacy swarmd daemon data was found under HOME/XDG paths:\n' >&2
+    printf '%s' "$found" | while IFS= read -r legacy_path; do
+      [ -n "$legacy_path" ] && printf '  %s\n' "$legacy_path" >&2
+    done
+    printf 'warning: this installer will not reuse or migrate those paths automatically.\n' >&2
+    if [ "$INSTALL_SYSTEM_SERVICE" = "1" ]; then
+      printf 'warning: systemd installs use StateDirectory=swarmd, CacheDirectory=swarmd, RuntimeDirectory=swarmd, LogsDirectory=swarmd, and ConfigurationDirectory=swarmd.\n' >&2
+      printf 'warning: review and migrate any legacy data manually before relying on the new service.\n' >&2
+    else
+      printf 'warning: daemon defaults now use /var/lib/swarmd, /var/cache/swarmd, /run/swarmd, /var/log/swarmd, and /etc/swarmd.\n' >&2
+    fi
+  fi
+}
+
+nologin_shell() {
+  if [ -x /usr/sbin/nologin ]; then
+    printf '%s\n' /usr/sbin/nologin
+  elif [ -x /sbin/nologin ]; then
+    printf '%s\n' /sbin/nologin
+  else
+    printf '%s\n' /bin/false
+  fi
+}
+
+ensure_swarmd_user() {
+  need_cmd getent
+  if ! getent group swarmd >/dev/null 2>&1; then
+    need_cmd groupadd
+    groupadd --system swarmd
+  fi
+  if ! id -u swarmd >/dev/null 2>&1; then
+    need_cmd useradd
+    useradd --system --gid swarmd --home-dir /nonexistent --shell "$(nologin_shell)" swarmd
+  fi
+}
+
+write_systemd_unit() {
+  root="$1"
+  cat <<EOF
+[Unit]
+Description=Swarm daemon
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=swarmd
+Group=swarmd
+WorkingDirectory=/var/lib/swarmd
+Environment=LD_LIBRARY_PATH=$root/lib
+Environment=SWARM_BIN_DIR=$root/bin
+Environment=SWARM_TOOL_BIN_DIR=$root/libexec
+Environment=SWARM_WEB_DIST_DIR=$root/share
+Environment=SWARM_STARTUP_CONFIG=/etc/swarmd/swarm.conf
+Environment=HOME=/nonexistent
+ExecStart=$root/bin/swarmd --bypass-permissions --cwd /var/lib/swarmd
+Restart=on-failure
+RestartSec=5s
+StateDirectory=swarmd
+CacheDirectory=swarmd
+RuntimeDirectory=swarmd
+LogsDirectory=swarmd
+ConfigurationDirectory=swarmd
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+install_systemd_service() {
+  if [ "$INSTALL_SYSTEM_SERVICE" != "1" ]; then
+    return 0
+  fi
+  if [ "$(id -u)" != "0" ]; then
+    echo "--install-systemd-service must be run as root so it can create swarmd:swarmd and write the system unit" >&2
+    return 1
+  fi
+  if [ ! -d /run/systemd/system ]; then
+    echo "--install-systemd-service requires systemd on this Linux host" >&2
+    return 1
+  fi
+  need_cmd systemctl
+  need_cmd install
+  ensure_swarmd_user
+  install -d -o swarmd -g swarmd -m 0750 /var/lib/swarmd /var/cache/swarmd /var/log/swarmd /etc/swarmd
+  install -d -o swarmd -g swarmd -m 0755 /run/swarmd
+  root="$(install_root)"
+  unit_path="/etc/systemd/system/swarmd.service"
+  tmp_unit="$(mktemp)"
+  write_systemd_unit "$root" >"$tmp_unit"
+  install -m 0644 "$tmp_unit" "$unit_path"
+  rm -f "$tmp_unit"
+  systemctl daemon-reload
+  systemctl enable --now swarmd.service
+  printf 'installed systemd service: %s\n' "$unit_path"
+}
+
 finish_install() {
+  warn_legacy_daemon_data
+  install_systemd_service
   print_path_refresh_instructions
 }
 
@@ -209,7 +375,26 @@ run_bundle_install() {
   platform_dir="$(printf '%s/%s\n' "$artifact_root" "linux-amd64")"
   installer="$(printf '%s/%s\n' "$platform_dir" "root/swarmsetup")"
   log_path="$2"
-  "$installer" --artifact-root "$artifact_root" >"$log_path" 2>&1
+  if [ "$INSTALL_SYSTEM_SERVICE" = "1" ]; then
+    XDG_DATA_HOME="$(system_data_home)" XDG_BIN_HOME="$(system_bin_home)" "$installer" --artifact-root "$artifact_root" >"$log_path" 2>&1
+    need_cmd chown
+    need_cmd find
+    need_cmd chmod
+    root="$(install_root)"
+    chown -R root:root "$root"
+    find "$root" -type d -exec chmod 0755 {} +
+    find "$root" -type f -exec chmod 0644 {} +
+    chmod 0755 "$root/current/bin/swarmtui" \
+      "$root/current/bin/swarmd" \
+      "$root/current/bin/swarmctl" \
+      "$root/current/bin/swarm-fff-search"
+    chmod 0755 "$root/current/libexec/swarm" \
+      "$root/current/libexec/swarmdev" \
+      "$root/current/libexec/rebuild" \
+      "$root/current/libexec/swarmsetup"
+  else
+    "$installer" --artifact-root "$artifact_root" >"$log_path" 2>&1
+  fi
 }
 
 need_cmd uname

@@ -4,12 +4,11 @@ set -euo pipefail
 SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SELF_DIR="$(cd -- "$(dirname -- "${SELF_PATH}")" && pwd)"
 ROOT_DIR="$(cd -- "${SELF_DIR}/.." && pwd)"
-DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
-TOOL_PATH="${DATA_HOME}/swarm/libexec/swarm"
+TOOL_PATH="${ROOT_DIR}/.bin/main/swarm"
 
 if [[ ! -x "${TOOL_PATH}" ]]; then
-  echo "installed swarm launcher missing at ${TOOL_PATH}" >&2
-  echo "manual fix: run rebuild from a source checkout or rerun ${ROOT_DIR}/scripts/install-launchers.sh" >&2
+  echo "local swarm launcher missing at ${TOOL_PATH}" >&2
+  echo "manual fix: run rebuild from the source checkout" >&2
   exit 1
 fi
 
