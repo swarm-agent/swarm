@@ -43,6 +43,7 @@ const (
 	KeySwarmGroupBySwarmPrefix         = "swarm/group_membership_by_swarm/"
 	KeySwarmContainerProfilePrefix     = "swarm/container_profile/"
 	KeySwarmLocalContainerPrefix       = "swarm/local_container/"
+	KeySwarmNodePrefix                 = "swarm/node/"
 	KeyDeployContainerPrefix           = "deploy/container/"
 	KeyRemoteDeploySessionPrefix       = "deploy/remote_session/"
 	KeySwarmInvitePrefix               = "swarm/invite/"
@@ -536,6 +537,10 @@ func KeySwarmLocalContainer(containerID string) string {
 	return KeySwarmLocalContainerPrefix + keyPart(containerID)
 }
 
+func KeySwarmNode(swarmID string) string {
+	return KeySwarmNodePrefix + keyPart(swarmID)
+}
+
 func KeyDeployContainer(deploymentID string) string {
 	return KeyDeployContainerPrefix + keyPart(deploymentID)
 }
@@ -550,6 +555,10 @@ func SwarmContainerProfilePrefix() string {
 
 func SwarmLocalContainerPrefix() string {
 	return KeySwarmLocalContainerPrefix
+}
+
+func SwarmNodePrefix() string {
+	return KeySwarmNodePrefix
 }
 
 func DeployContainerPrefix() string {

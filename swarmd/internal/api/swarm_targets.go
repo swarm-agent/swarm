@@ -14,6 +14,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
@@ -178,6 +179,10 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	if err != nil {
 		return nil, nil, err
 	}
+	nodeTargets, err := s.listSwarmNodeTargets()
+	if err != nil {
+		return nil, nil, err
+	}
 	deployments, err := s.listDeployContainerTargets(r)
 	if err != nil {
 		return nil, nil, err
@@ -195,7 +200,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		}
 	}
 
-	targets := make([]swarmTarget, 0, len(deployments)+len(remoteDeployments)+1)
+	targets := make([]swarmTarget, 0, len(nodeTargets)+len(deployments)+len(remoteDeployments)+1)
 	targets = append(targets, swarmTarget{
 		SwarmID:      localSwarmID,
 		Name:         firstNonEmpty(strings.TrimSpace(state.Node.Name), strings.TrimSpace(cfg.SwarmName), "Local"),
@@ -206,13 +211,31 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		Selectable:   true,
 		Current:      strings.EqualFold(localSwarmID, selectedID),
 	})
+	seenTargets := map[string]struct{}{}
+	markSwarmTargetSeen(seenTargets, targets[0])
+	for _, node := range nodeTargets {
+		if isLocalSwarmTargetID(node.SwarmID, localSwarmID) {
+			continue
+		}
+		s.applyCachedSwarmTargetHealth(&node)
+		targets = append(targets, node)
+		markSwarmTargetSeen(seenTargets, node)
+	}
 	for _, deployment := range deployments {
+		if swarmTargetSeen(seenTargets, deployment) {
+			continue
+		}
 		s.applyCachedSwarmTargetHealth(&deployment)
 		targets = append(targets, deployment)
+		markSwarmTargetSeen(seenTargets, deployment)
 	}
 	for _, deployment := range remoteDeployments {
+		if swarmTargetSeen(seenTargets, deployment) {
+			continue
+		}
 		s.applyCachedSwarmTargetHealth(&deployment)
 		targets = append(targets, deployment)
+		markSwarmTargetSeen(seenTargets, deployment)
 	}
 	sort.Slice(targets, func(i, j int) bool {
 		if targets[i].Relationship == "self" {
@@ -265,6 +288,25 @@ func (s *Server) selectedSwarmDesktopTargetID(localSwarmID string) (string, erro
 		return localSwarmID, nil
 	}
 	return strings.TrimSpace(record.SwarmID), nil
+}
+
+func (s *Server) listSwarmNodeTargets() ([]swarmTarget, error) {
+	if s == nil || s.swarmNodes == nil {
+		return nil, nil
+	}
+	items, err := s.swarmNodes.List(1000)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]swarmTarget, 0, len(items))
+	for _, item := range items {
+		target, ok := mapSwarmNodeTarget(item)
+		if !ok {
+			continue
+		}
+		out = append(out, target)
+	}
+	return out, nil
 }
 
 func (s *Server) listDeployContainerTargets(r *http.Request) ([]swarmTarget, error) {
@@ -386,6 +428,44 @@ func (s *Server) refreshSwarmTargetHealth(key, backendURL string) {
 	s.swarmTargetHealth.mu.Unlock()
 }
 
+func isLocalSwarmTargetID(swarmID, localSwarmID string) bool {
+	swarmID = strings.TrimSpace(swarmID)
+	localSwarmID = strings.TrimSpace(localSwarmID)
+	return swarmID != "" && localSwarmID != "" && strings.EqualFold(swarmID, localSwarmID)
+}
+
+func markSwarmTargetSeen(seen map[string]struct{}, target swarmTarget) {
+	if seen == nil {
+		return
+	}
+	for _, key := range swarmTargetIdentityKeys(target) {
+		seen[key] = struct{}{}
+	}
+}
+
+func swarmTargetSeen(seen map[string]struct{}, target swarmTarget) bool {
+	if seen == nil {
+		return false
+	}
+	for _, key := range swarmTargetIdentityKeys(target) {
+		if _, ok := seen[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func swarmTargetIdentityKeys(target swarmTarget) []string {
+	keys := make([]string, 0, 2)
+	if swarmID := strings.ToLower(strings.TrimSpace(target.SwarmID)); swarmID != "" {
+		keys = append(keys, "swarm:"+swarmID)
+	}
+	if backendURL := strings.ToLower(strings.TrimRight(strings.TrimSpace(target.BackendURL), "/")); backendURL != "" {
+		keys = append(keys, "backend:"+backendURL)
+	}
+	return keys
+}
+
 func probeSwarmTargetBackend(ctx context.Context, backendURL string) bool {
 	base := strings.TrimRight(strings.TrimSpace(backendURL), "/")
 	if base == "" {
@@ -411,6 +491,51 @@ func probeSwarmTargetBackend(ctx context.Context, backendURL string) bool {
 
 func swarmTargetHealthKey(target swarmTarget) string {
 	return strings.Join([]string{strings.TrimSpace(target.Kind), strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL)}, "|")
+}
+
+func mapSwarmNodeTarget(item pebblestore.SwarmNodeRecord) (swarmTarget, bool) {
+	swarmID := strings.TrimSpace(item.SwarmID)
+	backendURL := strings.TrimSpace(item.BackendURL)
+	if swarmID == "" || backendURL == "" {
+		return swarmTarget{}, false
+	}
+	status := strings.TrimSpace(item.Status)
+	online := swarmNodeStatusOnline(status)
+	role := firstNonEmpty(strings.TrimSpace(item.Role), "child")
+	return swarmTarget{
+		SwarmID:      swarmID,
+		Name:         firstNonEmpty(strings.TrimSpace(item.Name), swarmID),
+		Role:         role,
+		Relationship: relationshipForSwarmNodeRole(role),
+		Kind:         firstNonEmpty(strings.TrimSpace(item.Kind), "remote"),
+		DeploymentID: strings.TrimSpace(item.DeploymentID),
+		AttachStatus: status,
+		Online:       online,
+		Selectable:   online,
+		BackendURL:   backendURL,
+		DesktopURL:   strings.TrimSpace(item.DesktopURL),
+		LastError:    strings.TrimSpace(item.LastError),
+	}, true
+}
+
+func swarmNodeStatusOnline(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "online", "ready", "attached", "registered":
+		return true
+	default:
+		return false
+	}
+}
+
+func relationshipForSwarmNodeRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "controller", "master", "parent":
+		return swarmruntime.RelationshipParent
+	case "child":
+		return swarmruntime.RelationshipChild
+	default:
+		return strings.ToLower(strings.TrimSpace(role))
+	}
 }
 
 func mapDeployContainerTarget(item deployruntime.ContainerDeployment) (swarmTarget, bool) {

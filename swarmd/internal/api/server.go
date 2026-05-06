@@ -88,6 +88,7 @@ type Server struct {
 	localContainers             localContainerService
 	deployContainers            deployContainerService
 	remoteDeploys               remoteDeployService
+	swarmNodes                  *pebblestore.SwarmNodeStore
 	update                      *update.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	sessionRoutes               *pebblestore.SessionRouteStore
@@ -382,6 +383,13 @@ func (s *Server) SetRemoteDeployService(remoteDeploySvc remoteDeployService) {
 		return
 	}
 	s.remoteDeploys = remoteDeploySvc
+}
+
+func (s *Server) SetSwarmNodeStore(store *pebblestore.SwarmNodeStore) {
+	if s == nil {
+		return
+	}
+	s.swarmNodes = store
 }
 
 func (s *Server) SetSwarmDesktopTargetSelectionStore(store *pebblestore.SwarmDesktopTargetSelectionStore) {

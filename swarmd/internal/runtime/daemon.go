@@ -215,6 +215,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
+	swarmNodeStore := pebblestore.NewSwarmNodeStore(store)
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish, sessionSvc)
 	startupCfg, startupCfgErr := startupconfig.Load(cfg.ConfigPath)
 	if startupCfgErr != nil {
@@ -346,6 +347,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetVoiceService(voiceSvc)
 	apiServer.SetUISettingsService(uiSettingsSvc)
 	apiServer.SetSwarmDesktopTargetSelectionStore(swarmDesktopTargetSelectionStore)
+	apiServer.SetSwarmNodeStore(swarmNodeStore)
 	apiServer.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
 	apiServer.SetFlowStore(flowStore)
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
