@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
-	"swarm/packages/swarmd/internal/appstorage"
 )
 
 const (
@@ -47,14 +46,14 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
-	roots, err := appstorage.DefaultRoots()
+	dataHome, err := resolveXDGDataHome()
 	if err != nil {
 		return Config{}, err
 	}
 
-	defaultDataDir := roots.DataDir
+	defaultDataDir := filepath.Join(dataHome, "swarmd")
 	defaultDBPath := filepath.Join(defaultDataDir, "swarmd.pebble")
-	defaultLockPath := filepath.Join(roots.RuntimeDir, "swarmd.lock")
+	defaultLockPath := filepath.Join(defaultDataDir, "swarmd.lock")
 	defaultMode, err := runtimeModeForStartupMode(startupCfg.Mode)
 	if err != nil {
 		return Config{}, err
@@ -341,4 +340,15 @@ func consumeInlineFlag(arg, prefix string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimPrefix(arg, prefix), true
+}
+
+func resolveXDGDataHome() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); override != "" {
+		return filepath.Clean(override), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".local", "share"), nil
 }
