@@ -11,7 +11,7 @@ import (
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 )
 
-const remoteDeploySessionRefreshTimeout = 8 * time.Second
+const remoteDeploySessionRefreshTimeout = 30 * time.Second
 
 func (s *Server) handleRemoteDeploySessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

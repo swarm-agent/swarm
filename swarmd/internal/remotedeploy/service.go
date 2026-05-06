@@ -317,6 +317,11 @@ type remotePairingResponse struct {
 	AuthCode     string `json:"auth_code"`
 }
 
+type remoteSwarmStateResponse struct {
+	OK    bool                    `json:"ok"`
+	State swarmruntime.LocalState `json:"state"`
+}
+
 type remotePairingFinalizeRequest struct {
 	PrimarySwarmID       string                   `json:"primary_swarm_id"`
 	PrimaryName          string                   `json:"primary_name,omitempty"`
@@ -855,6 +860,13 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		}
 		record.InviteToken = invite.Token
 	} else {
+		if strings.TrimSpace(record.InviteToken) == "" {
+			inviteToken, err := generateSecretToken(24)
+			if err != nil {
+				return s.failRemoteDeployStart(record, err)
+			}
+			record.InviteToken = inviteToken
+		}
 		appendRemoteDeployStartTiming(&record, "start.skip_invite", stepStartedAt, nil, "session_id", record.ID, "transport_mode", record.TransportMode)
 	}
 	childCfgText := s.renderChildStartupConfig(record, startupCfg, hostState)
@@ -1695,6 +1707,7 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 			}
 		}
 		isTailscale := strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale)
+		registeredTailscale := false
 		if isTailscale {
 			if remoteSessionEndpoint(record) != "" {
 				if record.Status != "attached" {
@@ -1710,6 +1723,7 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 						refreshErr = err
 					}
 				} else if registered {
+					registeredTailscale = true
 					changed = true
 					status = record.Status
 				}
@@ -1721,7 +1735,7 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 				changed = true
 			}
 		}
-		if !isTailscale || strings.TrimSpace(record.MasterEndpoint) != "" {
+		if (!isTailscale || strings.TrimSpace(record.MasterEndpoint) != "") && !registeredTailscale {
 			if inviteChanged, err := s.ensurePendingInvite(&record); err != nil {
 				if refreshErr == nil {
 					refreshErr = err
@@ -1737,7 +1751,7 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 				changed = true
 			}
 		}
-		if (!isTailscale || strings.TrimSpace(record.MasterEndpoint) != "") && shouldRequestRemotePairing(record) {
+		if (!isTailscale || strings.TrimSpace(record.MasterEndpoint) != "") && !registeredTailscale && shouldRequestRemotePairing(record) {
 			if pairingChanged, err := s.requestRemotePairing(ctx, &record); err != nil {
 				if strings.TrimSpace(record.LastError) != strings.TrimSpace(err.Error()) {
 					record.LastError = strings.TrimSpace(err.Error())
@@ -2152,16 +2166,175 @@ func derivedTailnetBackendURL(record pebblestore.RemoteDeploySessionRecord) stri
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(remoteChildPorts(record.ID).Backend))
 }
 
-func fallbackRemoteChildSwarmID(record pebblestore.RemoteDeploySessionRecord) string {
-	id := strings.TrimSpace(record.ChildSwarmID)
-	if id != "" {
-		return id
+func (s *Service) ensureRegisteredRemoteGroupMembership(record pebblestore.RemoteDeploySessionRecord, swarmID, name string) error {
+	if s == nil || s.swarmStore == nil {
+		return nil
 	}
-	deploymentID := firstNonEmpty(strings.TrimSpace(record.ID), strings.TrimSpace(record.Name))
-	if deploymentID == "" {
-		return ""
+	groupID := strings.TrimSpace(record.GroupID)
+	swarmID = strings.TrimSpace(swarmID)
+	if groupID == "" || swarmID == "" {
+		return nil
 	}
-	return "remote-deploy:" + deploymentID
+	_, err := s.swarmStore.PutGroupMembership(pebblestore.SwarmGroupMembershipRecord{
+		GroupID:        groupID,
+		SwarmID:        swarmID,
+		Name:           firstNonEmpty(strings.TrimSpace(name), strings.TrimSpace(record.ChildName), strings.TrimSpace(record.Name), swarmID),
+		SwarmRole:      "child",
+		MembershipRole: swarmruntime.GroupMembershipRoleMember,
+	})
+	return err
+}
+
+func (s *Service) ensureRegisteredRemotePeerAuth(record pebblestore.RemoteDeploySessionRecord, swarmID, name string, transports []pebblestore.SwarmTransportRecord) error {
+	if s == nil || s.swarmStore == nil {
+		return nil
+	}
+	swarmID = strings.TrimSpace(swarmID)
+	if swarmID == "" {
+		return fmt.Errorf("remote child swarm id is required for peer auth")
+	}
+	inviteToken := strings.TrimSpace(record.InviteToken)
+	sessionToken := strings.TrimSpace(record.SessionToken)
+	if inviteToken == "" || sessionToken == "" {
+		return fmt.Errorf("remote deploy peer auth tokens are required")
+	}
+	existing, _, err := s.swarmStore.GetTrustedPeer(swarmID)
+	if err != nil {
+		return err
+	}
+	if len(transports) == 0 {
+		transports = existing.RendezvousTransports
+	}
+	if len(transports) == 0 && remoteSessionEndpoint(record) != "" {
+		transports = []pebblestore.SwarmTransportRecord{{
+			Kind:    firstNonEmpty(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale),
+			Primary: remoteSessionEndpoint(record),
+			All:     []string{remoteSessionEndpoint(record)},
+		}}
+	}
+	approvedAt := existing.ApprovedAt
+	if approvedAt <= 0 {
+		approvedAt = time.Now().UnixMilli()
+	}
+	_, err = s.swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{
+		SwarmID:               swarmID,
+		Name:                  firstNonEmpty(strings.TrimSpace(name), strings.TrimSpace(record.ChildName), existing.Name, swarmID),
+		Role:                  firstNonEmpty(existing.Role, "child"),
+		PublicKey:             firstNonEmpty(strings.TrimSpace(record.ChildPublicKey), existing.PublicKey),
+		Fingerprint:           firstNonEmpty(strings.TrimSpace(record.ChildFingerprint), existing.Fingerprint),
+		Relationship:          swarmruntime.RelationshipChild,
+		ParentSwarmID:         firstNonEmpty(strings.TrimSpace(record.HostSwarmID), existing.ParentSwarmID),
+		TransportMode:         firstNonEmpty(existing.TransportMode, strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale),
+		RendezvousTransports:  transports,
+		OutgoingPeerAuthToken: inviteToken,
+		IncomingPeerAuthHash:  swarmruntime.HashPeerAuthToken(sessionToken),
+		ApprovedAt:            approvedAt,
+	})
+	return err
+}
+
+func (s *Service) finalizeRegisteredRemoteChildPairing(ctx context.Context, record *pebblestore.RemoteDeploySessionRecord, endpoint string, hostState swarmruntime.LocalState) error {
+	if record == nil {
+		return fmt.Errorf("remote deploy record is required")
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return fmt.Errorf("remote child endpoint is required")
+	}
+	peerSwarmID := strings.TrimSpace(record.HostSwarmID)
+	if peerSwarmID == "" {
+		peerSwarmID = strings.TrimSpace(hostState.Node.SwarmID)
+	}
+	peerToken := strings.TrimSpace(record.InviteToken)
+	if peerSwarmID == "" || peerToken == "" {
+		return fmt.Errorf("remote deploy host peer id/token are required")
+	}
+	transports := remotePairingTransportsForMode(strings.TrimSpace(record.TransportMode), hostState.Node.Transports, strings.TrimSpace(record.MasterEndpoint))
+	payload := remotePairingFinalizeRequest{
+		PrimarySwarmID:       peerSwarmID,
+		PrimaryName:          firstNonEmpty(strings.TrimSpace(record.HostName), strings.TrimSpace(hostState.Node.Name), "Primary"),
+		PrimaryPublicKey:     strings.TrimSpace(record.HostPublicKey),
+		PrimaryFingerprint:   strings.TrimSpace(record.HostFingerprint),
+		TransportMode:        strings.TrimSpace(record.TransportMode),
+		RendezvousTransports: transports,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+"/v1/swarm/remote-pairing/finalize", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Swarm-Peer-ID", peerSwarmID)
+	req.Header.Set("X-Swarm-Peer-Token", peerToken)
+	resp, err := (&http.Client{Timeout: remotePairingHTTPTimeout}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+		text := strings.TrimSpace(string(message))
+		if text == "" {
+			text = resp.Status
+		}
+		return fmt.Errorf("remote child pairing finalize failed: %s", text)
+	}
+	return nil
+}
+
+func fetchRegisteredRemoteChildState(ctx context.Context, endpoint, hostSwarmID, peerToken string) (swarmruntime.LocalState, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return swarmruntime.LocalState{}, fmt.Errorf("remote child endpoint is required")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/v1/swarm/state", nil)
+	if err != nil {
+		return swarmruntime.LocalState{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if strings.TrimSpace(hostSwarmID) != "" && strings.TrimSpace(peerToken) != "" {
+		req.Header.Set("X-Swarm-Peer-ID", strings.TrimSpace(hostSwarmID))
+		req.Header.Set("X-Swarm-Peer-Token", strings.TrimSpace(peerToken))
+	}
+	resp, err := (&http.Client{Timeout: remotePairingHTTPTimeout}).Do(req)
+	if err != nil {
+		return swarmruntime.LocalState{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return swarmruntime.LocalState{}, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		text := strings.TrimSpace(string(body))
+		if text == "" {
+			text = resp.Status
+		}
+		return swarmruntime.LocalState{}, fmt.Errorf("remote child state request failed: %s", text)
+	}
+	var payload remoteSwarmStateResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return swarmruntime.LocalState{}, err
+	}
+	return payload.State, nil
+}
+
+func storeTransportsFromSwarm(transports []swarmruntime.TransportSummary) []pebblestore.SwarmTransportRecord {
+	out := make([]pebblestore.SwarmTransportRecord, 0, len(transports))
+	for _, transport := range transports {
+		kind := strings.TrimSpace(transport.Kind)
+		primary := strings.TrimSpace(transport.Primary)
+		all := append([]string(nil), transport.All...)
+		if kind == "" && primary == "" && len(all) == 0 {
+			continue
+		}
+		out = append(out, pebblestore.SwarmTransportRecord{Kind: kind, Primary: primary, All: all})
+	}
+	return out
 }
 
 func (s *Service) tryRegisterTailscaleRemoteNode(ctx context.Context, record *pebblestore.RemoteDeploySessionRecord, timeout time.Duration) (bool, error) {
@@ -2184,11 +2357,34 @@ func (s *Service) tryRegisterTailscaleRemoteNode(ctx context.Context, record *pe
 	if err := waitForRemoteSwarmReady(ctx, endpoint, timeout); err != nil {
 		return false, err
 	}
-	swarmID := fallbackRemoteChildSwarmID(*record)
-	if swarmID == "" {
-		return false, fmt.Errorf("remote child swarm id is not available")
+	startupCfg, hostState, err := s.resolveBootstrapContext()
+	if err != nil {
+		return false, err
 	}
-	name := firstNonEmpty(strings.TrimSpace(record.ChildName), strings.TrimSpace(record.Name), swarmID)
+	record.HostSwarmID = strings.TrimSpace(hostState.Node.SwarmID)
+	record.HostName = firstNonEmpty(strings.TrimSpace(record.HostName), strings.TrimSpace(hostState.Node.Name), strings.TrimSpace(startupCfg.SwarmName), "Primary")
+	record.HostPublicKey = strings.TrimSpace(hostState.Node.PublicKey)
+	record.HostFingerprint = strings.TrimSpace(hostState.Node.Fingerprint)
+	if strings.TrimSpace(record.InviteToken) == "" || strings.TrimSpace(record.SessionToken) == "" {
+		return false, fmt.Errorf("remote deploy peer auth tokens are required")
+	}
+	if err := s.finalizeRegisteredRemoteChildPairing(ctx, record, endpoint, hostState); err != nil {
+		return false, err
+	}
+	childState, err := fetchRegisteredRemoteChildState(ctx, endpoint, strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.InviteToken))
+	if err != nil {
+		return false, err
+	}
+	swarmID := strings.TrimSpace(childState.Node.SwarmID)
+	if swarmID == "" {
+		return false, fmt.Errorf("remote child state did not report a swarm id")
+	}
+	name := firstNonEmpty(strings.TrimSpace(childState.Node.Name), strings.TrimSpace(record.ChildName), strings.TrimSpace(record.Name), swarmID)
+	record.ChildSwarmID = swarmID
+	record.ChildName = name
+	record.ChildPublicKey = firstNonEmpty(strings.TrimSpace(childState.Node.PublicKey), strings.TrimSpace(record.ChildPublicKey))
+	record.ChildFingerprint = firstNonEmpty(strings.TrimSpace(childState.Node.Fingerprint), strings.TrimSpace(record.ChildFingerprint))
+	transports := storeTransportsFromSwarm(childState.Node.Transports)
 	magicDNSName := remoteTailscaleHostname(name)
 	node := pebblestore.SwarmNodeRecord{
 		SwarmID:      swarmID,
@@ -2207,8 +2403,12 @@ func (s *Service) tryRegisterTailscaleRemoteNode(ctx context.Context, record *pe
 	if _, err := s.nodeStore.Put(node); err != nil {
 		return false, err
 	}
-	record.ChildSwarmID = swarmID
-	record.ChildName = name
+	if err := s.ensureRegisteredRemoteGroupMembership(*record, swarmID, name); err != nil {
+		return false, err
+	}
+	if err := s.ensureRegisteredRemotePeerAuth(*record, swarmID, name, transports); err != nil {
+		return false, err
+	}
 	record.Status = "attached"
 	record.EnrollmentStatus = ""
 	record.LastError = ""
@@ -2312,6 +2512,7 @@ func probeRemoteSwarmReady(ctx context.Context, endpoint string, client *http.Cl
 }
 
 func parseRemoteBootstrapURLs(output string) (authURL, remoteEndpoint string) {
+	tailnetBackendEndpoint := ""
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
@@ -2320,10 +2521,15 @@ func parseRemoteBootstrapURLs(output string) (authURL, remoteEndpoint string) {
 		case strings.HasPrefix(line, "SWARM_REMOTE_URL="):
 			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_REMOTE_URL="))
 		case strings.HasPrefix(line, "SWARM_TAILNET_BACKEND_URL="):
-			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_BACKEND_URL="))
+			tailnetBackendEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_BACKEND_URL="))
 		case strings.HasPrefix(line, "SWARM_TAILNET_URL="):
-			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_URL="))
+			if remoteEndpoint == "" {
+				remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_URL="))
+			}
 		}
+	}
+	if tailnetBackendEndpoint != "" {
+		remoteEndpoint = tailnetBackendEndpoint
 	}
 	return authURL, remoteEndpoint
 }
@@ -2812,8 +3018,10 @@ func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessio
 	cfg.RemoteDeploy = startupconfig.RemoteDeployBootstrap{
 		Enabled:           true,
 		SessionID:         strings.TrimSpace(record.ID),
+		SessionToken:      strings.TrimSpace(record.SessionToken),
 		HostAPIBaseURL:    strings.TrimSpace(record.MasterEndpoint),
 		HostDesktopURL:    strings.TrimSpace(record.MasterEndpoint),
+		InviteToken:       strings.TrimSpace(record.InviteToken),
 		SyncEnabled:       record.SyncEnabled,
 		SyncMode:          strings.TrimSpace(record.SyncMode),
 		SyncOwnerSwarmID:  strings.TrimSpace(record.SyncOwnerSwarmID),
@@ -2916,19 +3124,7 @@ func (s *Service) startRemoteBundle(ctx context.Context, record *pebblestore.Rem
 		return "", "", "", err
 	}
 	output, err = remoteSSHCommandRunner(ctx, record.SSHSessionTarget, cmd)
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "TAILSCALE_AUTH_URL="):
-			authURL = strings.TrimSpace(strings.TrimPrefix(line, "TAILSCALE_AUTH_URL="))
-		case strings.HasPrefix(line, "SWARM_REMOTE_URL="):
-			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_REMOTE_URL="))
-		case strings.HasPrefix(line, "SWARM_TAILNET_BACKEND_URL="):
-			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_BACKEND_URL="))
-		case strings.HasPrefix(line, "SWARM_TAILNET_URL="):
-			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_URL="))
-		}
-	}
+	authURL, remoteEndpoint = parseRemoteBootstrapURLs(output)
 	return output, authURL, remoteEndpoint, err
 }
 
@@ -3130,6 +3326,11 @@ func (s *Service) cleanupRemoteChildState(childSwarmID string, item *localcontai
 	childSwarmID = strings.TrimSpace(childSwarmID)
 	if childSwarmID == "" {
 		return nil
+	}
+	if s.nodeStore != nil {
+		if err := s.nodeStore.Delete(childSwarmID); err != nil {
+			return err
+		}
 	}
 	if s.swarmStore != nil {
 		memberships, err := s.swarmStore.ListGroupMembershipsBySwarm(childSwarmID, 500)
@@ -3441,7 +3642,7 @@ func remoteDevReplacementScript(record pebblestore.RemoteDeploySessionRecord, ru
 	tailscaleProxyAddr := net.JoinHostPort(startupconfig.DefaultHost, strconv.Itoa(childPorts.TailscaleProxy))
 	peerTransportPort := strconv.Itoa(childPorts.PeerTransport)
 	offlineMode := "0"
-	bootstrapOutputPrefix := "SWARM_TAILNET_URL"
+	bootstrapOutputPrefix := "SWARM_TAILNET_BACKEND_URL"
 	if transportMode == startupconfig.NetworkModeLAN {
 		offlineMode = "1"
 		bootstrapOutputPrefix = "SWARM_REMOTE_URL"
@@ -3735,7 +3936,10 @@ while :; do
       break
     fi
   elif [ -s "$log_file" ]; then
-    remote_url="$(sed -n 's/^SWARM_TAILNET_URL=//p' "$log_file" | tail -n 1)"
+    remote_url="$(sed -n 's/^SWARM_TAILNET_BACKEND_URL=//p' "$log_file" | tail -n 1)"
+    if [ -z "$remote_url" ]; then
+      remote_url="$(sed -n 's/^SWARM_TAILNET_URL=//p' "$log_file" | tail -n 1)"
+    fi
     if [ -n "$remote_url" ]; then
       break
     fi
@@ -5153,7 +5357,7 @@ func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string 
 	tailscaleProxyAddr := net.JoinHostPort(startupconfig.DefaultHost, strconv.Itoa(childPorts.TailscaleProxy))
 	peerTransportPort := strconv.Itoa(childPorts.PeerTransport)
 	offlineMode := "0"
-	bootstrapOutputPrefix := "SWARM_TAILNET_URL"
+	bootstrapOutputPrefix := "SWARM_TAILNET_BACKEND_URL"
 	if transportMode == startupconfig.NetworkModeLAN {
 		offlineMode = "1"
 		bootstrapOutputPrefix = "SWARM_REMOTE_URL"
@@ -5489,7 +5693,10 @@ while :; do
       remote_url="http://${listen_addr}"
     fi
   else
-    remote_url="$(printf '%%s\n' "$log_output" | sed -n 's/^SWARM_TAILNET_URL=//p' | tail -n 1)"
+    remote_url="$(printf '%%s\n' "$log_output" | sed -n 's/^SWARM_TAILNET_BACKEND_URL=//p' | tail -n 1)"
+    if [ -z "$remote_url" ]; then
+      remote_url="$(printf '%%s\n' "$log_output" | sed -n 's/^SWARM_TAILNET_URL=//p' | tail -n 1)"
+    fi
   fi
   if [ -n "$auth_url" ] || [ -n "$remote_url" ]; then
     break

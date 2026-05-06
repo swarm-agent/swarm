@@ -517,22 +517,38 @@ function remoteLaunchStatusMessage(session: RemoteDeploySession, fallbackMethod:
   if (status === 'failed') {
     return String(session.last_error ?? '').trim() || progress || `Remote deploy failed on ${target}.`
   }
+  if (status === 'attached' && fallbackMethod === 'tailscale') {
+    return progress || `Remote child ${session.name || target} is registered; this local daemon can reach it over Tailnet.`
+  }
   if (session.remote_auth_url) {
     return `Remote child started. Approve Tailscale login: ${session.remote_auth_url}`
-  }
-  if (session.remote_endpoint) {
-    return `Remote child started. Waiting for the child to enroll back at ${session.remote_endpoint}…`
   }
   if (progress) {
     return progress
   }
+  if (session.remote_endpoint) {
+    return fallbackMethod === 'tailscale'
+      ? `Remote child started. Probing child backend at ${session.remote_endpoint}…`
+      : `Remote child started. Waiting for the child to enroll back at ${session.remote_endpoint}…`
+  }
+  if (status === 'auth_required' && fallbackMethod === 'tailscale') {
+    return `Remote child started on ${target}; waiting for Tailnet login.`
+  }
   if (status === 'starting') {
-    return `Remote deploy is running on ${target}.`
+    return fallbackMethod === 'tailscale'
+      ? `Remote deploy is running on ${target}; waiting for Tailnet reachability.`
+      : `Remote deploy is running on ${target}.`
   }
   if (status === 'waiting_for_approval' || status === 'waiting_for_child') {
-    return `Remote child started. Waiting for the child to enroll back over ${fallbackMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`
+    return fallbackMethod === 'tailscale'
+      ? 'Remote child started. Waiting for Tailnet login and child backend registration…'
+      : 'Remote child started. Waiting for the child to enroll back over LAN / WireGuard…'
   }
   return ''
+}
+
+function remoteTailscaleSessionRegistered(session: RemoteDeploySession): boolean {
+  return String(session.status ?? '').trim() === 'attached' && !!String(session.child_swarm_id ?? '').trim()
 }
 
 function remoteLaunchFailureMessage(error: unknown, session: RemoteDeploySession | null): string {
@@ -1111,14 +1127,18 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         '',
         selectedRemotePayloads.length > 0
           ? 'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.'
-          : 'No workspace payloads will be staged; the remote child will start empty and connect back to this master.',
+          : remoteDeployMethod === 'tailscale'
+            ? 'No workspace payloads will be staged; the remote child will start empty and this local daemon will register it after Tailnet login.'
+            : 'No workspace payloads will be staged; the remote child will start empty and connect back to this master.',
         devMode
           ? `This will deliver generated config/install/start content over SSH stdin, copy a locally built dev Swarm image archive${selectedRemotePayloads.length > 0 ? ' and selected payload archives' : ''} over SSH, then load and launch it on the remote host.`
           : `This will deliver generated config/install/start content over SSH stdin${selectedRemotePayloads.length > 0 ? ' and copy selected payload archives over SSH' : ''}, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
-        `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
+        remoteDeployMethod === 'tailscale'
+          ? 'The remote child will be launched there as a target-owned daemon. This local daemon will dial the child backend over Tailscale/MagicDNS; no child-to-master callback is required for registration.'
+          : 'The remote child will be launched there and configured to connect back to this master over the master\'s LAN / WireGuard endpoint.',
         alwaysOn
-          ? 'Always On is recorded for this remote child; while this master is running it will probe SSH reachability and restart the remote container if it stops. It does not install remote boot persistence.'
-          : 'Always On is off; this master will not automatically restart the remote child.',
+          ? 'Always On is recorded for this remote child; while this local daemon is running it can probe SSH reachability and restart the remote container if it stops. It does not install remote boot persistence.'
+          : 'Always On is off; this local daemon will not automatically restart the remote child.',
         '',
         'Continue with SSH launch?'
       ].join('\n'))
@@ -1162,7 +1182,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       await stopLaunchProgressPoll()
       await refreshRemoteSessions({ sessionID: session.id })
       setStatus(remoteLaunchStatusMessage(currentSession, remoteDeployMethod)
-        || `Remote child started. Waiting for the child to enroll back over ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'}…`)
+        || (remoteDeployMethod === 'tailscale'
+          ? 'Remote child started. Waiting for Tailnet login and child backend registration…'
+          : 'Remote child started. Waiting for the child to enroll back over LAN / WireGuard…'))
 
       const startedAt = Date.now()
       const timeoutMs = 5 * 60 * 1000
@@ -1174,11 +1196,27 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         if (nextStatus) {
           setStatus(nextStatus)
         }
-        if (currentSession.enrollment_id || currentSession.child_swarm_id) {
+        if (remoteDeployMethod === 'tailscale') {
+          if (remoteTailscaleSessionRegistered(currentSession)) {
+            break
+          }
+        } else if (currentSession.enrollment_id || currentSession.child_swarm_id) {
           break
         }
         await new Promise((resolve) => window.setTimeout(resolve, REMOTE_LAUNCH_POLL_INTERVAL_MS))
       }
+      if (remoteDeployMethod === 'tailscale') {
+        if (!remoteTailscaleSessionRegistered(currentSession)) {
+          throw new Error(currentSession.last_error || 'Remote child did not become reachable over Tailnet before timeout')
+        }
+        if (currentSession.always_on !== alwaysOn) {
+          currentSession = await updateRemoteDeploySessionSettings({ id: currentSession.id, alwaysOn })
+        }
+        await refreshRemoteSessions({ sessionID: currentSession.id })
+        await finishSuccess(`Registered remote child ${currentSession.name} over Tailnet.`)
+        return
+      }
+
       if (!currentSession.enrollment_id && !currentSession.child_swarm_id) {
         throw new Error(currentSession.last_error || 'Remote child did not enroll before timeout')
       }
@@ -1619,7 +1657,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     {
                       id: 'tailscale' as const,
                       title: 'SSH + Tailscale',
-                      text: 'Prepare the SSH/Tailscale remote image here, then the child calls back over the master tailnet URL.',
+                      text: 'Prepare the SSH/Tailscale remote image here, then this local daemon dials the child backend over MagicDNS after login.',
                       disabled: false,
                     },
                     {
@@ -1797,9 +1835,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     <li>This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server as payload archives.</li>
                     <li>This will also have the remote host pull the published SSH + Tailscale Swarm remote image when that image is not already present there.</li>
                     <li>The remote install path copies: rendered <code>swarm.conf</code>, installer script, and Git-tracked workspace payload archives.</li>
-                    <li>The launched remote child is configured to call back to this master over Tailscale.</li>
+                    <li>For Tailscale deploys, the launched remote child is target-owned; this local daemon probes its raw backend over MagicDNS and registers it when ready.</li>
                     <li>Persistence is not installed by Swarm in this path. Reboot survival is up to the remote machine owner.</li>
-                    <li>Attach flow: remote child must come back over the selected transport, then you explicitly approve it here.</li>
+                    <li>Attach flow: Tailscale children only need Tailnet login and backend reachability. LAN / WireGuard legacy children still require enrollment approval.</li>
                   </ul>
                 </div>
               </Card>

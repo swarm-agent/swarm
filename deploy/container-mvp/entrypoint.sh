@@ -52,6 +52,19 @@ is_true() {
   esac
 }
 
+swarm_backend_port() {
+  listen="${SWARMD_LISTEN:-}"
+  case "${listen}" in
+    *:*)
+      port="${listen##*:}"
+      ;;
+    *)
+      port="${listen}"
+      ;;
+  esac
+  printf '%s' "${port}" | awk '/^[0-9]+$/ { print; exit }'
+}
+
 runtime_uid() {
   printf '%s' "${SWARM_RUNTIME_UID:-65534}" | awk '/^[0-9]+$/ { print; exit }'
 }
@@ -234,6 +247,12 @@ while :; do
     dns_name="$(printf '%s' "${status_json}" | jq -r '.Self.DNSName // ""' 2>/dev/null | sed 's/\.$//' || true)"
 
     if [ "${backend_state}" = "Running" ] && [ -n "${dns_name}" ]; then
+      backend_port="$(swarm_backend_port)"
+      if [ -z "${backend_port}" ]; then
+        echo "[swarm-container] could not derive backend port from SWARMD_LISTEN=${SWARMD_LISTEN}" >&2
+        exit 1
+      fi
+      echo "SWARM_TAILNET_BACKEND_URL=http://${dns_name}:${backend_port}"
       if [ "${served}" != "1" ]; then
         tailscale --socket="${TS_SOCKET}" serve --bg "${SWARM_DESKTOP_PORT}" >"${TS_SERVE_LOG}" 2>&1 || {
           echo "[swarm-container] tailscale serve failed" >&2

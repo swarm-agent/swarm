@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -531,6 +532,94 @@ func TestRemoteDeploySessionCreateUsesRemotePayloadTargetPath(t *testing.T) {
 	}
 }
 
+func TestRemoteSessionCreateUsesRegistryMagicDNSBackend(t *testing.T) {
+	server, _, _, routeStore := newRoutedSessionTestServer(t)
+	var hits atomic.Int32
+	var openedWorkspacePath atomic.Value
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path != "/v1/swarm/peer/sessions/open" {
+			http.NotFound(w, r)
+			return
+		}
+		var req peerSessionOpenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode child request: %v", err)
+		}
+		openedWorkspacePath.Store(req.Request.RuntimeWorkspacePath)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"session": map[string]any{
+				"id":             req.SessionID,
+				"title":          req.Request.Title,
+				"workspace_path": req.Request.RuntimeWorkspacePath,
+				"workspace_name": req.Request.WorkspaceName,
+				"mode":           req.Request.Mode,
+				"created_at":     1,
+				"updated_at":     2,
+			},
+		})
+	}))
+	defer child.Close()
+
+	nodes := server.swarmNodes
+	if nodes == nil {
+		t.Fatal("swarm node store not configured")
+	}
+	if _, err := nodes.Put(pebblestore.SwarmNodeRecord{
+		SwarmID:      "registry-child",
+		Name:         "registry child",
+		Role:         "child",
+		Kind:         "remote",
+		Transport:    "tailscale",
+		BackendURL:   child.URL,
+		MagicDNSName: "registry-child.tailnet.ts.net",
+		DeploymentID: "remote-deploy-registry",
+		Source:       "remote-deploy",
+		Status:       "online",
+	}); err != nil {
+		t.Fatalf("put node: %v", err)
+	}
+	server.SetSwarmNodeStore(nodes)
+	server.swarmTargetHealth.entries = map[string]swarmTargetHealthEntry{
+		"remote|registry-child|" + child.URL: {online: true, checkedAt: time.Now()},
+	}
+
+	body := bytes.NewBufferString(`{"title":"remote","mode":"plan","workspace_path":"/src/swarm-go","workspace_name":"swarm-go","preference":{"provider":"fireworks","model":"accounts/fireworks/models/kimi-k2p5","thinking":"high"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=registry-child", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("child hits = %d, want 1", hits.Load())
+	}
+	if got, _ := openedWorkspacePath.Load().(string); got != "/src/swarm-go" {
+		t.Fatalf("child workspace path = %q, want %q", got, "/src/swarm-go")
+	}
+	var payload struct {
+		Session struct {
+			ID string `json:"id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	route, ok, err := routeStore.Get(payload.Session.ID)
+	if err != nil {
+		t.Fatalf("load route: %v", err)
+	}
+	if !ok {
+		t.Fatalf("route missing for session %q", payload.Session.ID)
+	}
+	if route.ChildSwarmID != "registry-child" || route.ChildBackendURL != child.URL {
+		t.Fatalf("route child = %q/%q, want registry-child/%q", route.ChildSwarmID, route.ChildBackendURL, child.URL)
+	}
+}
+
 func TestRemoteDeploySessionStartForwardsLaunchOnlyTailscaleAuthKey(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	fake := &fakeRemoteDeployService{
@@ -617,8 +706,10 @@ func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service,
 		t.Fatalf("ensure agent defaults: %v", err)
 	}
 	routeStore := pebblestore.NewSessionRouteStore(store)
+	nodeStore := pebblestore.NewSwarmNodeStore(store)
 	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
 	server.SetSessionRouteStore(routeStore)
+	server.SetSwarmNodeStore(nodeStore)
 	server.SetSwarmService(fakeRoutedSwarmService{
 		state: swarmruntime.LocalState{
 			Node: swarmruntime.LocalNodeState{
