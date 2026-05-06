@@ -102,3 +102,29 @@ func TestSwarmNodeStoreRequiresBackendURL(t *testing.T) {
 		t.Fatal("expected backend url validation error")
 	}
 }
+
+func TestSwarmNodeStoreRejectsRemoteDeployFallbackIDs(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "swarm-nodes.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	nodes := NewSwarmNodeStore(store)
+	if _, err := nodes.Put(SwarmNodeRecord{SwarmID: "remote-deploy:session-1", Name: "fake", BackendURL: "http://child.example:7781"}); err == nil {
+		t.Fatal("expected remote-deploy fallback id validation error")
+	}
+	if err := store.PutJSON(KeySwarmNode("remote-deploy:legacy"), SwarmNodeRecord{SwarmID: "remote-deploy:legacy", Name: "legacy", BackendURL: "http://legacy.example:7781"}); err != nil {
+		t.Fatalf("put legacy fallback node: %v", err)
+	}
+	listed, err := nodes.List(100)
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("listed fallback nodes = %+v, want none", listed)
+	}
+	if _, ok, err := nodes.Get("remote-deploy:legacy"); err != nil || ok {
+		t.Fatalf("get fallback ok=%t err=%v, want no record/no error", ok, err)
+	}
+}

@@ -2027,6 +2027,9 @@ func (s *Service) syncPendingEnrollment(record *pebblestore.RemoteDeploySessionR
 		if !strings.EqualFold(strings.TrimSpace(item.InviteToken), inviteToken) {
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) && strings.EqualFold(strings.TrimSpace(record.Status), "attached") {
+			return clearRemoteDeployEnrollmentDrift(record), nil
+		}
 		changed := false
 		if strings.TrimSpace(record.EnrollmentID) != strings.TrimSpace(item.ID) {
 			record.EnrollmentID = strings.TrimSpace(item.ID)
@@ -2055,6 +2058,22 @@ func (s *Service) syncPendingEnrollment(record *pebblestore.RemoteDeploySessionR
 		return changed, nil
 	}
 	return false, nil
+}
+
+func clearRemoteDeployEnrollmentDrift(record *pebblestore.RemoteDeploySessionRecord) bool {
+	if record == nil {
+		return false
+	}
+	changed := false
+	if strings.TrimSpace(record.EnrollmentID) != "" {
+		record.EnrollmentID = ""
+		changed = true
+	}
+	if strings.TrimSpace(record.EnrollmentStatus) != "" {
+		record.EnrollmentStatus = ""
+		changed = true
+	}
+	return changed
 }
 
 func (s *Service) requestRemotePairing(ctx context.Context, record *pebblestore.RemoteDeploySessionRecord) (bool, error) {
@@ -2410,6 +2429,7 @@ func (s *Service) tryRegisterTailscaleRemoteNode(ctx context.Context, record *pe
 		return false, err
 	}
 	record.Status = "attached"
+	record.EnrollmentID = ""
 	record.EnrollmentStatus = ""
 	record.LastError = ""
 	record.LastProgress = "Remote child ready over Tailnet; registered node."

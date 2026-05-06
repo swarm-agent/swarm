@@ -321,8 +321,8 @@ func TestRefreshRemoteSessionStateDoesNotResyncPendingEnrollmentAfterTailscaleRe
 	if refreshed.Status != "attached" {
 		t.Fatalf("refreshed.Status = %q, want attached", refreshed.Status)
 	}
-	if refreshed.EnrollmentStatus != "" {
-		t.Fatalf("refreshed.EnrollmentStatus = %q, want empty", refreshed.EnrollmentStatus)
+	if refreshed.EnrollmentID != "" || refreshed.EnrollmentStatus != "" {
+		t.Fatalf("refreshed enrollment drift was not cleared: id=%q status=%q", refreshed.EnrollmentID, refreshed.EnrollmentStatus)
 	}
 	if refreshed.ChildSwarmID != "real-child" {
 		t.Fatalf("refreshed.ChildSwarmID = %q, want real child", refreshed.ChildSwarmID)
