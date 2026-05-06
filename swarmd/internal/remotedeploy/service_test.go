@@ -250,7 +250,7 @@ func TestCreateRejectsLANWireGuardRemoteDeploy(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write startup config: %v", err)
 	}
-	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), swarms, swarmStore, nil, nil, nil, startupPath, t.TempDir())
+	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarms, swarmStore, nil, nil, nil, startupPath, t.TempDir())
 	state, err := swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Remote Deploy Test Host", Role: "master", SwarmMode: true})
 	if err != nil {
 		t.Fatalf("ensure local state: %v", err)
@@ -476,14 +476,14 @@ func TestRemoteBundleStartScriptDeliversSecretsViaSSHStdinWithoutCredentialsFile
 		`bootstrap_secret_path='/var/lib/swarm/remote-deploy/test/config/swarm/remote-deploy-bootstrap.secret'`,
 		`installer_path='/var/lib/swarm/remote-deploy/test/install-remote-child.sh'`,
 		`legacy_credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
-		`trap 'rm -f "$installer_path" "$legacy_credentials_file"' EXIT`,
-		`cat > "$config_path" <<'SWARM_REMOTE_CONFIG_EOF'`,
+		`trap 'rm -f "$installer_path" "$legacy_credentials_file" "${config_tmp:-}" "${bootstrap_secret_tmp:-}"' EXIT`,
+		`cat > "$config_tmp" <<'SWARM_REMOTE_CONFIG_EOF'`,
 		childCfgText,
-		`chmod 0600 "$config_path"`,
-		`cat > "$bootstrap_secret_path" <<'SWARM_REMOTE_SECRET_EOF'`,
+		`as_root install -m 0600 "$config_tmp" "$config_path"`,
+		`cat > "$bootstrap_secret_tmp" <<'SWARM_REMOTE_SECRET_EOF'`,
 		"remote_deploy_session_token = session-secret",
 		"remote_deploy_invite_token = invite-secret",
-		`chmod 0600 "$bootstrap_secret_path"`,
+		`as_root install -m 0600 "$bootstrap_secret_tmp" "$bootstrap_secret_path"`,
 		`cat > "$installer_path" <<'SWARM_REMOTE_INSTALL_EOF'`,
 		`chmod 0700 "$installer_path"`,
 		`TS_AUTHKEY='ts-auth-key' SWARM_REMOTE_SYNC_VAULT_PASSWORD='vault-pass' "$installer_path"`,
@@ -717,7 +717,7 @@ func TestEnsurePendingInviteRestoresMissingHostInvite(t *testing.T) {
 		t.Fatalf("write startup config: %v", err)
 	}
 
-	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), swarms, swarmStore, nil, nil, nil, startupPath, t.TempDir())
+	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), swarms, swarmStore, nil, nil, nil, startupPath, t.TempDir())
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:                 "remote-test-1",
 		Name:               "remote-test-1",
@@ -777,7 +777,7 @@ func TestReconcileAlwaysOnRemoteSessionsRestartsStoppedRemoteContainer(t *testin
 		t.Fatalf("open pebble store: %v", err)
 	}
 	defer store.Close()
-	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), nil, nil, nil, nil, nil, "", "")
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), nil, nil, nil, nil, nil, "", "")
 	record, err := svc.store.Put(pebblestore.RemoteDeploySessionRecord{
 		ID:               "remote-always-on-1",
 		Name:             "remote-always-on-1",
@@ -839,7 +839,7 @@ func TestReconcileAlwaysOnRemoteSessionsReportsUnreachableSSHHost(t *testing.T) 
 		t.Fatalf("open pebble store: %v", err)
 	}
 	defer store.Close()
-	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), nil, nil, nil, nil, nil, "", "")
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), pebblestore.NewSwarmNodeStore(store), nil, nil, nil, nil, nil, "", "")
 	record, err := svc.store.Put(pebblestore.RemoteDeploySessionRecord{
 		ID:               "remote-always-on-2",
 		Name:             "remote-always-on-2",

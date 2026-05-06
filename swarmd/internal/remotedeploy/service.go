@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -272,6 +273,7 @@ type Session struct {
 
 type Service struct {
 	store       *pebblestore.RemoteDeploySessionStore
+	nodeStore   *pebblestore.SwarmNodeStore
 	swarms      *swarmruntime.Service
 	swarmStore  *pebblestore.SwarmStore
 	containers  *localcontainers.Service
@@ -324,9 +326,10 @@ type remotePairingFinalizeRequest struct {
 	RendezvousTransports []remotePairingTransport `json:"rendezvous_transports,omitempty"`
 }
 
-func NewService(store *pebblestore.RemoteDeploySessionStore, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, containers *localcontainers.Service, authSvc *authruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath, startupCWD string) *Service {
+func NewService(store *pebblestore.RemoteDeploySessionStore, nodeStore *pebblestore.SwarmNodeStore, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, containers *localcontainers.Service, authSvc *authruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath, startupCWD string) *Service {
 	return &Service{
 		store:       store,
+		nodeStore:   nodeStore,
 		swarms:      swarms,
 		swarmStore:  swarmStore,
 		containers:  containers,
@@ -805,6 +808,9 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		}
 		logRemoteDeployTiming("start.require_sync_vault_password", stepStartedAt, nil, "session_id", strings.TrimSpace(input.SessionID))
 		appendRemoteDeployStartTiming(&record, "start.require_sync_vault_password", stepStartedAt, nil, "session_id", strings.TrimSpace(input.SessionID))
+		if strings.TrimSpace(record.MasterEndpoint) == "" {
+			return s.failRemoteDeployStart(record, fmt.Errorf("managed sync requires a reachable master endpoint; configure tailscale_url or disable sync for target-owned Tailnet deploy"))
+		}
 		if strings.TrimSpace(record.SyncBundlePassword) == "" {
 			bundlePassword, err := generateSecretToken(32)
 			if err != nil {
@@ -830,23 +836,27 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	}
 	record.TransportMode = normalizeRemoteTransportMode(record.TransportMode)
 	stepStartedAt := time.Now()
-	if err := s.markRemoteDeployStartProgress(&record, "starting", "Creating the remote child invite."); err != nil {
-		return Session{}, err
+	if strings.TrimSpace(record.MasterEndpoint) != "" {
+		if err := s.markRemoteDeployStartProgress(&record, "starting", "Creating the remote child invite."); err != nil {
+			return Session{}, err
+		}
+		invite, err := s.swarms.CreateInvite(swarmruntime.CreateInviteInput{
+			PrimarySwarmID:       strings.TrimSpace(hostState.Node.SwarmID),
+			PrimaryName:          firstNonEmpty(strings.TrimSpace(startupCfg.SwarmName), hostState.Node.Name, "Primary"),
+			GroupID:              strings.TrimSpace(record.GroupID),
+			TransportMode:        record.TransportMode,
+			RendezvousTransports: []swarmruntime.TransportSummary{{Kind: record.TransportMode, Primary: strings.TrimSpace(record.MasterEndpoint), All: []string{strings.TrimSpace(record.MasterEndpoint)}}},
+			TTL:                  30 * time.Minute,
+		})
+		logRemoteDeployTiming("start.create_invite", stepStartedAt, err, "session_id", record.ID, "transport_mode", record.TransportMode)
+		appendRemoteDeployStartTiming(&record, "start.create_invite", stepStartedAt, err, "session_id", record.ID, "transport_mode", record.TransportMode)
+		if err != nil {
+			return s.failRemoteDeployStart(record, err)
+		}
+		record.InviteToken = invite.Token
+	} else {
+		appendRemoteDeployStartTiming(&record, "start.skip_invite", stepStartedAt, nil, "session_id", record.ID, "transport_mode", record.TransportMode)
 	}
-	invite, err := s.swarms.CreateInvite(swarmruntime.CreateInviteInput{
-		PrimarySwarmID:       strings.TrimSpace(hostState.Node.SwarmID),
-		PrimaryName:          firstNonEmpty(strings.TrimSpace(startupCfg.SwarmName), hostState.Node.Name, "Primary"),
-		GroupID:              strings.TrimSpace(record.GroupID),
-		TransportMode:        record.TransportMode,
-		RendezvousTransports: []swarmruntime.TransportSummary{{Kind: record.TransportMode, Primary: strings.TrimSpace(record.MasterEndpoint), All: []string{strings.TrimSpace(record.MasterEndpoint)}}},
-		TTL:                  30 * time.Minute,
-	})
-	logRemoteDeployTiming("start.create_invite", stepStartedAt, err, "session_id", record.ID, "transport_mode", record.TransportMode)
-	appendRemoteDeployStartTiming(&record, "start.create_invite", stepStartedAt, err, "session_id", record.ID, "transport_mode", record.TransportMode)
-	if err != nil {
-		return s.failRemoteDeployStart(record, err)
-	}
-	record.InviteToken = invite.Token
 	childCfgText := s.renderChildStartupConfig(record, startupCfg, hostState)
 	workDir, err := os.MkdirTemp("", "swarm-remote-deploy-")
 	if err != nil {
@@ -952,22 +962,47 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 	output, authURL, remoteEndpoint, err := s.startRemoteBundle(ctx, &record, childCfgText, strings.TrimSpace(input.TailscaleAuthKey), strings.TrimSpace(input.SyncVaultPassword))
 	logRemoteDeployTiming("start.start_remote_bundle", stepStartedAt, err, "session_id", record.ID, "ssh_target", record.SSHSessionTarget, "auth_required", strconv.FormatBool(strings.TrimSpace(authURL) != ""), "remote_endpoint_present", strconv.FormatBool(strings.TrimSpace(remoteEndpoint) != ""))
 	appendRemoteDeployStartTiming(&record, "start.start_remote_bundle", stepStartedAt, err, "session_id", record.ID, "ssh_target", record.SSHSessionTarget, "auth_required", strconv.FormatBool(strings.TrimSpace(authURL) != ""), "remote_endpoint_present", strconv.FormatBool(strings.TrimSpace(remoteEndpoint) != ""))
-	record.InviteToken = invite.Token
 	record.LastRemoteOutput = strings.TrimSpace(output)
 	record.RemoteAuthURL = strings.TrimSpace(authURL)
-	record.RemoteEndpoint = strings.TrimSpace(remoteEndpoint)
-	record.RemoteTailnetURL = firstNonEmpty(map[bool]string{true: strings.TrimSpace(remoteEndpoint)}[strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale)])
+	deferDerivedEndpoint := strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) && strings.TrimSpace(remoteEndpoint) == "" && strings.TrimSpace(record.RemoteAuthURL) != ""
+	if !deferDerivedEndpoint {
+		if endpoint := deriveRemoteChildBackendURL(record, remoteEndpoint); endpoint != "" {
+			record.RemoteEndpoint = endpoint
+			if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) {
+				record.RemoteTailnetURL = endpoint
+			}
+		}
+	}
 	if err != nil {
 		return s.failRemoteDeployStart(record, err)
 	}
-	if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) && strings.TrimSpace(record.RemoteAuthURL) != "" && strings.TrimSpace(record.RemoteTailnetURL) == "" {
-		record.Status = "auth_required"
-		record.EnrollmentStatus = ""
-		record.LastError = ""
-		record.LastProgress = "Remote child started; approve the Tailscale login to continue."
+	if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) {
+		registered, registerErr := s.tryRegisterTailscaleRemoteNode(ctx, &record, 45*time.Second)
+		if registerErr != nil {
+			record.LastError = strings.TrimSpace(registerErr.Error())
+		}
+		if registered {
+			stepStartedAt = time.Now()
+			saved, err := s.store.Put(record)
+			logRemoteDeployTiming("start.store_registered", stepStartedAt, err, "session_id", record.ID)
+			if err != nil {
+				return Session{}, err
+			}
+			return mapSession(saved), nil
+		}
+		if strings.TrimSpace(record.RemoteAuthURL) != "" && remoteSessionEndpoint(record) == "" {
+			record.Status = "auth_required"
+			record.EnrollmentStatus = ""
+			record.LastError = ""
+			record.LastProgress = "Remote child started; waiting for Tailnet login."
+		} else {
+			record.Status = "starting"
+			record.EnrollmentStatus = ""
+			record.LastProgress = "Remote child started; probing child endpoint."
+		}
 		stepStartedAt = time.Now()
 		saved, err := s.store.Put(record)
-		logRemoteDeployTiming("start.store_auth_required", stepStartedAt, err, "session_id", record.ID)
+		logRemoteDeployTiming("start.store_tailscale_pending", stepStartedAt, err, "session_id", record.ID)
 		if err != nil {
 			return Session{}, err
 		}
@@ -1659,35 +1694,50 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 				}
 			}
 		}
-		if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) {
-			if remoteSessionEndpoint(record) != "" && (status == "starting" || status == "auth_required") {
-				record.Status = "waiting_for_approval"
-				record.EnrollmentStatus = firstNonEmpty(strings.TrimSpace(record.EnrollmentStatus), "pending")
-				record.LastProgress = "Remote child joined Tailscale; waiting for the child to enroll and be approved."
-				status = record.Status
-				changed = true
-			} else if strings.TrimSpace(record.RemoteAuthURL) != "" && remoteSessionEndpoint(record) == "" && status == "starting" {
+		isTailscale := strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale)
+		if isTailscale {
+			if remoteSessionEndpoint(record) != "" {
+				if record.Status != "attached" {
+					record.LastProgress = "Remote child endpoint discovered; probing child endpoint."
+					changed = true
+				}
+				if registered, err := s.tryRegisterTailscaleRemoteNode(ctx, &record, 10*time.Second); err != nil {
+					if strings.TrimSpace(record.LastError) != strings.TrimSpace(err.Error()) {
+						record.LastError = strings.TrimSpace(err.Error())
+						changed = true
+					}
+					if refreshErr == nil {
+						refreshErr = err
+					}
+				} else if registered {
+					changed = true
+					status = record.Status
+				}
+			} else if strings.TrimSpace(record.RemoteAuthURL) != "" && status == "starting" {
 				record.Status = "auth_required"
-				record.LastProgress = "Remote child started; approve the Tailscale login to continue."
+				record.EnrollmentStatus = ""
+				record.LastProgress = "Remote child started; waiting for Tailnet login."
 				status = record.Status
 				changed = true
 			}
 		}
-		if inviteChanged, err := s.ensurePendingInvite(&record); err != nil {
-			if refreshErr == nil {
-				refreshErr = err
+		if !isTailscale || strings.TrimSpace(record.MasterEndpoint) != "" {
+			if inviteChanged, err := s.ensurePendingInvite(&record); err != nil {
+				if refreshErr == nil {
+					refreshErr = err
+				}
+			} else if inviteChanged {
+				changed = true
 			}
-		} else if inviteChanged {
-			changed = true
-		}
-		if enrollmentChanged, err := s.syncPendingEnrollment(&record); err != nil {
-			if refreshErr == nil {
-				refreshErr = err
+			if enrollmentChanged, err := s.syncPendingEnrollment(&record); err != nil {
+				if refreshErr == nil {
+					refreshErr = err
+				}
+			} else if enrollmentChanged {
+				changed = true
 			}
-		} else if enrollmentChanged {
-			changed = true
 		}
-		if shouldRequestRemotePairing(record) {
+		if (!isTailscale || strings.TrimSpace(record.MasterEndpoint) != "") && shouldRequestRemotePairing(record) {
 			if pairingChanged, err := s.requestRemotePairing(ctx, &record); err != nil {
 				if strings.TrimSpace(record.LastError) != strings.TrimSpace(err.Error()) {
 					record.LastError = strings.TrimSpace(err.Error())
@@ -2057,6 +2107,9 @@ func shouldRequestRemotePairing(record pebblestore.RemoteDeploySessionRecord) bo
 	if strings.TrimSpace(record.EnrollmentID) != "" {
 		return false
 	}
+	if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) && strings.TrimSpace(record.MasterEndpoint) == "" {
+		return false
+	}
 	remoteEndpoint := remoteSessionEndpoint(record)
 	if remoteEndpoint == "" || strings.TrimSpace(record.InviteToken) == "" {
 		return false
@@ -2065,6 +2118,105 @@ func shouldRequestRemotePairing(record pebblestore.RemoteDeploySessionRecord) bo
 		return true
 	}
 	return !strings.EqualFold(strings.TrimSpace(record.LastPairingURL), remoteEndpoint)
+}
+
+func deriveRemoteChildBackendURL(record pebblestore.RemoteDeploySessionRecord, bootstrapEndpoint string) string {
+	if endpoint := normalizeRemoteSwarmURL(strings.TrimSpace(bootstrapEndpoint), "http"); endpoint != "" {
+		if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) {
+			return preferTailnetBackendURL(record, endpoint)
+		}
+		return endpoint
+	}
+	if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) {
+		return derivedTailnetBackendURL(record)
+	}
+	return ""
+}
+
+func preferTailnetBackendURL(record pebblestore.RemoteDeploySessionRecord, endpoint string) string {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return derivedTailnetBackendURL(record)
+	}
+	if strings.EqualFold(parsed.Scheme, "https") && parsed.Port() == "" {
+		return derivedTailnetBackendURL(record)
+	}
+	return strings.TrimRight(endpoint, "/")
+}
+
+func derivedTailnetBackendURL(record pebblestore.RemoteDeploySessionRecord) string {
+	host := remoteTailscaleHostname(record.Name)
+	if host == "" {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(remoteChildPorts(record.ID).Backend))
+}
+
+func fallbackRemoteChildSwarmID(record pebblestore.RemoteDeploySessionRecord) string {
+	id := strings.TrimSpace(record.ChildSwarmID)
+	if id != "" {
+		return id
+	}
+	deploymentID := firstNonEmpty(strings.TrimSpace(record.ID), strings.TrimSpace(record.Name))
+	if deploymentID == "" {
+		return ""
+	}
+	return "remote-deploy:" + deploymentID
+}
+
+func (s *Service) tryRegisterTailscaleRemoteNode(ctx context.Context, record *pebblestore.RemoteDeploySessionRecord, timeout time.Duration) (bool, error) {
+	if record == nil {
+		return false, fmt.Errorf("remote deploy record is required")
+	}
+	if s == nil || s.nodeStore == nil {
+		return false, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) {
+		return false, nil
+	}
+	endpoint := deriveRemoteChildBackendURL(*record, remoteSessionEndpoint(*record))
+	if endpoint == "" {
+		return false, nil
+	}
+	record.RemoteEndpoint = endpoint
+	record.RemoteTailnetURL = endpoint
+	record.LastProgress = "Remote child endpoint discovered; probing child endpoint."
+	if err := waitForRemoteSwarmReady(ctx, endpoint, timeout); err != nil {
+		return false, err
+	}
+	swarmID := fallbackRemoteChildSwarmID(*record)
+	if swarmID == "" {
+		return false, fmt.Errorf("remote child swarm id is not available")
+	}
+	name := firstNonEmpty(strings.TrimSpace(record.ChildName), strings.TrimSpace(record.Name), swarmID)
+	magicDNSName := remoteTailscaleHostname(name)
+	node := pebblestore.SwarmNodeRecord{
+		SwarmID:      swarmID,
+		Name:         name,
+		Role:         "child",
+		Kind:         "remote",
+		Transport:    "tailscale",
+		BackendURL:   endpoint,
+		MagicDNSName: magicDNSName,
+		TailnetFQDN:  magicDNSName,
+		DeploymentID: strings.TrimSpace(record.ID),
+		Source:       "remote-deploy",
+		Status:       "online",
+		LastSeenAt:   time.Now().UnixMilli(),
+	}
+	if _, err := s.nodeStore.Put(node); err != nil {
+		return false, err
+	}
+	record.ChildSwarmID = swarmID
+	record.ChildName = name
+	record.Status = "attached"
+	record.EnrollmentStatus = ""
+	record.LastError = ""
+	record.LastProgress = "Remote child ready over Tailnet; registered node."
+	if record.AttachedAt == 0 {
+		record.AttachedAt = time.Now().UnixMilli()
+	}
+	return true, nil
 }
 
 const remotePairingHTTPTimeout = 30 * time.Second
@@ -2167,6 +2319,8 @@ func parseRemoteBootstrapURLs(output string) (authURL, remoteEndpoint string) {
 			authURL = strings.TrimSpace(strings.TrimPrefix(line, "TAILSCALE_AUTH_URL="))
 		case strings.HasPrefix(line, "SWARM_REMOTE_URL="):
 			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_REMOTE_URL="))
+		case strings.HasPrefix(line, "SWARM_TAILNET_BACKEND_URL="):
+			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_BACKEND_URL="))
 		case strings.HasPrefix(line, "SWARM_TAILNET_URL="):
 			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_URL="))
 		}
@@ -2650,7 +2804,7 @@ func (s *Service) renderChildStartupConfig(record pebblestore.RemoteDeploySessio
 	cfg.SwarmMode = true
 	cfg.Child = true
 	cfg.NetworkMode = transportMode
-	cfg.TailscaleURL = firstNonEmpty(map[bool]string{true: strings.TrimSpace(record.MasterEndpoint)}[transportMode == startupconfig.NetworkModeTailscale])
+	cfg.TailscaleURL = firstNonEmpty(map[bool]string{true: strings.TrimSpace(record.MasterEndpoint)}[transportMode == startupconfig.NetworkModeTailscale && strings.TrimSpace(record.MasterEndpoint) != ""])
 	cfg.BypassPermissions = record.BypassPermissions
 	cfg.SwarmName = strings.TrimSpace(record.Name)
 	cfg.ParentSwarmID = strings.TrimSpace(hostState.Node.SwarmID)
@@ -2769,6 +2923,8 @@ func (s *Service) startRemoteBundle(ctx context.Context, record *pebblestore.Rem
 			authURL = strings.TrimSpace(strings.TrimPrefix(line, "TAILSCALE_AUTH_URL="))
 		case strings.HasPrefix(line, "SWARM_REMOTE_URL="):
 			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_REMOTE_URL="))
+		case strings.HasPrefix(line, "SWARM_TAILNET_BACKEND_URL="):
+			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_BACKEND_URL="))
 		case strings.HasPrefix(line, "SWARM_TAILNET_URL="):
 			remoteEndpoint = strings.TrimSpace(strings.TrimPrefix(line, "SWARM_TAILNET_URL="))
 		}
@@ -3657,7 +3813,7 @@ func resolveMasterRemoteDeployEndpoint(cfg startupconfig.FileConfig, transportMo
 	default:
 		endpoint := strings.TrimSpace(cfg.TailscaleURL)
 		if endpoint == "" {
-			return "", fmt.Errorf("master swarm.conf tailscale_url is required for remote child deploy")
+			return "", nil
 		}
 		return normalizeRemoteSwarmURL(endpoint, "https"), nil
 	}
