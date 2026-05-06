@@ -96,6 +96,34 @@ func TestRemoteRequiredDiskBytesIncludesPayloadStagingAndFallback(t *testing.T) 
 	}
 }
 
+func TestRemotePayloadLinkedTargetWorkspacePathUsesExistingPayloadTarget(t *testing.T) {
+	payloads := []pebblestore.RemoteDeployPayloadRecord{
+		{
+			SourcePath:    "/src/parent",
+			WorkspacePath: "/src/parent",
+			TargetPath:    "/workspaces/parent",
+			Directories: []pebblestore.RemoteDeployPayloadDirectoryRecord{{
+				SourcePath:    "/src/child",
+				WorkspacePath: "/src/child",
+				TargetPath:    "/workspaces/child",
+			}},
+		},
+		{
+			SourcePath:    "/src/child",
+			WorkspacePath: "/src/child",
+			TargetPath:    "/workspaces/child",
+		},
+	}
+
+	got, ok := remotePayloadLinkedTargetWorkspacePath(payloads, payloads[1])
+	if !ok {
+		t.Fatal("expected linked target to be found")
+	}
+	if got != "/workspaces/child" {
+		t.Fatalf("linked target = %q, want /workspaces/child", got)
+	}
+}
+
 func TestResolveRemoteImageDeliveryModeUsesArchiveInDevMode(t *testing.T) {
 	if got := resolveRemoteImageDeliveryMode(remoteImageDeliveryRegistry, startupconfig.FileConfig{DevMode: true}); got != remoteImageDeliveryArchive {
 		t.Fatalf("resolveRemoteImageDeliveryMode(dev registry) = %q, want %q", got, remoteImageDeliveryArchive)

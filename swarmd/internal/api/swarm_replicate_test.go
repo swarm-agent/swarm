@@ -178,6 +178,44 @@ func TestSwarmReplicatePassesRequestedSyncModulesThroughToDeployCreate(t *testin
 	}
 }
 
+func TestBuildReplicationPlanUsesStandaloneWorkspaceTargetForLinkedDirectory(t *testing.T) {
+	parent := "/src/parent"
+	child := "/src/child"
+	workspaces := []workspaceruntime.NormalizedReplicationWorkspace{
+		{SourceWorkspacePath: parent, ReplicationMode: workspaceruntime.ReplicationModeBundle, Writable: true},
+		{SourceWorkspacePath: child, ReplicationMode: workspaceruntime.ReplicationModeBundle, Writable: true},
+	}
+	catalog := map[string]replicateWorkspaceCatalogEntry{
+		parent: {Name: "parent", Directories: []string{parent, child}, Active: true},
+		child:  {Name: "child", Directories: []string{child}},
+	}
+
+	mounts, childPaths, bootstrap := buildReplicationPlan(workspaces, catalog, workspaceruntime.NormalizedReplicationSync{})
+
+	if childPaths[child] != "/workspaces/child" {
+		t.Fatalf("child target = %q, want /workspaces/child", childPaths[child])
+	}
+	if len(bootstrap) != 2 {
+		t.Fatalf("bootstrap len = %d, want 2", len(bootstrap))
+	}
+	if len(bootstrap[0].Directories) != 1 {
+		t.Fatalf("parent linked directories = %#v, want one child link", bootstrap[0].Directories)
+	}
+	if bootstrap[0].Directories[0].SourcePath != child || bootstrap[0].Directories[0].TargetPath != childPaths[child] {
+		t.Fatalf("parent linked child = %+v, want %s at %s", bootstrap[0].Directories[0], child, childPaths[child])
+	}
+	var linkedMount localcontainers.Mount
+	for _, mount := range mounts {
+		if mount.SourcePath == child && mount.WorkspacePath == parent {
+			linkedMount = mount
+			break
+		}
+	}
+	if linkedMount.TargetPath != childPaths[child] {
+		t.Fatalf("linked child mount target = %q, want %q", linkedMount.TargetPath, childPaths[child])
+	}
+}
+
 func newReplicateTestHandler(t *testing.T) (http.Handler, *fakeReplicateDeployService, string) {
 	t.Helper()
 

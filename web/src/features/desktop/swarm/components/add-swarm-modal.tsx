@@ -265,37 +265,48 @@ function nextRemoteWorkspaceTargetPath(baseName: string, usedTargets: Map<string
 }
 
 function buildRemoteWorkspacePayloads(workspaces: ReplicateWorkspaceDraft[]) {
+  const selectedWorkspaces = workspaces.filter((workspace) => workspace.selected)
   const usedTargets = new Map<string, number>()
-  return workspaces
-    .filter((workspace) => workspace.selected)
-    .map((workspace, index) => {
-      const sourcePath = workspace.workspacePath.trim()
-      const workspaceName = workspace.workspaceName.trim() || fallbackWorkspaceName(sourcePath, index)
-      const baseName = sanitizeRemoteWorkspaceTargetSegment(workspaceName)
-        || sanitizeRemoteWorkspaceTargetSegment(fallbackWorkspaceName(sourcePath, index))
-        || `workspace-${index + 1}`
-      const targetPath = nextRemoteWorkspaceTargetPath(baseName, usedTargets)
-      const linkedDirectories = workspace.directories
-        .map((directory) => directory.trim())
-        .filter((directory) => directory.length > 0 && directory !== sourcePath)
-        .map((directory, directoryIndex) => {
-          const directoryBaseName = sanitizeRemoteWorkspaceTargetSegment(
-            `${baseName}-dir-${fallbackWorkspaceName(directory, directoryIndex)}`,
-          ) || `${baseName}-dir-${directoryIndex + 1}`
-          return {
-            sourcePath: directory,
-            targetPath: nextRemoteWorkspaceTargetPath(directoryBaseName, usedTargets),
-          }
-        })
-      return {
-        sourcePath,
-        workspacePath: sourcePath,
-        workspaceName,
-        targetPath,
-        mode: 'rw' as const,
-        directories: linkedDirectories,
-      }
-    })
+  const selectedTargetByPath = new Map<string, string>()
+
+  selectedWorkspaces.forEach((workspace, index) => {
+    const sourcePath = workspace.workspacePath.trim()
+    const workspaceName = workspace.workspaceName.trim() || fallbackWorkspaceName(sourcePath, index)
+    const baseName = sanitizeRemoteWorkspaceTargetSegment(workspaceName)
+      || sanitizeRemoteWorkspaceTargetSegment(fallbackWorkspaceName(sourcePath, index))
+      || `workspace-${index + 1}`
+    selectedTargetByPath.set(sourcePath, nextRemoteWorkspaceTargetPath(baseName, usedTargets))
+  })
+
+  return selectedWorkspaces.map((workspace, index) => {
+    const sourcePath = workspace.workspacePath.trim()
+    const workspaceName = workspace.workspaceName.trim() || fallbackWorkspaceName(sourcePath, index)
+    const targetPath = selectedTargetByPath.get(sourcePath) || nextRemoteWorkspaceTargetPath(fallbackWorkspaceName(sourcePath, index), usedTargets)
+    const baseName = sanitizeRemoteWorkspaceTargetSegment(workspaceName)
+      || sanitizeRemoteWorkspaceTargetSegment(fallbackWorkspaceName(sourcePath, index))
+      || `workspace-${index + 1}`
+    const linkedDirectories = workspace.directories
+      .map((directory) => directory.trim())
+      .filter((directory) => directory.length > 0 && directory !== sourcePath)
+      .map((directory, directoryIndex) => {
+        const directoryBaseName = sanitizeRemoteWorkspaceTargetSegment(
+          `${baseName}-dir-${fallbackWorkspaceName(directory, directoryIndex)}`,
+        ) || `${baseName}-dir-${directoryIndex + 1}`
+        return {
+          sourcePath: directory,
+          targetPath: selectedTargetByPath.get(directory) || nextRemoteWorkspaceTargetPath(directoryBaseName, usedTargets),
+          workspacePath: directory,
+        }
+      })
+    return {
+      sourcePath,
+      workspacePath: sourcePath,
+      workspaceName,
+      targetPath,
+      mode: 'rw' as const,
+      directories: linkedDirectories,
+    }
+  })
 }
 
 function countRemotePayloadArchives(payloads: Array<{ directories?: Array<unknown> }>): number {

@@ -83,8 +83,9 @@ type PayloadSelection struct {
 }
 
 type PayloadDirectorySelection struct {
-	SourcePath string
-	TargetPath string
+	SourcePath    string
+	TargetPath    string
+	WorkspacePath string
 }
 
 type CreateSessionInput struct {
@@ -1466,6 +1467,9 @@ func (s *Service) ensureWorkspaceReplicationLinks(record pebblestore.RemoteDeplo
 		linkID = fmt.Sprintf("remote:%s:%s", strings.TrimSpace(record.ID), linkID)
 		writable := !strings.EqualFold(strings.TrimSpace(payload.Mode), "ro")
 		targetWorkspacePath := firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces")
+		if linkedTarget, ok := remotePayloadLinkedTargetWorkspacePath(record.Payloads, payload); ok {
+			targetWorkspacePath = linkedTarget
+		}
 		desired := pebblestore.WorkspaceReplicationLink{
 			ID:                  linkID,
 			TargetKind:          workspaceruntime.ReplicationTargetModeRemote,
@@ -1489,6 +1493,28 @@ func (s *Service) ensureWorkspaceReplicationLinks(record pebblestore.RemoteDeplo
 		knownByPath[workspacePath] = entry
 	}
 	return nil
+}
+
+func remotePayloadLinkedTargetWorkspacePath(payloads []pebblestore.RemoteDeployPayloadRecord, payload pebblestore.RemoteDeployPayloadRecord) (string, bool) {
+	workspacePath := strings.TrimSpace(firstNonEmpty(payload.WorkspacePath, payload.SourcePath))
+	if workspacePath == "" {
+		return "", false
+	}
+	for _, candidate := range payloads {
+		candidateWorkspacePath := strings.TrimSpace(firstNonEmpty(candidate.WorkspacePath, candidate.SourcePath))
+		if candidateWorkspacePath == "" || candidateWorkspacePath == workspacePath {
+			continue
+		}
+		for _, directory := range candidate.Directories {
+			if strings.TrimSpace(directory.WorkspacePath) != workspacePath {
+				continue
+			}
+			if targetPath := strings.TrimSpace(directory.TargetPath); targetPath != "" {
+				return targetPath, true
+			}
+		}
+	}
+	return "", false
 }
 
 func findWorkspaceReplicationLink(links []pebblestore.WorkspaceReplicationLink, linkID string) (pebblestore.WorkspaceReplicationLink, bool) {
@@ -2964,6 +2990,7 @@ func buildPayloadRecord(index int, payload PayloadSelection) (pebblestore.Remote
 		if err != nil {
 			return pebblestore.RemoteDeployPayloadRecord{}, err
 		}
+		directoryRecord.WorkspacePath = strings.TrimSpace(directory.WorkspacePath)
 		directories = append(directories, directoryRecord)
 		totalFiles += directoryRecord.IncludedFiles
 		totalBytes += directoryRecord.IncludedBytes

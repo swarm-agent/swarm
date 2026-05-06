@@ -95,6 +95,11 @@ type replicateWorkspaceCatalogEntry struct {
 	Active      bool
 }
 
+type replicationTargetAssignment struct {
+	SourcePath string
+	TargetPath string
+}
+
 func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -450,12 +455,20 @@ func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace,
 	mounts := make([]localcontainers.Mount, 0, len(workspaces)*2)
 	childPaths := make(map[string]string, len(workspaces))
 	bootstraps := make([]deployruntime.ContainerWorkspaceBootstrap, 0, len(workspaces))
+	selectedWorkspaceTargets := assignReplicationWorkspaceTargets(workspaces, workspaceCatalog)
+	selectedWorkspaceTargetsBySource := make(map[string]replicationTargetAssignment, len(selectedWorkspaceTargets))
 	usedTargets := make(map[string]int, len(workspaces)*2)
+	for _, assigned := range selectedWorkspaceTargets {
+		selectedWorkspaceTargetsBySource[assigned.SourcePath] = assigned
+		if target := strings.TrimSpace(assigned.TargetPath); target != "" {
+			usedTargets[target]++
+		}
+	}
 	anyCurrent := false
-	for index, item := range workspaces {
+	for _, item := range workspaces {
 		catalog := workspaceCatalog[item.SourceWorkspacePath]
 		name := strings.TrimSpace(catalog.Name)
-		targetPath := nextReplicationTargetPath(name, item.SourceWorkspacePath, index, usedTargets)
+		targetPath := strings.TrimSpace(selectedWorkspaceTargetsBySource[item.SourceWorkspacePath].TargetPath)
 		mode := pebblestore.ContainerMountModeReadWrite
 		if !item.Writable {
 			mode = pebblestore.ContainerMountModeReadOnly
@@ -474,7 +487,13 @@ func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace,
 			if directory == "" || directory == item.SourceWorkspacePath {
 				continue
 			}
-			directoryTarget := nextReplicationDirectoryTargetPath(name, directory, dirIndex, usedTargets)
+			directoryTarget := ""
+			if assigned, ok := selectedWorkspaceTargetsBySource[directory]; ok {
+				directoryTarget = strings.TrimSpace(assigned.TargetPath)
+			}
+			if directoryTarget == "" {
+				directoryTarget = nextReplicationDirectoryTargetPath(name, directory, dirIndex, usedTargets)
+			}
 			mounts = append(mounts, localcontainers.Mount{
 				SourcePath:    directory,
 				TargetPath:    directoryTarget,
@@ -511,6 +530,20 @@ func buildReplicationPlan(workspaces []workspace.NormalizedReplicationWorkspace,
 		bootstraps[0].MakeCurrent = true
 	}
 	return mounts, childPaths, bootstraps
+}
+
+func assignReplicationWorkspaceTargets(workspaces []workspace.NormalizedReplicationWorkspace, workspaceCatalog map[string]replicateWorkspaceCatalogEntry) []replicationTargetAssignment {
+	usedTargets := make(map[string]int, len(workspaces)*2)
+	out := make([]replicationTargetAssignment, 0, len(workspaces))
+	for index, item := range workspaces {
+		catalog := workspaceCatalog[item.SourceWorkspacePath]
+		name := strings.TrimSpace(catalog.Name)
+		out = append(out, replicationTargetAssignment{
+			SourcePath: item.SourceWorkspacePath,
+			TargetPath: nextReplicationTargetPath(name, item.SourceWorkspacePath, index, usedTargets),
+		})
+	}
+	return out
 }
 
 func nextReplicationTargetPath(name, sourcePath string, index int, used map[string]int) string {

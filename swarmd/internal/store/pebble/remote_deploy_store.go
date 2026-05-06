@@ -28,6 +28,7 @@ type RemoteDeployPayloadRecord struct {
 type RemoteDeployPayloadDirectoryRecord struct {
 	SourcePath    string `json:"source_path,omitempty"`
 	TargetPath    string `json:"target_path,omitempty"`
+	WorkspacePath string `json:"workspace_path,omitempty"`
 	GitRoot       string `json:"git_root,omitempty"`
 	ArchiveName   string `json:"archive_name,omitempty"`
 	IncludedFiles int    `json:"included_files,omitempty"`
@@ -296,6 +297,7 @@ func normalizeRemoteDeploySessionRecord(record RemoteDeploySessionRecord) Remote
 		for j := range record.Payloads[i].Directories {
 			record.Payloads[i].Directories[j].SourcePath = strings.TrimSpace(record.Payloads[i].Directories[j].SourcePath)
 			record.Payloads[i].Directories[j].TargetPath = strings.TrimSpace(record.Payloads[i].Directories[j].TargetPath)
+			record.Payloads[i].Directories[j].WorkspacePath = strings.TrimSpace(record.Payloads[i].Directories[j].WorkspacePath)
 			record.Payloads[i].Directories[j].GitRoot = strings.TrimSpace(record.Payloads[i].Directories[j].GitRoot)
 			record.Payloads[i].Directories[j].ArchiveName = strings.TrimSpace(record.Payloads[i].Directories[j].ArchiveName)
 			record.Payloads[i].Directories[j].ExcludedNote = strings.TrimSpace(record.Payloads[i].Directories[j].ExcludedNote)

@@ -392,6 +392,7 @@ export async function createRemoteDeploySession(input: {
     directories?: Array<{
       sourcePath: string
       targetPath?: string
+      workspacePath?: string
     }>
   }>
 }): Promise<RemoteDeploySession> {
@@ -430,6 +431,7 @@ export async function createRemoteDeploySession(input: {
         directories: (payload.directories ?? []).map((directory) => ({
           source_path: directory.sourcePath,
           target_path: directory.targetPath,
+          workspace_path: directory.workspacePath,
         })),
       })),
     }),

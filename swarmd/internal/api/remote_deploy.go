@@ -104,8 +104,9 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 			TargetPath    string `json:"target_path"`
 			Mode          string `json:"mode"`
 			Directories   []struct {
-				SourcePath string `json:"source_path"`
-				TargetPath string `json:"target_path"`
+				SourcePath    string `json:"source_path"`
+				TargetPath    string `json:"target_path"`
+				WorkspacePath string `json:"workspace_path"`
 			} `json:"directories,omitempty"`
 		} `json:"payloads"`
 	}
@@ -119,8 +120,9 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 		directories := make([]remotedeploy.PayloadDirectorySelection, 0, len(payload.Directories))
 		for _, directory := range payload.Directories {
 			directories = append(directories, remotedeploy.PayloadDirectorySelection{
-				SourcePath: directory.SourcePath,
-				TargetPath: directory.TargetPath,
+				SourcePath:    directory.SourcePath,
+				TargetPath:    directory.TargetPath,
+				WorkspacePath: firstNonEmpty(directory.WorkspacePath, directory.SourcePath),
 			})
 		}
 		payloads = append(payloads, remotedeploy.PayloadSelection{
