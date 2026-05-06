@@ -373,7 +373,7 @@ export interface RemoteDeployStartError {
 export async function createRemoteDeploySession(input: {
   name: string
   sshSessionTarget: string
-  transportMode?: 'lan' | 'tailscale'
+  transportMode?: 'tailscale'
   remoteAdvertiseHost?: string
   groupID: string
   groupName?: string
@@ -452,6 +452,26 @@ export async function createRemoteDeploySession(input: {
     throw new Error('remote deploy session response was missing session data')
   }
   return payload.session
+}
+
+export async function updateRemoteDeploySessionSettings(input: {
+  id: string
+  alwaysOn?: boolean
+}): Promise<RemoteDeploySession> {
+  const response = await requestJson<{ ok?: boolean; session?: RemoteDeploySession; error?: string }>('/v1/deploy/remote/session/settings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      id: input.id,
+      always_on: input.alwaysOn,
+    }),
+  })
+  if (!response.session) {
+    throw new Error(response.error || 'remote deploy settings response was missing session data')
+  }
+  return response.session
 }
 
 export async function startRemoteDeploySession(sessionID: string, input?: {

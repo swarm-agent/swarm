@@ -177,6 +177,48 @@ func (s *Server) handleRemoteDeploySessionCreate(w http.ResponseWriter, r *http.
 	})
 }
 
+func (s *Server) handleRemoteDeploySessionSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.remoteDeploys == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("remote deploy service not configured"))
+		return
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+		ID        string `json:"id,omitempty"`
+		AlwaysOn  *bool  `json:"always_on,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(req.ID)
+	}
+	session, err := s.remoteDeploys.UpdateSettings(r.Context(), remotedeploy.UpdateSettingsInput{
+		SessionID: sessionID,
+		AlwaysOn:  req.AlwaysOn,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":      false,
+			"path_id": "deploy.remote.settings.v1",
+			"session": session,
+			"error":   err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"path_id": "deploy.remote.settings.v1",
+		"session": session,
+	})
+}
+
 func (s *Server) handleRemoteDeploySessionDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

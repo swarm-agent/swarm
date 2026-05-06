@@ -702,6 +702,10 @@ func (f *fakeRemoteDeployService) Create(_ context.Context, input remotedeploy.C
 	return remotedeploy.Session{}, nil
 }
 
+func (f *fakeRemoteDeployService) UpdateSettings(_ context.Context, input remotedeploy.UpdateSettingsInput) (remotedeploy.Session, error) {
+	return remotedeploy.Session{}, nil
+}
+
 func (f *fakeRemoteDeployService) Delete(_ context.Context, input remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error) {
 	return localcontainers.DeleteResult{}, nil
 }

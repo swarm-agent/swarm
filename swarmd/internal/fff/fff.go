@@ -99,7 +99,7 @@ func CreateWithOptions(basePath string, opts CreateOptions) (*Instance, CreateMe
 		defer C.free(unsafe.Pointer(cHistory))
 	}
 
-	res, err := wrapResult(C.fff_create_instance(cBase, cFrecency, cHistory, C.bool(opts.UseUnsafeNoLock), C.bool(opts.WarmupMmapCache), C.bool(!opts.DisableAIMode)))
+	res, err := wrapResult(C.fff_create_instance(cBase, cFrecency, cHistory, C.bool(opts.UseUnsafeNoLock), C.bool(opts.WarmupMmapCache), false, false, C.bool(!opts.DisableAIMode)))
 	if err != nil {
 		return nil, CreateMetrics{}, err
 	}
@@ -184,17 +184,18 @@ func (i *Instance) SearchWithOptions(query string, pageSize uint32, pageIndex ui
 		if item == nil {
 			continue
 		}
+		relativePath := fromCString(item.relative_path)
 		entry := SearchItem{
-			Path:                      fromCString(item.path),
-			RelativePath:              fromCString(item.relative_path),
-			FileName:                  fromCString(item.file_name),
-			GitStatus:                 fromCString(item.git_status),
-			Size:                      uint64(item.size),
-			Modified:                  uint64(item.modified),
-			AccessFrecencyScore:       int64(item.access_frecency_score),
-			ModificationFrecencyScore: int64(item.modification_frecency_score),
-			TotalFrecencyScore:        int64(item.total_frecency_score),
-			IsBinary:                  bool(item.is_binary),
+			Path:                      relativePath,
+			RelativePath:              relativePath,
+			FileName:                  fromCString(C.fff_file_item_get_file_name(item)),
+			GitStatus:                 fromCString(C.fff_file_item_get_git_status(item)),
+			Size:                      uint64(C.fff_file_item_get_size(item)),
+			Modified:                  uint64(C.fff_file_item_get_modified(item)),
+			AccessFrecencyScore:       int64(C.fff_file_item_get_access_frecency_score(item)),
+			ModificationFrecencyScore: int64(C.fff_file_item_get_modification_frecency_score(item)),
+			TotalFrecencyScore:        int64(C.fff_file_item_get_total_frecency_score(item)),
+			IsBinary:                  bool(C.fff_file_item_get_is_binary(item)),
 		}
 		if score != nil {
 			entry.Score = int(score.total)
@@ -483,27 +484,28 @@ func extractGrepResult(grepRes *C.struct_FffGrepResult, start time.Time) ([]Grep
 		if match == nil {
 			continue
 		}
+		relativePath := fromCString(match.relative_path)
 		items = append(items, GrepMatch{
-			Path:                      fromCString(match.path),
-			RelativePath:              fromCString(match.relative_path),
-			FileName:                  fromCString(match.file_name),
-			GitStatus:                 fromCString(match.git_status),
-			LineNumber:                uint64(match.line_number),
-			ByteOffset:                uint64(match.byte_offset),
-			Column:                    uint32(match.col),
-			LineContent:               fromCString(match.line_content),
-			MatchRanges:               parseMatchRanges(match.match_ranges, match.match_ranges_count),
-			ContextBefore:             parseCStringArray(match.context_before, match.context_before_count),
-			ContextAfter:              parseCStringArray(match.context_after, match.context_after_count),
-			Size:                      uint64(match.size),
-			Modified:                  uint64(match.modified),
-			TotalFrecencyScore:        int64(match.total_frecency_score),
-			AccessFrecencyScore:       int64(match.access_frecency_score),
-			ModificationFrecencyScore: int64(match.modification_frecency_score),
-			FuzzyScore:                uint16(match.fuzzy_score),
-			HasFuzzyScore:             bool(match.has_fuzzy_score),
-			IsBinary:                  bool(match.is_binary),
-			IsDefinition:              bool(match.is_definition),
+			Path:                      relativePath,
+			RelativePath:              relativePath,
+			FileName:                  fromCString(C.fff_grep_match_get_file_name(match)),
+			GitStatus:                 fromCString(C.fff_grep_match_get_git_status(match)),
+			LineNumber:                uint64(C.fff_grep_match_get_line_number(match)),
+			ByteOffset:                uint64(C.fff_grep_match_get_byte_offset(match)),
+			Column:                    uint32(C.fff_grep_match_get_col(match)),
+			LineContent:               fromCString(C.fff_grep_match_get_line_content(match)),
+			MatchRanges:               parseMatchRanges(match),
+			ContextBefore:             parseContextBefore(match),
+			ContextAfter:              parseContextAfter(match),
+			Size:                      uint64(C.fff_grep_match_get_size(match)),
+			Modified:                  uint64(C.fff_grep_match_get_modified(match)),
+			TotalFrecencyScore:        int64(C.fff_grep_match_get_total_frecency_score(match)),
+			AccessFrecencyScore:       int64(C.fff_grep_match_get_access_frecency_score(match)),
+			ModificationFrecencyScore: int64(C.fff_grep_match_get_modification_frecency_score(match)),
+			FuzzyScore:                uint16(C.fff_grep_match_get_fuzzy_score(match)),
+			HasFuzzyScore:             bool(C.fff_grep_match_get_has_fuzzy_score(match)),
+			IsBinary:                  bool(C.fff_grep_match_get_is_binary(match)),
+			IsDefinition:              bool(C.fff_grep_match_get_is_definition(match)),
 		})
 	}
 	metrics := GrepMetrics{
@@ -519,26 +521,42 @@ func extractGrepResult(grepRes *C.struct_FffGrepResult, start time.Time) ([]Grep
 	return items, metrics, nil
 }
 
-func parseMatchRanges(base *C.struct_FffMatchRange, count C.uint32_t) []MatchRange {
-	if base == nil || count == 0 {
+func parseMatchRanges(match *C.struct_FffGrepMatch) []MatchRange {
+	count := C.fff_grep_match_get_match_ranges_count(match)
+	if count == 0 {
 		return nil
 	}
-	raw := unsafe.Slice(base, int(count))
-	out := make([]MatchRange, 0, len(raw))
-	for _, entry := range raw {
+	out := make([]MatchRange, 0, int(count))
+	for idx := C.uint32_t(0); idx < count; idx++ {
+		entry := C.fff_grep_match_get_match_range(match, idx)
+		if entry == nil {
+			continue
+		}
 		out = append(out, MatchRange{Start: uint32(entry.start), End: uint32(entry.end)})
 	}
 	return out
 }
 
-func parseCStringArray(base **C.char, count C.uint32_t) []string {
-	if base == nil || count == 0 {
+func parseContextBefore(match *C.struct_FffGrepMatch) []string {
+	count := C.fff_grep_match_get_context_before_count(match)
+	if count == 0 {
 		return nil
 	}
-	raw := unsafe.Slice(base, int(count))
-	out := make([]string, 0, len(raw))
-	for _, entry := range raw {
-		out = append(out, fromCString(entry))
+	out := make([]string, 0, int(count))
+	for idx := C.uint32_t(0); idx < count; idx++ {
+		out = append(out, fromCString(C.fff_grep_match_get_context_before(match, idx)))
+	}
+	return out
+}
+
+func parseContextAfter(match *C.struct_FffGrepMatch) []string {
+	count := C.fff_grep_match_get_context_after_count(match)
+	if count == 0 {
+		return nil
+	}
+	out := make([]string, 0, int(count))
+	for idx := C.uint32_t(0); idx < count; idx++ {
+		out = append(out, fromCString(C.fff_grep_match_get_context_after(match, idx)))
 	}
 	return out
 }

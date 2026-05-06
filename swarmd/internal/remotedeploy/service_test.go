@@ -224,6 +224,59 @@ func TestVerifyRemoteDeployBackendBinariesRequiresExecutableStagedBinaries(t *te
 	}
 }
 
+func TestCreateRejectsLANWireGuardRemoteDeploy(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "swarmd.pebble")
+	store, err := pebblestore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open pebble store: %v", err)
+	}
+	defer store.Close()
+
+	swarmStore := pebblestore.NewSwarmStore(store)
+	swarms := swarmruntime.NewService(swarmStore, nil, nil)
+	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
+	if err := startupconfig.Write(startupconfig.FileConfig{
+		Path:              startupPath,
+		Mode:              "box",
+		Host:              "127.0.0.1",
+		Port:              17792,
+		AdvertisePort:     17792,
+		DesktopPort:       15566,
+		PeerTransportPort: 17802,
+		SwarmName:         "Remote Deploy Test Host",
+		SwarmMode:         true,
+		NetworkMode:       startupconfig.NetworkModeTailscale,
+		TailscaleURL:      "https://host.tailnet.ts.net",
+	}); err != nil {
+		t.Fatalf("write startup config: %v", err)
+	}
+	service := NewService(pebblestore.NewRemoteDeploySessionStore(store), swarms, swarmStore, nil, nil, nil, startupPath, t.TempDir())
+	state, err := swarms.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Remote Deploy Test Host", Role: "master", SwarmMode: true})
+	if err != nil {
+		t.Fatalf("ensure local state: %v", err)
+	}
+	if _, err := swarmStore.PutGroup(pebblestore.SwarmGroupRecord{ID: "group-1", Name: "Group 1", HostSwarmID: state.Node.SwarmID}); err != nil {
+		t.Fatalf("put group: %v", err)
+	}
+	if _, err := swarmStore.PutGroupMembership(pebblestore.SwarmGroupMembershipRecord{GroupID: "group-1", SwarmID: state.Node.SwarmID, Name: "Remote Deploy Test Host", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost}); err != nil {
+		t.Fatalf("put group membership: %v", err)
+	}
+
+	_, err = service.Create(context.Background(), CreateSessionInput{
+		Name:             "lan-child",
+		SSHSessionTarget: "remote-host",
+		TransportMode:    startupconfig.NetworkModeLAN,
+		GroupID:          "group-1",
+		RemoteRuntime:    "docker",
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil, want LAN/WireGuard disabled error")
+	}
+	if !strings.Contains(err.Error(), "LAN/WireGuard remote deploy is disabled") {
+		t.Fatalf("Create() error = %q, want disabled message", err.Error())
+	}
+}
+
 func TestResolveMasterRemoteDeployEndpointUsesDevLanePort(t *testing.T) {
 	t.Setenv("SWARM_LANE", "dev")
 	t.Setenv("SWARM_LANE_PORT", "7782")
@@ -715,6 +768,119 @@ func TestEnsurePendingInviteRestoresMissingHostInvite(t *testing.T) {
 	}
 	if strings.TrimSpace(restoredInvite.GroupID) != strings.TrimSpace(record.GroupID) {
 		t.Fatalf("restored invite group = %q, want %q", restoredInvite.GroupID, record.GroupID)
+	}
+}
+
+func TestReconcileAlwaysOnRemoteSessionsRestartsStoppedRemoteContainer(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarmd.pebble"))
+	if err != nil {
+		t.Fatalf("open pebble store: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), nil, nil, nil, nil, nil, "", "")
+	record, err := svc.store.Put(pebblestore.RemoteDeploySessionRecord{
+		ID:               "remote-always-on-1",
+		Name:             "remote-always-on-1",
+		Status:           "attached",
+		AlwaysOn:         true,
+		SSHSessionTarget: "test-ssh",
+		RemoteRoot:       "/tmp/swarm-remote-always-on",
+		RemoteRuntime:    "docker",
+		SSHReachable:     true,
+	})
+	if err != nil {
+		t.Fatalf("put remote deploy session: %v", err)
+	}
+	var commands []string
+	oldRunner := remoteSSHCommandRunner
+	remoteSSHCommandRunner = func(_ context.Context, target, script string) (string, error) {
+		if target != "test-ssh" {
+			t.Fatalf("ssh target = %q, want test-ssh", target)
+		}
+		commands = append(commands, script)
+		switch {
+		case strings.Contains(script, "REMOTE_SSH_OK=1"):
+			return "REMOTE_SSH_OK=1\n", nil
+		case strings.Contains(script, "REMOTE_ACTIVE="):
+			return "REMOTE_ACTIVE=0\n", nil
+		case strings.Contains(script, "REMOTE_ALWAYS_ON_RESTARTED=1"):
+			if !strings.Contains(script, "run-remote-child.sh") {
+				t.Fatalf("restart script did not use existing run script: %s", script)
+			}
+			return "REMOTE_ALWAYS_ON_RESTARTED=1\n", nil
+		default:
+			t.Fatalf("unexpected ssh script: %s", script)
+			return "", nil
+		}
+	}
+	defer func() { remoteSSHCommandRunner = oldRunner }()
+
+	if err := svc.ReconcileAlwaysOnRemoteSessions(context.Background()); err != nil {
+		t.Fatalf("ReconcileAlwaysOnRemoteSessions() error = %v", err)
+	}
+	if len(commands) != 3 {
+		t.Fatalf("ssh command count = %d, want 3", len(commands))
+	}
+	updated, ok, err := svc.store.Get(record.ID)
+	if err != nil || !ok {
+		t.Fatalf("get updated remote deploy session ok=%t err=%v", ok, err)
+	}
+	if updated.LastError != "" {
+		t.Fatalf("LastError = %q, want empty", updated.LastError)
+	}
+	if updated.LastProgress != "Remote Always On restarted the remote child container." {
+		t.Fatalf("LastProgress = %q", updated.LastProgress)
+	}
+}
+
+func TestReconcileAlwaysOnRemoteSessionsReportsUnreachableSSHHost(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarmd.pebble"))
+	if err != nil {
+		t.Fatalf("open pebble store: %v", err)
+	}
+	defer store.Close()
+	svc := NewService(pebblestore.NewRemoteDeploySessionStore(store), nil, nil, nil, nil, nil, "", "")
+	record, err := svc.store.Put(pebblestore.RemoteDeploySessionRecord{
+		ID:               "remote-always-on-2",
+		Name:             "remote-always-on-2",
+		Status:           "attached",
+		AlwaysOn:         true,
+		SSHSessionTarget: "offline-ssh",
+		RemoteRoot:       "/tmp/swarm-remote-always-on",
+		RemoteRuntime:    "docker",
+		SSHReachable:     true,
+	})
+	if err != nil {
+		t.Fatalf("put remote deploy session: %v", err)
+	}
+	oldRunner := remoteSSHCommandRunner
+	remoteSSHCommandRunner = func(_ context.Context, target, script string) (string, error) {
+		if target != "offline-ssh" {
+			t.Fatalf("ssh target = %q, want offline-ssh", target)
+		}
+		if !strings.Contains(script, "REMOTE_SSH_OK=1") {
+			t.Fatalf("unexpected script after failed probe: %s", script)
+		}
+		return "", errors.New("connect: no route to host")
+	}
+	defer func() { remoteSSHCommandRunner = oldRunner }()
+
+	err = svc.ReconcileAlwaysOnRemoteSessions(context.Background())
+	if err == nil {
+		t.Fatalf("ReconcileAlwaysOnRemoteSessions() error = nil, want unreachable error")
+	}
+	if !strings.Contains(err.Error(), "remote SSH host offline-ssh is unreachable") {
+		t.Fatalf("error = %q, want explicit SSH unreachable message", err.Error())
+	}
+	updated, ok, err := svc.store.Get(record.ID)
+	if err != nil || !ok {
+		t.Fatalf("get updated remote deploy session ok=%t err=%v", ok, err)
+	}
+	if updated.SSHReachable {
+		t.Fatalf("SSHReachable = true, want false")
+	}
+	if !strings.Contains(updated.LastError, "remote SSH host offline-ssh is unreachable") {
+		t.Fatalf("LastError = %q, want unreachable message", updated.LastError)
 	}
 }
 

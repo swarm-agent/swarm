@@ -55,7 +55,10 @@ const (
 	legacyRemoteCredentialsFileName = "remote-child.credentials.env"
 	remoteContainerRuntimeUID       = "65534"
 	remoteContainerRuntimeGID       = "65534"
+	remoteAlwaysOnPollInterval      = 5 * time.Second
 )
+
+var remoteSSHCommandRunner = runSSHCommand
 
 type ContainerPackageSelection struct {
 	Name   string `json:"name"`
@@ -103,6 +106,11 @@ type StartSessionInput struct {
 	SessionID         string
 	TailscaleAuthKey  string
 	SyncVaultPassword string
+}
+
+type UpdateSettingsInput struct {
+	SessionID string
+	AlwaysOn  *bool
 }
 
 type UpdateJobInput struct {
@@ -402,6 +410,31 @@ func (s *Service) Get(ctx context.Context, sessionID string, refresh bool) (Sess
 	return mapSession(record), nil
 }
 
+func (s *Service) UpdateSettings(ctx context.Context, input UpdateSettingsInput) (Session, error) {
+	if s == nil || s.store == nil {
+		return Session{}, fmt.Errorf("remote deploy service is not configured")
+	}
+	record, ok, err := s.store.Get(input.SessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	if !ok {
+		return Session{}, fmt.Errorf("remote deploy session not found")
+	}
+	if input.AlwaysOn != nil {
+		record.AlwaysOn = *input.AlwaysOn
+	}
+	saved, err := s.store.Put(record)
+	if err != nil {
+		return Session{}, err
+	}
+	if saved.AlwaysOn {
+		refreshed, _ := s.refreshRemoteSessionState(ctx, saved)
+		saved = refreshed
+	}
+	return mapSession(saved), nil
+}
+
 func (s *Service) list(ctx context.Context, refresh bool) ([]Session, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("remote deploy service is not configured")
@@ -437,6 +470,9 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 		return Session{}, fmt.Errorf("ssh_session_target is required")
 	}
 	transportMode := normalizeRemoteTransportMode(input.TransportMode)
+	if transportMode == startupconfig.NetworkModeLAN {
+		return Session{}, fmt.Errorf("LAN/WireGuard remote deploy is disabled; use SSH + Tailscale for remote swarms")
+	}
 	stepStartedAt := time.Now()
 	startupCfg, hostState, err := s.resolveBootstrapContext()
 	logRemoteDeployTiming("create.resolve_bootstrap_context", stepStartedAt, err)
@@ -1594,19 +1630,33 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 	var refreshErr error
 	status := strings.TrimSpace(record.Status)
 	if status == "starting" || status == "auth_required" || status == "waiting_for_approval" || status == "approved" || status == "attached" {
-		if runtimeChanged, err := s.refreshRemoteRuntimeSignals(ctx, &record); err != nil {
-			if firstNonEmpty(strings.TrimSpace(record.LastError), "") != strings.TrimSpace(err.Error()) {
+		alwaysOnChanged := false
+		if changedNow, err := s.reconcileRemoteAlwaysOn(ctx, &record); err != nil {
+			alwaysOnChanged = changedNow
+			if strings.TrimSpace(record.LastError) != strings.TrimSpace(err.Error()) {
 				record.LastError = strings.TrimSpace(err.Error())
 				changed = true
 			}
 			refreshErr = err
-		} else {
-			if runtimeChanged {
-				changed = true
-			}
-			if strings.TrimSpace(record.LastError) != "" {
-				record.LastError = ""
-				changed = true
+		} else if changedNow {
+			alwaysOnChanged = true
+			changed = true
+		}
+		if refreshErr == nil && !alwaysOnChanged {
+			if runtimeChanged, err := s.refreshRemoteRuntimeSignals(ctx, &record); err != nil {
+				if firstNonEmpty(strings.TrimSpace(record.LastError), "") != strings.TrimSpace(err.Error()) {
+					record.LastError = strings.TrimSpace(err.Error())
+					changed = true
+				}
+				refreshErr = err
+			} else {
+				if runtimeChanged {
+					changed = true
+				}
+				if strings.TrimSpace(record.LastError) != "" {
+					record.LastError = ""
+					changed = true
+				}
 			}
 		}
 		if strings.EqualFold(strings.TrimSpace(record.TransportMode), startupconfig.NetworkModeTailscale) {
@@ -1674,6 +1724,132 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 	return record, refreshErr
 }
 
+func (s *Service) RunAlwaysOnReconciliationLoop(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	if err := s.ReconcileAlwaysOnRemoteSessions(ctx); err != nil {
+		log.Printf("warning: remote deploy always-on reconciliation failed: %v", err)
+	}
+	ticker := time.NewTicker(remoteAlwaysOnPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.ReconcileAlwaysOnRemoteSessions(ctx); err != nil {
+				log.Printf("warning: remote deploy always-on reconciliation failed: %v", err)
+			}
+		}
+	}
+}
+
+func (s *Service) ReconcileAlwaysOnRemoteSessions(ctx context.Context) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("remote deploy service is not configured")
+	}
+	records, err := s.store.List(500)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, record := range records {
+		if !remoteAlwaysOnRecordEligible(record) {
+			continue
+		}
+		if _, err := s.refreshRemoteSessionState(ctx, record); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", record.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func remoteAlwaysOnRecordEligible(record pebblestore.RemoteDeploySessionRecord) bool {
+	status := strings.TrimSpace(record.Status)
+	return record.AlwaysOn && strings.TrimSpace(record.SSHSessionTarget) != "" && strings.TrimSpace(record.RemoteRoot) != "" && (status == "attached" || status == "approved" || status == "waiting_for_approval" || status == "auth_required" || status == "starting")
+}
+
+func (s *Service) reconcileRemoteAlwaysOn(ctx context.Context, record *pebblestore.RemoteDeploySessionRecord) (bool, error) {
+	if record == nil {
+		return false, fmt.Errorf("remote deploy record is required")
+	}
+	if !remoteAlwaysOnRecordEligible(*record) {
+		return false, nil
+	}
+	if err := remoteProbeSSHReachable(ctx, *record); err != nil {
+		record.SSHReachable = false
+		return true, fmt.Errorf("remote SSH host %s is unreachable: %w", strings.TrimSpace(record.SSHSessionTarget), err)
+	}
+	changed := false
+	if !record.SSHReachable {
+		record.SSHReachable = true
+		changed = true
+	}
+	active, err := remoteSessionContainerActive(ctx, *record)
+	if err != nil {
+		return changed, err
+	}
+	if active {
+		if strings.TrimSpace(record.LastProgress) == "Remote Always On restarted the remote child container." || strings.Contains(strings.TrimSpace(record.LastError), "remote SSH host") {
+			record.LastProgress = "Remote Always On verified the remote child container is running."
+			changed = true
+		}
+		return changed, nil
+	}
+	if err := restartRemoteSessionContainer(ctx, *record); err != nil {
+		return changed, err
+	}
+	if strings.TrimSpace(record.Status) == "attached" {
+		record.LastProgress = "Remote Always On restarted the remote child container."
+		record.LastError = ""
+		changed = true
+	}
+	return true, nil
+}
+
+func remoteProbeSSHReachable(ctx context.Context, record pebblestore.RemoteDeploySessionRecord) error {
+	_, err := remoteSSHCommandRunner(ctx, record.SSHSessionTarget, "printf 'REMOTE_SSH_OK=1\\n'")
+	return err
+}
+
+func restartRemoteSessionContainer(ctx context.Context, record pebblestore.RemoteDeploySessionRecord) error {
+	startScript := filepath.ToSlash(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "run-remote-child.sh"))
+	pidFile := filepath.ToSlash(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "run-remote-child.pid"))
+	logFile := remoteServiceLogPath(record)
+	useSudo := "0"
+	if strings.TrimSpace(record.SudoMode) == "sudo" {
+		useSudo = "1"
+	}
+	cmd := fmt.Sprintf(`set -eu
+start_script=%s
+pid_file=%s
+log_file=%s
+use_sudo=%s
+if [ ! -x "$start_script" ]; then
+  printf 'REMOTE_ALWAYS_ON_ERROR=start-script-missing\n'
+  exit 1
+fi
+mkdir -p "$(dirname "$log_file")"
+rm -f "$pid_file"
+if [ "$use_sudo" = "1" ]; then
+  nohup sudo -E /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
+else
+  nohup /bin/bash "$start_script" >"$log_file" 2>&1 < /dev/null &
+fi
+echo $! >"$pid_file"
+printf 'REMOTE_ALWAYS_ON_RESTARTED=1\n'
+`, shellQuote(startScript), shellQuote(pidFile), shellQuote(logFile), shellQuote(useSudo))
+	output, err := remoteSSHCommandRunner(ctx, record.SSHSessionTarget, cmd)
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(output, "REMOTE_ALWAYS_ON_RESTARTED=1") {
+		return fmt.Errorf("remote always-on restart on %s did not complete", strings.TrimSpace(record.SSHSessionTarget))
+	}
+	return nil
+}
+
 func (s *Service) refreshRemoteRuntimeSignals(ctx context.Context, record *pebblestore.RemoteDeploySessionRecord) (bool, error) {
 	if record == nil {
 		return false, fmt.Errorf("remote deploy record is required")
@@ -1697,7 +1873,7 @@ else
 fi
 printf '%%s\n' "$logs"
 `, shellQuote(remoteServiceLogPath(*record)), shellQuote(normalizeRemoteDeployRuntime(record.RemoteRuntime)), sudoPrefix, shellQuote(remoteContainerNameForSession(record.ID)), sudoPrefix, shellQuote(remoteContainerNameForSession(record.ID)))
-	output, err := runSSHCommand(ctx, record.SSHSessionTarget, cmd)
+	output, err := remoteSSHCommandRunner(ctx, record.SSHSessionTarget, cmd)
 	if err != nil {
 		return false, err
 	}
@@ -2072,30 +2248,20 @@ func (s *Service) inspectRemoteHost(ctx context.Context, sshTarget, preferredRun
 runtime=%s
 if command -v systemctl >/dev/null 2>&1; then systemd=1; else systemd=0; fi
 sudo_mode="none"
-if command -v sudo >/dev/null 2>&1; then sudo_mode="sudo"; fi
 remote_home="${HOME:-}"
 if [ -z "$remote_home" ]; then remote_home="$(cd && pwd)"; fi
 if [ -z "$remote_home" ] || [ "${remote_home#/}" = "$remote_home" ]; then echo "remote home directory missing" >&2; exit 41; fi
-if [ "$sudo_mode" = "sudo" ]; then
-  runtime_found=0
-  if sudo -n sh -c 'command -v "$1" >/dev/null 2>&1' sh "$runtime"; then runtime_found=1; fi
-  if [ "$runtime_found" != "1" ]; then
-    echo "REMOTE_RUNTIME_MISSING=$runtime"
-    exit 42
+if ! command -v "$runtime" >/dev/null 2>&1; then
+  echo "REMOTE_RUNTIME_MISSING=$runtime"
+  exit 42
+fi
+if ! "$runtime" --version >/dev/null 2>&1 || ! "$runtime" info >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1 && sudo -n sh -c 'command -v "$1" >/dev/null 2>&1 && "$1" --version >/dev/null 2>&1 && "$1" info >/dev/null 2>&1' sh "$runtime"; then
+    echo "REMOTE_RUNTIME_REQUIRES_SUDO=$runtime"
+    exit 44
   fi
-  if ! sudo -n "$runtime" --version >/dev/null 2>&1 || ! sudo -n "$runtime" info >/dev/null 2>&1; then
-    echo "REMOTE_RUNTIME_UNUSABLE=$runtime"
-    exit 43
-  fi
-else
-  if ! command -v "$runtime" >/dev/null 2>&1; then
-    echo "REMOTE_RUNTIME_MISSING=$runtime"
-    exit 42
-  fi
-  if ! "$runtime" --version >/dev/null 2>&1 || ! "$runtime" info >/dev/null 2>&1; then
-    echo "REMOTE_RUNTIME_UNUSABLE=$runtime"
-    exit 43
-  fi
+  echo "REMOTE_RUNTIME_UNUSABLE=$runtime"
+  exit 43
 fi
 remote_available_bytes=""
 if command -v df >/dev/null 2>&1; then
@@ -2140,6 +2306,12 @@ fi
 				runtimeName = selectedRuntime
 			}
 			return "", false, "", "", nil, 0, fmt.Errorf("remote runtime unusable:%s", runtimeName)
+		case strings.Contains(trimmed, "REMOTE_RUNTIME_REQUIRES_SUDO="):
+			runtimeName := strings.TrimSpace(strings.TrimPrefix(lastMatchingLine(trimmed, "REMOTE_RUNTIME_REQUIRES_SUDO="), "REMOTE_RUNTIME_REQUIRES_SUDO="))
+			if runtimeName == "" {
+				runtimeName = selectedRuntime
+			}
+			return "", false, "", "", nil, 0, fmt.Errorf("remote runtime requires sudo:%s", runtimeName)
 		default:
 			return "", false, "", "", nil, 0, err
 		}
@@ -2294,10 +2466,14 @@ func formatCreatePreflightError(sshTarget string, err error) error {
 		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Docker was selected for the remote host, but Docker is not installed there.\n\nWhat to do on the remote host\n- Install Docker.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- apt update\n- apt install -y docker.io\n- systemctl enable --now docker\n- docker --version", target, target)
 	case strings.Contains(lower, "remote runtime missing:podman"):
 		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Podman was selected for the remote host, but Podman is not installed there.\n\nWhat to do on the remote host\n- Install Podman.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- apt update\n- apt install -y podman\n- podman --version", target, target)
+	case strings.Contains(lower, "remote runtime requires sudo:docker"):
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Docker only works through sudo on the remote host.\n- Remote deploy runs as the SSH user and requires non-sudo container runtime access.\n\nWhat to do on the remote host\n- Add the SSH user to the docker group, log out/in, and verify docker works without sudo.\n- Or install/configure rootless Docker or Podman.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- sudo usermod -aG docker $USER\n- exit\n- ssh %s\n- docker ps", target, target, target)
+	case strings.Contains(lower, "remote runtime requires sudo:podman"):
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Podman only works through sudo on the remote host.\n- Remote deploy runs as the SSH user and requires non-sudo container runtime access.\n\nWhat to do on the remote host\n- Configure rootless Podman for the SSH user, or choose Docker with non-sudo access.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- podman info", target, target)
 	case strings.Contains(lower, "remote runtime unusable:docker"):
-		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Docker was selected for the remote host, but Docker could not run successfully there.\n\nWhat to do on the remote host\n- Verify Docker is installed correctly and usable.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- docker --version\n- sudo docker --version", target, target)
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Docker was selected for the remote host, but Docker could not run successfully as the SSH user.\n\nWhat to do on the remote host\n- Verify Docker is installed and usable without sudo.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- docker --version\n- docker ps", target, target)
 	case strings.Contains(lower, "remote runtime unusable:podman"):
-		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Podman was selected for the remote host, but the Podman CLI could not run successfully there.\n\nWhat to do on the remote host\n- Verify Podman is installed correctly and usable.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- podman --version\n- sudo podman --version", target, target)
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Podman was selected for the remote host, but the Podman CLI could not run successfully as the SSH user.\n\nWhat to do on the remote host\n- Verify rootless Podman is installed and usable.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- podman --version\n- podman info", target, target)
 	case strings.Contains(lower, "remote runtime missing"):
 		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- No supported container runtime was found on the remote host.\n\nWhat to do on the remote host\n- Install Docker or Podman.\n- Then rerun preflight.\n\nSuggested commands (Debian/Ubuntu)\n- ssh %s\n- apt update\n- apt install -y docker.io\n- systemctl enable --now docker\n- docker --version\n\nAlternative\n- apt install -y podman\n- podman --version", target, target)
 	case strings.Contains(lower, "target remote path already exists:"):
@@ -2585,7 +2761,7 @@ func (s *Service) startRemoteBundle(ctx context.Context, record *pebblestore.Rem
 	if err != nil {
 		return "", "", "", err
 	}
-	output, err = runSSHCommand(ctx, record.SSHSessionTarget, cmd)
+	output, err = remoteSSHCommandRunner(ctx, record.SSHSessionTarget, cmd)
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
@@ -3044,7 +3220,7 @@ else
   printf 'REMOTE_ACTIVE=0\n'
 fi
 `, shellQuote(normalizeRemoteDeployRuntime(record.RemoteRuntime)), shellQuote(containerName), shellQuote(map[bool]string{true: "1", false: "0"}[strings.TrimSpace(record.SudoMode) == "sudo"]))
-	output, err := runSSHCommand(ctx, record.SSHSessionTarget, cmd)
+	output, err := remoteSSHCommandRunner(ctx, record.SSHSessionTarget, cmd)
 	if err != nil {
 		return false, err
 	}
@@ -3059,7 +3235,7 @@ fi
 
 func runRemoteDevReplacement(ctx context.Context, record pebblestore.RemoteDeploySessionRecord, runtimeArtifact remoteRuntimeArtifact) (remoteDevReplacementResult, error) {
 	cmd := remoteDevReplacementScript(record, runtimeArtifact)
-	output, err := runSSHCommand(ctx, record.SSHSessionTarget, cmd)
+	output, err := remoteSSHCommandRunner(ctx, record.SSHSessionTarget, cmd)
 	result := parseRemoteDevReplacementOutput(output)
 	if err != nil {
 		if result.Error == "" {
@@ -4993,7 +5169,7 @@ mkdir -p "$remote_root" "$config_home/swarm" "$state_root" "$tailscale_state_dir
 as_root chown -R 65534:65534 "$config_home" "$remote_root/xdg" "$swarmd_state_dir" >/dev/null 2>&1 || true
 as_root chmod 0755 "$remote_root" "$state_root" "$remote_root/xdg" "$remote_root/xdg/data" "$remote_root/xdg/state" >/dev/null 2>&1 || true
 as_root chmod 0700 "$config_home" "$config_home/swarm" "$swarmd_state_dir" >/dev/null 2>&1 || true
-if [ ! -f "$config_home/swarm/swarm.conf" ]; then
+if ! as_root test -f "$config_home/swarm/swarm.conf"; then
   echo "remote startup config missing: $config_home/swarm/swarm.conf" >&2
   exit 1
 fi
@@ -5214,22 +5390,31 @@ func remoteBundleStartScript(record *pebblestore.RemoteDeploySessionRecord, chil
 	var builder strings.Builder
 	builder.WriteString("set -euo pipefail\n")
 	builder.WriteString("umask 077\n")
-	builder.WriteString("trap 'rm -f \"$installer_path\" \"$legacy_credentials_file\"' EXIT\n")
+	builder.WriteString("trap 'rm -f \"$installer_path\" \"$legacy_credentials_file\" \"${config_tmp:-}\" \"${bootstrap_secret_tmp:-}\"' EXIT\n")
 	builder.WriteString(fmt.Sprintf("remote_dir=%s\n", shellQuote(remoteDir)))
 	builder.WriteString(fmt.Sprintf("config_path=%s\n", shellQuote(remoteStartupConfigPath(*record))))
 	builder.WriteString(fmt.Sprintf("bootstrap_secret_path=%s\n", shellQuote(remoteBootstrapSecretPath(*record))))
 	builder.WriteString(fmt.Sprintf("installer_path=%s\n", shellQuote(filepath.ToSlash(filepath.Join(remoteDir, "install-remote-child.sh")))))
 	builder.WriteString(fmt.Sprintf("legacy_credentials_file=%s\n", shellQuote(legacyCredentialsPath)))
-	builder.WriteString("mkdir -p \"$remote_dir\" \"$(dirname \"$config_path\")\"\n")
+	builder.WriteString(fmt.Sprintf("use_sudo=%s\n", shellQuote(map[bool]string{true: "1", false: "0"}[strings.TrimSpace(record.SudoMode) == "sudo"])))
+	builder.WriteString("as_root() { if [ \"$use_sudo\" = \"1\" ]; then sudo \"$@\"; else \"$@\"; fi; }\n")
+	builder.WriteString("mkdir -p \"$remote_dir\"\n")
+	builder.WriteString("as_root mkdir -p \"$(dirname \"$config_path\")\"\n")
 	builder.WriteString("rm -f \"$legacy_credentials_file\"\n")
-	builder.WriteString("cat > \"$config_path\" <<'SWARM_REMOTE_CONFIG_EOF'\n")
+	builder.WriteString("config_tmp=\"$remote_dir/.swarm.conf.$$\"\n")
+	builder.WriteString("cat > \"$config_tmp\" <<'SWARM_REMOTE_CONFIG_EOF'\n")
 	builder.WriteString(childCfgText)
 	builder.WriteString("\nSWARM_REMOTE_CONFIG_EOF\n")
-	builder.WriteString("chmod 0600 \"$config_path\"\n")
-	builder.WriteString("cat > \"$bootstrap_secret_path\" <<'SWARM_REMOTE_SECRET_EOF'\n")
+	builder.WriteString("chmod 0600 \"$config_tmp\"\n")
+	builder.WriteString("as_root install -m 0600 \"$config_tmp\" \"$config_path\"\n")
+	builder.WriteString("rm -f \"$config_tmp\"\n")
+	builder.WriteString("bootstrap_secret_tmp=\"$remote_dir/.remote-deploy-bootstrap.secret.$$\"\n")
+	builder.WriteString("cat > \"$bootstrap_secret_tmp\" <<'SWARM_REMOTE_SECRET_EOF'\n")
 	builder.WriteString(bootstrapSecretText)
 	builder.WriteString("\nSWARM_REMOTE_SECRET_EOF\n")
-	builder.WriteString("chmod 0600 \"$bootstrap_secret_path\"\n")
+	builder.WriteString("chmod 0600 \"$bootstrap_secret_tmp\"\n")
+	builder.WriteString("as_root install -m 0600 \"$bootstrap_secret_tmp\" \"$bootstrap_secret_path\"\n")
+	builder.WriteString("rm -f \"$bootstrap_secret_tmp\"\n")
 	builder.WriteString("cat > \"$installer_path\" <<'SWARM_REMOTE_INSTALL_EOF'\n")
 	builder.WriteString(installerScript)
 	builder.WriteString("\nSWARM_REMOTE_INSTALL_EOF\n")

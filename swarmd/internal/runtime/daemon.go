@@ -658,6 +658,9 @@ func (d *Daemon) Run() error {
 		go d.deployContainers.RunLocalDeploymentReconciliationLoop(d.bgCtx)
 		go d.deployContainers.RunManagedCredentialSyncLoop(d.bgCtx)
 	}
+	if d.remoteDeploys != nil {
+		go d.remoteDeploys.RunAlwaysOnReconciliationLoop(d.bgCtx)
+	}
 	return d.waitForShutdown()
 }
 

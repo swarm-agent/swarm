@@ -16,6 +16,7 @@ import {
   fetchRemoteDeploySession,
   fetchRemoteDeploySessions,
   startRemoteDeploySession,
+  updateRemoteDeploySessionSettings,
   suggestDeployContainerPackages,
   validateDeployContainerPackage,
   type DeployContainerPackageSelection,
@@ -903,7 +904,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       const session = await createRemoteDeploySession({
         name: swarmName.trim(),
         sshSessionTarget: remoteSSHTarget.trim(),
-        transportMode: remoteDeployMethod,
+        transportMode: 'tailscale',
         remoteAdvertiseHost: remoteDeployMethod === 'lan' ? remoteReachableHost.trim() : '',
         groupID: group.group.id,
         groupName: group.group.name,
@@ -1101,7 +1102,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         `Builder runtime: ${session.preflight.builder_runtime || 'unknown'}`,
         `Remote runtime: ${session.preflight.remote_runtime || 'unknown'}`,
         `Deploy method: ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim()}`}`,
-        `Always On: ${alwaysOn ? 'enabled (restart attached child on host startup)' : 'disabled (manual start)'}`,
+        `Always On: ${alwaysOn ? 'enabled (master will probe over SSH and restart the remote child while this master is running)' : 'disabled (manual start)'}`,
         `Files copied: ${(session.preflight.files_to_copy || []).join(', ') || 'none'}`,
         `Payloads: ${(session.preflight.payloads || []).map((payload) => `${payload.workspace_name || payload.source_path} (${payload.included_files} tracked files)`).join('; ') || 'none'}`,
         ...(remoteDeployMethod === 'tailscale'
@@ -1116,8 +1117,8 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           : `This will deliver generated config/install/start content over SSH stdin${selectedRemotePayloads.length > 0 ? ' and copy selected payload archives over SSH' : ''}, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
         `The remote child will be launched there and configured to connect back to this master over the master's ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : 'LAN / WireGuard'} endpoint.`,
         alwaysOn
-          ? 'Always On is recorded for this child; the host will restart attached local children on Swarm startup. Remote machine boot persistence still depends on the remote owner.'
-          : 'Always On is off; reboot/startup recovery will not automatically restart this child.',
+          ? 'Always On is recorded for this remote child; while this master is running it will probe SSH reachability and restart the remote container if it stops. It does not install remote boot persistence.'
+          : 'Always On is off; this master will not automatically restart the remote child.',
         '',
         'Continue with SSH launch?'
       ].join('\n'))
@@ -1184,6 +1185,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
       setStatus(`Remote child ${currentSession.name} is waiting for approval on the main swarm…`)
       currentSession = await approveRemoteDeploySession(currentSession.id)
+      if (currentSession.always_on !== alwaysOn) {
+        currentSession = await updateRemoteDeploySessionSettings({ id: currentSession.id, alwaysOn })
+      }
       await refreshRemoteSessions({ sessionID: currentSession.id })
       await finishSuccess(`Added remote child ${currentSession.name} to the swarm.`)
     } catch (err) {
@@ -1617,11 +1621,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       title: 'SSH + Tailscale',
                       text: 'Prepare the SSH/Tailscale remote image here, then the child calls back over the master tailnet URL.',
                     },
-                    {
-                      id: 'lan' as const,
-                      title: 'SSH + LAN / WireGuard',
-                      text: 'Prepare the SSH/LAN remote image here, then the child calls back over a reachable host or private IP.',
-                    },
                   ].map((option) => (
                     <button
                       key={option.id}
@@ -1782,9 +1781,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <div className="font-medium text-[var(--app-text)]">Preflight summary shown before execution</div>
                   <ul className="mt-3 list-disc space-y-2 pl-5">
                     <li>This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server as payload archives.</li>
-                    <li>This will also have the remote host pull the published Swarm remote image for the selected SSH transport when that image is not already present there.</li>
+                    <li>This will also have the remote host pull the published SSH + Tailscale Swarm remote image when that image is not already present there.</li>
                     <li>The remote install path copies: rendered <code>swarm.conf</code>, installer script, and Git-tracked workspace payload archives.</li>
-                    <li>The launched remote child is configured to call back to this master over the selected transport endpoint.</li>
+                    <li>The launched remote child is configured to call back to this master over Tailscale.</li>
                     <li>Persistence is not installed by Swarm in this path. Reboot survival is up to the remote machine owner.</li>
                     <li>Attach flow: remote child must come back over the selected transport, then you explicitly approve it here.</li>
                   </ul>
@@ -1851,7 +1850,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                   <div>
                     <div className="text-sm font-semibold text-[var(--app-text)]">Always On</div>
                     <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {alwaysOn ? 'Restart attached children on host startup.' : 'Manual start after host restart.'}
+                      {launchTarget === 'remote'
+                        ? (alwaysOn ? 'Master probes SSH and restarts the remote child while running.' : 'Manual remote restart if the child stops.')
+                        : (alwaysOn ? 'Restart attached children on host startup.' : 'Manual start after host restart.')}
                     </div>
                   </div>
                   {alwaysOn ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}

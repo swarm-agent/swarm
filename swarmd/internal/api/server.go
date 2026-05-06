@@ -186,6 +186,7 @@ type remoteDeployService interface {
 	ListCached(ctx context.Context) ([]remotedeploy.Session, error)
 	Get(ctx context.Context, sessionID string, refresh bool) (remotedeploy.Session, error)
 	Create(ctx context.Context, input remotedeploy.CreateSessionInput) (remotedeploy.Session, error)
+	UpdateSettings(ctx context.Context, input remotedeploy.UpdateSettingsInput) (remotedeploy.Session, error)
 	Delete(ctx context.Context, input remotedeploy.DeleteSessionInput) (localcontainers.DeleteResult, error)
 	Start(ctx context.Context, input remotedeploy.StartSessionInput) (remotedeploy.Session, error)
 	RunUpdateJob(ctx context.Context, input remotedeploy.UpdateJobInput) (remotedeploy.UpdateJobResult, error)
