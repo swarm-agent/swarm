@@ -136,6 +136,17 @@ func TestWritePrivateFileUses0600(t *testing.T) {
 	assertMode(t, filePath, PrivateFilePerm)
 }
 
+func TestTempDirUsesCacheRoot(t *testing.T) {
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("CACHE_DIRECTORY", cacheRoot)
+	path, err := TempDir("unit-*", "remote-deploy")
+	if err != nil {
+		t.Fatalf("TempDir: %v", err)
+	}
+	defer os.RemoveAll(path)
+	assertPathUnder(t, path, filepath.Join(cacheRoot, "tmp", "remote-deploy"))
+}
+
 func TestPathPartsCannotEscapeAppDirectory(t *testing.T) {
 	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
 	if _, err := CacheDir("workspaces", "..", "escape"); err == nil {

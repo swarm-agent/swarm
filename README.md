@@ -152,11 +152,23 @@ SWARMD_URL=http://127.0.0.1:7782 SWARMD_TOKEN=<token> swarm dev
 
 ## Data and configuration locations
 
-Swarm uses system locations:
+Swarm uses system locations for Swarm-owned daemon state. By default it does not write daemon databases, secrets, runtime files, logs, caches, generated artifacts, downloads, reports, or worktrees under a user home directory, XDG user directory, repository checkout, or current working directory.
+
+Linux defaults:
 
 - `/usr/local/bin` for launchers.
 - `/usr/local/share/swarm/{bin,libexec,lib,share}` for runtime files.
-- `/etc/swarmd`, `/var/lib/swarmd`, `/run/swarmd`, and `/var/log/swarmd` for daemon configuration, data, runtime files, and logs.
+- `/etc/swarmd` for daemon and startup configuration.
+- `/var/lib/swarmd` for daemon data, databases, secrets, generated artifacts, reports, worktrees, and remote-deploy session data.
+- `/var/cache/swarmd` for daemon caches.
+- `/run/swarmd` for volatile runtime files, sockets, locks, and PID files.
+- `/var/log/swarmd` for logs and diagnostic artifacts.
+
+Remote deploy and container sessions use the same split-root model. Remote deploy session data lives under `/var/lib/swarmd/remote-deploy/<session>`, configuration under `/etc/swarmd/remote-deploy/<session>`, cache under `/var/cache/swarmd/remote-deploy/<session>`, runtime files under `/run/swarmd/remote-deploy/<session>`, and logs under `/var/log/swarmd/remote-deploy/<session>`.
+
+macOS support is not yet the primary installer target, but the storage contract is prepared for system-level locations: `/Library/Application Support/Swarm/swarmd` for data, `/Library/Application Support/Swarm/swarmd/config` for configuration, `/Library/Caches/Swarm/swarmd`, `/var/run/swarmd`, and `/Library/Logs/Swarm/swarmd`. Future macOS installer work should provision those system roots rather than user `~/Library` locations.
+
+Swarm intentionally does not silently migrate or reuse legacy home/XDG/workspace daemon data. If legacy startup config or secrets are detected, startup stops with a diagnostic telling you which legacy path exists and which system path is expected. Move data only after an explicit backup and operator-controlled migration.
 
 UI settings are persisted through the daemon-backed `/v1/ui/settings` API. Current settings include chat header visibility, thinking tags, tool stream display, mouse capture, keybinds, theme selection, custom themes, and swarm display metadata.
 

@@ -73,6 +73,15 @@ func WorkspaceDataDir(workspacePath string, parts ...string) (string, error) {
 	return DataDir(append([]string{WorkspacesDir, bucket}, parts...)...)
 }
 
+// TempDir returns a private disposable directory under the canonical daemon cache root.
+func TempDir(pattern string, parts ...string) (string, error) {
+	base, err := CacheDir(append([]string{"tmp"}, parts...)...)
+	if err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(base, pattern)
+}
+
 // WorkspaceCacheDir returns a private cache directory for disposable artifacts owned by a workspace.
 func WorkspaceCacheDir(workspacePath string, parts ...string) (string, error) {
 	bucket, err := WorkspaceBucketName(workspacePath)

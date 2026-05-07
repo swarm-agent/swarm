@@ -58,6 +58,7 @@ if ! rg -q '^## 4\. Safe Throwaway / Scratch Locations$' "${ROOT_DIR}/AGENTS.md"
 fi
 
 "${SCRIPT_DIR}/check-hardcoded-paths.sh"
+"${SCRIPT_DIR}/check-daemon-storage-paths.sh" --self-test
 "${SCRIPT_DIR}/check-secrets.sh"
 "${SCRIPT_DIR}/check-hidden-text.sh"
 bash "${SCRIPT_DIR}/check-policy-guardrails.sh"

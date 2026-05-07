@@ -898,7 +898,7 @@ func (s *Service) Start(ctx context.Context, input StartSessionInput) (Session, 
 		appendRemoteDeployStartTiming(&record, "start.skip_invite", stepStartedAt, nil, "session_id", record.ID, "transport_mode", record.TransportMode)
 	}
 	childCfgText := s.renderChildStartupConfig(record, startupCfg, hostState)
-	workDir, err := os.MkdirTemp("", "swarm-remote-deploy-")
+	workDir, err := appstorage.TempDir("swarm-remote-deploy-*", "remote-deploy", "bundles")
 	if err != nil {
 		return s.failRemoteDeployStart(record, err)
 	}
@@ -3584,7 +3584,7 @@ func (s *Service) copyRemoteRuntimeMountArchive(ctx context.Context, runtimeArti
 	if err != nil {
 		return err
 	}
-	tempDir, err := os.MkdirTemp("", "swarm-remote-runtime-mount-")
+	tempDir, err := appstorage.TempDir("swarm-remote-runtime-mount-*", "remote-deploy", "runtime-mounts")
 	if err != nil {
 		return err
 	}
