@@ -11,6 +11,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"swarm-refactor/swarmtui/pkg/storagecontract"
+	"swarm/packages/swarmd/internal/appstorage"
 )
 
 const managedSkillsDirName = "managed/skills"
@@ -36,15 +39,21 @@ type ManagedSkillBundle struct {
 }
 
 func ManagedSkillsDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	swarmConfig, err := managedSwarmConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve user home: %w", err)
-	}
-	swarmConfig := strings.TrimSpace(os.Getenv("SWARM_CONFIG"))
-	if swarmConfig == "" {
-		swarmConfig = filepath.Join(homeDir, ".config", "swarm")
+		return "", err
 	}
 	return filepath.Join(swarmConfig, managedSkillsDirName), nil
+}
+
+func managedSwarmConfigDir() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("SWARM_CONFIG")); override != "" {
+		if err := storagecontract.ValidateRoot(override, storagecontract.Options{}); err != nil {
+			return "", fmt.Errorf("invalid SWARM_CONFIG %q: %w", override, err)
+		}
+		return filepath.Clean(override), nil
+	}
+	return appstorage.DataDir("config")
 }
 
 func (s *Service) ExportManagedSkillBundle() (ManagedSkillBundle, error) {

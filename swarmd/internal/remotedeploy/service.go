@@ -27,6 +27,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/buildinfo"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/appstorage"
 	authruntime "swarm/packages/swarmd/internal/auth"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
@@ -4484,11 +4485,11 @@ func resolveRemoteDeployBuildRoot(startupCWD string) (string, error) {
 }
 
 func remoteDeployCacheRoot() (string, error) {
-	cacheRoot, err := os.UserCacheDir()
+	cacheRoot, err := appstorage.CacheDir("remote-deploy")
 	if err != nil {
-		return "", fmt.Errorf("resolve user cache dir: %w", err)
+		return "", fmt.Errorf("resolve remote deploy cache root: %w", err)
 	}
-	return filepath.Join(cacheRoot, "swarm", "remote-deploy"), nil
+	return cacheRoot, nil
 }
 
 func exportRemoteImageArchive(ctx context.Context, runtimeName, imageRef, destPath string) error {

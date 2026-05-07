@@ -145,12 +145,6 @@ func (a *whisperLocalAdapter) resolveWhisperBin(options map[string]string) (stri
 	if env := strings.TrimSpace(os.Getenv("SWARMD_WHISPER_BIN")); env != "" {
 		candidates = append(candidates, env)
 	}
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		candidates = append(candidates, filepath.Join(home, "whisper.cpp", "build", "bin", "whisper-cli"))
-	}
-	if cacheHome := resolveXDGCacheHome(); cacheHome != "" {
-		candidates = append(candidates, filepath.Join(cacheHome, "swarm", "whisper.cpp", "build", "bin", "whisper-cli"))
-	}
 	candidates = append(candidates, "whisper-cli", "whisper-cpp")
 
 	for _, candidate := range candidates {
@@ -274,33 +268,7 @@ func (a *whisperLocalAdapter) modelDirs(options map[string]string) []string {
 }
 
 func defaultWhisperModelDir() string {
-	dataHome := resolveXDGDataHome()
-	if dataHome == "" {
-		return ""
-	}
-	return filepath.Join(dataHome, "swarm", "models", "whisper.cpp")
-}
-
-func resolveXDGDataHome() string {
-	if override := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); override != "" {
-		return filepath.Clean(override)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return ""
-	}
-	return filepath.Join(home, ".local", "share")
-}
-
-func resolveXDGCacheHome() string {
-	if override := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME")); override != "" {
-		return filepath.Clean(override)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return ""
-	}
-	return filepath.Join(home, ".cache")
+	return ""
 }
 
 func summarizeWhisperError(err error, stderr string) string {

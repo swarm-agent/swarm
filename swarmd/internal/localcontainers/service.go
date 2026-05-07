@@ -2626,12 +2626,6 @@ func CurrentRuntimeMount() *RuntimeMount {
 	if override := strings.TrimSpace(os.Getenv("SWARM_SHARED_RUNTIME_ROOT")); override != "" {
 		appendRoot(override)
 	}
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		appendRoot(filepath.Join(home, ".local", "share", "swarm"))
-	}
-	if dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dataHome != "" {
-		appendRoot(filepath.Join(dataHome, "swarm"))
-	}
 	if repoRoot, _, err := resolveCanonicalRebuildScript(); err == nil {
 		repoMount := normalizeRuntimeMount(&RuntimeMount{
 			BinDir:     filepath.Join(repoRoot, ".bin", "main"),

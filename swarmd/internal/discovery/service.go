@@ -105,13 +105,9 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 	if err != nil {
 		return Report{}, err
 	}
-	homeDir, err := os.UserHomeDir()
+	swarmConfig, err := managedSwarmConfigDir()
 	if err != nil {
-		return Report{}, fmt.Errorf("resolve user home: %w", err)
-	}
-	swarmConfig := strings.TrimSpace(os.Getenv("SWARM_CONFIG"))
-	if swarmConfig == "" {
-		swarmConfig = filepath.Join(homeDir, ".config", "swarm")
+		return Report{}, err
 	}
 
 	report := Report{
@@ -161,9 +157,8 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 		}
 	}
 
-	// User-level defaults.
-	appendRule(filepath.Join(homeDir, ".claude", "CLAUDE.md"), "user-local", "claude-user-default", precedenceUserLocal)
-	appendRule(filepath.Join(swarmConfig, "AGENTS.md"), "user-local", "swarm-user-default", precedenceUserLocal)
+	// Swarm-managed daemon defaults.
+	appendRule(filepath.Join(swarmConfig, "AGENTS.md"), "managed", "swarm-managed-default", precedenceGlobalCompatible)
 
 	// Cursor rule files become explicit rule sources.
 	for _, root := range scopeRoots {
@@ -179,9 +174,7 @@ func (s *Service) ScanScope(primaryPath string, roots []string) (Report, error) 
 		invalidSkills = append(invalidSkills, invalid...)
 	}
 	appendSkillScan(filepath.Join(swarmConfig, managedSkillsDirName), "managed", "swarm-managed-skills", precedenceGlobalCompatible)
-	appendSkillScan(filepath.Join(swarmConfig, "skills"), "user-local", "swarm-user-skills", precedenceUserLocal)
-	appendSkillScan(filepath.Join(homeDir, ".agents", "skills"), "global-compatible", "agents-global-skills", precedenceGlobalCompatible)
-	appendSkillScan(filepath.Join(homeDir, ".claude", "skills"), "user-local", "claude-user-skills", precedenceUserLocal)
+	appendSkillScan(filepath.Join(swarmConfig, "skills"), "managed", "swarm-managed-config-skills", precedenceGlobalCompatible)
 	for _, root := range scopeRoots {
 		appendSkillScan(filepath.Join(root, ".agents", "skills"), "workspace-local", "agents-project-skills", precedenceWorkspaceLocal)
 		appendSkillScan(filepath.Join(root, ".swarm", "skills"), "workspace-local", "swarm-project-skills", precedenceWorkspaceLocal)
