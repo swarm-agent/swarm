@@ -16,6 +16,9 @@ If a rule below conflicts with convenience, the rule wins.
   - No machine-specific hostnames, tokens, or private internal URLs unless they are intentional public product defaults.
 - Never hardcode local paths in runtime code, scripts, tests, or docs.
   - Use XDG-aware paths, `os.UserHomeDir`, `filepath.Join`, `filepath.Clean`, `filepath.Abs`, `mktemp`, and `os.MkdirTemp` as appropriate.
+- Never invent or relocate product/runtime state into local storage paths such as `~/.local`, `.local`, or ad-hoc "local" directories unless the user explicitly asks for that exact storage model or the checked-in product design already requires it.
+  - Preserve the canonical storage path for each flow. If the intended path is unclear, stop and verify from code, harnesses, or the user instead of choosing a convenient local path.
+  - For remote deploy, do not replace the intended remote state path with a local/user-home path as a workaround.
 - Never add silent fallback behavior that hides real failures.
   - Fail clearly and explain what is missing.
 - Never keep two behavior paths when one canonical path should exist.
