@@ -351,7 +351,7 @@ func (f fakeWorkspaceBootstrapSwarmService) PrepareRemoteBootstrapParentPeer(inp
 	return nil
 }
 
-func (f fakeWorkspaceBootstrapSwarmService) FinalizeRemoteBootstrapChildPairing(input swarmruntime.FinalizeRemoteBootstrapChildPairingInput) (swarmruntime.PairingState, error) {
+func (f fakeWorkspaceBootstrapSwarmService) ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
 	return swarmruntime.PairingState{}, nil
 }
 

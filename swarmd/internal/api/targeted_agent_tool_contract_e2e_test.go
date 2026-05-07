@@ -449,7 +449,7 @@ func (f fakeAgentAPISwarmService) DecideEnrollment(input swarmruntime.DecideEnro
 func (f fakeAgentAPISwarmService) PrepareRemoteBootstrapParentPeer(input swarmruntime.PrepareRemoteBootstrapParentPeerInput) error {
 	return nil
 }
-func (f fakeAgentAPISwarmService) FinalizeRemoteBootstrapChildPairing(input swarmruntime.FinalizeRemoteBootstrapChildPairingInput) (swarmruntime.PairingState, error) {
+func (f fakeAgentAPISwarmService) ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
 	return swarmruntime.PairingState{}, nil
 }
 func (f fakeAgentAPISwarmService) UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {

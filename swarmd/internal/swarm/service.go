@@ -22,6 +22,10 @@ const (
 	EnrollmentStatusApproved = "approved"
 	EnrollmentStatusRejected = "rejected"
 
+	RelationshipManager = "manager"
+	RelationshipManaged = "managed"
+
+	// Legacy relationship constants are kept as aliases for existing stored records.
 	RelationshipParent = "parent"
 	RelationshipChild  = "child"
 
@@ -142,6 +146,7 @@ type CreateInviteInput struct {
 	TransportMode        string
 	RendezvousTransports []TransportSummary
 	TTL                  time.Duration
+	Token                string
 }
 
 type EnsureInviteInput struct {
@@ -184,11 +189,11 @@ type PrepareRemoteBootstrapParentPeerInput struct {
 	IncomingPeerAuthToken string
 }
 
-type FinalizeRemoteBootstrapChildPairingInput struct {
-	ParentSwarmID        string
-	ParentName           string
-	ParentPublicKey      string
-	ParentFingerprint    string
+type ApproveManagedPairingInput struct {
+	ManagerSwarmID       string
+	ManagerName          string
+	ManagerPublicKey     string
+	ManagerFingerprint   string
 	TransportMode        string
 	RendezvousTransports []TransportSummary
 }
@@ -282,11 +287,11 @@ func (s *Service) PrepareRemoteBootstrapParentPeer(input PrepareRemoteBootstrapP
 	}
 	_, err = s.store.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{
 		SwarmID:               parentSwarmID,
-		Name:                  firstNonEmpty(strings.TrimSpace(input.ParentName), existing.Name, "Primary"),
-		Role:                  firstNonEmpty(existing.Role, bootstrapRoleMaster),
+		Name:                  firstNonEmpty(strings.TrimSpace(input.ParentName), existing.Name, "Manager"),
+		Role:                  firstNonEmpty(existing.Role, "manager"),
 		PublicKey:             firstNonEmpty(strings.TrimSpace(input.ParentPublicKey), existing.PublicKey),
 		Fingerprint:           firstNonEmpty(strings.TrimSpace(input.ParentFingerprint), existing.Fingerprint),
-		Relationship:          RelationshipParent,
+		Relationship:          RelationshipManager,
 		ParentSwarmID:         "",
 		TransportMode:         firstNonEmpty(strings.TrimSpace(input.TransportMode), existing.TransportMode, startupconfig.NetworkModeTailscale),
 		RendezvousTransports:  transports,
@@ -297,19 +302,19 @@ func (s *Service) PrepareRemoteBootstrapParentPeer(input PrepareRemoteBootstrapP
 	return err
 }
 
-func (s *Service) FinalizeRemoteBootstrapChildPairing(input FinalizeRemoteBootstrapChildPairingInput) (PairingState, error) {
+func (s *Service) ApproveManagedPairing(input ApproveManagedPairingInput) (PairingState, error) {
 	if s == nil || s.store == nil {
 		return PairingState{}, errors.New("swarm service is not configured")
 	}
-	parentSwarmID := strings.TrimSpace(input.ParentSwarmID)
-	if parentSwarmID == "" {
-		return PairingState{}, errors.New("parent swarm id is required")
+	managerSwarmID := strings.TrimSpace(input.ManagerSwarmID)
+	if managerSwarmID == "" {
+		return PairingState{}, errors.New("manager swarm id is required")
 	}
 	if err := s.PrepareRemoteBootstrapParentPeer(PrepareRemoteBootstrapParentPeerInput{
-		ParentSwarmID:        parentSwarmID,
-		ParentName:           input.ParentName,
-		ParentPublicKey:      input.ParentPublicKey,
-		ParentFingerprint:    input.ParentFingerprint,
+		ParentSwarmID:        managerSwarmID,
+		ParentName:           input.ManagerName,
+		ParentPublicKey:      input.ManagerPublicKey,
+		ParentFingerprint:    input.ManagerFingerprint,
 		TransportMode:        input.TransportMode,
 		RendezvousTransports: input.RendezvousTransports,
 	}); err != nil {
@@ -323,8 +328,8 @@ func (s *Service) FinalizeRemoteBootstrapChildPairing(input FinalizeRemoteBootst
 		record = pebblestore.SwarmLocalPairingRecord{}
 	}
 	record.PairingState = startupconfig.PairingStatePaired
-	record.ParentSwarmID = parentSwarmID
-	record.LastUpdatedByRole = bootstrapRoleChild
+	record.ParentSwarmID = managerSwarmID
+	record.LastUpdatedByRole = "managed"
 	if transports := toStoreTransports(input.RendezvousTransports); len(transports) > 0 {
 		record.RendezvousTransports = transports
 	}
@@ -456,7 +461,7 @@ func (s *Service) CreateInvite(input CreateInviteInput) (Invite, error) {
 	if s == nil || s.store == nil {
 		return Invite{}, errors.New("swarm service is not configured")
 	}
-	record, err := s.buildInviteRecord(strings.TrimSpace(input.PrimarySwarmID), strings.TrimSpace(input.PrimaryName), strings.TrimSpace(input.GroupID), strings.TrimSpace(input.TransportMode), input.RendezvousTransports, input.TTL, "")
+	record, err := s.buildInviteRecord(strings.TrimSpace(input.PrimarySwarmID), strings.TrimSpace(input.PrimaryName), strings.TrimSpace(input.GroupID), strings.TrimSpace(input.TransportMode), input.RendezvousTransports, input.TTL, strings.TrimSpace(input.Token))
 	if err != nil {
 		return Invite{}, err
 	}
@@ -715,7 +720,7 @@ func (s *Service) DecideEnrollment(input DecideEnrollmentInput) (Enrollment, []T
 			SwarmID:              record.PrimarySwarmID,
 			Name:                 "Primary",
 			Role:                 bootstrapRoleMaster,
-			Relationship:         RelationshipParent,
+			Relationship:         RelationshipManager,
 			ParentSwarmID:        "",
 			TransportMode:        record.TransportMode,
 			RendezvousTransports: toStoreTransports(fromStoreTransports(record.RendezvousTransports)),
@@ -730,7 +735,7 @@ func (s *Service) DecideEnrollment(input DecideEnrollmentInput) (Enrollment, []T
 			Role:                 record.ChildRole,
 			PublicKey:            record.ChildPublicKey,
 			Fingerprint:          record.ChildFingerprint,
-			Relationship:         RelationshipChild,
+			Relationship:         RelationshipManaged,
 			ParentSwarmID:        record.PrimarySwarmID,
 			TransportMode:        record.TransportMode,
 			RendezvousTransports: record.RendezvousTransports,

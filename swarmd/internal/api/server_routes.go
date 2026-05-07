@@ -40,6 +40,7 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/remote-pairing/offer", s.handleSwarmRemotePairingOffer)
 	mux.HandleFunc("/v1/swarm/remote-pairing/request", s.handleSwarmRemotePairingRequest)
 	mux.HandleFunc("/v1/swarm/remote-pairing/finalize", s.handleSwarmRemotePairingFinalize)
+	mux.HandleFunc("/v1/swarm/remote-pairing/approve", s.handleSwarmRemotePairingApprove)
 	mux.HandleFunc("/v1/swarm/enroll", s.handleSwarmEnroll)
 	mux.HandleFunc("/v1/swarm/pending-children", s.handleSwarmPendingChildren)
 	mux.HandleFunc("/v1/swarm/enrollment/", s.handleSwarmEnrollmentDecision)

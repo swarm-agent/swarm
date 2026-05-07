@@ -445,7 +445,7 @@ func (f fakeReplicateSwarmService) PrepareRemoteBootstrapParentPeer(swarmruntime
 	return nil
 }
 
-func (f fakeReplicateSwarmService) FinalizeRemoteBootstrapChildPairing(swarmruntime.FinalizeRemoteBootstrapChildPairingInput) (swarmruntime.PairingState, error) {
+func (f fakeReplicateSwarmService) ApproveManagedPairing(swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
 	return swarmruntime.PairingState{}, nil
 }
 

@@ -332,7 +332,11 @@ func TestSwarmEnrollRejectsMissingInviteTokenAndAttachToken(t *testing.T) {
 func TestSwarmRemotePairingRequestAllowsInviteTokenWithoutAttachToken(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
-		cfg.Child = true
+		cfg.SwarmMode = true
+		cfg.Child = false
+		cfg.NetworkMode = startupconfig.NetworkModeTailscale
+		cfg.SwarmName = "Managed B"
+		cfg.TailscaleURL = "https://managed-b.example.ts.net"
 	})
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/swarm/enroll" {
@@ -343,7 +347,17 @@ func TestSwarmRemotePairingRequestAllowsInviteTokenWithoutAttachToken(t *testing
 	}))
 	defer primary.Close()
 
-	body := bytes.NewBufferString(`{"invite_token":"invite-123","primary_swarm_id":"primary-1","primary_endpoint":"` + primary.URL + `"}`)
+	publicKey, _, fingerprint, err := swarmruntime.GenerateNodeKeypair()
+	if err != nil {
+		t.Fatalf("generate test node keypair: %v", err)
+	}
+	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: publicKey, Fingerprint: fingerprint}}}
+	offer := mustManagedPairingOfferForTest(t, publicKey, fingerprint)
+	raw, err := json.Marshal(swarmRemotePairingRequest{InviteToken: "invite-123", ManagerSwarmID: "primary-1", ManagerEndpoint: primary.URL, Offer: offer, CeremonyCode: offer.Ceremony.Code})
+	if err != nil {
+		t.Fatalf("marshal remote pairing request: %v", err)
+	}
+	body := bytes.NewBuffer(raw)
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/swarm/remote-pairing/request", body)
 	req.RemoteAddr = "198.51.100.20:7777"
 	req.Header.Set("Content-Type", "application/json")
@@ -511,7 +525,7 @@ func (f fakeLocalAuthSwarmService) PrepareRemoteBootstrapParentPeer(swarmruntime
 	return nil
 }
 
-func (f fakeLocalAuthSwarmService) FinalizeRemoteBootstrapChildPairing(swarmruntime.FinalizeRemoteBootstrapChildPairingInput) (swarmruntime.PairingState, error) {
+func (f fakeLocalAuthSwarmService) ApproveManagedPairing(swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
 	return swarmruntime.PairingState{}, nil
 }
 

@@ -88,6 +88,7 @@ type Server struct {
 	localContainers             localContainerService
 	deployContainers            deployContainerService
 	remoteDeploys               remoteDeployService
+	remotePairingPending        map[string]swarmRemotePairingPendingRequest
 	swarmNodes                  *pebblestore.SwarmNodeStore
 	update                      *update.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
@@ -140,7 +141,7 @@ type swarmService interface {
 	ListPendingEnrollments(limit int) ([]swarmruntime.Enrollment, error)
 	DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error)
 	PrepareRemoteBootstrapParentPeer(input swarmruntime.PrepareRemoteBootstrapParentPeerInput) error
-	FinalizeRemoteBootstrapChildPairing(input swarmruntime.FinalizeRemoteBootstrapChildPairingInput) (swarmruntime.PairingState, error)
+	ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error)
 	UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error)
 	DetachToStandalone(localSwarmID string) error
 }
@@ -268,6 +269,7 @@ func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Servic
 		startedAt:            time.Now(),
 		codexOAuthSessions:   make(map[string]*codexOAuthSession),
 		desktopLocalSessions: newDesktopLocalSessionManager(),
+		remotePairingPending: make(map[string]swarmRemotePairingPendingRequest),
 		gitRealtime:          nil,
 		runCtx:               runCtx,
 		runCancel:            runCancel,

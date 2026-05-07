@@ -50,50 +50,96 @@ type swarmEnrollmentDecisionRequest struct {
 }
 
 type swarmRemotePairingStartRequest struct {
-	Endpoint             string                       `json:"endpoint,omitempty"`
-	DNSName              string                       `json:"dns_name,omitempty"`
-	IPs                  []string                     `json:"ips,omitempty"`
-	GroupID              string                       `json:"group_id,omitempty"`
-	ChildSwarmID         string                       `json:"child_swarm_id,omitempty"`
-	ChildName            string                       `json:"child_name,omitempty"`
-	RendezvousTransports []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
+	Endpoint             string                         `json:"endpoint,omitempty"`
+	DNSName              string                         `json:"dns_name,omitempty"`
+	IPs                  []string                       `json:"ips,omitempty"`
+	GroupID              string                         `json:"group_id,omitempty"`
+	ManagedSwarmID       string                         `json:"managed_swarm_id,omitempty"`
+	ManagedName          string                         `json:"managed_name,omitempty"`
+	Offer                swarmRemotePairingOfferPayload `json:"offer,omitempty"`
+	CeremonyCode         string                         `json:"ceremony_code,omitempty"`
+	RendezvousTransports []onboardingTransportPayload   `json:"rendezvous_transports,omitempty"`
+	ChildSwarmID         string                         `json:"child_swarm_id,omitempty"`
+	ChildName            string                         `json:"child_name,omitempty"`
 }
 
 type swarmRemotePairingCeremony struct {
-	ChildSwarmID string `json:"child_swarm_id"`
-	ChildName    string `json:"child_name"`
-	AuthCode     string `json:"auth_code"`
+	ManagedSwarmID   string `json:"managed_swarm_id"`
+	ManagedName      string `json:"managed_name"`
+	Code             string `json:"code"`
+	VerificationOnly bool   `json:"verification_only"`
+	ChildSwarmID     string `json:"child_swarm_id,omitempty"`
+	ChildName        string `json:"child_name,omitempty"`
+	AuthCode         string `json:"auth_code,omitempty"`
 }
 
 type swarmRemotePairingStartResponse struct {
 	OK       bool                       `json:"ok"`
 	Invite   swarmruntime.Invite        `json:"invite"`
+	Request  swarmRemotePairingResponse `json:"request"`
 	Ceremony swarmRemotePairingCeremony `json:"ceremony"`
 }
 
 type swarmRemotePairingRequest struct {
-	InviteToken          string                       `json:"invite_token"`
-	PrimarySwarmID       string                       `json:"primary_swarm_id"`
-	PrimaryName          string                       `json:"primary_name,omitempty"`
-	PrimaryEndpoint      string                       `json:"primary_endpoint"`
-	TransportMode        string                       `json:"transport_mode,omitempty"`
-	RendezvousTransports []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
+	InviteToken          string                         `json:"invite_token"`
+	ManagerSwarmID       string                         `json:"manager_swarm_id"`
+	ManagerName          string                         `json:"manager_name,omitempty"`
+	ManagerEndpoint      string                         `json:"manager_endpoint"`
+	Offer                swarmRemotePairingOfferPayload `json:"offer"`
+	CeremonyCode         string                         `json:"ceremony_code"`
+	TransportMode        string                         `json:"transport_mode,omitempty"`
+	RendezvousTransports []onboardingTransportPayload   `json:"rendezvous_transports,omitempty"`
+	PrimarySwarmID       string                         `json:"primary_swarm_id,omitempty"`
+	PrimaryName          string                         `json:"primary_name,omitempty"`
+	PrimaryEndpoint      string                         `json:"primary_endpoint,omitempty"`
 }
 
 type swarmRemotePairingResponse struct {
-	OK           bool   `json:"ok"`
-	ChildSwarmID string `json:"child_swarm_id"`
-	ChildName    string `json:"child_name"`
-	AuthCode     string `json:"auth_code"`
+	OK             bool   `json:"ok"`
+	RequestID      string `json:"request_id"`
+	Status         string `json:"status"`
+	ManagedSwarmID string `json:"managed_swarm_id"`
+	ManagedName    string `json:"managed_name"`
+	CeremonyCode   string `json:"ceremony_code"`
+	ChildSwarmID   string `json:"child_swarm_id,omitempty"`
+	ChildName      string `json:"child_name,omitempty"`
+	AuthCode       string `json:"auth_code,omitempty"`
 }
 
 type swarmRemotePairingFinalizeRequest struct {
-	PrimarySwarmID       string                       `json:"primary_swarm_id"`
+	ManagerSwarmID       string                       `json:"manager_swarm_id"`
+	ManagerName          string                       `json:"manager_name,omitempty"`
+	ManagerPublicKey     string                       `json:"manager_public_key,omitempty"`
+	ManagerFingerprint   string                       `json:"manager_fingerprint,omitempty"`
+	TransportMode        string                       `json:"transport_mode,omitempty"`
+	RendezvousTransports []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
+	PrimarySwarmID       string                       `json:"primary_swarm_id,omitempty"`
 	PrimaryName          string                       `json:"primary_name,omitempty"`
 	PrimaryPublicKey     string                       `json:"primary_public_key,omitempty"`
 	PrimaryFingerprint   string                       `json:"primary_fingerprint,omitempty"`
-	TransportMode        string                       `json:"transport_mode,omitempty"`
-	RendezvousTransports []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
+}
+
+type swarmRemotePairingApprovalRequest struct {
+	RequestID    string `json:"request_id"`
+	Approve      bool   `json:"approve"`
+	CeremonyCode string `json:"ceremony_code"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+type swarmRemotePairingPendingRequest struct {
+	ID                   string
+	InviteToken          string
+	ManagerSwarmID       string
+	ManagerName          string
+	ManagerEndpoint      string
+	ManagedSwarmID       string
+	ManagedName          string
+	ManagedPublicKey     string
+	ManagedFingerprint   string
+	CeremonyCode         string
+	TransportMode        string
+	RendezvousTransports []onboardingTransportPayload
+	CreatedAt            time.Time
 }
 
 type swarmStateResponse struct {
@@ -263,10 +309,23 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	childTransports := remotePairingStartTransports(req)
-	childEndpoint := normalizeRemoteSwarmEndpoint(firstNonEmpty(req.Endpoint, req.DNSName, firstString(req.IPs)))
-	if childEndpoint == "" {
-		writeError(w, http.StatusBadRequest, errors.New("child endpoint is required"))
+	managedTransports := remotePairingStartTransports(req)
+	offer := req.Offer
+	managedEndpoint := normalizeRemoteSwarmEndpoint(firstNonEmpty(offer.Endpoint, req.Endpoint, req.DNSName, firstString(req.IPs)))
+	if managedEndpoint == "" {
+		writeError(w, http.StatusBadRequest, errors.New("managed endpoint is required"))
+		return
+	}
+	if strings.TrimSpace(offer.Token) == "" {
+		writeError(w, http.StatusBadRequest, errors.New("managed pairing offer token is required"))
+		return
+	}
+	if expectedCode := deriveSwarmRemotePairingOfferCeremonyCode(offer); expectedCode == "" || !strings.EqualFold(strings.TrimSpace(req.CeremonyCode), expectedCode) || !strings.EqualFold(strings.TrimSpace(offer.Ceremony.Code), expectedCode) {
+		writeError(w, http.StatusBadRequest, errors.New("managed pairing ceremony code does not match offer transcript"))
+		return
+	}
+	if offer.ExpiresAt > 0 && offer.ExpiresAt < time.Now().Unix() {
+		writeError(w, http.StatusBadRequest, errors.New("managed pairing offer has expired"))
 		return
 	}
 	cfg, err := s.loadStartupConfig()
@@ -283,13 +342,9 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if cfg.Child {
-		writeError(w, http.StatusBadRequest, errors.New("only master swarms can start child pairing"))
-		return
-	}
-	primaryEndpoint := canonicalRemoteSwarmEndpoint(cfg, status)
-	if primaryEndpoint == "" {
-		writeError(w, http.StatusBadRequest, errors.New("this master swarm does not have a reachable remote endpoint yet"))
+	managerEndpoint := canonicalRemoteSwarmEndpoint(cfg, status)
+	if managerEndpoint == "" {
+		writeError(w, http.StatusBadRequest, errors.New("this manager swarm does not have a reachable remote endpoint yet"))
 		return
 	}
 	state, err := s.currentSwarmState(cfg)
@@ -304,34 +359,44 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 		TransportMode:        status.Config.Mode,
 		RendezvousTransports: onboardingTransportsToSwarm(detectedOnboardingTransports(cfg)),
 		TTL:                  15 * time.Minute,
+		Token:                strings.TrimSpace(offer.Token),
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	var remote swarmRemotePairingResponse
-	if err := postRemoteSwarmJSONWithTransportFallback(childEndpoint, "/v1/swarm/remote-pairing/request", childTransports, swarmRemotePairingRequest{
+	if err := postRemoteSwarmJSONWithTransportFallback(managedEndpoint, "/v1/swarm/remote-pairing/request", managedTransports, swarmRemotePairingRequest{
 		InviteToken:          invite.Token,
-		PrimarySwarmID:       strings.TrimSpace(state.Node.SwarmID),
-		PrimaryName:          status.Config.SwarmName,
-		PrimaryEndpoint:      primaryEndpoint,
+		ManagerSwarmID:       strings.TrimSpace(state.Node.SwarmID),
+		ManagerName:          status.Config.SwarmName,
+		ManagerEndpoint:      managerEndpoint,
+		Offer:                offer,
+		CeremonyCode:         strings.TrimSpace(req.CeremonyCode),
 		TransportMode:        status.Config.Mode,
 		RendezvousTransports: detectedOnboardingTransports(cfg),
 	}, &remote); err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	if requestedChildSwarmID := strings.TrimSpace(req.ChildSwarmID); requestedChildSwarmID != "" && strings.TrimSpace(remote.ChildSwarmID) != "" && !strings.EqualFold(requestedChildSwarmID, strings.TrimSpace(remote.ChildSwarmID)) {
-		writeError(w, http.StatusBadGateway, fmt.Errorf("remote pairing target mismatch: requested child swarm %s but remote node responded as %s", requestedChildSwarmID, strings.TrimSpace(remote.ChildSwarmID)))
+	requestedManagedSwarmID := firstNonEmpty(strings.TrimSpace(req.ManagedSwarmID), strings.TrimSpace(req.ChildSwarmID), strings.TrimSpace(offer.SwarmID))
+	if requestedManagedSwarmID != "" && strings.TrimSpace(remote.ManagedSwarmID) != "" && !strings.EqualFold(requestedManagedSwarmID, strings.TrimSpace(remote.ManagedSwarmID)) {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("remote pairing target mismatch: requested managed swarm %s but remote node responded as %s", requestedManagedSwarmID, strings.TrimSpace(remote.ManagedSwarmID)))
 		return
 	}
+	ceremonyCode := firstNonEmpty(strings.TrimSpace(remote.CeremonyCode), strings.TrimSpace(req.CeremonyCode), strings.TrimSpace(offer.Ceremony.Code))
 	writeJSON(w, http.StatusOK, swarmRemotePairingStartResponse{
-		OK:     true,
-		Invite: invite,
+		OK:      true,
+		Invite:  invite,
+		Request: remote,
 		Ceremony: swarmRemotePairingCeremony{
-			ChildSwarmID: strings.TrimSpace(remote.ChildSwarmID),
-			ChildName:    strings.TrimSpace(remote.ChildName),
-			AuthCode:     strings.TrimSpace(remote.AuthCode),
+			ManagedSwarmID:   strings.TrimSpace(remote.ManagedSwarmID),
+			ManagedName:      strings.TrimSpace(remote.ManagedName),
+			Code:             ceremonyCode,
+			VerificationOnly: true,
+			ChildSwarmID:     strings.TrimSpace(remote.ManagedSwarmID),
+			ChildName:        strings.TrimSpace(remote.ManagedName),
+			AuthCode:         ceremonyCode,
 		},
 	})
 }
@@ -348,19 +413,19 @@ func (s *Server) handleSwarmRemotePairingRequest(w http.ResponseWriter, r *http.
 	requestStartedAt := time.Now()
 	var req swarmRemotePairingRequest
 	var requestErr error
-	var primaryEndpoint string
-	var childSwarmID string
+	var managerEndpoint string
+	var managedSwarmID string
 	defer func() {
 		logSwarmPairingTiming(
 			"remote_pairing.total",
 			requestStartedAt,
 			requestErr,
-			"primary_swarm_id",
-			strings.TrimSpace(req.PrimarySwarmID),
-			"primary_endpoint",
-			primaryEndpoint,
-			"child_swarm_id",
-			childSwarmID,
+			"manager_swarm_id",
+			firstNonEmpty(strings.TrimSpace(req.ManagerSwarmID), strings.TrimSpace(req.PrimarySwarmID)),
+			"manager_endpoint",
+			managerEndpoint,
+			"managed_swarm_id",
+			managedSwarmID,
 		)
 	}()
 	fail := func(statusCode int, err error) {
@@ -375,15 +440,34 @@ func (s *Server) handleSwarmRemotePairingRequest(w http.ResponseWriter, r *http.
 		fail(http.StatusBadRequest, errors.New("invite token is required"))
 		return
 	}
-	primaryEndpoint = normalizeRemoteSwarmEndpoint(req.PrimaryEndpoint)
-	if primaryEndpoint == "" {
-		fail(http.StatusBadRequest, errors.New("primary endpoint is required"))
+	managerSwarmID := firstNonEmpty(strings.TrimSpace(req.ManagerSwarmID), strings.TrimSpace(req.PrimarySwarmID))
+	if managerSwarmID == "" {
+		fail(http.StatusBadRequest, errors.New("manager swarm id is required"))
+		return
+	}
+	managerEndpoint = normalizeRemoteSwarmEndpoint(firstNonEmpty(req.ManagerEndpoint, req.PrimaryEndpoint))
+	if managerEndpoint == "" {
+		fail(http.StatusBadRequest, errors.New("manager endpoint is required"))
+		return
+	}
+	offer := req.Offer
+	if strings.TrimSpace(offer.Token) == "" {
+		fail(http.StatusBadRequest, errors.New("managed pairing offer token is required"))
+		return
+	}
+	expectedCode := deriveSwarmRemotePairingOfferCeremonyCode(offer)
+	if expectedCode == "" || !strings.EqualFold(strings.TrimSpace(req.CeremonyCode), expectedCode) || !strings.EqualFold(strings.TrimSpace(offer.Ceremony.Code), expectedCode) {
+		fail(http.StatusBadRequest, errors.New("managed pairing ceremony code does not match offer transcript"))
+		return
+	}
+	if offer.ExpiresAt > 0 && offer.ExpiresAt < time.Now().Unix() {
+		fail(http.StatusBadRequest, errors.New("managed pairing offer has expired"))
 		return
 	}
 
 	stepStartedAt := time.Now()
 	cfg, err := s.loadStartupConfig()
-	logSwarmPairingTiming("remote_pairing.load_startup_config", stepStartedAt, err, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID))
+	logSwarmPairingTiming("remote_pairing.load_startup_config", stepStartedAt, err, "manager_swarm_id", managerSwarmID)
 	if err != nil {
 		fail(http.StatusInternalServerError, err)
 		return
@@ -394,13 +478,9 @@ func (s *Server) handleSwarmRemotePairingRequest(w http.ResponseWriter, r *http.
 	}
 	stepStartedAt = time.Now()
 	state, err := s.currentSwarmState(cfg)
-	logSwarmPairingTiming("remote_pairing.current_swarm_state", stepStartedAt, err, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID))
+	logSwarmPairingTiming("remote_pairing.current_swarm_state", stepStartedAt, err, "manager_swarm_id", managerSwarmID)
 	if err != nil {
 		fail(http.StatusInternalServerError, err)
-		return
-	}
-	if !cfg.Child {
-		fail(http.StatusBadRequest, errors.New("a master swarm cannot be paired as a child"))
 		return
 	}
 	pairingState := strings.TrimSpace(state.Pairing.PairingState)
@@ -408,112 +488,87 @@ func (s *Server) handleSwarmRemotePairingRequest(w http.ResponseWriter, r *http.
 		pairingState = startupconfig.PairingStateUnpaired
 	}
 	if strings.TrimSpace(state.Pairing.ParentSwarmID) != "" &&
-		!strings.EqualFold(strings.TrimSpace(state.Pairing.ParentSwarmID), strings.TrimSpace(req.PrimarySwarmID)) &&
+		!strings.EqualFold(strings.TrimSpace(state.Pairing.ParentSwarmID), managerSwarmID) &&
 		pairingState == startupconfig.PairingStatePaired {
-		fail(http.StatusBadRequest, errors.New("this swarm is already paired to another parent"))
+		fail(http.StatusBadRequest, errors.New("this managed swarm is already paired to another manager"))
 		return
 	}
 
-	childSwarmID = strings.TrimSpace(state.Node.SwarmID)
-	childName := firstNonEmpty(strings.TrimSpace(cfg.SwarmName), strings.TrimSpace(state.Node.Name), "Child swarm")
+	managedSwarmID = strings.TrimSpace(state.Node.SwarmID)
+	managedName := firstNonEmpty(strings.TrimSpace(cfg.SwarmName), strings.TrimSpace(state.Node.Name), "Managed swarm")
+	managedPublicKey := strings.TrimSpace(state.Node.PublicKey)
+	managedFingerprint := firstNonEmpty(strings.TrimSpace(state.Node.Fingerprint), swarmruntime.FingerprintPublicKey(managedPublicKey))
 	transportMode := firstNonEmpty(strings.TrimSpace(req.TransportMode), bootstrapNetworkMode(cfg))
-	if childSwarmID == "" {
-		fail(http.StatusInternalServerError, errors.New("child swarm identity is not configured"))
+	if managedSwarmID == "" {
+		fail(http.StatusInternalServerError, errors.New("managed swarm identity is not configured"))
 		return
 	}
-	if strings.TrimSpace(state.Node.PublicKey) == "" {
-		fail(http.StatusInternalServerError, errors.New("child public key is unavailable"))
+	if managedPublicKey == "" {
+		fail(http.StatusInternalServerError, errors.New("managed swarm public key is unavailable"))
+		return
+	}
+	if strings.TrimSpace(offer.SwarmID) != "" && !strings.EqualFold(strings.TrimSpace(offer.SwarmID), managedSwarmID) {
+		fail(http.StatusBadRequest, errors.New("managed pairing offer identity does not match this swarm"))
+		return
+	}
+	if strings.TrimSpace(offer.PublicKey) != "" && strings.TrimSpace(offer.PublicKey) != managedPublicKey {
+		fail(http.StatusBadRequest, errors.New("managed pairing offer public key does not match this swarm"))
 		return
 	}
 
-	stepStartedAt = time.Now()
-	authCode, err := randomSwarmCeremonyCode()
-	logSwarmPairingTiming("remote_pairing.generate_auth_code", stepStartedAt, err, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID), "child_swarm_id", childSwarmID)
+	requestID, err := randomSwarmRemotePairingRequestID()
 	if err != nil {
 		fail(http.StatusInternalServerError, err)
 		return
 	}
-
-	var enrollResponse struct {
-		OK         bool                    `json:"ok"`
-		Enrollment swarmruntime.Enrollment `json:"enrollment"`
-	}
-	stepStartedAt = time.Now()
-	if err := postRemoteSwarmJSONWithTailscaleFallback(primaryEndpoint, req.RendezvousTransports, swarmEnrollRequest{
+	pending := swarmRemotePairingPendingRequest{
+		ID:                   requestID,
 		InviteToken:          strings.TrimSpace(req.InviteToken),
-		PrimarySwarmID:       strings.TrimSpace(req.PrimarySwarmID),
-		ChildSwarmID:         childSwarmID,
-		ChildName:            childName,
-		ChildRole:            bootstrapRoleChild,
-		ChildPublicKey:       strings.TrimSpace(state.Node.PublicKey),
+		ManagerSwarmID:       managerSwarmID,
+		ManagerName:          firstNonEmpty(strings.TrimSpace(req.ManagerName), strings.TrimSpace(req.PrimaryName)),
+		ManagerEndpoint:      managerEndpoint,
+		ManagedSwarmID:       managedSwarmID,
+		ManagedName:          managedName,
+		ManagedPublicKey:     managedPublicKey,
+		ManagedFingerprint:   managedFingerprint,
+		CeremonyCode:         expectedCode,
 		TransportMode:        transportMode,
-		RendezvousTransports: detectedOnboardingTransports(cfg),
-	}, &enrollResponse); err != nil {
-		logSwarmPairingTiming("remote_pairing.post_primary_enroll", stepStartedAt, err, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID), "primary_endpoint", primaryEndpoint, "child_swarm_id", childSwarmID)
-		fail(http.StatusBadGateway, err)
-		return
+		RendezvousTransports: append([]onboardingTransportPayload(nil), req.RendezvousTransports...),
+		CreatedAt:            time.Now(),
 	}
-	logSwarmPairingTiming("remote_pairing.post_primary_enroll", stepStartedAt, nil, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID), "primary_endpoint", primaryEndpoint, "child_swarm_id", childSwarmID, "enrollment_id", strings.TrimSpace(enrollResponse.Enrollment.ID))
-	if strings.TrimSpace(enrollResponse.Enrollment.ID) == "" {
-		fail(http.StatusBadGateway, errors.New("primary enrollment response was missing enrollment data"))
-		return
+	if s.remotePairingPending == nil {
+		s.remotePairingPending = make(map[string]swarmRemotePairingPendingRequest)
 	}
+	s.remotePairingPending[requestID] = pending
 
-	updatedCfg := cfg
-	updatedCfg.Child = true
 	stepStartedAt = time.Now()
-	if err := startupconfig.Write(updatedCfg); err != nil {
-		logSwarmPairingTiming("remote_pairing.write_startup_config", stepStartedAt, err, "child_swarm_id", childSwarmID)
-		fail(http.StatusInternalServerError, err)
-		return
-	}
-	logSwarmPairingTiming("remote_pairing.write_startup_config", stepStartedAt, nil, "child_swarm_id", childSwarmID)
-	stepStartedAt = time.Now()
-	if _, err := s.swarm.UpdateLocalPairingFromConfig(updatedCfg, onboardingTransportsToSwarm(detectedOnboardingTransports(updatedCfg))); err != nil {
-		logSwarmPairingTiming("remote_pairing.update_local_pairing_from_config", stepStartedAt, err, "child_swarm_id", childSwarmID, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID))
-		fail(http.StatusInternalServerError, err)
-		return
-	}
-	logSwarmPairingTiming("remote_pairing.update_local_pairing_from_config", stepStartedAt, nil, "child_swarm_id", childSwarmID, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID))
-	if cfg.RemoteDeploy.Enabled {
-		stepStartedAt = time.Now()
-		if err := s.swarm.PrepareRemoteBootstrapParentPeer(swarmruntime.PrepareRemoteBootstrapParentPeerInput{
-			ParentSwarmID:         strings.TrimSpace(req.PrimarySwarmID),
-			ParentName:            strings.TrimSpace(req.PrimaryName),
-			TransportMode:         transportMode,
-			RendezvousTransports:  onboardingTransportsToSwarm(req.RendezvousTransports),
-			OutgoingPeerAuthToken: strings.TrimSpace(cfg.RemoteDeploy.SessionToken),
-			IncomingPeerAuthToken: strings.TrimSpace(req.InviteToken),
-		}); err != nil {
-			logSwarmPairingTiming("remote_pairing.prepare_remote_bootstrap_parent_peer", stepStartedAt, err, "child_swarm_id", childSwarmID, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID))
-			fail(http.StatusInternalServerError, err)
-			return
-		}
-		logSwarmPairingTiming("remote_pairing.prepare_remote_bootstrap_parent_peer", stepStartedAt, nil, "child_swarm_id", childSwarmID, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID))
-	}
-	stepStartedAt = time.Now()
-	if err := s.publishSwarmPairingEvent("swarm.ceremony.requested", childSwarmID, map[string]any{
-		"auth_code":        authCode,
-		"primary_name":     strings.TrimSpace(req.PrimaryName),
-		"primary_swarm_id": strings.TrimSpace(req.PrimarySwarmID),
-		"child_name":       childName,
-		"child_swarm_id":   childSwarmID,
-		"enrollment_id":    strings.TrimSpace(enrollResponse.Enrollment.ID),
+	if err := s.publishSwarmPairingEvent("swarm.managed_pairing.requested", managedSwarmID, map[string]any{
+		"request_id":       requestID,
+		"ceremony_code":    expectedCode,
+		"manager_name":     pending.ManagerName,
+		"manager_swarm_id": managerSwarmID,
+		"managed_name":     managedName,
+		"managed_swarm_id": managedSwarmID,
 	}); err != nil {
-		logSwarmPairingTiming("remote_pairing.publish_pairing_event", stepStartedAt, err, "child_swarm_id", childSwarmID, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID), "enrollment_id", strings.TrimSpace(enrollResponse.Enrollment.ID))
+		logSwarmPairingTiming("remote_pairing.publish_pairing_event", stepStartedAt, err, "managed_swarm_id", managedSwarmID, "manager_swarm_id", managerSwarmID)
 		fail(http.StatusInternalServerError, err)
 		return
 	}
-	logSwarmPairingTiming("remote_pairing.publish_pairing_event", stepStartedAt, nil, "child_swarm_id", childSwarmID, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID), "enrollment_id", strings.TrimSpace(enrollResponse.Enrollment.ID))
+	logSwarmPairingTiming("remote_pairing.publish_pairing_event", stepStartedAt, nil, "managed_swarm_id", managedSwarmID, "manager_swarm_id", managerSwarmID)
 
 	stepStartedAt = time.Now()
 	writeJSON(w, http.StatusOK, swarmRemotePairingResponse{
-		OK:           true,
-		ChildSwarmID: childSwarmID,
-		ChildName:    childName,
-		AuthCode:     authCode,
+		OK:             true,
+		RequestID:      requestID,
+		Status:         startupconfig.PairingStatePendingApproval,
+		ManagedSwarmID: managedSwarmID,
+		ManagedName:    managedName,
+		CeremonyCode:   expectedCode,
+		ChildSwarmID:   managedSwarmID,
+		ChildName:      managedName,
+		AuthCode:       expectedCode,
 	})
-	logSwarmPairingTiming("remote_pairing.write_response", stepStartedAt, nil, "child_swarm_id", childSwarmID, "primary_swarm_id", strings.TrimSpace(req.PrimarySwarmID))
+	logSwarmPairingTiming("remote_pairing.write_response", stepStartedAt, nil, "managed_swarm_id", managedSwarmID, "manager_swarm_id", managerSwarmID)
 }
 
 func (s *Server) handleSwarmRemotePairingFinalize(w http.ResponseWriter, r *http.Request) {
@@ -530,15 +585,16 @@ func (s *Server) handleSwarmRemotePairingFinalize(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if strings.TrimSpace(req.PrimarySwarmID) == "" {
-		writeError(w, http.StatusBadRequest, errors.New("primary swarm id is required"))
+	managerSwarmID := firstNonEmpty(strings.TrimSpace(req.ManagerSwarmID), strings.TrimSpace(req.PrimarySwarmID))
+	if managerSwarmID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("manager swarm id is required"))
 		return
 	}
-	pairing, err := s.swarm.FinalizeRemoteBootstrapChildPairing(swarmruntime.FinalizeRemoteBootstrapChildPairingInput{
-		ParentSwarmID:        strings.TrimSpace(req.PrimarySwarmID),
-		ParentName:           strings.TrimSpace(req.PrimaryName),
-		ParentPublicKey:      strings.TrimSpace(req.PrimaryPublicKey),
-		ParentFingerprint:    strings.TrimSpace(req.PrimaryFingerprint),
+	pairing, err := s.swarm.ApproveManagedPairing(swarmruntime.ApproveManagedPairingInput{
+		ManagerSwarmID:       managerSwarmID,
+		ManagerName:          firstNonEmpty(strings.TrimSpace(req.ManagerName), strings.TrimSpace(req.PrimaryName)),
+		ManagerPublicKey:     firstNonEmpty(strings.TrimSpace(req.ManagerPublicKey), strings.TrimSpace(req.PrimaryPublicKey)),
+		ManagerFingerprint:   firstNonEmpty(strings.TrimSpace(req.ManagerFingerprint), strings.TrimSpace(req.PrimaryFingerprint)),
 		TransportMode:        strings.TrimSpace(req.TransportMode),
 		RendezvousTransports: onboardingTransportsToSwarm(req.RendezvousTransports),
 	})
@@ -551,6 +607,95 @@ func (s *Server) handleSwarmRemotePairingFinalize(w http.ResponseWriter, r *http
 		"path_id": "swarm.remote_pairing.finalize.v1",
 		"pairing": pairing,
 	})
+}
+
+func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.swarm == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("swarm service is not configured"))
+		return
+	}
+	var req swarmRemotePairingApprovalRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("pairing request id is required"))
+		return
+	}
+	pending, ok := s.remotePairingPending[requestID]
+	if !ok {
+		writeError(w, http.StatusNotFound, errors.New("pairing request not found"))
+		return
+	}
+	if !req.Approve {
+		delete(s.remotePairingPending, requestID)
+		_ = s.publishSwarmPairingEvent("swarm.managed_pairing.rejected", pending.ManagedSwarmID, map[string]any{
+			"request_id":       pending.ID,
+			"manager_swarm_id": pending.ManagerSwarmID,
+			"managed_swarm_id": pending.ManagedSwarmID,
+			"reason":           strings.TrimSpace(req.Reason),
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": startupconfig.PairingStateRejected, "request_id": requestID})
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(req.CeremonyCode), strings.TrimSpace(pending.CeremonyCode)) {
+		writeError(w, http.StatusBadRequest, errors.New("managed pairing ceremony code mismatch"))
+		return
+	}
+
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	var enrollResponse struct {
+		OK         bool                    `json:"ok"`
+		Enrollment swarmruntime.Enrollment `json:"enrollment"`
+	}
+	if err := postRemoteSwarmJSONWithTailscaleFallback(pending.ManagerEndpoint, pending.RendezvousTransports, swarmEnrollRequest{
+		InviteToken:          pending.InviteToken,
+		PrimarySwarmID:       pending.ManagerSwarmID,
+		ChildSwarmID:         pending.ManagedSwarmID,
+		ChildName:            pending.ManagedName,
+		ChildRole:            "managed",
+		ChildPublicKey:       pending.ManagedPublicKey,
+		TransportMode:        pending.TransportMode,
+		RendezvousTransports: detectedOnboardingTransports(cfg),
+	}, &enrollResponse); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	if strings.TrimSpace(enrollResponse.Enrollment.ID) == "" {
+		writeError(w, http.StatusBadGateway, errors.New("manager enrollment response was missing enrollment data"))
+		return
+	}
+	pairing, err := s.swarm.ApproveManagedPairing(swarmruntime.ApproveManagedPairingInput{
+		ManagerSwarmID:       pending.ManagerSwarmID,
+		ManagerName:          pending.ManagerName,
+		TransportMode:        pending.TransportMode,
+		RendezvousTransports: onboardingTransportsToSwarm(pending.RendezvousTransports),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	delete(s.remotePairingPending, requestID)
+	_ = s.publishSwarmPairingEvent("swarm.managed_pairing.approved", pending.ManagedSwarmID, map[string]any{
+		"request_id":       pending.ID,
+		"ceremony_code":    pending.CeremonyCode,
+		"manager_name":     pending.ManagerName,
+		"manager_swarm_id": pending.ManagerSwarmID,
+		"managed_name":     pending.ManagedName,
+		"managed_swarm_id": pending.ManagedSwarmID,
+		"enrollment_id":    strings.TrimSpace(enrollResponse.Enrollment.ID),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": startupconfig.PairingStatePaired, "request_id": requestID, "pairing": pairing, "enrollment": enrollResponse.Enrollment})
 }
 
 func (s *Server) handleSwarmDiscovery(w http.ResponseWriter, r *http.Request) {
@@ -931,6 +1076,9 @@ func remotePairingStartTransports(req swarmRemotePairingStartRequest) []onboardi
 	if len(req.RendezvousTransports) > 0 {
 		return append([]onboardingTransportPayload(nil), req.RendezvousTransports...)
 	}
+	if len(req.Offer.RendezvousTransports) > 0 {
+		return append([]onboardingTransportPayload(nil), req.Offer.RendezvousTransports...)
+	}
 	values := make([]string, 0, len(req.IPs)+1)
 	if dnsName := strings.TrimSpace(req.DNSName); dnsName != "" {
 		values = append(values, dnsName)
@@ -994,6 +1142,14 @@ func randomSwarmCeremonyCode() (string, error) {
 		return "", err
 	}
 	return strings.ToUpper(hex.EncodeToString(buf)), nil
+}
+
+func randomSwarmRemotePairingRequestID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return "pair_" + hex.EncodeToString(buf), nil
 }
 
 func (s *Server) publishSwarmPairingEvent(eventType, entityID string, payload any) error {
