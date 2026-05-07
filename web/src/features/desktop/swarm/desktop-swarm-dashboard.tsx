@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Boxes, CheckSquare, Pencil, Play, Plus, Square, Trash2, TriangleAlert } from 'lucide-react'
-import { useDesktopStore } from '../state/use-desktop-store'
 import { Badge } from '../../../components/ui/badge'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -114,6 +113,35 @@ function tailscaleTransportCandidate(status: DesktopOnboardingStatus | null): { 
 
 function formatUnderscoreLabel(value: string | null | undefined): string {
   return String(value ?? '').replace(/_/g, ' ')
+}
+
+function hostnameFromURL(raw: string | null | undefined): string {
+  const value = String(raw ?? '').trim()
+  if (!value) {
+    return ''
+  }
+  try {
+    const parsed = new URL(value.includes('://') ? value : `https://${value}`)
+    return parsed.hostname.trim()
+  } catch {
+    return ''
+  }
+}
+
+function displayNameFromHost(host: string | null | undefined): string {
+  const value = String(host ?? '').trim().replace(/\.$/, '')
+  if (!value) {
+    return ''
+  }
+  return value.split('.')[0]?.trim() || value
+}
+
+function defaultLocalSwarmName(status: DesktopOnboardingStatus | null, nodeName?: string): string {
+  return status?.config.swarmName.trim()
+    || String(nodeName ?? '').trim()
+    || displayNameFromHost(status?.network.tailscale.dnsName)
+    || displayNameFromHost(hostnameFromURL(status?.network.tailscale.tailnetURL || status?.config.tailscaleURL))
+    || 'Local swarm'
 }
 
 function swarmRoleLabel(value: string | null | undefined): string {
@@ -764,7 +792,6 @@ function DeleteSwarmsModal({
 }
 
 export function DesktopSwarmDashboard() {
-  const requestOnboardingFlow = useDesktopStore((state) => state.requestOnboardingFlow)
 
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -1155,10 +1182,19 @@ export function DesktopSwarmDashboard() {
     setError(null)
     setStatus(null)
     try {
-      const currentName = onboardingStatus?.config.swarmName || swarmState?.node.name || ''
-      await saveDesktopOnboarding({ swarmName: currentName, swarmMode: true, child: false, mode: 'lan' })
-      requestOnboardingFlow()
-      setStatus('Swarm Mode is now on. Continue through setup to confirm reachability.')
+      const currentName = defaultLocalSwarmName(onboardingStatus, swarmState?.node.name)
+      const useTailscale = Boolean(tailscaleCandidate.connected && localTailscaleURL)
+      await saveDesktopOnboarding({
+        swarmName: currentName,
+        swarmMode: true,
+        child: false,
+        mode: useTailscale ? 'tailscale' : 'lan',
+        ...(useTailscale ? { tailscaleURL: localTailscaleURL, peerTransportPort: parsePeerTransportPort(String(localPeerTransportPort)) } : {}),
+      })
+      await refresh()
+      setStatus(useTailscale
+        ? 'Swarm Mode is on with Tailscale reachability. Use Add swarm to pair another managed host.'
+        : 'Swarm Mode is on. Tailscale was not connected, so reachability stayed on LAN for now.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to turn on Swarm Mode')
     } finally {
@@ -1171,7 +1207,7 @@ export function DesktopSwarmDashboard() {
     setError(null)
     setStatus(null)
     try {
-      const currentName = onboardingStatus?.config.swarmName || swarmState?.node.name || ''
+      const currentName = defaultLocalSwarmName(onboardingStatus, swarmState?.node.name)
       await saveDesktopOnboarding({ swarmName: currentName, swarmMode: false, child: false })
       await refresh()
       setStatus('Swarm Mode is now off. This node is back to standalone local use.')
@@ -1190,7 +1226,7 @@ export function DesktopSwarmDashboard() {
     setError(null)
     setStatus(null)
     try {
-      const currentName = onboardingStatus.config.swarmName || swarmState?.node.name || ''
+      const currentName = defaultLocalSwarmName(onboardingStatus, swarmState?.node.name)
       const nextPort = parsePeerTransportPort(String(localPeerTransportPort))
       await saveDesktopOnboarding({
         swarmName: currentName,
@@ -1603,7 +1639,9 @@ export function DesktopSwarmDashboard() {
                     </div>
                   </div>
                   <div className="flex flex-col items-start gap-2 md:items-end">
-                    <Badge tone="neutral">{formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}</Badge>
+                    <Badge tone={localTailscalePrimary ? 'live' : tailscaleCandidate.connected ? 'warning' : 'neutral'}>
+                      {localTailscalePrimary ? 'Tailscale' : tailscaleCandidate.connected ? 'Tailscale connected · LAN config' : formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}
+                    </Badge>
                     <div className="flex flex-wrap items-center gap-2">
                       <Button type="button" data-testid="swarm-dashboard-add-swarm" onClick={openAddSwarm} disabled={masterControlsDisabled} title={localIsChild ? 'Child swarms cannot add other swarms.' : undefined}>
                         <Plus size={14} />
@@ -1652,7 +1690,7 @@ export function DesktopSwarmDashboard() {
                   </div>
                 ) : !isSwarmMode ? (
                   <div className="mt-4 rounded-2xl border border-dashed border-[var(--app-border)] p-5 text-sm text-[var(--app-text-muted)]">
-                    Swarm Mode is off. Turn it on first so this machine can host and manage this group.
+                    Swarm Mode is off. Turn it on to name this machine automatically and use Tailscale reachability when Tailscale is connected.
                   </div>
                 ) : group ? (
                   <div className="mt-5 grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-4">
@@ -1752,7 +1790,7 @@ export function DesktopSwarmDashboard() {
                                       </div>
                                       <div className="flex flex-col gap-1">
                                         <span className="text-[var(--app-text-muted)]">Primary Transport</span>
-                                        <span className="font-medium text-[var(--app-text)] truncate">{localBindStatus === 'Local only' ? (localTransportActive ? 'Local' : 'Local only') : formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}</span>
+                                        <span className="font-medium text-[var(--app-text)] truncate">{localTailscalePrimary ? 'Tailscale' : tailscaleCandidate.connected ? 'Tailscale connected · LAN config' : (localBindStatus === 'Local only' ? (localTransportActive ? 'Local' : 'Local only') : formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan'))}</span>
                                       </div>
                                       <div className="flex flex-col gap-1 col-span-2">
                                         <span className="text-[var(--app-text-muted)]">Advertise Endpoint</span>

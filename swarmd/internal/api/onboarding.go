@@ -488,7 +488,7 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 	}
 	needsOnboarding := shouldShowOnboarding(cfg, vaultStatus, credentialList.Total, savedCount)
 	tailscale := onboardingTailscalePayload{IPs: nil, Serve: onboardingTailscaleServePayload{}}
-	if needsOnboarding {
+	if needsOnboarding || !swarmModeEnabled(cfg) {
 		tailscale, _ = detectTailscaleWithStatus()
 	} else {
 		tailscaleURL := strings.TrimSpace(cfg.TailscaleURL)
@@ -578,8 +578,8 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 
 	if req.SwarmName != nil {
 		updated.SwarmName = strings.TrimSpace(*req.SwarmName)
-		if updated.SwarmName == "" {
-			return onboardingResponse{}, errors.New("swarm_name is required")
+		if updated.SwarmName == "" && !requestChangesSwarmShape(req) {
+			return onboardingResponse{}, errors.New("swarm name is required")
 		}
 		changed = true
 	}
@@ -639,6 +639,10 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	}
 	if !swarmModeEnabled(updated) {
 		updated.Child = false
+	}
+	if swarmModeEnabled(updated) && strings.TrimSpace(updated.SwarmName) == "" {
+		updated.SwarmName = defaultOnboardingSwarmName(updated)
+		changed = true
 	}
 	if swarmModeEnabled(updated) && bootstrapNetworkMode(updated) == startupconfig.NetworkModeLAN {
 		updated.AdvertiseHost = firstNonEmpty(
@@ -753,6 +757,40 @@ func looksLikeFreshDesktopSetup(cfg startupconfig.FileConfig, vault auth.VaultSt
 		!vault.Enabled &&
 		credentialCount == 0 &&
 		savedCount == 0
+}
+
+func requestChangesSwarmShape(req onboardingUpdateRequest) bool {
+	return req.SwarmMode != nil || req.Child != nil || req.Mode != nil || req.Port != nil || req.AdvertiseHost != nil || req.AdvertisePort != nil || req.TailscaleURL != nil || req.PeerTransportPort != nil
+}
+
+func defaultOnboardingSwarmName(cfg startupconfig.FileConfig) string {
+	if name := strings.TrimSpace(cfg.SwarmName); name != "" {
+		return name
+	}
+	if name := tailscalePeerDisplayName(hostnameFromURL(cfg.TailscaleURL)); name != "" {
+		return name
+	}
+	if hostname, err := os.Hostname(); err == nil {
+		if name := strings.TrimSpace(hostname); name != "" {
+			return name
+		}
+	}
+	return "Local swarm"
+}
+
+func hostnameFromURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Hostname())
 }
 
 func localSwarmRole(cfg startupconfig.FileConfig) string {

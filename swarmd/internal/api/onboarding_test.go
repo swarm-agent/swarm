@@ -113,6 +113,43 @@ func TestDetectedTailscaleOnboardingTransportsUsesConfigOnly(t *testing.T) {
 	}
 }
 
+func TestUpdateOnboardingEnablesSwarmModeWithoutExplicitName(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmName = ""
+		cfg.SwarmMode = false
+		cfg.Child = false
+		cfg.NetworkMode = startupconfig.NetworkModeLAN
+		cfg.TailscaleURL = "https://laptop.tailnet.example"
+	})
+
+	mode := startupconfig.NetworkModeTailscale
+	enabled := true
+	child := false
+	status, err := server.updateOnboarding(onboardingUpdateRequest{
+		SwarmMode:    &enabled,
+		Child:        &child,
+		Mode:         &mode,
+		TailscaleURL: onboardingStringPtr("https://laptop.tailnet.example"),
+	}, true)
+	if err != nil {
+		t.Fatalf("updateOnboarding returned error: %v", err)
+	}
+	if !status.Config.SwarmMode {
+		t.Fatalf("swarm mode = false, want true")
+	}
+	if status.Config.SwarmName != "laptop" {
+		t.Fatalf("swarm name = %q, want laptop", status.Config.SwarmName)
+	}
+	if status.Config.Mode != startupconfig.NetworkModeTailscale {
+		t.Fatalf("mode = %q, want tailscale", status.Config.Mode)
+	}
+}
+
+func onboardingStringPtr(value string) *string {
+	return &value
+}
+
 func TestConfiguredOnboardingResponseUsesConfigOnlyForTailscale(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "tailscale-invoked")
