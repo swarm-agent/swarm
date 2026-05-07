@@ -94,20 +94,104 @@ print_ok() {
   printf 'ok\n'
 }
 
-bin_home() {
-  if [ -n "${XDG_BIN_HOME:-}" ]; then
-    printf '%s\n' "$XDG_BIN_HOME"
+current_owner_uid() {
+  if [ -n "${SUDO_UID:-}" ]; then
+    printf '%s\n' "$SUDO_UID"
   else
-    printf '%s/.local/bin\n' "$HOME"
+    id -u
   fi
 }
 
-data_home() {
-  if [ -n "${XDG_DATA_HOME:-}" ]; then
-    printf '%s\n' "$XDG_DATA_HOME"
+current_owner_gid() {
+  if [ -n "${SUDO_GID:-}" ]; then
+    printf '%s\n' "$SUDO_GID"
   else
-    printf '%s/.local/share\n' "$HOME"
+    id -g
   fi
+}
+
+run_privileged() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+    return $?
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "Swarm installs to /usr/local and stores daemon state under /etc, /var, and /run." >&2
+    echo "Install sudo or pre-create the Swarm-owned system directories before running install.sh." >&2
+    return 1
+  fi
+  sudo "$@"
+}
+
+dir_writable() {
+  path="$1"
+  probe="$(mktemp "$path/.swarm-write-check.XXXXXX" 2>/dev/null)" || return 1
+  rm -f "$probe"
+}
+
+provision_owned_dir() {
+  mode="$1"
+  path="$2"
+  if mkdir -p "$path" 2>/dev/null && chmod "$mode" "$path" 2>/dev/null && dir_writable "$path"; then
+    return 0
+  fi
+  run_privileged install -d -m "$mode" -o "$(current_owner_uid)" -g "$(current_owner_gid)" "$path"
+}
+
+provision_system_dir() {
+  mode="$1"
+  path="$2"
+  if mkdir -p "$path" 2>/dev/null && [ -d "$path" ]; then
+    return 0
+  fi
+  run_privileged install -d -m "$mode" "$path"
+}
+
+provision_tmpfiles_config() {
+  uid="$(current_owner_uid)"
+  gid="$(current_owner_gid)"
+  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-tmpfiles.XXXXXX")"
+  cat >"$tmp_path" <<EOF
+d /run/swarmd 0700 ${uid} ${gid} -
+d /run/swarmd/dev 0700 ${uid} ${gid} -
+d /run/swarmd/ports 0700 ${uid} ${gid} -
+EOF
+  if ! run_privileged install -m 0644 "$tmp_path" "/etc"/tmpfiles.d/swarmd.conf; then
+    rm -f "$tmp_path"
+    return 1
+  fi
+  rm -f "$tmp_path"
+}
+
+provision_system_paths() {
+  provision_system_dir 0755 /usr/local/bin
+  provision_system_dir 0755 /usr/local/share
+  provision_system_dir 0755 "/etc"/tmpfiles.d
+
+  provision_owned_dir 0755 /usr/local/share/swarm/bin
+  provision_owned_dir 0755 /usr/local/share/swarm/libexec
+  provision_owned_dir 0755 /usr/local/share/swarm
+  provision_owned_dir 0755 /usr/local/share/swarm/share
+  provision_owned_dir 0755 /usr/local/share/swarm/lib
+
+  provision_owned_dir 0700 "/etc"/swarmd
+  provision_owned_dir 0700 /var/lib/swarmd
+  provision_owned_dir 0700 /var/lib/swarmd/dev
+  provision_owned_dir 0700 /var/cache/swarmd
+  provision_owned_dir 0700 /run/swarmd
+  provision_owned_dir 0700 /run/swarmd/dev
+  provision_owned_dir 0700 /run/swarmd/ports
+  provision_owned_dir 0755 /var/log/swarmd
+  provision_owned_dir 0755 /var/log/swarmd/dev
+  provision_tmpfiles_config
+}
+
+bin_home() {
+  printf '%s\n' "/usr/local/bin"
+}
+
+data_home() {
+  printf '%s\n' "/usr/local/share"
 }
 
 install_root() {
@@ -218,6 +302,8 @@ need_cmd tar
 need_cmd sed
 need_cmd grep
 need_cmd mktemp
+need_cmd id
+need_cmd install
 
 script_dir=""
 if script_dir_candidate="$(resolve_script_dir 2>/dev/null)"; then
@@ -236,6 +322,11 @@ if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ];
   print_installing "$version"
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT INT TERM
+  printf 'provisioning system paths... '
+  if ! provision_system_paths; then
+    exit 1
+  fi
+  print_ok
   printf 'installing runtime... '
   if ! run_bundle_install "$script_dir" "$tmp_dir/swarmsetup.log"; then
     cat "$tmp_dir/swarmsetup.log" >&2
@@ -295,6 +386,11 @@ if [ ! -d "$artifact_root" ]; then
   exit 1
 fi
 
+printf 'provisioning system paths... '
+if ! provision_system_paths; then
+  exit 1
+fi
+print_ok
 printf 'installing runtime... '
 if ! run_bundle_install "$artifact_root" "$tmp_dir/swarmsetup.log"; then
   cat "$tmp_dir/swarmsetup.log" >&2

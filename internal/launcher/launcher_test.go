@@ -95,8 +95,22 @@ func TestDevFrontendAssetsNeedRebuildDetectsSourceChanges(t *testing.T) {
 }
 
 func TestEnvMapIncludesInstalledLibDirInLDLibraryPath(t *testing.T) {
-	xdgRoot := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", filepath.Join(xdgRoot, "data"))
+	systemRoot := t.TempDir()
+	installRoot := filepath.Join(systemRoot, "share", "swarm")
+	libRoot := filepath.Join(systemRoot, "lib", "swarm")
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", installRoot)
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", filepath.Join(systemRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_BINARY_DIR", filepath.Join(installRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_LIBEXEC_DIR", filepath.Join(installRoot, "libexec"))
+	t.Setenv("SWARM_SYSTEM_LIB_DIR", libRoot)
+	t.Setenv("SWARM_SYSTEM_SHARE_DIR", filepath.Join(installRoot, "share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(systemRoot, "config"))
+	t.Setenv("HOME", filepath.Join(systemRoot, "home"))
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("RUNTIME_DIRECTORY", filepath.Join(t.TempDir(), "runtime"))
+	t.Setenv("CONFIGURATION_DIRECTORY", filepath.Join(t.TempDir(), "config"))
+	t.Setenv("LOGS_DIRECTORY", filepath.Join(t.TempDir(), "logs"))
 	t.Setenv("LD_LIBRARY_PATH", "/opt/existing/lib")
 
 	profile, err := LoadRuntimeProfile("main", nil)
@@ -105,8 +119,60 @@ func TestEnvMapIncludesInstalledLibDirInLDLibraryPath(t *testing.T) {
 	}
 
 	got := profile.EnvMap()["LD_LIBRARY_PATH"]
-	want := filepath.Join(xdgRoot, "data", "swarm", "lib") + string(os.PathListSeparator) + "/opt/existing/lib"
+	want := libRoot + string(os.PathListSeparator) + "/opt/existing/lib"
 	if got != want {
 		t.Fatalf("LD_LIBRARY_PATH = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRuntimeProfileUsesStorageContractDaemonRoots(t *testing.T) {
+	installRoot := t.TempDir()
+	systemRoot := filepath.Join(installRoot, "system")
+	systemInstallRoot := filepath.Join(systemRoot, "share", "swarm")
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	configRoot := filepath.Join(t.TempDir(), "config")
+	logsRoot := filepath.Join(t.TempDir(), "logs")
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", systemInstallRoot)
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", filepath.Join(systemRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_BINARY_DIR", filepath.Join(systemInstallRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_LIBEXEC_DIR", filepath.Join(systemInstallRoot, "libexec"))
+	t.Setenv("SWARM_SYSTEM_LIB_DIR", filepath.Join(systemInstallRoot, "lib"))
+	t.Setenv("SWARM_SYSTEM_SHARE_DIR", filepath.Join(systemInstallRoot, "share"))
+	t.Setenv("HOME", filepath.Join(installRoot, "home"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(installRoot, "xdg-data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(installRoot, "xdg-config"))
+	t.Setenv("STATE_DIRECTORY", dataRoot)
+	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("RUNTIME_DIRECTORY", runtimeRoot)
+	t.Setenv("CONFIGURATION_DIRECTORY", configRoot)
+	t.Setenv("LOGS_DIRECTORY", logsRoot)
+
+	profile, err := LoadRuntimeProfile("main", nil)
+	if err != nil {
+		t.Fatalf("LoadRuntimeProfile main: %v", err)
+	}
+	if profile.Startup.Path != filepath.Join(configRoot, "swarm.conf") {
+		t.Fatalf("Startup.Path = %q", profile.Startup.Path)
+	}
+	if profile.DataDir != dataRoot {
+		t.Fatalf("DataDir = %q, want %q", profile.DataDir, dataRoot)
+	}
+	if profile.StateRoot != runtimeRoot {
+		t.Fatalf("StateRoot = %q, want %q", profile.StateRoot, runtimeRoot)
+	}
+	if profile.LogFile != filepath.Join(logsRoot, "swarmd.log") {
+		t.Fatalf("LogFile = %q", profile.LogFile)
+	}
+
+	dev, err := LoadRuntimeProfile("dev", nil)
+	if err != nil {
+		t.Fatalf("LoadRuntimeProfile dev: %v", err)
+	}
+	if dev.DataDir != filepath.Join(dataRoot, "dev") {
+		t.Fatalf("dev DataDir = %q", dev.DataDir)
+	}
+	if dev.StateRoot != filepath.Join(runtimeRoot, "dev") {
+		t.Fatalf("dev StateRoot = %q", dev.StateRoot)
 	}
 }

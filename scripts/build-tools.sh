@@ -20,6 +20,7 @@ source "${LANE_LIB}"
 source "${GO_LIB}"
 
 swarm_require_go "${ROOT_DIR}"
+swarm_provision_system_paths "$(swarm_lane_default)"
 
 CACHE_ROOT="${GO_CACHE_ROOT:-${ROOT_DIR}/.cache/go}"
 GOCACHE_DIR="${GOCACHE_DIR:-${CACHE_ROOT}/build}"

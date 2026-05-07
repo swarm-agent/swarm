@@ -44,14 +44,14 @@ func TestWorkspaceBucketNameStableDistinctAndNonLeaky(t *testing.T) {
 	}
 }
 
-func TestWorkspaceDirsUseXDGWorkspaceBucketsAndPrivatePermissions(t *testing.T) {
-	xdgRoot := t.TempDir()
-	dataHome := filepath.Join(xdgRoot, "data")
-	cacheHome := filepath.Join(xdgRoot, "cache")
-	stateHome := filepath.Join(xdgRoot, "state")
-	t.Setenv("XDG_DATA_HOME", dataHome)
-	t.Setenv("XDG_CACHE_HOME", cacheHome)
-	t.Setenv("XDG_STATE_HOME", stateHome)
+func TestWorkspaceDirsUseStorageContractWorkspaceBucketsAndPrivatePermissions(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "data")
+	cacheRoot := filepath.Join(root, "cache")
+	runtimeRoot := filepath.Join(root, "runtime")
+	t.Setenv("STATE_DIRECTORY", dataRoot)
+	t.Setenv("CACHE_DIRECTORY", cacheRoot)
+	t.Setenv("RUNTIME_DIRECTORY", runtimeRoot)
 
 	workspace := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(filepath.Join(workspace, ".swarm"), 0o755); err != nil {
@@ -75,9 +75,9 @@ func TestWorkspaceDirsUseXDGWorkspaceBucketsAndPrivatePermissions(t *testing.T) 
 		t.Fatalf("WorkspaceStateDir: %v", err)
 	}
 
-	wantDataPrefix := filepath.Join(dataHome, AppDirName, WorkspacesDir, bucket)
-	wantCachePrefix := filepath.Join(cacheHome, AppDirName, WorkspacesDir, bucket)
-	wantStatePrefix := filepath.Join(stateHome, AppDirName, WorkspacesDir, bucket)
+	wantDataPrefix := filepath.Join(dataRoot, WorkspacesDir, bucket)
+	wantCachePrefix := filepath.Join(cacheRoot, WorkspacesDir, bucket)
+	wantStatePrefix := filepath.Join(runtimeRoot, WorkspacesDir, bucket)
 	assertPathUnder(t, dataDir, wantDataPrefix)
 	assertPathUnder(t, cacheDir, wantCachePrefix)
 	assertPathUnder(t, stateDir, wantStatePrefix)
@@ -85,14 +85,14 @@ func TestWorkspaceDirsUseXDGWorkspaceBucketsAndPrivatePermissions(t *testing.T) 
 		t.Fatalf("workspace app-storage path must not use workspace .swarm: data=%q cache=%q state=%q", dataDir, cacheDir, stateDir)
 	}
 
-	assertMode(t, filepath.Join(dataHome, AppDirName), PrivateDirPerm)
-	assertMode(t, filepath.Join(dataHome, AppDirName, WorkspacesDir), PrivateDirPerm)
+	assertMode(t, dataRoot, PrivateDirPerm)
+	assertMode(t, filepath.Join(dataRoot, WorkspacesDir), PrivateDirPerm)
 	assertMode(t, wantDataPrefix, PrivateDirPerm)
-	assertMode(t, filepath.Join(cacheHome, AppDirName), PrivateDirPerm)
-	assertMode(t, filepath.Join(cacheHome, AppDirName, WorkspacesDir), PrivateDirPerm)
+	assertMode(t, cacheRoot, PrivateDirPerm)
+	assertMode(t, filepath.Join(cacheRoot, WorkspacesDir), PrivateDirPerm)
 	assertMode(t, wantCachePrefix, PrivateDirPerm)
-	assertMode(t, filepath.Join(stateHome, AppDirName), PrivateDirPerm)
-	assertMode(t, filepath.Join(stateHome, AppDirName, WorkspacesDir), PrivateDirPerm)
+	assertMode(t, runtimeRoot, PrivateDirPerm)
+	assertMode(t, filepath.Join(runtimeRoot, WorkspacesDir), PrivateDirPerm)
 	assertMode(t, wantStatePrefix, PrivateDirPerm)
 	assertMode(t, dataDir, PrivateDirPerm)
 	assertMode(t, cacheDir, PrivateDirPerm)
@@ -100,32 +100,30 @@ func TestWorkspaceDirsUseXDGWorkspaceBucketsAndPrivatePermissions(t *testing.T) 
 }
 
 func TestExistingAppParentDirectoriesAreHardened(t *testing.T) {
-	xdgRoot := t.TempDir()
-	dataHome := filepath.Join(xdgRoot, "data")
-	appDir := filepath.Join(dataHome, AppDirName)
-	workspacesDir := filepath.Join(appDir, WorkspacesDir)
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	workspacesDir := filepath.Join(dataRoot, WorkspacesDir)
 	if err := os.MkdirAll(workspacesDir, 0o775); err != nil {
 		t.Fatalf("mkdir existing app dirs: %v", err)
 	}
-	if err := os.Chmod(appDir, 0o775); err != nil {
+	if err := os.Chmod(dataRoot, 0o775); err != nil {
 		t.Fatalf("chmod app dir: %v", err)
 	}
 	if err := os.Chmod(workspacesDir, 0o775); err != nil {
 		t.Fatalf("chmod workspaces dir: %v", err)
 	}
 
-	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("STATE_DIRECTORY", dataRoot)
 	workspace := filepath.Join(t.TempDir(), "repo")
 	if _, err := WorkspaceDataDir(workspace, "reports"); err != nil {
 		t.Fatalf("WorkspaceDataDir: %v", err)
 	}
 
-	assertMode(t, appDir, PrivateDirPerm)
+	assertMode(t, dataRoot, PrivateDirPerm)
 	assertMode(t, workspacesDir, PrivateDirPerm)
 }
 
 func TestWritePrivateFileUses0600(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "data"))
 	workspace := filepath.Join(t.TempDir(), "repo")
 	path, err := WorkspaceDataDir(workspace, "reports", "session-1")
 	if err != nil {
@@ -139,7 +137,7 @@ func TestWritePrivateFileUses0600(t *testing.T) {
 }
 
 func TestPathPartsCannotEscapeAppDirectory(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
+	t.Setenv("CACHE_DIRECTORY", filepath.Join(t.TempDir(), "cache"))
 	if _, err := CacheDir("workspaces", "..", "escape"); err == nil {
 		t.Fatalf("CacheDir accepted escaping path part")
 	}

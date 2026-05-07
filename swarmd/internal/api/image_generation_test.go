@@ -19,8 +19,8 @@ import (
 )
 
 func TestHandleImageGenerationsStreamSerializesConcurrentEvents(t *testing.T) {
-	xdgDataHome := filepath.Join(t.TempDir(), "data")
-	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	t.Setenv("STATE_DIRECTORY", dataRoot)
 
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "image-generation.pebble"))
 	if err != nil {

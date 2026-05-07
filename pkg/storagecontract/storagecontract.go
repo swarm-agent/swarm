@@ -199,15 +199,15 @@ func defaultRoot(goos string, kind RootKind) (string, error) {
 	case "linux":
 		switch kind {
 		case RootData:
-			return "/var/lib/" + appDirName, nil
+			return filepath.Join(string(filepath.Separator), "var", "lib", appDirName), nil
 		case RootCache:
-			return "/var/cache/" + appDirName, nil
+			return filepath.Join(string(filepath.Separator), "var", "cache", appDirName), nil
 		case RootRuntime:
-			return "/run/" + appDirName, nil
+			return filepath.Join(string(filepath.Separator), "run", appDirName), nil
 		case RootConfig:
-			return "/etc/" + appDirName, nil
+			return filepath.Join(string(filepath.Separator), "etc", appDirName), nil
 		case RootLogs:
-			return "/var/log/" + appDirName, nil
+			return filepath.Join(string(filepath.Separator), "var", "log", appDirName), nil
 		}
 	case "darwin":
 		switch kind {

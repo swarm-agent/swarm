@@ -9,10 +9,11 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
 
 const (
-	AppDirName      = "swarmd"
 	WorkspacesDir   = "workspaces"
 	PrivateDirPerm  = 0o700
 	PrivateFilePerm = 0o600
@@ -24,43 +25,43 @@ const (
 
 var nonWorkspaceSlugRune = regexp.MustCompile(`[^a-z0-9]+`)
 
-// DataDir returns a private Swarm data directory under XDG_DATA_HOME/swarmd.
+// DataDir returns a private Swarm data directory under the canonical daemon data root.
 func DataDir(parts ...string) (string, error) {
-	root, err := xdgDataHome()
+	root, err := storagecontract.ResolveRoot(storagecontract.RootData, storagecontract.Options{})
 	if err != nil {
 		return "", err
 	}
-	path, err := joinAppPath(root, parts...)
+	path, err := joinRootPath(root, parts...)
 	if err != nil {
 		return "", err
 	}
-	return ensurePrivateAppDir(filepath.Join(filepath.Clean(root), AppDirName), path)
+	return ensurePrivateAppDir(root, path)
 }
 
-// CacheDir returns a private Swarm cache directory under XDG_CACHE_HOME/swarmd.
+// CacheDir returns a private Swarm cache directory under the canonical daemon cache root.
 func CacheDir(parts ...string) (string, error) {
-	root, err := xdgCacheHome()
+	root, err := storagecontract.ResolveRoot(storagecontract.RootCache, storagecontract.Options{})
 	if err != nil {
 		return "", err
 	}
-	path, err := joinAppPath(root, parts...)
+	path, err := joinRootPath(root, parts...)
 	if err != nil {
 		return "", err
 	}
-	return ensurePrivateAppDir(filepath.Join(filepath.Clean(root), AppDirName), path)
+	return ensurePrivateAppDir(root, path)
 }
 
-// StateDir returns a private Swarm state directory under XDG_STATE_HOME/swarmd.
+// StateDir returns a private Swarm state directory under the canonical daemon runtime root.
 func StateDir(parts ...string) (string, error) {
-	root, err := xdgStateHome()
+	root, err := storagecontract.ResolveRoot(storagecontract.RootRuntime, storagecontract.Options{})
 	if err != nil {
 		return "", err
 	}
-	path, err := joinAppPath(root, parts...)
+	path, err := joinRootPath(root, parts...)
 	if err != nil {
 		return "", err
 	}
-	return ensurePrivateAppDir(filepath.Join(filepath.Clean(root), AppDirName), path)
+	return ensurePrivateAppDir(root, path)
 }
 
 // WorkspaceDataDir returns a private data directory for artifacts owned by a workspace.
@@ -184,45 +185,12 @@ func ensurePrivateAppDir(appRoot, path string) (string, error) {
 	return path, nil
 }
 
-func xdgDataHome() (string, error) {
-	if override := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); override != "" {
-		return filepath.Clean(override), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".local", "share"), nil
-}
-
-func xdgCacheHome() (string, error) {
-	if override := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME")); override != "" {
-		return filepath.Clean(override), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".cache"), nil
-}
-
-func xdgStateHome() (string, error) {
-	if override := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); override != "" {
-		return filepath.Clean(override), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".local", "state"), nil
-}
-
-func joinAppPath(root string, parts ...string) (string, error) {
+func joinRootPath(root string, parts ...string) (string, error) {
 	root = filepath.Clean(strings.TrimSpace(root))
 	if root == "." || root == "" {
 		return "", fmt.Errorf("root directory is required")
 	}
-	joined := filepath.Join(root, AppDirName)
+	joined := root
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" || part == "." {

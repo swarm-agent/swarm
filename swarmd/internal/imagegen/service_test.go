@@ -52,7 +52,7 @@ func TestGenerateWorkspaceImageSessionBackendWritesOnePNGBeforeSuccess(t *testin
 		CallID:     "ig_test/../bad",
 		DecodedPNG: testPNGBytes(),
 	}})
-	logPath := filepath.Join(dataHome, "swarmd", "main", "imagegen.log")
+	logPath := filepath.Join(dataHome, "main", "imagegen.log")
 
 	result, err := svc.Generate(context.Background(), GenerateRequest{
 		Provider: ProviderCodexOpenAI,
@@ -195,7 +195,7 @@ func TestGenerateUsesProviderResultWithGeneratingStatusWithoutStreamRecovery(t *
 		ProviderResponse: map[string]any{"id": "resp_generating", "status": "generating"},
 	}}
 	svc, _, threadID, storagePath := newImageServiceTestHarnessWithDataHome(t, dataHome, client)
-	logPath := filepath.Join(dataHome, "swarmd", "main", "imagegen.log")
+	logPath := filepath.Join(dataHome, "main", "imagegen.log")
 
 	result, err := svc.Generate(context.Background(), GenerateRequest{
 		Provider: ProviderCodexOpenAI,
@@ -416,7 +416,7 @@ func newImageServiceTestHarnessWithClient(t *testing.T, client *fakeCodexImageCl
 
 func newImageServiceTestHarnessWithDataHome(t *testing.T, dataHome string, client *fakeCodexImageClient) (*Service, *pebblestore.ImageThreadStore, string, string) {
 	t.Helper()
-	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("STATE_DIRECTORY", dataHome)
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "store.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)

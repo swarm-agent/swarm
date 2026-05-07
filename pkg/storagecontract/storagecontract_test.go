@@ -8,15 +8,16 @@ import (
 )
 
 func TestResolveRootsLinuxDefaultsIgnoreHomeAndXDG(t *testing.T) {
+	home := "/test-home/alice"
 	roots, err := ResolveRoots(Options{
 		GOOS:    "linux",
-		HomeDir: "/home/alice",
+		HomeDir: home,
 		Env: map[string]string{
-			"HOME":            "/home/alice",
-			"XDG_DATA_HOME":   "/home/alice/.local/share",
-			"XDG_CACHE_HOME":  "/home/alice/.cache",
-			"XDG_STATE_HOME":  "/home/alice/.local/state",
-			"XDG_CONFIG_HOME": "/home/alice/.config",
+			"HOME":            home,
+			"XDG_DATA_HOME":   filepath.Join(home, ".local", "share"),
+			"XDG_CACHE_HOME":  filepath.Join(home, ".cache"),
+			"XDG_STATE_HOME":  filepath.Join(home, ".local", "state"),
+			"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
 		},
 		WorkspaceRoots: []string{"/srv/workspace/swarm-go"},
 	})
@@ -36,11 +37,12 @@ func TestResolveRootsLinuxDefaultsIgnoreHomeAndXDG(t *testing.T) {
 }
 
 func TestResolveRootsDarwinDefaultsUseSystemLibrary(t *testing.T) {
+	home := "/test-users/alice"
 	roots, err := ResolveRoots(Options{
 		GOOS:    "darwin",
-		HomeDir: "/Users/alice",
+		HomeDir: home,
 		Env: map[string]string{
-			"HOME": "/Users/alice",
+			"HOME": home,
 		},
 	})
 	if err != nil {
@@ -57,7 +59,7 @@ func TestResolveRootsDarwinDefaultsUseSystemLibrary(t *testing.T) {
 		t.Fatalf("darwin roots = %#v, want %#v", roots, want)
 	}
 	for _, got := range []string{roots.DataDir, roots.CacheDir, roots.ConfigDir, roots.LogsDir} {
-		if strings.HasPrefix(got, "/Users/alice/Library") {
+		if strings.HasPrefix(got, filepath.Join(home, "Library")) {
 			t.Fatalf("root %q unexpectedly uses user Library", got)
 		}
 	}
@@ -66,7 +68,7 @@ func TestResolveRootsDarwinDefaultsUseSystemLibrary(t *testing.T) {
 func TestResolveRootUsesSingleSystemdDirectoryEnvOnLinux(t *testing.T) {
 	got, err := ResolveRoot(RootData, Options{
 		GOOS:    "linux",
-		HomeDir: "/home/alice",
+		HomeDir: "/test-home/alice",
 		Env: map[string]string{
 			"STATE_DIRECTORY": "/var/lib/swarmd-custom",
 		},
@@ -92,7 +94,7 @@ func TestResolveRootRejectsMultiPathSystemdDirectoryEnv(t *testing.T) {
 }
 
 func TestValidateRootRejectsForbiddenRoots(t *testing.T) {
-	home := "/home/alice"
+	home := "/test-home/alice"
 	opts := Options{
 		HomeDir: home,
 		Env: map[string]string{
@@ -133,11 +135,12 @@ func TestValidateRootRejectsForbiddenRoots(t *testing.T) {
 }
 
 func TestOverridesUseSameForbiddenRootValidation(t *testing.T) {
+	home := "/test-home/alice"
 	_, err := ResolveRoot(RootData, Options{
 		GOOS:    "linux",
-		HomeDir: "/home/alice",
+		HomeDir: home,
 		OverrideRoots: map[RootKind]string{
-			RootData: "/home/alice/swarmd-test",
+			RootData: filepath.Join(home, "swarmd-test"),
 		},
 	})
 	if err == nil {
@@ -146,7 +149,7 @@ func TestOverridesUseSameForbiddenRootValidation(t *testing.T) {
 
 	got, err := ResolveRoot(RootData, Options{
 		GOOS:    "linux",
-		HomeDir: "/home/alice",
+		HomeDir: home,
 		OverrideRoots: map[RootKind]string{
 			RootData: "/tmp/swarmd-test",
 		},

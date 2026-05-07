@@ -10,8 +10,8 @@ import (
 )
 
 func TestPersistTaskReportUsesPrivateWorkspaceDataDir(t *testing.T) {
-	xdgDataHome := filepath.Join(t.TempDir(), "data")
-	t.Setenv("XDG_DATA_HOME", xdgDataHome)
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	t.Setenv("STATE_DIRECTORY", dataRoot)
 
 	workspace := filepath.Join(t.TempDir(), "repo")
 	gotRef, err := persistTaskReport(workspace, "Session 1", "task_call/launch 2", "Clone B", "move reports", "full report body")
@@ -23,7 +23,7 @@ func TestPersistTaskReportUsesPrivateWorkspaceDataDir(t *testing.T) {
 	if gotRef != wantRef {
 		t.Fatalf("report reference = %q, want %q", gotRef, wantRef)
 	}
-	if filepath.IsAbs(gotRef) || strings.Contains(gotRef, workspace) || strings.Contains(gotRef, xdgDataHome) {
+	if filepath.IsAbs(gotRef) || strings.Contains(gotRef, workspace) || strings.Contains(gotRef, dataRoot) {
 		t.Fatalf("report reference should be controlled and non-absolute, got %q", gotRef)
 	}
 
@@ -44,7 +44,7 @@ func TestPersistTaskReportUsesPrivateWorkspaceDataDir(t *testing.T) {
 	}
 	assertFileMode(t, reportPath, appstorage.PrivateFilePerm)
 	assertFileMode(t, reportDir, appstorage.PrivateDirPerm)
-	assertPathUnderRunTest(t, reportPath, filepath.Join(xdgDataHome, appstorage.AppDirName, appstorage.WorkspacesDir))
+	assertPathUnderRunTest(t, reportPath, filepath.Join(dataRoot, appstorage.WorkspacesDir))
 	if _, err := os.Stat(filepath.Join(workspace, ".swarm")); !os.IsNotExist(err) {
 		t.Fatalf("persistTaskReport should not create workspace .swarm, stat err=%v", err)
 	}

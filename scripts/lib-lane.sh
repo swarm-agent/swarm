@@ -39,19 +39,15 @@ swarm_lane_data_home() {
 }
 
 swarm_lane_binary_root() {
-  local data_home
-  data_home="$(swarm_lane_data_home)"
-  printf "%s\n" "${data_home}/swarm/bin"
+  printf "%s\n" "/usr/local/share/swarm/bin"
 }
 
 swarm_lane_install_root() {
-  local data_home
-  data_home="$(swarm_lane_data_home)"
-  printf "%s\n" "${data_home}/swarm"
+  printf "%s\n" "/usr/local/share/swarm"
 }
 
 swarm_lane_tool_bin_dir() {
-  printf "%s\n" "$(swarm_lane_install_root)/libexec"
+  printf "%s\n" "/usr/local/share/swarm/libexec"
 }
 
 swarm_lane_bin_dir() {
@@ -61,13 +57,129 @@ swarm_lane_bin_dir() {
 }
 
 swarm_lane_desktop_dist_dir() {
-  printf "%s\n" "$(swarm_lane_install_root)/share"
+  printf "%s\n" "/usr/local/share/swarm/share"
+}
+
+swarm_daemon_config_root() {
+  printf "%s\n" "/etc"/swarmd
+}
+
+swarm_daemon_data_root() {
+  local lane="${1:-main}"
+  case "${lane}" in
+    dev) printf "%s\n" "/var/lib/swarmd/dev" ;;
+    *) printf "%s\n" "/var/lib/swarmd" ;;
+  esac
+}
+
+swarm_daemon_runtime_root() {
+  local lane="${1:-main}"
+  case "${lane}" in
+    dev) printf "%s\n" "/run/swarmd/dev" ;;
+    *) printf "%s\n" "/run/swarmd" ;;
+  esac
+}
+
+swarm_daemon_log_root() {
+  local lane="${1:-main}"
+  case "${lane}" in
+    dev) printf "%s\n" "/var/log/swarmd/dev" ;;
+    *) printf "%s\n" "/var/log/swarmd" ;;
+  esac
+}
+
+swarm_daemon_ports_root() {
+  printf "%s\n" "/run/swarmd/ports"
+}
+
+swarm_current_owner_spec() {
+  printf "%s:%s\n" "$(id -u)" "$(id -g)"
+}
+
+swarm_run_privileged() {
+  if [[ "$(id -u)" == "0" ]]; then
+    "$@"
+    return $?
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "Swarm uses system locations under /usr/local, /etc, /var, and /run." >&2
+    echo "Install sudo or create/chown those Swarm directories before running this command." >&2
+    return 1
+  fi
+  sudo "$@"
+}
+
+swarm_dir_writable() {
+  local path="${1:-}"
+  local probe
+  probe="$(mktemp "${path}/.swarm-write-check.XXXXXX" 2>/dev/null)" || return 1
+  rm -f "${probe}"
+}
+
+swarm_provision_owned_dir() {
+  local mode="${1:-0755}"
+  local path="${2:-}"
+  local owner
+  if mkdir -p "${path}" 2>/dev/null && chmod "${mode}" "${path}" 2>/dev/null && swarm_dir_writable "${path}"; then
+    return 0
+  fi
+  owner="$(swarm_current_owner_spec)"
+  swarm_run_privileged install -d -m "${mode}" -o "${owner%:*}" -g "${owner#*:}" "${path}"
+}
+
+swarm_provision_system_dir() {
+  local mode="${1:-0755}"
+  local path="${2:-}"
+  if mkdir -p "${path}" 2>/dev/null && [[ -d "${path}" ]]; then
+    return 0
+  fi
+  swarm_run_privileged install -d -m "${mode}" "${path}"
+}
+
+swarm_provision_tmpfiles_config() {
+  local owner tmp_path
+  owner="$(swarm_current_owner_spec)"
+  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-tmpfiles.XXXXXX")"
+  cat >"${tmp_path}" <<EOF
+d /run/swarmd 0700 ${owner%:*} ${owner#*:} -
+d /run/swarmd/dev 0700 ${owner%:*} ${owner#*:} -
+d /run/swarmd/ports 0700 ${owner%:*} ${owner#*:} -
+EOF
+  if ! swarm_run_privileged install -m 0644 "${tmp_path}" "/etc"/tmpfiles.d/swarmd.conf; then
+    rm -f "${tmp_path}"
+    return 1
+  fi
+  rm -f "${tmp_path}"
+}
+
+swarm_provision_system_paths() {
+  local lane="${1:-main}"
+  local data_root runtime_root log_root
+  data_root="$(swarm_daemon_data_root "${lane}")"
+  runtime_root="$(swarm_daemon_runtime_root "${lane}")"
+  log_root="$(swarm_daemon_log_root "${lane}")"
+
+  swarm_provision_system_dir 0755 "/usr/local/bin"
+  swarm_provision_system_dir 0755 "/usr/local/share"
+  swarm_provision_system_dir 0755 "/etc"/tmpfiles.d
+
+  swarm_provision_owned_dir 0755 "$(swarm_lane_binary_root)"
+  swarm_provision_owned_dir 0755 "$(swarm_lane_tool_bin_dir)"
+  swarm_provision_owned_dir 0755 "$(swarm_lane_install_root)"
+  swarm_provision_owned_dir 0755 "$(swarm_lane_install_root)/lib"
+  swarm_provision_owned_dir 0755 "$(swarm_lane_desktop_dist_dir)"
+
+  swarm_provision_owned_dir 0700 "$(swarm_daemon_config_root)"
+  swarm_provision_owned_dir 0700 "${data_root}"
+  swarm_provision_owned_dir 0700 "/var/cache/swarmd"
+  swarm_provision_owned_dir 0700 "${runtime_root}"
+  swarm_provision_owned_dir 0755 "${log_root}"
+  swarm_provision_owned_dir 0700 "$(swarm_daemon_ports_root)"
+  swarm_provision_tmpfiles_config
 }
 
 swarm_startup_config_path() {
-  local config_home
-  config_home="$(swarm_lane_config_home)"
-  printf "%s\n" "${config_home}/swarm/swarm.conf"
+  printf "%s\n" "$(swarm_daemon_config_root)/swarm.conf"
 }
 
 swarm_startup_config_ensure() {
@@ -77,6 +189,7 @@ swarm_startup_config_ensure() {
     return 0
   fi
 
+  swarm_provision_system_paths "$(swarm_lane_default)"
   mkdir -p "$(dirname -- "${config_path}")"
   cat >"${config_path}" <<'EOF'
 startup_mode = interactive
@@ -1002,6 +1115,8 @@ swarm_lane_export_profile() {
     ;;
   esac
 
+  swarm_provision_system_paths "${lane}"
+
   local listen
   listen="$(swarm_lane_listen_addr "${lane}")" || return 1
 
@@ -1011,21 +1126,22 @@ swarm_lane_export_profile() {
     return 1
   fi
 
-  local state_home
-  state_home="$(swarm_lane_state_home)"
-  local config_home
-  config_home="$(swarm_lane_config_home)"
-  local data_home
-  data_home="$(swarm_lane_data_home)"
   local startup_mode
   local dev_mode
   local dev_root
   local bypass_permissions
   local desktop_port
 
-  local swarm_state_home="${state_home}/swarm"
-  local daemon_state_root="${swarm_state_home}/swarmd/${lane}"
-  local daemon_data_root="${data_home}/swarmd/${lane}"
+  local daemon_config_root
+  daemon_config_root="$(swarm_daemon_config_root)"
+  local daemon_state_root
+  daemon_state_root="$(swarm_daemon_runtime_root "${lane}")"
+  local daemon_data_root
+  daemon_data_root="$(swarm_daemon_data_root "${lane}")"
+  local daemon_log_root
+  daemon_log_root="$(swarm_daemon_log_root "${lane}")"
+  local daemon_ports_root
+  daemon_ports_root="$(swarm_daemon_ports_root)"
 
   startup_mode="$(swarm_startup_mode)" || return 1
   dev_mode="$(swarm_startup_dev_mode)" || return 1
@@ -1035,8 +1151,8 @@ swarm_lane_export_profile() {
 
   export SWARM_LANE="${lane}"
   export SWARM_LANE_PORT="${port}"
-  export SWARM_STATE_HOME="${swarm_state_home}"
-  export SWARM_CONFIG_HOME="${config_home}/swarm"
+  export SWARM_STATE_HOME="${daemon_state_root}"
+  export SWARM_CONFIG_HOME="${daemon_config_root}"
   export SWARM_STARTUP_CONFIG="$(swarm_startup_config_path)"
   export SWARM_STARTUP_MODE="${startup_mode}"
   export SWARM_DEV_MODE="${dev_mode}"
@@ -1052,14 +1168,14 @@ swarm_lane_export_profile() {
   export DB_PATH="${daemon_data_root}/swarmd.pebble"
   export LOCK_PATH="${daemon_state_root}/swarmd.lock"
   export PID_FILE="${daemon_state_root}/swarmd.pid"
-  export LOG_FILE="${daemon_state_root}/swarmd.log"
+  export LOG_FILE="${daemon_log_root}/swarmd.log"
 
   export SWARM_BIN_DIR="$(swarm_lane_bin_dir "${lane}")"
   export SWARM_TOOL_BIN_DIR="$(swarm_lane_tool_bin_dir)"
   export SWARM_WEB_DIR="${repo_root}/web"
   export SWARM_WEB_DIST_DIR="$(swarm_lane_desktop_dist_dir)"
 
-  export SWARM_PORTS_DIR="${swarm_state_home}/ports"
+  export SWARM_PORTS_DIR="${daemon_ports_root}"
   export SWARM_PORT_RECORD="${SWARM_PORTS_DIR}/swarmd-${lane}.env"
 
   # Compatibility env expected by existing swarmd scripts.

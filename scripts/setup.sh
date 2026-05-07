@@ -120,6 +120,7 @@ fi
 source "${LANE_LIB}"
 
 echo "installing swarm/swarmdev/rebuild launchers..."
+swarm_provision_system_paths main
 bash "${ROOT_DIR}/scripts/build-tools.sh"
 "$(swarm_lane_tool_bin_dir)/swarmsetup"
 

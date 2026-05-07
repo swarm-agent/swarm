@@ -562,10 +562,10 @@ func switchRuntimeLinks(installRoot, targetRoot string) error {
 }
 
 func installLauncherSymlinks(installRoot string) error {
-	binHome, err := xdgBinHome()
-	if err != nil {
+	if err := ensureSystemBinDir(); err != nil {
 		return err
 	}
+	binHome := systemBinDir()
 	if err := os.MkdirAll(binHome, 0o755); err != nil {
 		return err
 	}
@@ -579,7 +579,7 @@ func installLauncherSymlinks(installRoot string) error {
 		if !isExecutable(target) {
 			return fmt.Errorf("missing executable launcher: %s", target)
 		}
-		if err := replaceSymlink(filepath.Join(binHome, name), target); err != nil {
+		if err := replaceSymlinkPrivileged(filepath.Join(binHome, name), target); err != nil {
 			return fmt.Errorf("link %s -> %s: %w", filepath.Join(binHome, name), target, err)
 		}
 	}

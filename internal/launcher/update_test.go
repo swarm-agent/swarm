@@ -65,16 +65,22 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 	const version = "v1.2.3"
 	writeRuntimeArtifact(t, artifactRoot, version, nil)
 
-	xdgRoot := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", filepath.Join(xdgRoot, "data"))
-	t.Setenv("XDG_BIN_HOME", filepath.Join(xdgRoot, "bin"))
+	systemRoot := t.TempDir()
+	installRoot := filepath.Join(systemRoot, "share", "swarm")
+	binRoot := filepath.Join(systemRoot, "bin")
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", installRoot)
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", binRoot)
+	t.Setenv("SWARM_SYSTEM_BINARY_DIR", filepath.Join(installRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_LIBEXEC_DIR", filepath.Join(installRoot, "libexec"))
+	t.Setenv("SWARM_SYSTEM_LIB_DIR", filepath.Join(installRoot, "lib"))
+	t.Setenv("SWARM_SYSTEM_SHARE_DIR", filepath.Join(installRoot, "share"))
 
 	report, err := InstallRuntimeFromArtifact(artifactRoot)
 	if err != nil {
 		t.Fatalf("InstallRuntimeFromArtifact: %v", err)
 	}
 
-	versionRoot := filepath.Join(xdgRoot, "data", "swarm", "versions", version)
+	versionRoot := filepath.Join(installRoot, "versions", version)
 	for _, rel := range []string{
 		filepath.Join("libexec", "swarm"),
 		filepath.Join("libexec", "swarmdev"),
@@ -96,7 +102,7 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 			t.Fatalf("stat %s: %v", path, err)
 		}
 	}
-	currentTarget, err := os.Readlink(filepath.Join(xdgRoot, "data", "swarm", "current"))
+	currentTarget, err := os.Readlink(filepath.Join(installRoot, "current"))
 	if err != nil {
 		t.Fatalf("read current symlink: %v", err)
 	}
@@ -108,19 +114,24 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readlink %s: %v", linkPath, err)
 	}
-	wantLauncher := filepath.Join(xdgRoot, "data", "swarm", "libexec", "swarm")
+	wantLauncher := filepath.Join(installRoot, "libexec", "swarm")
 	if filepath.Clean(targetPath) != filepath.Clean(wantLauncher) {
 		t.Fatalf("swarm link = %q, want %q", targetPath, wantLauncher)
 	}
-	if got := CurrentRuntimeVersion(filepath.Join(xdgRoot, "data", "swarm")); got != version {
+	if got := CurrentRuntimeVersion(installRoot); got != version {
 		t.Fatalf("CurrentRuntimeVersion = %q, want %q", got, version)
 	}
 }
 
 func TestInstallRuntimeFromArtifactDoesNotBreakCurrentRuntimeOnIncompleteArtifact(t *testing.T) {
-	xdgRoot := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", filepath.Join(xdgRoot, "data"))
-	t.Setenv("XDG_BIN_HOME", filepath.Join(xdgRoot, "bin"))
+	systemRoot := t.TempDir()
+	installRoot := filepath.Join(systemRoot, "share", "swarm")
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", installRoot)
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", filepath.Join(systemRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_BINARY_DIR", filepath.Join(installRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_LIBEXEC_DIR", filepath.Join(installRoot, "libexec"))
+	t.Setenv("SWARM_SYSTEM_LIB_DIR", filepath.Join(installRoot, "lib"))
+	t.Setenv("SWARM_SYSTEM_SHARE_DIR", filepath.Join(installRoot, "share"))
 
 	const version = "v1.2.3"
 	goodArtifact := t.TempDir()
@@ -129,7 +140,6 @@ func TestInstallRuntimeFromArtifactDoesNotBreakCurrentRuntimeOnIncompleteArtifac
 	if err != nil {
 		t.Fatalf("initial InstallRuntimeFromArtifact: %v", err)
 	}
-	installRoot := filepath.Join(xdgRoot, "data", "swarm")
 	wantCurrent, ok := resolveRuntimeLink(filepath.Join(installRoot, "current"))
 	if !ok {
 		t.Fatalf("current runtime link missing after initial install")
@@ -302,8 +312,7 @@ func TestMarkPendingRuntimeUpdateAndBootSuccess(t *testing.T) {
 
 func TestRollbackPendingRuntimeUpdateRestoresPreviousRuntime(t *testing.T) {
 	installRoot := t.TempDir()
-	xdgRoot := t.TempDir()
-	t.Setenv("XDG_BIN_HOME", filepath.Join(xdgRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", filepath.Join(t.TempDir(), "bin"))
 	previousRoot := filepath.Join(installRoot, "versions", "v1.0.0")
 	targetRoot := filepath.Join(installRoot, "versions", "v1.1.0")
 	for _, root := range []string{previousRoot, targetRoot} {

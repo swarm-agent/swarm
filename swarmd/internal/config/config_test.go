@@ -11,11 +11,12 @@ import (
 
 func TestParseDefaultsUseSystemStorageRoots(t *testing.T) {
 	configDir := writeTestStartupConfig(t)
-	t.Setenv("HOME", "/home/swarmd-config-test")
-	t.Setenv("XDG_DATA_HOME", "/home/swarmd-config-test/.local/share")
-	t.Setenv("XDG_CONFIG_HOME", "/home/swarmd-config-test/.config")
-	t.Setenv("XDG_CACHE_HOME", "/home/swarmd-config-test/.cache")
-	t.Setenv("XDG_STATE_HOME", "/home/swarmd-config-test/.local/state")
+	home := "/test-home/swarmd-config-test"
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
 	t.Setenv("STATE_DIRECTORY", "")
 	t.Setenv("RUNTIME_DIRECTORY", "")
 	t.Setenv("CONFIGURATION_DIRECTORY", configDir)
@@ -34,7 +35,7 @@ func TestParseDefaultsUseSystemStorageRoots(t *testing.T) {
 		t.Fatalf("LockPath = %q, want /run/swarmd/swarmd.lock", cfg.LockPath)
 	}
 	for _, path := range []string{cfg.DataDir, cfg.DBPath, cfg.LockPath} {
-		if strings.HasPrefix(path, "/home/swarmd-config-test") {
+		if strings.HasPrefix(path, home) {
 			t.Fatalf("storage path %q unexpectedly under HOME/XDG", path)
 		}
 	}
@@ -42,7 +43,7 @@ func TestParseDefaultsUseSystemStorageRoots(t *testing.T) {
 
 func TestParseUsesSystemdStorageDirectoryOverrides(t *testing.T) {
 	configDir := writeTestStartupConfig(t)
-	t.Setenv("HOME", "/home/swarmd-config-test")
+	t.Setenv("HOME", "/test-home/swarmd-config-test")
 	t.Setenv("STATE_DIRECTORY", "/var/lib/swarmd-unit")
 	t.Setenv("RUNTIME_DIRECTORY", "/run/swarmd-unit")
 	t.Setenv("CONFIGURATION_DIRECTORY", configDir)
@@ -64,7 +65,8 @@ func TestParseUsesSystemdStorageDirectoryOverrides(t *testing.T) {
 
 func TestParseRejectsUnsafeExplicitStorageFlags(t *testing.T) {
 	configDir := writeTestStartupConfig(t)
-	t.Setenv("HOME", "/home/swarmd-config-test")
+	home := "/test-home/swarmd-config-test"
+	t.Setenv("HOME", home)
 	t.Setenv("STATE_DIRECTORY", "")
 	t.Setenv("RUNTIME_DIRECTORY", "")
 	t.Setenv("CONFIGURATION_DIRECTORY", configDir)
@@ -77,9 +79,9 @@ func TestParseRejectsUnsafeExplicitStorageFlags(t *testing.T) {
 		{name: "relative data dir", args: []string{"--data-dir", "relative-data"}, want: "relative paths are forbidden"},
 		{name: "relative db path", args: []string{"--db-path", "relative.pebble"}, want: "relative paths are forbidden"},
 		{name: "relative lock path", args: []string{"--lock-path", "relative.lock"}, want: "relative paths are forbidden"},
-		{name: "home data dir", args: []string{"--data-dir", "/home/swarmd-config-test/.local/share/swarmd"}, want: "forbidden root"},
-		{name: "home db path", args: []string{"--db-path", "/home/swarmd-config-test/.local/share/swarmd/swarmd.pebble"}, want: "forbidden root"},
-		{name: "home lock path", args: []string{"--lock-path", "/home/swarmd-config-test/.cache/swarmd.lock"}, want: "forbidden root"},
+		{name: "home data dir", args: []string{"--data-dir", filepath.Join(home, ".local", "share", "swarmd")}, want: "forbidden root"},
+		{name: "home db path", args: []string{"--db-path", filepath.Join(home, ".local", "share", "swarmd", "swarmd.pebble")}, want: "forbidden root"},
+		{name: "home lock path", args: []string{"--lock-path", filepath.Join(home, ".cache", "swarmd.lock")}, want: "forbidden root"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

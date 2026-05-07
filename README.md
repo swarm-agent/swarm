@@ -16,7 +16,7 @@ This repository is under active development. The README below is intentionally c
 - Opens a terminal UI with slash commands for workspaces, sessions, providers, models, auth, permissions, themes, keybinds, updates, and related coding workflow controls.
 - Opens a browser desktop UI with the installed launcher via `swarm --desktop`.
 - Supports main and dev runtime lanes so an installed release and a development lane can use separate ports and state.
-- Stores runtime data under XDG-aware user directories instead of requiring repository-local mutable state.
+- Stores runtime data under system locations instead of repository-local mutable state.
 - Uses attach-token authenticated local API endpoints for non-health daemon access.
 - Includes provider adapters and auth/status plumbing for Anthropic, Codex, Google, Fireworks, OpenRouter, and Exa search support. Copilot is not currently available as a selectable or runnable provider.
 - Includes repository guardrails for public-repo hygiene, pre-commit checks, secret scanning, policy checks, and vulnerability scanning.
@@ -31,12 +31,12 @@ curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh |
 
 That command fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm.
 
-The installer places launchers in `${XDG_BIN_HOME:-$HOME/.local/bin}` and installs runtime artifacts under `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}`.
+The installer places launchers in `/usr/local/bin` and installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`. Because those are system locations, `install.sh` may prompt for sudo during provisioning. Swarm-owned subdirectories are created for the installing user so the daemon still runs as that user.
 
 If your shell does not already include the launcher directory on `PATH`, run Swarm with:
 
 ```bash
-${XDG_BIN_HOME:-$HOME/.local/bin}/swarm
+/usr/local/bin/swarm
 ```
 
 Manual release asset install is also supported. Download `swarm-<version>-linux-amd64.tar.gz` from a GitHub release, extract it, and run:
@@ -124,7 +124,7 @@ Swarm is split into a launcher, a terminal UI, a daemon, and a web frontend:
 | Area | Path | Purpose |
 | --- | --- | --- |
 | Launcher CLI | `cmd/swarm/`, `internal/launcher/` | Starts/stops lanes, records port metadata, launches TUI or desktop, runs update helpers. |
-| Installer | `cmd/swarmsetup/` | Installs launchers and release artifacts into XDG-aware locations. |
+| Installer | `cmd/swarmsetup/` | Installs launchers and release artifacts into system locations. |
 | Terminal UI | `cmd/swarmtui/`, `internal/app/`, `internal/ui/` | tcell app, slash commands, modals, settings, model/auth/workspace/session UI. |
 | Daemon | `swarmd/` | HTTP/WebSocket API, provider runtime, sessions, workspaces, permissions, Pebble-backed persistence. |
 | Desktop UI | `web/` | Vite/React browser frontend served by the local runtime. |
@@ -152,11 +152,11 @@ SWARMD_URL=http://127.0.0.1:7782 SWARMD_TOKEN=<token> swarm dev
 
 ## Data and configuration locations
 
-Swarm uses XDG-aware paths:
+Swarm uses system locations:
 
-- `${XDG_BIN_HOME:-$HOME/.local/bin}` for launchers.
-- `${XDG_DATA_HOME:-$HOME/.local/share}/swarm/{bin,libexec,share}` for runtime files.
-- `${XDG_STATE_HOME:-$HOME/.local/state}/swarm/...` for runtime state, logs, PID files, and lane port records.
+- `/usr/local/bin` for launchers.
+- `/usr/local/share/swarm/{bin,libexec,lib,share}` for runtime files.
+- `/etc/swarmd`, `/var/lib/swarmd`, `/run/swarmd`, and `/var/log/swarmd` for daemon configuration, data, runtime files, and logs.
 
 UI settings are persisted through the daemon-backed `/v1/ui/settings` API. Current settings include chat header visibility, thinking tags, tool stream display, mouse capture, keybinds, theme selection, custom themes, and swarm display metadata.
 

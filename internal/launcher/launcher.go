@@ -26,6 +26,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
 
 type StartupConfig = startupconfig.FileConfig
@@ -61,25 +62,58 @@ type Profile struct {
 	Bypass      bool
 }
 
-func swarmInstallRoot(dataHome string) string {
-	return filepath.Join(dataHome, "swarm")
+const (
+	defaultSystemBinDir         = "/usr/local/bin"
+	defaultSystemInstallRoot    = "/usr/local/share/swarm"
+	defaultSystemBinaryDir      = "/usr/local/share/swarm/bin"
+	defaultSystemToolBinDir     = "/usr/local/share/swarm/libexec"
+	defaultSystemLibDir         = "/usr/local/share/swarm/lib"
+	defaultSystemDesktopDistDir = "/usr/local/share/swarm/share"
+)
+
+func systemBinDir() string {
+	return envOrDefault("SWARM_SYSTEM_BIN_DIR", defaultSystemBinDir)
 }
 
-func swarmBinaryRoot(dataHome string) string {
-	return filepath.Join(swarmInstallRoot(dataHome), "bin")
+func systemInstallRoot() string {
+	return envOrDefault("SWARM_SYSTEM_INSTALL_ROOT", defaultSystemInstallRoot)
 }
 
-func swarmToolBinDir(dataHome string) string {
-	return filepath.Join(swarmInstallRoot(dataHome), "libexec")
+func systemBinaryDir() string {
+	return envOrDefault("SWARM_SYSTEM_BINARY_DIR", defaultSystemBinaryDir)
 }
 
-func swarmLaneBinDir(dataHome, lane string) string {
+func systemToolBinDir() string {
+	return envOrDefault("SWARM_SYSTEM_LIBEXEC_DIR", defaultSystemToolBinDir)
+}
+
+func systemLibDir() string {
+	return envOrDefault("SWARM_SYSTEM_LIB_DIR", defaultSystemLibDir)
+}
+
+func systemDesktopDistDir() string {
+	return envOrDefault("SWARM_SYSTEM_SHARE_DIR", defaultSystemDesktopDistDir)
+}
+
+func swarmInstallRoot(_ string) string {
+	return systemInstallRoot()
+}
+
+func swarmBinaryRoot(_ string) string {
+	return systemBinaryDir()
+}
+
+func swarmToolBinDir(_ string) string {
+	return systemToolBinDir()
+}
+
+func swarmLaneBinDir(_ string, lane string) string {
 	_ = lane
-	return swarmBinaryRoot(dataHome)
+	return systemBinaryDir()
 }
 
-func swarmLibDir(dataHome string) string {
-	return filepath.Join(swarmInstallRoot(dataHome), "lib")
+func swarmLibDir(_ string) string {
+	return systemLibDir()
 }
 
 func fffLibraryPlatformDir() string {
@@ -91,8 +125,8 @@ func fffLibraryPlatformDir() string {
 	}
 }
 
-func swarmDesktopDistDir(dataHome string) string {
-	return filepath.Join(swarmInstallRoot(dataHome), "share")
+func swarmDesktopDistDir(_ string) string {
+	return systemDesktopDistDir()
 }
 
 type ServerStatus struct {
@@ -229,24 +263,16 @@ func LoadProfile(root, lane string, bypassOverride *bool) (Profile, error) {
 	if bypassOverride != nil {
 		bypass = *bypassOverride
 	}
-	stateHome, err := xdgStateHome()
-	if err != nil {
-		return Profile{}, err
-	}
-	configHome, err := xdgConfigHome()
-	if err != nil {
-		return Profile{}, err
-	}
-	dataHome, err := xdgDataHome()
+	storageRoots, err := storagecontract.ResolveRoots(storagecontract.Options{})
 	if err != nil {
 		return Profile{}, err
 	}
 	startupCWD, _ := os.Getwd()
 	startupCWD = filepath.Clean(startupCWD)
-	installRoot := swarmInstallRoot(dataHome)
-	swarmState := filepath.Join(stateHome, "swarm")
-	stateRoot := filepath.Join(swarmState, "swarmd", lane)
-	dataDir := filepath.Join(dataHome, "swarmd", lane)
+	installRoot := swarmInstallRoot("")
+	stateRoot := laneRoot(storageRoots.RuntimeDir, lane)
+	dataDir := laneRoot(storageRoots.DataDir, lane)
+	logRoot := laneRoot(storageRoots.LogsDir, lane)
 	webDir := ""
 	if root != "" {
 		webDir = filepath.Join(root, "web")
@@ -260,27 +286,35 @@ func LoadProfile(root, lane string, bypassOverride *bool) (Profile, error) {
 		URL:         fmt.Sprintf("http://%s:%d", cfg.Host, port),
 		LanePort:    port,
 		DesktopPort: desktopPort,
-		StateHome:   stateHome,
-		ConfigHome:  filepath.Join(configHome, "swarm"),
-		DataHome:    dataHome,
-		SwarmState:  swarmState,
+		StateHome:   storageRoots.RuntimeDir,
+		ConfigHome:  storageRoots.ConfigDir,
+		DataHome:    storageRoots.DataDir,
+		SwarmState:  storageRoots.RuntimeDir,
 		StateRoot:   stateRoot,
 		DataDir:     dataDir,
 		DBPath:      filepath.Join(dataDir, "swarmd.pebble"),
 		LockPath:    filepath.Join(stateRoot, "swarmd.lock"),
 		ManagerFile: filepath.Join(stateRoot, "swarmd.manager.json"),
 		PIDFile:     filepath.Join(stateRoot, "swarmd.pid"),
-		LogFile:     filepath.Join(stateRoot, "swarmd.log"),
-		PortsDir:    filepath.Join(swarmState, "ports"),
-		PortRecord:  filepath.Join(swarmState, "ports", fmt.Sprintf("swarmd-%s.env", lane)),
-		BinDir:      swarmLaneBinDir(dataHome, lane),
-		ToolBinDir:  swarmToolBinDir(dataHome),
-		LibDir:      swarmLibDir(dataHome),
+		LogFile:     filepath.Join(logRoot, "swarmd.log"),
+		PortsDir:    filepath.Join(storageRoots.RuntimeDir, "ports"),
+		PortRecord:  filepath.Join(storageRoots.RuntimeDir, "ports", fmt.Sprintf("swarmd-%s.env", lane)),
+		BinDir:      swarmLaneBinDir("", lane),
+		ToolBinDir:  swarmToolBinDir(""),
+		LibDir:      swarmLibDir(""),
 		WebDir:      webDir,
-		WebDistDir:  swarmDesktopDistDir(dataHome),
+		WebDistDir:  swarmDesktopDistDir(""),
 		StartupCWD:  startupCWD,
 		Bypass:      bypass,
 	}, nil
+}
+
+func laneRoot(root, lane string) string {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if strings.EqualFold(strings.TrimSpace(lane), "dev") {
+		return filepath.Join(root, "dev")
+	}
+	return root
 }
 
 func LoadRuntimeProfile(lane string, bypassOverride *bool) (Profile, error) {
@@ -292,22 +326,66 @@ func LoadBuildProfile(root, lane string, bypassOverride *bool) (Profile, error) 
 }
 
 func LoadStartupConfig() (StartupConfig, error) {
+	if err := EnsureSystemInstallReady(); err != nil {
+		return StartupConfig{}, err
+	}
 	path, err := startupconfig.ResolvePath()
 	if err != nil {
+		return StartupConfig{}, err
+	}
+	if err := migrateLegacyStartupConfig(path); err != nil {
 		return StartupConfig{}, err
 	}
 	return startupconfig.Load(path)
 }
 
-func xdgConfigHome() (string, error) {
-	if v := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); v != "" {
-		return filepath.Clean(v), nil
+func migrateLegacyStartupConfig(targetPath string) error {
+	targetPath = filepath.Clean(strings.TrimSpace(targetPath))
+	if targetPath == "" || targetPath == "." {
+		return errors.New("startup config path is required")
 	}
-	home, err := os.UserHomeDir()
+	if _, err := os.Stat(targetPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat startup config %q: %w", targetPath, err)
+	}
+	legacyPath, err := legacyStartupConfigPath()
 	if err != nil {
-		return "", err
+		return err
 	}
-	return filepath.Join(home, ".config"), nil
+	if legacyPath == "" || legacyPath == targetPath {
+		return nil
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat legacy startup config %q: %w", legacyPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create startup config directory %q for migration from %q: %w", filepath.Dir(targetPath), legacyPath, err)
+	}
+	if err := os.Rename(legacyPath, targetPath); err != nil {
+		return fmt.Errorf("migrate legacy startup config from %q to %q: %w", legacyPath, targetPath, err)
+	}
+	legacySecret := startupconfig.RemoteDeployBootstrapSecretPath(legacyPath)
+	if _, err := os.Stat(legacySecret); err == nil {
+		targetSecret := startupconfig.RemoteDeployBootstrapSecretPath(targetPath)
+		if err := os.Rename(legacySecret, targetSecret); err != nil {
+			return fmt.Errorf("migrate legacy startup secret from %q to %q: %w", legacySecret, targetSecret, err)
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat legacy startup secret %q: %w", legacySecret, err)
+	}
+	return nil
+}
+
+func legacyStartupConfigPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve legacy user config directory: %w", err)
+	}
+	return filepath.Join(configDir, "swarm", "swarm.conf"), nil
 }
 
 func xdgStateHome() (string, error) {
@@ -333,14 +411,7 @@ func xdgDataHome() (string, error) {
 }
 
 func xdgBinHome() (string, error) {
-	if v := strings.TrimSpace(os.Getenv("XDG_BIN_HOME")); v != "" {
-		return filepath.Clean(v), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "bin"), nil
+	return systemBinDir(), nil
 }
 
 func (p Profile) EnvMap() map[string]string {
@@ -502,11 +573,10 @@ func buildToolBinaries(root string, skip map[string]bool, force bool) error {
 	if err != nil {
 		return err
 	}
-	dataHome, err := xdgDataHome()
-	if err != nil {
+	if err := EnsureSystemInstallReady(); err != nil {
 		return err
 	}
-	toolDir := swarmToolBinDir(dataHome)
+	toolDir := swarmToolBinDir("")
 	if err := os.MkdirAll(toolDir, 0o755); err != nil {
 		return err
 	}
@@ -844,6 +914,9 @@ func envValueOrDefault(key, fallback string) string {
 }
 
 func InstallLaunchers(root string) (InstallReport, error) {
+	if err := EnsureSystemInstallReady(); err != nil {
+		return InstallReport{}, err
+	}
 	binHome, err := xdgBinHome()
 	if err != nil {
 		return InstallReport{}, err
@@ -851,15 +924,11 @@ func InstallLaunchers(root string) (InstallReport, error) {
 	if err := os.MkdirAll(binHome, 0o755); err != nil {
 		return InstallReport{}, err
 	}
-	dataHome, err := xdgDataHome()
-	if err != nil {
-		return InstallReport{}, err
-	}
 	links := map[string]string{
-		"swarm":      filepath.Join(dataHome, "swarm", "libexec", "swarm"),
-		"swarmdev":   filepath.Join(dataHome, "swarm", "libexec", "swarmdev"),
-		"rebuild":    filepath.Join(dataHome, "swarm", "libexec", "rebuild"),
-		"swarmsetup": filepath.Join(dataHome, "swarm", "libexec", "swarmsetup"),
+		"swarm":      filepath.Join(systemToolBinDir(), "swarm"),
+		"swarmdev":   filepath.Join(systemToolBinDir(), "swarmdev"),
+		"rebuild":    filepath.Join(systemToolBinDir(), "rebuild"),
+		"swarmsetup": filepath.Join(systemToolBinDir(), "swarmsetup"),
 	}
 	for _, target := range links {
 		if !isExecutable(target) {
@@ -868,7 +937,7 @@ func InstallLaunchers(root string) (InstallReport, error) {
 	}
 	for name, target := range links {
 		linkPath := filepath.Join(binHome, name)
-		if err := replaceSymlink(linkPath, target); err != nil {
+		if err := replaceSymlinkPrivileged(linkPath, target); err != nil {
 			return InstallReport{}, fmt.Errorf("link %s -> %s: %w", linkPath, target, err)
 		}
 	}
@@ -880,11 +949,10 @@ func InstallRuntimeFromArtifact(artifactRoot string) (InstallReport, error) {
 	if artifactRoot == "" {
 		return InstallReport{}, errors.New("artifact root must not be empty")
 	}
-	dataHome, err := xdgDataHome()
-	if err != nil {
+	if err := EnsureSystemInstallReady(); err != nil {
 		return InstallReport{}, err
 	}
-	installRoot := swarmInstallRoot(dataHome)
+	installRoot := swarmInstallRoot("")
 	versionsDir := filepath.Join(installRoot, "versions")
 	if err := os.MkdirAll(versionsDir, 0o755); err != nil {
 		return InstallReport{}, err
@@ -1115,10 +1183,16 @@ func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []st
 	if opts.Bootstrap.HasAny() && profile.Startup.Exists {
 		return "", nil, startupconfig.BootstrapExistingConfigError(profile.Startup.Path)
 	}
+	if err := migrateLegacyDaemonData(profile); err != nil {
+		return "", nil, err
+	}
 	if err := os.MkdirAll(profile.StateRoot, 0o755); err != nil {
 		return "", nil, err
 	}
 	if err := os.MkdirAll(profile.DataDir, 0o755); err != nil {
+		return "", nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(profile.LogFile), 0o755); err != nil {
 		return "", nil, err
 	}
 	if err := os.MkdirAll(profile.BinDir, 0o755); err != nil {
@@ -1173,6 +1247,139 @@ func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []st
 		}
 	}
 	return backendPath, args, nil
+}
+
+func migrateLegacyDaemonData(profile Profile) error {
+	target := filepath.Clean(strings.TrimSpace(profile.DataDir))
+	if target == "" || target == "." {
+		return errors.New("daemon data directory is required")
+	}
+	targetHasEntries, err := dirHasEntries(target)
+	if err != nil {
+		return fmt.Errorf("inspect daemon data directory %q: %w", target, err)
+	}
+	if targetHasEntries {
+		return nil
+	}
+	candidates, err := legacyDaemonDataCandidates(profile.Lane)
+	if err != nil {
+		return err
+	}
+	for _, source := range candidates {
+		source = filepath.Clean(strings.TrimSpace(source))
+		if source == "" || source == "." || source == target {
+			continue
+		}
+		if !legacyDaemonDataPresent(source) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("create daemon data parent %q for migration from %q: %w", filepath.Dir(target), source, err)
+		}
+		if _, err := os.Stat(target); err == nil {
+			empty, err := dirIsEmpty(target)
+			if err != nil {
+				return fmt.Errorf("inspect daemon data directory %q: %w", target, err)
+			}
+			if !empty {
+				return nil
+			}
+			if err := moveDirContents(source, target); err != nil {
+				return fmt.Errorf("migrate legacy daemon data from %q into %q: %w", source, target, err)
+			}
+			return nil
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat daemon data directory %q: %w", target, err)
+		}
+		if err := os.Rename(source, target); err != nil {
+			return fmt.Errorf("migrate legacy daemon data from %q to %q: %w", source, target, err)
+		}
+		return nil
+	}
+	return nil
+}
+
+func legacyDaemonDataCandidates(lane string) ([]string, error) {
+	dataHome, err := xdgDataHome()
+	if err != nil {
+		return nil, err
+	}
+	stateHome, err := xdgStateHome()
+	if err != nil {
+		return nil, err
+	}
+	lane = strings.ToLower(strings.TrimSpace(lane))
+	candidates := []string{
+		filepath.Join(dataHome, "swarmd", lane),
+	}
+	if lane == "main" {
+		candidates = append(candidates,
+			filepath.Join(dataHome, "swarmd"),
+			filepath.Join(stateHome, "swarmd", "data"),
+		)
+	}
+	return candidates, nil
+}
+
+func legacyDaemonDataPresent(path string) bool {
+	for _, marker := range []string{
+		"swarmd.pebble",
+		"swarmd-secrets.pebble",
+		"swarmd-secrets.pebble.key",
+		"local-transport",
+		"update",
+	} {
+		if _, err := os.Stat(filepath.Join(path, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func moveDirContents(source, target string) error {
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "." || name == ".." {
+			continue
+		}
+		from := filepath.Join(source, name)
+		to := filepath.Join(target, name)
+		if _, err := os.Stat(to); err == nil {
+			return fmt.Errorf("target path %q already exists", to)
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat target path %q: %w", to, err)
+		}
+		if err := os.Rename(from, to); err != nil {
+			return fmt.Errorf("move %q to %q: %w", from, to, err)
+		}
+	}
+	if err := os.Remove(source); err != nil {
+		return fmt.Errorf("remove migrated legacy directory %q: %w", source, err)
+	}
+	return nil
+}
+
+func dirHasEntries(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return len(entries) > 0, nil
+}
+
+func dirIsEmpty(path string) (bool, error) {
+	hasEntries, err := dirHasEntries(path)
+	if err != nil {
+		return false, err
+	}
+	return !hasEntries, nil
 }
 
 func waitForHealth(profile Profile, attempts int) error {

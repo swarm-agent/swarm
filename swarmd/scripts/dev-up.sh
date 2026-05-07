@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib-dev.sh"
 
-mkdir -p "${STATE_ROOT}" "${DATA_DIR}" "${BIN_DIR}"
+mkdir -p "${STATE_ROOT}" "${DATA_DIR}" "${BIN_DIR}" "$(dirname -- "${LOG_FILE}")"
 
 if curl -fsS "${ADDR}/healthz" >/dev/null 2>&1; then
   echo "swarmd already reachable at ${ADDR} (lane=${SWARM_LANE})"

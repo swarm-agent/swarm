@@ -11,7 +11,7 @@ import (
 
 func TestPrintfRedactsGoogleAPIKeyFromDaemonAndDurableLogs(t *testing.T) {
 	dataHome := filepath.Join(t.TempDir(), "data")
-	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("STATE_DIRECTORY", dataHome)
 
 	var daemonLog bytes.Buffer
 	previousOutput := log.Writer()
@@ -51,7 +51,7 @@ func TestPrintfRedactsGoogleAPIKeyFromDaemonAndDurableLogs(t *testing.T) {
 
 func TestAppendRedactsSecretLikeFields(t *testing.T) {
 	dataHome := filepath.Join(t.TempDir(), "data")
-	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("STATE_DIRECTORY", dataHome)
 
 	secret := "secret-token-value"
 	Append("[swarmd.imagegen] stage=provider_call_error api_key=\"" + secret + "\" x-goog-api-key:" + secret + " access_token=" + secret)
