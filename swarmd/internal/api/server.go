@@ -106,15 +106,16 @@ type Server struct {
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
 
-	shuttingDown         atomic.Bool
-	runCtx               context.Context
-	runCancel            context.CancelFunc
-	runWG                sync.WaitGroup
-	activeRuns           atomic.Int32
-	requestStop          func(reason string)
-	desktopLocalSessions *desktopLocalSessionManager
-	gitRealtime          *gitRealtimeManager
-	swarmTargetHealth    swarmTargetHealthCache
+	shuttingDown              atomic.Bool
+	runCtx                    context.Context
+	runCancel                 context.CancelFunc
+	runWG                     sync.WaitGroup
+	activeRuns                atomic.Int32
+	requestStop               func(reason string)
+	desktopLocalSessions      *desktopLocalSessionManager
+	gitRealtime               *gitRealtimeManager
+	swarmTargetHealth         swarmTargetHealthCache
+	remoteCandidateProbePorts []int
 }
 
 type runService interface {

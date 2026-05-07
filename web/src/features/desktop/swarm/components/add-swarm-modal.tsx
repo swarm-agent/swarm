@@ -5,14 +5,12 @@ import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
-import { Textarea } from '../../../../components/ui/textarea'
 import {
   fetchDesktopOnboardingStatus,
   fetchRemoteSwarmCandidates,
   fetchSwarmLocalRuntimeStatus,
   startRemoteSwarmPairing,
   type RemoteSwarmCandidate,
-  type RemoteSwarmPairingOffer,
   type RemoteSwarmPairingStartResult,
   type SwarmLocalRuntimeStatus,
 } from '../../onboarding/api'
@@ -66,13 +64,6 @@ interface ContainerPackageDraft {
   name: string
   source: 'recommended' | 'user_added' | 'workspace_scan'
   reason?: string
-}
-
-type RemotePairingMode = 'candidate' | 'manual'
-
-interface RemotePairingDraft {
-  offer: RemoteSwarmPairingOffer
-  raw: string
 }
 
 const FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE = 'docker.io/ubuntu:26.04'
@@ -221,75 +212,6 @@ function selectCandidateEndpoint(candidate: RemoteSwarmCandidate | null): string
   return apiEndpoint?.url.trim() || candidate.endpoint.trim() || candidate.endpointCandidates.find((item) => item.url.trim() !== '')?.url.trim() || ''
 }
 
-function parseRemotePairingOffer(input: string): RemotePairingDraft {
-  const raw = String(input ?? '').trim()
-  if (!raw) {
-    throw new Error('Paste a managed swarm offer from the remote host.')
-  }
-  let decoded = raw
-  if (!raw.startsWith('{')) {
-    try {
-      decoded = window.atob(raw.replace(/^swarm-offer:/i, '').trim())
-    } catch {
-      decoded = raw
-    }
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(decoded)
-  } catch {
-    throw new Error('Managed swarm offer must be valid JSON or base64-encoded JSON.')
-  }
-  const record = parsed && typeof parsed === 'object' && 'offer' in parsed
-    ? (parsed as { offer?: unknown }).offer
-    : parsed
-  if (!record || typeof record !== 'object') {
-    throw new Error('Managed swarm offer payload is missing.')
-  }
-  const source = record as Partial<RemoteSwarmPairingOffer>
-  const offer: RemoteSwarmPairingOffer = {
-    version: String(source.version ?? '').trim(),
-    type: String(source.type ?? '').trim(),
-    token: String(source.token ?? '').trim(),
-    single_use: Boolean(source.single_use),
-    swarm_id: String(source.swarm_id ?? '').trim(),
-    swarm_name: String(source.swarm_name ?? '').trim(),
-    public_key: String(source.public_key ?? '').trim(),
-    fingerprint: String(source.fingerprint ?? '').trim(),
-    endpoint: String(source.endpoint ?? '').trim(),
-    endpoint_candidates: Array.isArray(source.endpoint_candidates) ? source.endpoint_candidates : [],
-    api_port: typeof source.api_port === 'number' ? source.api_port : 0,
-    transport_mode: String(source.transport_mode ?? '').trim(),
-    rendezvous_transports: Array.isArray(source.rendezvous_transports) ? source.rendezvous_transports : [],
-    expires_at: typeof source.expires_at === 'number' ? source.expires_at : 0,
-    created_at: typeof source.created_at === 'number' ? source.created_at : 0,
-    ceremony: {
-      code: normalizePairingCode(source.ceremony?.code ?? ''),
-      verification_only: Boolean(source.ceremony?.verification_only),
-      description: String(source.ceremony?.description ?? '').trim(),
-    },
-  }
-  if (offer.version !== 'managed-swarm-offer/v1' || offer.type !== 'managed_swarm_offer') {
-    throw new Error('Offer is not a managed swarm pairing offer.')
-  }
-  if (!offer.token || offer.token.length < 32) {
-    throw new Error('Managed swarm offer is missing its high-entropy pairing token.')
-  }
-  if (!offer.endpoint) {
-    throw new Error('Managed swarm offer is missing an endpoint.')
-  }
-  if (!offer.swarm_id || !offer.swarm_name) {
-    throw new Error('Managed swarm offer is missing swarm identity metadata.')
-  }
-  if (!offer.ceremony.code) {
-    throw new Error('Managed swarm offer is missing its ceremony code.')
-  }
-  if (offer.expires_at > 0 && offer.expires_at < Math.floor(Date.now() / 1000)) {
-    throw new Error('Managed swarm offer has expired. Generate a fresh offer on the remote host.')
-  }
-  return { offer, raw }
-}
-
 export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete }: AddSwarmModalProps) {
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -302,9 +224,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [remoteCandidatesLoading, setRemoteCandidatesLoading] = useState(false)
   const [remoteCandidatesError, setRemoteCandidatesError] = useState<string | null>(null)
   const [selectedRemoteCandidateID, setSelectedRemoteCandidateID] = useState('')
-  const [remotePairingMode, setRemotePairingMode] = useState<RemotePairingMode>('candidate')
-  const [manualPairingOfferText, setManualPairingOfferText] = useState('')
-  const [manualPairingDraft, setManualPairingDraft] = useState<RemotePairingDraft | null>(null)
   const [remoteCeremonyCode, setRemoteCeremonyCode] = useState('')
   const [remotePairingResult, setRemotePairingResult] = useState<RemoteSwarmPairingStartResult | null>(null)
   const [launchTarget, setLaunchTarget] = useState<LaunchTarget>('local')
@@ -336,10 +255,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     [remoteCandidates, selectedRemoteCandidateID],
   )
   const selectedRemoteCandidateEndpoint = useMemo(() => selectCandidateEndpoint(selectedRemoteCandidate), [selectedRemoteCandidate])
-  const activeRemotePairingDraft = remotePairingMode === 'manual'
-    ? manualPairingDraft
-    : null
-  const activeRemoteCeremonyCode = normalizePairingCode(activeRemotePairingDraft?.offer.ceremony.code ?? remoteCeremonyCode)
+  const activeRemoteCeremonyCode = normalizePairingCode(remotePairingResult?.ceremony.code ?? remoteCeremonyCode)
 
   const group = useMemo(() => currentGroup(currentOnboardingStatus), [currentOnboardingStatus])
   const hostSwarmID = group?.group.hostSwarmID || ''
@@ -526,9 +442,6 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         setRemoteCandidatesError(null)
         setRemoteCandidatesLoading(false)
         setSelectedRemoteCandidateID('')
-        setRemotePairingMode('candidate')
-        setManualPairingOfferText('')
-        setManualPairingDraft(null)
         setRemoteCeremonyCode('')
         setRemotePairingResult(null)
         setSwarmName('')
@@ -670,52 +583,37 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       setError('Create or select a swarm group before adding a managed swarm.')
       return
     }
-    const ceremonyCode = normalizePairingCode(remoteCeremonyCode || activeRemoteCeremonyCode)
-    const draft = activeRemotePairingDraft
-    if (remotePairingMode === 'manual' && !draft) {
-      setError('Paste a managed swarm offer first.')
+    if (!selectedRemoteCandidate) {
+      setError('Select an online Tailscale device running swarmd.')
       return
     }
-    if (remotePairingMode === 'candidate' && !selectedRemoteCandidateEndpoint) {
-      setError('Selected Tailscale device is missing an API endpoint.')
-      return
-    }
-    if (draft && !draft.offer.endpoint.trim()) {
-      setError('Managed swarm endpoint is required.')
-      return
-    }
-    if (!ceremonyCode) {
-      setError('Enter the 6-character ceremony code shown on the managed swarm.')
-      return
-    }
-    const offerCode = normalizePairingCode(draft?.offer.ceremony.code ?? '')
-    if (offerCode && ceremonyCode !== offerCode) {
-      setError('Ceremony code does not match the managed swarm offer. Compare both hosts before continuing.')
+    if (!selectedRemoteCandidateEndpoint) {
+      setError('Selected Tailscale device is missing a reachable swarmd endpoint.')
       return
     }
 
-    const pairingEndpoint = draft?.offer.endpoint || selectedRemoteCandidateEndpoint
-    const pairingName = draft?.offer.swarm_name || selectedRemoteCandidate?.name || 'managed swarm'
+    const pairingEndpoint = selectedRemoteCandidateEndpoint
+    const pairingName = selectedRemoteCandidate.name || selectedRemoteCandidate.dnsName || endpointHostLabel(pairingEndpoint) || 'managed swarm'
 
     setSubmitting(true)
     setError(null)
+    setRemoteCeremonyCode('')
     setRemotePairingResult(null)
     setStatus('Requesting managed swarm pairing…')
     try {
       const result = await startRemoteSwarmPairing({
         endpoint: pairingEndpoint,
-        dnsName: remotePairingMode === 'candidate' ? selectedRemoteCandidate?.dnsName : undefined,
-        ips: remotePairingMode === 'candidate' ? selectedRemoteCandidate?.ips : undefined,
+        dnsName: selectedRemoteCandidate.dnsName,
+        ips: selectedRemoteCandidate.ips,
         groupID: group.group.id,
-        managedSwarmID: draft?.offer.swarm_id,
         managedName: pairingName,
-        offer: draft?.offer,
-        ceremonyCode: remotePairingMode === 'manual' ? ceremonyCode : undefined,
-        rendezvousTransports: draft?.offer.rendezvous_transports || selectedRemoteCandidate?.rendezvousTransports,
+        rendezvousTransports: selectedRemoteCandidate.rendezvousTransports,
       })
+      const ceremonyCode = normalizePairingCode(result.ceremony.code || result.request.ceremony_code)
+      setRemoteCeremonyCode(ceremonyCode)
       setRemotePairingResult(result)
       const displayName = result.ceremony.managed_name || result.request.managed_name || pairingName
-      setStatus(`Pairing request sent to ${displayName}. Approve it on the managed swarm after confirming code ${formatPairingCode(ceremonyCode)}.`)
+      setStatus(`Pairing request sent to ${displayName}. On the managed swarm, approve the pending request after confirming code ${formatPairingCode(ceremonyCode)}.`)
       await onComplete(`Pairing request sent to ${displayName}. Approve it on the managed swarm to finish adding the Managed Swarm.`)
     } catch (err) {
       logAddSwarmError('managed swarm pairing failed', err, {
@@ -776,25 +674,16 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       }
       return null
     }
-    if (remotePairingMode === 'candidate' && !selectedRemoteCandidate) {
-      return remoteCandidatesLoading ? 'Loading Tailscale candidates…' : 'Select a Tailscale device or use Paste offer.'
+    if (!selectedRemoteCandidate) {
+      return remoteCandidatesLoading ? 'Loading Tailscale candidates…' : 'Select an online Tailscale device running swarmd.'
     }
-    if (remotePairingMode === 'candidate' && !selectedRemoteCandidateEndpoint) {
-      return 'Selected Tailscale device is missing an API endpoint.'
-    }
-    if (remotePairingMode === 'manual' && !activeRemotePairingDraft) {
-      return 'Provide a managed swarm offer.'
-    }
-    if (activeRemotePairingDraft && !activeRemotePairingDraft.offer.endpoint.trim()) {
-      return 'Managed swarm endpoint is required.'
-    }
-    if (!activeRemoteCeremonyCode) {
-      return 'Enter the ceremony code shown on the managed swarm.'
+    if (!selectedRemoteCandidateEndpoint) {
+      return 'Selected Tailscale device is missing a reachable swarmd endpoint.'
     }
     return null
   })()
   const footerStatusText = launchPendingReason || (launchTarget === 'remote'
-    ? `Managed Swarm pairing will request approval from ${activeRemotePairingDraft?.offer.swarm_name || selectedRemoteCandidate?.name || 'the remote host'} using container scope managed_host_local.`
+    ? `Managed Swarm pairing will request approval from ${selectedRemoteCandidate?.name || selectedRemoteCandidate?.dnsName || 'the remote host'} using container scope managed_host_local.`
     : `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be replicated using ${runtimeChoice || 'the selected runtime'} with Swarm Sync ${syncEnabled ? 'enabled' : 'disabled'}.`)
   const swarmNameCard = (
     <Card className={sectionClassName}>
@@ -1100,49 +989,11 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div className="flex flex-col gap-1">
                   <div className="text-sm font-semibold text-[var(--app-text)]">Add Remote Swarm</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
-                    Select a Tailscale device when available, or paste a managed swarm offer generated on the remote host. The 6-character ceremony code is verification-only.
+                    Select an online Tailscale device running swarmd. Swarm requests pairing directly, then shows the 6-character ceremony code returned by the real API.
                   </div>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    className={optionClassName(remotePairingMode === 'candidate')}
-                    onClick={() => {
-                      setRemotePairingMode('candidate')
-                      clearRemotePairingState()
-                    }}
-                    disabled={submitting}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold text-[var(--app-text)]">Tailscale device</div>
-                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">Use connected Tailnet devices as the first pairing screen.</div>
-                      </div>
-                      {remotePairingMode === 'candidate' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    className={optionClassName(remotePairingMode === 'manual')}
-                    onClick={() => {
-                      setRemotePairingMode('manual')
-                      clearRemotePairingState()
-                    }}
-                    disabled={submitting}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold text-[var(--app-text)]">Paste offer</div>
-                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">Manual fallback for a JSON or base64 managed swarm offer.</div>
-                      </div>
-                      {remotePairingMode === 'manual' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
-                    </div>
-                  </button>
-                </div>
-
-                {remotePairingMode === 'candidate' ? (
-                  <div className={subtlePanelClassName}>
+                <div className={subtlePanelClassName}>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <div className="text-sm font-semibold text-[var(--app-text)]">Tailscale candidates</div>
@@ -1160,7 +1011,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                     ) : null}
                     {remoteCandidates.length === 0 ? (
                       <div className="mt-3 rounded-lg border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">
-                        {remoteCandidatesLoading ? 'Loading Tailscale devices…' : 'No online Tailscale candidates found. Use Paste offer if the remote host is reachable another way.'}
+                        {remoteCandidatesLoading ? 'Loading Tailscale devices…' : 'No reachable swarmd hosts found on your Tailnet. Start swarmd on the managed host, confirm Tailscale is connected, then refresh.'}
                       </div>
                     ) : (
                       <div className="mt-3 grid gap-2">
@@ -1193,64 +1044,25 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                       </div>
                     )}
                   </div>
-                ) : (
-                  <div className={subtlePanelClassName}>
-                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Managed swarm offer</label>
-                    <Textarea
-                      data-testid="add-swarm-managed-offer"
-                      value={manualPairingOfferText}
-                      onChange={(event) => {
-                        const value = event.target.value
-                        setManualPairingOfferText(value)
-                        setManualPairingDraft(null)
-                        clearRemotePairingState()
-                        if (!value.trim()) {
-                          setRemoteCeremonyCode('')
-                          return
-                        }
-                        try {
-                          const draft = parseRemotePairingOffer(value)
-                          setManualPairingDraft(draft)
-                          setRemoteCeremonyCode(draft.offer.ceremony.code)
-                          setError(null)
-                        } catch (err) {
-                          setError(err instanceof Error ? err.message : 'Invalid managed swarm offer')
-                        }
-                      }}
-                      disabled={submitting}
-                      placeholder="Paste the managed-swarm-offer/v1 JSON from the remote host"
-                      className="min-h-[150px] font-mono text-xs"
-                    />
-                  </div>
-                )}
 
                 <div className={subtlePanelClassName}>
-                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px] sm:items-end">
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px] sm:items-center">
                     <div className="grid gap-1 text-sm">
-                      <div className="font-semibold text-[var(--app-text)]">Ceremony comparison</div>
+                      <div className="font-semibold text-[var(--app-text)]">Pairing request</div>
                       <div className="text-xs text-[var(--app-text-muted)]">
-                        Compare this short code on both hosts. It verifies the high-entropy offer transcript; it does not unlock configuration by itself.
+                        Start pairing first. Swarm fetches the managed host offer and returns a verification-only ceremony code for approval on the managed host.
                       </div>
-                      {activeRemotePairingDraft ? (
-                        <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)]">
-                          <div><span className="font-medium text-[var(--app-text)]">Managed host:</span> {activeRemotePairingDraft?.offer.swarm_name || selectedRemoteCandidate?.name || 'Pending offer'}</div>
-                          <div><span className="font-medium text-[var(--app-text)]">Endpoint:</span> {activeRemotePairingDraft?.offer.endpoint || selectedRemoteCandidateEndpoint || 'Required'}</div>
-                          {activeRemotePairingDraft?.offer.fingerprint ? <div><span className="font-medium text-[var(--app-text)]">Fingerprint:</span> {activeRemotePairingDraft.offer.fingerprint}</div> : null}
-                        </div>
-                      ) : null}
+                      <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)]">
+                        <div><span className="font-medium text-[var(--app-text)]">Managed host:</span> {remotePairingResult?.request.managed_name || selectedRemoteCandidate?.name || selectedRemoteCandidate?.dnsName || 'Select a host'}</div>
+                        <div><span className="font-medium text-[var(--app-text)]">Endpoint:</span> {selectedRemoteCandidateEndpoint || 'Required'}</div>
+                        {remotePairingResult?.request.managed_fingerprint ? <div><span className="font-medium text-[var(--app-text)]">Fingerprint:</span> {remotePairingResult.request.managed_fingerprint}</div> : null}
+                      </div>
                     </div>
-                    <div className="grid gap-2">
-                      <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">6 hex chars</label>
-                      <Input
-                        data-testid="add-swarm-ceremony-code"
-                        value={formatPairingCode(remoteCeremonyCode)}
-                        onChange={(event) => {
-                          setRemoteCeremonyCode(normalizePairingCode(event.target.value))
-                          clearRemotePairingState()
-                        }}
-                        disabled={submitting || (remotePairingMode === 'manual' && Boolean(manualPairingDraft?.offer.ceremony.code))}
-                        placeholder="ABC 123"
-                      />
+                    <div className="rounded-lg border border-[var(--app-border)] p-3 text-center">
+                      <div className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Ceremony code</div>
+                      <div className="mt-1 font-mono text-2xl font-semibold text-[var(--app-text)]">
+                        {activeRemoteCeremonyCode ? formatPairingCode(activeRemoteCeremonyCode) : '—'}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1273,13 +1085,13 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div className="text-sm font-semibold text-[var(--app-text)]">Ready Check</div>
                 <div className="text-xs text-[var(--app-text-muted)]">
                   {launchTarget === 'remote'
-                    ? 'Managed Swarm pairing uses the remote host offer and ceremony-code comparison.'
+                    ? 'Select a reachable Tailscale swarmd host, then start pairing. The ceremony code appears after the request is sent.'
                     : 'Smart defaults are selected. Adjust only what you need before launch.'}
                 </div>
               </div>
-              <Badge tone={launchTarget === 'remote' ? (activeRemotePairingDraft && activeRemoteCeremonyCode ? 'live' : 'warning') : runtimeChoice ? 'live' : 'warning'}>
+              <Badge tone={launchTarget === 'remote' ? (selectedRemoteCandidate && selectedRemoteCandidateEndpoint ? 'live' : 'warning') : runtimeChoice ? 'live' : 'warning'}>
                 {launchTarget === 'remote'
-                  ? (activeRemotePairingDraft && activeRemoteCeremonyCode ? 'ready to pair' : 'pairing info required')
+                  ? (selectedRemoteCandidate && selectedRemoteCandidateEndpoint ? 'ready to request' : 'host required')
                   : (runtimeChoice ? 'ready' : 'runtime required')}
               </Badge>
             </div>
@@ -1394,9 +1206,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               {launchTarget === 'remote' ? (
                 <>
                   <div><span className="font-medium text-[var(--app-text)]">Target:</span> Managed Swarm</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Mode:</span> {remotePairingMode === 'candidate' ? 'Tailscale candidate' : 'Pasted offer'}</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Endpoint:</span> {activeRemotePairingDraft?.offer.endpoint || selectedRemoteCandidateEndpoint || 'Required'}</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Ceremony:</span> {formatPairingCode(remoteCeremonyCode || activeRemoteCeremonyCode) || 'Required'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Mode:</span> Tailscale candidate</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Endpoint:</span> {selectedRemoteCandidateEndpoint || 'Required'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Ceremony:</span> {formatPairingCode(activeRemoteCeremonyCode) || 'Shown after request'}</div>
                   <div><span className="font-medium text-[var(--app-text)]">Container scope:</span> managed_host_local</div>
                   <div><span className="font-medium text-[var(--app-text)]">Remote containers:</span> stay local to the managed host</div>
                 </>
@@ -1432,10 +1244,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 || !group?.group.id.trim()
                 || (launchTarget === 'local'
                   ? !runtimeChoice || !swarmName.trim() || selectedWorkspaceCountValue === 0
-                  : remoteCandidatesLoading
-                    || (remotePairingMode === 'candidate' && (!selectedRemoteCandidate || !selectedRemoteCandidateEndpoint))
-                    || (remotePairingMode === 'manual' && (!activeRemotePairingDraft || !activeRemotePairingDraft.offer.endpoint.trim()))
-                    || !activeRemoteCeremonyCode)
+                  : remoteCandidatesLoading || !selectedRemoteCandidate || !selectedRemoteCandidateEndpoint)
               }
             >
               {(submitting || remoteCandidatesLoading) ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}

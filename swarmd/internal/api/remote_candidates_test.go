@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,13 +17,32 @@ import (
 
 func TestSwarmRemoteCandidatesListsConnectedTailscaleDevices(t *testing.T) {
 	server := newLocalAuthTestServer(t)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/readyz" && r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer remote.Close()
+	remotePort := testServerPort(t, remote.URL)
+	remotePortInt, err := strconv.Atoi(remotePort)
+	if err != nil {
+		t.Fatalf("parse remote port %q: %v", remotePort, err)
+	}
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.Port = remotePortInt
+		cfg.AdvertisePort = remotePortInt
+	})
+	server.remoteCandidateProbePorts = []int{remotePortInt}
 	installFakeTailscaleStatus(t, `{
 		"BackendState":"Running",
 		"AuthURL":"https://login.tailscale.example/secret-token",
 		"CurrentTailnet":{"Name":"example.ts.net"},
 		"Self":{"DNSName":"manager.example.ts.net.","TailscaleIPs":["100.64.0.1"],"Online":true},
 		"Peer":{
-			"peer1":{"DNSName":"managed-one.example.ts.net.","OS":"linux","TailscaleIPs":["100.64.0.2"],"Online":true,"Active":false},
+			"peer1":{"DNSName":"127.0.0.1.","OS":"linux","TailscaleIPs":["127.0.0.1"],"Online":true,"Active":false},
 			"peer2":{"DNSName":"offline.example.ts.net.","OS":"windows","TailscaleIPs":["100.64.0.3"],"Online":false,"Active":false},
 			"self":{"DNSName":"manager.example.ts.net.","OS":"linux","TailscaleIPs":["100.64.0.1"],"Online":true,"Self":true}
 		}
@@ -44,17 +65,17 @@ func TestSwarmRemoteCandidatesListsConnectedTailscaleDevices(t *testing.T) {
 		t.Fatalf("candidates count = %d len=%d payload=%+v, want one online peer", status.Count, len(status.Candidates), status.Candidates)
 	}
 	candidate := status.Candidates[0]
-	if candidate.Name != "managed-one" {
-		t.Fatalf("candidate name = %q, want managed-one", candidate.Name)
+	if candidate.Name != "127" {
+		t.Fatalf("candidate name = %q, want 127", candidate.Name)
 	}
 	if candidate.Source != startupconfig.NetworkModeTailscale || candidate.TransportMode != startupconfig.NetworkModeTailscale {
 		t.Fatalf("candidate transport = source %q mode %q, want tailscale", candidate.Source, candidate.TransportMode)
 	}
-	if candidate.DNSName != "managed-one.example.ts.net" {
+	if candidate.DNSName != "127.0.0.1" {
 		t.Fatalf("candidate dns = %q", candidate.DNSName)
 	}
-	if candidate.TailnetURL != "https://managed-one.example.ts.net" || candidate.Endpoint != "https://managed-one.example.ts.net" {
-		t.Fatalf("candidate endpoints tailnet=%q endpoint=%q", candidate.TailnetURL, candidate.Endpoint)
+	if candidate.TailnetURL != "https://127.0.0.1" || !strings.HasSuffix(candidate.Endpoint, ":"+remotePort) || !strings.HasPrefix(candidate.Endpoint, "http://") {
+		t.Fatalf("candidate endpoints tailnet=%q endpoint=%q port=%s", candidate.TailnetURL, candidate.Endpoint, remotePort)
 	}
 	if candidate.OS != "linux" {
 		t.Fatalf("candidate os = %q, want linux", candidate.OS)
@@ -62,11 +83,11 @@ func TestSwarmRemoteCandidatesListsConnectedTailscaleDevices(t *testing.T) {
 	if !candidate.Online {
 		t.Fatalf("candidate online = false")
 	}
-	if len(candidate.IPs) != 1 || candidate.IPs[0] != "100.64.0.2" {
+	if len(candidate.IPs) != 1 || candidate.IPs[0] != "127.0.0.1" {
 		t.Fatalf("candidate ips = %#v", candidate.IPs)
 	}
-	if len(candidate.EndpointCandidates) < 2 {
-		t.Fatalf("endpoint candidates = %#v, want https and api candidates", candidate.EndpointCandidates)
+	if len(candidate.EndpointCandidates) != 1 || candidate.EndpointCandidates[0].Port != remotePortInt {
+		t.Fatalf("endpoint candidates = %#v, want only reachable API candidate on custom port", candidate.EndpointCandidates)
 	}
 	body, err := json.Marshal(status)
 	if err != nil {
@@ -75,6 +96,27 @@ func TestSwarmRemoteCandidatesListsConnectedTailscaleDevices(t *testing.T) {
 	bodyText := string(body)
 	if strings.Contains(bodyText, "secret-token") || strings.Contains(bodyText, "AuthURL") || strings.Contains(bodyText, "auth_url") {
 		t.Fatalf("candidate response leaked auth metadata: %s", bodyText)
+	}
+}
+
+func TestSwarmRemoteCandidatesSkipsOnlinePeerWhenSwarmdUnreachable(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.Port = 9
+		cfg.AdvertisePort = 9
+	})
+	installFakeTailscaleStatus(t, `{
+		"BackendState":"Running",
+		"CurrentTailnet":{"Name":"example.ts.net"},
+		"Self":{"DNSName":"manager.example.ts.net.","TailscaleIPs":["100.64.0.1"],"Online":true},
+		"Peer":{
+			"peer1":{"DNSName":"managed-one.example.ts.net.","OS":"linux","TailscaleIPs":["100.64.0.2"],"Online":true,"Active":false}
+		}
+	}`)
+
+	status := getRemoteCandidatesWithDesktopSession(t, server)
+	if status.Count != 0 || len(status.Candidates) != 0 {
+		t.Fatalf("candidates = %+v, want none when swarmd probe fails", status.Candidates)
 	}
 }
 
@@ -126,6 +168,19 @@ func TestSwarmRemoteCandidatesDisconnectedTailscale(t *testing.T) {
 	if status.Count != 0 || len(status.Candidates) != 0 {
 		t.Fatalf("candidates = %+v, want none", status.Candidates)
 	}
+}
+
+func testServerPort(t *testing.T, rawURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse test server url %q: %v", rawURL, err)
+	}
+	port := parsed.Port()
+	if port == "" {
+		t.Fatalf("test server url %q had no port", rawURL)
+	}
+	return port
 }
 
 func installFakeTailscaleStatus(t *testing.T, output string) {
