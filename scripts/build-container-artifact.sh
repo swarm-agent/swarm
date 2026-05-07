@@ -306,7 +306,10 @@ join_path() {
 usr_local="$(join_path usr local)"
 opt_swarm="$(join_path opt swarm)"
 var_lib_swarmd="$(join_path var lib swarmd)"
-var_run_swarmd="$(join_path var run swarmd)"
+var_cache_swarmd="$(join_path var cache swarmd)"
+var_log_swarmd="$(join_path var log swarmd)"
+etc_swarmd="$(join_path etc swarmd)"
+run_swarmd="$(join_path run swarmd)"
 root_home="$(join_path root)"
 workspace_root="$(join_path workspaces)"
 
@@ -323,7 +326,11 @@ required_files=(
 )
 required_dirs=(
   "${opt_swarm}/web/dist"
-  "${var_lib_swarmd}/home"
+  "${var_lib_swarmd}"
+  "${var_cache_swarmd}"
+  "${var_log_swarmd}"
+  "${etc_swarmd}"
+  "${run_swarmd}"
 )
 
 for path in "${required_execs[@]}"; do
@@ -336,7 +343,7 @@ for path in "${required_dirs[@]}"; do
   [[ -d "${path}" ]] || { echo "missing required directory: ${path}" >&2; exit 1; }
 done
 
-owner_check="$(stat -c "%U:%G" "${var_lib_swarmd}" "${var_run_swarmd}" "${var_lib_swarmd}/home" | sort -u)"
+owner_check="$(stat -c "%U:%G" "${var_lib_swarmd}" "${var_cache_swarmd}" "${var_log_swarmd}" "${etc_swarmd}" "${run_swarmd}" | sort -u)"
 if [[ "${owner_check}" != "nobody:nogroup" ]]; then
   echo "unexpected internal runtime directory ownership: ${owner_check}" >&2
   exit 1

@@ -8,17 +8,20 @@ TS_HOSTNAME="${TS_HOSTNAME:-swarm-box}"
 TS_OUTBOUND_HTTP_PROXY_LISTEN="${TS_OUTBOUND_HTTP_PROXY_LISTEN:-}"
 SWARM_STARTUP_MODE="${SWARM_STARTUP_MODE:-}"
 SWARM_CONTAINER_OFFLINE="${SWARM_CONTAINER_OFFLINE:-}"
-SWARMD_DATA_DIR="${SWARMD_DATA_DIR:?SWARMD_DATA_DIR must be set}"
-SWARMD_LOCK_PATH="${SWARMD_LOCK_PATH:?SWARMD_LOCK_PATH must be set}"
+SWARMD_DATA_DIR="${SWARMD_DATA_DIR:-/var/lib/swarmd}"
+SWARMD_CONFIG_DIR="${SWARMD_CONFIG_DIR:-/etc/swarmd}"
+SWARMD_CACHE_DIR="${SWARMD_CACHE_DIR:-/var/cache/swarmd}"
+SWARMD_LOG_DIR="${SWARMD_LOG_DIR:-/var/log/swarmd}"
+SWARMD_RUNTIME_DIR="${SWARMD_RUNTIME_DIR:-/run/swarmd}"
+SWARMD_LOCK_PATH="${SWARMD_LOCK_PATH:-${SWARMD_RUNTIME_DIR}/swarmd.lock}"
 SWARMD_LISTEN="${SWARMD_LISTEN:?SWARMD_LISTEN must be set}"
 SWARM_DESKTOP_PORT="${SWARM_DESKTOP_PORT:?SWARM_DESKTOP_PORT must be set}"
 SWARM_WEB_DIST_DIR="${SWARM_WEB_DIST_DIR:?SWARM_WEB_DIST_DIR must be set}"
-SWARM_RUNTIME_HOME="${SWARM_RUNTIME_HOME:-/var/lib/swarmd/home}"
+SWARM_PROCESS_HOME="${SWARM_PROCESS_HOME:-/nonexistent}"
 TS_UP_LOG="$(mktemp)"
 TS_SERVE_LOG="$(mktemp)"
 
-mkdir -p "${TS_STATE_DIR}" "$(dirname "${TS_SOCKET}")" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")"
-mkdir -p /workspaces
+mkdir -p "${TS_STATE_DIR}" "$(dirname "${TS_SOCKET}")" /workspaces
 
 child_cfg_value() {
   key="${1:-}"
@@ -73,36 +76,72 @@ runtime_gid() {
   printf '%s' "${SWARM_RUNTIME_GID:-65534}" | awk '/^[0-9]+$/ { print; exit }'
 }
 
+validate_container_storage_path() {
+  name="${1:-path}"
+  value="${2:-}"
+  case "${value}" in
+    ""|~|~/*)
+      echo "[swarm-container] ${name} must be an absolute system path" >&2
+      exit 1
+      ;;
+    /*)
+      ;;
+    *)
+      echo "[swarm-container] ${name} must be absolute: ${value}" >&2
+      exit 1
+      ;;
+  esac
+  case "${value}" in
+    */../*|*/..|*/./*|*/.)
+      echo "[swarm-container] ${name} must be clean and must not contain traversal: ${value}" >&2
+      exit 1
+      ;;
+    /root|/root/*|/home|/home/*|/workspaces|/workspaces/*|/tmp|/tmp/*)
+      echo "[swarm-container] ${name} must not be under a user home, workspace, or temp root: ${value}" >&2
+      exit 1
+      ;;
+  esac
+}
+
 ensure_runtime_permissions() {
-  runtime_config_home="${XDG_CONFIG_HOME:-${SWARM_RUNTIME_HOME}/.config}"
-  runtime_data_home="${XDG_DATA_HOME:-${SWARM_RUNTIME_HOME}/.local/share}"
-  runtime_state_home="${XDG_STATE_HOME:-${SWARM_RUNTIME_HOME}/.local/state}"
   runtime_uid_value="$(runtime_uid)"
   runtime_gid_value="$(runtime_gid)"
   if [ -z "${runtime_uid_value}" ] || [ -z "${runtime_gid_value}" ]; then
     echo "[swarm-container] SWARM_RUNTIME_UID and SWARM_RUNTIME_GID must be numeric" >&2
     exit 1
   fi
-  mkdir -p "${SWARM_RUNTIME_HOME}" "${runtime_config_home}" "${runtime_data_home}" "${runtime_state_home}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")" /workspaces
+  validate_container_storage_path SWARMD_DATA_DIR "${SWARMD_DATA_DIR}"
+  validate_container_storage_path SWARMD_CONFIG_DIR "${SWARMD_CONFIG_DIR}"
+  validate_container_storage_path SWARMD_CACHE_DIR "${SWARMD_CACHE_DIR}"
+  validate_container_storage_path SWARMD_LOG_DIR "${SWARMD_LOG_DIR}"
+  validate_container_storage_path SWARMD_RUNTIME_DIR "${SWARMD_RUNTIME_DIR}"
+  validate_container_storage_path SWARMD_LOCK_PATH "${SWARMD_LOCK_PATH}"
+  mkdir -p "${SWARMD_DATA_DIR}" "${SWARMD_CONFIG_DIR}" "${SWARMD_CACHE_DIR}" "${SWARMD_LOG_DIR}" "${SWARMD_RUNTIME_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")" /workspaces
   # /workspaces is an intentional host-shared mount boundary; do not rewrite ownership.
-  chown -R "${runtime_uid_value}:${runtime_gid_value}" "${SWARM_RUNTIME_HOME}" "${runtime_config_home}" "${runtime_data_home}" "${runtime_state_home}" "${SWARMD_DATA_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")"
+  chown -R "${runtime_uid_value}:${runtime_gid_value}" "${SWARMD_DATA_DIR}" "${SWARMD_CONFIG_DIR}" "${SWARMD_CACHE_DIR}" "${SWARMD_LOG_DIR}" "${SWARMD_RUNTIME_DIR}" "$(dirname "${SWARMD_LOCK_PATH}")"
 }
 
 run_as_swarm_user() {
-  runtime_config_home="${XDG_CONFIG_HOME:-${SWARM_RUNTIME_HOME}/.config}"
-  runtime_data_home="${XDG_DATA_HOME:-${SWARM_RUNTIME_HOME}/.local/share}"
-  runtime_state_home="${XDG_STATE_HOME:-${SWARM_RUNTIME_HOME}/.local/state}"
   runtime_uid_value="$(runtime_uid)"
   runtime_gid_value="$(runtime_gid)"
   if [ -z "${runtime_uid_value}" ] || [ -z "${runtime_gid_value}" ]; then
     echo "[swarm-container] SWARM_RUNTIME_UID and SWARM_RUNTIME_GID must be numeric" >&2
     exit 1
   fi
-  HOME="${SWARM_RUNTIME_HOME}" \
-  XDG_CONFIG_HOME="${runtime_config_home}" \
-  XDG_DATA_HOME="${runtime_data_home}" \
-  XDG_STATE_HOME="${runtime_state_home}" \
-  setpriv --reuid="${runtime_uid_value}" --regid="${runtime_gid_value}" --clear-groups "$@"
+  setpriv --reuid="${runtime_uid_value}" --regid="${runtime_gid_value}" --clear-groups \
+    env \
+      -u XDG_CONFIG_HOME \
+      -u XDG_DATA_HOME \
+      -u XDG_STATE_HOME \
+      -u XDG_CACHE_HOME \
+      -u XDG_RUNTIME_DIR \
+      HOME="${SWARM_PROCESS_HOME}" \
+      STATE_DIRECTORY="${SWARMD_DATA_DIR}" \
+      CONFIGURATION_DIRECTORY="${SWARMD_CONFIG_DIR}" \
+      CACHE_DIRECTORY="${SWARMD_CACHE_DIR}" \
+      LOGS_DIRECTORY="${SWARMD_LOG_DIR}" \
+      RUNTIME_DIRECTORY="${SWARMD_RUNTIME_DIR}" \
+      "$@"
 }
 
 start_swarmd() {

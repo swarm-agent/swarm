@@ -11,18 +11,22 @@ RUN apt-get update \
 COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
 COPY --from=tailscale /usr/local/bin/tailscaled /usr/local/bin/tailscaled
 
-RUN mkdir -p /var/lib/tailscale /var/lib/swarmd /var/lib/swarmd/home /var/run/tailscale /var/run/swarmd /workspaces \
-    && chown -R nobody:nogroup /var/lib/swarmd /var/run/swarmd
+RUN mkdir -p /var/lib/tailscale /var/lib/swarmd /var/cache/swarmd /var/log/swarmd /etc/swarmd /run/tailscale /run/swarmd /workspaces \
+    && chown -R nobody:nogroup /var/lib/swarmd /var/cache/swarmd /var/log/swarmd /etc/swarmd /run/swarmd
 
 ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV SWARM_WEB_DIST_DIR=/opt/swarm/web/dist
-ENV TS_SOCKET=/var/run/tailscale/tailscaled.sock
+ENV TS_SOCKET=/run/tailscale/tailscaled.sock
 ENV TS_STATE_DIR=/var/lib/tailscale
 ENV SWARMD_DATA_DIR=/var/lib/swarmd
-ENV SWARMD_LOCK_PATH=/var/run/swarmd/swarmd.lock
+ENV SWARMD_CONFIG_DIR=/etc/swarmd
+ENV SWARMD_CACHE_DIR=/var/cache/swarmd
+ENV SWARMD_LOG_DIR=/var/log/swarmd
+ENV SWARMD_RUNTIME_DIR=/run/swarmd
+ENV SWARMD_LOCK_PATH=/run/swarmd/swarmd.lock
 ENV SWARMD_LISTEN=127.0.0.1:7781
 ENV SWARM_DESKTOP_PORT=5555
 ENV TS_HOSTNAME=swarm-box
-ENV SWARM_RUNTIME_HOME=/var/lib/swarmd/home
+ENV SWARM_PROCESS_HOME=/nonexistent
 
-VOLUME ["/var/lib/tailscale", "/var/lib/swarmd", "/workspaces"]
+VOLUME ["/var/lib/tailscale", "/var/lib/swarmd", "/var/cache/swarmd", "/var/log/swarmd", "/etc/swarmd", "/workspaces"]

@@ -244,7 +244,11 @@ required_files=(
 
 required_dirs=(
   "$(join_path opt swarm web dist)"
-  /var/lib/swarmd/home
+  /var/lib/swarmd
+  /var/cache/swarmd
+  /var/log/swarmd
+  /etc/swarmd
+  /run/swarmd
 )
 
 for path in "${required_execs[@]}"; do
@@ -268,7 +272,7 @@ for path in "${required_dirs[@]}"; do
   }
 done
 
-owner_check="$(stat -c '%U:%G' /var/lib/swarmd /var/run/swarmd /var/lib/swarmd/home | sort -u)"
+owner_check="$(stat -c '%U:%G' /var/lib/swarmd /var/cache/swarmd /var/log/swarmd /etc/swarmd /run/swarmd | sort -u)"
 if [[ "${owner_check}" != "nobody:nogroup" ]]; then
   echo "unexpected internal runtime directory ownership: ${owner_check}" >&2
   exit 1

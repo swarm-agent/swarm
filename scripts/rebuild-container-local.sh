@@ -14,15 +14,17 @@ CONTAINER_NAME="${CONTAINER_NAME:-swarm-container-mvp}"
 TS_VOLUME="${TS_VOLUME:-swarm-mvp-ts-state}"
 DATA_VOLUME="${DATA_VOLUME:-swarm-mvp-data}"
 CONFIG_VOLUME="${CONFIG_VOLUME:-swarm-mvp-config}"
+CACHE_VOLUME="${CACHE_VOLUME:-swarm-mvp-cache}"
+LOG_VOLUME="${LOG_VOLUME:-swarm-mvp-logs}"
 BUILD_RUNTIME="${BUILD_RUNTIME:-podman}"
 PRIMARY_REPO_HOST="${PRIMARY_REPO_HOST:-${ROOT_DIR}}"
 PRIMARY_REPO_CONTAINER_PATH="${PRIMARY_REPO_CONTAINER_PATH:-/workspaces/swarm-go}"
 STARTUP_MODE="${STARTUP_MODE:-box}"
 TAILSCALE_STATE_MOUNT="${TAILSCALE_STATE_MOUNT:-/var/lib/tailscale}"
 SWARMD_DATA_MOUNT="${SWARMD_DATA_MOUNT:-/var/lib/swarmd}"
-CONTAINER_HOME_USER="${CONTAINER_HOME_USER:-root}"
-CONTAINER_CONFIG_HOME="${CONTAINER_CONFIG_HOME:-/${CONTAINER_HOME_USER}/.config}"
-SWARM_CONFIG_MOUNT="${SWARM_CONFIG_MOUNT:-${CONTAINER_CONFIG_HOME}/swarm}"
+SWARMD_CONFIG_MOUNT="${SWARMD_CONFIG_MOUNT:-/etc/swarmd}"
+SWARMD_CACHE_MOUNT="${SWARMD_CACHE_MOUNT:-/var/cache/swarmd}"
+SWARMD_LOG_MOUNT="${SWARMD_LOG_MOUNT:-/var/log/swarmd}"
 SHUTDOWN_REASON="${SWARM_REBUILD_REASON:-swarm-container-rebuild}"
 IMAGE_ONLY=0
 SKIP_LOCAL_ARTIFACT_REBUILD="${SWARM_SKIP_LOCAL_ARTIFACT_REBUILD:-0}"
@@ -296,6 +298,8 @@ echo "[rebuild-container] ensuring podman volumes"
 ensure_podman_volume "${TS_VOLUME}"
 ensure_podman_volume "${DATA_VOLUME}"
 ensure_podman_volume "${CONFIG_VOLUME}"
+ensure_podman_volume "${CACHE_VOLUME}"
+ensure_podman_volume "${LOG_VOLUME}"
 
 request_container_shutdown
 
@@ -307,7 +311,9 @@ podman run -d \
   --cap-drop=ALL \
   -v "${TS_VOLUME}:${TAILSCALE_STATE_MOUNT}:Z" \
   -v "${DATA_VOLUME}:${SWARMD_DATA_MOUNT}:Z" \
-  -v "${CONFIG_VOLUME}:${SWARM_CONFIG_MOUNT}:Z" \
+  -v "${CONFIG_VOLUME}:${SWARMD_CONFIG_MOUNT}:Z" \
+  -v "${CACHE_VOLUME}:${SWARMD_CACHE_MOUNT}:Z" \
+  -v "${LOG_VOLUME}:${SWARMD_LOG_MOUNT}:Z" \
   -v "${PRIMARY_REPO_HOST}:${PRIMARY_REPO_CONTAINER_PATH}:Z" \
   -e SWARM_STARTUP_MODE="${STARTUP_MODE}" \
   "${IMAGE_NAME}"
