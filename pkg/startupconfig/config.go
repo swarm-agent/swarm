@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
 
 const (
@@ -31,7 +33,6 @@ const (
 	DefaultDesktopPort       = 5555
 	DefaultPeerTransportPort = 7791
 
-	configDirName                   = "swarm"
 	configFileName                  = "swarm.conf"
 	remoteDeployBootstrapSecretName = "remote-deploy-bootstrap.secret"
 	configFileMode                  = 0o600
@@ -176,11 +177,11 @@ func (cfg FileConfig) ApplyBootstrap(flags BootstrapFlags) (FileConfig, error) {
 }
 
 func ResolvePath() (string, error) {
-	configDir, err := os.UserConfigDir()
+	configDir, err := storagecontract.ResolveRoot(storagecontract.RootConfig, storagecontract.Options{})
 	if err != nil {
-		return "", fmt.Errorf("resolve user config directory: %w", err)
+		return "", fmt.Errorf("resolve startup config directory: %w", err)
 	}
-	return filepath.Join(configDir, configDirName, configFileName), nil
+	return storagecontract.Join(configDir, configFileName)
 }
 
 func RemoteDeployBootstrapSecretPath(configPath string) string {

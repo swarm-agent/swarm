@@ -67,6 +67,86 @@ func TestWriteAndLoad_PersistsSwarmMode(t *testing.T) {
 	}
 }
 
+func TestResolvePath_DefaultsToSystemConfigRoot(t *testing.T) {
+	t.Setenv("HOME", "/home/startupconfig-test-user")
+	t.Setenv("XDG_CONFIG_HOME", "/home/startupconfig-test-user/.config")
+	t.Setenv("XDG_DATA_HOME", "/home/startupconfig-test-user/.local/share")
+	t.Setenv("XDG_CACHE_HOME", "/home/startupconfig-test-user/.cache")
+	t.Setenv("XDG_STATE_HOME", "/home/startupconfig-test-user/.local/state")
+	t.Setenv("CONFIGURATION_DIRECTORY", "")
+
+	path, err := startupconfig.ResolvePath()
+	if err != nil {
+		t.Fatalf("ResolvePath() error = %v", err)
+	}
+	if path != "/etc/swarmd/swarm.conf" {
+		t.Fatalf("ResolvePath() = %q, want /etc/swarmd/swarm.conf", path)
+	}
+	forbiddenPrefixes := []string{
+		"/home/startupconfig-test-user",
+		"/home/startupconfig-test-user/.config",
+		"/home/startupconfig-test-user/.local/share",
+		"/home/startupconfig-test-user/.cache",
+		"/home/startupconfig-test-user/.local/state",
+	}
+	for _, prefix := range forbiddenPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			t.Fatalf("ResolvePath() = %q under forbidden prefix %q", path, prefix)
+		}
+	}
+}
+
+func TestResolvePath_UsesValidatedSystemdConfigurationDirectory(t *testing.T) {
+	t.Setenv("HOME", "/home/startupconfig-test-user")
+	t.Setenv("XDG_CONFIG_HOME", "/home/startupconfig-test-user/.config")
+	t.Setenv("CONFIGURATION_DIRECTORY", "/etc/swarmd-test")
+
+	path, err := startupconfig.ResolvePath()
+	if err != nil {
+		t.Fatalf("ResolvePath() error = %v", err)
+	}
+	if path != "/etc/swarmd-test/swarm.conf" {
+		t.Fatalf("ResolvePath() = %q, want /etc/swarmd-test/swarm.conf", path)
+	}
+}
+
+func TestResolvePath_RejectsForbiddenConfigurationDirectory(t *testing.T) {
+	t.Setenv("HOME", "/home/startupconfig-test-user")
+	t.Setenv("CONFIGURATION_DIRECTORY", "/home/startupconfig-test-user/.config/swarm")
+
+	_, err := startupconfig.ResolvePath()
+	if err == nil {
+		t.Fatal("ResolvePath() succeeded with forbidden CONFIGURATION_DIRECTORY")
+	}
+	if !strings.Contains(err.Error(), "forbidden root") {
+		t.Fatalf("ResolvePath() error = %v, want forbidden root", err)
+	}
+}
+
+func TestRemoteDeployBootstrapSecretPath_DefaultResolvedPathNotUnderHomeXDGOrWorkspace(t *testing.T) {
+	t.Setenv("HOME", "/home/startupconfig-test-user")
+	t.Setenv("XDG_CONFIG_HOME", "/home/startupconfig-test-user/.config")
+	t.Setenv("CONFIGURATION_DIRECTORY", "")
+
+	configPath, err := startupconfig.ResolvePath()
+	if err != nil {
+		t.Fatalf("ResolvePath() error = %v", err)
+	}
+	secretPath := startupconfig.RemoteDeployBootstrapSecretPath(configPath)
+	if secretPath != "/etc/swarmd/remote-deploy-bootstrap.secret" {
+		t.Fatalf("RemoteDeployBootstrapSecretPath() = %q, want /etc/swarmd/remote-deploy-bootstrap.secret", secretPath)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	for _, forbidden := range []string{"/home/startupconfig-test-user", "/home/startupconfig-test-user/.config", cwd} {
+		if strings.HasPrefix(secretPath, forbidden) {
+			t.Fatalf("remote deploy bootstrap secret %q under forbidden prefix %q", secretPath, forbidden)
+		}
+	}
+}
+
 func TestWriteAndLoad_RemoteDeploySecretsUseSeparateSecretFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(path)
