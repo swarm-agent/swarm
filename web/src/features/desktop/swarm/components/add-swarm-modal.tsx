@@ -48,6 +48,7 @@ function logAddSwarmError(step: string, error: unknown, details?: Record<string,
 interface AddSwarmModalProps {
   open: boolean
   onboardingStatus: DesktopOnboardingStatus | null
+  initialTarget?: LaunchTarget
   onOpenChange: (open: boolean) => void
   onComplete: (message: string) => Promise<void> | void
 }
@@ -212,7 +213,7 @@ function selectCandidateEndpoint(candidate: RemoteSwarmCandidate | null): string
   return apiEndpoint?.url.trim() || candidate.endpoint.trim() || candidate.endpointCandidates.find((item) => item.url.trim() !== '')?.url.trim() || ''
 }
 
-export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete }: AddSwarmModalProps) {
+export function AddSwarmModal({ open, onboardingStatus, initialTarget = 'local', onOpenChange, onComplete }: AddSwarmModalProps) {
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -226,7 +227,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [selectedRemoteCandidateID, setSelectedRemoteCandidateID] = useState('')
   const [remoteCeremonyCode, setRemoteCeremonyCode] = useState('')
   const [remotePairingResult, setRemotePairingResult] = useState<RemoteSwarmPairingStartResult | null>(null)
-  const [launchTarget, setLaunchTarget] = useState<LaunchTarget>('local')
+  const [launchTarget, setLaunchTarget] = useState<LaunchTarget>(initialTarget)
   const [selectedRuntime, setSelectedRuntime] = useState<'podman' | 'docker' | ''>('')
   const [swarmName, setSwarmName] = useState('')
   const [syncEnabled, setSyncEnabled] = useState(true)
@@ -401,7 +402,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     setLoading(true)
     setError(null)
     setStatus(null)
-    setLaunchTarget('local')
+    setLaunchTarget(initialTarget)
     setSelectedRuntime('')
     setSyncEnabled(true)
     setSyncVaultPassword('')
@@ -457,7 +458,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       .catch((err) => {
         if (!cancelled) {
           logAddSwarmError('failed to load modal options', err)
-          setError(err instanceof Error ? err.message : 'Failed to load Add Swarm options')
+          setError(err instanceof Error ? err.message : 'Failed to load swarm link options')
         }
       })
       .finally(() => {
@@ -469,7 +470,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     return () => {
       cancelled = true
     }
-  }, [onboardingStatus, open])
+  }, [initialTarget, onboardingStatus, open])
 
   const closeModal = () => {
     if (submitting) {
@@ -851,9 +852,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         <div className={headerClassName}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-xl font-semibold text-[var(--app-text)]">Add Swarm</h2>
+              <h2 className="text-xl font-semibold text-[var(--app-text)]">{launchTarget === 'remote' ? 'Link Swarm' : 'Add Container'}</h2>
               <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                Launch a local container swarm or pair with a Managed Swarm over Tailscale.
+                {launchTarget === 'remote' ? 'Request a Managed Swarm relationship over Tailscale.' : 'Launch a local container swarm from selected workspaces.'}
               </p>
             </div>
             <Badge tone={launchTarget === 'remote' ? 'live' : activeRuntimeLabel ? 'live' : 'warning'}>
@@ -866,7 +867,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           {loading ? (
             <Card className="flex items-center gap-3 p-4 text-sm text-[var(--app-text-muted)]">
               <Loader2 size={16} className="animate-spin" />
-              <span>Loading Add Swarm options…</span>
+              <span>Loading swarm options…</span>
             </Card>
           ) : null}
 
@@ -987,7 +988,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             <>
               <Card className={sectionClassName}>
                 <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">Add Remote Swarm</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">Link Swarm</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
                     Select an online Tailscale device running swarmd. Swarm requests pairing directly, then shows the 6-character ceremony code returned by the real API.
                   </div>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Boxes, CheckSquare, Pencil, Play, Plus, Square, Trash2, TriangleAlert } from 'lucide-react'
+import { Boxes, CheckSquare, Link2, Pencil, Play, Plus, Square, Trash2, TriangleAlert } from 'lucide-react'
 import { Badge } from '../../../components/ui/badge'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -547,11 +547,11 @@ function DeleteSwarmsModal({
   const singleRemoteDeleteBySSH = Boolean(singleRemoteCandidate && effectiveRemoteDeleteMode === 'teardown' && remoteDeleteCandidateSupportsSSHDelete(singleRemoteCandidate))
   const title = singleCandidate
     ? (singleRemoteCleanup
-        ? 'Remove stale swarm record'
+        ? 'Remove stale Managed Swarm record'
         : (singleRemoteCandidate
-            ? (singleRemoteDeleteBySSH ? 'Delete remote swarm' : 'Remove remote swarm')
-            : 'Delete swarm'))
-    : 'Delete swarms'
+            ? (singleRemoteDeleteBySSH ? 'Remove linked Managed Swarm' : 'Remove Managed Swarm')
+            : 'Remove linked container swarm'))
+    : 'Remove swarms'
   const singleCandidateWorkspaceSummaries = singleCandidate == null
     ? []
     : (
@@ -779,9 +779,9 @@ function DeleteSwarmsModal({
                   ? (singleRemoteCleanup
                       ? 'Remove stale record'
                       : (singleRemoteCandidate
-                          ? (singleRemoteDeleteBySSH ? 'Delete remote swarm' : 'Remove remote swarm')
-                          : 'Delete swarm'))
-                  : 'Delete selected'
+                          ? (singleRemoteDeleteBySSH ? 'Remove linked Managed Swarm' : 'Remove Managed Swarm')
+                          : 'Remove linked container swarm'))
+                  : 'Remove selected'
               )}
             </Button>
           </div>
@@ -803,7 +803,7 @@ export function DesktopSwarmDashboard() {
   const [runtimeLoading, setRuntimeLoading] = useState(true)
   const [localContainersLoading, setLocalContainersLoading] = useState(true)
   const [deploymentsLoading, setDeploymentsLoading] = useState(true)
-  const [remoteSessionsLoading, setRemoteSessionsLoading] = useState(true)
+  const [, setRemoteSessionsLoading] = useState(true)
   const [localRuntime, setLocalRuntime] = useState<SwarmLocalRuntimeStatus>({ recommended: '', available: [], installed: [], issues: {}, warning: '' })
   const [localContainers, setLocalContainers] = useState<SwarmLocalContainer[]>([])
   const [deployments, setDeployments] = useState<DeployContainerDeployment[]>([])
@@ -814,6 +814,7 @@ export function DesktopSwarmDashboard() {
   const [groupNameDraft, setGroupNameDraft] = useState('')
   const [localNameDraft, setLocalNameDraft] = useState('')
   const [addSwarmOpen, setAddSwarmOpen] = useState(false)
+  const [addSwarmInitialTarget, setAddSwarmInitialTarget] = useState<'local' | 'remote'>('local')
   const [deleteContainersOpen, setDeleteContainersOpen] = useState(false)
   const [selectedDeleteContainerIDs, setSelectedDeleteContainerIDs] = useState<string[]>([])
   const [deleteSwarmsOpen, setDeleteSwarmsOpen] = useState(false)
@@ -1193,7 +1194,7 @@ export function DesktopSwarmDashboard() {
       })
       await refresh()
       setStatus(useTailscale
-        ? 'Swarm Mode is on with Tailscale reachability. Use Add swarm to pair another managed host.'
+        ? 'Swarm Mode is on with Tailscale reachability. Use Link Swarm to pair another Managed host.'
         : 'Swarm Mode is on. Tailscale was not connected, so reachability stayed on LAN for now.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to turn on Swarm Mode')
@@ -1313,7 +1314,8 @@ export function DesktopSwarmDashboard() {
     }
   }
 
-  const openAddSwarm = () => {
+  const openAddSwarm = (target: 'local' | 'remote' = 'local') => {
+    setAddSwarmInitialTarget(target)
     setAddSwarmOpen(true)
     setError(null)
     setStatus(null)
@@ -1602,7 +1604,7 @@ export function DesktopSwarmDashboard() {
         <div className="space-y-2">
           <h1 className="text-2xl font-semibold">Swarm</h1>
           <p className="max-w-3xl text-sm text-[var(--app-text-muted)]">
-            Add local swarms from your existing workspaces with container/runtime details handled automatically.
+            Add local containers from your existing workspaces or link a Managed Swarm over Tailscale.
           </p>
         </div>
       </div>
@@ -1643,28 +1645,13 @@ export function DesktopSwarmDashboard() {
                       {localTailscalePrimary ? 'Tailscale' : tailscaleCandidate.connected ? 'Tailscale connected · LAN config' : formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}
                     </Badge>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" data-testid="swarm-dashboard-add-swarm" onClick={openAddSwarm} disabled={masterControlsDisabled} title={localIsChild ? 'Child swarms cannot add other swarms.' : undefined}>
+                      <Button type="button" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm('local')} disabled={masterControlsDisabled} title={localIsChild ? 'Managed swarms cannot add local containers to the Manager group.' : undefined}>
                         <Plus size={14} />
-                        Add swarm
+                        Add Container
                       </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => {
-                          if (baseDeleteSwarmCandidates.length === 0) {
-                            return
-                          }
-                          if (baseDeleteSwarmCandidates.length === 1) {
-                            openDeleteSwarms([baseDeleteSwarmCandidates[0].selectionID], [baseDeleteSwarmCandidates[0].selectionID])
-                            return
-                          }
-                          openDeleteSwarms(baseDeleteSwarmCandidates.map((candidate) => candidate.selectionID), [])
-                        }}
-                        disabled={masterControlsDisabled || remoteSessionsLoading || baseDeleteSwarmCandidates.length === 0}
-                        title={localIsChild ? 'Child swarms cannot delete swarms from the group.' : undefined}
-                      >
-                        <Trash2 size={14} />
-                        {baseDeleteSwarmCandidates.length > 1 ? 'Delete swarms' : 'Delete swarm'}
+                      <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" onClick={() => openAddSwarm('remote')} disabled={masterControlsDisabled} title={localIsChild ? 'Managed swarms cannot link other swarms to the Manager group.' : undefined}>
+                        <Link2 size={14} />
+                        Link Swarm
                       </Button>
                       <Button
                         variant="outline"
@@ -1968,7 +1955,7 @@ export function DesktopSwarmDashboard() {
                                         type="button"
                                         variant="outline"
                                         className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl p-0 text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]"
-                                        title="Delete swarm"
+                                        title="Remove linked container swarm"
                                         onClick={() => openDeleteSwarms([`local:${attachedContainer.id}`], [`local:${attachedContainer.id}`])}
                                         disabled={busy}
                                       >
@@ -2047,7 +2034,7 @@ export function DesktopSwarmDashboard() {
                                         type="button"
                                         variant="outline"
                                         className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl p-0 text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]"
-                                        title={remoteDeleteCandidate ? 'Delete remote swarm' : 'Remove stale remote record'}
+                                        title={remoteDeleteCandidate ? 'Remove linked Managed Swarm' : 'Remove stale Managed Swarm record'}
                                         onClick={() => {
                                           const deleteCandidate = remoteDeleteCandidate ?? staleRemoteDeleteCandidate
                                           if (!deleteCandidate) {
@@ -2082,7 +2069,7 @@ export function DesktopSwarmDashboard() {
                   <div>
                     <h2 className="text-xl font-semibold">Local swarm containers</h2>
                     <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                      Add Swarm will choose the runtime, create or reuse the group network, and wire local children automatically for communication. Replicated child swarms stay visible here after attach.
+                      Add Container chooses the runtime, creates or reuses the group network, and wires local children automatically for communication. Linked Managed Swarms stay visible here after attach.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -2345,6 +2332,7 @@ export function DesktopSwarmDashboard() {
       <AddSwarmModal
         open={addSwarmOpen}
         onboardingStatus={onboardingStatus}
+        initialTarget={addSwarmInitialTarget}
         onOpenChange={setAddSwarmOpen}
         onComplete={handleAddSwarmComplete}
       />
