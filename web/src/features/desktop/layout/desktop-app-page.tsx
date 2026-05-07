@@ -2826,6 +2826,7 @@ export function DesktopAppPage() {
                   workspacePath: workspace.path,
                   workspaceName: workspace.workspaceName,
                   replicationLinks: workspace.replicationLinks,
+                  availableSwarmIds: swarmTargets.map((target) => target.swarm_id),
                 })
                 const handleToggleWorkspaceWorktree = () => {
                   if (worktreeBusy) {
@@ -3021,6 +3022,7 @@ export function DesktopAppPage() {
             workspaceName={chatWorkspaceName}
             workspaceWorktreeEnabled={selectedWorkspace?.worktreeEnabled ?? false}
             workspaceReplicationLinks={selectedWorkspace?.replicationLinks ?? []}
+            availableSwarmTargets={swarmTargets}
             session={selectedSession}
             onSessionCreated={handleSessionCreated}
             onOpenSettingsTab={handleOpenSettingsTab}

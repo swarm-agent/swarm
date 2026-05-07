@@ -192,6 +192,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		return nil, nil, err
 	}
 	localSwarmID := strings.TrimSpace(state.Node.SwarmID)
+	currentGroupSwarmIDs := currentSwarmGroupMemberIDs(state)
 	selectedID := requestedSwarmTargetID(r)
 	if selectedID == "" {
 		selectedID, err = s.selectedSwarmDesktopTargetID(localSwarmID)
@@ -217,11 +218,17 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		if isLocalSwarmTargetID(node.SwarmID, localSwarmID) {
 			continue
 		}
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, node.SwarmID) {
+			continue
+		}
 		s.applyCachedSwarmTargetHealth(&node)
 		targets = append(targets, node)
 		markSwarmTargetSeen(seenTargets, node)
 	}
 	for _, deployment := range deployments {
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.SwarmID) {
+			continue
+		}
 		if swarmTargetSeen(seenTargets, deployment) {
 			continue
 		}
@@ -230,6 +237,9 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		markSwarmTargetSeen(seenTargets, deployment)
 	}
 	for _, deployment := range remoteDeployments {
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.SwarmID) {
+			continue
+		}
 		if swarmTargetSeen(seenTargets, deployment) {
 			continue
 		}
@@ -288,6 +298,37 @@ func (s *Server) selectedSwarmDesktopTargetID(localSwarmID string) (string, erro
 		return localSwarmID, nil
 	}
 	return strings.TrimSpace(record.SwarmID), nil
+}
+
+func currentSwarmGroupMemberIDs(state swarmruntime.LocalState) map[string]struct{} {
+	currentGroupID := strings.TrimSpace(state.CurrentGroupID)
+	if currentGroupID == "" {
+		return nil
+	}
+	for _, group := range state.Groups {
+		if !strings.EqualFold(strings.TrimSpace(group.Group.ID), currentGroupID) {
+			continue
+		}
+		out := make(map[string]struct{}, len(group.Members)+1)
+		if localSwarmID := strings.TrimSpace(state.Node.SwarmID); localSwarmID != "" {
+			out[strings.ToLower(localSwarmID)] = struct{}{}
+		}
+		for _, member := range group.Members {
+			if swarmID := strings.TrimSpace(member.SwarmID); swarmID != "" {
+				out[strings.ToLower(swarmID)] = struct{}{}
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func swarmTargetInCurrentGroup(currentGroupSwarmIDs map[string]struct{}, swarmID string) bool {
+	if len(currentGroupSwarmIDs) == 0 {
+		return true
+	}
+	_, ok := currentGroupSwarmIDs[strings.ToLower(strings.TrimSpace(swarmID))]
+	return ok
 }
 
 func (s *Server) listSwarmNodeTargets() ([]swarmTarget, error) {

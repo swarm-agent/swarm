@@ -487,7 +487,14 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 		return onboardingResponse{}, err
 	}
 	needsOnboarding := shouldShowOnboarding(cfg, vaultStatus, credentialList.Total, savedCount)
-	tailscale, _ := detectTailscaleWithStatus()
+	tailscale := onboardingTailscalePayload{IPs: nil, Serve: onboardingTailscaleServePayload{}}
+	if needsOnboarding {
+		tailscale, _ = detectTailscaleWithStatus()
+	} else {
+		tailscaleURL := strings.TrimSpace(cfg.TailscaleURL)
+		tailscale.Available = tailscaleURL != "" || bootstrapNetworkMode(cfg) == startupconfig.NetworkModeTailscale
+		tailscale.TailnetURL = tailscaleURL
+	}
 	response := onboardingResponse{
 		OK:              true,
 		NeedsOnboarding: needsOnboarding,
@@ -520,7 +527,12 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 		return response, nil
 	}
 	if !needsOnboarding {
-		response.Tailscale.Serve = detectTailscaleServe(cfg, response.Tailscale)
+		response.Tailscale.Serve = onboardingTailscaleServePayload{
+			URL:                        strings.TrimSpace(cfg.TailscaleURL),
+			ExpectedDesktopProxy:       httpProxyTarget(strings.TrimSpace(cfg.Host), cfg.DesktopPort),
+			ExpectedAPIProxy:           httpProxyTarget(strings.TrimSpace(cfg.Host), cfg.Port),
+			ExpectedPeerTransportProxy: httpProxyTarget("127.0.0.1", cfg.PeerTransportPort),
+		}
 		return response, nil
 	}
 	response.Tailscale.CandidateURL = tailscaleCandidateURL(cfg, tailscale)
@@ -801,26 +813,15 @@ func detectedLANOnboardingTransports(cfg startupconfig.FileConfig) []onboardingT
 }
 
 func detectedTailscaleOnboardingTransports(cfg startupconfig.FileConfig) []onboardingTransportPayload {
-	tailscale := detectTailscale()
-	tailscaleValues := dedupeTransportStrings([]string{
-		strings.TrimSpace(cfg.TailscaleURL),
-		strings.TrimSpace(tailscale.TailnetURL),
-		strings.TrimSpace(tailscale.DNSName),
-	})
-	tailscaleValues = dedupeTransportStrings(append(tailscaleValues, tailscale.IPs...))
-	if len(tailscaleValues) > 0 {
-		return []onboardingTransportPayload{{
-			Kind: startupconfig.NetworkModeTailscale,
-			Primary: firstNonEmptyTransport(
-				strings.TrimSpace(cfg.TailscaleURL),
-				strings.TrimSpace(tailscale.TailnetURL),
-				strings.TrimSpace(tailscale.DNSName),
-				firstString(tailscale.IPs),
-			),
-			All: tailscaleValues,
-		}}
+	tailscaleURL := strings.TrimSpace(cfg.TailscaleURL)
+	if tailscaleURL == "" {
+		return nil
 	}
-	return nil
+	return []onboardingTransportPayload{{
+		Kind:    startupconfig.NetworkModeTailscale,
+		Primary: tailscaleURL,
+		All:     []string{tailscaleURL},
+	}}
 }
 
 func lanCandidateHosts(cfg startupconfig.FileConfig) []string {

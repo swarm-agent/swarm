@@ -38,15 +38,22 @@ export function buildDesktopChatRouteOptions(input: {
   workspacePath: string
   workspaceName: string
   replicationLinks: WorkspaceReplicationLink[]
+  availableSwarmIds?: string[]
 }): DesktopChatRoute[] {
   const hostRoute = buildHostDesktopChatRoute(input.hostSwarmName, input.workspacePath, input.workspaceName)
   const options: DesktopChatRoute[] = [hostRoute]
   const seen = new Set<string>([desktopChatRouteID(hostRoute.swarmId, hostRoute.runtimeWorkspacePath)])
+  const availableSwarmIds = input.availableSwarmIds
+    ? new Set(input.availableSwarmIds.map((value) => value.trim().toLowerCase()).filter(Boolean))
+    : null
   for (const link of input.replicationLinks) {
     const swarmId = link.targetSwarmId.trim()
     const runtimeWorkspacePath = link.targetWorkspacePath.trim()
     const targetKind = link.targetKind.trim()
     if (!swarmId || !runtimeWorkspacePath) {
+      continue
+    }
+    if (availableSwarmIds && !availableSwarmIds.has(swarmId.toLowerCase())) {
       continue
     }
     const id = desktopChatRouteID(swarmId, runtimeWorkspacePath)

@@ -69,6 +69,7 @@ import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from '../serv
 import { appendPendingUserMessage, createPendingUserMessage, removePendingUserMessage } from '../services/message-cache'
 import type { SettingsTabID } from '../../settings/types/settings-tabs'
 import type { QuickSettingsTabID } from '../../settings/components/desktop-quick-settings-modal'
+import type { SwarmTarget } from '../../swarm/api/swarm-targets'
 import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
 import { ImageSessionSidebar, type ImageSessionSidebarState } from '../../tools/components/image-session-sidebar'
 
@@ -290,6 +291,7 @@ interface DesktopChatPanelProps {
   workspaceName: string
   workspaceWorktreeEnabled: boolean
   workspaceReplicationLinks: WorkspaceReplicationLink[]
+  availableSwarmTargets: SwarmTarget[]
   session: DesktopSessionRecord | null
   onSessionCreated: (session: DesktopSessionRecord) => void
   onOpenSettingsTab: (tab: SettingsTabID) => void
@@ -799,6 +801,7 @@ export function DesktopChatPanel({
   workspaceName,
   workspaceWorktreeEnabled,
   workspaceReplicationLinks,
+  availableSwarmTargets,
   session,
   onSessionCreated,
   onOpenSettingsTab,
@@ -870,7 +873,8 @@ export function DesktopChatPanel({
     workspacePath,
     workspaceName,
     replicationLinks: workspaceReplicationLinks,
-  }), [hostSwarmName, workspacePath, workspaceName, workspaceReplicationLinks])
+    availableSwarmIds: availableSwarmTargets.map((target) => target.swarm_id),
+  }), [availableSwarmTargets, hostSwarmName, workspacePath, workspaceName, workspaceReplicationLinks])
   const defaultChatRoute = routeOptions[0]!
   const [selectedRouteId, setSelectedRouteId] = useState(() => defaultChatRoute?.id ?? 'host')
   const [draftRouteOverrideId, setDraftRouteOverrideId] = useState<string | null>(null)
