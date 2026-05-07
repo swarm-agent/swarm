@@ -3795,7 +3795,12 @@ as_root() {
     "$@"
   fi
 }
-as_root mkdir -p "$remote_root" "$config_home" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$runtime_dir" "$cache_dir"
+as_root mkdir -p "$remote_root" "$config_home" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$runtime_dir" "$cache_dir" "$(dirname "$log_file")" "$(dirname "$pid_file")"
+remote_uid="$(id -u)"
+remote_gid="$(id -g)"
+as_root touch "$log_file" "$pid_file"
+as_root chown "$remote_uid:$remote_gid" "$log_file" "$pid_file"
+as_root chmod 0600 "$log_file" "$pid_file"
 cd "$remote_root"
 runtime_cmd() {
   if [ "$runtime" = "podman" ]; then
@@ -5583,7 +5588,12 @@ as_root() {
   fi
 }
 
-as_root mkdir -p "$remote_root" "$config_home" "$cache_dir" "$runtime_dir" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir"
+as_root mkdir -p "$remote_root" "$config_home" "$cache_dir" "$runtime_dir" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$(dirname "$log_file")" "$(dirname "$pid_file")"
+remote_uid="$(id -u)"
+remote_gid="$(id -g)"
+as_root touch "$log_file" "$pid_file"
+as_root chown "$remote_uid:$remote_gid" "$log_file" "$pid_file"
+as_root chmod 0600 "$log_file" "$pid_file"
 cd "$remote_root"
 
 runtime_cmd() {

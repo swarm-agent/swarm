@@ -470,6 +470,8 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`runtime_cmd load -i "$image_archive" >/dev/null`,
 		`as_root mkdir -p '/workspaces'`,
 		`as_root mkdir -p "$remote_root" "$config_home" "$cache_dir" "$runtime_dir" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir"`,
+		`as_root touch "$log_file" "$pid_file"`,
+		`as_root chown "$remote_uid:$remote_gid" "$log_file" "$pid_file"`,
 		`if [ "$use_sudo" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then`,
 		`container_runtime_uid='65534'`,
 		`container_runtime_gid='65534'`,
