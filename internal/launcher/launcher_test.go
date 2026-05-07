@@ -5,7 +5,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
 func TestWriteCompressedDesktopAssetsCreatesGzipFiles(t *testing.T) {
@@ -174,5 +177,161 @@ func TestLoadRuntimeProfileUsesStorageContractDaemonRoots(t *testing.T) {
 	}
 	if dev.StateRoot != filepath.Join(runtimeRoot, "dev") {
 		t.Fatalf("dev StateRoot = %q", dev.StateRoot)
+	}
+}
+
+func TestRejectLegacyStartupConfigStopsWithoutMovingData(t *testing.T) {
+	configRoot := t.TempDir()
+	legacyRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", legacyRoot)
+
+	targetPath := filepath.Join(configRoot, "swarm.conf")
+	legacyPath := filepath.Join(legacyRoot, "swarm", "swarm.conf")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("mkdir legacy config dir: %v", err)
+	}
+	legacyContent := []byte("startup_mode = interactive\n")
+	if err := os.WriteFile(legacyPath, legacyContent, 0o600); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir target config dir: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("startup_mode = box\n"), 0o600); err != nil {
+		t.Fatalf("write target config: %v", err)
+	}
+
+	err := rejectLegacyStartupConfig(targetPath)
+	if err == nil {
+		t.Fatal("rejectLegacyStartupConfig succeeded with legacy config present")
+	}
+	if !strings.Contains(err.Error(), "legacy startup config detected") {
+		t.Fatalf("error = %q, want legacy startup config diagnostic", err)
+	}
+	if !strings.Contains(err.Error(), "will not move, copy, delete, open, or reuse") {
+		t.Fatalf("error = %q, want no automatic migration/reuse diagnostic", err)
+	}
+	got, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("legacy config was moved/deleted: %v", err)
+	}
+	if string(got) != string(legacyContent) {
+		t.Fatalf("legacy config content changed: %q", got)
+	}
+	target, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("target config missing: %v", err)
+	}
+	if string(target) != "startup_mode = box\n" {
+		t.Fatalf("target config changed: %q", target)
+	}
+}
+
+func TestRejectLegacyStartupSecretStopsWithoutMovingData(t *testing.T) {
+	configRoot := t.TempDir()
+	legacyRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", legacyRoot)
+
+	targetPath := filepath.Join(configRoot, "swarm.conf")
+	legacySecret := filepath.Join(legacyRoot, "swarm", "remote-deploy-bootstrap.secret")
+	if err := os.MkdirAll(filepath.Dir(legacySecret), 0o755); err != nil {
+		t.Fatalf("mkdir legacy secret dir: %v", err)
+	}
+	legacyContent := []byte("not-a-real-secret\n")
+	if err := os.WriteFile(legacySecret, legacyContent, 0o600); err != nil {
+		t.Fatalf("write legacy secret: %v", err)
+	}
+
+	err := rejectLegacyStartupConfig(targetPath)
+	if err == nil {
+		t.Fatal("rejectLegacyStartupConfig succeeded with legacy secret present")
+	}
+	if !strings.Contains(err.Error(), "legacy startup secret detected") {
+		t.Fatalf("error = %q, want legacy startup secret diagnostic", err)
+	}
+	got, err := os.ReadFile(legacySecret)
+	if err != nil {
+		t.Fatalf("legacy secret was moved/deleted: %v", err)
+	}
+	if string(got) != string(legacyContent) {
+		t.Fatalf("legacy secret content changed: %q", got)
+	}
+	if _, err := os.Stat(startupconfig.RemoteDeployBootstrapSecretPath(targetPath)); !os.IsNotExist(err) {
+		t.Fatalf("target secret exists or stat failed after rejection: %v", err)
+	}
+}
+
+func TestBackendPathAndArgsRejectsLegacyDaemonDataBeforeCreatingTargets(t *testing.T) {
+	dataHome := t.TempDir()
+	stateHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	legacyDir := filepath.Join(dataHome, "swarmd", "main")
+	legacyMarker := filepath.Join(legacyDir, "swarmd.pebble")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy daemon dir: %v", err)
+	}
+	legacyContent := []byte("legacy-db-marker")
+	if err := os.WriteFile(legacyMarker, legacyContent, 0o600); err != nil {
+		t.Fatalf("write legacy daemon marker: %v", err)
+	}
+	targetDir := filepath.Join(t.TempDir(), "data")
+	profile := Profile{Lane: "main", DataDir: targetDir, StateRoot: filepath.Join(t.TempDir(), "run")}
+
+	_, _, err := backendPathAndArgs(profile, StartBackendOptions{})
+	if err == nil {
+		t.Fatal("backendPathAndArgs succeeded with legacy daemon data present")
+	}
+	if !strings.Contains(err.Error(), "legacy daemon data detected") {
+		t.Fatalf("error = %q, want legacy daemon data diagnostic", err)
+	}
+	got, err := os.ReadFile(legacyMarker)
+	if err != nil {
+		t.Fatalf("legacy marker was moved/deleted: %v", err)
+	}
+	if string(got) != string(legacyContent) {
+		t.Fatalf("legacy marker content changed: %q", got)
+	}
+	if _, err := os.Stat(targetDir); !os.IsNotExist(err) {
+		t.Fatalf("target data dir exists or stat failed after rejection: %v", err)
+	}
+	if _, err := os.Stat(profile.StateRoot); !os.IsNotExist(err) {
+		t.Fatalf("runtime dir exists or stat failed after rejection: %v", err)
+	}
+}
+
+func TestBackendPathAndArgsRejectsLegacyDaemonDataEvenWithExistingTarget(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	legacyDir := filepath.Join(dataHome, "swarmd", "main")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy daemon dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "swarmd-secrets.pebble.key"), []byte("legacy-key"), 0o600); err != nil {
+		t.Fatalf("write legacy daemon marker: %v", err)
+	}
+	targetDir := t.TempDir()
+	targetFile := filepath.Join(targetDir, "existing")
+	if err := os.WriteFile(targetFile, []byte("system-data"), 0o600); err != nil {
+		t.Fatalf("write target file: %v", err)
+	}
+	profile := Profile{Lane: "main", DataDir: targetDir, StateRoot: filepath.Join(t.TempDir(), "run")}
+
+	_, _, err := backendPathAndArgs(profile, StartBackendOptions{})
+	if err == nil {
+		t.Fatal("backendPathAndArgs succeeded with legacy daemon data and existing target")
+	}
+	if !strings.Contains(err.Error(), "legacy daemon data detected") {
+		t.Fatalf("error = %q, want legacy daemon data diagnostic", err)
+	}
+	got, err := os.ReadFile(targetFile)
+	if err != nil {
+		t.Fatalf("target file missing: %v", err)
+	}
+	if string(got) != "system-data" {
+		t.Fatalf("target file changed: %q", got)
 	}
 }

@@ -333,20 +333,18 @@ func LoadStartupConfig() (StartupConfig, error) {
 	if err != nil {
 		return StartupConfig{}, err
 	}
-	if err := migrateLegacyStartupConfig(path); err != nil {
+	if err := rejectLegacyStartupConfig(path); err != nil {
 		return StartupConfig{}, err
 	}
 	return startupconfig.Load(path)
 }
 
-func migrateLegacyStartupConfig(targetPath string) error {
+func rejectLegacyStartupConfig(targetPath string) error {
 	targetPath = filepath.Clean(strings.TrimSpace(targetPath))
 	if targetPath == "" || targetPath == "." {
 		return errors.New("startup config path is required")
 	}
-	if _, err := os.Stat(targetPath); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat startup config %q: %w", targetPath, err)
 	}
 	legacyPath, err := legacyStartupConfigPath()
@@ -356,25 +354,15 @@ func migrateLegacyStartupConfig(targetPath string) error {
 	if legacyPath == "" || legacyPath == targetPath {
 		return nil
 	}
-	if _, err := os.Stat(legacyPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
+	if _, err := os.Stat(legacyPath); err == nil {
+		return legacyStorageError("startup config", legacyPath, targetPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat legacy startup config %q: %w", legacyPath, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return fmt.Errorf("create startup config directory %q for migration from %q: %w", filepath.Dir(targetPath), legacyPath, err)
-	}
-	if err := os.Rename(legacyPath, targetPath); err != nil {
-		return fmt.Errorf("migrate legacy startup config from %q to %q: %w", legacyPath, targetPath, err)
 	}
 	legacySecret := startupconfig.RemoteDeployBootstrapSecretPath(legacyPath)
 	if _, err := os.Stat(legacySecret); err == nil {
-		targetSecret := startupconfig.RemoteDeployBootstrapSecretPath(targetPath)
-		if err := os.Rename(legacySecret, targetSecret); err != nil {
-			return fmt.Errorf("migrate legacy startup secret from %q to %q: %w", legacySecret, targetSecret, err)
-		}
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return legacyStorageError("startup secret", legacySecret, startupconfig.RemoteDeployBootstrapSecretPath(targetPath))
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat legacy startup secret %q: %w", legacySecret, err)
 	}
 	return nil
@@ -1183,7 +1171,7 @@ func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []st
 	if opts.Bootstrap.HasAny() && profile.Startup.Exists {
 		return "", nil, startupconfig.BootstrapExistingConfigError(profile.Startup.Path)
 	}
-	if err := migrateLegacyDaemonData(profile); err != nil {
+	if err := rejectLegacyDaemonData(profile); err != nil {
 		return "", nil, err
 	}
 	if err := os.MkdirAll(profile.StateRoot, 0o755); err != nil {
@@ -1249,17 +1237,10 @@ func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []st
 	return backendPath, args, nil
 }
 
-func migrateLegacyDaemonData(profile Profile) error {
+func rejectLegacyDaemonData(profile Profile) error {
 	target := filepath.Clean(strings.TrimSpace(profile.DataDir))
 	if target == "" || target == "." {
 		return errors.New("daemon data directory is required")
-	}
-	targetHasEntries, err := dirHasEntries(target)
-	if err != nil {
-		return fmt.Errorf("inspect daemon data directory %q: %w", target, err)
-	}
-	if targetHasEntries {
-		return nil
 	}
 	candidates, err := legacyDaemonDataCandidates(profile.Lane)
 	if err != nil {
@@ -1273,28 +1254,7 @@ func migrateLegacyDaemonData(profile Profile) error {
 		if !legacyDaemonDataPresent(source) {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("create daemon data parent %q for migration from %q: %w", filepath.Dir(target), source, err)
-		}
-		if _, err := os.Stat(target); err == nil {
-			empty, err := dirIsEmpty(target)
-			if err != nil {
-				return fmt.Errorf("inspect daemon data directory %q: %w", target, err)
-			}
-			if !empty {
-				return nil
-			}
-			if err := moveDirContents(source, target); err != nil {
-				return fmt.Errorf("migrate legacy daemon data from %q into %q: %w", source, target, err)
-			}
-			return nil
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("stat daemon data directory %q: %w", target, err)
-		}
-		if err := os.Rename(source, target); err != nil {
-			return fmt.Errorf("migrate legacy daemon data from %q to %q: %w", source, target, err)
-		}
-		return nil
+		return legacyStorageError("daemon data", source, target)
 	}
 	return nil
 }
@@ -1336,50 +1296,8 @@ func legacyDaemonDataPresent(path string) bool {
 	return false
 }
 
-func moveDirContents(source, target string) error {
-	entries, err := os.ReadDir(source)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if name == "." || name == ".." {
-			continue
-		}
-		from := filepath.Join(source, name)
-		to := filepath.Join(target, name)
-		if _, err := os.Stat(to); err == nil {
-			return fmt.Errorf("target path %q already exists", to)
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("stat target path %q: %w", to, err)
-		}
-		if err := os.Rename(from, to); err != nil {
-			return fmt.Errorf("move %q to %q: %w", from, to, err)
-		}
-	}
-	if err := os.Remove(source); err != nil {
-		return fmt.Errorf("remove migrated legacy directory %q: %w", source, err)
-	}
-	return nil
-}
-
-func dirHasEntries(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	return len(entries) > 0, nil
-}
-
-func dirIsEmpty(path string) (bool, error) {
-	hasEntries, err := dirHasEntries(path)
-	if err != nil {
-		return false, err
-	}
-	return !hasEntries, nil
+func legacyStorageError(kind, legacyPath, targetPath string) error {
+	return fmt.Errorf("legacy %s detected at %q; Swarm will not move, copy, delete, open, or reuse legacy home/XDG data automatically. Review it manually and, if you choose to keep it, move it to the configured system location %q before restarting", kind, legacyPath, targetPath)
 }
 
 func waitForHealth(profile Profile, attempts int) error {
