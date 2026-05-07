@@ -34,6 +34,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 
 func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/discovery", s.handleSwarmDiscovery)
+	mux.HandleFunc("/v1/swarm/remote-candidates", s.handleSwarmRemoteCandidates)
 	mux.HandleFunc("/v1/swarm/invites", s.handleSwarmInvites)
 	mux.HandleFunc("/v1/swarm/remote-pairing/start", s.handleSwarmRemotePairingStart)
 	mux.HandleFunc("/v1/swarm/remote-pairing/request", s.handleSwarmRemotePairingRequest)
