@@ -137,15 +137,20 @@ swarm_provision_system_dir() {
 }
 
 swarm_provision_tmpfiles_config() {
-  local owner tmp_path
+  local owner tmp_path target_path
   owner="$(swarm_current_owner_spec)"
+  target_path="/etc"/tmpfiles.d/swarmd.conf
   tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-tmpfiles.XXXXXX")"
   cat >"${tmp_path}" <<EOF
 d /run/swarmd 0700 ${owner%:*} ${owner#*:} -
 d /run/swarmd/dev 0700 ${owner%:*} ${owner#*:} -
 d /run/swarmd/ports 0700 ${owner%:*} ${owner#*:} -
 EOF
-  if ! swarm_run_privileged install -m 0644 "${tmp_path}" "/etc"/tmpfiles.d/swarmd.conf; then
+  if [[ -f "${target_path}" ]] && cmp -s "${tmp_path}" "${target_path}"; then
+    rm -f "${tmp_path}"
+    return 0
+  fi
+  if ! swarm_run_privileged install -m 0644 "${tmp_path}" "${target_path}"; then
     rm -f "${tmp_path}"
     return 1
   fi

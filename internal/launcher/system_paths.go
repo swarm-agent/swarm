@@ -180,6 +180,9 @@ func runPrivilegedCommand(args ...string) error {
 }
 
 func replaceSymlinkPrivileged(linkPath, target string) error {
+	if symlinkAlreadyPoints(linkPath, target) {
+		return nil
+	}
 	if err := replaceSymlink(linkPath, target); err == nil {
 		return nil
 	}
@@ -187,4 +190,13 @@ func replaceSymlinkPrivileged(linkPath, target string) error {
 		return err
 	}
 	return nil
+}
+
+func symlinkAlreadyPoints(linkPath, target string) bool {
+	info, err := os.Lstat(linkPath)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	existing, err := os.Readlink(linkPath)
+	return err == nil && filepath.Clean(existing) == filepath.Clean(target)
 }
