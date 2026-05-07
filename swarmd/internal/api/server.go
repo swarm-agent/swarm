@@ -142,6 +142,7 @@ type swarmService interface {
 	DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error)
 	PrepareRemoteBootstrapParentPeer(input swarmruntime.PrepareRemoteBootstrapParentPeerInput) error
 	ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error)
+	TrustManagedPeer(input swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error)
 	UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error)
 	DetachToStandalone(localSwarmID string) error
 }

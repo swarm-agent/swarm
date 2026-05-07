@@ -160,22 +160,24 @@ type EnsureInviteInput struct {
 }
 
 type SubmitEnrollmentInput struct {
-	InviteToken          string
-	PrimarySwarmID       string
-	GroupID              string
-	ChildSwarmID         string
-	ChildName            string
-	ChildRole            string
-	ChildPublicKey       string
-	TransportMode        string
-	ObservedRemoteAddr   string
-	RendezvousTransports []TransportSummary
+	InviteToken           string
+	PrimarySwarmID        string
+	GroupID               string
+	ChildSwarmID          string
+	ChildName             string
+	ChildRole             string
+	ChildPublicKey        string
+	TransportMode         string
+	ObservedRemoteAddr    string
+	RendezvousTransports  []TransportSummary
+	IncomingPeerAuthToken string
 }
 
 type DecideEnrollmentInput struct {
-	EnrollmentID string
-	Approve      bool
-	Reason       string
+	EnrollmentID          string
+	Approve               bool
+	Reason                string
+	IncomingPeerAuthToken string
 }
 
 type PrepareRemoteBootstrapParentPeerInput struct {
@@ -190,12 +192,26 @@ type PrepareRemoteBootstrapParentPeerInput struct {
 }
 
 type ApproveManagedPairingInput struct {
-	ManagerSwarmID       string
-	ManagerName          string
-	ManagerPublicKey     string
-	ManagerFingerprint   string
-	TransportMode        string
-	RendezvousTransports []TransportSummary
+	ManagerSwarmID        string
+	ManagerName           string
+	ManagerPublicKey      string
+	ManagerFingerprint    string
+	TransportMode         string
+	RendezvousTransports  []TransportSummary
+	OutgoingPeerAuthToken string
+	IncomingPeerAuthToken string
+}
+
+type TrustManagedPeerInput struct {
+	ManagedSwarmID        string
+	ManagedName           string
+	ManagedRole           string
+	ManagedPublicKey      string
+	ManagedFingerprint    string
+	TransportMode         string
+	RendezvousTransports  []TransportSummary
+	OutgoingPeerAuthToken string
+	IncomingPeerAuthToken string
 }
 
 func NewService(store *pebblestore.SwarmStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) *Service {
@@ -311,12 +327,14 @@ func (s *Service) ApproveManagedPairing(input ApproveManagedPairingInput) (Pairi
 		return PairingState{}, errors.New("manager swarm id is required")
 	}
 	if err := s.PrepareRemoteBootstrapParentPeer(PrepareRemoteBootstrapParentPeerInput{
-		ParentSwarmID:        managerSwarmID,
-		ParentName:           input.ManagerName,
-		ParentPublicKey:      input.ManagerPublicKey,
-		ParentFingerprint:    input.ManagerFingerprint,
-		TransportMode:        input.TransportMode,
-		RendezvousTransports: input.RendezvousTransports,
+		ParentSwarmID:         managerSwarmID,
+		ParentName:            input.ManagerName,
+		ParentPublicKey:       input.ManagerPublicKey,
+		ParentFingerprint:     input.ManagerFingerprint,
+		TransportMode:         input.TransportMode,
+		RendezvousTransports:  input.RendezvousTransports,
+		OutgoingPeerAuthToken: strings.TrimSpace(input.OutgoingPeerAuthToken),
+		IncomingPeerAuthToken: strings.TrimSpace(input.IncomingPeerAuthToken),
 	}); err != nil {
 		return PairingState{}, err
 	}
@@ -338,6 +356,51 @@ func (s *Service) ApproveManagedPairing(input ApproveManagedPairingInput) (Pairi
 		return PairingState{}, err
 	}
 	return toPairingState(record), nil
+}
+
+func (s *Service) TrustManagedPeer(input TrustManagedPeerInput) (TrustedPeer, error) {
+	if s == nil || s.store == nil {
+		return TrustedPeer{}, errors.New("swarm service is not configured")
+	}
+	managedSwarmID := strings.TrimSpace(input.ManagedSwarmID)
+	if managedSwarmID == "" {
+		return TrustedPeer{}, errors.New("managed swarm id is required")
+	}
+	existing, _, err := s.store.GetTrustedPeer(managedSwarmID)
+	if err != nil {
+		return TrustedPeer{}, err
+	}
+	transports := toStoreTransports(input.RendezvousTransports)
+	if len(transports) == 0 {
+		transports = existing.RendezvousTransports
+	}
+	incomingPeerAuthHash := strings.TrimSpace(existing.IncomingPeerAuthHash)
+	if token := strings.TrimSpace(input.IncomingPeerAuthToken); token != "" {
+		incomingPeerAuthHash = HashPeerAuthToken(token)
+	}
+	approvedAt := existing.ApprovedAt
+	if approvedAt <= 0 {
+		approvedAt = time.Now().UnixMilli()
+	}
+	role := firstNonEmpty(strings.TrimSpace(input.ManagedRole), existing.Role, RelationshipManaged)
+	peer, err := s.store.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{
+		SwarmID:               managedSwarmID,
+		Name:                  firstNonEmpty(strings.TrimSpace(input.ManagedName), existing.Name, "Managed swarm"),
+		Role:                  role,
+		PublicKey:             firstNonEmpty(strings.TrimSpace(input.ManagedPublicKey), existing.PublicKey),
+		Fingerprint:           firstNonEmpty(strings.TrimSpace(input.ManagedFingerprint), existing.Fingerprint),
+		Relationship:          RelationshipManaged,
+		ParentSwarmID:         "",
+		TransportMode:         firstNonEmpty(strings.TrimSpace(input.TransportMode), existing.TransportMode, startupconfig.NetworkModeTailscale),
+		RendezvousTransports:  transports,
+		OutgoingPeerAuthToken: firstNonEmpty(strings.TrimSpace(input.OutgoingPeerAuthToken), existing.OutgoingPeerAuthToken),
+		IncomingPeerAuthHash:  incomingPeerAuthHash,
+		ApprovedAt:            approvedAt,
+	})
+	if err != nil {
+		return TrustedPeer{}, err
+	}
+	return toTrustedPeer(peer), nil
 }
 
 func (s *Service) ValidateIncomingPeerAuth(swarmID, rawToken string) (bool, error) {
@@ -730,16 +793,18 @@ func (s *Service) DecideEnrollment(input DecideEnrollmentInput) (Enrollment, []T
 			return Enrollment{}, nil, err
 		}
 		childPeer, err := s.store.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{
-			SwarmID:              record.ChildSwarmID,
-			Name:                 record.ChildName,
-			Role:                 record.ChildRole,
-			PublicKey:            record.ChildPublicKey,
-			Fingerprint:          record.ChildFingerprint,
-			Relationship:         RelationshipManaged,
-			ParentSwarmID:        record.PrimarySwarmID,
-			TransportMode:        record.TransportMode,
-			RendezvousTransports: record.RendezvousTransports,
-			ApprovedAt:           now,
+			SwarmID:               record.ChildSwarmID,
+			Name:                  record.ChildName,
+			Role:                  record.ChildRole,
+			PublicKey:             record.ChildPublicKey,
+			Fingerprint:           record.ChildFingerprint,
+			Relationship:          RelationshipManaged,
+			ParentSwarmID:         record.PrimarySwarmID,
+			TransportMode:         record.TransportMode,
+			RendezvousTransports:  record.RendezvousTransports,
+			OutgoingPeerAuthToken: strings.TrimSpace(record.InviteToken),
+			IncomingPeerAuthHash:  HashPeerAuthToken(input.IncomingPeerAuthToken),
+			ApprovedAt:            now,
 		})
 		if err != nil {
 			return Enrollment{}, nil, err

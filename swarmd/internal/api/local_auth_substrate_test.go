@@ -529,6 +529,10 @@ func (f fakeLocalAuthSwarmService) ApproveManagedPairing(swarmruntime.ApproveMan
 	return swarmruntime.PairingState{}, nil
 }
 
+func (f fakeLocalAuthSwarmService) TrustManagedPeer(swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
+	return swarmruntime.TrustedPeer{}, nil
+}
+
 func (f fakeLocalAuthSwarmService) UpdateLocalPairingFromConfig(startupconfig.FileConfig, []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
 	return swarmruntime.PairingState{}, nil
 }
