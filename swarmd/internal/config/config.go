@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
 
 const (
@@ -46,14 +47,14 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
-	dataHome, err := resolveXDGDataHome()
+	storageDefaults, err := resolveDaemonStorageDefaults()
 	if err != nil {
 		return Config{}, err
 	}
 
-	defaultDataDir := filepath.Join(dataHome, "swarmd")
-	defaultDBPath := filepath.Join(defaultDataDir, "swarmd.pebble")
-	defaultLockPath := filepath.Join(defaultDataDir, "swarmd.lock")
+	defaultDataDir := storageDefaults.DataDir
+	defaultDBPath := storageDefaults.DBPath
+	defaultLockPath := storageDefaults.LockPath
 	defaultMode, err := runtimeModeForStartupMode(startupCfg.Mode)
 	if err != nil {
 		return Config{}, err
@@ -99,22 +100,6 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
-	if !startupCfg.Exists {
-		startupCfg, err = startupConfigFromRuntime(configPath, cfg.Mode, cfg.ListenAddr, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory)
-		if err != nil {
-			return Config{}, err
-		}
-		startupCfg, err = startupCfg.ApplyBootstrap(bootstrapArgs)
-		if err != nil {
-			return Config{}, err
-		}
-		if err := startupconfig.Write(startupCfg); err != nil {
-			return Config{}, err
-		}
-		cfg.StartupMode = startupCfg.Mode
-		cfg.RetainToolOutputHistory = startupCfg.RetainToolOutputHistory
-	}
-
 	if err := validateRuntimeMode(cfg.Mode); err != nil {
 		return Config{}, err
 	}
@@ -131,17 +116,95 @@ func Parse(args []string) (Config, error) {
 		cfg.StartupCWD = cwd
 	}
 
-	if !filepath.IsAbs(cfg.DataDir) {
-		cfg.DataDir = filepath.Clean(filepath.Join(cfg.StartupCWD, cfg.DataDir))
+	if err := validateDaemonStoragePaths(cfg); err != nil {
+		return Config{}, err
 	}
-	if !filepath.IsAbs(cfg.DBPath) {
-		cfg.DBPath = filepath.Clean(filepath.Join(cfg.StartupCWD, cfg.DBPath))
-	}
-	if !filepath.IsAbs(cfg.LockPath) {
-		cfg.LockPath = filepath.Clean(filepath.Join(cfg.StartupCWD, cfg.LockPath))
+
+	if !startupCfg.Exists {
+		startupCfg, err = startupConfigFromRuntime(configPath, cfg.Mode, cfg.ListenAddr, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory)
+		if err != nil {
+			return Config{}, err
+		}
+		startupCfg, err = startupCfg.ApplyBootstrap(bootstrapArgs)
+		if err != nil {
+			return Config{}, err
+		}
+		if err := startupconfig.Write(startupCfg); err != nil {
+			return Config{}, err
+		}
+		cfg.StartupMode = startupCfg.Mode
+		cfg.RetainToolOutputHistory = startupCfg.RetainToolOutputHistory
 	}
 
 	return cfg, nil
+}
+
+type daemonStorageDefaults struct {
+	DataDir  string
+	DBPath   string
+	LockPath string
+}
+
+func resolveDaemonStorageDefaults() (daemonStorageDefaults, error) {
+	dataDir, err := storagecontract.ResolveRoot(storagecontract.RootData, storagecontract.Options{})
+	if err != nil {
+		return daemonStorageDefaults{}, fmt.Errorf("resolve daemon data directory: %w", err)
+	}
+	runtimeDir, err := storagecontract.ResolveRoot(storagecontract.RootRuntime, storagecontract.Options{})
+	if err != nil {
+		return daemonStorageDefaults{}, fmt.Errorf("resolve daemon runtime directory: %w", err)
+	}
+	dbPath, err := storagecontract.Join(dataDir, "swarmd.pebble")
+	if err != nil {
+		return daemonStorageDefaults{}, fmt.Errorf("resolve daemon database path: %w", err)
+	}
+	lockPath, err := storagecontract.Join(runtimeDir, "swarmd.lock")
+	if err != nil {
+		return daemonStorageDefaults{}, fmt.Errorf("resolve daemon lock path: %w", err)
+	}
+	return daemonStorageDefaults{DataDir: dataDir, DBPath: dbPath, LockPath: lockPath}, nil
+}
+
+func validateDaemonStoragePaths(cfg Config) error {
+	opts := storagecontract.Options{WorkspaceRoots: detectedWorkspaceRoots(cfg.StartupCWD)}
+	for _, item := range []struct {
+		flagName string
+		path     string
+	}{
+		{flagName: "data-dir", path: cfg.DataDir},
+		{flagName: "db-path", path: cfg.DBPath},
+		{flagName: "lock-path", path: cfg.LockPath},
+	} {
+		if err := storagecontract.ValidateRoot(item.path, opts); err != nil {
+			return fmt.Errorf("invalid --%s %q: %w", item.flagName, item.path, err)
+		}
+	}
+	return nil
+}
+
+func detectedWorkspaceRoots(start string) []string {
+	start = strings.TrimSpace(start)
+	if start == "" {
+		return nil
+	}
+	if !filepath.IsAbs(start) {
+		abs, err := filepath.Abs(start)
+		if err != nil {
+			return nil
+		}
+		start = abs
+	}
+	current := filepath.Clean(start)
+	for {
+		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil {
+			return []string{current}
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+		current = parent
+	}
 }
 
 func validateRuntimeMode(mode string) error {
@@ -340,15 +403,4 @@ func consumeInlineFlag(arg, prefix string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimPrefix(arg, prefix), true
-}
-
-func resolveXDGDataHome() (string, error) {
-	if override := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); override != "" {
-		return filepath.Clean(override), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".local", "share"), nil
 }
