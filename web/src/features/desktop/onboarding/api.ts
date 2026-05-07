@@ -163,9 +163,84 @@ export interface SwarmLocalState {
 }
 
 export interface RemoteSwarmPairingCeremony {
-  child_swarm_id: string
-  child_name: string
-  auth_code: string
+  managed_swarm_id?: string
+  managed_name?: string
+  code?: string
+  verification_only?: boolean
+  child_swarm_id?: string
+  child_name?: string
+  auth_code?: string
+}
+
+export interface RemoteSwarmEndpointCandidate {
+  kind: string
+  url: string
+  host: string
+  port: number
+  scheme: string
+}
+
+export interface RemoteSwarmCandidate {
+  id: string
+  source: string
+  name: string
+  dnsName: string
+  tailnetURL: string
+  endpoint: string
+  endpointCandidates: RemoteSwarmEndpointCandidate[]
+  ips: string[]
+  os: string
+  online: boolean
+  transportMode: string
+  rendezvousTransports: DesktopOnboardingTransport[]
+}
+
+export interface RemoteSwarmCandidatesResult {
+  tailscale: {
+    available: boolean
+    connected: boolean
+    tailnetName: string
+    error: string
+  }
+  candidates: RemoteSwarmCandidate[]
+  count: number
+}
+
+export interface RemoteSwarmPairingOffer {
+  version: string
+  type: string
+  token: string
+  single_use?: boolean
+  swarm_id: string
+  swarm_name: string
+  public_key: string
+  fingerprint: string
+  endpoint: string
+  endpoint_candidates?: RemoteSwarmEndpointCandidate[]
+  api_port: number
+  transport_mode: string
+  rendezvous_transports?: DesktopOnboardingTransport[]
+  expires_at: number
+  created_at: number
+  ceremony: {
+    code: string
+    verification_only?: boolean
+    description?: string
+  }
+}
+
+export interface RemoteSwarmPairingStartResult {
+  invite?: SwarmInvite
+  request: {
+    request_id: string
+    status: string
+    managed_swarm_id: string
+    managed_name: string
+    managed_public_key?: string
+    managed_fingerprint?: string
+    ceremony_code: string
+  }
+  ceremony: RemoteSwarmPairingCeremony
 }
 
 export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingStatus> {
@@ -425,15 +500,38 @@ export async function createSwarmInvite(ttlSeconds = 900): Promise<SwarmInvite> 
   return response.invite
 }
 
+export async function fetchRemoteSwarmCandidates(): Promise<RemoteSwarmCandidatesResult> {
+  const response = await requestJson<{
+    ok?: boolean
+    tailscale?: { available?: boolean; connected?: boolean; tailnet_name?: string; error?: string }
+    candidates?: any[]
+    count?: number
+  }>('/v1/swarm/remote-candidates')
+  const candidates = Array.isArray(response.candidates) ? response.candidates : []
+  return {
+    tailscale: {
+      available: Boolean(response.tailscale?.available),
+      connected: Boolean(response.tailscale?.connected),
+      tailnetName: String(response.tailscale?.tailnet_name ?? '').trim(),
+      error: String(response.tailscale?.error ?? '').trim(),
+    },
+    candidates: candidates.map(mapRemoteSwarmCandidate),
+    count: typeof response.count === 'number' ? response.count : candidates.length,
+  }
+}
+
 export async function startRemoteSwarmPairing(input: {
   endpoint?: string
   dnsName?: string
   ips?: string[]
-  childSwarmID?: string
-  childName?: string
+  groupID?: string
+  managedSwarmID?: string
+  managedName?: string
+  offer?: RemoteSwarmPairingOffer
+  ceremonyCode?: string
   rendezvousTransports?: DesktopOnboardingTransport[]
-}): Promise<{ invite: SwarmInvite; ceremony: RemoteSwarmPairingCeremony }> {
-  const response = await requestJson<{ ok?: boolean; invite?: SwarmInvite; ceremony?: RemoteSwarmPairingCeremony }>('/v1/swarm/remote-pairing/start', {
+}): Promise<RemoteSwarmPairingStartResult> {
+  const response = await requestJson<{ ok?: boolean; invite?: SwarmInvite; request?: RemoteSwarmPairingStartResult['request']; ceremony?: RemoteSwarmPairingCeremony }>('/v1/swarm/remote-pairing/start', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -442,19 +540,23 @@ export async function startRemoteSwarmPairing(input: {
       endpoint: input.endpoint,
       dns_name: input.dnsName,
       ips: input.ips,
-      child_swarm_id: input.childSwarmID,
-      child_name: input.childName,
+      group_id: input.groupID,
+      managed_swarm_id: input.managedSwarmID,
+      managed_name: input.managedName,
+      offer: input.offer,
+      ceremony_code: input.ceremonyCode,
       rendezvous_transports: input.rendezvousTransports,
     }),
   })
-  if (!response.invite) {
-    throw new Error('remote pairing response was missing invite data')
+  if (!response.request) {
+    throw new Error('remote pairing response was missing managed pairing request data')
   }
   if (!response.ceremony) {
-    throw new Error('remote pairing response was missing child ceremony data')
+    throw new Error('remote pairing response was missing ceremony data')
   }
   return {
     invite: response.invite,
+    request: response.request,
     ceremony: response.ceremony,
   }
 }
@@ -537,6 +639,33 @@ function mapTransport(record: DesktopOnboardingTransportWire): DesktopOnboarding
     all: Array.isArray(record.all)
       ? record.all.map((value) => String(value).trim()).filter((value) => value !== '')
       : [],
+  }
+}
+
+function mapRemoteSwarmEndpointCandidate(record: any): RemoteSwarmEndpointCandidate {
+  return {
+    kind: String(record?.kind ?? '').trim(),
+    url: String(record?.url ?? '').trim(),
+    host: String(record?.host ?? '').trim(),
+    port: typeof record?.port === 'number' ? record.port : 0,
+    scheme: String(record?.scheme ?? '').trim(),
+  }
+}
+
+function mapRemoteSwarmCandidate(record: any): RemoteSwarmCandidate {
+  return {
+    id: String(record?.id ?? '').trim(),
+    source: String(record?.source ?? '').trim(),
+    name: String(record?.name ?? '').trim(),
+    dnsName: String(record?.dns_name ?? '').trim(),
+    tailnetURL: String(record?.tailnet_url ?? '').trim(),
+    endpoint: String(record?.endpoint ?? '').trim(),
+    endpointCandidates: Array.isArray(record?.endpoint_candidates) ? record.endpoint_candidates.map(mapRemoteSwarmEndpointCandidate) : [],
+    ips: Array.isArray(record?.ips) ? record.ips.map((value: unknown) => String(value ?? '').trim()).filter((value: string) => value !== '') : [],
+    os: String(record?.os ?? '').trim(),
+    online: Boolean(record?.online),
+    transportMode: String(record?.transport_mode ?? '').trim(),
+    rendezvousTransports: Array.isArray(record?.rendezvous_transports) ? record.rendezvous_transports.map(mapTransport) : [],
   }
 }
 

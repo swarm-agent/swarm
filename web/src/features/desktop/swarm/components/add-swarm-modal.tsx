@@ -1,28 +1,28 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, HelpCircle, Loader2, Plus, X } from 'lucide-react'
+import { Check, HelpCircle, Loader2, Plus, RefreshCw, X } from 'lucide-react'
 import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
-import { Select } from '../../../../components/ui/select'
-import { fetchDesktopOnboardingStatus, fetchSwarmLocalRuntimeStatus, saveDesktopOnboarding, type SwarmLocalRuntimeStatus } from '../../onboarding/api'
-import { getUISettings, saveRemoteSSHTarget } from '../../settings/swarm/queries/get-ui-settings'
+import { Textarea } from '../../../../components/ui/textarea'
+import {
+  fetchDesktopOnboardingStatus,
+  fetchRemoteSwarmCandidates,
+  fetchSwarmLocalRuntimeStatus,
+  startRemoteSwarmPairing,
+  type RemoteSwarmCandidate,
+  type RemoteSwarmPairingOffer,
+  type RemoteSwarmPairingStartResult,
+  type SwarmLocalRuntimeStatus,
+} from '../../onboarding/api'
+
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
 import {
-  approveRemoteDeploySession,
-  createRemoteDeploySession,
   fetchDeployContainerPackageDefaults,
-  fetchRemoteDeploySession,
-  fetchRemoteDeploySessions,
-  startRemoteDeploySession,
-  updateRemoteDeploySessionSettings,
   suggestDeployContainerPackages,
   validateDeployContainerPackage,
   type DeployContainerPackageSelection,
-  type RemoteDeployPreflightError,
-  type RemoteDeploySession,
-  type RemoteDeployStartError,
 } from '../api/deploy-container'
 import { replicateSwarm, ReplicateSwarmLaunchError } from '../api/replicate-swarm'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
@@ -55,8 +55,6 @@ interface AddSwarmModalProps {
 }
 
 type LaunchTarget = 'local' | 'remote'
-type RemoteDeployMethod = 'lan' | 'tailscale'
-type RemoteTailscaleAuthMode = 'manual' | 'key'
 interface ReplicateWorkspaceDraft {
   workspacePath: string
   selected: boolean
@@ -70,11 +68,15 @@ interface ContainerPackageDraft {
   reason?: string
 }
 
+type RemotePairingMode = 'candidate' | 'manual'
+
+interface RemotePairingDraft {
+  offer: RemoteSwarmPairingOffer
+  raw: string
+}
+
 const FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE = 'docker.io/ubuntu:26.04'
 const FALLBACK_CONTAINER_PACKAGE_MANAGER = 'apt'
-const REMOTE_IMAGE_DELIVERY_MODE_RELEASE: 'registry' = 'registry'
-const REMOTE_IMAGE_DELIVERY_MODE_DEV: 'archive' = 'archive'
-const REMOTE_LAUNCH_POLL_INTERVAL_MS = 2000
 
 const DEFAULT_CONTAINER_PACKAGES: ContainerPackageDraft[] = [
   'bash',
@@ -101,21 +103,6 @@ function buildContainerPackageManifest(packages: ContainerPackageDraft[], baseIm
       reason: pkg.reason,
     })),
   }
-}
-
-function formatBytes(bytes?: number): string {
-  const safeBytes = typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0 ? bytes : 0
-  if (safeBytes <= 0) {
-    return 'unknown'
-  }
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let value = safeBytes
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return unit === 0 ? `${safeBytes} ${units[unit]}` : `${value.toFixed(1)} ${units[unit]}`
 }
 
 function mergeContainerPackages(packages: ContainerPackageDraft[]): ContainerPackageDraft[] {
@@ -191,42 +178,6 @@ function currentGroup(status: DesktopOnboardingStatus | null) {
   return status.groups[0] ?? null
 }
 
-function remoteReachableHostCandidate(target: string): string {
-  const trimmed = String(target ?? '').trim()
-  if (!trimmed) {
-    return ''
-  }
-  let value = trimmed
-  const atIndex = value.lastIndexOf('@')
-  if (atIndex >= 0) {
-    value = value.slice(atIndex + 1).trim()
-  }
-  if (value.startsWith('[')) {
-    const end = value.indexOf(']')
-    if (end > 0) {
-      return value.slice(1, end).trim()
-    }
-  }
-  const colonIndex = value.lastIndexOf(':')
-  if (colonIndex > 0 && value.indexOf(':') === colonIndex) {
-    value = value.slice(0, colonIndex).trim()
-  }
-  const candidate = value.trim()
-  if (!candidate) {
-    return ''
-  }
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(candidate)) {
-    return candidate
-  }
-  if (candidate.includes(':')) {
-    return candidate
-  }
-  if (candidate.includes('.')) {
-    return candidate
-  }
-  return ''
-}
-
 function buildWorkspaceDrafts(workspaces: WorkspaceEntry[]): ReplicateWorkspaceDraft[] {
   return workspaces.map((workspace) => ({
     workspacePath: workspace.path,
@@ -240,335 +191,103 @@ function selectedWorkspaceCount(items: ReplicateWorkspaceDraft[]): number {
   return items.filter((item) => item.selected).length
 }
 
-const REMOTE_WORKSPACE_ROOT = '/workspaces'
-
-function fallbackWorkspaceName(workspacePath: string, index: number): string {
-  const segments = String(workspacePath ?? '').trim().split(/[\\/]/).filter(Boolean)
-  return segments[segments.length - 1] || `workspace-${index + 1}`
+function normalizePairingCode(value: string): string {
+  return String(value ?? '').trim().replace(/[^a-fA-F0-9]/g, '').toUpperCase().slice(0, 6)
 }
 
-function sanitizeRemoteWorkspaceTargetSegment(value: string): string {
-  return String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
+function formatPairingCode(value: string): string {
+  const normalized = normalizePairingCode(value)
+  return normalized ? normalized.match(/.{1,3}/g)?.join(' ') ?? normalized : ''
 }
 
-function nextRemoteWorkspaceTargetPath(baseName: string, usedTargets: Map<string, number>): string {
-  const normalizedBase = sanitizeRemoteWorkspaceTargetSegment(baseName) || 'workspace'
-  const basePath = `${REMOTE_WORKSPACE_ROOT}/${normalizedBase}`
-  const count = (usedTargets.get(basePath) ?? 0) + 1
-  usedTargets.set(basePath, count)
-  return count === 1 ? basePath : `${basePath}-${count}`
-}
-
-function buildRemoteWorkspacePayloads(workspaces: ReplicateWorkspaceDraft[]) {
-  const selectedWorkspaces = workspaces.filter((workspace) => workspace.selected)
-  const usedTargets = new Map<string, number>()
-  const selectedTargetByPath = new Map<string, string>()
-
-  selectedWorkspaces.forEach((workspace, index) => {
-    const sourcePath = workspace.workspacePath.trim()
-    const workspaceName = workspace.workspaceName.trim() || fallbackWorkspaceName(sourcePath, index)
-    const baseName = sanitizeRemoteWorkspaceTargetSegment(workspaceName)
-      || sanitizeRemoteWorkspaceTargetSegment(fallbackWorkspaceName(sourcePath, index))
-      || `workspace-${index + 1}`
-    selectedTargetByPath.set(sourcePath, nextRemoteWorkspaceTargetPath(baseName, usedTargets))
-  })
-
-  return selectedWorkspaces.map((workspace, index) => {
-    const sourcePath = workspace.workspacePath.trim()
-    const workspaceName = workspace.workspaceName.trim() || fallbackWorkspaceName(sourcePath, index)
-    const targetPath = selectedTargetByPath.get(sourcePath) || nextRemoteWorkspaceTargetPath(fallbackWorkspaceName(sourcePath, index), usedTargets)
-    const baseName = sanitizeRemoteWorkspaceTargetSegment(workspaceName)
-      || sanitizeRemoteWorkspaceTargetSegment(fallbackWorkspaceName(sourcePath, index))
-      || `workspace-${index + 1}`
-    const linkedDirectories = workspace.directories
-      .map((directory) => directory.trim())
-      .filter((directory) => directory.length > 0 && directory !== sourcePath)
-      .map((directory, directoryIndex) => {
-        const directoryBaseName = sanitizeRemoteWorkspaceTargetSegment(
-          `${baseName}-dir-${fallbackWorkspaceName(directory, directoryIndex)}`,
-        ) || `${baseName}-dir-${directoryIndex + 1}`
-        return {
-          sourcePath: directory,
-          targetPath: selectedTargetByPath.get(directory) || nextRemoteWorkspaceTargetPath(directoryBaseName, usedTargets),
-          workspacePath: directory,
-        }
-      })
-    return {
-      sourcePath,
-      workspacePath: sourcePath,
-      workspaceName,
-      targetPath,
-      mode: 'rw' as const,
-      directories: linkedDirectories,
-    }
-  })
-}
-
-function countRemotePayloadArchives(payloads: Array<{ directories?: Array<unknown> }>): number {
-  return payloads.reduce((total, payload) => total + 1 + (payload.directories?.length ?? 0), 0)
-}
-
-type RemotePreflightGuidance = {
-  title: string
-  details: string[]
-  commands: string[]
-}
-
-type MasterLANCallbackGuidance = {
-  blocking: boolean
-  title: string
-  details: string[]
-  suggestedHost: string
-  suggestedPort: number
-  canAutofill: boolean
-}
-
-function formatEndpointLabel(host: string, port: number): string {
-  const normalizedHost = String(host ?? '').trim() || 'unset'
-  return port > 0 ? `${normalizedHost}:${port}` : normalizedHost
-}
-
-function usableLANCallbackHost(value: string): string {
-  const normalized = String(value ?? '').trim()
-  if (!normalized) {
+function endpointHostLabel(endpoint: string): string {
+  const trimmed = String(endpoint ?? '').trim()
+  if (!trimmed) {
     return ''
   }
-  const lower = normalized.toLowerCase()
-  if (
-    lower === 'localhost'
-    || lower === '0.0.0.0'
-    || lower === '::'
-    || lower === '::1'
-    || lower === '[::1]'
-    || lower.startsWith('127.')
-  ) {
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.host || trimmed
+  } catch {
+    return trimmed
+  }
+}
+
+function selectCandidateEndpoint(candidate: RemoteSwarmCandidate | null): string {
+  if (!candidate) {
     return ''
   }
-  return normalized
+  const apiEndpoint = candidate.endpointCandidates.find((item) => String(item.kind ?? '').includes('api') && item.url.trim() !== '')
+  return apiEndpoint?.url.trim() || candidate.endpoint.trim() || candidate.endpointCandidates.find((item) => item.url.trim() !== '')?.url.trim() || ''
 }
 
-function isLocalOnlyBindHost(value: string): boolean {
-  const normalized = String(value ?? '').trim().toLowerCase()
-  if (!normalized) {
-    return false
+function parseRemotePairingOffer(input: string): RemotePairingDraft {
+  const raw = String(input ?? '').trim()
+  if (!raw) {
+    throw new Error('Paste a managed swarm offer from the remote host.')
   }
-  return normalized === 'localhost'
-    || normalized === '::1'
-    || normalized === '[::1]'
-    || normalized.startsWith('127.')
-}
-
-function preferredLANCallbackCandidate(onboardingStatus: DesktopOnboardingStatus | null): string {
-  const config = onboardingStatus?.config
-  const configHost = usableLANCallbackHost(config?.host ?? '')
-  const tailscaleIPs = new Set((onboardingStatus?.network.tailscale.ips ?? []).map((value) => String(value).trim()))
-  if (configHost && !tailscaleIPs.has(configHost)) {
-    return configHost
-  }
-  const lanCandidates = onboardingStatus?.network.lanAddresses ?? []
-  for (const candidate of lanCandidates) {
-    const host = usableLANCallbackHost(candidate)
-    if (!host || tailscaleIPs.has(host)) {
-      continue
-    }
-    return host
-  }
-  return ''
-}
-
-function buildMasterLANCallbackGuidance(onboardingStatus: DesktopOnboardingStatus | null): MasterLANCallbackGuidance {
-  const config = onboardingStatus?.config
-  const bindHost = String(config?.host ?? '').trim()
-  const bindPort = typeof config?.port === 'number' ? config.port : 0
-  const advertiseHost = String(config?.advertiseHost ?? '').trim()
-  const advertisePort = typeof config?.advertisePort === 'number' ? config.advertisePort : bindPort
-  const effectiveHost = advertiseHost || usableLANCallbackHost(bindHost)
-  const effectivePort = advertisePort > 0 ? advertisePort : bindPort
-  const tailscaleURL = String(onboardingStatus?.network.tailscale.tailnetURL || config?.tailscaleURL || '').trim()
-  const suggestedHost = preferredLANCallbackCandidate(onboardingStatus)
-  const suggestedPort = effectivePort
-  const bindIsLocalOnly = isLocalOnlyBindHost(bindHost)
-
-  if (bindIsLocalOnly) {
-    const details = [
-      `This machine is still listening only on ${formatEndpointLabel(bindHost || '127.0.0.1', bindPort)}.`,
-      advertiseHost
-        ? `Advertise host is set to ${formatEndpointLabel(advertiseHost, effectivePort)}, but that only changes what children try to call. It does not move the master listener.`
-        : 'No reachable LAN / VPN bind host is active on this machine yet.',
-      'LAN / WireGuard remote deploy requires the master backend itself to listen on a reachable LAN, WireGuard, or tunnel address.',
-      'Update host in the master swarm.conf to a reachable address, keep advertise_host aligned unless you have a separate forwarded endpoint, then restart Swarm.',
-    ]
-    if (suggestedHost) {
-      details.push(`Detected LAN / VPN candidate on this machine: ${formatEndpointLabel(suggestedHost, suggestedPort)}.`)
-    }
-    if (tailscaleURL) {
-      details.push(`If both machines are already on Tailscale, switch this deploy method to Tailscale and use ${tailscaleURL}.`)
-    }
-    return {
-      blocking: true,
-      title: 'Restart this machine with a LAN / VPN bind address first',
-      details,
-      suggestedHost,
-      suggestedPort,
-      canAutofill: false,
+  let decoded = raw
+  if (!raw.startsWith('{')) {
+    try {
+      decoded = window.atob(raw.replace(/^swarm-offer:/i, '').trim())
+    } catch {
+      decoded = raw
     }
   }
-
-  if (effectiveHost) {
-    return {
-      blocking: false,
-      title: 'This machine will accept LAN / WireGuard callbacks',
-      details: advertiseHost
-        ? [
-            `Remote children will call back to ${formatEndpointLabel(effectiveHost, effectivePort)} over your LAN, WireGuard, or tunnel path.`,
-            'Source: Advertise host on this machine.',
-          ]
-        : [
-            `Remote children will call back to ${formatEndpointLabel(effectiveHost, effectivePort)} over your LAN, WireGuard, or tunnel path.`,
-            'Source: Advertise host is blank, so Swarm will reuse this machine’s current host bind.',
-          ],
-      suggestedHost: '',
-      suggestedPort,
-      canAutofill: false,
-    }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(decoded)
+  } catch {
+    throw new Error('Managed swarm offer must be valid JSON or base64-encoded JSON.')
   }
-
-  const details = [
-    'LAN / WireGuard uses SSH only to install the child.',
-    'After launch, the child must connect back to this machine over your LAN, WireGuard, or another VPN/tunnel path.',
-    `Right now this machine is bound to ${formatEndpointLabel(bindHost, bindPort)}, which is still local-only for this flow.`,
-    'Open Settings -> Swarm, then set Advertise host to the LAN or VPN address other machines should use to reach this machine.',
-    'Examples: 10.0.0.12, 192.168.1.40, wg-box.internal.',
-    'Leave Advertise port as the API port unless the child should call back on a different port.',
-  ]
-  if (suggestedHost) {
-    details.push(`Swarm can fill this in now with ${formatEndpointLabel(suggestedHost, suggestedPort)}.`)
+  const record = parsed && typeof parsed === 'object' && 'offer' in parsed
+    ? (parsed as { offer?: unknown }).offer
+    : parsed
+  if (!record || typeof record !== 'object') {
+    throw new Error('Managed swarm offer payload is missing.')
   }
-  if (tailscaleURL) {
-    details.push(`If both machines are already on Tailscale, switch this deploy method to Tailscale and use ${tailscaleURL}.`)
+  const source = record as Partial<RemoteSwarmPairingOffer>
+  const offer: RemoteSwarmPairingOffer = {
+    version: String(source.version ?? '').trim(),
+    type: String(source.type ?? '').trim(),
+    token: String(source.token ?? '').trim(),
+    single_use: Boolean(source.single_use),
+    swarm_id: String(source.swarm_id ?? '').trim(),
+    swarm_name: String(source.swarm_name ?? '').trim(),
+    public_key: String(source.public_key ?? '').trim(),
+    fingerprint: String(source.fingerprint ?? '').trim(),
+    endpoint: String(source.endpoint ?? '').trim(),
+    endpoint_candidates: Array.isArray(source.endpoint_candidates) ? source.endpoint_candidates : [],
+    api_port: typeof source.api_port === 'number' ? source.api_port : 0,
+    transport_mode: String(source.transport_mode ?? '').trim(),
+    rendezvous_transports: Array.isArray(source.rendezvous_transports) ? source.rendezvous_transports : [],
+    expires_at: typeof source.expires_at === 'number' ? source.expires_at : 0,
+    created_at: typeof source.created_at === 'number' ? source.created_at : 0,
+    ceremony: {
+      code: normalizePairingCode(source.ceremony?.code ?? ''),
+      verification_only: Boolean(source.ceremony?.verification_only),
+      description: String(source.ceremony?.description ?? '').trim(),
+    },
   }
-  return {
-    blocking: true,
-    title: 'Set a LAN / VPN address for this machine first',
-    details,
-    suggestedHost,
-    suggestedPort,
-    canAutofill: suggestedHost !== '',
+  if (offer.version !== 'managed-swarm-offer/v1' || offer.type !== 'managed_swarm_offer') {
+    throw new Error('Offer is not a managed swarm pairing offer.')
   }
-}
-
-function parseRemotePreflightGuidance(message: string): RemotePreflightGuidance | null {
-  const text = typeof message === 'string' ? message.trim() : ''
-  if (!text) {
-    return null
+  if (!offer.token || offer.token.length < 32) {
+    throw new Error('Managed swarm offer is missing its high-entropy pairing token.')
   }
-  const lines = text.split(/\r?\n/).map((line) => line.trim())
-  const details: string[] = []
-  const commands: string[] = []
-  let title = 'Remote preflight failed'
-  let section: 'details' | 'commands' | '' = ''
-  for (const line of lines) {
-    if (!line) {
-      continue
-    }
-    if (title === 'Remote preflight failed' && line.toLowerCase().startsWith('remote preflight failed')) {
-      title = line
-      continue
-    }
-    const lower = line.toLowerCase()
-    if (lower === 'suggested commands' || lower.startsWith('suggested commands')) {
-      section = 'commands'
-      continue
-    }
-    if (lower === 'what failed' || lower === 'what to do' || lower === 'alternative') {
-      section = 'details'
-      continue
-    }
-    if (line.startsWith('- ')) {
-      const value = line.slice(2).trim()
-      if (!value) {
-        continue
-      }
-      if (section === 'commands') {
-        commands.push(value)
-      } else {
-        details.push(value)
-      }
-      continue
-    }
-    if (section === 'commands') {
-      commands.push(line)
-    } else {
-      details.push(line)
-    }
+  if (!offer.endpoint) {
+    throw new Error('Managed swarm offer is missing an endpoint.')
   }
-  return {
-    title,
-    details,
-    commands,
+  if (!offer.swarm_id || !offer.swarm_name) {
+    throw new Error('Managed swarm offer is missing swarm identity metadata.')
   }
-}
-
-function remoteDeployStartError(error: unknown): RemoteDeployStartError | undefined {
-  if (!error || typeof error !== 'object' || !('remoteStart' in error)) {
-    return undefined
+  if (!offer.ceremony.code) {
+    throw new Error('Managed swarm offer is missing its ceremony code.')
   }
-  return (error as Error & { remoteStart?: RemoteDeployStartError }).remoteStart
-}
-
-function remoteLaunchStatusMessage(session: RemoteDeploySession, fallbackMethod: RemoteDeployMethod): string {
-  const progress = String(session.last_progress ?? '').trim()
-  const target = String(session.ssh_session_target ?? '').trim() || 'remote host'
-  const status = String(session.status ?? '').trim()
-  if (status === 'failed') {
-    return String(session.last_error ?? '').trim() || progress || `Remote deploy failed on ${target}.`
+  if (offer.expires_at > 0 && offer.expires_at < Math.floor(Date.now() / 1000)) {
+    throw new Error('Managed swarm offer has expired. Generate a fresh offer on the remote host.')
   }
-  if (status === 'attached' && fallbackMethod === 'tailscale') {
-    return progress || `Remote child ${session.name || target} is registered; this local daemon can reach it over Tailnet.`
-  }
-  if (session.remote_auth_url) {
-    return `Remote child started. Approve Tailscale login: ${session.remote_auth_url}`
-  }
-  if (progress) {
-    return progress
-  }
-  if (session.remote_endpoint) {
-    return fallbackMethod === 'tailscale'
-      ? `Remote child started. Probing child backend at ${session.remote_endpoint}…`
-      : `Remote child started. Waiting for the child to enroll back at ${session.remote_endpoint}…`
-  }
-  if (status === 'auth_required' && fallbackMethod === 'tailscale') {
-    return `Remote child started on ${target}; waiting for Tailnet login.`
-  }
-  if (status === 'starting') {
-    return fallbackMethod === 'tailscale'
-      ? `Remote deploy is running on ${target}; waiting for Tailnet reachability.`
-      : `Remote deploy is running on ${target}.`
-  }
-  if (status === 'waiting_for_approval' || status === 'waiting_for_child') {
-    return fallbackMethod === 'tailscale'
-      ? 'Remote child started. Waiting for Tailnet login and child backend registration…'
-      : 'Remote child started. Waiting for the child to enroll back over LAN / WireGuard…'
-  }
-  return ''
-}
-
-function remoteTailscaleSessionRegistered(session: RemoteDeploySession): boolean {
-  return String(session.status ?? '').trim() === 'attached' && !!String(session.child_swarm_id ?? '').trim()
-}
-
-function remoteLaunchFailureMessage(error: unknown, session: RemoteDeploySession | null): string {
-  const base = error instanceof Error ? error.message : 'Failed to launch remote swarm'
-  const details = [
-    String(session?.last_progress ?? '').trim(),
-    String(session?.last_error ?? '').trim(),
-  ].filter((value, index, values) => value && value !== base && values.indexOf(value) === index)
-  return [base, ...details].join('\n')
+  return { offer, raw }
 }
 
 export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete }: AddSwarmModalProps) {
@@ -579,19 +298,15 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   const [currentOnboardingStatus, setCurrentOnboardingStatus] = useState<DesktopOnboardingStatus | null>(onboardingStatus)
   const [workspaceDrafts, setWorkspaceDrafts] = useState<ReplicateWorkspaceDraft[]>([])
   const [runtimeStatus, setRuntimeStatus] = useState<SwarmLocalRuntimeStatus>(FALLBACK_RUNTIME_STATUS)
-  const [, setRemoteSessions] = useState<RemoteDeploySession[]>([])
-  const [savedRemoteSSHTargets, setSavedRemoteSSHTargets] = useState<string[]>([])
-  const [remoteSSHTarget, setRemoteSSHTarget] = useState('')
-  const [remoteRuntimeChoice, setRemoteRuntimeChoice] = useState<'docker' | 'podman'>('docker')
-  const [remoteDeployMethod, setRemoteDeployMethod] = useState<RemoteDeployMethod>('tailscale')
-  const [remoteReachableHost, setRemoteReachableHost] = useState('')
-  const [remotePreflightSession, setRemotePreflightSession] = useState<RemoteDeploySession | null>(null)
-  const [remotePreflightError, setRemotePreflightError] = useState<string | null>(null)
-  const [remotePreflightLoading, setRemotePreflightLoading] = useState(false)
-  const [remotePreflightGuidance, setRemotePreflightGuidance] = useState<RemotePreflightGuidance | null>(null)
-  const [configuringMasterLANCallback, setConfiguringMasterLANCallback] = useState(false)
-  const [remoteTailscaleAuthMode, setRemoteTailscaleAuthMode] = useState<RemoteTailscaleAuthMode>('manual')
-  const [remoteTailscaleAuthKey, setRemoteTailscaleAuthKey] = useState('')
+  const [remoteCandidates, setRemoteCandidates] = useState<RemoteSwarmCandidate[]>([])
+  const [remoteCandidatesLoading, setRemoteCandidatesLoading] = useState(false)
+  const [remoteCandidatesError, setRemoteCandidatesError] = useState<string | null>(null)
+  const [selectedRemoteCandidateID, setSelectedRemoteCandidateID] = useState('')
+  const [remotePairingMode, setRemotePairingMode] = useState<RemotePairingMode>('candidate')
+  const [manualPairingOfferText, setManualPairingOfferText] = useState('')
+  const [manualPairingDraft, setManualPairingDraft] = useState<RemotePairingDraft | null>(null)
+  const [remoteCeremonyCode, setRemoteCeremonyCode] = useState('')
+  const [remotePairingResult, setRemotePairingResult] = useState<RemoteSwarmPairingStartResult | null>(null)
   const [launchTarget, setLaunchTarget] = useState<LaunchTarget>('local')
   const [selectedRuntime, setSelectedRuntime] = useState<'podman' | 'docker' | ''>('')
   const [swarmName, setSwarmName] = useState('')
@@ -614,42 +329,23 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     () => (selectedRuntime && runtimeStatus.available.includes(selectedRuntime) ? selectedRuntime : runtimeStatus.recommended || ''),
     [runtimeStatus, selectedRuntime],
   ) as 'podman' | 'docker' | ''
-  const activeRuntimeLabel = launchTarget === 'remote' ? remoteRuntimeChoice : runtimeChoice
+  const activeRuntimeLabel = runtimeChoice
   const devMode = Boolean(currentOnboardingStatus?.config.devMode)
-  const remoteImageDeliveryMode = devMode ? REMOTE_IMAGE_DELIVERY_MODE_DEV : REMOTE_IMAGE_DELIVERY_MODE_RELEASE
+  const selectedRemoteCandidate = useMemo(
+    () => remoteCandidates.find((candidate) => candidate.id === selectedRemoteCandidateID) ?? null,
+    [remoteCandidates, selectedRemoteCandidateID],
+  )
+  const selectedRemoteCandidateEndpoint = useMemo(() => selectCandidateEndpoint(selectedRemoteCandidate), [selectedRemoteCandidate])
+  const activeRemotePairingDraft = remotePairingMode === 'manual'
+    ? manualPairingDraft
+    : null
+  const activeRemoteCeremonyCode = normalizePairingCode(activeRemotePairingDraft?.offer.ceremony.code ?? remoteCeremonyCode)
 
   const group = useMemo(() => currentGroup(currentOnboardingStatus), [currentOnboardingStatus])
   const hostSwarmID = group?.group.hostSwarmID || ''
   const hostVaultEnabled = Boolean(vault.enabled)
-  const masterLANCallbackGuidance = useMemo(
-    () => (remoteDeployMethod === 'lan' ? buildMasterLANCallbackGuidance(currentOnboardingStatus) : null),
-    [currentOnboardingStatus, remoteDeployMethod],
-  )
-  const remotePreflightBlocked = remoteDeployMethod === 'lan' && Boolean(masterLANCallbackGuidance?.blocking)
-  const remotePreflightCanAutofill = remoteDeployMethod === 'lan' && Boolean(masterLANCallbackGuidance?.canAutofill)
-  const remoteReachableHostSuggestions = useMemo(() => {
-    if (remoteDeployMethod !== 'lan') {
-      return []
-    }
-    const values = remotePreflightSession?.preflight.remote_network_candidates ?? []
-    const seen = new Set<string>()
-    const out: string[] = []
-    for (const value of values) {
-      const trimmed = String(value ?? '').trim()
-      if (!trimmed) {
-        continue
-      }
-      const key = trimmed.toLowerCase()
-      if (seen.has(key)) {
-        continue
-      }
-      seen.add(key)
-      out.push(trimmed)
-    }
-    return out
-  }, [remoteDeployMethod, remotePreflightSession])
-  const masterName = useMemo(
-    () => group?.members.find((member) => member.swarmID === hostSwarmID)?.name || 'Current master',
+  const managerName = useMemo(
+    () => group?.members.find((member) => member.swarmID === hostSwarmID)?.name || 'Current manager',
     [group, hostSwarmID],
   )
 
@@ -658,24 +354,40 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     () => workspaceDrafts.filter((item) => item.selected).map((item) => item.workspacePath),
     [workspaceDrafts],
   )
-  const selectedRemotePayloads = useMemo(() => buildRemoteWorkspacePayloads(workspaceDrafts), [workspaceDrafts])
-  const selectedRemoteArchiveCount = useMemo(() => countRemotePayloadArchives(selectedRemotePayloads), [selectedRemotePayloads])
-  const remotePreflightArchiveCount = useMemo(
-    () => countRemotePayloadArchives(remotePreflightSession?.preflight.payloads ?? []),
-    [remotePreflightSession],
-  )
+  const invalidateLaunchDraft = () => undefined
 
-  const invalidateRemotePreflight = () => {
-    setRemotePreflightSession(null)
-    setRemotePreflightError(null)
-    setRemotePreflightGuidance(null)
+  const clearRemotePairingState = () => {
+    setRemotePairingResult(null)
+  }
+
+  const loadRemoteCandidates = async () => {
+    setRemoteCandidatesLoading(true)
+    setRemoteCandidatesError(null)
+    try {
+      const result = await fetchRemoteSwarmCandidates()
+      setRemoteCandidates(result.candidates)
+      setSelectedRemoteCandidateID((current) => (
+        current && result.candidates.some((candidate) => candidate.id === current)
+          ? current
+          : result.candidates[0]?.id ?? ''
+      ))
+      if (!result.tailscale.connected) {
+        setRemoteCandidatesError(result.tailscale.error || 'Tailscale is not connected on this host.')
+      }
+    } catch (err) {
+      setRemoteCandidates([])
+      setSelectedRemoteCandidateID('')
+      setRemoteCandidatesError(err instanceof Error ? err.message : 'Failed to load Tailscale devices')
+    } finally {
+      setRemoteCandidatesLoading(false)
+    }
   }
 
   const updateWorkspaceDraft = (
     workspacePath: string,
     transform: (draft: ReplicateWorkspaceDraft) => ReplicateWorkspaceDraft,
   ) => {
-    invalidateRemotePreflight()
+    invalidateLaunchDraft()
     setWorkspaceDrafts((current) => current.map((item) => (
       item.workspacePath === workspacePath
         ? transform(item)
@@ -700,7 +412,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       if (!result.valid) {
         throw new Error(`apt package ${normalized} was not found on this host`)
       }
-      invalidateRemotePreflight()
+      invalidateLaunchDraft()
       setContainerPackages((current) => mergeContainerPackages([...current, { name: normalized, source: 'user_added' }]))
       setPackageInput('')
     } catch (err) {
@@ -711,7 +423,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   }
 
   const removePackage = (name: string) => {
-    invalidateRemotePreflight()
+    invalidateLaunchDraft()
     setContainerPackages((current) => current.filter((pkg) => pkg.name !== name))
     setPackageValidationError(null)
   }
@@ -719,7 +431,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
   useEffect(() => {
     let cancelled = false
     if (selectedWorkspacePaths.length === 0) {
-      invalidateRemotePreflight()
+      invalidateLaunchDraft()
       setContainerPackages((current) => mergeContainerPackages(current.filter((pkg) => pkg.source !== 'workspace_scan')))
       setPackageSuggestionError(null)
       setSuggestingPackages(false)
@@ -735,7 +447,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           return
         }
         const suggestions = mapSuggestedPackages(packages)
-        invalidateRemotePreflight()
+        invalidateLaunchDraft()
         setContainerPackages((current) => mergeContainerPackages([
           ...current.filter((pkg) => pkg.source !== 'workspace_scan'),
           ...suggestions,
@@ -746,7 +458,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           return
         }
         setPackageSuggestionError(err instanceof Error ? err.message : 'Failed to suggest packages from workspace contents')
-        invalidateRemotePreflight()
+        invalidateLaunchDraft()
         setContainerPackages((current) => mergeContainerPackages(current.filter((pkg) => pkg.source !== 'workspace_scan')))
       })
       .finally(() => {
@@ -795,14 +507,13 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     void Promise.all([
       listWorkspaces().catch(() => []),
       fetchSwarmLocalRuntimeStatus().catch(() => FALLBACK_RUNTIME_STATUS),
-      getUISettings().catch(() => null),
       fetchDeployContainerPackageDefaults().catch(() => ({
         baseImage: FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE,
         packageManager: FALLBACK_CONTAINER_PACKAGE_MANAGER,
       })),
       onboardingStatus ? Promise.resolve(onboardingStatus) : fetchDesktopOnboardingStatus().catch(() => null),
     ])
-      .then(([nextWorkspaces, nextRuntimeStatus, nextUISettings, nextPackageDefaults, nextOnboardingStatus]) => {
+      .then(([nextWorkspaces, nextRuntimeStatus, nextPackageDefaults, nextOnboardingStatus]) => {
         if (cancelled) {
           return
         }
@@ -810,23 +521,19 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         setRuntimeStatus(nextRuntimeStatus)
         setContainerPackageBaseImage(nextPackageDefaults.baseImage || FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE)
         setContainerPackageManager(nextPackageDefaults.packageManager || FALLBACK_CONTAINER_PACKAGE_MANAGER)
-        setRemoteSessions([])
         setCurrentOnboardingStatus(nextOnboardingStatus)
-        const nextSavedTargets = Array.isArray(nextUISettings?.swarm?.remote_ssh_targets)
-          ? nextUISettings.swarm.remote_ssh_targets.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-          : []
-        setSavedRemoteSSHTargets(nextSavedTargets)
-        setRemoteSSHTarget((current) => current || nextSavedTargets[0] || '')
-        setRemotePreflightSession(null)
-        setRemotePreflightError(null)
-        setRemotePreflightGuidance(null)
-        setRemoteRuntimeChoice('docker')
-        setRemoteDeployMethod('tailscale')
-        setRemoteReachableHost('')
-        setRemoteTailscaleAuthMode('manual')
-        setRemoteTailscaleAuthKey('')
+        setRemoteCandidates([])
+        setRemoteCandidatesError(null)
+        setRemoteCandidatesLoading(false)
+        setSelectedRemoteCandidateID('')
+        setRemotePairingMode('candidate')
+        setManualPairingOfferText('')
+        setManualPairingDraft(null)
+        setRemoteCeremonyCode('')
+        setRemotePairingResult(null)
         setSwarmName('')
         setSelectedRuntime((nextRuntimeStatus.recommended || '') as 'podman' | 'docker' | '')
+        void loadRemoteCandidates()
         logAddSwarm('modal options loaded', {
           workspaces: nextWorkspaces.length,
           recommended_runtime: nextRuntimeStatus.recommended,
@@ -858,122 +565,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     onOpenChange(false)
   }
 
-  useEffect(() => {
-    if (remoteDeployMethod !== 'lan' || remoteReachableHost.trim()) {
-      return
-    }
-    const candidate = remoteReachableHostCandidate(remoteSSHTarget)
-    if (candidate) {
-      setRemoteReachableHost(candidate)
-    }
-  }, [remoteDeployMethod, remoteReachableHost, remoteSSHTarget])
-
-  const refreshRemoteSessions = async (options?: { refresh?: boolean; sessionID?: string }): Promise<RemoteDeploySession[]> => {
-    if (options?.sessionID?.trim()) {
-      const nextSession = await fetchRemoteDeploySession(options.sessionID.trim(), { refresh: options.refresh ?? true })
-      setRemoteSessions((current) => [nextSession, ...current.filter((item) => item.id !== nextSession.id)])
-      logAddSwarm('refreshed remote session', { session_id: nextSession.id, status: nextSession.status })
-      return [nextSession]
-    }
-    const nextSessions = await fetchRemoteDeploySessions({ refresh: options?.refresh ?? true })
-    setRemoteSessions(nextSessions)
-    logAddSwarm('refreshed remote session list', { sessions: nextSessions.length })
-    return nextSessions
-  }
-
-  const ensureMasterLANCallbackConfigured = async (): Promise<DesktopOnboardingStatus | null> => {
-    if (remoteDeployMethod !== 'lan') {
-      return currentOnboardingStatus
-    }
-    if (!masterLANCallbackGuidance?.blocking) {
-      return currentOnboardingStatus
-    }
-    const suggestedHost = masterLANCallbackGuidance?.suggestedHost.trim() || ''
-    if (!suggestedHost) {
-      throw new Error('Swarm could not detect a LAN / VPN address for this machine. Open Settings -> Swarm and set Advertise host manually.')
-    }
-    const suggestedPort = masterLANCallbackGuidance.suggestedPort > 0 ? masterLANCallbackGuidance.suggestedPort : (currentOnboardingStatus?.config.port || 0)
-    setConfiguringMasterLANCallback(true)
-    setStatus(`Using ${formatEndpointLabel(suggestedHost, suggestedPort)} for this machine’s LAN / WireGuard callback…`)
-    try {
-      const nextOnboarding = await saveDesktopOnboarding({
-        advertiseHost: suggestedHost,
-        advertisePort: suggestedPort,
-      })
-      setCurrentOnboardingStatus(nextOnboarding)
-      if (nextOnboarding.config.restartRequired) {
-        throw new Error(`Saved this machine’s LAN / VPN address, but Swarm must be restarted before remote preflight can continue: ${nextOnboarding.config.restartReason || 'transport settings changed'}.`)
-      }
-      return nextOnboarding
-    } finally {
-      setConfiguringMasterLANCallback(false)
-    }
-  }
-
-  const runRemotePreflight = async (): Promise<RemoteDeploySession> => {
-    if (!group?.group.id.trim()) {
-      throw new Error('Create or select a swarm group on the master before adding a remote swarm.')
-    }
-    if (!swarmName.trim()) {
-      throw new Error('Swarm name is required.')
-    }
-    if (!remoteSSHTarget.trim()) {
-      throw new Error('SSH alias or target is required.')
-    }
-    if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
-      throw new Error('Vault password is required to sync from a vaulted host.')
-    }
-    setRemotePreflightLoading(true)
-    setRemotePreflightError(null)
-    setRemotePreflightGuidance(null)
-    try {
-      await ensureMasterLANCallbackConfigured()
-      const session = await createRemoteDeploySession({
-        name: swarmName.trim(),
-        sshSessionTarget: remoteSSHTarget.trim(),
-        transportMode: 'tailscale',
-        remoteAdvertiseHost: remoteDeployMethod === 'lan' ? remoteReachableHost.trim() : '',
-        groupID: group.group.id,
-        groupName: group.group.name,
-        remoteRuntime: remoteRuntimeChoice,
-        imageDeliveryMode: remoteImageDeliveryMode,
-        syncEnabled,
-        bypassPermissions,
-        alwaysOn,
-        containerPackages: buildContainerPackageManifest(containerPackages, containerPackageBaseImage, containerPackageManager),
-        payloads: selectedRemotePayloads,
-      })
-      setRemotePreflightSession(session)
-      if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim() && session.remote_advertise_host?.trim()) {
-        setRemoteReachableHost(session.remote_advertise_host.trim())
-      }
-      setRemoteSessions((current) => [session, ...current.filter((item) => item.id !== session.id)])
-      const currentSettings = await getUISettings().catch(() => null)
-      if (currentSettings) {
-        const saved = await saveRemoteSSHTarget({ current: currentSettings, target: remoteSSHTarget.trim() })
-        const nextSavedTargets = Array.isArray(saved.swarm?.remote_ssh_targets)
-          ? saved.swarm.remote_ssh_targets.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-          : []
-        setSavedRemoteSSHTargets(nextSavedTargets)
-      }
-      return session
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Remote preflight failed'
-      const remotePreflight = err && typeof err === 'object' && 'remotePreflight' in err
-        ? (err as Error & { remotePreflight?: RemoteDeployPreflightError }).remotePreflight
-        : undefined
-      setRemotePreflightGuidance(parseRemotePreflightGuidance(remotePreflight?.error || message))
-      setRemotePreflightError(message)
-      setRemotePreflightSession(null)
-      throw err instanceof Error ? err : new Error(message)
-    } finally {
-      setRemotePreflightLoading(false)
-    }
-  }
-
   const handleLaunchLocal = async () => {
     if (!group?.group.id.trim()) {
-      setError('Create or select a swarm group on the master before adding a local swarm.')
+      setError('Create or select a swarm group on the manager before adding a local swarm.')
       return
     }
     if (!runtimeChoice) {
@@ -1056,10 +650,10 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
           guidance.push(`Desktop port: ${details.failure.desktopHostPort}`)
         }
         if (details.failure.childBackendURL) {
-          guidance.push(`Child backend URL: ${details.failure.childBackendURL}`)
+          guidance.push(`Managed backend URL: ${details.failure.childBackendURL}`)
         }
         if (details.failure.childDesktopURL) {
-          guidance.push(`Child desktop URL: ${details.failure.childDesktopURL}`)
+          guidance.push(`Managed desktop URL: ${details.failure.childDesktopURL}`)
         }
         guidance.push('Check the Swarm dashboard deployment details and the host swarmd log for this deployment.')
         setError([details.error || 'Failed to add swarm', ...guidance].filter(Boolean).join('\n'))
@@ -1073,184 +667,63 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
 
   const handleLaunchRemote = async () => {
     if (!group?.group.id.trim()) {
-      setError('Create or select a swarm group on the master before adding a remote swarm.')
+      setError('Create or select a swarm group before adding a managed swarm.')
       return
     }
-    if (!swarmName.trim()) {
-      setError('Swarm name is required.')
+    const ceremonyCode = normalizePairingCode(remoteCeremonyCode || activeRemoteCeremonyCode)
+    const draft = activeRemotePairingDraft
+    if (remotePairingMode === 'manual' && !draft) {
+      setError('Paste a managed swarm offer first.')
       return
     }
-    if (!remoteSSHTarget.trim()) {
-      setError('SSH alias or target is required.')
+    if (remotePairingMode === 'candidate' && !selectedRemoteCandidateEndpoint) {
+      setError('Selected Tailscale device is missing an API endpoint.')
       return
     }
-    if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()) {
-      setError('Remote reachable host is required for LAN / WireGuard deploy.')
+    if (draft && !draft.offer.endpoint.trim()) {
+      setError('Managed swarm endpoint is required.')
       return
     }
-    let preflightSession = remotePreflightSession
-    if (!preflightSession
-      || preflightSession.ssh_session_target?.trim() !== remoteSSHTarget.trim()
-      || preflightSession.name?.trim() !== swarmName.trim()) {
-      setStatus('Running remote preflight…')
-      try {
-        preflightSession = await runRemotePreflight()
-      } catch (err) {
-        setStatus(null)
-        setError(err instanceof Error ? err.message : 'Remote preflight failed')
-        return
-      }
-    }
-    if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
-      setError('Vault password is required to sync from a vaulted host.')
+    if (!ceremonyCode) {
+      setError('Enter the 6-character ceremony code shown on the managed swarm.')
       return
     }
-    if (remoteDeployMethod === 'tailscale' && remoteTailscaleAuthMode === 'key' && !remoteTailscaleAuthKey.trim()) {
-      setError('Tailscale auth key is required for auth-key launch mode.')
+    const offerCode = normalizePairingCode(draft?.offer.ceremony.code ?? '')
+    if (offerCode && ceremonyCode !== offerCode) {
+      setError('Ceremony code does not match the managed swarm offer. Compare both hosts before continuing.')
       return
     }
+
+    const pairingEndpoint = draft?.offer.endpoint || selectedRemoteCandidateEndpoint
+    const pairingName = draft?.offer.swarm_name || selectedRemoteCandidate?.name || 'managed swarm'
 
     setSubmitting(true)
     setError(null)
-    let latestRemoteSession: RemoteDeploySession | null = preflightSession
-    let pollLaunchProgress = false
-    let launchProgressPoll: Promise<void> | null = null
-    const stopLaunchProgressPoll = async () => {
-      pollLaunchProgress = false
-      if (launchProgressPoll) {
-        await launchProgressPoll
-      }
-    }
+    setRemotePairingResult(null)
+    setStatus('Requesting managed swarm pairing…')
     try {
-      const session = preflightSession
-      setStatus(`Preflight ready: ${session.preflight.summary || `copying ${session.preflight.files_to_copy?.length || 0} files to ${remoteSSHTarget.trim()}`}`)
-      const confirmed = window.confirm([
-        `Remote host: ${remoteSSHTarget.trim()}`,
-        `Builder runtime: ${session.preflight.builder_runtime || 'unknown'}`,
-        `Remote runtime: ${session.preflight.remote_runtime || 'unknown'}`,
-        `Deploy method: ${remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim()}`}`,
-        `Always On: ${alwaysOn ? 'enabled (master will probe over SSH and restart the remote child while this master is running)' : 'disabled (manual start)'}`,
-        `Files copied: ${(session.preflight.files_to_copy || []).join(', ') || 'none'}`,
-        `Payloads: ${(session.preflight.payloads || []).map((payload) => `${payload.workspace_name || payload.source_path} (${payload.included_files} tracked files)`).join('; ') || 'none'}`,
-        ...(remoteDeployMethod === 'tailscale'
-          ? [`Tailscale login: ${remoteTailscaleAuthMode === 'key' ? 'Auth key (launch only, not saved)' : 'Manual browser approval'}`]
-          : []),
-        '',
-        selectedRemotePayloads.length > 0
-          ? 'This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server.'
-          : remoteDeployMethod === 'tailscale'
-            ? 'No workspace payloads will be staged; the remote child will start empty and this local daemon will register it after Tailnet login.'
-            : 'No workspace payloads will be staged; the remote child will start empty and connect back to this master.',
-        devMode
-          ? `This will deliver generated config/install/start content over SSH stdin, copy a locally built dev Swarm image archive${selectedRemotePayloads.length > 0 ? ' and selected payload archives' : ''} over SSH, then load and launch it on the remote host.`
-          : `This will deliver generated config/install/start content over SSH stdin${selectedRemotePayloads.length > 0 ? ' and copy selected payload archives over SSH' : ''}, then have the remote host download the published ${remoteDeployMethod === 'tailscale' ? 'SSH + Tailscale' : 'SSH + LAN / WireGuard'} remote image when it is not already present there.`,
-        remoteDeployMethod === 'tailscale'
-          ? 'The remote child will be launched there as a target-owned daemon. This local daemon will dial the child backend over Tailscale/MagicDNS; no child-to-master callback is required for registration.'
-          : 'The remote child will be launched there and configured to connect back to this master over the master\'s LAN / WireGuard endpoint.',
-        alwaysOn
-          ? 'Always On is recorded for this remote child; while this local daemon is running it can probe SSH reachability and restart the remote container if it stops. It does not install remote boot persistence.'
-          : 'Always On is off; this local daemon will not automatically restart the remote child.',
-        '',
-        'Continue with SSH launch?'
-      ].join('\n'))
-      if (!confirmed) {
-        setStatus('Remote deploy cancelled after preflight review.')
-        return
-      }
-
-      setStatus('Preparing payloads locally and shipping the minimum needed over SSH…')
-      pollLaunchProgress = true
-      launchProgressPoll = (async () => {
-        while (pollLaunchProgress) {
-          await new Promise((resolve) => window.setTimeout(resolve, REMOTE_LAUNCH_POLL_INTERVAL_MS))
-          if (!pollLaunchProgress) {
-            break
-          }
-          try {
-            const sessions = await refreshRemoteSessions({ sessionID: session.id, refresh: false })
-            const nextSession = sessions.find((item) => item.id === session.id)
-            if (!nextSession) {
-              continue
-            }
-            latestRemoteSession = nextSession
-            const nextStatus = remoteLaunchStatusMessage(nextSession, remoteDeployMethod)
-            if (nextStatus) {
-              setStatus(nextStatus)
-            }
-          } catch (pollErr) {
-            logAddSwarmError('remote launch progress poll failed', pollErr, {
-              session_id: session.id,
-              ssh_target: remoteSSHTarget.trim(),
-            })
-          }
-        }
-      })()
-      let currentSession = await startRemoteDeploySession(session.id, {
-        tailscaleAuthKey: remoteDeployMethod === 'tailscale' && remoteTailscaleAuthMode === 'key' ? remoteTailscaleAuthKey.trim() : '',
-        syncVaultPassword: syncEnabled && hostVaultEnabled ? syncVaultPassword.trim() : '',
+      const result = await startRemoteSwarmPairing({
+        endpoint: pairingEndpoint,
+        dnsName: remotePairingMode === 'candidate' ? selectedRemoteCandidate?.dnsName : undefined,
+        ips: remotePairingMode === 'candidate' ? selectedRemoteCandidate?.ips : undefined,
+        groupID: group.group.id,
+        managedSwarmID: draft?.offer.swarm_id,
+        managedName: pairingName,
+        offer: draft?.offer,
+        ceremonyCode: remotePairingMode === 'manual' ? ceremonyCode : undefined,
+        rendezvousTransports: draft?.offer.rendezvous_transports || selectedRemoteCandidate?.rendezvousTransports,
       })
-      latestRemoteSession = currentSession
-      await stopLaunchProgressPoll()
-      await refreshRemoteSessions({ sessionID: session.id })
-      setStatus(remoteLaunchStatusMessage(currentSession, remoteDeployMethod)
-        || (remoteDeployMethod === 'tailscale'
-          ? 'Remote child started. Waiting for Tailnet login and child backend registration…'
-          : 'Remote child started. Waiting for the child to enroll back over LAN / WireGuard…'))
-
-      const startedAt = Date.now()
-      const timeoutMs = 5 * 60 * 1000
-      while (Date.now() - startedAt < timeoutMs) {
-        const sessions = await refreshRemoteSessions({ sessionID: session.id })
-        currentSession = sessions.find((item) => item.id === session.id) ?? currentSession
-        latestRemoteSession = currentSession
-        const nextStatus = remoteLaunchStatusMessage(currentSession, remoteDeployMethod)
-        if (nextStatus) {
-          setStatus(nextStatus)
-        }
-        if (remoteDeployMethod === 'tailscale') {
-          if (remoteTailscaleSessionRegistered(currentSession)) {
-            break
-          }
-        } else if (currentSession.enrollment_id || currentSession.child_swarm_id) {
-          break
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, REMOTE_LAUNCH_POLL_INTERVAL_MS))
-      }
-      if (remoteDeployMethod === 'tailscale') {
-        if (!remoteTailscaleSessionRegistered(currentSession)) {
-          throw new Error(currentSession.last_error || 'Remote child did not become reachable over Tailnet before timeout')
-        }
-        if (currentSession.always_on !== alwaysOn) {
-          currentSession = await updateRemoteDeploySessionSettings({ id: currentSession.id, alwaysOn })
-        }
-        await refreshRemoteSessions({ sessionID: currentSession.id })
-        await finishSuccess(`Registered remote child ${currentSession.name} over Tailnet.`)
-        return
-      }
-
-      if (!currentSession.enrollment_id && !currentSession.child_swarm_id) {
-        throw new Error(currentSession.last_error || 'Remote child did not enroll before timeout')
-      }
-
-      setStatus(`Remote child ${currentSession.name} is waiting for approval on the main swarm…`)
-      currentSession = await approveRemoteDeploySession(currentSession.id)
-      if (currentSession.always_on !== alwaysOn) {
-        currentSession = await updateRemoteDeploySessionSettings({ id: currentSession.id, alwaysOn })
-      }
-      await refreshRemoteSessions({ sessionID: currentSession.id })
-      await finishSuccess(`Added remote child ${currentSession.name} to the swarm.`)
+      setRemotePairingResult(result)
+      const displayName = result.ceremony.managed_name || result.request.managed_name || pairingName
+      setStatus(`Pairing request sent to ${displayName}. Approve it on the managed swarm after confirming code ${formatPairingCode(ceremonyCode)}.`)
+      await onComplete(`Pairing request sent to ${displayName}. Approve it on the managed swarm to finish adding the Managed Swarm.`)
     } catch (err) {
-      await stopLaunchProgressPoll()
-      const startDetails = remoteDeployStartError(err)
-      latestRemoteSession = startDetails?.session ?? latestRemoteSession
-      logAddSwarmError('remote launch flow failed', err, {
-        swarm_name: swarmName.trim(),
-        ssh_target: remoteSSHTarget.trim(),
+      logAddSwarmError('managed swarm pairing failed', err, {
+        endpoint: pairingEndpoint,
         group_id: group.group.id,
       })
-      setError(remoteLaunchFailureMessage(err, latestRemoteSession))
+      setError(err instanceof Error ? err.message : 'Failed to start managed swarm pairing')
     } finally {
-      await stopLaunchProgressPoll()
       setSubmitting(false)
     }
   }
@@ -1288,7 +761,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
     if (!group?.group.id.trim()) {
       return 'Waiting for a swarm group.'
     }
-    if (!swarmName.trim()) {
+    if (!swarmName.trim() && launchTarget === 'local') {
       return 'Please enter a swarm name.'
     }
     if (launchTarget === 'local') {
@@ -1303,43 +776,43 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
       }
       return null
     }
-    if (!remoteSSHTarget.trim()) {
-      return 'Please enter an SSH target.'
+    if (remotePairingMode === 'candidate' && !selectedRemoteCandidate) {
+      return remoteCandidatesLoading ? 'Loading Tailscale candidates…' : 'Select a Tailscale device or use Paste offer.'
     }
-    if (configuringMasterLANCallback) {
-      return 'Saving this machine’s address…'
+    if (remotePairingMode === 'candidate' && !selectedRemoteCandidateEndpoint) {
+      return 'Selected Tailscale device is missing an API endpoint.'
     }
-    if (remotePreflightLoading) {
-      return 'Checking the remote host…'
+    if (remotePairingMode === 'manual' && !activeRemotePairingDraft) {
+      return 'Provide a managed swarm offer.'
     }
-    if (remotePreflightBlocked && !remotePreflightCanAutofill) {
-      return masterLANCallbackGuidance?.title || 'Update this machine’s callback address before preflight.'
+    if (activeRemotePairingDraft && !activeRemotePairingDraft.offer.endpoint.trim()) {
+      return 'Managed swarm endpoint is required.'
     }
-    if (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()) {
-      return 'Please enter the callback host for LAN / WireGuard.'
+    if (!activeRemoteCeremonyCode) {
+      return 'Enter the ceremony code shown on the managed swarm.'
     }
     return null
   })()
   const footerStatusText = launchPendingReason || (launchTarget === 'remote'
-    ? `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} and ${containerPackages.length} package${containerPackages.length === 1 ? '' : 's'} configured for the remote deploy.`
+    ? `Managed Swarm pairing will request approval from ${activeRemotePairingDraft?.offer.swarm_name || selectedRemoteCandidate?.name || 'the remote host'} using container scope managed_host_local.`
     : `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be replicated using ${runtimeChoice || 'the selected runtime'} with Swarm Sync ${syncEnabled ? 'enabled' : 'disabled'}.`)
   const swarmNameCard = (
     <Card className={sectionClassName}>
       <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,320px)] sm:items-center">
         <div className="grid gap-1">
           <div className="text-sm font-semibold text-[var(--app-text)]">Name this swarm</div>
-          <div className="text-xs text-[var(--app-text-muted)]">Choose the display name used to identify this child swarm in the group after launch.</div>
+          <div className="text-xs text-[var(--app-text-muted)]">Choose the display name used to identify this managed local swarm in the group after launch.</div>
         </div>
         <div className="grid gap-2">
           <Input
-            data-testid="add-swarm-child-name"
+            data-testid="add-swarm-local-name"
             value={swarmName}
             onChange={(event) => {
-              invalidateRemotePreflight()
+              invalidateLaunchDraft()
               setSwarmName(event.target.value)
             }}
             disabled={submitting}
-            placeholder="Enter a child swarm name"
+            placeholder="Enter a managed swarm name"
           />
         </div>
       </div>
@@ -1379,7 +852,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               type="button"
               onClick={() => removePackage(pkg.name)}
               className="inline-flex h-5 w-5 items-center justify-center rounded-md text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface)] hover:text-[var(--app-text)]"
-              disabled={submitting || validatingPackage || suggestingPackages || remotePreflightLoading}
+              disabled={submitting || validatingPackage || suggestingPackages || false}
               aria-label={`Remove package ${pkg.name}`}
             >
               <X size={12} />
@@ -1404,9 +877,9 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             }
           }}
           placeholder={suggestingPackages ? 'Scanning selected workspaces…' : 'Add apt package'}
-          disabled={submitting || validatingPackage || remotePreflightLoading}
+          disabled={submitting || validatingPackage || false}
         />
-        <Button type="button" variant="secondary" onClick={() => void addPackage()} disabled={submitting || validatingPackage || remotePreflightLoading}>
+        <Button type="button" variant="secondary" onClick={() => void addPackage()} disabled={submitting || validatingPackage || false}>
           {validatingPackage ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
           Add
         </Button>
@@ -1489,13 +962,13 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
         <div className={headerClassName}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h2 className="text-xl font-semibold text-[var(--app-text)]">Add swarm</h2>
+              <h2 className="text-xl font-semibold text-[var(--app-text)]">Add Swarm</h2>
               <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                Configure a child swarm in one compact flow.
+                Launch a local container swarm or pair with a Managed Swarm over Tailscale.
               </p>
             </div>
-            <Badge tone={activeRuntimeLabel ? 'live' : 'warning'}>
-              {activeRuntimeLabel ? `${activeRuntimeLabel} ready` : 'runtime required'}
+            <Badge tone={launchTarget === 'remote' ? 'live' : activeRuntimeLabel ? 'live' : 'warning'}>
+              {launchTarget === 'remote' ? 'Managed Swarm pairing' : activeRuntimeLabel ? `${activeRuntimeLabel} ready` : 'runtime required'}
             </Badge>
           </div>
         </div>
@@ -1520,7 +993,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             </Card>
           ) : null}
 
-          {swarmNameCard}
+          {launchTarget === 'local' ? swarmNameCard : null}
 
           <Card className={sectionClassName}>
             <div className="text-sm font-semibold text-[var(--app-text)]">Run target</div>
@@ -1535,7 +1008,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold text-[var(--app-text)]">Local container</div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Launch here and replicate selected workspaces into a child swarm.</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Launch here and replicate selected workspaces into a managed local swarm.</div>
                   </div>
                   {launchTarget === 'local' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
                 </div>
@@ -1544,17 +1017,19 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               <button
                 type="button"
                 data-testid="add-swarm-target-remote"
-                className={`${optionClassName(false, true)} cursor-not-allowed grayscale`}
-                onClick={() => undefined}
-                disabled
-                aria-disabled="true"
+                className={optionClassName(launchTarget === 'remote')}
+                onClick={() => {
+                  setLaunchTarget('remote')
+                  clearRemotePairingState()
+                }}
+                disabled={submitting}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-sm font-semibold text-[var(--app-text-muted)]">Managed Swarm</div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Remote Swarm pairing is replacing SSH deploy. Pairing setup is not enabled in this checkpoint.</div>
+                    <div className="text-sm font-semibold text-[var(--app-text)]">Managed Swarm</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Add a remote swarm over Tailscale with a high-entropy offer and short ceremony-code verification.</div>
                   </div>
-                  <Badge tone="warning">coming next</Badge>
+                  {launchTarget === 'remote' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
                 </div>
               </button>
             </div>
@@ -1566,7 +1041,7 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 <div className="flex flex-col gap-1">
                   <div className="text-sm font-semibold text-[var(--app-text)]">Local runtime</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
-                    Choose which local container runtime should launch the replicated child swarm.
+                    Choose which local container runtime should launch the replicated managed swarm.
                   </div>
                 </div>
 
@@ -1623,417 +1098,320 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
             <>
               <Card className={sectionClassName}>
                 <div className="flex flex-col gap-1">
-                  <div className="text-sm font-semibold text-[var(--app-text)]">Remote deploy method</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">Add Remote Swarm</div>
                   <div className="text-xs text-[var(--app-text-muted)]">
-                    Choose how the remote child connects back. Preflight runs from the footer when you are ready.
-                  </div>
-                </div>
-
-                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px] sm:items-end">
-                  <div className="grid gap-2">
-                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">SSH alias or target</label>
-                    <Input
-                      data-testid="add-swarm-ssh-target"
-                      value={remoteSSHTarget}
-                      onChange={(event) => {
-                        setRemoteSSHTarget(event.target.value)
-                        setRemotePreflightSession(null)
-                        setRemotePreflightError(null)
-                        setRemotePreflightGuidance(null)
-                      }}
-                      disabled={submitting || remotePreflightLoading}
-                      placeholder="user@host or ssh-config alias"
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Remote runtime</label>
-                    <Select
-                      data-testid="add-swarm-remote-runtime"
-                      value={remoteRuntimeChoice}
-                      onChange={(event) => {
-                        setRemoteRuntimeChoice((event.target.value === 'podman' ? 'podman' : 'docker'))
-                        setRemotePreflightSession(null)
-                        setRemotePreflightError(null)
-                        setRemotePreflightGuidance(null)
-                      }}
-                      disabled={submitting || remotePreflightLoading}
-                    >
-                      <option value="docker">Docker</option>
-                      <option value="podman">Podman</option>
-                    </Select>
+                    Select a Tailscale device when available, or paste a managed swarm offer generated on the remote host. The 6-character ceremony code is verification-only.
                   </div>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {[
-                    {
-                      id: 'tailscale' as const,
-                      title: 'SSH + Tailscale',
-                      text: 'Prepare the SSH/Tailscale remote image here, then this local daemon dials the child backend over MagicDNS after login.',
-                      disabled: false,
-                    },
-                    {
-                      id: 'lan' as const,
-                      title: 'SSH + LAN / WireGuard',
-                      text: 'This feature is coming soon, please be patient!',
-                      disabled: true,
-                    },
-                  ].map((option) => {
-                    const active = remoteDeployMethod === option.id
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        data-testid={`add-swarm-method-${option.id}`}
-                        onClick={() => {
-                          if (option.disabled) {
-                            return
-                          }
-                          setRemoteDeployMethod(option.id)
-                          setRemotePreflightSession(null)
-                          setRemotePreflightError(null)
-                          setRemotePreflightGuidance(null)
-                        }}
-                        className={`${optionClassName(active, option.disabled)} ${option.disabled ? 'cursor-not-allowed grayscale' : ''}`}
-                        disabled={submitting || remotePreflightLoading || option.disabled}
-                        aria-disabled={option.disabled}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className={`text-sm font-semibold ${option.disabled ? 'text-[var(--app-text-muted)]' : 'text-[var(--app-text)]'}`}>{option.title}</div>
-                            <div className="mt-1 text-xs text-[var(--app-text-muted)]">{option.text}</div>
-                          </div>
-                          {active ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
-                        </div>
-                      </button>
-                    )
-                  })}
+                  <button
+                    type="button"
+                    className={optionClassName(remotePairingMode === 'candidate')}
+                    onClick={() => {
+                      setRemotePairingMode('candidate')
+                      clearRemotePairingState()
+                    }}
+                    disabled={submitting}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-[var(--app-text)]">Tailscale device</div>
+                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">Use connected Tailnet devices as the first pairing screen.</div>
+                      </div>
+                      {remotePairingMode === 'candidate' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className={optionClassName(remotePairingMode === 'manual')}
+                    onClick={() => {
+                      setRemotePairingMode('manual')
+                      clearRemotePairingState()
+                    }}
+                    disabled={submitting}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-[var(--app-text)]">Paste offer</div>
+                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">Manual fallback for a JSON or base64 managed swarm offer.</div>
+                      </div>
+                      {remotePairingMode === 'manual' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                    </div>
+                  </button>
                 </div>
 
-                {savedRemoteSSHTargets.length > 0 ? (
-                  <div className="grid gap-2">
-                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Saved targets</label>
-                    <Select
-                      value={savedRemoteSSHTargets.includes(remoteSSHTarget.trim()) ? remoteSSHTarget.trim() : ''}
-                      onChange={(event) => {
-                        setRemoteSSHTarget(event.target.value)
-                        setRemotePreflightSession(null)
-                        setRemotePreflightError(null)
-                        setRemotePreflightGuidance(null)
-                      }}
-                      disabled={submitting || remotePreflightLoading}
-                    >
-                      <option value="">Choose a saved SSH target</option>
-                      {savedRemoteSSHTargets.map((target) => (
-                        <option key={target} value={target}>{target}</option>
-                      ))}
-                    </Select>
-                  </div>
-                ) : null}
-
-                {remoteDeployMethod === 'tailscale' ? (
-                  <div className={`grid gap-3 ${subtlePanelClassName}`}>
-                    <div className="grid gap-1">
-                      <div className="text-sm font-semibold text-[var(--app-text)]">Tailscale login</div>
-                      <div className="text-xs text-[var(--app-text-muted)]">
-                        Choose manual browser approval or a launch-only auth key. The raw key is used only for this launch and is not saved by Swarm.
+                {remotePairingMode === 'candidate' ? (
+                  <div className={subtlePanelClassName}>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <div className="text-sm font-semibold text-[var(--app-text)]">Tailscale candidates</div>
+                        <div className="text-xs text-[var(--app-text-muted)]">Choose the already-installed swarmd host to manage.</div>
                       </div>
+                      <Button type="button" variant="outline" onClick={() => void loadRemoteCandidates()} disabled={submitting || remoteCandidatesLoading}>
+                        {remoteCandidatesLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                        Refresh
+                      </Button>
                     </div>
-                    <div className="grid gap-2 sm:max-w-xs">
-                      <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Login mode</label>
-                      <Select
-                        data-testid="add-swarm-tailscale-login-mode"
-                        value={remoteTailscaleAuthMode}
-                        onChange={(event) => setRemoteTailscaleAuthMode(event.target.value === 'key' ? 'key' : 'manual')}
-                        disabled={submitting || remotePreflightLoading}
-                      >
-                        <option value="manual">Manual URL</option>
-                        <option value="key">Tailscale auth key</option>
-                      </Select>
-                    </div>
-                    {remoteTailscaleAuthMode === 'key' ? (
-                      <div className="grid gap-2">
-                        <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Launch-only auth key</label>
-                        <Input
-                          data-testid="add-swarm-tailscale-auth-key"
-                          type="password"
-                          value={remoteTailscaleAuthKey}
-                          onChange={(event) => setRemoteTailscaleAuthKey(event.target.value)}
-                          disabled={submitting || remotePreflightLoading}
-                          placeholder="tskey-..."
-                        />
-                        <div className="text-xs text-[var(--app-text-muted)]">
-                          Use a reusable short-lived Tailscale key for multi-launch testing. Swarm does not store the raw key in Pebble, startup config, or artifacts.
-                        </div>
+                    {remoteCandidatesError ? (
+                      <div className="mt-3 rounded-lg border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-3 text-sm text-[var(--app-warning-text)]">
+                        {remoteCandidatesError}
+                      </div>
+                    ) : null}
+                    {remoteCandidates.length === 0 ? (
+                      <div className="mt-3 rounded-lg border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">
+                        {remoteCandidatesLoading ? 'Loading Tailscale devices…' : 'No online Tailscale candidates found. Use Paste offer if the remote host is reachable another way.'}
                       </div>
                     ) : (
-                      <div className="text-xs text-[var(--app-text-muted)]">
-                        Manual mode will show the child&apos;s Tailscale login URL after launch so you can approve it in the browser.
+                      <div className="mt-3 grid gap-2">
+                        {remoteCandidates.map((candidate) => {
+                          const selected = candidate.id === selectedRemoteCandidateID
+                          const endpoint = selectCandidateEndpoint(candidate)
+                          return (
+                            <button
+                              key={candidate.id}
+                              type="button"
+                              className={optionClassName(selected)}
+                              onClick={() => {
+                                setSelectedRemoteCandidateID(candidate.id)
+                                setRemoteCeremonyCode('')
+                                clearRemotePairingState()
+                              }}
+                              disabled={submitting}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-semibold text-[var(--app-text)]">{candidate.name || candidate.dnsName || endpointHostLabel(endpoint) || 'Tailscale device'}</div>
+                                  <div className="mt-1 truncate text-xs text-[var(--app-text-muted)]">{endpoint || candidate.dnsName || candidate.ips.join(', ')}</div>
+                                  <div className="mt-1 text-xs text-[var(--app-text-muted)]">{candidate.os || 'unknown OS'} · {candidate.transportMode || 'tailscale'}</div>
+                                </div>
+                                {selected ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                              </div>
+                            </button>
+                          )
+                        })}
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div className={`grid gap-3 ${subtlePanelClassName}`}>
-                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Remote reachable host</label>
-                    <Input
-                      data-testid="add-swarm-remote-reachable-host"
-                      value={remoteReachableHost}
+                  <div className={subtlePanelClassName}>
+                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Managed swarm offer</label>
+                    <Textarea
+                      data-testid="add-swarm-managed-offer"
+                      value={manualPairingOfferText}
                       onChange={(event) => {
-                        setRemoteReachableHost(event.target.value)
-                        setRemotePreflightSession(null)
-                        setRemotePreflightError(null)
-                        setRemotePreflightGuidance(null)
+                        const value = event.target.value
+                        setManualPairingOfferText(value)
+                        setManualPairingDraft(null)
+                        clearRemotePairingState()
+                        if (!value.trim()) {
+                          setRemoteCeremonyCode('')
+                          return
+                        }
+                        try {
+                          const draft = parseRemotePairingOffer(value)
+                          setManualPairingDraft(draft)
+                          setRemoteCeremonyCode(draft.offer.ceremony.code)
+                          setError(null)
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : 'Invalid managed swarm offer')
+                        }
                       }}
-                      disabled={submitting || remotePreflightLoading}
-                      placeholder={remoteReachableHostCandidate(remoteSSHTarget) || '10.0.0.12'}
+                      disabled={submitting}
+                      placeholder="Paste the managed-swarm-offer/v1 JSON from the remote host"
+                      className="min-h-[150px] font-mono text-xs"
                     />
-                    <div className="text-xs text-[var(--app-text-muted)]">
-                      Enter the remote machine&apos;s LAN, WireGuard, or tunnel host/IP that this master should use after SSH install. Do not use an SSH alias unless other machines can resolve it too.
-                    </div>
-                    {remoteReachableHostSuggestions.length > 0 ? (
-                      <div className="grid gap-2">
-                        <div className="text-xs text-[var(--app-text-muted)]">Detected on the remote host during preflight:</div>
-                        <div className="flex flex-wrap gap-2">
-                          {remoteReachableHostSuggestions.map((candidate) => {
-                            const selected = candidate === remoteReachableHost.trim()
-                            return (
-                              <button
-                                key={candidate}
-                                type="button"
-                                className={`rounded-md border px-2 py-1 text-xs transition ${
-                                  selected
-                                    ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]'
-                                    : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
-                                }`}
-                                onClick={() => {
-                                  setRemoteReachableHost(candidate)
-                                  if (remotePreflightSession?.remote_advertise_host?.trim() !== candidate) {
-                                    setRemotePreflightSession(null)
-                                  }
-                                  setRemotePreflightError(null)
-                                  setRemotePreflightGuidance(null)
-                                }}
-                                disabled={submitting || remotePreflightLoading}
-                              >
-                                {candidate}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
-                    {masterLANCallbackGuidance ? (
-                      <div
-                        className={`rounded-2xl border p-4 text-sm ${
-                          masterLANCallbackGuidance.blocking
-                            ? 'border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] text-[var(--app-warning-text)]'
-                            : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'
-                        }`}
-                      >
-                        <div className="font-medium text-[var(--app-text)]">{masterLANCallbackGuidance.title}</div>
-                        <ul className="mt-3 list-disc space-y-2 pl-5">
-                          {masterLANCallbackGuidance.details.map((detail) => (
-                            <li key={detail}>{detail}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
                   </div>
                 )}
 
-                <div className={`${subtlePanelClassName} text-sm text-[var(--app-text-muted)]`}>
-                  <div className="font-medium text-[var(--app-text)]">Preflight summary shown before execution</div>
-                  <ul className="mt-3 list-disc space-y-2 pl-5">
-                    <li>This will send only Git-tracked files from the selected workspace roots and any linked directories to the remote server as payload archives.</li>
-                    <li>This will also have the remote host pull the published SSH + Tailscale Swarm remote image when that image is not already present there.</li>
-                    <li>The remote install path copies: rendered <code>swarm.conf</code>, installer script, and Git-tracked workspace payload archives.</li>
-                    <li>For Tailscale deploys, the launched remote child is target-owned; this local daemon probes its raw backend over MagicDNS and registers it when ready.</li>
-                    <li>Persistence is not installed by Swarm in this path. Reboot survival is up to the remote machine owner.</li>
-                    <li>Attach flow: Tailscale children only need Tailnet login and backend reachability. LAN / WireGuard legacy children still require enrollment approval.</li>
-                  </ul>
-                </div>
-              </Card>
-
-              {workspaceSelectionCard}
-
-              {remotePreflightError ? (
-                <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">
-                  <div className="font-medium">{remotePreflightGuidance?.title || 'Remote preflight failed'}</div>
-                  {remotePreflightGuidance?.details?.length ? (
-                    <ul className="mt-3 list-disc space-y-2 pl-5 text-[var(--app-text)]">
-                      {remotePreflightGuidance.details.map((detail) => (
-                        <li key={detail}>{detail}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div className="mt-2">{remotePreflightError}</div>
-                  )}
-                  {remotePreflightGuidance?.commands?.length ? (
-                    <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs text-[var(--app-text)]">
-                      <div className="font-medium text-[var(--app-text)]">Suggested commands</div>
-                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap">{remotePreflightGuidance.commands.join('\n')}</pre>
+                <div className={subtlePanelClassName}>
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px] sm:items-end">
+                    <div className="grid gap-1 text-sm">
+                      <div className="font-semibold text-[var(--app-text)]">Ceremony comparison</div>
+                      <div className="text-xs text-[var(--app-text-muted)]">
+                        Compare this short code on both hosts. It verifies the high-entropy offer transcript; it does not unlock configuration by itself.
+                      </div>
+                      {activeRemotePairingDraft ? (
+                        <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)]">
+                          <div><span className="font-medium text-[var(--app-text)]">Managed host:</span> {activeRemotePairingDraft?.offer.swarm_name || selectedRemoteCandidate?.name || 'Pending offer'}</div>
+                          <div><span className="font-medium text-[var(--app-text)]">Endpoint:</span> {activeRemotePairingDraft?.offer.endpoint || selectedRemoteCandidateEndpoint || 'Required'}</div>
+                          {activeRemotePairingDraft?.offer.fingerprint ? <div><span className="font-medium text-[var(--app-text)]">Fingerprint:</span> {activeRemotePairingDraft.offer.fingerprint}</div> : null}
+                        </div>
+                      ) : null}
                     </div>
-                  ) : null}
+                    <div className="grid gap-2">
+                      <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">6 hex chars</label>
+                      <Input
+                        data-testid="add-swarm-ceremony-code"
+                        value={formatPairingCode(remoteCeremonyCode)}
+                        onChange={(event) => {
+                          setRemoteCeremonyCode(normalizePairingCode(event.target.value))
+                          clearRemotePairingState()
+                        }}
+                        disabled={submitting || (remotePairingMode === 'manual' && Boolean(manualPairingDraft?.offer.ceremony.code))}
+                        placeholder="ABC 123"
+                      />
+                    </div>
+                  </div>
                 </div>
-              ) : null}
 
+                {remotePairingResult ? (
+                  <div className="rounded-lg border border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-3 text-sm text-[var(--app-success)]">
+                    <div className="font-medium">Pairing request sent</div>
+                    <div className="mt-1 text-[var(--app-text)]">Approve request {remotePairingResult.request.request_id} on the managed swarm after confirming code {formatPairingCode(remoteCeremonyCode || activeRemoteCeremonyCode)}.</div>
+                  </div>
+                ) : null}
+              </Card>
             </>
           ) : null}
+
+
 
           <Card className={sectionClassName}>
             <div className="flex items-start justify-between gap-3">
               <div className="grid gap-1">
                 <div className="text-sm font-semibold text-[var(--app-text)]">Ready Check</div>
                 <div className="text-xs text-[var(--app-text-muted)]">
-                  Smart defaults are selected. Adjust only what you need before launch.
+                  {launchTarget === 'remote'
+                    ? 'Managed Swarm pairing uses the remote host offer and ceremony-code comparison.'
+                    : 'Smart defaults are selected. Adjust only what you need before launch.'}
                 </div>
               </div>
-              <Badge tone={launchTarget === 'remote' && !remotePreflightSession ? 'warning' : 'live'}>
+              <Badge tone={launchTarget === 'remote' ? (activeRemotePairingDraft && activeRemoteCeremonyCode ? 'live' : 'warning') : runtimeChoice ? 'live' : 'warning'}>
                 {launchTarget === 'remote'
-                  ? (remotePreflightSession ? 'preflight passed' : 'preflight next')
+                  ? (activeRemotePairingDraft && activeRemoteCeremonyCode ? 'ready to pair' : 'pairing info required')
                   : (runtimeChoice ? 'ready' : 'runtime required')}
               </Badge>
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-3">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={alwaysOn}
-                data-testid="add-swarm-always-on"
-                className={optionClassName(alwaysOn)}
-                onClick={() => {
-                  if (!submitting && !remotePreflightLoading) {
-                    invalidateRemotePreflight()
-                    setAlwaysOn((current) => !current)
-                  }
-                }}
-                disabled={submitting || remotePreflightLoading}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold text-[var(--app-text)]">Always On</div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {launchTarget === 'remote'
-                        ? (alwaysOn ? 'Master probes SSH and restarts the remote child while running.' : 'Manual remote restart if the child stops.')
-                        : (alwaysOn ? 'Restart attached children on host startup.' : 'Manual start after host restart.')}
+            {launchTarget === 'local' ? (
+              <>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={alwaysOn}
+                    data-testid="add-swarm-always-on"
+                    className={optionClassName(alwaysOn)}
+                    onClick={() => {
+                      if (!submitting && !false) {
+                        invalidateLaunchDraft()
+                        setAlwaysOn((current) => !current)
+                      }
+                    }}
+                    disabled={submitting || false}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold text-[var(--app-text)]">Always On</div>
+                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">{alwaysOn ? 'Restart attached swarms on host startup.' : 'Manual start after host restart.'}</div>
+                      </div>
+                      {alwaysOn ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
                     </div>
-                  </div>
-                  {alwaysOn ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
-                </div>
-              </button>
+                  </button>
 
-              <button
-                type="button"
-                role="switch"
-                aria-checked={syncEnabled}
-                className={optionClassName(syncEnabled)}
-                onClick={() => {
-                  if (!submitting && !remotePreflightLoading) {
-                    invalidateRemotePreflight()
-                    setSyncEnabled((current) => !current)
-                  }
-                }}
-                disabled={submitting || remotePreflightLoading}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold text-[var(--app-text)]">Swarm Sync</div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {syncEnabled ? 'Continuously follows main swarm changes.' : 'Standalone child auth.'}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={syncEnabled}
+                    className={optionClassName(syncEnabled)}
+                    onClick={() => {
+                      if (!submitting && !false) {
+                        invalidateLaunchDraft()
+                        setSyncEnabled((current) => !current)
+                      }
+                    }}
+                    disabled={submitting || false}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold text-[var(--app-text)]">Swarm Sync</div>
+                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">{syncEnabled ? 'Continuously follows manager swarm changes.' : 'Standalone managed swarm auth.'}</div>
+                      </div>
+                      {syncEnabled ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
                     </div>
-                  </div>
-                  {syncEnabled ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
-                </div>
-              </button>
+                  </button>
 
-              <button
-                type="button"
-                role="switch"
-                aria-checked={bypassPermissions}
-                className={optionClassName(bypassPermissions)}
-                onClick={() => {
-                  if (!submitting && !remotePreflightLoading) {
-                    invalidateRemotePreflight()
-                    setBypassPermissions((current) => !current)
-                  }
-                }}
-                disabled={submitting || remotePreflightLoading}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold text-[var(--app-text)]">Permission sync & bypass override</div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">
-                      {!syncEnabled
-                        ? 'Swarm Sync is off — host permission policy will not sync.'
-                        : bypassPermissions
-                          ? 'Bypass override on — host permission policy will not sync to this child.'
-                          : 'Permissions sync on — host policy syncs to this child. Click to enable container bypass override.'}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={bypassPermissions}
+                    className={optionClassName(bypassPermissions)}
+                    onClick={() => {
+                      if (!submitting && !false) {
+                        invalidateLaunchDraft()
+                        setBypassPermissions((current) => !current)
+                      }
+                    }}
+                    disabled={submitting || false}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold text-[var(--app-text)]">Permission sync & bypass override</div>
+                        <div className="mt-1 text-xs text-[var(--app-text-muted)]">
+                          {!syncEnabled
+                            ? 'Swarm Sync is off — host permission policy will not sync.'
+                            : bypassPermissions
+                              ? 'Bypass override on — host permission policy will not sync to this managed swarm.'
+                              : 'Permissions sync on — host policy syncs to this managed swarm. Click to enable container bypass override.'}
+                        </div>
+                      </div>
+                      {bypassPermissions ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
                     </div>
-                  </div>
-                  {bypassPermissions ? <Check size={15} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                  </button>
                 </div>
-              </button>
-            </div>
 
-            {syncEnabled ? (
-              <div className="rounded-lg border border-[var(--app-border)] bg-transparent p-3">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="grid gap-1">
-                    <div className="text-sm font-medium text-[var(--app-text)]">What is Swarm Sync?</div>
-                    <div className="text-xs text-[var(--app-text-muted)]">
-                      When credentials, saved agents, custom tools, skills, or host permissions change on the main swarm, Swarm Sync updates this child automatically unless the bypass override is on.
+                {syncEnabled ? (
+                  <div className="rounded-lg border border-[var(--app-border)] bg-transparent p-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="grid gap-1">
+                        <div className="text-sm font-medium text-[var(--app-text)]">What is Swarm Sync?</div>
+                        <div className="text-xs text-[var(--app-text-muted)]">
+                          When credentials, saved agents, custom tools, skills, or host permissions change on the manager swarm, Swarm Sync updates this managed swarm automatically unless the bypass override is on.
+                        </div>
+                      </div>
+                      <Badge tone="live">automatic</Badge>
                     </div>
-                  </div>
-                  <Badge tone="live">automatic</Badge>
-                </div>
-                {hostVaultEnabled ? (
-                  <div className="mt-3 grid gap-1">
-                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Vault password</label>
-                    <Input
-                      data-testid="add-swarm-sync-vault-password"
-                      type="password"
-                      value={syncVaultPassword}
-                      onChange={(event) => setSyncVaultPassword(event.target.value)}
-                      placeholder="Required to unlock synced credentials"
-                      disabled={submitting || remotePreflightLoading}
-                    />
+                    {hostVaultEnabled ? (
+                      <div className="mt-3 grid gap-1">
+                        <label className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--app-text-muted)]">Vault password</label>
+                        <Input
+                          data-testid="add-swarm-sync-vault-password"
+                          type="password"
+                          value={syncVaultPassword}
+                          onChange={(event) => setSyncVaultPassword(event.target.value)}
+                          placeholder="Required to unlock synced credentials"
+                          disabled={submitting || false}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
-              </div>
-            ) : null}
-
-            {launchTarget === 'remote' && remotePreflightSession ? (
-              <div data-testid="add-swarm-preflight-success" className="rounded-lg border border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-3 text-sm text-[var(--app-success)]">
-                <div className="font-medium">Preflight passed</div>
-                <div className="mt-1 text-[var(--app-text)]">{remotePreflightSession.preflight.summary || 'Remote host is ready for SSH launch.'}</div>
-              </div>
+              </>
             ) : null}
 
             <div className="grid gap-2 text-sm text-[var(--app-text-muted)] sm:grid-cols-2">
               {launchTarget === 'remote' ? (
                 <>
-                  <div><span className="font-medium text-[var(--app-text)]">Target:</span> Remote over SSH</div>
-                  <div><span className="font-medium text-[var(--app-text)]">SSH target:</span> {remoteSSHTarget.trim() || 'Required'}</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Deploy method:</span> {remoteDeployMethod === 'tailscale' ? 'Tailscale' : `LAN / WireGuard via ${remoteReachableHost.trim() || 'Required'}`}</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Preflight:</span> {remotePreflightSession ? 'Passed' : (remotePreflightLoading ? 'Running…' : 'Required before launch')}</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Runtime:</span> {remotePreflightSession?.preflight.remote_runtime || remoteRuntimeChoice}</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Disk:</span> {remotePreflightSession ? `${formatBytes(remotePreflightSession.preflight.remote_disk?.available_bytes)} available / ${formatBytes(remotePreflightSession.preflight.remote_disk?.required_bytes)} required` : 'Unknown until preflight'}</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Payload archives:</span> {remotePreflightSession ? remotePreflightArchiveCount : selectedRemoteArchiveCount}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Target:</span> Managed Swarm</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Mode:</span> {remotePairingMode === 'candidate' ? 'Tailscale candidate' : 'Pasted offer'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Endpoint:</span> {activeRemotePairingDraft?.offer.endpoint || selectedRemoteCandidateEndpoint || 'Required'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Ceremony:</span> {formatPairingCode(remoteCeremonyCode || activeRemoteCeremonyCode) || 'Required'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Container scope:</span> managed_host_local</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Remote containers:</span> stay local to the managed host</div>
                 </>
               ) : (
                 <>
                   <div><span className="font-medium text-[var(--app-text)]">Target:</span> Local container</div>
-                  <div><span className="font-medium text-[var(--app-text)]">Master:</span> {masterName}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Manager:</span> {managerName}</div>
                   <div><span className="font-medium text-[var(--app-text)]">Runtime:</span> {runtimeChoice || 'Unavailable'}</div>
                   <div><span className="font-medium text-[var(--app-text)]">Workspaces:</span> {selectedWorkspaceCountValue}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Always On:</span> {alwaysOn ? 'Enabled' : 'Disabled'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Swarm Sync:</span> {syncEnabled ? 'Enabled' : 'Disabled'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Permissions:</span> {!syncEnabled ? 'Not synced' : bypassPermissions ? 'Bypass override enabled' : 'Synced; bypass override available'}</div>
+                  <div><span className="font-medium text-[var(--app-text)]">Swarm name:</span> {swarmName.trim() || 'Required'}</div>
                 </>
               )}
-              <div><span className="font-medium text-[var(--app-text)]">Always On:</span> {alwaysOn ? 'Enabled' : 'Disabled'}</div>
-              <div><span className="font-medium text-[var(--app-text)]">Swarm Sync:</span> {syncEnabled ? 'Enabled' : 'Disabled'}</div>
-              <div><span className="font-medium text-[var(--app-text)]">Permissions:</span> {!syncEnabled ? 'Not synced' : bypassPermissions ? 'Bypass override enabled' : 'Synced; bypass override available'}</div>
-              <div><span className="font-medium text-[var(--app-text)]">Swarm name:</span> {swarmName.trim() || 'Required'}</div>
             </div>
           </Card>
         </div>
@@ -2054,25 +1432,17 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
                 || !group?.group.id.trim()
                 || (launchTarget === 'local'
                   ? !runtimeChoice || !swarmName.trim() || selectedWorkspaceCountValue === 0
-                  : !swarmName.trim()
-                    || !remoteSSHTarget.trim()
-                    || remotePreflightLoading
-                    || configuringMasterLANCallback
-                    || (remotePreflightBlocked && !remotePreflightCanAutofill)
-                    || (remoteDeployMethod === 'lan' && !remoteReachableHost.trim()))
+                  : remoteCandidatesLoading
+                    || (remotePairingMode === 'candidate' && (!selectedRemoteCandidate || !selectedRemoteCandidateEndpoint))
+                    || (remotePairingMode === 'manual' && (!activeRemotePairingDraft || !activeRemotePairingDraft.offer.endpoint.trim()))
+                    || !activeRemoteCeremonyCode)
               }
             >
-              {(submitting || remotePreflightLoading || configuringMasterLANCallback) ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              {(submitting || remoteCandidatesLoading) ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
               {submitting
                 ? 'Working…'
                 : launchTarget === 'remote'
-                  ? (configuringMasterLANCallback
-                      ? 'Saving this machine’s address…'
-                      : remotePreflightLoading
-                        ? 'Checking…'
-                        : remotePreflightSession
-                          ? 'Launch'
-                          : 'Preflight when Ready')
+                  ? 'Start Pairing'
                   : 'Launch'}
             </Button>
           </div>

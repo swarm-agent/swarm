@@ -505,8 +505,12 @@ func (f fakeLocalAuthSwarmService) RemoveGroupMember(swarmruntime.RemoveGroupMem
 	return nil
 }
 
-func (f fakeLocalAuthSwarmService) CreateInvite(swarmruntime.CreateInviteInput) (swarmruntime.Invite, error) {
-	return swarmruntime.Invite{}, nil
+func (f fakeLocalAuthSwarmService) CreateInvite(input swarmruntime.CreateInviteInput) (swarmruntime.Invite, error) {
+	token := strings.TrimSpace(input.Token)
+	if token == "" {
+		token = "invite-token-1"
+	}
+	return swarmruntime.Invite{ID: "invite-1", Token: token, PrimarySwarmID: input.PrimarySwarmID, PrimaryName: input.PrimaryName, GroupID: input.GroupID, TransportMode: input.TransportMode, ExpiresAt: time.Now().Add(input.TTL).Unix(), CreatedAt: time.Now().Unix(), UpdatedAt: time.Now().Unix()}, nil
 }
 
 func (f fakeLocalAuthSwarmService) SubmitEnrollment(input swarmruntime.SubmitEnrollmentInput) (swarmruntime.Enrollment, error) {

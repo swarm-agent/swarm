@@ -357,10 +357,25 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if strings.TrimSpace(offer.Token) == "" {
-		writeError(w, http.StatusBadRequest, errors.New("managed pairing offer token is required"))
+		fetchedOffer, err := fetchSwarmRemotePairingOffer(managedEndpoint, managedTransports)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("fetch managed swarm pairing offer from %s: %w", managedEndpoint, err))
+			return
+		}
+		offer = fetchedOffer
+		if len(managedTransports) == 0 && len(offer.RendezvousTransports) > 0 {
+			managedTransports = append([]onboardingTransportPayload(nil), offer.RendezvousTransports...)
+		}
+	}
+	if strings.TrimSpace(offer.Token) == "" {
+		writeError(w, http.StatusBadGateway, errors.New("managed pairing offer response was missing its high-entropy token"))
 		return
 	}
-	if expectedCode := deriveSwarmRemotePairingOfferCeremonyCode(offer); expectedCode == "" || !strings.EqualFold(strings.TrimSpace(req.CeremonyCode), expectedCode) || !strings.EqualFold(strings.TrimSpace(offer.Ceremony.Code), expectedCode) {
+	expectedCode := deriveSwarmRemotePairingOfferCeremonyCode(offer)
+	if strings.TrimSpace(req.CeremonyCode) == "" {
+		req.CeremonyCode = expectedCode
+	}
+	if expectedCode == "" || !strings.EqualFold(strings.TrimSpace(req.CeremonyCode), expectedCode) || !strings.EqualFold(strings.TrimSpace(offer.Ceremony.Code), expectedCode) {
 		writeError(w, http.StatusBadRequest, errors.New("managed pairing ceremony code does not match offer transcript"))
 		return
 	}
@@ -995,6 +1010,17 @@ func postRemoteSwarmJSONWithTransportFallback(endpoint, requestPath string, tran
 
 func getRemoteSwarmJSONWithTransportFallback(endpoint, requestPath string, transports []onboardingTransportPayload, out any) error {
 	return remoteSwarmJSONRequestWithTransportFallback(http.MethodGet, endpoint, requestPath, transports, nil, out)
+}
+
+func fetchSwarmRemotePairingOffer(endpoint string, transports []onboardingTransportPayload) (swarmRemotePairingOfferPayload, error) {
+	var response swarmRemotePairingOfferResponse
+	if err := postRemoteSwarmJSONWithTransportFallback(endpoint, "/v1/swarm/remote-pairing/offer", transports, swarmRemotePairingOfferCreateRequest{}, &response); err != nil {
+		return swarmRemotePairingOfferPayload{}, err
+	}
+	if !response.OK {
+		return swarmRemotePairingOfferPayload{}, errors.New("managed swarm offer response was not ok")
+	}
+	return response.Offer, nil
 }
 
 func remoteSwarmJSONRequestWithTransportFallback(method, endpoint, requestPath string, transports []onboardingTransportPayload, payload any, out any) error {
