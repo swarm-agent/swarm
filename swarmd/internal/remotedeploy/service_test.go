@@ -182,6 +182,44 @@ func TestFormatCreatePreflightErrorReportsSelectedRemoteRuntime(t *testing.T) {
 	}
 }
 
+func TestRemoteRootUsesCanonicalSystemDataPath(t *testing.T) {
+	if got, want := remoteRoot("remote child/test"), "/var/lib/swarmd/remote-deploy/remote-child-test"; got != want {
+		t.Fatalf("remoteRoot() = %q, want %q", got, want)
+	}
+}
+
+func TestPrepareRemoteWritableDirUsesSudoAwareProvisioning(t *testing.T) {
+	oldRunner := remoteSSHCommandRunner
+	var gotTarget string
+	var gotScript string
+	remoteSSHCommandRunner = func(ctx context.Context, target, script string) (string, error) {
+		gotTarget = target
+		gotScript = script
+		return "", nil
+	}
+	t.Cleanup(func() { remoteSSHCommandRunner = oldRunner })
+
+	if err := prepareRemoteWritableDir(context.Background(), "remote.example", "/var/lib/swarmd/remote-deploy/test", "sudo"); err != nil {
+		t.Fatalf("prepareRemoteWritableDir() error = %v", err)
+	}
+	if gotTarget != "remote.example" {
+		t.Fatalf("ssh target = %q, want remote.example", gotTarget)
+	}
+	for _, needle := range []string{
+		`remote_dir='/var/lib/swarmd/remote-deploy/test'`,
+		`use_sudo='1'`,
+		`if [ "$use_sudo" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then`,
+		`sudo -n "$@"`,
+		`as_root mkdir -p "$remote_dir"`,
+		`as_root chown "$remote_uid:$remote_gid" "$remote_dir"`,
+		`remote directory is not writable: $remote_dir`,
+	} {
+		if !strings.Contains(gotScript, needle) {
+			t.Fatalf("prepare script missing %q\n%s", needle, gotScript)
+		}
+	}
+}
+
 func TestRemoteRuntimePreflightScriptChecksSelectedRuntimeWithSudo(t *testing.T) {
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:            "remote-child-test",
@@ -431,6 +469,8 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`if runtime_cmd image inspect "$image_ref" >/dev/null 2>&1; then`,
 		`runtime_cmd load -i "$image_archive" >/dev/null`,
 		`as_root mkdir -p '/workspaces'`,
+		`as_root mkdir -p "$remote_root" "$config_home" "$cache_dir" "$runtime_dir" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir"`,
+		`if [ "$use_sudo" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then`,
 		`container_runtime_uid='65534'`,
 		`container_runtime_gid='65534'`,
 		`repair_workspace_mount_permissions()`,
@@ -513,6 +553,9 @@ func TestRemoteBundleStartScriptDeliversSecretsViaSSHStdinWithoutCredentialsFile
 		`installer_path='/var/lib/swarmd/remote-deploy/test/install-remote-child.sh'`,
 		`legacy_credentials_file='/var/lib/swarmd/remote-deploy/test/remote-child.credentials.env'`,
 		`trap 'rm -f "$installer_path" "$legacy_credentials_file" "${config_tmp:-}" "${bootstrap_secret_tmp:-}"' EXIT`,
+		`if [ "$use_sudo" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then use_sudo=1; fi`,
+		`if ! mkdir -p "$remote_dir" 2>/dev/null; then as_root mkdir -p "$remote_dir"; fi`,
+		`as_root mkdir -p "$(dirname "$config_path")" "$(dirname "$bootstrap_secret_path")"`,
 		`cat > "$config_tmp" <<'SWARM_REMOTE_CONFIG_EOF'`,
 		childCfgText,
 		`as_root install -m 0600 "$config_tmp" "$config_path"`,

@@ -2682,6 +2682,9 @@ func (s *Service) inspectRemoteHost(ctx context.Context, sshTarget, preferredRun
 runtime=%s
 if command -v systemctl >/dev/null 2>&1; then systemd=1; else systemd=0; fi
 sudo_mode="none"
+if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+  sudo_mode="sudo"
+fi
 if ! command -v "$runtime" >/dev/null 2>&1; then
   echo "REMOTE_RUNTIME_MISSING=$runtime"
   exit 42
@@ -3134,7 +3137,7 @@ func (s *Service) copyRemoteBundle(ctx context.Context, workDir string, runtimeA
 		return fmt.Errorf("remote deploy record is required")
 	}
 	remoteDir := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
-	if _, err := runSSHCommand(ctx, record.SSHSessionTarget, fmt.Sprintf("mkdir -p %s", shellQuote(remoteDir))); err != nil {
+	if err := prepareRemoteWritableDir(ctx, record.SSHSessionTarget, remoteDir, record.SudoMode); err != nil {
 		return err
 	}
 	sourceRoot := filepath.Join(workDir, "bundle", "remote")
@@ -3563,7 +3566,7 @@ func copyRemoteRuntimeArtifact(ctx context.Context, runtimeArtifact remoteRuntim
 		return fmt.Errorf("remote image archive path is required")
 	}
 	remoteDir := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
-	if _, err := runSSHCommand(ctx, record.SSHSessionTarget, fmt.Sprintf("mkdir -p %s", shellQuote(remoteDir))); err != nil {
+	if err := prepareRemoteWritableDir(ctx, record.SSHSessionTarget, remoteDir, record.SudoMode); err != nil {
 		return err
 	}
 	archiveName := firstNonEmpty(strings.TrimSpace(runtimeArtifact.ArchiveName), remoteImageArchiveName(record.TransportMode))
@@ -3595,7 +3598,7 @@ func (s *Service) copyRemoteRuntimeMountArchive(ctx context.Context, runtimeArti
 		return err
 	}
 	remoteDir := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
-	if _, err := runSSHCommand(ctx, record.SSHSessionTarget, fmt.Sprintf("mkdir -p %s", shellQuote(remoteDir))); err != nil {
+	if err := prepareRemoteWritableDir(ctx, record.SSHSessionTarget, remoteDir, record.SudoMode); err != nil {
 		return err
 	}
 	archiveDest := fmt.Sprintf("%s:%s", record.SSHSessionTarget, filepath.ToSlash(filepath.Join(remoteDir, archiveName)))
@@ -3782,15 +3785,18 @@ offline_mode=%s
 ts_hostname=%s
 container_runtime_uid=%s
 container_runtime_gid=%s
-mkdir -p "$remote_root" "$config_home" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$runtime_dir" "$cache_dir"
-cd "$remote_root"
+if [ "$use_sudo" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+  use_sudo=1
+fi
 as_root() {
   if [ "$use_sudo" = "1" ]; then
-    sudo "$@"
+    sudo -n "$@"
   else
     "$@"
   fi
 }
+as_root mkdir -p "$remote_root" "$config_home" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$runtime_dir" "$cache_dir"
+cd "$remote_root"
 runtime_cmd() {
   if [ "$runtime" = "podman" ]; then
     as_root podman "$@"
@@ -5416,6 +5422,47 @@ func shortToken(size int) string {
 	return hex.EncodeToString(buf)
 }
 
+func prepareRemoteWritableDir(ctx context.Context, sshTarget, remoteDir, sudoMode string) error {
+	remoteDir = strings.TrimSpace(remoteDir)
+	if remoteDir == "" {
+		return fmt.Errorf("remote directory is required")
+	}
+	useSudo := "0"
+	if strings.TrimSpace(sudoMode) == "sudo" {
+		useSudo = "1"
+	}
+	script := fmt.Sprintf(`set -eu
+remote_dir=%s
+use_sudo=%s
+if [ "$use_sudo" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+  use_sudo=1
+fi
+as_root() {
+  if [ "$use_sudo" = "1" ]; then
+    sudo -n "$@"
+  else
+    "$@"
+  fi
+}
+if ! mkdir -p "$remote_dir" 2>/dev/null; then
+  as_root mkdir -p "$remote_dir"
+fi
+if [ ! -w "$remote_dir" ]; then
+  remote_uid="$(id -u)"
+  remote_gid="$(id -g)"
+  as_root chown "$remote_uid:$remote_gid" "$remote_dir"
+fi
+if [ ! -w "$remote_dir" ]; then
+  echo "remote directory is not writable: $remote_dir" >&2
+  exit 1
+fi
+`, shellQuote(remoteDir), shellQuote(useSudo))
+	if _, err := remoteSSHCommandRunner(ctx, sshTarget, script); err != nil {
+		return fmt.Errorf("prepare remote writable directory %s: %w", remoteDir, err)
+	}
+	return nil
+}
+
 func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string {
 	remoteRoot := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
 	storagePaths := remoteStorageForRoot(remoteRoot)
@@ -5525,15 +5572,19 @@ peer_transport_port=%s
 offline_mode=%s
 container_runtime_uid=%s
 container_runtime_gid=%s
-cd "$remote_root"
-
+if [ "$use_sudo" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+  use_sudo=1
+fi
 as_root() {
   if [ "$use_sudo" = "1" ]; then
-    sudo "$@"
+    sudo -n "$@"
   else
     "$@"
   fi
 }
+
+as_root mkdir -p "$remote_root" "$config_home" "$cache_dir" "$runtime_dir" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir"
+cd "$remote_root"
 
 runtime_cmd() {
   if [ "$runtime" = "podman" ]; then
@@ -5601,7 +5652,6 @@ log_timer_step() {
 }
 
 step_started_ms="$(now_ms)"
-mkdir -p "$remote_root" "$config_home" "$cache_dir" "$runtime_dir" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir"
 as_root chown -R 65534:65534 "$config_home" "$cache_dir" "$runtime_dir" "$swarmd_state_dir" >/dev/null 2>&1 || true
 as_root chmod 0755 "$remote_root" >/dev/null 2>&1 || true
 as_root chmod 0700 "$config_home" "$cache_dir" "$runtime_dir" "$swarmd_state_dir" >/dev/null 2>&1 || true
@@ -5842,9 +5892,10 @@ func remoteBundleStartScript(record *pebblestore.RemoteDeploySessionRecord, chil
 	builder.WriteString(fmt.Sprintf("installer_path=%s\n", shellQuote(filepath.ToSlash(filepath.Join(remoteDir, "install-remote-child.sh")))))
 	builder.WriteString(fmt.Sprintf("legacy_credentials_file=%s\n", shellQuote(legacyCredentialsPath)))
 	builder.WriteString(fmt.Sprintf("use_sudo=%s\n", shellQuote(map[bool]string{true: "1", false: "0"}[strings.TrimSpace(record.SudoMode) == "sudo"])))
-	builder.WriteString("as_root() { if [ \"$use_sudo\" = \"1\" ]; then sudo \"$@\"; else \"$@\"; fi; }\n")
-	builder.WriteString("mkdir -p \"$remote_dir\"\n")
-	builder.WriteString("as_root mkdir -p \"$(dirname \"$config_path\")\"\n")
+	builder.WriteString("if [ \"$use_sudo\" != \"1\" ] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then use_sudo=1; fi\n")
+	builder.WriteString("as_root() { if [ \"$use_sudo\" = \"1\" ]; then sudo -n \"$@\"; else \"$@\"; fi; }\n")
+	builder.WriteString("if ! mkdir -p \"$remote_dir\" 2>/dev/null; then as_root mkdir -p \"$remote_dir\"; fi\n")
+	builder.WriteString("as_root mkdir -p \"$(dirname \"$config_path\")\" \"$(dirname \"$bootstrap_secret_path\")\"\n")
 	builder.WriteString("rm -f \"$legacy_credentials_file\"\n")
 	builder.WriteString("config_tmp=\"$remote_dir/.swarm.conf.$$\"\n")
 	builder.WriteString("cat > \"$config_tmp\" <<'SWARM_REMOTE_CONFIG_EOF'\n")
