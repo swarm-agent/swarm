@@ -186,7 +186,7 @@ func TestRemoteRuntimePreflightScriptChecksSelectedRuntimeWithSudo(t *testing.T)
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:            "remote-child-test",
 		Name:          "remote-child",
-		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
+		RemoteRoot:    "/var/lib/swarmd/remote-deploy/test",
 		RemoteRuntime: "podman",
 		ImageRef:      "localhost/swarm-remote-child:test1234",
 		SudoMode:      "sudo",
@@ -354,7 +354,7 @@ func TestRemoteDevReplacementScriptDoesNotDuplicateRemoteRootMount(t *testing.T)
 		Name:                "remote-replace-test",
 		TransportMode:       startupconfig.NetworkModeLAN,
 		RemoteRuntime:       "docker",
-		RemoteRoot:          "/var/lib/swarm/rd/remote-replace-test",
+		RemoteRoot:          "/var/lib/swarmd/remote-deploy/remote-replace-test",
 		RemoteAdvertiseHost: "10.0.0.10",
 		Payloads: []pebblestore.RemoteDeployPayloadRecord{{
 			TargetPath: "/workspaces",
@@ -364,7 +364,7 @@ func TestRemoteDevReplacementScriptDoesNotDuplicateRemoteRootMount(t *testing.T)
 	if got := strings.Count(script, `"$remote_root:$remote_root"`); got != 1 {
 		t.Fatalf("remote root mount occurrences = %d, want one\n%s", got, script)
 	}
-	if strings.Contains(script, `run_args+=(--volume '/var/lib/swarm/rd/remote-replace-test:/var/lib/swarm/rd/remote-replace-test')`) {
+	if strings.Contains(script, `run_args+=(--volume '/var/lib/swarmd/remote-deploy/remote-replace-test:/var/lib/swarmd/remote-deploy/remote-replace-test')`) {
 		t.Fatalf("replacement script duplicates concrete remote root mount\n%s", script)
 	}
 	if !strings.Contains(script, `run_args+=(--volume '/workspaces:/workspaces')`) {
@@ -376,7 +376,7 @@ func TestRemoteInstallerScriptSanitizesTailscaleHostname(t *testing.T) {
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:            "pc-child-test",
 		Name:          "pc child",
-		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
+		RemoteRoot:    "/var/lib/swarmd/remote-deploy/test",
 		RemoteRuntime: "docker",
 		ImageRef:      "localhost/swarm-remote-child:test1234",
 	}
@@ -404,7 +404,7 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:            "remote-child-test",
 		Name:          "remote-child",
-		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
+		RemoteRoot:    "/var/lib/swarmd/remote-deploy/test",
 		RemoteRuntime: "docker",
 		ImageRef:      "localhost/swarm-remote-child:test1234",
 		SudoMode:      "sudo",
@@ -415,12 +415,14 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 	}
 	script := remoteInstallerScript(record)
 	for _, needle := range []string{
-		`remote_root='/var/lib/swarm/remote-deploy/test'`,
-		`config_home='/var/lib/swarm/remote-deploy/test/config'`,
-		`legacy_credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
-		`bootstrap_secret_file='/var/lib/swarm/remote-deploy/test/config/swarm/remote-deploy-bootstrap.secret'`,
-		`tailscale_state_dir='/var/lib/swarm/remote-deploy/test/state/tailscale'`,
-		`swarmd_state_dir='/var/lib/swarm/remote-deploy/test/state/swarmd'`,
+		`remote_root='/var/lib/swarmd/remote-deploy/test'`,
+		`config_home='/etc/swarmd/remote-deploy/test'`,
+		`cache_dir='/var/cache/swarmd/remote-deploy/test'`,
+		`runtime_dir='/run/swarmd/remote-deploy/test'`,
+		`legacy_credentials_file='/var/lib/swarmd/remote-deploy/test/remote-child.credentials.env'`,
+		`bootstrap_secret_file='/etc/swarmd/remote-deploy/test/remote-deploy-bootstrap.secret'`,
+		`tailscale_state_dir='/var/lib/swarmd/remote-deploy/test/data/tailscale'`,
+		`swarmd_state_dir='/var/lib/swarmd/remote-deploy/test/data/swarmd'`,
 		`runtime='docker'`,
 		`image_ref='localhost/swarm-remote-child:test1234'`,
 		`image_archive='swarm-remote-tailscale-image.tar'`,
@@ -434,12 +436,16 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 		`repair_workspace_mount_permissions()`,
 		`as_root chown -R "${container_runtime_uid}:${container_runtime_gid}" "$target"`,
 		`repair_workspace_mount_permissions '/workspaces'`,
-		`as_root chown -R 65534:65534 "$config_home" "$remote_root/xdg" "$swarmd_state_dir"`,
-		`as_root chmod 0700 "$config_home" "$config_home/swarm" "$swarmd_state_dir"`,
-		`as_root chmod 0600 "$config_home/swarm/swarm.conf"`,
+		`as_root chown -R 65534:65534 "$config_home" "$cache_dir" "$runtime_dir" "$swarmd_state_dir"`,
+		`as_root chmod 0700 "$config_home" "$cache_dir" "$runtime_dir" "$swarmd_state_dir"`,
+		`as_root chmod 0600 "$config_home/swarm.conf"`,
 		`rm -f "$legacy_credentials_file"`,
 		`cat > "$start_script" <<'SCRIPT'`,
-		`export XDG_CONFIG_HOME="$config_home"`,
+		`-e "SWARMD_CONFIG_DIR=$config_home"`,
+		`-e "SWARMD_CACHE_DIR=$cache_dir"`,
+		`-e "SWARMD_RUNTIME_DIR=$runtime_dir"`,
+		`-e "SWARMD_LOG_DIR=$log_dir"`,
+		`-e "HOME=/nonexistent"`,
 		`export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"`,
 		`tailscale_proxy_addr=`,
 		`desktop_port=`,
@@ -465,8 +471,10 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 			t.Fatalf("installer script missing %q\n%s", needle, script)
 		}
 	}
-	if strings.Contains(script, `$HOME/.config`) {
-		t.Fatalf("installer script should not depend on host HOME\n%s", script)
+	for _, forbidden := range []string{`$HOME/.config`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `remote_root/xdg`} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("installer script should not depend on forbidden home/XDG path %q\n%s", forbidden, script)
+		}
 	}
 	for _, unexpected := range []string{
 		`systemctl`,
@@ -488,7 +496,7 @@ func TestRemoteInstallerScriptLaunchesRemoteContainerWithoutPersistence(t *testi
 func TestRemoteBundleStartScriptDeliversSecretsViaSSHStdinWithoutCredentialsFile(t *testing.T) {
 	record := &pebblestore.RemoteDeploySessionRecord{
 		ID:           "remote-child-test",
-		RemoteRoot:   "/var/lib/swarm/remote-deploy/test",
+		RemoteRoot:   "/var/lib/swarmd/remote-deploy/test",
 		SessionToken: "session-secret",
 		InviteToken:  "invite-secret",
 	}
@@ -499,11 +507,11 @@ func TestRemoteBundleStartScriptDeliversSecretsViaSSHStdinWithoutCredentialsFile
 	}
 	for _, needle := range []string{
 		`umask 077`,
-		`remote_dir='/var/lib/swarm/remote-deploy/test'`,
-		`config_path='/var/lib/swarm/remote-deploy/test/config/swarm/swarm.conf'`,
-		`bootstrap_secret_path='/var/lib/swarm/remote-deploy/test/config/swarm/remote-deploy-bootstrap.secret'`,
-		`installer_path='/var/lib/swarm/remote-deploy/test/install-remote-child.sh'`,
-		`legacy_credentials_file='/var/lib/swarm/remote-deploy/test/remote-child.credentials.env'`,
+		`remote_dir='/var/lib/swarmd/remote-deploy/test'`,
+		`config_path='/etc/swarmd/remote-deploy/test/swarm.conf'`,
+		`bootstrap_secret_path='/etc/swarmd/remote-deploy/test/remote-deploy-bootstrap.secret'`,
+		`installer_path='/var/lib/swarmd/remote-deploy/test/install-remote-child.sh'`,
+		`legacy_credentials_file='/var/lib/swarmd/remote-deploy/test/remote-child.credentials.env'`,
 		`trap 'rm -f "$installer_path" "$legacy_credentials_file" "${config_tmp:-}" "${bootstrap_secret_tmp:-}"' EXIT`,
 		`cat > "$config_tmp" <<'SWARM_REMOTE_CONFIG_EOF'`,
 		childCfgText,
@@ -563,7 +571,7 @@ func TestRemoteInstallerScriptPullsAndVerifiesProductionRegistryDigestWithoutArc
 	record := pebblestore.RemoteDeploySessionRecord{
 		ID:            "remote-child-test",
 		Name:          "remote-child",
-		RemoteRoot:    "/var/lib/swarm/remote-deploy/test",
+		RemoteRoot:    "/var/lib/swarmd/remote-deploy/test",
 		RemoteRuntime: "docker",
 		ImageRef:      "ghcr.io/swarm-agent/swarm@sha256:abc123",
 		SudoMode:      "sudo",
@@ -812,7 +820,7 @@ func TestReconcileAlwaysOnRemoteSessionsRestartsStoppedRemoteContainer(t *testin
 		Status:           "attached",
 		AlwaysOn:         true,
 		SSHSessionTarget: "test-ssh",
-		RemoteRoot:       "/tmp/swarm-remote-always-on",
+		RemoteRoot:       "/var/lib/swarmd/remote-deploy/remote-always-on-1",
 		RemoteRuntime:    "docker",
 		SSHReachable:     true,
 	})
@@ -832,8 +840,14 @@ func TestReconcileAlwaysOnRemoteSessionsRestartsStoppedRemoteContainer(t *testin
 		case strings.Contains(script, "REMOTE_ACTIVE="):
 			return "REMOTE_ACTIVE=0\n", nil
 		case strings.Contains(script, "REMOTE_ALWAYS_ON_RESTARTED=1"):
-			if !strings.Contains(script, "run-remote-child.sh") {
+			if !strings.Contains(script, "/var/lib/swarmd/remote-deploy/remote-always-on-1/run-remote-child.sh") {
 				t.Fatalf("restart script did not use existing run script: %s", script)
+			}
+			if !strings.Contains(script, "/run/swarmd/remote-deploy/remote-always-on-1/run-remote-child.pid") {
+				t.Fatalf("restart script did not use runtime PID path: %s", script)
+			}
+			if strings.Contains(script, "/var/lib/swarmd/remote-deploy/remote-always-on-1/run-remote-child.pid") {
+				t.Fatalf("restart script used data root for PID file: %s", script)
 			}
 			return "REMOTE_ALWAYS_ON_RESTARTED=1\n", nil
 		default:
@@ -990,7 +1004,7 @@ func TestPrepareRemoteBundleExcludesGeneratedConfigSecretsAndScripts(t *testing.
 		ID:           "remote-test-1",
 		SessionToken: "secret",
 		InviteToken:  "invite",
-		RemoteRoot:   "/var/lib/swarm/remote-deploy/test",
+		RemoteRoot:   "/var/lib/swarmd/remote-deploy/test",
 		Payloads: []pebblestore.RemoteDeployPayloadRecord{{
 			ArchiveName: "payload-01.tar.gz",
 			SourcePath:  sourceDir,

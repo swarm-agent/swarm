@@ -2,7 +2,6 @@
 import fs from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { promisify } from 'node:util'
@@ -85,7 +84,7 @@ TTFAI existing child probe:
                                  SSH target that hosts the remote child container; verifies child DB evidence after the run.
 
 Browser/artifacts:
-  --artifact-dir <path>          Default: tmp/remote-deploy-ui-diagnostics/<timestamp>.
+  --artifact-dir <path>          Default: /var/log/swarmd/remote-deploy-ui-diagnostics/<timestamp>.
   --browser-executable <path>    Use a system browser executable.
   --headful                      Show the browser window.
   --timeout-ms <ms>              Overall timeout. Default: 900000.
@@ -307,8 +306,7 @@ function timestamp() {
 }
 
 function defaultConfigPath() {
-  const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
-  return path.join(configHome, 'swarm', 'swarm.conf')
+  return '/etc/swarmd/swarm.conf'
 }
 
 function parseConfig(text) {
@@ -347,7 +345,7 @@ async function resolveDesktopURL(opts) {
 }
 
 function defaultArtifactDir() {
-  return path.join(ROOT_DIR, 'tmp', 'remote-deploy-ui-diagnostics', timestamp())
+  return path.join('/var/log/swarmd/remote-deploy-ui-diagnostics', timestamp())
 }
 
 function requireFromWebPackage(name) {
@@ -730,6 +728,18 @@ function remoteContainerNameForSessionID(sessionID) {
   return slug ? `swarm-remote-child-${slug}` : ''
 }
 
+function remoteDeployStoragePaths(sessionID) {
+  const slug = sanitizeRemoteDeploySlug(sessionID)
+  return {
+    root: slug ? `/var/lib/swarmd/remote-deploy/${slug}` : '',
+    configDir: slug ? `/etc/swarmd/remote-deploy/${slug}` : '',
+    cacheDir: slug ? `/var/cache/swarmd/remote-deploy/${slug}` : '',
+    runtimeDir: slug ? `/run/swarmd/remote-deploy/${slug}` : '',
+    logDir: slug ? `/var/log/swarmd/remote-deploy/${slug}` : '',
+    dataDir: slug ? `/var/lib/swarmd/remote-deploy/${slug}/data/swarmd` : '',
+  }
+}
+
 async function verifyTTFAIRemoteChildEvidence(opts, probe, artifactDir) {
   const sshTarget = String(opts.ttfaiVerifySSHTarget || '').trim()
   const deploymentID = String(probe?.target?.deployment_id || probe?.remote_deploy_session?.id || '').trim()
@@ -747,6 +757,7 @@ async function verifyTTFAIRemoteChildEvidence(opts, probe, artifactDir) {
     return { verified: false, skipped: false, reason: 'unable to derive remote child container name' }
   }
   const evidencePath = path.join(artifactDir, 'ttfai-remote-evidence.txt')
+  const storagePaths = remoteDeployStoragePaths(deploymentID)
   const checks = [
     ['session_id', sessionID],
     ['run_id', runID],
@@ -761,7 +772,8 @@ async function verifyTTFAIRemoteChildEvidence(opts, probe, artifactDir) {
   ].join('\n')
   const checkCalls = checks.map(([label, value]) => `check ${shellQuote(label)} ${shellQuote(value)}`)
   const childEvidenceScript = [
-    `db=/var/lib/swarm/rd/${String(deploymentID).replace(/"/g, '')}/state/swarmd/swarmd.pebble`,
+    `for p in ${['root', 'configDir', 'cacheDir', 'runtimeDir', 'logDir', 'dataDir'].map((key) => shellQuote(storagePaths[key])).join(' ')}; do echo storage_path=$p; test -e "$p" && echo storage_exists=$p || echo storage_missing=$p; done`,
+    `db=${shellQuote(path.posix.join(storagePaths.dataDir, 'swarmd.pebble'))}`,
     'echo db=$db',
     'check() {',
     '  label="$1"',

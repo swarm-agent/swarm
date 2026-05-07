@@ -121,13 +121,78 @@ func ensureTmpfilesConfig(roots storagecontract.Roots) error {
 	uid, gid := installOwnerIDs()
 	content := fmt.Sprintf("d /run/swarmd 0700 %s %s -\nd /run/swarmd/dev 0700 %s %s -\nd /run/swarmd/ports 0700 %s %s -\n", uid, gid, uid, gid, uid, gid)
 	path := filepath.Join(string(filepath.Separator), "etc", "tmpfiles.d", "swarmd.conf")
+	return installTextFileIfChanged(path, content, 0o644, "tmpfiles config")
+}
+
+func EnsureSystemdServiceUnit() error {
+	if os.Getenv("SWARM_SKIP_SYSTEMD_UNIT") == "1" {
+		return nil
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return nil
+	}
+	roots, err := storagecontract.ResolveRoots(storagecontract.Options{})
+	if err != nil {
+		return err
+	}
+	content := renderSystemdServiceUnit(roots)
+	path := filepath.Join(string(filepath.Separator), "etc", "systemd", "system", "swarm.service")
+	if err := installTextFileIfChanged(path, content, 0o644, "systemd service unit"); err != nil {
+		return err
+	}
+	if err := runPrivilegedCommand("systemctl", "daemon-reload"); err != nil && os.Geteuid() == 0 {
+		return fmt.Errorf("reload systemd after service unit update: %w", err)
+	}
+	return nil
+}
+
+func renderSystemdServiceUnit(roots storagecontract.Roots) string {
+	launcherPath := filepath.Join(systemBinDir(), "swarm")
+	uid, gid := installOwnerIDs()
+	return fmt.Sprintf(`[Unit]
+Description=Swarm daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%s
+Group=%s
+ExecStart=%s server run
+Restart=on-failure
+RestartSec=2
+StateDirectory=swarmd
+CacheDirectory=swarmd
+RuntimeDirectory=swarmd
+ConfigurationDirectory=swarmd
+LogsDirectory=swarmd
+Environment=SWARM_SYSTEMD_SCOPE=system
+Environment=SWARM_SYSTEMD_UNIT=swarm.service
+Environment=SWARMD_DATA_DIR=%s
+Environment=SWARMD_CACHE_DIR=%s
+Environment=SWARMD_RUNTIME_DIR=%s
+Environment=SWARMD_CONFIG_DIR=%s
+Environment=SWARMD_LOG_DIR=%s
+WorkingDirectory=/
+
+[Install]
+WantedBy=multi-user.target
+`, uid, gid, launcherPath, roots.DataDir, roots.CacheDir, roots.RuntimeDir, roots.ConfigDir, roots.LogsDir)
+}
+
+func installTextFileIfChanged(path, content string, mode os.FileMode, label string) error {
 	if existing, err := os.ReadFile(path); err == nil && string(existing) == content {
 		return nil
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err == nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := runPrivilegedCommand("install", "-d", "-m", "0755", filepath.Dir(path)); err != nil {
+			return fmt.Errorf("create %s parent %q: %w", label, filepath.Dir(path), err)
+		}
+	}
+	if err := os.WriteFile(path, []byte(content), mode); err == nil {
 		return nil
 	}
-	tmp, err := os.CreateTemp("", "swarmd-tmpfiles-*")
+	tmp, err := os.CreateTemp("", "swarmd-config-*")
 	if err != nil {
 		return err
 	}
@@ -142,8 +207,8 @@ func ensureTmpfilesConfig(roots storagecontract.Roots) error {
 		return err
 	}
 	defer os.Remove(tmpPath)
-	if err := runPrivilegedCommand("install", "-m", "0644", tmpPath, path); err != nil {
-		return fmt.Errorf("provision tmpfiles config %q: %w", path, err)
+	if err := runPrivilegedCommand("install", "-m", fmt.Sprintf("%04o", mode.Perm()), tmpPath, path); err != nil {
+		return fmt.Errorf("provision %s %q: %w", label, path, err)
 	}
 	return nil
 }

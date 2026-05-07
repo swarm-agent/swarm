@@ -167,6 +167,7 @@ provision_system_paths() {
   provision_system_dir 0755 /usr/local/bin
   provision_system_dir 0755 /usr/local/share
   provision_system_dir 0755 "/etc"/tmpfiles.d
+  provision_system_dir 0755 "/etc"/systemd/system
 
   provision_owned_dir 0755 /usr/local/share/swarm/bin
   provision_owned_dir 0755 /usr/local/share/swarm/libexec

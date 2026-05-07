@@ -157,6 +157,69 @@ EOF
   rm -f "${tmp_path}"
 }
 
+swarm_provision_systemd_service_unit() {
+  if [[ "${SWARM_SKIP_SYSTEMD_UNIT:-}" == "1" ]]; then
+    return 0
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return 0
+  fi
+  local target_path tmp_path swarm_bin data_root cache_root runtime_root config_root log_root owner
+  target_path="/etc"/systemd/system/swarm.service
+  tmp_path="$(mktemp "${TMPDIR:-/tmp}/swarmd-service.XXXXXX")"
+  swarm_bin="$(swarm_lane_bin_dir main)/swarm"
+  owner="$(swarm_current_owner_spec)"
+  data_root="$(swarm_daemon_data_root main)"
+  cache_root="/var/cache/swarmd"
+  runtime_root="$(swarm_daemon_runtime_root main)"
+  config_root="$(swarm_daemon_config_root)"
+  log_root="$(swarm_daemon_log_root main)"
+  cat >"${tmp_path}" <<EOF
+[Unit]
+Description=Swarm daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${owner%:*}
+Group=${owner#*:}
+ExecStart=${swarm_bin} server run
+Restart=on-failure
+RestartSec=2
+StateDirectory=swarmd
+CacheDirectory=swarmd
+RuntimeDirectory=swarmd
+ConfigurationDirectory=swarmd
+LogsDirectory=swarmd
+Environment=SWARM_SYSTEMD_SCOPE=system
+Environment=SWARM_SYSTEMD_UNIT=swarm.service
+Environment=SWARMD_DATA_DIR=${data_root}
+Environment=SWARMD_CACHE_DIR=${cache_root}
+Environment=SWARMD_RUNTIME_DIR=${runtime_root}
+Environment=SWARMD_CONFIG_DIR=${config_root}
+Environment=SWARMD_LOG_DIR=${log_root}
+WorkingDirectory=/
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  if [[ -f "${target_path}" ]] && cmp -s "${tmp_path}" "${target_path}"; then
+    rm -f "${tmp_path}"
+    return 0
+  fi
+  if ! swarm_run_privileged install -m 0644 "${tmp_path}" "${target_path}"; then
+    rm -f "${tmp_path}"
+    return 1
+  fi
+  rm -f "${tmp_path}"
+  if [[ "$(id -u)" == "0" ]]; then
+    swarm_run_privileged systemctl daemon-reload
+  else
+    swarm_run_privileged systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+}
+
 swarm_provision_system_paths() {
   local lane="${1:-main}"
   local data_root runtime_root log_root
@@ -167,6 +230,7 @@ swarm_provision_system_paths() {
   swarm_provision_system_dir 0755 "/usr/local/bin"
   swarm_provision_system_dir 0755 "/usr/local/share"
   swarm_provision_system_dir 0755 "/etc"/tmpfiles.d
+  swarm_provision_system_dir 0755 "/etc"/systemd/system
 
   swarm_provision_owned_dir 0755 "$(swarm_lane_binary_root)"
   swarm_provision_owned_dir 0755 "$(swarm_lane_tool_bin_dir)"
@@ -181,6 +245,7 @@ swarm_provision_system_paths() {
   swarm_provision_owned_dir 0755 "${log_root}"
   swarm_provision_owned_dir 0700 "$(swarm_daemon_ports_root)"
   swarm_provision_tmpfiles_config
+  swarm_provision_systemd_service_unit
 }
 
 swarm_startup_config_path() {

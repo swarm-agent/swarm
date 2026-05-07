@@ -117,6 +117,9 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := launcher.EnsureSystemdServiceUnit(); err != nil {
+		return err
+	}
 	fmt.Println("installed launchers:")
 	for _, name := range []string{"swarm", "swarmdev", "rebuild", "swarmsetup"} {
 		target := report.Links[name]

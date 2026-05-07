@@ -58,6 +58,12 @@ const (
 	remoteContainerRuntimeUID       = "65534"
 	remoteContainerRuntimeGID       = "65534"
 	remoteAlwaysOnPollInterval      = 5 * time.Second
+	remoteSystemDataRoot            = "/var/lib/swarmd"
+	remoteSystemConfigRoot          = "/etc/swarmd"
+	remoteSystemCacheRoot           = "/var/cache/swarmd"
+	remoteSystemRuntimeRoot         = "/run/swarmd"
+	remoteSystemLogsRoot            = "/var/log/swarmd"
+	remoteDeploySystemDir           = "remote-deploy"
 )
 
 var remoteSSHCommandRunner = runSSHCommand
@@ -297,6 +303,25 @@ type remoteRuntimeArtifact struct {
 	RuntimeMount       bool
 }
 
+type remoteStoragePaths struct {
+	SessionRoot           string
+	ConfigDir             string
+	CacheDir              string
+	LogsDir               string
+	RuntimeDir            string
+	DataDir               string
+	TailscaleStateDir     string
+	SwarmdDataDir         string
+	StartupConfigPath     string
+	BootstrapSecretPath   string
+	LogFilePath           string
+	StartScriptPath       string
+	BackupStartScriptPath string
+	PIDFilePath           string
+	RuntimeMountRoot      string
+	LockPath              string
+}
+
 type remotePairingTransport struct {
 	Kind    string   `json:"kind,omitempty"`
 	Primary string   `json:"primary,omitempty"`
@@ -506,12 +531,13 @@ func (s *Service) Create(ctx context.Context, input CreateSessionInput) (Session
 	}
 	sessionID = sessionID + "-" + shortToken(4)
 	stepStartedAt = time.Now()
-	remoteRuntime, systemdAvailable, sudoMode, remoteHome, remoteNetworkCandidates, remoteAvailableBytes, err := s.inspectRemoteHost(ctx, sshTarget, input.RemoteRuntime)
+	remoteRuntime, systemdAvailable, sudoMode, remoteNetworkCandidates, err := s.inspectRemoteHost(ctx, sshTarget, input.RemoteRuntime)
+	remoteAvailableBytes := int64(0)
 	logRemoteDeployTiming("create.inspect_remote_host", stepStartedAt, err, "session_id", sessionID, "ssh_target", sshTarget, "systemd", strconv.FormatBool(systemdAvailable), "sudo_mode", sudoMode)
 	if err != nil {
 		return Session{}, formatCreatePreflightError(sshTarget, err)
 	}
-	remoteRoot := remoteRootForHome(remoteHome, sessionID)
+	remoteRoot := remoteRoot(sessionID)
 	stepStartedAt = time.Now()
 	if err := s.checkRemoteInstallCollision(ctx, sshTarget, remoteRoot); err != nil {
 		logRemoteDeployTiming("create.check_remote_install_collision", stepStartedAt, err, "session_id", sessionID, "ssh_target", sshTarget)
@@ -1905,9 +1931,10 @@ func remoteProbeSSHReachable(ctx context.Context, record pebblestore.RemoteDeplo
 }
 
 func restartRemoteSessionContainer(ctx context.Context, record pebblestore.RemoteDeploySessionRecord) error {
-	startScript := filepath.ToSlash(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "run-remote-child.sh"))
-	pidFile := filepath.ToSlash(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "run-remote-child.pid"))
-	logFile := remoteServiceLogPath(record)
+	storagePaths := remoteStorageForRoot(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)))
+	startScript := storagePaths.StartScriptPath
+	pidFile := storagePaths.PIDFilePath
+	logFile := storagePaths.LogFilePath
 	useSudo := "0"
 	if strings.TrimSpace(record.SudoMode) == "sudo" {
 		useSudo = "1"
@@ -2649,15 +2676,12 @@ func (s *Service) detectBuilderRuntime(ctx context.Context, preferredRuntime str
 	return "", fmt.Errorf("install Podman or Docker to build remote child artifacts")
 }
 
-func (s *Service) inspectRemoteHost(ctx context.Context, sshTarget, preferredRuntime string) (runtimeName string, systemdAvailable bool, sudoMode string, remoteHome string, remoteNetworkCandidates []string, remoteAvailableBytes int64, err error) {
+func (s *Service) inspectRemoteHost(ctx context.Context, sshTarget, preferredRuntime string) (runtimeName string, systemdAvailable bool, sudoMode string, remoteNetworkCandidates []string, err error) {
 	selectedRuntime := normalizeRemoteDeployRuntime(preferredRuntime)
 	checkCmd := fmt.Sprintf(`set -eu
 runtime=%s
 if command -v systemctl >/dev/null 2>&1; then systemd=1; else systemd=0; fi
 sudo_mode="none"
-remote_home="${HOME:-}"
-if [ -z "$remote_home" ]; then remote_home="$(cd && pwd)"; fi
-if [ -z "$remote_home" ] || [ "${remote_home#/}" = "$remote_home" ]; then echo "remote home directory missing" >&2; exit 41; fi
 if ! command -v "$runtime" >/dev/null 2>&1; then
   echo "REMOTE_RUNTIME_MISSING=$runtime"
   exit 42
@@ -2670,19 +2694,9 @@ if ! "$runtime" --version >/dev/null 2>&1 || ! "$runtime" info >/dev/null 2>&1; 
   echo "REMOTE_RUNTIME_UNUSABLE=$runtime"
   exit 43
 fi
-remote_available_bytes=""
-if command -v df >/dev/null 2>&1; then
-  remote_available_kb="$(df -Pk "$remote_home" 2>/dev/null | awk 'NR==2 {print $4}')"
-  case "$remote_available_kb" in
-    ''|*[!0-9]*) remote_available_bytes="" ;;
-    *) remote_available_bytes="$((remote_available_kb * 1024))" ;;
-  esac
-fi
 printf 'REMOTE_RUNTIME=%%s\n' "$runtime"
 printf 'SYSTEMD_AVAILABLE=%%s\n' "$systemd"
 printf 'SUDO_MODE=%%s\n' "$sudo_mode"
-printf 'REMOTE_HOME=%%s\n' "$remote_home"
-printf 'REMOTE_AVAILABLE_BYTES=%%s\n' "$remote_available_bytes"
 if command -v ip >/dev/null 2>&1; then
   ip -o -4 addr show up 2>/dev/null | while read -r _ iface _ addr _; do
     case "$iface" in
@@ -2706,21 +2720,21 @@ fi
 			if runtimeName == "" {
 				runtimeName = selectedRuntime
 			}
-			return "", false, "", "", nil, 0, fmt.Errorf("remote runtime missing:%s", runtimeName)
+			return "", false, "", nil, fmt.Errorf("remote runtime missing:%s", runtimeName)
 		case strings.Contains(trimmed, "REMOTE_RUNTIME_UNUSABLE="):
 			runtimeName := strings.TrimSpace(strings.TrimPrefix(lastMatchingLine(trimmed, "REMOTE_RUNTIME_UNUSABLE="), "REMOTE_RUNTIME_UNUSABLE="))
 			if runtimeName == "" {
 				runtimeName = selectedRuntime
 			}
-			return "", false, "", "", nil, 0, fmt.Errorf("remote runtime unusable:%s", runtimeName)
+			return "", false, "", nil, fmt.Errorf("remote runtime unusable:%s", runtimeName)
 		case strings.Contains(trimmed, "REMOTE_RUNTIME_REQUIRES_SUDO="):
 			runtimeName := strings.TrimSpace(strings.TrimPrefix(lastMatchingLine(trimmed, "REMOTE_RUNTIME_REQUIRES_SUDO="), "REMOTE_RUNTIME_REQUIRES_SUDO="))
 			if runtimeName == "" {
 				runtimeName = selectedRuntime
 			}
-			return "", false, "", "", nil, 0, fmt.Errorf("remote runtime requires sudo:%s", runtimeName)
+			return "", false, "", nil, fmt.Errorf("remote runtime requires sudo:%s", runtimeName)
 		default:
-			return "", false, "", "", nil, 0, err
+			return "", false, "", nil, err
 		}
 	}
 	for _, line := range strings.Split(out, "\n") {
@@ -2732,24 +2746,14 @@ fi
 			systemdAvailable = strings.TrimSpace(strings.TrimPrefix(line, "SYSTEMD_AVAILABLE=")) == "1"
 		case strings.HasPrefix(line, "SUDO_MODE="):
 			sudoMode = strings.TrimSpace(strings.TrimPrefix(line, "SUDO_MODE="))
-		case strings.HasPrefix(line, "REMOTE_HOME="):
-			remoteHome = strings.TrimSpace(strings.TrimPrefix(line, "REMOTE_HOME="))
-		case strings.HasPrefix(line, "REMOTE_AVAILABLE_BYTES="):
-			available, parseErr := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "REMOTE_AVAILABLE_BYTES=")), 10, 64)
-			if parseErr == nil && available > 0 {
-				remoteAvailableBytes = available
-			}
 		case strings.HasPrefix(line, "REMOTE_NETWORK_CANDIDATE="):
 			remoteNetworkCandidates = append(remoteNetworkCandidates, strings.TrimSpace(strings.TrimPrefix(line, "REMOTE_NETWORK_CANDIDATE=")))
 		}
 	}
 	if runtimeName == "" {
-		return "", false, "", "", nil, 0, fmt.Errorf("remote runtime detection failed")
+		return "", false, "", nil, fmt.Errorf("remote runtime detection failed")
 	}
-	if remoteHome == "" || !strings.HasPrefix(remoteHome, "/") {
-		return "", false, "", "", nil, 0, fmt.Errorf("remote home directory detection failed")
-	}
-	return runtimeName, systemdAvailable, sudoMode, remoteHome, sortRemoteNetworkCandidates(remoteNetworkCandidates), remoteAvailableBytes, nil
+	return runtimeName, systemdAvailable, sudoMode, sortRemoteNetworkCandidates(remoteNetworkCandidates), nil
 }
 
 func (s *Service) checkRemoteInstallCollision(ctx context.Context, sshTarget, remoteRoot string) error {
@@ -2892,7 +2896,7 @@ func formatCreatePreflightError(sshTarget string, err error) error {
 	case strings.Contains(lower, "insufficient disk space at"):
 		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- The remote host does not have enough available disk space for the image and selected payloads.\n- %s\n\nWhat to do\n- Free disk space on the remote host or select fewer workspace payloads.\n- Then rerun preflight.\n\nSuggested commands\n- ssh %s\n- df -h\n- docker system df || true\n- docker system prune   # only if old Docker cache can be safely removed", target, message, target)
 	case strings.Contains(lower, "remote disk capacity unavailable"):
-		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Swarm could not read available disk capacity on the remote host.\n- %s\n\nWhat to do\n- Make sure df is installed and the remote home filesystem is readable.\n- Then rerun preflight.\n\nSuggested commands\n- ssh %s\n- df -Pk ~", target, message, target)
+		return fmt.Errorf("Remote preflight failed for %s.\n\nWhat failed\n- Swarm could not read available disk capacity on the remote host.\n- %s\n\nWhat to do\n- Make sure df is installed and the remote deploy filesystem is readable.\n- Then rerun preflight.\n\nSuggested commands\n- ssh %s\n- df -Pk /var/lib/swarmd", target, message, target)
 	case strings.Contains(lower, "systemd unit already exists:"):
 		unit := strings.TrimSpace(strings.TrimPrefix(message, "remote preflight failed: systemd unit already exists:"))
 		if unit == "" {
@@ -3260,7 +3264,6 @@ func mapSession(record pebblestore.RemoteDeploySessionRecord) Session {
 		Checks: []string{
 			"local runtime bundle assets available",
 			"remote SSH reachable",
-			"remote home directory resolved",
 			"target remote install path does not already exist",
 			"remote container runtime is available",
 		},
@@ -3524,19 +3527,32 @@ func remoteChildListenAddr(record pebblestore.RemoteDeploySessionRecord, transpo
 }
 
 func remoteRoot(sessionID string) string {
-	// Keep the managed remote root short enough for swarmd's Unix socket paths.
-	return filepath.ToSlash(filepath.Join("~/.local/share/swarm/rd", sanitizeSlug(sessionID)))
+	return filepath.ToSlash(filepath.Join(remoteSystemDataRoot, remoteDeploySystemDir, sanitizeSlug(sessionID)))
 }
 
-func remoteRootForHome(homeDir, sessionID string) string {
-	homeDir = strings.TrimSpace(homeDir)
-	if homeDir == "" {
-		return remoteRoot(sessionID)
+func remoteStorageForRoot(root string) remoteStoragePaths {
+	root = filepath.ToSlash(filepath.Clean(firstNonEmpty(strings.TrimSpace(root), remoteRoot("remote-child"))))
+	configDir := filepath.ToSlash(filepath.Join(remoteSystemConfigRoot, remoteDeploySystemDir, filepath.Base(root)))
+	runtimeDir := filepath.ToSlash(filepath.Join(remoteSystemRuntimeRoot, remoteDeploySystemDir, filepath.Base(root)))
+	dataDir := filepath.ToSlash(filepath.Join(root, "data"))
+	return remoteStoragePaths{
+		SessionRoot:           root,
+		ConfigDir:             configDir,
+		CacheDir:              filepath.ToSlash(filepath.Join(remoteSystemCacheRoot, remoteDeploySystemDir, filepath.Base(root))),
+		LogsDir:               filepath.ToSlash(filepath.Join(remoteSystemLogsRoot, remoteDeploySystemDir, filepath.Base(root))),
+		RuntimeDir:            runtimeDir,
+		DataDir:               dataDir,
+		TailscaleStateDir:     filepath.ToSlash(filepath.Join(dataDir, "tailscale")),
+		SwarmdDataDir:         filepath.ToSlash(filepath.Join(dataDir, "swarmd")),
+		StartupConfigPath:     filepath.ToSlash(filepath.Join(configDir, "swarm.conf")),
+		BootstrapSecretPath:   filepath.ToSlash(filepath.Join(configDir, "remote-deploy-bootstrap.secret")),
+		LogFilePath:           filepath.ToSlash(filepath.Join(remoteSystemLogsRoot, remoteDeploySystemDir, filepath.Base(root), "remote-child.log")),
+		StartScriptPath:       filepath.ToSlash(filepath.Join(root, "run-remote-child.sh")),
+		BackupStartScriptPath: filepath.ToSlash(filepath.Join(root, "run-remote-child.sh.swarm-update-old")),
+		PIDFilePath:           filepath.ToSlash(filepath.Join(runtimeDir, "run-remote-child.pid")),
+		RuntimeMountRoot:      filepath.ToSlash(filepath.Join(root, "runtime")),
+		LockPath:              filepath.ToSlash(filepath.Join(runtimeDir, "swarmd.lock")),
 	}
-	if filepath.Clean(homeDir) == "/root" {
-		return filepath.ToSlash(filepath.Join("/var/lib/swarm/rd", sanitizeSlug(sessionID)))
-	}
-	return filepath.ToSlash(filepath.Join(homeDir, ".local", "share", "swarm", "rd", sanitizeSlug(sessionID)))
 }
 
 func copyRemoteRuntimeArtifact(ctx context.Context, runtimeArtifact remoteRuntimeArtifact, record pebblestore.RemoteDeploySessionRecord) error {
@@ -3673,15 +3689,15 @@ func parseRemoteDevReplacementOutput(output string) remoteDevReplacementResult {
 
 func remoteDevReplacementScript(record pebblestore.RemoteDeploySessionRecord, runtimeArtifact remoteRuntimeArtifact) string {
 	remoteRoot := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
-	remoteStateRoot := filepath.ToSlash(filepath.Join(remoteRoot, "state"))
-	tailscaleStateDir := filepath.ToSlash(filepath.Join(remoteStateRoot, "tailscale"))
-	swarmdStateDir := filepath.ToSlash(filepath.Join(remoteStateRoot, "swarmd"))
-	configHome := filepath.ToSlash(filepath.Join(remoteRoot, "config"))
-	logDir := filepath.ToSlash(filepath.Join(remoteRoot, "logs"))
-	logFile := remoteServiceLogPath(record)
-	startScriptPath := filepath.ToSlash(filepath.Join(remoteRoot, "run-remote-child.sh"))
-	backupStartScriptPath := filepath.ToSlash(filepath.Join(remoteRoot, "run-remote-child.sh.swarm-update-old"))
-	pidFile := filepath.ToSlash(filepath.Join(remoteRoot, "run-remote-child.pid"))
+	storagePaths := remoteStorageForRoot(remoteRoot)
+	configHome := storagePaths.ConfigDir
+	tailscaleStateDir := storagePaths.TailscaleStateDir
+	swarmdStateDir := storagePaths.SwarmdDataDir
+	logDir := storagePaths.LogsDir
+	logFile := storagePaths.LogFilePath
+	startScriptPath := storagePaths.StartScriptPath
+	backupStartScriptPath := storagePaths.BackupStartScriptPath
+	pidFile := storagePaths.PIDFilePath
 	transportMode := normalizeRemoteTransportMode(record.TransportMode)
 	runtimeName := normalizeRemoteDeployRuntime(record.RemoteRuntime)
 	remoteAdvertiseHost := firstNonEmpty(strings.TrimSpace(record.RemoteAdvertiseHost), "127.0.0.1")
@@ -3703,7 +3719,7 @@ func remoteDevReplacementScript(record pebblestore.RemoteDeploySessionRecord, ru
 	backupName := containerName + "-swarm-update-old"
 	imageArchiveName := remoteImageArchiveName(transportMode)
 	runtimeArchiveName := remoteRuntimeMountArchiveName()
-	runtimeMountRoot := filepath.ToSlash(filepath.Join(remoteRoot, "runtime"))
+	runtimeMountRoot := storagePaths.RuntimeMountRoot
 	useArchiveImage := "0"
 	if remoteImageUsesArchive(runtimeArtifact.ImageRef) {
 		useArchiveImage = "1"
@@ -3738,6 +3754,8 @@ func remoteDevReplacementScript(record pebblestore.RemoteDeploySessionRecord, ru
 	return fmt.Sprintf(`set -euo pipefail
 remote_root=%s
 config_home=%s
+cache_dir=%s
+runtime_dir=%s
 tailscale_state_dir=%s
 swarmd_state_dir=%s
 log_dir=%s
@@ -3764,7 +3782,7 @@ offline_mode=%s
 ts_hostname=%s
 container_runtime_uid=%s
 container_runtime_gid=%s
-mkdir -p "$remote_root" "$config_home/swarm" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
+mkdir -p "$remote_root" "$config_home" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$runtime_dir" "$cache_dir"
 cd "$remote_root"
 as_root() {
   if [ "$use_sudo" = "1" ]; then
@@ -3866,8 +3884,11 @@ set -euo pipefail
 remote_root=%s
 runtime_mount_root=%s
 config_home=%s
+cache_dir=%s
+runtime_dir=%s
 tailscale_state_dir=%s
 swarmd_state_dir=%s
+log_dir=%s
 runtime=%s
 image_ref=%s
 container_name=%s
@@ -3876,17 +3897,14 @@ tailscale_proxy_addr=%s
 desktop_port=%s
 offline_mode=%s
 ts_hostname=%s
-mkdir -p "$tailscale_state_dir" "$swarmd_state_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
-export XDG_CONFIG_HOME="$config_home"
-export XDG_DATA_HOME="$remote_root/xdg/data"
-export XDG_STATE_HOME="$remote_root/xdg/state"
+mkdir -p "$config_home" "$cache_dir" "$runtime_dir" "$tailscale_state_dir" "$swarmd_state_dir"
 export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"
 export TS_STATE_DIR="$tailscale_state_dir"
 export TS_OUTBOUND_HTTP_PROXY_LISTEN="$tailscale_proxy_addr"
 export TS_TUN_MODE=userspace-networking
 export SWARM_TAILSCALE_OUTBOUND_PROXY="http://$tailscale_proxy_addr"
 export SWARMD_DATA_DIR="$swarmd_state_dir"
-export SWARMD_LOCK_PATH="$swarmd_state_dir/swarmd.lock"
+export SWARMD_LOCK_PATH="$runtime_dir/swarmd.lock"
 export SWARMD_LISTEN="$listen_addr"
 export SWARM_DESKTOP_PORT="$desktop_port"
 export SWARM_CONTAINER_OFFLINE="$offline_mode"
@@ -3898,16 +3916,18 @@ else
   runtime_bin=docker
 fi
 run_args=(run --rm --name "$container_name" --network host
-  -e "XDG_CONFIG_HOME=$config_home"
-  -e "XDG_DATA_HOME=$remote_root/xdg/data"
-  -e "XDG_STATE_HOME=$remote_root/xdg/state"
+  -e "SWARMD_CONFIG_DIR=$config_home"
+  -e "SWARMD_DATA_DIR=$swarmd_state_dir"
+  -e "SWARMD_CACHE_DIR=$cache_dir"
+  -e "SWARMD_RUNTIME_DIR=$runtime_dir"
+  -e "SWARMD_LOG_DIR=$log_dir"
+  -e "SWARMD_LOCK_PATH=$runtime_dir/swarmd.lock"
+  -e "HOME=/nonexistent"
   -e "TS_SOCKET=$tailscale_state_dir/tailscaled.sock"
   -e "TS_STATE_DIR=$tailscale_state_dir"
   -e "TS_OUTBOUND_HTTP_PROXY_LISTEN=$tailscale_proxy_addr"
   -e "TS_TUN_MODE=userspace-networking"
   -e "SWARM_TAILSCALE_OUTBOUND_PROXY=http://$tailscale_proxy_addr"
-  -e "SWARMD_DATA_DIR=$swarmd_state_dir"
-  -e "SWARMD_LOCK_PATH=$swarmd_state_dir/swarmd.lock"
   -e "SWARMD_LISTEN=$listen_addr"
   -e "SWARM_DESKTOP_PORT=$desktop_port"
   -e "SWARM_CONTAINER_OFFLINE=$offline_mode"
@@ -3915,6 +3935,10 @@ run_args=(run --rm --name "$container_name" --network host
   -e "SWARM_STARTUP_MODE=box"
 )
 run_args+=(--volume "$remote_root:$remote_root")
+run_args+=(--volume "$config_home:$config_home")
+run_args+=(--volume "$cache_dir:$cache_dir")
+run_args+=(--volume "$runtime_dir:$runtime_dir")
+run_args+=(--volume "$log_dir:$log_dir")
 if [ -x "$runtime_mount_root/bin/swarmd" ]; then
   run_args+=(--volume "$runtime_mount_root/bin:/mnt/swarm/bin:ro")
   run_args+=(-e "SWARM_BIN_DIR=/mnt/swarm/bin")
@@ -4017,19 +4041,22 @@ rm -f "$backup_start_script"
 printf 'REMOTE_UPDATE_STATE=replaced\n'
 printf '%s=%%s\n' "$remote_url"
 printf 'REMOTE_UPDATE_ENDPOINT=%%s\n' "$remote_url"
-`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(backupStartScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(imageArchiveName), shellQuote(runtimeArchiveName), shellQuote(runtimeMountRoot), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(backupName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), shellQuote(remoteContainerRuntimeUID), shellQuote(remoteContainerRuntimeGID), imageVerification, shellQuote(remoteRoot), shellQuote(runtimeMountRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(storagePaths.CacheDir), shellQuote(storagePaths.RuntimeDir), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(backupStartScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(imageArchiveName), shellQuote(runtimeArchiveName), shellQuote(runtimeMountRoot), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(backupName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), shellQuote(remoteContainerRuntimeUID), shellQuote(remoteContainerRuntimeGID), imageVerification, shellQuote(remoteRoot), shellQuote(runtimeMountRoot), shellQuote(configHome), shellQuote(storagePaths.CacheDir), shellQuote(storagePaths.RuntimeDir), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(runtimeArtifact.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
 }
 
 func remoteStartupConfigPath(record pebblestore.RemoteDeploySessionRecord) string {
-	return filepath.ToSlash(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "config", "swarm", "swarm.conf"))
+	paths := remoteStorageForRoot(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)))
+	return paths.StartupConfigPath
 }
 
 func remoteBootstrapSecretPath(record pebblestore.RemoteDeploySessionRecord) string {
-	return filepath.ToSlash(startupconfig.RemoteDeployBootstrapSecretPath(remoteStartupConfigPath(record)))
+	paths := remoteStorageForRoot(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)))
+	return paths.BootstrapSecretPath
 }
 
 func remoteServiceLogPath(record pebblestore.RemoteDeploySessionRecord) string {
-	return filepath.ToSlash(filepath.Join(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)), "logs", "remote-child.log"))
+	paths := remoteStorageForRoot(firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID)))
+	return paths.LogFilePath
 }
 
 func normalizeRemoteDeployRuntime(value string) string {
@@ -5391,9 +5418,9 @@ func shortToken(size int) string {
 
 func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string {
 	remoteRoot := firstNonEmpty(strings.TrimSpace(record.RemoteRoot), remoteRoot(record.ID))
+	storagePaths := remoteStorageForRoot(remoteRoot)
 	legacyCredentialsFile := filepath.ToSlash(filepath.Join(remoteRoot, legacyRemoteCredentialsFileName))
-	bootstrapSecretFile := remoteBootstrapSecretPath(record)
-	remoteStateRoot := filepath.ToSlash(filepath.Join(remoteRoot, "state"))
+	bootstrapSecretFile := storagePaths.BootstrapSecretPath
 	transportMode := normalizeRemoteTransportMode(record.TransportMode)
 	runtimeName := normalizeRemoteDeployRuntime(record.RemoteRuntime)
 	if runtimeName == "" {
@@ -5410,16 +5437,16 @@ func remoteInstallerScript(record pebblestore.RemoteDeploySessionRecord) string 
 		offlineMode = "1"
 		bootstrapOutputPrefix = "SWARM_REMOTE_URL"
 	}
-	tailscaleStateDir := filepath.ToSlash(filepath.Join(remoteStateRoot, "tailscale"))
-	swarmdStateDir := filepath.ToSlash(filepath.Join(remoteStateRoot, "swarmd"))
-	configHome := filepath.ToSlash(filepath.Join(remoteRoot, "config"))
-	logDir := filepath.ToSlash(filepath.Join(remoteRoot, "logs"))
-	logFile := filepath.ToSlash(filepath.Join(logDir, "remote-child.log"))
-	startScriptPath := filepath.ToSlash(filepath.Join(remoteRoot, "run-remote-child.sh"))
-	pidFile := filepath.ToSlash(filepath.Join(remoteRoot, "run-remote-child.pid"))
+	configHome := storagePaths.ConfigDir
+	tailscaleStateDir := storagePaths.TailscaleStateDir
+	swarmdStateDir := storagePaths.SwarmdDataDir
+	logDir := storagePaths.LogsDir
+	logFile := storagePaths.LogFilePath
+	startScriptPath := storagePaths.StartScriptPath
+	pidFile := storagePaths.PIDFilePath
 	imageArchiveName := remoteImageArchiveName(transportMode)
 	runtimeArchiveName := remoteRuntimeMountArchiveName()
-	runtimeMountRoot := filepath.ToSlash(filepath.Join(remoteRoot, "runtime"))
+	runtimeMountRoot := storagePaths.RuntimeMountRoot
 	useArchiveImage := "0"
 	imageVerification := ""
 	if remoteImageUsesArchive(record.ImageRef) {
@@ -5471,9 +5498,10 @@ set -euo pipefail
 
 remote_root=%s
 config_home=%s
+cache_dir=%s
+runtime_dir=%s
 legacy_credentials_file=%s
 bootstrap_secret_file=%s
-state_root=%s
 tailscale_state_dir=%s
 swarmd_state_dir=%s
 log_dir=%s
@@ -5573,15 +5601,15 @@ log_timer_step() {
 }
 
 step_started_ms="$(now_ms)"
-mkdir -p "$remote_root" "$config_home/swarm" "$state_root" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
-as_root chown -R 65534:65534 "$config_home" "$remote_root/xdg" "$swarmd_state_dir" >/dev/null 2>&1 || true
-as_root chmod 0755 "$remote_root" "$state_root" "$remote_root/xdg" "$remote_root/xdg/data" "$remote_root/xdg/state" >/dev/null 2>&1 || true
-as_root chmod 0700 "$config_home" "$config_home/swarm" "$swarmd_state_dir" >/dev/null 2>&1 || true
-if ! as_root test -f "$config_home/swarm/swarm.conf"; then
-  echo "remote startup config missing: $config_home/swarm/swarm.conf" >&2
+mkdir -p "$remote_root" "$config_home" "$cache_dir" "$runtime_dir" "$tailscale_state_dir" "$swarmd_state_dir" "$log_dir"
+as_root chown -R 65534:65534 "$config_home" "$cache_dir" "$runtime_dir" "$swarmd_state_dir" >/dev/null 2>&1 || true
+as_root chmod 0755 "$remote_root" >/dev/null 2>&1 || true
+as_root chmod 0700 "$config_home" "$cache_dir" "$runtime_dir" "$swarmd_state_dir" >/dev/null 2>&1 || true
+if ! as_root test -f "$config_home/swarm.conf"; then
+  echo "remote startup config missing: $config_home/swarm.conf" >&2
   exit 1
 fi
-as_root chmod 0600 "$config_home/swarm/swarm.conf" >/dev/null 2>&1 || true
+as_root chmod 0600 "$config_home/swarm.conf" >/dev/null 2>&1 || true
 if [ -f "$bootstrap_secret_file" ]; then
   as_root chmod 0600 "$bootstrap_secret_file" >/dev/null 2>&1 || true
 fi
@@ -5631,8 +5659,11 @@ set -euo pipefail
 remote_root=%s
 runtime_mount_root=%s
 config_home=%s
+cache_dir=%s
+runtime_dir=%s
 tailscale_state_dir=%s
 swarmd_state_dir=%s
+log_dir=%s
 runtime=%s
 image_ref=%s
 container_name=%s
@@ -5641,17 +5672,14 @@ tailscale_proxy_addr=%s
 desktop_port=%s
 offline_mode=%s
 ts_hostname=%s
-mkdir -p "$tailscale_state_dir" "$swarmd_state_dir" "$remote_root/xdg/data" "$remote_root/xdg/state"
-export XDG_CONFIG_HOME="$config_home"
-export XDG_DATA_HOME="$remote_root/xdg/data"
-export XDG_STATE_HOME="$remote_root/xdg/state"
+mkdir -p "$config_home" "$cache_dir" "$runtime_dir" "$tailscale_state_dir" "$swarmd_state_dir"
 export TS_SOCKET="$tailscale_state_dir/tailscaled.sock"
 export TS_STATE_DIR="$tailscale_state_dir"
 export TS_OUTBOUND_HTTP_PROXY_LISTEN="$tailscale_proxy_addr"
 export TS_TUN_MODE=userspace-networking
 export SWARM_TAILSCALE_OUTBOUND_PROXY="http://$tailscale_proxy_addr"
 export SWARMD_DATA_DIR="$swarmd_state_dir"
-export SWARMD_LOCK_PATH="$swarmd_state_dir/swarmd.lock"
+export SWARMD_LOCK_PATH="$runtime_dir/swarmd.lock"
 export SWARMD_LISTEN="$listen_addr"
 export SWARM_DESKTOP_PORT="$desktop_port"
 export SWARM_CONTAINER_OFFLINE="$offline_mode"
@@ -5668,16 +5696,18 @@ run_args=(
   --rm
   --name "$container_name"
   --network host
-  -e "XDG_CONFIG_HOME=$config_home"
-  -e "XDG_DATA_HOME=$remote_root/xdg/data"
-  -e "XDG_STATE_HOME=$remote_root/xdg/state"
+  -e "SWARMD_CONFIG_DIR=$config_home"
+  -e "SWARMD_DATA_DIR=$swarmd_state_dir"
+  -e "SWARMD_CACHE_DIR=$cache_dir"
+  -e "SWARMD_RUNTIME_DIR=$runtime_dir"
+  -e "SWARMD_LOG_DIR=$log_dir"
+  -e "SWARMD_LOCK_PATH=$runtime_dir/swarmd.lock"
+  -e "HOME=/nonexistent"
   -e "TS_SOCKET=$tailscale_state_dir/tailscaled.sock"
   -e "TS_STATE_DIR=$tailscale_state_dir"
   -e "TS_OUTBOUND_HTTP_PROXY_LISTEN=$tailscale_proxy_addr"
   -e "TS_TUN_MODE=userspace-networking"
   -e "SWARM_TAILSCALE_OUTBOUND_PROXY=http://$tailscale_proxy_addr"
-  -e "SWARMD_DATA_DIR=$swarmd_state_dir"
-  -e "SWARMD_LOCK_PATH=$swarmd_state_dir/swarmd.lock"
   -e "SWARMD_LISTEN=$listen_addr"
   -e "SWARM_DESKTOP_PORT=$desktop_port"
   -e "SWARM_CONTAINER_OFFLINE=$offline_mode"
@@ -5691,6 +5721,10 @@ if [ -n "${SWARM_REMOTE_SYNC_VAULT_PASSWORD:-}" ]; then
   run_args+=(-e SWARM_REMOTE_SYNC_VAULT_PASSWORD)
 fi
 run_args+=(--volume "$remote_root:$remote_root")
+run_args+=(--volume "$config_home:$config_home")
+run_args+=(--volume "$cache_dir:$cache_dir")
+run_args+=(--volume "$runtime_dir:$runtime_dir")
+run_args+=(--volume "$log_dir:$log_dir")
 if [ -x "$runtime_mount_root/bin/swarmd" ]; then
   run_args+=(--volume "$runtime_mount_root/bin:/mnt/swarm/bin:ro")
   run_args+=(-e "SWARM_BIN_DIR=/mnt/swarm/bin")
@@ -5778,7 +5812,7 @@ log_timer_step "wait_for_bootstrap_signal" "$step_started_ms"
 printf '%%s\n' "$log_output"
 printf 'TAILSCALE_AUTH_URL=%%s\n' "$auth_url"
 printf '%s=%%s\n' "$remote_url"
-`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(legacyCredentialsFile), shellQuote(bootstrapSecretFile), shellQuote(remoteStateRoot), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(runtimeArchiveName), shellQuote(runtimeMountRoot), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), shellQuote(remoteContainerRuntimeUID), shellQuote(remoteContainerRuntimeGID), imageVerification, payloadExtract, shellQuote(remoteRoot), shellQuote(runtimeMountRoot), shellQuote(configHome), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
+`, shellQuote(remoteRoot), shellQuote(configHome), shellQuote(storagePaths.CacheDir), shellQuote(storagePaths.RuntimeDir), shellQuote(legacyCredentialsFile), shellQuote(bootstrapSecretFile), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(logFile), shellQuote(startScriptPath), shellQuote(pidFile), shellQuote(useSudo), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(imageArchiveName), shellQuote(runtimeArchiveName), shellQuote(runtimeMountRoot), shellQuote(useArchiveImage), shellQuote(containerName), shellQuote(transportMode), shellQuote(remoteAdvertiseHost), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(peerTransportPort), shellQuote(offlineMode), shellQuote(remoteContainerRuntimeUID), shellQuote(remoteContainerRuntimeGID), imageVerification, payloadExtract, shellQuote(remoteRoot), shellQuote(runtimeMountRoot), shellQuote(configHome), shellQuote(storagePaths.CacheDir), shellQuote(storagePaths.RuntimeDir), shellQuote(tailscaleStateDir), shellQuote(swarmdStateDir), shellQuote(logDir), shellQuote(runtimeName), shellQuote(strings.TrimSpace(record.ImageRef)), shellQuote(containerName), shellQuote(listenAddr), shellQuote(tailscaleProxyAddr), shellQuote(strconv.Itoa(childPorts.Desktop)), shellQuote(offlineMode), shellQuote(remoteTailscaleHostname(record.Name)), mountArgs, bootstrapOutputPrefix)
 }
 
 func remoteBundleStartScript(record *pebblestore.RemoteDeploySessionRecord, childCfgText string, tailscaleAuthKey string, syncVaultPassword string) (string, error) {

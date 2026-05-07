@@ -19,10 +19,10 @@ Options:
   --ssh-target <target>       SSH target to inspect. Optional when the API has a matching session.
   --session-id <id>           Remote deploy session id. Optional; defaults to newest matching session.
   --api-url <url>             Local swarmd API URL. Default: derived from swarm.conf.
-  --config <path>             Local swarm.conf path. Default: $XDG_CONFIG_HOME/swarm/swarm.conf or ~/.config/swarm/swarm.conf.
+  --config <path>             Local swarm.conf path. Default: /etc/swarmd/swarm.conf.
   --runtime <docker|podman|auto>
                               Remote runtime override. Default: session runtime or auto.
-  --artifact-dir <path>       Directory for diagnostic artifacts. Default: tmp/remote-deploy-diagnostics/<timestamp>.
+  --artifact-dir <path>       Directory for diagnostic artifacts. Default: /var/log/swarmd/remote-deploy-diagnostics/<timestamp>.
   --tail-lines <count>        Remote log tail lines. Default: 300.
   --show-auth-url             Print Tailscale auth URLs instead of redacting them.
   --no-refresh                Do not call /v1/deploy/remote/session?refresh=true.
@@ -141,7 +141,7 @@ init_desktop_cookie() {
 
 resolve_defaults() {
   if [[ -z "${CONFIG_PATH}" ]]; then
-    CONFIG_PATH="${XDG_CONFIG_HOME:-${HOME}/.config}/swarm/swarm.conf"
+    CONFIG_PATH="/etc/swarmd/swarm.conf"
   fi
 
   if [[ -z "${API_URL}" ]]; then
@@ -159,8 +159,8 @@ resolve_defaults() {
 
   if [[ -z "${ARTIFACT_DIR}" ]]; then
     local artifact_root
-    artifact_root="${SWARM_REMOTE_DEPLOY_DIAG_ARTIFACT_ROOT:-tmp}"
-    ARTIFACT_DIR="${ROOT_DIR}/${artifact_root}/remote-deploy-diagnostics/$(date -u +%Y%m%dT%H%M%SZ)"
+    artifact_root="${SWARM_REMOTE_DEPLOY_DIAG_ARTIFACT_ROOT:-/var/log/swarmd/remote-deploy-diagnostics}"
+    ARTIFACT_DIR="${artifact_root%/}/$(date -u +%Y%m%dT%H%M%SZ)"
   fi
   mkdir -p "${ARTIFACT_DIR}"
 }
@@ -448,10 +448,9 @@ case "$remote_root" in
   *) remote_root="" ;;
 esac
 if [ -z "$remote_root" ] || [ "$remote_root" = "null" ]; then
-  data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
   for candidate_root in \
-    "${data_home}/swarm/rd/${session_id}" \
-    "${data_home}/swarm/rd/"*"${session_id}"*
+    "/var/lib/swarmd/remote-deploy/${session_id}" \
+    "/var/lib/swarmd/remote-deploy/"*"${session_id}"*
   do
     if [ -d "$candidate_root" ]; then
       remote_root="$candidate_root"
@@ -460,6 +459,14 @@ if [ -z "$remote_root" ] || [ "$remote_root" = "null" ]; then
   done
 fi
 proof REMOTE_ROOT "$remote_root"
+remote_slug="${remote_root##*/}"
+remote_config_dir="/etc/swarmd/remote-deploy/${remote_slug}"
+remote_cache_dir="/var/cache/swarmd/remote-deploy/${remote_slug}"
+remote_log_dir="/var/log/swarmd/remote-deploy/${remote_slug}"
+remote_runtime_dir="/run/swarmd/remote-deploy/${remote_slug}"
+remote_data_dir="${remote_root%/}/data"
+tailscale_state_dir="${remote_data_dir}/tailscale"
+swarmd_data_dir="${remote_data_dir}/swarmd"
 
 section "REMOTE_ROOT_TREE"
 if [ -n "$remote_root" ] && [ -e "$remote_root" ]; then
@@ -470,9 +477,9 @@ else
   printf 'remote root does not exist: %s\n' "$remote_root"
 fi
 
-config_path="${remote_root%/}/config/swarm/swarm.conf"
-section "REMOTE_CONFIG_PATHS"
-for path in "${remote_root%/}/config" "${remote_root%/}/config/swarm" "$config_path"; do
+config_path="${remote_config_dir}/swarm.conf"
+section "REMOTE_STORAGE_PATHS"
+for path in "$remote_config_dir" "$config_path" "$remote_cache_dir" "$remote_runtime_dir" "$remote_log_dir" "$remote_data_dir" "$tailscale_state_dir" "$swarmd_data_dir"; do
   if [ -e "$path" ]; then
     ls -ld "$path" 2>&1 || true
   else
@@ -500,20 +507,20 @@ section "REMOTE_INSTALLER_LOG_MARKERS"
 log_auth_present=0
 log_tailnet_present=0
 log_remote_url_present=0
-if [ -n "$remote_root" ] && [ -d "${remote_root%/}/logs" ]; then
-  find "${remote_root%/}/logs" -maxdepth 1 -type f -printf '%p\n' 2>/dev/null | sort
-  grep -R -E 'TAILSCALE_AUTH_URL=|SWARM_TAILNET_URL=|SWARM_REMOTE_URL=|SWARM_REMOTE_TIMER|NeedsLogin|error|failed|panic' "${remote_root%/}/logs" 2>/dev/null | tail -n "$tail_lines" || true
-  if grep -R -q '^TAILSCALE_AUTH_URL=' "${remote_root%/}/logs" 2>/dev/null; then
+if [ -n "$remote_log_dir" ] && [ -d "$remote_log_dir" ]; then
+  find "$remote_log_dir" -maxdepth 1 -type f -printf '%p\n' 2>/dev/null | sort
+  grep -R -E 'TAILSCALE_AUTH_URL=|SWARM_TAILNET_URL=|SWARM_REMOTE_URL=|SWARM_REMOTE_TIMER|NeedsLogin|error|failed|panic' "$remote_log_dir" 2>/dev/null | tail -n "$tail_lines" || true
+  if grep -R -q '^TAILSCALE_AUTH_URL=' "$remote_log_dir" 2>/dev/null; then
     log_auth_present=1
   fi
-  if grep -R -q '^SWARM_TAILNET_URL=' "${remote_root%/}/logs" 2>/dev/null; then
+  if grep -R -q '^SWARM_TAILNET_URL=' "$remote_log_dir" 2>/dev/null; then
     log_tailnet_present=1
   fi
-  if grep -R -q '^SWARM_REMOTE_URL=' "${remote_root%/}/logs" 2>/dev/null; then
+  if grep -R -q '^SWARM_REMOTE_URL=' "$remote_log_dir" 2>/dev/null; then
     log_remote_url_present=1
   fi
 else
-  printf 'remote log directory missing: %s\n' "${remote_root%/}/logs"
+  printf 'remote log directory missing: %s\n' "$remote_log_dir"
 fi
 proof LOG_AUTH_URL_PRESENT "$log_auth_present"
 proof LOG_TAILNET_URL_PRESENT "$log_tailnet_present"
@@ -562,6 +569,11 @@ section "REMOTE_CHILD_CONTAINER_PROBE"
 if [ -n "$container_name" ]; then
   run_runtime exec \
     -e "SWARM_DIAG_REMOTE_ROOT=$remote_root" \
+    -e "SWARM_DIAG_REMOTE_CONFIG_DIR=$remote_config_dir" \
+    -e "SWARM_DIAG_REMOTE_CACHE_DIR=$remote_cache_dir" \
+    -e "SWARM_DIAG_REMOTE_RUNTIME_DIR=$remote_runtime_dir" \
+    -e "SWARM_DIAG_TAILSCALE_STATE_DIR=$tailscale_state_dir" \
+    -e "SWARM_DIAG_SWARMD_DATA_DIR=$swarmd_data_dir" \
     -e "SWARM_DIAG_MASTER_ENDPOINT=$master_endpoint" \
     "$container_name" sh -lc '
 set -u
@@ -586,8 +598,13 @@ conf_value() {
   " "$path" | tail -n 1
 }
 remote_root="${SWARM_DIAG_REMOTE_ROOT:-}"
+config_dir="${SWARM_DIAG_REMOTE_CONFIG_DIR:-}"
+cache_dir="${SWARM_DIAG_REMOTE_CACHE_DIR:-}"
+runtime_dir="${SWARM_DIAG_REMOTE_RUNTIME_DIR:-}"
+tailscale_state_dir="${SWARM_DIAG_TAILSCALE_STATE_DIR:-}"
+swarmd_data_dir="${SWARM_DIAG_SWARMD_DATA_DIR:-}"
 master_endpoint="${SWARM_DIAG_MASTER_ENDPOINT:-}"
-config_path="${remote_root%/}/config/swarm/swarm.conf"
+config_path="${config_dir%/}/swarm.conf"
 printf "container_user=%s\n" "$(id -un 2>/dev/null || true)"
 printf "container_config_path=%s\n" "$config_path"
 if [ -f "$config_path" ]; then
@@ -600,7 +617,7 @@ else
   proof CONTAINER_CONFIG_FILE 0
 fi
 
-ts_socket="${remote_root%/}/state/tailscale/tailscaled.sock"
+ts_socket="${tailscale_state_dir%/}/tailscaled.sock"
 printf "tailscale_socket=%s\n" "$ts_socket"
 if command -v tailscale >/dev/null 2>&1 && [ -S "$ts_socket" ]; then
   ts_json="$(tailscale --socket="$ts_socket" status --json 2>&1 || true)"
@@ -645,7 +662,7 @@ fi
 proof CHILD_MASTER_READYZ_CURL_EXIT "$child_curl_exit"
 proof CHILD_MASTER_READYZ_HTTP_CODE "$child_http_code"
 
-local_socket="${remote_root%/}/state/swarmd/local-transport/api.sock"
+local_socket="${swarmd_data_dir%/}/local-transport/api.sock"
 local_http_code="000"
 local_curl_exit="0"
 if [ -S "$local_socket" ] && command -v curl >/dev/null 2>&1; then
