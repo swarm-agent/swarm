@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -620,15 +621,9 @@ func TestRemoteSessionCreateUsesRegistryMagicDNSBackend(t *testing.T) {
 	}
 }
 
-func TestRemoteDeploySessionStartForwardsLaunchOnlyTailscaleAuthKey(t *testing.T) {
+func TestRemoteDeploySessionStartIsRetired(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
-	fake := &fakeRemoteDeployService{
-		startResult: remotedeploy.Session{
-			ID:     "remote-start-1",
-			Name:   "remote-child",
-			Status: "waiting_for_approval",
-		},
-	}
+	fake := &fakeRemoteDeployService{}
 	server.SetRemoteDeployService(fake)
 
 	body := bytes.NewBufferString(`{"session_id":"remote-start-1","tailscale_auth_key":"tskey-launch-only"}`)
@@ -637,14 +632,24 @@ func TestRemoteDeploySessionStartForwardsLaunchOnlyTailscaleAuthKey(t *testing.T
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusGone, rec.Body.String())
 	}
-	if fake.lastStartInput.SessionID != "remote-start-1" {
-		t.Fatalf("start session id = %q, want %q", fake.lastStartInput.SessionID, "remote-start-1")
+	if fake.lastStartInput.SessionID != "" || fake.lastStartInput.TailscaleAuthKey != "" {
+		t.Fatalf("retired start path called remote deploy service: %+v", fake.lastStartInput)
 	}
-	if fake.lastStartInput.TailscaleAuthKey != "tskey-launch-only" {
-		t.Fatalf("start tailscale auth key = %q, want %q", fake.lastStartInput.TailscaleAuthKey, "tskey-launch-only")
+	var payload struct {
+		PathID string `json:"path_id"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.PathID != remotedeploy.PathSessionStart {
+		t.Fatalf("path_id = %q, want %q", payload.PathID, remotedeploy.PathSessionStart)
+	}
+	if !strings.Contains(payload.Error, "SSH remote deploy is retired") {
+		t.Fatalf("error = %q, want retired guidance", payload.Error)
 	}
 }
 

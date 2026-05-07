@@ -1544,16 +1544,17 @@ export function AddSwarmModal({ open, onboardingStatus, onOpenChange, onComplete
               <button
                 type="button"
                 data-testid="add-swarm-target-remote"
-                className={optionClassName(launchTarget === 'remote', true)}
-                onClick={() => setLaunchTarget('remote')}
-                disabled={submitting}
+                className={`${optionClassName(false, true)} cursor-not-allowed grayscale`}
+                onClick={() => undefined}
+                disabled
+                aria-disabled="true"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-sm font-semibold text-[var(--app-text)]">Remote over SSH</div>
-                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Ship selected workspaces and config over SSH, then attach back through the selected transport.</div>
+                    <div className="text-sm font-semibold text-[var(--app-text-muted)]">Managed Swarm</div>
+                    <div className="mt-1 text-xs text-[var(--app-text-muted)]">Remote Swarm pairing is replacing SSH deploy. Pairing setup is not enabled in this checkpoint.</div>
                   </div>
-                  {launchTarget === 'remote' ? <Check size={16} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                  <Badge tone="warning">coming next</Badge>
                 </div>
               </button>
             </div>
