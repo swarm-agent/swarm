@@ -10,12 +10,15 @@ import { Select } from '../../../components/ui/select'
 import {
   actOnSwarmLocalContainer,
   deleteSwarmLocalContainers,
+  approveRemoteSwarmPairing,
   fetchDesktopOnboardingStatus,
+  fetchPendingRemoteSwarmPairings,
   fetchSwarmLocalContainers,
   fetchSwarmLocalRuntimeStatus,
   fetchSwarmState,
   pruneMissingSwarmLocalContainers,
   saveDesktopOnboarding,
+  type RemoteSwarmPendingPairing,
   type SwarmLocalContainer,
   type SwarmLocalContainerDeleteResult,
   type SwarmLocalRuntimeStatus,
@@ -201,6 +204,15 @@ function formatTime(value: number): string {
     return 'just now'
   }
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+}
+
+function normalizePairingCode(value: string | null | undefined): string {
+  return String(value ?? '').trim().replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6)
+}
+
+function formatPairingCode(value: string | null | undefined): string {
+  const normalized = normalizePairingCode(value)
+  return normalized.length === 6 ? `${normalized.slice(0, 3)}-${normalized.slice(3)}` : normalized
 }
 
 function deploymentMatchesContainer(deployment: DeployContainerDeployment, container: SwarmLocalContainer): boolean {
@@ -808,6 +820,8 @@ export function DesktopSwarmDashboard() {
   const [localContainers, setLocalContainers] = useState<SwarmLocalContainer[]>([])
   const [deployments, setDeployments] = useState<DeployContainerDeployment[]>([])
   const [remoteSessions, setRemoteSessions] = useState<RemoteDeploySession[]>([])
+  const [pendingPairings, setPendingPairings] = useState<RemoteSwarmPendingPairing[]>([])
+  const [pairingDecisionBusyID, setPairingDecisionBusyID] = useState<string | null>(null)
   const [copyState, setCopyState] = useState<'idle' | 'desktop' | 'peer' | 'error'>('idle')
   const [editingGroupName, setEditingGroupName] = useState(false)
   const [editingLocalName, setEditingLocalName] = useState(false)
@@ -839,15 +853,17 @@ export function DesktopSwarmDashboard() {
     launchedContainers: SwarmLocalContainer[],
     nextDeployments: DeployContainerDeployment[],
     nextRemoteSessions: RemoteDeploySession[],
+    nextPendingPairings: RemoteSwarmPendingPairing[],
   ) => {
     setLocalRuntime(runtimeStatus)
     setLocalContainers(launchedContainers)
     setDeployments(nextDeployments)
     setRemoteSessions(nextRemoteSessions)
+    setPendingPairings(nextPendingPairings)
   }
 
   const refresh = async () => {
-    const [state, onboarding, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions] = await Promise.all([
+    const [state, onboarding, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings] = await Promise.all([
       fetchSwarmState(),
       fetchDesktopOnboardingStatus(),
       getUISettings(),
@@ -855,9 +871,10 @@ export function DesktopSwarmDashboard() {
       fetchSwarmLocalContainers(),
       fetchDeployContainers(),
       fetchRemoteDeploySessions(),
+      fetchPendingRemoteSwarmPairings(),
     ])
     applyCoreDashboardState(state, onboarding, nextUISettings)
-    applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions)
+    applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings)
   }
 
   useEffect(() => {
@@ -955,6 +972,18 @@ export function DesktopSwarmDashboard() {
         }
       })
 
+    void fetchPendingRemoteSwarmPairings()
+      .then((items) => {
+        if (!cancelled) {
+          setPendingPairings(items)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError((current) => current ?? (err instanceof Error ? err.message : 'Failed to load pending pairing requests'))
+        }
+      })
+
     return () => {
       cancelled = true
     }
@@ -983,6 +1012,7 @@ export function DesktopSwarmDashboard() {
   const groupMasterName = group?.members.find((member) => member.swarmID === groupMasterID)?.name || 'Current master'
   const localIsMaster = Boolean(localSwarmID && groupMasterID === localSwarmID && !localIsChild)
   const masterControlsDisabled = loading || busy || localIsChild || Boolean(group && !localIsMaster)
+  const visiblePendingPairings = pendingPairings.filter((item) => item.status === 'pending_approval' || item.status === '')
   const groupNameDirty = groupNameDraft.trim() !== (group?.group.name || '').trim()
   const localNameDirty = localNameDraft.trim() !== localSwarmName.trim()
   const frontendOrigin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -1255,6 +1285,32 @@ export function DesktopSwarmDashboard() {
       setCopyState(kind)
     } catch {
       setCopyState('error')
+    }
+  }
+
+  const handlePairingDecision = async (request: RemoteSwarmPendingPairing, approve: boolean) => {
+    const requestID = request.request_id.trim()
+    if (!requestID) {
+      setError('Pairing request id is missing.')
+      return
+    }
+    setPairingDecisionBusyID(requestID)
+    setError(null)
+    setStatus(null)
+    try {
+      await approveRemoteSwarmPairing({
+        requestID,
+        approve,
+        ceremonyCode: approve ? normalizePairingCode(request.ceremony_code) : undefined,
+        reason: approve ? undefined : 'Rejected from Swarm dashboard',
+      })
+      setPendingPairings((items) => items.filter((item) => item.request_id !== requestID))
+      await refresh()
+      setStatus(approve ? `Approved Managed Swarm ${request.managed_name || request.managed_swarm_id || requestID}.` : `Rejected pairing request ${requestID}.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update pairing request')
+    } finally {
+      setPairingDecisionBusyID(null)
     }
   }
 
@@ -1611,6 +1667,37 @@ export function DesktopSwarmDashboard() {
 
       {error ? <Card data-testid="swarm-dashboard-error" className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
       {status ? <Card data-testid="swarm-dashboard-status" className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
+
+      {visiblePendingPairings.length > 0 ? (
+        <Card data-testid="swarm-pending-pairings" className="border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4">
+          <div className="flex flex-col gap-3">
+            <div>
+              <div className="text-sm font-semibold text-[var(--app-text)]">Pending Managed Swarm request</div>
+              <div className="mt-1 text-sm text-[var(--app-text-muted)]">Confirm the 6-character code on both machines before approving.</div>
+            </div>
+            {visiblePendingPairings.map((request) => {
+              const requestID = request.request_id.trim()
+              const busyRequest = pairingDecisionBusyID === requestID
+              return (
+                <div key={requestID || request.managed_swarm_id || request.managed_name} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div className="min-w-0 space-y-1 text-sm">
+                      <div className="font-medium text-[var(--app-text)]">{request.managed_name || 'Managed Swarm'}</div>
+                      <div className="text-[var(--app-text-muted)]">{request.managed_endpoint || request.managed_swarm_id || requestID}</div>
+                      {request.managed_fingerprint ? <div className="break-all text-xs text-[var(--app-text-muted)]">Fingerprint: {request.managed_fingerprint}</div> : null}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone="warning">{formatPairingCode(request.ceremony_code) || 'No code'}</Badge>
+                      <Button size="sm" variant="outline" disabled={busy || busyRequest} onClick={() => void handlePairingDecision(request, false)}>Reject</Button>
+                      <Button size="sm" disabled={busy || busyRequest || normalizePairingCode(request.ceremony_code).length !== 6} onClick={() => void handlePairingDecision(request, true)}>Approve</Button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </Card>
+      ) : null}
 
       <div className="flex flex-col gap-8">
         <Card className="p-5">

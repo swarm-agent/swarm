@@ -243,6 +243,34 @@ export interface RemoteSwarmPairingStartResult {
   ceremony: RemoteSwarmPairingCeremony
 }
 
+export interface RemoteSwarmPendingPairing {
+  request_id: string
+  status: string
+  manager_swarm_id?: string
+  manager_name?: string
+  manager_endpoint?: string
+  managed_swarm_id?: string
+  managed_name?: string
+  managed_fingerprint?: string
+  managed_endpoint?: string
+  ceremony_code?: string
+  transport_mode?: string
+  created_at?: number
+}
+
+export interface RemoteSwarmPairingApprovalResult {
+  ok?: boolean
+  status: string
+  request_id: string
+  routing?: {
+    managed_swarm_id?: string
+    managed_name?: string
+    backend_url?: string
+    transport_mode?: string
+    container_scope?: string
+  }
+}
+
 export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingStatus> {
   const finish = createDebugTimer('desktop-onboarding-api', 'fetchDesktopOnboardingStatus')
   debugLog('desktop-onboarding-api', 'fetchDesktopOnboardingStatus:request')
@@ -518,6 +546,32 @@ export async function fetchRemoteSwarmCandidates(): Promise<RemoteSwarmCandidate
     candidates: candidates.map(mapRemoteSwarmCandidate),
     count: typeof response.count === 'number' ? response.count : candidates.length,
   }
+}
+
+export async function fetchPendingRemoteSwarmPairings(): Promise<RemoteSwarmPendingPairing[]> {
+  const response = await requestJson<{ ok?: boolean; items?: RemoteSwarmPendingPairing[]; count?: number }>('/v1/swarm/remote-pairing/pending')
+  return Array.isArray(response.items) ? response.items : []
+}
+
+export async function approveRemoteSwarmPairing(input: {
+  requestID: string
+  approve: boolean
+  ceremonyCode?: string
+  reason?: string
+}): Promise<RemoteSwarmPairingApprovalResult> {
+  const response = await requestJson<RemoteSwarmPairingApprovalResult>('/v1/swarm/remote-pairing/approve', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      request_id: input.requestID,
+      approve: input.approve,
+      ceremony_code: input.ceremonyCode,
+      reason: input.reason,
+    }),
+  })
+  return response
 }
 
 export async function startRemoteSwarmPairing(input: {

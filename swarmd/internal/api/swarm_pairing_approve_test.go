@@ -3,12 +3,57 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
+
+func TestSwarmRemotePairingPendingListsManagerApprovalRequests(t *testing.T) {
+	manager := newLocalAuthTestServer(t)
+	manager.remotePairingPending["pair-list-1"] = swarmRemotePairingPendingRequest{
+		ID:                 "pair-list-1",
+		ManagerSwarmID:     "manager-swarm-1",
+		ManagerName:        "Manager A",
+		ManagerEndpoint:    "https://manager-a.example.ts.net",
+		ManagedSwarmID:     "managed-swarm-1",
+		ManagedName:        "Managed B",
+		ManagedFingerprint: "managed-fingerprint",
+		ManagedEndpoint:    "https://managed-b.example.ts.net",
+		CeremonyCode:       "ABC123",
+		TransportMode:      startupconfig.NetworkModeTailscale,
+		CreatedAt:          time.Unix(123, 0),
+	}
+
+	token, expiresAt, err := manager.desktopLocalSessions.Ensure(time.Now())
+	if err != nil {
+		t.Fatalf("ensure desktop local session: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/swarm/remote-pairing/pending", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Origin", "http://127.0.0.1:5555")
+	req.Header.Set("Referer", "http://127.0.0.1:5555/app")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.AddCookie(buildDesktopLocalSessionCookie(token, expiresAt, false))
+	manager.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pending status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response swarmRemotePairingPendingResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode pending response: %v", err)
+	}
+	if !response.OK || response.Count != 1 || len(response.Items) != 1 {
+		t.Fatalf("pending response = %+v", response)
+	}
+	item := response.Items[0]
+	if item.RequestID != "pair-list-1" || item.ManagedName != "Managed B" || item.CeremonyCode != "ABC123" {
+		t.Fatalf("pending item = %+v", item)
+	}
+}
 
 func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *testing.T) {
 	manager := newLocalAuthTestServer(t)

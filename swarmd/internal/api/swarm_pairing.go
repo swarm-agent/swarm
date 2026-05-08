@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -143,6 +144,28 @@ type swarmRemotePairingApprovalResponse struct {
 	Enrollment  swarmruntime.Enrollment     `json:"enrollment,omitempty"`
 	TrustedPeer *swarmruntime.TrustedPeer   `json:"trusted_peer,omitempty"`
 	Routing     *swarmManagedPairingRouting `json:"routing,omitempty"`
+}
+
+type swarmRemotePairingPendingItem struct {
+	RequestID          string                       `json:"request_id"`
+	Status             string                       `json:"status"`
+	ManagerSwarmID     string                       `json:"manager_swarm_id,omitempty"`
+	ManagerName        string                       `json:"manager_name,omitempty"`
+	ManagerEndpoint    string                       `json:"manager_endpoint,omitempty"`
+	ManagedSwarmID     string                       `json:"managed_swarm_id,omitempty"`
+	ManagedName        string                       `json:"managed_name,omitempty"`
+	ManagedFingerprint string                       `json:"managed_fingerprint,omitempty"`
+	ManagedEndpoint    string                       `json:"managed_endpoint,omitempty"`
+	CeremonyCode       string                       `json:"ceremony_code,omitempty"`
+	TransportMode      string                       `json:"transport_mode,omitempty"`
+	Rendezvous         []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
+	CreatedAt          int64                        `json:"created_at,omitempty"`
+}
+
+type swarmRemotePairingPendingResponse struct {
+	OK    bool                            `json:"ok"`
+	Items []swarmRemotePairingPendingItem `json:"items"`
+	Count int                             `json:"count"`
 }
 
 type swarmManagedPairingRouting struct {
@@ -719,6 +742,33 @@ func (s *Server) handleSwarmRemotePairingFinalize(w http.ResponseWriter, r *http
 		"path_id": "swarm.remote_pairing.finalize.v1",
 		"pairing": pairing,
 	})
+}
+
+func (s *Server) handleSwarmRemotePairingPending(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	items := make([]swarmRemotePairingPendingItem, 0, len(s.remotePairingPending))
+	for _, pending := range s.remotePairingPending {
+		items = append(items, swarmRemotePairingPendingItem{
+			RequestID:          pending.ID,
+			Status:             startupconfig.PairingStatePendingApproval,
+			ManagerSwarmID:     pending.ManagerSwarmID,
+			ManagerName:        pending.ManagerName,
+			ManagerEndpoint:    pending.ManagerEndpoint,
+			ManagedSwarmID:     pending.ManagedSwarmID,
+			ManagedName:        pending.ManagedName,
+			ManagedFingerprint: pending.ManagedFingerprint,
+			ManagedEndpoint:    pending.ManagedEndpoint,
+			CeremonyCode:       pending.CeremonyCode,
+			TransportMode:      pending.TransportMode,
+			Rendezvous:         append([]onboardingTransportPayload(nil), pending.ManagedRendezvousTransports...),
+			CreatedAt:          pending.CreatedAt.Unix(),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt < items[j].CreatedAt })
+	writeJSON(w, http.StatusOK, swarmRemotePairingPendingResponse{OK: true, Items: items, Count: len(items)})
 }
 
 func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.Request) {

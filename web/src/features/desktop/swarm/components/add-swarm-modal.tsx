@@ -614,8 +614,8 @@ export function AddSwarmModal({ open, onboardingStatus, initialTarget = 'local',
       setRemoteCeremonyCode(ceremonyCode)
       setRemotePairingResult(result)
       const displayName = result.ceremony.managed_name || result.request.managed_name || pairingName
-      setStatus(`Pairing request sent to ${displayName}. On the managed swarm, approve the pending request after confirming code ${formatPairingCode(ceremonyCode)}.`)
-      await onComplete(`Pairing request sent to ${displayName}. Approve it on the managed swarm to finish adding the Managed Swarm.`)
+      setStatus(`Pairing request sent to ${displayName}. Approve it on the Manager swarm after confirming code ${formatPairingCode(ceremonyCode)}.`)
+      await onComplete(`Pairing request sent to ${displayName}. Approve it on the Manager swarm to finish linking the Managed Swarm.`)
     } catch (err) {
       logAddSwarmError('managed swarm pairing failed', err, {
         endpoint: pairingEndpoint,
@@ -1071,7 +1071,7 @@ export function AddSwarmModal({ open, onboardingStatus, initialTarget = 'local',
                 {remotePairingResult ? (
                   <div className="rounded-lg border border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-3 text-sm text-[var(--app-success)]">
                     <div className="font-medium">Pairing request sent</div>
-                    <div className="mt-1 text-[var(--app-text)]">Approve request {remotePairingResult.request.request_id} on the managed swarm after confirming code {formatPairingCode(remoteCeremonyCode || activeRemoteCeremonyCode)}.</div>
+                    <div className="mt-1 text-[var(--app-text)]">Approve request {remotePairingResult.request.request_id} on the Manager swarm after confirming code {formatPairingCode(remoteCeremonyCode || activeRemoteCeremonyCode)}.</div>
                   </div>
                 ) : null}
               </Card>
