@@ -520,7 +520,7 @@ func (f fakeLocalAuthSwarmService) CreateInvite(input swarmruntime.CreateInviteI
 }
 
 func (f fakeLocalAuthSwarmService) SubmitEnrollment(input swarmruntime.SubmitEnrollmentInput) (swarmruntime.Enrollment, error) {
-	return swarmruntime.Enrollment{ID: "enroll-1", InviteToken: input.InviteToken, PrimarySwarmID: input.PrimarySwarmID, ChildSwarmID: input.ChildSwarmID, ChildName: input.ChildName, Status: swarmruntime.EnrollmentStatusPending}, nil
+	return swarmruntime.Enrollment{ID: "enroll-1", InviteToken: input.InviteToken, PrimarySwarmID: input.PrimarySwarmID, GroupID: input.GroupID, ChildSwarmID: input.ChildSwarmID, ChildName: input.ChildName, Status: swarmruntime.EnrollmentStatusPending}, nil
 }
 
 func (f fakeLocalAuthSwarmService) ListPendingEnrollments(int) ([]swarmruntime.Enrollment, error) {
@@ -532,7 +532,7 @@ func (f fakeLocalAuthSwarmService) DecideEnrollment(input swarmruntime.DecideEnr
 	if input.Approve {
 		status = swarmruntime.EnrollmentStatusApproved
 	}
-	return swarmruntime.Enrollment{ID: input.EnrollmentID, Status: status}, nil, nil
+	return swarmruntime.Enrollment{ID: input.EnrollmentID, GroupID: "group-managed-hosts", Status: status}, nil, nil
 }
 
 func (f fakeLocalAuthSwarmService) PrepareRemoteBootstrapParentPeer(swarmruntime.PrepareRemoteBootstrapParentPeerInput) error {

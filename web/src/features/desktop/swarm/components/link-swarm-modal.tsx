@@ -154,7 +154,7 @@ export function LinkSwarmModal({
     selectedCandidate?.dnsName ||
     endpointHostLabel(selectedEndpoint) ||
     'managed swarm'
-  const busy = status === 'pairing' || status === 'pending' || status === 'paired'
+  const busy = status === 'pairing' || status === 'pending'
   const serveBlockReason = localServeBlockReason(effectiveOnboardingStatus)
   const serveCommand = defaultTailscaleServeCommand(effectiveOnboardingStatus)
   const serveBlocksLink = serveBlockReason !== ''
@@ -270,7 +270,6 @@ export function LinkSwarmModal({
   useEffect(() => {
     if (!open || status !== 'pending' || !pairingResult) return
     let cancelled = false
-    let closeTimer: number | null = null
 
     const pollPairingState = async () => {
       try {
@@ -284,10 +283,18 @@ export function LinkSwarmModal({
             pairingResult.ceremony.managed_name ||
             pairingResult.request.managed_name ||
             selectedName
-          void onPairingSent?.(`Linked ${displayName} to the Manager swarm.`)
-          closeTimer = window.setTimeout(() => {
-            if (!cancelled) onOpenChange(false)
-          }, 1100)
+          try {
+            const next = await fetchDesktopOnboardingStatus()
+            if (!cancelled) {
+              setModalOnboardingStatus(next)
+              onOnboardingStatusChange?.(next)
+            }
+          } catch (err) {
+            if (!cancelled) {
+              setListenError(err instanceof Error ? err.message : 'Linked, but failed to refresh local status')
+            }
+          }
+          void onPairingSent?.(`Your Swarm is now linked, you can use it from the main host. Linked ${displayName} to the Manager swarm.`)
         } else if (!cancelled) {
           setListenError(null)
         }
@@ -303,9 +310,8 @@ export function LinkSwarmModal({
     return () => {
       cancelled = true
       window.clearInterval(timer)
-      if (closeTimer !== null) window.clearTimeout(closeTimer)
     }
-  }, [open, status, pairingResult, selectedName, onOpenChange, onPairingSent])
+  }, [open, status, pairingResult, selectedName, onPairingSent, onOnboardingStatusChange])
 
   const closeModal = () => {
     if (status !== 'pairing') onOpenChange(false)
@@ -541,8 +547,8 @@ export function LinkSwarmModal({
                   </div>
                   <div className="mt-1 text-sm text-[var(--app-text-muted)]">
                     {status === 'paired'
-                      ? 'Pairing completed and managed sync is configured. Closing…'
-                      : `Approve the request on the Manager swarm and confirm code ${formatPairingCode(ceremonyCode)}. This modal will close when pairing completes.`}
+                      ? 'Your Swarm is now linked, you can use it from the main host.'
+                      : `Approve the request on the Manager swarm and confirm code ${formatPairingCode(ceremonyCode)}. This screen will update when the link is complete.`}
                   </div>
                   {listenError && status === 'pending' ? (
                     <div className="mt-2 text-xs text-[var(--app-warning-text)]">
@@ -560,7 +566,7 @@ export function LinkSwarmModal({
             {status === 'pending'
               ? 'Keep this open; it is listening for approval.'
               : status === 'paired'
-                ? 'Paired.'
+                ? 'Your Swarm is now linked.'
                 : alreadyLinkedManagedHost
                   ? 'This host is already linked to a Manager.'
                   : 'Press Link to opt the host into full Manager-owned sync.'}
@@ -572,16 +578,16 @@ export function LinkSwarmModal({
               onClick={closeModal}
               disabled={status === 'pairing'}
             >
-              {status === 'pending' ? 'Close' : 'Cancel'}
+              {status === 'paired' ? 'Done' : status === 'pending' ? 'Close' : 'Cancel'}
             </Button>
             {status === 'pending' || status === 'paired' ? (
-              <Button type="button" disabled>
+              <Button type="button" disabled={status === 'pending'} onClick={status === 'paired' ? closeModal : undefined}>
                 {status === 'paired' ? (
                   <Check size={14} />
                 ) : (
                   <Loader2 size={14} className="animate-spin" />
                 )}
-                {status === 'paired' ? 'Paired' : 'Listening…'}
+                {status === 'paired' ? 'Linked' : 'Listening…'}
               </Button>
             ) : (
               <Button
