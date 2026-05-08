@@ -238,7 +238,7 @@ function actionButtonClassName(
   intent: "primary" | "secondary" | "danger",
 ): string {
   if (intent === "primary") {
-    return "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-transparent bg-[var(--app-primary)] px-4 py-2 text-sm font-medium text-[var(--app-primary-text)] shadow-sm transition-colors hover:bg-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50";
+    return "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-[var(--app-primary)] bg-transparent px-4 py-2 text-sm font-medium text-[var(--app-primary)] shadow-sm transition-colors hover:bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)] hover:text-[var(--app-primary-hover)] disabled:cursor-not-allowed disabled:opacity-50";
   }
   if (intent === "danger") {
     return "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-[var(--app-danger)]/25 bg-[var(--app-danger)]/10 px-4 py-2 text-sm font-medium text-[var(--app-danger)] shadow-sm transition-colors hover:bg-[var(--app-danger)]/18 disabled:cursor-not-allowed disabled:opacity-50";

@@ -12,7 +12,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantClasses: Record<ButtonVariant, string> = {
   primary:
-    'border border-transparent bg-[var(--app-primary)] text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] active:bg-[var(--app-primary-active)]',
+    'border border-[var(--app-primary)] bg-transparent text-[var(--app-primary)] hover:bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)] hover:text-[var(--app-primary-hover)] active:bg-[color-mix(in_oklab,var(--app-primary)_16%,transparent)]',
   secondary:
     'border border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] active:bg-[var(--app-surface-active)]',
   ghost:

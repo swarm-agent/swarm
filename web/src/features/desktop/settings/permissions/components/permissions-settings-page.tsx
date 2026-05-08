@@ -331,7 +331,15 @@ export function PermissionsSettingsPage() {
                 {bypassPermissions ? 'Permissions are OFF. Tool approval prompts are bypassed globally.' : 'Permissions are ON. Tool approval prompts are enforced.'}
               </div>
             </div>
-            <Button variant={bypassPermissions ? 'outline' : 'primary'} onClick={handleBypassButton} disabled={loading || bypassBusy}>
+            <Button
+              variant="outline"
+              onClick={handleBypassButton}
+              disabled={loading || bypassBusy}
+              className={cn(
+                !bypassPermissions &&
+                  'border-[var(--app-primary)] text-[var(--app-primary)] hover:bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)] hover:text-[var(--app-primary-hover)]',
+              )}
+            >
               {bypassBusy ? 'Saving…' : bypassPermissions ? 'Turn permissions ON' : 'Turn permissions OFF'}
             </Button>
           </div>
@@ -504,7 +512,12 @@ export function PermissionsSettingsPage() {
             </div>
             <div className="flex justify-end gap-2 border-t border-[var(--app-border)] px-6 py-4">
               <Button variant="ghost" onClick={() => setConfirmBypassOpen(false)} disabled={bypassBusy}>Cancel</Button>
-              <Button variant="primary" onClick={() => { void applyBypassPermissions(true) }} disabled={bypassBusy}>
+              <Button
+                variant="outline"
+                onClick={() => { void applyBypassPermissions(true) }}
+                disabled={bypassBusy}
+                className="border-[var(--app-primary)] text-[var(--app-primary)] hover:bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)] hover:text-[var(--app-primary-hover)]"
+              >
                 {bypassBusy ? 'Saving…' : 'Turn permissions OFF'}
               </Button>
             </div>

@@ -1070,6 +1070,7 @@ export function AddSwarmModal({
             </Button>
             <Button
               type="button"
+              variant="primary"
               data-testid="add-swarm-launch"
               onClick={() => void handleLaunchLocal()}
               disabled={

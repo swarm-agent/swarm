@@ -183,6 +183,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	if err != nil {
 		return nil, nil, err
 	}
+	trustedPeerTargets := listTrustedPeerTargets(state.TrustedPeers)
 	deployments, err := s.listDeployContainerTargets(r)
 	if err != nil {
 		return nil, nil, err
@@ -201,7 +202,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		}
 	}
 
-	targets := make([]swarmTarget, 0, len(nodeTargets)+len(deployments)+len(remoteDeployments)+1)
+	targets := make([]swarmTarget, 0, len(nodeTargets)+len(trustedPeerTargets)+len(deployments)+len(remoteDeployments)+1)
 	targets = append(targets, swarmTarget{
 		SwarmID:      localSwarmID,
 		Name:         firstNonEmpty(strings.TrimSpace(state.Node.Name), strings.TrimSpace(cfg.SwarmName), "Local"),
@@ -224,6 +225,20 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		s.applyCachedSwarmTargetHealth(&node)
 		targets = append(targets, node)
 		markSwarmTargetSeen(seenTargets, node)
+	}
+	for _, peer := range trustedPeerTargets {
+		if isLocalSwarmTargetID(peer.SwarmID, localSwarmID) {
+			continue
+		}
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, peer.SwarmID) {
+			continue
+		}
+		if swarmTargetSeen(seenTargets, peer) {
+			continue
+		}
+		s.applyCachedSwarmTargetHealth(&peer)
+		targets = append(targets, peer)
+		markSwarmTargetSeen(seenTargets, peer)
 	}
 	for _, deployment := range deployments {
 		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.SwarmID) {
@@ -367,6 +382,18 @@ func (s *Server) listDeployContainerTargets(r *http.Request) ([]swarmTarget, err
 		out = append(out, target)
 	}
 	return out, nil
+}
+
+func listTrustedPeerTargets(peers []swarmruntime.TrustedPeer) []swarmTarget {
+	out := make([]swarmTarget, 0, len(peers))
+	for _, peer := range peers {
+		target, ok := mapTrustedPeerTarget(peer)
+		if !ok {
+			continue
+		}
+		out = append(out, target)
+	}
+	return out
 }
 
 func (s *Server) listRemoteDeployTargets(r *http.Request) ([]swarmTarget, error) {
@@ -577,6 +604,70 @@ func relationshipForSwarmNodeRole(role string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(role))
 	}
+}
+
+func mapTrustedPeerTarget(peer swarmruntime.TrustedPeer) (swarmTarget, bool) {
+	swarmID := strings.TrimSpace(peer.SwarmID)
+	if swarmID == "" || !strings.EqualFold(strings.TrimSpace(peer.Relationship), swarmruntime.RelationshipManaged) {
+		return swarmTarget{}, false
+	}
+	backendURL := trustedPeerBackendURL(peer)
+	online := backendURL != ""
+	return swarmTarget{
+		SwarmID:      swarmID,
+		Name:         firstNonEmpty(strings.TrimSpace(peer.Name), swarmID),
+		Role:         firstNonEmpty(strings.TrimSpace(peer.Role), swarmruntime.RelationshipManaged),
+		Relationship: swarmruntime.RelationshipManaged,
+		Kind:         "host",
+		AttachStatus: firstNonEmpty(strings.TrimSpace(peer.TransportMode), startupconfig.NetworkModeTailscale),
+		Online:       online,
+		Selectable:   online,
+		BackendURL:   backendURL,
+		DesktopURL:   backendURL,
+	}, true
+}
+
+func trustedPeerBackendURL(peer swarmruntime.TrustedPeer) string {
+	if endpoint := firstTrustedPeerTransportForKind(peer.RendezvousTransports, startupconfig.NetworkModeTailscale); endpoint != "" {
+		return normalizeRemoteSwarmEndpoint(endpoint)
+	}
+	if endpoint := firstTrustedPeerTransportForKind(peer.RendezvousTransports, strings.TrimSpace(peer.TransportMode)); endpoint != "" {
+		return normalizeRemoteSwarmEndpoint(endpoint)
+	}
+	for _, transport := range peer.RendezvousTransports {
+		if endpoint := firstTrustedPeerTransportValue(transport); endpoint != "" {
+			return normalizeRemoteSwarmEndpoint(endpoint)
+		}
+	}
+	return ""
+}
+
+func firstTrustedPeerTransportForKind(transports []swarmruntime.TransportSummary, kind string) string {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		return ""
+	}
+	for _, transport := range transports {
+		if !strings.EqualFold(strings.TrimSpace(transport.Kind), kind) {
+			continue
+		}
+		if endpoint := firstTrustedPeerTransportValue(transport); endpoint != "" {
+			return endpoint
+		}
+	}
+	return ""
+}
+
+func firstTrustedPeerTransportValue(transport swarmruntime.TransportSummary) string {
+	if value := strings.TrimSpace(transport.Primary); value != "" {
+		return value
+	}
+	for _, value := range transport.All {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func mapDeployContainerTarget(item deployruntime.ContainerDeployment) (swarmTarget, bool) {

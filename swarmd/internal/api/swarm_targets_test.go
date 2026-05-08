@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/startupconfig"
+
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -91,6 +93,127 @@ func TestSwarmTargetsForRequestPrefersRegistryNodes(t *testing.T) {
 	}
 	if !child.Current {
 		t.Fatalf("child should be current: %+v", child)
+	}
+}
+
+func TestSwarmTargetsForRequestIncludesTrustedManagedPeerTargets(t *testing.T) {
+	managedBackendURL := "https://managed-host.tailnet.ts.net"
+	server := &Server{
+		startupConfigPath: filepath.Join(t.TempDir(), "swarm.conf"),
+		swarm: fakeRoutedSwarmService{state: swarmruntime.LocalState{
+			Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm", Name: "manager", Role: "master"},
+			TrustedPeers: []swarmruntime.TrustedPeer{{
+				SwarmID:       "managed-swarm-1",
+				Name:          "managed-host",
+				Role:          swarmruntime.RelationshipManaged,
+				Relationship:  swarmruntime.RelationshipManaged,
+				TransportMode: startupconfig.NetworkModeTailscale,
+				RendezvousTransports: []swarmruntime.TransportSummary{{
+					Kind:    startupconfig.NetworkModeTailscale,
+					Primary: managedBackendURL,
+					All:     []string{managedBackendURL},
+				}},
+			}},
+			Groups: []swarmruntime.GroupState{{
+				Group: swarmruntime.Group{ID: "group-1", HostSwarmID: "manager-swarm", Name: "manager group"},
+				Members: []swarmruntime.GroupMember{
+					{GroupID: "group-1", SwarmID: "manager-swarm", Name: "manager", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost},
+					{GroupID: "group-1", SwarmID: "managed-swarm-1", Name: "managed-host", SwarmRole: swarmruntime.RelationshipManaged, MembershipRole: swarmruntime.GroupMembershipRoleMember},
+				},
+			}},
+			CurrentGroupID: "group-1",
+		}},
+		swarmTargetHealth: swarmTargetHealthCache{entries: map[string]swarmTargetHealthEntry{
+			"host|managed-swarm-1|" + managedBackendURL: {online: true, checkedAt: time.Now()},
+		}},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets?swarm_id=managed-swarm-1", nil)
+	targets, current, err := server.swarmTargetsForRequest(req)
+	if err != nil {
+		t.Fatalf("targets: %v", err)
+	}
+	if current == nil || current.SwarmID != "managed-swarm-1" {
+		t.Fatalf("current = %+v, want managed-swarm-1", current)
+	}
+	var managedTargets []swarmTarget
+	for _, target := range targets {
+		if target.SwarmID == "managed-swarm-1" {
+			managedTargets = append(managedTargets, target)
+		}
+	}
+	if len(managedTargets) != 1 {
+		t.Fatalf("managed target count = %d, targets=%+v", len(managedTargets), targets)
+	}
+	managed := managedTargets[0]
+	if managed.Name != "managed-host" || managed.Role != swarmruntime.RelationshipManaged || managed.Relationship != swarmruntime.RelationshipManaged {
+		t.Fatalf("managed target identity = %+v", managed)
+	}
+	if managed.Kind != "host" {
+		t.Fatalf("managed target kind = %q, want host", managed.Kind)
+	}
+	if managed.BackendURL != managedBackendURL || managed.DesktopURL != managedBackendURL {
+		t.Fatalf("managed urls = backend %q desktop %q", managed.BackendURL, managed.DesktopURL)
+	}
+	if !managed.Online || !managed.Selectable || !managed.Current {
+		t.Fatalf("managed should be online/selectable/current: %+v", managed)
+	}
+}
+
+func TestSwarmTargetsForRequestPrefersRegistryNodeOverTrustedManagedPeer(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm-targets-dedupe.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	nodes := pebblestore.NewSwarmNodeStore(store)
+	registryBackendURL := "http://registry-managed.tailnet.ts.net:8421"
+	if _, err := nodes.Put(pebblestore.SwarmNodeRecord{
+		SwarmID:    "managed-swarm-1",
+		Name:       "registry-managed",
+		Role:       swarmruntime.RelationshipManaged,
+		Kind:       "host",
+		BackendURL: registryBackendURL,
+		Status:     "online",
+	}); err != nil {
+		t.Fatalf("put node: %v", err)
+	}
+
+	server := &Server{
+		startupConfigPath: filepath.Join(t.TempDir(), "swarm.conf"),
+		swarm: fakeRoutedSwarmService{state: swarmruntime.LocalState{
+			Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm", Name: "manager", Role: "master"},
+			TrustedPeers: []swarmruntime.TrustedPeer{{
+				SwarmID:              "managed-swarm-1",
+				Name:                 "trusted-managed",
+				Role:                 swarmruntime.RelationshipManaged,
+				Relationship:         swarmruntime.RelationshipManaged,
+				RendezvousTransports: []swarmruntime.TransportSummary{{Kind: startupconfig.NetworkModeTailscale, Primary: "https://trusted-managed.tailnet.ts.net"}},
+			}},
+		}},
+		swarmNodes: nodes,
+		swarmTargetHealth: swarmTargetHealthCache{entries: map[string]swarmTargetHealthEntry{
+			"host|managed-swarm-1|" + registryBackendURL: {online: true, checkedAt: time.Now()},
+		}},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)
+	targets, _, err := server.swarmTargetsForRequest(req)
+	if err != nil {
+		t.Fatalf("targets: %v", err)
+	}
+	var managedTargets []swarmTarget
+	for _, target := range targets {
+		if target.SwarmID == "managed-swarm-1" {
+			managedTargets = append(managedTargets, target)
+		}
+	}
+	if len(managedTargets) != 1 {
+		t.Fatalf("managed target count = %d, targets=%+v", len(managedTargets), targets)
+	}
+	if managedTargets[0].Name != "registry-managed" || managedTargets[0].BackendURL != registryBackendURL {
+		t.Fatalf("expected registry target to win, got %+v", managedTargets[0])
 	}
 }
 

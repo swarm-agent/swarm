@@ -647,6 +647,8 @@ function swarmKindDotClass(kind: SwarmTarget['kind'] | undefined, online = true)
 function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): string {
   const role = target?.role?.trim().toLowerCase() || ''
   switch (role) {
+    case 'managed':
+      return 'Managed Host'
     case 'child':
       return 'Child'
     case 'controller':
@@ -661,6 +663,9 @@ function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): s
 function swarmKindLabel(target: SwarmTarget): string {
   if (target.kind === 'self') {
     return swarmRoleLabel(target)
+  }
+  if (target.kind === 'host' || target.relationship?.trim().toLowerCase() === 'managed') {
+    return 'host'
   }
   return target.kind === 'remote' ? 'remote' : 'local'
 }
@@ -1717,14 +1722,14 @@ export function DesktopAppPage() {
     }), [swarmTargets])
   const selfSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'self' || target.current), [sortedSwarmTargets])
   const localSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'local' && !target.current), [sortedSwarmTargets])
-  const remoteSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'remote' && !target.current), [sortedSwarmTargets])
+  const remoteSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => (target.kind === 'remote' || target.kind === 'host') && !target.current), [sortedSwarmTargets])
   const swarmTargetCounts = useMemo(() => {
     const local = selfSwarmTargets.length + localSwarmTargets.length
     const remote = remoteSwarmTargets.length
     const offline = sortedSwarmTargets.filter((target) => !target.online && !target.current).length
     return { local, remote, offline }
   }, [localSwarmTargets.length, remoteSwarmTargets, selfSwarmTargets.length, sortedSwarmTargets])
-  const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} remote${swarmTargetCounts.offline > 0 ? ` · ${swarmTargetCounts.offline} offline` : ''}`
+  const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} host/remote${swarmTargetCounts.offline > 0 ? ` · ${swarmTargetCounts.offline} offline` : ''}`
   const swarmTargetCountLabel = `${swarmTargets.length} ${swarmTargets.length === 1 ? 'swarm' : 'swarms'}`
   const activePairingRequests = useMemo(() => activePendingPairings(pendingPairingRequests), [pendingPairingRequests])
   const pairingRequestCount = activePairingRequests.length

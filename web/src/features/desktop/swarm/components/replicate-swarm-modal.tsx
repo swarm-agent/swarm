@@ -621,7 +621,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
             <Button type="button" variant="outline" onClick={closeModal} disabled={submitting}>
               Close
             </Button>
-            <Button type="button" onClick={() => void handleSubmit()} disabled={submitting || loading || selectedCount === 0 || targetMode !== 'local' || !runtimeChoice}>
+            <Button type="button" variant="primary" onClick={() => void handleSubmit()} disabled={submitting || loading || selectedCount === 0 || targetMode !== 'local' || !runtimeChoice}>
               {submitting ? <Loader2 className="animate-spin" size={14} /> : null}
               {submitting ? 'Replicating…' : 'Replicate Swarm'}
             </Button>

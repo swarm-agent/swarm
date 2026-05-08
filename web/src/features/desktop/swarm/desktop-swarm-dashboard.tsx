@@ -1749,7 +1749,7 @@ export function DesktopSwarmDashboard() {
                       {localTailscalePrimary ? 'Tailscale' : tailscaleCandidate.connected ? 'Tailscale connected · LAN config' : formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}
                     </Badge>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm()} disabled={masterControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'Child swarms cannot add local containers to the Manager group.' : undefined)}>
+                      <Button type="button" variant="primary" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm()} disabled={masterControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'Child swarms cannot add local containers to the Manager group.' : undefined)}>
                         <Plus size={14} />
                         Add Container
                       </Button>
@@ -1811,6 +1811,8 @@ export function DesktopSwarmDashboard() {
                         const attachedImage = attachedDeployment?.image || attachedContainer?.image || ''
                         const attachedRemoteStatus = String(attachedRemoteSession?.status ?? '').trim()
                         const attachedRemoteActive = Boolean(attachedRemoteSession && ['attached', 'approved', 'waiting_for_approval', 'waiting_for_child'].includes(attachedRemoteStatus))
+                        const memberSwarmRole = String(member.swarmRole ?? '').trim().toLowerCase()
+                        const isManagedHostPeer = !isLocalMember && memberSwarmRole === 'managed'
                         const localWorkspaceSummaries = (attachedDeployment?.workspace_bootstrap ?? []).map(summarizeWorkspaceBootstrap)
                         const remoteWorkspaceSummaries = (attachedRemoteSession?.preflight.payloads ?? []).map(summarizeRemotePayload)
                         const childAPIURL = attachedDeployment?.child_backend_url
@@ -1826,7 +1828,8 @@ export function DesktopSwarmDashboard() {
                           ? 'failed attach'
                           : (attachedDeployment?.status || attachedContainer?.status || 'unknown')
                         const remoteStatusLabel = formatRemoteSessionStatus(attachedRemoteStatus || 'unknown')
-                        const memberDisplayName = attachedContainerName || attachedRemoteSession?.child_name || attachedRemoteSession?.name || member.name || member.swarmID
+                        const managedHostDisplayName = member.name || attachedRemoteSession?.child_name || attachedRemoteSession?.name || member.swarmID
+                        const memberDisplayName = isManagedHostPeer ? managedHostDisplayName : (attachedContainerName || attachedRemoteSession?.child_name || attachedRemoteSession?.name || member.name || member.swarmID)
                         
                         return (
                           <div
@@ -1838,17 +1841,21 @@ export function DesktopSwarmDashboard() {
                                 <Badge tone={isMasterMember ? 'live' : 'neutral'}>{memberRoleLabel}</Badge>
                                 {isLocalMember ? <Badge tone="live">This device</Badge> : null}
                                 {attachedDeployment ? <Badge tone={attachFailed ? 'warning' : 'live'}>Container</Badge> : null}
-                                {!attachedDeployment && attachedRemoteSession ? <Badge tone={attachedRemoteActive ? 'live' : 'warning'}>Remote</Badge> : null}
-                                {!attachedDeployment && !attachedRemoteSession && staleRemoteDeleteCandidate ? <Badge tone="warning">Stale</Badge> : null}
+                                {isManagedHostPeer ? <Badge tone="live">Host</Badge> : null}
+                                {!isManagedHostPeer && !attachedDeployment && attachedRemoteSession ? <Badge tone={attachedRemoteActive ? 'live' : 'warning'}>Remote</Badge> : null}
+                                {!isManagedHostPeer && !attachedDeployment && !attachedRemoteSession && staleRemoteDeleteCandidate ? <Badge tone="warning">Stale</Badge> : null}
                               </div>
                               <div className="flex items-center gap-2">
                                 {attachedDeployment ? (
                                   <Badge tone={attachFailed ? 'warning' : 'neutral'}>{deploymentStatusLabel}</Badge>
                                 ) : null}
-                                {!attachedDeployment && attachedRemoteSession ? (
+                                {isManagedHostPeer ? (
+                                  <Badge tone="neutral">paired</Badge>
+                                ) : null}
+                                {!isManagedHostPeer && !attachedDeployment && attachedRemoteSession ? (
                                   <Badge tone={attachedRemoteActive ? 'neutral' : 'warning'}>{remoteStatusLabel}</Badge>
                                 ) : null}
-                                {!attachedDeployment && !attachedRemoteSession && staleRemoteDeleteCandidate ? (
+                                {!isManagedHostPeer && !attachedDeployment && !attachedRemoteSession && staleRemoteDeleteCandidate ? (
                                   <Badge tone="warning">stale record</Badge>
                                 ) : null}
                               </div>
@@ -2074,6 +2081,44 @@ export function DesktopSwarmDashboard() {
                                         <Trash2 size={22} className="shrink-0" />
                                       </Button>
                                     ) : null}
+                                  </div>
+                                </div>
+                              ) : isManagedHostPeer ? (
+                                <div className="flex-1 flex flex-col justify-between space-y-4">
+                                  <div className="space-y-4">
+                                    <div className="grid grid-cols-2 gap-3 text-xs">
+                                      <div className="flex flex-col gap-1">
+                                        <span className="text-[var(--app-text-muted)]">Host</span>
+                                        <span className="font-medium text-[var(--app-text)] truncate">{managedHostDisplayName}</span>
+                                      </div>
+                                      <div className="flex flex-col gap-1">
+                                        <span className="text-[var(--app-text-muted)]">Runtime</span>
+                                        <span className="font-medium text-[var(--app-text)]">host</span>
+                                      </div>
+                                      <div className="flex flex-col gap-1">
+                                        <span className="text-[var(--app-text-muted)]">Relationship</span>
+                                        <span className="font-medium text-[var(--app-text)]">managed</span>
+                                      </div>
+                                      <div className="flex flex-col gap-1">
+                                        <span className="text-[var(--app-text-muted)]">Link</span>
+                                        <span className="font-medium text-[var(--app-text)]">paired</span>
+                                      </div>
+                                      <div className="flex flex-col gap-1">
+                                        <span className="text-[var(--app-text-muted)]">Sync</span>
+                                        <span className="font-medium text-[var(--app-text)]">not enabled yet</span>
+                                      </div>
+                                      <div className="flex flex-col gap-1">
+                                        <span className="text-[var(--app-text-muted)]">Role</span>
+                                        <span className="font-medium text-[var(--app-text)]">{memberRoleLabel}</span>
+                                      </div>
+                                      <div className="col-span-2 flex flex-col gap-1">
+                                        <span className="text-[var(--app-text-muted)]">Managed Host Swarm</span>
+                                        <span className="font-medium text-[var(--app-text)] truncate">{member.swarmID}</span>
+                                      </div>
+                                    </div>
+                                    <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-xs text-[var(--app-text-muted)]">
+                                      This host is linked over Tailscale and Peer Auth. Session and message sync are not enabled in this slice.
+                                    </div>
                                   </div>
                                 </div>
                               ) : (attachedRemoteSession || staleRemoteDeleteCandidate) ? (
