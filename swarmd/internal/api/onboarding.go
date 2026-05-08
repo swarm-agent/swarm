@@ -990,6 +990,14 @@ func onboardingTransportsToSwarm(records []onboardingTransportPayload) []swarmru
 	return out
 }
 
+func swarmTransportsToOnboarding(records []swarmruntime.TransportSummary) []onboardingTransportPayload {
+	out := make([]onboardingTransportPayload, 0, len(records))
+	for _, record := range records {
+		out = append(out, onboardingTransportPayload{Kind: strings.TrimSpace(record.Kind), Primary: strings.TrimSpace(record.Primary), All: append([]string(nil), record.All...)})
+	}
+	return out
+}
+
 func detectLANAddresses() []string {
 	interfaces, err := net.Interfaces()
 	if err != nil {

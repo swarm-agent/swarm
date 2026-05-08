@@ -144,6 +144,7 @@ type swarmService interface {
 	PrepareRemoteBootstrapParentPeer(input swarmruntime.PrepareRemoteBootstrapParentPeerInput) error
 	ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error)
 	TrustManagedPeer(input swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error)
+	RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error)
 	UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error)
 	DetachToStandalone(localSwarmID string) error
 }
@@ -3708,7 +3709,7 @@ func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 		return r.Method == http.MethodPost && (loopback || isTailscaleIP(remoteRequestIP(r)))
 	case "/v1/swarm/remote-pairing/request":
 		return r.Method == http.MethodPost && (loopback || isTailscaleIP(remoteRequestIP(r)))
-	case "/v1/swarm/remote-pairing/finalize":
+	case "/v1/swarm/remote-pairing/finalize", "/v1/swarm/managed-host/remove":
 		return false
 	case "/v1/deploy/container/attach/child-state", "/v1/deploy/container/attach/request", "/v1/deploy/container/attach/approve", "/v1/deploy/container/attach/finalize", "/v1/deploy/container/sync/credentials", "/v1/deploy/container/sync/agents", "/v1/deploy/container/sync/skills", "/v1/deploy/container/sync/permissions", "/v1/deploy/container/managed/skills/apply", "/v1/permissions/managed/apply", "/v1/permissions/bypass", "/v1/deploy/container/workspaces/bootstrap", "/v1/deploy/remote/session/sync/credentials":
 		return trustedNetwork && r.Method == http.MethodPost

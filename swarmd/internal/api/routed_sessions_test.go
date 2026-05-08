@@ -894,6 +894,10 @@ func (f fakeRoutedSwarmService) TrustManagedPeer(swarmruntime.TrustManagedPeerIn
 	return swarmruntime.TrustedPeer{}, nil
 }
 
+func (f fakeRoutedSwarmService) RemoveManagedPeer(swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
+	return swarmruntime.RemoveManagedPeerResult{}, nil
+}
+
 func (f fakeRoutedSwarmService) UpdateLocalPairingFromConfig(startupconfig.FileConfig, []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
 	return swarmruntime.PairingState{}, nil
 }

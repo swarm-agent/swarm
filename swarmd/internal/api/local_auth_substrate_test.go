@@ -467,7 +467,8 @@ func newStaticUpdateService(t *testing.T, updateAvailable bool) *update.Service 
 }
 
 type fakeLocalAuthSwarmService struct {
-	state swarmruntime.LocalState
+	state                  swarmruntime.LocalState
+	outgoingPeerAuthTokens map[string]string
 }
 
 func (f fakeLocalAuthSwarmService) EnsureLocalState(swarmruntime.EnsureLocalStateInput) (swarmruntime.LocalState, error) {
@@ -488,7 +489,13 @@ func (f fakeLocalAuthSwarmService) SetCurrentGroup(string, string) (swarmruntime
 	return swarmruntime.GroupState{}, nil
 }
 
-func (f fakeLocalAuthSwarmService) OutgoingPeerAuthToken(string) (string, bool, error) {
+func (f fakeLocalAuthSwarmService) OutgoingPeerAuthToken(swarmID string) (string, bool, error) {
+	if f.outgoingPeerAuthTokens != nil {
+		token := strings.TrimSpace(f.outgoingPeerAuthTokens[strings.TrimSpace(swarmID)])
+		if token != "" {
+			return token, true, nil
+		}
+	}
 	return "", false, nil
 }
 
@@ -538,6 +545,10 @@ func (f fakeLocalAuthSwarmService) ApproveManagedPairing(input swarmruntime.Appr
 
 func (f fakeLocalAuthSwarmService) TrustManagedPeer(swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
 	return swarmruntime.TrustedPeer{}, nil
+}
+
+func (f fakeLocalAuthSwarmService) RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
+	return swarmruntime.RemoveManagedPeerResult{ManagedSwarmID: input.ManagedSwarmID, RemovedTrustedPeer: true}, nil
 }
 
 func (f fakeLocalAuthSwarmService) UpdateLocalPairingFromConfig(startupconfig.FileConfig, []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {

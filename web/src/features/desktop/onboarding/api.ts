@@ -118,6 +118,24 @@ export interface SwarmLocalContainerDeleteResult {
   items: SwarmLocalContainerDeleteItemResult[]
 }
 
+export interface ManagedHostRemoveResult {
+  ok?: boolean
+  role: string
+  localRemoved: boolean
+  remoteRemoved: boolean
+  remoteError: string
+  pairing?: {
+    pairing_state?: string
+    parent_swarm_id?: string
+    last_updated_by_role?: string
+  }
+  cleanup?: {
+    managed_swarm_id?: string
+    removed_trusted_peer?: boolean
+    removed_group_memberships?: number
+  }
+}
+
 export interface SwarmLocalState {
   node: {
     swarm_id: string
@@ -508,6 +526,41 @@ export async function deleteSwarmLocalContainers(ids: string[]): Promise<SwarmLo
     throw new Error(response.error || 'local container delete response was missing result data')
   }
   return mapSwarmLocalContainerDeleteResult(response.result)
+}
+
+export async function removeManagedHostLink(input: {
+  managedSwarmID?: string
+  managerSwarmID?: string
+  endpoint?: string
+  transportMode?: string
+  rendezvousTransports?: DesktopOnboardingTransport[]
+  propagate?: boolean
+  reason?: string
+}): Promise<ManagedHostRemoveResult> {
+  const response = await requestJson<any>('/v1/swarm/managed-host/remove', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      managed_swarm_id: input.managedSwarmID,
+      manager_swarm_id: input.managerSwarmID,
+      endpoint: input.endpoint,
+      transport_mode: input.transportMode,
+      rendezvous_transports: input.rendezvousTransports,
+      propagate: input.propagate,
+      reason: input.reason,
+    }),
+  })
+  return {
+    ok: Boolean(response?.ok),
+    role: String(response?.role ?? '').trim(),
+    localRemoved: Boolean(response?.local_removed),
+    remoteRemoved: Boolean(response?.remote_removed),
+    remoteError: String(response?.remote_error ?? '').trim(),
+    pairing: response?.pairing,
+    cleanup: response?.cleanup,
+  }
 }
 
 export async function pruneMissingSwarmLocalContainers(): Promise<SwarmLocalContainerDeleteResult> {

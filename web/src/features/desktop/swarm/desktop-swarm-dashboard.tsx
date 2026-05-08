@@ -17,6 +17,7 @@ import {
   fetchSwarmLocalRuntimeStatus,
   fetchSwarmState,
   pruneMissingSwarmLocalContainers,
+  removeManagedHostLink,
   saveDesktopOnboarding,
   type RemoteSwarmPendingPairing,
   type SwarmLocalContainer,
@@ -844,6 +845,7 @@ export function DesktopSwarmDashboard() {
   const [settingsDeployment, setSettingsDeployment] = useState<DeployContainerDeployment | null>(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [removingManagedHostID, setRemovingManagedHostID] = useState<string | null>(null)
 
   const applyCoreDashboardState = (state: SwarmLocalState, onboarding: DesktopOnboardingStatus, nextUISettings: UISettingsWire) => {
     setSwarmState(state)
@@ -1439,6 +1441,58 @@ export function DesktopSwarmDashboard() {
     }
   }
 
+  const handleRemoveLocalManagedHostLink = async () => {
+    setBusy(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const managerPeer = swarmState?.trusted_peers.find((peer) => peer.swarm_id === localManagerSwarmID) ?? null
+      const result = await removeManagedHostLink({
+        managerSwarmID: localManagerSwarmID,
+        endpoint: managerPeer?.rendezvous_transports?.find((transport) => transport.kind === 'tailscale')?.primary,
+        transportMode: managerPeer?.transport_mode,
+        rendezvousTransports: managerPeer?.rendezvous_transports,
+        propagate: true,
+        reason: 'Removed from Managed Host dashboard',
+      })
+      await refresh()
+      setStatus(result.remoteError
+        ? `Removed this Managed Host link locally. Manager cleanup did not complete: ${result.remoteError}`
+        : 'Removed this Managed Host link on both hosts.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove Managed Host link')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleRemoveManagedHost = async (member: DesktopSwarmGroupMember, target: SwarmTarget | null) => {
+    const managedSwarmID = member.swarmID.trim()
+    if (!managedSwarmID) {
+      setError('Managed Host swarm id is missing.')
+      return
+    }
+    setRemovingManagedHostID(managedSwarmID)
+    setError(null)
+    setStatus(null)
+    try {
+      const result = await removeManagedHostLink({
+        managedSwarmID,
+        endpoint: target?.backend_url,
+        propagate: true,
+        reason: 'Removed from Manager dashboard',
+      })
+      await refresh()
+      setStatus(result.remoteError
+        ? `Removed ${member.name || managedSwarmID} from this Manager. Managed Host cleanup did not complete: ${result.remoteError}`
+        : `Removed ${member.name || managedSwarmID} on both hosts.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to remove ${member.name || managedSwarmID}`)
+    } finally {
+      setRemovingManagedHostID(null)
+    }
+  }
+
   const handleDeleteSelectedSwarms = async () => {
     setBusy(true)
     setError(null)
@@ -1761,7 +1815,7 @@ export function DesktopSwarmDashboard() {
                   <Badge tone={isSwarmMode ? 'live' : 'neutral'}>{isSwarmMode ? 'Swarm on' : 'Swarm off'}</Badge>
                   <Badge tone={localTailscaleHosting.tone}>{localTailscaleHosting.summary}</Badge>
                   {localManagedLinked ? <Badge tone="neutral">Manager: {localManagerDisplay}</Badge> : null}
-                  {localPairingState ? <Badge tone="neutral">Pairing: {formatUnderscoreLabel(localPairingState)}</Badge> : null}
+                  {localManagedLinked && localPairingState ? <Badge tone="neutral">Pairing: {formatUnderscoreLabel(localPairingState)}</Badge> : null}
                   {localManagedLinked ? <Badge tone="warning">Sync not enabled yet</Badge> : null}
                 </div>
               </div>
@@ -1775,7 +1829,12 @@ export function DesktopSwarmDashboard() {
 
           {localManagedLinked ? (
             <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-transparent p-3 text-sm text-[var(--app-text-muted)]">
-              This host is linked to {localManagerDisplay}{localManagerSwarmID ? ` (${localManagerSwarmID})` : ''}. Manager-only controls are disabled here. Sync is not enabled yet.
+              <div>This host is linked to {localManagerDisplay}{localManagerSwarmID ? ` (${localManagerSwarmID})` : ''}. Manager-only controls are disabled here. Sync is not enabled yet.</div>
+              <div className="mt-3">
+                <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => void handleRemoveLocalManagedHostLink()} disabled={busy}>
+                  Remove Managed Host link
+                </Button>
+              </div>
             </div>
           ) : null}
 
@@ -1957,6 +2016,9 @@ export function DesktopSwarmDashboard() {
                       <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                         {hostDesktopURL ? <a href={hostDesktopURL} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">Desktop</a> : null}
                         {hostAPIURL ? <a href={hostAPIURL} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">API</a> : null}
+                        <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => void handleRemoveManagedHost(member, target)} disabled={busy || removingManagedHostID === member.swarmID}>
+                          {removingManagedHostID === member.swarmID ? 'Removing…' : 'Remove Host'}
+                        </Button>
                       </div>
                     </div>
 

@@ -151,8 +151,9 @@ func TestRuntimeAvailabilityWarningExplainsDockerSocketPermission(t *testing.T) 
 		message,
 		"local Docker permission issue",
 		"not a Swarm container issue",
-		"allow this user to access the Docker socket",
+		"allow this operating-system user to access the Docker socket",
 		"adding the user to the docker group",
+		"ending this desktop/login session and signing back in",
 	} {
 		if !strings.Contains(got, needle) {
 			t.Fatalf("runtimeAvailabilityWarning() missing %q in:\n%s", needle, got)

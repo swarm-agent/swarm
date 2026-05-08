@@ -214,6 +214,16 @@ type TrustManagedPeerInput struct {
 	IncomingPeerAuthToken string
 }
 
+type RemoveManagedPeerInput struct {
+	ManagedSwarmID string
+}
+
+type RemoveManagedPeerResult struct {
+	ManagedSwarmID          string `json:"managed_swarm_id"`
+	RemovedTrustedPeer      bool   `json:"removed_trusted_peer"`
+	RemovedGroupMemberships int    `json:"removed_group_memberships"`
+}
+
 func NewService(store *pebblestore.SwarmStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) *Service {
 	return &Service{store: store, events: events, publish: publish}
 }
@@ -401,6 +411,37 @@ func (s *Service) TrustManagedPeer(input TrustManagedPeerInput) (TrustedPeer, er
 		return TrustedPeer{}, err
 	}
 	return toTrustedPeer(peer), nil
+}
+
+func (s *Service) RemoveManagedPeer(input RemoveManagedPeerInput) (RemoveManagedPeerResult, error) {
+	if s == nil || s.store == nil {
+		return RemoveManagedPeerResult{}, errors.New("swarm service is not configured")
+	}
+	managedSwarmID := strings.TrimSpace(input.ManagedSwarmID)
+	if managedSwarmID == "" {
+		return RemoveManagedPeerResult{}, errors.New("managed swarm id is required")
+	}
+	result := RemoveManagedPeerResult{ManagedSwarmID: managedSwarmID}
+	if _, ok, err := s.store.GetTrustedPeer(managedSwarmID); err != nil {
+		return result, err
+	} else if ok {
+		if err := s.store.DeleteTrustedPeer(managedSwarmID); err != nil {
+			return result, err
+		}
+		result.RemovedTrustedPeer = true
+	}
+	memberships, err := s.store.ListGroupMembershipsBySwarm(managedSwarmID, 100000)
+	if err != nil {
+		return result, err
+	}
+	for _, membership := range memberships {
+		if err := s.store.DeleteGroupMembership(membership.GroupID, membership.SwarmID); err != nil {
+			return result, err
+		}
+		result.RemovedGroupMemberships++
+	}
+	_, _ = s.appendEvent("swarm:pairing", "swarm.managed_peer.removed", managedSwarmID, result)
+	return result, nil
 }
 
 func (s *Service) ValidateIncomingPeerAuth(swarmID, rawToken string) (bool, error) {
@@ -896,6 +937,27 @@ func (s *Service) DetachToStandalone(localSwarmID string) error {
 		}
 		if err := s.store.DeleteTrustedPeer(peer.SwarmID); err != nil {
 			return err
+		}
+	}
+	if localSwarmID != "" {
+		memberships, err := s.store.ListGroupMembershipsBySwarm(localSwarmID, 100000)
+		if err != nil {
+			return err
+		}
+		currentGroupID, currentSet, err := s.store.GetCurrentGroupID()
+		if err != nil {
+			return err
+		}
+		for _, membership := range memberships {
+			if err := s.store.DeleteGroupMembership(membership.GroupID, membership.SwarmID); err != nil {
+				return err
+			}
+			if currentSet && strings.EqualFold(strings.TrimSpace(currentGroupID), strings.TrimSpace(membership.GroupID)) {
+				if err := s.store.DeleteCurrentGroupID(); err != nil {
+					return err
+				}
+				currentSet = false
+			}
 		}
 	}
 	_, _ = s.appendEvent("swarm:pairing", "swarm.detached.standalone", localSwarmID, map[string]any{"swarm_id": localSwarmID})

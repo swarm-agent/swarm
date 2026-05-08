@@ -453,6 +453,10 @@ func (f fakeReplicateSwarmService) TrustManagedPeer(swarmruntime.TrustManagedPee
 	return swarmruntime.TrustedPeer{}, nil
 }
 
+func (f fakeReplicateSwarmService) RemoveManagedPeer(swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
+	return swarmruntime.RemoveManagedPeerResult{}, nil
+}
+
 func (f fakeReplicateSwarmService) UpdateLocalPairingFromConfig(startupconfig.FileConfig, []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
 	return swarmruntime.PairingState{}, nil
 }

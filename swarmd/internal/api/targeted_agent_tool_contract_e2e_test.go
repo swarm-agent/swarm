@@ -455,6 +455,9 @@ func (f fakeAgentAPISwarmService) ApproveManagedPairing(input swarmruntime.Appro
 func (f fakeAgentAPISwarmService) TrustManagedPeer(input swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
 	return swarmruntime.TrustedPeer{}, nil
 }
+func (f fakeAgentAPISwarmService) RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
+	return swarmruntime.RemoveManagedPeerResult{}, nil
+}
 func (f fakeAgentAPISwarmService) UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
 	return swarmruntime.PairingState{}, nil
 }

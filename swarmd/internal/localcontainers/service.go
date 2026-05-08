@@ -1223,7 +1223,7 @@ func runtimeAvailabilityWarning(runtimeName, message string) string {
 		warning += ": " + message
 	}
 	if normalizeRuntimeSelection(runtimeName) == "docker" && isDockerSocketPermissionDenied(message) {
-		warning += " This is a local Docker permission issue, not a Swarm container issue. To let Swarm use Docker, start Docker and allow this user to access the Docker socket; on Linux this usually means adding the user to the docker group, then logging out and back in."
+		warning += " This is a local Docker permission issue, not a Swarm container issue. To let Swarm use Docker, start Docker and allow this operating-system user to access the Docker socket; on Linux this usually means adding the user to the docker group, then ending this desktop/login session and signing back in so group membership is refreshed."
 	}
 	return warning
 }
