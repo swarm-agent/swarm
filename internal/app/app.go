@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -373,10 +374,30 @@ func New() (*App, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	if count, err := app.loadSwarmNotificationCount(ctx); err == nil {
-		app.setSwarmNotificationCount(count)
+	var (
+		next              model.HomeModel
+		loadErr           error
+		notificationCount int
+		hasNotifications  bool
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		count, err := app.loadSwarmNotificationCount(ctx)
+		if err == nil {
+			notificationCount = count
+			hasNotifications = true
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		next, loadErr = app.refreshHomeModel(ctx)
+	}()
+	wg.Wait()
+	if hasNotifications {
+		app.setSwarmNotificationCount(notificationCount)
 	}
-	next, loadErr := app.refreshHomeModel(ctx)
 	if loadErr != nil {
 		app.home.SetStatus(fmt.Sprintf("backend unavailable: %v", loadErr))
 		app.home.SetModel(app.homeModel)
@@ -1154,32 +1175,10 @@ func (a *App) applyRemoteUISettings(settings client.UISettings) bool {
 	if a == nil {
 		return false
 	}
-	previousConfig := a.config
-	a.config = appConfigFromUISettings(settings)
-	a.syncSelectedChatRouteAfterSettingsUpdate(previousConfig)
-	if a.keybinds == nil {
-		a.keybinds = ui.NewDefaultKeyBindings()
-	} else {
-		a.keybinds = a.keybinds.Clone()
-	}
-	a.keybinds.ResetAll()
-	a.keybinds.ApplyOverrides(a.config.Input.Keybinds)
+	a.applyLoadedAppConfig(appConfigFromUISettings(settings))
 	if a.home != nil {
-		a.home.SetKeyBindings(a.keybinds)
-		a.home.SetSwarmName(a.config.Swarm.Name)
-		a.home.SetSessionMode(a.config.Chat.DefaultNewSessionMode)
 		a.home.SetModel(a.homeModel)
 	}
-	if a.chat != nil {
-		a.chat.SetKeyBindings(a.keybinds)
-		a.chat.SetHeaderVisible(a.config.Chat.ShowHeader)
-		a.chat.SetThinkingTagsVisible(a.config.Chat.ThinkingTags)
-		a.chat.SetSwarmName(a.config.Swarm.Name)
-	}
-	a.setMouseCapture(a.config.Input.MouseEnabled)
-	a.mouseHintShown = false
-	a.syncConfiguredCustomThemes()
-	a.applyEffectiveTheme()
 	return true
 }
 
@@ -7045,6 +7044,38 @@ func (a *App) syncChatAgentRuntime() {
 	a.chat.SetMeta(meta)
 }
 
+func (a *App) applyLoadedAppConfig(cfg AppConfig) {
+	if a == nil {
+		return
+	}
+	previousConfig := a.config
+	a.config = cfg
+	a.syncSelectedChatRouteAfterSettingsUpdate(previousConfig)
+	if a.keybinds == nil {
+		a.keybinds = ui.NewDefaultKeyBindings()
+	} else {
+		a.keybinds = a.keybinds.Clone()
+	}
+	a.keybinds.ResetAll()
+	a.keybinds.ApplyOverrides(a.config.Input.Keybinds)
+	if a.home != nil {
+		a.home.SetKeyBindings(a.keybinds)
+		a.home.SetSwarmName(a.config.Swarm.Name)
+		a.home.SetSessionMode(a.config.Chat.DefaultNewSessionMode)
+		a.home.SetCommandSuggestions(buildHomeCommandSuggestions(a.config.Startup.DevMode))
+	}
+	if a.chat != nil {
+		a.chat.SetKeyBindings(a.keybinds)
+		a.chat.SetHeaderVisible(a.config.Chat.ShowHeader)
+		a.chat.SetThinkingTagsVisible(a.config.Chat.ThinkingTags)
+		a.chat.SetSwarmName(a.config.Swarm.Name)
+	}
+	a.setMouseCapture(a.config.Input.MouseEnabled)
+	a.mouseHintShown = false
+	a.syncConfiguredCustomThemes()
+	a.applyEffectiveTheme()
+}
+
 func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
@@ -7137,8 +7168,67 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "vault status unavailable")
 	}
 
-	health, err := a.api.GetHealth(ctx)
-	if err == nil {
+	var (
+		health           client.HealthStatus
+		healthErr        error
+		worktreeSettings client.WorktreeSettings
+		worktreeErr      error
+		overview         client.WorkspaceOverviewResponse
+		overviewErr      error
+		providerStatuses []client.ProviderStatus
+		providersErr     error
+		modelResolved    client.ModelResolved
+		modelErr         error
+		updateStatus     client.UpdateStatus
+		updateErr        error
+		agentState       client.AgentState
+		agentErr         error
+		contextReport    client.ContextReport
+		contextErr       error
+		sessions         []client.SessionSummary
+		sessionsErr      error
+	)
+	var refreshWG sync.WaitGroup
+	refreshWG.Add(9)
+	go func() {
+		defer refreshWG.Done()
+		health, healthErr = a.api.GetHealth(ctx)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		worktreeSettings, worktreeErr = a.api.GetWorktreeSettings(ctx, next.CWD)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		overview, overviewErr = a.api.WorkspaceOverview(ctx, next.CWD, nil, homeWorkspaceOverviewSessionLimit)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		providerStatuses, providersErr = a.api.ListProviders(ctx)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		modelResolved, modelErr = a.api.GetModel(ctx)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		updateStatus, updateErr = a.api.GetUpdateStatus(ctx)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		agentState, agentErr = a.api.ListAgents(ctx, 200)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		contextReport, contextErr = a.api.ContextSources(ctx, contextPath)
+	}()
+	go func() {
+		defer refreshWG.Done()
+		sessions, sessionsErr = a.api.ListSessionsForExactCWD(ctx, homeRecentSessionLimit, contextPath)
+	}()
+	refreshWG.Wait()
+
+	if healthErr == nil {
 		if mode := strings.TrimSpace(health.Mode); mode != "" {
 			next.ServerMode = mode
 		}
@@ -7147,18 +7237,16 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "daemon status unavailable")
 	}
 
-	worktreeSettings, err := a.api.GetWorktreeSettings(ctx, next.CWD)
-	if err == nil {
+	if worktreeErr == nil {
 		next.WorktreesEnabled = worktreeSettings.Enabled
 	} else {
 		errorsSeen = append(errorsSeen, "worktrees settings unavailable")
 	}
 
-	overview, err := a.api.WorkspaceOverview(ctx, next.CWD, nil, homeWorkspaceOverviewSessionLimit)
 	activePath := normalizePath(strings.TrimSpace(next.CWD))
 	activeIsWorkspace := false
 	activeIsWorkspaceRoot := false
-	if err == nil {
+	if overviewErr == nil {
 		selectedWorkspacePath := ""
 		if overview.CurrentWorkspace != nil {
 			selectedWorkspacePath = normalizePath(strings.TrimSpace(overview.CurrentWorkspace.WorkspacePath))
@@ -7265,9 +7353,8 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		}, next.Directories...)
 	}
 
-	providerStatuses, err := a.api.ListProviders(ctx)
 	runnableProviders := 0
-	if err == nil {
+	if providersErr == nil {
 		for _, status := range providerStatuses {
 			id := strings.ToLower(strings.TrimSpace(status.ID))
 			if id == "" {
@@ -7282,14 +7369,12 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "provider status unavailable")
 	}
 
-	modelResolved, err := a.api.GetModel(ctx)
-	if err == nil {
+	if modelErr == nil {
 		next = applyHomeModelResolved(next, modelResolved)
 	} else {
 		errorsSeen = append(errorsSeen, "model preference unavailable")
 	}
 
-	updateStatus, updateErr := a.api.GetUpdateStatus(ctx)
 	if updateErr == nil {
 		next.UpdateStatus = &updateStatus
 		if current := strings.TrimSpace(updateStatus.CurrentVersion); current != "" {
@@ -7313,8 +7398,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		}
 	}
 
-	agentState, err := a.api.ListAgents(ctx, 200)
-	if err == nil {
+	if agentErr == nil {
 		next.ActiveAgent, next.ActiveAgentExecutionSetting, next.ActiveAgentExitPlanMode, next.ActiveAgentRuntimeKnown = activeAgentRuntime(agentState)
 		next.Subagents = chatMentionSubagentNames(agentState)
 	} else {
@@ -7325,8 +7409,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 		errorsSeen = append(errorsSeen, "agent state unavailable")
 	}
 
-	contextReport, err := a.api.ContextSources(ctx, contextPath)
-	if err == nil {
+	if contextErr == nil {
 		next.RuleCount = len(contextReport.Rules)
 		next.SkillCount = len(contextReport.Skills)
 		agentsToken := contextAgentsToken(contextReport.Rules)
@@ -7341,7 +7424,6 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 
 	// Home does not render usage summaries, so avoid one /usage request per
 	// session during startup and keep the initial recent-session slice small.
-	sessions, sessionsErr := a.api.ListSessionsForExactCWD(ctx, homeRecentSessionLimit, contextPath)
 	if sessionsErr == nil {
 		modelSessions := make([]model.SessionSummary, 0, len(sessions))
 		for _, session := range sessions {
