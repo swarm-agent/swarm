@@ -593,6 +593,20 @@ pairing_state =
 EOF
   fi
 
+  if ! swarm_startup_config_has_key managed_host_sync_mode; then
+    cat >>"${config_path}" <<'EOF'
+
+# Managed Host Link Mode sync. Active whenever swarm_role = managed and pairing_state = paired.
+# To stop management sync, unlink/detach this Managed Host from its Manager.
+managed_host_sync_mode =
+managed_host_sync_modules =
+managed_host_sync_owner_swarm_id =
+managed_host_sync_host_api_base_url =
+managed_host_sync_credential_url =
+managed_host_sync_agent_url =
+EOF
+  fi
+
   if ! swarm_startup_config_has_key deploy_container_enabled; then
     cat >>"${config_path}" <<'EOF'
 
@@ -739,6 +753,12 @@ swarm_startup_config_validate() {
       valid["peer_transport_port"] = 1
       valid["parent_swarm_id"] = 1
       valid["pairing_state"] = 1
+      valid["managed_host_sync_mode"] = 1
+      valid["managed_host_sync_modules"] = 1
+      valid["managed_host_sync_owner_swarm_id"] = 1
+      valid["managed_host_sync_host_api_base_url"] = 1
+      valid["managed_host_sync_credential_url"] = 1
+      valid["managed_host_sync_agent_url"] = 1
       valid["deploy_container_enabled"] = 1
       valid["deploy_container_host_driven"] = 1
       valid["deploy_container_sync_enabled"] = 1
@@ -767,6 +787,12 @@ swarm_startup_config_validate() {
       allow_empty["tailscale_url"] = 1
       allow_empty["parent_swarm_id"] = 1
       allow_empty["pairing_state"] = 1
+      allow_empty["managed_host_sync_mode"] = 1
+      allow_empty["managed_host_sync_modules"] = 1
+      allow_empty["managed_host_sync_owner_swarm_id"] = 1
+      allow_empty["managed_host_sync_host_api_base_url"] = 1
+      allow_empty["managed_host_sync_credential_url"] = 1
+      allow_empty["managed_host_sync_agent_url"] = 1
       allow_empty["deploy_container_sync_mode"] = 1
       allow_empty["deploy_container_sync_modules"] = 1
       allow_empty["deploy_container_sync_owner_swarm_id"] = 1
@@ -871,6 +897,24 @@ swarm_startup_config_validate() {
       }
       if (!("pairing_state" in seen)) {
         fail(sprintf("invalid startup config %s: missing pairing_state", config_path))
+      }
+      if (!("managed_host_sync_mode" in seen)) {
+        fail(sprintf("invalid startup config %s: missing managed_host_sync_mode", config_path))
+      }
+      if (!("managed_host_sync_modules" in seen)) {
+        fail(sprintf("invalid startup config %s: missing managed_host_sync_modules", config_path))
+      }
+      if (!("managed_host_sync_owner_swarm_id" in seen)) {
+        fail(sprintf("invalid startup config %s: missing managed_host_sync_owner_swarm_id", config_path))
+      }
+      if (!("managed_host_sync_host_api_base_url" in seen)) {
+        fail(sprintf("invalid startup config %s: missing managed_host_sync_host_api_base_url", config_path))
+      }
+      if (!("managed_host_sync_credential_url" in seen)) {
+        fail(sprintf("invalid startup config %s: missing managed_host_sync_credential_url", config_path))
+      }
+      if (!("managed_host_sync_agent_url" in seen)) {
+        fail(sprintf("invalid startup config %s: missing managed_host_sync_agent_url", config_path))
       }
       if (!("deploy_container_enabled" in seen)) {
         fail(sprintf("invalid startup config %s: missing deploy_container_enabled", config_path))

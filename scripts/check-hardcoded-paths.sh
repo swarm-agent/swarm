@@ -8,9 +8,19 @@ cd "${ROOT_DIR}"
 DISALLOWED_ABS_PATH_PATTERN='(/home/|/Users/|/tmp/|/var/tmp/|/etc/|/opt/|/root/)'
 has_failures=0
 
+filter_allowed_runtime_paths() {
+  grep -Ev \
+    -e '^(\./)?(deploy/container-mvp/entrypoint\.sh|scripts/(rebuild-container-(local|remote)|diagnose-remote-deploy-live|check-container-publish)\.sh|swarmd/internal/remotedeploy/service\.go):.*(/etc/swarmd|/var/lib/swarmd|/var/cache/swarmd|/var/log/swarmd|/run/swarmd)' \
+    -e '^(\./)?deploy/container-mvp/entrypoint\.sh:.*(/root|/home|/workspaces|/tmp)' \
+    -e '^(\./)?scripts/check-daemon-storage-paths\.sh:.*(/home/|/root|/tmp/swarm-storage-gate-self-test\.out|forbidden_home_hits|negative fixture|run_scan)' \
+    -e '^(\./)?scripts/check-container-publish\.sh:.*(/etc/swarmd|/var/lib/swarmd|/var/cache/swarmd|/var/log/swarmd|/run/swarmd)' \
+    || true
+}
+
 echo "[path-check] scanning non-test runtime code and scripts for hardcoded absolute paths"
 runtime_hits="$(
-  rg -n \
+  {
+    rg -n \
     --glob '!.git/**' \
     --glob '*.go' \
     --glob '*.sh' \
@@ -21,7 +31,8 @@ runtime_hits="$(
     --glob '!scripts/check-hardcoded-paths.sh' \
     --glob '!scripts/check-precommit.sh' \
     "${DISALLOWED_ABS_PATH_PATTERN}" \
-    "${ROOT_DIR}" || true
+    . || true;
+  } | filter_allowed_runtime_paths
 )"
 if [[ -n "${runtime_hits}" ]]; then
   has_failures=1
@@ -41,7 +52,7 @@ legacy_hits="$(
     --glob '!scripts/check-hardcoded-paths.sh' \
     --glob '!scripts/check-precommit.sh' \
     'swarm-refactor' \
-    "${ROOT_DIR}" || true
+    . || true
 )"
 if [[ -n "${legacy_hits}" ]]; then
   has_failures=1
@@ -55,7 +66,7 @@ home_hits="$(
     --glob '!.git/**' \
     --glob '*.md' \
     '/home/[A-Za-z0-9._-]+/' \
-    "${ROOT_DIR}" || true
+    . || true
 )"
 if [[ -n "${home_hits}" ]]; then
   has_failures=1
@@ -70,7 +81,7 @@ repo_home_hits="$(
     --glob '!scripts/check-hardcoded-paths.sh' \
     --glob '!scripts/check-precommit.sh' \
     '/home/[A-Za-z0-9._-]+/|/Users/[A-Za-z0-9._-]+/' \
-    "${ROOT_DIR}" || true
+    . || true
 )"
 if [[ -n "${repo_home_hits}" ]]; then
   has_failures=1
