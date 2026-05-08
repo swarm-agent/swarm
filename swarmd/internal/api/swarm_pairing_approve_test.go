@@ -118,9 +118,9 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 	}
 
 	rec := postRemotePairingJSONWithDesktopSession(t, manager, "/v1/swarm/remote-pairing/approve", map[string]any{
-		"request_id":    requestID,
-		"approve":       true,
-		"ceremony_code": offer.Ceremony.Code,
+		"request_id": requestID,
+		"approve":    true,
+		"confirmed":  true,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("approve status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -146,6 +146,28 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 	}
 	if _, ok := manager.remotePairingPending[requestID]; ok {
 		t.Fatalf("approved pending request was not cleared")
+	}
+}
+
+func TestSwarmRemotePairingApproveRequiresExplicitConfirmation(t *testing.T) {
+	manager := newLocalAuthTestServer(t)
+	requestID := "pair-confirm-required"
+	manager.remotePairingPending[requestID] = swarmRemotePairingPendingRequest{
+		ID:           requestID,
+		CeremonyCode: "ABC123",
+		CreatedAt:    time.Now(),
+	}
+
+	rec := postRemotePairingJSONWithDesktopSession(t, manager, "/v1/swarm/remote-pairing/approve", map[string]any{
+		"request_id":    requestID,
+		"approve":       true,
+		"ceremony_code": "ABC123",
+	})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "code confirmation is required") {
+		t.Fatalf("approve without confirmation status/body = %d/%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := manager.remotePairingPending[requestID]; !ok {
+		t.Fatalf("unconfirmed approve cleared pending request")
 	}
 }
 

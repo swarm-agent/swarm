@@ -11,6 +11,7 @@ import {
   fetchDesktopOnboardingStatus,
   fetchRemoteSwarmCandidates,
   fetchSwarmState,
+  removeManagedHostLink,
   saveDesktopOnboarding,
   startRemoteSwarmPairing,
   type RemoteSwarmCandidate,
@@ -122,6 +123,7 @@ export function LinkSwarmModal({
   const [error, setError] = useState<string | null>(null)
   const [listenError, setListenError] = useState<string | null>(null)
   const [serveRefreshing, setServeRefreshing] = useState(false)
+  const [detachBusy, setDetachBusy] = useState(false)
   const [serveCopyState, setServeCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const [modalOnboardingStatus, setModalOnboardingStatus] =
     useState<DesktopOnboardingStatus | null>(onboardingStatus)
@@ -187,6 +189,29 @@ export function LinkSwarmModal({
       window.setTimeout(() => setServeCopyState('idle'), 1200)
     } catch {
       setServeCopyState('error')
+    }
+  }
+
+  const forceDetachManagedHost = async () => {
+    setDetachBusy(true)
+    setError(null)
+    try {
+      await removeManagedHostLink({
+        managerSwarmID: linkedManagerID,
+        propagate: false,
+        reason: 'Force detached locally from Managed Hosting modal',
+      })
+      const next = await fetchDesktopOnboardingStatus()
+      setModalOnboardingStatus(next)
+      onOnboardingStatusChange?.(next)
+      await onPairingSent?.('Detached this host locally from its stale Manager link. You can link it again now.')
+      if (next.config.swarmRole !== 'managed') {
+        void loadCandidates()
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to detach Managed Host link')
+    } finally {
+      setDetachBusy(false)
     }
   }
 
@@ -374,7 +399,13 @@ export function LinkSwarmModal({
               <div>
                 This host is already linked to a Manager{linkedManagerID ? ` (${linkedManagerID})` : ''}. Pairing is {linkedPairingState || 'paired'}.
               </div>
-              <div>Sync is not enabled yet. Linking another Manager is disabled for this slice.</div>
+              <div>Sync is not enabled yet. Linking another Manager is disabled until this local link is cleared.</div>
+              <div className="flex justify-end">
+                <Button type="button" variant="outline" onClick={() => void forceDetachManagedHost()} disabled={detachBusy}>
+                  {detachBusy ? <Loader2 size={14} className="animate-spin" /> : null}
+                  Force detach locally
+                </Button>
+              </div>
             </Card>
           ) : null}
 

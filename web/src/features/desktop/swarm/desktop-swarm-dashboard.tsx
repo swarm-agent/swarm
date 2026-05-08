@@ -830,6 +830,7 @@ export function DesktopSwarmDashboard() {
   const [remoteSessions, setRemoteSessions] = useState<RemoteDeploySession[]>([])
   const [pendingPairings, setPendingPairings] = useState<RemoteSwarmPendingPairing[]>([])
   const [pairingDecisionBusyID, setPairingDecisionBusyID] = useState<string | null>(null)
+  const [pairingConfirmations, setPairingConfirmations] = useState<Record<string, boolean>>({})
   const [copyState, setCopyState] = useState<'idle' | 'desktop' | 'error'>('idle')
   const [editingLocalName, setEditingLocalName] = useState(false)
   const [localNameDraft, setLocalNameDraft] = useState('')
@@ -1334,10 +1335,15 @@ export function DesktopSwarmDashboard() {
       await approveRemoteSwarmPairing({
         requestID,
         approve,
-        ceremonyCode: approve ? normalizePairingCode(request.ceremony_code) : undefined,
+        confirmed: approve ? pairingConfirmations[requestID] === true : undefined,
         reason: approve ? undefined : 'Rejected from Swarm dashboard',
       })
       setPendingPairings((items) => items.filter((item) => item.request_id !== requestID))
+      setPairingConfirmations((current) => {
+        const next = { ...current }
+        delete next[requestID]
+        return next
+      })
       await refresh()
       setStatus(approve ? `Approved Managed Swarm ${request.managed_name || request.managed_swarm_id || requestID}.` : `Rejected pairing request ${requestID}.`)
     } catch (err) {
@@ -1779,8 +1785,17 @@ export function DesktopSwarmDashboard() {
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge tone="warning">{formatPairingCode(request.ceremony_code) || 'No code'}</Badge>
+                          <label className="flex items-center gap-2 text-xs text-[var(--app-text-muted)]">
+                            <input
+                              type="checkbox"
+                              checked={pairingConfirmations[requestID] === true}
+                              disabled={busy || busyRequest}
+                              onChange={(event) => setPairingConfirmations((current) => ({ ...current, [requestID]: event.currentTarget.checked }))}
+                            />
+                            <span>I confirm the code matches</span>
+                          </label>
                           <Button size="sm" variant="outline" disabled={busy || busyRequest} onClick={() => void handlePairingDecision(request, false)}>Reject</Button>
-                          <Button size="sm" disabled={busy || busyRequest || normalizePairingCode(request.ceremony_code).length !== 6} onClick={() => void handlePairingDecision(request, true)}>Approve</Button>
+                          <Button size="sm" disabled={busy || busyRequest || normalizePairingCode(request.ceremony_code).length !== 6 || pairingConfirmations[requestID] !== true} onClick={() => void handlePairingDecision(request, true)}>Approve</Button>
                         </div>
                       </div>
                     </div>

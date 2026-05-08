@@ -144,6 +144,7 @@ func TestSwarmRemotePairingApproveRejectsCeremonyCodeMismatch(t *testing.T) {
 	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/remote-pairing/approve", map[string]any{
 		"request_id":    "pair-1",
 		"approve":       true,
+		"confirmed":     true,
 		"ceremony_code": "BADBAD",
 	})
 	if rec.Code != http.StatusBadRequest {

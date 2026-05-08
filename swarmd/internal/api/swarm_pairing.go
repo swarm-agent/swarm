@@ -132,6 +132,7 @@ type swarmRemotePairingFinalizeRequest struct {
 type swarmRemotePairingApprovalRequest struct {
 	RequestID    string `json:"request_id"`
 	Approve      bool   `json:"approve"`
+	Confirmed    bool   `json:"confirmed,omitempty"`
 	CeremonyCode string `json:"ceremony_code"`
 	Reason       string `json:"reason,omitempty"`
 }
@@ -904,17 +905,24 @@ func (s *Server) handleSwarmManagedHostRemove(w http.ResponseWriter, r *http.Req
 	}
 	response.LocalRemoved = true
 	response.Cleanup = cleanup
-	if req.Propagate && managedEndpoint != "" && peerAuthToken != "" {
-		var remote swarmManagedHostRemoveResponse
-		if err := postRemoteSwarmJSONWithTransportFallbackAndHeaders(managedEndpoint, "/v1/swarm/managed-host/remove", managedTransports, swarmManagedHostRemoveRequest{
-			ManagedSwarmID: managedSwarmID,
-			ManagerSwarmID: localSwarmID,
-			Reason:         firstNonEmpty(strings.TrimSpace(req.Reason), "Manager removed Managed Host"),
-			Propagate:      false,
-		}, &remote, map[string]string{peerAuthSwarmIDHeader: localSwarmID, peerAuthTokenHeader: peerAuthToken}); err != nil {
-			response.RemoteError = err.Error()
-		} else {
-			response.RemoteRemoved = remote.LocalRemoved
+	if req.Propagate {
+		switch {
+		case managedEndpoint == "":
+			response.RemoteError = "managed host endpoint is missing; remote cleanup was not attempted"
+		case peerAuthToken == "":
+			response.RemoteError = "managed host peer auth token is missing; remote cleanup was not attempted"
+		default:
+			var remote swarmManagedHostRemoveResponse
+			if err := postRemoteSwarmJSONWithTransportFallbackAndHeaders(managedEndpoint, "/v1/swarm/managed-host/remove", managedTransports, swarmManagedHostRemoveRequest{
+				ManagedSwarmID: managedSwarmID,
+				ManagerSwarmID: localSwarmID,
+				Reason:         firstNonEmpty(strings.TrimSpace(req.Reason), "Manager removed Managed Host"),
+				Propagate:      false,
+			}, &remote, map[string]string{peerAuthSwarmIDHeader: localSwarmID, peerAuthTokenHeader: peerAuthToken}); err != nil {
+				response.RemoteError = err.Error()
+			} else {
+				response.RemoteRemoved = remote.LocalRemoved
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -982,7 +990,11 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusOK, swarmRemotePairingApprovalResponse{OK: true, Status: startupconfig.PairingStateRejected, RequestID: requestID})
 		return
 	}
-	if !strings.EqualFold(strings.TrimSpace(req.CeremonyCode), strings.TrimSpace(pending.CeremonyCode)) {
+	if !req.Confirmed {
+		writeError(w, http.StatusBadRequest, errors.New("managed pairing code confirmation is required"))
+		return
+	}
+	if strings.TrimSpace(req.CeremonyCode) != "" && !strings.EqualFold(strings.TrimSpace(req.CeremonyCode), strings.TrimSpace(pending.CeremonyCode)) {
 		writeError(w, http.StatusBadRequest, errors.New("managed pairing ceremony code mismatch"))
 		return
 	}
@@ -1049,7 +1061,6 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 	delete(s.remotePairingPending, requestID)
 	_ = s.publishSwarmPairingEvent("swarm.managed_pairing.approved", pending.ManagedSwarmID, map[string]any{
 		"request_id":       pending.ID,
-		"ceremony_code":    pending.CeremonyCode,
 		"manager_name":     pending.ManagerName,
 		"manager_swarm_id": pending.ManagerSwarmID,
 		"managed_name":     pending.ManagedName,

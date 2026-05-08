@@ -278,21 +278,25 @@ function PairingRequestsModal({
   open,
   requests,
   busyID,
+  confirmations,
   error,
   status,
   now,
   onOpenChange,
   onRefresh,
+  onConfirmationChange,
   onDecision,
 }: {
   open: boolean
   requests: RemoteSwarmPendingPairing[]
   busyID: string | null
+  confirmations: Record<string, boolean>
   error: string | null
   status: string | null
   now: number
   onOpenChange: (open: boolean) => void
   onRefresh: () => void
+  onConfirmationChange: (requestID: string, confirmed: boolean) => void
   onDecision: (request: RemoteSwarmPendingPairing, approve: boolean) => void
 }) {
   if (!open) return null
@@ -325,6 +329,7 @@ function PairingRequestsModal({
             const requestID = request.request_id.trim()
             const busy = busyID === requestID
             const code = normalizePairingCode(request.ceremony_code)
+            const confirmed = confirmations[requestID] === true
             return (
               <Card key={requestID || request.managed_swarm_id || request.managed_name} className="grid gap-3 border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -339,9 +344,18 @@ function PairingRequestsModal({
                     <div className="mt-1 font-mono text-2xl font-semibold tracking-[0.18em] text-[var(--app-text)]">{formatPairingCode(code) || '—'}</div>
                   </div>
                 </div>
+                <label className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
+                  <input
+                    type="checkbox"
+                    checked={confirmed}
+                    disabled={Boolean(busyID)}
+                    onChange={(event) => onConfirmationChange(requestID, event.currentTarget.checked)}
+                  />
+                  <span>I confirm this code matches on both machines</span>
+                </label>
                 <div className="flex flex-wrap justify-end gap-2">
                   <Button size="sm" variant="outline" disabled={Boolean(busyID)} onClick={() => onDecision(request, false)}>{busy ? 'Working…' : 'Reject'}</Button>
-                  <Button size="sm" disabled={Boolean(busyID) || code.length !== 6} onClick={() => onDecision(request, true)}>{busy ? 'Working…' : 'Approve'}</Button>
+                  <Button size="sm" disabled={Boolean(busyID) || code.length !== 6 || !confirmed} onClick={() => onDecision(request, true)}>{busy ? 'Working…' : 'Approve'}</Button>
                 </div>
               </Card>
             )
@@ -1518,6 +1532,7 @@ export function DesktopAppPage() {
   const [pairingRequestsOpen, setPairingRequestsOpen] = useState(false)
   const [pendingPairingRequests, setPendingPairingRequests] = useState<RemoteSwarmPendingPairing[]>([])
   const [pairingDecisionBusyID, setPairingDecisionBusyID] = useState<string | null>(null)
+  const [pairingConfirmations, setPairingConfirmations] = useState<Record<string, boolean>>({})
   const [pairingRequestError, setPairingRequestError] = useState<string | null>(null)
   const [pairingRequestStatus, setPairingRequestStatus] = useState<string | null>(null)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
@@ -1831,10 +1846,15 @@ export function DesktopAppPage() {
       await approveRemoteSwarmPairing({
         requestID,
         approve,
-        ceremonyCode: approve ? normalizePairingCode(request.ceremony_code) : undefined,
+        confirmed: approve ? pairingConfirmations[requestID] === true : undefined,
         reason: approve ? undefined : 'Rejected from Link request modal',
       })
       setPendingPairingRequests((items) => items.filter((item) => item.request_id !== requestID))
+      setPairingConfirmations((current) => {
+        const next = { ...current }
+        delete next[requestID]
+        return next
+      })
       setPairingRequestStatus(approve ? `Approved ${request.managed_name || request.managed_swarm_id || 'Managed Swarm'}.` : `Rejected link request ${requestID}.`)
       void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
       refreshPairingRequests()
@@ -1843,7 +1863,7 @@ export function DesktopAppPage() {
     } finally {
       setPairingDecisionBusyID(null)
     }
-  }, [queryClient, refreshPairingRequests])
+  }, [pairingConfirmations, queryClient, refreshPairingRequests]
 
   const openTodoModal = useCallback((workspacePath: string, workspaceName: string) => {
     const normalizedPath = workspacePath.trim()
@@ -3453,11 +3473,13 @@ export function DesktopAppPage() {
         open={pairingRequestsOpen}
         requests={activePairingRequests}
         busyID={pairingDecisionBusyID}
+        confirmations={pairingConfirmations}
         error={pairingRequestError}
         status={pairingRequestStatus}
         now={sidebarNow}
         onOpenChange={setPairingRequestsOpen}
         onRefresh={refreshPairingRequests}
+        onConfirmationChange={(requestID, confirmed) => setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))}
         onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
       />
       <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />

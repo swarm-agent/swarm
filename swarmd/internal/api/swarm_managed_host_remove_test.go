@@ -111,3 +111,31 @@ func TestSwarmManagedHostRemoveFromManagerCanPropagate(t *testing.T) {
 		t.Fatalf("response = %+v", response)
 	}
 }
+
+func TestSwarmManagedHostRemoveFromManagerReportsMissingPropagationInputs(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{
+		Node:         swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", Role: "master"},
+		TrustedPeers: []swarmruntime.TrustedPeer{{SwarmID: "managed-swarm-1", Relationship: swarmruntime.RelationshipManaged}},
+	}}
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmMode = true
+		cfg.Child = false
+		cfg.SwarmRole = ""
+	})
+
+	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/managed-host/remove", map[string]any{
+		"managed_swarm_id": "managed-swarm-1",
+		"propagate":        true,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remove status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response swarmManagedHostRemoveResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.LocalRemoved || response.RemoteError == "" {
+		t.Fatalf("expected local removal with remote propagation error, got %+v", response)
+	}
+}

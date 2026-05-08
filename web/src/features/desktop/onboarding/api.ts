@@ -615,6 +615,7 @@ export async function fetchPendingRemoteSwarmPairings(): Promise<RemoteSwarmPend
 export async function approveRemoteSwarmPairing(input: {
   requestID: string
   approve: boolean
+  confirmed?: boolean
   ceremonyCode?: string
   reason?: string
 }): Promise<RemoteSwarmPairingApprovalResult> {
@@ -626,6 +627,7 @@ export async function approveRemoteSwarmPairing(input: {
     body: JSON.stringify({
       request_id: input.requestID,
       approve: input.approve,
+      confirmed: input.confirmed,
       ceremony_code: input.ceremonyCode,
       reason: input.reason,
     }),
