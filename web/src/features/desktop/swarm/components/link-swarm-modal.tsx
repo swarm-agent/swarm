@@ -131,6 +131,9 @@ export function LinkSwarmModal({
     () => currentGroup(effectiveOnboardingStatus),
     [effectiveOnboardingStatus],
   )
+  const alreadyLinkedManagedHost = effectiveOnboardingStatus?.config.swarmRole === 'managed'
+  const linkedManagerID = effectiveOnboardingStatus?.pairing.parentSwarmID || ''
+  const linkedPairingState = effectiveOnboardingStatus?.pairing.pairingState || ''
   const selectedCandidate = useMemo(
     () =>
       candidates.find((candidate) => candidate.id === selectedCandidateID) ??
@@ -230,11 +233,13 @@ export function LinkSwarmModal({
       .then((next) => {
         setModalOnboardingStatus(next)
         onOnboardingStatusChange?.(next)
+        if (next.config.swarmRole !== 'managed') {
+          void loadCandidates()
+        }
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to load Tailscale Serve status')
       })
-    void loadCandidates()
   }, [open])
 
   useEffect(() => {
@@ -282,6 +287,11 @@ export function LinkSwarmModal({
   }
 
   const startPairing = async () => {
+    if (alreadyLinkedManagedHost) {
+      setError('This host is already linked to a Manager.')
+      setStatus('error')
+      return
+    }
     if (!group?.group.id.trim()) {
       setError('Create or select a swarm group before linking a managed swarm.')
       setStatus('error')
@@ -342,10 +352,10 @@ export function LinkSwarmModal({
       <DialogPanel data-testid="link-swarm-modal" className={panelClassName}>
         <div className="border-b border-[var(--app-border)] px-5 py-4">
           <h2 className="text-xl font-semibold text-[var(--app-text)]">
-            Link Swarm
+            Managed Hosting
           </h2>
           <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-            Choose a Tailscale swarmd host to link.
+            Choose a Tailscale swarmd host to link as a Managed Host.
           </p>
         </div>
 
@@ -356,7 +366,19 @@ export function LinkSwarmModal({
             </Card>
           ) : null}
 
-          {serveBlocksLink ? (
+          {alreadyLinkedManagedHost ? (
+            <Card className="grid gap-2 border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
+              <div className="font-semibold text-[var(--app-text)]">
+                Already linked as a Managed Host
+              </div>
+              <div>
+                This host is already linked to a Manager{linkedManagerID ? ` (${linkedManagerID})` : ''}. Pairing is {linkedPairingState || 'paired'}.
+              </div>
+              <div>Sync is not enabled yet. Linking another Manager is disabled for this slice.</div>
+            </Card>
+          ) : null}
+
+          {!alreadyLinkedManagedHost && serveBlocksLink ? (
             <Card className="grid gap-3 border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning-text)]">
               <div className="font-semibold text-[var(--app-text)]">
                 This requester cannot link yet
@@ -385,6 +407,7 @@ export function LinkSwarmModal({
             </Card>
           ) : null}
 
+          {!alreadyLinkedManagedHost ? (
           <Card className={sectionClassName}>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -471,6 +494,7 @@ export function LinkSwarmModal({
               </div>
             )}
           </Card>
+          ) : null}
 
           {pairingResult ? (
             <Card className={sectionClassName}>
@@ -506,7 +530,9 @@ export function LinkSwarmModal({
               ? 'Keep this open; it is listening for approval.'
               : status === 'paired'
                 ? 'Paired.'
-                : 'Press Link to send the request.'}
+                : alreadyLinkedManagedHost
+                  ? 'This host is already linked to a Manager.'
+                  : 'Press Link to send the request.'}
           </div>
           <div className="flex gap-3">
             <Button
@@ -535,6 +561,7 @@ export function LinkSwarmModal({
                   status === 'pairing' ||
                   candidatesLoading ||
                   !group?.group.id.trim() ||
+                  alreadyLinkedManagedHost ||
                   serveBlocksLink ||
                   !selectedCandidate ||
                   !selectedEndpoint
@@ -545,7 +572,7 @@ export function LinkSwarmModal({
                 ) : (
                   <Check size={14} />
                 )}
-                {status === 'pairing' ? 'Linking…' : 'Link'}
+                {status === 'pairing' ? 'Linking…' : 'Link Host'}
               </Button>
             )}
           </div>

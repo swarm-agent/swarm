@@ -287,11 +287,17 @@ export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingS
   const child = Boolean(onboarding.config?.child)
   const tailscale = mapTailscale(onboarding)
   const lanAddresses = collectTransportValues(swarmState.node.transports, 'lan')
+  const rawSwarmRole = String(onboarding.config?.swarm_role ?? '').trim().toLowerCase()
+  const swarmRole: DesktopOnboardingConfig['swarmRole'] = !swarmMode
+    ? 'standalone'
+    : rawSwarmRole === 'managed'
+      ? 'managed'
+      : child ? 'child' : 'master'
   const config: DesktopOnboardingConfig = {
     swarmName: String(onboarding.config?.swarm_name ?? '').trim(),
     child,
     swarmMode,
-    swarmRole: !swarmMode ? 'standalone' : child ? 'child' : 'master',
+    swarmRole,
     swarmID: String(swarmState.node.swarm_id ?? '').trim(),
     mode,
     host: String(onboarding.config?.host ?? '').trim(),

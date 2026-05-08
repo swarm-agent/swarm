@@ -153,6 +153,8 @@ function swarmRoleLabel(value: string | null | undefined): string {
   switch (role) {
     case 'child':
       return 'Child'
+    case 'managed':
+      return 'Managed Host'
     case 'controller':
     case 'parent':
     case 'master':
@@ -1004,14 +1006,20 @@ export function DesktopSwarmDashboard() {
   const localSwarmName = onboardingStatus?.config.swarmName || swarmState?.node.name || 'Local swarm'
   const localSwarmRole = onboardingStatus?.config.swarmRole || swarmState?.node.role || (onboardingStatus?.config.child ? 'child' : 'master')
   const localSwarmRoleLabel = swarmRoleLabel(localSwarmRole)
-  const localIsChild = localSwarmRoleLabel === 'Child'
+  const localIsManagedHost = String(localSwarmRole).trim().toLowerCase() === 'managed'
+  const localIsChild = localSwarmRoleLabel === 'Child' || localIsManagedHost
+  const localManagerSwarmID = onboardingStatus?.pairing.parentSwarmID || ''
+  const localPairingState = onboardingStatus?.pairing.pairingState || ''
+  const localManagedLinked = localIsManagedHost && (localPairingState === 'paired' || localManagerSwarmID !== '')
   const localGroupEditable = Boolean(group && group.group.hostSwarmID === localSwarmID && !localIsChild)
   const groupDisplayName = group?.group.name.trim() || 'Swarm group'
   const groupNetworkName = group?.group.networkName.trim() || ''
   const currentGroupID = group?.group.id.trim() || ''
   const groupMasterID = group?.group.hostSwarmID || ''
-  const groupMasterName = group?.members.find((member) => member.swarmID === groupMasterID)?.name || 'Current master'
+  const resolvedGroupMasterName = group?.members.find((member) => member.swarmID === groupMasterID)?.name.trim() || ''
+  const localManagerDisplay = resolvedGroupMasterName || localManagerSwarmID || 'Manager'
   const localIsMaster = Boolean(localSwarmID && groupMasterID === localSwarmID && !localIsChild)
+  const managedHostControlTitle = localIsManagedHost ? 'This host is already linked to a Manager.' : undefined
   const masterControlsDisabled = loading || busy || localIsChild || Boolean(group && !localIsMaster)
   const visiblePendingPairings = pendingPairings.filter((item) => item.status === 'pending_approval' || item.status === '')
   const groupNameDirty = groupNameDraft.trim() !== (group?.group.name || '').trim()
@@ -1729,8 +1737,11 @@ export function DesktopSwarmDashboard() {
                       {group ? `${group.members.length} members` : 'No current group returned yet.'}
                     </p>
                     <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-muted)]">
-                      <Badge tone={localIsMaster ? 'live' : localIsChild ? 'warning' : 'neutral'}>This device is {localSwarmRoleLabel}</Badge>
-                      {!localIsMaster ? <Badge tone="neutral">Master: {groupMasterName}</Badge> : null}
+                      <Badge tone={localIsMaster ? 'live' : localIsManagedHost ? 'live' : localIsChild ? 'warning' : 'neutral'}>This device is {localSwarmRoleLabel}</Badge>
+                      {localManagedLinked ? <Badge tone="neutral">Connected as Managed Host</Badge> : null}
+                      {!localIsMaster ? <Badge tone="neutral">Manager: {localManagerDisplay}</Badge> : null}
+                      {localPairingState ? <Badge tone="neutral">Pairing: {formatUnderscoreLabel(localPairingState)}</Badge> : null}
+                      {localManagedLinked ? <Badge tone="warning">Sync not enabled yet</Badge> : null}
                     </div>
                   </div>
                   <div className="flex flex-col items-start gap-2 md:items-end">
@@ -1738,13 +1749,13 @@ export function DesktopSwarmDashboard() {
                       {localTailscalePrimary ? 'Tailscale' : tailscaleCandidate.connected ? 'Tailscale connected · LAN config' : formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}
                     </Badge>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm()} disabled={masterControlsDisabled} title={localIsChild ? 'Managed swarms cannot add local containers to the Manager group.' : undefined}>
+                      <Button type="button" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm()} disabled={masterControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'Child swarms cannot add local containers to the Manager group.' : undefined)}>
                         <Plus size={14} />
                         Add Container
                       </Button>
-                      <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" onClick={() => openLinkSwarm()} disabled={masterControlsDisabled} title={localIsChild ? 'Managed swarms cannot link other swarms to the Manager group.' : undefined}>
+                      <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" onClick={() => openLinkSwarm()} disabled={masterControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'Child swarms cannot link other swarms to the Manager group.' : undefined)}>
                         <Link2 size={14} />
-                        Link Swarm
+                        Managed Hosting
                       </Button>
                       <Button
                         variant="outline"
@@ -1756,13 +1767,21 @@ export function DesktopSwarmDashboard() {
                           void handleEnableSwarmMode()
                         }}
                         disabled={masterControlsDisabled}
-                        title={localIsChild ? 'Child swarms cannot toggle master Swarm Mode controls.' : undefined}
+                        title={managedHostControlTitle || (localIsChild ? 'Child swarms cannot toggle master Swarm Mode controls.' : undefined)}
                       >
                         {isSwarmMode ? 'Turn Off Swarm Mode' : 'Turn On Swarm Mode'}
                       </Button>
                     </div>
                   </div>
                 </div>
+
+                {localManagedLinked ? (
+                  <div className="mt-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
+                    <div className="font-semibold text-[var(--app-text)]">Connected as Managed Host</div>
+                    <div className="mt-1">This host is linked to {localManagerDisplay}{localManagerSwarmID ? ` (${localManagerSwarmID})` : ''}. Pairing is {formatUnderscoreLabel(localPairingState || 'paired')}. Sync is not enabled yet.</div>
+                    <div className="mt-2">Manager-only controls are disabled because this host is already linked to a Manager.</div>
+                  </div>
+                ) : null}
 
                 {loading && onboardingStatus === null ? (
                   <div className="mt-4 rounded-2xl border border-dashed border-[var(--app-border)] p-5 text-sm text-[var(--app-text-muted)]">
@@ -2162,7 +2181,7 @@ export function DesktopSwarmDashboard() {
                   <div>
                     <h2 className="text-xl font-semibold">Local swarm containers</h2>
                     <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                      Add Container chooses the runtime, creates or reuses the group network, and wires local children automatically for communication. Linked Managed Swarms stay visible here after attach.
+                      Add Container chooses the runtime, creates or reuses the group network, and wires local child containers automatically for communication. Linked Managed Hosts stay visible here after attach.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">

@@ -11,6 +11,7 @@ export interface DesktopOnboardingConfigWire {
   swarm_name?: string
   swarm_mode?: boolean
   child?: boolean
+  swarm_role?: string
   mode?: string
   host?: string
   port?: number
@@ -129,7 +130,7 @@ export interface DesktopOnboardingConfig {
   swarmName: string
   child: boolean
   swarmMode: boolean
-  swarmRole: 'standalone' | 'master' | 'child'
+  swarmRole: 'standalone' | 'master' | 'child' | 'managed'
   swarmID: string
   mode: 'lan' | 'tailscale'
   host: string

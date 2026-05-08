@@ -23,6 +23,7 @@ const (
 	bootstrapRoleStandalone = "standalone"
 	bootstrapRoleMaster     = "master"
 	bootstrapRoleChild      = "child"
+	bootstrapRoleManaged    = startupconfig.SwarmRoleManaged
 )
 
 type onboardingTransportPayload struct {
@@ -35,6 +36,7 @@ type onboardingConfigPayload struct {
 	SwarmName         string `json:"swarm_name"`
 	SwarmMode         bool   `json:"swarm_mode"`
 	Child             bool   `json:"child"`
+	SwarmRole         string `json:"swarm_role,omitempty"`
 	Mode              string `json:"mode"`
 	Host              string `json:"host,omitempty"`
 	Port              int    `json:"port"`
@@ -508,6 +510,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 			SwarmName:         strings.TrimSpace(cfg.SwarmName),
 			SwarmMode:         swarmModeEnabled(cfg),
 			Child:             cfg.Child,
+			SwarmRole:         localSwarmRole(cfg),
 			Mode:              bootstrapNetworkMode(cfg),
 			Host:              strings.TrimSpace(cfg.Host),
 			Port:              cfg.Port,
@@ -803,6 +806,9 @@ func hostnameFromURL(raw string) string {
 func localSwarmRole(cfg startupconfig.FileConfig) string {
 	if !swarmModeEnabled(cfg) {
 		return bootstrapRoleStandalone
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.SwarmRole), startupconfig.SwarmRoleManaged) {
+		return bootstrapRoleManaged
 	}
 	if cfg.Child {
 		return bootstrapRoleChild
