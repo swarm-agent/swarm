@@ -1755,37 +1755,41 @@ export function DesktopSwarmDashboard() {
         </div>
       </div>
 
-      {error ? <Card data-testid="swarm-dashboard-error" className="border-[var(--app-danger-border)] bg-transparent p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
-      {status ? <Card data-testid="swarm-dashboard-status" className="border-[var(--app-success-border)] bg-transparent p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
+      {error || status || visiblePendingPairings.length > 0 ? (
+        <div className="mt-4 space-y-3">
+          {error ? <Card data-testid="swarm-dashboard-error" className="border-[var(--app-danger-border)] bg-transparent p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
+          {status ? <Card data-testid="swarm-dashboard-status" className="border-[var(--app-success-border)] bg-transparent p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
 
-      {visiblePendingPairings.length > 0 ? (
-        <Card data-testid="swarm-pending-pairings" className="border-[var(--app-warning-border)] bg-transparent p-4">
-          <div className="flex flex-col gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[var(--app-text)]">Pending Managed Host request</div>
-              <div className="mt-1 text-sm text-[var(--app-text-muted)]">Confirm the 6-character code on both machines before approving.</div>
-            </div>
-            {visiblePendingPairings.map((request) => {
-              const requestID = request.request_id.trim()
-              const busyRequest = pairingDecisionBusyID === requestID
-              return (
-                <div key={requestID || request.managed_swarm_id || request.managed_name} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div className="min-w-0 space-y-1 text-sm">
-                      <div className="font-medium text-[var(--app-text)]">{request.managed_name || 'Managed Host'}</div>
-                      <div className="text-[var(--app-text-muted)]">{request.managed_endpoint || request.managed_swarm_id || requestID}</div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone="warning">{formatPairingCode(request.ceremony_code) || 'No code'}</Badge>
-                      <Button size="sm" variant="outline" disabled={busy || busyRequest} onClick={() => void handlePairingDecision(request, false)}>Reject</Button>
-                      <Button size="sm" disabled={busy || busyRequest || normalizePairingCode(request.ceremony_code).length !== 6} onClick={() => void handlePairingDecision(request, true)}>Approve</Button>
-                    </div>
-                  </div>
+          {visiblePendingPairings.length > 0 ? (
+            <Card data-testid="swarm-pending-pairings" className="border-[var(--app-warning-border)] bg-transparent p-4">
+              <div className="flex flex-col gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">Pending Managed Host request</div>
+                  <div className="mt-1 text-sm text-[var(--app-text-muted)]">Confirm the 6-character code on both machines before approving.</div>
                 </div>
-              )
-            })}
-          </div>
-        </Card>
+                {visiblePendingPairings.map((request) => {
+                  const requestID = request.request_id.trim()
+                  const busyRequest = pairingDecisionBusyID === requestID
+                  return (
+                    <div key={requestID || request.managed_swarm_id || request.managed_name} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div className="min-w-0 space-y-1 text-sm">
+                          <div className="font-medium text-[var(--app-text)]">{request.managed_name || 'Managed Host'}</div>
+                          <div className="text-[var(--app-text-muted)]">{request.managed_endpoint || request.managed_swarm_id || requestID}</div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge tone="warning">{formatPairingCode(request.ceremony_code) || 'No code'}</Badge>
+                          <Button size="sm" variant="outline" disabled={busy || busyRequest} onClick={() => void handlePairingDecision(request, false)}>Reject</Button>
+                          <Button size="sm" disabled={busy || busyRequest || normalizePairingCode(request.ceremony_code).length !== 6} onClick={() => void handlePairingDecision(request, true)}>Approve</Button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </Card>
+          ) : null}
+        </div>
       ) : null}
 
       <div className="grid gap-6 pt-4">
