@@ -757,6 +757,20 @@ func (s *Server) handleSwarmRemotePairingFinalize(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	cfg.SwarmMode = true
+	cfg.Child = true
+	cfg.SwarmRole = startupconfig.SwarmRoleManaged
+	cfg.ParentSwarmID = managerSwarmID
+	cfg.PairingState = startupconfig.PairingStatePaired
+	if err := startupconfig.Write(cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"path_id": "swarm.remote_pairing.finalize.v1",

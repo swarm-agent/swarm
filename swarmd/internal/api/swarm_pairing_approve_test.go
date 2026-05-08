@@ -149,6 +149,50 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 	}
 }
 
+func TestSwarmRemotePairingFinalizePersistsManagedStartupConfig(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmMode = false
+		cfg.Child = false
+		cfg.SwarmRole = ""
+		cfg.ParentSwarmID = ""
+		cfg.PairingState = ""
+		cfg.NetworkMode = startupconfig.NetworkModeTailscale
+		cfg.TailscaleURL = "https://managed-b.example.ts.net"
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/swarm/remote-pairing/finalize", strings.NewReader(`{"manager_swarm_id":"manager-swarm-1","manager_name":"Manager A","peer_auth_token":"managed-to-manager-token","incoming_peer_auth_token":"manager-to-managed-token","transport_mode":"tailscale"}`))
+	req.RemoteAddr = "100.64.0.10:443"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, "manager-swarm-1")
+	req.Header.Set(peerAuthTokenHeader, "manager-to-managed-token")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("finalize status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	cfg, err := server.loadStartupConfig()
+	if err != nil {
+		t.Fatalf("load startup config: %v", err)
+	}
+	if !cfg.SwarmMode || !cfg.Child {
+		t.Fatalf("config swarm identity = mode:%t child:%t, want true/true", cfg.SwarmMode, cfg.Child)
+	}
+	if cfg.SwarmRole != startupconfig.SwarmRoleManaged {
+		t.Fatalf("config SwarmRole = %q, want %q", cfg.SwarmRole, startupconfig.SwarmRoleManaged)
+	}
+	if cfg.ParentSwarmID != "manager-swarm-1" {
+		t.Fatalf("config ParentSwarmID = %q, want manager-swarm-1", cfg.ParentSwarmID)
+	}
+	if cfg.PairingState != startupconfig.PairingStatePaired {
+		t.Fatalf("config PairingState = %q, want paired", cfg.PairingState)
+	}
+	if cfg.NetworkMode != startupconfig.NetworkModeTailscale || cfg.TailscaleURL != "https://managed-b.example.ts.net" {
+		t.Fatalf("config transport changed unexpectedly: mode=%q tailscale=%q", cfg.NetworkMode, cfg.TailscaleURL)
+	}
+}
+
 func TestSwarmRemotePairingFinalizeRequiresPeerAuth(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	rec := httptest.NewRecorder()
