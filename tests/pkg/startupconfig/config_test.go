@@ -14,6 +14,7 @@ func TestWriteAndLoad_PersistsSwarmMode(t *testing.T) {
 	cfg := startupconfig.Default(path)
 	cfg.SwarmName = "my-device"
 	cfg.SwarmMode = true
+	cfg.SwarmRole = startupconfig.SwarmRoleManaged
 	cfg.DevMode = true
 	cfg.DevRoot = filepath.Clean(filepath.Join(t.TempDir(), "repo"))
 	cfg.Child = true
@@ -39,6 +40,9 @@ func TestWriteAndLoad_PersistsSwarmMode(t *testing.T) {
 	if !strings.Contains(text, "swarm_mode = true") {
 		t.Fatalf("startup config missing swarm_mode=true: %q", text)
 	}
+	if !strings.Contains(text, "swarm_role = managed") {
+		t.Fatalf("startup config missing swarm_role=managed: %q", text)
+	}
 	if !strings.Contains(text, "dev_mode = true") {
 		t.Fatalf("startup config missing dev_mode=true: %q", text)
 	}
@@ -52,6 +56,9 @@ func TestWriteAndLoad_PersistsSwarmMode(t *testing.T) {
 	}
 	if !loaded.SwarmMode {
 		t.Fatal("loaded.SwarmMode = false, want true")
+	}
+	if loaded.SwarmRole != startupconfig.SwarmRoleManaged {
+		t.Fatalf("loaded.SwarmRole = %q, want %q", loaded.SwarmRole, startupconfig.SwarmRoleManaged)
 	}
 	if !loaded.DevMode {
 		t.Fatal("loaded.DevMode = false, want true")
@@ -207,10 +214,106 @@ func TestWriteAndLoad_RemoteDeploySecretsUseSeparateSecretFile(t *testing.T) {
 	}
 }
 
+func TestLoad_ParsesSwarmRoleManaged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swarm.conf")
+	text := strings.Join([]string{
+		"startup_mode = interactive",
+		"dev_mode = false",
+		"dev_root = ",
+		"host = 127.0.0.1",
+		"port = 7781",
+		"advertise_host = ",
+		"advertise_port = 7781",
+		"desktop_port = 5555",
+		"bypass_permissions = false",
+		"retain_tool_output_history = false",
+		"swarm_name = child-host",
+		"swarm_mode = true",
+		"child = true",
+		"swarm_role = managed",
+		"mode = tailscale",
+		"tailscale_url = https://child.example.ts.net",
+		"peer_transport_port = 7791",
+		"parent_swarm_id = manager-1",
+		"pairing_state = paired",
+		"deploy_container_enabled = false",
+		"deploy_container_sync_enabled = false",
+		"deploy_container_sync_mode = ",
+		"deploy_container_sync_modules = ",
+		"deploy_container_sync_owner_swarm_id = ",
+		"deploy_container_sync_credential_url = ",
+		"deploy_container_sync_agent_url = ",
+		"deploy_container_deployment_id = ",
+		"deploy_container_host_api_base_url = ",
+		"deploy_container_host_desktop_url = ",
+		"deploy_container_local_transport_socket_path = ",
+		"deploy_container_bootstrap_secret = ",
+		"deploy_container_verification_code = ",
+		"remote_deploy_enabled = false",
+		"remote_deploy_session_id = ",
+		"remote_deploy_host_api_base_url = ",
+		"remote_deploy_host_desktop_url = ",
+		"remote_deploy_sync_enabled = false",
+		"remote_deploy_sync_mode = ",
+		"remote_deploy_sync_owner_swarm_id = ",
+		"remote_deploy_sync_credential_url = ",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", path, err)
+	}
+
+	loaded, err := startupconfig.Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.SwarmRole != startupconfig.SwarmRoleManaged {
+		t.Fatalf("loaded.SwarmRole = %q, want %q", loaded.SwarmRole, startupconfig.SwarmRoleManaged)
+	}
+	if !loaded.SwarmMode || !loaded.Child {
+		t.Fatalf("loaded swarm identity = mode:%t child:%t, want true/true", loaded.SwarmMode, loaded.Child)
+	}
+}
+
+func TestLoad_LegacyConfigWithoutSwarmRoleDefaultsEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swarm.conf")
+	cfg := startupconfig.Default(path)
+	cfg.SwarmMode = true
+	cfg.Child = true
+	if err := startupconfig.Write(cfg); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	legacyText := strings.ReplaceAll(string(data), "# Optional additive swarm role marker.\n# managed = paired host managed by another Swarm; blank = derive from swarm_mode/child.\nswarm_role = \n\n", "")
+	if err := os.WriteFile(path, []byte(legacyText), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", path, err)
+	}
+
+	loaded, err := startupconfig.Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.SwarmRole != "" {
+		t.Fatalf("loaded.SwarmRole = %q, want empty", loaded.SwarmRole)
+	}
+	migratedData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	if !strings.Contains(string(migratedData), "swarm_role = ") {
+		t.Fatalf("legacy config was not migrated with swarm_role key: %q", string(migratedData))
+	}
+}
+
 func TestDefault_SwarmModeDisabled(t *testing.T) {
 	cfg := startupconfig.Default(filepath.Join(t.TempDir(), "swarm.conf"))
 	if cfg.SwarmMode {
 		t.Fatal("Default().SwarmMode = true, want false")
+	}
+	if cfg.SwarmRole != "" {
+		t.Fatalf("Default().SwarmRole = %q, want empty", cfg.SwarmRole)
 	}
 	if cfg.DevMode {
 		t.Fatal("Default().DevMode = true, want false")
