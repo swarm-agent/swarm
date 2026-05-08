@@ -1628,7 +1628,7 @@ export function DesktopSwarmDashboard() {
 
   const content = (
     <>
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+      <div className="space-y-3">
         <div className="space-y-2">
           <h1 className="text-2xl font-semibold">Swarm</h1>
           <p className="max-w-3xl text-sm text-[var(--app-text-muted)]">
@@ -1694,8 +1694,8 @@ export function DesktopSwarmDashboard() {
         </Card>
       ) : null}
 
-      <div className="grid gap-4">
-        <section className="rounded-2xl border border-[var(--app-border)] bg-transparent p-5">
+      <div className="grid gap-6 pt-4">
+        <section className="rounded-2xl border border-[var(--app-border)] bg-transparent p-6 pb-8">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0 flex items-start gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] text-[var(--app-text-muted)]">

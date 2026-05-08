@@ -1095,7 +1095,7 @@ export function AgentsSettingsPage() {
     return (
       <>
       <div className="flex h-full flex-col">
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mb-6 space-y-3">
           <div>
             <h1 className="text-xl font-semibold text-[var(--app-text)]">
               Agents
@@ -1315,14 +1315,14 @@ export function AgentsSettingsPage() {
   // Edit View
   return (
     <div className="flex h-full flex-col">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+      <div className="mb-6 space-y-3">
         <button
           onClick={handleBackToList}
           className="flex items-center gap-2 text-sm font-medium text-[var(--app-text-muted)] transition-colors hover:text-[var(--app-text)]"
         >
           <span>←</span> Back to Agents
         </button>
-        <div className="flex items-center gap-4 text-sm text-[var(--app-text-muted)]">
+        <div className="flex flex-wrap items-center gap-4 text-sm text-[var(--app-text-muted)]">
           <div>
             <span className="font-medium text-[var(--app-text)]">
               Active primary:
@@ -1355,7 +1355,7 @@ export function AgentsSettingsPage() {
         </div>
 
         <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 rounded-t-xl">
+          <div className="space-y-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 rounded-t-xl">
             <h4 className="text-sm font-semibold text-[var(--app-text)]">
               {selectedProfile ? `Edit ${selectedProfile.name}` : "New agent"}
             </h4>
