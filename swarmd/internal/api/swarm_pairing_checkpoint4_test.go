@@ -12,30 +12,36 @@ import (
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
-func TestSwarmRemotePairingRequestCreatesManagedPendingApproval(t *testing.T) {
+func TestSwarmRemotePairingRequestCreatesManagerPendingApproval(t *testing.T) {
 	server := newLocalAuthTestServer(t)
-	publicKey, _, fingerprint, err := swarmruntime.GenerateNodeKeypair()
+	managerPublicKey, _, managerFingerprint, err := swarmruntime.GenerateNodeKeypair()
 	if err != nil {
-		t.Fatalf("generate test node keypair: %v", err)
+		t.Fatalf("generate manager keypair: %v", err)
 	}
-	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: publicKey, Fingerprint: fingerprint}}}
+	managedPublicKey, _, managedFingerprint, err := swarmruntime.GenerateNodeKeypair()
+	if err != nil {
+		t.Fatalf("generate managed keypair: %v", err)
+	}
+	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
-		cfg.SwarmName = "Managed B"
-		cfg.TailscaleURL = "https://managed-b.example.ts.net"
+		cfg.SwarmName = "Manager A"
+		cfg.TailscaleURL = "https://manager-a.example.ts.net"
 	})
-	offer := mustManagedPairingOfferForTest(t, publicKey, fingerprint)
+	offer := mustManagedPairingOfferForTest(t, managedPublicKey, managedFingerprint)
 
 	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/remote-pairing/request", map[string]any{
-		"invite_token":     "invite-token-1",
-		"manager_swarm_id": "manager-swarm-1",
-		"manager_name":     "Manager A",
-		"manager_endpoint": "https://manager-a.example.ts.net",
-		"offer":            offer,
-		"ceremony_code":    offer.Ceremony.Code,
-		"transport_mode":   startupconfig.NetworkModeTailscale,
+		"invite_token":          offer.Token,
+		"manager_swarm_id":      "manager-swarm-1",
+		"manager_name":          "Manager A",
+		"manager_endpoint":      "https://manager-a.example.ts.net",
+		"offer":                 offer,
+		"ceremony_code":         offer.Ceremony.Code,
+		"transport_mode":        startupconfig.NetworkModeTailscale,
+		"peer_auth_token":       "managed-to-manager-token",
+		"rendezvous_transports": offer.RendezvousTransports,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("request status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -53,6 +59,9 @@ func TestSwarmRemotePairingRequestCreatesManagedPendingApproval(t *testing.T) {
 	if response.ManagedSwarmID != "managed-swarm-1" || response.ManagedName != "Managed B" {
 		t.Fatalf("managed identity = %q/%q", response.ManagedSwarmID, response.ManagedName)
 	}
+	if response.ManagedPublicKey != managedPublicKey || response.ManagedFingerprint != managedFingerprint {
+		t.Fatalf("managed key/fingerprint not reflected in response")
+	}
 	if response.CeremonyCode != offer.Ceremony.Code {
 		t.Fatalf("ceremony code = %q, want %q", response.CeremonyCode, offer.Ceremony.Code)
 	}
@@ -63,25 +72,35 @@ func TestSwarmRemotePairingRequestCreatesManagedPendingApproval(t *testing.T) {
 	if pending.ManagerSwarmID != "manager-swarm-1" || pending.ManagedSwarmID != "managed-swarm-1" {
 		t.Fatalf("pending manager/managed = %q/%q", pending.ManagerSwarmID, pending.ManagedSwarmID)
 	}
+	if pending.ManagedEndpoint != "https://managed-b.example.ts.net" || len(pending.ManagedRendezvousTransports) == 0 {
+		t.Fatalf("pending missing managed reachability: endpoint=%q transports=%d", pending.ManagedEndpoint, len(pending.ManagedRendezvousTransports))
+	}
+	if pending.ManagerToManagedPeerToken != offer.Token || pending.ManagedToManagerPeerToken != "managed-to-manager-token" {
+		t.Fatalf("pending peer tokens not retained as expected")
+	}
 }
 
 func TestSwarmRemotePairingRequestRejectsCeremonyCodeMismatch(t *testing.T) {
 	server := newLocalAuthTestServer(t)
-	publicKey, _, fingerprint, err := swarmruntime.GenerateNodeKeypair()
+	managerPublicKey, _, managerFingerprint, err := swarmruntime.GenerateNodeKeypair()
 	if err != nil {
-		t.Fatalf("generate test node keypair: %v", err)
+		t.Fatalf("generate manager keypair: %v", err)
 	}
-	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: publicKey, Fingerprint: fingerprint}}}
+	managedPublicKey, _, managedFingerprint, err := swarmruntime.GenerateNodeKeypair()
+	if err != nil {
+		t.Fatalf("generate managed keypair: %v", err)
+	}
+	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.SwarmMode = true
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
-		cfg.SwarmName = "Managed B"
-		cfg.TailscaleURL = "https://managed-b.example.ts.net"
+		cfg.SwarmName = "Manager A"
+		cfg.TailscaleURL = "https://manager-a.example.ts.net"
 	})
-	offer := mustManagedPairingOfferForTest(t, publicKey, fingerprint)
+	offer := mustManagedPairingOfferForTest(t, managedPublicKey, managedFingerprint)
 
 	rec := postRemotePairingJSONWithDesktopSession(t, server, "/v1/swarm/remote-pairing/request", map[string]any{
-		"invite_token":     "invite-token-1",
+		"invite_token":     offer.Token,
 		"manager_swarm_id": "manager-swarm-1",
 		"manager_endpoint": "https://manager-a.example.ts.net",
 		"offer":            offer,

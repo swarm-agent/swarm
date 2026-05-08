@@ -3638,7 +3638,7 @@ func authorizeBootstrapRequest(r *http.Request) (bool, *http.Request, error) {
 		return false, r, nil
 	}
 	switch r.URL.Path {
-	case "/v1/swarm/enroll", "/v1/swarm/remote-pairing/request":
+	case "/v1/swarm/enroll":
 		inviteToken, updatedReq, err := inviteTokenFromBootstrapRequest(r)
 		if err != nil {
 			return false, updatedReq, err

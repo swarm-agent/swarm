@@ -329,31 +329,27 @@ func TestSwarmEnrollRejectsMissingInviteTokenAndAttachToken(t *testing.T) {
 	}
 }
 
-func TestSwarmRemotePairingRequestAllowsInviteTokenWithoutAttachToken(t *testing.T) {
+func TestSwarmRemotePairingRequestRequiresAuthOffTailnet(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
 		cfg.SwarmMode = true
 		cfg.Child = false
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
-		cfg.SwarmName = "Managed B"
-		cfg.TailscaleURL = "https://managed-b.example.ts.net"
+		cfg.SwarmName = "Manager A"
+		cfg.TailscaleURL = "https://manager-a.example.ts.net"
 	})
-	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/swarm/enroll" {
-			t.Fatalf("unexpected primary path %q", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"enrollment":{"id":"enroll-remote-1"}}`))
-	}))
-	defer primary.Close()
 
-	publicKey, _, fingerprint, err := swarmruntime.GenerateNodeKeypair()
+	managerPublicKey, _, managerFingerprint, err := swarmruntime.GenerateNodeKeypair()
 	if err != nil {
-		t.Fatalf("generate test node keypair: %v", err)
+		t.Fatalf("generate manager keypair: %v", err)
 	}
-	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: publicKey, Fingerprint: fingerprint}}}
-	offer := mustManagedPairingOfferForTest(t, publicKey, fingerprint)
-	raw, err := json.Marshal(swarmRemotePairingRequest{InviteToken: "invite-123", ManagerSwarmID: "primary-1", ManagerEndpoint: primary.URL, Offer: offer, CeremonyCode: offer.Ceremony.Code})
+	managedPublicKey, _, managedFingerprint, err := swarmruntime.GenerateNodeKeypair()
+	if err != nil {
+		t.Fatalf("generate managed keypair: %v", err)
+	}
+	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", PublicKey: managerPublicKey, Fingerprint: managerFingerprint}}}
+	offer := mustManagedPairingOfferForTest(t, managedPublicKey, managedFingerprint)
+	raw, err := json.Marshal(swarmRemotePairingRequest{InviteToken: offer.Token, ManagerSwarmID: "manager-swarm-1", ManagerEndpoint: "https://manager-a.example.ts.net", Offer: offer, CeremonyCode: offer.Ceremony.Code})
 	if err != nil {
 		t.Fatalf("marshal remote pairing request: %v", err)
 	}
@@ -364,8 +360,8 @@ func TestSwarmRemotePairingRequestAllowsInviteTokenWithoutAttachToken(t *testing
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("swarm remote pairing request without attach token status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("swarm remote pairing request off-tailnet status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
 }
 
@@ -514,23 +510,27 @@ func (f fakeLocalAuthSwarmService) CreateInvite(input swarmruntime.CreateInviteI
 }
 
 func (f fakeLocalAuthSwarmService) SubmitEnrollment(input swarmruntime.SubmitEnrollmentInput) (swarmruntime.Enrollment, error) {
-	return swarmruntime.Enrollment{ID: "enroll-1", InviteToken: input.InviteToken, ChildSwarmID: input.ChildSwarmID, ChildName: input.ChildName, Status: swarmruntime.EnrollmentStatusPending}, nil
+	return swarmruntime.Enrollment{ID: "enroll-1", InviteToken: input.InviteToken, PrimarySwarmID: input.PrimarySwarmID, ChildSwarmID: input.ChildSwarmID, ChildName: input.ChildName, Status: swarmruntime.EnrollmentStatusPending}, nil
 }
 
 func (f fakeLocalAuthSwarmService) ListPendingEnrollments(int) ([]swarmruntime.Enrollment, error) {
 	return nil, nil
 }
 
-func (f fakeLocalAuthSwarmService) DecideEnrollment(swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error) {
-	return swarmruntime.Enrollment{}, nil, nil
+func (f fakeLocalAuthSwarmService) DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error) {
+	status := swarmruntime.EnrollmentStatusRejected
+	if input.Approve {
+		status = swarmruntime.EnrollmentStatusApproved
+	}
+	return swarmruntime.Enrollment{ID: input.EnrollmentID, Status: status}, nil, nil
 }
 
 func (f fakeLocalAuthSwarmService) PrepareRemoteBootstrapParentPeer(swarmruntime.PrepareRemoteBootstrapParentPeerInput) error {
 	return nil
 }
 
-func (f fakeLocalAuthSwarmService) ApproveManagedPairing(swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{}, nil
+func (f fakeLocalAuthSwarmService) ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
+	return swarmruntime.PairingState{PairingState: startupconfig.PairingStatePaired, ParentSwarmID: input.ManagerSwarmID}, nil
 }
 
 func (f fakeLocalAuthSwarmService) TrustManagedPeer(swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
