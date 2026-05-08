@@ -1863,7 +1863,7 @@ export function DesktopAppPage() {
     } finally {
       setPairingDecisionBusyID(null)
     }
-  }, [pairingConfirmations, queryClient, refreshPairingRequests]
+  }, [pairingConfirmations, queryClient, refreshPairingRequests])
 
   const openTodoModal = useCallback((workspacePath: string, workspaceName: string) => {
     const normalizedPath = workspacePath.trim()
