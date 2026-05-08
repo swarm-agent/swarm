@@ -86,6 +86,13 @@ func TestSwarmRemotePairingStartPostsManagedRequestToManager(t *testing.T) {
 	if len(managed.remotePairingPending) != 0 {
 		t.Fatalf("managed host should not store manager approval pending requests")
 	}
+	cfg, err := managed.loadStartupConfig()
+	if err != nil {
+		t.Fatalf("load managed startup config: %v", err)
+	}
+	if cfg.Child || strings.EqualFold(cfg.SwarmRole, startupconfig.SwarmRoleManaged) || strings.EqualFold(cfg.PairingState, startupconfig.PairingStatePaired) {
+		t.Fatalf("remote pairing start auto-linked managed host before manager approval: child=%t role=%q pairing=%q", cfg.Child, cfg.SwarmRole, cfg.PairingState)
+	}
 	for _, pending := range manager.remotePairingPending {
 		if pending.ManagedSwarmID != "managed-swarm-1" || pending.ManagerSwarmID != "manager-swarm-1" {
 			t.Fatalf("pending manager/managed = %q/%q", pending.ManagerSwarmID, pending.ManagedSwarmID)

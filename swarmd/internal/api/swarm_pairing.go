@@ -375,15 +375,6 @@ func (s *Server) handleSwarmEnroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if peerAuthToken := strings.TrimSpace(req.PeerAuthToken); peerAuthToken != "" {
-		if _, peers, err := s.swarm.DecideEnrollment(swarmruntime.DecideEnrollmentInput{EnrollmentID: enrollment.ID, Approve: true, Reason: "managed pairing approved", IncomingPeerAuthToken: peerAuthToken}); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		} else {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enrollment": enrollment, "trusted_peers": peers})
-			return
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "enrollment": enrollment})
 }
 
@@ -408,6 +399,10 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 	}
 	if err := requireSwarmModeEnabled(cfg); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.EqualFold(localSwarmRole(cfg), startupconfig.SwarmRoleManaged) || cfg.Child || strings.EqualFold(strings.TrimSpace(cfg.PairingState), startupconfig.PairingStatePaired) {
+		writeError(w, http.StatusConflict, errors.New("this host is already linked to a Manager; detach it locally before starting a new managed pairing"))
 		return
 	}
 	status, err := s.onboardingResponse(true)
