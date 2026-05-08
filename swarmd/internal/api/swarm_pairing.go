@@ -906,7 +906,7 @@ func (s *Server) handleSwarmDiscovery(w http.ResponseWriter, r *http.Request) {
 	}
 	if !swarmModeEnabled(cfg) {
 		response.Role = bootstrapRoleStandalone
-		response = redactSensitiveSwarmDiscoveryResponse(response, s.allowSensitiveOnboardingMetadata(r))
+		response = redactSensitiveSwarmDiscoveryResponse(response, s.allowSwarmDiscoveryIdentity(r))
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
@@ -917,8 +917,16 @@ func (s *Server) handleSwarmDiscovery(w http.ResponseWriter, r *http.Request) {
 	response.Endpoint = canonicalRemoteSwarmEndpoint(cfg, status)
 	response.TransportMode = bootstrapNetworkMode(cfg)
 	response.RendezvousTransports = transports
-	response = redactSensitiveSwarmDiscoveryResponse(response, s.allowSensitiveOnboardingMetadata(r))
+	response = redactSensitiveSwarmDiscoveryResponse(response, s.allowSwarmDiscoveryIdentity(r))
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) allowSwarmDiscoveryIdentity(r *http.Request) bool {
+	if s.allowSensitiveOnboardingMetadata(r) {
+		return true
+	}
+	ip := remoteRequestIP(r)
+	return ip != nil && (ip.IsLoopback() || isTailscaleIP(ip))
 }
 
 func redactSensitiveSwarmDiscoveryResponse(response swarmDiscoveryResponse, allowSensitive bool) swarmDiscoveryResponse {
