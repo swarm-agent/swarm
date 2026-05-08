@@ -608,17 +608,23 @@ func relationshipForSwarmNodeRole(role string) string {
 
 func mapTrustedPeerTarget(peer swarmruntime.TrustedPeer) (swarmTarget, bool) {
 	swarmID := strings.TrimSpace(peer.SwarmID)
-	if swarmID == "" || !strings.EqualFold(strings.TrimSpace(peer.Relationship), swarmruntime.RelationshipManaged) {
+	relationship := strings.ToLower(strings.TrimSpace(peer.Relationship))
+	if swarmID == "" || (relationship != swarmruntime.RelationshipManaged && relationship != swarmruntime.RelationshipManager) {
 		return swarmTarget{}, false
 	}
 	backendURL := trustedPeerBackendURL(peer)
 	online := backendURL != ""
+	role := firstNonEmpty(strings.TrimSpace(peer.Role), relationship)
+	kind := "host"
+	if relationship == swarmruntime.RelationshipManager {
+		kind = "manager"
+	}
 	return swarmTarget{
 		SwarmID:      swarmID,
 		Name:         firstNonEmpty(strings.TrimSpace(peer.Name), swarmID),
-		Role:         firstNonEmpty(strings.TrimSpace(peer.Role), swarmruntime.RelationshipManaged),
-		Relationship: swarmruntime.RelationshipManaged,
-		Kind:         "host",
+		Role:         role,
+		Relationship: relationship,
+		Kind:         kind,
 		AttachStatus: firstNonEmpty(strings.TrimSpace(peer.TransportMode), startupconfig.NetworkModeTailscale),
 		Online:       online,
 		Selectable:   online,

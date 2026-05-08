@@ -498,6 +498,14 @@ func (s *Server) handleDeployContainerAttachFinalize(w http.ResponseWriter, r *h
 	})
 }
 
+func syncRequestWithPeerAuth(r *http.Request, req deployruntime.ContainerSyncCredentialRequestInput) deployruntime.ContainerSyncCredentialRequestInput {
+	if peerSwarmID, ok := authorizedPeerSwarmID(r); ok {
+		req.PeerSwarmID = peerSwarmID
+		req.PeerAuthorized = true
+	}
+	return req
+}
+
 func (s *Server) handleDeployContainerSyncCredentials(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -516,11 +524,11 @@ func (s *Server) handleDeployContainerSyncCredentials(w http.ResponseWriter, r *
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	bundle, err := s.deployContainers.SyncCredentialBundle(context.Background(), deployruntime.ContainerSyncCredentialRequestInput{
+	bundle, err := s.deployContainers.SyncCredentialBundle(context.Background(), syncRequestWithPeerAuth(r, deployruntime.ContainerSyncCredentialRequestInput{
 		DeploymentID:    req.DeploymentID,
 		BootstrapSecret: req.BootstrapSecret,
 		VaultPassword:   req.VaultPassword,
-	})
+	}))
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(strings.ToLower(err.Error()), "unlock") {
@@ -557,10 +565,10 @@ func (s *Server) handleDeployContainerSyncAgents(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	bundle, err := s.deployContainers.SyncAgentBundle(context.Background(), deployruntime.ContainerSyncCredentialRequestInput{
+	bundle, err := s.deployContainers.SyncAgentBundle(context.Background(), syncRequestWithPeerAuth(r, deployruntime.ContainerSyncCredentialRequestInput{
 		DeploymentID:    req.DeploymentID,
 		BootstrapSecret: req.BootstrapSecret,
-	})
+	}))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":      false,
@@ -600,7 +608,7 @@ func (s *Server) handleDeployContainerSyncSkills(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusInternalServerError, errors.New("deploy container skill sync not configured"))
 		return
 	}
-	bundle, err := syncSvc.SyncSkillBundle(context.Background(), deployruntime.ContainerSyncCredentialRequestInput{DeploymentID: req.DeploymentID, BootstrapSecret: req.BootstrapSecret})
+	bundle, err := syncSvc.SyncSkillBundle(context.Background(), syncRequestWithPeerAuth(r, deployruntime.ContainerSyncCredentialRequestInput{DeploymentID: req.DeploymentID, BootstrapSecret: req.BootstrapSecret}))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSyncSkills, "error": err.Error()})
 		return
@@ -632,7 +640,7 @@ func (s *Server) handleDeployContainerSyncPermissions(w http.ResponseWriter, r *
 		writeError(w, http.StatusInternalServerError, errors.New("deploy container permission sync not configured"))
 		return
 	}
-	bundle, err := syncSvc.SyncPermissionBundle(context.Background(), deployruntime.ContainerSyncCredentialRequestInput{DeploymentID: req.DeploymentID, BootstrapSecret: req.BootstrapSecret})
+	bundle, err := syncSvc.SyncPermissionBundle(context.Background(), syncRequestWithPeerAuth(r, deployruntime.ContainerSyncCredentialRequestInput{DeploymentID: req.DeploymentID, BootstrapSecret: req.BootstrapSecret}))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSyncPermissions, "error": err.Error()})
 		return

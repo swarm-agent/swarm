@@ -63,6 +63,14 @@ type codexOAuthSession struct {
 	UpdatedAt    time.Time
 }
 
+type peerAuthContextKey string
+
+const peerAuthAuthorizedContextKey peerAuthContextKey = "peer-auth-authorized"
+
+type peerAuthContextValue struct {
+	SwarmID string
+}
+
 type Server struct {
 	auth                        *auth.Service
 	agents                      *agentruntime.Service
@@ -3619,7 +3627,8 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 				return
 			}
 			if peerOK {
-				next.ServeHTTP(w, r)
+				ctx := context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: peerSwarmID})
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 			log.Printf("peer auth denied method=%s path=%s remote_addr=%s peer_swarm_id=%q", r.Method, r.URL.Path, strings.TrimSpace(r.RemoteAddr), peerSwarmID)
@@ -3695,12 +3704,26 @@ func extractPeerAuth(r *http.Request) (string, string) {
 	return strings.TrimSpace(r.Header.Get(peerAuthSwarmIDHeader)), strings.TrimSpace(r.Header.Get(peerAuthTokenHeader))
 }
 
+func authorizedPeerSwarmID(r *http.Request) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	value, ok := r.Context().Value(peerAuthAuthorizedContextKey).(peerAuthContextValue)
+	if !ok {
+		return "", false
+	}
+	swarmID := strings.TrimSpace(value.SwarmID)
+	return swarmID, swarmID != ""
+}
+
 func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 	switch r.URL.Path {
 	case "/healthz", "/readyz":
 		return true
 	case "/v1/auth/desktop/session":
 		return r.Method == http.MethodGet && shouldUseDesktopLocalSessionAuth(r)
+	case "/v1/onboarding":
+		return r.Method == http.MethodGet
 	case "/v1/update/status", "/v1/update/local-containers":
 		return loopback && r.Method == http.MethodGet
 	case "/v1/swarm/discovery":

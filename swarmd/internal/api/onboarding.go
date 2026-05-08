@@ -536,7 +536,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		return response, nil
 	}
 	response.Tailscale.CandidateURL = tailscaleCandidateURL(cfg, tailscale)
-	if detectServe {
+	if detectServe && shouldDetectTailscaleServeForOnboarding(cfg, response.Tailscale) {
 		response.Tailscale.Serve = detectTailscaleServe(cfg, response.Tailscale)
 	} else {
 		response.Tailscale.Serve = expectedTailscaleServe(cfg, response.Tailscale)
@@ -1056,6 +1056,13 @@ func expectedTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTa
 		ExpectedPeerTransportProxy: httpProxyTarget("127.0.0.1", cfg.PeerTransportPort),
 		Command:                    tailscaleServeCommand(cfg),
 	}
+}
+
+func shouldDetectTailscaleServeForOnboarding(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) bool {
+	if !swarmModeEnabled(cfg) || bootstrapNetworkMode(cfg) != startupconfig.NetworkModeTailscale {
+		return false
+	}
+	return strings.TrimSpace(cfg.TailscaleURL) == "" || strings.TrimSpace(tailscale.TailnetURL) == "" || strings.TrimSpace(tailscale.DNSName) != ""
 }
 
 func detectTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) onboardingTailscaleServePayload {

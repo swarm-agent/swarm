@@ -380,7 +380,7 @@ export function LinkSwarmModal({
             Managed Hosting
           </h2>
           <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-            Choose a Tailscale swarmd host to link as a Managed Host.
+            Choose a Tailscale swarmd host to link as a Managed Host. Linking opts that host into full Manager-owned sync.
           </p>
         </div>
 
@@ -399,7 +399,7 @@ export function LinkSwarmModal({
               <div>
                 This host is already linked to a Manager{linkedManagerID ? ` (${linkedManagerID})` : ''}. Pairing is {linkedPairingState || 'paired'}.
               </div>
-              <div>Sync is not enabled yet. Linking another Manager is disabled until this local link is cleared.</div>
+              <div>Managed sync is enabled by this link. This host pulls credentials/API keys, agents, custom tools, skills, and permissions from its Manager until it is detached.</div>
               <div className="flex justify-end">
                 <Button type="button" variant="outline" onClick={() => void forceDetachManagedHost()} disabled={detachBusy}>
                   {detachBusy ? <Loader2 size={14} className="animate-spin" /> : null}
@@ -446,7 +446,7 @@ export function LinkSwarmModal({
                   Tailscale swarms
                 </div>
                 <div className="text-xs text-[var(--app-text-muted)]">
-                  Select the host to link to this Manager swarm.
+                  Select the host to link to this Manager swarm. It will continuously sync credentials/API keys, agents, custom tools, skills, and permissions from this Manager; detach/unlink is the removal path.
                 </div>
               </div>
               <Button
@@ -541,7 +541,7 @@ export function LinkSwarmModal({
                   </div>
                   <div className="mt-1 text-sm text-[var(--app-text-muted)]">
                     {status === 'paired'
-                      ? 'Pairing completed. Closing…'
+                      ? 'Pairing completed and managed sync is configured. Closing…'
                       : `Approve the request on the Manager swarm and confirm code ${formatPairingCode(ceremonyCode)}. This modal will close when pairing completes.`}
                   </div>
                   {listenError && status === 'pending' ? (
@@ -563,7 +563,7 @@ export function LinkSwarmModal({
                 ? 'Paired.'
                 : alreadyLinkedManagedHost
                   ? 'This host is already linked to a Manager.'
-                  : 'Press Link to send the request.'}
+                  : 'Press Link to opt the host into full Manager-owned sync.'}
           </div>
           <div className="flex gap-3">
             <Button

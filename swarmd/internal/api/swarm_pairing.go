@@ -20,8 +20,10 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	deployruntime "swarm/packages/swarmd/internal/deploy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
 type swarmInviteCreateRequest struct {
@@ -115,18 +117,19 @@ type swarmRemotePairingResponse struct {
 }
 
 type swarmRemotePairingFinalizeRequest struct {
-	ManagerSwarmID        string                       `json:"manager_swarm_id"`
-	ManagerName           string                       `json:"manager_name,omitempty"`
-	ManagerPublicKey      string                       `json:"manager_public_key,omitempty"`
-	ManagerFingerprint    string                       `json:"manager_fingerprint,omitempty"`
-	TransportMode         string                       `json:"transport_mode,omitempty"`
-	RendezvousTransports  []onboardingTransportPayload `json:"rendezvous_transports,omitempty"`
-	PeerAuthToken         string                       `json:"peer_auth_token,omitempty"`
-	IncomingPeerAuthToken string                       `json:"incoming_peer_auth_token,omitempty"`
-	PrimarySwarmID        string                       `json:"primary_swarm_id,omitempty"`
-	PrimaryName           string                       `json:"primary_name,omitempty"`
-	PrimaryPublicKey      string                       `json:"primary_public_key,omitempty"`
-	PrimaryFingerprint    string                       `json:"primary_fingerprint,omitempty"`
+	ManagerSwarmID        string                                     `json:"manager_swarm_id"`
+	ManagerName           string                                     `json:"manager_name,omitempty"`
+	ManagerPublicKey      string                                     `json:"manager_public_key,omitempty"`
+	ManagerFingerprint    string                                     `json:"manager_fingerprint,omitempty"`
+	TransportMode         string                                     `json:"transport_mode,omitempty"`
+	RendezvousTransports  []onboardingTransportPayload               `json:"rendezvous_transports,omitempty"`
+	PeerAuthToken         string                                     `json:"peer_auth_token,omitempty"`
+	IncomingPeerAuthToken string                                     `json:"incoming_peer_auth_token,omitempty"`
+	PrimarySwarmID        string                                     `json:"primary_swarm_id,omitempty"`
+	PrimaryName           string                                     `json:"primary_name,omitempty"`
+	PrimaryPublicKey      string                                     `json:"primary_public_key,omitempty"`
+	PrimaryFingerprint    string                                     `json:"primary_fingerprint,omitempty"`
+	InitialSync           deployruntime.ManagedHostInitialSyncBundle `json:"initial_sync,omitempty"`
 }
 
 type swarmRemotePairingApprovalRequest struct {
@@ -278,7 +281,7 @@ func (s *Server) handleSwarmInvites(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	status, err := s.onboardingResponse(true)
+	status, err := s.onboardingResponseWithServeDetection(true, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -341,7 +344,7 @@ func (s *Server) handleSwarmEnroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	status, err := s.onboardingResponse(true)
+	status, err := s.onboardingResponseWithServeDetection(true, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -783,14 +786,45 @@ func (s *Server) handleSwarmRemotePairingFinalize(w http.ResponseWriter, r *http
 	cfg.SwarmRole = startupconfig.SwarmRoleManaged
 	cfg.ParentSwarmID = managerSwarmID
 	cfg.PairingState = startupconfig.PairingStatePaired
+	modules := workspaceruntime.NormalizeReplicationSyncModules(req.InitialSync.SyncModules)
+	if len(modules) == 0 {
+		modules = workspaceruntime.DefaultReplicationSyncModules()
+	}
+	cfg.ManagedHostSync.Mode = firstNonEmpty(strings.TrimSpace(req.InitialSync.SyncMode), workspaceruntime.ReplicationSyncModeManaged)
+	cfg.ManagedHostSync.Modules = modules
+	cfg.ManagedHostSync.OwnerSwarmID = firstNonEmpty(strings.TrimSpace(req.InitialSync.OwnerSwarmID), managerSwarmID)
+	cfg.ManagedHostSync.HostAPIBaseURL = strings.TrimRight(strings.TrimSpace(req.InitialSync.HostAPIBaseURL), "/")
+	if cfg.ManagedHostSync.HostAPIBaseURL == "" {
+		cfg.ManagedHostSync.HostAPIBaseURL = normalizeRemoteSwarmEndpoint(firstTransportForKind(req.RendezvousTransports, startupconfig.NetworkModeTailscale))
+	}
+	cfg.ManagedHostSync.SyncCredentialURL = strings.TrimSpace(req.InitialSync.SyncCredentialURL)
+	if cfg.ManagedHostSync.SyncCredentialURL == "" && cfg.ManagedHostSync.HostAPIBaseURL != "" {
+		cfg.ManagedHostSync.SyncCredentialURL = strings.TrimRight(cfg.ManagedHostSync.HostAPIBaseURL, "/") + "/v1/deploy/container/sync/credentials"
+	}
+	cfg.ManagedHostSync.SyncAgentURL = strings.TrimSpace(req.InitialSync.SyncAgentURL)
+	if cfg.ManagedHostSync.SyncAgentURL == "" && cfg.ManagedHostSync.HostAPIBaseURL != "" {
+		cfg.ManagedHostSync.SyncAgentURL = strings.TrimRight(cfg.ManagedHostSync.HostAPIBaseURL, "/") + "/v1/deploy/container/sync/agents"
+	}
 	if err := startupconfig.Write(cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	var syncStatus *deployruntime.ManagedHostSyncStatus
+	if syncSvc, ok := s.deployContainers.(interface {
+		ApplyManagedHostInitialSyncBundle(context.Context, string, deployruntime.ManagedHostInitialSyncBundle) (deployruntime.ManagedHostSyncStatus, error)
+	}); ok && len(req.InitialSync.CredentialBundle.Bundle) > 0 {
+		status, err := syncSvc.ApplyManagedHostInitialSyncBundle(r.Context(), managerSwarmID, req.InitialSync)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("apply managed host initial sync: %w", err))
+			return
+		}
+		syncStatus = &status
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"path_id": "swarm.remote_pairing.finalize.v1",
-		"pairing": pairing,
+		"ok":          true,
+		"path_id":     "swarm.remote_pairing.finalize.v1",
+		"pairing":     pairing,
+		"sync_status": syncStatus,
 	})
 }
 
@@ -1049,7 +1083,19 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		ProxyPathPrefix:      "/v1/swarm/containers/local",
 		RendezvousTransports: append([]onboardingTransportPayload(nil), pending.ManagedRendezvousTransports...),
 	}
-	if err := finalizeApprovedRemoteSwarmPairing(pending); err != nil {
+	managerBackendURL := firstNonEmpty(pending.ManagerEndpoint, normalizeRemoteSwarmEndpoint(firstTransportForKind(pending.ManagerRendezvousTransports, startupconfig.NetworkModeTailscale)))
+	initialSync := deployruntime.ManagedHostInitialSyncBundle{}
+	if syncSvc, ok := s.deployContainers.(interface {
+		ManagedHostInitialSyncBundle(context.Context, string, string) (deployruntime.ManagedHostInitialSyncBundle, error)
+	}); ok {
+		bundle, err := syncSvc.ManagedHostInitialSyncBundle(r.Context(), managerBackendURL, pending.ManagedSwarmID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("prepare managed host initial sync: %w", err))
+			return
+		}
+		initialSync = bundle
+	}
+	if err := finalizeApprovedRemoteSwarmPairing(pending, initialSync); err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Errorf("finalize managed pairing on %s: %w", firstNonEmpty(pending.ManagedEndpoint, pending.ManagedSwarmID), err))
 		return
 	}
@@ -1065,7 +1111,7 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, swarmRemotePairingApprovalResponse{OK: true, Status: startupconfig.PairingStatePaired, RequestID: requestID, Invite: invite, Pairing: pairing, Enrollment: enrollment, Routing: &routing})
 }
 
-func finalizeApprovedRemoteSwarmPairing(pending swarmRemotePairingPendingRequest) error {
+func finalizeApprovedRemoteSwarmPairing(pending swarmRemotePairingPendingRequest, initialSync deployruntime.ManagedHostInitialSyncBundle) error {
 	managerSwarmID := strings.TrimSpace(pending.ManagerSwarmID)
 	managedEndpoint := normalizeRemoteSwarmEndpoint(pending.ManagedEndpoint)
 	if managerSwarmID == "" {
@@ -1095,6 +1141,7 @@ func finalizeApprovedRemoteSwarmPairing(pending swarmRemotePairingPendingRequest
 		PrimaryName:           pending.ManagerName,
 		PrimaryPublicKey:      pending.ManagerPublicKey,
 		PrimaryFingerprint:    pending.ManagerFingerprint,
+		InitialSync:           initialSync,
 	}, &response, map[string]string{
 		peerAuthSwarmIDHeader: managerSwarmID,
 		peerAuthTokenHeader:   managerToManagedPeerToken,

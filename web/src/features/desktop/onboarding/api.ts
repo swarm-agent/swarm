@@ -156,6 +156,11 @@ export interface SwarmLocalState {
     last_decision_reason: string
     last_updated_by_role: string
     rendezvous_transports: DesktopOnboardingTransport[]
+    managed_auth_owner_swarm_id?: string
+    managed_auth_snapshot_hash?: string
+    managed_auth_applied_at?: number
+    managed_auth_last_attempt_at?: number
+    managed_auth_last_error?: string
   }
   trusted_peers: SwarmTrustedPeer[]
   current_group_id?: string
@@ -351,6 +356,11 @@ export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingS
     rendezvousTransports: Array.isArray(swarmState.pairing?.rendezvous_transports)
       ? swarmState.pairing.rendezvous_transports.map(mapTransport)
       : [],
+    managedAuthOwnerSwarmID: String(swarmState.pairing?.managed_auth_owner_swarm_id ?? '').trim(),
+    managedAuthSnapshotHash: String(swarmState.pairing?.managed_auth_snapshot_hash ?? '').trim(),
+    managedAuthAppliedAt: typeof swarmState.pairing?.managed_auth_applied_at === 'number' ? swarmState.pairing.managed_auth_applied_at : 0,
+    managedAuthLastAttemptAt: typeof swarmState.pairing?.managed_auth_last_attempt_at === 'number' ? swarmState.pairing.managed_auth_last_attempt_at : 0,
+    managedAuthLastError: String(swarmState.pairing?.managed_auth_last_error ?? '').trim(),
   }
   const auth: DesktopOnboardingAuth = {
     credentialCount: heuristics.credentialCount,

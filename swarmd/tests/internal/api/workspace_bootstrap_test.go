@@ -355,12 +355,20 @@ func (f fakeWorkspaceBootstrapSwarmService) ApproveManagedPairing(input swarmrun
 	return swarmruntime.PairingState{}, nil
 }
 
+func (f fakeWorkspaceBootstrapSwarmService) TrustManagedPeer(input swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
+	return swarmruntime.TrustedPeer{}, nil
+}
+
 func (f fakeWorkspaceBootstrapSwarmService) UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
 	return swarmruntime.PairingState{}, nil
 }
 
 func (f fakeWorkspaceBootstrapSwarmService) DetachToStandalone(localSwarmID string) error {
 	return nil
+}
+
+func (f fakeWorkspaceBootstrapSwarmService) RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
+	return swarmruntime.RemoveManagedPeerResult{}, nil
 }
 
 func osMkdirAll(path string) error {

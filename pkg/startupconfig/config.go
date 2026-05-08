@@ -70,8 +70,18 @@ type FileConfig struct {
 	PeerTransportPort       int
 	ParentSwarmID           string
 	PairingState            string
+	ManagedHostSync         ManagedHostSyncConfig
 	DeployContainer         DeployContainerBootstrap
 	RemoteDeploy            RemoteDeployBootstrap
+}
+
+type ManagedHostSyncConfig struct {
+	Mode              string
+	Modules           []string
+	OwnerSwarmID      string
+	HostAPIBaseURL    string
+	SyncCredentialURL string
+	SyncAgentURL      string
 }
 
 type DeployContainerBootstrap struct {
@@ -214,6 +224,7 @@ func Default(path string) FileConfig {
 		PeerTransportPort:       DefaultPeerTransportPort,
 		ParentSwarmID:           "",
 		PairingState:            "",
+		ManagedHostSync:         ManagedHostSyncConfig{},
 		DeployContainer:         DeployContainerBootstrap{},
 		RemoteDeploy:            RemoteDeployBootstrap{},
 	}
@@ -423,6 +434,15 @@ parent_swarm_id = %s
 # Persisted local pairing state.
 pairing_state = %s
 
+# Managed Host Link Mode sync. Active whenever swarm_role = managed and pairing_state = paired.
+# To stop management sync, unlink/detach this Managed Host from its Manager.
+managed_host_sync_mode = %s
+managed_host_sync_modules = %s
+managed_host_sync_owner_swarm_id = %s
+managed_host_sync_host_api_base_url = %s
+managed_host_sync_credential_url = %s
+managed_host_sync_agent_url = %s
+
 # Deploy/container child attach bootstrap payload.
 deploy_container_enabled = %t
 deploy_container_host_driven = %t
@@ -448,7 +468,7 @@ remote_deploy_sync_enabled = %t
 remote_deploy_sync_mode = %s
 remote_deploy_sync_owner_swarm_id = %s
 remote_deploy_sync_credential_url = %s
-`, cfg.Mode, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.SwarmMode, cfg.Child, cfg.SwarmRole, cfg.NetworkMode, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
+`, cfg.Mode, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.SwarmName, cfg.SwarmMode, cfg.Child, cfg.SwarmRole, cfg.NetworkMode, cfg.TailscaleURL, cfg.PeerTransportPort, cfg.ParentSwarmID, cfg.PairingState, cfg.ManagedHostSync.Mode, formatCSVList(cfg.ManagedHostSync.Modules), cfg.ManagedHostSync.OwnerSwarmID, cfg.ManagedHostSync.HostAPIBaseURL, cfg.ManagedHostSync.SyncCredentialURL, cfg.ManagedHostSync.SyncAgentURL, cfg.DeployContainer.Enabled, cfg.DeployContainer.HostDriven, cfg.DeployContainer.SyncEnabled, cfg.DeployContainer.SyncMode, formatCSVList(cfg.DeployContainer.SyncModules), cfg.DeployContainer.SyncOwnerSwarmID, cfg.DeployContainer.SyncCredentialURL, cfg.DeployContainer.SyncAgentURL, cfg.DeployContainer.DeploymentID, cfg.DeployContainer.HostAPIBaseURL, cfg.DeployContainer.HostDesktopURL, cfg.DeployContainer.LocalTransportSocketPath, cfg.DeployContainer.BootstrapSecret, cfg.DeployContainer.VerificationCode, cfg.RemoteDeploy.Enabled, cfg.RemoteDeploy.SessionID, cfg.RemoteDeploy.HostAPIBaseURL, cfg.RemoteDeploy.HostDesktopURL, cfg.RemoteDeploy.SyncEnabled, cfg.RemoteDeploy.SyncMode, cfg.RemoteDeploy.SyncOwnerSwarmID, cfg.RemoteDeploy.SyncCredentialURL)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -734,6 +754,48 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			rawSeen[key] = struct{}{}
 			seen["pairing_state"] = struct{}{}
 			cfg.PairingState = normalizePairingState(value)
+		case "managed_host_sync_mode":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["managed_host_sync_mode"] = struct{}{}
+			cfg.ManagedHostSync.Mode = strings.TrimSpace(value)
+		case "managed_host_sync_modules":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["managed_host_sync_modules"] = struct{}{}
+			cfg.ManagedHostSync.Modules = parseCSVList(value)
+		case "managed_host_sync_owner_swarm_id":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["managed_host_sync_owner_swarm_id"] = struct{}{}
+			cfg.ManagedHostSync.OwnerSwarmID = strings.TrimSpace(value)
+		case "managed_host_sync_host_api_base_url":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["managed_host_sync_host_api_base_url"] = struct{}{}
+			cfg.ManagedHostSync.HostAPIBaseURL = strings.TrimSpace(value)
+		case "managed_host_sync_credential_url":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["managed_host_sync_credential_url"] = struct{}{}
+			cfg.ManagedHostSync.SyncCredentialURL = strings.TrimSpace(value)
+		case "managed_host_sync_agent_url":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen["managed_host_sync_agent_url"] = struct{}{}
+			cfg.ManagedHostSync.SyncAgentURL = strings.TrimSpace(value)
 		case "deploy_container_enabled":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -1054,6 +1116,18 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			fmt.Sprintf("pairing_state = %s", cfg.PairingState),
 		)
 	}
+	if _, ok := seen["managed_host_sync_mode"]; !ok {
+		lines = append(lines,
+			"# Managed Host Link Mode sync. Active whenever swarm_role = managed and pairing_state = paired.",
+			"# To stop management sync, unlink/detach this Managed Host from its Manager.",
+			fmt.Sprintf("managed_host_sync_mode = %s", cfg.ManagedHostSync.Mode),
+			fmt.Sprintf("managed_host_sync_modules = %s", formatCSVList(cfg.ManagedHostSync.Modules)),
+			fmt.Sprintf("managed_host_sync_owner_swarm_id = %s", cfg.ManagedHostSync.OwnerSwarmID),
+			fmt.Sprintf("managed_host_sync_host_api_base_url = %s", cfg.ManagedHostSync.HostAPIBaseURL),
+			fmt.Sprintf("managed_host_sync_credential_url = %s", cfg.ManagedHostSync.SyncCredentialURL),
+			fmt.Sprintf("managed_host_sync_agent_url = %s", cfg.ManagedHostSync.SyncAgentURL),
+		)
+	}
 	if _, ok := seen["deploy_container_enabled"]; !ok {
 		lines = append(lines,
 			"# Deploy/container child attach bootstrap payload.",
@@ -1126,12 +1200,12 @@ func validate(cfg FileConfig) error {
 }
 
 func requiredKeys() []string {
-	return []string{startupModeKey, devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "swarm_name", swarmModeKey, "child", swarmRoleKey, bootstrapModeKey, "tailscale_url", "peer_transport_port", "parent_swarm_id", "pairing_state", "deploy_container_enabled", "deploy_container_sync_enabled", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_enabled", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_enabled", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url"}
+	return []string{startupModeKey, devModeKey, devRootKey, "host", "port", "advertise_host", "advertise_port", "desktop_port", "bypass_permissions", "retain_tool_output_history", "swarm_name", swarmModeKey, "child", swarmRoleKey, bootstrapModeKey, "tailscale_url", "peer_transport_port", "parent_swarm_id", "pairing_state", "managed_host_sync_mode", "managed_host_sync_modules", "managed_host_sync_owner_swarm_id", "managed_host_sync_host_api_base_url", "managed_host_sync_credential_url", "managed_host_sync_agent_url", "deploy_container_enabled", "deploy_container_sync_enabled", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_enabled", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_enabled", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url"}
 }
 
 func allowsEmptyValue(key string) bool {
 	switch key {
-	case devRootKey, swarmRoleKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id", "parent_swarm_id", "pairing_state", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url":
+	case devRootKey, swarmRoleKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id", "parent_swarm_id", "pairing_state", "managed_host_sync_mode", "managed_host_sync_modules", "managed_host_sync_owner_swarm_id", "managed_host_sync_host_api_base_url", "managed_host_sync_credential_url", "managed_host_sync_agent_url", "deploy_container_sync_mode", "deploy_container_sync_modules", "deploy_container_sync_owner_swarm_id", "deploy_container_sync_credential_url", "deploy_container_sync_agent_url", "deploy_container_deployment_id", "deploy_container_host_api_base_url", "deploy_container_host_desktop_url", "deploy_container_local_transport_socket_path", "deploy_container_bootstrap_secret", "deploy_container_verification_code", "remote_deploy_session_id", "remote_deploy_host_api_base_url", "remote_deploy_host_desktop_url", "remote_deploy_sync_mode", "remote_deploy_sync_owner_swarm_id", "remote_deploy_sync_credential_url":
 		return true
 	default:
 		return false

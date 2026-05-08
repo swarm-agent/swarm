@@ -46,6 +46,11 @@ export interface DesktopOnboardingPairingWire {
   last_decision_reason?: string
   last_updated_by_role?: string
   rendezvous_transports?: DesktopOnboardingTransportWire[]
+  managed_auth_owner_swarm_id?: string
+  managed_auth_snapshot_hash?: string
+  managed_auth_applied_at?: number
+  managed_auth_last_attempt_at?: number
+  managed_auth_last_error?: string
 }
 
 export interface DesktopOnboardingTailscaleServeWire {
@@ -166,6 +171,11 @@ export interface DesktopOnboardingPairing {
   lastDecisionReason: string
   lastUpdatedByRole: string
   rendezvousTransports: DesktopOnboardingTransport[]
+  managedAuthOwnerSwarmID: string
+  managedAuthSnapshotHash: string
+  managedAuthAppliedAt: number
+  managedAuthLastAttemptAt: number
+  managedAuthLastError: string
 }
 
 export interface DesktopOnboardingTailscaleServe {

@@ -57,14 +57,19 @@ type LocalNodeState struct {
 }
 
 type PairingState struct {
-	PairingState         string             `json:"pairing_state"`
-	ParentSwarmID        string             `json:"parent_swarm_id,omitempty"`
-	ActiveInviteID       string             `json:"active_invite_id,omitempty"`
-	LastEnrollmentID     string             `json:"last_enrollment_id,omitempty"`
-	LastDecision         string             `json:"last_decision,omitempty"`
-	LastDecisionReason   string             `json:"last_decision_reason,omitempty"`
-	LastUpdatedByRole    string             `json:"last_updated_by_role,omitempty"`
-	RendezvousTransports []TransportSummary `json:"rendezvous_transports,omitempty"`
+	PairingState             string             `json:"pairing_state"`
+	ParentSwarmID            string             `json:"parent_swarm_id,omitempty"`
+	ActiveInviteID           string             `json:"active_invite_id,omitempty"`
+	LastEnrollmentID         string             `json:"last_enrollment_id,omitempty"`
+	LastDecision             string             `json:"last_decision,omitempty"`
+	LastDecisionReason       string             `json:"last_decision_reason,omitempty"`
+	LastUpdatedByRole        string             `json:"last_updated_by_role,omitempty"`
+	RendezvousTransports     []TransportSummary `json:"rendezvous_transports,omitempty"`
+	ManagedAuthOwnerSwarmID  string             `json:"managed_auth_owner_swarm_id,omitempty"`
+	ManagedAuthSnapshotHash  string             `json:"managed_auth_snapshot_hash,omitempty"`
+	ManagedAuthAppliedAt     int64              `json:"managed_auth_applied_at,omitempty"`
+	ManagedAuthLastAttemptAt int64              `json:"managed_auth_last_attempt_at,omitempty"`
+	ManagedAuthLastError     string             `json:"managed_auth_last_error,omitempty"`
 }
 
 type Invite struct {
@@ -997,14 +1002,19 @@ func toLocalNodeState(record pebblestore.SwarmLocalNodeRecord) LocalNodeState {
 
 func toPairingState(record pebblestore.SwarmLocalPairingRecord) PairingState {
 	return PairingState{
-		PairingState:         record.PairingState,
-		ParentSwarmID:        record.ParentSwarmID,
-		ActiveInviteID:       record.ActiveInviteID,
-		LastEnrollmentID:     record.LastEnrollmentID,
-		LastDecision:         record.LastDecision,
-		LastDecisionReason:   record.LastDecisionReason,
-		LastUpdatedByRole:    record.LastUpdatedByRole,
-		RendezvousTransports: fromStoreTransports(record.RendezvousTransports),
+		PairingState:             record.PairingState,
+		ParentSwarmID:            record.ParentSwarmID,
+		ActiveInviteID:           record.ActiveInviteID,
+		LastEnrollmentID:         record.LastEnrollmentID,
+		LastDecision:             record.LastDecision,
+		LastDecisionReason:       record.LastDecisionReason,
+		LastUpdatedByRole:        record.LastUpdatedByRole,
+		RendezvousTransports:     fromStoreTransports(record.RendezvousTransports),
+		ManagedAuthOwnerSwarmID:  record.ManagedAuthOwnerSwarmID,
+		ManagedAuthSnapshotHash:  record.ManagedAuthSnapshotHash,
+		ManagedAuthAppliedAt:     record.ManagedAuthAppliedAt,
+		ManagedAuthLastAttemptAt: record.ManagedAuthLastAttemptAt,
+		ManagedAuthLastError:     record.ManagedAuthLastError,
 	}
 }
 

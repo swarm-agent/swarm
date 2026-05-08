@@ -287,6 +287,18 @@ function formatRemoteSessionStatus(value: string | null | undefined): string {
   }
 }
 
+function formatManagedSyncTimestamp(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 'not applied yet'
+  }
+  return new Date(value).toLocaleString()
+}
+
+function compactSnapshotHash(value: string | null | undefined): string {
+  const normalized = String(value ?? '').trim()
+  return normalized.length > 12 ? normalized.slice(0, 12) : normalized
+}
+
 function summarizeWorkspaceBootstrap(item: DeployContainerWorkspaceBootstrap): string {
   const label = item.source_workspace_name || item.source_workspace_path || item.target_workspace_path || 'Workspace'
   const details = [
@@ -1008,6 +1020,28 @@ export function DesktopSwarmDashboard() {
 
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const refreshPendingPairings = () => {
+      void fetchPendingRemoteSwarmPairings()
+        .then((items) => {
+          if (!cancelled) {
+            setPendingPairings(items)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setError((current) => current ?? (err instanceof Error ? err.message : 'Failed to load pending pairing requests'))
+          }
+        })
+    }
+    const timer = window.setInterval(refreshPendingPairings, 5_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
     }
   }, [])
 
@@ -1838,7 +1872,7 @@ export function DesktopSwarmDashboard() {
                   <Badge tone={localTailscaleHosting.tone}>{localTailscaleHosting.summary}</Badge>
                   {localManagedLinked ? <Badge tone="neutral">Manager: {localManagerDisplay}</Badge> : null}
                   {localManagedLinked && localPairingState ? <Badge tone="neutral">Pairing: {formatUnderscoreLabel(localPairingState)}</Badge> : null}
-                  {localManagedLinked ? <Badge tone="warning">Sync not enabled yet</Badge> : null}
+                  {localManagedLinked ? <Badge tone={onboardingStatus?.pairing.managedAuthLastError ? 'warning' : onboardingStatus?.pairing.managedAuthSnapshotHash ? 'live' : 'neutral'}>{onboardingStatus?.pairing.managedAuthLastError ? 'Managed sync error' : onboardingStatus?.pairing.managedAuthSnapshotHash ? 'Managed sync current' : 'Managed sync pending'}</Badge> : null}
                 </div>
               </div>
             </div>
@@ -1851,7 +1885,12 @@ export function DesktopSwarmDashboard() {
 
           {localManagedLinked ? (
             <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-transparent p-3 text-sm text-[var(--app-text-muted)]">
-              <div>This host is linked to {localManagerDisplay}{localManagerSwarmID ? ` (${localManagerSwarmID})` : ''}. Manager-only controls are disabled here. Sync is not enabled yet.</div>
+              <div>This host is linked to {localManagerDisplay}{localManagerSwarmID ? ` (${localManagerSwarmID})` : ''}. Manager-only controls are disabled here. Managed sync pulls credentials/API keys, agents, custom tools, skills, and permissions from the Manager.</div>
+              <div className="mt-2 grid gap-1 text-xs">
+                <div>Snapshot: <span className="font-mono text-[var(--app-text)]">{compactSnapshotHash(onboardingStatus?.pairing.managedAuthSnapshotHash) || 'pending'}</span></div>
+                <div>Last applied: <span className="text-[var(--app-text)]">{formatManagedSyncTimestamp(onboardingStatus?.pairing.managedAuthAppliedAt ?? 0)}</span></div>
+                {onboardingStatus?.pairing.managedAuthLastError ? <div className="text-[var(--app-warning-text)]">{onboardingStatus.pairing.managedAuthLastError}</div> : null}
+              </div>
               <div className="mt-3">
                 <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => void handleRemoveLocalManagedHostLink()} disabled={busy}>
                   Remove Managed Host link
@@ -2025,7 +2064,7 @@ export function DesktopSwarmDashboard() {
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
                             <Badge tone="live">Managed Host</Badge>
                             <Badge tone="neutral">paired</Badge>
-                            <Badge tone="warning">Sync not enabled yet</Badge>
+                            <Badge tone="live">Managed sync linked</Badge>
                             {target && !target.online ? <Badge tone="warning">stale record</Badge> : null}
                           </div>
                           <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)]">
