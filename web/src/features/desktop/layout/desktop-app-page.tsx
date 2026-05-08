@@ -1752,6 +1752,17 @@ export function DesktopAppPage() {
   const activePairingRequests = useMemo(() => activePendingPairings(pendingPairingRequests), [pendingPairingRequests])
   const pairingRequestCount = activePairingRequests.length
   const pairingRequestAttentionVisible = pairingRequestCount > 0
+  const headerActionCount = 2 + (pairingRequestAttentionVisible ? 1 : 0) + (updateAttentionVisible ? 1 : 0)
+  const headerActionRowClass = headerActionCount === 4
+    ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_108px] items-center gap-2.5 min-h-7 pr-4'
+    : headerActionCount === 3
+      ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_80px] items-center gap-2.5 min-h-7 pr-4'
+      : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')
+  const headerActionRailClass = headerActionCount === 4
+    ? '!w-[108px] !grid-cols-[24px_24px_24px_24px]'
+    : headerActionCount === 3
+      ? '!w-[80px] !grid-cols-[24px_24px_24px]'
+      : undefined
   const workspaceCount = mergedSidebarWorkspaceEntries.length
   const sidebarFlows = useMemo(() => (flowsQuery.data ?? []).map(sidebarFlowRow), [flowsQuery.data])
   const flowCount = sidebarFlows.length
@@ -2653,14 +2664,14 @@ export function DesktopAppPage() {
           <div className="border-b border-[var(--app-border)] font-mono">
             <div className="min-h-[124px] border border-[color-mix(in_srgb,var(--app-border)_74%,transparent)] bg-[var(--app-surface)]">
               <div className="p-[12px_0_11px_13px]">
-                <div className={(updateAttentionVisible || pairingRequestAttentionVisible) ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_102px] items-center gap-2.5 min-h-7 pr-4' : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')}>
+                <div className={headerActionRowClass}>
                   <div className="min-w-0">
                     <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
                     <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
                       <strong className="font-medium text-[var(--app-text-muted)]">{currentSwarmRoleLabel}</strong> · {masterWorkspaceName}
                     </div>
                   </div>
-                  <SidebarActionRail className={(updateAttentionVisible || pairingRequestAttentionVisible) ? '!w-[102px] !grid-cols-[24px_24px_24px_24px]' : undefined}>
+                  <SidebarActionRail className={headerActionRailClass}>
                     {pairingRequestAttentionVisible ? (
                       <button
                         type="button"
