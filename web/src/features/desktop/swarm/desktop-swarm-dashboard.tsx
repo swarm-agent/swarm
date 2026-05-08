@@ -24,7 +24,7 @@ import {
   type SwarmLocalRuntimeStatus,
   type SwarmLocalState,
 } from '../onboarding/api'
-import type { DesktopOnboardingStatus, DesktopSwarmGroupState } from '../onboarding/types'
+import type { DesktopOnboardingStatus, DesktopSwarmGroupMember, DesktopSwarmGroupState } from '../onboarding/types'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
 import { normalizeDefaultNewSessionMode } from '../settings/swarm/types/swarm-settings'
@@ -197,6 +197,19 @@ function swarmTargetByID(targets: SwarmTarget[], swarmID: string): SwarmTarget |
     return null
   }
   return targets.find((target) => target.swarm_id.trim() === normalized) ?? null
+}
+
+function isManagedHostGroupMember(member: DesktopSwarmGroupMember, target?: SwarmTarget | null): boolean {
+  const memberRole = String(member.swarmRole ?? '').trim().toLowerCase()
+  const targetRole = String(target?.role ?? '').trim().toLowerCase()
+  const relationship = String(target?.relationship ?? '').trim().toLowerCase()
+  return memberRole === 'managed' || targetRole === 'managed' || relationship === 'managed' || target?.kind === 'host'
+}
+
+function containerLocationLabel(hostName: string, containerName: string): string {
+  const host = hostName.trim() || 'host'
+  const container = containerName.trim() || 'container'
+  return `${host} / ${container}`
 }
 
 function normalizePairingCode(value: string | null | undefined): string {
@@ -1063,6 +1076,33 @@ export function DesktopSwarmDashboard() {
     })
     return mapped
   }, [currentGroupID, remoteSessions])
+  const managedHostMembers = useMemo(() => (
+    (group?.members ?? [])
+      .filter((member) => member.swarmID !== localSwarmID)
+      .filter((member) => isManagedHostGroupMember(member, swarmTargetByID(swarmTargets, member.swarmID)))
+      .sort((left, right) => left.name.localeCompare(right.name))
+  ), [group?.members, localSwarmID, swarmTargets])
+  const remoteContainerRowsByHostSwarmID = useMemo(() => {
+    const mapped = new Map<string, RemoteDeploySession[]>()
+    remoteSessions.forEach((session) => {
+      const hostSwarmID = String(session.host_swarm_id ?? '').trim()
+      const childSwarmID = String(session.child_swarm_id ?? '').trim()
+      if (!hostSwarmID || !childSwarmID || String(session.group_id ?? '').trim() !== currentGroupID) {
+        return
+      }
+      const next = mapped.get(hostSwarmID) ?? []
+      next.push(session)
+      mapped.set(hostSwarmID, next)
+    })
+    mapped.forEach((items) => items.sort((left, right) => (left.child_name || left.name).localeCompare(right.child_name || right.name)))
+    return mapped
+  }, [currentGroupID, remoteSessions])
+  const staleRelationshipMembers = useMemo(() => (
+    (group?.members ?? [])
+      .filter((member) => member.swarmID !== localSwarmID)
+      .filter((member) => !isManagedHostGroupMember(member, swarmTargetByID(swarmTargets, member.swarmID)))
+      .filter((member) => !groupDeploymentByChildSwarmID.has(member.swarmID) && !groupRemoteSessionByChildSwarmID.has(member.swarmID))
+  ), [group?.members, groupDeploymentByChildSwarmID, groupRemoteSessionByChildSwarmID, localSwarmID, swarmTargets])
   const localDeleteSwarmCandidates = useMemo<DeleteSwarmCandidate[]>(() => (
     (group?.members ?? []).reduce<DeleteSwarmCandidate[]>((items, member) => {
       if (member.swarmID === localSwarmID) {
@@ -1802,7 +1842,7 @@ export function DesktopSwarmDashboard() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-[var(--app-text)]">Containers on this host</div>
-                <div className="text-xs text-[var(--app-text-muted)]">Local child swarms started from this machine.</div>
+                <div className="text-xs text-[var(--app-text-muted)]">Container swarms running on {localSwarmName}.</div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button type="button" variant="outline" size="sm" onClick={openDeleteContainers} disabled={busy || deleteCandidates.length === 0}>
@@ -1848,8 +1888,8 @@ export function DesktopSwarmDashboard() {
                         <div className="min-w-0 flex items-center gap-2">
                           <Boxes size={16} className="text-[var(--app-text-muted)]" />
                           <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold text-[var(--app-text)]">{container.name}</div>
-                            <div className="truncate text-xs text-[var(--app-text-muted)]">{container.containerName} · {container.runtime || 'runtime unknown'} · API {container.runtimePort || 'auto'}</div>
+                            <div className="truncate text-sm font-semibold text-[var(--app-text)]">{containerLocationLabel(localSwarmName, container.containerName || container.name)}</div>
+                            <div className="truncate text-xs text-[var(--app-text-muted)]">Swarm: {attachedDeployment?.child_display_name || container.name} · Container: {container.containerName} · {container.runtime || 'runtime unknown'} · API {container.runtimePort || 'auto'}</div>
                           </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -1876,88 +1916,83 @@ export function DesktopSwarmDashboard() {
         <section className="rounded-2xl border border-[var(--app-border)] bg-transparent p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold text-[var(--app-text)]">Linked swarms</h2>
-              <p className="mt-1 text-sm text-[var(--app-text-muted)]">Managed Hosts and attached container swarms linked to this host.</p>
+              <h2 className="text-lg font-semibold text-[var(--app-text)]">Linked Managed Hosts</h2>
+              <p className="mt-1 text-sm text-[var(--app-text-muted)]">Hosts linked to this Swarm. Container swarms are listed under the host where they run.</p>
             </div>
-            <Badge tone="neutral">{Math.max((group?.members.length ?? 1) - 1, 0)}</Badge>
+            <Badge tone="neutral">{managedHostMembers.length}</Badge>
           </div>
 
           {!isSwarmMode ? (
-            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Turn Swarm on to link hosts and containers.</div>
-          ) : group && group.members.filter((member) => member.swarmID !== localSwarmID).length > 0 ? (
-            <div className="mt-4 grid gap-3">
-              {group.members.filter((member) => member.swarmID !== localSwarmID).map((member) => {
-                const memberSwarmRole = String(member.swarmRole ?? '').trim().toLowerCase()
-                const isManagedHostPeer = memberSwarmRole === 'managed'
-                const attachedDeployment = groupDeploymentByChildSwarmID.get(member.swarmID) ?? null
-                const attachedRemoteSession = groupRemoteSessionByChildSwarmID.get(member.swarmID) ?? null
-                const attachedContainer = attachedDeployment
-                  ? localContainers.find((container) => deploymentMatchesContainer(attachedDeployment, container)) ?? null
-                  : null
-                const remoteDeleteCandidate = remoteDeleteSwarmCandidates.find((candidate) => candidate.swarmID === member.swarmID) ?? null
-                const staleRemoteDeleteCandidate = staleRemoteDeleteSwarmCandidates.find((candidate) => candidate.swarmID === member.swarmID) ?? null
+            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Turn Swarm on to link Managed Hosts.</div>
+          ) : managedHostMembers.length > 0 ? (
+            <div className="mt-4 grid gap-4">
+              {managedHostMembers.map((member) => {
                 const target = swarmTargetByID(swarmTargets, member.swarmID)
-                const childAPIURL = attachedDeployment?.child_backend_url
-                  || target?.backend_url
-                  || urlForHostPort(browserProtocol, browserHost, attachedDeployment?.backend_host_port || 0)
-                const childDesktopURL = attachedDeployment?.child_desktop_url
-                  || target?.desktop_url
-                  || urlForHostPort(browserProtocol, browserHost, attachedDeployment?.desktop_host_port || 0)
-                const remoteTailnetURL = remoteTailnetVisitURL(attachedRemoteSession?.remote_tailnet_url, attachedRemoteSession?.remote_endpoint, target?.desktop_url, target?.backend_url)
-                const attachStatus = String(attachedDeployment?.attach_status ?? '').trim()
-                const attachFailed = attachStatus === 'failed'
-                const deploymentRunning = attachedDeployment?.status === 'running' || attachedDeployment?.status === 'attached'
-                const canToggleDeployment = Boolean(attachedDeployment && !attachFailed)
-                const deploymentStatusLabel = attachFailed ? 'failed attach' : (attachedDeployment?.status || attachedContainer?.status || 'unknown')
-                const remoteStatusLabel = formatRemoteSessionStatus(String(attachedRemoteSession?.status ?? '').trim() || 'unknown')
-                const memberRoleLabel = isManagedHostPeer ? 'Managed Host' : swarmRoleLabel(member.swarmRole || 'child')
-                const memberDisplayName = isManagedHostPeer
-                  ? (member.name || attachedRemoteSession?.child_name || attachedRemoteSession?.name || target?.name || member.swarmID)
-                  : (attachedDeployment?.child_display_name || attachedDeployment?.container_name || attachedRemoteSession?.child_name || attachedRemoteSession?.name || member.name || member.swarmID)
-                const deleteCandidate = remoteDeleteCandidate ?? staleRemoteDeleteCandidate
+                const hostName = member.name || target?.name || member.swarmID
+                const hostDesktopURL = target?.desktop_url || ''
+                const hostAPIURL = target?.backend_url || ''
+                const hostContainers = remoteContainerRowsByHostSwarmID.get(member.swarmID) ?? []
                 return (
                   <div key={`${member.groupID}:${member.swarmID}`} className="rounded-xl border border-[var(--app-border)] bg-transparent p-4">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0 flex items-start gap-3">
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] text-[var(--app-text-muted)]">
-                          {isManagedHostPeer ? <Monitor size={18} /> : <Boxes size={18} />}
+                          <Monitor size={18} />
                         </div>
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold text-[var(--app-text)]">{memberDisplayName}</div>
+                          <div className="truncate text-sm font-semibold text-[var(--app-text)]">{hostName}</div>
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                            <Badge tone={isManagedHostPeer ? 'live' : attachedDeployment ? 'neutral' : 'warning'}>{memberRoleLabel}</Badge>
-                            {isManagedHostPeer ? <Badge tone="neutral">paired</Badge> : null}
-                            {attachedDeployment ? <Badge tone={attachFailed ? 'warning' : 'live'}>{deploymentStatusLabel}</Badge> : null}
-                            {!isManagedHostPeer && !attachedDeployment && attachedRemoteSession ? <Badge tone="neutral">{remoteStatusLabel}</Badge> : null}
-                            {!attachedDeployment && !attachedRemoteSession && staleRemoteDeleteCandidate ? <Badge tone="warning">stale record</Badge> : null}
-                            {isManagedHostPeer ? <Badge tone="warning">Sync not enabled yet</Badge> : null}
+                            <Badge tone="live">Managed Host</Badge>
+                            <Badge tone="neutral">paired</Badge>
+                            <Badge tone="warning">Sync not enabled yet</Badge>
+                            {target && !target.online ? <Badge tone="warning">stale record</Badge> : null}
                           </div>
                           <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)]">
                             <div>Swarm ID: <span className="font-mono text-[var(--app-text)]">{member.swarmID}</span></div>
-                            {isManagedHostPeer ? <div>Runtime: host · Relationship: managed</div> : null}
-                            {attachedDeployment ? <div>Container: {attachedDeployment.container_name || attachedContainer?.containerName || 'container'} · Network: {attachedContainer?.networkName || attachedDeployment.group_network_name || 'auto'}</div> : null}
-                            {attachedRemoteSession ? <div>Remote host: {attachedRemoteSession.ssh_session_target || 'unknown'}</div> : null}
-                            {attachedDeployment?.last_attach_error ? <div className="text-[var(--app-warning-text)]">{attachedDeployment.last_attach_error}</div> : null}
-                            {attachedRemoteSession?.last_error ? <div className="text-[var(--app-warning-text)]">{attachedRemoteSession.last_error}</div> : null}
+                            <div>Runtime: host · Relationship: managed</div>
+                            {target?.last_error ? <div className="text-[var(--app-warning-text)]">{target.last_error}</div> : null}
                           </div>
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                        {childDesktopURL ? <a href={childDesktopURL} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">Desktop</a> : null}
-                        {childAPIURL ? <a href={childAPIURL} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">API</a> : null}
-                        {!childDesktopURL && !childAPIURL && remoteTailnetURL ? <a href={remoteTailnetURL} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">Tailnet</a> : null}
-                        {attachedDeployment ? (
-                          <Button variant="outline" size="sm" onClick={() => { setSettingsDeployment(attachedDeployment); setSettingsError(null) }}>Settings</Button>
-                        ) : null}
-                        {canToggleDeployment && attachedDeployment ? (
-                          <Button type="button" variant="outline" size="sm" onClick={() => void handleDeploymentAction(attachedDeployment, deploymentRunning ? 'stop' : 'start')} disabled={busy}>{deploymentRunning ? 'Stop' : 'Start'}</Button>
-                        ) : null}
-                        {attachedContainer ? (
-                          <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => openDeleteSwarms([`local:${attachedContainer.id}`], [`local:${attachedContainer.id}`])} disabled={busy}>Remove</Button>
-                        ) : null}
-                        {deleteCandidate ? (
-                          <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => openDeleteSwarms([deleteCandidate.selectionID], [deleteCandidate.selectionID])} disabled={busy}>Remove</Button>
-                        ) : null}
+                        {hostDesktopURL ? <a href={hostDesktopURL} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">Desktop</a> : null}
+                        {hostAPIURL ? <a href={hostAPIURL} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">API</a> : null}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 border-t border-[var(--app-border)] pt-4">
+                      <div className="text-sm font-semibold text-[var(--app-text)]">Containers on {hostName}</div>
+                      <div className="mt-2 grid gap-2">
+                        {hostContainers.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">No container swarms reported for this host yet.</div>
+                        ) : hostContainers.map((session) => {
+                          const running = session.status === 'attached' || session.status === 'running'
+                          const remoteDesktopURL = remoteTailnetVisitURL(session.remote_tailnet_url, session.remote_endpoint)
+                          const remoteAPIURL = session.remote_endpoint || session.remote_tailnet_url || ''
+                          const deleteCandidate = remoteDeleteSwarmCandidates.find((candidate) => candidate.swarmID === session.child_swarm_id) ?? null
+                          const childName = session.child_name || session.name || session.child_swarm_id || 'container swarm'
+                          const containerName = session.ssh_session_target || session.id
+                          return (
+                            <div key={session.id} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
+                              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                <div className="min-w-0 flex items-center gap-2">
+                                  <Boxes size={16} className="text-[var(--app-text-muted)]" />
+                                  <div className="min-w-0">
+                                    <div className="truncate text-sm font-semibold text-[var(--app-text)]">{containerLocationLabel(hostName, containerName)}</div>
+                                    <div className="truncate text-xs text-[var(--app-text-muted)]">Swarm: {childName} · Container: {containerName} · {session.remote_runtime || 'runtime unknown'}</div>
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge tone={running ? 'live' : 'neutral'}>{formatRemoteSessionStatus(session.status || 'unknown')}</Badge>
+                                  {remoteDesktopURL ? <a href={remoteDesktopURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">Desktop</a> : null}
+                                  {remoteAPIURL ? <a href={remoteAPIURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">API</a> : null}
+                                  {deleteCandidate ? <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => openDeleteSwarms([deleteCandidate.selectionID], [deleteCandidate.selectionID])} disabled={busy}>Remove</Button> : null}
+                                </div>
+                              </div>
+                              {session.last_error ? <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] px-3 py-2 text-xs text-[var(--app-warning-text)]">{session.last_error}</div> : null}
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   </div>
@@ -1965,9 +2000,37 @@ export function DesktopSwarmDashboard() {
               })}
             </div>
           ) : (
-            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">No linked Managed Hosts or container swarms yet.</div>
+            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">No linked Managed Hosts yet.</div>
           )}
         </section>
+
+        {staleRelationshipMembers.length > 0 ? (
+          <section className="rounded-2xl border border-[var(--app-warning-border)] bg-transparent p-5">
+            <div>
+              <h2 className="text-lg font-semibold text-[var(--app-text)]">Stale relationship records</h2>
+              <p className="mt-1 text-sm text-[var(--app-text-muted)]">Group members without a matching Managed Host, local container deployment, or remote session.</p>
+            </div>
+            <div className="mt-4 grid gap-2">
+              {staleRelationshipMembers.map((member) => {
+                const staleRemoteDeleteCandidate = staleRemoteDeleteSwarmCandidates.find((candidate) => candidate.swarmID === member.swarmID) ?? null
+                return (
+                  <div key={`${member.groupID}:${member.swarmID}`} className="rounded-xl border border-[var(--app-warning-border)] bg-transparent p-3 text-sm">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <div className="min-w-0">
+                        <div className="truncate font-medium text-[var(--app-text)]">{member.name || member.swarmID}</div>
+                        <div className="text-xs text-[var(--app-text-muted)]">Swarm ID: {member.swarmID} · Role: {swarmRoleLabel(member.swarmRole || 'child')}</div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge tone="warning">stale record</Badge>
+                        {staleRemoteDeleteCandidate ? <Button type="button" variant="outline" size="sm" onClick={() => openDeleteSwarms([staleRemoteDeleteCandidate.selectionID], [staleRemoteDeleteCandidate.selectionID])} disabled={busy}>Remove stale record</Button> : null}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+        ) : null}
 
         {staleAttachedDeployments.length > 0 ? (
           <section className="rounded-2xl border border-[var(--app-warning-border)] bg-transparent p-5">

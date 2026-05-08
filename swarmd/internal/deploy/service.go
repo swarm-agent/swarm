@@ -99,6 +99,7 @@ type ContainerDeployment struct {
 	ContainerName       string                        `json:"container_name,omitempty"`
 	ContainerID         string                        `json:"container_id,omitempty"`
 	HostAPIBaseURL      string                        `json:"host_api_base_url,omitempty"`
+	HostSwarmID         string                        `json:"host_swarm_id,omitempty"`
 	BackendHostPort     int                           `json:"backend_host_port"`
 	DesktopHostPort     int                           `json:"desktop_host_port"`
 	Image               string                        `json:"image,omitempty"`
@@ -1840,6 +1841,7 @@ func mapContainerRecord(record pebblestore.DeployContainerRecord) ContainerDeplo
 		ContainerName:       record.ContainerName,
 		ContainerID:         record.ContainerID,
 		HostAPIBaseURL:      record.HostAPIBaseURL,
+		HostSwarmID:         record.HostSwarmID,
 		GroupNetworkName:    record.GroupNetworkName,
 		SyncEnabled:         record.SyncEnabled,
 		SyncMode:            record.SyncMode,

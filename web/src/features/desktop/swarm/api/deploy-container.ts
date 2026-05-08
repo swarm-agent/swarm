@@ -60,6 +60,7 @@ export interface DeployContainerDeployment {
   container_name?: string
   container_id?: string
   host_api_base_url?: string
+  host_swarm_id?: string
   backend_host_port: number
   desktop_host_port: number
   image?: string
