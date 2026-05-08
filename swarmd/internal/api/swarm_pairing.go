@@ -89,7 +89,6 @@ type swarmRemotePairingStartResponse struct {
 
 type swarmRemotePairingRequest struct {
 	InviteToken          string                         `json:"invite_token"`
-	GroupID              string                         `json:"group_id,omitempty"`
 	ManagerSwarmID       string                         `json:"manager_swarm_id"`
 	ManagerName          string                         `json:"manager_name,omitempty"`
 	ManagerEndpoint      string                         `json:"manager_endpoint"`
@@ -219,7 +218,6 @@ type swarmRemotePairingPendingRequest struct {
 	ManagedPublicKey            string
 	ManagedFingerprint          string
 	ManagedEndpoint             string
-	GroupID                     string
 	CeremonyCode                string
 	TransportMode               string
 	ManagerRendezvousTransports []onboardingTransportPayload
@@ -499,7 +497,6 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 	var remote swarmRemotePairingResponse
 	if err := postRemoteSwarmJSONWithTransportFallback(managerEndpoint, "/v1/swarm/remote-pairing/request", managerTransports, swarmRemotePairingRequest{
 		InviteToken:          managerToManagedPeerToken,
-		GroupID:              strings.TrimSpace(req.GroupID),
 		ManagerSwarmID:       managerSwarmID,
 		ManagerName:          managerName,
 		ManagerEndpoint:      managerEndpoint,
@@ -696,7 +693,6 @@ func (s *Server) handleSwarmRemotePairingRequest(w http.ResponseWriter, r *http.
 		ManagedPublicKey:            managedPublicKey,
 		ManagedFingerprint:          managedFingerprint,
 		ManagedEndpoint:             managedEndpoint,
-		GroupID:                     strings.TrimSpace(req.GroupID),
 		CeremonyCode:                expectedCode,
 		TransportMode:               transportMode,
 		ManagerRendezvousTransports: detectedOnboardingTransports(cfg),
@@ -1047,7 +1043,6 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 	enrollment, err := s.swarm.SubmitEnrollment(swarmruntime.SubmitEnrollmentInput{
 		InviteToken:           pending.InviteToken,
 		PrimarySwarmID:        pending.ManagerSwarmID,
-		GroupID:               pending.GroupID,
 		ChildSwarmID:          pending.ManagedSwarmID,
 		ChildName:             pending.ManagedName,
 		ChildRole:             swarmruntime.RelationshipManaged,

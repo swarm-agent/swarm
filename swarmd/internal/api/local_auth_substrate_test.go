@@ -532,7 +532,7 @@ func (f fakeLocalAuthSwarmService) DecideEnrollment(input swarmruntime.DecideEnr
 	if input.Approve {
 		status = swarmruntime.EnrollmentStatusApproved
 	}
-	return swarmruntime.Enrollment{ID: input.EnrollmentID, GroupID: "group-managed-hosts", Status: status}, nil, nil
+	return swarmruntime.Enrollment{ID: input.EnrollmentID, Status: status}, nil, nil
 }
 
 func (f fakeLocalAuthSwarmService) PrepareRemoteBootstrapParentPeer(swarmruntime.PrepareRemoteBootstrapParentPeerInput) error {

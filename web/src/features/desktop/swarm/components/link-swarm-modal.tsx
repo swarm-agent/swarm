@@ -29,18 +29,6 @@ interface LinkSwarmModalProps {
 
 type LinkStatus = 'idle' | 'pairing' | 'pending' | 'paired' | 'error'
 
-function currentGroup(status: DesktopOnboardingStatus | null) {
-  if (!status) return null
-  const currentGroupID = status.currentGroupID.trim()
-  if (currentGroupID) {
-    const exact = status.groups.find(
-      (group) => group.group.id === currentGroupID,
-    )
-    if (exact) return exact
-  }
-  return status.groups[0] ?? null
-}
-
 function normalizePairingCode(value: string): string {
   return String(value ?? '')
     .trim()
@@ -129,10 +117,6 @@ export function LinkSwarmModal({
     useState<DesktopOnboardingStatus | null>(onboardingStatus)
   const effectiveOnboardingStatus = modalOnboardingStatus ?? onboardingStatus
 
-  const group = useMemo(
-    () => currentGroup(effectiveOnboardingStatus),
-    [effectiveOnboardingStatus],
-  )
   const alreadyLinkedManagedHost = effectiveOnboardingStatus?.config.swarmRole === 'managed'
   const linkedManagerID = effectiveOnboardingStatus?.pairing.parentSwarmID || ''
   const linkedPairingState = effectiveOnboardingStatus?.pairing.pairingState || ''
@@ -323,11 +307,6 @@ export function LinkSwarmModal({
       setStatus('error')
       return
     }
-    if (!group?.group.id.trim()) {
-      setError('Create or select a swarm group before linking a managed swarm.')
-      setStatus('error')
-      return
-    }
     if (serveBlocksLink) {
       setError(`${serveBlockReason} Run the Tailscale Serve command on this requester, then press Confirm.`)
       setStatus('error')
@@ -347,7 +326,6 @@ export function LinkSwarmModal({
         endpoint: selectedEndpoint,
         dnsName: selectedCandidate.dnsName,
         ips: selectedCandidate.ips,
-        groupID: group.group.id,
         managedName: selectedName,
         rendezvousTransports: selectedCandidate.rendezvousTransports,
       })
@@ -597,7 +575,6 @@ export function LinkSwarmModal({
                 disabled={
                   status === 'pairing' ||
                   candidatesLoading ||
-                  !group?.group.id.trim() ||
                   alreadyLinkedManagedHost ||
                   serveBlocksLink ||
                   !selectedCandidate ||

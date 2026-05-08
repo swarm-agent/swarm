@@ -108,7 +108,6 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 		ManagedPublicKey:            managedPublicKey,
 		ManagedFingerprint:          managedFingerprint,
 		ManagedEndpoint:             managedServer.URL,
-		GroupID:                     "group-managed-hosts",
 		CeremonyCode:                offer.Ceremony.Code,
 		TransportMode:               startupconfig.NetworkModeTailscale,
 		ManagerRendezvousTransports: []onboardingTransportPayload{{Kind: startupconfig.NetworkModeTailscale, Primary: "https://manager-a.example.ts.net", All: []string{"https://manager-a.example.ts.net"}}},
@@ -141,9 +140,6 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 	}
 	if response.Enrollment.Status != swarmruntime.EnrollmentStatusApproved {
 		t.Fatalf("enrollment status = %q, want approved", response.Enrollment.Status)
-	}
-	if response.Enrollment.GroupID == "" {
-		t.Fatalf("enrollment group was not preserved from the link request")
 	}
 	if !finalizeSeen {
 		t.Fatalf("manager approval did not call managed finalize")
