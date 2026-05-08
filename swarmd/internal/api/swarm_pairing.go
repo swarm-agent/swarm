@@ -311,7 +311,7 @@ func (s *Server) handleSwarmInvites(w http.ResponseWriter, r *http.Request) {
 		PrimaryName:          status.Config.SwarmName,
 		GroupID:              strings.TrimSpace(req.GroupID),
 		TransportMode:        status.Config.Mode,
-		RendezvousTransports: onboardingTransportsToSwarm(detectedOnboardingTransports(cfg)),
+		RendezvousTransports: onboardingTransportsToSwarm(detectedCurrentSwarmStateTransports(cfg)),
 		TTL:                  ttl,
 	})
 	if err != nil {
@@ -503,7 +503,7 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 		Offer:                offer,
 		CeremonyCode:         strings.TrimSpace(req.CeremonyCode),
 		TransportMode:        firstNonEmpty(strings.TrimSpace(offer.TransportMode), status.Config.Mode),
-		RendezvousTransports: detectedOnboardingTransports(cfg),
+		RendezvousTransports: detectedCurrentSwarmStateTransports(cfg),
 		PeerAuthToken:        managedToManagerPeerToken,
 	}, &remote); err != nil {
 		writeError(w, http.StatusBadGateway, err)

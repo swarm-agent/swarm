@@ -495,13 +495,10 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		return onboardingResponse{}, err
 	}
 	needsOnboarding := shouldShowOnboarding(cfg, vaultStatus, credentialList.Total, savedCount)
-	tailscale := onboardingTailscalePayload{IPs: nil, Serve: onboardingTailscaleServePayload{}}
-	if needsOnboarding || !swarmModeEnabled(cfg) {
-		tailscale, _ = detectTailscaleWithStatus()
-	} else {
-		tailscaleURL := strings.TrimSpace(cfg.TailscaleURL)
-		tailscale.Available = tailscaleURL != "" || bootstrapNetworkMode(cfg) == startupconfig.NetworkModeTailscale
-		tailscale.TailnetURL = tailscaleURL
+	tailscale, _ := detectTailscaleWithStatus()
+	if !needsOnboarding && swarmModeEnabled(cfg) {
+		tailscale.TailnetURL = firstNonEmpty(strings.TrimSpace(cfg.TailscaleURL), strings.TrimSpace(tailscale.TailnetURL))
+		tailscale.Available = tailscale.Available || tailscale.TailnetURL != "" || bootstrapNetworkMode(cfg) == startupconfig.NetworkModeTailscale
 	}
 	response := onboardingResponse{
 		OK:              true,
@@ -1003,29 +1000,32 @@ func detectLANAddresses() []string {
 	if err != nil {
 		return nil
 	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0, 8)
+	ifaceAddrs := make([]lanInterfaceAddrs, 0, len(interfaces))
 	for _, iface := range interfaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue
 		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch value := addr.(type) {
-			case *net.IPNet:
-				ip = value.IP
-			case *net.IPAddr:
-				ip = value.IP
-			}
-			if ip == nil {
-				continue
-			}
-			ip = ip.To4()
-			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		ifaceAddrs = append(ifaceAddrs, lanInterfaceAddrs{Interface: iface, Addrs: addrs})
+	}
+	return lanAddressesFromInterfaces(ifaceAddrs)
+}
+
+type lanInterfaceAddrs struct {
+	Interface net.Interface
+	Addrs     []net.Addr
+}
+
+func lanAddressesFromInterfaces(interfaces []lanInterfaceAddrs) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 8)
+	for _, iface := range interfaces {
+		if !isUsableLANInterface(iface.Interface) {
+			continue
+		}
+		for _, addr := range iface.Addrs {
+			ip := ipFromAddr(addr)
+			if !isUsableLANIP(ip) {
 				continue
 			}
 			text := strings.TrimSpace(ip.String())
@@ -1041,6 +1041,44 @@ func detectLANAddresses() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func ipFromAddr(addr net.Addr) net.IP {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		return value.IP
+	case *net.IPAddr:
+		return value.IP
+	default:
+		return nil
+	}
+}
+
+func isUsableLANInterface(iface net.Interface) bool {
+	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(iface.Name))
+	if name == "" {
+		return false
+	}
+	for _, prefix := range []string{"docker", "br-", "veth", "tailscale", "ts"} {
+		if strings.HasPrefix(name, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+func isUsableLANIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	ip = ip.To4()
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || !ip.IsPrivate() {
+		return false
+	}
+	return !isTailscaleIP(ip)
 }
 
 func detectTailscale() onboardingTailscalePayload {
@@ -1062,7 +1100,10 @@ func shouldDetectTailscaleServeForOnboarding(cfg startupconfig.FileConfig, tails
 	if !swarmModeEnabled(cfg) || bootstrapNetworkMode(cfg) != startupconfig.NetworkModeTailscale {
 		return false
 	}
-	return strings.TrimSpace(cfg.TailscaleURL) == "" || strings.TrimSpace(tailscale.TailnetURL) == "" || strings.TrimSpace(tailscale.DNSName) != ""
+	if strings.TrimSpace(tailscale.Error) != "" || !tailscale.Available {
+		return false
+	}
+	return strings.TrimSpace(cfg.TailscaleURL) != "" || strings.TrimSpace(tailscale.TailnetURL) != "" || strings.TrimSpace(tailscale.DNSName) != ""
 }
 
 func detectTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) onboardingTailscaleServePayload {
@@ -1072,7 +1113,11 @@ func detectTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTail
 		payload.Error = strings.TrimSpace(err.Error())
 		return payload
 	}
-	proxyTarget := tailscaleServeProxyTarget(status, payload.URL, strings.TrimSpace(tailscale.DNSName))
+	dnsName := strings.TrimSpace(tailscale.DNSName)
+	if strings.TrimSpace(cfg.TailscaleURL) != "" && hostnameWithHTTPSPort(cfg.TailscaleURL) != hostnameWithHTTPSPort(dnsName) {
+		dnsName = ""
+	}
+	proxyTarget := tailscaleServeProxyTarget(status, payload.URL, dnsName)
 	payload.ProxyTarget = proxyTarget
 	if proxyTarget == "" {
 		return payload
@@ -1216,6 +1261,9 @@ func tailscaleServePairingError(serve onboardingTailscaleServePayload) error {
 func requireTailscaleServeReadyForPairing(cfg startupconfig.FileConfig, status onboardingResponse) error {
 	if !swarmModeEnabled(cfg) || bootstrapNetworkMode(cfg) != startupconfig.NetworkModeTailscale {
 		return nil
+	}
+	if !status.Tailscale.Available || strings.TrimSpace(status.Tailscale.Error) != "" || !status.Tailscale.Connected {
+		return tailscaleServePairingError(status.Tailscale.Serve)
 	}
 	if status.Tailscale.Serve.Ready {
 		return nil

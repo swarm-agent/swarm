@@ -1,6 +1,8 @@
 package api
 
 import (
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -181,14 +183,23 @@ func onboardingStringPtr(value string) *string {
 	return &value
 }
 
-func TestConfiguredOnboardingResponseUsesConfigOnlyForTailscale(t *testing.T) {
+func TestConfiguredOnboardingResponseRefreshesTailscaleStatus(t *testing.T) {
 	dir := t.TempDir()
-	marker := filepath.Join(dir, "tailscale-invoked")
-	t.Setenv("FAKE_TAILSCALE_MARKER", marker)
-	t.Setenv("PATH", dir)
-	if err := os.WriteFile(filepath.Join(dir, "tailscale"), []byte("#!/bin/sh\nprintf invoked >> \"$FAKE_TAILSCALE_MARKER\"\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("write fake tailscale: %v", err)
-	}
+	writeFakeTailscale(t, dir, `
+case "$1 $2 $3" in
+  "status --json ")
+    cat <<'JSON'
+{"Self":{"DNSName":"roy.tail2ff467.ts.net.","TailscaleIPs":["100.122.157.125"],"Online":true},"CurrentTailnet":{"Name":"roycohen1@gmail.com"}}
+JSON
+    ;;
+  "serve status --json")
+    cat <<'JSON'
+{"Web":{"roy.tail2ff467.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:25606"}}}}}
+JSON
+    ;;
+  *) exit 1 ;;
+esac
+`)
 
 	server := newLocalAuthTestServer(t)
 	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
@@ -216,20 +227,48 @@ func TestConfiguredOnboardingResponseUsesConfigOnlyForTailscale(t *testing.T) {
 	if status.Config.SwarmName != "test69" || !status.Config.Child {
 		t.Fatalf("config identity = %#v, want configured child", status.Config)
 	}
-	if status.Tailscale.Error != "" {
-		t.Fatalf("tailscale error = %q, want empty config-only response", status.Tailscale.Error)
+	if !status.Tailscale.Connected {
+		t.Fatalf("tailscale connected = false, want true: %#v", status.Tailscale)
 	}
 	if status.Tailscale.TailnetURL != "https://roy.tail2ff467.ts.net" {
 		t.Fatalf("tailnet url = %q, want configured URL", status.Tailscale.TailnetURL)
 	}
-	if status.Tailscale.Serve.Error != "" {
-		t.Fatalf("tailscale serve error = %q, want empty config-only response", status.Tailscale.Serve.Error)
+	if status.Tailscale.DNSName != "roy.tail2ff467.ts.net" {
+		t.Fatalf("dns name = %q, want live DNS name", status.Tailscale.DNSName)
+	}
+	if !status.Tailscale.Serve.Ready || status.Tailscale.Serve.Mode != "desktop" {
+		t.Fatalf("serve status = %#v, want ready desktop", status.Tailscale.Serve)
 	}
 	if status.Tailscale.Serve.ExpectedDesktopProxy != "http://127.0.0.1:25606" {
 		t.Fatalf("desktop proxy = %q, want configured desktop proxy", status.Tailscale.Serve.ExpectedDesktopProxy)
 	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("tailscale command was invoked during configured onboarding response")
+}
+
+func TestLANAddressFilteringExcludesTailscaleAndBridgeNetworks(t *testing.T) {
+	interfaces := []lanInterfaceAddrs{
+		{Interface: net.Interface{Name: "eth0", Flags: net.FlagUp}, Addrs: []net.Addr{testIPAddr("10.0.0.1")}},
+		{Interface: net.Interface{Name: "tailscale0", Flags: net.FlagUp}, Addrs: []net.Addr{testIPAddr("100.116.139.106")}},
+		{Interface: net.Interface{Name: "docker0", Flags: net.FlagUp}, Addrs: []net.Addr{testIPAddr("172.17.0.1")}},
+		{Interface: net.Interface{Name: "br-test", Flags: net.FlagUp}, Addrs: []net.Addr{testIPAddr("172.18.0.1")}},
+		{Interface: net.Interface{Name: "wlan0", Flags: net.FlagUp}, Addrs: []net.Addr{testIPAddr("192.168.1.10")}},
+	}
+
+	got := lanAddressesFromInterfaces(interfaces)
+	want := []string{"10.0.0.1", "192.168.1.10"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("lan addresses = %#v, want %#v", got, want)
+	}
+}
+
+func testIPAddr(value string) net.Addr {
+	return &net.IPNet{IP: net.ParseIP(value), Mask: net.CIDRMask(24, 32)}
+}
+
+func writeFakeTailscale(t *testing.T, dir, script string) {
+	t.Helper()
+	t.Setenv("PATH", fmt.Sprintf("%s%c%s", dir, os.PathListSeparator, os.Getenv("PATH")))
+	if err := os.WriteFile(filepath.Join(dir, "tailscale"), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+		t.Fatalf("write fake tailscale: %v", err)
 	}
 }
 
