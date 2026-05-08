@@ -53,7 +53,7 @@ func TestSwarmRemotePairingStartPostsManagedRequestToManager(t *testing.T) {
 		cfg.Child = false
 		cfg.NetworkMode = startupconfig.NetworkModeTailscale
 		cfg.SwarmName = "Managed B"
-		cfg.TailscaleURL = "https://managed-b.example.ts.net"
+		cfg.TailscaleURL = remoteManager.URL
 	})
 
 	rec := postRemotePairingJSONWithDesktopSession(t, managed, "/v1/swarm/remote-pairing/start", map[string]any{
@@ -90,9 +90,32 @@ func TestSwarmRemotePairingStartPostsManagedRequestToManager(t *testing.T) {
 		if pending.ManagedSwarmID != "managed-swarm-1" || pending.ManagerSwarmID != "manager-swarm-1" {
 			t.Fatalf("pending manager/managed = %q/%q", pending.ManagerSwarmID, pending.ManagedSwarmID)
 		}
-		if pending.ManagedEndpoint != "https://managed-b.example.ts.net" || pending.CeremonyCode != response.Ceremony.Code {
+		if pending.ManagedEndpoint != remoteManager.URL || pending.CeremonyCode != response.Ceremony.Code {
 			t.Fatalf("pending missing modal data: endpoint=%q code=%q", pending.ManagedEndpoint, pending.CeremonyCode)
 		}
+	}
+}
+
+func TestSwarmRemotePairingStartRejectsUnservedTailscaleRequester(t *testing.T) {
+	managed := newLocalAuthTestServer(t)
+	managed.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm-1", Name: "Managed B", PublicKey: "public-key", Fingerprint: "fingerprint"}}}
+	setLocalAuthTestStartupConfig(t, managed, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmMode = true
+		cfg.Child = false
+		cfg.NetworkMode = startupconfig.NetworkModeTailscale
+		cfg.SwarmName = "Managed B"
+		cfg.TailscaleURL = "https://managed-b.example.ts.net"
+		cfg.DesktopPort = 5555
+	})
+
+	rec := postRemotePairingJSONWithDesktopSession(t, managed, "/v1/swarm/remote-pairing/start", map[string]any{
+		"endpoint": "https://manager-a.example.ts.net",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unserved requester start status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "tailscale serve --bg http://127.0.0.1:5555") {
+		t.Fatalf("body missing serve command: %s", rec.Body.String())
 	}
 }
 

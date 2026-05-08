@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
@@ -61,6 +62,36 @@ func TestHTTPProxyTargetUsesConfiguredHost(t *testing.T) {
 	got := httpProxyTarget("127.0.0.2", 5555)
 	if got != "http://127.0.0.2:5555" {
 		t.Fatalf("httpProxyTarget() = %q, want %q", got, "http://127.0.0.2:5555")
+	}
+}
+
+func TestTailscaleServeCommandUsesDesktopPort(t *testing.T) {
+	got := tailscaleServeCommand(startupconfig.FileConfig{Host: "127.0.0.1", DesktopPort: 5555})
+	if got != "tailscale serve --bg http://127.0.0.1:5555" {
+		t.Fatalf("tailscaleServeCommand() = %q", got)
+	}
+}
+
+func TestRequireTailscaleServeReadyForPairingRejectsMissingServe(t *testing.T) {
+	cfg := startupconfig.FileConfig{SwarmMode: true, NetworkMode: startupconfig.NetworkModeTailscale, Host: "127.0.0.1", DesktopPort: 5555}
+	err := requireTailscaleServeReadyForPairing(cfg, onboardingResponse{Tailscale: onboardingTailscalePayload{Serve: onboardingTailscaleServePayload{Command: tailscaleServeCommand(cfg)}}})
+	if err == nil {
+		t.Fatal("expected missing Tailscale Serve to reject pairing")
+	}
+	if !strings.Contains(err.Error(), "tailscale serve --bg http://127.0.0.1:5555") {
+		t.Fatalf("error = %q, want serve command", err.Error())
+	}
+}
+
+func TestRequireTailscaleServeReadyForPairingAcceptsDesktopServe(t *testing.T) {
+	cfg := startupconfig.FileConfig{SwarmMode: true, NetworkMode: startupconfig.NetworkModeTailscale, Host: "127.0.0.1", DesktopPort: 5555}
+	serve := detectTailscaleServe(cfg, onboardingTailscalePayload{})
+	serve.Configured = true
+	serve.Ready = true
+	serve.Mode = "desktop"
+	serve.ProxyTarget = "http://127.0.0.1:5555"
+	if err := requireTailscaleServeReadyForPairing(cfg, onboardingResponse{Tailscale: onboardingTailscalePayload{Serve: serve}}); err != nil {
+		t.Fatalf("ready Tailscale Serve rejected: %v", err)
 	}
 }
 

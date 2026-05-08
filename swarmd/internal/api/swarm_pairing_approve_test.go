@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,25 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 
 	requestID := "pair-approve-1"
 	offer := mustManagedPairingOfferForTest(t, managedPublicKey, managedFingerprint)
+	var finalizeSeen bool
+	managedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/swarm/remote-pairing/finalize" {
+			t.Fatalf("unexpected managed request path %s", r.URL.Path)
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "manager-swarm-1" || r.Header.Get(peerAuthTokenHeader) != offer.Token {
+			t.Fatalf("finalize peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		var req swarmRemotePairingFinalizeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode finalize request: %v", err)
+		}
+		if req.ManagerSwarmID != "manager-swarm-1" || req.PeerAuthToken != "managed-to-manager-token" || req.IncomingPeerAuthToken != offer.Token {
+			t.Fatalf("finalize payload = %+v", req)
+		}
+		finalizeSeen = true
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}))
+	defer managedServer.Close()
 	manager.remotePairingPending[requestID] = swarmRemotePairingPendingRequest{
 		ID:                          requestID,
 		InviteToken:                 offer.Token,
@@ -87,7 +107,7 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 		ManagedName:                 "Managed B",
 		ManagedPublicKey:            managedPublicKey,
 		ManagedFingerprint:          managedFingerprint,
-		ManagedEndpoint:             "https://managed-b.example.ts.net",
+		ManagedEndpoint:             managedServer.URL,
 		CeremonyCode:                offer.Ceremony.Code,
 		TransportMode:               startupconfig.NetworkModeTailscale,
 		ManagerRendezvousTransports: []onboardingTransportPayload{{Kind: startupconfig.NetworkModeTailscale, Primary: "https://manager-a.example.ts.net", All: []string{"https://manager-a.example.ts.net"}}},
@@ -121,7 +141,22 @@ func TestSwarmRemotePairingApproveManagerApprovesAndReturnsFinalizeMaterial(t *t
 	if response.Enrollment.Status != swarmruntime.EnrollmentStatusApproved {
 		t.Fatalf("enrollment status = %q, want approved", response.Enrollment.Status)
 	}
+	if !finalizeSeen {
+		t.Fatalf("manager approval did not call managed finalize")
+	}
 	if _, ok := manager.remotePairingPending[requestID]; ok {
 		t.Fatalf("approved pending request was not cleared")
+	}
+}
+
+func TestSwarmRemotePairingFinalizeRequiresPeerAuth(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/v1/swarm/remote-pairing/finalize", strings.NewReader(`{"manager_swarm_id":"manager-swarm-1"}`))
+	req.RemoteAddr = "100.64.0.10:443"
+	req.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("finalize without peer auth status = %d, want %d body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
 }

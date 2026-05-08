@@ -78,6 +78,20 @@ func TestSwarmRemotePairingRequestCreatesManagerPendingApproval(t *testing.T) {
 	if pending.ManagerToManagedPeerToken != offer.Token || pending.ManagedToManagerPeerToken != "managed-to-manager-token" {
 		t.Fatalf("pending peer tokens not retained as expected")
 	}
+	notifications, err := server.notifications.ListNotifications("manager-swarm-1", 20)
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	var found bool
+	for _, item := range notifications {
+		if item.SourceEventType == "swarm.managed_pairing.requested" && strings.Contains(item.Body, offer.Ceremony.Code) && strings.Contains(item.Body, "Managed B") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("manager pairing notification not found in %+v", notifications)
+	}
 }
 
 func TestSwarmRemotePairingRequestRejectsCeremonyCodeMismatch(t *testing.T) {

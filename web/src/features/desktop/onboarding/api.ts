@@ -804,12 +804,14 @@ function mapTailscale(onboarding: DesktopOnboardingStatusWire): DesktopOnboardin
     error: String(source.error ?? '').trim(),
     serve: {
       configured: Boolean(source.serve?.configured),
+      ready: Boolean(source.serve?.ready),
       mode: String(source.serve?.mode ?? '').trim(),
       url: String(source.serve?.url ?? '').trim(),
       proxyTarget: String(source.serve?.proxy_target ?? '').trim(),
       expectedDesktopProxy: String(source.serve?.expected_desktop_proxy ?? '').trim(),
       expectedAPIProxy: String(source.serve?.expected_api_proxy ?? '').trim(),
       expectedPeerTransportProxy: String(source.serve?.expected_peer_transport_proxy ?? '').trim(),
+      command: String(source.serve?.command ?? '').trim(),
       error: String(source.serve?.error ?? '').trim(),
     },
   }

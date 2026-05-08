@@ -58,12 +58,14 @@ type onboardingHeuristicsPayload struct {
 
 type onboardingTailscaleServePayload struct {
 	Configured                 bool   `json:"configured"`
+	Ready                      bool   `json:"ready"`
 	Mode                       string `json:"mode,omitempty"`
 	URL                        string `json:"url,omitempty"`
 	ProxyTarget                string `json:"proxy_target,omitempty"`
 	ExpectedDesktopProxy       string `json:"expected_desktop_proxy,omitempty"`
 	ExpectedAPIProxy           string `json:"expected_api_proxy,omitempty"`
 	ExpectedPeerTransportProxy string `json:"expected_peer_transport_proxy,omitempty"`
+	Command                    string `json:"command,omitempty"`
 	Error                      string `json:"error,omitempty"`
 }
 
@@ -467,6 +469,10 @@ func (s *Server) allowSensitiveOnboardingMetadata(r *http.Request) bool {
 }
 
 func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, error) {
+	return s.onboardingResponseWithServeDetection(includeSensitive, true)
+}
+
+func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, detectServe bool) (onboardingResponse, error) {
 	cfg, err := s.loadStartupConfig()
 	if err != nil {
 		return onboardingResponse{}, err
@@ -526,17 +532,12 @@ func (s *Server) onboardingResponse(includeSensitive bool) (onboardingResponse, 
 		response.Tailscale = redactSensitiveOnboardingTailscale(response.Tailscale)
 		return response, nil
 	}
-	if !needsOnboarding {
-		response.Tailscale.Serve = onboardingTailscaleServePayload{
-			URL:                        strings.TrimSpace(cfg.TailscaleURL),
-			ExpectedDesktopProxy:       httpProxyTarget(strings.TrimSpace(cfg.Host), cfg.DesktopPort),
-			ExpectedAPIProxy:           httpProxyTarget(strings.TrimSpace(cfg.Host), cfg.Port),
-			ExpectedPeerTransportProxy: httpProxyTarget("127.0.0.1", cfg.PeerTransportPort),
-		}
-		return response, nil
-	}
 	response.Tailscale.CandidateURL = tailscaleCandidateURL(cfg, tailscale)
-	response.Tailscale.Serve = detectTailscaleServe(cfg, response.Tailscale)
+	if detectServe {
+		response.Tailscale.Serve = detectTailscaleServe(cfg, response.Tailscale)
+	} else {
+		response.Tailscale.Serve = expectedTailscaleServe(cfg, response.Tailscale)
+	}
 	// Keep first-launch onboarding fast: remote swarm discovery probes peers and
 	// should not block the initial setup screen. Discovery can be loaded by
 	// explicit swarm-management screens instead of the base onboarding status.
@@ -627,6 +628,12 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		changed = true
 		restartRequired = true
 		restartReasons = append(restartReasons, "peer transport endpoint changed")
+	}
+	if swarmModeEnabled(updated) && bootstrapNetworkMode(updated) == startupconfig.NetworkModeTailscale && strings.TrimSpace(updated.TailscaleURL) == "" {
+		if tailscale, _ := detectTailscaleWithStatus(); strings.TrimSpace(tailscale.TailnetURL) != "" {
+			updated.TailscaleURL = strings.TrimSpace(tailscale.TailnetURL)
+			changed = true
+		}
 	}
 	if req.PeerTransportPort != nil {
 		updated.PeerTransportPort = *req.PeerTransportPort
@@ -1027,13 +1034,18 @@ func detectTailscale() onboardingTailscalePayload {
 	return tailscale
 }
 
-func detectTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) onboardingTailscaleServePayload {
-	payload := onboardingTailscaleServePayload{
+func expectedTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) onboardingTailscaleServePayload {
+	return onboardingTailscaleServePayload{
 		URL:                        firstNonEmpty(strings.TrimSpace(cfg.TailscaleURL), strings.TrimSpace(tailscale.TailnetURL)),
 		ExpectedDesktopProxy:       httpProxyTarget(strings.TrimSpace(cfg.Host), cfg.DesktopPort),
 		ExpectedAPIProxy:           httpProxyTarget(strings.TrimSpace(cfg.Host), cfg.Port),
 		ExpectedPeerTransportProxy: httpProxyTarget("127.0.0.1", cfg.PeerTransportPort),
+		Command:                    tailscaleServeCommand(cfg),
 	}
+}
+
+func detectTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) onboardingTailscaleServePayload {
+	payload := expectedTailscaleServe(cfg, tailscale)
 	status, err := detectTailscaleServeStatus()
 	if err != nil {
 		payload.Error = strings.TrimSpace(err.Error())
@@ -1046,6 +1058,7 @@ func detectTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTail
 	}
 	payload.Configured = true
 	payload.Mode = classifyTailscaleServeMode(proxyTarget, payload.ExpectedDesktopProxy, payload.ExpectedAPIProxy, payload.ExpectedPeerTransportProxy)
+	payload.Ready = tailscaleServeModePairingReady(payload.Mode)
 	return payload
 }
 
@@ -1091,7 +1104,7 @@ func tailscaleServeProxyTarget(status tailscaleServeStatusWire, rawURL, dnsName 
 	if parsedHost := hostnameWithHTTPSPort(dnsName); parsedHost != "" {
 		hostCandidates = append(hostCandidates, parsedHost)
 	}
-	for _, host := range dedupeTransportStrings(hostCandidates) {
+	for _, host := range orderedUniqueTransportStrings(hostCandidates) {
 		if proxyTarget := strings.TrimSpace(status.Web[host].Handlers["/"].Proxy); proxyTarget != "" {
 			return proxyTarget
 		}
@@ -1112,7 +1125,7 @@ func hostnameWithHTTPSPort(raw string) string {
 		return ""
 	}
 	host := strings.TrimSpace(parsed.Hostname())
-	if host == "" {
+	if host == "" || !strings.HasSuffix(strings.ToLower(strings.TrimSuffix(host, ".")), ".ts.net") {
 		return ""
 	}
 	return net.JoinHostPort(host, "443")
@@ -1143,6 +1156,50 @@ func classifyTailscaleServeMode(proxyTarget, desktopProxy, apiProxy, peerProxy s
 	default:
 		return "other"
 	}
+}
+
+func tailscaleServeModePairingReady(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case "desktop", "api":
+		return true
+	default:
+		return false
+	}
+}
+
+func tailscaleServeCommand(cfg startupconfig.FileConfig) string {
+	target := httpProxyTarget(strings.TrimSpace(cfg.Host), cfg.DesktopPort)
+	if target == "" {
+		target = httpProxyTarget("127.0.0.1", cfg.DesktopPort)
+	}
+	if target == "" {
+		return ""
+	}
+	return "tailscale serve --bg " + target
+}
+
+func tailscaleServePairingError(serve onboardingTailscaleServePayload) error {
+	command := strings.TrimSpace(serve.Command)
+	if command == "" {
+		command = "tailscale serve --bg http://127.0.0.1:5555"
+	}
+	if strings.TrimSpace(serve.Error) != "" {
+		return fmt.Errorf("this requester is not ready for Link Swarm because Tailscale Serve status could not be checked: %s. Run `%s` on this host, then press Link again", strings.TrimSpace(serve.Error), command)
+	}
+	if !serve.Configured {
+		return fmt.Errorf("this requester is not ready for Link Swarm because its Tailscale URL is not being served. Run `%s` on this host, then press Link again", command)
+	}
+	return fmt.Errorf("this requester is not ready for Link Swarm because Tailscale Serve points to %q instead of the Swarm desktop/API port. Run `%s` on this host, then press Link again", strings.TrimSpace(serve.ProxyTarget), command)
+}
+
+func requireTailscaleServeReadyForPairing(cfg startupconfig.FileConfig, status onboardingResponse) error {
+	if !swarmModeEnabled(cfg) || bootstrapNetworkMode(cfg) != startupconfig.NetworkModeTailscale {
+		return nil
+	}
+	if status.Tailscale.Serve.Ready {
+		return nil
+	}
+	return tailscaleServePairingError(status.Tailscale.Serve)
 }
 
 func detectTailscaleWithStatus() (onboardingTailscalePayload, *tailscaleStatusWire) {

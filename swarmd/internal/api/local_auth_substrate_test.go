@@ -16,6 +16,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
+	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
@@ -384,7 +385,9 @@ func newLocalAuthTestServer(t *testing.T) *Server {
 		t.Fatalf("ensure attach auth: %v", err)
 	}
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
-	server := NewServer("test", authSvc, nil, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, nil, eventLog, stream.NewHub(eventLog))
+	hub := stream.NewHub(eventLog)
+	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), eventLog, hub.Publish)
+	server := NewServer("test", authSvc, nil, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "local-auth-test", Name: "Local Auth Test", Role: "standalone", PublicKey: "local-auth-public-key", Fingerprint: "local-auth-fingerprint"}}}
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")

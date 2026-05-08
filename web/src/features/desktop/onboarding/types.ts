@@ -49,12 +49,14 @@ export interface DesktopOnboardingPairingWire {
 
 export interface DesktopOnboardingTailscaleServeWire {
   configured?: boolean
+  ready?: boolean
   mode?: string
   url?: string
   proxy_target?: string
   expected_desktop_proxy?: string
   expected_api_proxy?: string
   expected_peer_transport_proxy?: string
+  command?: string
   error?: string
 }
 
@@ -167,12 +169,14 @@ export interface DesktopOnboardingPairing {
 
 export interface DesktopOnboardingTailscaleServe {
   configured: boolean
+  ready: boolean
   mode: string
   url: string
   proxyTarget: string
   expectedDesktopProxy: string
   expectedAPIProxy: string
   expectedPeerTransportProxy: string
+  command: string
   error: string
 }
 

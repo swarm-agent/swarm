@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -40,6 +40,7 @@ import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/muta
 import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
+import { approveRemoteSwarmPairing, fetchPendingRemoteSwarmPairings, type RemoteSwarmPendingPairing } from '../onboarding/api'
 import { fetchSession } from '../chat/queries/chat-queries'
 import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
@@ -257,6 +258,101 @@ function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; on
         await useDesktopStore.getState().clearNotifications()
       }}
     />
+  )
+}
+
+function normalizePairingCode(value: string | null | undefined): string {
+  return String(value ?? '').trim().replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6)
+}
+
+function formatPairingCode(value: string | null | undefined): string {
+  const normalized = normalizePairingCode(value)
+  return normalized.length === 6 ? `${normalized.slice(0, 3)}-${normalized.slice(3)}` : normalized
+}
+
+function activePendingPairings(items: RemoteSwarmPendingPairing[]): RemoteSwarmPendingPairing[] {
+  return items.filter((item) => item.status === 'pending_approval' || item.status === '')
+}
+
+function PairingRequestsModal({
+  open,
+  requests,
+  busyID,
+  error,
+  status,
+  now,
+  onOpenChange,
+  onRefresh,
+  onDecision,
+}: {
+  open: boolean
+  requests: RemoteSwarmPendingPairing[]
+  busyID: string | null
+  error: string | null
+  status: string | null
+  now: number
+  onOpenChange: (open: boolean) => void
+  onRefresh: () => void
+  onDecision: (request: RemoteSwarmPendingPairing, approve: boolean) => void
+}) {
+  if (!open) return null
+  return (
+    <Dialog>
+      <DialogBackdrop onClick={() => onOpenChange(false)} />
+      <DialogPanel className="mx-auto mt-[8vh] flex w-[min(620px,calc(100vw-24px))] max-w-[620px] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
+        <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4">
+          <div>
+            <div className="flex items-center gap-2 text-lg font-semibold text-[var(--app-text)]">
+              <Link2 size={18} className="text-[var(--app-primary)]" />
+              Link request
+            </div>
+            <p className="mt-1 text-sm text-[var(--app-text-muted)]">
+              Confirm the ceremony code on both machines before approving.
+            </p>
+          </div>
+          <Button variant="ghost" size="sm" className="h-8 w-8 min-w-8 p-0" onClick={() => onOpenChange(false)} aria-label="Close link requests">
+            <X size={16} />
+          </Button>
+        </div>
+        <div className="grid max-h-[70vh] gap-3 overflow-y-auto px-5 py-4">
+          {error ? <Card className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-3 text-sm text-[var(--app-danger)]">{error}</Card> : null}
+          {status ? <Card className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-3 text-sm text-[var(--app-success)]">{status}</Card> : null}
+          {requests.length === 0 ? (
+            <Card className="border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">
+              No pending Managed Swarm link requests.
+            </Card>
+          ) : requests.map((request) => {
+            const requestID = request.request_id.trim()
+            const busy = busyID === requestID
+            const code = normalizePairingCode(request.ceremony_code)
+            return (
+              <Card key={requestID || request.managed_swarm_id || request.managed_name} className="grid gap-3 border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-[var(--app-text)]">{request.managed_name || 'Managed Swarm'}</div>
+                    <div className="mt-1 break-all text-sm text-[var(--app-text-muted)]">{request.managed_endpoint || request.managed_swarm_id || requestID}</div>
+                    {request.managed_fingerprint ? <div className="mt-1 break-all text-xs text-[var(--app-text-muted)]">Fingerprint: {request.managed_fingerprint}</div> : null}
+                    {request.created_at ? <div className="mt-1 text-xs text-[var(--app-text-subtle)]">Requested {formatRelativeTime(request.created_at * 1000, now)}</div> : null}
+                  </div>
+                  <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-center">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Code</div>
+                    <div className="mt-1 font-mono text-2xl font-semibold tracking-[0.18em] text-[var(--app-text)]">{formatPairingCode(code) || '—'}</div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button size="sm" variant="outline" disabled={Boolean(busyID)} onClick={() => onDecision(request, false)}>{busy ? 'Working…' : 'Reject'}</Button>
+                  <Button size="sm" disabled={Boolean(busyID) || code.length !== 6} onClick={() => onDecision(request, true)}>{busy ? 'Working…' : 'Approve'}</Button>
+                </div>
+              </Card>
+            )
+          })}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-[var(--app-border)] px-5 py-3">
+          <Button variant="outline" onClick={onRefresh} disabled={Boolean(busyID)}>Refresh</Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>Close</Button>
+        </div>
+      </DialogPanel>
+    </Dialog>
   )
 }
 
@@ -1414,6 +1510,11 @@ export function DesktopAppPage() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [pairingRequestsOpen, setPairingRequestsOpen] = useState(false)
+  const [pendingPairingRequests, setPendingPairingRequests] = useState<RemoteSwarmPendingPairing[]>([])
+  const [pairingDecisionBusyID, setPairingDecisionBusyID] = useState<string | null>(null)
+  const [pairingRequestError, setPairingRequestError] = useState<string | null>(null)
+  const [pairingRequestStatus, setPairingRequestStatus] = useState<string | null>(null)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [gitPanel, setGitPanel] = useState<GitPanelState | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
@@ -1625,6 +1726,9 @@ export function DesktopAppPage() {
   }, [localSwarmTargets.length, remoteSwarmTargets, selfSwarmTargets.length, sortedSwarmTargets])
   const swarmTargetSummary = `${swarmTargetCounts.local} local · ${swarmTargetCounts.remote} remote${swarmTargetCounts.offline > 0 ? ` · ${swarmTargetCounts.offline} offline` : ''}`
   const swarmTargetCountLabel = `${swarmTargets.length} ${swarmTargets.length === 1 ? 'swarm' : 'swarms'}`
+  const activePairingRequests = useMemo(() => activePendingPairings(pendingPairingRequests), [pendingPairingRequests])
+  const pairingRequestCount = activePairingRequests.length
+  const pairingRequestAttentionVisible = pairingRequestCount > 0
   const workspaceCount = mergedSidebarWorkspaceEntries.length
   const sidebarFlows = useMemo(() => (flowsQuery.data ?? []).map(sidebarFlowRow), [flowsQuery.data])
   const flowCount = sidebarFlows.length
@@ -1686,6 +1790,55 @@ export function DesktopAppPage() {
     void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
   }, [queryClient, swarmTopologySignature])
 
+  const refreshPairingRequests = useCallback(() => {
+    void fetchPendingRemoteSwarmPairings()
+      .then((items) => {
+        setPendingPairingRequests(items)
+        setPairingRequestError(null)
+      })
+      .catch((error) => {
+        setPairingRequestError(error instanceof Error ? error.message : 'Failed to load link requests')
+      })
+  }, [])
+
+  useEffect(() => {
+    refreshPairingRequests()
+    const timer = window.setInterval(refreshPairingRequests, 5_000)
+    return () => window.clearInterval(timer)
+  }, [refreshPairingRequests])
+
+  const handleOpenPairingRequests = useCallback(() => {
+    setPairingRequestsOpen(true)
+    setPairingRequestStatus(null)
+    refreshPairingRequests()
+  }, [refreshPairingRequests])
+
+  const handlePairingDecision = useCallback(async (request: RemoteSwarmPendingPairing, approve: boolean) => {
+    const requestID = request.request_id.trim()
+    if (!requestID) {
+      setPairingRequestError('Pairing request id is missing.')
+      return
+    }
+    setPairingDecisionBusyID(requestID)
+    setPairingRequestError(null)
+    setPairingRequestStatus(null)
+    try {
+      await approveRemoteSwarmPairing({
+        requestID,
+        approve,
+        ceremonyCode: approve ? normalizePairingCode(request.ceremony_code) : undefined,
+        reason: approve ? undefined : 'Rejected from Link request modal',
+      })
+      setPendingPairingRequests((items) => items.filter((item) => item.request_id !== requestID))
+      setPairingRequestStatus(approve ? `Approved ${request.managed_name || request.managed_swarm_id || 'Managed Swarm'}.` : `Rejected link request ${requestID}.`)
+      void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
+      refreshPairingRequests()
+    } catch (error) {
+      setPairingRequestError(error instanceof Error ? error.message : 'Failed to update link request')
+    } finally {
+      setPairingDecisionBusyID(null)
+    }
+  }, [queryClient, refreshPairingRequests])
 
   const openTodoModal = useCallback((workspacePath: string, workspaceName: string) => {
     const normalizedPath = workspacePath.trim()
@@ -2451,6 +2604,12 @@ export function DesktopAppPage() {
           <Button variant="ghost" className="h-12 w-12 min-w-12 p-0" onClick={() => { if (selectedWorkspacePath) { openTodoModal(selectedWorkspacePath, selectedWorkspace?.workspaceName ?? 'Workspace') } }} aria-label="Open tasks" disabled={!selectedWorkspacePath}>
             <ListChecks size={24} className="shrink-0" />
           </Button>
+          {pairingRequestAttentionVisible ? (
+            <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0 text-[var(--app-primary)]" onClick={handleOpenPairingRequests} aria-label="Open link requests" title={`${pairingRequestCount} pending link request${pairingRequestCount === 1 ? '' : 's'}`}>
+              <Link2 size={24} className="shrink-0" />
+              <span aria-hidden="true" className="absolute right-2 top-2 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--app-warning)] px-1 text-[9px] font-semibold text-[var(--app-background)]">{pairingRequestCount}</span>
+            </Button>
+          ) : null}
           {updateAttentionVisible ? (
             <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label={updateActionLabel} title={updateActionTitle} disabled={updateRunning || !updateActionEnabled}>
               <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
@@ -2466,14 +2625,26 @@ export function DesktopAppPage() {
           <div className="border-b border-[var(--app-border)] font-mono">
             <div className="min-h-[124px] border border-[color-mix(in_srgb,var(--app-border)_74%,transparent)] bg-[var(--app-surface)]">
               <div className="p-[12px_0_11px_13px]">
-                <div className={updateAttentionVisible ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_78px] items-center gap-2.5 min-h-7 pr-4' : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')}>
+                <div className={(updateAttentionVisible || pairingRequestAttentionVisible) ? 'grid min-w-0 grid-cols-[minmax(0,1fr)_102px] items-center gap-2.5 min-h-7 pr-4' : cn(SIDEBAR_ACTION_ROW_CLASS, 'min-h-7 pr-4')}>
                   <div className="min-w-0">
                     <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
                     <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
                       <strong className="font-medium text-[var(--app-text-muted)]">{currentSwarmRoleLabel}</strong> · {masterWorkspaceName}
                     </div>
                   </div>
-                  <SidebarActionRail className={updateAttentionVisible ? '!w-[78px] !grid-cols-[24px_24px_24px]' : undefined}>
+                  <SidebarActionRail className={(updateAttentionVisible || pairingRequestAttentionVisible) ? '!w-[102px] !grid-cols-[24px_24px_24px_24px]' : undefined}>
+                    {pairingRequestAttentionVisible ? (
+                      <button
+                        type="button"
+                        className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'relative text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] hover:text-[var(--app-primary-hover)]')}
+                        onClick={handleOpenPairingRequests}
+                        aria-label="Open link requests"
+                        title={`${pairingRequestCount} pending link request${pairingRequestCount === 1 ? '' : 's'}`}
+                      >
+                        <Link2 size={14} strokeWidth={1.8} className="shrink-0" />
+                        <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-warning)] shadow-[0_0_8px_var(--app-warning)]" />
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className={cn(
@@ -3272,6 +3443,17 @@ export function DesktopAppPage() {
         error={gitPanel ? (gitRealtimeErrors[gitPanel.workspacePath] ?? (gitPanel.workspacePath === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)) : null}
         onRefresh={() => { if (gitPanel) void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(gitPanel.workspacePath) }) }}
         onClose={closeGitPanel}
+      />
+      <PairingRequestsModal
+        open={pairingRequestsOpen}
+        requests={activePairingRequests}
+        busyID={pairingDecisionBusyID}
+        error={pairingRequestError}
+        status={pairingRequestStatus}
+        now={sidebarNow}
+        onOpenChange={setPairingRequestsOpen}
+        onRefresh={refreshPairingRequests}
+        onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
       />
       <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
       {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}

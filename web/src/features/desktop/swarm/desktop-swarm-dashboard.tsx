@@ -30,6 +30,7 @@ import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settin
 import { normalizeDefaultNewSessionMode } from '../settings/swarm/types/swarm-settings'
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { AddSwarmModal } from './components/add-swarm-modal'
+import { LinkSwarmModal } from './components/link-swarm-modal'
 import {
   type DeployContainerDeployment,
   type DeployContainerWorkspaceBootstrap,
@@ -828,7 +829,7 @@ export function DesktopSwarmDashboard() {
   const [groupNameDraft, setGroupNameDraft] = useState('')
   const [localNameDraft, setLocalNameDraft] = useState('')
   const [addSwarmOpen, setAddSwarmOpen] = useState(false)
-  const [addSwarmInitialTarget, setAddSwarmInitialTarget] = useState<'local' | 'remote'>('local')
+  const [linkSwarmOpen, setLinkSwarmOpen] = useState(false)
   const [deleteContainersOpen, setDeleteContainersOpen] = useState(false)
   const [selectedDeleteContainerIDs, setSelectedDeleteContainerIDs] = useState<string[]>([])
   const [deleteSwarmsOpen, setDeleteSwarmsOpen] = useState(false)
@@ -1370,9 +1371,14 @@ export function DesktopSwarmDashboard() {
     }
   }
 
-  const openAddSwarm = (target: 'local' | 'remote' = 'local') => {
-    setAddSwarmInitialTarget(target)
+  const openAddSwarm = () => {
     setAddSwarmOpen(true)
+    setError(null)
+    setStatus(null)
+  }
+
+  const openLinkSwarm = () => {
+    setLinkSwarmOpen(true)
     setError(null)
     setStatus(null)
   }
@@ -1732,11 +1738,11 @@ export function DesktopSwarmDashboard() {
                       {localTailscalePrimary ? 'Tailscale' : tailscaleCandidate.connected ? 'Tailscale connected · LAN config' : formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}
                     </Badge>
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button type="button" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm('local')} disabled={masterControlsDisabled} title={localIsChild ? 'Managed swarms cannot add local containers to the Manager group.' : undefined}>
+                      <Button type="button" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm()} disabled={masterControlsDisabled} title={localIsChild ? 'Managed swarms cannot add local containers to the Manager group.' : undefined}>
                         <Plus size={14} />
                         Add Container
                       </Button>
-                      <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" onClick={() => openAddSwarm('remote')} disabled={masterControlsDisabled} title={localIsChild ? 'Managed swarms cannot link other swarms to the Manager group.' : undefined}>
+                      <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" onClick={() => openLinkSwarm()} disabled={masterControlsDisabled} title={localIsChild ? 'Managed swarms cannot link other swarms to the Manager group.' : undefined}>
                         <Link2 size={14} />
                         Link Swarm
                       </Button>
@@ -2419,9 +2425,15 @@ export function DesktopSwarmDashboard() {
       <AddSwarmModal
         open={addSwarmOpen}
         onboardingStatus={onboardingStatus}
-        initialTarget={addSwarmInitialTarget}
         onOpenChange={setAddSwarmOpen}
         onComplete={handleAddSwarmComplete}
+      />
+      <LinkSwarmModal
+        open={linkSwarmOpen}
+        onboardingStatus={onboardingStatus}
+        onOpenChange={setLinkSwarmOpen}
+        onPairingSent={handleAddSwarmComplete}
+        onOnboardingStatusChange={setOnboardingStatus}
       />
       <ManagedSwarmSettingsDialog
         deployment={settingsDeployment}

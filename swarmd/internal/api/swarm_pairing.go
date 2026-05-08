@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
@@ -393,6 +394,12 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.Endpoint)), "http://127.0.0.1:") && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.Endpoint)), "http://[::1]:") {
+		if err := requireTailscaleServeReadyForPairing(cfg, status); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	state, err := s.currentSwarmState(cfg)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -489,6 +496,17 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 	}
 	if strings.TrimSpace(remote.ManagedSwarmID) != "" && !strings.EqualFold(strings.TrimSpace(remote.ManagedSwarmID), managedSwarmID) {
 		writeError(w, http.StatusBadGateway, fmt.Errorf("remote pairing target mismatch: requested managed swarm %s but manager stored %s", managedSwarmID, strings.TrimSpace(remote.ManagedSwarmID)))
+		return
+	}
+	if err := s.swarm.PrepareRemoteBootstrapParentPeer(swarmruntime.PrepareRemoteBootstrapParentPeerInput{
+		ParentSwarmID:         managerSwarmID,
+		ParentName:            managerName,
+		TransportMode:         firstNonEmpty(strings.TrimSpace(offer.TransportMode), status.Config.Mode),
+		RendezvousTransports:  onboardingTransportsToSwarm(managerTransports),
+		OutgoingPeerAuthToken: managedToManagerPeerToken,
+		IncomingPeerAuthToken: managerToManagedPeerToken,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	remote.AuthCode = ""
@@ -668,6 +686,8 @@ func (s *Server) handleSwarmRemotePairingRequest(w http.ResponseWriter, r *http.
 		s.remotePairingPending = make(map[string]swarmRemotePairingPendingRequest)
 	}
 	s.remotePairingPending[requestID] = pending
+
+	_ = s.emitSwarmPairingRequestedNotification(pending)
 
 	stepStartedAt = time.Now()
 	if err := s.publishSwarmPairingEvent("swarm.managed_pairing.requested", managedSwarmID, map[string]any{
@@ -866,6 +886,10 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		ProxyPathPrefix:      "/v1/swarm/containers/local",
 		RendezvousTransports: append([]onboardingTransportPayload(nil), pending.ManagedRendezvousTransports...),
 	}
+	if err := finalizeApprovedRemoteSwarmPairing(pending); err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("finalize managed pairing on %s: %w", firstNonEmpty(pending.ManagedEndpoint, pending.ManagedSwarmID), err))
+		return
+	}
 	delete(s.remotePairingPending, requestID)
 	_ = s.publishSwarmPairingEvent("swarm.managed_pairing.approved", pending.ManagedSwarmID, map[string]any{
 		"request_id":       pending.ID,
@@ -877,6 +901,49 @@ func (s *Server) handleSwarmRemotePairingApprove(w http.ResponseWriter, r *http.
 		"enrollment_id":    strings.TrimSpace(enrollment.ID),
 	})
 	writeJSON(w, http.StatusOK, swarmRemotePairingApprovalResponse{OK: true, Status: startupconfig.PairingStatePaired, RequestID: requestID, Invite: invite, Pairing: pairing, Enrollment: enrollment, Routing: &routing})
+}
+
+func finalizeApprovedRemoteSwarmPairing(pending swarmRemotePairingPendingRequest) error {
+	managerSwarmID := strings.TrimSpace(pending.ManagerSwarmID)
+	managedEndpoint := normalizeRemoteSwarmEndpoint(pending.ManagedEndpoint)
+	if managerSwarmID == "" {
+		return errors.New("manager swarm id is required")
+	}
+	if managedEndpoint == "" {
+		return errors.New("managed endpoint is required")
+	}
+	managerToManagedPeerToken := strings.TrimSpace(pending.ManagerToManagedPeerToken)
+	managedToManagerPeerToken := strings.TrimSpace(pending.ManagedToManagerPeerToken)
+	if managerToManagedPeerToken == "" || managedToManagerPeerToken == "" {
+		return errors.New("managed pairing peer auth tokens are required")
+	}
+	var response struct {
+		OK bool `json:"ok"`
+	}
+	err := postRemoteSwarmJSONWithTransportFallbackAndHeaders(managedEndpoint, "/v1/swarm/remote-pairing/finalize", pending.ManagedRendezvousTransports, swarmRemotePairingFinalizeRequest{
+		ManagerSwarmID:        managerSwarmID,
+		ManagerName:           pending.ManagerName,
+		ManagerPublicKey:      pending.ManagerPublicKey,
+		ManagerFingerprint:    pending.ManagerFingerprint,
+		TransportMode:         pending.TransportMode,
+		RendezvousTransports:  pending.ManagerRendezvousTransports,
+		PeerAuthToken:         managedToManagerPeerToken,
+		IncomingPeerAuthToken: managerToManagedPeerToken,
+		PrimarySwarmID:        managerSwarmID,
+		PrimaryName:           pending.ManagerName,
+		PrimaryPublicKey:      pending.ManagerPublicKey,
+		PrimaryFingerprint:    pending.ManagerFingerprint,
+	}, &response, map[string]string{
+		peerAuthSwarmIDHeader: managerSwarmID,
+		peerAuthTokenHeader:   managerToManagedPeerToken,
+	})
+	if err != nil {
+		return err
+	}
+	if !response.OK {
+		return errors.New("managed pairing finalize response was not ok")
+	}
+	return nil
 }
 
 func (s *Server) handleSwarmDiscovery(w http.ResponseWriter, r *http.Request) {
@@ -1104,6 +1171,10 @@ func postRemoteSwarmJSONWithTransportFallback(endpoint, requestPath string, tran
 	return remoteSwarmJSONRequestWithTransportFallback(http.MethodPost, endpoint, requestPath, transports, payload, out)
 }
 
+func postRemoteSwarmJSONWithTransportFallbackAndHeaders(endpoint, requestPath string, transports []onboardingTransportPayload, payload any, out any, headers map[string]string) error {
+	return remoteSwarmJSONRequestWithTransportFallbackAndHeaders(http.MethodPost, endpoint, requestPath, transports, payload, out, headers)
+}
+
 func getRemoteSwarmJSONWithTransportFallback(endpoint, requestPath string, transports []onboardingTransportPayload, out any) error {
 	return remoteSwarmJSONRequestWithTransportFallback(http.MethodGet, endpoint, requestPath, transports, nil, out)
 }
@@ -1120,13 +1191,17 @@ func fetchSwarmRemotePairingOffer(endpoint string, transports []onboardingTransp
 }
 
 func remoteSwarmJSONRequestWithTransportFallback(method, endpoint, requestPath string, transports []onboardingTransportPayload, payload any, out any) error {
+	return remoteSwarmJSONRequestWithTransportFallbackAndHeaders(method, endpoint, requestPath, transports, payload, out, nil)
+}
+
+func remoteSwarmJSONRequestWithTransportFallbackAndHeaders(method, endpoint, requestPath string, transports []onboardingTransportPayload, payload any, out any, headers map[string]string) error {
 	endpoint = strings.TrimSpace(strings.TrimSuffix(endpoint, "/"))
 	if endpoint == "" {
 		return errors.New("remote endpoint is required")
 	}
 	requestPath = "/" + strings.TrimPrefix(strings.TrimSpace(requestPath), "/")
 	requestURL := endpoint + requestPath
-	if err := remoteSwarmJSONRequestWithClient(method, requestURL, payload, out, nil); err == nil {
+	if err := remoteSwarmJSONRequestWithClientAndHeaders(method, requestURL, payload, out, nil, headers); err == nil {
 		return nil
 	} else {
 		canonicalErr := err
@@ -1134,7 +1209,7 @@ func remoteSwarmJSONRequestWithTransportFallback(method, endpoint, requestPath s
 		if client, clientErr := httpClientForTailscaleOutboundProxy(endpoint, transports); clientErr != nil {
 			lastErr = clientErr
 		} else if client != nil {
-			if err := remoteSwarmJSONRequestWithClient(method, requestURL, payload, out, client); err == nil {
+			if err := remoteSwarmJSONRequestWithClientAndHeaders(method, requestURL, payload, out, client, headers); err == nil {
 				return nil
 			} else {
 				lastErr = err
@@ -1146,7 +1221,7 @@ func remoteSwarmJSONRequestWithTransportFallback(method, endpoint, requestPath s
 				lastErr = clientErr
 				continue
 			}
-			if err := remoteSwarmJSONRequestWithClient(method, requestURL, payload, out, client); err == nil {
+			if err := remoteSwarmJSONRequestWithClientAndHeaders(method, requestURL, payload, out, client, headers); err == nil {
 				return nil
 			} else {
 				lastErr = err
@@ -1205,6 +1280,10 @@ func transportsContainKind(transports []onboardingTransportPayload, kind string)
 }
 
 func remoteSwarmJSONRequestWithClient(method, endpoint string, payload any, out any, client *http.Client) error {
+	return remoteSwarmJSONRequestWithClientAndHeaders(method, endpoint, payload, out, client, nil)
+}
+
+func remoteSwarmJSONRequestWithClientAndHeaders(method, endpoint string, payload any, out any, client *http.Client, headers map[string]string) error {
 	var bodyReader io.Reader
 	if payload != nil {
 		body, err := json.Marshal(payload)
@@ -1224,6 +1303,14 @@ func remoteSwarmJSONRequestWithClient(method, endpoint string, payload any, out 
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	for key, value := range headers {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		req.Header.Set(key, value)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -1346,6 +1433,42 @@ func randomSwarmRemotePairingRequestID() (string, error) {
 		return "", err
 	}
 	return "pair_" + hex.EncodeToString(buf), nil
+}
+
+func (s *Server) emitSwarmPairingRequestedNotification(pending swarmRemotePairingPendingRequest) error {
+	if s == nil || s.notifications == nil {
+		return nil
+	}
+	requestID := strings.TrimSpace(pending.ID)
+	managerSwarmID := strings.TrimSpace(pending.ManagerSwarmID)
+	managedName := firstNonEmpty(strings.TrimSpace(pending.ManagedName), strings.TrimSpace(pending.ManagedSwarmID), "Managed swarm")
+	if requestID == "" {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	bodyParts := []string{
+		fmt.Sprintf("%s wants to link to this Manager swarm.", managedName),
+	}
+	if code := strings.TrimSpace(pending.CeremonyCode); code != "" {
+		bodyParts = append(bodyParts, "Confirm ceremony code "+code+" before approving.")
+	}
+	if endpoint := strings.TrimSpace(pending.ManagedEndpoint); endpoint != "" {
+		bodyParts = append(bodyParts, "Endpoint: "+endpoint)
+	}
+	_, _, err := s.notifications.UpsertSystemNotification(pebblestore.NotificationRecord{
+		ID:              "swarm_pairing_" + requestID,
+		SwarmID:         managerSwarmID,
+		OriginSwarmID:   strings.TrimSpace(pending.ManagedSwarmID),
+		Category:        pebblestore.NotificationCategorySystem,
+		Severity:        pebblestore.NotificationSeverityWarning,
+		Title:           "Managed Swarm pairing request",
+		Body:            strings.Join(bodyParts, " "),
+		Status:          pebblestore.NotificationStatusActive,
+		SourceEventType: "swarm.managed_pairing.requested",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	})
+	return err
 }
 
 func (s *Server) publishSwarmPairingEvent(eventType, entityID string, payload any) error {
