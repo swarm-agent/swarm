@@ -349,7 +349,10 @@ function PairingRequestsModal({
                     type="checkbox"
                     checked={confirmed}
                     disabled={Boolean(busyID)}
-                    onChange={(event) => onConfirmationChange(requestID, event.currentTarget.checked)}
+                    onChange={(event) => {
+                    const confirmed = event.target.checked
+                    onConfirmationChange(requestID, confirmed)
+                  }}
                   />
                   <span>I confirm this code matches on both machines</span>
                 </label>
@@ -3446,7 +3449,10 @@ export function DesktopAppPage() {
                 <input
                   type="checkbox"
                   checked={localContainerUpdateConfirm?.pendingDismiss ?? false}
-                  onChange={(event) => handleToggleLocalContainerUpdateDismissal(event.currentTarget.checked)}
+                  onChange={(event) => {
+                      const dismissed = event.target.checked
+                      handleToggleLocalContainerUpdateDismissal(dismissed)
+                    }}
                 />
                 <span>Don&apos;t show this again for local-only container image warnings</span>
               </label>

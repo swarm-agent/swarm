@@ -1790,7 +1790,10 @@ export function DesktopSwarmDashboard() {
                               type="checkbox"
                               checked={pairingConfirmations[requestID] === true}
                               disabled={busy || busyRequest}
-                              onChange={(event) => setPairingConfirmations((current) => ({ ...current, [requestID]: event.currentTarget.checked }))}
+                              onChange={(event) => {
+                                const confirmed = event.target.checked
+                                setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))
+                              }}
                             />
                             <span>I confirm the code matches</span>
                           </label>
