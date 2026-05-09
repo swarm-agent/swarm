@@ -34,6 +34,7 @@ import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
 import { fetchSwarmMirrorResources, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
 import { LinkSwarmModal } from './components/link-swarm-modal'
+import { ReplicateSwarmModal } from './components/replicate-swarm-modal'
 import {
   type DeployContainerDeployment,
   type DeployContainerWorkspaceBootstrap,
@@ -217,6 +218,54 @@ function containerLocationLabel(hostName: string, containerName: string): string
 
 function emptySwarmMirrorResources(): SwarmMirrorResources {
   return { hosts: [], workspaces: [], containers: [], deployments: [] }
+}
+
+const PENDING_REPLICATION_TARGET_STORAGE_KEY = 'swarm.pendingReplicationTarget.v1'
+
+function loadPendingReplicationTarget(): SwarmTarget | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  try {
+    const raw = window.localStorage.getItem(PENDING_REPLICATION_TARGET_STORAGE_KEY)
+    if (!raw) {
+      return null
+    }
+    const parsed = JSON.parse(raw) as Partial<SwarmTarget>
+    const swarmID = String(parsed.swarm_id ?? '').trim()
+    if (!swarmID) {
+      return null
+    }
+    return {
+      swarm_id: swarmID,
+      name: String(parsed.name ?? swarmID).trim(),
+      role: String(parsed.role ?? 'managed').trim(),
+      relationship: String(parsed.relationship ?? 'managed').trim(),
+      kind: parsed.kind === 'host' || parsed.kind === 'remote' || parsed.kind === 'local' || parsed.kind === 'self' ? parsed.kind : 'host',
+      attach_status: String(parsed.attach_status ?? 'paired').trim(),
+      online: parsed.online !== false,
+      selectable: parsed.selectable !== false,
+      current: Boolean(parsed.current),
+      backend_url: String(parsed.backend_url ?? '').trim(),
+    }
+  } catch {
+    return null
+  }
+}
+
+function savePendingReplicationTarget(target: SwarmTarget | null): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    if (target) {
+      window.localStorage.setItem(PENDING_REPLICATION_TARGET_STORAGE_KEY, JSON.stringify(target))
+      return
+    }
+    window.localStorage.removeItem(PENDING_REPLICATION_TARGET_STORAGE_KEY)
+  } catch {
+    // Ignore local persistence failures; the in-memory pending card still works.
+  }
 }
 
 function mirrorWorkspaceName(workspace: SwarmMirrorWorkspaceResource): string {
@@ -859,6 +908,8 @@ export function DesktopSwarmDashboard() {
   const [localNameDraft, setLocalNameDraft] = useState('')
   const [addSwarmOpen, setAddSwarmOpen] = useState(false)
   const [linkSwarmOpen, setLinkSwarmOpen] = useState(false)
+  const [pendingReplicationTarget, setPendingReplicationTarget] = useState<SwarmTarget | null>(() => loadPendingReplicationTarget())
+  const [replicationModalOpen, setReplicationModalOpen] = useState(false)
   const [deleteContainersOpen, setDeleteContainersOpen] = useState(false)
   const [selectedDeleteContainerIDs, setSelectedDeleteContainerIDs] = useState<string[]>([])
   const [deleteSwarmsOpen, setDeleteSwarmsOpen] = useState(false)
@@ -912,6 +963,10 @@ export function DesktopSwarmDashboard() {
     applyCoreDashboardState(state, onboarding, nextUISettings)
     applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets.targets, nextMirrorResources)
   }
+
+  useEffect(() => {
+    savePendingReplicationTarget(pendingReplicationTarget)
+  }, [pendingReplicationTarget])
 
   useEffect(() => {
     let cancelled = false
@@ -1461,7 +1516,7 @@ export function DesktopSwarmDashboard() {
     setError(null)
     setStatus(null)
     try {
-      await approveRemoteSwarmPairing({
+      const result = await approveRemoteSwarmPairing({
         requestID,
         approve,
         confirmed: approve ? pairingConfirmations[requestID] === true : undefined,
@@ -1474,7 +1529,29 @@ export function DesktopSwarmDashboard() {
         return next
       })
       await refresh()
-      setStatus(approve ? `Approved Managed Swarm ${request.managed_name || request.managed_swarm_id || requestID}.` : `Rejected pairing request ${requestID}.`)
+      if (approve) {
+        const managedSwarmID = (result.routing?.managed_swarm_id || request.managed_swarm_id || '').trim()
+        const managedName = (result.routing?.managed_name || request.managed_name || managedSwarmID || requestID).trim()
+        const backendURL = (result.routing?.backend_url || request.managed_endpoint || '').trim()
+        if (managedSwarmID) {
+          setPendingReplicationTarget({
+            swarm_id: managedSwarmID,
+            name: managedName,
+            role: 'managed',
+            relationship: 'managed',
+            kind: 'host',
+            attach_status: result.status || 'paired',
+            online: true,
+            selectable: true,
+            current: false,
+            backend_url: backendURL,
+          })
+          setReplicationModalOpen(true)
+        }
+        setStatus(`Approved Managed Swarm ${managedName}. Workspace replication is pending; replicate now or skip.`)
+      } else {
+        setStatus(`Rejected pairing request ${requestID}.`)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update pairing request')
     } finally {
@@ -1888,10 +1965,27 @@ export function DesktopSwarmDashboard() {
         </div>
       </div>
 
-      {error || status || visiblePendingPairings.length > 0 ? (
+      {error || status || pendingReplicationTarget || visiblePendingPairings.length > 0 ? (
         <div className="mt-4 space-y-3">
           {error ? <Card data-testid="swarm-dashboard-error" className="border-[var(--app-danger-border)] bg-transparent p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
           {status ? <Card data-testid="swarm-dashboard-status" className="border-[var(--app-success-border)] bg-transparent p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
+          {pendingReplicationTarget ? (
+            <Card data-testid="swarm-replication-pending" className="border-[var(--app-warning-border)] bg-transparent p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">Managed Host linked — workspace replication pending</div>
+                  <div className="mt-1 text-sm text-[var(--app-text-muted)]">
+                    {pendingReplicationTarget.name || pendingReplicationTarget.swarm_id} is trusted. Replicate git workspaces now or skip and run replication later.
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone="warning">Pending</Badge>
+                  <Button size="sm" variant="outline" onClick={() => { setPendingReplicationTarget(null); setReplicationModalOpen(false) }} disabled={busy}>Skip</Button>
+                  <Button size="sm" onClick={() => setReplicationModalOpen(true)} disabled={busy}>Replicate</Button>
+                </div>
+              </div>
+            </Card>
+          ) : null}
 
           {visiblePendingPairings.length > 0 ? (
             <Card data-testid="swarm-pending-pairings" className="border-[var(--app-warning-border)] bg-transparent p-4">
@@ -2365,6 +2459,31 @@ export function DesktopSwarmDashboard() {
         onOpenChange={setLinkSwarmOpen}
         onPairingSent={handleAddSwarmComplete}
         onOnboardingStatusChange={setOnboardingStatus}
+      />
+      <ReplicateSwarmModal
+        open={replicationModalOpen && Boolean(pendingReplicationTarget)}
+        onboardingStatus={onboardingStatus}
+        onOpenChange={(open) => setReplicationModalOpen(open)}
+        initialTargetMode="remote"
+        initialTargetSwarmID={pendingReplicationTarget?.swarm_id ?? ''}
+        lockedTarget
+        flowLabel="Managed Host link"
+        title="Replicate workspaces to the new Managed Host"
+        description="The host is linked and trusted. Choose which git workspaces to import over peer-authenticated Tailscale, or skip and replicate later from the Swarm dashboard."
+        submitLabel="Replicate to Managed Host"
+        onComplete={async (message) => {
+          await refresh()
+          setPendingReplicationTarget(null)
+          setReplicationModalOpen(false)
+          setError(null)
+          setStatus(message)
+        }}
+        onSkip={async (message) => {
+          setPendingReplicationTarget(null)
+          setReplicationModalOpen(false)
+          setError(null)
+          setStatus(message)
+        }}
       />
       <ManagedSwarmSettingsDialog
         deployment={settingsDeployment}

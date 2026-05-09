@@ -14,14 +14,23 @@ import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspac
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
 import { useDesktopStore } from '../../state/use-desktop-store'
 
+type ReplicateTargetMode = 'local' | 'remote'
+
 interface ReplicateSwarmModalProps {
   open: boolean
   onboardingStatus: DesktopOnboardingStatus | null
   onOpenChange: (open: boolean) => void
   onComplete: (message: string) => Promise<void> | void
+  onSkip?: (message: string) => Promise<void> | void
+  initialTargetMode?: ReplicateTargetMode
+  initialTargetSwarmID?: string
+  lockedTarget?: boolean
+  title?: string
+  description?: string
+  flowLabel?: string
+  submitLabel?: string
 }
 
-type ReplicateTargetMode = 'local' | 'remote'
 type ReplicationMode = 'bundle' | 'copy'
 
 interface ReplicateWorkspaceDraft {
@@ -69,11 +78,20 @@ function buildWorkspaceDrafts(workspaces: WorkspaceEntry[]): ReplicateWorkspaceD
   })
 }
 
-function selectedWorkspaceCount(items: ReplicateWorkspaceDraft[]): number {
-  return items.filter((item) => item.selected).length
-}
-
-export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onComplete }: ReplicateSwarmModalProps) {
+export function ReplicateSwarmModal({
+  open,
+  onboardingStatus,
+  onOpenChange,
+  onComplete,
+  onSkip,
+  initialTargetMode = 'local',
+  initialTargetSwarmID = '',
+  lockedTarget = false,
+  title = 'Replicate a child swarm from existing workspaces',
+  description = 'This is a dedicated replication flow. It prepares a child swarm using the existing container primitives, then provisions selected workspaces into it with sync and access settings.',
+  flowLabel = 'Separate flow',
+  submitLabel = 'Replicate Swarm',
+}: ReplicateSwarmModalProps) {
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -94,7 +112,10 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
 
   const vault = useDesktopStore((state) => state.vault)
   const suggestedName = useMemo(() => suggestedReplicatedSwarmName(onboardingStatus), [onboardingStatus])
-  const selectedCount = useMemo(() => selectedWorkspaceCount(workspaceDrafts), [workspaceDrafts])
+  const selectedCount = useMemo(
+    () => workspaceDrafts.filter((item) => item.selected && (targetMode !== 'remote' || item.defaultReplicationMode === 'bundle')).length,
+    [workspaceDrafts, targetMode],
+  )
   const hostVaultEnabled = Boolean(vault.enabled)
   const runtimeChoice = useMemo(
     () => (selectedRuntime && runtimeStatus.available.includes(selectedRuntime) ? selectedRuntime : runtimeStatus.recommended || ''),
@@ -108,8 +129,8 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
     [remoteTargets],
   )
   const selectedRemoteTarget = useMemo(
-    () => remoteTargetCandidates.find((target) => target.swarm_id === selectedRemoteSwarmID) ?? null,
-    [remoteTargetCandidates, selectedRemoteSwarmID],
+    () => remoteTargets.find((target) => target.swarm_id === selectedRemoteSwarmID) ?? null,
+    [remoteTargets, selectedRemoteSwarmID],
   )
 
   useEffect(() => {
@@ -120,10 +141,10 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
     setLoading(true)
     setSubmitting(false)
     setError(null)
-    setTargetMode('local')
+    setTargetMode(initialTargetMode)
     setSwarmName(suggestedName)
     setRemoteTargets([])
-    setSelectedRemoteSwarmID('')
+    setSelectedRemoteSwarmID(initialTargetMode === 'remote' ? initialTargetSwarmID.trim() : '')
     setRuntimeStatus(FALLBACK_RUNTIME_STATUS)
     setSelectedRuntime('')
     setSyncEnabled(true)
@@ -145,11 +166,12 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
         setWorkspaceDrafts(buildWorkspaceDrafts(workspaces))
         const nextRemoteTargets = Array.isArray(targetsResponse.targets) ? targetsResponse.targets : []
         setRemoteTargets(nextRemoteTargets)
+        const requestedRemoteSwarmID = initialTargetSwarmID.trim()
         const firstManagedTarget = nextRemoteTargets.find((target) => {
           const relationship = target.relationship.trim().toLowerCase()
           return target.selectable && target.online && relationship === 'managed' && target.swarm_id.trim() !== ''
         })
-        setSelectedRemoteSwarmID(firstManagedTarget?.swarm_id ?? '')
+        setSelectedRemoteSwarmID(initialTargetMode === 'remote' ? (requestedRemoteSwarmID || firstManagedTarget?.swarm_id || '') : (firstManagedTarget?.swarm_id ?? ''))
         setRuntimeStatus(nextRuntimeStatus)
         setSelectedRuntime((nextRuntimeStatus.recommended || '') as 'podman' | 'docker' | '')
       })
@@ -168,7 +190,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
     return () => {
       cancelled = true
     }
-  }, [open, suggestedName])
+  }, [open, suggestedName, initialTargetMode, initialTargetSwarmID])
 
   if (!open) {
     return null
@@ -197,7 +219,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
       setError(runtimeStatus.warning || 'No supported local runtime is available.')
       return
     }
-    const selected = workspaceDrafts.filter((item) => item.selected)
+    const selected = workspaceDrafts.filter((item) => item.selected && (targetMode !== 'remote' || item.defaultReplicationMode === 'bundle'))
     if (selected.length === 0) {
       setError('Select at least one workspace to replicate.')
       return
@@ -288,14 +310,12 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="flex items-center gap-2">
-                <Badge tone="neutral">Separate flow</Badge>
+                <Badge tone="neutral">{flowLabel}</Badge>
                 <Badge tone="live">Replicate Swarm</Badge>
+                {lockedTarget ? <Badge tone="warning">Target locked</Badge> : null}
               </div>
-              <h2 className="mt-3 text-xl font-semibold text-[var(--app-text)]">Replicate a child swarm from existing workspaces</h2>
-              <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-                This is a dedicated replication flow. It prepares a child swarm using the existing container primitives,
-                then provisions selected workspaces into it with sync and access settings.
-              </p>
+              <h2 className="mt-3 text-xl font-semibold text-[var(--app-text)]">{title}</h2>
+              <p className="mt-2 text-sm text-[var(--app-text-muted)]">{description}</p>
             </div>
             <ModalCloseButton onClick={closeModal} aria-label="Close replicate swarm dialog" />
           </div>
@@ -340,8 +360,9 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <button
                 type="button"
-                onClick={() => setTargetMode('local')}
-                className={`rounded-2xl border p-4 text-left transition ${targetMode === 'local' ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
+                onClick={() => { if (!lockedTarget) setTargetMode('local') }}
+                disabled={lockedTarget}
+                className={`rounded-2xl border p-4 text-left transition ${targetMode === 'local' ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'} ${lockedTarget ? 'opacity-60' : ''}`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-sm font-medium text-[var(--app-text)]">
@@ -354,8 +375,9 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
               </button>
               <button
                 type="button"
-                onClick={() => setTargetMode('remote')}
-                className={`rounded-2xl border p-4 text-left transition ${targetMode === 'remote' ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'} ${remoteTargetCandidates.length > 0 ? '' : 'opacity-70'}`}
+                onClick={() => { if (!lockedTarget) setTargetMode('remote') }}
+                disabled={lockedTarget}
+                className={`rounded-2xl border p-4 text-left transition ${targetMode === 'remote' ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'} ${remoteTargetCandidates.length > 0 ? '' : 'opacity-70'} ${lockedTarget ? 'opacity-60' : ''}`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-sm font-medium text-[var(--app-text)]">
@@ -380,7 +402,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
                   No online managed host targets are available. Link and approve a managed host first.
                 </div>
               ) : (
-                <Select value={selectedRemoteSwarmID} onChange={(event) => setSelectedRemoteSwarmID(event.target.value)} className="mt-3" disabled={submitting}>
+                <Select value={selectedRemoteSwarmID} onChange={(event) => setSelectedRemoteSwarmID(event.target.value)} className="mt-3" disabled={submitting || lockedTarget}>
                   {remoteTargetCandidates.map((target) => (
                     <option key={target.swarm_id} value={target.swarm_id}>
                       {target.name || target.swarm_id} · {target.swarm_id}
@@ -424,17 +446,19 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
                     <Card className="border-dashed p-5 text-sm text-[var(--app-text-muted)]">No workspaces available yet.</Card>
                   ) : (
                     workspaceDrafts.map((workspace) => {
-                      const checked = workspace.selected
+                      const remoteUnsupported = targetMode === 'remote' && workspace.defaultReplicationMode !== 'bundle'
+                      const checked = workspace.selected && !remoteUnsupported
                       return (
                         <label
                           key={workspace.workspacePath}
-                          className={`block rounded-2xl border p-4 transition ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}
+                          className={`block rounded-2xl border p-4 transition ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'} ${remoteUnsupported ? 'opacity-60' : ''}`}
                         >
                           <div className="flex items-start gap-3">
                             <input
                               type="checkbox"
                               className="mt-1 h-4 w-4 rounded border-[var(--app-border)]"
                               checked={checked}
+                              disabled={remoteUnsupported}
                               onChange={(event) => {
                                 const nextChecked = event.target.checked
                                 setWorkspaceDrafts((current) => current.map((item) => (
@@ -450,6 +474,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
                                 <Badge tone={workspace.defaultReplicationMode === 'bundle' ? 'live' : 'neutral'}>
                                   default {workspace.defaultReplicationMode}
                                 </Badge>
+                                {remoteUnsupported ? <Badge tone="warning">remote requires git bundle</Badge> : null}
                                 {checked ? (
                                   <Badge tone="live">
                                     <Check size={12} />
@@ -461,6 +486,11 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
                               {workspace.directories.length > 1 ? (
                                 <div className="mt-2 text-xs text-[var(--app-text-muted)]">
                                   Includes {workspace.directories.length} linked directories.
+                                </div>
+                              ) : null}
+                              {remoteUnsupported ? (
+                                <div className="mt-2 text-xs text-[var(--app-warning-text)]">
+                                  Archive copy is not implemented for managed hosts yet, so this non-git workspace is skipped for remote replication.
                                 </div>
                               ) : null}
 
@@ -479,6 +509,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
                                         )))
                                       }}
                                       className="mt-2"
+                                      disabled={targetMode === 'remote'}
                                     >
                                       <option value="bundle">Git bundle</option>
                                       <option value="copy">Full workspace copy</option>
@@ -675,9 +706,14 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
             <Button type="button" variant="outline" onClick={closeModal} disabled={submitting}>
               Close
             </Button>
+            {onSkip ? (
+              <Button type="button" variant="outline" onClick={() => void onSkip('Workspace replication skipped.')} disabled={submitting}>
+                Skip replication
+              </Button>
+            ) : null}
             <Button type="button" variant="primary" onClick={() => void handleSubmit()} disabled={submitting || loading || selectedCount === 0 || (targetMode === 'local' ? !runtimeChoice : !selectedRemoteSwarmID.trim())}>
               {submitting ? <Loader2 className="animate-spin" size={14} /> : null}
-              {submitting ? 'Replicating…' : 'Replicate Swarm'}
+              {submitting ? 'Replicating…' : submitLabel}
             </Button>
           </div>
         </div>

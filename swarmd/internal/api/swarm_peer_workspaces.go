@@ -22,7 +22,7 @@ const (
 	peerWorkspaceImportBundlePath = "/v1/swarm/peer/workspaces/import-bundle"
 	peerWorkspaceCreatePath       = "/v1/swarm/peer/workspaces/create"
 	peerWorkspaceTransferPrefix   = "/v1/swarm/peer/workspaces/transfer/"
-	peerWorkspaceDefaultRoot      = "swarm-managed-workspaces"
+	peerWorkspaceDefaultRoot      = "workspaces"
 )
 
 type peerWorkspaceInfo struct {
@@ -226,11 +226,11 @@ func (s *Server) requirePeerAuth(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func peerWorkspaceImportRoot() (string, error) {
-	configDir, err := os.UserConfigDir()
-	if err != nil || strings.TrimSpace(configDir) == "" {
-		return "", fmt.Errorf("resolve config directory: %w", err)
+	homeDir, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(homeDir) == "" {
+		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(configDir, "swarm", peerWorkspaceDefaultRoot), nil
+	return filepath.Join(homeDir, peerWorkspaceDefaultRoot), nil
 }
 
 func uniquePeerWorkspacePath(root, name string) string {
