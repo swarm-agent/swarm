@@ -11,7 +11,7 @@ import (
 
 func TestParseDefaultsUseSystemStorageRoots(t *testing.T) {
 	configDir := writeTestStartupConfig(t)
-	home := "/test-home/swarmd-config-test"
+	home := filepath.Join(t.TempDir(), "home")
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -38,6 +38,34 @@ func TestParseDefaultsUseSystemStorageRoots(t *testing.T) {
 		if strings.HasPrefix(path, home) {
 			t.Fatalf("storage path %q unexpectedly under HOME/XDG", path)
 		}
+	}
+	if cfg.StartupCWD != home {
+		t.Fatalf("StartupCWD = %q, want user home %q", cfg.StartupCWD, home)
+	}
+}
+
+func TestParseExplicitCWDOverridesHomeDefault(t *testing.T) {
+	configDir := writeTestStartupConfig(t)
+	home := filepath.Join(t.TempDir(), "home")
+	cwd := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir cwd: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("STATE_DIRECTORY", "")
+	t.Setenv("RUNTIME_DIRECTORY", "")
+	t.Setenv("CONFIGURATION_DIRECTORY", configDir)
+
+	cfg, err := Parse([]string{"--cwd", cwd})
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if cfg.StartupCWD != cwd {
+		t.Fatalf("StartupCWD = %q, want explicit cwd %q", cfg.StartupCWD, cwd)
 	}
 }
 

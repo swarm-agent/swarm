@@ -94,7 +94,11 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")
 	fs.StringVar(&cfg.DBPath, "db-path", defaultDBPath, "Pebble database path")
 	fs.StringVar(&cfg.LockPath, "lock-path", defaultLockPath, "daemon lock file path")
-	fs.StringVar(&cfg.StartupCWD, "cwd", "", "startup working directory binding (defaults to process cwd)")
+	defaultStartupCWD, err := resolveDefaultStartupCWD()
+	if err != nil {
+		return Config{}, err
+	}
+	fs.StringVar(&cfg.StartupCWD, "cwd", defaultStartupCWD, "startup working directory binding (defaults to user home)")
 
 	if err := fs.Parse(filteredArgs); err != nil {
 		return Config{}, err
@@ -108,12 +112,8 @@ func Parse(args []string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid desktop port %d (expected 0-65535)", cfg.DesktopPort)
 	}
 
-	if cfg.StartupCWD == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return Config{}, fmt.Errorf("resolve process cwd: %w", err)
-		}
-		cfg.StartupCWD = cwd
+	if strings.TrimSpace(cfg.StartupCWD) == "" {
+		cfg.StartupCWD = defaultStartupCWD
 	}
 
 	if err := validateDaemonStoragePaths(cfg); err != nil {
@@ -165,8 +165,20 @@ func resolveDaemonStorageDefaults() (daemonStorageDefaults, error) {
 	return daemonStorageDefaults{DataDir: dataDir, DBPath: dbPath, LockPath: lockPath}, nil
 }
 
+func resolveDefaultStartupCWD() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home directory: %w", err)
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return "", errors.New("user home directory is unavailable")
+	}
+	return home, nil
+}
+
 func validateDaemonStoragePaths(cfg Config) error {
-	opts := storagecontract.Options{WorkspaceRoots: detectedWorkspaceRoots(cfg.StartupCWD)}
+	opts := storagecontract.Options{WorkspaceRoots: validationWorkspaceRoots(cfg.StartupCWD)}
 	for _, item := range []struct {
 		flagName string
 		path     string
@@ -180,6 +192,34 @@ func validateDaemonStoragePaths(cfg Config) error {
 		}
 	}
 	return nil
+}
+
+func validationWorkspaceRoots(starts ...string) []string {
+	roots := make([]string, 0, len(starts)+1)
+	seen := make(map[string]struct{}, len(starts)+1)
+	appendRoot := func(root string) {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			return
+		}
+		root = filepath.Clean(root)
+		if _, ok := seen[root]; ok {
+			return
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
+	}
+	for _, start := range starts {
+		for _, root := range detectedWorkspaceRoots(start) {
+			appendRoot(root)
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		for _, root := range detectedWorkspaceRoots(cwd) {
+			appendRoot(root)
+		}
+	}
+	return roots
 }
 
 func detectedWorkspaceRoots(start string) []string {
