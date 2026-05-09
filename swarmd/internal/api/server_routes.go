@@ -48,6 +48,7 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/enrollment/", s.handleSwarmEnrollmentDecision)
 	mux.HandleFunc("/v1/swarm/state", s.handleSwarmState)
 	mux.HandleFunc("/v1/swarm/targets", s.handleSwarmTargets)
+	mux.HandleFunc("/v1/swarm/mirror/resources", s.handleSwarmMirrorResources)
 	mux.HandleFunc("/v1/swarm/target/current", s.handleSwarmCurrentTarget)
 	mux.HandleFunc("/v1/swarm/target/select", s.handleSwarmSelectTarget)
 	mux.HandleFunc("/v1/swarm/groups", s.handleSwarmGroups)

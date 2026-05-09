@@ -32,6 +32,7 @@ import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settin
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
+import { fetchSwarmMirrorResources, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
 import { LinkSwarmModal } from './components/link-swarm-modal'
 import {
   type DeployContainerDeployment,
@@ -212,6 +213,14 @@ function containerLocationLabel(hostName: string, containerName: string): string
   const host = hostName.trim() || 'host'
   const container = containerName.trim() || 'container'
   return `${host} / ${container}`
+}
+
+function emptySwarmMirrorResources(): SwarmMirrorResources {
+  return { hosts: [], workspaces: [], containers: [], deployments: [] }
+}
+
+function mirrorWorkspaceName(workspace: SwarmMirrorWorkspaceResource): string {
+  return String(workspace.workspace_name || workspace.name || workspace.path.split('/').filter(Boolean).pop() || 'workspace').trim()
 }
 
 function normalizePairingCode(value: string | null | undefined): string {
@@ -837,6 +846,7 @@ export function DesktopSwarmDashboard() {
   const [deploymentsLoading, setDeploymentsLoading] = useState(true)
   const [, setRemoteSessionsLoading] = useState(true)
   const [swarmTargets, setSwarmTargets] = useState<SwarmTarget[]>([])
+  const [mirrorResources, setMirrorResources] = useState<SwarmMirrorResources>(emptySwarmMirrorResources)
   const [localRuntime, setLocalRuntime] = useState<SwarmLocalRuntimeStatus>({ recommended: '', available: [], installed: [], issues: {}, warning: '' })
   const [localContainers, setLocalContainers] = useState<SwarmLocalContainer[]>([])
   const [deployments, setDeployments] = useState<DeployContainerDeployment[]>([])
@@ -875,6 +885,7 @@ export function DesktopSwarmDashboard() {
     nextRemoteSessions: RemoteDeploySession[],
     nextPendingPairings: RemoteSwarmPendingPairing[],
     nextSwarmTargets: SwarmTarget[],
+    nextMirrorResources: SwarmMirrorResources,
   ) => {
     setLocalRuntime(runtimeStatus)
     setLocalContainers(launchedContainers)
@@ -882,10 +893,11 @@ export function DesktopSwarmDashboard() {
     setRemoteSessions(nextRemoteSessions)
     setPendingPairings(nextPendingPairings)
     setSwarmTargets(nextSwarmTargets)
+    setMirrorResources(nextMirrorResources)
   }
 
   const refresh = async () => {
-    const [state, onboarding, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets] = await Promise.all([
+    const [state, onboarding, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets, nextMirrorResources] = await Promise.all([
       fetchSwarmState(),
       fetchDesktopOnboardingStatus(),
       getUISettings(),
@@ -895,9 +907,10 @@ export function DesktopSwarmDashboard() {
       fetchRemoteDeploySessions(),
       fetchPendingRemoteSwarmPairings(),
       fetchSwarmTargets(),
+      fetchSwarmMirrorResources(),
     ])
     applyCoreDashboardState(state, onboarding, nextUISettings)
-    applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets.targets)
+    applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets.targets, nextMirrorResources)
   }
 
   useEffect(() => {
@@ -1019,8 +1032,43 @@ export function DesktopSwarmDashboard() {
         }
       })
 
+    void fetchSwarmMirrorResources()
+      .then((resources) => {
+        if (!cancelled) {
+          setMirrorResources(resources)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError((current) => current ?? (err instanceof Error ? err.message : 'Failed to load mirrored swarm resources'))
+        }
+      })
+
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const refreshMirrors = () => {
+      void Promise.all([fetchSwarmMirrorResources(), fetchSwarmTargets()])
+        .then(([resources, targets]) => {
+          if (!cancelled) {
+            setMirrorResources(resources)
+            setSwarmTargets(targets.targets)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setError((current) => current ?? (err instanceof Error ? err.message : 'Failed to refresh mirrored swarm resources'))
+          }
+        })
+    }
+    window.addEventListener('swarm:mirror-updated', refreshMirrors)
+    return () => {
+      cancelled = true
+      window.removeEventListener('swarm:mirror-updated', refreshMirrors)
     }
   }, [])
 
@@ -1136,6 +1184,48 @@ export function DesktopSwarmDashboard() {
     mapped.forEach((items) => items.sort((left, right) => (left.child_name || left.name).localeCompare(right.child_name || right.name)))
     return mapped
   }, [currentGroupID, remoteSessions])
+  const mirroredContainersByHostSwarmID = useMemo(() => {
+    const mapped = new Map<string, typeof mirrorResources.containers>()
+    mirrorResources.containers.forEach((container) => {
+      const hostSwarmID = container.managedSwarmID.trim()
+      if (!hostSwarmID) {
+        return
+      }
+      const next = mapped.get(hostSwarmID) ?? []
+      next.push(container)
+      mapped.set(hostSwarmID, next)
+    })
+    mapped.forEach((items) => items.sort((left, right) => (right.resource.updatedAt || right.updatedAt) - (left.resource.updatedAt || left.updatedAt)))
+    return mapped
+  }, [mirrorResources.containers])
+  const mirroredWorkspacesByHostSwarmID = useMemo(() => {
+    const mapped = new Map<string, typeof mirrorResources.workspaces>()
+    mirrorResources.workspaces.forEach((workspace) => {
+      const hostSwarmID = workspace.managedSwarmID.trim()
+      const path = String(workspace.resource.path ?? '').trim()
+      if (!hostSwarmID || !path) {
+        return
+      }
+      const next = mapped.get(hostSwarmID) ?? []
+      next.push(workspace)
+      mapped.set(hostSwarmID, next)
+    })
+    mapped.forEach((items) => items.sort((left, right) => mirrorWorkspaceName(left.resource).localeCompare(mirrorWorkspaceName(right.resource))))
+    return mapped
+  }, [mirrorResources.workspaces])
+  const mirroredDeploymentByContainerID = useMemo(() => {
+    const mapped = new Map<string, DeployContainerDeployment>()
+    mirrorResources.deployments.forEach((deployment) => {
+      const resource = deployment.resource
+      ;[resource.id, resource.container_id, resource.container_name].forEach((value) => {
+        const key = String(value ?? '').trim()
+        if (key) {
+          mapped.set(key, resource)
+        }
+      })
+    })
+    return mapped
+  }, [mirrorResources.deployments])
   const staleRelationshipMembers = useMemo(() => (
     (group?.members ?? [])
       .filter((member) => member.swarmID !== localSwarmID)
@@ -2055,6 +2145,9 @@ export function DesktopSwarmDashboard() {
                 const hostDesktopURL = target?.desktop_url || ''
                 const hostAPIURL = target?.backend_url || ''
                 const hostContainers = remoteContainerRowsByHostSwarmID.get(member.swarmID) ?? []
+                const mirroredHostContainers = mirroredContainersByHostSwarmID.get(member.swarmID) ?? []
+                const mirroredHostWorkspaces = mirroredWorkspacesByHostSwarmID.get(member.swarmID) ?? []
+                const totalHostContainers = hostContainers.length + mirroredHostContainers.length
                 return (
                   <div key={`${member.groupID}:${member.swarmID}`} className="rounded-xl border border-[var(--app-border)] bg-transparent p-4">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -2073,6 +2166,7 @@ export function DesktopSwarmDashboard() {
                           <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)]">
                             <div>Swarm ID: <span className="font-mono text-[var(--app-text)]">{member.swarmID}</span></div>
                             <div>Runtime: host · Relationship: managed</div>
+                            <div>Mirrored resources: {mirroredHostWorkspaces.length} workspace{mirroredHostWorkspaces.length === 1 ? '' : 's'} · {mirroredHostContainers.length} container{mirroredHostContainers.length === 1 ? '' : 's'}</div>
                             {target?.last_error ? <div className="text-[var(--app-warning-text)]">{target.last_error}</div> : null}
                           </div>
                         </div>
@@ -2087,9 +2181,36 @@ export function DesktopSwarmDashboard() {
                     </div>
 
                     <div className="mt-4 border-t border-[var(--app-border)] pt-4">
+                      <div className="text-sm font-semibold text-[var(--app-text)]">Workspaces on {hostName}</div>
+                      <div className="mt-2 grid gap-2">
+                        {mirroredHostWorkspaces.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">No workspaces mirrored for this host yet.</div>
+                        ) : mirroredHostWorkspaces.map((workspace) => {
+                          const resource = workspace.resource
+                          const workspaceName = mirrorWorkspaceName(resource)
+                          const directories = Array.isArray(resource.directories) ? resource.directories : []
+                          return (
+                            <div key={workspace.id} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
+                              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-semibold text-[var(--app-text)]">{workspaceName}</div>
+                                  <div className="break-all text-xs text-[var(--app-text-muted)]">{resource.path}</div>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {resource.is_git_repo ? <Badge tone="live">git</Badge> : <Badge tone="neutral">folder</Badge>}
+                                  {directories.length > 1 ? <Badge tone="neutral">{directories.length} dirs</Badge> : null}
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 border-t border-[var(--app-border)] pt-4">
                       <div className="text-sm font-semibold text-[var(--app-text)]">Containers on {hostName}</div>
                       <div className="mt-2 grid gap-2">
-                        {hostContainers.length === 0 ? (
+                        {totalHostContainers === 0 ? (
                           <div className="rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">No container swarms reported for this host yet.</div>
                         ) : hostContainers.map((session) => {
                           const running = session.status === 'attached' || session.status === 'running'
@@ -2116,6 +2237,37 @@ export function DesktopSwarmDashboard() {
                                 </div>
                               </div>
                               {session.last_error ? <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] px-3 py-2 text-xs text-[var(--app-warning-text)]">{session.last_error}</div> : null}
+                            </div>
+                          )
+                        })}
+                        {mirroredHostContainers.map((mirroredContainer) => {
+                          const container = mirroredContainer.resource
+                          const attachedDeployment = [container.id, container.containerID, container.containerName]
+                            .map((value) => mirroredDeploymentByContainerID.get(String(value ?? '').trim()) ?? null)
+                            .find(Boolean) ?? null
+                          const running = container.status === 'running'
+                          const childName = attachedDeployment?.child_display_name || attachedDeployment?.child_swarm_id || container.name || 'container swarm'
+                          const childDesktopURL = attachedDeployment?.child_desktop_url || ''
+                          const childAPIURL = attachedDeployment?.child_backend_url || container.hostAPIBaseURL || ''
+                          return (
+                            <div key={`mirrored:${mirroredContainer.managedSwarmID}:${mirroredContainer.id}`} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
+                              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                <div className="min-w-0 flex items-center gap-2">
+                                  <Boxes size={16} className="text-[var(--app-text-muted)]" />
+                                  <div className="min-w-0">
+                                    <div className="truncate text-sm font-semibold text-[var(--app-text)]">{containerLocationLabel(hostName, container.containerName || container.name)}</div>
+                                    <div className="truncate text-xs text-[var(--app-text-muted)]">Swarm: {childName} · Container: {container.containerName || container.id} · {container.runtime || attachedDeployment?.runtime || 'runtime unknown'} · API {container.runtimePort || attachedDeployment?.backend_host_port || 'auto'}</div>
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {attachedDeployment ? <Badge tone="live">{attachedDeployment.child_display_name || attachedDeployment.child_swarm_id || 'attached swarm'}</Badge> : <Badge tone="neutral">mirrored</Badge>}
+                                  <Badge tone={running ? 'live' : container.status === 'missing' ? 'warning' : 'neutral'}>{container.status || 'created'}</Badge>
+                                  {childDesktopURL ? <a href={childDesktopURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">Desktop</a> : null}
+                                  {childAPIURL ? <a href={childAPIURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">API</a> : null}
+                                </div>
+                              </div>
+                              {container.warning ? <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] px-3 py-2 text-xs text-[var(--app-warning-text)]">{container.warning}</div> : null}
+                              {attachedDeployment?.last_attach_error ? <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] px-3 py-2 text-xs text-[var(--app-warning-text)]">{attachedDeployment.last_attach_error}</div> : null}
                             </div>
                           )
                         })}

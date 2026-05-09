@@ -69,6 +69,20 @@ type peerMirrorHostResource struct {
 	UpdatedAt      int64  `json:"updated_at"`
 }
 
+type swarmMirrorResourceView struct {
+	ManagedSwarmID string          `json:"managed_swarm_id"`
+	Kind           string          `json:"kind"`
+	ID             string          `json:"id"`
+	Sequence       uint64          `json:"sequence"`
+	UpdatedAt      int64           `json:"updated_at"`
+	Resource       json.RawMessage `json:"resource"`
+}
+
+type swarmMirrorResourcesResponse struct {
+	OK        bool                      `json:"ok"`
+	Resources []swarmMirrorResourceView `json:"resources"`
+}
+
 func (s *Server) SetSwarmMirrorStore(store *pebblestore.SwarmMirrorStore) {
 	if s == nil {
 		return
@@ -84,6 +98,27 @@ func (s *Server) StartManagedMirrorSync(ctx context.Context) {
 		return
 	}
 	go s.managedMirrorSyncLoop(ctx)
+}
+
+func (s *Server) handleSwarmMirrorResources(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if s == nil || s.swarmMirror == nil {
+		writeJSON(w, http.StatusOK, swarmMirrorResourcesResponse{OK: true, Resources: []swarmMirrorResourceView{}})
+		return
+	}
+	resources, err := s.swarmMirror.ListRemoteResources(strings.TrimSpace(r.URL.Query().Get("managed_swarm_id")), parseMirrorResources(r), 100000)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := make([]swarmMirrorResourceView, 0, len(resources))
+	for _, resource := range resources {
+		out = append(out, swarmMirrorResourceView{ManagedSwarmID: resource.ManagedSwarmID, Kind: resource.Kind, ID: resource.ID, Sequence: resource.Sequence, UpdatedAt: resource.UpdatedAt, Resource: append([]byte(nil), resource.Resource...)})
+	}
+	writeJSON(w, http.StatusOK, swarmMirrorResourcesResponse{OK: true, Resources: out})
 }
 
 func (s *Server) handlePeerMirrorSnapshot(w http.ResponseWriter, r *http.Request) {

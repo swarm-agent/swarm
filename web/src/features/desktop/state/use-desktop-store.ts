@@ -1651,6 +1651,9 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
     }
   }
   if (eventType.startsWith('swarm.')) {
+    if (eventType === 'swarm.mirror.updated' && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('swarm:mirror-updated', { detail: payloadRecord }))
+    }
     const notifications = [...state.notifications]
     const enrollmentId = typeof payloadRecord.id === 'string'
       ? payloadRecord.id
