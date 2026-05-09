@@ -16,6 +16,7 @@ import {
   fetchSwarmLocalContainers,
   fetchSwarmLocalRuntimeStatus,
   fetchSwarmState,
+  patchDesktopOnboarding,
   pruneMissingSwarmLocalContainers,
   removeManagedHostLink,
   saveDesktopOnboarding,
@@ -28,7 +29,6 @@ import {
 import type { DesktopOnboardingStatus, DesktopSwarmGroupMember, DesktopSwarmGroupState } from '../onboarding/types'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { normalizeDefaultNewSessionMode } from '../settings/swarm/types/swarm-settings'
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
@@ -1298,7 +1298,7 @@ export function DesktopSwarmDashboard() {
         ? 'Managed Hosting is enabled with Tailscale reachability. Use Managed Hosting to link another host.'
         : 'Managed Hosting is enabled. Tailscale was not connected, so reachability stayed on LAN for now.')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to turn on Swarm Mode')
+      setError(err instanceof Error ? err.message : 'Failed to turn on Managed Hosting')
     } finally {
       setBusy(false)
     }
@@ -1310,11 +1310,14 @@ export function DesktopSwarmDashboard() {
     setStatus(null)
     try {
       const currentName = defaultLocalSwarmName(onboardingStatus, swarmState?.node.name)
-      await saveDesktopOnboarding({ swarmName: currentName, swarmMode: false, child: false })
-      await refresh()
+      await patchDesktopOnboarding({ swarmMode: false })
+      setOnboardingStatus((current) => current
+        ? { ...current, config: { ...current.config, swarmName: currentName, swarmMode: false } }
+        : current)
+      setLocalNameDraft(currentName)
       setStatus('Managed Hosting is now off. Local containers remain available.')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to turn off Swarm Mode')
+      setError(err instanceof Error ? err.message : 'Failed to turn off Managed Hosting')
     } finally {
       setBusy(false)
     }
@@ -1403,11 +1406,7 @@ export function DesktopSwarmDashboard() {
     setStatus(null)
     try {
       await Promise.all([
-        saveSwarmSettings({
-          current: uiSettings,
-          name: normalized,
-          defaultNewSessionMode: normalizeDefaultNewSessionMode(uiSettings.chat?.default_new_session_mode),
-        }),
+        saveSwarmSettings({ name: normalized }),
         saveDesktopOnboarding({ swarmName: normalized }),
       ])
       await refresh()

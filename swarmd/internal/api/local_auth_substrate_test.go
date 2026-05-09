@@ -469,6 +469,7 @@ func newStaticUpdateService(t *testing.T, updateAvailable bool) *update.Service 
 type fakeLocalAuthSwarmService struct {
 	state                  swarmruntime.LocalState
 	outgoingPeerAuthTokens map[string]string
+	detachCalls            *int
 }
 
 func (f fakeLocalAuthSwarmService) EnsureLocalState(swarmruntime.EnsureLocalStateInput) (swarmruntime.LocalState, error) {
@@ -555,4 +556,9 @@ func (f fakeLocalAuthSwarmService) UpdateLocalPairingFromConfig(startupconfig.Fi
 	return swarmruntime.PairingState{}, nil
 }
 
-func (f fakeLocalAuthSwarmService) DetachToStandalone(string) error { return nil }
+func (f fakeLocalAuthSwarmService) DetachToStandalone(string) error {
+	if f.detachCalls != nil {
+		(*f.detachCalls)++
+	}
+	return nil
+}

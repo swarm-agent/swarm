@@ -18,7 +18,7 @@ function describeWorkspaceTheme(themeId: string): string {
 }
 
 export function ThemesSettingsPage() {
-  const { workspaces, currentWorkspacePath, setWorkspaceTheme } = useWorkspaceLauncher()
+  const { workspaces, currentWorkspacePath, setWorkspaceTheme } = useWorkspaceLauncher({ applyDocumentTheme: false })
   const [savingPath, setSavingPath] = useState<string | null>(null)
   const [savingGlobalTheme, setSavingGlobalTheme] = useState(false)
   const [error, setError] = useState<string | null>(null)

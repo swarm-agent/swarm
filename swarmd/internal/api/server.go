@@ -3273,6 +3273,141 @@ func (s *Server) handleSTTTranscribe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type uiSettingsPatchPresence struct {
+	Theme     *uiThemeSettingsPatchPresence    `json:"theme"`
+	Input     *uiInputSettingsPatchPresence    `json:"input"`
+	Chat      *uiChatSettingsPatchPresence     `json:"chat"`
+	Swarming  *uiSwarmingSettingsPatchPresence `json:"swarming"`
+	Swarm     *uiSwarmSettingsPatchPresence    `json:"swarm"`
+	Updates   *uiUpdateSettingsPatchPresence   `json:"updates"`
+	Tools     *uiToolSettingsPatchPresence     `json:"tools"`
+	UpdatedAt *int64                           `json:"updated_at"`
+}
+
+type uiThemeSettingsPatchPresence struct {
+	ActiveID     *string                        `json:"active_id"`
+	CustomThemes *[]uisettings.ThemeCustomTheme `json:"custom_themes"`
+}
+
+type uiInputSettingsPatchPresence struct {
+	MouseEnabled *bool              `json:"mouse_enabled"`
+	Keybinds     *map[string]string `json:"keybinds"`
+}
+
+type uiChatToolStreamSettingsPatchPresence struct {
+	ShowAnchor    *bool     `json:"show_anchor"`
+	PulseFrames   *[]string `json:"pulse_frames"`
+	RunningSymbol *string   `json:"running_symbol"`
+	SuccessSymbol *string   `json:"success_symbol"`
+	ErrorSymbol   *string   `json:"error_symbol"`
+}
+
+type uiChatSettingsPatchPresence struct {
+	ShowHeader             *bool                                  `json:"show_header"`
+	ThinkingTags           *bool                                  `json:"thinking_tags"`
+	DefaultNewSessionMode  *string                                `json:"default_new_session_mode"`
+	DefaultWorkspaceRoutes *map[string]string                     `json:"default_workspace_routes"`
+	ToolStream             *uiChatToolStreamSettingsPatchPresence `json:"tool_stream"`
+}
+
+type uiSwarmingSettingsPatchPresence struct {
+	Title  *string `json:"title"`
+	Status *string `json:"status"`
+}
+
+type uiSwarmSettingsPatchPresence struct {
+	Name             *string   `json:"name"`
+	RemoteSSHTargets *[]string `json:"remote_ssh_targets"`
+}
+
+type uiUpdateSettingsPatchPresence struct {
+	LocalContainerWarningDismissed *bool `json:"local_container_warning_dismissed"`
+}
+
+type uiToolImageSettingsPatchPresence struct {
+	DefaultModel *string `json:"default_model"`
+}
+
+type uiToolSettingsPatchPresence struct {
+	Image *uiToolImageSettingsPatchPresence `json:"image"`
+}
+
+func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPatchPresence) uisettings.UISettings {
+	settings := current
+	if raw.Theme != nil {
+		if raw.Theme.ActiveID != nil {
+			settings.Theme.ActiveID = patch.Theme.ActiveID
+		}
+		if raw.Theme.CustomThemes != nil {
+			settings.Theme.CustomThemes = patch.Theme.CustomThemes
+		}
+	}
+	if raw.Input != nil {
+		if raw.Input.MouseEnabled != nil {
+			settings.Input.MouseEnabled = patch.Input.MouseEnabled
+		}
+		if raw.Input.Keybinds != nil {
+			settings.Input.Keybinds = patch.Input.Keybinds
+		}
+	}
+	if raw.Chat != nil {
+		if raw.Chat.ShowHeader != nil {
+			settings.Chat.ShowHeader = patch.Chat.ShowHeader
+		}
+		if raw.Chat.ThinkingTags != nil {
+			settings.Chat.ThinkingTags = patch.Chat.ThinkingTags
+		}
+		if raw.Chat.DefaultNewSessionMode != nil {
+			settings.Chat.DefaultNewSessionMode = patch.Chat.DefaultNewSessionMode
+		}
+		if raw.Chat.DefaultWorkspaceRoutes != nil {
+			settings.Chat.DefaultWorkspaceRoutes = patch.Chat.DefaultWorkspaceRoutes
+		}
+		if raw.Chat.ToolStream != nil {
+			if raw.Chat.ToolStream.ShowAnchor != nil {
+				settings.Chat.ToolStream.ShowAnchor = patch.Chat.ToolStream.ShowAnchor
+			}
+			if raw.Chat.ToolStream.PulseFrames != nil {
+				settings.Chat.ToolStream.PulseFrames = patch.Chat.ToolStream.PulseFrames
+			}
+			if raw.Chat.ToolStream.RunningSymbol != nil {
+				settings.Chat.ToolStream.RunningSymbol = patch.Chat.ToolStream.RunningSymbol
+			}
+			if raw.Chat.ToolStream.SuccessSymbol != nil {
+				settings.Chat.ToolStream.SuccessSymbol = patch.Chat.ToolStream.SuccessSymbol
+			}
+			if raw.Chat.ToolStream.ErrorSymbol != nil {
+				settings.Chat.ToolStream.ErrorSymbol = patch.Chat.ToolStream.ErrorSymbol
+			}
+		}
+	}
+	if raw.Swarming != nil {
+		if raw.Swarming.Title != nil {
+			settings.Swarming.Title = patch.Swarming.Title
+		}
+		if raw.Swarming.Status != nil {
+			settings.Swarming.Status = patch.Swarming.Status
+		}
+	}
+	if raw.Swarm != nil {
+		if raw.Swarm.Name != nil {
+			settings.Swarm.Name = patch.Swarm.Name
+		}
+		if raw.Swarm.RemoteSSHTargets != nil {
+			settings.Swarm.RemoteSSHTargets = patch.Swarm.RemoteSSHTargets
+		}
+	}
+	if raw.Updates != nil && raw.Updates.LocalContainerWarningDismissed != nil {
+		settings.Updates.LocalContainerWarningDismissed = patch.Updates.LocalContainerWarningDismissed
+	}
+	if raw.Tools != nil && raw.Tools.Image != nil {
+		if raw.Tools.Image.DefaultModel != nil {
+			settings.Tools.Image.DefaultModel = patch.Tools.Image.DefaultModel
+		}
+	}
+	return settings
+}
+
 func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 	if s.uiSettings == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("ui settings service not configured"))
@@ -3294,20 +3429,12 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = r.Body.Close()
-		var settings uisettings.UISettings
-		if err := decodeJSONBytes(body, &settings); err != nil {
+		var patch uisettings.UISettings
+		if err := decodeJSONBytes(body, &patch); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		var raw struct {
-			Chat *struct {
-				ShowHeader             *bool              `json:"show_header"`
-				ThinkingTags           *bool              `json:"thinking_tags"`
-				DefaultNewSessionMode  *string            `json:"default_new_session_mode"`
-				DefaultWorkspaceRoutes *map[string]string `json:"default_workspace_routes"`
-				ToolStream             *struct{}          `json:"tool_stream"`
-			} `json:"chat"`
-		}
+		var raw uiSettingsPatchPresence
 		if err := json.Unmarshal(body, &raw); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -3317,25 +3444,7 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if raw.Chat == nil {
-			settings.Chat = current.Chat
-		} else {
-			if raw.Chat.ShowHeader == nil {
-				settings.Chat.ShowHeader = current.Chat.ShowHeader
-			}
-			if raw.Chat.ThinkingTags == nil {
-				settings.Chat.ThinkingTags = current.Chat.ThinkingTags
-			}
-			if raw.Chat.DefaultNewSessionMode == nil {
-				settings.Chat.DefaultNewSessionMode = current.Chat.DefaultNewSessionMode
-			}
-			if raw.Chat.DefaultWorkspaceRoutes == nil {
-				settings.Chat.DefaultWorkspaceRoutes = current.Chat.DefaultWorkspaceRoutes
-			}
-			if raw.Chat.ToolStream == nil {
-				settings.Chat.ToolStream = current.Chat.ToolStream
-			}
-		}
+		settings := mergeUISettingsPatch(current, patch, raw)
 		saved, err := s.uiSettings.Set(settings)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)

@@ -12,7 +12,7 @@ import {
   syncWorkspaceOverviewThemeState,
   syncWorkspaceOverviewWorktreeState,
 } from '../../workspaces/launcher/services/workspace-overview-cache'
-import { applyWorkspaceTheme, setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/services/workspace-theme'
+import { setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/services/workspace-theme'
 import { openDesktopWebSocket } from '../realtime/client'
 import { disableVault, enableVault, exportVaultBundle, fetchVaultStatus, importVaultBundle, lockVault, unlockVault } from '../vault/api'
 import {
@@ -25,7 +25,7 @@ import { agentStateQueryOptions, sessionMessagesQueryOptions, sessionPreferenceQ
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
-import { normalizeGlobalThemeSettings, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import {
   loadDesktopActiveSessionId,
   loadDesktopActiveWorkspacePath,
@@ -41,7 +41,6 @@ import type {
 } from '../types/realtime'
 import type { ChatMessageRecord } from '../chat/types/chat'
 import type { VaultStatus } from '../vault/types'
-import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/workspace-overview'
 import { DesktopRunStreamController, type RunStreamEventMessage } from './run-stream-controller'
 import { sessionRequiresSnapshotHydration } from './session-snapshot-hydration'
 import { mergeSessionRecords } from './session-records'
@@ -360,40 +359,12 @@ function reconnectDelayMs(attempt: number): number {
   return Math.max(RECONNECT_BASE_DELAY_MS, baseDelay + jitterOffset)
 }
 
-function resolveDesktopGlobalThemeId(): string {
-  const settings = queryClient.getQueryData<UISettingsWire>(uiSettingsQueryKey())
-  return normalizeGlobalThemeSettings(settings).activeId
-}
-
-function resolveDesktopWorkspaceThemeId(workspacePath: string | null): string {
-  const normalizedWorkspacePath = workspacePath?.trim() ?? ''
-  if (!normalizedWorkspacePath) {
-    return ''
-  }
-  const queries = queryClient.getQueryCache().findAll({ queryKey: ['workspace-overview'] })
-  for (const query of queries) {
-    const overview = query.state.data as WorkspaceOverviewResponse | undefined
-    const workspace = overview?.workspaces?.find((entry) => entry.path === normalizedWorkspacePath)
-    if (workspace) {
-      return workspace.themeId?.trim().toLowerCase() ?? ''
-    }
-  }
-  return ''
-}
-
 function themeCustomOptionsSignature(settings?: UISettingsWire | null): string {
   return JSON.stringify(Array.isArray(settings?.theme?.custom_themes) ? settings.theme.custom_themes : [])
 }
 
-function themeSettingsChanged(previous?: UISettingsWire | null, next?: UISettingsWire | null): boolean {
-  return normalizeGlobalThemeSettings(previous).activeId !== normalizeGlobalThemeSettings(next).activeId
-    || themeCustomOptionsSignature(previous) !== themeCustomOptionsSignature(next)
-}
-
-function applyDesktopEffectiveTheme(activeWorkspacePath: string | null): void {
-  const workspaceThemeId = resolveDesktopWorkspaceThemeId(activeWorkspacePath)
-  const globalThemeId = resolveDesktopGlobalThemeId()
-  applyWorkspaceTheme(workspaceThemeId || globalThemeId)
+function themeCustomOptionsChanged(previous?: UISettingsWire | null, next?: UISettingsWire | null): boolean {
+  return themeCustomOptionsSignature(previous) !== themeCustomOptionsSignature(next)
 }
 
 
@@ -1631,9 +1602,8 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
     const previousSettings = queryClient.getQueryData<UISettingsWire>(uiSettingsQueryKey())
     queryClient.setQueryData(uiSettingsQueryKey(), nextSettings)
     queryClient.setQueryData(['ui-settings', 'swarm'], normalizeSwarmSettings(nextSettings))
-    if (themeSettingsChanged(previousSettings, nextSettings)) {
+    if (themeCustomOptionsChanged(previousSettings, nextSettings)) {
       setWorkspaceThemeCustomOptions(nextSettings.theme?.custom_themes ?? [])
-      applyDesktopEffectiveTheme(state.activeWorkspacePath)
     }
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }
@@ -1646,9 +1616,6 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
     const themeId = typeof payloadRecord.theme_id === 'string' ? payloadRecord.theme_id.trim().toLowerCase() : ''
     if (workspacePath) {
       syncWorkspaceOverviewThemeState(queryClient, workspacePath, themeId)
-      if (state.activeWorkspacePath === workspacePath) {
-        applyWorkspaceTheme(themeId || resolveDesktopGlobalThemeId())
-      }
     }
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }

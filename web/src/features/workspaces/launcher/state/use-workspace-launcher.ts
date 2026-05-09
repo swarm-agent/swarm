@@ -34,6 +34,10 @@ interface SaveWorkspaceInput {
   linkedDirectories?: string[]
 }
 
+interface UseWorkspaceLauncherOptions {
+  applyDocumentTheme?: boolean
+}
+
 interface UseWorkspaceLauncherState {
   workspaces: WorkspaceEntry[]
   discovered: WorkspaceDiscoverEntry[]
@@ -203,8 +207,9 @@ function isDefaultWorkspaceOverviewKey(queryKey: readonly unknown[]): boolean {
   return Array.isArray(roots) && roots.length === 0 && sessionLimit === 25
 }
 
-export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
+export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}): UseWorkspaceLauncherState {
   const queryClient = useQueryClient()
+  const applyDocumentTheme = options.applyDocumentTheme ?? true
   const refreshVaultStatus = useDesktopStore((state) => state.refreshVaultStatus)
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([])
   const [discovered, setDiscovered] = useState<WorkspaceDiscoverEntry[]>([])
@@ -225,8 +230,10 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
     const nextPath = resolution?.resolvedPath?.trim() || null
     const nextThemeId = resolution?.themeId?.trim() || ''
     setCurrentWorkspacePath(nextPath)
-    applyWorkspaceTheme(nextThemeId || globalThemeId)
-  }, [globalThemeId])
+    if (applyDocumentTheme) {
+      applyWorkspaceTheme(nextThemeId || globalThemeId)
+    }
+  }, [applyDocumentTheme, globalThemeId])
 
   const browsePath = useCallback(async (path: string) => {
     setBrowserLoading(true)
@@ -292,7 +299,9 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
       setWorkspaces((current) => (workspacesEqual(current, sorted) ? current : sorted))
       setDiscovered(sortDiscoveredWorkspaces(dedupeDiscoveredAgainstWorkspaces(overview.discovered, Array.from(knownPaths))))
       setCurrentWorkspacePath((current) => (current === nextCurrentWorkspacePath ? current : nextCurrentWorkspacePath))
-      applyWorkspaceTheme(resolveEffectiveThemeId(nextCurrentWorkspacePath, sorted, globalThemeId))
+      if (applyDocumentTheme) {
+        applyWorkspaceTheme(resolveEffectiveThemeId(nextCurrentWorkspacePath, sorted, globalThemeId))
+      }
       if (roots.length > 0) {
         debugLog('workspace-launcher', 'refresh:browse-root', { root: roots[0] })
         await browsePath(roots[0])
@@ -323,7 +332,7 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [browser, browsePath, globalThemeId, queryClient, refreshVaultStatus])
+  }, [applyDocumentTheme, browser, browsePath, globalThemeId, queryClient, refreshVaultStatus])
 
   useEffect(() => {
     debugLog('workspace-launcher', 'effect:initial-refresh')
@@ -335,8 +344,10 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
       return
     }
 
-    applyWorkspaceTheme(resolveEffectiveThemeId(currentWorkspacePath, workspaces, globalThemeId))
-  }, [currentWorkspacePath, globalThemeId, loading, workspaces])
+    if (applyDocumentTheme) {
+      applyWorkspaceTheme(resolveEffectiveThemeId(currentWorkspacePath, workspaces, globalThemeId))
+    }
+  }, [applyDocumentTheme, currentWorkspacePath, globalThemeId, loading, workspaces])
 
   useEffect(() => {
     const defaultOverviewKey = workspaceOverviewQueryKey([], 25)
@@ -481,7 +492,9 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
       setWorkspaces((current) => current.filter((workspace) => workspace.path !== deleted.resolvedPath))
       if (currentWorkspacePath === deleted.resolvedPath) {
         setCurrentWorkspacePath(null)
-        applyWorkspaceTheme(globalThemeId)
+        if (applyDocumentTheme) {
+          applyWorkspaceTheme(globalThemeId)
+        }
         useDesktopStore.getState().setActiveWorkspacePath(null)
       }
       await refresh()
@@ -492,7 +505,7 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
     } finally {
       setSavingPath(null)
     }
-  }, [globalThemeId, browsePath, currentWorkspacePath, refresh])
+  }, [applyDocumentTheme, globalThemeId, browsePath, currentWorkspacePath, refresh])
 
   const removeWorkspaceDirectory = useCallback(async (workspacePath: string, directoryPath: string) => {
     const trimmedWorkspacePath = workspacePath.trim()
@@ -560,7 +573,7 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
           ? { ...workspace, themeId: nextThemeId }
           : workspace
       )))
-      if (currentWorkspacePath === trimmedPath) {
+      if (applyDocumentTheme && currentWorkspacePath === trimmedPath) {
         applyWorkspaceTheme(nextThemeId || globalThemeId)
       }
     }
@@ -578,7 +591,7 @@ export function useWorkspaceLauncher(): UseWorkspaceLauncherState {
     } finally {
       setSavingPath(null)
     }
-  }, [currentWorkspacePath, globalThemeId, queryClient, workspaces])
+  }, [applyDocumentTheme, currentWorkspacePath, globalThemeId, queryClient, workspaces])
 
   const moveWorkspaceToIndex = useCallback(async (path: string, targetIndex: number) => {
     const trimmedPath = path.trim()

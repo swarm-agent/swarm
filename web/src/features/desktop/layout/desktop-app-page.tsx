@@ -11,6 +11,7 @@ import { DesktopNotificationsModal } from '../notifications/components/desktop-n
 import { cn } from '../../../lib/cn'
 import { useDesktopStore } from '../state/use-desktop-store'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
+import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
 import { prefetchSessionRuntimeData, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopSessionRecord } from '../types/realtime'
@@ -1518,7 +1519,7 @@ export function DesktopAppPage() {
   const routeWorkspaceSlug = (workspaceFlowDetailMatch ? workspaceFlowDetailMatch.workspaceSlug : workspaceFlowMatch ? workspaceFlowMatch.workspaceSlug : workspaceSessionMatch ? workspaceSessionMatch.workspaceSlug : workspaceMatch ? workspaceMatch.workspaceSlug : '').trim()
   const routeSessionId = (!isFlowRoute && workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
-  const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: workspacesLoading } = useWorkspaceLauncher()
+  const { workspaces, selectingPath, savingPath, saveWorkspace, setWorktreeEnabled, loading: workspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false })
   const connectionState = useDesktopStore((state) => state.connectionState)
   const liveSessions = useDesktopStore((state) => state.sessions)
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
@@ -1674,6 +1675,9 @@ export function DesktopAppPage() {
       setUISettings(uiSettingsQuery.data)
     }
   }, [uiSettingsQuery.data])
+  useEffect(() => {
+    applyDesktopRouteTheme(selectedWorkspacePath, workspaces, uiSettingsQuery.data ?? uiSettings, Boolean(routeWorkspaceSlug))
+  }, [routeWorkspaceSlug, selectedWorkspacePath, workspaces, uiSettingsQuery.data, uiSettings])
   const swarmSettingsQuery = useQuery({
     queryKey: ['ui-settings', 'swarm'] as const,
     queryFn: () => getSwarmSettings(),

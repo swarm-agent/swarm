@@ -10,6 +10,9 @@ import (
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	"swarm/packages/swarmd/internal/uisettings"
 )
 
 func TestClassifyTailscaleServeMode(t *testing.T) {
@@ -176,6 +179,126 @@ func TestUpdateOnboardingEnablesSwarmModeWithoutExplicitName(t *testing.T) {
 	}
 	if status.Config.Mode != startupconfig.NetworkModeTailscale {
 		t.Fatalf("mode = %q, want tailscale", status.Config.Mode)
+	}
+}
+
+func TestUpdateOnboardingDisablesSwarmModeWithoutDetaching(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	detachCalls := 0
+	server.swarm = fakeLocalAuthSwarmService{
+		state:       swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "manager-swarm-1", Name: "Manager A", Role: "master"}},
+		detachCalls: &detachCalls,
+	}
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmName = "manager"
+		cfg.SwarmMode = true
+		cfg.Child = false
+		cfg.NetworkMode = startupconfig.NetworkModeLAN
+	})
+
+	enabled := false
+	status, err := server.updateOnboarding(onboardingUpdateRequest{SwarmMode: &enabled}, true)
+	if err != nil {
+		t.Fatalf("updateOnboarding returned error: %v", err)
+	}
+	if status.Config.SwarmMode {
+		t.Fatalf("swarm mode = true, want false")
+	}
+	if detachCalls != 0 {
+		t.Fatalf("DetachToStandalone calls = %d, want 0", detachCalls)
+	}
+}
+
+func TestUpdateOnboardingDisablesSwarmModeIgnoresStaleNameForUISettings(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-disable-swarm-mode-stale-name.pebble"))
+	if err != nil {
+		t.Fatalf("open ui settings store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("create event log: %v", err)
+	}
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, func(pebblestore.EventEnvelope) {})
+	server.SetUISettingsService(settingsSvc)
+	if _, err := settingsSvc.Set(uisettings.UISettings{
+		Theme: uisettings.ThemeSettings{ActiveID: "midnight"},
+		Swarm: uisettings.SwarmSettings{Name: "Manager A"},
+	}); err != nil {
+		t.Fatalf("seed ui settings: %v", err)
+	}
+	baselineSeq := events.CurrentSequence()
+
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmName = "manager"
+		cfg.SwarmMode = true
+		cfg.Child = false
+		cfg.NetworkMode = startupconfig.NetworkModeLAN
+	})
+
+	enabled := false
+	if _, err := server.updateOnboarding(onboardingUpdateRequest{SwarmName: onboardingStringPtr("Stale Name"), SwarmMode: &enabled}, true); err != nil {
+		t.Fatalf("updateOnboarding returned error: %v", err)
+	}
+	if got := events.CurrentSequence(); got != baselineSeq {
+		t.Fatalf("event sequence changed from %d to %d; swarm_mode:false must ignore stale swarm_name for UI settings", baselineSeq, got)
+	}
+	saved, err := settingsSvc.Get()
+	if err != nil {
+		t.Fatalf("get ui settings: %v", err)
+	}
+	if saved.Theme.ActiveID != "midnight" {
+		t.Fatalf("theme active id = %q, want midnight", saved.Theme.ActiveID)
+	}
+	if saved.Swarm.Name != "Manager A" {
+		t.Fatalf("swarm name = %q, want Manager A", saved.Swarm.Name)
+	}
+}
+
+func TestUpdateOnboardingDisablesSwarmModeWithoutPublishingUISettings(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-disable-swarm-mode.pebble"))
+	if err != nil {
+		t.Fatalf("open ui settings store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("create event log: %v", err)
+	}
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, func(pebblestore.EventEnvelope) {})
+	server.SetUISettingsService(settingsSvc)
+	if _, err := settingsSvc.Set(uisettings.UISettings{
+		Theme: uisettings.ThemeSettings{ActiveID: "midnight"},
+		Swarm: uisettings.SwarmSettings{Name: "Manager A"},
+	}); err != nil {
+		t.Fatalf("seed ui settings: %v", err)
+	}
+	baselineSeq := events.CurrentSequence()
+
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmName = "manager"
+		cfg.SwarmMode = true
+		cfg.Child = false
+		cfg.NetworkMode = startupconfig.NetworkModeLAN
+	})
+
+	enabled := false
+	if _, err := server.updateOnboarding(onboardingUpdateRequest{SwarmMode: &enabled}, true); err != nil {
+		t.Fatalf("updateOnboarding returned error: %v", err)
+	}
+	if got := events.CurrentSequence(); got != baselineSeq {
+		t.Fatalf("event sequence changed from %d to %d; swarm_mode:false-only must not publish ui.settings.updated", baselineSeq, got)
+	}
+	saved, err := settingsSvc.Get()
+	if err != nil {
+		t.Fatalf("get ui settings: %v", err)
+	}
+	if saved.Theme.ActiveID != "midnight" {
+		t.Fatalf("theme active id = %q, want midnight", saved.Theme.ActiveID)
 	}
 }
 

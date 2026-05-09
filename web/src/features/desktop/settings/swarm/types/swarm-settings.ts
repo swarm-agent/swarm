@@ -2,8 +2,8 @@
 // Keep this separate from the existing "swarming" activity indicator settings:
 // - `swarming` = live run/activity label copy.
 // - `swarm.name` = persisted machine/device name edited by /swarm and desktop settings.
-// The UI settings POST endpoint replaces the full document, so callers that save swarm
-// settings must round-trip the full UI settings payload instead of posting a partial patch.
+// The UI settings POST endpoint merges partial patches into the saved document, so callers
+// should send only the setting section they intend to change.
 
 export const DEFAULT_SWARM_NAME = 'Local'
 

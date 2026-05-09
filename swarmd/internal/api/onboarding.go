@@ -573,7 +573,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 
 	updated := cfg
 	changed := false
-	turnedOffSwarmMode := false
+	turnedOffChildMode := false
 	restartRequired := false
 	var restartReasons []string
 
@@ -586,7 +586,6 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	}
 	if req.SwarmMode != nil {
 		updated.SwarmMode = *req.SwarmMode
-		turnedOffSwarmMode = cfg.SwarmMode && !updated.SwarmMode
 		if !updated.SwarmMode {
 			updated.Child = false
 		}
@@ -594,6 +593,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	}
 	if req.Child != nil {
 		updated.Child = *req.Child
+		turnedOffChildMode = cfg.Child && !updated.Child
 		changed = true
 	}
 	if req.Mode != nil {
@@ -671,7 +671,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if err := startupconfig.Write(updated); err != nil {
 		return onboardingResponse{}, err
 	}
-	if (turnedOffSwarmMode || (req.Child != nil && !updated.Child)) && s.swarm != nil {
+	if turnedOffChildMode && s.swarm != nil {
 		state, err := s.currentSwarmState(cfg)
 		if err != nil {
 			return onboardingResponse{}, err
@@ -680,7 +680,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 			return onboardingResponse{}, err
 		}
 	}
-	if req.SwarmName != nil {
+	if req.SwarmName != nil && !(req.SwarmMode != nil && !*req.SwarmMode) {
 		if err := s.persistUISwarmName(updated.SwarmName); err != nil {
 			return onboardingResponse{}, err
 		}

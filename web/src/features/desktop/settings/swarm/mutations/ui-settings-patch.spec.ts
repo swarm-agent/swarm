@@ -33,12 +33,11 @@ test('saveThinkingTagsSetting sends only thinking_tags patch', async () => {
   }
 })
 
-test('saveSwarmSettings sends only swarm name and default mode patch', async () => {
+test('saveSwarmSettings sends only swarm name patch', async () => {
   let capturedBody = ''
   const restore = installFetchMock(async (_input, init) => {
     capturedBody = String(init?.body ?? '')
     return new Response(JSON.stringify({
-      chat: { default_new_session_mode: 'plan' },
       swarm: { name: 'Desk' },
     }), {
       status: 200,
@@ -47,13 +46,9 @@ test('saveSwarmSettings sends only swarm name and default mode patch', async () 
   })
 
   try {
-    const response = await saveSwarmSettings({
-      current: { chat: { default_new_session_mode: 'plan' } },
-      name: 'Desk',
-    })
+    const response = await saveSwarmSettings({ name: 'Desk' })
     assert.equal(response.name, 'Desk')
     assert.deepEqual(JSON.parse(capturedBody), {
-      chat: { default_new_session_mode: 'plan' },
       swarm: { name: 'Desk' },
     })
   } finally {

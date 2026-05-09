@@ -404,7 +404,7 @@ export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingS
   return result
 }
 
-export async function saveDesktopOnboarding(input: SaveDesktopOnboardingInput): Promise<DesktopOnboardingStatus> {
+function buildDesktopOnboardingPayload(input: SaveDesktopOnboardingInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {}
   if (Object.prototype.hasOwnProperty.call(input, 'swarmName')) {
     payload.swarm_name = input.swarmName
@@ -436,14 +436,21 @@ export async function saveDesktopOnboarding(input: SaveDesktopOnboardingInput): 
   if (Object.prototype.hasOwnProperty.call(input, 'peerTransportPort')) {
     payload.peer_transport_port = input.peerTransportPort
   }
+  return payload
+}
 
-  await requestJson<DesktopOnboardingStatusWire>('/v1/onboarding', {
+export async function patchDesktopOnboarding(input: SaveDesktopOnboardingInput): Promise<DesktopOnboardingStatusWire> {
+  return requestJson<DesktopOnboardingStatusWire>('/v1/onboarding', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(buildDesktopOnboardingPayload(input)),
   })
+}
+
+export async function saveDesktopOnboarding(input: SaveDesktopOnboardingInput): Promise<DesktopOnboardingStatus> {
+  await patchDesktopOnboarding(input)
   return fetchDesktopOnboardingStatus()
 }
 

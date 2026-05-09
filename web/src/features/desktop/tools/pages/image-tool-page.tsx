@@ -542,8 +542,11 @@ export function ImageToolPage() {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(IMAGE_TOOL_BLACK_MODE_STORAGE_KEY, blackModeEnabled ? 'true' : 'false')
     }
+    if (routeWorkspaceSlug && workspacesQuery.isLoading && !selectedWorkspace) {
+      return
+    }
     applyWorkspaceTheme(blackModeEnabled ? 'black' : userThemeId)
-  }, [blackModeEnabled, userThemeId])
+  }, [blackModeEnabled, routeWorkspaceSlug, selectedWorkspace, userThemeId, workspacesQuery.isLoading])
 
   useEffect(() => {
     if (!selectedImageAsset) {
