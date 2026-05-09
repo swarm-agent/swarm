@@ -9,6 +9,7 @@ import { Select } from '../../../../components/ui/select'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { fetchSwarmLocalRuntimeStatus, type SwarmLocalRuntimeStatus } from '../../onboarding/api'
 import { hydrateReplicationWorkspaces, replicateSwarm, ReplicateSwarmLaunchError } from '../api/replicate-swarm'
+import { fetchSwarmTargets, type SwarmTarget } from '../api/swarm-targets'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { DesktopOnboardingStatus } from '../../onboarding/types'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -79,6 +80,8 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
   const [targetMode, setTargetMode] = useState<ReplicateTargetMode>('local')
   const [swarmName, setSwarmName] = useState('')
   const [workspaceDrafts, setWorkspaceDrafts] = useState<ReplicateWorkspaceDraft[]>([])
+  const [remoteTargets, setRemoteTargets] = useState<SwarmTarget[]>([])
+  const [selectedRemoteSwarmID, setSelectedRemoteSwarmID] = useState('')
   const [runtimeStatus, setRuntimeStatus] = useState<SwarmLocalRuntimeStatus>(FALLBACK_RUNTIME_STATUS)
   const [selectedRuntime, setSelectedRuntime] = useState<'podman' | 'docker' | ''>('')
   const [syncEnabled, setSyncEnabled] = useState(true)
@@ -97,6 +100,17 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
     () => (selectedRuntime && runtimeStatus.available.includes(selectedRuntime) ? selectedRuntime : runtimeStatus.recommended || ''),
     [runtimeStatus, selectedRuntime],
   )
+  const remoteTargetCandidates = useMemo(
+    () => remoteTargets.filter((target) => {
+      const relationship = target.relationship.trim().toLowerCase()
+      return target.selectable && target.online && relationship === 'managed' && target.swarm_id.trim() !== ''
+    }),
+    [remoteTargets],
+  )
+  const selectedRemoteTarget = useMemo(
+    () => remoteTargetCandidates.find((target) => target.swarm_id === selectedRemoteSwarmID) ?? null,
+    [remoteTargetCandidates, selectedRemoteSwarmID],
+  )
 
   useEffect(() => {
     if (!open) {
@@ -108,6 +122,8 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
     setError(null)
     setTargetMode('local')
     setSwarmName(suggestedName)
+    setRemoteTargets([])
+    setSelectedRemoteSwarmID('')
     setRuntimeStatus(FALLBACK_RUNTIME_STATUS)
     setSelectedRuntime('')
     setSyncEnabled(true)
@@ -120,12 +136,20 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
     void Promise.all([
       hydrateReplicationWorkspaces(),
       fetchSwarmLocalRuntimeStatus().catch(() => FALLBACK_RUNTIME_STATUS),
+      fetchSwarmTargets().catch(() => ({ ok: false, targets: [] })),
     ])
-      .then(([workspaces, nextRuntimeStatus]) => {
+      .then(([workspaces, nextRuntimeStatus, targetsResponse]) => {
         if (cancelled) {
           return
         }
         setWorkspaceDrafts(buildWorkspaceDrafts(workspaces))
+        const nextRemoteTargets = Array.isArray(targetsResponse.targets) ? targetsResponse.targets : []
+        setRemoteTargets(nextRemoteTargets)
+        const firstManagedTarget = nextRemoteTargets.find((target) => {
+          const relationship = target.relationship.trim().toLowerCase()
+          return target.selectable && target.online && relationship === 'managed' && target.swarm_id.trim() !== ''
+        })
+        setSelectedRemoteSwarmID(firstManagedTarget?.swarm_id ?? '')
         setRuntimeStatus(nextRuntimeStatus)
         setSelectedRuntime((nextRuntimeStatus.recommended || '') as 'podman' | 'docker' | '')
       })
@@ -161,21 +185,26 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
     if (submitting) {
       return
     }
-    if (targetMode !== 'local') {
-      setError('Remote replication is not implemented yet.')
+    if (targetMode === 'remote' && !selectedRemoteSwarmID.trim()) {
+      setError('Select a managed host target for remote replication.')
       return
     }
     if (!swarmName.trim()) {
       setError('Child swarm name is required.')
       return
     }
-    if (!runtimeChoice) {
+    if (targetMode === 'local' && !runtimeChoice) {
       setError(runtimeStatus.warning || 'No supported local runtime is available.')
       return
     }
     const selected = workspaceDrafts.filter((item) => item.selected)
     if (selected.length === 0) {
       setError('Select at least one workspace to replicate.')
+      return
+    }
+    const unsupportedRemoteCopy = targetMode === 'remote' && selected.some((item) => item.replicationMode !== 'bundle')
+    if (unsupportedRemoteCopy) {
+      setError('Remote replication currently supports git bundle mode only. Archive copy mode is not implemented for managed hosts yet.')
       return
     }
     if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim()) {
@@ -193,9 +222,10 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
         ...(syncSkillsEnabled ? ['skills'] : []),
       ]
       const result = await replicateSwarm({
-        mode: 'local',
+        mode: targetMode,
         swarmName: swarmName.trim(),
-        runtime: runtimeChoice,
+        targetSwarmID: targetMode === 'remote' ? selectedRemoteSwarmID.trim() : undefined,
+        runtime: targetMode === 'local' ? runtimeChoice : '',
         bypassPermissions,
         sync: {
           enabled: syncEnabled,
@@ -209,7 +239,8 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
           writable: item.writable,
         })),
       })
-      await onComplete(`Replicated ${result.swarm.name || swarmName.trim()} with ${result.workspaces.length} workspace${result.workspaces.length === 1 ? '' : 's'}.`)
+      const targetLabel = targetMode === 'remote' ? (selectedRemoteTarget?.name || result.swarm.name || selectedRemoteSwarmID.trim()) : (result.swarm.name || swarmName.trim())
+      await onComplete(`Replicated ${result.workspaces.length} workspace${result.workspaces.length === 1 ? '' : 's'} to ${targetLabel}.`)
       onOpenChange(false)
     } catch (err) {
       if (err instanceof ReplicateSwarmLaunchError) {
@@ -323,20 +354,42 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
               </button>
               <button
                 type="button"
-                disabled
-                className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-left opacity-70"
+                onClick={() => setTargetMode('remote')}
+                className={`rounded-2xl border p-4 text-left transition ${targetMode === 'remote' ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'} ${remoteTargetCandidates.length > 0 ? '' : 'opacity-70'}`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-sm font-medium text-[var(--app-text)]">
                     <Globe size={14} />
                     Remote
                   </div>
-                  <Badge tone="warning">Not yet wired</Badge>
+                  <Badge tone={remoteTargetCandidates.length > 0 ? 'live' : 'warning'}>{remoteTargetCandidates.length > 0 ? 'Available' : 'No managed hosts'}</Badge>
                 </div>
-                <p className="mt-2 text-xs text-[var(--app-text-muted)]">Remote stays visible in the product flow, but remains unavailable until the remote orchestration slice is implemented.</p>
+                <p className="mt-2 text-xs text-[var(--app-text-muted)]">Use peer-authenticated Tailscale transport to match an existing managed workspace or import a git bundle. Archive copy is not supported remotely yet.</p>
               </button>
             </div>
           </div>
+
+          {targetMode === 'remote' ? (
+            <Card className="border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+              <div className="text-sm font-medium text-[var(--app-text)]">Managed host target</div>
+              <p className="mt-1 text-xs text-[var(--app-text-muted)]">
+                Remote replication is routed with the selected managed host's swarm_id. Git workspaces use bundle import when no clear workspace match exists.
+              </p>
+              {remoteTargetCandidates.length === 0 ? (
+                <div className="mt-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-xs text-[var(--app-text-muted)]">
+                  No online managed host targets are available. Link and approve a managed host first.
+                </div>
+              ) : (
+                <Select value={selectedRemoteSwarmID} onChange={(event) => setSelectedRemoteSwarmID(event.target.value)} className="mt-3" disabled={submitting}>
+                  {remoteTargetCandidates.map((target) => (
+                    <option key={target.swarm_id} value={target.swarm_id}>
+                      {target.name || target.swarm_id} · {target.swarm_id}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Card>
+          ) : null}
 
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)]">
             <div className="space-y-6">
@@ -601,7 +654,8 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
                 <div className="mt-3 grid gap-2 text-xs text-[var(--app-text-muted)]">
                   <div>Target: <span className="font-medium text-[var(--app-text)]">{targetMode}</span></div>
                   <div>Child swarm: <span className="font-medium text-[var(--app-text)]">{swarmName.trim() || suggestedName}</span></div>
-                  <div>Runtime: <span className="font-medium text-[var(--app-text)]">{runtimeChoice || 'Unavailable'}</span></div>
+                  <div>Remote target: <span className="font-medium text-[var(--app-text)]">{targetMode === 'remote' ? (selectedRemoteTarget?.name || selectedRemoteSwarmID || 'Not selected') : 'This host'}</span></div>
+                  <div>Runtime: <span className="font-medium text-[var(--app-text)]">{targetMode === 'remote' ? 'managed host' : (runtimeChoice || 'Unavailable')}</span></div>
                   <div>Selected workspaces: <span className="font-medium text-[var(--app-text)]">{selectedCount}</span></div>
                   <div>Sync: <span className="font-medium text-[var(--app-text)]">{syncEnabled ? `enabled (${syncMode})` : 'disabled'}</span></div>
                   <div>Sync modules: <span className="font-medium text-[var(--app-text)]">{syncEnabled ? ['credentials', ...(syncAgentsEnabled ? ['agents'] : []), ...(syncCustomToolsEnabled ? ['custom_tools'] : []), ...(syncSkillsEnabled ? ['skills'] : [])].join(', ') : 'none'}</span></div>
@@ -621,7 +675,7 @@ export function ReplicateSwarmModal({ open, onboardingStatus, onOpenChange, onCo
             <Button type="button" variant="outline" onClick={closeModal} disabled={submitting}>
               Close
             </Button>
-            <Button type="button" variant="primary" onClick={() => void handleSubmit()} disabled={submitting || loading || selectedCount === 0 || targetMode !== 'local' || !runtimeChoice}>
+            <Button type="button" variant="primary" onClick={() => void handleSubmit()} disabled={submitting || loading || selectedCount === 0 || (targetMode === 'local' ? !runtimeChoice : !selectedRemoteSwarmID.trim())}>
               {submitting ? <Loader2 className="animate-spin" size={14} /> : null}
               {submitting ? 'Replicating…' : 'Replicate Swarm'}
             </Button>

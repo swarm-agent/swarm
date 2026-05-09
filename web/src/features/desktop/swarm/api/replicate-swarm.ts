@@ -30,6 +30,7 @@ export interface ReplicateSwarmContainerPackagesInput {
 export interface ReplicateSwarmRequest {
   mode: 'local' | 'remote'
   swarmName: string
+  targetSwarmID?: string
   runtime?: 'podman' | 'docker' | ''
   bypassPermissions?: boolean
   alwaysOn?: boolean
@@ -173,7 +174,10 @@ function normalizeReplicateSwarmFailure(payload: {
 }
 
 export async function replicateSwarm(input: ReplicateSwarmRequest): Promise<ReplicateSwarmResponse> {
-  const response = await apiFetch('/v1/swarm/replicate', {
+  const query = input.targetSwarmID?.trim()
+    ? `?swarm_id=${encodeURIComponent(input.targetSwarmID.trim())}`
+    : ''
+  const response = await apiFetch(`/v1/swarm/replicate${query}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
