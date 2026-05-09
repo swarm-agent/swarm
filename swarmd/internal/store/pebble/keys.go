@@ -51,6 +51,11 @@ const (
 	KeySwarmEnrollmentPrefix           = "swarm/enrollment/"
 	KeySwarmTrustedPeerPrefix          = "swarm/trusted_peer/"
 	KeySwarmDesktopTargetCurrent       = "swarm/desktop_target/current"
+	KeySwarmMirrorLocalSeq             = "swarm/mirror/local/seq"
+	KeySwarmMirrorLocalEventPrefix     = "swarm/mirror/local/event/"
+	KeySwarmMirrorLocalResourcePrefix  = "swarm/mirror/local/resource/"
+	KeySwarmMirrorRemoteCursorPrefix   = "swarm/mirror/remote/cursor/"
+	KeySwarmMirrorRemoteResourcePrefix = "swarm/mirror/remote/resource/"
 	KeyNotificationPrefix              = "notification/"
 	KeyNotificationBySwarmPrefix       = "notification_by_swarm/"
 	KeyNotificationPermissionRefPrefix = "notification_permission_ref/"
@@ -567,6 +572,38 @@ func DeployContainerPrefix() string {
 
 func RemoteDeploySessionPrefix() string {
 	return KeyRemoteDeploySessionPrefix
+}
+
+func KeySwarmMirrorLocalEvent(sequence uint64) string {
+	return fmt.Sprintf("%s%020d", KeySwarmMirrorLocalEventPrefix, sequence)
+}
+
+func SwarmMirrorLocalEventPrefix() string {
+	return KeySwarmMirrorLocalEventPrefix
+}
+
+func KeySwarmMirrorLocalResource(kind, id string) string {
+	return fmt.Sprintf("%s%s/%s", KeySwarmMirrorLocalResourcePrefix, keyPart(kind), keyPart(id))
+}
+
+func SwarmMirrorLocalResourcePrefix() string {
+	return KeySwarmMirrorLocalResourcePrefix
+}
+
+func KeySwarmMirrorRemoteCursor(managedSwarmID string) string {
+	return KeySwarmMirrorRemoteCursorPrefix + keyPart(managedSwarmID)
+}
+
+func KeySwarmMirrorRemoteResource(managedSwarmID, kind, id string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeySwarmMirrorRemoteResourcePrefix, keyPart(managedSwarmID), keyPart(kind), keyPart(id))
+}
+
+func SwarmMirrorRemoteResourcePrefix() string {
+	return KeySwarmMirrorRemoteResourcePrefix
+}
+
+func KeySwarmMirrorRemoteResourcePrefixForSwarm(managedSwarmID string) string {
+	return KeySwarmMirrorRemoteResourcePrefix + keyPart(managedSwarmID) + "/"
 }
 
 func SwarmInvitePrefix() string {

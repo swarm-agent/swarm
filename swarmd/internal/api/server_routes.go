@@ -196,6 +196,8 @@ func (s *Server) registerPeerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/peer/permissions/cancel_run", s.handlePeerPermissionCancelRun)
 	mux.HandleFunc("/v1/swarm/peer/permissions/mark_started", s.handlePeerPermissionMarkStarted)
 	mux.HandleFunc("/v1/swarm/peer/permissions/mark_completed", s.handlePeerPermissionMarkCompleted)
+	mux.HandleFunc(peerMirrorSnapshotPath, s.handlePeerMirrorSnapshot)
+	mux.HandleFunc(peerMirrorWatchPath, s.handlePeerMirrorWatch)
 }
 
 func (s *Server) registerLocalTransportRoutes(mux *http.ServeMux) {
@@ -226,4 +228,6 @@ func (s *Server) registerLocalTransportRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/peer/permissions/cancel_run", s.handlePeerPermissionCancelRun)
 	mux.HandleFunc("/v1/swarm/peer/permissions/mark_started", s.handlePeerPermissionMarkStarted)
 	mux.HandleFunc("/v1/swarm/peer/permissions/mark_completed", s.handlePeerPermissionMarkCompleted)
+	mux.HandleFunc(peerMirrorSnapshotPath, s.handlePeerMirrorSnapshot)
+	mux.HandleFunc(peerMirrorWatchPath, s.handlePeerMirrorWatch)
 }

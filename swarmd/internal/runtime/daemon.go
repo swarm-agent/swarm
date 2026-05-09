@@ -349,6 +349,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetUISettingsService(uiSettingsSvc)
 	apiServer.SetSwarmDesktopTargetSelectionStore(swarmDesktopTargetSelectionStore)
 	apiServer.SetSwarmNodeStore(swarmNodeStore)
+	apiServer.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	apiServer.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))
 	apiServer.SetFlowStore(flowStore)
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
@@ -365,6 +366,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetDeployContainerService(deployContainerSvc)
 	apiServer.SetRemoteDeployService(remoteDeploySvc)
 	apiServer.SetUpdateService(updateSvc)
+	apiServer.StartManagedMirrorSync(bgCtx)
 
 	runtimeStatus, runtimeStatusErr := localContainerSvc.RuntimeStatus(context.Background())
 	localTransportRuntimeName := ""

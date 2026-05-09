@@ -123,6 +123,8 @@ type Server struct {
 	desktopLocalSessions      *desktopLocalSessionManager
 	gitRealtime               *gitRealtimeManager
 	swarmTargetHealth         swarmTargetHealthCache
+	swarmMirror               *pebblestore.SwarmMirrorStore
+	mirrorSyncStarted         atomic.Bool
 	remoteCandidateProbePorts []int
 }
 

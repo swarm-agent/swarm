@@ -192,6 +192,10 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	if err != nil {
 		return nil, nil, err
 	}
+	mirroredTargets, err := s.listMirroredSwarmTargets()
+	if err != nil {
+		return nil, nil, err
+	}
 	localSwarmID := strings.TrimSpace(state.Node.SwarmID)
 	currentGroupSwarmIDs := currentSwarmGroupMemberIDs(state)
 	selectedID := requestedSwarmTargetID(r)
@@ -202,7 +206,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		}
 	}
 
-	targets := make([]swarmTarget, 0, len(nodeTargets)+len(trustedPeerTargets)+len(deployments)+len(remoteDeployments)+1)
+	targets := make([]swarmTarget, 0, len(nodeTargets)+len(trustedPeerTargets)+len(deployments)+len(remoteDeployments)+len(mirroredTargets)+1)
 	targets = append(targets, swarmTarget{
 		SwarmID:      localSwarmID,
 		Name:         firstNonEmpty(strings.TrimSpace(state.Node.Name), strings.TrimSpace(cfg.SwarmName), "Local"),
@@ -261,6 +265,17 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		s.applyCachedSwarmTargetHealth(&deployment)
 		targets = append(targets, deployment)
 		markSwarmTargetSeen(seenTargets, deployment)
+	}
+	for _, mirrored := range mirroredTargets {
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, mirrored.SwarmID) {
+			continue
+		}
+		if swarmTargetSeen(seenTargets, mirrored) {
+			continue
+		}
+		s.applyCachedSwarmTargetHealth(&mirrored)
+		targets = append(targets, mirrored)
+		markSwarmTargetSeen(seenTargets, mirrored)
 	}
 	sort.Slice(targets, func(i, j int) bool {
 		if targets[i].Relationship == "self" {
