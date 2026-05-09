@@ -27,14 +27,12 @@ type chatLiveAssistantCacheEntry struct {
 	Width                 int
 	Generation            uint64
 	Variant               int
-	Streaming             bool
 	ParsedText            string
 	Lines                 []chatRenderLine
 	LastParseAt           time.Time
 	LastAttemptWidth      int
 	LastAttemptGeneration uint64
 	LastAttemptVariant    int
-	LastAttemptStreaming  bool
 }
 
 var chatLiveAssistantParseMinInterval = 33 * time.Millisecond
@@ -155,12 +153,10 @@ func (p *ChatPage) cachedLiveAssistantLines(width int) []chatRenderLine {
 		return nil
 	}
 	entry := &p.liveAssistantRenderCache
-	streaming := p.liveRunVisible()
 	if entry.Valid &&
 		entry.Width == width &&
 		entry.Generation == p.timelineRenderGeneration &&
 		entry.Variant == p.assistantVariant &&
-		entry.Streaming == streaming &&
 		entry.ParsedText == text {
 		return cloneRenderLines(entry.Lines)
 	}
@@ -168,8 +164,7 @@ func (p *ChatPage) cachedLiveAssistantLines(width int) []chatRenderLine {
 	now := time.Now()
 	attemptLayoutChanged := entry.LastAttemptWidth != width ||
 		entry.LastAttemptGeneration != p.timelineRenderGeneration ||
-		entry.LastAttemptVariant != p.assistantVariant ||
-		entry.LastAttemptStreaming != streaming
+		entry.LastAttemptVariant != p.assistantVariant
 	if !attemptLayoutChanged && !entry.LastParseAt.IsZero() && now.Sub(entry.LastParseAt) < chatLiveAssistantParseMinInterval {
 		if entry.Valid {
 			return cloneRenderLines(entry.Lines)
@@ -187,7 +182,6 @@ func (p *ChatPage) cachedLiveAssistantLines(width int) []chatRenderLine {
 	entry.LastAttemptWidth = width
 	entry.LastAttemptGeneration = p.timelineRenderGeneration
 	entry.LastAttemptVariant = p.assistantVariant
-	entry.LastAttemptStreaming = streaming
 	if recovered {
 		if entry.Valid {
 			return cloneRenderLines(entry.Lines)
@@ -198,7 +192,6 @@ func (p *ChatPage) cachedLiveAssistantLines(width int) []chatRenderLine {
 	entry.Width = width
 	entry.Generation = p.timelineRenderGeneration
 	entry.Variant = p.assistantVariant
-	entry.Streaming = streaming
 	entry.ParsedText = text
 	entry.Lines = cloneRenderLines(lines)
 	return lines
