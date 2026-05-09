@@ -53,7 +53,7 @@ const (
 	childLocalTransportMountTargetDir = "/run/swarm-parent-transport"
 	childLocalTransportSocketPath     = childLocalTransportMountTargetDir + "/api.sock"
 	childLocalTransportBaseURL        = "http://swarm-local-transport"
-	managedCredentialSyncPollInterval = 5 * time.Second
+	managedCredentialSyncPollInterval = 60 * time.Second
 	localReconcilePollInterval        = 5 * time.Second
 	peerAuthSwarmIDHeader             = "X-Swarm-Peer-ID"
 	peerAuthTokenHeader               = "X-Swarm-Peer-Token"
@@ -210,11 +210,12 @@ type ContainerAttachFinalizeInput struct {
 }
 
 type ContainerSyncCredentialRequestInput struct {
-	DeploymentID    string `json:"deployment_id"`
-	BootstrapSecret string `json:"bootstrap_secret"`
-	VaultPassword   string `json:"vault_password,omitempty"`
-	PeerSwarmID     string `json:"peer_swarm_id,omitempty"`
-	PeerAuthorized  bool   `json:"-"`
+	DeploymentID      string `json:"deployment_id"`
+	BootstrapSecret   string `json:"bootstrap_secret"`
+	VaultPassword     string `json:"vault_password,omitempty"`
+	KnownSnapshotHash string `json:"known_snapshot_hash,omitempty"`
+	PeerSwarmID       string `json:"peer_swarm_id,omitempty"`
+	PeerAuthorized    bool   `json:"-"`
 }
 
 type ContainerWorkspaceBootstrapRequestInput struct {
@@ -1120,6 +1121,15 @@ func (s *Service) SyncCredentialBundle(ctx context.Context, input ContainerSyncC
 	if strings.TrimSpace(record.SyncBundlePassword) == "" {
 		return ContainerSyncCredentialBundle{}, fmt.Errorf("sync bundle password is not configured")
 	}
+	if known := strings.TrimSpace(input.KnownSnapshotHash); known != "" && strings.EqualFold(known, strings.TrimSpace(record.SyncCredentialSnapshotHash)) {
+		return ContainerSyncCredentialBundle{
+			OwnerSwarmID:   record.SyncOwnerSwarmID,
+			BundlePassword: record.SyncBundlePassword,
+			Exported:       record.SyncBundleExportCount,
+			ExportedAt:     record.SyncBundleExportedAt,
+			SnapshotHash:   strings.TrimSpace(record.SyncCredentialSnapshotHash),
+		}, nil
+	}
 	payload, exported, err := s.auth.ExportCredentials(record.SyncBundlePassword, strings.TrimSpace(input.VaultPassword))
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
@@ -1130,6 +1140,7 @@ func (s *Service) SyncCredentialBundle(ctx context.Context, input ContainerSyncC
 	}
 	record.SyncBundleExportCount = exported
 	record.SyncBundleExportedAt = time.Now().UnixMilli()
+	record.SyncCredentialSnapshotHash = strings.TrimSpace(metadata.SnapshotHash)
 	if _, err := s.store.Put(record); err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
@@ -1731,14 +1742,6 @@ func (s *Service) applyLocalDeploymentSyncReconciliation(ctx context.Context, re
 				return err
 			}
 			record.SyncBundlePassword = bundlePassword
-		}
-		if s.auth != nil {
-			_, exported, err := s.auth.ExportCredentials(record.SyncBundlePassword, "")
-			if err != nil {
-				return err
-			}
-			record.SyncBundleExportCount = exported
-			record.SyncBundleExportedAt = now
 		}
 	} else {
 		record.SyncCredentialURL = ""
@@ -2811,7 +2814,7 @@ func (s *Service) finalizeChildAttach(cfg startupconfig.FileConfig, state swarmr
 			}
 			if len(bundle.Bundle) == 0 || strings.TrimSpace(bundle.BundlePassword) == "" {
 				var err error
-				bundle, err = s.fetchSyncCredentialBundle(context.Background(), cfg, status)
+				bundle, err = s.fetchSyncCredentialBundle(context.Background(), cfg, pairing, status)
 				if err != nil {
 					return err
 				}
@@ -3196,7 +3199,7 @@ func (s *Service) syncDeployContainerFromHost(ctx context.Context, cfg startupco
 		return nil
 	}
 	if workspaceruntime.ReplicationSyncModuleEnabled(cfg.DeployContainer.SyncModules, workspaceruntime.ReplicationSyncModuleCredentials) {
-		bundle, err := s.fetchSyncCredentialBundle(ctx, cfg, ContainerAttachState{HostSwarmID: ownerSwarmID})
+		bundle, err := s.fetchSyncCredentialBundle(ctx, cfg, pairing, ContainerAttachState{HostSwarmID: ownerSwarmID})
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
@@ -3385,12 +3388,23 @@ func (s *Service) applyManagedCredentialBundle(pairing pebblestore.SwarmLocalPai
 	if ownerSwarmID == "" {
 		return pairing, fmt.Errorf("sync owner swarm id is required")
 	}
+	pairing.ManagedAuthOwnerSwarmID = ownerSwarmID
+	pairing.ManagedAuthLastAttemptAt = time.Now().UnixMilli()
+	if bundleSnapshotHash := strings.TrimSpace(bundle.SnapshotHash); bundleSnapshotHash != "" && strings.EqualFold(strings.TrimSpace(pairing.ManagedAuthSnapshotHash), bundleSnapshotHash) {
+		pairing.ManagedAuthLastError = ""
+		if pairing.ManagedAuthAppliedAt <= 0 {
+			pairing.ManagedAuthAppliedAt = pairing.ManagedAuthLastAttemptAt
+		}
+		saved, err := s.swarmStore.PutLocalPairing(pairing)
+		if err != nil {
+			return pairing, err
+		}
+		return saved, nil
+	}
 	metadata, err := s.auth.CredentialBundleMetadata(bundle.BundlePassword, bundle.Bundle)
 	if err != nil {
 		return pairing, err
 	}
-	pairing.ManagedAuthOwnerSwarmID = ownerSwarmID
-	pairing.ManagedAuthLastAttemptAt = time.Now().UnixMilli()
 	if metadata.SnapshotHash != "" && strings.EqualFold(strings.TrimSpace(pairing.ManagedAuthSnapshotHash), metadata.SnapshotHash) {
 		pairing.ManagedAuthLastError = ""
 		if pairing.ManagedAuthAppliedAt <= 0 {
@@ -3658,7 +3672,7 @@ func (s *Service) fetchManagedHostSyncJSON(ctx context.Context, endpoint, manage
 	return nil
 }
 
-func (s *Service) fetchSyncCredentialBundle(ctx context.Context, cfg startupconfig.FileConfig, status ContainerAttachState) (ContainerSyncCredentialBundle, error) {
+func (s *Service) fetchSyncCredentialBundle(ctx context.Context, cfg startupconfig.FileConfig, pairing pebblestore.SwarmLocalPairingRecord, status ContainerAttachState) (ContainerSyncCredentialBundle, error) {
 	socketPath := strings.TrimSpace(cfg.DeployContainer.LocalTransportSocketPath)
 	endpoint := strings.TrimSpace(cfg.DeployContainer.SyncCredentialURL)
 	if socketPath != "" {
@@ -3670,9 +3684,11 @@ func (s *Service) fetchSyncCredentialBundle(ctx context.Context, cfg startupconf
 	if endpoint == "" {
 		return ContainerSyncCredentialBundle{}, fmt.Errorf("sync credential url is not configured")
 	}
+	knownSnapshotHash := strings.TrimSpace(pairing.ManagedAuthSnapshotHash)
 	payload, err := json.Marshal(ContainerSyncCredentialRequestInput{
-		DeploymentID:    strings.TrimSpace(cfg.DeployContainer.DeploymentID),
-		BootstrapSecret: strings.TrimSpace(cfg.DeployContainer.BootstrapSecret),
+		DeploymentID:      strings.TrimSpace(cfg.DeployContainer.DeploymentID),
+		BootstrapSecret:   strings.TrimSpace(cfg.DeployContainer.BootstrapSecret),
+		KnownSnapshotHash: knownSnapshotHash,
 	})
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
@@ -3703,6 +3719,9 @@ func (s *Service) fetchSyncCredentialBundle(ctx context.Context, cfg startupconf
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ContainerSyncCredentialBundle{}, errors.New(firstNonEmpty(decoded.Error, fmt.Sprintf("sync credential fetch failed with status %d", resp.StatusCode)))
+	}
+	if knownSnapshotHash != "" && strings.EqualFold(strings.TrimSpace(decoded.Bundle.SnapshotHash), knownSnapshotHash) {
+		return decoded.Bundle, nil
 	}
 	if len(decoded.Bundle.Bundle) == 0 {
 		return ContainerSyncCredentialBundle{}, fmt.Errorf("sync credential bundle was empty")

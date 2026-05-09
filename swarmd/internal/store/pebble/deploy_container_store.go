@@ -23,58 +23,59 @@ type ContainerPackageManifestRecord struct {
 }
 
 type DeployContainerRecord struct {
-	ID                    string                              `json:"id"`
-	Kind                  string                              `json:"kind"`
-	Name                  string                              `json:"name"`
-	Status                string                              `json:"status"`
-	Runtime               string                              `json:"runtime,omitempty"`
-	ContainerName         string                              `json:"container_name,omitempty"`
-	ContainerID           string                              `json:"container_id,omitempty"`
-	HostAPIBaseURL        string                              `json:"host_api_base_url,omitempty"`
-	BackendHostPort       int                                 `json:"backend_host_port,omitempty"`
-	DesktopHostPort       int                                 `json:"desktop_host_port,omitempty"`
-	Image                 string                              `json:"image,omitempty"`
-	SyncEnabled           bool                                `json:"sync_enabled,omitempty"`
-	SyncMode              string                              `json:"sync_mode,omitempty"`
-	SyncModules           []string                            `json:"sync_modules,omitempty"`
-	SyncOwnerSwarmID      string                              `json:"sync_owner_swarm_id,omitempty"`
-	SyncCredentialURL     string                              `json:"sync_credential_url,omitempty"`
-	SyncAgentURL          string                              `json:"sync_agent_url,omitempty"`
-	SyncBundlePassword    string                              `json:"sync_bundle_password,omitempty"`
-	SyncBundleExportedAt  int64                               `json:"sync_bundle_exported_at,omitempty"`
-	SyncBundleExportCount int                                 `json:"sync_bundle_export_count,omitempty"`
-	SyncLastCheckedAt     int64                               `json:"sync_last_checked_at,omitempty"`
-	SyncLastAppliedAt     int64                               `json:"sync_last_applied_at,omitempty"`
-	SyncLastError         string                              `json:"sync_last_error,omitempty"`
-	AttachStatus          string                              `json:"attach_status,omitempty"`
-	VerificationCode      string                              `json:"verification_code,omitempty"`
-	BootstrapSecret       string                              `json:"bootstrap_secret,omitempty"`
-	BootstrapExpiresAt    int64                               `json:"bootstrap_secret_expires_at,omitempty"`
-	BootstrapSecretUsedAt int64                               `json:"bootstrap_secret_used_at,omitempty"`
-	BootstrapSecretSent   bool                                `json:"bootstrap_secret_sent,omitempty"`
-	BypassPermissions     bool                                `json:"bypass_permissions,omitempty"`
-	AlwaysOn              bool                                `json:"always_on,omitempty"`
-	ChildSwarmID          string                              `json:"child_swarm_id,omitempty"`
-	ChildDisplayName      string                              `json:"child_display_name,omitempty"`
-	ChildBackendURL       string                              `json:"child_backend_url,omitempty"`
-	ChildDesktopURL       string                              `json:"child_desktop_url,omitempty"`
-	ChildPublicKey        string                              `json:"child_public_key,omitempty"`
-	ChildFingerprint      string                              `json:"child_fingerprint,omitempty"`
-	HostSwarmID           string                              `json:"host_swarm_id,omitempty"`
-	HostDisplayName       string                              `json:"host_display_name,omitempty"`
-	HostPublicKey         string                              `json:"host_public_key,omitempty"`
-	HostFingerprint       string                              `json:"host_fingerprint,omitempty"`
-	HostBackendURL        string                              `json:"host_backend_url,omitempty"`
-	HostDesktopURL        string                              `json:"host_desktop_url,omitempty"`
-	GroupID               string                              `json:"group_id,omitempty"`
-	GroupName             string                              `json:"group_name,omitempty"`
-	GroupNetworkName      string                              `json:"group_network_name,omitempty"`
-	WorkspaceBootstrap    []DeployContainerWorkspaceBootstrap `json:"workspace_bootstrap,omitempty"`
-	ContainerPackages     ContainerPackageManifestRecord      `json:"container_packages,omitempty"`
-	LastAttachError       string                              `json:"last_attach_error,omitempty"`
-	DecidedAt             int64                               `json:"decided_at,omitempty"`
-	CreatedAt             int64                               `json:"created_at"`
-	UpdatedAt             int64                               `json:"updated_at"`
+	ID                         string                              `json:"id"`
+	Kind                       string                              `json:"kind"`
+	Name                       string                              `json:"name"`
+	Status                     string                              `json:"status"`
+	Runtime                    string                              `json:"runtime,omitempty"`
+	ContainerName              string                              `json:"container_name,omitempty"`
+	ContainerID                string                              `json:"container_id,omitempty"`
+	HostAPIBaseURL             string                              `json:"host_api_base_url,omitempty"`
+	BackendHostPort            int                                 `json:"backend_host_port,omitempty"`
+	DesktopHostPort            int                                 `json:"desktop_host_port,omitempty"`
+	Image                      string                              `json:"image,omitempty"`
+	SyncEnabled                bool                                `json:"sync_enabled,omitempty"`
+	SyncMode                   string                              `json:"sync_mode,omitempty"`
+	SyncModules                []string                            `json:"sync_modules,omitempty"`
+	SyncOwnerSwarmID           string                              `json:"sync_owner_swarm_id,omitempty"`
+	SyncCredentialURL          string                              `json:"sync_credential_url,omitempty"`
+	SyncAgentURL               string                              `json:"sync_agent_url,omitempty"`
+	SyncBundlePassword         string                              `json:"sync_bundle_password,omitempty"`
+	SyncBundleExportedAt       int64                               `json:"sync_bundle_exported_at,omitempty"`
+	SyncBundleExportCount      int                                 `json:"sync_bundle_export_count,omitempty"`
+	SyncCredentialSnapshotHash string                              `json:"sync_credential_snapshot_hash,omitempty"`
+	SyncLastCheckedAt          int64                               `json:"sync_last_checked_at,omitempty"`
+	SyncLastAppliedAt          int64                               `json:"sync_last_applied_at,omitempty"`
+	SyncLastError              string                              `json:"sync_last_error,omitempty"`
+	AttachStatus               string                              `json:"attach_status,omitempty"`
+	VerificationCode           string                              `json:"verification_code,omitempty"`
+	BootstrapSecret            string                              `json:"bootstrap_secret,omitempty"`
+	BootstrapExpiresAt         int64                               `json:"bootstrap_secret_expires_at,omitempty"`
+	BootstrapSecretUsedAt      int64                               `json:"bootstrap_secret_used_at,omitempty"`
+	BootstrapSecretSent        bool                                `json:"bootstrap_secret_sent,omitempty"`
+	BypassPermissions          bool                                `json:"bypass_permissions,omitempty"`
+	AlwaysOn                   bool                                `json:"always_on,omitempty"`
+	ChildSwarmID               string                              `json:"child_swarm_id,omitempty"`
+	ChildDisplayName           string                              `json:"child_display_name,omitempty"`
+	ChildBackendURL            string                              `json:"child_backend_url,omitempty"`
+	ChildDesktopURL            string                              `json:"child_desktop_url,omitempty"`
+	ChildPublicKey             string                              `json:"child_public_key,omitempty"`
+	ChildFingerprint           string                              `json:"child_fingerprint,omitempty"`
+	HostSwarmID                string                              `json:"host_swarm_id,omitempty"`
+	HostDisplayName            string                              `json:"host_display_name,omitempty"`
+	HostPublicKey              string                              `json:"host_public_key,omitempty"`
+	HostFingerprint            string                              `json:"host_fingerprint,omitempty"`
+	HostBackendURL             string                              `json:"host_backend_url,omitempty"`
+	HostDesktopURL             string                              `json:"host_desktop_url,omitempty"`
+	GroupID                    string                              `json:"group_id,omitempty"`
+	GroupName                  string                              `json:"group_name,omitempty"`
+	GroupNetworkName           string                              `json:"group_network_name,omitempty"`
+	WorkspaceBootstrap         []DeployContainerWorkspaceBootstrap `json:"workspace_bootstrap,omitempty"`
+	ContainerPackages          ContainerPackageManifestRecord      `json:"container_packages,omitempty"`
+	LastAttachError            string                              `json:"last_attach_error,omitempty"`
+	DecidedAt                  int64                               `json:"decided_at,omitempty"`
+	CreatedAt                  int64                               `json:"created_at"`
+	UpdatedAt                  int64                               `json:"updated_at"`
 }
 
 type DeployContainerWorkspaceBootstrapDirectory struct {
@@ -212,6 +213,7 @@ func normalizeDeployContainerRecord(record DeployContainerRecord) DeployContaine
 	record.SyncCredentialURL = strings.TrimSpace(record.SyncCredentialURL)
 	record.SyncAgentURL = strings.TrimSpace(record.SyncAgentURL)
 	record.SyncBundlePassword = strings.TrimSpace(record.SyncBundlePassword)
+	record.SyncCredentialSnapshotHash = strings.TrimSpace(record.SyncCredentialSnapshotHash)
 	record.SyncLastError = strings.TrimSpace(record.SyncLastError)
 	record.AttachStatus = normalizeDeployAttachStatus(record.AttachStatus)
 	record.VerificationCode = strings.ToUpper(strings.TrimSpace(record.VerificationCode))

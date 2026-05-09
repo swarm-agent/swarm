@@ -57,15 +57,5 @@ func (s *Server) resolveGitStatusWorkspacePath(r *http.Request) (string, error) 
 	if workspacePath == "" {
 		return "", errors.New("workspace_path is required")
 	}
-	if s.workspace == nil {
-		return workspacePath, nil
-	}
-	scope, err := s.workspace.ScopeForPath(workspacePath)
-	if err != nil {
-		return "", err
-	}
-	if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
-		return strings.TrimSpace(scope.WorkspacePath), nil
-	}
-	return strings.TrimSpace(scope.ResolvedPath), nil
+	return workspacePath, nil
 }

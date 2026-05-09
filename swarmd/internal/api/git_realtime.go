@@ -39,6 +39,7 @@ type gitRealtimeRepo struct {
 	repoRoot      string
 	gitDir        string
 	commonDir     string
+	watchPaths    []string
 	stop          chan struct{}
 	stopped       chan struct{}
 	wake          chan struct{}
@@ -101,6 +102,7 @@ func newGitRealtimeRepo(manager *gitRealtimeManager, workspacePath string) (*git
 		repoRoot:      paths.RepoRoot,
 		gitDir:        paths.GitDir,
 		commonDir:     paths.CommonDir,
+		watchPaths:    gitRealtimeMetadataWatchPaths(paths),
 		stop:          make(chan struct{}),
 		stopped:       make(chan struct{}),
 		wake:          make(chan struct{}, 1),
@@ -206,67 +208,57 @@ func (r *gitRealtimeRepo) refreshAndPublish(previous string) string {
 }
 
 func (r *gitRealtimeRepo) watchFingerprint() string {
-	parts := make([]string, 0, 64)
-	appendStat := func(path string) {
+	parts := make([]string, 0, len(r.watchPaths))
+	for _, path := range r.watchPaths {
 		clean := strings.TrimSpace(path)
 		if clean == "" {
-			return
+			continue
 		}
 		info, err := os.Stat(clean)
 		if err != nil {
 			parts = append(parts, clean+":missing")
-			return
+			continue
 		}
 		parts = append(parts, clean+":"+info.ModTime().UTC().Format(time.RFC3339Nano)+":"+formatInt64(info.Size()))
 	}
-	appendStat(filepath.Join(r.gitDir, "index"))
-	appendStat(filepath.Join(r.gitDir, "HEAD"))
-	appendStat(filepath.Join(r.gitDir, "MERGE_HEAD"))
-	appendStat(filepath.Join(r.gitDir, "CHERRY_PICK_HEAD"))
-	appendStat(filepath.Join(r.gitDir, "REBASE_HEAD"))
-	for _, root := range gitstatus.WatchRootsForGitPaths(r.gitDir, r.commonDir) {
-		for _, candidate := range gitstatus.CandidateGitWatchPaths(root) {
-			appendStat(candidate)
-		}
-	}
-	_ = filepath.WalkDir(r.repoRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		clean := gitstatus.NormalizePath(path)
-		if clean == "" {
-			return nil
-		}
-		if d.IsDir() {
-			if r.shouldSkipDir(clean) {
-				return filepath.SkipDir
-			}
-			appendStat(clean)
-			return nil
-		}
-		appendStat(clean)
-		return nil
-	})
 	return strings.Join(parts, "\n")
 }
 
-func (r *gitRealtimeRepo) shouldSkipDir(path string) bool {
-	clean := gitstatus.NormalizePath(path)
-	if clean == "" {
-		return true
+func gitRealtimeMetadataWatchPaths(paths gitstatus.WatchPaths) []string {
+	candidates := []string{
+		paths.RepoRoot,
+		filepath.Join(paths.GitDir, "index"),
+		filepath.Join(paths.GitDir, "HEAD"),
+		filepath.Join(paths.GitDir, "FETCH_HEAD"),
+		filepath.Join(paths.GitDir, "ORIG_HEAD"),
+		filepath.Join(paths.GitDir, "MERGE_HEAD"),
+		filepath.Join(paths.GitDir, "CHERRY_PICK_HEAD"),
+		filepath.Join(paths.GitDir, "REBASE_HEAD"),
+		filepath.Join(paths.GitDir, "packed-refs"),
+		filepath.Join(paths.GitDir, "rebase-apply"),
+		filepath.Join(paths.GitDir, "rebase-merge"),
 	}
-	for _, root := range gitstatus.WatchRootsForGitPaths(r.gitDir, r.commonDir) {
-		if root != "" && (clean == root || strings.HasPrefix(clean, root+string(filepath.Separator))) {
-			return true
+	for _, root := range []string{paths.GitDir, paths.CommonDir} {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
 		}
+		candidates = append(candidates, gitstatus.CandidateGitWatchPaths(root)...)
 	}
-	base := strings.ToLower(filepath.Base(clean))
-	switch base {
-	case ".git", ".swarm", "node_modules", "dist", ".cache":
-		return true
-	default:
-		return false
+	seen := make(map[string]struct{}, len(candidates))
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		clean := filepath.Clean(strings.TrimSpace(candidate))
+		if clean == "." || clean == "" {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
 	}
+	return out
 }
 
 func gitSnapshotFingerprint(snapshot gitstatus.Snapshot) string {
