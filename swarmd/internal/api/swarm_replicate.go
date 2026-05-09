@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"swarm-refactor/swarmtui/pkg/startupconfig"
+
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -160,11 +162,31 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := requireSwarmModeEnabled(cfg); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	stateCfg := cfg
+	stateCfgChanged := false
+	stateSwarmNameGenerated := false
+	if !swarmModeEnabled(stateCfg) {
+		stateCfg.SwarmMode = true
+		stateCfg.Child = false
+		stateCfgChanged = true
+		if strings.TrimSpace(stateCfg.SwarmName) == "" {
+			stateCfg.SwarmName = defaultOnboardingSwarmName(stateCfg)
+			stateSwarmNameGenerated = true
+		}
 	}
-	state, err := s.currentSwarmState(cfg)
+	if stateCfgChanged {
+		if err := startupconfig.Write(stateCfg); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if stateSwarmNameGenerated {
+			if err := s.persistUISwarmName(stateCfg.SwarmName); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+		}
+	}
+	state, err := s.currentSwarmState(stateCfg)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

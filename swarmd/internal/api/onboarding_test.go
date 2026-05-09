@@ -92,7 +92,7 @@ func TestRequireTailscaleServeReadyForPairingAcceptsDesktopServe(t *testing.T) {
 	serve.Ready = true
 	serve.Mode = "desktop"
 	serve.ProxyTarget = "http://127.0.0.1:5555"
-	if err := requireTailscaleServeReadyForPairing(cfg, onboardingResponse{Tailscale: onboardingTailscalePayload{Serve: serve}}); err != nil {
+	if err := requireTailscaleServeReadyForPairing(cfg, onboardingResponse{Tailscale: onboardingTailscalePayload{Available: true, Connected: true, Serve: serve}}); err != nil {
 		t.Fatalf("ready Tailscale Serve rejected: %v", err)
 	}
 }

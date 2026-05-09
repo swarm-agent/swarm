@@ -1064,7 +1064,8 @@ export function DesktopSwarmDashboard() {
   const localManagerDisplay = resolvedGroupMasterName || localManagerSwarmID || 'Manager'
   const localIsMaster = Boolean(localSwarmID && groupMasterID === localSwarmID && !localIsChild)
   const managedHostControlTitle = localIsManagedHost ? 'This host is already linked to a Manager.' : undefined
-  const masterControlsDisabled = loading || busy || localIsChild || Boolean(group && !localIsMaster)
+  const managedHostingControlsDisabled = loading || busy || localIsChild || Boolean(group && !localIsMaster)
+  const addContainerDisabled = loading || busy
   const visiblePendingPairings = pendingPairings.filter((item) => item.status === 'pending_approval' || item.status === '')
   const localNameDirty = localNameDraft.trim() !== localSwarmName.trim()
   const frontendOrigin = typeof window !== 'undefined' ? window.location.origin : ''
@@ -1294,8 +1295,8 @@ export function DesktopSwarmDashboard() {
       })
       await refresh()
       setStatus(useTailscale
-        ? 'Swarm is on with Tailscale reachability. Use Managed Hosting to link another host.'
-        : 'Swarm is on. Tailscale was not connected, so reachability stayed on LAN for now.')
+        ? 'Managed Hosting is enabled with Tailscale reachability. Use Managed Hosting to link another host.'
+        : 'Managed Hosting is enabled. Tailscale was not connected, so reachability stayed on LAN for now.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to turn on Swarm Mode')
     } finally {
@@ -1311,7 +1312,7 @@ export function DesktopSwarmDashboard() {
       const currentName = defaultLocalSwarmName(onboardingStatus, swarmState?.node.name)
       await saveDesktopOnboarding({ swarmName: currentName, swarmMode: false, child: false })
       await refresh()
-      setStatus('Swarm Mode is now off. This node is back to standalone local use.')
+      setStatus('Managed Hosting is now off. Local containers remain available.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to turn off Swarm Mode')
     } finally {
@@ -1770,14 +1771,16 @@ export function DesktopSwarmDashboard() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="primary" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm()} disabled={masterControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}>
+          <Button type="button" variant="primary" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm()} disabled={addContainerDisabled}>
             <Plus size={14} />
             Add Container
           </Button>
-          <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" onClick={() => openLinkSwarm()} disabled={masterControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}>
-            <Link2 size={14} />
-            Managed Hosting
-          </Button>
+          {isSwarmMode ? (
+            <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" onClick={() => openLinkSwarm()} disabled={managedHostingControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}>
+              <Link2 size={14} />
+              Managed Hosting
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             onClick={() => {
@@ -1787,10 +1790,10 @@ export function DesktopSwarmDashboard() {
               }
               void handleEnableSwarmMode()
             }}
-            disabled={masterControlsDisabled}
+            disabled={managedHostingControlsDisabled}
             title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}
           >
-            {isSwarmMode ? 'Swarm On' : 'Swarm Off'}
+            {isSwarmMode ? 'Disable Managed Hosting' : 'Enable Managed Hosting'}
           </Button>
         </div>
       </div>
@@ -1868,7 +1871,7 @@ export function DesktopSwarmDashboard() {
                 )}
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                   <Badge tone={localIsMaster ? 'live' : localIsManagedHost ? 'live' : localIsChild ? 'warning' : 'neutral'}>{localSwarmRoleLabel}</Badge>
-                  <Badge tone={isSwarmMode ? 'live' : 'neutral'}>{isSwarmMode ? 'Swarm on' : 'Swarm off'}</Badge>
+                  <Badge tone={isSwarmMode ? 'live' : 'neutral'}>{isSwarmMode ? 'Managed hosting on' : 'Managed hosting off'}</Badge>
                   <Badge tone={localTailscaleHosting.tone}>{localTailscaleHosting.summary}</Badge>
                   {localManagedLinked ? <Badge tone="neutral">Manager: {localManagerDisplay}</Badge> : null}
                   {localManagedLinked && localPairingState ? <Badge tone="neutral">Pairing: {formatUnderscoreLabel(localPairingState)}</Badge> : null}
@@ -1902,7 +1905,7 @@ export function DesktopSwarmDashboard() {
           {loading && onboardingStatus === null ? (
             <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Loading swarm configuration…</div>
           ) : !isSwarmMode ? (
-            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Swarm is off. Turn it on to add containers or link Managed Hosts.</div>
+            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Managed Hosting is off. Local containers still work; enable Managed Hosting only to link other machines.</div>
           ) : null}
 
           <div className="mt-5 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
@@ -2043,7 +2046,7 @@ export function DesktopSwarmDashboard() {
           </div>
 
           {!isSwarmMode ? (
-            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Turn Swarm on to link Managed Hosts.</div>
+            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Enable Managed Hosting to link Managed Hosts.</div>
           ) : managedHostMembers.length > 0 ? (
             <div className="mt-4 grid gap-4">
               {managedHostMembers.map((member) => {

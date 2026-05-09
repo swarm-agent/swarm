@@ -243,12 +243,13 @@ export function AddSwarmModal({
     () => currentGroup(currentOnboardingStatus),
     [currentOnboardingStatus],
   )
-  const hostSwarmID = group?.group.hostSwarmID || ''
+  const hostSwarmID = group?.group.hostSwarmID || currentOnboardingStatus?.config.swarmID || ''
   const hostVaultEnabled = Boolean(vault.enabled)
   const managerName = useMemo(
     () =>
       group?.members.find((member) => member.swarmID === hostSwarmID)?.name ||
-      'Current manager',
+      currentOnboardingStatus?.config.swarmName ||
+      'This host',
     [group, hostSwarmID],
   )
   const selectedWorkspaceCountValue = useMemo(
@@ -446,12 +447,6 @@ export function AddSwarmModal({
   }
 
   const handleLaunchLocal = async () => {
-    if (!group?.group.id.trim()) {
-      setError(
-        'Create or select a swarm group on the manager before adding a local swarm.',
-      )
-      return
-    }
     if (!runtimeChoice) {
       setError(
         runtimeStatus.warning || 'No supported local runtime is available.',
@@ -459,7 +454,7 @@ export function AddSwarmModal({
       return
     }
     if (!swarmName.trim()) {
-      setError('Swarm name is required.')
+      setError('Container name is required.')
       return
     }
     const selected = workspaceDrafts.filter((item) => item.selected)
@@ -473,7 +468,7 @@ export function AddSwarmModal({
     }
     setSubmitting(true)
     setError(null)
-    setStatus('Replicating local swarm…')
+    setStatus('Creating local container…')
     try {
       const syncModules = ['credentials', 'agents', 'custom_tools', 'skills']
       const result = await replicateSwarm({
@@ -503,7 +498,7 @@ export function AddSwarmModal({
           : undefined,
       })
       await finishSuccess(
-        `Added ${result.swarm.name || swarmName.trim()} to the swarm.`,
+        `Added ${result.swarm.name || swarmName.trim()} as a local container.`,
       )
     } catch (err) {
       if (err instanceof ReplicateSwarmLaunchError) {
@@ -534,10 +529,10 @@ export function AddSwarmModal({
           'Check the Swarm dashboard deployment details and the host swarmd log for this deployment.',
         ].filter(Boolean)
         setError(
-          [details.error || 'Failed to add swarm', ...guidance].join('\n'),
+          [details.error || 'Failed to add container', ...guidance].join('\n'),
         )
       } else {
-        setError(err instanceof Error ? err.message : 'Failed to add swarm')
+        setError(err instanceof Error ? err.message : 'Failed to add container')
       }
     } finally {
       setSubmitting(false)
@@ -557,18 +552,17 @@ export function AddSwarmModal({
     `rounded-lg border px-3 py-2 text-left transition ${active ? 'border-[var(--app-primary)] bg-transparent text-[var(--app-text)]' : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)]'}`
   const launchPendingReason = (() => {
     if (loading) return 'Loading launch options…'
-    if (!group?.group.id.trim()) return 'Waiting for a swarm group.'
-    if (!swarmName.trim()) return 'Please enter a swarm name.'
+    if (!swarmName.trim()) return 'Please enter a container name.'
     if (!runtimeChoice)
       return runtimeStatus.warning || 'Please choose an available runtime.'
     if (selectedWorkspaceCountValue === 0) return 'Please select a workspace.'
     if (syncEnabled && hostVaultEnabled && !syncVaultPassword.trim())
-      return 'Please enter the vault password to enable Swarm Sync.'
+      return 'Please enter the vault password to enable sync.'
     return null
   })()
   const footerStatusText =
     launchPendingReason ||
-    `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be replicated using ${runtimeChoice || 'the selected runtime'} with Swarm Sync ${syncEnabled ? 'enabled' : 'disabled'}.`
+    `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be added to a local container using ${runtimeChoice || 'the selected runtime'} with sync ${syncEnabled ? 'enabled' : 'disabled'}.`
 
   return (
     <Dialog>
@@ -581,7 +575,7 @@ export function AddSwarmModal({
                 Add Container
               </h2>
               <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                Launch a local container swarm from selected workspaces.
+                Launch a local container from selected workspaces.
               </p>
             </div>
             <Badge tone={runtimeChoice ? 'live' : 'warning'}>
@@ -618,11 +612,10 @@ export function AddSwarmModal({
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(220px,320px)] sm:items-center">
               <div className="grid gap-1">
                 <div className="text-sm font-semibold text-[var(--app-text)]">
-                  Name this swarm
+                  Name this container
                 </div>
                 <div className="text-xs text-[var(--app-text-muted)]">
-                  Choose the display name used to identify this managed local
-                  swarm in the group after launch.
+                  Choose the display name used to identify this local container after launch.
                 </div>
               </div>
               <Input
@@ -630,7 +623,7 @@ export function AddSwarmModal({
                 value={swarmName}
                 onChange={(event) => setSwarmName(event.target.value)}
                 disabled={submitting}
-                placeholder="Enter a managed swarm name"
+                placeholder="Enter a container name"
               />
             </div>
           </Card>
@@ -641,8 +634,7 @@ export function AddSwarmModal({
                 Local runtime
               </div>
               <div className="text-xs text-[var(--app-text-muted)]">
-                Choose which local container runtime should launch the
-                replicated managed swarm.
+                Choose which local container runtime should launch the container.
               </div>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -675,7 +667,7 @@ export function AddSwarmModal({
                               ? issue
                                 ? `Installed, but unavailable here: ${issue}`
                                 : 'Installed, but unavailable here.'
-                              : `Install ${runtime} to launch local swarms here.`}
+                              : `Install ${runtime} to launch local containers here.`}
                         </div>
                       </div>
                       {active ? (
@@ -1076,7 +1068,6 @@ export function AddSwarmModal({
               disabled={
                 submitting ||
                 loading ||
-                !group?.group.id.trim() ||
                 !runtimeChoice ||
                 !swarmName.trim() ||
                 selectedWorkspaceCountValue === 0 ||
