@@ -9,14 +9,18 @@ import (
 	"sort"
 	"strings"
 
+	"swarm-refactor/swarmtui/pkg/startupconfig"
+
 	"swarm/packages/swarmd/internal/appstorage"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type Service struct {
-	store   *pebblestore.WorkspaceStore
-	events  *pebblestore.EventLog
-	publish func(pebblestore.EventEnvelope)
+	store                      *pebblestore.WorkspaceStore
+	events                     *pebblestore.EventLog
+	publish                    func(pebblestore.EventEnvelope)
+	startupConfigPath          string
+	startupConfigForWorkspaces *startupconfig.FileConfig
 }
 
 type Resolution struct {
@@ -88,6 +92,51 @@ type CreateFolderResult struct {
 
 func NewService(store *pebblestore.WorkspaceStore) *Service {
 	return &Service{store: store}
+}
+
+func (s *Service) SetStartupConfigPath(path string) {
+	if s == nil {
+		return
+	}
+	s.startupConfigPath = strings.TrimSpace(path)
+	s.startupConfigForWorkspaces = nil
+}
+
+func (s *Service) SetStartupConfigForTesting(cfg startupconfig.FileConfig) {
+	if s == nil {
+		return
+	}
+	s.startupConfigForWorkspaces = &cfg
+}
+
+func (s *Service) explicitChildContainerRuntime() bool {
+	if s == nil {
+		return false
+	}
+	if s.startupConfigForWorkspaces != nil {
+		return startupConfigIsExplicitChildContainerRuntime(*s.startupConfigForWorkspaces)
+	}
+	path := strings.TrimSpace(s.startupConfigPath)
+	if path == "" {
+		resolved, err := startupconfig.ResolvePath()
+		if err != nil {
+			return false
+		}
+		path = resolved
+	}
+	cfg, err := startupconfig.Load(path)
+	if err != nil {
+		return false
+	}
+	s.startupConfigForWorkspaces = &cfg
+	return startupConfigIsExplicitChildContainerRuntime(cfg)
+}
+
+func startupConfigIsExplicitChildContainerRuntime(cfg startupconfig.FileConfig) bool {
+	if !cfg.Child {
+		return false
+	}
+	return cfg.DeployContainer.Enabled || cfg.RemoteDeploy.Enabled
 }
 
 func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) {
@@ -432,7 +481,7 @@ func (s *Service) ScopeForWorkspace(path string) (Scope, error) {
 }
 
 func (s *Service) Browse(path string) (BrowseResult, error) {
-	resolved, err := resolveBrowsePath(path)
+	resolved, err := s.resolveBrowsePath(path)
 	if err != nil {
 		return BrowseResult{}, err
 	}
@@ -471,7 +520,7 @@ func (s *Service) Browse(path string) (BrowseResult, error) {
 	if parent != "" && parent != resolved {
 		parentPath = parent
 	}
-	homePath, err := resolveBrowseHomePath()
+	homePath, err := s.resolveBrowseHomePath()
 	if err != nil {
 		return BrowseResult{}, err
 	}
@@ -581,9 +630,27 @@ func resolveBrowsePath(input string) (string, error) {
 	return resolvePath(target)
 }
 
+func (s *Service) resolveBrowsePath(input string) (string, error) {
+	target := strings.TrimSpace(input)
+	if target == "" {
+		return s.resolveBrowseHomePath()
+	}
+	return resolvePath(target)
+}
+
 func resolveBrowseHomePath() (string, error) {
-	if workspaceRoot, ok := remoteChildWorkspaceRoot(); ok {
-		return workspaceRoot, nil
+	return resolveBrowseHomePathForExplicitChildContainer(false)
+}
+
+func (s *Service) resolveBrowseHomePath() (string, error) {
+	return resolveBrowseHomePathForExplicitChildContainer(s.explicitChildContainerRuntime())
+}
+
+func resolveBrowseHomePathForExplicitChildContainer(explicitChildContainer bool) (string, error) {
+	if explicitChildContainer {
+		if workspaceRoot, ok := remoteChildWorkspaceRoot(); ok {
+			return workspaceRoot, nil
+		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -615,6 +682,9 @@ func remoteChildWorkspaceRoot() (string, bool) {
 
 func (s *Service) ensureRemoteChildWorkspaceEntries() error {
 	if s == nil || s.store == nil {
+		return nil
+	}
+	if !s.explicitChildContainerRuntime() {
 		return nil
 	}
 	workspaceRoot, ok := remoteChildWorkspaceRoot()

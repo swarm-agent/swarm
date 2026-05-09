@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
 func withRemoteChildWorkspaceRootPath(t *testing.T, path string) {
@@ -15,7 +17,24 @@ func withRemoteChildWorkspaceRootPath(t *testing.T, path string) {
 	})
 }
 
-func TestRemoteChildWorkspaceRootUsesWorkspacesWhenPresent(t *testing.T) {
+func explicitChildContainerStartupConfig() startupconfig.FileConfig {
+	cfg := startupconfig.Default("")
+	cfg.Mode = startupconfig.ModeBox
+	cfg.SwarmMode = true
+	cfg.Child = true
+	cfg.DeployContainer.Enabled = true
+	return cfg
+}
+
+func plainLaptopStartupConfig() startupconfig.FileConfig {
+	cfg := startupconfig.Default("")
+	cfg.Mode = startupconfig.ModeInteractive
+	cfg.SwarmMode = false
+	cfg.Child = false
+	return cfg
+}
+
+func TestRemoteChildWorkspaceRootDetectsWorkspacesWhenPresent(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "workspaces")
 	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatalf("mkdir workspaces root: %v", err)
@@ -29,8 +48,53 @@ func TestRemoteChildWorkspaceRootUsesWorkspacesWhenPresent(t *testing.T) {
 	if detected != root {
 		t.Fatalf("root = %q, want %q", detected, root)
 	}
+}
 
-	home, err := resolveBrowseHomePath()
+func TestPlainLaptopBrowseHomeIgnoresWorkspacesDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspaces")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("mkdir workspaces root: %v", err)
+	}
+	withRemoteChildWorkspaceRootPath(t, root)
+
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	svc.SetStartupConfigForTesting(plainLaptopStartupConfig())
+
+	home, err := svc.resolveBrowseHomePath()
+	if err != nil {
+		t.Fatalf("resolveBrowseHomePath: %v", err)
+	}
+	if home == root {
+		t.Fatalf("browse home = %q, want user home instead of workspaces root", home)
+	}
+	wantHome, err := os.UserHomeDir()
+	if err != nil || wantHome == "" {
+		t.Fatalf("os.UserHomeDir: %q %v", wantHome, err)
+	}
+	wantHome, err = resolvePath(wantHome)
+	if err != nil {
+		t.Fatalf("resolve home: %v", err)
+	}
+	if home != wantHome {
+		t.Fatalf("browse home = %q, want %q", home, wantHome)
+	}
+}
+
+func TestExplicitChildContainerBrowseHomeUsesWorkspaces(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspaces")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("mkdir workspaces root: %v", err)
+	}
+	withRemoteChildWorkspaceRootPath(t, root)
+
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	svc.SetStartupConfigForTesting(explicitChildContainerStartupConfig())
+
+	home, err := svc.resolveBrowseHomePath()
 	if err != nil {
 		t.Fatalf("resolveBrowseHomePath: %v", err)
 	}
@@ -39,7 +103,7 @@ func TestRemoteChildWorkspaceRootUsesWorkspacesWhenPresent(t *testing.T) {
 	}
 }
 
-func TestWorkspaceDiscoverRootsIncludesWorkspacesWhenPresent(t *testing.T) {
+func TestPlainLaptopWorkspaceDiscoverRootsIgnoresWorkspacesDirectory(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "workspaces")
 	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatalf("mkdir workspaces root: %v", err)
@@ -47,9 +111,36 @@ func TestWorkspaceDiscoverRootsIncludesWorkspacesWhenPresent(t *testing.T) {
 	withRemoteChildWorkspaceRootPath(t, root)
 
 	roots := workspaceDiscoverRoots(nil)
-	if len(roots) == 0 || roots[0] != root {
-		t.Fatalf("roots = %#v, want first root %q", roots, root)
+	for _, got := range roots {
+		if got == root {
+			t.Fatalf("roots = %#v, should not include plain /workspaces root %q", roots, root)
+		}
 	}
+}
+
+func TestExplicitChildContainerDiscoverIncludesWorkspaces(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspaces")
+	project := filepath.Join(root, "swarm")
+	if err := os.MkdirAll(filepath.Join(project, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir mounted git workspace: %v", err)
+	}
+	withRemoteChildWorkspaceRootPath(t, root)
+
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	svc.SetStartupConfigForTesting(explicitChildContainerStartupConfig())
+
+	entries, err := svc.Discover(nil, 200)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Path == project {
+			return
+		}
+	}
+	t.Fatalf("Discover entries = %#v, want project %q", entries, project)
 }
 
 func TestWorkspaceDiscoverRootsHonorsExplicitRoots(t *testing.T) {
@@ -70,7 +161,7 @@ func TestWorkspaceDiscoverRootsHonorsExplicitRoots(t *testing.T) {
 	}
 }
 
-func TestListKnownRegistersMountedRemoteChildWorkspaces(t *testing.T) {
+func TestPlainLaptopListKnownDoesNotRegisterMountedWorkspaces(t *testing.T) {
 	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
 	project := filepath.Join(workspaceRoot, "swarm")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -81,6 +172,29 @@ func TestListKnownRegistersMountedRemoteChildWorkspaces(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
 	defer cleanup()
 	svc := NewService(store)
+	svc.SetStartupConfigForTesting(plainLaptopStartupConfig())
+
+	entries, err := svc.ListKnown(200)
+	if err != nil {
+		t.Fatalf("ListKnown: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries = %d, want 0: %#v", len(entries), entries)
+	}
+}
+
+func TestExplicitChildContainerListKnownRegistersMountedWorkspaces(t *testing.T) {
+	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
+	project := filepath.Join(workspaceRoot, "swarm")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatalf("mkdir mounted workspace: %v", err)
+	}
+	withRemoteChildWorkspaceRootPath(t, workspaceRoot)
+
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	svc.SetStartupConfigForTesting(explicitChildContainerStartupConfig())
 
 	entries, err := svc.ListKnown(200)
 	if err != nil {

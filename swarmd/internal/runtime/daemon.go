@@ -193,6 +193,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
 	containerProfileSvc := containerprofiles.NewService(pebblestore.NewSwarmContainerProfileStore(store))
 	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
+	workspaceSvc.SetStartupConfigPath(cfg.ConfigPath)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
 	localContainerSvc := localcontainers.NewServiceWithDataDir(
 		pebblestore.NewSwarmLocalContainerStore(store),
