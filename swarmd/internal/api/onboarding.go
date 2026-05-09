@@ -1097,10 +1097,10 @@ func expectedTailscaleServe(cfg startupconfig.FileConfig, tailscale onboardingTa
 }
 
 func shouldDetectTailscaleServeForOnboarding(cfg startupconfig.FileConfig, tailscale onboardingTailscalePayload) bool {
-	if !swarmModeEnabled(cfg) || bootstrapNetworkMode(cfg) != startupconfig.NetworkModeTailscale {
+	if strings.TrimSpace(tailscale.Error) != "" || !tailscale.Available {
 		return false
 	}
-	if strings.TrimSpace(tailscale.Error) != "" || !tailscale.Available {
+	if !tailscale.Connected && strings.TrimSpace(cfg.TailscaleURL) == "" {
 		return false
 	}
 	return strings.TrimSpace(cfg.TailscaleURL) != "" || strings.TrimSpace(tailscale.TailnetURL) != "" || strings.TrimSpace(tailscale.DNSName) != ""

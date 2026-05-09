@@ -306,6 +306,50 @@ func onboardingStringPtr(value string) *string {
 	return &value
 }
 
+func TestOnboardingResponseDetectsTailscaleServeBeforeManagedHostingEnabled(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeTailscale(t, dir, `
+case "$1 $2 $3" in
+  "status --json ")
+    cat <<'JSON'
+{"Self":{"DNSName":"standalone.tail2ff467.ts.net.","TailscaleIPs":["100.122.157.126"],"Online":true},"CurrentTailnet":{"Name":"example.ts.net"}}
+JSON
+    ;;
+  "serve status --json")
+    cat <<'JSON'
+{"Web":{"standalone.tail2ff467.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:5555"}}}}}
+JSON
+    ;;
+  *) exit 1 ;;
+esac
+`)
+
+	server := newLocalAuthTestServer(t)
+	setLocalAuthTestStartupConfig(t, server, func(cfg *startupconfig.FileConfig) {
+		cfg.SwarmName = "standalone"
+		cfg.SwarmMode = false
+		cfg.Child = false
+		cfg.NetworkMode = startupconfig.NetworkModeLAN
+		cfg.Host = "127.0.0.1"
+		cfg.Port = 7781
+		cfg.DesktopPort = 5555
+	})
+
+	status, err := server.onboardingResponse(true)
+	if err != nil {
+		t.Fatalf("onboardingResponse returned error: %v", err)
+	}
+	if status.Config.SwarmMode {
+		t.Fatalf("swarm mode = true, want false")
+	}
+	if status.Tailscale.TailnetURL != "https://standalone.tail2ff467.ts.net" {
+		t.Fatalf("tailnet url = %q, want detected live URL", status.Tailscale.TailnetURL)
+	}
+	if !status.Tailscale.Serve.Ready || status.Tailscale.Serve.Mode != "desktop" {
+		t.Fatalf("serve status = %#v, want ready desktop before managed hosting is enabled", status.Tailscale.Serve)
+	}
+}
+
 func TestConfiguredOnboardingResponseRefreshesTailscaleStatus(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeTailscale(t, dir, `

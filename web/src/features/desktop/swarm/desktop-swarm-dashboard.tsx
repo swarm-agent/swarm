@@ -65,11 +65,12 @@ function tailscaleServeStatus(status: DesktopOnboardingStatus | null): { summary
   }
   const tailscale = status.network.tailscale
   const serve = tailscale.serve
+  const managedHostingOffPrefix = status.config.swarmMode ? '' : 'Managed Hosting is off; linking/networking APIs stay disabled until you enable it. '
   if (serve.ready && serve.mode === 'desktop') {
-    return { summary: 'Hosted on Tailscale', detail: 'Verified with Tailscale Serve status. The tailnet link opens this Swarm desktop and backend API.', tone: 'live', badge: 'Serve verified' }
+    return { summary: 'Hosted on Tailscale', detail: `${managedHostingOffPrefix}Verified with Tailscale Serve status. The tailnet link opens this Swarm desktop and backend API.`, tone: 'live', badge: 'Serve verified' }
   }
   if (serve.ready && serve.mode === 'api') {
-    return { summary: 'Backend API only', detail: 'Verified with Tailscale Serve status. The tailnet link reaches the backend API, not the desktop UI.', tone: 'warning', badge: 'API verified' }
+    return { summary: 'Backend API only', detail: `${managedHostingOffPrefix}Verified with Tailscale Serve status. The tailnet link reaches the backend API, not the desktop UI.`, tone: 'warning', badge: 'API verified' }
   }
   if (serve.error) {
     return { summary: 'Serve status unavailable', detail: serve.error, tone: 'warning', badge: 'Check failed' }
@@ -79,10 +80,10 @@ function tailscaleServeStatus(status: DesktopOnboardingStatus | null): { summary
   }
   const hasTailnetURL = Boolean(status.config.tailscaleURL || tailscale.tailnetURL || tailscale.candidateURL || tailscale.dnsName)
   if (hasTailnetURL) {
-    return { summary: 'Not hosted yet', detail: 'A tailnet URL is saved, but Tailscale Serve status does not show this desktop/API being served yet.', tone: 'neutral', badge: 'Not served' }
+    return { summary: 'Not hosted yet', detail: `${managedHostingOffPrefix}A tailnet URL is available, but Tailscale Serve status does not show this desktop/API being served yet.`, tone: 'neutral', badge: 'Not served' }
   }
   if (tailscale.connected) {
-    return { summary: 'Not hosted yet', detail: 'Tailscale is connected. Run the Host Swarm command to publish this desktop on the tailnet.', tone: 'neutral', badge: 'Tailscale connected' }
+    return { summary: 'Not hosted yet', detail: `${managedHostingOffPrefix}Tailscale is connected. Run the Host Swarm command to publish this desktop on the tailnet.`, tone: 'neutral', badge: 'Tailscale connected' }
   }
   return { summary: 'Tailscale not detected', detail: tailscale.error || 'No tailnet URL or active Tailscale connection was reported for this host.', tone: 'neutral', badge: 'Not detected' }
 }
