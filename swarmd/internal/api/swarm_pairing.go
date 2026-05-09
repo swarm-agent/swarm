@@ -413,12 +413,6 @@ func (s *Server) handleSwarmRemotePairingStart(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.Endpoint)), "http://127.0.0.1:") && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.Endpoint)), "http://[::1]:") {
-		if err := requireTailscaleServeReadyForPairing(cfg, status); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-	}
 	state, err := s.currentSwarmState(cfg)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

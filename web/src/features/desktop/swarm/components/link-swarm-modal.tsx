@@ -55,26 +55,36 @@ function endpointHostLabel(endpoint: string): string {
   }
 }
 
-function defaultTailscaleServeCommand(status: DesktopOnboardingStatus | null): string {
+function localTailscaleServeCommand(status: DesktopOnboardingStatus | null): string {
   const desktopPort = status?.config.desktopPort || 5555
-  return `tailscale serve --bg http://127.0.0.1:${desktopPort}`
+  return status?.network.tailscale.serve.command || `tailscale serve --bg http://127.0.0.1:${desktopPort}`
 }
 
-function localServeBlockReason(status: DesktopOnboardingStatus | null): string {
+function remoteTailscaleServeCommand(candidate: RemoteSwarmCandidate | null): string {
+  const endpoint = selectCandidateEndpoint(candidate)
+  const apiPort = candidate?.endpointCandidates.find((item) => item.url === endpoint)?.port
+    || candidate?.endpointCandidates.find((item) => item.kind.includes('api') && item.port > 0)?.port
+    || 7781
+  return `tailscale serve --bg http://127.0.0.1:${apiPort}`
+}
+
+function localServeAdvisoryDetail(status: DesktopOnboardingStatus | null): string {
   if (!status) return 'Checking this swarm’s Tailscale Serve status…'
   const tailscale = status.network.tailscale
   const serve = tailscale.serve
-  if (serve.ready) return ''
   if (!tailscale.connected) {
     return tailscale.error || 'Tailscale is not connected on this requester.'
   }
   if (serve.error) {
     return `Tailscale Serve status could not be checked: ${serve.error}`
   }
-  if (!serve.configured) {
-    return 'This requester is not currently served on its Tailscale URL.'
+  if (serve.ready) {
+    return 'This requester already reports a Tailscale Serve target for Swarm.'
   }
-  return `Tailscale Serve currently points to ${serve.proxyTarget || 'another target'} instead of the Swarm desktop/API port.`
+  if (serve.configured) {
+    return `This requester’s Tailscale Serve currently points to ${serve.proxyTarget || 'another target'}; confirm that target is the Swarm desktop/API you want to link.`
+  }
+  return 'This requester is not currently reported as served on its Tailscale URL.'
 }
 
 function selectCandidateEndpoint(
@@ -139,9 +149,9 @@ export function LinkSwarmModal({
     endpointHostLabel(selectedEndpoint) ||
     'managed swarm'
   const busy = status === 'pairing' || status === 'pending'
-  const serveBlockReason = localServeBlockReason(effectiveOnboardingStatus)
-  const serveCommand = defaultTailscaleServeCommand(effectiveOnboardingStatus)
-  const serveBlocksLink = serveBlockReason !== ''
+  const serveAdvisoryDetail = localServeAdvisoryDetail(effectiveOnboardingStatus)
+  const serveCommand = localTailscaleServeCommand(effectiveOnboardingStatus)
+  const selectedRemoteServeCommand = remoteTailscaleServeCommand(selectedCandidate)
 
   const refreshRequesterServeStatus = async () => {
     setServeRefreshing(true)
@@ -307,11 +317,6 @@ export function LinkSwarmModal({
       setStatus('error')
       return
     }
-    if (serveBlocksLink) {
-      setError(`${serveBlockReason} Run the Tailscale Serve command on this requester, then press Confirm.`)
-      setStatus('error')
-      return
-    }
     if (!selectedCandidate || !selectedEndpoint) {
       setError('Select an online Tailscale device running swarmd.')
       setStatus('error')
@@ -393,30 +398,39 @@ export function LinkSwarmModal({
             </Card>
           ) : null}
 
-          {!alreadyLinkedManagedHost && serveBlocksLink ? (
+          {!alreadyLinkedManagedHost ? (
             <Card className="grid gap-3 border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning-text)]">
               <div className="font-semibold text-[var(--app-text)]">
-                This requester cannot link yet
+                To link, please ensure both Swarm instances are serving on Tailscale
               </div>
-              <div>
-                {serveBlockReason} Run this tailnet-only Tailscale Serve command on this requester, then press Confirm:
-              </div>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <code className="min-w-0 flex-1 overflow-x-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] px-2 py-1 text-xs text-[var(--app-text)]">
-                  {serveCommand}
-                </code>
-                <Button type="button" variant="outline" onClick={() => void copyServeCommand()}>
-                  <Clipboard size={14} />
-                  {serveCopyState === 'copied' ? 'Copied' : 'Copy'}
-                </Button>
+              <div>{serveAdvisoryDetail}</div>
+              <div className="grid gap-2">
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--app-text-muted)]">This Swarm</div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <code className="min-w-0 flex-1 overflow-x-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] px-2 py-1 text-xs text-[var(--app-text)]">
+                      {serveCommand}
+                    </code>
+                    <Button type="button" variant="outline" onClick={() => void copyServeCommand()}>
+                      <Clipboard size={14} />
+                      {serveCopyState === 'copied' ? 'Copied' : 'Copy'}
+                    </Button>
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--app-text-muted)]">Selected remote Swarm</div>
+                  <code className="block min-w-0 overflow-x-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] px-2 py-1 text-xs text-[var(--app-text)]">
+                    {selectedRemoteServeCommand}
+                  </code>
+                </div>
               </div>
               {serveCopyState === 'error' ? (
                 <div className="text-xs">Copy failed; select and copy the command manually.</div>
               ) : null}
               <div className="flex justify-end">
-                <Button type="button" onClick={() => void refreshRequesterServeStatus()} disabled={serveRefreshing}>
+                <Button type="button" variant="outline" onClick={() => void refreshRequesterServeStatus()} disabled={serveRefreshing}>
                   {serveRefreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                  Confirm
+                  Refresh status
                 </Button>
               </div>
             </Card>
@@ -576,7 +590,6 @@ export function LinkSwarmModal({
                   status === 'pairing' ||
                   candidatesLoading ||
                   alreadyLinkedManagedHost ||
-                  serveBlocksLink ||
                   !selectedCandidate ||
                   !selectedEndpoint
                 }
