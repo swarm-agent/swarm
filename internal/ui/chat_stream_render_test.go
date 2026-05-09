@@ -96,7 +96,7 @@ func TestCachedLiveAssistantLinesReuseRecentParseResult(t *testing.T) {
 	}
 }
 
-func TestLiveAssistantStreamingUsesMarkdownRenderer(t *testing.T) {
+func TestLiveAssistantStreamingUsesPlainPreviewRenderer(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",
 		SessionMode:    "auto",
@@ -119,43 +119,40 @@ func TestLiveAssistantStreamingUsesMarkdownRenderer(t *testing.T) {
 	}
 	rendered := chatRenderLinesText(lines)
 	if !containsAll(rendered, []string{"Streaming Title", "first item", "second item", "func main()"}) {
-		t.Fatalf("streaming markdown content missing:\n%s", rendered)
+		t.Fatalf("streaming preview content missing:\n%s", rendered)
 	}
-	if strings.Contains(rendered, "```go") {
-		t.Fatalf("streaming code fence was not parsed as markdown:\n%s", rendered)
+	if !strings.Contains(rendered, "```go") {
+		t.Fatalf("streaming code fence should stay plain in low-CPU preview mode:\n%s", rendered)
 	}
-	if !renderLinesContainStyle(lines, page.theme.MarkdownHeading) {
-		t.Fatalf("streaming heading was not markdown-styled:\n%s", rendered)
-	}
-	if !renderLinesContainStyle(lines, page.theme.MarkdownList) {
-		t.Fatalf("streaming list was not markdown-styled:\n%s", rendered)
+	if renderLinesContainStyle(lines, page.theme.MarkdownHeading) {
+		t.Fatalf("streaming preview should avoid heading markdown styling hot path:\n%s", rendered)
 	}
 }
 
-func TestLiveAssistantStreamingCopyBlocksUseCopyAwareMarkdown(t *testing.T) {
+func TestLiveAssistantCompletedCopyBlocksUseCopyAwareMarkdown(t *testing.T) {
 	page := NewChatPage(ChatPageOptions{
 		SessionID:      "session-test",
 		SessionMode:    "auto",
 		AuthConfigured: true,
 	})
 	page.liveAssistant = "Here is a block:\n\n<copy label=\"cmd\">swarm status</copy>"
-	page.streamingRun = true
-	page.busy = true
+	page.streamingRun = false
+	page.busy = false
 	page.ownedRunID = "run-1"
 	page.lifecycle = &ChatSessionLifecycle{
 		SessionID: "session-test",
 		RunID:     "run-1",
-		Active:    true,
-		Phase:     "running",
+		Active:    false,
+		Phase:     "completed",
 	}
 
 	lines := page.renderLiveAssistantLines(100)
 	rendered := chatRenderLinesText(lines)
 	if !strings.Contains(rendered, "/copy 1 · cmd") {
-		t.Fatalf("streaming copy block marker missing:\n%s", rendered)
+		t.Fatalf("completed copy block marker missing:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "swarm status") {
-		t.Fatalf("streaming copy block preview missing:\n%s", rendered)
+		t.Fatalf("completed copy block preview missing:\n%s", rendered)
 	}
 }
 

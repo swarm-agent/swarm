@@ -13,6 +13,9 @@ func (p *ChatPage) liveAssistantParseFallbackLines(width int) []chatRenderLine {
 	if text == "" {
 		return nil
 	}
+	if p.liveRunVisible() {
+		return p.renderLiveAssistantStreamingPreviewLines(text, width)
+	}
 	message := chatMessageItem{
 		Role:      "assistant",
 		Text:      text,
@@ -38,13 +41,52 @@ func (p *ChatPage) renderLiveAssistantMessageLines(message chatMessageItem, widt
 const chatMaxLiveAssistantMarkdownRenderBytes = 8 * 1024
 
 func (p *ChatPage) renderLiveAssistantStreamingLines(message chatMessageItem, width int) []chatRenderLine {
-	body := liveRenderTail(message.Text, chatMaxLiveAssistantMarkdownRenderBytes)
+	return p.renderLiveAssistantStreamingPreviewLines(message.Text, width)
+}
+
+func (p *ChatPage) renderLiveAssistantStreamingPreviewLines(text string, width int) []chatRenderLine {
+	if p == nil || width <= 0 {
+		return nil
+	}
+	body := liveRenderTail(text, chatMaxLiveAssistantMarkdownRenderBytes)
 	if body == "" {
 		body = " "
 	}
-	streamMessage := message
-	streamMessage.Text = body
-	return p.renderAssistantMessageLines(streamMessage, width)
+	return p.renderAssistantPlainPreviewMessageLines(body, width)
+}
+
+func (p *ChatPage) renderAssistantPlainPreviewMessageLines(body string, width int) []chatRenderLine {
+	if p == nil || width <= 0 {
+		return nil
+	}
+	body = strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n"))
+	if body == "" {
+		body = " "
+	}
+	variant := normalizeVariant(p.assistantVariant, chatAssistantVariantCount)
+	switch variant {
+	case 1:
+		return styledWrapped("□ ", "", body, width, p.theme.Accent.Bold(true))
+	case 2:
+		return styledWrapped("▢ ", "", body, width, p.theme.Accent)
+	case 3:
+		return styledWrapped("□ ", "│ ", body, width, p.theme.Accent)
+	case 4:
+		prefix := "□ " + formatMessageClock(time.Now().UnixMilli()) + " "
+		return styledWrapped(prefix, "  ", body, width, p.theme.Accent)
+	case 5:
+		return styledWrapped("[□] ", "    ", body, width, p.theme.Accent)
+	case 6:
+		return bubbleWrappedWithTitle(body, width, p.theme.Accent, "╭─□ assistant")
+	case 7:
+		return styledWrapped("□ » ", "  » ", body, width, p.theme.Accent)
+	case 8:
+		return styledWrapped("□· ", "   ", body, width, p.theme.Accent)
+	case 9:
+		return styledWrapped("▣ assistant ", "▣ ", body, width, p.theme.Accent.Bold(true))
+	default:
+		return styledWrapped("▢ ", "", body, width, p.theme.Accent)
+	}
 }
 
 func liveRenderTail(text string, maxBytes int) string {

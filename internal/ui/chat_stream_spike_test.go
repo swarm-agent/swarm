@@ -382,6 +382,57 @@ func BenchmarkChatPageMarkdownHeavyFiveSecondStreamDrawEveryDelta(b *testing.B) 
 	}
 }
 
+func BenchmarkChatPageMarkdownHeavyStreamMergeOnly(b *testing.B) {
+	scenario := markdownHeavyStreamingScenario()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page := newStreamSpikeChatPage()
+		for _, event := range scenario.Events {
+			if event.Type != "assistant.delta" {
+				continue
+			}
+			page.applyRunStreamEvent(event, int64(i))
+		}
+		if got := strings.TrimSpace(page.liveAssistant); got != scenario.Markdown {
+			b.Fatalf("live assistant length = %d, want %d", len(got), len(scenario.Markdown))
+		}
+	}
+}
+
+func BenchmarkChatPageMarkdownHeavyLiveStreamingPreviewRender(b *testing.B) {
+	scenario := markdownHeavyStreamingScenario()
+	page := newStreamSpikeChatPage()
+	page.liveAssistant = scenario.Markdown
+	page.streamingRun = true
+	page.busy = true
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page.liveAssistantRenderCache = chatLiveAssistantCacheEntry{}
+		if lines := page.cachedLiveAssistantLines(128); len(lines) == 0 {
+			b.Fatal("expected live assistant preview lines")
+		}
+	}
+}
+
+func BenchmarkChatPageMarkdownHeavyCompletedRichRender(b *testing.B) {
+	scenario := markdownHeavyStreamingScenario()
+	page := newStreamSpikeChatPage()
+	page.liveAssistant = scenario.Markdown
+	page.streamingRun = false
+	page.busy = false
+	page.lifecycle = &ChatSessionLifecycle{SessionID: streamSpikeSessionID, RunID: streamSpikeRunID, Active: false, Phase: "completed"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		page.liveAssistantRenderCache = chatLiveAssistantCacheEntry{}
+		if lines := page.cachedLiveAssistantLines(128); len(lines) == 0 {
+			b.Fatal("expected completed rich render lines")
+		}
+	}
+}
+
 const loremBashStreamDuration = 5 * time.Second
 const loremBashChunkInterval = 10 * time.Millisecond
 const loremBashDrawInterval = 33 * time.Millisecond
