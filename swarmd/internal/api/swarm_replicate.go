@@ -1,10 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -111,10 +117,6 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("workspace service is not configured"))
 		return
 	}
-	if s.deployContainers == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("deploy container service is not configured"))
-		return
-	}
 	if s.swarm == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("swarm service is not configured"))
 		return
@@ -131,14 +133,13 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("mode must be local or remote"))
 		return
 	}
-	if targetMode != workspace.ReplicationTargetModeLocal {
-		writeError(w, http.StatusBadRequest, errors.New("remote replication is not implemented yet"))
+	swarmName := strings.TrimSpace(req.SwarmName)
+	if targetMode == workspace.ReplicationTargetModeLocal && swarmName == "" {
+		writeError(w, http.StatusBadRequest, errors.New("swarm_name is required"))
 		return
 	}
-
-	swarmName := strings.TrimSpace(req.SwarmName)
-	if swarmName == "" {
-		writeError(w, http.StatusBadRequest, errors.New("swarm_name is required"))
+	if targetMode == workspace.ReplicationTargetModeLocal && s.deployContainers == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container service is not configured"))
 		return
 	}
 	if len(req.Workspaces) == 0 {
@@ -191,6 +192,21 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	workspaceCatalog, err := s.replicateWorkspaceCatalog(normalizedWorkspaces)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if targetMode == workspace.ReplicationTargetModeRemote {
+		response, statusCode, err := s.replicateToRemoteSwarm(r, normalizedWorkspaces, workspaceCatalog, syncConfig)
+		if err != nil {
+			writeError(w, statusCode, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+
 	groupID := strings.TrimSpace(state.CurrentGroupID)
 	if groupID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("current swarm group is not selected"))
@@ -198,11 +214,6 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 	}
 	groupName, groupNetworkName := lookupCurrentGroupDetails(state, groupID)
 
-	workspaceCatalog, err := s.replicateWorkspaceCatalog(normalizedWorkspaces)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	mounts, childWorkspacePaths, bootstrap := buildReplicationPlan(normalizedWorkspaces, workspaceCatalog, syncConfig)
 	containerPackages := deployruntime.ContainerPackageManifest{}
 	if cfg.DevMode {
@@ -305,6 +316,217 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) replicateToRemoteSwarm(r *http.Request, workspaces []workspace.NormalizedReplicationWorkspace, catalog map[string]replicateWorkspaceCatalogEntry, syncConfig workspace.NormalizedReplicationSync) (swarmReplicateResponse, int, error) {
+	target, err := s.currentRemoteSwarmTargetForRequest(r)
+	if err != nil {
+		return swarmReplicateResponse{}, http.StatusBadRequest, err
+	}
+	if target == nil {
+		return swarmReplicateResponse{}, http.StatusBadRequest, errors.New("select a managed swarm target before using remote replication")
+	}
+	if strings.TrimSpace(target.SwarmID) == "" || strings.TrimSpace(target.BackendURL) == "" {
+		return swarmReplicateResponse{}, http.StatusBadRequest, errors.New("selected managed swarm target is missing route details")
+	}
+	if strings.EqualFold(strings.TrimSpace(target.Relationship), swarmruntime.RelationshipManager) || strings.EqualFold(strings.TrimSpace(target.Kind), "manager") {
+		return swarmReplicateResponse{}, http.StatusBadRequest, errors.New("remote replication target must be a managed host, not its manager")
+	}
+	peerToken, err := s.outgoingPeerAuthTokenForTarget(r, *target)
+	if err != nil {
+		return swarmReplicateResponse{}, http.StatusBadRequest, err
+	}
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		return swarmReplicateResponse{}, http.StatusInternalServerError, err
+	}
+	state, err := s.currentSwarmState(cfg)
+	if err != nil {
+		return swarmReplicateResponse{}, http.StatusInternalServerError, err
+	}
+	localSwarmID := strings.TrimSpace(state.Node.SwarmID)
+	if localSwarmID == "" {
+		return swarmReplicateResponse{}, http.StatusInternalServerError, errors.New("local swarm id is not configured")
+	}
+	remoteWorkspaces, err := s.discoverPeerWorkspaces(r.Context(), *target, localSwarmID, peerToken)
+	if err != nil {
+		return swarmReplicateResponse{}, http.StatusBadGateway, err
+	}
+
+	response := swarmReplicateResponse{
+		OK: true,
+		Swarm: swarmReplicateSwarmResponse{
+			ID:           strings.TrimSpace(target.SwarmID),
+			Name:         firstNonEmpty(strings.TrimSpace(target.Name), strings.TrimSpace(target.SwarmID)),
+			Mode:         workspace.ReplicationTargetModeRemote,
+			AttachStatus: strings.TrimSpace(target.AttachStatus),
+		},
+		Workspaces: make([]swarmReplicateWorkspaceResponse, 0, len(workspaces)),
+	}
+	for _, normalized := range workspaces {
+		workspaceCatalog := catalog[normalized.SourceWorkspacePath]
+		remotePath := matchingPeerWorkspacePath(remoteWorkspaces, normalized.SourceWorkspacePath, workspaceCatalog)
+		if remotePath == "" {
+			if normalized.ReplicationMode != workspace.ReplicationModeBundle {
+				return swarmReplicateResponse{}, http.StatusBadRequest, fmt.Errorf("remote replication for workspace %q currently supports git bundle mode only; archive copy is not implemented", normalized.SourceWorkspacePath)
+			}
+			if !normalized.GitWorkspace {
+				return swarmReplicateResponse{}, http.StatusBadRequest, fmt.Errorf("remote replication for workspace %q requires a git workspace", normalized.SourceWorkspacePath)
+			}
+			remotePath, err = s.importWorkspaceBundleToPeer(r.Context(), *target, localSwarmID, peerToken, normalized, workspaceCatalog)
+			if err != nil {
+				return swarmReplicateResponse{}, http.StatusBadGateway, err
+			}
+		}
+		storedLink, err := s.workspace.AddReplicationLink(normalized.SourceWorkspacePath, pebblestore.WorkspaceReplicationLink{
+			ID:                  linkIDForRemoteReplication(target.SwarmID, normalized.SourceWorkspacePath),
+			TargetKind:          workspace.ReplicationTargetModeRemote,
+			TargetSwarmID:       strings.TrimSpace(target.SwarmID),
+			TargetSwarmName:     firstNonEmpty(strings.TrimSpace(target.Name), strings.TrimSpace(target.SwarmID)),
+			TargetWorkspacePath: remotePath,
+			ReplicationMode:     normalized.ReplicationMode,
+			Writable:            normalized.Writable,
+			Sync: pebblestore.WorkspaceReplicationSync{
+				Enabled: syncConfig.Enabled,
+				Mode:    syncConfig.Mode,
+				Modules: append([]string(nil), syncConfig.Modules...),
+			},
+		})
+		if err != nil {
+			return swarmReplicateResponse{}, http.StatusInternalServerError, err
+		}
+		addWorkspaceReplicationResponse(&response, normalized, workspaceCatalog, storedLink)
+	}
+	return response, http.StatusOK, nil
+}
+
+func (s *Server) discoverPeerWorkspaces(ctx context.Context, target swarmTarget, localSwarmID, peerToken string) ([]peerWorkspaceInfo, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + peerWorkspaceDiscoverPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(localSwarmID))
+	req.Header.Set(peerAuthTokenHeader, strings.TrimSpace(peerToken))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("managed workspace discover failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var payload peerWorkspaceDiscoverResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Workspaces, nil
+}
+
+func (s *Server) importWorkspaceBundleToPeer(ctx context.Context, target swarmTarget, localSwarmID, peerToken string, source workspace.NormalizedReplicationWorkspace, catalog replicateWorkspaceCatalogEntry) (string, error) {
+	bundlePath, err := createGitBundle(ctx, source.SourceWorkspacePath)
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(bundlePath)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("source_workspace_path", source.SourceWorkspacePath)
+	_ = writer.WriteField("workspace_name", firstNonEmpty(strings.TrimSpace(catalog.Name), defaultReplicatedWorkspaceName(source.SourceWorkspacePath)))
+	_ = writer.WriteField("replication_mode", source.ReplicationMode)
+	part, err := writer.CreateFormFile("bundle", filepath.Base(bundlePath))
+	if err != nil {
+		return "", err
+	}
+	file, err := os.Open(bundlePath)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		file.Close()
+		return "", err
+	}
+	file.Close()
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+
+	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + peerWorkspaceImportBundlePath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(localSwarmID))
+	req.Header.Set(peerAuthTokenHeader, strings.TrimSpace(peerToken))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("managed workspace bundle import failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var payload peerWorkspaceImportBundleResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	remotePath := strings.TrimSpace(payload.WorkspacePath)
+	if remotePath == "" {
+		return "", errors.New("managed workspace bundle import did not return a workspace path")
+	}
+	return remotePath, nil
+}
+
+func createGitBundle(ctx context.Context, workspacePath string) (string, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return "", errors.New("workspace path is required")
+	}
+	file, err := os.CreateTemp("", "swarm-workspace-*.bundle")
+	if err != nil {
+		return "", err
+	}
+	bundlePath := file.Name()
+	file.Close()
+	if err := os.Remove(bundlePath); err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", workspacePath, "bundle", "create", bundlePath, "--all")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = os.Remove(bundlePath)
+		return "", fmt.Errorf("create git bundle: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return bundlePath, nil
+}
+
+func matchingPeerWorkspacePath(workspaces []peerWorkspaceInfo, sourcePath string, catalog replicateWorkspaceCatalogEntry) string {
+	sourceBase := strings.TrimSpace(filepath.Base(strings.TrimSpace(sourcePath)))
+	catalogName := strings.TrimSpace(catalog.Name)
+	for _, candidate := range workspaces {
+		candidatePath := strings.TrimSpace(candidate.Path)
+		if candidatePath == "" {
+			continue
+		}
+		if strings.EqualFold(candidatePath, strings.TrimSpace(sourcePath)) {
+			return candidatePath
+		}
+		candidateName := strings.TrimSpace(candidate.Name)
+		candidateBase := strings.TrimSpace(filepath.Base(candidatePath))
+		if catalogName != "" && strings.EqualFold(candidateName, catalogName) {
+			return candidatePath
+		}
+		if sourceBase != "" && strings.EqualFold(candidateBase, sourceBase) {
+			return candidatePath
+		}
+	}
+	return ""
 }
 
 func (s *Server) waitForReplicatedSwarmAttach(ctx context.Context, deploymentID string, timeout time.Duration) (deployruntime.ContainerDeployment, error) {

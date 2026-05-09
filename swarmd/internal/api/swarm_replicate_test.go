@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
@@ -178,6 +179,108 @@ func TestSwarmReplicatePassesRequestedSyncModulesThroughToDeployCreate(t *testin
 	}
 }
 
+func TestSwarmReplicateRemoteMatchingWorkspaceCreatesLink(t *testing.T) {
+	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
+	_ = fakeDeploy
+
+	var sawDiscover bool
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		if r.URL.Path != peerWorkspaceDiscoverPath {
+			t.Fatalf("remote path = %q", r.URL.Path)
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "host-to-managed-token" {
+			t.Fatalf("missing peer auth headers: id=%q token=%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		sawDiscover = true
+		writeJSON(w, http.StatusOK, peerWorkspaceDiscoverResponse{OK: true, Workspaces: []peerWorkspaceInfo{{Path: "/managed/workspace-one", Name: "workspace-one", GitWorkspace: true}}})
+	}))
+	t.Cleanup(remote.Close)
+	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(remote.URL, "host-to-managed-token"))
+
+	recorder := postReplicateRequest(t, handler, map[string]any{
+		"mode": "remote",
+		"sync": map[string]any{"enabled": true, "mode": "managed"},
+		"workspaces": []map[string]any{{
+			"source_workspace_path": workspacePath,
+			"replication_mode":      "bundle",
+			"writable":              true,
+		}},
+	}, "managed-swarm-1")
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if !sawDiscover {
+		t.Fatal("remote discover was not called")
+	}
+	if fakeDeploy.lastCreateInput.Name != "" {
+		t.Fatalf("remote replicate should not create local container, got create input %+v", fakeDeploy.lastCreateInput)
+	}
+	var response swarmReplicateResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.OK || response.Swarm.ID != "managed-swarm-1" || response.Swarm.Mode != "remote" {
+		t.Fatalf("response swarm = %+v", response.Swarm)
+	}
+	if len(response.Workspaces) != 1 {
+		t.Fatalf("workspaces len = %d", len(response.Workspaces))
+	}
+	link := response.Workspaces[0].Link
+	if link.TargetKind != "remote" || link.TargetSwarmID != "managed-swarm-1" || link.TargetWorkspacePath != "/managed/workspace-one" {
+		t.Fatalf("link = %+v", link)
+	}
+}
+
+func TestSwarmReplicateRemoteCopyModeFailsClearly(t *testing.T) {
+	handler, _, workspacePath := newReplicateTestHandler(t)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, peerWorkspaceDiscoverResponse{OK: true})
+	}))
+	t.Cleanup(remote.Close)
+	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(remote.URL, "host-to-managed-token"))
+
+	recorder := postReplicateRequest(t, handler, map[string]any{
+		"mode": "remote",
+		"sync": map[string]any{"enabled": false},
+		"workspaces": []map[string]any{{
+			"source_workspace_path": workspacePath,
+			"replication_mode":      "copy",
+			"writable":              true,
+		}},
+	}, "managed-swarm-1")
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "archive copy is not implemented") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestPeerWorkspaceDiscoverRequiresPeerAuth(t *testing.T) {
+	handler, _, _ := newReplicateTestHandler(t)
+	recorder := httptest.NewRecorder()
+	handler.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, peerWorkspaceDiscoverPath, nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusUnauthorized, recorder.Body.String())
+	}
+}
+
+func TestPeerWorkspaceImportBundleRequiresPeerAuth(t *testing.T) {
+	handler, _, _ := newReplicateTestHandler(t)
+	request := httptest.NewRequest(http.MethodPost, peerWorkspaceImportBundlePath, strings.NewReader("not a bundle"))
+	recorder := httptest.NewRecorder()
+	handler.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusUnauthorized, recorder.Body.String())
+	}
+}
+
 func TestBuildReplicationPlanUsesStandaloneWorkspaceTargetForLinkedDirectory(t *testing.T) {
 	parent := "/src/parent"
 	child := "/src/child"
@@ -216,7 +319,7 @@ func TestBuildReplicationPlanUsesStandaloneWorkspaceTargetForLinkedDirectory(t *
 	}
 }
 
-func newReplicateTestHandler(t *testing.T) (http.Handler, *fakeReplicateDeployService, string) {
+func newReplicateTestHandler(t *testing.T) (*Server, *fakeReplicateDeployService, string) {
 	t.Helper()
 
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "replicate-api.pebble"))
@@ -281,21 +384,58 @@ func newReplicateTestHandler(t *testing.T) (http.Handler, *fakeReplicateDeploySe
 	fakeDeploy := &fakeReplicateDeployService{}
 	server.SetDeployContainerService(fakeDeploy)
 
-	return server.Handler(), fakeDeploy, workspacePath
+	return server, fakeDeploy, workspacePath
 }
 
-func postReplicateRequest(t *testing.T, handler http.Handler, body map[string]any) *httptest.ResponseRecorder {
+func postReplicateRequest(t *testing.T, server *Server, body map[string]any, swarmID ...string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	payload, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/swarm/replicate", bytes.NewReader(payload))
+	path := "/v1/swarm/replicate"
+	if len(swarmID) > 0 && strings.TrimSpace(swarmID[0]) != "" {
+		path += "?swarm_id=" + strings.TrimSpace(swarmID[0])
+	}
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
+	server.Handler().ServeHTTP(recorder, request)
 	return recorder
+}
+
+func setReplicateFakeSwarmState(server *Server, state swarmruntime.LocalState) {
+	if server != nil {
+		server.SetSwarmService(fakeReplicateSwarmService{state: state, outgoingTokens: map[string]string{"managed-swarm-1": "host-to-managed-token"}, incomingTokens: map[string]string{"manager-swarm": "manager-token"}})
+	}
+}
+
+func swarmStateWithManagedPeer(backendURL, token string) swarmruntime.LocalState {
+	_ = token
+	return swarmruntime.LocalState{
+		Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
+		TrustedPeers: []swarmruntime.TrustedPeer{{
+			SwarmID:       "managed-swarm-1",
+			Name:          "managed-host",
+			Role:          swarmruntime.RelationshipManaged,
+			Relationship:  swarmruntime.RelationshipManaged,
+			TransportMode: startupconfig.NetworkModeTailscale,
+			RendezvousTransports: []swarmruntime.TransportSummary{{
+				Kind:    startupconfig.NetworkModeTailscale,
+				Primary: backendURL,
+				All:     []string{backendURL},
+			}},
+		}},
+		CurrentGroupID: "group-1",
+		Groups: []swarmruntime.GroupState{{
+			Group: swarmruntime.Group{ID: "group-1", Name: "Primary Group", NetworkName: "group-net", HostSwarmID: "host-swarm-id"},
+			Members: []swarmruntime.GroupMember{
+				{GroupID: "group-1", SwarmID: "host-swarm-id", Name: "host-swarm", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost},
+				{GroupID: "group-1", SwarmID: "managed-swarm-1", Name: "managed-host", SwarmRole: swarmruntime.RelationshipManaged, MembershipRole: swarmruntime.GroupMembershipRoleMember},
+			},
+		}},
+	}
 }
 
 type fakeReplicateDeployService struct {
@@ -386,7 +526,9 @@ func (f *fakeReplicateDeployService) UnlockManagedLocalChildVaults(context.Conte
 }
 
 type fakeReplicateSwarmService struct {
-	state swarmruntime.LocalState
+	state          swarmruntime.LocalState
+	outgoingTokens map[string]string
+	incomingTokens map[string]string
 }
 
 func (f fakeReplicateSwarmService) EnsureLocalState(swarmruntime.EnsureLocalStateInput) (swarmruntime.LocalState, error) {
@@ -409,12 +551,14 @@ func (f fakeReplicateSwarmService) SetCurrentGroup(string, string) (swarmruntime
 	return swarmruntime.GroupState{}, nil
 }
 
-func (f fakeReplicateSwarmService) OutgoingPeerAuthToken(string) (string, bool, error) {
-	return "", false, nil
+func (f fakeReplicateSwarmService) OutgoingPeerAuthToken(swarmID string) (string, bool, error) {
+	token := strings.TrimSpace(f.outgoingTokens[strings.TrimSpace(swarmID)])
+	return token, token != "", nil
 }
 
-func (f fakeReplicateSwarmService) ValidateIncomingPeerAuth(string, string) (bool, error) {
-	return false, nil
+func (f fakeReplicateSwarmService) ValidateIncomingPeerAuth(swarmID, token string) (bool, error) {
+	want := strings.TrimSpace(f.incomingTokens[strings.TrimSpace(swarmID)])
+	return want != "" && want == strings.TrimSpace(token), nil
 }
 
 func (f fakeReplicateSwarmService) UpsertGroupMember(swarmruntime.UpsertGroupMemberInput) (swarmruntime.GroupMember, error) {

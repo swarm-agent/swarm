@@ -65,6 +65,10 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/swarm/containers/local/delete", s.handleSwarmLocalContainerDelete)
 	mux.HandleFunc("/v1/swarm/containers/local/prune-missing", s.handleSwarmLocalContainerPruneMissing)
 	mux.HandleFunc("/v1/swarm/replicate", s.handleSwarmReplicate)
+	mux.HandleFunc(peerWorkspaceDiscoverPath, s.handlePeerWorkspaceDiscover)
+	mux.HandleFunc(peerWorkspaceCreatePath, s.handlePeerWorkspaceCreate)
+	mux.HandleFunc(peerWorkspaceImportBundlePath, s.handlePeerWorkspaceImportBundle)
+	mux.HandleFunc(peerWorkspaceTransferPrefix, s.handlePeerWorkspaceTransfer)
 }
 
 func (s *Server) registerFlowRoutes(mux *http.ServeMux) {
