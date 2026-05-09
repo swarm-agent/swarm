@@ -85,6 +85,60 @@ If a rule below conflicts with convenience, the rule wins.
 - Only run tests in precommit when the user explicitly asks for tests.
 - If tests or validation were not requested, say so explicitly.
 
+## Canonical Swarm Filesystem Paths
+
+These paths are code-derived product defaults. Before diagnosing config, storage, service, install, or `/workspaces` behavior, verify against the code paths listed here instead of guessing from old notes or host assumptions.
+
+Authoritative code locations:
+- `pkg/startupconfig/config.go` — startup config filename and `startupconfig.ResolvePath()`.
+- `pkg/storagecontract/storagecontract.go` — Linux/macOS storage root contract and systemd directory env overrides.
+- `swarmd/internal/config/config.go` — daemon flag/default resolution for data dir, DB path, lock path, and startup CWD.
+- `internal/launcher/launcher.go` — runtime profile paths, per-lane files, and install-root mapping.
+- `internal/launcher/system_paths.go` — system install directories, systemd unit path, and tmpfiles path.
+- `swarmd/internal/runtime/daemon.go` — local transport socket path and API server use of startup config path.
+- `swarmd/internal/workspace/service.go` — `/workspaces` discovery/browse behavior.
+
+Current Linux startup config:
+- Canonical daemon startup config path: `/etc/swarmd/swarm.conf`.
+- The filename is always `swarm.conf`; the default Linux config root is `/etc/swarmd`.
+- systemd can explicitly override the config root through `ConfigurationDirectory=swarmd` / `CONFIGURATION_DIRECTORY`; the resolved file still ends with `swarm.conf` under that root.
+- Do not diagnose current daemon startup config from `~/.config/swarm/swarm.conf`, `~/.swarm/swarm.conf`, `/etc/swarm/swarm.conf`, or `/usr/local/etc/swarm/swarm.conf`. They are not current canonical daemon startup config paths.
+- A normal laptop/basic local swarm is not automatically a managed host, container, or remote deployment. Do not infer managed/container/remote mode from `/workspaces` or from the existence/absence of non-canonical config files.
+
+Current Linux storage roots from `storagecontract`:
+- Data root: `/var/lib/swarmd`.
+- Cache root: `/var/cache/swarmd`.
+- Runtime root: `/run/swarmd`.
+- Config root: `/etc/swarmd`.
+- Logs root: `/var/log/swarmd`.
+- systemd directory env overrides are authoritative when explicitly present: `STATE_DIRECTORY`, `CACHE_DIRECTORY`, `RUNTIME_DIRECTORY`, `CONFIGURATION_DIRECTORY`, and `LOGS_DIRECTORY`.
+
+Runtime profile files:
+- Main lane DB: `/var/lib/swarmd/swarmd.pebble`.
+- Main lane lock: `/run/swarmd/swarmd.lock`.
+- Main lane manager metadata: `/run/swarmd/swarmd.manager.json`.
+- Main lane PID file: `/run/swarmd/swarmd.pid`.
+- Main lane log: `/var/log/swarmd/swarmd.log`.
+- Main lane port record: `/run/swarmd/ports/swarmd-main.env`.
+- Main lane local transport socket: `/var/lib/swarmd/local-transport/api.sock`.
+- Dev lane uses the same root contract with a `dev` child where lane-specific: `/var/lib/swarmd/dev`, `/run/swarmd/dev`, and `/var/log/swarmd/dev`.
+
+System install and service paths:
+- Launcher/shim directory: `/usr/local/bin`.
+- Install root: `/usr/local/share/swarm`.
+- Daemon/application binary directory: `/usr/local/share/swarm/bin`.
+- Tool/libexec directory: `/usr/local/share/swarm/libexec`.
+- Library directory: `/usr/local/share/swarm/lib`.
+- Desktop/static share directory: `/usr/local/share/swarm/share`.
+- System service unit path: `/etc/systemd/system/swarm.service`.
+- Runtime tmpfiles config path: `/etc/tmpfiles.d/swarmd.conf`.
+- User-scoped systemd service files are host-local service manager configuration, not daemon startup config.
+
+Workspace path rules:
+- `/workspaces` is workspace discovery/browse behavior only. It is not a startup config path and is not proof that the host is managed, containerized, or remote deployed.
+- Workspaces are host-local unless explicitly mapped/provisioned/replicated by the relevant Swarm flow.
+- Do not add implicit fallbacks to home-local storage, hidden config locations, or duplicate legacy paths. If a route/path/config is absent, fail clearly and report the canonical path that was checked.
+
 ## Current Active Testing Focus
 
 Keep this section durable and small. It is not a live proof board.

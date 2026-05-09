@@ -28,6 +28,7 @@ coverage.out
 /.cache/
 /.runtime/
 /.swarm/
+/.swarm-prof/
 /.tmp/
 
 # Web build/runtime outputs
