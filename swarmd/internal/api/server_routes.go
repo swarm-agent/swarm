@@ -69,6 +69,7 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(managedWorkspacePreflightPath, s.handleManagedWorkspacePreflight)
 	mux.HandleFunc(managedWorkspaceReplicatePath, s.handleManagedWorkspaceReplicate)
 	mux.HandleFunc(peerManagedWorkspacePreflightPath, s.handlePeerManagedWorkspacePreflight)
+	mux.HandleFunc(peerManagedWorkspaceLinkExistingPath, s.handlePeerManagedWorkspaceLinkExisting)
 	mux.HandleFunc(peerManagedWorkspaceImportBundlePath, s.handlePeerManagedWorkspaceImportBundle)
 	mux.HandleFunc(peerWorkspaceDiscoverPath, s.handlePeerWorkspaceDiscover)
 	mux.HandleFunc(peerWorkspaceCreatePath, s.handlePeerWorkspaceCreate)

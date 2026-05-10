@@ -27,6 +27,7 @@ const (
 	managedWorkspacePreflightPath        = "/v1/swarm/managed-workspaces/preflight"
 	managedWorkspaceReplicatePath        = "/v1/swarm/managed-workspaces/replicate"
 	peerManagedWorkspacePreflightPath    = "/v1/swarm/peer/managed-workspaces/preflight"
+	peerManagedWorkspaceLinkExistingPath = "/v1/swarm/peer/managed-workspaces/link-existing"
 	peerManagedWorkspaceImportBundlePath = "/v1/swarm/peer/managed-workspaces/import-bundle"
 
 	managedWorkspaceActionImportBundle = "import_bundle"
@@ -121,6 +122,21 @@ type peerManagedWorkspacePreflightResponse struct {
 	Workspaces      []managedWorkspacePlanResponse `json:"workspaces"`
 }
 
+type peerManagedWorkspaceLinkExistingRequest struct {
+	DestinationRoot        string `json:"destination_root"`
+	DestinationPath        string `json:"destination_path"`
+	WorkspaceName          string `json:"workspace_name"`
+	SourceWorkspacePath    string `json:"source_workspace_path"`
+	SourceWorkspaceName    string `json:"source_workspace_name,omitempty"`
+	SourceHomeRelativePath string `json:"source_home_relative_path,omitempty"`
+}
+
+type peerManagedWorkspaceLinkExistingResponse struct {
+	OK              bool   `json:"ok"`
+	DestinationPath string `json:"destination_path"`
+	WorkspaceName   string `json:"workspace_name"`
+}
+
 type peerManagedWorkspaceImportBundleResponse struct {
 	OK              bool   `json:"ok"`
 	DestinationPath string `json:"destination_path"`
@@ -184,6 +200,52 @@ func (s *Server) handlePeerManagedWorkspacePreflight(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *Server) handlePeerManagedWorkspaceLinkExisting(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requirePeerAuth(w, r) {
+		return
+	}
+	if s.workspace == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("workspace service is not configured"))
+		return
+	}
+	var req peerManagedWorkspaceLinkExistingRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	workspaceName := sanitizeReplicationMountName(firstNonEmpty(req.WorkspaceName, req.SourceWorkspaceName, defaultReplicatedWorkspaceName(req.SourceWorkspacePath)))
+	if workspaceName == "" {
+		workspaceName = "workspace"
+	}
+	preflight, status, err := s.peerManagedWorkspacePreflight(peerManagedWorkspacePreflightRequest{
+		DestinationRoot: req.DestinationRoot,
+		Workspaces: []peerManagedWorkspacePlanItem{{
+			SourceWorkspacePath:    strings.TrimSpace(req.SourceWorkspacePath),
+			SourceHomeRelativePath: cleanManagedWorkspaceRelativePath(req.SourceHomeRelativePath),
+			WorkspaceName:          workspaceName,
+			DestinationPath:        strings.TrimSpace(req.DestinationPath),
+			GitWorkspace:           true,
+		}},
+	})
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	if len(preflight.Workspaces) != 1 || !preflight.Workspaces[0].OK || preflight.Workspaces[0].Action != managedWorkspaceActionLinkExisting || filepath.Clean(preflight.Workspaces[0].DestinationPath) != filepath.Clean(req.DestinationPath) {
+		writeError(w, http.StatusConflict, errors.New("destination no longer matches a linkable existing managed workspace"))
+		return
+	}
+	if _, err := s.workspace.Add(preflight.Workspaces[0].DestinationPath, workspaceName, "", false); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, peerManagedWorkspaceLinkExistingResponse{OK: true, DestinationPath: preflight.Workspaces[0].DestinationPath, WorkspaceName: workspaceName})
+}
+
 func (s *Server) handlePeerManagedWorkspaceImportBundle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -214,7 +276,7 @@ func (s *Server) handlePeerManagedWorkspaceImportBundle(w http.ResponseWriter, r
 		DestinationRoot: destinationRoot,
 		Workspaces: []peerManagedWorkspacePlanItem{{
 			SourceWorkspacePath:    strings.TrimSpace(r.FormValue("source_workspace_path")),
-			SourceHomeRelativePath: sourceHomeRelativePath(strings.TrimSpace(r.FormValue("source_workspace_path"))),
+			SourceHomeRelativePath: cleanManagedWorkspaceRelativePath(r.FormValue("source_home_relative_path")),
 			WorkspaceName:          workspaceName,
 			DestinationPath:        destinationPath,
 			GitWorkspace:           true,
@@ -279,9 +341,6 @@ func (s *Server) managedWorkspacePreflight(r *http.Request, req managedWorkspace
 }
 
 func (s *Server) managedWorkspaceReplicate(r *http.Request, req managedWorkspaceReplicateRequest) (managedWorkspaceReplicateResponse, int, error) {
-	if len(req.ConfirmedPlans) == 0 {
-		return managedWorkspaceReplicateResponse{}, http.StatusBadRequest, errors.New("confirmed_plans is required")
-	}
 	preflight, status, err := s.managedWorkspacePreflight(r, managedWorkspacePreflightRequest{TargetSwarmID: req.TargetSwarmID, DestinationRoot: req.DestinationRoot, Workspaces: req.Workspaces})
 	if err != nil {
 		return managedWorkspaceReplicateResponse{}, status, err
@@ -289,21 +348,23 @@ func (s *Server) managedWorkspaceReplicate(r *http.Request, req managedWorkspace
 	if !preflight.Ready {
 		return managedWorkspaceReplicateResponse{}, http.StatusConflict, errors.New("managed workspace preflight is not ready")
 	}
-	confirmed := make(map[string]managedWorkspaceConfirmedPlan, len(req.ConfirmedPlans))
-	for _, plan := range req.ConfirmedPlans {
-		key := filepath.Clean(strings.TrimSpace(plan.SourceWorkspacePath))
-		if key == "." || key == "" {
-			return managedWorkspaceReplicateResponse{}, http.StatusBadRequest, errors.New("confirmed source_workspace_path is required")
+	if len(req.ConfirmedPlans) > 0 {
+		confirmed := make(map[string]managedWorkspaceConfirmedPlan, len(req.ConfirmedPlans))
+		for _, plan := range req.ConfirmedPlans {
+			key := filepath.Clean(strings.TrimSpace(plan.SourceWorkspacePath))
+			if key == "." || key == "" {
+				return managedWorkspaceReplicateResponse{}, http.StatusBadRequest, errors.New("confirmed source_workspace_path is required")
+			}
+			confirmed[key] = plan
 		}
-		confirmed[key] = plan
-	}
-	for _, plan := range preflight.Workspaces {
-		confirmedPlan, ok := confirmed[filepath.Clean(plan.SourceWorkspacePath)]
-		if !ok {
-			return managedWorkspaceReplicateResponse{}, http.StatusBadRequest, fmt.Errorf("missing confirmation for workspace %q", plan.SourceWorkspacePath)
-		}
-		if filepath.Clean(confirmedPlan.DestinationPath) != filepath.Clean(plan.DestinationPath) || strings.TrimSpace(confirmedPlan.Action) != plan.Action {
-			return managedWorkspaceReplicateResponse{}, http.StatusConflict, fmt.Errorf("confirmed plan for workspace %q changed after preflight", plan.SourceWorkspacePath)
+		for _, plan := range preflight.Workspaces {
+			confirmedPlan, ok := confirmed[filepath.Clean(plan.SourceWorkspacePath)]
+			if !ok {
+				return managedWorkspaceReplicateResponse{}, http.StatusBadRequest, fmt.Errorf("missing confirmation for workspace %q", plan.SourceWorkspacePath)
+			}
+			if filepath.Clean(confirmedPlan.DestinationPath) != filepath.Clean(plan.DestinationPath) || strings.TrimSpace(confirmedPlan.Action) != plan.Action {
+				return managedWorkspaceReplicateResponse{}, http.StatusConflict, fmt.Errorf("confirmed plan for workspace %q changed after preflight", plan.SourceWorkspacePath)
+			}
 		}
 	}
 
@@ -316,8 +377,13 @@ func (s *Server) managedWorkspaceReplicate(r *http.Request, req managedWorkspace
 	}
 	results := make([]managedWorkspaceResultResponse, 0, len(preflight.Workspaces))
 	for _, plan := range preflight.Workspaces {
-		if plan.Action == managedWorkspaceActionImportBundle {
+		switch plan.Action {
+		case managedWorkspaceActionImportBundle:
 			if err := importManagedWorkspaceBundleToPeer(r.Context(), *target, localSwarmID, peerToken, req.DestinationRoot, plan); err != nil {
+				return managedWorkspaceReplicateResponse{}, http.StatusBadGateway, err
+			}
+		case managedWorkspaceActionLinkExisting:
+			if err := linkExistingManagedWorkspaceOnPeer(r.Context(), *target, localSwarmID, peerToken, req.DestinationRoot, plan); err != nil {
 				return managedWorkspaceReplicateResponse{}, http.StatusBadGateway, err
 			}
 		}
@@ -590,10 +656,13 @@ func planPeerManagedWorkspace(root string, item peerManagedWorkspacePlanItem, kn
 		} else if _, ok := known[filepath.Clean(destination)]; ok {
 			plan.OK = true
 			plan.Action = managedWorkspaceActionLinkExisting
+		} else if managedWorkspaceDestinationIsGitRepository(destination) {
+			plan.OK = true
+			plan.Action = managedWorkspaceActionLinkExisting
 		} else {
 			plan.OK = false
 			plan.Action = managedWorkspaceActionConflict
-			plan.Error = "destination exists but is not a registered workspace"
+			plan.Error = "destination exists but is not a git workspace"
 		}
 	} else if os.IsNotExist(statErr) {
 		plan.OK = true
@@ -605,6 +674,15 @@ func planPeerManagedWorkspace(root string, item peerManagedWorkspacePlanItem, kn
 	}
 	plan.PlanID = managedWorkspacePlanID(plan.SourceWorkspacePath, root, destination, plan.Action)
 	return plan
+}
+
+func managedWorkspaceDestinationIsGitRepository(path string) bool {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil && info.IsDir()
 }
 
 func managedWorkspaceDestinationRootUsesHomeDefault(raw string) bool {
@@ -710,6 +788,47 @@ func pathWithinManagedWorkspaceRoot(root, target string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+func linkExistingManagedWorkspaceOnPeer(ctx context.Context, target swarmTarget, localSwarmID, peerToken, destinationRoot string, plan managedWorkspacePlanResponse) error {
+	payload := peerManagedWorkspaceLinkExistingRequest{
+		DestinationRoot:        destinationRoot,
+		DestinationPath:        plan.DestinationPath,
+		WorkspaceName:          plan.SourceWorkspaceName,
+		SourceWorkspacePath:    plan.SourceWorkspacePath,
+		SourceWorkspaceName:    plan.SourceWorkspaceName,
+		SourceHomeRelativePath: sourceHomeRelativePath(plan.SourceWorkspacePath),
+	}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return err
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + peerManagedWorkspaceLinkExistingPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(localSwarmID))
+	req.Header.Set(peerAuthTokenHeader, strings.TrimSpace(peerToken))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("managed host workspace link failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var decoded peerManagedWorkspaceLinkExistingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return err
+	}
+	if filepath.Clean(decoded.DestinationPath) != filepath.Clean(plan.DestinationPath) {
+		return errors.New("managed host linked a different destination than the confirmed plan")
+	}
+	return nil
+}
+
 func importManagedWorkspaceBundleToPeer(ctx context.Context, target swarmTarget, localSwarmID, peerToken, destinationRoot string, plan managedWorkspacePlanResponse) error {
 	bundlePath, err := managedWorkspaceCreateGitBundle(ctx, plan.SourceWorkspacePath)
 	if err != nil {
@@ -719,6 +838,7 @@ func importManagedWorkspaceBundleToPeer(ctx context.Context, target swarmTarget,
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	_ = writer.WriteField("source_workspace_path", plan.SourceWorkspacePath)
+	_ = writer.WriteField("source_home_relative_path", sourceHomeRelativePath(plan.SourceWorkspacePath))
 	_ = writer.WriteField("workspace_name", plan.SourceWorkspaceName)
 	_ = writer.WriteField("destination_root", destinationRoot)
 	_ = writer.WriteField("destination_path", plan.DestinationPath)

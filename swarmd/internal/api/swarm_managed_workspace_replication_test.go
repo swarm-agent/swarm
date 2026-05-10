@@ -278,3 +278,75 @@ func runGitForManagedWorkspaceTest(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %s: %s: %v", strings.Join(args, " "), strings.TrimSpace(string(output)), err)
 	}
 }
+
+func TestPeerManagedWorkspacePreflightDetectsExistingGitDirectory(t *testing.T) {
+	handler, _, _ := newReplicateTestHandler(t)
+	root := t.TempDir()
+	destination := filepath.Join(root, "swarm-go")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatalf("mkdir destination: %v", err)
+	}
+	initGitRepoForManagedWorkspaceTest(t, destination)
+
+	response, status, err := handler.peerManagedWorkspacePreflight(peerManagedWorkspacePreflightRequest{
+		DestinationRoot: root,
+		Workspaces: []peerManagedWorkspacePlanItem{{
+			SourceWorkspacePath:    "/home/primary/swarm-go",
+			SourceHomeRelativePath: "swarm-go",
+			WorkspaceName:          "swarm-go",
+			GitWorkspace:           true,
+		}},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("preflight status=%d err=%v", status, err)
+	}
+	if !response.Ready || len(response.Workspaces) != 1 {
+		t.Fatalf("response=%+v", response)
+	}
+	plan := response.Workspaces[0]
+	if plan.Action != managedWorkspaceActionLinkExisting || !plan.OK {
+		t.Fatalf("action=%q ok=%v err=%q", plan.Action, plan.OK, plan.Error)
+	}
+	if filepath.Clean(plan.DestinationPath) != filepath.Clean(destination) {
+		t.Fatalf("destination=%q want %q", plan.DestinationPath, destination)
+	}
+}
+
+func TestPeerManagedWorkspacePreflightUsesPeerHomeForPrimaryHomeRelativeSource(t *testing.T) {
+	handler, _, _ := newReplicateTestHandler(t)
+	primaryHome := filepath.Join(t.TempDir(), "primary-home")
+	peerHome := filepath.Join(t.TempDir(), "peer-home")
+	if err := os.MkdirAll(primaryHome, 0o755); err != nil {
+		t.Fatalf("mkdir primary home: %v", err)
+	}
+	if err := os.MkdirAll(peerHome, 0o755); err != nil {
+		t.Fatalf("mkdir peer home: %v", err)
+	}
+	primaryWorkspace := filepath.Join(primaryHome, "swarm-go")
+	t.Setenv("HOME", primaryHome)
+	relative := sourceHomeRelativePath(primaryWorkspace)
+	if relative != "swarm-go" {
+		t.Fatalf("relative=%q", relative)
+	}
+	t.Setenv("HOME", peerHome)
+
+	response, status, err := handler.peerManagedWorkspacePreflight(peerManagedWorkspacePreflightRequest{
+		DestinationRoot: "~",
+		Workspaces: []peerManagedWorkspacePlanItem{{
+			SourceWorkspacePath:    primaryWorkspace,
+			SourceHomeRelativePath: relative,
+			WorkspaceName:          "swarm-go",
+			GitWorkspace:           true,
+		}},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("preflight status=%d err=%v", status, err)
+	}
+	want := filepath.Join(peerHome, "swarm-go")
+	if got := response.Workspaces[0].DestinationPath; filepath.Clean(got) != filepath.Clean(want) {
+		t.Fatalf("destination=%q want %q", got, want)
+	}
+	if strings.Contains(response.Workspaces[0].DestinationPath, primaryHome) {
+		t.Fatalf("destination leaked primary home: %q", response.Workspaces[0].DestinationPath)
+	}
+}

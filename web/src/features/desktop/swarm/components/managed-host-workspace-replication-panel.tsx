@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { CheckCircle2, Folder, GitBranch, HardDrive, Loader2, RefreshCw, XCircle } from 'lucide-react'
 import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
@@ -7,9 +7,7 @@ import { Input } from '../../../../components/ui/input'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import {
-  preflightManagedWorkspaces,
   replicateManagedWorkspaces,
-  type ManagedWorkspacePlan,
   type ManagedWorkspaceResult,
   type ManagedWorkspaceSelectionInput,
 } from '../api/managed-workspace-replication'
@@ -45,12 +43,6 @@ function actionLabel(action: string): string {
   }
 }
 
-function actionTone(action: string, ok: boolean): 'live' | 'warning' | 'neutral' {
-  if (!ok || action === 'conflict') return 'warning'
-  if (action === 'import_bundle' || action === 'link_existing') return 'live'
-  return 'neutral'
-}
-
 function buildSelections(drafts: WorkspaceDraft[]): ManagedWorkspaceSelectionInput[] {
   return drafts
     .filter((draft) => draft.selected)
@@ -71,8 +63,6 @@ export function ManagedHostWorkspaceReplicationPanel({
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([])
   const [drafts, setDrafts] = useState<WorkspaceDraft[]>([])
   const [destinationRoot, setDestinationRoot] = useState('~')
-  const [preflightPlans, setPreflightPlans] = useState<ManagedWorkspacePlan[]>([])
-  const [preflightSnapshot, setPreflightSnapshot] = useState('')
   const [results, setResults] = useState<ManagedWorkspaceResult[]>([])
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
@@ -80,16 +70,6 @@ export function ManagedHostWorkspaceReplicationPanel({
   const targetName = target.name || target.swarm_id
   const selectedCount = drafts.filter((draft) => draft.selected).length
   const selectedGitCount = drafts.filter((draft) => draft.selected && workspaces.some((workspace) => workspace.path === draft.workspacePath && workspace.isGitRepo)).length
-  const currentSelectionKey = useMemo(() => JSON.stringify({ root: destinationRoot.trim(), selections: buildSelections(drafts) }), [destinationRoot, drafts])
-  const preflightCurrent = preflightSnapshot === currentSelectionKey
-  const ready = preflightCurrent && preflightPlans.length > 0 && preflightPlans.every((plan) => plan.ok && plan.action !== 'conflict')
-  const planByPath = useMemo(() => {
-    const map = new Map<string, ManagedWorkspacePlan>()
-    for (const plan of preflightPlans) {
-      map.set(plan.sourceWorkspacePath, plan)
-    }
-    return map
-  }, [preflightPlans])
 
   const load = async () => {
     setLoading(true)
@@ -119,12 +99,6 @@ export function ManagedHostWorkspaceReplicationPanel({
     void load()
   }, [])
 
-  useEffect(() => {
-    if (preflightPlans.length > 0 && preflightSnapshot !== currentSelectionKey) {
-      setStatus('Selection changed. Run preflight again before transfer.')
-    }
-  }, [currentSelectionKey, preflightPlans.length, preflightSnapshot])
-
   const toggleWorkspace = (path: string) => {
     setResults([])
     setDrafts((current) => current.map((draft) => draft.workspacePath === path ? { ...draft, selected: !draft.selected } : draft))
@@ -135,7 +109,7 @@ export function ManagedHostWorkspaceReplicationPanel({
     setDrafts((current) => current.map((draft) => draft.workspacePath === path ? { ...draft, destinationPath } : draft))
   }
 
-  const handlePreflight = async () => {
+  const handleReplicate = async () => {
     const selections = buildSelections(drafts)
     if (!target.swarm_id.trim()) {
       setError('Managed Host target is missing.')
@@ -151,57 +125,24 @@ export function ManagedHostWorkspaceReplicationPanel({
     }
     setSubmitting(true)
     setError(null)
-    setStatus(null)
-    setResults([])
-    try {
-      const snapshot = JSON.stringify({ root: destinationRoot.trim(), selections })
-      const response = await preflightManagedWorkspaces({
-        targetSwarmID: target.swarm_id,
-        destinationRoot,
-        workspaces: selections,
-      })
-      setPreflightPlans(response.workspaces)
-      setPreflightSnapshot(snapshot)
-      setStatus(response.ready ? `Ready to transfer ${response.workspaces.length} workspace${response.workspaces.length === 1 ? '' : 's'} to ${response.target.name || targetName}.` : 'Preflight found conflicts. Resolve them before transfer.')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Managed Host preflight failed')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  const handleReplicate = async () => {
-    if (!ready) {
-      setError('Run a clean preflight before transfer.')
-      return
-    }
-    const selections = buildSelections(drafts)
-    setSubmitting(true)
-    setError(null)
-    setStatus(null)
+    setStatus('Checking the managed host and transferring workspaces…')
     setResults([])
     try {
       const response = await replicateManagedWorkspaces({
         targetSwarmID: target.swarm_id,
         destinationRoot,
         workspaces: selections,
-        confirmedPlans: preflightPlans.map((plan) => ({
-          sourceWorkspacePath: plan.sourceWorkspacePath,
-          destinationPath: plan.destinationPath,
-          action: plan.action,
-          planId: plan.planId,
-        })),
       })
       setResults(response.workspaces)
-      setStatus(`Transferred ${response.workspaces.length} workspace${response.workspaces.length === 1 ? '' : 's'} to ${response.target.name || targetName}.`)
-      await onComplete(`Transferred ${response.workspaces.length} workspace${response.workspaces.length === 1 ? '' : 's'} to ${response.target.name || targetName}.`)
+      setStatus(`Replicated ${response.workspaces.length} workspace${response.workspaces.length === 1 ? '' : 's'} to ${response.target.name || targetName}.`)
+      await onComplete(`Replicated ${response.workspaces.length} workspace${response.workspaces.length === 1 ? '' : 's'} to ${response.target.name || targetName}.`)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Managed Host transfer failed')
+      setError(err instanceof Error ? err.message : 'Managed Host replication failed')
+      setStatus(null)
     } finally {
       setSubmitting(false)
     }
   }
-
   return (
     <section data-testid="managed-host-workspace-replication-panel" className="mt-4 grid gap-4 rounded-2xl border border-[var(--app-border)] bg-transparent p-4 sm:p-5">
       <Card className="flex flex-col gap-4 px-5 py-5 sm:px-6 lg:flex-row lg:items-start lg:justify-between">
@@ -211,7 +152,7 @@ export function ManagedHostWorkspaceReplicationPanel({
             <Badge tone={target.online ? 'live' : 'warning'}>{target.online ? 'Online' : 'Route pending'}</Badge>
           </div>
           <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-            Select saved git workspaces, review the home-based destination on {targetName}, preflight the planned paths, then transfer.
+            Select saved git workspaces, then replicate. Swarm checks {targetName}, detects existing git directories, registers them when present, and imports missing workspaces with git bundles.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -257,7 +198,6 @@ export function ManagedHostWorkspaceReplicationPanel({
         ) : workspaces.map((workspace, index) => {
           const draft = drafts.find((item) => item.workspacePath === workspace.path)
           const selected = Boolean(draft?.selected)
-          const plan = planByPath.get(workspace.path)
           const directories = workspace.directories.length > 0 ? workspace.directories : [workspace.path]
           return (
             <div key={workspace.path} className={`group flex flex-col gap-3 rounded-lg border bg-[var(--app-surface)] p-3.5 shadow-sm transition-all ${selected ? 'border-[var(--app-border-strong)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-accent)]'}`}>
@@ -282,7 +222,6 @@ export function ManagedHostWorkspaceReplicationPanel({
                   <HardDrive size={14} /> {directories.length}
                 </div>
                 {workspace.isGitRepo ? <Badge tone="live">git</Badge> : <Badge tone="warning">not git</Badge>}
-                {plan ? <Badge tone={actionTone(plan.action, plan.ok)}>{actionLabel(plan.action)}</Badge> : null}
               </div>
               <label className="mt-auto grid gap-1 border-t border-[var(--app-border)] pt-3 text-xs">
                 <span className="text-[var(--app-text-muted)]">Exact destination path (optional)</span>
@@ -293,12 +232,6 @@ export function ManagedHostWorkspaceReplicationPanel({
                   disabled={submitting || busy || !selected}
                 />
               </label>
-              {plan ? (
-                <div className={`rounded-lg border px-3 py-2 text-xs ${plan.ok ? 'border-[var(--app-border)] text-[var(--app-text-muted)]' : 'border-[var(--app-warning-border)] text-[var(--app-warning-text)]'}`}>
-                  <div className="break-all">{plan.destinationPath}</div>
-                  {plan.error ? <div className="mt-1">{plan.error}</div> : null}
-                </div>
-              ) : null}
             </div>
           )
         })}
@@ -326,20 +259,16 @@ export function ManagedHostWorkspaceReplicationPanel({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant="outline" onClick={() => void onSkip(`Skipped workspace replication for ${targetName}.`)} disabled={submitting || busy}>Skip</Button>
-          <Button type="button" variant="outline" onClick={() => void handlePreflight()} disabled={submitting || busy || selectedCount === 0}>
-            {submitting && !ready ? <Loader2 size={14} className="animate-spin" /> : null}
-            Preflight
-          </Button>
-          <Button type="button" onClick={() => void handleReplicate()} disabled={submitting || busy || !ready} title={!ready ? 'Run a clean preflight first' : undefined}>
-            {submitting && ready ? <Loader2 size={14} className="animate-spin" /> : null}
-            Transfer
+          <Button type="button" onClick={() => void handleReplicate()} disabled={submitting || busy || selectedCount === 0}>
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
+            Replicate workspaces
           </Button>
         </div>
       </div>
 
       {!target.online ? (
         <div className="flex items-start gap-2 rounded-xl border border-[var(--app-warning-border)] px-3 py-2 text-sm text-[var(--app-warning-text)]">
-          <XCircle size={16} className="mt-0.5" /> The Managed Host route is not currently marked online. Preflight will verify reachability before transfer.
+          <XCircle size={16} className="mt-0.5" /> The Managed Host route is not currently marked online. Replication will verify reachability before transfer.
         </div>
       ) : null}
     </section>

@@ -156,7 +156,7 @@ export async function replicateManagedWorkspaces(input: {
   targetSwarmID: string
   destinationRoot: string
   workspaces: ManagedWorkspaceSelectionInput[]
-  confirmedPlans: ManagedWorkspaceConfirmedPlanInput[]
+  confirmedPlans?: ManagedWorkspaceConfirmedPlanInput[]
 }): Promise<ManagedWorkspaceReplicateResponse> {
   const payload = await requestJson<ManagedWorkspaceReplicateWire>('/v1/swarm/managed-workspaces/replicate', {
     method: 'POST',
@@ -167,7 +167,7 @@ export async function replicateManagedWorkspaces(input: {
       target_swarm_id: input.targetSwarmID,
       destination_root: input.destinationRoot,
       workspaces: input.workspaces.map(selectionWire),
-      confirmed_plans: input.confirmedPlans.map((plan) => ({
+      confirmed_plans: input.confirmedPlans?.map((plan) => ({
         source_workspace_path: plan.sourceWorkspacePath,
         destination_path: plan.destinationPath,
         action: plan.action,
