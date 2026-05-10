@@ -20,6 +20,7 @@ import type {
 import {
   applyDesktopChatRouteToSession,
   desktopChatRouteFromSessionMetadata,
+  isManagedHostDesktopChatRoute,
   type DesktopChatRoute,
   withDesktopChatRoute,
 } from "../services/chat-routing";
@@ -1065,6 +1066,39 @@ export async function activatePrimaryAgent(name: string): Promise<void> {
   });
 }
 
+function sessionRequestBody(input: {
+  title?: string;
+  workspacePath: string;
+  workspaceName: string;
+  mode: string;
+  agentName?: string;
+  metadata?: Record<string, unknown>;
+  preference: ResolvedSessionPreference["preference"];
+  route?: DesktopChatRoute | null;
+  worktreeMode?: string;
+}): Record<string, unknown> {
+  return {
+    title: input.title ?? "",
+    workspace_path: input.workspacePath,
+    host_workspace_path:
+      input.route?.hostWorkspacePath ?? input.workspacePath,
+    runtime_workspace_path:
+      input.route?.runtimeWorkspacePath ?? input.workspacePath,
+    workspace_name: input.workspaceName,
+    mode: input.mode,
+    agent_name: input.agentName?.trim() ?? "",
+    metadata: input.metadata ?? undefined,
+    worktree_mode: input.worktreeMode?.trim() || undefined,
+    preference: {
+      provider: input.preference.provider,
+      model: input.preference.model,
+      thinking: input.preference.thinking,
+      service_tier: input.preference.serviceTier,
+      context_mode: input.preference.contextMode,
+    },
+  }
+}
+
 export async function createSession(input: {
   title?: string;
   workspacePath: string;
@@ -1076,33 +1110,21 @@ export async function createSession(input: {
   route?: DesktopChatRoute | null;
   worktreeMode?: string;
 }): Promise<DesktopSessionRecord> {
+  const body = sessionRequestBody(input)
+  const endpoint = isManagedHostDesktopChatRoute(input.route)
+    ? "/v1/swarm/managed-hosts/sessions/open"
+    : withDesktopChatRoute("/v1/sessions", input.route)
+  if (isManagedHostDesktopChatRoute(input.route)) {
+    body.target_swarm_id = input.route?.swarmId?.trim() ?? ""
+  }
   const response = await requestJson<{ session?: SessionWire }>(
-    withDesktopChatRoute("/v1/sessions", input.route),
+    endpoint,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        title: input.title ?? "",
-        workspace_path: input.workspacePath,
-        host_workspace_path:
-          input.route?.hostWorkspacePath ?? input.workspacePath,
-        runtime_workspace_path:
-          input.route?.runtimeWorkspacePath ?? input.workspacePath,
-        workspace_name: input.workspaceName,
-        mode: input.mode,
-        agent_name: input.agentName?.trim() ?? "",
-        metadata: input.metadata ?? undefined,
-        worktree_mode: input.worktreeMode?.trim() || undefined,
-        preference: {
-          provider: input.preference.provider,
-          model: input.preference.model,
-          thinking: input.preference.thinking,
-          service_tier: input.preference.serviceTier,
-          context_mode: input.preference.contextMode,
-        },
-      }),
+      body: JSON.stringify(body),
     },
   );
   const mapped = applyDesktopChatRouteToSession(
@@ -1116,18 +1138,23 @@ export async function sendSessionMessage(
   sessionId: string,
   role: "user" | "assistant" | "system" | "tool" | "reasoning",
   content: string,
+  route?: DesktopChatRoute | null,
 ) {
-  return requestJson(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
+  const managedHost = isManagedHostDesktopChatRoute(route)
+  return requestJson(managedHost ? "/v1/swarm/managed-hosts/sessions/message" : `/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ role, content }),
+    body: JSON.stringify(managedHost
+      ? { target_swarm_id: route?.swarmId?.trim() ?? "", session_id: sessionId, role, content }
+      : { role, content }),
   });
 }
 
 export interface DesktopBackgroundRunStartOptions {
   sessionId: string;
+  route?: DesktopChatRoute | null;
   prompt: string;
   agentName?: string;
   instructions?: string;
@@ -1175,8 +1202,9 @@ export async function startSessionRun(
     throw new Error("prompt is required");
   }
 
+  const managedHost = isManagedHostDesktopChatRoute(options.route);
   return requestJson<DesktopRunAccepted>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+    managedHost ? "/v1/swarm/managed-hosts/sessions/run" : `/v1/sessions/${encodeURIComponent(sessionId)}/run/stream`,
     {
       method: "POST",
       headers: {
@@ -1184,6 +1212,8 @@ export async function startSessionRun(
       },
       body: JSON.stringify({
         type: "run.start",
+        target_swarm_id: managedHost ? options.route?.swarmId?.trim() ?? "" : undefined,
+        session_id: managedHost ? sessionId : undefined,
         prompt,
         agent_name: options.agentName?.trim() ?? "",
         instructions: options.instructions?.trim() ?? "",
@@ -1211,15 +1241,19 @@ export async function openRunStream(sessionId: string): Promise<WebSocket> {
 export async function stopSessionRun(
   sessionId: string,
   runId: string,
+  route?: DesktopChatRoute | null,
 ): Promise<void> {
+  const managedHost = isManagedHostDesktopChatRoute(route);
   const response = await apiFetch(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/run/stream`,
+    managedHost ? "/v1/swarm/managed-hosts/sessions/stop" : `/v1/sessions/${encodeURIComponent(sessionId)}/run/stream`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ type: "run.stop", run_id: runId }),
+      body: JSON.stringify(managedHost
+        ? { type: "run.stop", target_swarm_id: route?.swarmId?.trim() ?? "", session_id: sessionId, run_id: runId }
+        : { type: "run.stop", run_id: runId }),
     },
   );
   if (!response.ok) {

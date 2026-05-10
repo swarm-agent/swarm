@@ -2126,6 +2126,7 @@ export function DesktopChatPanel({
 
       await submitPrompt({
         sessionId: targetSession.id,
+        route: activeChatRoute,
         workspacePath,
         workspaceName,
         prompt: runPrompt,
@@ -2150,11 +2151,11 @@ export function DesktopChatPanel({
     }
     setPanelError(null)
     try {
-      await stopRun(sessionId)
+      await stopRun(sessionId, activeChatRoute)
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to stop run')
     }
-  }, [sessionId, stopRun])
+  }, [activeChatRoute, sessionId, stopRun])
 
   const closeCommitModal = useCallback(() => {
     setCommitModal((current) => ({

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { applyDesktopChatRouteToSession, desktopChatRouteFromSessionMetadata, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
+import { applyDesktopChatRouteToSession, desktopChatRouteFromSessionMetadata, isManagedHostDesktopChatRoute, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
 import type { DesktopSessionRecord } from '../../types/realtime'
 
 const remoteRoute: DesktopChatRoute = {
@@ -13,6 +13,17 @@ const remoteRoute: DesktopChatRoute = {
   hostWorkspacePath: '/workspaces/host-swarm',
   hostWorkspaceName: 'host swarm',
   runtimeWorkspacePath: '/workspaces/swarm',
+}
+
+const managedHostRoute: DesktopChatRoute = {
+  id: 'swarm:managed-swarm:/managed/workspace',
+  label: 'managed host',
+  swarmId: 'managed-swarm',
+  targetKind: 'host',
+  targetRelationship: 'managed',
+  hostWorkspacePath: '/workspaces/host-swarm',
+  hostWorkspaceName: 'host swarm',
+  runtimeWorkspacePath: '/managed/workspace',
 }
 
 function sessionRecord(overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
@@ -66,6 +77,11 @@ test('routed session fetch URL includes swarm_id so backend can proxy to child',
     withDesktopChatRoute('/v1/sessions/session-1', remoteRoute),
     '/v1/sessions/session-1?swarm_id=child-swarm',
   )
+})
+
+test('managed host routes are identified separately from child routes', () => {
+  assert.equal(isManagedHostDesktopChatRoute(managedHostRoute), true)
+  assert.equal(isManagedHostDesktopChatRoute(remoteRoute), false)
 })
 
 test('routed session metadata reconstructs route label from server metadata, not target metadata', () => {

@@ -20,6 +20,7 @@ import {
   fetchSessionPendingPermissions,
   fetchSessionUsageSummary,
 } from '../chat/queries/chat-queries'
+import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
@@ -2774,7 +2775,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     }
     await requireRunStreamController().ensure(normalizedSessionId, runId)
   },
-  stopRun: async (sessionId) => {
+  stopRun: async (sessionId, route = null) => {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) {
       return
@@ -2784,10 +2785,11 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
       return
     }
     set((state) => applyRunStreamFrame(state, normalizedSessionId, { type: 'run.stop.accepted', run_id: runId }, Date.now()))
-    await requireRunStreamController().stop(normalizedSessionId, runId)
+    await requireRunStreamController().stop({ sessionId: normalizedSessionId, runId, route })
   },
-  submitPrompt: async ({ sessionId, workspacePath, prompt, agentName, compact = false, targetKind = '', targetName = '' }: {
+  submitPrompt: async ({ sessionId, route = null, workspacePath, prompt, agentName, compact = false, targetKind = '', targetName = '' }: {
     sessionId: string | null
+    route?: DesktopChatRoute | null
     workspacePath: string
     prompt: string
     agentName: string
@@ -2841,6 +2843,7 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     try {
       const accepted = await requireRunStreamController().start({
         sessionId: targetSessionId,
+        route,
         prompt: trimmedPrompt,
         agentName,
         compact,

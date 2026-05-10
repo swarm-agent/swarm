@@ -147,6 +147,16 @@ export function resolveDesktopChatRouteFromSession(
   return matchedRoute ?? metadataRoute ?? fallback ?? routeOptions[0] ?? null
 }
 
+export function isManagedHostDesktopChatRoute(route: DesktopChatRoute | null | undefined): boolean {
+  const swarmId = route?.swarmId?.trim() ?? ''
+  if (!swarmId) {
+    return false
+  }
+  const relationship = route?.targetRelationship?.trim().toLowerCase() ?? ''
+  const kind = route?.targetKind?.trim().toLowerCase() ?? ''
+  return relationship === 'managed' || kind === 'host'
+}
+
 export function withDesktopChatRoute(path: string, route: DesktopChatRoute | null | undefined): string {
   const normalizedPath = path.trim()
   if (!normalizedPath) {

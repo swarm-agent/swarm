@@ -1,4 +1,5 @@
 import type { VaultImportResult } from '../vault/types'
+import type { DesktopChatRoute } from '../chat/services/chat-routing'
 
 export interface DesktopSessionUsageRecord {
   sessionId: string
@@ -234,6 +235,7 @@ export interface DesktopStoreState {
   disconnect: () => void
   submitPrompt: (input: {
     sessionId: string | null
+    route?: DesktopChatRoute | null
     workspacePath: string
     workspaceName: string
     prompt: string
@@ -244,6 +246,6 @@ export interface DesktopStoreState {
   }) => Promise<void>
   ensureRunStream: (sessionId: string, runId?: string | null) => Promise<void>
   closeRunStream: (sessionId: string) => void
-  stopRun: (sessionId: string) => Promise<void>
+  stopRun: (sessionId: string, route?: DesktopChatRoute | null) => Promise<void>
   __testApplyRunStreamFrame?: (sessionId: string, payload: Record<string, unknown>, ts?: number) => void
 }
