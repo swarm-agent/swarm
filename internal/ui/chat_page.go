@@ -1800,6 +1800,17 @@ func (p *ChatPage) applyRunStreamEvent(event ChatRunStreamEvent, atUnix int64) {
 			p.thinkingSummary = p.defaultThinkingSummary(p.runPrompt)
 		}
 		p.statusLine = fmt.Sprintf("winding up %s %s", p.spinnerFrame(), p.runElapsedLabel())
+	case "session.status":
+		summary := strings.TrimSpace(event.Summary)
+		status := strings.ToLower(strings.TrimSpace(event.Status))
+		switch {
+		case summary != "" && status == "compacting":
+			p.statusLine = fmt.Sprintf("compacting context: %s", summary)
+		case summary != "":
+			p.statusLine = summary
+		case status != "":
+			p.statusLine = status
+		}
 	case "step.started":
 		if strings.TrimSpace(p.statusLine) == "" {
 			p.statusLine = fmt.Sprintf("working %s", p.runElapsedLabel())

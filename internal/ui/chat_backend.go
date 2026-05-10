@@ -146,6 +146,7 @@ type ChatRunStreamEvent struct {
 	SessionID    string
 	RunID        string
 	Agent        string
+	Status       string
 	Step         int
 	Delta        string
 	Summary      string

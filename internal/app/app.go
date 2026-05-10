@@ -1101,6 +1101,7 @@ func (a *App) applySessionStreamEvent(event client.StreamEventEnvelope) bool {
 		}
 		return a.updateHomeSessionPendingPermissions(sessionID, payload.PendingCount)
 	case "permission.requested", "permission.updated",
+		"session.status",
 		"run.turn.started", "run.turn.error",
 		"run.step.started",
 		"run.assistant.delta", "run.assistant.commentary",
@@ -1382,6 +1383,8 @@ func normalizeSharedChatRuntimeEventType(envelopeType, payloadType string) strin
 		return strings.TrimSpace(payloadType)
 	}
 	switch strings.ToLower(strings.TrimSpace(envelopeType)) {
+	case "session.status":
+		return "session.status"
 	case "run.turn.started":
 		return "turn.started"
 	case "run.turn.completed":

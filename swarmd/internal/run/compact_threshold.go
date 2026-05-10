@@ -105,7 +105,7 @@ func remainingContextPercent(summary pebblestore.SessionUsageSummary) float64 {
 
 func compactedContinuationLead(origin string) string {
 	switch strings.ToLower(strings.TrimSpace(origin)) {
-	case "threshold":
+	case contextCompactionOriginThreshold:
 		return "The previous conversation context was proactively compacted before the model hit its context limit."
 	default:
 		return "The previous conversation context exceeded the model context window and was compacted by the memory subagent."
@@ -146,6 +146,7 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 		contextWindow,
 		maxOutputTokens,
 		false,
+		contextCompactionOriginThreshold,
 		step,
 		1,
 		emit,
@@ -156,7 +157,7 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 	resetSummary, _, compactEvents, compactErr := s.applyContextCompactionArtifacts(
 		sessionID,
 		compactedSummary,
-		"threshold",
+		contextCompactionOriginThreshold,
 		contextWindow,
 		providerID,
 		modelName,
@@ -174,7 +175,7 @@ func (s *Service) maybeAutoCompactRunContext(ctx context.Context, sessionID, run
 	if ok {
 		activePlan = &plan
 	}
-	compactedInput := buildCompactedContinuationInput(runPrompt, compactedSummary, activePlan, "threshold")
+	compactedInput := buildCompactedContinuationInput(runPrompt, compactedSummary, activePlan, contextCompactionOriginThreshold)
 	if len(compactedInput) == 0 {
 		return nil, nil, nil, errors.New("threshold auto compact produced empty input")
 	}

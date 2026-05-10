@@ -352,6 +352,36 @@ function messageRoleLabel(role: string): string {
   }
 }
 
+export function isDesktopCompactionCheckpointMessage(message: ChatMessageRecord | null | undefined): boolean {
+  return message?.role.trim().toLowerCase() === 'system'
+    && message.content.trim().startsWith('[context-compact]')
+}
+
+export function isDesktopManualCompactionAckMessage(message: ChatMessageRecord | null | undefined): boolean {
+  const source = metadataString(metadataRecord(message?.metadata), 'source').toLowerCase()
+  if (source === 'manual_context_compaction_ack') {
+    return true
+  }
+  return message?.role.trim().toLowerCase() === 'assistant'
+    && message.content.trim().startsWith('Manual context compact complete (Compact #')
+    && !message.content.includes('Compacted recap:')
+}
+
+export function visibleDesktopChatMessages(messages: ChatMessageRecord[]): ChatMessageRecord[] {
+  const hiddenIds = new Set<string>()
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+    if (!isDesktopManualCompactionAckMessage(message)) {
+      continue
+    }
+    const previous = index > 0 ? messages[index - 1] : null
+    if (isDesktopCompactionCheckpointMessage(previous)) {
+      hiddenIds.add(message.id)
+    }
+  }
+  return messages.filter((message) => !hiddenIds.has(message.id))
+}
+
 function optionKey(provider: string, model: string, contextMode = ''): string {
   return `${provider}:${model}:${contextMode.trim().toLowerCase()}`
 }
@@ -1185,7 +1215,7 @@ export function DesktopChatPanel({
   }, [slashPalette.matches, slashSelectionIndex])
 
   const messages = useMemo(() => dedupeMessages(messagesQuery.data ?? []), [messagesQuery.data])
-  const displayedMessages = messages
+  const displayedMessages = useMemo(() => visibleDesktopChatMessages(messages), [messages])
   const liveAssistantDraft = liveSession?.live.assistantDraft ?? ''
   const retainedAssistantSegments = liveSession?.live.retainedAssistantSegments ?? []
   const liveToolMessage = useMemo(() => buildLiveToolMessage(liveSession), [liveSession])

@@ -959,6 +959,7 @@ type SessionRunStreamEvent struct {
 	RunID        string                    `json:"run_id,omitempty"`
 	Seq          uint64                    `json:"seq,omitempty"`
 	Agent        string                    `json:"agent,omitempty"`
+	Status       string                    `json:"status,omitempty"`
 	Step         int                       `json:"step,omitempty"`
 	Delta        string                    `json:"delta,omitempty"`
 	Summary      string                    `json:"summary,omitempty"`

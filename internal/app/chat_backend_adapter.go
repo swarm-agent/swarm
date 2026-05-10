@@ -403,6 +403,7 @@ func convertClientRunStreamEvent(event client.SessionRunStreamEvent) ui.ChatRunS
 		SessionID:    event.SessionID,
 		RunID:        event.RunID,
 		Agent:        event.Agent,
+		Status:       event.Status,
 		Step:         event.Step,
 		Delta:        event.Delta,
 		Summary:      event.Summary,

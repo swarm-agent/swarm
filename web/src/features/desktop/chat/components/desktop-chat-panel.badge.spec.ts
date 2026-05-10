@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { DesktopSessionRecord } from '../../types/realtime'
-import { formatAgentTodoBadge, metadataTodoSummary, resolveSessionEffectiveAgentName, sessionUsesReadOnlyFlowIdentity } from './desktop-chat-panel'
+import type { ChatMessageRecord } from '../types/chat'
+import { formatAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, metadataTodoSummary, resolveSessionEffectiveAgentName, sessionUsesReadOnlyFlowIdentity, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1 }), '4/6 complete • 1 active')
@@ -102,4 +103,34 @@ test('non-flow sessions still resolve requested subagent before falling back to 
 
   assert.equal(sessionUsesReadOnlyFlowIdentity(session), false)
   assert.equal(resolveSessionEffectiveAgentName(session, 'swarm'), 'explorer')
+})
+
+function makeMessage(overrides: Partial<ChatMessageRecord> = {}): ChatMessageRecord {
+  return {
+    id: 'message-1',
+    sessionId: 'session-1',
+    globalSeq: 1,
+    role: 'assistant',
+    content: 'hello',
+    createdAt: 0,
+    ...overrides,
+  }
+}
+
+test('desktop chat shows the context compact checkpoint and hides the duplicate ack', () => {
+  const checkpoint = makeMessage({
+    id: 'checkpoint',
+    role: 'system',
+    content: '[context-compact] index=3 origin=manual\n\nCompacted recap:\nsummary',
+  })
+  const ack = makeMessage({
+    id: 'ack',
+    globalSeq: 2,
+    role: 'assistant',
+    content: 'Manual context compact complete (Compact #3).',
+  })
+
+  assert.equal(isDesktopCompactionCheckpointMessage(checkpoint), true)
+  assert.equal(isDesktopManualCompactionAckMessage(ack), true)
+  assert.deepEqual(visibleDesktopChatMessages([checkpoint, ack]).map((message) => message.id), ['checkpoint'])
 })

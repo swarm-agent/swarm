@@ -532,6 +532,9 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 		if content == "" {
 			continue
 		}
+		if isManualCompactionAcknowledgement(message) {
+			continue
+		}
 
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 		switch role {
@@ -586,6 +589,20 @@ func buildAssistantOutputInput(content string) (map[string]any, bool) {
 			{"type": "output_text", "text": content},
 		},
 	}, true
+}
+
+func isManualCompactionAcknowledgement(message pebblestore.MessageSnapshot) bool {
+	if strings.ToLower(strings.TrimSpace(message.Role)) != "assistant" {
+		return false
+	}
+	if source := strings.ToLower(strings.TrimSpace(mapString(message.Metadata, "source"))); source == "manual_context_compaction_ack" {
+		return true
+	}
+	content := strings.TrimSpace(message.Content)
+	if content == "" || !strings.HasPrefix(content, "Manual context compact complete (Compact #") {
+		return false
+	}
+	return !strings.Contains(content, "Compacted recap:")
 }
 
 func shouldDropSensitiveConversationMessage(message pebblestore.MessageSnapshot) bool {

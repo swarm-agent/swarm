@@ -58,6 +58,9 @@ const (
 	contextCompactionUsageSource          = "context_compaction_reset"
 	contextCompactionPlanLabelMetadataKey = "context_compaction_attached_plan_label"
 	contextCompactionPlanTextMetadataKey  = "context_compaction_attached_plan_text"
+	contextCompactionOriginManual         = "manual"
+	contextCompactionOriginThreshold      = "threshold"
+	contextCompactionOriginOverflow       = "overflow"
 
 	taskReportMinChars               = 400
 	taskReportDefaultChars           = 1800
@@ -83,6 +86,7 @@ const (
 
 var sessionTitleWordPattern = regexp.MustCompile(sessionTitleWordExtractionRegexp)
 var sessionCompactTitleSuffixPattern = regexp.MustCompile(`(?i)\s*\(compact\s*#\s*([0-9]+)\)\s*$`)
+var contextCompactionCheckpointIndexPattern = regexp.MustCompile(`\bindex=([0-9]+)\b`)
 
 type Service struct {
 	sessions     *sessionruntime.Service
@@ -1056,6 +1060,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			resolvedPreference.ContextWindow,
 			resolvedPreference.MaxOutputTokens,
 			true,
+			contextCompactionOriginManual,
 			stepsCompleted,
 			1,
 			emit,
@@ -1066,7 +1071,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		resetSummary, compactIndex, compactEvents, compactErr := s.applyContextCompactionArtifacts(
 			sessionID,
 			compactedSummary,
-			"manual",
+			contextCompactionOriginManual,
 			resolvedPreference.ContextWindow,
 			providerID,
 			resolvedPreference.Preference.Model,
@@ -1092,7 +1097,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		reasoningSummary = fmt.Sprintf("Context compacted into checkpoint #%d.", compactIndex)
 		assistantText := buildManualCompactionAssistantText(compactedSummary, compactIndex, attachedPlanLabel)
-		assistantMessage, _, assistantEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", assistantText, nil)
+		assistantMessage, _, assistantEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", assistantText, map[string]any{"source": "manual_context_compaction_ack"})
 		if appendErr != nil {
 			return RunResult{}, appendErr
 		}
@@ -1158,6 +1163,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			resolvedPreference.ContextWindow,
 			resolvedPreference.MaxOutputTokens,
 			false,
+			contextCompactionOriginOverflow,
 			step,
 			contextCompactionAttempts,
 			emit,
@@ -1168,7 +1174,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		resetSummary, _, compactEvents, compactErr := s.applyContextCompactionArtifacts(
 			sessionID,
 			compactedSummary,
-			"overflow",
+			contextCompactionOriginOverflow,
 			resolvedPreference.ContextWindow,
 			providerID,
 			resolvedPreference.Preference.Model,
@@ -1196,7 +1202,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				activePlan = &plan
 			}
 		}
-		compactedInput := buildCompactedContinuationInput(prompt, compactedSummary, activePlan, "overflow")
+		compactedInput := buildCompactedContinuationInput(prompt, compactedSummary, activePlan, contextCompactionOriginOverflow)
 		if len(compactedInput) == 0 {
 			return false, errors.New("context overflow compact continuation produced empty input")
 		}
@@ -2082,7 +2088,7 @@ func emitMemoryCompactionStatus(emit StreamHandler, step int, summary string) {
 	if emit == nil || summary == "" {
 		return
 	}
-	emit(StreamEvent{Type: StreamEventAssistantCommentary, Step: step, Delta: summary})
+	emit(StreamEvent{Type: StreamEventSessionStatus, Status: "compacting", Step: step, Summary: summary})
 }
 
 func trimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnapshot) []pebblestore.MessageSnapshot {
@@ -2237,22 +2243,10 @@ func buildCompactionCheckpointMessage(compactSummary, origin string, compactInde
 }
 
 func buildManualCompactionAssistantText(compactSummary string, compactIndex int, attachedPlanLabel string) string {
-	compactSummary = strings.TrimSpace(compactSummary)
-	if compactSummary == "" {
-		compactSummary = "(empty compact summary)"
-	}
 	if compactIndex <= 0 {
 		compactIndex = 2
 	}
-	lines := []string{
-		fmt.Sprintf("Manual context compact complete (Compact #%d).", compactIndex),
-		"Compacted recap:",
-		compactSummary,
-	}
-	if attachedPlanLabel = strings.TrimSpace(attachedPlanLabel); attachedPlanLabel != "" {
-		lines = append(lines, "Attached plan: "+attachedPlanLabel)
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n\n"))
+	return fmt.Sprintf("Manual context compact complete (Compact #%d).", compactIndex)
 }
 
 func compactedContextCheckpointMetadata(activePlan *pebblestore.SessionPlanSnapshot) map[string]any {
@@ -2288,7 +2282,7 @@ func compactedActivePlanLabel(activePlan *pebblestore.SessionPlanSnapshot) strin
 	}
 }
 
-func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, assistantDraft string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, step, attempt int, emit StreamHandler) (string, error) {
+func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, assistantDraft string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, step, attempt int, emit StreamHandler) (string, error) {
 	if s == nil || s.providers == nil || s.sessions == nil {
 		return "", errors.New("run service is not fully configured")
 	}
@@ -2315,6 +2309,11 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	if err != nil {
 		return "", fmt.Errorf("list session messages for compaction: %w", err)
 	}
+	activePlan, planErr := s.activePlanForCompaction(sessionID)
+	if planErr != nil {
+		return "", fmt.Errorf("load active plan for compaction: %w", planErr)
+	}
+	compactIndex := nextMemoryCompactionIndex(messages)
 	transcript := buildMemoryCompactionTranscript(messages, assistantDraft)
 	if strings.TrimSpace(transcript) == "" {
 		return "", errors.New("memory compaction transcript is empty")
@@ -2323,10 +2322,20 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	if returnFullCompactionResponse {
 		summaryMaxRunes = 0
 	}
-	instructions := buildMemoryCompactionInstructions(memoryProfile.Prompt, summaryMaxRunes)
+	instructions := buildMemoryCompactionInstructions(memoryProfile.Prompt, summaryMaxRunes, origin)
 	transcriptRunes := len([]rune(transcript))
 	inputBudgetTokens := effectiveMemoryCompactionInputBudget(contextWindow, maxOutputTokens, summaryMaxRunes)
-	oneShotPrompt := buildMemoryCompactionPrompt(runPrompt, "", transcript, 1, 1)
+	oneShotPrompt := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
+		RunPrompt:      runPrompt,
+		RollingSummary: "",
+		Chunk:          transcript,
+		Index:          1,
+		Total:          1,
+		Origin:         origin,
+		AssistantDraft: assistantDraft,
+		CompactIndex:   compactIndex,
+		ActivePlan:     activePlan,
+	})
 	oneShotTokens := estimateMemoryCompactionTokens(instructions, oneShotPrompt)
 	runCompactionDebugEvent("memory_compaction_start", map[string]any{
 		"session_id":                strings.TrimSpace(sessionID),
@@ -2431,7 +2440,17 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		for i := range chunks {
 			chunkStatus := fmt.Sprintf("compacting full chat with memory agent (%d/%d, attempt %d)", i+1, len(chunks), attempt)
 			emitMemoryCompactionStatus(emit, step, chunkStatus)
-			promptText := buildMemoryCompactionPrompt(runPrompt, rollingSummary, chunks[i], i+1, len(chunks))
+			promptText := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
+				RunPrompt:      runPrompt,
+				RollingSummary: rollingSummary,
+				Chunk:          chunks[i],
+				Index:          i + 1,
+				Total:          len(chunks),
+				Origin:         origin,
+				AssistantDraft: assistantDraft,
+				CompactIndex:   compactIndex,
+				ActivePlan:     activePlan,
+			})
 			chunkResult, reqErr := executeMemoryCompactionRequest(ctx, runner, modelName, thinking, preference.ContextMode, instructions, promptText, contextWindow, summaryMaxRunes, func(message string) {
 				emitMemoryCompactionStatus(emit, step, chunkStatus+"; "+strings.TrimSpace(message))
 			})
@@ -2515,6 +2534,9 @@ func buildMemoryCompactionTranscript(messages []pebblestore.MessageSnapshot, ass
 		if content == "" {
 			continue
 		}
+		if isManualCompactionAcknowledgement(message) {
+			continue
+		}
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 		if role == "system" && isToolDBDebugMessage(content) {
 			continue
@@ -2572,37 +2594,127 @@ func splitCompactionTranscript(transcript string, chunkRunes, overlapRunes int) 
 	return chunks
 }
 
-func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int) string {
-	lines := []string{
-		strings.TrimSpace(memoryPrompt),
-		"You are handling emergency context compaction for an active coding run.",
-		"Produce a high-fidelity compact recap so execution can continue without the full transcript.",
-		"Return plain text only (no markdown fences, no JSON).",
-		"Required sections:",
-		"1) Goal and non-negotiable constraints.",
-		"2) Completed work and concrete outcomes.",
-		"3) Relevant filepaths and locations (path + line/symbol when known).",
-		"4) Outstanding issues, errors, and pending asks.",
-		"5) Immediate next actions for the active agent.",
+func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int, origin string) string {
+	origin = normalizeContextCompactionOrigin(origin)
+	lines := make([]string, 0, 24)
+	if prompt := strings.TrimSpace(memoryPrompt); prompt != "" {
+		lines = append(lines, prompt)
 	}
+	lines = append(lines,
+		"You are the memory compact agent for an active coding session.",
+		"Your output becomes the checkpoint the next agent will use after older transcript context is removed.",
+		"Return plain text only (no markdown fences, no JSON).",
+	)
+	switch origin {
+	case contextCompactionOriginManual:
+		lines = append(lines,
+			"Compaction mode: manual user-requested compact.",
+			"The user wants this conversation summarized into a durable continuation checkpoint.",
+			"If the user gave no specific compact note, summarize the full available session as well as possible: concise, not overly verbose, but detailed enough for the next agent to continue without rediscovery.",
+			"If this is Compact #2, #3, or later, preserve the original request and prior checkpoint state, then clearly describe what changed since that checkpoint.",
+		)
+	case contextCompactionOriginThreshold:
+		lines = append(lines,
+			"Compaction mode: proactive automatic compact before the context limit.",
+			"Write the summary as a better-formulated continuation problem for the next main-agent step, using the context that is about to be compacted away.",
+			"Emphasize current goal, constraints, known facts, relevant files, completed work, and the highest-value next action.",
+			"Call out completed/open plan or todo checkpoints when the transcript makes them clear, and say if the resumed agent should update plan/todos.",
+		)
+	case contextCompactionOriginOverflow:
+		lines = append(lines,
+			"Compaction mode: reactive automatic compact after provider context overflow.",
+			"Explicitly note that the previous provider step overflowed the model context window.",
+			"Assume the main agent may have been mid-task. Do not rush to a final answer; preserve enough state for the resumed agent to continue carefully.",
+			"If an assistant draft is present, integrate it as in-progress work and state what should happen next.",
+			"Call out completed/open plan or todo checkpoints when the transcript makes them clear, and say if the resumed agent should update plan/todos before continuing.",
+		)
+	}
+	lines = append(lines,
+		"Required sections:",
+		"1) Original/active goal and non-negotiable constraints.",
+		"2) What changed since any prior compact checkpoint.",
+		"3) Completed work, decisions, and concrete tool/test outcomes.",
+		"4) Active plan/todo state: done, probably done, open, and needs updating.",
+		"5) Relevant filepaths and locations (path + line/symbol when known).",
+		"6) Outstanding issues, errors, risks, and pending asks.",
+		"7) Immediate next action for the resumed agent.",
+	)
 	if summaryMaxRunes > 0 {
 		lines = append(lines, fmt.Sprintf("Keep the summary under %d characters while preserving critical details.", summaryMaxRunes))
 	}
-	lines = append(lines, "Never invent filepaths, line numbers, commands, or outcomes.")
+	lines = append(lines,
+		"Never invent filepaths, line numbers, commands, outcomes, completed plan items, or user intent.",
+		"If something is uncertain, label it as uncertain and explain the evidence.",
+	)
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func buildMemoryCompactionPrompt(runPrompt, rollingSummary, chunk string, index, total int) string {
-	runPrompt = strings.TrimSpace(runPrompt)
+type memoryCompactionPromptOptions struct {
+	RunPrompt      string
+	RollingSummary string
+	Chunk          string
+	Index          int
+	Total          int
+	Origin         string
+	AssistantDraft string
+	CompactIndex   int
+	ActivePlan     *pebblestore.SessionPlanSnapshot
+}
+
+func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
+	origin := normalizeContextCompactionOrigin(options.Origin)
+	runPrompt := strings.TrimSpace(options.RunPrompt)
 	if runPrompt == "" {
 		runPrompt = "(empty prompt)"
 	}
-	rollingSummary = strings.TrimSpace(rollingSummary)
-	chunk = strings.TrimSpace(chunk)
-	lines := []string{
-		"Compaction context: the previous provider step failed with context-length overflow and no usable output.",
-		"Current run user prompt:",
-		runPrompt,
+	rollingSummary := strings.TrimSpace(options.RollingSummary)
+	chunk := strings.TrimSpace(options.Chunk)
+	index := options.Index
+	if index <= 0 {
+		index = 1
+	}
+	total := options.Total
+	if total <= 0 {
+		total = 1
+	}
+	compactIndex := options.CompactIndex
+	if compactIndex <= 0 {
+		compactIndex = 2
+	}
+
+	lines := []string{memoryCompactionContextLine(origin), fmt.Sprintf("This will become Compact #%d.", compactIndex)}
+	if compactIndex > 2 {
+		lines = append(lines, "This is a later compact. Keep the original user request and prior checkpoint state alive, then summarize only the meaningful changes since then.")
+	}
+	switch origin {
+	case contextCompactionOriginManual:
+		if isDefaultManualCompactionPrompt(runPrompt) {
+			lines = append(lines, "Manual compact note: none provided. Produce the best continuation summary from the full available context.")
+		} else {
+			lines = append(lines, "Manual compact note/instructions:", runPrompt)
+		}
+	case contextCompactionOriginThreshold:
+		lines = append(lines,
+			"Current run user prompt:",
+			runPrompt,
+			"Formulate the continuation as a clear problem statement for the next main-agent step, with the compacted-away evidence embedded in the recap.",
+		)
+	case contextCompactionOriginOverflow:
+		lines = append(lines,
+			"Current run user prompt:",
+			runPrompt,
+			"The provider overflow means the previous agent may have stopped mid-thought or mid-action. Preserve in-progress intent and tell the resumed agent exactly what to do next.",
+		)
+		if strings.TrimSpace(options.AssistantDraft) != "" {
+			lines = append(lines, "An assistant draft was captured at overflow time and is included in the transcript as [role:assistant_draft]; treat it as in-progress work, not a completed final answer.")
+		}
+	}
+	if activePlanText := compactedActivePlanText(options.ActivePlan); activePlanText != "" {
+		lines = append(lines,
+			"Active session plan at compaction time:",
+			activePlanText,
+			"When the transcript shows plan items or checklist steps were completed, mention that the resumed agent should mark/update them after compaction.",
+		)
 	}
 	if total > 1 {
 		lines = append(lines,
@@ -2617,12 +2729,73 @@ func buildMemoryCompactionPrompt(runPrompt, rollingSummary, chunk string, index,
 	}
 	if rollingSummary != "" {
 		lines = append(lines,
-			"Current rolling compact summary (update this by integrating the chunk):",
+			"Current rolling compact summary (update this by integrating this chunk; return the complete updated summary, not just this chunk):",
 			rollingSummary,
 		)
 	}
-	lines = append(lines, "Update and return the full compact summary now. Preserve explicit constraints, tool outcomes, and filepaths/locations.")
+	lines = append(lines, "Return the full compact summary now. Preserve explicit constraints, tool outcomes, filepaths/locations, plan state, and the exact next action.")
 	return strings.TrimSpace(strings.Join(lines, "\n\n"))
+}
+
+func normalizeContextCompactionOrigin(origin string) string {
+	switch strings.ToLower(strings.TrimSpace(origin)) {
+	case contextCompactionOriginManual:
+		return contextCompactionOriginManual
+	case contextCompactionOriginThreshold:
+		return contextCompactionOriginThreshold
+	case contextCompactionOriginOverflow:
+		return contextCompactionOriginOverflow
+	default:
+		return contextCompactionOriginOverflow
+	}
+}
+
+func memoryCompactionContextLine(origin string) string {
+	switch normalizeContextCompactionOrigin(origin) {
+	case contextCompactionOriginManual:
+		return "Compaction context: the user manually requested a durable context summary."
+	case contextCompactionOriginThreshold:
+		return "Compaction context: remaining context hit the configured proactive auto-compact threshold before provider overflow."
+	default:
+		return "Compaction context: the previous provider step failed because the conversation exceeded the model context window."
+	}
+}
+
+func isDefaultManualCompactionPrompt(prompt string) bool {
+	return strings.EqualFold(strings.TrimSpace(prompt), "manual context compact request")
+}
+
+func (s *Service) activePlanForCompaction(sessionID string) (*pebblestore.SessionPlanSnapshot, error) {
+	if s == nil || s.sessions == nil {
+		return nil, nil
+	}
+	plan, ok, err := s.sessions.GetActivePlan(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	return &plan, nil
+}
+
+func nextMemoryCompactionIndex(messages []pebblestore.MessageSnapshot) int {
+	latest := 1
+	for _, message := range messages {
+		if strings.ToLower(strings.TrimSpace(message.Role)) != "system" || !isCompactionCheckpointMessage(message.Content) {
+			continue
+		}
+		line := strings.TrimSpace(strings.SplitN(message.Content, "\n", 2)[0])
+		match := contextCompactionCheckpointIndexPattern.FindStringSubmatch(line)
+		if len(match) != 2 {
+			continue
+		}
+		parsed, err := strconv.Atoi(match[1])
+		if err == nil && parsed > latest {
+			latest = parsed
+		}
+	}
+	return latest + 1
 }
 
 func buildCompactedContinuationInput(runPrompt, compactSummary string, activePlan *pebblestore.SessionPlanSnapshot, origin string) []map[string]any {
