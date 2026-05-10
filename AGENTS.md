@@ -85,11 +85,40 @@ If a rule below conflicts with convenience, the rule wins.
 - Only run tests in precommit when the user explicitly asks for tests.
 - If tests or validation were not requested, say so explicitly.
 
-## Canonical Swarm Filesystem Paths
+## Canonical Swarm Architecture and Filesystem Paths
 
-These paths are code-derived product defaults. Before diagnosing config, storage, service, install, or `/workspaces` behavior, verify against the code paths listed here instead of guessing from old notes or host assumptions.
+Before diagnosing config, storage, service, install, routing, `/workspaces`, or target-selection behavior, identify which runtime plane you are touching. Do not guess from old notes, path shape, or host assumptions.
+
+### Three runtime planes that must not be conflated
+
+1. Primary host (`relationship=self`, `kind=self`)
+   - This is the daemon/UI the user is directly operating. It is the controller/owner for local resources and the default desktop target.
+   - It owns the host-local system install, systemd service, startup config, storage roots, and local transport socket listed below.
+   - It may create and manage local container children, and it may pair with managed hosts, but it is not itself a local container or a managed host.
+   - Do not rename current product language to "master" in new docs or UI. Only use legacy `master` where existing code/config compatibility requires it.
+
+2. Local container children (`relationship=child`, `kind=local`)
+   - These are Swarm child daemons running inside containers on the primary host's local container runtime.
+   - They are created/listed/updated through the local container/deploy-container paths, not through managed-host pairing or remote deploy.
+   - Their `/workspaces`, daemon storage, ports, and process namespace are container-local unless an explicit mount/published port says otherwise.
+   - A local container target being attached/selectable does not make the primary host managed, remote, or containerized.
+
+3. Managed hosts (`relationship=managed`, `kind=host`)
+   - These are separate host machines paired/trusted by the primary host. The supported managed remote shape is `ssh + tailscale`.
+   - They are selected/routed as managed host targets and use peer-authenticated host-to-host APIs for sessions, workspace inventory, replication, and sync.
+   - Their workspaces and daemon storage are host-local to that managed machine. Do not substitute primary-host paths, container paths, or local-user home fallbacks.
+   - A managed host is not a local container child, and remote reachability alone does not mean Swarm provisions arbitrary networking.
+
+Remote deploy sessions are a separate child-target path (`relationship=child`, `kind=remote`). Keep them separate from all three planes above unless code explicitly bridges them.
+
+### Architecture authority map
 
 Authoritative code locations:
+- `swarmd/internal/api/swarm_targets.go` — target catalog semantics: self, local container children, remote deploy children, and managed host peers.
+- `swarmd/internal/api/managed_host_sessions.go` — managed-host session routing and mirrored-session metadata.
+- `swarmd/internal/api/swarm_managed_workspace_replication.go` — managed-host workspace inventory/replication boundary.
+- `swarmd/internal/localcontainers/service.go` and `swarmd/internal/deploy/` — local container lifecycle and deploy-container child records.
+- `swarmd/internal/remotedeploy/` — remote deploy child sessions; not the managed-host pairing model.
 - `pkg/startupconfig/config.go` — startup config filename and `startupconfig.ResolvePath()`.
 - `pkg/storagecontract/storagecontract.go` — Linux/macOS storage root contract and systemd directory env overrides.
 - `swarmd/internal/config/config.go` — daemon flag/default resolution for data dir, DB path, lock path, and startup CWD.
@@ -98,14 +127,17 @@ Authoritative code locations:
 - `swarmd/internal/runtime/daemon.go` — local transport socket path and API server use of startup config path.
 - `swarmd/internal/workspace/service.go` — `/workspaces` discovery/browse behavior.
 
-Current Linux startup config:
+### Primary-host Linux paths
+
+These are current primary-host product defaults from code. Apply them per host; on a managed host, the same contract is evaluated on that managed machine, not on the primary host.
+
+Startup config:
 - Canonical daemon startup config path: `/etc/swarmd/swarm.conf`.
 - The filename is always `swarm.conf`; the default Linux config root is `/etc/swarmd`.
 - systemd can explicitly override the config root through `ConfigurationDirectory=swarmd` / `CONFIGURATION_DIRECTORY`; the resolved file still ends with `swarm.conf` under that root.
 - Do not diagnose current daemon startup config from `~/.config/swarm/swarm.conf`, `~/.swarm/swarm.conf`, `/etc/swarm/swarm.conf`, or `/usr/local/etc/swarm/swarm.conf`. They are not current canonical daemon startup config paths.
-- A normal laptop/basic local swarm is not automatically a managed host, container, or remote deployment. Do not infer managed/container/remote mode from `/workspaces` or from the existence/absence of non-canonical config files.
 
-Current Linux storage roots from `storagecontract`:
+Storage roots from `storagecontract`:
 - Data root: `/var/lib/swarmd`.
 - Cache root: `/var/cache/swarmd`.
 - Runtime root: `/run/swarmd`.
@@ -135,8 +167,9 @@ System install and service paths:
 - User-scoped systemd service files are host-local service manager configuration, not daemon startup config.
 
 Workspace path rules:
-- `/workspaces` is workspace discovery/browse behavior only. It is not a startup config path and is not proof that the host is managed, containerized, or remote deployed.
-- Workspaces are host-local unless explicitly mapped/provisioned/replicated by the relevant Swarm flow.
+- `/workspaces` is workspace discovery/browse behavior only. It is not a startup config path and is not proof that the target is the primary host, a local container, a managed host, or remote deployed.
+- Workspaces are local to the selected runtime plane unless explicitly mapped, mounted, provisioned, or replicated by the relevant Swarm flow.
+- Diagnose workspace issues from the active target metadata first: self/local container/managed host/remote deploy, relationship, kind, swarm ID, backend URL, attach status, and selected route.
 - Do not add implicit fallbacks to home-local storage, hidden config locations, or duplicate legacy paths. If a route/path/config is absent, fail clearly and report the canonical path that was checked.
 
 ## Current Active Testing Focus
@@ -159,13 +192,16 @@ Canonical harness map (not exhaustive; use `list`/`search` for current tests bef
 - `swarmd/tests/internal/deploy/sync_credentials_test.go` — backend sync-credential coverage used by child/host sync paths.
 - `tests/swarmd/internal/...` — preferred relocated backend test tree for new package-level backend tests when feasible.
 
-Remote/local testing boundaries:
-- Remote deploy is separate from local replicate.
+Remote/local/managed testing boundaries:
+- Local replicate/local container coverage, remote deploy coverage, and managed-host coverage are separate. Do not use one harness as proof for another plane.
+- Local container checks prove child daemons inside local containers on the primary host; they do not prove managed-host pairing or remote deploy.
+- Remote deploy checks prove the remote deploy child-session path; they do not prove managed-host session routing or managed workspace replication.
+- Managed-host checks must exercise the managed-host peer/session/workspace paths and verify the target is `relationship=managed`, `kind=host`.
 - Supported managed remote shape is `ssh + tailscale`; generic reachable endpoints are user-managed networking and must not imply Swarm sets up non-Tailscale networks.
 - Normal workstation testing should stay loopback-only unless the user explicitly asks for private/LAN coverage.
 - Do not use `0.0.0.0` for normal host testing.
 - When private/LAN coverage is explicitly needed, use deliberate private addresses only; do not use public or wildcard addresses.
-- After live harness runs, verify teardown: no swarm listeners, leaked containers, or leftover swarm/container helper processes.
+- After live harness runs, verify teardown in the correct plane: no primary-host swarm listeners, leaked local containers, leftover helper processes, or unmanaged remote/managed-host sessions.
 
 ## Agent Safety Warnings: Do Not Fall for These Traps
 
@@ -268,6 +304,9 @@ Required behavior:
 
 ## 6. Architecture Rules
 
+- Keep the runtime-plane boundary explicit in names, docs, tests, APIs, and UI state: primary host, local container children, managed hosts, and remote deploy children are different things.
+- When adding target-aware behavior, thread `relationship`, `kind`, `swarm_id`, `deployment_id`, `backend_url`, and route/session metadata through the existing target catalog instead of inventing a second classifier.
+- Do not infer architecture from a filesystem path. In particular, `/workspaces` can appear in more than one plane and is never sufficient proof of container, managed-host, or remote-deploy mode.
 - Provider-specific behavior belongs in provider adapter/runner packages, not generic orchestration paths.
 - Shared run/session/auth flows should remain provider-agnostic where possible.
 - New functionality should be additive and modular.

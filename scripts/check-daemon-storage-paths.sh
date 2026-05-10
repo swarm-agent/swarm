@@ -53,6 +53,7 @@ filter_allowed() {
   grep -Ev \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
+    -e '^swarmd/internal/config/config\.go:.*(resolveDefaultStartupCWD|UserHomeDir|user home directory|home = strings\.TrimSpace|return home)' \
     -e '^internal/launcher/system_paths\.go:.*os\.CreateTemp\("", "swarmd-config-\*"\)' \
     -e '^scripts/lib-lane\.sh:[0-9]+:.*(swarm_xdg_|XDG_|\.local/state|\.local/share|\.config|migrate_legacy)' \
     -e '^deploy/container-mvp/(entrypoint\.sh|Containerfile\.base):.*(-u XDG_|/root|/home|/workspaces|/tmp|must not be under a user home|~|mkdir -p|VOLUME)' \

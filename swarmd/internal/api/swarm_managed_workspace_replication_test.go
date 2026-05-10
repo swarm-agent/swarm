@@ -77,7 +77,8 @@ func TestManagedWorkspaceInventoryCallsPeerWithAuth(t *testing.T) {
 			t.Fatalf("peer auth headers id=%q token=%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
 		}
 		sawInventory = true
-		writeJSON(w, http.StatusOK, peerManagedWorkspaceInventoryResponse{OK: true, ManagedHome: "/home/managed", SavedWorkspaces: []workspace.Entry{{Path: "/home/managed/swarm-go", WorkspaceName: "swarm-go"}}})
+		managedHome := filepath.Join(string(os.PathSeparator), "srv", "managed")
+		writeJSON(w, http.StatusOK, peerManagedWorkspaceInventoryResponse{OK: true, ManagedHome: managedHome, SavedWorkspaces: []workspace.Entry{{Path: filepath.Join(managedHome, "swarm-go"), WorkspaceName: "swarm-go"}}})
 	}))
 	t.Cleanup(remote.Close)
 	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(remote.URL, "host-to-managed-token"))
@@ -94,7 +95,7 @@ func TestManagedWorkspaceInventoryCallsPeerWithAuth(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if response.ManagedHome != "/home/managed" || len(response.SavedWorkspaces) != 1 {
+	if response.ManagedHome != filepath.Join(string(os.PathSeparator), "srv", "managed") || len(response.SavedWorkspaces) != 1 {
 		t.Fatalf("response=%+v", response)
 	}
 }
@@ -403,7 +404,7 @@ func TestPeerManagedWorkspacePreflightDetectsExistingGitDirectory(t *testing.T) 
 	response, status, err := handler.peerManagedWorkspacePreflight(peerManagedWorkspacePreflightRequest{
 		DestinationRoot: root,
 		Workspaces: []peerManagedWorkspacePlanItem{{
-			SourceWorkspacePath:    "/home/primary/swarm-go",
+			SourceWorkspacePath:    filepath.Join(string(os.PathSeparator), "srv", "primary", "swarm-go"),
 			SourceHomeRelativePath: "swarm-go",
 			WorkspaceName:          "swarm-go",
 			GitWorkspace:           true,

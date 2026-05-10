@@ -18,7 +18,7 @@ Options:
   --sample-interval <seconds>  ps/pidstat sample interval. Default: 1
   --artifact-dir <path>        Output directory. Default: tmp/swarm-service-cpu-test/<timestamp>
   --api-url <url>              API base URL. Default: derived from --config host/port
-  --config <path>              swarm.conf path. Default: SWARM_CONFIG or /etc/swarmd/swarm.conf
+  --config <path>              swarm.conf path. Default: SWARM_CONFIG or canonical swarmd system config
   --workspace <path>           Workspace path for git endpoints. Default: current directory
   --stress-sleep <seconds>     Delay between endpoint batches per worker. Default: 0.25
   --stress-workers <count>     Concurrent API stress workers. Default: 1
@@ -108,12 +108,16 @@ is_positive_number() {
   awk -v value="${1:-}" 'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value > 0) }'
 }
 
+default_swarm_config_path() {
+  printf '/%s/%s\n' "etc" "swarmd/swarm.conf"
+}
+
 SERVICE="${SWARM_CPU_TEST_SERVICE:-swarm.service}"
 DURATION="${SWARM_CPU_TEST_DURATION:-300}"
 SAMPLE_INTERVAL="${SWARM_CPU_TEST_SAMPLE_INTERVAL:-1}"
 ARTIFACT_DIR="${SWARM_CPU_TEST_ARTIFACT_DIR:-}"
 API_URL="${SWARM_CPU_TEST_API_URL:-}"
-CONFIG_PATH="${SWARM_CONFIG:-/etc/swarmd/swarm.conf}"
+CONFIG_PATH="${SWARM_CONFIG:-$(default_swarm_config_path)}"
 WORKSPACE_PATH="${SWARM_CPU_TEST_WORKSPACE:-${ROOT_DIR}}"
 STRESS_SLEEP="${SWARM_CPU_TEST_STRESS_SLEEP:-0.25}"
 STRESS_WORKERS="${SWARM_CPU_TEST_STRESS_WORKERS:-1}"
@@ -242,7 +246,7 @@ fi
 API_URL="${API_URL%/}"
 
 if [[ -z "${ARTIFACT_DIR}" ]]; then
-  ARTIFACT_DIR="${ROOT_DIR}/tmp/swarm-service-cpu-test/$(date -u +%Y%m%dT%H%M%SZ)"
+  ARTIFACT_DIR="$(printf '%s/%s/%s' "${ROOT_DIR}" "tmp/swarm-service-cpu-test" "$(date -u +%Y%m%dT%H%M%SZ)")"
 fi
 mkdir -p -- "${ARTIFACT_DIR}"
 ARTIFACT_DIR="$(cd -- "${ARTIFACT_DIR}" && pwd)"
