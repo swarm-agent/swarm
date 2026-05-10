@@ -1,4 +1,12 @@
 import { requestJson } from '../../../../app/api'
+import {
+  mapWorkspaceDiscoverEntry,
+  mapWorkspaceEntry,
+  type WorkspaceDiscoverEntry,
+  type WorkspaceDiscoverEntryWire,
+  type WorkspaceEntry,
+  type WorkspaceEntryWire,
+} from '../../../workspaces/launcher/types/workspace'
 
 export type ManagedWorkspaceAction = 'import_bundle' | 'link_existing' | 'conflict'
 
@@ -29,6 +37,29 @@ export interface ManagedWorkspacePreflightResponse {
   }
   destinationRoot: string
   workspaces: ManagedWorkspacePlan[]
+}
+
+export interface ManagedWorkspaceActiveCWD {
+  path: string
+  workspacePath: string
+  workspaceName: string
+  sessionID: string
+  sessionTitle: string
+  active: boolean
+  updatedAt: number
+}
+
+export interface ManagedWorkspaceInventoryResponse {
+  ok: boolean
+  target: {
+    swarmId: string
+    name: string
+    online: boolean
+  }
+  managedHome: string
+  savedWorkspaces: WorkspaceEntry[]
+  discoveredDirectories: WorkspaceDiscoverEntry[]
+  activeCWDs: ManagedWorkspaceActiveCWD[]
 }
 
 export interface ManagedWorkspaceConfirmedPlanInput {
@@ -71,13 +102,34 @@ interface ManagedWorkspacePlanWire {
 interface ManagedWorkspacePreflightWire {
   ok?: boolean
   ready?: boolean
-  target?: {
-    swarm_id?: string
-    name?: string
-    online?: boolean
-  }
+  target?: ManagedWorkspaceTargetWire
   destination_root?: string
   workspaces?: ManagedWorkspacePlanWire[]
+}
+
+interface ManagedWorkspaceTargetWire {
+  swarm_id?: string
+  name?: string
+  online?: boolean
+}
+
+interface ManagedWorkspaceActiveCWDWire {
+  path?: string
+  workspace_path?: string
+  workspace_name?: string
+  session_id?: string
+  session_title?: string
+  active?: boolean
+  updated_at?: number
+}
+
+interface ManagedWorkspaceInventoryWire {
+  ok?: boolean
+  target?: ManagedWorkspaceTargetWire
+  managed_home?: string
+  saved_workspaces?: WorkspaceEntryWire[]
+  discovered_directories?: WorkspaceDiscoverEntryWire[]
+  active_cwds?: ManagedWorkspaceActiveCWDWire[]
 }
 
 interface ManagedWorkspaceResultWire {
@@ -90,11 +142,7 @@ interface ManagedWorkspaceResultWire {
 
 interface ManagedWorkspaceReplicateWire {
   ok?: boolean
-  target?: {
-    swarm_id?: string
-    name?: string
-    online?: boolean
-  }
+  target?: ManagedWorkspaceTargetWire
   workspaces?: ManagedWorkspaceResultWire[]
 }
 
@@ -112,7 +160,7 @@ function mapPlan(plan: ManagedWorkspacePlanWire): ManagedWorkspacePlan {
   }
 }
 
-function mapTarget(target: ManagedWorkspacePreflightWire['target'] | ManagedWorkspaceReplicateWire['target']) {
+function mapTarget(target: ManagedWorkspaceTargetWire | undefined) {
   return {
     swarmId: String(target?.swarm_id ?? '').trim(),
     name: String(target?.name ?? '').trim(),
@@ -120,10 +168,47 @@ function mapTarget(target: ManagedWorkspacePreflightWire['target'] | ManagedWork
   }
 }
 
+function mapActiveCWD(entry: ManagedWorkspaceActiveCWDWire): ManagedWorkspaceActiveCWD {
+  return {
+    path: String(entry.path ?? '').trim(),
+    workspacePath: String(entry.workspace_path ?? '').trim(),
+    workspaceName: String(entry.workspace_name ?? '').trim(),
+    sessionID: String(entry.session_id ?? '').trim(),
+    sessionTitle: String(entry.session_title ?? '').trim(),
+    active: Boolean(entry.active),
+    updatedAt: typeof entry.updated_at === 'number' ? entry.updated_at : 0,
+  }
+}
+
 function selectionWire(selection: ManagedWorkspaceSelectionInput) {
   return {
     source_workspace_path: selection.sourceWorkspacePath,
     destination_path: selection.destinationPath?.trim() || undefined,
+  }
+}
+
+export async function fetchManagedWorkspaceInventory(input: {
+  targetSwarmID: string
+  limit?: number
+}): Promise<ManagedWorkspaceInventoryResponse> {
+  const params = new URLSearchParams()
+  params.set('target_swarm_id', input.targetSwarmID)
+  if (typeof input.limit === 'number' && input.limit > 0) {
+    params.set('limit', String(input.limit))
+  }
+  const payload = await requestJson<ManagedWorkspaceInventoryWire>(`/v1/swarm/managed-workspaces/inventory?${params.toString()}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  })
+  return {
+    ok: Boolean(payload.ok),
+    target: mapTarget(payload.target),
+    managedHome: String(payload.managed_home ?? '').trim(),
+    savedWorkspaces: Array.isArray(payload.saved_workspaces) ? payload.saved_workspaces.map(mapWorkspaceEntry) : [],
+    discoveredDirectories: Array.isArray(payload.discovered_directories) ? payload.discovered_directories.map(mapWorkspaceDiscoverEntry) : [],
+    activeCWDs: Array.isArray(payload.active_cwds) ? payload.active_cwds.map(mapActiveCWD) : [],
   }
 }
 

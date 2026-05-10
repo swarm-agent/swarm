@@ -1772,7 +1772,7 @@ export function DesktopAppPage() {
       } else {
         setPairingReplicationTarget(null)
       }
-      setPairingRequestStatus(approve ? `Approved ${request.managed_name || request.managed_swarm_id || 'Managed Host'}. Workspace replication is pending.` : `Rejected link request ${requestID}.`)
+      setPairingRequestStatus(approve ? `Approved ${request.managed_name || request.managed_swarm_id || 'Managed Host'}. Workspace link/import review is ready.` : `Rejected link request ${requestID}.`)
       void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
       refreshPairingRequests()
     } catch (error) {
@@ -3397,18 +3397,18 @@ export function DesktopAppPage() {
         error={pairingRequestError}
         status={pairingRequestStatus}
         now={sidebarNow}
-        replicationTarget={pairingReplicationTarget}
+        linkReviewTarget={pairingReplicationTarget}
         onOpenChange={setPairingRequestsOpen}
         onRefresh={refreshPairingRequests}
         onConfirmationChange={(requestID, confirmed) => setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))}
         onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
-        onReplicationComplete={async (message) => {
+        onLinkReviewComplete={async (message: string) => {
           setPairingReplicationTarget(null)
           setPairingRequestError(null)
           setPairingRequestStatus(message)
           await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
         }}
-        onReplicationSkip={(message) => {
+        onLinkReviewSkip={(message: string) => {
           setPairingReplicationTarget(null)
           setPairingRequestError(null)
           setPairingRequestStatus(message)

@@ -6,7 +6,7 @@ import { Card } from '../../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import type { RemoteSwarmPendingPairing } from '../../onboarding/api'
 import type { SwarmTarget } from '../api/swarm-targets'
-import { ManagedHostWorkspaceReplicationPanel } from './managed-host-workspace-replication-panel'
+import { ManagedHostWorkspaceLinkPanel } from './managed-host-workspace-replication-panel'
 
 interface ManagedHostLinkRequestModalProps {
   open: boolean
@@ -16,14 +16,14 @@ interface ManagedHostLinkRequestModalProps {
   error: string | null
   status: string | null
   now: number
-  replicationTarget: SwarmTarget | null
-  replicationBusy?: boolean
+  linkReviewTarget: SwarmTarget | null
+  linkReviewBusy?: boolean
   onOpenChange: (open: boolean) => void
   onRefresh: () => void
   onConfirmationChange: (requestID: string, confirmed: boolean) => void
   onDecision: (request: RemoteSwarmPendingPairing, approve: boolean) => void
-  onReplicationComplete: (message: string) => Promise<void> | void
-  onReplicationSkip: (message: string) => Promise<void> | void
+  onLinkReviewComplete: (message: string) => Promise<void> | void
+  onLinkReviewSkip: (message: string) => Promise<void> | void
 }
 
 function normalizePairingCode(value: string | null | undefined): string {
@@ -81,16 +81,16 @@ export function ManagedHostLinkRequestModal({
   error,
   status,
   now,
-  replicationTarget,
-  replicationBusy = false,
+  linkReviewTarget,
+  linkReviewBusy = false,
   onOpenChange,
   onRefresh,
   onConfirmationChange,
   onDecision,
-  onReplicationComplete,
-  onReplicationSkip,
+  onLinkReviewComplete,
+  onLinkReviewSkip,
 }: ManagedHostLinkRequestModalProps) {
-  const title = replicationTarget ? `Replicate workspaces to ${replicationTarget.name || replicationTarget.swarm_id}` : 'Link request'
+  const title = linkReviewTarget ? `Link workspaces on ${linkReviewTarget.name || linkReviewTarget.swarm_id}` : 'Link request'
   const visibleRequests = useMemo(() => activePendingPairings(requests), [requests])
 
   if (!open) return null
@@ -105,8 +105,8 @@ export function ManagedHostLinkRequestModal({
               {title}
             </div>
             <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-              {replicationTarget
-                ? 'Managed Host linked. Replicate git workspaces now or skip and run replication later.'
+              {linkReviewTarget
+                ? 'Managed Host linked. Review its live inventory, then link existing workspaces or transfer only missing git workspaces.'
                 : 'Confirm the ceremony code on both machines before approving.'}
             </p>
           </div>
@@ -118,12 +118,12 @@ export function ManagedHostLinkRequestModal({
           {error ? <Card className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-3 text-sm text-[var(--app-danger)]">{error}</Card> : null}
           {status ? <Card className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-3 text-sm text-[var(--app-success)]">{status}</Card> : null}
 
-          {replicationTarget ? (
-            <ManagedHostWorkspaceReplicationPanel
-              target={replicationTarget}
-              busy={replicationBusy}
-              onComplete={onReplicationComplete}
-              onSkip={onReplicationSkip}
+          {linkReviewTarget ? (
+            <ManagedHostWorkspaceLinkPanel
+              target={linkReviewTarget}
+              busy={linkReviewBusy}
+              onComplete={onLinkReviewComplete}
+              onSkip={onLinkReviewSkip}
             />
           ) : visibleRequests.length === 0 ? (
             <Card className="border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">
@@ -169,7 +169,7 @@ export function ManagedHostLinkRequestModal({
           })}
         </div>
         <div className="flex justify-end gap-2 border-t border-[var(--app-border)] px-5 py-3">
-          {!replicationTarget ? <Button variant="outline" onClick={onRefresh} disabled={Boolean(busyID)}>Refresh</Button> : null}
+          {!linkReviewTarget ? <Button variant="outline" onClick={onRefresh} disabled={Boolean(busyID)}>Refresh</Button> : null}
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Close</Button>
         </div>
       </DialogPanel>

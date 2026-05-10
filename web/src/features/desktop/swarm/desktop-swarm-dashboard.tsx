@@ -220,14 +220,14 @@ function emptySwarmMirrorResources(): SwarmMirrorResources {
   return { hosts: [], workspaces: [], containers: [], deployments: [] }
 }
 
-const PENDING_REPLICATION_TARGET_STORAGE_KEY = 'swarm.pendingReplicationTarget.v1'
+const PENDING_LINK_REVIEW_TARGET_STORAGE_KEY = 'swarm.pendingLinkReviewTarget.v1'
 
-function loadPendingReplicationTarget(): SwarmTarget | null {
+function loadPendingLinkReviewTarget(): SwarmTarget | null {
   if (typeof window === 'undefined') {
     return null
   }
   try {
-    const raw = window.localStorage.getItem(PENDING_REPLICATION_TARGET_STORAGE_KEY)
+    const raw = window.localStorage.getItem(PENDING_LINK_REVIEW_TARGET_STORAGE_KEY) || window.localStorage.getItem('swarm.pendingReplicationTarget.v1')
     if (!raw) {
       return null
     }
@@ -253,16 +253,18 @@ function loadPendingReplicationTarget(): SwarmTarget | null {
   }
 }
 
-function savePendingReplicationTarget(target: SwarmTarget | null): void {
+function savePendingLinkReviewTarget(target: SwarmTarget | null): void {
   if (typeof window === 'undefined') {
     return
   }
   try {
     if (target) {
-      window.localStorage.setItem(PENDING_REPLICATION_TARGET_STORAGE_KEY, JSON.stringify(target))
+      window.localStorage.setItem(PENDING_LINK_REVIEW_TARGET_STORAGE_KEY, JSON.stringify(target))
+      window.localStorage.removeItem('swarm.pendingReplicationTarget.v1')
       return
     }
-    window.localStorage.removeItem(PENDING_REPLICATION_TARGET_STORAGE_KEY)
+    window.localStorage.removeItem(PENDING_LINK_REVIEW_TARGET_STORAGE_KEY)
+    window.localStorage.removeItem('swarm.pendingReplicationTarget.v1')
   } catch {
     // Ignore local persistence failures; the in-memory pending card still works.
   }
@@ -900,7 +902,7 @@ export function DesktopSwarmDashboard() {
   const [addSwarmOpen, setAddSwarmOpen] = useState(false)
   const [linkSwarmOpen, setLinkSwarmOpen] = useState(false)
   const [linkRequestOpen, setLinkRequestOpen] = useState(false)
-  const [pendingReplicationTarget, setPendingReplicationTarget] = useState<SwarmTarget | null>(() => loadPendingReplicationTarget())
+  const [pendingLinkReviewTarget, setPendingLinkReviewTarget] = useState<SwarmTarget | null>(() => loadPendingLinkReviewTarget())
   const [deleteContainersOpen, setDeleteContainersOpen] = useState(false)
   const [selectedDeleteContainerIDs, setSelectedDeleteContainerIDs] = useState<string[]>([])
   const [deleteSwarmsOpen, setDeleteSwarmsOpen] = useState(false)
@@ -956,8 +958,8 @@ export function DesktopSwarmDashboard() {
   }
 
   useEffect(() => {
-    savePendingReplicationTarget(pendingReplicationTarget)
-  }, [pendingReplicationTarget])
+    savePendingLinkReviewTarget(pendingLinkReviewTarget)
+  }, [pendingLinkReviewTarget])
 
   useEffect(() => {
     let cancelled = false
@@ -1523,12 +1525,12 @@ export function DesktopSwarmDashboard() {
       if (approve) {
         const target = managedHostTargetFromPairingResult({ request, result })
         if (target) {
-          setPendingReplicationTarget(target)
+          setPendingLinkReviewTarget(target)
           setLinkRequestOpen(true)
         }
-        setStatus(`Approved Managed Host ${target?.name || request.managed_name || request.managed_swarm_id || requestID}. Workspace replication is pending; replicate now or skip.`)
+        setStatus(`Approved Managed Host ${target?.name || request.managed_name || request.managed_swarm_id || requestID}. Workspace link/import review is ready.`)
       } else {
-        setPendingReplicationTarget(null)
+        setPendingLinkReviewTarget(null)
         setStatus(`Rejected pairing request ${requestID}.`)
       }
     } catch (err) {
@@ -1927,7 +1929,7 @@ export function DesktopSwarmDashboard() {
               Managed Hosting
             </Button>
           ) : null}
-          {isSwarmMode && (visiblePendingPairings.length > 0 || pendingReplicationTarget) ? (
+          {isSwarmMode && (visiblePendingPairings.length > 0 || pendingLinkReviewTarget) ? (
             <Button type="button" variant="primary" data-testid="swarm-dashboard-link-request" onClick={() => setLinkRequestOpen(true)}>
               <Link2 size={14} />
               Link request{visiblePendingPairings.length > 0 ? ` (${visiblePendingPairings.length})` : ''}
@@ -1950,25 +1952,25 @@ export function DesktopSwarmDashboard() {
         </div>
       </div>
 
-      {error || status || pendingReplicationTarget || visiblePendingPairings.length > 0 ? (
+      {error || status || pendingLinkReviewTarget || visiblePendingPairings.length > 0 ? (
         <div className="mt-4 space-y-3">
           {error ? <Card data-testid="swarm-dashboard-error" className="border-[var(--app-danger-border)] bg-transparent p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
           {status ? <Card data-testid="swarm-dashboard-status" className="border-[var(--app-success-border)] bg-transparent p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
-          {pendingReplicationTarget || visiblePendingPairings.length > 0 ? (
+          {pendingLinkReviewTarget || visiblePendingPairings.length > 0 ? (
             <Card data-testid="swarm-link-request-summary" className="border-[var(--app-warning-border)] bg-transparent p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
                   <div className="text-sm font-semibold text-[var(--app-text)]">
-                    {pendingReplicationTarget ? 'Workspace replication pending' : 'Pending Managed Host request'}
+                    {pendingLinkReviewTarget ? 'Workspace link/import review pending' : 'Pending Managed Host request'}
                   </div>
                   <div className="mt-1 text-sm text-[var(--app-text-muted)]">
-                    {pendingReplicationTarget
-                      ? `${pendingReplicationTarget.name || pendingReplicationTarget.swarm_id} is trusted. Open the link request modal to replicate workspaces.`
+                    {pendingLinkReviewTarget
+                      ? `${pendingLinkReviewTarget.name || pendingLinkReviewTarget.swarm_id} is trusted. Open the link modal to review live inventory, link existing workspaces, or transfer missing ones.`
                       : 'Confirm the 6-character code in the link request modal before approving.'}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="warning">{pendingReplicationTarget ? 'Replication pending' : `${visiblePendingPairings.length} pending`}</Badge>
+                  <Badge tone="warning">{pendingLinkReviewTarget ? 'Review pending' : `${visiblePendingPairings.length} pending`}</Badge>
                   <Button size="sm" onClick={() => setLinkRequestOpen(true)} disabled={busy}>Link request</Button>
                 </div>
               </div>
@@ -2414,20 +2416,20 @@ export function DesktopSwarmDashboard() {
         error={error}
         status={status}
         now={Date.now()}
-        replicationTarget={pendingReplicationTarget}
-        replicationBusy={busy}
+        linkReviewTarget={pendingLinkReviewTarget}
+        linkReviewBusy={busy}
         onOpenChange={setLinkRequestOpen}
         onRefresh={() => { void refresh() }}
         onConfirmationChange={(requestID, confirmed) => setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))}
         onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
-        onReplicationComplete={async (message) => {
+        onLinkReviewComplete={async (message) => {
           await refresh()
-          setPendingReplicationTarget(null)
+          setPendingLinkReviewTarget(null)
           setError(null)
           setStatus(message)
         }}
-        onReplicationSkip={(message) => {
-          setPendingReplicationTarget(null)
+        onLinkReviewSkip={(message) => {
+          setPendingLinkReviewTarget(null)
           setError(null)
           setStatus(message)
         }}

@@ -12,7 +12,119 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	sessionruntime "swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/workspace"
 )
+
+func TestPeerManagedWorkspaceInventoryReturnsSavedDiscoveredAndCWDs(t *testing.T) {
+	handler, _, _ := newReplicateTestHandler(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	savedPath := filepath.Join(home, "saved-workspace")
+	if err := os.MkdirAll(savedPath, 0o755); err != nil {
+		t.Fatalf("mkdir saved: %v", err)
+	}
+	if _, err := handler.workspace.Add(savedPath, "saved-workspace", "", false); err != nil {
+		t.Fatalf("add saved: %v", err)
+	}
+	discoveredPath := filepath.Join(home, "discovered-workspace")
+	if err := os.MkdirAll(filepath.Join(discoveredPath, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir discovered git: %v", err)
+	}
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "sessions.pebble"))
+	if err != nil {
+		t.Fatalf("open sessions store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), nil)
+	handler.sessions = sessionSvc
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "session-1", WorkspacePath: discoveredPath, WorkspaceName: "discovered-workspace", Title: "Active work", UpdatedAt: 42}); err != nil {
+		t.Fatalf("store session: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, peerManagedWorkspaceInventoryPath, nil)
+	response, status, err := handler.peerManagedWorkspaceInventory(req)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("inventory status=%d err=%v", status, err)
+	}
+	if filepath.Clean(response.ManagedHome) != filepath.Clean(home) {
+		t.Fatalf("managed home=%q want %q", response.ManagedHome, home)
+	}
+	if !managedInventoryHasSavedWorkspace(response.SavedWorkspaces, savedPath) {
+		t.Fatalf("saved workspace %q missing from %#v", savedPath, response.SavedWorkspaces)
+	}
+	if !managedInventoryHasDiscoveredDirectory(response.DiscoveredDirectories, discoveredPath) {
+		t.Fatalf("discovered workspace %q missing from %#v", discoveredPath, response.DiscoveredDirectories)
+	}
+	if !managedInventoryHasActiveCWD(response.ActiveCWDs, discoveredPath, "session-1") {
+		t.Fatalf("active cwd %q missing from %#v", discoveredPath, response.ActiveCWDs)
+	}
+}
+
+func TestManagedWorkspaceInventoryCallsPeerWithAuth(t *testing.T) {
+	handler, _, _ := newReplicateTestHandler(t)
+	var sawInventory bool
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		if r.URL.Path != peerManagedWorkspaceInventoryPath {
+			t.Fatalf("unexpected peer path %q", r.URL.Path)
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "host-to-managed-token" {
+			t.Fatalf("peer auth headers id=%q token=%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		sawInventory = true
+		writeJSON(w, http.StatusOK, peerManagedWorkspaceInventoryResponse{OK: true, ManagedHome: "/home/managed", SavedWorkspaces: []workspace.Entry{{Path: "/home/managed/swarm-go", WorkspaceName: "swarm-go"}}})
+	}))
+	t.Cleanup(remote.Close)
+	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(remote.URL, "host-to-managed-token"))
+	req := httptest.NewRequest(http.MethodGet, managedWorkspaceInventoryPath+"?target_swarm_id=managed-swarm-1", nil)
+	recorder := httptest.NewRecorder()
+	handler.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !sawInventory {
+		t.Fatal("peer inventory was not called")
+	}
+	var response managedWorkspaceInventoryResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if response.ManagedHome != "/home/managed" || len(response.SavedWorkspaces) != 1 {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func managedInventoryHasSavedWorkspace(items []workspace.Entry, path string) bool {
+	for _, item := range items {
+		if filepath.Clean(item.Path) == filepath.Clean(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func managedInventoryHasDiscoveredDirectory(items []workspace.DiscoverEntry, path string) bool {
+	for _, item := range items {
+		if filepath.Clean(item.Path) == filepath.Clean(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func managedInventoryHasActiveCWD(items []managedWorkspaceActiveCWDResponse, path, sessionID string) bool {
+	for _, item := range items {
+		if filepath.Clean(item.Path) == filepath.Clean(path) && item.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
 
 func TestPeerManagedWorkspacePreflightPlansImportLinkAndConflict(t *testing.T) {
 	handler, _, _ := newReplicateTestHandler(t)

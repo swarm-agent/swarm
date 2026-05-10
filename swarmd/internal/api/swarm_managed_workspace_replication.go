@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,9 +27,11 @@ import (
 const (
 	managedWorkspacePreflightPath        = "/v1/swarm/managed-workspaces/preflight"
 	managedWorkspaceReplicatePath        = "/v1/swarm/managed-workspaces/replicate"
+	managedWorkspaceInventoryPath        = "/v1/swarm/managed-workspaces/inventory"
 	peerManagedWorkspacePreflightPath    = "/v1/swarm/peer/managed-workspaces/preflight"
 	peerManagedWorkspaceLinkExistingPath = "/v1/swarm/peer/managed-workspaces/link-existing"
 	peerManagedWorkspaceImportBundlePath = "/v1/swarm/peer/managed-workspaces/import-bundle"
+	peerManagedWorkspaceInventoryPath    = "/v1/swarm/peer/managed-workspaces/inventory"
 
 	managedWorkspaceActionImportBundle = "import_bundle"
 	managedWorkspaceActionLinkExisting = "link_existing"
@@ -100,6 +103,33 @@ type managedWorkspaceReplicateResponse struct {
 	OK         bool                             `json:"ok"`
 	Target     managedWorkspaceTargetResponse   `json:"target"`
 	Workspaces []managedWorkspaceResultResponse `json:"workspaces"`
+}
+
+type managedWorkspaceActiveCWDResponse struct {
+	Path          string `json:"path"`
+	WorkspacePath string `json:"workspace_path"`
+	WorkspaceName string `json:"workspace_name,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
+	SessionTitle  string `json:"session_title,omitempty"`
+	Active        bool   `json:"active"`
+	UpdatedAt     int64  `json:"updated_at,omitempty"`
+}
+
+type peerManagedWorkspaceInventoryResponse struct {
+	OK                    bool                                `json:"ok"`
+	ManagedHome           string                              `json:"managed_home"`
+	SavedWorkspaces       []workspace.Entry                   `json:"saved_workspaces"`
+	DiscoveredDirectories []workspace.DiscoverEntry           `json:"discovered_directories"`
+	ActiveCWDs            []managedWorkspaceActiveCWDResponse `json:"active_cwds"`
+}
+
+type managedWorkspaceInventoryResponse struct {
+	OK                    bool                                `json:"ok"`
+	Target                managedWorkspaceTargetResponse      `json:"target"`
+	ManagedHome           string                              `json:"managed_home"`
+	SavedWorkspaces       []workspace.Entry                   `json:"saved_workspaces"`
+	DiscoveredDirectories []workspace.DiscoverEntry           `json:"discovered_directories"`
+	ActiveCWDs            []managedWorkspaceActiveCWDResponse `json:"active_cwds"`
 }
 
 type peerManagedWorkspacePreflightRequest struct {
@@ -179,6 +209,20 @@ func (s *Server) handleManagedWorkspaceReplicate(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *Server) handleManagedWorkspaceInventory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	targetSwarmID := strings.TrimSpace(r.URL.Query().Get("target_swarm_id"))
+	response, status, err := s.managedWorkspaceInventory(r, targetSwarmID)
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (s *Server) handlePeerManagedWorkspacePreflight(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -193,6 +237,22 @@ func (s *Server) handlePeerManagedWorkspacePreflight(w http.ResponseWriter, r *h
 		return
 	}
 	response, status, err := s.peerManagedWorkspacePreflight(req)
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handlePeerManagedWorkspaceInventory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requirePeerAuth(w, r) {
+		return
+	}
+	response, status, err := s.peerManagedWorkspaceInventory(r)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -338,6 +398,138 @@ func (s *Server) managedWorkspacePreflight(r *http.Request, req managedWorkspace
 		DestinationRoot: peerResp.DestinationRoot,
 		Workspaces:      peerResp.Workspaces,
 	}, http.StatusOK, nil
+}
+
+func (s *Server) managedWorkspaceInventory(r *http.Request, targetSwarmID string) (managedWorkspaceInventoryResponse, int, error) {
+	target, localSwarmID, peerToken, status, err := s.resolveManagedWorkspaceTarget(r, targetSwarmID)
+	if err != nil {
+		return managedWorkspaceInventoryResponse{}, status, err
+	}
+	peerResp, err := getPeerManagedWorkspaceInventory(r.Context(), *target, localSwarmID, peerToken)
+	if err != nil {
+		return managedWorkspaceInventoryResponse{}, http.StatusBadGateway, err
+	}
+	return managedWorkspaceInventoryResponse{
+		OK:                    peerResp.OK,
+		Target:                managedWorkspaceTargetResponse{SwarmID: target.SwarmID, Name: firstNonEmpty(target.Name, target.SwarmID), Online: true},
+		ManagedHome:           peerResp.ManagedHome,
+		SavedWorkspaces:       peerResp.SavedWorkspaces,
+		DiscoveredDirectories: peerResp.DiscoveredDirectories,
+		ActiveCWDs:            peerResp.ActiveCWDs,
+	}, http.StatusOK, nil
+}
+
+func getPeerManagedWorkspaceInventory(ctx context.Context, target swarmTarget, localSwarmID, peerToken string) (peerManagedWorkspaceInventoryResponse, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + peerManagedWorkspaceInventoryPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return peerManagedWorkspaceInventoryResponse{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(localSwarmID))
+	req.Header.Set(peerAuthTokenHeader, strings.TrimSpace(peerToken))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return peerManagedWorkspaceInventoryResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return peerManagedWorkspaceInventoryResponse{}, fmt.Errorf("managed host workspace inventory failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var decoded peerManagedWorkspaceInventoryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return peerManagedWorkspaceInventoryResponse{}, err
+	}
+	return decoded, nil
+}
+
+func (s *Server) peerManagedWorkspaceInventory(r *http.Request) (peerManagedWorkspaceInventoryResponse, int, error) {
+	if s == nil || s.workspace == nil {
+		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, errors.New("workspace service is not configured")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, fmt.Errorf("resolve managed host home: %w", err)
+	}
+	saved, err := s.workspace.ListKnown(100000)
+	if err != nil {
+		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, err
+	}
+	discovered, err := s.workspace.Discover(managedWorkspaceInventoryDiscoverRoots(r), managedWorkspaceInventoryLimit(r, 200))
+	if err != nil {
+		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, err
+	}
+	activeCWDs, err := s.managedWorkspaceActiveCWDs(managedWorkspaceInventoryLimit(r, 200))
+	if err != nil {
+		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, err
+	}
+	return peerManagedWorkspaceInventoryResponse{OK: true, ManagedHome: filepath.Clean(home), SavedWorkspaces: saved, DiscoveredDirectories: discovered, ActiveCWDs: activeCWDs}, http.StatusOK, nil
+}
+
+func (s *Server) managedWorkspaceActiveCWDs(limit int) ([]managedWorkspaceActiveCWDResponse, error) {
+	if s == nil || s.sessions == nil {
+		return nil, nil
+	}
+	sessions, err := s.sessions.ListSessions(limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]managedWorkspaceActiveCWDResponse, 0, len(sessions))
+	seen := map[string]struct{}{}
+	for _, session := range sessions {
+		path := filepath.Clean(strings.TrimSpace(session.WorkspacePath))
+		if path == "" || path == "." {
+			continue
+		}
+		key := path + "\x00" + strings.TrimSpace(session.ID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		active := false
+		if session.Lifecycle != nil {
+			active = session.Lifecycle.Active
+		}
+		out = append(out, managedWorkspaceActiveCWDResponse{Path: path, WorkspacePath: path, WorkspaceName: strings.TrimSpace(session.WorkspaceName), SessionID: strings.TrimSpace(session.ID), SessionTitle: strings.TrimSpace(session.Title), Active: active, UpdatedAt: session.UpdatedAt})
+	}
+	return out, nil
+}
+
+func managedWorkspaceInventoryDiscoverRoots(r *http.Request) []string {
+	if r == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get("roots"))
+	if raw == "" {
+		return nil
+	}
+	roots := make([]string, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			roots = append(roots, part)
+		}
+	}
+	return roots
+}
+
+func managedWorkspaceInventoryLimit(r *http.Request, fallback int) int {
+	if r == nil {
+		return fallback
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	if parsed > 1000 {
+		return 1000
+	}
+	return parsed
 }
 
 func (s *Server) managedWorkspaceReplicate(r *http.Request, req managedWorkspaceReplicateRequest) (managedWorkspaceReplicateResponse, int, error) {
