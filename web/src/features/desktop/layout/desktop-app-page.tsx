@@ -2939,7 +2939,7 @@ export function DesktopAppPage() {
                   workspacePath: workspace.path,
                   workspaceName: workspace.workspaceName,
                   replicationLinks: workspace.replicationLinks,
-                  availableSwarmIds: swarmTargets.map((target) => target.swarm_id),
+                  availableSwarmTargets: swarmTargets,
                 })
                 const handleToggleWorkspaceWorktree = () => {
                   if (worktreeBusy) {

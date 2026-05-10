@@ -873,7 +873,7 @@ export function DesktopChatPanel({
     workspacePath,
     workspaceName,
     replicationLinks: workspaceReplicationLinks,
-    availableSwarmIds: availableSwarmTargets.map((target) => target.swarm_id),
+    availableSwarmTargets,
   }), [availableSwarmTargets, hostSwarmName, workspacePath, workspaceName, workspaceReplicationLinks])
   const defaultChatRoute = routeOptions[0]!
   const [selectedRouteId, setSelectedRouteId] = useState(() => defaultChatRoute?.id ?? 'host')

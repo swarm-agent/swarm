@@ -1,4 +1,5 @@
 import type { DesktopSessionRecord } from '../../types/realtime'
+import type { SwarmTarget } from '../../swarm/api/swarm-targets'
 import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
 
 export interface DesktopChatRoute {
@@ -6,6 +7,7 @@ export interface DesktopChatRoute {
   label: string
   swarmId: string | null
   targetKind: string
+  targetRelationship: string
   hostWorkspacePath: string
   hostWorkspaceName: string
   runtimeWorkspacePath: string
@@ -27,6 +29,7 @@ export function buildHostDesktopChatRoute(hostSwarmName: string, workspacePath: 
     label: hostSwarmName.trim() || 'host',
     swarmId: null,
     targetKind: 'host',
+    targetRelationship: 'self',
     hostWorkspacePath: normalizedWorkspacePath,
     hostWorkspaceName: workspaceName.trim(),
     runtimeWorkspacePath: normalizedWorkspacePath,
@@ -38,22 +41,29 @@ export function buildDesktopChatRouteOptions(input: {
   workspacePath: string
   workspaceName: string
   replicationLinks: WorkspaceReplicationLink[]
-  availableSwarmIds?: string[]
+  availableSwarmTargets?: Pick<SwarmTarget, 'swarm_id' | 'kind' | 'relationship' | 'role'>[]
 }): DesktopChatRoute[] {
   const hostRoute = buildHostDesktopChatRoute(input.hostSwarmName, input.workspacePath, input.workspaceName)
   const options: DesktopChatRoute[] = [hostRoute]
   const seen = new Set<string>([desktopChatRouteID(hostRoute.swarmId, hostRoute.runtimeWorkspacePath)])
-  const availableSwarmIds = input.availableSwarmIds
-    ? new Set(input.availableSwarmIds.map((value) => value.trim().toLowerCase()).filter(Boolean))
+  const availableSwarmTargets = input.availableSwarmTargets
+    ? new Map(input.availableSwarmTargets
+      .map((target) => [target.swarm_id.trim().toLowerCase(), target] as const)
+      .filter(([swarmId]) => Boolean(swarmId)))
     : null
   for (const link of input.replicationLinks) {
     const swarmId = link.targetSwarmId.trim()
     const runtimeWorkspacePath = link.targetWorkspacePath.trim()
-    const targetKind = link.targetKind.trim()
+    const availableTarget = availableSwarmTargets?.get(swarmId.toLowerCase()) ?? null
+    const targetRelationship = String(availableTarget?.relationship ?? '').trim().toLowerCase()
+    const targetRole = String(availableTarget?.role ?? '').trim().toLowerCase()
+    const targetKind = targetRelationship === 'managed' || targetRole === 'managed'
+      ? 'host'
+      : (String(availableTarget?.kind ?? '').trim() || link.targetKind.trim())
     if (!swarmId || !runtimeWorkspacePath) {
       continue
     }
-    if (availableSwarmIds && !availableSwarmIds.has(swarmId.toLowerCase())) {
+    if (availableSwarmTargets && !availableSwarmTargets.has(swarmId.toLowerCase())) {
       continue
     }
     const id = desktopChatRouteID(swarmId, runtimeWorkspacePath)
@@ -66,6 +76,7 @@ export function buildDesktopChatRouteOptions(input: {
       label: link.targetSwarmName.trim() || swarmId,
       swarmId,
       targetKind,
+      targetRelationship,
       hostWorkspacePath: hostRoute.hostWorkspacePath,
       hostWorkspaceName: hostRoute.hostWorkspaceName,
       runtimeWorkspacePath,
@@ -119,6 +130,7 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
     label: sessionMetadataString(metadata, 'swarm_route_label') || metadataSwarmId,
     swarmId: metadataSwarmId,
     targetKind: sessionMetadataString(metadata, 'swarm_route_target_kind') || sessionMetadataString(metadata, 'swarm_target_kind'),
+    targetRelationship: sessionMetadataString(metadata, 'swarm_route_target_relationship') || sessionMetadataString(metadata, 'swarm_target_relationship'),
     hostWorkspacePath: sessionMetadataString(metadata, 'swarm_routed_host_workspace_path') || session?.workspacePath?.trim() || '',
     hostWorkspaceName: session?.workspaceName?.trim() || '',
     runtimeWorkspacePath,

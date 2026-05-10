@@ -18,12 +18,18 @@ const VIEWPORT_GUTTER = 8
 const MIN_DROPDOWN_WIDTH = 220
 const MAX_DROPDOWN_WIDTH = 320
 
-function routeKind(route: DesktopChatRoute): 'remote' | 'local' {
-  return route.swarmId && route.targetKind.trim().toLowerCase() === 'remote' ? 'remote' : 'local'
+function routeKind(route: DesktopChatRoute): 'managed' | 'remote' | 'local' {
+  const targetKind = route.targetKind.trim().toLowerCase()
+  const targetRelationship = route.targetRelationship.trim().toLowerCase()
+  if (route.swarmId && (targetRelationship === 'managed' || targetKind === 'host')) {
+    return 'managed'
+  }
+  return route.swarmId && targetKind === 'remote' ? 'remote' : 'local'
 }
 
 function RouteIcon({ route, className }: { route: DesktopChatRoute; className?: string }) {
-  const Icon = !route.swarmId ? Monitor : routeKind(route) === 'remote' ? Server : Container
+  const kind = routeKind(route)
+  const Icon = !route.swarmId || kind === 'managed' ? Monitor : kind === 'remote' ? Server : Container
   return <Icon size={14} className={className} />
 }
 
@@ -31,7 +37,11 @@ function routeCaption(route: DesktopChatRoute): string {
   if (!route.swarmId) {
     return 'Host machine'
   }
-  return routeKind(route) === 'remote' ? 'Remote swarm' : 'Local swarm'
+  const kind = routeKind(route)
+  if (kind === 'managed') {
+    return 'Managed host'
+  }
+  return kind === 'remote' ? 'Remote swarm' : 'Local swarm'
 }
 
 export function RoutePicker({ currentRoute, routes, onSelect, defaultRouteId, onSetDefault, defaultDisabled = false, disabled = false, title }: RoutePickerProps) {

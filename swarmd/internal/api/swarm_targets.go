@@ -219,17 +219,6 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 	})
 	seenTargets := map[string]struct{}{}
 	markSwarmTargetSeen(seenTargets, targets[0])
-	for _, node := range nodeTargets {
-		if isLocalSwarmTargetID(node.SwarmID, localSwarmID) {
-			continue
-		}
-		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, node.SwarmID) {
-			continue
-		}
-		s.applyCachedSwarmTargetHealth(&node)
-		targets = append(targets, node)
-		markSwarmTargetSeen(seenTargets, node)
-	}
 	for _, peer := range trustedPeerTargets {
 		if isLocalSwarmTargetID(peer.SwarmID, localSwarmID) {
 			continue
@@ -243,6 +232,20 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		s.applyCachedSwarmTargetHealth(&peer)
 		targets = append(targets, peer)
 		markSwarmTargetSeen(seenTargets, peer)
+	}
+	for _, node := range nodeTargets {
+		if isLocalSwarmTargetID(node.SwarmID, localSwarmID) {
+			continue
+		}
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, node.SwarmID) {
+			continue
+		}
+		if swarmTargetSeen(seenTargets, node) {
+			continue
+		}
+		s.applyCachedSwarmTargetHealth(&node)
+		targets = append(targets, node)
+		markSwarmTargetSeen(seenTargets, node)
 	}
 	for _, deployment := range deployments {
 		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.SwarmID) {

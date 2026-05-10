@@ -160,7 +160,7 @@ func TestSwarmTargetsForRequestIncludesTrustedManagedPeerTargets(t *testing.T) {
 	}
 }
 
-func TestSwarmTargetsForRequestPrefersRegistryNodeOverTrustedManagedPeer(t *testing.T) {
+func TestSwarmTargetsForRequestPrefersTrustedManagedPeerOverRegistryNode(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm-targets-dedupe.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -212,8 +212,11 @@ func TestSwarmTargetsForRequestPrefersRegistryNodeOverTrustedManagedPeer(t *test
 	if len(managedTargets) != 1 {
 		t.Fatalf("managed target count = %d, targets=%+v", len(managedTargets), targets)
 	}
-	if managedTargets[0].Name != "registry-managed" || managedTargets[0].BackendURL != registryBackendURL {
-		t.Fatalf("expected registry target to win, got %+v", managedTargets[0])
+	if managedTargets[0].Name != "trusted-managed" || managedTargets[0].BackendURL != "https://trusted-managed.tailnet.ts.net" {
+		t.Fatalf("expected trusted managed peer target to win, got %+v", managedTargets[0])
+	}
+	if managedTargets[0].Role != swarmruntime.RelationshipManaged || managedTargets[0].Relationship != swarmruntime.RelationshipManaged || managedTargets[0].Kind != "host" {
+		t.Fatalf("expected trusted managed peer identity, got %+v", managedTargets[0])
 	}
 }
 
