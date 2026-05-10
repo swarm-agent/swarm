@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Clipboard, Loader2, RefreshCw } from 'lucide-react'
-import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import {
@@ -56,24 +55,6 @@ function endpointHostLabel(endpoint: string): string {
   }
 }
 
-function formatSwarmRoleLabel(value: string | null | undefined): string {
-  const role = String(value ?? '').trim().toLowerCase()
-  switch (role) {
-    case 'managed':
-      return 'Managed Host'
-    case 'child':
-      return 'Child'
-    case 'master':
-    case 'parent':
-    case 'controller':
-      return 'Primary / Manager'
-    case 'standalone':
-      return 'Standalone'
-    default:
-      return role ? role.replace(/_/g, ' ') : 'Unknown'
-  }
-}
-
 function localTailscaleServeCommand(status: DesktopOnboardingStatus | null): string {
   const desktopPort = status?.config.desktopPort || 5555
   return status?.network.tailscale.serve.command || `tailscale serve --bg http://127.0.0.1:${desktopPort}`
@@ -92,18 +73,18 @@ function localServeAdvisoryDetail(status: DesktopOnboardingStatus | null): strin
   const tailscale = status.network.tailscale
   const serve = tailscale.serve
   if (!tailscale.connected) {
-    return tailscale.error || 'Tailscale is not connected on this requester.'
+    return tailscale.error || 'Tailscale is not connected on this host.'
   }
   if (serve.error) {
     return `Tailscale Serve status could not be checked: ${serve.error}`
   }
   if (serve.ready) {
-    return 'This requester already reports a Tailscale Serve target for Swarm.'
+    return 'This host is already served on Tailscale.'
   }
   if (serve.configured) {
-    return `This requester’s Tailscale Serve currently points to ${serve.proxyTarget || 'another target'}; confirm that target is the Swarm desktop/API you want to link.`
+    return `Tailscale Serve points to ${serve.proxyTarget || 'another target'}; confirm it is Swarm.`
   }
-  return 'This requester is not currently reported as served on its Tailscale URL.'
+  return 'This host is not served on its Tailscale URL.'
 }
 
 function selectCandidateEndpoint(
@@ -151,13 +132,6 @@ export function LinkSwarmModal({
   const alreadyLinkedManagedHost = effectiveOnboardingStatus?.config.swarmRole === 'managed'
   const linkedManagerID = effectiveOnboardingStatus?.pairing.parentSwarmID || ''
   const linkedPairingState = effectiveOnboardingStatus?.pairing.pairingState || ''
-  const localRole = effectiveOnboardingStatus?.config.swarmRole || 'standalone'
-  const localRoleLabel = formatSwarmRoleLabel(localRole)
-  const localHostName = effectiveOnboardingStatus?.config.swarmName.trim()
-    || effectiveOnboardingStatus?.network.tailscale.dnsName.trim()
-    || 'This host'
-  const localLooksPrimary = localRole === 'master'
-  const localLooksStandalone = localRole === 'standalone'
   const selectedCandidate = useMemo(
     () =>
       candidates.find((candidate) => candidate.id === selectedCandidateID) ??
@@ -363,7 +337,7 @@ export function LinkSwarmModal({
       setStatus('pending')
       const displayName = selectedName
       await onPairingSent?.(
-        `Pairing request sent from this host to primary Manager ${displayName}. Approve it on the primary host after confirming code ${formatPairingCode(result.ceremony.code || result.request.ceremony_code)}.`,
+        `Request sent to ${displayName}. Approve on the primary host. Code: ${formatPairingCode(result.ceremony.code || result.request.ceremony_code)}.`,
       )
     } catch (err) {
       setError(
@@ -388,10 +362,10 @@ export function LinkSwarmModal({
       <DialogPanel data-testid="link-swarm-modal" className={panelClassName}>
         <div className="border-b border-[var(--app-border)] px-5 py-4">
           <h2 className="text-xl font-semibold text-[var(--app-text)]">
-            Request Managed Host link
+            Link as Managed Host
           </h2>
           <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-            Start this from the machine that should become a Managed Host. This requester sends a link request to the selected primary/Manager host; the primary should approve the incoming request, not initiate it here.
+            Run this on the host you want managed. It sends a request to the primary host for approval.
           </p>
         </div>
 
@@ -421,32 +395,14 @@ export function LinkSwarmModal({
           ) : null}
 
           {!alreadyLinkedManagedHost ? (
-            <Card className="grid gap-2 border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold text-[var(--app-text)]">This machine</span>
-                <Badge tone={localLooksPrimary ? 'warning' : localLooksStandalone ? 'neutral' : 'live'}>{localRoleLabel}</Badge>
-                <span className="truncate">{localHostName}</span>
-              </div>
-              <div>
-                This dialog sends a request <span className="font-semibold text-[var(--app-text)]">from this machine</span> to a primary/Manager host. If this is your primary host, do not start linking here; wait for an incoming Managed Host request on the primary dashboard and approve it there.
-              </div>
-              {localLooksPrimary ? (
-                <div className="text-[var(--app-warning-text)]">
-                  This machine currently reports as Primary / Manager. Continue only if you intentionally want this machine to become the requester/new Managed Host for another primary.
-                </div>
-              ) : null}
-            </Card>
-          ) : null}
-
-          {!alreadyLinkedManagedHost ? (
             <Card className="grid gap-3 border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning-text)]">
               <div className="font-semibold text-[var(--app-text)]">
-                To request a link, make sure this requester and the primary host are serving on Tailscale
+                Tailscale Serve required
               </div>
               <div>{serveAdvisoryDetail}</div>
               <div className="grid gap-2">
                 <div>
-                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--app-text-muted)]">This requester / future Managed Host</div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--app-text-muted)]">This host</div>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <code className="min-w-0 flex-1 overflow-x-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] px-2 py-1 text-xs text-[var(--app-text)]">
                       {serveCommand}
@@ -458,7 +414,7 @@ export function LinkSwarmModal({
                   </div>
                 </div>
                 <div>
-                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--app-text-muted)]">Selected primary / Manager host</div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--app-text-muted)]">Primary host</div>
                   <code className="block min-w-0 overflow-x-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] px-2 py-1 text-xs text-[var(--app-text)]">
                     {selectedRemoteServeCommand}
                   </code>
@@ -481,10 +437,10 @@ export function LinkSwarmModal({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="text-sm font-semibold text-[var(--app-text)]">
-                  Primary/Manager hosts on Tailscale
+                  Primary host
                 </div>
                 <div className="text-xs text-[var(--app-text-muted)]">
-                  Select the existing primary host that should manage this requester. After approval, this machine becomes a Managed Host and pulls credentials/API keys, agents, custom tools, skills, and permissions from that primary; detach/unlink is the removal path.
+                  Select the primary that should manage this host.
                 </div>
               </div>
               <Button
@@ -510,7 +466,7 @@ export function LinkSwarmModal({
               <div className="rounded-lg border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">
                 {candidatesLoading
                   ? 'Loading Tailscale devices…'
-                  : 'No reachable primary/Manager swarmd hosts found on your Tailnet. Start swarmd on the primary host, confirm Tailscale is connected, then refresh.'}
+                  : 'No reachable primary hosts found. Start swarmd on the primary, confirm Tailscale, then refresh.'}
               </div>
             ) : (
               <div className="grid gap-2">
@@ -579,8 +535,8 @@ export function LinkSwarmModal({
                   </div>
                   <div className="mt-1 text-sm text-[var(--app-text-muted)]">
                     {status === 'paired'
-                      ? 'This host is now linked as a Managed Host; use it from the primary/Manager host.'
-                      : `Approve this requester on the primary/Manager host and confirm code ${formatPairingCode(ceremonyCode)}. This screen will update when the link is complete.`}
+                      ? 'Linked. Use this host from the primary.'
+                      : `Approve on the primary host. Code: ${formatPairingCode(ceremonyCode)}.`}
                   </div>
                   {listenError && status === 'pending' ? (
                     <div className="mt-2 text-xs text-[var(--app-warning-text)]">
@@ -598,10 +554,10 @@ export function LinkSwarmModal({
             {status === 'pending'
               ? 'Keep this open; it is listening for approval.'
               : status === 'paired'
-                ? 'Your Swarm is now linked.'
+                ? 'Linked.'
                 : alreadyLinkedManagedHost
                   ? 'This host is already linked to a Manager.'
-                  : 'Press Send request from this Managed Host candidate to contact the selected primary.'}
+                  : 'Select a primary host.'}
           </div>
           <div className="flex gap-3">
             <Button
@@ -639,7 +595,7 @@ export function LinkSwarmModal({
                 ) : (
                   <Check size={14} />
                 )}
-                {status === 'pairing' ? 'Sending request…' : 'Send request to primary'}
+                {status === 'pairing' ? 'Requesting…' : 'Request'}
               </Button>
             )}
           </div>
