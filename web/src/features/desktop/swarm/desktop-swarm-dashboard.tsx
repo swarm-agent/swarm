@@ -34,7 +34,7 @@ import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
 import { fetchSwarmMirrorResources, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
 import { LinkSwarmModal } from './components/link-swarm-modal'
-import { ReplicateSwarmModal } from './components/replicate-swarm-modal'
+import { ManagedHostWorkspaceReplicationPanel } from './components/managed-host-workspace-replication-panel'
 import {
   type DeployContainerDeployment,
   type DeployContainerWorkspaceBootstrap,
@@ -909,7 +909,6 @@ export function DesktopSwarmDashboard() {
   const [addSwarmOpen, setAddSwarmOpen] = useState(false)
   const [linkSwarmOpen, setLinkSwarmOpen] = useState(false)
   const [pendingReplicationTarget, setPendingReplicationTarget] = useState<SwarmTarget | null>(() => loadPendingReplicationTarget())
-  const [replicationModalOpen, setReplicationModalOpen] = useState(false)
   const [deleteContainersOpen, setDeleteContainersOpen] = useState(false)
   const [selectedDeleteContainerIDs, setSelectedDeleteContainerIDs] = useState<string[]>([])
   const [deleteSwarmsOpen, setDeleteSwarmsOpen] = useState(false)
@@ -1546,7 +1545,6 @@ export function DesktopSwarmDashboard() {
             current: false,
             backend_url: backendURL,
           })
-          setReplicationModalOpen(true)
         }
         setStatus(`Approved Managed Swarm ${managedName}. Workspace replication is pending; replicate now or skip.`)
       } else {
@@ -1980,11 +1978,29 @@ export function DesktopSwarmDashboard() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone="warning">Pending</Badge>
-                  <Button size="sm" variant="outline" onClick={() => { setPendingReplicationTarget(null); setReplicationModalOpen(false) }} disabled={busy}>Skip</Button>
-                  <Button size="sm" onClick={() => setReplicationModalOpen(true)} disabled={busy}>Replicate</Button>
+                  <Button size="sm" variant="outline" onClick={() => { setPendingReplicationTarget(null) }} disabled={busy}>Skip</Button>
+                  <Button size="sm" onClick={() => setStatus('Choose workspaces in the replication options below.')} disabled={busy}>Review options</Button>
                 </div>
               </div>
             </Card>
+          ) : null}
+
+          {pendingReplicationTarget ? (
+            <ManagedHostWorkspaceReplicationPanel
+              target={pendingReplicationTarget}
+              busy={busy}
+              onComplete={async (message) => {
+                await refresh()
+                setPendingReplicationTarget(null)
+                setError(null)
+                setStatus(message)
+              }}
+              onSkip={async (message) => {
+                setPendingReplicationTarget(null)
+                setError(null)
+                setStatus(message)
+              }}
+            />
           ) : null}
 
           {visiblePendingPairings.length > 0 ? (
@@ -2459,31 +2475,6 @@ export function DesktopSwarmDashboard() {
         onOpenChange={setLinkSwarmOpen}
         onPairingSent={handleAddSwarmComplete}
         onOnboardingStatusChange={setOnboardingStatus}
-      />
-      <ReplicateSwarmModal
-        open={replicationModalOpen && Boolean(pendingReplicationTarget)}
-        onboardingStatus={onboardingStatus}
-        onOpenChange={(open) => setReplicationModalOpen(open)}
-        initialTargetMode="remote"
-        initialTargetSwarmID={pendingReplicationTarget?.swarm_id ?? ''}
-        lockedTarget
-        flowLabel="Managed Host link"
-        title="Replicate workspaces to the new Managed Host"
-        description="The host is linked and trusted. Choose which git workspaces to import over peer-authenticated Tailscale, or skip and replicate later from the Swarm dashboard."
-        submitLabel="Replicate to Managed Host"
-        onComplete={async (message) => {
-          await refresh()
-          setPendingReplicationTarget(null)
-          setReplicationModalOpen(false)
-          setError(null)
-          setStatus(message)
-        }}
-        onSkip={async (message) => {
-          setPendingReplicationTarget(null)
-          setReplicationModalOpen(false)
-          setError(null)
-          setStatus(message)
-        }}
       />
       <ManagedSwarmSettingsDialog
         deployment={settingsDeployment}
