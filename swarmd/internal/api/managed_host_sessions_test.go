@@ -88,6 +88,104 @@ func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T)
 	}
 }
 
+func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	var openedWorkspacePath atomic.Value
+	var openedHostWorkspacePath atomic.Value
+	var openedRuntimeWorkspacePath atomic.Value
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != peerManagedHostSessionOpenPath {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		var req peerManagedHostSessionOpenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		openedWorkspacePath.Store(req.Request.WorkspacePath)
+		openedHostWorkspacePath.Store(req.Request.HostWorkspacePath)
+		openedRuntimeWorkspacePath.Store(req.Request.RuntimeWorkspacePath)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"session": pebblestore.SessionSnapshot{ID: req.SessionID, WorkspacePath: req.Request.WorkspacePath, WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: req.Request.Metadata, CreatedAt: 1, UpdatedAt: 2},
+		})
+	}))
+	defer managed.Close()
+
+	seedManagedHostTarget(t, server, managed.URL)
+	req := httptest.NewRequest(http.MethodPost, managedHostSessionOpenPath, bytes.NewBufferString(`{"title":"managed","workspace_path":"/host/workspace","host_workspace_path":"/host/workspace","runtime_workspace_path":"/managed/workspace","workspace_name":"workspace","mode":"auto","agent_name":"swarm","preference":{"provider":"codex","model":"gpt-5.5","thinking":"high"},"target_swarm_id":"managed-swarm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got, _ := openedWorkspacePath.Load().(string); got != "/managed/workspace" {
+		t.Fatalf("peer workspace path = %q, want /managed/workspace", got)
+	}
+	if got, _ := openedHostWorkspacePath.Load().(string); got != "/managed/workspace" {
+		t.Fatalf("peer host workspace path = %q, want /managed/workspace", got)
+	}
+	if got, _ := openedRuntimeWorkspacePath.Load().(string); got != "/managed/workspace" {
+		t.Fatalf("peer runtime workspace path = %q, want /managed/workspace", got)
+	}
+	var payload struct {
+		Session struct {
+			ID            string `json:"id"`
+			WorkspacePath string `json:"workspace_path"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if strings.TrimSpace(payload.Session.ID) == "" || payload.Session.WorkspacePath != "/managed/workspace" {
+		t.Fatalf("mirrored session payload = %+v", payload.Session)
+	}
+	mirrored, ok, err := sessionSvc.GetSession(payload.Session.ID)
+	if err != nil {
+		t.Fatalf("get mirrored session: %v", err)
+	}
+	if !ok || mirrored.WorkspacePath != "/managed/workspace" {
+		t.Fatalf("mirrored session = %+v ok=%v", mirrored, ok)
+	}
+}
+
+func TestPeerManagedHostSessionEventPublishesToPrimaryRunStream(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"session_id":"managed-session","event_type":"assistant.delta","payload":{"type":"assistant.delta","session_id":"managed-session","run_id":"managed-run","delta":"hello"},"causation_id":"managed-run"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, "managed-swarm")
+	req.Header.Set(peerAuthTokenHeader, "managed-token")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	state, sub, replay, err := server.runStreams.subscribe("managed-run", 0)
+	if err != nil {
+		t.Fatalf("subscribe mirrored run stream: %v", err)
+	}
+	defer server.runStreams.unsubscribe("managed-run", sub.id)
+	if state.sessionID != "managed-session" {
+		t.Fatalf("run stream session = %q, want managed-session", state.sessionID)
+	}
+	if len(replay) != 1 {
+		t.Fatalf("replay len = %d, want 1", len(replay))
+	}
+	var frame runStreamWireEvent
+	if err := json.Unmarshal(replay[0].payload, &frame); err != nil {
+		t.Fatalf("decode replay frame: %v", err)
+	}
+	if frame.Type != "assistant.delta" || frame.RunID != "managed-run" || frame.SessionID != "managed-session" || frame.Delta != "hello" || frame.Seq == 0 {
+		t.Fatalf("replay frame = %+v", frame)
+	}
+}
+
 func TestPeerManagedHostSessionMessageRequiresPeerAuth(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionMessagePath, bytes.NewBufferString(`{"session_id":"managed-session","role":"user","content":"hello"}`))

@@ -88,13 +88,15 @@ type peerManagedHostSessionOpenRequest struct {
 }
 
 type managedHostSessionCreateRequest struct {
-	Title         string         `json:"title"`
-	WorkspacePath string         `json:"workspace_path"`
-	WorkspaceName string         `json:"workspace_name"`
-	Mode          string         `json:"mode"`
-	AgentName     string         `json:"agent_name"`
-	Metadata      map[string]any `json:"metadata"`
-	Preference    struct {
+	Title                string         `json:"title"`
+	WorkspacePath        string         `json:"workspace_path"`
+	HostWorkspacePath    string         `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath string         `json:"runtime_workspace_path,omitempty"`
+	WorkspaceName        string         `json:"workspace_name"`
+	Mode                 string         `json:"mode"`
+	AgentName            string         `json:"agent_name"`
+	Metadata             map[string]any `json:"metadata"`
+	Preference           struct {
 		Provider    string `json:"provider"`
 		Model       string `json:"model"`
 		Thinking    string `json:"thinking"`
@@ -152,13 +154,15 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 	peerReq := peerManagedHostSessionOpenRequest{
 		SessionID: sessionID,
 		Request: managedHostSessionCreateRequest{
-			Title:         req.Title,
-			WorkspacePath: runtimeWorkspacePath,
-			WorkspaceName: workspaceName,
-			Mode:          req.Mode,
-			AgentName:     req.AgentName,
-			Metadata:      managedHostSessionMetadata(req.Metadata, route),
-			Preference:    req.Preference,
+			Title:                req.Title,
+			WorkspacePath:        runtimeWorkspacePath,
+			HostWorkspacePath:    runtimeWorkspacePath,
+			RuntimeWorkspacePath: runtimeWorkspacePath,
+			WorkspaceName:        workspaceName,
+			Mode:                 req.Mode,
+			AgentName:            req.AgentName,
+			Metadata:             managedHostSessionMetadata(req.Metadata, route),
+			Preference:           req.Preference,
 		},
 		Route: route,
 	}
@@ -341,14 +345,18 @@ func (s *Server) handlePeerManagedHostSessionOpen(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(req.Request.RuntimeWorkspacePath), strings.TrimSpace(req.Request.WorkspacePath), strings.TrimSpace(req.Route.RuntimeWorkspacePath))
+	hostWorkspacePath := firstNonEmpty(strings.TrimSpace(req.Request.HostWorkspacePath), runtimeWorkspacePath, strings.TrimSpace(req.Route.HostWorkspacePath))
 	childReq := sessionCreateRequest{
-		Title:         req.Request.Title,
-		WorkspacePath: req.Request.WorkspacePath,
-		WorkspaceName: req.Request.WorkspaceName,
-		Mode:          req.Request.Mode,
-		AgentName:     req.Request.AgentName,
-		Metadata:      managedHostSessionMetadata(req.Request.Metadata, req.Route),
-		Preference:    req.Request.Preference,
+		Title:                req.Request.Title,
+		WorkspacePath:        runtimeWorkspacePath,
+		HostWorkspacePath:    hostWorkspacePath,
+		RuntimeWorkspacePath: runtimeWorkspacePath,
+		WorkspaceName:        req.Request.WorkspaceName,
+		Mode:                 req.Request.Mode,
+		AgentName:            req.Request.AgentName,
+		Metadata:             managedHostSessionMetadata(req.Request.Metadata, req.Route),
+		Preference:           req.Request.Preference,
 	}
 	session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, nil, true, req.SessionID)
 	if err != nil {
@@ -485,10 +493,53 @@ func (s *Server) handlePeerManagedHostSessionEvent(w http.ResponseWriter, r *htt
 	if err := s.storeMirroredEventPayloadMessage(req.SessionID, req.Payload); err != nil {
 		log.Printf("warning: store managed-host mirrored event message failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
 	}
+	if err := s.publishManagedHostSessionEventToPrimaryRunStream(req.SessionID, req.EventType, req.Payload); err != nil {
+		log.Printf("warning: publish managed-host mirrored event to run stream failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
+	}
 	if s.hub != nil {
 		s.hub.Publish(env)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "event": env})
+}
+
+func (s *Server) publishManagedHostSessionEventToPrimaryRunStream(sessionID, eventType string, payload map[string]any) error {
+	if s == nil || s.runStreams == nil || len(payload) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	var msg runStreamWireEvent
+	if err := json.Unmarshal(encoded, &msg); err != nil {
+		return err
+	}
+	if strings.TrimSpace(msg.Type) == "" {
+		msg.Type = strings.TrimSpace(eventType)
+	}
+	if strings.TrimSpace(msg.Type) == "" {
+		return nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if strings.TrimSpace(msg.SessionID) == "" {
+		msg.SessionID = sessionID
+	}
+	if sessionID == "" || !strings.EqualFold(strings.TrimSpace(msg.SessionID), sessionID) {
+		return nil
+	}
+	runID := strings.TrimSpace(msg.RunID)
+	if runID == "" {
+		return nil
+	}
+	state, err := s.runStreams.ensureRunWithID(sessionID, runID)
+	if err != nil {
+		return err
+	}
+	if state == nil {
+		return nil
+	}
+	s.runStreams.publish(runID, msg)
+	return nil
 }
 
 func (s *Server) startManagedHostRunStreamExecution(runID, sessionID string, request runruntime.RunRequest) <-chan error {

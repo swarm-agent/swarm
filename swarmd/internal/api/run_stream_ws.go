@@ -155,6 +155,32 @@ func (m *runStreamManager) newRun(sessionID string) (*runStreamState, error) {
 	now := time.Now()
 	runOrdinal := m.nextRun.Add(1)
 	runID := fmt.Sprintf("%s_%d_%06d", runStreamRunIDPrefix, now.UnixMilli(), runOrdinal)
+	return m.ensureRunWithID(sessionID, runID)
+}
+
+func (m *runStreamManager) ensureRunWithID(sessionID, runID string) (*runStreamState, error) {
+	if m == nil {
+		return nil, nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	if sessionID == "" || runID == "" {
+		return nil, nil
+	}
+	now := time.Now()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupLocked(now)
+	if existing := m.runs[runID]; existing != nil {
+		existing.mu.Lock()
+		defer existing.mu.Unlock()
+		if !strings.EqualFold(strings.TrimSpace(existing.sessionID), sessionID) {
+			return nil, fmt.Errorf("run %q belongs to a different session", runID)
+		}
+		existing.updatedAt = now
+		return existing, nil
+	}
 	state := &runStreamState{
 		runID:     runID,
 		sessionID: sessionID,
@@ -163,10 +189,6 @@ func (m *runStreamManager) newRun(sessionID string) (*runStreamState, error) {
 		events:    make([]runStreamReplayFrame, 0, 32),
 		subs:      make(map[string]*runStreamSubscriber),
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cleanupLocked(now)
 	m.runs[runID] = state
 	return state, nil
 }
