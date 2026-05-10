@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
@@ -93,6 +94,7 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	var openedWorkspacePath atomic.Value
 	var openedHostWorkspacePath atomic.Value
 	var openedRuntimeWorkspacePath atomic.Value
+	var openedMetadata atomic.Value
 	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != peerManagedHostSessionOpenPath {
 			http.NotFound(w, r)
@@ -108,6 +110,7 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 		openedWorkspacePath.Store(req.Request.WorkspacePath)
 		openedHostWorkspacePath.Store(req.Request.HostWorkspacePath)
 		openedRuntimeWorkspacePath.Store(req.Request.RuntimeWorkspacePath)
+		openedMetadata.Store(req.Request.Metadata)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,
 			"session": pebblestore.SessionSnapshot{ID: req.SessionID, WorkspacePath: req.Request.WorkspacePath, WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: req.Request.Metadata, CreatedAt: 1, UpdatedAt: 2},
@@ -133,6 +136,13 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	if got, _ := openedRuntimeWorkspacePath.Load().(string); got != "/managed/workspace" {
 		t.Fatalf("peer runtime workspace path = %q, want /managed/workspace", got)
 	}
+	metadata, _ := openedMetadata.Load().(map[string]any)
+	if metadata["swarm_route_id"] != "swarm:managed-swarm:/managed/workspace" || metadata["swarm_route_label"] != "Managed Host" || metadata["swarm_route_target_kind"] != "host" || metadata["swarm_route_target_relationship"] != swarmruntime.RelationshipManaged || metadata["owner_transport"] != "managed_host_peer" {
+		t.Fatalf("route metadata = %+v", metadata)
+	}
+	if metadata[sessionruntime.HostedSessionMetadataEnabled] != true || metadata[sessionruntime.HostedSessionMetadataHostSwarmID] != "host-swarm-id" || metadata[sessionruntime.HostedSessionMetadataHostBackendURL] != "http://127.0.0.1:7781" || metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != "/host/workspace" || metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] != "/managed/workspace" || metadata[sessionruntime.HostedSessionMetadataChildSwarmID] != "managed-swarm" {
+		t.Fatalf("hosted metadata = %+v", metadata)
+	}
 	var payload struct {
 		Session struct {
 			ID            string `json:"id"`
@@ -151,6 +161,9 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	}
 	if !ok || mirrored.WorkspacePath != "/managed/workspace" {
 		t.Fatalf("mirrored session = %+v ok=%v", mirrored, ok)
+	}
+	if mirrored.Metadata["swarm_route_id"] != "swarm:managed-swarm:/managed/workspace" || mirrored.Metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != "/host/workspace" || mirrored.Metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] != "/managed/workspace" {
+		t.Fatalf("mirrored metadata = %+v", mirrored.Metadata)
 	}
 }
 
@@ -179,14 +192,13 @@ func TestManagedHostMirroredRunStreamControlUsesPeerStreamAPIWithSessionID(t *te
 	}))
 	defer managed.Close()
 
-	seedManagedHostTarget(t, server, managed.URL)
-	server.swarmTargetHealth.entries = map[string]swarmTargetHealthEntry{
-		"host|managed-swarm|" + managed.URL: {online: true, checkedAt: time.Now()},
-	}
-	if _, err := server.swarmNodes.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed Host", Role: swarmruntime.RelationshipManaged, Kind: "host", Transport: startupconfig.NetworkModeTailscale, BackendURL: managed.URL, Status: "online"}); err != nil {
-		t.Fatalf("refresh managed node: %v", err)
+	if _, err := server.swarmNodes.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed Host", Role: swarmruntime.RelationshipManaged, Kind: "manual", Transport: startupconfig.NetworkModeTailscale, BackendURL: managed.URL, Status: "online"}); err != nil {
+		t.Fatalf("put managed node: %v", err)
 	}
 	server.SetSwarmNodeStore(server.swarmNodes)
+	server.swarmTargetHealth.entries = map[string]swarmTargetHealthEntry{
+		"manual|managed-swarm|" + managed.URL: {online: true, checkedAt: time.Now()},
+	}
 	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm"}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatalf("store mirror: %v", err)
 	}
@@ -270,7 +282,7 @@ func seedManagedHostTarget(t *testing.T, server *Server, backendURL string) {
 	if nodes == nil {
 		t.Fatal("swarm node store not configured")
 	}
-	if _, err := nodes.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed Host", Role: swarmruntime.RelationshipManaged, Kind: "host", Transport: startupconfig.NetworkModeTailscale, BackendURL: backendURL, Status: "online"}); err != nil {
+	if _, err := nodes.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed Host", Role: swarmruntime.RelationshipManaged, Kind: "manual", Transport: startupconfig.NetworkModeTailscale, BackendURL: backendURL, Status: "online"}); err != nil {
 		t.Fatalf("put managed node: %v", err)
 	}
 	server.SetSwarmNodeStore(nodes)

@@ -73,6 +73,9 @@ func HostedSessionFromMetadataForLocal(metadata map[string]any, localSwarmID str
 	if !hosted {
 		return HostedSessionDescriptor{}, false
 	}
+	if strings.EqualFold(stringMetadataValue(metadata, "owner_transport"), "managed_host_peer") {
+		return HostedSessionDescriptor{}, false
+	}
 	localSwarmID = strings.TrimSpace(localSwarmID)
 	if localSwarmID != "" && strings.EqualFold(strings.TrimSpace(descriptor.HostSwarmID), localSwarmID) {
 		return HostedSessionDescriptor{}, false

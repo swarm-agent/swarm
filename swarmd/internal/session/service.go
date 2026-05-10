@@ -1230,6 +1230,7 @@ func mapsEqualJSON(left, right map[string]any) bool {
 func hostedSyncOptional(metadata map[string]any) bool {
 	return strings.EqualFold(stringMetadataValue(metadata, "source"), "flow") ||
 		strings.EqualFold(stringMetadataValue(metadata, "owner_transport"), "flow_scheduler") ||
+		strings.EqualFold(stringMetadataValue(metadata, "owner_transport"), "managed_host_peer") ||
 		strings.EqualFold(stringMetadataValue(metadata, "lineage_kind"), "flow")
 }
 

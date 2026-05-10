@@ -115,6 +115,18 @@ func TestHostedAppendMessageMirrorsCanonicalStateIntoLocalRuntimeCache(t *testin
 	}
 }
 
+func TestManagedHostPeerMetadataDoesNotUseGenericHostedSync(t *testing.T) {
+	metadata := HostedSessionDescriptor{HostSwarmID: "host-swarm", RuntimeWorkspacePath: "/runtime/workspace", ChildSwarmID: "managed-swarm"}.WithMetadata(map[string]any{
+		"owner_transport": "managed_host_peer",
+	})
+	if !hostedSyncOptional(metadata) {
+		t.Fatal("managed-host peer sessions should treat generic hosted sync as optional")
+	}
+	if _, hosted := HostedSessionFromMetadataForLocal(metadata, ""); hosted {
+		t.Fatal("managed-host peer sessions should not use generic hosted sync for local mutations")
+	}
+}
+
 func TestMirroredRoutedSessionUsesLocalRuntimeWorkspaceWhenLocalSwarmIsUnknown(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "runtime-mirrored-routed-session.pebble"))
 	if err != nil {

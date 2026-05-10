@@ -877,9 +877,14 @@ func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID 
 	}
 	var target *swarmTarget
 	for i := range targets {
-		if strings.EqualFold(strings.TrimSpace(targets[i].SwarmID), targetSwarmID) {
+		if !strings.EqualFold(strings.TrimSpace(targets[i].SwarmID), targetSwarmID) {
+			continue
+		}
+		if target == nil || targets[i].Selectable {
 			targetCopy := targets[i]
 			target = &targetCopy
+		}
+		if target.Selectable {
 			break
 		}
 	}
@@ -892,7 +897,7 @@ func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID 
 	if strings.TrimSpace(target.BackendURL) == "" {
 		return nil, "", "", http.StatusBadRequest, errors.New("managed host route is missing")
 	}
-	if !target.Selectable && !strings.EqualFold(strings.TrimSpace(target.SwarmID), targetSwarmID) {
+	if !target.Selectable {
 		return nil, "", "", http.StatusBadRequest, errors.New("managed host is not selectable")
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), swarmTargetHealthTimeout)
@@ -934,16 +939,42 @@ func managedHostSessionStringMetadata(metadata map[string]any, key string) strin
 }
 
 func managedHostSessionMetadata(metadata map[string]any, route managedHostSessionRoute) map[string]any {
-	merged := mergeSessionCreateMetadata(metadata, map[string]any{
-		"swarm_managed_host_session":                true,
-		"swarm_managed_host_primary_swarm_id":       strings.TrimSpace(route.PrimarySwarmID),
-		"swarm_managed_host_primary_backend_url":    strings.TrimSpace(route.PrimaryBackendURL),
-		"swarm_managed_host_swarm_id":               strings.TrimSpace(route.ManagedHostSwarmID),
-		"swarm_managed_host_name":                   strings.TrimSpace(route.ManagedHostName),
-		"swarm_managed_host_backend_url":            strings.TrimSpace(route.ManagedHostBackendURL),
-		"swarm_managed_host_host_workspace_path":    strings.TrimSpace(route.HostWorkspacePath),
-		"swarm_managed_host_runtime_workspace_path": strings.TrimSpace(route.RuntimeWorkspacePath),
-	})
+	primarySwarmID := strings.TrimSpace(route.PrimarySwarmID)
+	primaryBackendURL := strings.TrimSpace(route.PrimaryBackendURL)
+	managedHostSwarmID := strings.TrimSpace(route.ManagedHostSwarmID)
+	managedHostName := strings.TrimSpace(route.ManagedHostName)
+	managedHostBackendURL := strings.TrimSpace(route.ManagedHostBackendURL)
+	hostWorkspacePath := strings.TrimSpace(route.HostWorkspacePath)
+	runtimeWorkspacePath := strings.TrimSpace(route.RuntimeWorkspacePath)
+	routeID := ""
+	if managedHostSwarmID != "" && runtimeWorkspacePath != "" {
+		routeID = "swarm:" + managedHostSwarmID + ":" + runtimeWorkspacePath
+	}
+	extra := map[string]any{
+		"swarm_managed_host_session":                             true,
+		"swarm_managed_host_primary_swarm_id":                    primarySwarmID,
+		"swarm_managed_host_primary_backend_url":                 primaryBackendURL,
+		"swarm_managed_host_swarm_id":                            managedHostSwarmID,
+		"swarm_managed_host_name":                                managedHostName,
+		"swarm_managed_host_backend_url":                         managedHostBackendURL,
+		"swarm_managed_host_host_workspace_path":                 hostWorkspacePath,
+		"swarm_managed_host_runtime_workspace_path":              runtimeWorkspacePath,
+		"owner_transport":                                        "managed_host_peer",
+		"swarm_route_id":                                         routeID,
+		"swarm_route_label":                                      firstNonEmpty(managedHostName, managedHostSwarmID),
+		"swarm_route_target_kind":                                "host",
+		"swarm_route_target_relationship":                        swarmruntime.RelationshipManaged,
+		sessionruntime.HostedSessionMetadataEnabled:              true,
+		sessionruntime.HostedSessionMetadataHostSwarmID:          primarySwarmID,
+		sessionruntime.HostedSessionMetadataHostBackendURL:       primaryBackendURL,
+		sessionruntime.HostedSessionMetadataHostWorkspacePath:    hostWorkspacePath,
+		sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: runtimeWorkspacePath,
+		sessionruntime.HostedSessionMetadataChildSwarmID:         managedHostSwarmID,
+	}
+	merged := mergeSessionCreateMetadata(metadata, extra)
+	for key, value := range extra {
+		merged[key] = value
+	}
 	for key, value := range merged {
 		if strings.TrimSpace(key) == "" || value == "" {
 			delete(merged, key)

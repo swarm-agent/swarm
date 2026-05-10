@@ -148,6 +148,31 @@ test('routed session route resolution prefers current route option label when av
   assert.equal(route?.label, 'child swarm')
 })
 
+test('managed host session metadata reconstructs selected managed host route', () => {
+  const route = resolveDesktopChatRouteFromSession(sessionRecord({
+    workspacePath: '/host/workspace',
+    workspaceName: 'host workspace',
+    runtimeWorkspacePath: '/managed/workspace',
+    metadata: {
+      swarm_route_id: managedHostRoute.id,
+      swarm_route_label: 'Managed Host',
+      swarm_route_target_kind: 'host',
+      swarm_route_target_relationship: 'managed',
+      swarm_routed_session: true,
+      swarm_routed_host_swarm_id: 'host-swarm-id',
+      swarm_routed_host_workspace_path: '/host/workspace',
+      swarm_routed_runtime_workspace_path: '/managed/workspace',
+      swarm_routed_child_swarm_id: 'managed-swarm',
+      swarm_managed_host_session: true,
+    },
+  }), [managedHostRoute], null)
+
+  assert.equal(route?.id, managedHostRoute.id)
+  assert.equal(route?.swarmId, 'managed-swarm')
+  assert.equal(route?.targetKind, 'host')
+  assert.equal(route?.targetRelationship, 'managed')
+})
+
 test('routed session hydration preserves remote child workspace identity', () => {
   const mapped = applyDesktopChatRouteToSession(sessionRecord(), remoteRoute)
 
