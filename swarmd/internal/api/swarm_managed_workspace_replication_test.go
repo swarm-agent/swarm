@@ -54,11 +54,8 @@ func TestPeerManagedWorkspacePreflightPlansImportLinkAndConflict(t *testing.T) {
 	}
 }
 
-func TestPeerManagedWorkspacePreflightRejectsOmittedAndOutOfContractRoot(t *testing.T) {
+func TestPeerManagedWorkspacePreflightRejectsOutOfContractRoot(t *testing.T) {
 	handler, _, _ := newReplicateTestHandler(t)
-	if _, status, err := handler.peerManagedWorkspacePreflight(peerManagedWorkspacePreflightRequest{Workspaces: []peerManagedWorkspacePlanItem{{WorkspaceName: "x", GitWorkspace: true}}}); err == nil || status != http.StatusBadRequest {
-		t.Fatalf("missing root status=%d err=%v, want bad request", status, err)
-	}
 	root := t.TempDir()
 	response, status, err := handler.peerManagedWorkspacePreflight(peerManagedWorkspacePreflightRequest{
 		DestinationRoot: root,
@@ -69,6 +66,51 @@ func TestPeerManagedWorkspacePreflightRejectsOmittedAndOutOfContractRoot(t *test
 	}
 	if response.Ready || len(response.Workspaces) != 1 || response.Workspaces[0].Action != managedWorkspaceActionConflict {
 		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestPeerManagedWorkspacePreflightDefaultsToHomeAndPreservesHomeRelativeSource(t *testing.T) {
+	handler, _, _ := newReplicateTestHandler(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspacePath := filepath.Join(home, "workspaces", "demo")
+	response, status, err := handler.peerManagedWorkspacePreflight(peerManagedWorkspacePreflightRequest{
+		DestinationRoot: "",
+		Workspaces: []peerManagedWorkspacePlanItem{{
+			SourceWorkspacePath:    workspacePath,
+			SourceHomeRelativePath: sourceHomeRelativePath(workspacePath),
+			WorkspaceName:          "demo",
+			GitWorkspace:           true,
+		}},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("preflight status=%d err=%v", status, err)
+	}
+	want := filepath.Join(home, "workspaces", "demo")
+	if !response.Ready || len(response.Workspaces) != 1 {
+		t.Fatalf("response=%+v", response)
+	}
+	if got := response.DestinationRoot; filepath.Clean(got) != filepath.Clean(home) {
+		t.Fatalf("root=%q want %q", got, home)
+	}
+	if got := response.Workspaces[0].DestinationPath; filepath.Clean(got) != filepath.Clean(want) {
+		t.Fatalf("destination=%q want %q", got, want)
+	}
+}
+
+func TestNormalizeManagedWorkspaceDestinationRootAcceptsHomeRelativeInput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspaces := filepath.Join(home, "workspaces")
+	if err := os.MkdirAll(workspaces, 0o755); err != nil {
+		t.Fatalf("mkdir workspaces: %v", err)
+	}
+	root, err := normalizeManagedWorkspaceDestinationRoot("workspaces")
+	if err != nil {
+		t.Fatalf("normalize relative: %v", err)
+	}
+	if filepath.Clean(root) != filepath.Clean(workspaces) {
+		t.Fatalf("root=%q want %q", root, workspaces)
 	}
 }
 
@@ -119,6 +161,7 @@ func TestManagedWorkspacePreflightUsesDedicatedPeerAPIAndAuth(t *testing.T) {
 	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
 	initGitRepoForManagedWorkspaceTest(t, workspacePath)
 	root := t.TempDir()
+	t.Setenv("HOME", filepath.Dir(workspacePath))
 	var sawPeerPreflight bool
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
@@ -136,14 +179,17 @@ func TestManagedWorkspacePreflightUsesDedicatedPeerAPIAndAuth(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode peer preflight: %v", err)
 		}
-		writeJSON(w, http.StatusOK, peerManagedWorkspacePreflightResponse{OK: true, Ready: true, DestinationRoot: req.DestinationRoot, Workspaces: []managedWorkspacePlanResponse{{OK: true, SourceWorkspacePath: workspacePath, SourceWorkspaceName: "workspace-one", DestinationRoot: req.DestinationRoot, DestinationPath: filepath.Join(root, "workspace-one"), Action: managedWorkspaceActionImportBundle, GitWorkspace: true}}})
+		if len(req.Workspaces) != 1 || req.Workspaces[0].SourceHomeRelativePath == "" {
+			t.Fatalf("missing source home relative path in peer request: %+v", req.Workspaces)
+		}
+		writeJSON(w, http.StatusOK, peerManagedWorkspacePreflightResponse{OK: true, Ready: true, DestinationRoot: root, Workspaces: []managedWorkspacePlanResponse{{OK: true, SourceWorkspacePath: workspacePath, SourceWorkspaceName: "workspace-one", DestinationRoot: root, DestinationPath: filepath.Join(root, "workspace-one"), Action: managedWorkspaceActionImportBundle, GitWorkspace: true}}})
 	}))
 	t.Cleanup(remote.Close)
 	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(remote.URL, "host-to-managed-token"))
 
 	recorder := postManagedWorkspacePreflightRequest(t, handler, map[string]any{
 		"target_swarm_id":  "managed-swarm-1",
-		"destination_root": root,
+		"destination_root": "",
 		"workspaces": []map[string]any{{
 			"source_workspace_path": workspacePath,
 		}},

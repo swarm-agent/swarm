@@ -107,10 +107,11 @@ type peerManagedWorkspacePreflightRequest struct {
 }
 
 type peerManagedWorkspacePlanItem struct {
-	SourceWorkspacePath string `json:"source_workspace_path"`
-	WorkspaceName       string `json:"workspace_name"`
-	DestinationPath     string `json:"destination_path,omitempty"`
-	GitWorkspace        bool   `json:"git_workspace"`
+	SourceWorkspacePath    string `json:"source_workspace_path"`
+	SourceHomeRelativePath string `json:"source_home_relative_path,omitempty"`
+	WorkspaceName          string `json:"workspace_name"`
+	DestinationPath        string `json:"destination_path,omitempty"`
+	GitWorkspace           bool   `json:"git_workspace"`
 }
 
 type peerManagedWorkspacePreflightResponse struct {
@@ -212,10 +213,11 @@ func (s *Server) handlePeerManagedWorkspaceImportBundle(w http.ResponseWriter, r
 	preflight, status, err := s.peerManagedWorkspacePreflight(peerManagedWorkspacePreflightRequest{
 		DestinationRoot: destinationRoot,
 		Workspaces: []peerManagedWorkspacePlanItem{{
-			SourceWorkspacePath: strings.TrimSpace(r.FormValue("source_workspace_path")),
-			WorkspaceName:       workspaceName,
-			DestinationPath:     destinationPath,
-			GitWorkspace:        true,
+			SourceWorkspacePath:    strings.TrimSpace(r.FormValue("source_workspace_path")),
+			SourceHomeRelativePath: sourceHomeRelativePath(strings.TrimSpace(r.FormValue("source_workspace_path"))),
+			WorkspaceName:          workspaceName,
+			DestinationPath:        destinationPath,
+			GitWorkspace:           true,
 		}},
 	})
 	if err != nil {
@@ -233,7 +235,7 @@ func (s *Server) handlePeerManagedWorkspaceImportBundle(w http.ResponseWriter, r
 	}
 	defer file.Close()
 
-	bundlePath, err := writeManagedWorkspaceUploadedBundle(destinationRoot, workspaceName, file)
+	bundlePath, err := writeManagedWorkspaceUploadedBundle(preflight.Workspaces[0].DestinationRoot, workspaceName, file)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -447,6 +449,7 @@ func (s *Server) normalizeManagedWorkspaceSelections(inputs []managedWorkspaceSe
 }
 
 func (s *Server) buildPeerManagedWorkspacePreflightRequest(destinationRoot string, normalized []workspace.NormalizedReplicationWorkspace, catalog map[string]replicateWorkspaceCatalogEntry, selections []managedWorkspaceSelectionRequest) peerManagedWorkspacePreflightRequest {
+	preserveHomeRelativePath := managedWorkspaceDestinationRootUsesHomeDefault(destinationRoot)
 	destinations := make(map[string]string, len(selections))
 	for _, selection := range selections {
 		if source := strings.TrimSpace(selection.SourceWorkspacePath); source != "" {
@@ -456,11 +459,16 @@ func (s *Server) buildPeerManagedWorkspacePreflightRequest(destinationRoot strin
 	items := make([]peerManagedWorkspacePlanItem, 0, len(normalized))
 	for _, item := range normalized {
 		name := firstNonEmpty(strings.TrimSpace(catalog[item.SourceWorkspacePath].Name), defaultReplicatedWorkspaceName(item.SourceWorkspacePath))
+		homeRelativePath := ""
+		if preserveHomeRelativePath {
+			homeRelativePath = sourceHomeRelativePath(item.SourceWorkspacePath)
+		}
 		items = append(items, peerManagedWorkspacePlanItem{
-			SourceWorkspacePath: item.SourceWorkspacePath,
-			WorkspaceName:       name,
-			DestinationPath:     destinations[filepath.Clean(item.SourceWorkspacePath)],
-			GitWorkspace:        item.GitWorkspace,
+			SourceWorkspacePath:    item.SourceWorkspacePath,
+			SourceHomeRelativePath: homeRelativePath,
+			WorkspaceName:          name,
+			DestinationPath:        destinations[filepath.Clean(item.SourceWorkspacePath)],
+			GitWorkspace:           item.GitWorkspace,
 		})
 	}
 	return peerManagedWorkspacePreflightRequest{DestinationRoot: strings.TrimSpace(destinationRoot), Workspaces: items}
@@ -550,7 +558,7 @@ func planPeerManagedWorkspace(root string, item peerManagedWorkspacePlanItem, kn
 	if workspaceName == "" {
 		workspaceName = "workspace"
 	}
-	destination, err := managedWorkspaceDestinationPath(root, workspaceName, item.DestinationPath)
+	destination, err := managedWorkspaceDestinationPath(root, workspaceName, item.SourceHomeRelativePath, item.DestinationPath)
 	plan := managedWorkspacePlanResponse{
 		PlanID:              managedWorkspacePlanID(item.SourceWorkspacePath, root, destination, ""),
 		SourceWorkspacePath: strings.TrimSpace(item.SourceWorkspacePath),
@@ -599,13 +607,31 @@ func planPeerManagedWorkspace(root string, item peerManagedWorkspacePlanItem, kn
 	return plan
 }
 
+func managedWorkspaceDestinationRootUsesHomeDefault(raw string) bool {
+	root := strings.TrimSpace(raw)
+	return root == "" || root == "~"
+}
+
 func normalizeManagedWorkspaceDestinationRoot(raw string) (string, error) {
 	root := strings.TrimSpace(raw)
-	if root == "" {
-		return "", errors.New("destination_root is required")
-	}
-	if !filepath.IsAbs(root) {
-		return "", errors.New("destination_root must be an absolute path")
+	if root == "" || root == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			return "", errors.New("managed host home directory is unavailable")
+		}
+		root = home
+	} else if strings.HasPrefix(root, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			return "", errors.New("managed host home directory is unavailable")
+		}
+		root = filepath.Join(home, strings.TrimPrefix(root, "~/"))
+	} else if !filepath.IsAbs(root) {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			return "", errors.New("managed host home directory is unavailable")
+		}
+		root = filepath.Join(home, root)
 	}
 	root = filepath.Clean(root)
 	info, err := os.Stat(root)
@@ -618,12 +644,16 @@ func normalizeManagedWorkspaceDestinationRoot(raw string) (string, error) {
 	return root, nil
 }
 
-func managedWorkspaceDestinationPath(root, workspaceName, requested string) (string, error) {
+func managedWorkspaceDestinationPath(root, workspaceName, sourceHomeRelativePath, requested string) (string, error) {
 	root = filepath.Clean(strings.TrimSpace(root))
 	requested = strings.TrimSpace(requested)
 	var destination string
 	if requested == "" {
-		destination = filepath.Join(root, sanitizeReplicationMountName(workspaceName))
+		defaultRelative := cleanManagedWorkspaceRelativePath(sourceHomeRelativePath)
+		if defaultRelative == "" {
+			defaultRelative = sanitizeReplicationMountName(workspaceName)
+		}
+		destination = filepath.Join(root, defaultRelative)
 	} else {
 		if !filepath.IsAbs(requested) {
 			return "", errors.New("destination_path must be absolute when provided")
@@ -637,6 +667,31 @@ func managedWorkspaceDestinationPath(root, workspaceName, requested string) (str
 		return destination, errors.New("destination_path must stay inside destination_root")
 	}
 	return destination, nil
+}
+
+func sourceHomeRelativePath(sourcePath string) string {
+	sourcePath = filepath.Clean(strings.TrimSpace(sourcePath))
+	if sourcePath == "" || sourcePath == "." {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	home = filepath.Clean(home)
+	rel, err := filepath.Rel(home, sourcePath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return cleanManagedWorkspaceRelativePath(rel)
+}
+
+func cleanManagedWorkspaceRelativePath(raw string) string {
+	rel := filepath.Clean(strings.TrimSpace(raw))
+	if rel == "" || rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return rel
 }
 
 func pathWithinManagedWorkspaceRoot(root, target string) bool {

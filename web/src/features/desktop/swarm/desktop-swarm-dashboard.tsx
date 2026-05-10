@@ -34,7 +34,7 @@ import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
 import { fetchSwarmMirrorResources, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
 import { LinkSwarmModal } from './components/link-swarm-modal'
-import { ManagedHostWorkspaceReplicationPanel } from './components/managed-host-workspace-replication-panel'
+import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from './components/managed-host-link-request-modal'
 import {
   type DeployContainerDeployment,
   type DeployContainerWorkspaceBootstrap,
@@ -270,15 +270,6 @@ function savePendingReplicationTarget(target: SwarmTarget | null): void {
 
 function mirrorWorkspaceName(workspace: SwarmMirrorWorkspaceResource): string {
   return String(workspace.workspace_name || workspace.name || workspace.path.split('/').filter(Boolean).pop() || 'workspace').trim()
-}
-
-function normalizePairingCode(value: string | null | undefined): string {
-  return String(value ?? '').trim().replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6)
-}
-
-function formatPairingCode(value: string | null | undefined): string {
-  const normalized = normalizePairingCode(value)
-  return normalized.length === 6 ? `${normalized.slice(0, 3)}-${normalized.slice(3)}` : normalized
 }
 
 function deploymentMatchesContainer(deployment: DeployContainerDeployment, container: SwarmLocalContainer): boolean {
@@ -908,6 +899,7 @@ export function DesktopSwarmDashboard() {
   const [localNameDraft, setLocalNameDraft] = useState('')
   const [addSwarmOpen, setAddSwarmOpen] = useState(false)
   const [linkSwarmOpen, setLinkSwarmOpen] = useState(false)
+  const [linkRequestOpen, setLinkRequestOpen] = useState(false)
   const [pendingReplicationTarget, setPendingReplicationTarget] = useState<SwarmTarget | null>(() => loadPendingReplicationTarget())
   const [deleteContainersOpen, setDeleteContainersOpen] = useState(false)
   const [selectedDeleteContainerIDs, setSelectedDeleteContainerIDs] = useState<string[]>([])
@@ -1169,7 +1161,7 @@ export function DesktopSwarmDashboard() {
   const managedHostControlTitle = localIsManagedHost ? 'This host is already linked to a Manager.' : undefined
   const managedHostingControlsDisabled = loading || busy || localIsChild || Boolean(group && !localIsMaster)
   const addContainerDisabled = loading || busy
-  const visiblePendingPairings = pendingPairings.filter((item) => item.status === 'pending_approval' || item.status === '')
+  const visiblePendingPairings = activePendingPairings(pendingPairings)
   const localNameDirty = localNameDraft.trim() !== localSwarmName.trim()
   const frontendOrigin = typeof window !== 'undefined' ? window.location.origin : ''
   const browserProtocol = typeof window !== 'undefined' ? window.location.protocol : 'http:'
@@ -1529,25 +1521,14 @@ export function DesktopSwarmDashboard() {
       })
       await refresh()
       if (approve) {
-        const managedSwarmID = (result.routing?.managed_swarm_id || request.managed_swarm_id || '').trim()
-        const managedName = (result.routing?.managed_name || request.managed_name || managedSwarmID || requestID).trim()
-        const backendURL = (result.routing?.backend_url || request.managed_endpoint || '').trim()
-        if (managedSwarmID) {
-          setPendingReplicationTarget({
-            swarm_id: managedSwarmID,
-            name: managedName,
-            role: 'managed',
-            relationship: 'managed',
-            kind: 'host',
-            attach_status: result.status || 'paired',
-            online: true,
-            selectable: true,
-            current: false,
-            backend_url: backendURL,
-          })
+        const target = managedHostTargetFromPairingResult({ request, result })
+        if (target) {
+          setPendingReplicationTarget(target)
+          setLinkRequestOpen(true)
         }
-        setStatus(`Approved Managed Swarm ${managedName}. Workspace replication is pending; replicate now or skip.`)
+        setStatus(`Approved Managed Host ${target?.name || request.managed_name || request.managed_swarm_id || requestID}. Workspace replication is pending; replicate now or skip.`)
       } else {
+        setPendingReplicationTarget(null)
         setStatus(`Rejected pairing request ${requestID}.`)
       }
     } catch (err) {
@@ -1946,6 +1927,12 @@ export function DesktopSwarmDashboard() {
               Managed Hosting
             </Button>
           ) : null}
+          {isSwarmMode && (visiblePendingPairings.length > 0 || pendingReplicationTarget) ? (
+            <Button type="button" variant="primary" data-testid="swarm-dashboard-link-request" onClick={() => setLinkRequestOpen(true)}>
+              <Link2 size={14} />
+              Link request{visiblePendingPairings.length > 0 ? ` (${visiblePendingPairings.length})` : ''}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             onClick={() => {
@@ -1967,80 +1954,23 @@ export function DesktopSwarmDashboard() {
         <div className="mt-4 space-y-3">
           {error ? <Card data-testid="swarm-dashboard-error" className="border-[var(--app-danger-border)] bg-transparent p-4 text-sm text-[var(--app-danger)]">{error}</Card> : null}
           {status ? <Card data-testid="swarm-dashboard-status" className="border-[var(--app-success-border)] bg-transparent p-4 text-sm text-[var(--app-success)]">{status}</Card> : null}
-          {pendingReplicationTarget ? (
-            <Card data-testid="swarm-replication-pending" className="border-[var(--app-warning-border)] bg-transparent p-4">
+          {pendingReplicationTarget || visiblePendingPairings.length > 0 ? (
+            <Card data-testid="swarm-link-request-summary" className="border-[var(--app-warning-border)] bg-transparent p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <div className="text-sm font-semibold text-[var(--app-text)]">Managed Host linked — workspace replication pending</div>
+                  <div className="text-sm font-semibold text-[var(--app-text)]">
+                    {pendingReplicationTarget ? 'Workspace replication pending' : 'Pending Managed Host request'}
+                  </div>
                   <div className="mt-1 text-sm text-[var(--app-text-muted)]">
-                    {pendingReplicationTarget.name || pendingReplicationTarget.swarm_id} is trusted. Replicate git workspaces now or skip and run replication later.
+                    {pendingReplicationTarget
+                      ? `${pendingReplicationTarget.name || pendingReplicationTarget.swarm_id} is trusted. Open the link request modal to replicate workspaces.`
+                      : 'Confirm the 6-character code in the link request modal before approving.'}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone="warning">Pending</Badge>
-                  <Button size="sm" variant="outline" onClick={() => { setPendingReplicationTarget(null) }} disabled={busy}>Skip</Button>
-                  <Button size="sm" onClick={() => setStatus('Choose workspaces in the replication options below.')} disabled={busy}>Review options</Button>
+                  <Badge tone="warning">{pendingReplicationTarget ? 'Replication pending' : `${visiblePendingPairings.length} pending`}</Badge>
+                  <Button size="sm" onClick={() => setLinkRequestOpen(true)} disabled={busy}>Link request</Button>
                 </div>
-              </div>
-            </Card>
-          ) : null}
-
-          {pendingReplicationTarget ? (
-            <ManagedHostWorkspaceReplicationPanel
-              target={pendingReplicationTarget}
-              busy={busy}
-              onComplete={async (message) => {
-                await refresh()
-                setPendingReplicationTarget(null)
-                setError(null)
-                setStatus(message)
-              }}
-              onSkip={async (message) => {
-                setPendingReplicationTarget(null)
-                setError(null)
-                setStatus(message)
-              }}
-            />
-          ) : null}
-
-          {visiblePendingPairings.length > 0 ? (
-            <Card data-testid="swarm-pending-pairings" className="border-[var(--app-warning-border)] bg-transparent p-4">
-              <div className="flex flex-col gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-[var(--app-text)]">Pending Managed Host request</div>
-                  <div className="mt-1 text-sm text-[var(--app-text-muted)]">Confirm the 6-character code on both machines before approving.</div>
-                </div>
-                {visiblePendingPairings.map((request) => {
-                  const requestID = request.request_id.trim()
-                  const busyRequest = pairingDecisionBusyID === requestID
-                  return (
-                    <div key={requestID || request.managed_swarm_id || request.managed_name} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div className="min-w-0 space-y-1 text-sm">
-                          <div className="font-medium text-[var(--app-text)]">{request.managed_name || 'Managed Host'}</div>
-                          <div className="text-[var(--app-text-muted)]">{request.managed_endpoint || request.managed_swarm_id || requestID}</div>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Badge tone="warning">{formatPairingCode(request.ceremony_code) || 'No code'}</Badge>
-                          <label className="flex items-center gap-2 text-xs text-[var(--app-text-muted)]">
-                            <input
-                              type="checkbox"
-                              checked={pairingConfirmations[requestID] === true}
-                              disabled={busy || busyRequest}
-                              onChange={(event) => {
-                                const confirmed = event.target.checked
-                                setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))
-                              }}
-                            />
-                            <span>I confirm the code matches</span>
-                          </label>
-                          <Button size="sm" variant="outline" disabled={busy || busyRequest} onClick={() => void handlePairingDecision(request, false)}>Reject</Button>
-                          <Button size="sm" disabled={busy || busyRequest || normalizePairingCode(request.ceremony_code).length !== 6 || pairingConfirmations[requestID] !== true} onClick={() => void handlePairingDecision(request, true)}>Approve</Button>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
               </div>
             </Card>
           ) : null}
@@ -2475,6 +2405,32 @@ export function DesktopSwarmDashboard() {
         onOpenChange={setLinkSwarmOpen}
         onPairingSent={handleAddSwarmComplete}
         onOnboardingStatusChange={setOnboardingStatus}
+      />
+      <ManagedHostLinkRequestModal
+        open={linkRequestOpen}
+        requests={visiblePendingPairings}
+        busyID={pairingDecisionBusyID}
+        confirmations={pairingConfirmations}
+        error={error}
+        status={status}
+        now={Date.now()}
+        replicationTarget={pendingReplicationTarget}
+        replicationBusy={busy}
+        onOpenChange={setLinkRequestOpen}
+        onRefresh={() => { void refresh() }}
+        onConfirmationChange={(requestID, confirmed) => setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))}
+        onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
+        onReplicationComplete={async (message) => {
+          await refresh()
+          setPendingReplicationTarget(null)
+          setError(null)
+          setStatus(message)
+        }}
+        onReplicationSkip={(message) => {
+          setPendingReplicationTarget(null)
+          setError(null)
+          setStatus(message)
+        }}
       />
       <ManagedSwarmSettingsDialog
         deployment={settingsDeployment}

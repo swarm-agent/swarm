@@ -70,7 +70,7 @@ export function ManagedHostWorkspaceReplicationPanel({
   const [submitting, setSubmitting] = useState(false)
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([])
   const [drafts, setDrafts] = useState<WorkspaceDraft[]>([])
-  const [destinationRoot, setDestinationRoot] = useState('')
+  const [destinationRoot, setDestinationRoot] = useState('~')
   const [preflightPlans, setPreflightPlans] = useState<ManagedWorkspacePlan[]>([])
   const [preflightSnapshot, setPreflightSnapshot] = useState('')
   const [results, setResults] = useState<ManagedWorkspaceResult[]>([])
@@ -139,10 +139,6 @@ export function ManagedHostWorkspaceReplicationPanel({
     const selections = buildSelections(drafts)
     if (!target.swarm_id.trim()) {
       setError('Managed Host target is missing.')
-      return
-    }
-    if (!destinationRoot.trim()) {
-      setError('Destination root is required.')
       return
     }
     if (selections.length === 0) {
@@ -215,7 +211,7 @@ export function ManagedHostWorkspaceReplicationPanel({
             <Badge tone={target.online ? 'live' : 'warning'}>{target.online ? 'Online' : 'Route pending'}</Badge>
           </div>
           <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-            Select saved git workspaces, enter the exact destination root on {targetName}, preflight the planned paths, then transfer.
+            Select saved git workspaces, review the home-based destination on {targetName}, preflight the planned paths, then transfer.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -237,17 +233,19 @@ export function ManagedHostWorkspaceReplicationPanel({
 
       <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-transparent p-4">
         <label className="grid gap-2 text-sm">
-          <span className="font-medium text-[var(--app-text)]">Destination root on {targetName}</span>
+          <span className="font-medium text-[var(--app-text)]">Change the destination of the linked workspaces</span>
           <Input
             value={destinationRoot}
             onChange={(event) => {
               setResults([])
               setDestinationRoot(event.target.value)
             }}
-            placeholder="Absolute path on the Managed Host"
+            placeholder="~"
             disabled={submitting || busy}
           />
-          <span className="text-xs text-[var(--app-text-muted)]">Required. No default is assumed. Workspace destinations are planned inside this root.</span>
+          <span className="text-xs leading-5 text-[var(--app-text-muted)]">
+            Default is <code className="rounded bg-[var(--app-surface-subtle)] px-1">~</code> on {targetName}; paths under your home keep the part after <code className="rounded bg-[var(--app-surface-subtle)] px-1">/home/user/</code>. To store them in the workspaces folder, use <code className="rounded bg-[var(--app-surface-subtle)] px-1">workspaces</code> (typically <code className="rounded bg-[var(--app-surface-subtle)] px-1">/home/user/workspaces</code>).
+          </span>
         </label>
       </div>
 
@@ -291,7 +289,7 @@ export function ManagedHostWorkspaceReplicationPanel({
                 <Input
                   value={draft?.destinationPath ?? ''}
                   onChange={(event) => updateDestinationPath(workspace.path, event.target.value)}
-                  placeholder="Leave blank to use root/name"
+                  placeholder="Leave blank to use the planned home-relative path"
                   disabled={submitting || busy || !selected}
                 />
               </label>

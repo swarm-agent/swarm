@@ -42,6 +42,7 @@ import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISe
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
 import { approveRemoteSwarmPairing, fetchPendingRemoteSwarmPairings, type RemoteSwarmPendingPairing } from '../onboarding/api'
+import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from '../swarm/components/managed-host-link-request-modal'
 import { fetchSession } from '../chat/queries/chat-queries'
 import { buildDesktopChatRouteOptions, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
@@ -259,118 +260,6 @@ function DesktopNotificationsOverlay({ open, onOpenChange }: { open: boolean; on
         await useDesktopStore.getState().clearNotifications()
       }}
     />
-  )
-}
-
-function normalizePairingCode(value: string | null | undefined): string {
-  return String(value ?? '').trim().replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 6)
-}
-
-function formatPairingCode(value: string | null | undefined): string {
-  const normalized = normalizePairingCode(value)
-  return normalized.length === 6 ? `${normalized.slice(0, 3)}-${normalized.slice(3)}` : normalized
-}
-
-function activePendingPairings(items: RemoteSwarmPendingPairing[]): RemoteSwarmPendingPairing[] {
-  return items.filter((item) => item.status === 'pending_approval' || item.status === '')
-}
-
-function PairingRequestsModal({
-  open,
-  requests,
-  busyID,
-  confirmations,
-  error,
-  status,
-  now,
-  onOpenChange,
-  onRefresh,
-  onConfirmationChange,
-  onDecision,
-}: {
-  open: boolean
-  requests: RemoteSwarmPendingPairing[]
-  busyID: string | null
-  confirmations: Record<string, boolean>
-  error: string | null
-  status: string | null
-  now: number
-  onOpenChange: (open: boolean) => void
-  onRefresh: () => void
-  onConfirmationChange: (requestID: string, confirmed: boolean) => void
-  onDecision: (request: RemoteSwarmPendingPairing, approve: boolean) => void
-}) {
-  if (!open) return null
-  return (
-    <Dialog>
-      <DialogBackdrop onClick={() => onOpenChange(false)} />
-      <DialogPanel className="mx-auto mt-[8vh] flex w-[min(620px,calc(100vw-24px))] max-w-[620px] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
-        <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4">
-          <div>
-            <div className="flex items-center gap-2 text-lg font-semibold text-[var(--app-text)]">
-              <Link2 size={18} className="text-[var(--app-primary)]" />
-              Link request
-            </div>
-            <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-              Confirm the ceremony code on both machines before approving.
-            </p>
-          </div>
-          <Button variant="ghost" size="sm" className="h-8 w-8 min-w-8 p-0" onClick={() => onOpenChange(false)} aria-label="Close link requests">
-            <X size={16} />
-          </Button>
-        </div>
-        <div className="grid max-h-[70vh] gap-3 overflow-y-auto px-5 py-4">
-          {error ? <Card className="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] p-3 text-sm text-[var(--app-danger)]">{error}</Card> : null}
-          {status ? <Card className="border-[var(--app-success-border)] bg-[var(--app-success-bg)] p-3 text-sm text-[var(--app-success)]">{status}</Card> : null}
-          {requests.length === 0 ? (
-            <Card className="border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">
-              No pending Managed Swarm link requests.
-            </Card>
-          ) : requests.map((request) => {
-            const requestID = request.request_id.trim()
-            const busy = busyID === requestID
-            const code = normalizePairingCode(request.ceremony_code)
-            const confirmed = confirmations[requestID] === true
-            return (
-              <Card key={requestID || request.managed_swarm_id || request.managed_name} className="grid gap-3 border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0">
-                    <div className="font-semibold text-[var(--app-text)]">{request.managed_name || 'Managed Swarm'}</div>
-                    <div className="mt-1 break-all text-sm text-[var(--app-text-muted)]">{request.managed_endpoint || request.managed_swarm_id || requestID}</div>
-                    {request.managed_fingerprint ? <div className="mt-1 break-all text-xs text-[var(--app-text-muted)]">Fingerprint: {request.managed_fingerprint}</div> : null}
-                    {request.created_at ? <div className="mt-1 text-xs text-[var(--app-text-subtle)]">Requested {formatRelativeTime(request.created_at * 1000, now)}</div> : null}
-                  </div>
-                  <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-center">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Code</div>
-                    <div className="mt-1 font-mono text-2xl font-semibold tracking-[0.18em] text-[var(--app-text)]">{formatPairingCode(code) || '—'}</div>
-                  </div>
-                </div>
-                <label className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
-                  <input
-                    type="checkbox"
-                    checked={confirmed}
-                    disabled={Boolean(busyID)}
-                    onChange={(event) => {
-                    const confirmed = event.target.checked
-                    onConfirmationChange(requestID, confirmed)
-                  }}
-                  />
-                  <span>I confirm this code matches on both machines</span>
-                </label>
-                <div className="flex flex-wrap justify-end gap-2">
-                  <Button size="sm" variant="outline" disabled={Boolean(busyID)} onClick={() => onDecision(request, false)}>{busy ? 'Working…' : 'Reject'}</Button>
-                  <Button size="sm" disabled={Boolean(busyID) || code.length !== 6 || !confirmed} onClick={() => onDecision(request, true)}>{busy ? 'Working…' : 'Approve'}</Button>
-                </div>
-              </Card>
-            )
-          })}
-        </div>
-        <div className="flex justify-end gap-2 border-t border-[var(--app-border)] px-5 py-3">
-          <Button variant="outline" onClick={onRefresh} disabled={Boolean(busyID)}>Refresh</Button>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>Close</Button>
-        </div>
-      </DialogPanel>
-    </Dialog>
   )
 }
 
@@ -1539,6 +1428,7 @@ export function DesktopAppPage() {
   const [pairingConfirmations, setPairingConfirmations] = useState<Record<string, boolean>>({})
   const [pairingRequestError, setPairingRequestError] = useState<string | null>(null)
   const [pairingRequestStatus, setPairingRequestStatus] = useState<string | null>(null)
+  const [pairingReplicationTarget, setPairingReplicationTarget] = useState<SwarmTarget | null>(null)
   const [todoModal, setTodoModal] = useState<TodoModalState | null>(null)
   const [gitPanel, setGitPanel] = useState<GitPanelState | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
@@ -1861,7 +1751,7 @@ export function DesktopAppPage() {
     setPairingRequestError(null)
     setPairingRequestStatus(null)
     try {
-      await approveRemoteSwarmPairing({
+      const result = await approveRemoteSwarmPairing({
         requestID,
         approve,
         confirmed: approve ? pairingConfirmations[requestID] === true : undefined,
@@ -1873,7 +1763,16 @@ export function DesktopAppPage() {
         delete next[requestID]
         return next
       })
-      setPairingRequestStatus(approve ? `Approved ${request.managed_name || request.managed_swarm_id || 'Managed Swarm'}.` : `Rejected link request ${requestID}.`)
+      if (approve) {
+        const target = managedHostTargetFromPairingResult({ request, result })
+        if (target) {
+          setPairingReplicationTarget(target)
+          setPairingRequestsOpen(true)
+        }
+      } else {
+        setPairingReplicationTarget(null)
+      }
+      setPairingRequestStatus(approve ? `Approved ${request.managed_name || request.managed_swarm_id || 'Managed Host'}. Workspace replication is pending.` : `Rejected link request ${requestID}.`)
       void queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
       refreshPairingRequests()
     } catch (error) {
@@ -3490,7 +3389,7 @@ export function DesktopAppPage() {
         onRefresh={() => { if (gitPanel) void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(gitPanel.workspacePath) }) }}
         onClose={closeGitPanel}
       />
-      <PairingRequestsModal
+      <ManagedHostLinkRequestModal
         open={pairingRequestsOpen}
         requests={activePairingRequests}
         busyID={pairingDecisionBusyID}
@@ -3498,10 +3397,22 @@ export function DesktopAppPage() {
         error={pairingRequestError}
         status={pairingRequestStatus}
         now={sidebarNow}
+        replicationTarget={pairingReplicationTarget}
         onOpenChange={setPairingRequestsOpen}
         onRefresh={refreshPairingRequests}
         onConfirmationChange={(requestID, confirmed) => setPairingConfirmations((current) => ({ ...current, [requestID]: confirmed }))}
         onDecision={(request, approve) => { void handlePairingDecision(request, approve) }}
+        onReplicationComplete={async (message) => {
+          setPairingReplicationTarget(null)
+          setPairingRequestError(null)
+          setPairingRequestStatus(message)
+          await queryClient.invalidateQueries({ queryKey: ['swarm-targets'] })
+        }}
+        onReplicationSkip={(message) => {
+          setPairingReplicationTarget(null)
+          setPairingRequestError(null)
+          setPairingRequestStatus(message)
+        }}
       />
       <DesktopNotificationsOverlay open={notificationsOpen} onOpenChange={setNotificationsOpen} />
       {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}
