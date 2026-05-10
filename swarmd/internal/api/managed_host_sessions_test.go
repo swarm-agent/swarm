@@ -154,6 +154,73 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	}
 }
 
+func TestManagedHostMirroredRunStreamControlUsesPeerStreamAPIWithSessionID(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	server.SetSessionRouteStore(nil)
+	var streamPeerHits atomic.Int32
+	var received runStreamInboundMessage
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path != peerManagedHostSessionRunStreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		streamPeerHits.Add(1)
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeJSON(w, http.StatusAccepted, managedHostSessionRunAccepted{OK: true, SessionID: "managed-session", RunID: "managed-run", Status: "accepted", Background: true, OwnerTransport: "managed_host_peer"})
+	}))
+	defer managed.Close()
+
+	seedManagedHostTarget(t, server, managed.URL)
+	server.swarmTargetHealth.entries = map[string]swarmTargetHealthEntry{
+		"host|managed-swarm|" + managed.URL: {online: true, checkedAt: time.Now()},
+	}
+	if _, err := server.swarmNodes.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed Host", Role: swarmruntime.RelationshipManaged, Kind: "host", Transport: startupconfig.NetworkModeTailscale, BackendURL: managed.URL, Status: "online"}); err != nil {
+		t.Fatalf("refresh managed node: %v", err)
+	}
+	server.SetSwarmNodeStore(server.swarmNodes)
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm"}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store mirror: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/managed-session/run/stream?swarm_id=managed-swarm", bytes.NewBufferString(`{"type":"run.start","prompt":"hello managed","background":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	if streamPeerHits.Load() != 1 {
+		t.Fatalf("peer stream hits = %d, want 1", streamPeerHits.Load())
+	}
+	if received.SessionID != "managed-session" || received.Type != "run.start" || received.Prompt != "hello managed" || !received.Background {
+		t.Fatalf("peer stream request = %+v", received)
+	}
+}
+
+func TestManagedHostRunStreamStartPayloadWithSession(t *testing.T) {
+	raw, err := managedHostRunStreamStartPayloadWithSession([]byte(`{"type":"run.start","prompt":"hello"}`), "managed-session")
+	if err != nil {
+		t.Fatalf("patch start payload: %v", err)
+	}
+	var payload runStreamInboundMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode patched payload: %v", err)
+	}
+	if payload.SessionID != "managed-session" || payload.Type != "run.start" || payload.Prompt != "hello" {
+		t.Fatalf("patched payload = %+v", payload)
+	}
+}
+
 func TestPeerManagedHostSessionEventPublishesToPrimaryRunStream(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"session_id":"managed-session","event_type":"assistant.delta","payload":{"type":"assistant.delta","session_id":"managed-session","run_id":"managed-run","delta":"hello"},"causation_id":"managed-run"}`))

@@ -43,7 +43,8 @@ func (e *runStreamResumeGapError) Error() string {
 }
 
 type runStreamInboundMessage struct {
-	Type string `json:"type"`
+	Type      string `json:"type"`
+	SessionID string `json:"session_id,omitempty"`
 	runruntime.RunRequest
 	RunID   string `json:"run_id,omitempty"`
 	LastSeq uint64 `json:"last_seq,omitempty"`
@@ -561,7 +562,7 @@ func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	if remoteTarget != nil {
+	if remoteTarget != nil && !s.isManagedHostMirroredSession(sessionID) {
 		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
 			if errors.Is(err, transportws.ErrUpgradeRequired) {
 				writeError(w, http.StatusUpgradeRequired, errors.New("websocket upgrade required"))
@@ -569,6 +570,10 @@ func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request
 			}
 			writeError(w, http.StatusBadGateway, err)
 		}
+		return
+	}
+	if s.isManagedHostMirroredSession(sessionID) {
+		s.handleManagedHostSessionRunStreamWebsocket(w, r, sessionID)
 		return
 	}
 	if s.runner == nil {
@@ -782,10 +787,14 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	}
-	if remoteTarget != nil {
+	if remoteTarget != nil && !s.isManagedHostMirroredSession(sessionID) {
 		if err := s.proxyRequestToSwarmTarget(w, r, *remoteTarget); err != nil {
 			writeError(w, http.StatusBadGateway, err)
 		}
+		return
+	}
+	if s.isManagedHostMirroredSession(sessionID) {
+		s.handleManagedHostSessionRunStreamControl(w, r, sessionID)
 		return
 	}
 	if s.runner == nil {
@@ -848,6 +857,20 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported run stream control type %q", inbound.Type))
 	}
+}
+
+func (s *Server) isManagedHostMirroredSession(sessionID string) bool {
+	if s == nil || s.sessions == nil {
+		return false
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return false
+	}
+	if value, ok := session.Metadata["swarm_managed_host_session"].(bool); ok && value {
+		return strings.TrimSpace(managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_swarm_id")) != ""
+	}
+	return false
 }
 
 func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStreamInboundMessage) <-chan error {

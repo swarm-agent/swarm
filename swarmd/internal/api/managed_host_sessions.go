@@ -4,26 +4,31 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
+
+	gorillaws "github.com/gorilla/websocket"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	transportws "swarm/packages/swarmd/internal/transport/ws"
 )
 
 const (
-	managedHostSessionOpenPath        = "/v1/swarm/managed-hosts/sessions/open"
-	managedHostSessionMessagePath     = "/v1/swarm/managed-hosts/sessions/message"
-	managedHostSessionRunPath         = "/v1/swarm/managed-hosts/sessions/run"
-	managedHostSessionStopPath        = "/v1/swarm/managed-hosts/sessions/stop"
-	peerManagedHostSessionOpenPath    = "/v1/swarm/peer/managed-host-sessions/open"
-	peerManagedHostSessionMessagePath = "/v1/swarm/peer/managed-host-sessions/message"
-	peerManagedHostSessionRunPath     = "/v1/swarm/peer/managed-host-sessions/run"
-	peerManagedHostSessionStopPath    = "/v1/swarm/peer/managed-host-sessions/stop"
-	peerManagedHostSessionEventPath   = "/v1/swarm/peer/managed-host-sessions/event"
+	managedHostSessionOpenPath          = "/v1/swarm/managed-hosts/sessions/open"
+	managedHostSessionMessagePath       = "/v1/swarm/managed-hosts/sessions/message"
+	managedHostSessionRunPath           = "/v1/swarm/managed-hosts/sessions/run"
+	managedHostSessionStopPath          = "/v1/swarm/managed-hosts/sessions/stop"
+	peerManagedHostSessionOpenPath      = "/v1/swarm/peer/managed-host-sessions/open"
+	peerManagedHostSessionMessagePath   = "/v1/swarm/peer/managed-host-sessions/message"
+	peerManagedHostSessionRunPath       = "/v1/swarm/peer/managed-host-sessions/run"
+	peerManagedHostSessionRunStreamPath = "/v1/swarm/peer/managed-host-sessions/run/stream"
+	peerManagedHostSessionStopPath      = "/v1/swarm/peer/managed-host-sessions/stop"
+	peerManagedHostSessionEventPath     = "/v1/swarm/peer/managed-host-sessions/event"
 )
 
 type managedHostSessionOpenRequest struct {
@@ -262,20 +267,7 @@ func (s *Server) handleManagedHostSessionRun(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
 		return
 	}
-	targetSwarmID := strings.TrimSpace(req.TargetSwarmID)
-	if targetSwarmID == "" {
-		session, ok, err := s.sessions.GetSession(req.SessionID)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if !ok {
-			writeError(w, http.StatusBadRequest, errors.New("managed host mirrored session was not found"))
-			return
-		}
-		targetSwarmID = managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_swarm_id")
-	}
-	target, _, _, status, err := s.resolveManagedHostSessionTarget(r, targetSwarmID)
+	target, status, err := s.managedHostTargetForSessionRequest(r, req.SessionID, req.TargetSwarmID)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -414,30 +406,260 @@ func (s *Server) handlePeerManagedHostSessionRun(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if strings.TrimSpace(req.SessionID) == "" {
-		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
+	accepted, status, err := s.startPeerManagedHostSessionRun(req)
+	if err != nil {
+		writeError(w, status, err)
 		return
+	}
+	writeJSON(w, http.StatusAccepted, accepted)
+}
+
+func (s *Server) handleManagedHostSessionRunStreamWebsocket(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if s.sessions == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("session id is required"))
+		return
+	}
+	target, status, err := s.managedHostTargetForSessionRequest(r, sessionID, r.URL.Query().Get("target_swarm_id"))
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	if err := s.proxyManagedHostRunStreamWebsocket(w, r, *target, sessionID); err != nil {
+		if errors.Is(err, transportws.ErrUpgradeRequired) {
+			writeError(w, http.StatusUpgradeRequired, errors.New("websocket upgrade required"))
+			return
+		}
+		writeError(w, http.StatusBadGateway, err)
+	}
+}
+
+func (s *Server) handleManagedHostSessionRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if s.sessions == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("session id is required"))
+		return
+	}
+	target, status, err := s.managedHostTargetForSessionRequest(r, sessionID, r.URL.Query().Get("target_swarm_id"))
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	var inbound runStreamInboundMessage
+	if err := decodeJSON(r, &inbound); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	inbound.SessionID = sessionID
+	var peerResp managedHostSessionRunAccepted
+	if err := s.postPeerJSONToSwarmTarget(r.Context(), *target, peerManagedHostSessionRunStreamPath, inbound, &peerResp); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, peerResp)
+}
+
+func (s *Server) proxyManagedHostRunStreamWebsocket(w http.ResponseWriter, r *http.Request, target swarmTarget, sessionID string) error {
+	if !isWebsocketUpgradeRequest(r) {
+		return transportws.ErrUpgradeRequired
+	}
+	if s.swarm == nil {
+		return errors.New("swarm service not configured")
+	}
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		return err
+	}
+	state, err := s.currentSwarmState(cfg)
+	if err != nil {
+		return err
+	}
+	peerToken, err := s.outgoingPeerAuthTokenForTarget(r, target)
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + peerManagedHostSessionRunStreamPath
+	wsEndpoint, err := websocketEndpointForBackend(endpoint)
+	if err != nil {
+		return err
+	}
+	headers := cloneHeaderForUpstreamWebsocket(r.Header)
+	headers.Set(peerAuthSwarmIDHeader, strings.TrimSpace(state.Node.SwarmID))
+	headers.Set(peerAuthTokenHeader, peerToken)
+	upstream, resp, err := gorillaws.DefaultDialer.DialContext(r.Context(), wsEndpoint, headers)
+	if err != nil {
+		return summarizeWebsocketDialError(err, resp)
+	}
+	defer upstream.Close()
+	downstream, err := transportws.Accept(w, r)
+	if err != nil {
+		return err
+	}
+	defer downstream.Close()
+	first, err := downstream.ReadText()
+	if err != nil {
+		return err
+	}
+	patched, err := managedHostRunStreamStartPayloadWithSession(first, sessionID)
+	if err != nil {
+		return err
+	}
+	if err := upstream.WriteMessage(gorillaws.TextMessage, patched); err != nil {
+		return err
+	}
+	bridgeWebsocketText(downstream, upstream)
+	return nil
+}
+
+func managedHostRunStreamStartPayloadWithSession(raw []byte, sessionID string) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		payload["session_id"] = strings.TrimSpace(sessionID)
+	}
+	return json.Marshal(payload)
+}
+
+func (s *Server) handlePeerManagedHostSessionRunStream(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePeerAuth(w, r) {
+		return
+	}
+	if s.runner == nil || s.runStreams == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
+		return
+	}
+	if r.Method == http.MethodPost {
+		var inbound runStreamInboundMessage
+		if err := decodeJSON(r, &inbound); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		sessionID := strings.TrimSpace(inbound.SessionID)
+		if sessionID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
+			return
+		}
+		switch strings.ToLower(strings.TrimSpace(inbound.Type)) {
+		case "run.start", "start":
+			accepted, status, err := s.startPeerManagedHostSessionRun(managedHostSessionRunRequest{SessionID: sessionID, RunRequest: inbound.RunRequest})
+			if err != nil {
+				writeError(w, status, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, accepted)
+		case "run.stop", "stop":
+			if strings.TrimSpace(inbound.RunID) == "" {
+				writeError(w, http.StatusBadRequest, errors.New("run_id is required for stop"))
+				return
+			}
+			s.runStreams.setStopReason(inbound.RunID, "run stopped by user")
+			if err := s.runner.StopSessionRun(sessionID, inbound.RunID, "run stopped by user"); err != nil {
+				writeError(w, http.StatusConflict, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "run_id": inbound.RunID})
+		default:
+			writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported run stream control type %q", strings.TrimSpace(inbound.Type)))
+		}
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusUpgradeRequired, errors.New("run stream requires websocket upgrade (GET) or control POST"))
+		return
+	}
+	conn, err := transportws.Accept(w, r)
+	if err != nil {
+		if errors.Is(err, transportws.ErrUpgradeRequired) {
+			writeError(w, http.StatusUpgradeRequired, errors.New("websocket upgrade required"))
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	defer conn.Close()
+	raw, err := conn.ReadText()
+	if err != nil {
+		return
+	}
+	inbound, err := decodeRunStreamInbound(raw)
+	if err != nil {
+		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, Error: err.Error()})
+		return
+	}
+	sessionID := strings.TrimSpace(inbound.SessionID)
+	if sessionID == "" {
+		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, Error: "session_id is required"})
+		return
+	}
+	switch inbound.Type {
+	case "run.start", "start":
+		s.handlePeerManagedHostRunStreamStart(conn, sessionID, inbound)
+	case "run.resume", "resume":
+		s.handleRunStreamResume(conn, sessionID, inbound)
+	case "run.stop", "stop":
+		s.handleRunStreamStop(conn, sessionID, inbound)
+	default:
+		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: fmt.Sprintf("unsupported run stream message type %q", inbound.Type)})
+	}
+}
+
+func (s *Server) handlePeerManagedHostRunStreamStart(conn *transportws.Conn, sessionID string, inbound runStreamInboundMessage) {
+	accepted, _, err := s.startPeerManagedHostSessionRun(managedHostSessionRunRequest{SessionID: sessionID, RunRequest: inbound.RunRequest})
+	if err != nil {
+		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
+		return
+	}
+	_, sub, replay, err := s.runStreams.subscribe(accepted.RunID, inbound.LastSeq)
+	if err != nil {
+		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, RunID: accepted.RunID, Error: err.Error()})
+		return
+	}
+	defer s.runStreams.unsubscribe(accepted.RunID, sub.id)
+	if accepted.Background {
+		raw, err := json.Marshal(accepted)
+		if err == nil {
+			_ = conn.WriteText(raw)
+		}
+		return
+	}
+	s.sendRunStreamControl(conn, runStreamControlMessage{Type: "run.accepted", OK: true, SessionID: sessionID, RunID: accepted.RunID, LastSeq: inbound.LastSeq})
+	s.streamRunFrames(conn, accepted.RunID, sub, replay)
+}
+
+func (s *Server) startPeerManagedHostSessionRun(req managedHostSessionRunRequest) (managedHostSessionRunAccepted, int, error) {
+	if s == nil || s.runner == nil || s.runStreams == nil {
+		return managedHostSessionRunAccepted{}, http.StatusInternalServerError, errors.New("run service not configured")
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if req.SessionID == "" {
+		return managedHostSessionRunAccepted{}, http.StatusBadRequest, errors.New("session_id is required")
 	}
 	req.RunRequest = req.RunRequest.Normalized()
 	if req.RunRequest.Prompt == "" && !req.RunRequest.Compact {
-		writeError(w, http.StatusBadRequest, errors.New("prompt is required"))
-		return
+		return managedHostSessionRunAccepted{}, http.StatusBadRequest, errors.New("prompt is required")
 	}
 	if normalized := runruntime.NormalizeRunTargetKind(req.RunRequest.TargetKind); req.RunRequest.TargetKind != "" && normalized == "" {
-		writeError(w, http.StatusBadRequest, errors.New("unsupported target_kind"))
-		return
+		return managedHostSessionRunAccepted{}, http.StatusBadRequest, errors.New("unsupported target_kind")
 	}
 	state, err := s.runStreams.newRun(req.SessionID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+		return managedHostSessionRunAccepted{}, http.StatusInternalServerError, err
 	}
 	started := s.startManagedHostRunStreamExecution(state.runID, req.SessionID, req.RunRequest)
 	if startErr := <-started; startErr != nil {
-		writeError(w, http.StatusBadRequest, startErr)
-		return
+		return managedHostSessionRunAccepted{}, http.StatusBadRequest, startErr
 	}
-	writeJSON(w, http.StatusAccepted, managedHostSessionRunAccepted{OK: true, SessionID: req.SessionID, RunID: state.runID, Status: "accepted", Background: req.RunRequest.Background, TargetKind: strings.TrimSpace(req.RunRequest.TargetKind), TargetName: strings.TrimSpace(req.RunRequest.TargetName), OwnerTransport: "managed_host_peer"})
+	return managedHostSessionRunAccepted{OK: true, SessionID: req.SessionID, RunID: state.runID, Status: "accepted", Background: req.RunRequest.Background, TargetKind: strings.TrimSpace(req.RunRequest.TargetKind), TargetName: strings.TrimSpace(req.RunRequest.TargetName), OwnerTransport: "managed_host_peer"}, http.StatusAccepted, nil
 }
 
 func (s *Server) handlePeerManagedHostSessionStop(w http.ResponseWriter, r *http.Request) {
@@ -619,6 +841,28 @@ func (s *Server) publishManagedHostSessionEventToPrimary(event runruntime.Stream
 	return s.postPeerJSONToSwarmTarget(s.runCtx, target, peerManagedHostSessionEventPath, managedHostSessionEventRequest{SessionID: event.SessionID, EventType: event.Type, Payload: payload, CausationID: event.RunID}, nil)
 }
 
+func (s *Server) managedHostTargetForSessionRequest(r *http.Request, sessionID, targetSwarmID string) (*swarmTarget, int, error) {
+	targetSwarmID = strings.TrimSpace(targetSwarmID)
+	if targetSwarmID == "" {
+		session, ok, err := s.sessions.GetSession(sessionID)
+		if err != nil {
+			return nil, http.StatusBadRequest, err
+		}
+		if !ok {
+			return nil, http.StatusBadRequest, errors.New("managed host mirrored session was not found")
+		}
+		targetSwarmID = managedHostSessionStringMetadata(session.Metadata, "swarm_managed_host_swarm_id")
+	}
+	if targetSwarmID == "" {
+		return nil, http.StatusBadRequest, errors.New("target_swarm_id is required")
+	}
+	target, _, _, status, err := s.resolveManagedHostSessionTarget(requestWithSwarmTargetQuery(r, targetSwarmID), targetSwarmID)
+	if err != nil {
+		return nil, status, err
+	}
+	return target, http.StatusOK, nil
+}
+
 func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID string) (*swarmTarget, string, string, int, error) {
 	if s == nil || s.swarm == nil {
 		return nil, "", "", http.StatusInternalServerError, errors.New("swarm service is not configured")
@@ -648,7 +892,7 @@ func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID 
 	if strings.TrimSpace(target.BackendURL) == "" {
 		return nil, "", "", http.StatusBadRequest, errors.New("managed host route is missing")
 	}
-	if !target.Selectable {
+	if !target.Selectable && !strings.EqualFold(strings.TrimSpace(target.SwarmID), targetSwarmID) {
 		return nil, "", "", http.StatusBadRequest, errors.New("managed host is not selectable")
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), swarmTargetHealthTimeout)
