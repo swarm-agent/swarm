@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
+	"swarm/packages/swarmd/internal/flowdiaglog"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
@@ -52,11 +53,13 @@ func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.flows == nil {
+		flowdiaglog.Printf("peer_apply_no_store", "remote_addr=%q peer_header_swarm_id=%q path=%q", strings.TrimSpace(r.RemoteAddr), peerSwarmID, r.URL.Path)
 		writeError(w, http.StatusInternalServerError, errors.New("flow store is not configured"))
 		return
 	}
 	var command flow.AssignmentCommand
 	if err := decodeJSON(r, &command); err != nil {
+		flowdiaglog.Printf("peer_apply_decode_failed", "remote_addr=%q peer_header_swarm_id=%q path=%q err=%q", strings.TrimSpace(r.RemoteAddr), peerSwarmID, r.URL.Path, err.Error())
 		if strings.Contains(err.Error(), "unknown field") || strings.Contains(err.Error(), "runtime-only") {
 			writeError(w, http.StatusConflict, fmt.Errorf("peer flow protocol mismatch: %w", err))
 			return
@@ -90,8 +93,16 @@ func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
 		ack, inserted, err = s.flows.ApplyTargetAssignmentCommand(command, targetSwarmID, now)
 	}
 	if err != nil {
+		flowdiaglog.Printf("peer_apply_store_failed", "flow_id=%q command_id=%q action=%q target_swarm_id=%q db_path=%q accepted_key=%q err=%q", command.FlowID, command.CommandID, command.Action, targetSwarmID, s.flows.StorePath(), pebblestore.KeyFlowTargetAccepted(command.FlowID), err.Error())
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if normalizeAPIFlowAssignmentCommand(command).Action == flow.CommandDelete {
+		_, exists, verifyErr := s.flows.GetAcceptedAssignment(command.FlowID)
+		flowdiaglog.Printf("peer_apply_delete_verify", "flow_id=%q command_id=%q action=%q target_swarm_id=%q db_path=%q accepted_key=%q accepted_exists_after_delete=%t ack_status=%q ack_revision=%d inserted=%t verify_err=%q", command.FlowID, command.CommandID, command.Action, targetSwarmID, s.flows.StorePath(), pebblestore.KeyFlowTargetAccepted(command.FlowID), exists, ack.Status, ack.AcceptedRevision, inserted, errString(verifyErr))
+	} else {
+		accepted, exists, verifyErr := s.flows.GetAcceptedAssignment(command.FlowID)
+		flowdiaglog.Printf("peer_apply_accept_verify", "flow_id=%q command_id=%q action=%q target_swarm_id=%q db_path=%q accepted_key=%q accepted_exists_after_apply=%t accepted_revision=%d ack_status=%q ack_revision=%d inserted=%t verify_err=%q", command.FlowID, command.CommandID, command.Action, targetSwarmID, s.flows.StorePath(), pebblestore.KeyFlowTargetAccepted(command.FlowID), exists, accepted.Revision, ack.Status, ack.AcceptedRevision, inserted, errString(verifyErr))
 	}
 	writeJSON(w, http.StatusOK, flowAssignmentApplyResponse{OK: true, Ack: ack, Inserted: inserted})
 }
@@ -206,8 +217,10 @@ func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCo
 	}
 	stored, err := s.flows.PutOutboxCommand(record, nil)
 	if err != nil {
+		flowdiaglog.Printf("controller_enqueue_outbox_failed", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q err=%q", command.FlowID, command.CommandID, command.Action, s.flows.StorePath(), resolved.SwarmID, err.Error())
 		return pebblestore.FlowOutboxCommandRecord{}, err
 	}
+	flowdiaglog.Printf("controller_enqueue_outbox_saved", "flow_id=%q command_id=%q action=%q revision=%d controller_db_path=%q target_swarm_id=%q outbox_status=%q", stored.FlowID, stored.CommandID, stored.Command.Action, stored.Revision, s.flows.StorePath(), stored.TargetSwarmID, stored.Status)
 	_, err = s.flows.PutAssignmentStatus(pebblestore.FlowAssignmentStatusRecord{
 		FlowID:          key.FlowID,
 		TargetSwarmID:   resolved.SwarmID,
@@ -218,8 +231,10 @@ func (s *Server) enqueueFlowAssignmentCommandForTarget(command flow.AssignmentCo
 		Reason:          "assignment command queued for target sync",
 	})
 	if err != nil {
+		flowdiaglog.Printf("controller_enqueue_status_failed", "flow_id=%q command_id=%q controller_db_path=%q target_swarm_id=%q err=%q", command.FlowID, command.CommandID, s.flows.StorePath(), resolved.SwarmID, err.Error())
 		return pebblestore.FlowOutboxCommandRecord{}, err
 	}
+	flowdiaglog.Printf("controller_enqueue_status_saved", "flow_id=%q command_id=%q revision=%d controller_db_path=%q target_swarm_id=%q status=%q reason=%q", key.FlowID, key.CommandID, key.Revision, s.flows.StorePath(), resolved.SwarmID, flow.AssignmentPendingSync, "assignment command queued for target sync")
 	return stored, nil
 }
 
@@ -278,6 +293,7 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 	}
 	if strings.TrimSpace(target.BackendURL) == "" || !target.Online || !target.Selectable {
 		reason := firstNonEmpty(strings.TrimSpace(target.LastError), "target is not currently reachable")
+		flowdiaglog.Printf("controller_deliver_blocked_target_unreachable", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q target_kind=%q target_name=%q backend_url_present=%t online=%t selectable=%t reason=%q", record.FlowID, record.CommandID, record.Command.Action, s.flows.StorePath(), target.SwarmID, target.Kind, target.Name, strings.TrimSpace(target.BackendURL) != "", target.Online, target.Selectable, reason)
 		updated, state, err := s.markFlowAssignmentPending(record, flow.AssignmentTargetOffline, reason, nil)
 		return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, PendingSync: true}, err
 	}
@@ -294,16 +310,20 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 		"target_backend_url_present", strings.TrimSpace(target.BackendURL) != "",
 	)
 	var resp flowAssignmentApplyResponse
+	flowdiaglog.Printf("controller_http_post_start", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q target_kind=%q target_name=%q endpoint=%q accepted_key_expected_on_child=%q", record.FlowID, record.CommandID, record.Command.Action, s.flows.StorePath(), target.SwarmID, target.Kind, target.Name, strings.TrimRight(strings.TrimSpace(target.BackendURL), "/")+flowPeerApplyPath, pebblestore.KeyFlowTargetAccepted(record.FlowID))
 	deliverErr := s.postPeerJSONToSwarmTarget(ctx, target, flowPeerApplyPath, record.Command, &resp)
 	if deliverErr != nil {
+		flowdiaglog.Printf("controller_http_post_failed", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q endpoint=%q err=%q", record.FlowID, record.CommandID, record.Command.Action, s.flows.StorePath(), target.SwarmID, strings.TrimRight(strings.TrimSpace(target.BackendURL), "/")+flowPeerApplyPath, deliverErr.Error())
 		updated, state, updateErr := s.markFlowAssignmentPending(record, flow.AssignmentTargetOffline, deliverErr.Error(), nil)
 		if updateErr != nil {
 			return flowAssignmentDeliverResult{}, updateErr
 		}
 		return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, PendingSync: true}, nil
 	}
+	flowdiaglog.Printf("controller_http_post_response", "flow_id=%q command_id=%q target_swarm_id=%q response_ok=%t response_inserted=%t ack_command_id=%q ack_flow_id=%q ack_target_swarm_id=%q ack_status=%q ack_revision=%d", record.FlowID, record.CommandID, target.SwarmID, resp.OK, resp.Inserted, resp.Ack.CommandID, resp.Ack.FlowID, resp.Ack.TargetSwarmID, resp.Ack.Status, resp.Ack.AcceptedRevision)
 	ack, validationErr := validateFlowAssignmentApplyResponse(record, resp)
 	if validationErr != nil {
+		flowdiaglog.Printf("controller_ack_validation_failed", "flow_id=%q command_id=%q controller_db_path=%q target_swarm_id=%q ack_command_id=%q ack_flow_id=%q ack_target_swarm_id=%q ack_status=%q ack_revision=%d err=%q", record.FlowID, record.CommandID, s.flows.StorePath(), target.SwarmID, ack.CommandID, ack.FlowID, ack.TargetSwarmID, ack.Status, ack.AcceptedRevision, validationErr.Error())
 		updated, state, updateErr := s.markFlowAssignmentPending(record, flow.AssignmentTargetUnusable, validationErr.Error(), nil)
 		if updateErr != nil {
 			return flowAssignmentDeliverResult{}, updateErr
@@ -312,8 +332,10 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 	}
 	updated, state, err := s.applyFlowAssignmentAck(record, ack)
 	if err != nil {
+		flowdiaglog.Printf("controller_ack_apply_failed", "flow_id=%q command_id=%q controller_db_path=%q target_swarm_id=%q ack_status=%q ack_revision=%d err=%q", record.FlowID, record.CommandID, s.flows.StorePath(), target.SwarmID, ack.Status, ack.AcceptedRevision, err.Error())
 		return flowAssignmentDeliverResult{}, err
 	}
+	flowdiaglog.Printf("controller_ack_applied", "flow_id=%q command_id=%q controller_db_path=%q target_swarm_id=%q outbox_status=%q assignment_status=%q accepted_revision=%d pending_sync=%t", record.FlowID, record.CommandID, s.flows.StorePath(), target.SwarmID, updated.Status, state.Status, state.AcceptedRevision, state.PendingSync)
 	return flowAssignmentDeliverResult{
 		Outbox:          updated,
 		AssignmentState: state,
@@ -385,6 +407,10 @@ func normalizeFlowAssignmentAckForAPI(ack flow.AssignmentAck) flow.AssignmentAck
 
 func (s *Server) applyFlowAssignmentAck(record pebblestore.FlowOutboxCommandRecord, ack flow.AssignmentAck) (pebblestore.FlowOutboxCommandRecord, pebblestore.FlowAssignmentStatusRecord, error) {
 	ack = normalizeFlowAssignmentAckForAPI(ack)
+	defer func() {
+		// Logging is performed before returns below; this defer documents that this
+		// function is the controller-only accepted-state transition point.
+	}()
 	previous := record
 	if ack.Status == flow.AssignmentAccepted || ack.Status == flow.AssignmentDuplicate {
 		record.Status = pebblestore.FlowOutboxStatusDelivered
@@ -412,8 +438,10 @@ func (s *Server) applyFlowAssignmentAck(record pebblestore.FlowOutboxCommandReco
 	}
 	storedState, err := s.flows.PutAssignmentStatus(state)
 	if err != nil {
+		flowdiaglog.Printf("controller_assignment_status_write_failed", "flow_id=%q command_id=%q controller_db_path=%q target_swarm_id=%q status=%q err=%q", record.FlowID, record.CommandID, s.flows.StorePath(), state.TargetSwarmID, state.Status, err.Error())
 		return pebblestore.FlowOutboxCommandRecord{}, pebblestore.FlowAssignmentStatusRecord{}, err
 	}
+	flowdiaglog.Printf("controller_assignment_state_saved", "flow_id=%q command_id=%q controller_db_path=%q target_swarm_id=%q outbox_status=%q assignment_status=%q accepted_revision=%d pending_sync=%t reason=%q", record.FlowID, record.CommandID, s.flows.StorePath(), storedState.TargetSwarmID, updated.Status, storedState.Status, storedState.AcceptedRevision, storedState.PendingSync, storedState.Reason)
 	return updated, storedState, nil
 }
 
@@ -442,8 +470,10 @@ func (s *Server) markFlowAssignmentPending(record pebblestore.FlowOutboxCommandR
 	}
 	storedState, err := s.flows.PutAssignmentStatus(state)
 	if err != nil {
+		flowdiaglog.Printf("controller_assignment_pending_write_failed", "flow_id=%q command_id=%q controller_db_path=%q target_swarm_id=%q status=%q reason=%q err=%q", record.FlowID, record.CommandID, s.flows.StorePath(), state.TargetSwarmID, state.Status, state.Reason, err.Error())
 		return pebblestore.FlowOutboxCommandRecord{}, pebblestore.FlowAssignmentStatusRecord{}, err
 	}
+	flowdiaglog.Printf("controller_assignment_pending_saved", "flow_id=%q command_id=%q controller_db_path=%q target_swarm_id=%q outbox_status=%q assignment_status=%q next_attempt=%q reason=%q", record.FlowID, record.CommandID, s.flows.StorePath(), storedState.TargetSwarmID, updated.Status, storedState.Status, updated.NextAttemptAt.Format(time.RFC3339Nano), storedState.Reason)
 	return updated, storedState, nil
 }
 

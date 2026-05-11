@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/flowdiaglog"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -206,6 +207,7 @@ func (s *Server) proxyRoutedSessionRequest(w http.ResponseWriter, r *http.Reques
 func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarget, path string, payload any, out any) error {
 	startedAt := time.Now()
 	if s.swarm == nil {
+		flowdiaglog.Printf("peer_http_post_no_swarm_service", "target_swarm_id=%q path=%q backend_url_present=%t", target.SwarmID, path, strings.TrimSpace(target.BackendURL) != "")
 		return errors.New("swarm service not configured")
 	}
 	cfg, err := s.loadStartupConfig()
@@ -218,15 +220,19 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 	}
 	peerToken, err := s.outgoingPeerAuthTokenForTarget(nil, target)
 	if err != nil {
+		flowdiaglog.Printf("peer_http_post_auth_token_failed", "target_swarm_id=%q path=%q backend_url_present=%t err=%q", target.SwarmID, path, strings.TrimSpace(target.BackendURL) != "", err.Error())
 		return err
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
+		flowdiaglog.Printf("peer_http_post_marshal_failed", "target_swarm_id=%q path=%q err=%q", target.SwarmID, path, err.Error())
 		return err
 	}
 	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + path
+	flowdiaglog.Printf("peer_http_post_request", "source_swarm_id=%q target_swarm_id=%q path=%q endpoint=%q payload_bytes=%d", strings.TrimSpace(state.Node.SwarmID), target.SwarmID, path, endpoint, len(raw))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
+		flowdiaglog.Printf("peer_http_post_request_build_failed", "target_swarm_id=%q path=%q endpoint=%q err=%q", target.SwarmID, path, endpoint, err.Error())
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -235,6 +241,7 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("routed peer request failed swarm_id=%q path=%q elapsed_ms=%d err=%v", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), time.Since(startedAt).Milliseconds(), err)
+		flowdiaglog.Printf("peer_http_post_do_failed", "target_swarm_id=%q path=%q endpoint=%q elapsed_ms=%d err=%q", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), endpoint, time.Since(startedAt).Milliseconds(), err.Error())
 		return err
 	}
 	defer resp.Body.Close()
@@ -245,16 +252,24 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 		_ = json.NewDecoder(resp.Body).Decode(&failure)
 		if strings.TrimSpace(failure.Error) != "" {
 			log.Printf("routed peer request failed swarm_id=%q path=%q status=%d elapsed_ms=%d err=%q", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), resp.StatusCode, time.Since(startedAt).Milliseconds(), strings.TrimSpace(failure.Error))
+			flowdiaglog.Printf("peer_http_post_status_failed", "target_swarm_id=%q path=%q endpoint=%q status=%d elapsed_ms=%d err=%q", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), endpoint, resp.StatusCode, time.Since(startedAt).Milliseconds(), strings.TrimSpace(failure.Error))
 			return errors.New(strings.TrimSpace(failure.Error))
 		}
 		log.Printf("routed peer request failed swarm_id=%q path=%q status=%d elapsed_ms=%d err=%q", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), resp.StatusCode, time.Since(startedAt).Milliseconds(), resp.Status)
+		flowdiaglog.Printf("peer_http_post_status_failed", "target_swarm_id=%q path=%q endpoint=%q status=%d elapsed_ms=%d err=%q", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), endpoint, resp.StatusCode, time.Since(startedAt).Milliseconds(), resp.Status)
 		return errors.New(resp.Status)
 	}
 	log.Printf("routed peer request success swarm_id=%q path=%q status=%d elapsed_ms=%d", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), resp.StatusCode, time.Since(startedAt).Milliseconds())
+	flowdiaglog.Printf("peer_http_post_status_success", "target_swarm_id=%q path=%q endpoint=%q status=%d elapsed_ms=%d", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), endpoint, resp.StatusCode, time.Since(startedAt).Milliseconds())
 	if out == nil {
 		return nil
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		flowdiaglog.Printf("peer_http_post_decode_response_failed", "target_swarm_id=%q path=%q endpoint=%q status=%d err=%q", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), endpoint, resp.StatusCode, err.Error())
+		return err
+	}
+	flowdiaglog.Printf("peer_http_post_decode_response_success", "target_swarm_id=%q path=%q endpoint=%q status=%d", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), endpoint, resp.StatusCode)
+	return nil
 }
 
 func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {

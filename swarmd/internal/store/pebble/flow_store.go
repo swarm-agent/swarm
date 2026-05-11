@@ -445,6 +445,13 @@ func (s *FlowStore) ListMirroredRunSummaries(flowID string, limit int) ([]FlowRu
 	return s.listRunSummaries(FlowMirroredRunPrefix(flowID), limit)
 }
 
+func (s *FlowStore) StorePath() string {
+	if s == nil || s.store == nil {
+		return ""
+	}
+	return s.store.Path()
+}
+
 func (s *FlowStore) PutAcceptedAssignment(record flow.AcceptedAssignment) (flow.AcceptedAssignment, error) {
 	if s == nil || s.store == nil {
 		return flow.AcceptedAssignment{}, errors.New("flow store is not configured")

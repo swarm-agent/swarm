@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"swarm/packages/swarmd/internal/flowdiaglog"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -21,7 +22,9 @@ func flowRouteDiagLog(stage string, fields ...any) {
 		}
 		parts = append(parts, fmt.Sprintf("%s=%q", key, strings.TrimSpace(fmt.Sprint(fields[i+1]))))
 	}
-	log.Printf("flow_route_diag stage=%q %s", stage, strings.Join(parts, " "))
+	message := fmt.Sprintf("flow_route_diag stage=%q %s", stage, strings.Join(parts, " "))
+	log.Print(message)
+	flowdiaglog.Append(message)
 }
 
 func flowRouteDiagMetadataValue(metadata map[string]any, key string) string {
