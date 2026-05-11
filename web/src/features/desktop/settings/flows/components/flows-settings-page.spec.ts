@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { formToCreateInput } from './flows-settings-page'
+import { formToCreateInput, workspaceOptionsFromEntries } from './flows-settings-page'
 import type { FlowAgentProfile, FlowSwarmTarget, FlowWorkspaceEntry } from '../api'
 
 test('formToCreateInput maps manual and scheduled flows without auto-run intent', () => {
@@ -99,4 +99,42 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
   assert.equal(monthly.schedule.time, '09:00')
   assert.deepEqual(monthly.schedule.times, ['09:00'])
   assert.equal(monthly.schedule.month_day, 15)
+})
+
+
+test('workspaceOptionsFromEntries only exposes supplied target workspace records', () => {
+  const currentTargetWorkspaces: FlowWorkspaceEntry[] = [
+    {
+      path: '/target-a/one',
+      workspaceName: 'one',
+      themeId: '',
+      directories: [],
+      isGitRepo: true,
+      replicationLinks: [],
+      sortIndex: 0,
+      addedAt: 0,
+      updatedAt: 0,
+      lastSelectedAt: 0,
+      active: true,
+      worktreeEnabled: false,
+    },
+    {
+      path: '/target-a/one',
+      workspaceName: 'duplicate should not render twice',
+      themeId: '',
+      directories: [],
+      isGitRepo: true,
+      replicationLinks: [],
+      sortIndex: 1,
+      addedAt: 0,
+      updatedAt: 0,
+      lastSelectedAt: 0,
+      active: false,
+      worktreeEnabled: false,
+    },
+  ]
+
+  const options = workspaceOptionsFromEntries(currentTargetWorkspaces)
+  assert.deepEqual(options.map((option) => option.key), ['/target-a/one'])
+  assert.equal(options[0]?.workspace.path, '/target-a/one')
 })

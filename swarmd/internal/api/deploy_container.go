@@ -648,6 +648,54 @@ func (s *Server) handleDeployContainerSyncPermissions(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerSyncPermissions, "bundle": bundle})
 }
 
+func (s *Server) handleDeployContainerManagedCredentialsApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	syncSvc, ok := s.deployContainers.(interface {
+		ApplyManagedCredentialBundle(context.Context, deployruntime.ContainerSyncCredentialBundle) error
+	})
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container credential sync not configured"))
+		return
+	}
+	var bundle deployruntime.ContainerSyncCredentialBundle
+	if err := decodeJSON(r, &bundle); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := syncSvc.ApplyManagedCredentialBundle(context.Background(), bundle); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerManagedCredentialsApply, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerManagedCredentialsApply})
+}
+
+func (s *Server) handleDeployContainerManagedAgentsApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	syncSvc, ok := s.deployContainers.(interface {
+		ApplyManagedAgentBundle(context.Context, deployruntime.ContainerSyncAgentBundle) error
+	})
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container agent sync not configured"))
+		return
+	}
+	var bundle deployruntime.ContainerSyncAgentBundle
+	if err := decodeJSON(r, &bundle); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := syncSvc.ApplyManagedAgentBundle(context.Background(), bundle); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerManagedAgentsApply, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerManagedAgentsApply})
+}
+
 func (s *Server) handleDeployContainerManagedSkillsApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

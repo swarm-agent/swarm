@@ -14,6 +14,7 @@ import (
 type Service struct {
 	authStore *pebblestore.AuthStore
 	events    *pebblestore.EventLog
+	publish   func(pebblestore.EventEnvelope)
 }
 
 type CodexStatus struct {
@@ -52,6 +53,13 @@ type ConnectionStatus struct {
 	Method     string `json:"method,omitempty"`
 	Message    string `json:"message,omitempty"`
 	VerifiedAt int64  `json:"verified_at,omitempty"`
+}
+
+func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {
+	if s == nil {
+		return
+	}
+	s.publish = publish
 }
 
 type AutoDefaultsStatus struct {
@@ -535,6 +543,9 @@ func (s *Service) appendAuthEvent(eventType, entity string, payloadObj any) (*pe
 	env, err := s.events.Append("system:auth", eventType, entity, payload, "", "")
 	if err != nil {
 		return nil, err
+	}
+	if s.publish != nil {
+		s.publish(env)
 	}
 	return &env, nil
 }

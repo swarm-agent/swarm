@@ -439,9 +439,11 @@ func swarmStateWithManagedPeer(backendURL, token string) swarmruntime.LocalState
 }
 
 type fakeReplicateDeployService struct {
-	lastCreateInput          deployruntime.ContainerCreateInput
-	lastAttachApproveInput   deployruntime.ContainerAttachApproveInput
-	lastSyncAgentBundleInput deployruntime.ContainerSyncCredentialRequestInput
+	lastCreateInput             deployruntime.ContainerCreateInput
+	lastAttachApproveInput      deployruntime.ContainerAttachApproveInput
+	lastSyncAgentBundleInput    deployruntime.ContainerSyncCredentialRequestInput
+	lastAppliedCredentialBundle deployruntime.ContainerSyncCredentialBundle
+	lastAppliedAgentBundle      deployruntime.ContainerSyncAgentBundle
 }
 
 func (f *fakeReplicateDeployService) RuntimeStatus(context.Context) (deployruntime.ContainerRuntimeStatus, error) {
@@ -511,6 +513,16 @@ func (f *fakeReplicateDeployService) SyncCredentialBundle(context.Context, deplo
 func (f *fakeReplicateDeployService) SyncAgentBundle(_ context.Context, input deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncAgentBundle, error) {
 	f.lastSyncAgentBundleInput = input
 	return deployruntime.ContainerSyncAgentBundle{}, nil
+}
+
+func (f *fakeReplicateDeployService) ApplyManagedCredentialBundle(_ context.Context, bundle deployruntime.ContainerSyncCredentialBundle) error {
+	f.lastAppliedCredentialBundle = bundle
+	return nil
+}
+
+func (f *fakeReplicateDeployService) ApplyManagedAgentBundle(_ context.Context, bundle deployruntime.ContainerSyncAgentBundle) error {
+	f.lastAppliedAgentBundle = bundle
+	return nil
 }
 
 func (f *fakeReplicateDeployService) WorkspaceBootstrap(context.Context, deployruntime.ContainerWorkspaceBootstrapRequestInput) ([]deployruntime.ContainerWorkspaceBootstrap, error) {

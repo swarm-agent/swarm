@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
+	deployruntime "swarm/packages/swarmd/internal/deploy"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 )
 
@@ -48,5 +51,66 @@ func TestDeployContainerAttachApproveAcceptsPeerAuthTokens(t *testing.T) {
 	}
 	if fakeDeploy.lastAttachApproveInput.ChildToHostPeerAuthToken != "child-to-host-token" {
 		t.Fatalf("child to host token = %q, want %q", fakeDeploy.lastAttachApproveInput.ChildToHostPeerAuthToken, "child-to-host-token")
+	}
+}
+
+func TestDeployContainerManagedCredentialsApplyAcknowledgesBundle(t *testing.T) {
+	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	fakeDeploy := &fakeReplicateDeployService{}
+	server.SetDeployContainerService(fakeDeploy)
+
+	payload, err := json.Marshal(deployruntime.ContainerSyncCredentialBundle{
+		OwnerSwarmID:   "host-swarm",
+		BundlePassword: "bundle-password",
+		Bundle:         []byte("bundle-payload"),
+		Exported:       1,
+		SnapshotHash:   "credential-snapshot",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/container/managed/credentials/apply", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if fakeDeploy.lastAppliedCredentialBundle.OwnerSwarmID != "host-swarm" {
+		t.Fatalf("owner swarm id = %q, want host-swarm", fakeDeploy.lastAppliedCredentialBundle.OwnerSwarmID)
+	}
+	if string(fakeDeploy.lastAppliedCredentialBundle.Bundle) != "bundle-payload" {
+		t.Fatalf("bundle payload = %q, want bundle-payload", string(fakeDeploy.lastAppliedCredentialBundle.Bundle))
+	}
+}
+
+func TestDeployContainerManagedAgentsApplyAcknowledgesBundle(t *testing.T) {
+	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	fakeDeploy := &fakeReplicateDeployService{}
+	server.SetDeployContainerService(fakeDeploy)
+
+	payload, err := json.Marshal(deployruntime.ContainerSyncAgentBundle{
+		State:        agentruntime.State{Profiles: []pebblestore.AgentProfile{{Name: "probe", Mode: "subagent", Enabled: true}}},
+		SnapshotHash: "agent-snapshot",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/container/managed/agents/apply", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if fakeDeploy.lastAppliedAgentBundle.SnapshotHash != "agent-snapshot" {
+		t.Fatalf("agent snapshot = %q, want agent-snapshot", fakeDeploy.lastAppliedAgentBundle.SnapshotHash)
+	}
+	if len(fakeDeploy.lastAppliedAgentBundle.State.Profiles) != 1 || fakeDeploy.lastAppliedAgentBundle.State.Profiles[0].Name != "probe" {
+		t.Fatalf("applied agent profiles = %#v", fakeDeploy.lastAppliedAgentBundle.State.Profiles)
 	}
 }

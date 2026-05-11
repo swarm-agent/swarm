@@ -1,6 +1,7 @@
 import { requestJson } from '../../../../app/api'
 import { fetchSwarmTargets, type SwarmTarget, type SwarmTargetsResponse } from '../../swarm/api/swarm-targets'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
+import { fetchManagedWorkspaceInventory } from '../../swarm/api/managed-workspace-replication'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { AgentProfileRecord } from '../../../desktop/chat/types/chat'
 
@@ -258,8 +259,24 @@ export async function fetchFlowSwarmTargets(): Promise<FlowSwarmTarget[]> {
   return Array.isArray(response.targets) ? response.targets : []
 }
 
-export async function fetchFlowWorkspaces(): Promise<FlowWorkspaceEntry[]> {
-  return listWorkspaces(200)
+export async function fetchFlowWorkspaces(target?: FlowSwarmTarget | null, signal?: AbortSignal): Promise<FlowWorkspaceEntry[]> {
+  if (!target) {
+    return []
+  }
+  const kind = target.kind?.trim().toLowerCase()
+  const relationship = target.relationship?.trim().toLowerCase()
+  if (kind === 'self' || relationship === 'self') {
+    return listWorkspaces(200)
+  }
+  if (signal?.aborted) {
+    throw new DOMException('The operation was aborted.', 'AbortError')
+  }
+  const swarmID = target.swarm_id?.trim()
+  if (!swarmID) {
+    return []
+  }
+  const inventory = await fetchManagedWorkspaceInventory({ targetSwarmID: swarmID, limit: 200 })
+  return inventory.savedWorkspaces
 }
 
 export async function createFlow(input: CreateFlowInput): Promise<FlowDetailRecord> {

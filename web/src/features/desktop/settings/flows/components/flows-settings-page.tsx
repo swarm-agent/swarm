@@ -99,6 +99,7 @@ interface AddFlowForm {
 
 const flowSwarmTargetsQueryKey = ['flows', 'swarm-targets'] as const
 const flowWorkspacesQueryKey = ['flows', 'workspaces'] as const
+const flowWorkspacesForTargetQueryKey = (targetKey: string) => [...flowWorkspacesQueryKey, 'target', targetKey] as const
 
 interface FlowTargetOption {
   key: string
@@ -489,6 +490,19 @@ function workspaceOptionHelper(workspace: FlowWorkspaceEntry): string {
   return [workspace.active ? 'active' : '', linkedCount ? `${linkedCount} linked swarm${linkedCount === 1 ? '' : 's'}` : '', directoryCount ? `${directoryCount} director${directoryCount === 1 ? 'y' : 'ies'}` : '']
     .filter(Boolean)
     .join(' • ')
+}
+
+export function workspaceOptionsFromEntries(workspaces: FlowWorkspaceEntry[]): FlowWorkspaceOption[] {
+  const seen = new Set<string>()
+  return workspaces
+    .map((workspace) => ({ key: workspaceOptionKey(workspace), label: workspaceOptionLabel(workspace), helper: workspaceOptionHelper(workspace), workspace }))
+    .filter((option) => {
+      if (!option.key || seen.has(option.key)) {
+        return false
+      }
+      seen.add(option.key)
+      return true
+    })
 }
 
 function agentOptionKey(profile: FlowAgentProfile): string {
@@ -915,6 +929,7 @@ function FlowSettingsModal({
   workspaceOptions,
   agentOptions,
   loadingOptions,
+  loadWorkspacesForTarget,
 }: {
   open: boolean
   mode?: 'create' | 'edit'
@@ -927,18 +942,24 @@ function FlowSettingsModal({
   workspaceOptions: FlowWorkspaceOption[]
   agentOptions: FlowAgentOption[]
   loadingOptions?: boolean
+  loadWorkspacesForTarget: (target: FlowSwarmTarget, signal?: AbortSignal) => Promise<FlowWorkspaceEntry[]>
 }) {
   const defaultInitialForm = useMemo(() => initialAddFlowForm(targetOptions, workspaceOptions, agentOptions), [agentOptions, targetOptions, workspaceOptions])
   const effectiveInitialForm = useMemo(() => initialForm ?? defaultInitialForm, [defaultInitialForm, initialForm])
   const [form, setForm] = useState<AddFlowForm>(effectiveInitialForm)
+  const [targetWorkspaceOptions, setTargetWorkspaceOptions] = useState<FlowWorkspaceOption[]>(workspaceOptions)
+  const [targetWorkspacesLoading, setTargetWorkspacesLoading] = useState(false)
+  const [targetWorkspacesError, setTargetWorkspacesError] = useState('')
   const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
     if (open) {
       setForm(effectiveInitialForm)
+      setTargetWorkspaceOptions(workspaceOptions)
+      setTargetWorkspacesError('')
       setNow(new Date())
     }
-  }, [effectiveInitialForm, open])
+  }, [effectiveInitialForm, open, workspaceOptions])
 
   useEffect(() => {
     if (!open) {
@@ -948,9 +969,59 @@ function FlowSettingsModal({
     return () => window.clearInterval(interval)
   }, [open])
 
+  useEffect(() => {
+    if (!open) {
+      return undefined
+    }
+    const targetKey = form.targetKey
+    const target = targetOptions.find((option) => option.key === targetKey)?.target
+    if (!target) {
+      setTargetWorkspaceOptions([])
+      setForm((current) => current.workspacePath ? { ...current, workspacePath: '' } : current)
+      return undefined
+    }
+    const controller = new AbortController()
+    setTargetWorkspacesLoading(true)
+    setTargetWorkspacesError('')
+    void loadWorkspacesForTarget(target, controller.signal)
+      .then((workspaces) => {
+        if (controller.signal.aborted) {
+          return
+        }
+        const options = workspaceOptionsFromEntries(workspaces)
+        setTargetWorkspaceOptions(options)
+        setForm((current) => {
+          if (current.targetKey !== targetKey) {
+            return current
+          }
+          if (options.some((option) => option.key === current.workspacePath)) {
+            return current
+          }
+          return { ...current, workspacePath: options.find((option) => option.workspace.active)?.key ?? options[0]?.key ?? '' }
+        })
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) {
+          return
+        }
+        setTargetWorkspaceOptions([])
+        setTargetWorkspacesError(err instanceof Error ? err.message : 'Failed to load target workspaces')
+        setForm((current) => current.targetKey === targetKey && current.workspacePath ? { ...current, workspacePath: '' } : current)
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setTargetWorkspacesLoading(false)
+        }
+      })
+    return () => controller.abort()
+  }, [form.targetKey, loadWorkspacesForTarget, open, targetOptions])
+
   if (!open) {
     return null
   }
+
+  const scopedWorkspaceOptions = targetWorkspaceOptions
+  const selectorsLoading = loadingOptions || targetWorkspacesLoading
 
   const update = (field: keyof AddFlowForm) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const value = event.target.value
@@ -965,6 +1036,9 @@ function FlowSettingsModal({
       }
       if (field === 'dailyRunCount' || field === 'dailyIntervalHours' || field === 'dailyWindowStart' || field === 'dailyWindowEnd') {
         return { ...current, [field]: value, highRunCountConfirmed: false }
+      }
+      if (field === 'targetKey') {
+        return { ...current, targetKey: value, workspacePath: '' }
       }
       return { ...current, [field]: value }
     })
@@ -985,21 +1059,21 @@ function FlowSettingsModal({
 
   const schedulePreview = buildScheduleLabel(form)
   const selectedTarget = targetOptions.find((option) => option.key === form.targetKey)
-  const selectedWorkspace = workspaceOptions.find((option) => option.key === form.workspacePath)
+  const selectedWorkspace = scopedWorkspaceOptions.find((option) => option.key === form.workspacePath)
   const selectedAgent = agentOptions.find((option) => option.key === form.agentKey)
   const guidedScheduleTimes = scheduleTimesForCadence(form)
   const cronPreviewTimes = cronPreviewLabels(form.cronExpression)
   const selectedScheduleDayValues = selectedScheduleDays(form.scheduleDay)
   const selectedTimezoneNow = timeInZone(form.timezone, now)
   const needsHighRunCountConfirmation = form.scheduleMode === 'guided' && form.scheduleCadence === 'Daily' && guidedScheduleTimes.length > highDailyRunWarningThreshold
-  const canSubmit = Boolean(selectedTarget && selectedWorkspace && selectedAgent && form.task.trim()) && (form.scheduleMode !== 'cron' || Boolean(form.cronExpression.trim())) && (!needsHighRunCountConfirmation || form.highRunCountConfirmed) && !busy
+  const canSubmit = Boolean(selectedTarget && selectedWorkspace && selectedAgent && form.task.trim()) && (form.scheduleMode !== 'cron' || Boolean(form.cronExpression.trim())) && (!needsHighRunCountConfirmation || form.highRunCountConfirmed) && !busy && !targetWorkspacesLoading
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (!canSubmit) {
       return
     }
-    onConfirm(formToCreateInput(form, targetOptions, workspaceOptions, agentOptions, enabledOverride))
+    onConfirm(formToCreateInput(form, targetOptions, scopedWorkspaceOptions, agentOptions, enabledOverride))
     setForm(effectiveInitialForm)
   }
 
@@ -1039,11 +1113,11 @@ function FlowSettingsModal({
               </label>
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Workspace</span>
-                <select data-testid="flows-add-workspace" value={form.workspacePath} onChange={update('workspacePath')} className={fieldClass} disabled={loadingOptions || !workspaceOptions.length}>
-                  {workspaceOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                <select data-testid="flows-add-workspace" value={form.workspacePath} onChange={update('workspacePath')} className={fieldClass} disabled={selectorsLoading || !scopedWorkspaceOptions.length}>
+                  {scopedWorkspaceOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                 </select>
                 <span className={helperClass}>
-                  {loadingOptions ? 'Loading real workspaces…' : selectedWorkspace?.helper || 'No workspace records returned by the controller.'}
+                  {targetWorkspacesLoading ? 'Loading target workspaces…' : targetWorkspacesError || selectedWorkspace?.helper || 'No workspace records returned by the selected target.'}
                 </span>
               </label>
               <label className="flex flex-col gap-2">
@@ -1387,7 +1461,6 @@ export function FlowsSettingsPage() {
   const activeSessionId = useDesktopStore((state) => state.activeSessionId)
   const flowsQuery = useQuery({ queryKey: flowsQueryKey, queryFn: ({ signal }) => fetchFlows(signal) })
   const swarmTargetsQuery = useQuery({ queryKey: flowSwarmTargetsQueryKey, queryFn: fetchFlowSwarmTargets })
-  const flowWorkspacesQuery = useQuery({ queryKey: flowWorkspacesQueryKey, queryFn: fetchFlowWorkspaces })
   const agentStateQuery = useQuery(agentStateQueryOptions())
   const [selectedFlowRecord, setSelectedFlowRecord] = useState<FlowDetailRecord | null>(null)
   const flows = useMemo(() => (flowsQuery.data ?? []).map(recordToFlow), [flowsQuery.data])
@@ -1415,18 +1488,7 @@ export function FlowsSettingsPage() {
         return true
       })
   }, [swarmTargetsQuery.data])
-  const addWorkspaceOptions = useMemo<FlowWorkspaceOption[]>(() => {
-    const seen = new Set<string>()
-    return (flowWorkspacesQuery.data ?? [])
-      .map((workspace) => ({ key: workspaceOptionKey(workspace), label: workspaceOptionLabel(workspace), helper: workspaceOptionHelper(workspace), workspace }))
-      .filter((option) => {
-        if (!option.key || seen.has(option.key)) {
-          return false
-        }
-        seen.add(option.key)
-        return true
-      })
-  }, [flowWorkspacesQuery.data])
+  const addWorkspaceOptions = useMemo<FlowWorkspaceOption[]>(() => [], [])
   const savedAgentOptions = useMemo<FlowAgentOption[]>(() => {
     const seen = new Set<string>()
     return (agentStateQuery.data?.profiles ?? [])
@@ -1447,7 +1509,14 @@ export function FlowsSettingsPage() {
       })
       .sort((left, right) => left.label.localeCompare(right.label))
   }, [agentStateQuery.data?.profiles])
-  const loadingAddFlowOptions = swarmTargetsQuery.isLoading || flowWorkspacesQuery.isLoading || agentStateQuery.isLoading
+  const loadingAddFlowOptions = swarmTargetsQuery.isLoading || agentStateQuery.isLoading
+  const loadFlowWorkspacesForTarget = useCallback((target: FlowSwarmTarget, signal?: AbortSignal) => {
+    const targetKey = targetOptionKey(target)
+    return queryClient.fetchQuery({
+      queryKey: flowWorkspacesForTargetQueryKey(targetKey),
+      queryFn: () => fetchFlowWorkspaces(target, signal),
+    })
+  }, [queryClient])
 
   const workspaces = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.workspace)))], [flows])
   const agents = useMemo(() => ['all', ...Array.from(new Set(flows.map((flow) => flow.agent)))], [flows])
@@ -1685,6 +1754,7 @@ export function FlowsSettingsPage() {
           workspaceOptions={addWorkspaceOptions}
           agentOptions={savedAgentOptions}
           loadingOptions={loadingAddFlowOptions}
+          loadWorkspacesForTarget={loadFlowWorkspacesForTarget}
         />
       </>
     )
@@ -1716,7 +1786,7 @@ export function FlowsSettingsPage() {
       {flowsQuery.isLoading ? (
         <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">Loading flows…</div>
       ) : null}
-      {swarmTargetsQuery.isError || flowWorkspacesQuery.isError || agentStateQuery.isError ? (
+      {swarmTargetsQuery.isError || agentStateQuery.isError ? (
         <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning)]">
           Add Flow selectors could not load real controller targets, workspaces, or saved agents. Refresh after the controller endpoints recover.
         </div>
@@ -1883,6 +1953,7 @@ export function FlowsSettingsPage() {
         workspaceOptions={addWorkspaceOptions}
         agentOptions={savedAgentOptions}
         loadingOptions={loadingAddFlowOptions}
+        loadWorkspacesForTarget={loadFlowWorkspacesForTarget}
       />
     </div>
   )

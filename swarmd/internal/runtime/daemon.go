@@ -151,7 +151,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	codexClient := codex.NewClient(authStore)
 	toolRuntime := tool.NewRuntime(8)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	agentSvc.SetEventPublisher(hub.Publish)
 	modelCatalog := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
 	modelSvc := model.NewServiceWithFavorites(
 		pebblestore.NewModelStore(store),
@@ -206,6 +205,21 @@ func New(cfg config.Config) (*Daemon, error) {
 	)
 	swarmNodeStore := pebblestore.NewSwarmNodeStore(store)
 	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc)
+	publishAndSync := func(env pebblestore.EventEnvelope) {
+		hub.Publish(env)
+		if deployContainerSvc == nil {
+			return
+		}
+		go func(eventType string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := deployContainerSvc.PushManagedSyncToLocalChildren(ctx, eventType); err != nil {
+				log.Printf("warning: managed local container sync failed after %s: %v", eventType, err)
+			}
+		}(strings.TrimSpace(env.EventType))
+	}
+	agentSvc.SetEventPublisher(publishAndSync)
+	authSvc.SetEventPublisher(publishAndSync)
 	remoteDeploySvc := remotedeploy.NewService(pebblestore.NewRemoteDeploySessionStore(store), swarmNodeStore, swarmSvc, swarmStore, localContainerSvc, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD)
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
