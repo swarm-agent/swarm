@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { formToCreateInput, groupedAgentOptions, workspaceOptionsFromEntries } from './flows-settings-page'
+import { flowHasUnresolvedTarget, formToCreateInput, groupedAgentOptions, recordToFlow, workspaceOptionsFromEntries } from './flows-settings-page'
 import type { FlowAgentProfile, FlowSwarmTarget, FlowWorkspaceEntry } from '../api'
 
 test('formToCreateInput maps manual and scheduled flows without auto-run intent', () => {
@@ -234,4 +234,31 @@ test('formToCreateInput stores only selected real agent identifiers from every g
     assert.equal(input.agent.profile_name.includes(agent.groupLabel), false)
     assert.equal(input.agent.profile_name.includes('—'), false)
   }
+})
+
+
+test('recordToFlow marks saved flows with unresolved targets as needing review and stale', () => {
+  const record = {
+    definition: {
+      flow_id: 'flow-stale',
+      revision: 1,
+      name: 'Stale flow',
+      enabled: true,
+      target: { swarm_id: 'swarm-missing', kind: 'local' },
+      agent: { profile_name: 'swarm', profile_mode: 'primary' },
+      workspace: { workspace_path: '/tmp/workspace' },
+      schedule: { cadence: 'daily', time: '09:00', times: ['09:00'], timezone: 'UTC' },
+      catch_up_policy: { mode: 'once' },
+      intent: { prompt: 'Run task' },
+    },
+    target_detail: null,
+    history_count: 0,
+  }
+
+  assert.equal(flowHasUnresolvedTarget(record), true)
+  const flow = recordToFlow(record)
+  assert.equal(flow.status, 'needs_review')
+  assert.equal(flow.targetStale, true)
+  assert.equal(flow.target, 'swarm-missing (stale)')
+  assert.match(flow.targetStaleReason, /swarm-missing/)
 })

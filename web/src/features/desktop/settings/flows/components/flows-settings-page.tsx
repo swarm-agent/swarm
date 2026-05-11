@@ -73,6 +73,8 @@ interface FlowDefinition {
   runs: FlowRun[]
   assignmentStatuses: Array<{ label: string; detail: string; pendingSync: boolean }>
   outbox: Array<{ commandID: string; status: string; detail: string }>
+  targetStale: boolean
+  targetStaleReason: string
   raw: FlowSummaryRecord
 }
 
@@ -742,6 +744,19 @@ function cadenceLabel(cadence: string): ScheduleCadence {
   }
 }
 
+function targetSelectionLabel(selection: FlowSummaryRecord['definition']['target']): string {
+  return selection.swarm_id?.trim() || selection.deployment_id?.trim() || selection.name?.trim() || selection.kind?.trim() || 'target'
+}
+
+export function flowHasUnresolvedTarget(record: FlowSummaryRecord): boolean {
+  const hasTarget = Boolean(targetSelectionLabel(record.definition.target) !== 'target')
+  return Boolean(record.target_stale || (hasTarget && !record.target_detail))
+}
+
+function flowUnresolvedTargetReason(record: FlowSummaryRecord): string {
+  return record.target_stale_reason?.trim() || `Saved flow target ${targetSelectionLabel(record.definition.target)} no longer resolves.`
+}
+
 function scheduleLabelFromRecord(record: FlowSummaryRecord): string {
   const schedule = record.definition.schedule
   const cadence = cadenceLabel(schedule.cadence)
@@ -761,6 +776,9 @@ function scheduleLabelFromRecord(record: FlowSummaryRecord): string {
 }
 
 function statusFromRecord(record: FlowSummaryRecord): FlowStatus {
+  if (flowHasUnresolvedTarget(record)) {
+    return 'needs_review'
+  }
   if (record.last_run?.status === 'failed') {
     return 'failed'
   }
@@ -820,7 +838,10 @@ export function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
     summary: run.summary || run.status,
   }))
   const workspace = record.workspace_detail?.workspace_path?.trim() || assignment.workspace.workspace_path?.trim() || assignment.workspace.host_workspace_path?.trim() || 'workspace'
-  const target = record.target_detail?.name?.trim() || record.target_detail?.swarm_id?.trim() || assignment.target.name?.trim() || assignment.target.swarm_id?.trim() || assignment.target.kind?.trim() || 'local'
+  const targetStale = flowHasUnresolvedTarget(record)
+  const target = targetStale
+    ? `${targetSelectionLabel(assignment.target)} (stale)`
+    : record.target_detail?.name?.trim() || record.target_detail?.swarm_id?.trim() || assignment.target.name?.trim() || assignment.target.swarm_id?.trim() || assignment.target.kind?.trim() || 'local'
   const agent = record.agent_detail?.name?.trim() || assignment.agent.profile_name?.trim() || 'unknown agent'
   const tasks = assignment.intent.tasks?.length
     ? assignment.intent.tasks.map(normalizeTask)
@@ -858,6 +879,8 @@ export function recordToFlow(record: FlowSummaryRecord): FlowDefinition {
     runs,
     assignmentStatuses,
     outbox,
+    targetStale,
+    targetStaleReason: targetStale ? flowUnresolvedTargetReason(record) : '',
     raw: record,
   }
 }
@@ -1428,6 +1451,12 @@ function FlowDetail({
           </Button>
         </div>
       </div>
+
+      {flow.targetStale ? (
+        <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning)]">
+          This flow points at a target that no longer resolves. You can delete it safely from this page. {flow.targetStaleReason}
+        </div>
+      ) : null}
 
       <section className="grid gap-x-10 gap-y-6 border-b border-[var(--app-border)] pb-8 md:grid-cols-3">
         {[

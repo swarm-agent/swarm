@@ -51,6 +51,8 @@ type flowV3WorkspaceDetail struct {
 type flowV3Record struct {
 	Definition         flowV3Definition                         `json:"definition"`
 	TargetDetail       *swarmTarget                             `json:"target_detail,omitempty"`
+	TargetStale        bool                                     `json:"target_stale,omitempty"`
+	TargetStaleReason  string                                   `json:"target_stale_reason,omitempty"`
 	AgentDetail        *pebblestore.AgentProfile                `json:"agent_detail,omitempty"`
 	WorkspaceDetail    *flowV3WorkspaceDetail                   `json:"workspace_detail,omitempty"`
 	AssignmentStatuses []pebblestore.FlowAssignmentStatusRecord `json:"assignment_statuses,omitempty"`
@@ -416,7 +418,8 @@ func (s *Server) deleteFlowV3(r *http.Request, flowID string) (flowV3Record, flo
 	deletedDefinition.DeletedAt = time.Now().UTC()
 	command := flow.AssignmentCommand{CommandID: newFlowCommandID(definition.FlowID, definition.Revision, flow.CommandDelete), FlowID: definition.FlowID, Revision: definition.Revision, Action: flow.CommandDelete, CreatedAt: deletedDefinition.DeletedAt, Assignment: definition.Assignment}
 	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
-	if err != nil {
+	staleTarget := flowV3IsMissingTargetError(err)
+	if err != nil && !staleTarget {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
 	if result.PendingSync {
@@ -435,8 +438,12 @@ func (s *Server) deleteFlowV3(r *http.Request, flowID string) (flowV3Record, flo
 	statuses, _ := s.flows.ListAssignmentStatuses(definition.FlowID, 100)
 	outbox, _ := s.flows.ListOutboxCommands("", 100)
 	history, _ := s.flows.ListMirroredRunSummaries(definition.FlowID, 100)
-	record, err := s.flowV3RecordForDefinition(r, deletedDefinition, statuses, history, flowV3OutboxForFlow(outbox, definition.FlowID))
-	return record, result, err
+	record, recordErr := s.flowV3RecordForDefinition(r, deletedDefinition, statuses, history, flowV3OutboxForFlow(outbox, definition.FlowID))
+	if staleTarget {
+		record.TargetStale = true
+		record.TargetStaleReason = strings.TrimSpace(err.Error())
+	}
+	return record, result, recordErr
 }
 
 func (s *Server) flowV3Detail(r *http.Request, flowID string) (flowV3Record, bool, error) {
@@ -559,6 +566,11 @@ func (s *Server) flowV3RecordForDefinition(r *http.Request, definition pebblesto
 	if err != nil {
 		return flowV3Record{}, err
 	}
+	targetStale := flowV3HasTargetSelection(definition.Assignment.Target) && targetDetail == nil
+	targetStaleReason := ""
+	if targetStale {
+		targetStaleReason = fmt.Sprintf("flow target %q was not found", flowV3TargetSelectionLabel(definition.Assignment.Target))
+	}
 	agentDetail, err := s.flowV3AgentDetail(definition.Assignment.Agent)
 	if err != nil {
 		return flowV3Record{}, err
@@ -586,6 +598,8 @@ func (s *Server) flowV3RecordForDefinition(r *http.Request, definition pebblesto
 			DeletedAt:     definition.DeletedAt,
 		},
 		TargetDetail:       targetDetail,
+		TargetStale:        targetStale,
+		TargetStaleReason:  targetStaleReason,
 		AgentDetail:        agentDetail,
 		WorkspaceDetail:    flowV3WorkspaceDetailFromContext(definition.Assignment.Workspace),
 		AssignmentStatuses: append([]pebblestore.FlowAssignmentStatusRecord(nil), statuses...),
@@ -733,7 +747,7 @@ func (s *Server) requireFlowV3TargetDetail(r *http.Request, selection flow.Targe
 		return nil, err
 	}
 	if detail == nil {
-		return nil, fmt.Errorf("flow target %q was not found", firstNonEmpty(selection.SwarmID, selection.DeploymentID, selection.Name, selection.Kind))
+		return nil, fmt.Errorf("flow target %q was not found", flowV3TargetSelectionLabel(selection))
 	}
 	return detail, nil
 }
@@ -782,6 +796,15 @@ func (s *Server) requireFlowV3AgentDetail(agent flow.AgentSelection) (*pebblesto
 func flowV3HasTargetSelection(selection flow.TargetSelection) bool {
 	selection = normalizeFlowTargetSelection(selection)
 	return selection.SwarmID != "" || selection.Kind != "" || selection.DeploymentID != "" || selection.Name != ""
+}
+
+func flowV3TargetSelectionLabel(selection flow.TargetSelection) string {
+	selection = normalizeFlowTargetSelection(selection)
+	return firstNonEmpty(selection.SwarmID, selection.DeploymentID, selection.Name, selection.Kind, "target")
+}
+
+func flowV3IsMissingTargetError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "flow target") && strings.Contains(strings.ToLower(strings.TrimSpace(err.Error())), "was not found")
 }
 
 func flowV3HasAgentSelection(agent flow.AgentSelection) bool {

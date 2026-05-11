@@ -137,6 +137,8 @@ export interface FlowWorkspaceDetail {
 export interface FlowSummaryRecord {
   definition: FlowDefinitionRecord
   target_detail?: FlowSwarmTarget | null
+  target_stale?: boolean
+  target_stale_reason?: string
   agent_detail?: FlowAgentProfileDetail | null
   workspace_detail?: FlowWorkspaceDetail | null
   assignment_statuses?: FlowAssignmentStatusRecord[]

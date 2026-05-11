@@ -696,3 +696,53 @@ func TestFlowsV3RejectsMissingTargetAndBadTarget(t *testing.T) {
 func boolPtr(value bool) *bool {
 	return &value
 }
+
+func TestFlowsV3DeleteAllowsStaleMissingTarget(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	assignment := flow.Assignment{
+		FlowID:   "flow-v3-stale-target",
+		Revision: 1,
+		Name:     "Stale target flow",
+		Enabled:  true,
+		Target:   flow.TargetSelection{SwarmID: "swarm-missing", Kind: "local"},
+		Agent:    flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath: t.TempDir(),
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Clean up stale flow."},
+	}
+	if _, err := flows.PutDefinition(pebblestore.FlowDefinitionRecord{FlowID: assignment.FlowID, Revision: assignment.Revision, Assignment: assignment}); err != nil {
+		t.Fatalf("put stale definition: %v", err)
+	}
+	getRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-v3-stale-target", nil))
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var getPayload flowV3RecordResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if !getPayload.TargetStale || !strings.Contains(getPayload.TargetStaleReason, "swarm-missing") {
+		t.Fatalf("stale target markers = stale:%v reason:%q", getPayload.TargetStale, getPayload.TargetStaleReason)
+	}
+
+	deleteRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/v3/flows/flow-v3-stale-target", nil))
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	var deletePayload flowV3MutationResponse
+	if err := json.Unmarshal(deleteRec.Body.Bytes(), &deletePayload); err != nil {
+		t.Fatalf("decode delete: %v", err)
+	}
+	if !deletePayload.Flow.TargetStale || !strings.Contains(deletePayload.Flow.TargetStaleReason, "swarm-missing") {
+		t.Fatalf("delete stale markers = stale:%v reason:%q", deletePayload.Flow.TargetStale, deletePayload.Flow.TargetStaleReason)
+	}
+	if _, ok, err := flows.GetDefinition("flow-v3-stale-target"); err != nil || ok {
+		t.Fatalf("definition after stale delete ok=%v err=%v", ok, err)
+	}
+}
