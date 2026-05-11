@@ -91,13 +91,17 @@ func TestNextMemoryCompactionIndex(t *testing.T) {
 	}
 }
 
-func TestBuildManualCompactionAssistantTextAcknowledgementOnly(t *testing.T) {
+func TestBuildManualCompactionAssistantTextIncludesUserVisibleRecap(t *testing.T) {
 	text := buildManualCompactionAssistantText("important compact summary", 3, "Plan title (plan_1)")
-	if text != "Manual context compact complete (Compact #3)." {
-		t.Fatalf("manual compact assistant text = %q", text)
-	}
-	if strings.Contains(text, "important compact summary") || strings.Contains(text, "Compacted recap:") || strings.Contains(text, "Plan title") {
-		t.Fatalf("manual compact acknowledgement should not repeat checkpoint content: %s", text)
+	for _, want := range []string{
+		"Manual context compact complete (Compact #3).",
+		"Compacted recap:",
+		"important compact summary",
+		"Attached plan: Plan title (plan_1)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("manual compact assistant text missing %q:\n%s", want, text)
+		}
 	}
 }
 

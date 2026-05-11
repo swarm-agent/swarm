@@ -2243,10 +2243,22 @@ func buildCompactionCheckpointMessage(compactSummary, origin string, compactInde
 }
 
 func buildManualCompactionAssistantText(compactSummary string, compactIndex int, attachedPlanLabel string) string {
+	compactSummary = strings.TrimSpace(compactSummary)
+	if compactSummary == "" {
+		compactSummary = "(empty compact summary)"
+	}
 	if compactIndex <= 0 {
 		compactIndex = 2
 	}
-	return fmt.Sprintf("Manual context compact complete (Compact #%d).", compactIndex)
+	lines := []string{
+		fmt.Sprintf("Manual context compact complete (Compact #%d).", compactIndex),
+		"Compacted recap:",
+		compactSummary,
+	}
+	if attachedPlanLabel = strings.TrimSpace(attachedPlanLabel); attachedPlanLabel != "" {
+		lines = append(lines, "Attached plan: "+attachedPlanLabel)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n\n"))
 }
 
 func compactedContextCheckpointMetadata(activePlan *pebblestore.SessionPlanSnapshot) map[string]any {
