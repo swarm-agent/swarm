@@ -202,44 +202,56 @@ type ProviderDefaultsPreviewWire = {
   overwrite_explicit?: boolean;
 };
 
-type AgentStateWire = {
-  state?: {
-    profiles?: Array<{
-      name?: string;
-      mode?: string;
-      description?: string;
-      provider?: string;
-      model?: string;
-      thinking?: string;
-      prompt?: string;
-      execution_setting?: string;
-      exit_plan_mode_enabled?: boolean;
-      tool_scope?: {
-        preset?: string;
-        allow_tools?: string[];
-        deny_tools?: string[];
+type AgentProfileWire = {
+  name?: string;
+  mode?: string;
+  description?: string;
+  provider?: string;
+  model?: string;
+  thinking?: string;
+  prompt?: string;
+  execution_setting?: string;
+  exit_plan_mode_enabled?: boolean;
+  tool_scope?: {
+    preset?: string;
+    allow_tools?: string[];
+    deny_tools?: string[];
+    bash_prefixes?: string[];
+    inherit_policy?: boolean;
+  } | null;
+  tool_contract?: {
+    preset?: string;
+    inherit_policy?: boolean;
+    tools?: Record<
+      string,
+      {
+        enabled?: boolean;
         bash_prefixes?: string[];
-        inherit_policy?: boolean;
-      } | null;
-      tool_contract?: {
-        preset?: string;
-        inherit_policy?: boolean;
-        tools?: Record<
-          string,
-          {
-            enabled?: boolean;
-            bash_prefixes?: string[];
-          }
-        >;
-      } | null;
-      enabled?: boolean;
-      protected?: boolean;
-      updated_at?: number;
-    }>;
-    active_primary?: string;
-    active_subagent?: Record<string, string>;
-    version?: number;
-  };
+      }
+    >;
+  } | null;
+  enabled?: boolean;
+  protected?: boolean;
+  updated_at?: number;
+};
+
+type AgentStatePayloadWire = {
+  profiles?: AgentProfileWire[];
+  active_primary?: string;
+  active_subagent?: Record<string, string>;
+  version?: number;
+};
+
+type AgentStateWire = {
+  state?: AgentStatePayloadWire;
+  provider_defaults_preview?: ProviderDefaultsPreviewWire | null;
+};
+
+type ActivatePrimaryAgentWire = {
+  ok?: boolean;
+  active_primary?: string;
+  version?: number;
+  state?: AgentStatePayloadWire;
   provider_defaults_preview?: ProviderDefaultsPreviewWire | null;
 };
 
@@ -817,15 +829,13 @@ export async function updateDraftModelPreference(
   };
 }
 
-export async function fetchAgentState(
-  signal?: AbortSignal,
-): Promise<AgentStateRecord> {
-  const response = await requestJson<AgentStateWire>("/v2/agents?limit=200", {
-    signal,
-  });
+function mapAgentStateWire(
+  state?: AgentStatePayloadWire,
+  providerDefaultsPreview?: ProviderDefaultsPreviewWire | null,
+): AgentStateRecord {
   return {
-    profiles: Array.isArray(response.state?.profiles)
-      ? response.state.profiles.map((profile) => ({
+    profiles: Array.isArray(state?.profiles)
+      ? state.profiles.map((profile) => ({
           name: String(profile.name ?? "").trim(),
           mode: String(profile.mode ?? "").trim(),
           description: String(profile.description ?? "").trim(),
@@ -905,14 +915,20 @@ export async function fetchAgentState(
             typeof profile.updated_at === "number" ? profile.updated_at : 0,
         }))
       : [],
-    activePrimary: String(response.state?.active_primary ?? "").trim(),
-    activeSubagent: response.state?.active_subagent ?? {},
-    version:
-      typeof response.state?.version === "number" ? response.state.version : 0,
-    providerDefaultsPreview: mapProviderDefaultsPreview(
-      response.provider_defaults_preview,
-    ),
+    activePrimary: String(state?.active_primary ?? "").trim(),
+    activeSubagent: state?.active_subagent ?? {},
+    version: typeof state?.version === "number" ? state.version : 0,
+    providerDefaultsPreview: mapProviderDefaultsPreview(providerDefaultsPreview),
   };
+}
+
+export async function fetchAgentState(
+  signal?: AbortSignal,
+): Promise<AgentStateRecord> {
+  const response = await requestJson<AgentStateWire>("/v2/agents?limit=200", {
+    signal,
+  });
+  return mapAgentStateWire(response.state, response.provider_defaults_preview);
 }
 
 function mapProviderDefaultsPreview(
@@ -1056,14 +1072,18 @@ export async function resetAgentDefaults(): Promise<AgentStateRecord> {
   return mapAgentDefaultsState(response);
 }
 
-export async function activatePrimaryAgent(name: string): Promise<void> {
-  await requestJson("/v2/agents/active/primary", {
+export async function activatePrimaryAgent(name: string): Promise<AgentStateRecord | null> {
+  const response = await requestJson<ActivatePrimaryAgentWire>("/v2/agents/active/primary", {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ name: name.trim() }),
   });
+  if (response.state) {
+    return mapAgentStateWire(response.state, response.provider_defaults_preview);
+  }
+  return null;
 }
 
 function sessionRequestBody(input: {
