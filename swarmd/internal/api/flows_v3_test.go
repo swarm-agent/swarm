@@ -314,6 +314,65 @@ func TestFlowsV3LocalContainerCRUDSyncsAcrossHTTPBoundary(t *testing.T) {
 	}
 }
 
+func TestFlowsV3ChildListsTargetAcceptedAssignmentsWithoutControllerDefinitions(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	acceptedAt := time.Date(2026, 5, 11, 4, 52, 43, 0, time.UTC)
+	accepted := flow.AcceptedAssignment{
+		Assignment: flow.Assignment{
+			FlowID:   "flow-child-visible",
+			Revision: 1,
+			Name:     "Child Visible Flow",
+			Enabled:  true,
+			Target:   flow.TargetSelection{SwarmID: "child-local", Kind: "local", DeploymentID: "container", Name: "container"},
+			Agent:    flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+			Workspace: flow.WorkspaceContext{
+				WorkspacePath: "/workspaces/swarm-go",
+			},
+			Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceDaily, Time: "00:00", Timezone: "Asia/Jerusalem"},
+			CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+			Intent:        flow.PromptIntent{Prompt: "target-owned schedule"},
+		},
+		AcceptedAt: acceptedAt,
+	}
+	ack, inserted, err := flows.ApplyTargetAssignmentCommand(flow.AssignmentCommand{CommandID: "cmd-install", FlowID: accepted.FlowID, Revision: accepted.Revision, Action: flow.CommandInstall, CreatedAt: acceptedAt, Assignment: accepted.Assignment}, "child-local", acceptedAt)
+	if err != nil || !inserted || ack.Status != flow.AssignmentAccepted {
+		t.Fatalf("accept target command inserted=%v ack=%+v err=%v", inserted, ack, err)
+	}
+	if _, ok, err := flows.GetDefinition("flow-child-visible"); err != nil || ok {
+		t.Fatalf("controller definition ok=%v err=%v", ok, err)
+	}
+
+	listRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/v3/flows", nil))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listPayload flowV3ListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listPayload.Flows) != 1 || listPayload.Flows[0].Definition.FlowID != "flow-child-visible" || listPayload.Flows[0].Definition.Name != "Child Visible Flow" {
+		t.Fatalf("list payload = %+v", listPayload)
+	}
+	if listPayload.Flows[0].Definition.Target.DeploymentID != "container" || listPayload.Flows[0].Definition.Agent.ProfileName != "flow-test" {
+		t.Fatalf("listed definition = %+v", listPayload.Flows[0].Definition)
+	}
+
+	getRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/v3/flows/flow-child-visible", nil))
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var getPayload flowV3RecordResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if getPayload.Definition.FlowID != "flow-child-visible" || getPayload.Definition.Revision != 1 {
+		t.Fatalf("get payload = %+v", getPayload)
+	}
+}
+
 func TestFlowsV3CreateDoesNotAutoRunOnDemandFlow(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)

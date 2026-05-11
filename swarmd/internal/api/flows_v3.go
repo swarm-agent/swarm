@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -146,19 +147,10 @@ func (s *Server) handleFlowsV3Collection(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		definitions, err := s.flows.ListDefinitions(limit)
+		items, err := s.flowV3ListRecords(r, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
-		}
-		items := make([]flowV3Record, 0, len(definitions))
-		for _, definition := range definitions {
-			item, err := s.flowV3Summary(r, definition)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			items = append(items, item)
 		}
 		writeJSON(w, http.StatusOK, flowV3ListResponse{OK: true, Flows: items})
 	case http.MethodPost:
@@ -447,7 +439,7 @@ func (s *Server) deleteFlowV3(r *http.Request, flowID string) (flowV3Record, flo
 }
 
 func (s *Server) flowV3Detail(r *http.Request, flowID string) (flowV3Record, bool, error) {
-	definition, ok, err := s.flows.GetDefinition(flowID)
+	definition, ok, err := s.flowV3DefinitionOrAccepted(flowID)
 	if err != nil || !ok {
 		return flowV3Record{}, ok, err
 	}
@@ -465,6 +457,88 @@ func (s *Server) flowV3Detail(r *http.Request, flowID string) (flowV3Record, boo
 	}
 	record, err := s.flowV3RecordForDefinition(r, definition, statuses, history, flowV3OutboxForFlow(outbox, flowID))
 	return record, true, err
+}
+
+func (s *Server) flowV3ListRecords(r *http.Request, limit int) ([]flowV3Record, error) {
+	definitions, err := s.flows.ListDefinitions(limit)
+	if err != nil {
+		return nil, err
+	}
+	accepted, err := s.flows.ListAcceptedAssignments(limit)
+	if err != nil {
+		return nil, err
+	}
+	byFlowID := make(map[string]pebblestore.FlowDefinitionRecord, len(definitions)+len(accepted))
+	for _, definition := range definitions {
+		if strings.TrimSpace(definition.FlowID) == "" {
+			continue
+		}
+		byFlowID[definition.FlowID] = definition
+	}
+	for _, assignment := range accepted {
+		if strings.TrimSpace(assignment.FlowID) == "" {
+			continue
+		}
+		if _, exists := byFlowID[assignment.FlowID]; exists {
+			continue
+		}
+		byFlowID[assignment.FlowID] = flowV3DefinitionFromAccepted(assignment)
+	}
+	items := make([]flowV3Record, 0, len(byFlowID))
+	for _, definition := range byFlowID {
+		item, err := s.flowV3Summary(r, definition)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		left := items[i].Definition.UpdatedAt
+		if left.IsZero() {
+			left = items[i].Definition.CreatedAt
+		}
+		right := items[j].Definition.UpdatedAt
+		if right.IsZero() {
+			right = items[j].Definition.CreatedAt
+		}
+		if left.Equal(right) {
+			return items[i].Definition.FlowID < items[j].Definition.FlowID
+		}
+		return left.After(right)
+	})
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func (s *Server) flowV3DefinitionOrAccepted(flowID string) (pebblestore.FlowDefinitionRecord, bool, error) {
+	definition, ok, err := s.flows.GetDefinition(flowID)
+	if err != nil || ok {
+		return definition, ok, err
+	}
+	accepted, acceptedOK, err := s.flows.GetAcceptedAssignment(flowID)
+	if err != nil || !acceptedOK {
+		return pebblestore.FlowDefinitionRecord{}, acceptedOK, err
+	}
+	return flowV3DefinitionFromAccepted(accepted), true, nil
+}
+
+func flowV3DefinitionFromAccepted(accepted flow.AcceptedAssignment) pebblestore.FlowDefinitionRecord {
+	assignment := accepted.Assignment
+	if assignment.FlowID == "" {
+		assignment.FlowID = accepted.FlowID
+	}
+	if accepted.AcceptedAt.IsZero() {
+		accepted.AcceptedAt = time.Now().UTC()
+	}
+	return pebblestore.FlowDefinitionRecord{
+		FlowID:     assignment.FlowID,
+		Revision:   assignment.Revision,
+		Assignment: assignment,
+		CreatedAt:  accepted.AcceptedAt,
+		UpdatedAt:  accepted.AcceptedAt,
+	}
 }
 
 func (s *Server) flowV3Summary(r *http.Request, definition pebblestore.FlowDefinitionRecord) (flowV3Record, error) {
