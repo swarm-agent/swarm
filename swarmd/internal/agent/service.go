@@ -761,22 +761,10 @@ func (s *Service) ActivatePrimary(name string) (string, int64, *pebblestore.Even
 		return "", 0, nil, fmt.Errorf("agent %q is not a primary agent", name)
 	}
 
-	current, ok, err := s.store.GetActivePrimary()
-	if err != nil {
-		return "", 0, nil, err
-	}
-	version, _, err := s.store.GetVersion()
-	if err != nil {
-		return "", 0, nil, err
-	}
-	if ok && strings.TrimSpace(current) == name {
-		return name, version, nil, nil
-	}
-
 	if err := s.store.SetActivePrimary(name); err != nil {
 		return "", 0, nil, err
 	}
-	version, err = s.bumpVersionLocked()
+	version, err := s.bumpVersionLocked()
 	if err != nil {
 		return "", 0, nil, err
 	}

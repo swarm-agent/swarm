@@ -199,45 +199,6 @@ func TestDeleteSwarmRequiresAnotherPrimary(t *testing.T) {
 	}
 }
 
-func TestActivatePrimaryIsIdempotentForCurrentPrimary(t *testing.T) {
-	svc, _ := newTestService(t)
-	published := make([]pebblestore.EventEnvelope, 0, 2)
-	svc.SetEventPublisher(func(event pebblestore.EventEnvelope) {
-		published = append(published, event)
-	})
-	enabled := true
-	if _, _, _, err := svc.Upsert(UpsertInput{
-		Name:        "solo",
-		Mode:        ModePrimary,
-		Description: "solo primary",
-		Prompt:      "Handle primary tasks.",
-		Enabled:     &enabled,
-	}); err != nil {
-		t.Fatalf("create solo primary: %v", err)
-	}
-	_, firstVersion, firstEvent, err := svc.ActivatePrimary("solo")
-	if err != nil {
-		t.Fatalf("first ActivatePrimary() error = %v", err)
-	}
-	if firstEvent == nil {
-		t.Fatalf("first ActivatePrimary() event = nil, want event")
-	}
-	publishedCount := len(published)
-	_, secondVersion, secondEvent, err := svc.ActivatePrimary("solo")
-	if err != nil {
-		t.Fatalf("second ActivatePrimary() error = %v", err)
-	}
-	if secondEvent != nil {
-		t.Fatalf("second ActivatePrimary() event = %#v, want nil", secondEvent)
-	}
-	if secondVersion != firstVersion {
-		t.Fatalf("second version = %d, want %d", secondVersion, firstVersion)
-	}
-	if len(published) != publishedCount {
-		t.Fatalf("published event count = %d, want %d", len(published), publishedCount)
-	}
-}
-
 func TestDeletePrimaryRequiresAnotherPrimaryForEveryPrimary(t *testing.T) {
 	svc, _ := newTestService(t)
 	enabled := true

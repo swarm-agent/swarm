@@ -23,7 +23,6 @@ import {
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import { gitStatusQueryKey } from '../git/api'
 import { agentStateQueryOptions, sessionMessagesQueryOptions, sessionPreferenceQueryKey, uiSettingsQueryKey } from '../../queries/query-options'
-import type { AgentStateRecord } from '../chat/types/chat'
 import { parseStructuredToolMessage } from '../chat/services/tool-message'
 import { mergeMessageIntoCache } from '../chat/services/message-cache'
 import { countApprovalRequiredPermissions } from '../permissions/services/permission-payload'
@@ -1096,57 +1095,6 @@ function deferDesktopCacheMutation(label: string, mutate: () => void): void {
   }, 0)
 }
 
-function mapAgentProfileFromRealtime(value: unknown): AgentStateRecord['profiles'][number] | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null
-  }
-  const profile = value as Record<string, unknown>
-  const name = String(profile.name ?? '').trim()
-  if (!name) {
-    return null
-  }
-  const executionSetting = String(profile.execution_setting ?? '').trim().toLowerCase()
-  return {
-    name,
-    mode: String(profile.mode ?? '').trim(),
-    description: String(profile.description ?? '').trim(),
-    provider: String(profile.provider ?? '').trim(),
-    model: String(profile.model ?? '').trim(),
-    thinking: String(profile.thinking ?? '').trim(),
-    prompt: String(profile.prompt ?? ''),
-    executionSetting: executionSetting === 'read' || executionSetting === 'readwrite' ? executionSetting : '',
-    exitPlanModeEnabled: Boolean(profile.exit_plan_mode_enabled),
-    toolScope: null,
-    enabled: Boolean(profile.enabled),
-    protected: Boolean(profile.protected),
-    updatedAt: typeof profile.updated_at === 'number' ? profile.updated_at : 0,
-  }
-}
-
-function agentStateFromRealtimePayload(payloadRecord: Record<string, unknown>): AgentStateRecord | null {
-  const rawState = payloadRecord.state
-  if (!rawState || typeof rawState !== 'object' || Array.isArray(rawState)) {
-    return null
-  }
-  const state = rawState as Record<string, unknown>
-  const profiles = Array.isArray(state.profiles)
-    ? state.profiles.map(mapAgentProfileFromRealtime).filter((profile): profile is AgentStateRecord['profiles'][number] => profile !== null)
-    : []
-  return {
-    profiles,
-    activePrimary: String(state.active_primary ?? payloadRecord.active_primary ?? '').trim(),
-    activeSubagent: state.active_subagent && typeof state.active_subagent === 'object' && !Array.isArray(state.active_subagent)
-      ? state.active_subagent as Record<string, string>
-      : {},
-    version: typeof state.version === 'number'
-      ? state.version
-      : typeof payloadRecord.version === 'number'
-        ? payloadRecord.version
-        : 0,
-    providerDefaultsPreview: null,
-  }
-}
-
 function syncBlockedSessionToWorkspaceOverview(queryClient: QueryClient, session: DesktopSessionRecord): void {
   const normalizedSession = patchOverviewSessionStatus(session)
   deferDesktopCacheMutation('workspace overview sync', () => {
@@ -1645,12 +1593,7 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }
   }
   if (eventType.startsWith('agent.')) {
-    const nextAgentState = agentStateFromRealtimePayload(payloadRecord)
-    deferDesktopCacheMutation('agent state sync', () => {
-      if (nextAgentState) {
-        queryClient.setQueryData(agentStateQueryOptions().queryKey, nextAgentState)
-        return
-      }
+    deferDesktopCacheMutation('agent state invalidate', () => {
       void queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey })
     })
     return { lastGlobalSeq: Math.max(state.lastGlobalSeq, envelope.global_seq ?? 0) }

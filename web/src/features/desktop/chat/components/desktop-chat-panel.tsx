@@ -1651,17 +1651,12 @@ export function DesktopChatPanel({
       return
     }
     lastActivatedAgentRef.current = nextSelectedAgent
-    void activatePrimaryAgent(nextSelectedAgent).then((nextState) => {
-      if (nextState) {
-        queryClient.setQueryData(agentStateQueryOptions().queryKey, nextState)
-      }
-      lastActivatedAgentRef.current = ''
-    }).catch((error) => {
+    void activatePrimaryAgent(nextSelectedAgent).catch((error) => {
       console.error('[desktop-chat] activate primary agent failed', error)
       lastActivatedAgentRef.current = ''
       setPanelError(error instanceof Error ? error.message : 'Failed to activate agent')
     })
-  }, [agentState.activePrimary, isFlowSession, liveSession, queryClient, selectedPrimaryAgentProfile, session])
+  }, [agentState.activePrimary, isFlowSession, liveSession, selectedPrimaryAgentProfile, session])
 
   const handleAgentSelect = useCallback(async (value: string) => {
     if (isFlowSession) {

@@ -270,17 +270,10 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		state, stateErr := s.agents.ListState(2000)
-		if stateErr != nil {
-			writeError(w, http.StatusInternalServerError, stateErr)
-			return
-		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":                        true,
-			"active_primary":            activePrimary,
-			"version":                   version,
-			"state":                     state,
-			"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
+			"ok":             true,
+			"active_primary": activePrimary,
+			"version":        version,
 		})
 		return
 	}
