@@ -2,6 +2,14 @@ import { useState } from 'react'
 import { Card } from '../../../../components/ui/card'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
+import type { SwarmTarget } from '../../../desktop/swarm/api/swarm-targets'
+import {
+  workspaceLinkDisplayPath,
+  workspaceLinkHoverTitle,
+  workspaceLinkModeLabel,
+  workspaceLinkTargetName,
+  workspacePlacementLinks,
+} from '../services/workspace-placement'
 import { formatWorkspacePath } from '../services/workspace-format'
 import { createWorkspaceThemeStyle, WORKSPACE_THEME_OPTIONS } from '../services/workspace-theme'
 import type { WorkspaceEntry } from '../types/workspace'
@@ -23,6 +31,7 @@ interface WorkspaceEditorModalProps {
   linkedDirectories: string[]
   availableDirectories: WorkspaceEditorAvailableDirectory[]
   workspaces?: WorkspaceEntry[]
+  availableSwarmTargets?: SwarmTarget[]
   canRemoveLinkedDirectories?: boolean
   error: string | null
   saving: boolean
@@ -68,6 +77,7 @@ export function WorkspaceEditorModal({
   linkedDirectories,
   availableDirectories,
   workspaces = [],
+  availableSwarmTargets = [],
   canRemoveLinkedDirectories = false,
   error,
   saving,
@@ -93,6 +103,8 @@ export function WorkspaceEditorModal({
     ...WORKSPACE_THEME_OPTIONS,
   ]
   const selectedWorkspaceIndex = workspaces.findIndex((workspace) => workspace.path === workspacePath)
+  const selectedWorkspace = selectedWorkspaceIndex >= 0 ? workspaces[selectedWorkspaceIndex] : null
+  const placementLinks = workspacePlacementLinks(selectedWorkspace?.replicationLinks ?? [], availableSwarmTargets)
 
   return (
     <div className="fixed inset-0 z-[70] grid place-items-center p-4 sm:p-6" role="dialog" aria-modal="true" aria-label={mode === 'create' ? 'Create workspace' : 'Edit workspace'}>
@@ -201,6 +213,37 @@ export function WorkspaceEditorModal({
               className="min-h-11 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-subtle)] hover:border-[var(--app-border-strong)] focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
             />
           </label>
+
+          {mode === 'edit' ? (
+            <div className="grid gap-3">
+              <span className={fieldLabelClass}>Available on</span>
+              {placementLinks.length > 0 ? (
+                <div className="grid gap-2">
+                  {placementLinks.map(({ link, target, targetType }) => {
+                    const displayPath = workspaceLinkDisplayPath(link)
+                    return (
+                      <div
+                        key={link.id || `${link.targetSwarmId}:${link.targetWorkspacePath}`}
+                        className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3 transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]"
+                        title={workspaceLinkHoverTitle(link, target)}
+                      >
+                        <div className="grid min-w-0 gap-1">
+                          <span className="truncate text-sm font-medium text-[var(--app-text)]">{workspaceLinkTargetName(link, target)}</span>
+                          {displayPath ? <span className="truncate text-xs text-[var(--app-text-muted)]">{displayPath}</span> : null}
+                          <span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceLinkModeLabel(link)}</span>
+                        </div>
+                        <span className="shrink-0 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-elevated)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-muted)]">
+                          {targetType}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className={helperTextClass}>On this host only. No Managed Host or container link is saved for this workspace.</p>
+              )}
+            </div>
+          ) : null}
 
           <div className="grid gap-2">
             <span className={fieldLabelClass}>Theme</span>

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { FolderOpen, RefreshCw, Settings } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
@@ -9,6 +10,7 @@ import { WorkspaceStatus } from '../launcher/components/workspace-status'
 import { WorkspaceCard } from '../launcher/components/workspace-card'
 import { WorkspaceFolderTree } from '../launcher/components/workspace-folder-tree'
 import { WorkspaceEditorModal, type WorkspaceEditorAvailableDirectory } from '../launcher/components/workspace-editor-modal'
+import { fetchSwarmTargets } from '../../desktop/swarm/api/swarm-targets'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../launcher/services/workspace-route'
 import { useWorkspaceLauncher } from '../launcher/state/use-workspace-launcher'
 
@@ -72,6 +74,12 @@ export function WorkspaceHomePage() {
   } = useWorkspaceLauncher()
 
   const navigate = useNavigate()
+  const swarmTargetsQuery = useQuery({
+    queryKey: ['workspace-launcher-swarm-targets'],
+    queryFn: fetchSwarmTargets,
+    staleTime: 30_000,
+  })
+  const availableSwarmTargets = swarmTargetsQuery.data?.targets ?? []
   const [modalState, setModalState] = useState<WorkspaceModalState | null>(null)
   const [draftName, setDraftName] = useState('')
   const [modalError, setModalError] = useState<string | null>(null)
@@ -359,6 +367,7 @@ export function WorkspaceHomePage() {
                         void moveWorkspaceToIndex(path, indexToMove)
                       }}
                       onDraggingChange={setDraggingWorkspacePath}
+                      availableSwarmTargets={availableSwarmTargets}
                       density="compact"
                     />
                   ))}
@@ -478,6 +487,7 @@ export function WorkspaceHomePage() {
         linkedDirectories={modalState?.sourcePaths.filter((path) => path !== modalState.workspacePath) ?? []}
         availableDirectories={modalAvailableDirectories}
         workspaces={workspaces}
+        availableSwarmTargets={availableSwarmTargets}
         canRemoveLinkedDirectories={Boolean(modalState)}
         error={modalError}
         saving={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}

@@ -1,7 +1,15 @@
-import type { CSSProperties, DragEvent } from 'react'
-import { Folder, ListChecks, Pencil, Trash2 } from 'lucide-react'
+import { useState, type CSSProperties, type DragEvent } from 'react'
+import { ChevronDown, Folder, ListChecks, Pencil, Trash2 } from 'lucide-react'
+import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
+import type { SwarmTarget } from '../../../desktop/swarm/api/swarm-targets'
+import {
+  workspaceLinkDisplayPath,
+  workspaceLinkHoverTitle,
+  workspaceLinkTargetName,
+  workspacePlacementLinks,
+} from '../services/workspace-placement'
 import { formatWorkspaceDirectories } from '../services/workspace-format'
 import { createWorkspaceAccentStyle } from '../services/workspace-theme'
 import type { WorkspaceEntry } from '../types/workspace'
@@ -19,6 +27,7 @@ interface WorkspaceCardProps {
   onToggleWorktree?: (path: string, enabled: boolean) => void
   onMoveToIndex?: (path: string, index: number) => void
   onDraggingChange?: (path: string | null) => void
+  availableSwarmTargets?: SwarmTarget[]
   density?: 'comfortable' | 'compact'
 }
 
@@ -34,10 +43,16 @@ export function WorkspaceCard({
   onToggleWorktree,
   onMoveToIndex,
   onDraggingChange,
+  availableSwarmTargets = [],
   density = 'comfortable',
 }: WorkspaceCardProps) {
   const directories = formatWorkspaceDirectories(workspace.directories)
   const cardThemeStyle = createWorkspaceAccentStyle(workspace.themeId, '--workspace-card-theme') as CSSProperties
+  const placementLinks = workspacePlacementLinks(workspace.replicationLinks, availableSwarmTargets)
+  const [linksExpanded, setLinksExpanded] = useState(false)
+  const collapseLinks = placementLinks.length > 2 && !linksExpanded
+  const visiblePlacementLinks = collapseLinks ? placementLinks.slice(0, 2) : placementLinks
+  const hiddenLinkCount = Math.max(placementLinks.length - visiblePlacementLinks.length, 0)
 
   const handleDragStart = (event: DragEvent<HTMLElement>) => {
     if (!onMoveToIndex || !onDraggingChange) {
@@ -113,17 +128,58 @@ export function WorkspaceCard({
         ) : null}
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <div className="flex items-center gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1 text-xs text-[var(--app-text-muted)]">
-          <ListChecks size={14} />
-          {workspace.todoSummary?.user.taskCount ?? 0}
-        </div>
-        {directories.length > 1 ? (
+      <div className="grid gap-2">
+        <div className="flex flex-wrap gap-2">
           <div className="flex items-center gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1 text-xs text-[var(--app-text-muted)]">
-            <Folder size={14} />
-            {directories.length}
+            <ListChecks size={14} />
+            {workspace.todoSummary?.user.taskCount ?? 0}
           </div>
-        ) : null}
+          {directories.length > 1 ? (
+            <div className="flex items-center gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1 text-xs text-[var(--app-text-muted)]">
+              <Folder size={14} />
+              {directories.length}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="grid gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Available on</span>
+          {placementLinks.length > 0 ? (
+            <div className="grid gap-1.5">
+              {visiblePlacementLinks.map(({ link, target, targetType }) => {
+                const displayPath = workspaceLinkDisplayPath(link)
+                return (
+                  <div
+                    key={link.id || `${link.targetSwarmId}:${link.targetWorkspacePath}`}
+                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-2 text-xs transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]"
+                    title={workspaceLinkHoverTitle(link, target)}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-[var(--app-text)]">{workspaceLinkTargetName(link, target)}</div>
+                      {displayPath ? <div className="truncate text-[var(--app-text-subtle)]">{displayPath}</div> : null}
+                    </div>
+                    <span className="shrink-0 rounded bg-[var(--app-surface-elevated)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">
+                      {targetType}
+                    </span>
+                  </div>
+                )
+              })}
+              {hiddenLinkCount > 0 ? (
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center justify-center gap-1.5 rounded-md border border-dashed border-[var(--app-border)] bg-transparent px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  onClick={() => setLinksExpanded(true)}
+                  aria-label={`Show ${hiddenLinkCount} more linked ${hiddenLinkCount === 1 ? 'location' : 'locations'}`}
+                >
+                  <ChevronDown size={14} />
+                  Show {hiddenLinkCount} more
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <Badge tone="neutral" className="w-fit">On this host only</Badge>
+          )}
+        </div>
       </div>
 
       <div className="mt-auto flex items-center justify-between gap-2 border-t border-[var(--app-border)] pt-3">
