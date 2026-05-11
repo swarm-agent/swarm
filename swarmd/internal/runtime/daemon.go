@@ -204,7 +204,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		cfg.DataDir,
 	)
 	swarmNodeStore := pebblestore.NewSwarmNodeStore(store)
-	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc)
+	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc, swarmNodeStore)
 	publishAndSync := func(env pebblestore.EventEnvelope) {
 		hub.Publish(env)
 		if deployContainerSvc == nil {
@@ -215,6 +215,9 @@ func New(cfg config.Config) (*Daemon, error) {
 			defer cancel()
 			if err := deployContainerSvc.PushManagedSyncToLocalChildren(ctx, eventType); err != nil {
 				log.Printf("warning: managed local container sync failed after %s: %v", eventType, err)
+			}
+			if err := deployContainerSvc.PushManagedSyncToManagedHosts(ctx, eventType); err != nil {
+				log.Printf("warning: managed host sync failed after %s: %v", eventType, err)
 			}
 		}(strings.TrimSpace(env.EventType))
 	}

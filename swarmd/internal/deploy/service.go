@@ -314,6 +314,7 @@ type Service struct {
 	containers                   *localcontainers.Service
 	swarms                       *swarmruntime.Service
 	swarmStore                   *pebblestore.SwarmStore
+	swarmNodeStore               *pebblestore.SwarmNodeStore
 	auth                         *auth.Service
 	agents                       *agentruntime.Service
 	discovery                    *discovery.Service
@@ -332,12 +333,15 @@ type Service struct {
 func NewService(store *pebblestore.DeployContainerStore, containers *localcontainers.Service, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, authSvc *auth.Service, agentSvc *agentruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath string, extras ...any) *Service {
 	var discoverySvc *discovery.Service
 	var permissionSvc *permission.Service
+	var swarmNodeStore *pebblestore.SwarmNodeStore
 	for _, extra := range extras {
 		switch value := extra.(type) {
 		case *discovery.Service:
 			discoverySvc = value
 		case *permission.Service:
 			permissionSvc = value
+		case *pebblestore.SwarmNodeStore:
+			swarmNodeStore = value
 		}
 	}
 	return &Service{
@@ -345,6 +349,7 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 		containers:                containers,
 		swarms:                    swarms,
 		swarmStore:                swarmStore,
+		swarmNodeStore:            swarmNodeStore,
 		auth:                      authSvc,
 		agents:                    agentSvc,
 		discovery:                 discoverySvc,
@@ -3862,6 +3867,70 @@ func (s *Service) PushManagedSyncToLocalChildren(ctx context.Context, reason str
 	return errors.Join(errs...)
 }
 
+func (s *Service) PushManagedSyncToManagedHosts(ctx context.Context, reason string) error {
+	if s == nil || s.swarmStore == nil || s.swarmNodeStore == nil {
+		return fmt.Errorf("deploy container service is not configured")
+	}
+	peers, err := s.swarmStore.ListTrustedPeers(500)
+	if err != nil {
+		return err
+	}
+	client := s.client
+	if client == nil {
+		client = newBootstrapClient()
+	}
+	var errs []error
+	for _, peer := range peers {
+		peerID := strings.TrimSpace(peer.SwarmID)
+		if peerID == "" || !strings.EqualFold(strings.TrimSpace(peer.Relationship), swarmruntime.RelationshipManaged) {
+			continue
+		}
+		node, ok, err := s.swarmNodeStore.Get(peerID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: managed host lookup: %w", peerID, err))
+			continue
+		}
+		if !ok || strings.TrimSpace(node.BackendURL) == "" {
+			continue
+		}
+		if err := s.pushManagedSyncToManagedHost(ctx, client, peer, node); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", peerID, err))
+			continue
+		}
+		log.Printf("deploy managed sync pushed managed_swarm_id=%q reason=%q", peerID, strings.TrimSpace(reason))
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Service) pushManagedSyncToManagedHost(ctx context.Context, client *http.Client, peer pebblestore.SwarmTrustedPeerRecord, node pebblestore.SwarmNodeRecord) error {
+	managedSwarmID := strings.TrimSpace(peer.SwarmID)
+	if managedSwarmID == "" {
+		return fmt.Errorf("managed host swarm id is required")
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(node.BackendURL), "/")
+	if baseURL == "" {
+		return fmt.Errorf("managed host backend url is required")
+	}
+	credentialBundle, err := s.SyncManagedHostCredentialBundle(ctx, ContainerSyncCredentialRequestInput{PeerSwarmID: managedSwarmID, PeerAuthorized: true})
+	if err != nil {
+		return err
+	}
+	if err := s.postManagedHostJSON(ctx, client, managedSwarmID, baseURL+"/v1/deploy/container/managed/credentials/apply", credentialBundle); err != nil {
+		return err
+	}
+	agentBundle, err := s.SyncManagedHostAgentBundle(ctx, ContainerSyncCredentialRequestInput{PeerSwarmID: managedSwarmID, PeerAuthorized: true})
+	if err != nil {
+		return err
+	}
+	if err := s.postManagedHostJSON(ctx, client, managedSwarmID, baseURL+"/v1/deploy/container/managed/agents/apply", agentBundle); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestore.DeployContainerRecord) error {
 	if record == nil {
 		return fmt.Errorf("deploy container record is required")
@@ -3959,6 +4028,14 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 }
 
 func (s *Service) postChildJSON(ctx context.Context, client *http.Client, record pebblestore.DeployContainerRecord, endpoint string, payload any, out any) error {
+	return s.postPeerJSON(ctx, client, strings.TrimSpace(record.ChildSwarmID), endpoint, payload, out)
+}
+
+func (s *Service) postManagedHostJSON(ctx context.Context, client *http.Client, managedSwarmID, endpoint string, payload any) error {
+	return s.postPeerJSON(ctx, client, strings.TrimSpace(managedSwarmID), endpoint, payload, nil)
+}
+
+func (s *Service) postPeerJSON(ctx context.Context, client *http.Client, peerSwarmID, endpoint string, payload any, out any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -3968,26 +4045,36 @@ func (s *Service) postChildJSON(ctx context.Context, client *http.Client, record
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	s.addPeerAuthHeaders(req, strings.TrimSpace(record.ChildSwarmID))
+	s.addPeerAuthHeaders(req, strings.TrimSpace(peerSwarmID))
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	var decoded struct {
-		OK    bool            `json:"ok"`
-		Error string          `json:"error"`
-		Data  json.RawMessage `json:"data"`
-	}
-	if out == nil {
-		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			return nil
+	var rawResp json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&rawResp); err != nil {
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return fmt.Errorf("child sync push response was not valid JSON")
 		}
-	} else if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return err
+	}
+	var decoded struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if len(rawResp) > 0 {
+		_ = json.Unmarshal(rawResp, &decoded)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return errors.New(firstNonEmpty(decoded.Error, fmt.Sprintf("child sync push failed with status %d", resp.StatusCode)))
+	}
+	if !decoded.OK {
+		return errors.New(firstNonEmpty(decoded.Error, "child sync push response was not ok"))
+	}
+	if out != nil {
+		if err := json.Unmarshal(rawResp, out); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 	authruntime "swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
@@ -201,5 +202,123 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 	}
 	if record.SyncLastAppliedAt == 0 || record.SyncLastError != "" {
 		t.Fatalf("sync status not acknowledged: applied_at=%d error=%q", record.SyncLastAppliedAt, record.SyncLastError)
+	}
+}
+
+func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	swarmNodeStore := pebblestore.NewSwarmNodeStore(store)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "manager-swarm", Name: "Manager", Role: "master"}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if _, err := swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{SwarmID: "managed-swarm", Name: "Managed", Relationship: swarmruntime.RelationshipManaged, OutgoingPeerAuthToken: "manager-to-managed-token"}); err != nil {
+		t.Fatalf("put trusted peer: %v", err)
+	}
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	if _, _, _, err := agentSvc.Upsert(agentruntime.UpsertInput{Name: "managed-probe", Mode: agentruntime.ModeSubagent, Prompt: "sync me", Enabled: pebblestore.BoolPtr(true)}); err != nil {
+		t.Fatalf("upsert agent: %v", err)
+	}
+	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+		t.Fatalf("upsert credential: %v", err)
+	}
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), swarmNodeStore)
+
+	agentApplyCount := 0
+	credentialApplyCount := 0
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(peerAuthSwarmIDHeader); got != "manager-swarm" {
+			t.Fatalf("peer auth swarm id = %q, want manager-swarm", got)
+		}
+		if got := r.Header.Get(peerAuthTokenHeader); got != "manager-to-managed-token" {
+			t.Fatalf("peer auth token = %q, want manager-to-managed-token", got)
+		}
+		switch r.URL.Path {
+		case "/v1/deploy/container/managed/credentials/apply":
+			credentialApplyCount++
+			var bundle ContainerSyncCredentialBundle
+			if err := json.NewDecoder(r.Body).Decode(&bundle); err != nil {
+				t.Fatalf("decode credential bundle: %v", err)
+			}
+			if bundle.OwnerSwarmID != "managed-swarm" || bundle.BundlePassword == "" || len(bundle.Bundle) == 0 || bundle.SnapshotHash == "" {
+				t.Fatalf("credential bundle incomplete: %#v", bundle)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "path_id": PathContainerManagedCredentialsApply})
+		case "/v1/deploy/container/managed/agents/apply":
+			agentApplyCount++
+			var bundle ContainerSyncAgentBundle
+			if err := json.NewDecoder(r.Body).Decode(&bundle); err != nil {
+				t.Fatalf("decode agent bundle: %v", err)
+			}
+			if len(bundle.State.Profiles) != 1 || bundle.State.Profiles[0].Name != "managed-probe" || bundle.SnapshotHash == "" {
+				t.Fatalf("agent bundle incomplete: %#v", bundle)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "path_id": PathContainerManagedAgentsApply})
+		default:
+			t.Fatalf("unexpected managed path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(managed.Close)
+	if _, err := swarmNodeStore.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed", Role: swarmruntime.RelationshipManaged, BackendURL: managed.URL, Status: "online"}); err != nil {
+		t.Fatalf("put swarm node: %v", err)
+	}
+
+	if err := deploySvc.PushManagedSyncToManagedHosts(context.Background(), "test"); err != nil {
+		t.Fatalf("PushManagedSyncToManagedHosts() error = %v", err)
+	}
+	if credentialApplyCount != 1 {
+		t.Fatalf("credential apply count = %d, want 1", credentialApplyCount)
+	}
+	if agentApplyCount != 1 {
+		t.Fatalf("agent apply count = %d, want 1", agentApplyCount)
+	}
+}
+
+func TestPushManagedSyncToManagedHostsRequiresAck(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	swarmNodeStore := pebblestore.NewSwarmNodeStore(store)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "manager-swarm", Name: "Manager", Role: "master"}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if _, err := swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{SwarmID: "managed-swarm", Name: "Managed", Relationship: swarmruntime.RelationshipManaged, OutgoingPeerAuthToken: "manager-to-managed-token"}); err != nil {
+		t.Fatalf("put trusted peer: %v", err)
+	}
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+		t.Fatalf("upsert credential: %v", err)
+	}
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), swarmNodeStore)
+
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "not applied"})
+	}))
+	t.Cleanup(managed.Close)
+	if _, err := swarmNodeStore.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed", Role: swarmruntime.RelationshipManaged, BackendURL: managed.URL, Status: "online"}); err != nil {
+		t.Fatalf("put swarm node: %v", err)
+	}
+
+	if err := deploySvc.PushManagedSyncToManagedHosts(context.Background(), "test"); err == nil {
+		t.Fatalf("PushManagedSyncToManagedHosts() error = nil, want acknowledgement failure")
 	}
 }
