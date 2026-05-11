@@ -92,15 +92,16 @@ type flowV3StatusResponse struct {
 }
 
 type flowV3UpsertRequest struct {
-	FlowID        string                `json:"flow_id,omitempty"`
-	Name          string                `json:"name"`
-	Enabled       *bool                 `json:"enabled,omitempty"`
-	Target        flow.TargetSelection  `json:"target"`
-	Agent         flow.AgentSelection   `json:"agent"`
-	Workspace     flow.WorkspaceContext `json:"workspace"`
-	Schedule      flow.ScheduleSpec     `json:"schedule"`
-	CatchUpPolicy flow.CatchUpPolicy    `json:"catch_up_policy"`
-	Intent        flow.PromptIntent     `json:"intent"`
+	FlowID         string                `json:"flow_id,omitempty"`
+	Name           string                `json:"name"`
+	Enabled        *bool                 `json:"enabled,omitempty"`
+	Target         flow.TargetSelection  `json:"target"`
+	UnassignTarget bool                  `json:"unassign_target,omitempty"`
+	Agent          flow.AgentSelection   `json:"agent"`
+	Workspace      flow.WorkspaceContext `json:"workspace"`
+	Schedule       flow.ScheduleSpec     `json:"schedule"`
+	CatchUpPolicy  flow.CatchUpPolicy    `json:"catch_up_policy"`
+	Intent         flow.PromptIntent     `json:"intent"`
 }
 
 func (s *Server) handleFlowsV3(w http.ResponseWriter, r *http.Request) {
@@ -618,14 +619,19 @@ func (s *Server) flowV3AssignmentFromRequest(r *http.Request, req flowV3UpsertRe
 		name = flowID
 	}
 	target := normalizeFlowTargetSelection(req.Target)
-	if !flowV3HasTargetSelection(target) && base != nil {
-		target = normalizeFlowTargetSelection(base.Target)
-	}
-	if !flowV3HasTargetSelection(target) {
-		return flow.Assignment{}, errors.New("target selection is required")
-	}
-	if _, err := s.requireFlowV3TargetDetail(r, target); err != nil {
-		return flow.Assignment{}, err
+	if req.UnassignTarget {
+		target = flow.TargetSelection{}
+		enabled = false
+	} else {
+		if !flowV3HasTargetSelection(target) && base != nil {
+			target = normalizeFlowTargetSelection(base.Target)
+		}
+		if !flowV3HasTargetSelection(target) {
+			return flow.Assignment{}, errors.New("target selection is required")
+		}
+		if _, err := s.requireFlowV3TargetDetail(r, target); err != nil {
+			return flow.Assignment{}, err
+		}
 	}
 	agent := normalizeManagementAgentSelection(req.Agent)
 	if !flowV3HasAgentSelection(agent) && base != nil {

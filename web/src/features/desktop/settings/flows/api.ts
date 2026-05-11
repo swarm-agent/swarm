@@ -232,6 +232,7 @@ export interface UpdateFlowInput {
   name?: string
   enabled?: boolean
   target?: FlowTargetSelection
+  unassign_target?: boolean
   agent?: FlowAgentSelection
   workspace?: FlowWorkspaceContext
   schedule?: Partial<FlowScheduleSpec>

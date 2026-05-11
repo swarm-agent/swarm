@@ -35,6 +35,7 @@ import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
 import { fetchSwarmMirrorResources, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
 import { LinkSwarmModal } from './components/link-swarm-modal'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from './components/managed-host-link-request-modal'
+import { fetchFlows, updateFlow, type FlowSummaryRecord } from '../settings/flows/api'
 import {
   type DeployContainerDeployment,
   type DeployContainerWorkspaceBootstrap,
@@ -371,9 +372,114 @@ function summarizeRemotePayload(payload: RemoteDeployPayload): string {
   return details.length > 0 ? `${label} · ${details.join(' · ')}` : label
 }
 
+function summarizeContainerMount(mount: SwarmLocalContainer['mounts'][number]): string {
+  const label = mount.workspaceName || mount.workspacePath || mount.sourcePath || 'Workspace mount'
+  const details = [
+    mount.targetPath || '',
+    mount.mode || 'rw',
+    mount.sourcePath && mount.sourcePath !== label ? mount.sourcePath : '',
+  ].filter(Boolean)
+  return details.length > 0 ? `${label} · ${details.join(' · ')}` : label
+}
+
+function flowDisplayName(flow: FlowSummaryRecord): string {
+  return flow.definition.name || flow.definition.flow_id || 'Untitled flow'
+}
+
+function flowWorkspaceLabel(flow: FlowSummaryRecord): string {
+  return flow.workspace_detail?.workspace_path
+    || flow.definition.workspace.runtime_workspace_path
+    || flow.definition.workspace.workspace_path
+    || flow.definition.workspace.host_workspace_path
+    || flow.definition.workspace.cwd
+    || ''
+}
+
+function flowMatchesContainerTarget(flow: FlowSummaryRecord, input: {
+  deployment?: DeployContainerDeployment | null
+  container?: SwarmLocalContainer | null
+  swarmID?: string
+  deploymentID?: string
+}): boolean {
+  const target = flow.definition.target
+  const targetDetail = flow.target_detail
+  const normalizedSwarmIDs = new Set([
+    input.swarmID,
+    input.deployment?.child_swarm_id,
+    targetDetail?.swarm_id,
+  ].map((value) => String(value ?? '').trim().toLowerCase()).filter(Boolean))
+  const normalizedDeploymentIDs = new Set([
+    input.deploymentID,
+    input.deployment?.id,
+    input.deployment?.container_id,
+    input.deployment?.container_name,
+    input.container?.id,
+    input.container?.containerID,
+    input.container?.containerName,
+  ].map((value) => String(value ?? '').trim().toLowerCase()).filter(Boolean))
+  const targetSwarmID = String(target.swarm_id ?? '').trim().toLowerCase()
+  const targetDeploymentID = String(target.deployment_id ?? '').trim().toLowerCase()
+  return (
+    (!!targetSwarmID && normalizedSwarmIDs.has(targetSwarmID))
+    || (!!targetDeploymentID && normalizedDeploymentIDs.has(targetDeploymentID))
+  )
+}
+
+function flowImpactSummary(flows: FlowSummaryRecord[]): string {
+  if (flows.length === 0) {
+    return ''
+  }
+  return `${flows.length} assigned flow${flows.length === 1 ? '' : 's'} will be unassigned and turned off to avoid stale assignments.`
+}
+
+function FlowImpactDetails({ flows }: { flows: FlowSummaryRecord[] }) {
+  if (flows.length === 0) {
+    return null
+  }
+  return (
+    <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning-text)]">
+      <div className="flex items-start gap-2">
+        <TriangleAlert size={14} className="mt-0.5 shrink-0" />
+        <div className="min-w-0">
+          <div className="font-medium">Deleting this container unassigns and turns off {flows.length} assigned flow{flows.length === 1 ? '' : 's'}.</div>
+          <div className="mt-1 text-[var(--app-text-muted)]">Swarm keeps the flow definitions for later reuse, but clears their target first so they do not point at a removed container.</div>
+          <div className="mt-2 grid gap-1">
+            {flows.slice(0, 4).map((flow) => {
+              const workspace = flowWorkspaceLabel(flow)
+              return (
+                <div key={flow.definition.flow_id} className="min-w-0 truncate">
+                  {flowDisplayName(flow)}{workspace ? ` · ${workspace}` : ''}
+                </div>
+              )
+            })}
+            {flows.length > 4 ? <div>+{flows.length - 4} more flow{flows.length - 4 === 1 ? '' : 's'}</div> : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MountedWorkspaceDetails({ items }: { items: string[] }) {
+  if (items.length === 0) {
+    return null
+  }
+  return (
+    <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-xs">
+      <div className="font-medium text-[var(--app-text)]">Mounted workspaces</div>
+      <div className="mt-2 grid gap-1 text-[var(--app-text-muted)]">
+        {items.slice(0, 4).map((item, index) => <div key={`${item}:${index}`} className="min-w-0 truncate">{item}</div>)}
+        {items.length > 4 ? <div>+{items.length - 4} more mount{items.length - 4 === 1 ? '' : 's'}</div> : null}
+      </div>
+    </div>
+  )
+}
+
 interface DeleteCandidate {
   container: SwarmLocalContainer
   attachment: DeployContainerDeployment | null
+  flows: FlowSummaryRecord[]
+  mounts: string[]
 }
 
 interface DeleteSwarmCandidate {
@@ -524,7 +630,7 @@ function DeleteContainersModal({
             </Card>
           ) : (
             <div className="grid gap-3">
-              {candidates.map(({ container, attachment }) => {
+              {candidates.map(({ container, attachment, flows, mounts }) => {
                 const checked = selectedIDs.has(container.id)
                 const childLabel = attachment?.child_display_name || attachment?.child_swarm_id || ''
                 return (
@@ -547,7 +653,10 @@ function DeleteContainersModal({
                         <div>Runtime: {container.runtime || 'unknown'}</div>
                         {childLabel ? <div>Connected child swarm: {childLabel}</div> : null}
                         {attachment ? <div>Also removes linked deployment, trusted peer, and group membership info from this master.</div> : null}
+                        {flowImpactSummary(flows) ? <div className="text-[var(--app-warning-text)]">{flowImpactSummary(flows)}</div> : null}
                       </div>
+                      <MountedWorkspaceDetails items={mounts} />
+                      <FlowImpactDetails flows={flows} />
                     </div>
                   </label>
                 )
@@ -893,6 +1002,7 @@ export function DesktopSwarmDashboard() {
   const [localContainers, setLocalContainers] = useState<SwarmLocalContainer[]>([])
   const [deployments, setDeployments] = useState<DeployContainerDeployment[]>([])
   const [remoteSessions, setRemoteSessions] = useState<RemoteDeploySession[]>([])
+  const [flows, setFlows] = useState<FlowSummaryRecord[]>([])
   const [pendingPairings, setPendingPairings] = useState<RemoteSwarmPendingPairing[]>([])
   const [pairingDecisionBusyID, setPairingDecisionBusyID] = useState<string | null>(null)
   const [pairingConfirmations, setPairingConfirmations] = useState<Record<string, boolean>>({})
@@ -930,6 +1040,7 @@ export function DesktopSwarmDashboard() {
     nextPendingPairings: RemoteSwarmPendingPairing[],
     nextSwarmTargets: SwarmTarget[],
     nextMirrorResources: SwarmMirrorResources,
+    nextFlows: FlowSummaryRecord[],
   ) => {
     setLocalRuntime(runtimeStatus)
     setLocalContainers(launchedContainers)
@@ -938,10 +1049,11 @@ export function DesktopSwarmDashboard() {
     setPendingPairings(nextPendingPairings)
     setSwarmTargets(nextSwarmTargets)
     setMirrorResources(nextMirrorResources)
+    setFlows(nextFlows)
   }
 
   const refresh = async () => {
-    const [state, onboarding, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets, nextMirrorResources] = await Promise.all([
+    const [state, onboarding, nextUISettings, runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets, nextMirrorResources, nextFlows] = await Promise.all([
       fetchSwarmState(),
       fetchDesktopOnboardingStatus(),
       getUISettings(),
@@ -952,9 +1064,10 @@ export function DesktopSwarmDashboard() {
       fetchPendingRemoteSwarmPairings(),
       fetchSwarmTargets(),
       fetchSwarmMirrorResources(),
+      fetchFlows(),
     ])
     applyCoreDashboardState(state, onboarding, nextUISettings)
-    applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets.targets, nextMirrorResources)
+    applySupplementalDashboardState(runtimeStatus, launchedContainers, nextDeployments, nextRemoteSessions, nextPendingPairings, nextTargets.targets, nextMirrorResources, nextFlows)
   }
 
   useEffect(() => {
@@ -1089,6 +1202,18 @@ export function DesktopSwarmDashboard() {
       .catch((err) => {
         if (!cancelled) {
           setError((current) => current ?? (err instanceof Error ? err.message : 'Failed to load mirrored swarm resources'))
+        }
+      })
+
+    void fetchFlows()
+      .then((items) => {
+        if (!cancelled) {
+          setFlows(items)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError((current) => current ?? (err instanceof Error ? err.message : 'Failed to load assigned flows'))
         }
       })
 
@@ -1399,15 +1524,51 @@ export function DesktopSwarmDashboard() {
       })
       .sort((left, right) => right.updated_at - left.updated_at)
   ), [currentGroupID, deployments, localContainers])
-  const deleteCandidates = useMemo<DeleteCandidate[]>(() => (
-    localContainers.map((container) => ({
-      container,
-      attachment: deployments.find((deployment) => (
+  const flowsByLocalContainerID = useMemo(() => {
+    const mapped = new Map<string, FlowSummaryRecord[]>()
+    localContainers.forEach((container) => {
+      const attachedDeployment = deployments.find((deployment) => (
         String(deployment.attach_status ?? '').trim() === 'attached'
         && deploymentMatchesContainer(deployment, container)
-      )) ?? null,
-    }))
-  ), [deployments, localContainers])
+      )) ?? null
+      mapped.set(container.id, flows.filter((flow) => flowMatchesContainerTarget(flow, {
+        deployment: attachedDeployment,
+        container,
+        swarmID: attachedDeployment?.child_swarm_id,
+        deploymentID: attachedDeployment?.id || container.id,
+      })))
+    })
+    return mapped
+  }, [deployments, flows, localContainers])
+  const flowsByDeploymentID = useMemo(() => {
+    const mapped = new Map<string, FlowSummaryRecord[]>()
+    deployments.forEach((deployment) => {
+      const matchedContainer = localContainers.find((container) => deploymentMatchesContainer(deployment, container)) ?? null
+      mapped.set(deployment.id, flows.filter((flow) => flowMatchesContainerTarget(flow, {
+        deployment,
+        container: matchedContainer,
+        swarmID: deployment.child_swarm_id,
+        deploymentID: deployment.id,
+      })))
+    })
+    return mapped
+  }, [deployments, flows, localContainers])
+  const deleteCandidates = useMemo<DeleteCandidate[]>(() => (
+    localContainers.map((container) => {
+      const attachment = deployments.find((deployment) => (
+        String(deployment.attach_status ?? '').trim() === 'attached'
+        && deploymentMatchesContainer(deployment, container)
+      )) ?? null
+      const bootstrapMounts = attachment?.workspace_bootstrap?.map(summarizeWorkspaceBootstrap) ?? []
+      const containerMounts = container.mounts.map(summarizeContainerMount)
+      return {
+        container,
+        attachment,
+        flows: flowsByLocalContainerID.get(container.id) ?? [],
+        mounts: bootstrapMounts.length > 0 ? bootstrapMounts : containerMounts,
+      }
+    })
+  ), [deployments, flowsByLocalContainerID, localContainers])
   const deleteSwarmCandidates = useMemo<DeleteSwarmCandidate[]>(() => {
     if (deleteSwarmCandidateContainerIDs.length === 0) {
       return baseDeleteSwarmCandidates
@@ -1610,19 +1771,34 @@ export function DesktopSwarmDashboard() {
     ))
   }
 
+  const unassignImpactedFlows = async (impactedFlows: FlowSummaryRecord[]): Promise<number> => {
+    const flowIDs = Array.from(new Set(impactedFlows.map((flow) => flow.definition.flow_id.trim()).filter(Boolean)))
+    await Promise.all(flowIDs.map((flowID) => updateFlow(flowID, { enabled: false, target: {}, unassign_target: true })))
+    if (flowIDs.length > 0) {
+      setFlows((current) => current.map((flow) => (
+        flowIDs.includes(flow.definition.flow_id.trim())
+          ? { ...flow, definition: { ...flow.definition, enabled: false, target: {} }, target_detail: null, assignment_statuses: [] }
+          : flow
+      )))
+    }
+    return flowIDs.length
+  }
+
   const handleDeleteContainers = async () => {
     setBusy(true)
     setError(null)
     setStatus(null)
     try {
+      const selectedCandidates = deleteCandidates.filter((candidate) => selectedDeleteIDs.has(candidate.container.id))
+      const removedFlowCount = await unassignImpactedFlows(selectedCandidates.flatMap((candidate) => candidate.flows))
       const result = await deleteSwarmLocalContainers(selectedDeleteContainerIDs)
       await refresh()
       setDeleteResult(result)
       setSelectedDeleteContainerIDs([])
       setDeleteContainersOpen(false)
       setStatus(result.failed > 0
-        ? `Deleted ${result.count} container${result.count === 1 ? '' : 's'} with ${result.failed} failure${result.failed === 1 ? '' : 's'}.`
-        : `Deleted ${result.count} container${result.count === 1 ? '' : 's'}.${result.childInfoRemoved > 0 ? ` Removed linked child info for ${result.childInfoRemoved}.` : ''}`)
+        ? `Deleted ${result.count} container${result.count === 1 ? '' : 's'} with ${result.failed} failure${result.failed === 1 ? '' : 's'}.${removedFlowCount > 0 ? ` Unassigned and turned off ${removedFlowCount} assigned flow${removedFlowCount === 1 ? '' : 's'} first.` : ''}`
+        : `Deleted ${result.count} container${result.count === 1 ? '' : 's'}.${result.childInfoRemoved > 0 ? ` Removed linked child info for ${result.childInfoRemoved}.` : ''}${removedFlowCount > 0 ? ` Unassigned and turned off ${removedFlowCount} assigned flow${removedFlowCount === 1 ? '' : 's'} first.` : ''}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete selected containers')
     } finally {
@@ -1692,6 +1868,12 @@ export function DesktopSwarmDashboard() {
         setStatus('No swarms were selected.')
         return
       }
+      const removedFlowCount = await unassignImpactedFlows(selectedCandidates.flatMap((candidate) => {
+        if (candidate.kind === 'local' && candidate.deployment) {
+          return flowsByDeploymentID.get(candidate.deployment.id) ?? []
+        }
+        return flows.filter((flow) => flowMatchesContainerTarget(flow, { swarmID: candidate.swarmID }))
+      }))
       const localDeploymentIDs = selectedCandidates
         .filter((candidate) => candidate.kind === 'local' && candidate.deployment?.id)
         .map((candidate) => candidate.deployment!.id)
@@ -1755,6 +1937,9 @@ export function DesktopSwarmDashboard() {
         failures.push(remoteOutcome.reason instanceof Error ? remoteOutcome.reason.message : 'Failed to remove selected remote swarms')
       }
 
+      if (removedFlowCount > 0) {
+        messages.push(`Unassigned and turned off ${removedFlowCount} assigned flow${removedFlowCount === 1 ? '' : 's'} before deleting swarms.`)
+      }
       if (messages.length > 0) {
         setStatus(messages.join(' '))
       }
@@ -2137,6 +2322,8 @@ export function DesktopSwarmDashboard() {
                   const containerAction = attachedDeployment
                     ? () => handleDeploymentAction(attachedDeployment, running ? 'stop' : 'start')
                     : () => handleLocalContainerAction(container, running ? 'stop' : 'start')
+                  const mountedWorkspaces = attachedDeployment?.workspace_bootstrap?.map(summarizeWorkspaceBootstrap) ?? container.mounts.map(summarizeContainerMount)
+                  const assignedFlows = flowsByLocalContainerID.get(container.id) ?? []
                   return (
                     <div key={container.id} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
                       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -2159,6 +2346,8 @@ export function DesktopSwarmDashboard() {
                           )}
                         </div>
                       </div>
+                      <MountedWorkspaceDetails items={mountedWorkspaces} />
+                      <FlowImpactDetails flows={assignedFlows} />
                       {container.warning ? <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] px-3 py-2 text-xs text-[var(--app-warning-text)]">{container.warning}</div> : null}
                     </div>
                   )
@@ -2261,6 +2450,8 @@ export function DesktopSwarmDashboard() {
                           const deleteCandidate = remoteDeleteSwarmCandidates.find((candidate) => candidate.swarmID === session.child_swarm_id) ?? null
                           const childName = session.child_name || session.name || session.child_swarm_id || 'container swarm'
                           const containerName = session.ssh_session_target || session.id
+                          const mountedWorkspaces = session.preflight.payloads?.map(summarizeRemotePayload) ?? []
+                          const assignedFlows = flows.filter((flow) => flowMatchesContainerTarget(flow, { swarmID: session.child_swarm_id }))
                           return (
                             <div key={session.id} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
                               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -2278,6 +2469,8 @@ export function DesktopSwarmDashboard() {
                                   {deleteCandidate ? <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => openDeleteSwarms([deleteCandidate.selectionID], [deleteCandidate.selectionID])} disabled={busy}>Remove</Button> : null}
                                 </div>
                               </div>
+                              <MountedWorkspaceDetails items={mountedWorkspaces} />
+                              <FlowImpactDetails flows={assignedFlows} />
                               {session.last_error ? <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] px-3 py-2 text-xs text-[var(--app-warning-text)]">{session.last_error}</div> : null}
                             </div>
                           )
@@ -2291,6 +2484,13 @@ export function DesktopSwarmDashboard() {
                           const childName = attachedDeployment?.child_display_name || attachedDeployment?.child_swarm_id || container.name || 'container swarm'
                           const childDesktopURL = attachedDeployment?.child_desktop_url || ''
                           const childAPIURL = attachedDeployment?.child_backend_url || container.hostAPIBaseURL || ''
+                          const mountedWorkspaces = attachedDeployment?.workspace_bootstrap?.map(summarizeWorkspaceBootstrap) ?? container.mounts.map(summarizeContainerMount)
+                          const assignedFlows = flows.filter((flow) => flowMatchesContainerTarget(flow, {
+                            deployment: attachedDeployment,
+                            container,
+                            swarmID: attachedDeployment?.child_swarm_id,
+                            deploymentID: attachedDeployment?.id || container.id,
+                          }))
                           return (
                             <div key={`mirrored:${mirroredContainer.managedSwarmID}:${mirroredContainer.id}`} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
                               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -2308,6 +2508,8 @@ export function DesktopSwarmDashboard() {
                                   {childAPIURL ? <a href={childAPIURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">API</a> : null}
                                 </div>
                               </div>
+                              <MountedWorkspaceDetails items={mountedWorkspaces} />
+                              <FlowImpactDetails flows={assignedFlows} />
                               {container.warning ? <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] px-3 py-2 text-xs text-[var(--app-warning-text)]">{container.warning}</div> : null}
                               {attachedDeployment?.last_attach_error ? <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] px-3 py-2 text-xs text-[var(--app-warning-text)]">{attachedDeployment.last_attach_error}</div> : null}
                             </div>
