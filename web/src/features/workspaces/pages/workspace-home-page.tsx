@@ -288,7 +288,7 @@ export function WorkspaceHomePage() {
   }
 
   return (
-    <main className="flex min-h-screen w-full flex-col gap-4 bg-[linear-gradient(180deg,var(--app-bg),color-mix(in_oklab,var(--app-bg)_72%,var(--app-surface-subtle)))] px-4 py-6 sm:px-6 lg:px-8">
+    <main className="flex h-full min-h-0 w-full flex-col gap-4 overflow-y-auto overscroll-contain bg-[linear-gradient(180deg,var(--app-bg),color-mix(in_oklab,var(--app-bg)_72%,var(--app-surface-subtle)))] px-4 py-6 [-webkit-overflow-scrolling:touch] sm:px-6 lg:px-8">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 p-4 sm:p-6 lg:p-8">
         <div className="flex flex-col gap-4 bg-transparent px-0 py-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
