@@ -204,7 +204,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		cfg.DataDir,
 	)
 	swarmNodeStore := pebblestore.NewSwarmNodeStore(store)
-	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc, swarmNodeStore)
+	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc, modelSvc, swarmNodeStore)
 	publishAndSync := func(env pebblestore.EventEnvelope) {
 		hub.Publish(env)
 		if deployContainerSvc == nil {
@@ -223,6 +223,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	agentSvc.SetEventPublisher(publishAndSync)
 	authSvc.SetEventPublisher(publishAndSync)
+	modelSvc.SetEventPublisher(publishAndSync)
 	remoteDeploySvc := remotedeploy.NewService(pebblestore.NewRemoteDeploySessionStore(store), swarmNodeStore, swarmSvc, swarmStore, localContainerSvc, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD)
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)

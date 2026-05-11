@@ -25,6 +25,7 @@ import (
 	auth "swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
+	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -33,24 +34,26 @@ import (
 )
 
 const (
-	PathContainerRuntime                 = "deploy.container.runtime.v1"
-	PathContainerList                    = "deploy.container.list.v1"
-	PathContainerCreate                  = "deploy.container.create.v1"
-	PathContainerAction                  = "deploy.container.action.v1"
-	PathContainerDelete                  = "deploy.container.delete.v1"
-	PathContainerAttachChildState        = "deploy.container.attach.child_state.v1"
-	PathContainerAttachRequest           = "deploy.container.attach.request.v1"
-	PathContainerAttachStatus            = "deploy.container.attach.status.v1"
-	PathContainerAttachApprove           = "deploy.container.attach.approve.v1"
-	PathContainerAttachFinalize          = "deploy.container.attach.finalize.v1"
-	PathContainerSyncCredentials         = "deploy.container.sync.credentials.v1"
-	PathContainerSyncAgents              = "deploy.container.sync.agents.v1"
-	PathContainerSyncSkills              = "deploy.container.sync.skills.v1"
-	PathContainerSyncPermissions         = "deploy.container.sync.permissions.v1"
-	PathContainerManagedCredentialsApply = "deploy.container.managed.credentials.apply.v1"
-	PathContainerManagedAgentsApply      = "deploy.container.managed.agents.apply.v1"
-	PathContainerSettings                = "deploy.container.settings.v1"
-	PathContainerWorkspaceBootstrap      = "deploy.container.workspace-bootstrap.v1"
+	PathContainerRuntime                   = "deploy.container.runtime.v1"
+	PathContainerList                      = "deploy.container.list.v1"
+	PathContainerCreate                    = "deploy.container.create.v1"
+	PathContainerAction                    = "deploy.container.action.v1"
+	PathContainerDelete                    = "deploy.container.delete.v1"
+	PathContainerAttachChildState          = "deploy.container.attach.child_state.v1"
+	PathContainerAttachRequest             = "deploy.container.attach.request.v1"
+	PathContainerAttachStatus              = "deploy.container.attach.status.v1"
+	PathContainerAttachApprove             = "deploy.container.attach.approve.v1"
+	PathContainerAttachFinalize            = "deploy.container.attach.finalize.v1"
+	PathContainerSyncCredentials           = "deploy.container.sync.credentials.v1"
+	PathContainerSyncAgents                = "deploy.container.sync.agents.v1"
+	PathContainerSyncSkills                = "deploy.container.sync.skills.v1"
+	PathContainerSyncPermissions           = "deploy.container.sync.permissions.v1"
+	PathContainerSyncModelDefaults         = "deploy.container.sync.model_defaults.v1"
+	PathContainerManagedCredentialsApply   = "deploy.container.managed.credentials.apply.v1"
+	PathContainerManagedAgentsApply        = "deploy.container.managed.agents.apply.v1"
+	PathContainerManagedModelDefaultsApply = "deploy.container.managed.model_defaults.apply.v1"
+	PathContainerSettings                  = "deploy.container.settings.v1"
+	PathContainerWorkspaceBootstrap        = "deploy.container.workspace-bootstrap.v1"
 
 	childLocalTransportMountTargetDir = "/run/swarm-parent-transport"
 	childLocalTransportSocketPath     = childLocalTransportMountTargetDir + "/api.sock"
@@ -247,19 +250,27 @@ type ContainerSyncPermissionBundle struct {
 	State permission.ManagedPolicyState `json:"state"`
 }
 
+type ContainerSyncModelDefaultsBundle struct {
+	Preference   pebblestore.ModelPreference `json:"preference"`
+	SnapshotHash string                      `json:"snapshot_hash"`
+	ExportedAt   int64                       `json:"exported_at,omitempty"`
+	Modules      []string                    `json:"modules,omitempty"`
+}
+
 type ManagedHostInitialSyncBundle struct {
-	SyncMode          string                        `json:"sync_mode,omitempty"`
-	SyncModules       []string                      `json:"sync_modules,omitempty"`
-	OwnerSwarmID      string                        `json:"owner_swarm_id,omitempty"`
-	HostAPIBaseURL    string                        `json:"host_api_base_url,omitempty"`
-	SyncCredentialURL string                        `json:"sync_credential_url,omitempty"`
-	SyncAgentURL      string                        `json:"sync_agent_url,omitempty"`
-	CredentialBundle  ContainerSyncCredentialBundle `json:"credential_bundle,omitempty"`
-	AgentBundle       ContainerSyncAgentBundle      `json:"agent_bundle,omitempty"`
-	SkillBundle       ContainerSyncSkillBundle      `json:"skill_bundle,omitempty"`
-	PermissionBundle  ContainerSyncPermissionBundle `json:"permission_bundle,omitempty"`
-	SnapshotHash      string                        `json:"snapshot_hash,omitempty"`
-	ExportedAt        int64                         `json:"exported_at,omitempty"`
+	SyncMode            string                           `json:"sync_mode,omitempty"`
+	SyncModules         []string                         `json:"sync_modules,omitempty"`
+	OwnerSwarmID        string                           `json:"owner_swarm_id,omitempty"`
+	HostAPIBaseURL      string                           `json:"host_api_base_url,omitempty"`
+	SyncCredentialURL   string                           `json:"sync_credential_url,omitempty"`
+	SyncAgentURL        string                           `json:"sync_agent_url,omitempty"`
+	CredentialBundle    ContainerSyncCredentialBundle    `json:"credential_bundle,omitempty"`
+	AgentBundle         ContainerSyncAgentBundle         `json:"agent_bundle,omitempty"`
+	SkillBundle         ContainerSyncSkillBundle         `json:"skill_bundle,omitempty"`
+	PermissionBundle    ContainerSyncPermissionBundle    `json:"permission_bundle,omitempty"`
+	ModelDefaultsBundle ContainerSyncModelDefaultsBundle `json:"model_defaults_bundle,omitempty"`
+	SnapshotHash        string                           `json:"snapshot_hash,omitempty"`
+	ExportedAt          int64                            `json:"exported_at,omitempty"`
 }
 
 type ManagedHostSyncStatus struct {
@@ -319,6 +330,7 @@ type Service struct {
 	agents                       *agentruntime.Service
 	discovery                    *discovery.Service
 	permission                   *permission.Service
+	model                        *modelruntime.Service
 	workspace                    *workspaceruntime.Service
 	startupPath                  string
 	client                       *http.Client
@@ -333,6 +345,7 @@ type Service struct {
 func NewService(store *pebblestore.DeployContainerStore, containers *localcontainers.Service, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, authSvc *auth.Service, agentSvc *agentruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath string, extras ...any) *Service {
 	var discoverySvc *discovery.Service
 	var permissionSvc *permission.Service
+	var modelSvc *modelruntime.Service
 	var swarmNodeStore *pebblestore.SwarmNodeStore
 	for _, extra := range extras {
 		switch value := extra.(type) {
@@ -340,6 +353,8 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 			discoverySvc = value
 		case *permission.Service:
 			permissionSvc = value
+		case *modelruntime.Service:
+			modelSvc = value
 		case *pebblestore.SwarmNodeStore:
 			swarmNodeStore = value
 		}
@@ -354,6 +369,7 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 		agents:                    agentSvc,
 		discovery:                 discoverySvc,
 		permission:                permissionSvc,
+		model:                     modelSvc,
 		workspace:                 workspaceSvc,
 		startupPath:               strings.TrimSpace(startupPath),
 		client:                    newBootstrapClient(),
@@ -1235,6 +1251,50 @@ func (s *Service) SyncSkillBundle(ctx context.Context, input ContainerSyncCreden
 	return s.discovery.ExportManagedSkillBundle()
 }
 
+func (s *Service) SyncModelDefaultsBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncModelDefaultsBundle, error) {
+	if s == nil || s.model == nil {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("deploy container service is not configured")
+	}
+	_ = ctx
+	if input.PeerAuthorized && strings.TrimSpace(input.DeploymentID) == "" {
+		return s.SyncManagedHostModelDefaultsBundle(ctx, input)
+	}
+	if s.store == nil {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("deploy container service is not configured")
+	}
+	record, ok, err := s.store.Get(input.DeploymentID)
+	if err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
+	if !ok {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("deploy container not found")
+	}
+	if subtleTrim(record.BootstrapSecret) == "" || subtleTrim(record.BootstrapSecret) != subtleTrim(input.BootstrapSecret) {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("bootstrap secret mismatch")
+	}
+	if !record.SyncEnabled {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("swarm sync is not enabled for this deployment")
+	}
+	record.SyncModules = workspaceruntime.NormalizeReplicationSyncModules(record.SyncModules)
+	if len(record.SyncModules) == 0 {
+		record.SyncModules = workspaceruntime.DefaultReplicationSyncModules()
+	}
+	if !workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("model default sync module is not enabled for this deployment")
+	}
+	return s.exportManagedModelDefaultsBundle(record.SyncModules)
+}
+
+func (s *Service) SyncManagedHostModelDefaultsBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncModelDefaultsBundle, error) {
+	if s == nil || s.model == nil {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("deploy container service is not configured")
+	}
+	_ = ctx
+	_ = input
+	modules := workspaceruntime.DefaultReplicationSyncModules()
+	return s.exportManagedModelDefaultsBundle(modules)
+}
+
 func (s *Service) SyncPermissionBundle(ctx context.Context, input ContainerSyncCredentialRequestInput) (ContainerSyncPermissionBundle, error) {
 	if s == nil || s.permission == nil {
 		return ContainerSyncPermissionBundle{}, fmt.Errorf("deploy container service is not configured")
@@ -1357,6 +1417,11 @@ func (s *Service) ManagedHostInitialSyncBundle(ctx context.Context, managerBacke
 		return ManagedHostInitialSyncBundle{}, err
 	}
 	bundle.AgentBundle = agentBundle
+	if modelDefaultsBundle, err := s.exportManagedModelDefaultsBundle(modules); err != nil {
+		return ManagedHostInitialSyncBundle{}, err
+	} else {
+		bundle.ModelDefaultsBundle = modelDefaultsBundle
+	}
 	if s.discovery != nil {
 		skillBundle, err := s.discovery.ExportManagedSkillBundle()
 		if err != nil {
@@ -1418,6 +1483,9 @@ func (s *Service) ApplyManagedHostInitialSyncBundle(ctx context.Context, manager
 		if err := s.applyManagedPermissionBundle(bundle.PermissionBundle); err != nil {
 			return ManagedHostSyncStatus{}, err
 		}
+	}
+	if err := s.applyManagedModelDefaultsBundle(bundle.ModelDefaultsBundle, modules); err != nil {
+		return ManagedHostSyncStatus{}, err
 	}
 	if err := s.recordManagedHostBundleApplied(pairing, ownerSwarmID, bundle); err != nil {
 		return ManagedHostSyncStatus{}, err
@@ -2906,6 +2974,14 @@ func buildDeploymentSyncPermissionURL(hostAPIBaseURL string) string {
 	return hostAPIBaseURL + "/v1/deploy/container/sync/permissions"
 }
 
+func buildDeploymentSyncModelDefaultsURL(hostAPIBaseURL string) string {
+	hostAPIBaseURL = strings.TrimRight(strings.TrimSpace(hostAPIBaseURL), "/")
+	if hostAPIBaseURL == "" {
+		return ""
+	}
+	return hostAPIBaseURL + "/v1/deploy/container/sync/model-defaults"
+}
+
 func buildDeploymentWorkspaceBootstrapURL(hostAPIBaseURL string) string {
 	hostAPIBaseURL = strings.TrimRight(strings.TrimSpace(hostAPIBaseURL), "/")
 	if hostAPIBaseURL == "" {
@@ -2957,6 +3033,48 @@ func (s *Service) fetchSyncSkillBundle(ctx context.Context, cfg startupconfig.Fi
 	return decoded.Bundle, nil
 }
 
+func (s *Service) fetchSyncModelDefaultsBundle(ctx context.Context, cfg startupconfig.FileConfig, status ContainerAttachState) (ContainerSyncModelDefaultsBundle, error) {
+	socketPath := strings.TrimSpace(cfg.DeployContainer.LocalTransportSocketPath)
+	hostAPIBaseURL := firstNonEmpty(status.HostBackendURL, strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL))
+	endpoint := buildDeploymentSyncModelDefaultsURL(hostAPIBaseURL)
+	if socketPath != "" {
+		endpoint = buildDeploymentSyncModelDefaultsURL(childLocalTransportBaseURL)
+	}
+	if endpoint == "" {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("sync model defaults url is not configured")
+	}
+	payload, err := json.Marshal(ContainerSyncCredentialRequestInput{DeploymentID: strings.TrimSpace(cfg.DeployContainer.DeploymentID), BootstrapSecret: strings.TrimSpace(cfg.DeployContainer.BootstrapSecret)})
+	if err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	s.addPeerAuthHeaders(req, firstNonEmpty(strings.TrimSpace(status.HostSwarmID), strings.TrimSpace(cfg.ParentSwarmID)))
+	client, err := s.bootstrapHTTPClientForEndpoint(socketPath, endpoint)
+	if err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
+	defer resp.Body.Close()
+	var decoded struct {
+		OK     bool                             `json:"ok"`
+		Bundle ContainerSyncModelDefaultsBundle `json:"bundle"`
+		Error  string                           `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ContainerSyncModelDefaultsBundle{}, errors.New(firstNonEmpty(decoded.Error, fmt.Sprintf("sync model defaults fetch failed with status %d", resp.StatusCode)))
+	}
+	return decoded.Bundle, nil
+}
 func (s *Service) fetchSyncPermissionBundle(ctx context.Context, cfg startupconfig.FileConfig, status ContainerAttachState) (ContainerSyncPermissionBundle, error) {
 	socketPath := strings.TrimSpace(cfg.DeployContainer.LocalTransportSocketPath)
 	hostAPIBaseURL := firstNonEmpty(status.HostBackendURL, strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL))
@@ -2981,6 +3099,7 @@ func (s *Service) fetchSyncPermissionBundle(ctx context.Context, cfg startupconf
 	if err != nil {
 		return ContainerSyncPermissionBundle{}, err
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return ContainerSyncPermissionBundle{}, err
@@ -3150,6 +3269,57 @@ func (s *Service) applyManagedPermissionBundle(bundle ContainerSyncPermissionBun
 	return err
 }
 
+func (s *Service) exportManagedModelDefaultsBundle(modules []string) (ContainerSyncModelDefaultsBundle, error) {
+	if s == nil || s.model == nil {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("deploy container service is not configured")
+	}
+	modules = workspaceruntime.NormalizeReplicationSyncModules(modules)
+	if len(modules) == 0 {
+		modules = workspaceruntime.DefaultReplicationSyncModules()
+	}
+	if !workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
+		return ContainerSyncModelDefaultsBundle{}, nil
+	}
+	pref, err := s.model.GetGlobalPreference()
+	if err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
+	payload, err := json.Marshal(pref)
+	if err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
+	}
+	sum := sha256.Sum256(payload)
+	return ContainerSyncModelDefaultsBundle{Preference: pref, SnapshotHash: hex.EncodeToString(sum[:]), ExportedAt: time.Now().UnixMilli(), Modules: modules}, nil
+}
+
+func (s *Service) ApplyManagedModelDefaultsBundle(ctx context.Context, bundle ContainerSyncModelDefaultsBundle) error {
+	_ = ctx
+	modules := workspaceruntime.NormalizeReplicationSyncModules(bundle.Modules)
+	if len(modules) == 0 {
+		modules = workspaceruntime.DefaultReplicationSyncModules()
+	}
+	return s.applyManagedModelDefaultsBundle(bundle, modules)
+}
+
+func (s *Service) applyManagedModelDefaultsBundle(bundle ContainerSyncModelDefaultsBundle, modules []string) error {
+	if s == nil || s.model == nil {
+		return fmt.Errorf("deploy container service is not configured")
+	}
+	modules = workspaceruntime.NormalizeReplicationSyncModules(modules)
+	if len(modules) == 0 {
+		modules = workspaceruntime.DefaultReplicationSyncModules()
+	}
+	if !workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
+		return nil
+	}
+	pref := bundle.Preference
+	if strings.TrimSpace(pref.Provider) == "" || strings.TrimSpace(pref.Model) == "" || strings.TrimSpace(pref.Thinking) == "" {
+		return fmt.Errorf("model default sync bundle is missing provider, model, or thinking")
+	}
+	_, _, err := s.model.SetGlobalPreference(pref.Provider, pref.Model, pref.Thinking, pref.ServiceTier, pref.ContextMode)
+	return err
+}
+
 func firstNonEmptyStringSlice(values ...[]string) []string {
 	for _, value := range values {
 		if len(value) == 0 {
@@ -3268,6 +3438,15 @@ func (s *Service) syncDeployContainerFromHost(ctx context.Context, cfg startupco
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 	}
+	if workspaceruntime.ReplicationSyncModuleEnabled(cfg.DeployContainer.SyncModules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
+		bundle, err := s.fetchSyncModelDefaultsBundle(ctx, cfg, ContainerAttachState{HostSwarmID: ownerSwarmID})
+		if err != nil {
+			return s.recordManagedCredentialSyncFailure(pairing, err)
+		}
+		if err := s.applyManagedModelDefaultsBundle(bundle, cfg.DeployContainer.SyncModules); err != nil {
+			return s.recordManagedCredentialSyncFailure(pairing, err)
+		}
+	}
 	if !cfg.BypassPermissions && workspaceruntime.ReplicationSyncModuleEnabled(cfg.DeployContainer.SyncModules, workspaceruntime.ReplicationSyncModulePermissions) {
 		bundle, err := s.fetchSyncPermissionBundle(ctx, cfg, ContainerAttachState{HostSwarmID: ownerSwarmID})
 		if err != nil {
@@ -3324,6 +3503,17 @@ func (s *Service) syncManagedHostFromManager(ctx context.Context, cfg startupcon
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 	}
+	modelDefaultsBundle := ContainerSyncModelDefaultsBundle{}
+	if workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
+		bundle, err := s.fetchManagedHostSyncModelDefaultsBundle(ctx, cfg, managerSwarmID)
+		if err != nil {
+			return s.recordManagedCredentialSyncFailure(pairing, err)
+		}
+		modelDefaultsBundle = bundle
+		if err := s.applyManagedModelDefaultsBundle(bundle, modules); err != nil {
+			return s.recordManagedCredentialSyncFailure(pairing, err)
+		}
+	}
 	permissionBundle := ContainerSyncPermissionBundle{}
 	if s.permission != nil && workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModulePermissions) {
 		bundle, err := s.fetchManagedHostSyncPermissionBundle(ctx, cfg, managerSwarmID)
@@ -3335,7 +3525,7 @@ func (s *Service) syncManagedHostFromManager(ctx context.Context, cfg startupcon
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 	}
-	snapshotHash, err := managedHostBundleSnapshotHash(ManagedHostInitialSyncBundle{SyncMode: firstNonEmpty(strings.TrimSpace(cfg.ManagedHostSync.Mode), workspaceruntime.ReplicationSyncModeManaged), SyncModules: modules, OwnerSwarmID: managerSwarmID, HostAPIBaseURL: strings.TrimSpace(cfg.ManagedHostSync.HostAPIBaseURL), SyncCredentialURL: strings.TrimSpace(cfg.ManagedHostSync.SyncCredentialURL), SyncAgentURL: strings.TrimSpace(cfg.ManagedHostSync.SyncAgentURL), CredentialBundle: credentialBundle, AgentBundle: agentBundle, SkillBundle: skillBundle, PermissionBundle: permissionBundle})
+	snapshotHash, err := managedHostBundleSnapshotHash(ManagedHostInitialSyncBundle{SyncMode: firstNonEmpty(strings.TrimSpace(cfg.ManagedHostSync.Mode), workspaceruntime.ReplicationSyncModeManaged), SyncModules: modules, OwnerSwarmID: managerSwarmID, HostAPIBaseURL: strings.TrimSpace(cfg.ManagedHostSync.HostAPIBaseURL), SyncCredentialURL: strings.TrimSpace(cfg.ManagedHostSync.SyncCredentialURL), SyncAgentURL: strings.TrimSpace(cfg.ManagedHostSync.SyncAgentURL), CredentialBundle: credentialBundle, AgentBundle: agentBundle, SkillBundle: skillBundle, PermissionBundle: permissionBundle, ModelDefaultsBundle: modelDefaultsBundle})
 	if err != nil {
 		return s.recordManagedCredentialSyncFailure(pairing, err)
 	}
@@ -3371,6 +3561,9 @@ func managedHostBundleSnapshotHash(bundle ManagedHostInitialSyncBundle) (string,
 		PermissionBundle struct {
 			State permission.ManagedPolicyState `json:"state"`
 		} `json:"permission_bundle,omitempty"`
+		ModelDefaultsBundle struct {
+			SnapshotHash string `json:"snapshot_hash,omitempty"`
+		} `json:"model_defaults_bundle,omitempty"`
 	}{
 		SyncMode:          strings.TrimSpace(bundle.SyncMode),
 		SyncModules:       modules,
@@ -3392,6 +3585,9 @@ func managedHostBundleSnapshotHash(bundle ManagedHostInitialSyncBundle) (string,
 		PermissionBundle: struct {
 			State permission.ManagedPolicyState `json:"state"`
 		}{State: permissionState},
+		ModelDefaultsBundle: struct {
+			SnapshotHash string `json:"snapshot_hash,omitempty"`
+		}{SnapshotHash: strings.TrimSpace(bundle.ModelDefaultsBundle.SnapshotHash)},
 	})
 	if err != nil {
 		return "", err
@@ -3649,6 +3845,23 @@ func (s *Service) fetchManagedHostSyncSkillBundle(ctx context.Context, cfg start
 	}
 	if err := s.fetchManagedHostSyncJSON(ctx, endpoint, managerSwarmID, &decoded); err != nil {
 		return ContainerSyncSkillBundle{}, err
+	}
+	return decoded.Bundle, nil
+}
+
+func (s *Service) fetchManagedHostSyncModelDefaultsBundle(ctx context.Context, cfg startupconfig.FileConfig, managerSwarmID string) (ContainerSyncModelDefaultsBundle, error) {
+	endpoint := buildDeploymentSyncModelDefaultsURL(strings.TrimSpace(cfg.ManagedHostSync.HostAPIBaseURL))
+	if endpoint == "" {
+		return ContainerSyncModelDefaultsBundle{}, fmt.Errorf("managed host sync model defaults url is not configured")
+	}
+	var decoded struct {
+		OK     bool                             `json:"ok"`
+		Bundle ContainerSyncModelDefaultsBundle `json:"bundle"`
+		Error  string                           `json:"error"`
+		PathID string                           `json:"path_id"`
+	}
+	if err := s.fetchManagedHostSyncJSON(ctx, endpoint, managerSwarmID, &decoded); err != nil {
+		return ContainerSyncModelDefaultsBundle{}, err
 	}
 	return decoded.Bundle, nil
 }
@@ -3928,6 +4141,15 @@ func (s *Service) pushManagedSyncToManagedHost(ctx context.Context, client *http
 	if err := s.postManagedHostJSON(ctx, client, managedSwarmID, baseURL+"/v1/deploy/container/managed/agents/apply", agentBundle); err != nil {
 		return err
 	}
+	if s.model != nil {
+		modelDefaultsBundle, err := s.SyncManagedHostModelDefaultsBundle(ctx, ContainerSyncCredentialRequestInput{PeerSwarmID: managedSwarmID, PeerAuthorized: true})
+		if err != nil {
+			return err
+		}
+		if err := s.postManagedHostJSON(ctx, client, managedSwarmID, baseURL+"/v1/deploy/container/managed/model-defaults/apply", modelDefaultsBundle); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -3993,6 +4215,15 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 			return err
 		}
 		if err := s.postChildJSON(ctx, client, *record, childURL+"/v1/deploy/container/managed/agents/apply", bundle, nil); err != nil {
+			return err
+		}
+	}
+	if s.model != nil && workspaceruntime.ReplicationSyncModuleEnabled(record.SyncModules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
+		bundle, err := s.exportManagedModelDefaultsBundle(record.SyncModules)
+		if err != nil {
+			return err
+		}
+		if err := s.postChildJSON(ctx, client, *record, childURL+"/v1/deploy/container/managed/model-defaults/apply", bundle, nil); err != nil {
 			return err
 		}
 	}

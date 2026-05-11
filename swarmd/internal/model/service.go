@@ -26,6 +26,7 @@ type Service struct {
 	events    *pebblestore.EventLog
 	catalog   *CatalogService
 	favorites *pebblestore.ModelFavoriteStore
+	publish   func(pebblestore.EventEnvelope)
 }
 
 type ResolvedPreference struct {
@@ -51,6 +52,13 @@ func NewServiceWithFavorites(store *pebblestore.ModelStore, events *pebblestore.
 		catalog:   catalog,
 		favorites: favorites,
 	}
+}
+
+func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {
+	if s == nil {
+		return
+	}
+	s.publish = publish
 }
 
 func (s *Service) EnsureBootDefaults() error {
@@ -133,6 +141,9 @@ func (s *Service) SetGlobalPreference(provider, modelName, thinking string, code
 	if err != nil {
 		return ResolvedPreference{}, nil, err
 	}
+	if s.publish != nil {
+		s.publish(env)
+	}
 
 	resolved, err := s.ResolvePreference(pref)
 	if err != nil {
@@ -156,6 +167,9 @@ func (s *Service) ClearGlobalPreference() (ResolvedPreference, *pebblestore.Even
 	env, err := s.events.Append("system:model", "model.preference.updated", "global", payload, "", "")
 	if err != nil {
 		return ResolvedPreference{}, nil, err
+	}
+	if s.publish != nil {
+		s.publish(env)
 	}
 	resolved, err := s.ResolvePreference(pref)
 	if err != nil {

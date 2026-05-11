@@ -759,7 +759,7 @@ func (p *HomePage) openAgentsModalCreateEditor() {
 			{Key: "description", Label: "Role", Value: "", Placeholder: "What this agent does"},
 			{Key: "provider", Label: "Provider", Value: "", Placeholder: "inherit default provider", Options: providerOptions},
 			{Key: "model", Label: "Model", Value: "", Placeholder: "inherit default model", Options: modelOptions},
-			{Key: "thinking", Label: "Thinking", Value: "", Placeholder: "inherit default thinking", Options: thinkingOptions},
+			{Key: "thinking", Label: "Thinking", Value: "", Placeholder: "Inherit", Options: thinkingOptions},
 			{Key: "enabled", Label: "Enabled", Value: "y", Placeholder: "y", Options: []string{"y", "n"}},
 			{Key: "prompt", Label: "Prompt", Value: "", Placeholder: "System prompt"},
 		},
@@ -848,7 +848,7 @@ func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 			{Key: "description", Label: "Role", Value: profile.Description, Placeholder: "What this agent does"},
 			{Key: "provider", Label: "Provider", Value: profileProvider, Placeholder: "inherit default provider", Options: providerOptions},
 			{Key: "model", Label: "Model", Value: profile.Model, Placeholder: "inherit default model", Options: modelOptions},
-			{Key: "thinking", Label: "Thinking", Value: profile.Thinking, Placeholder: "inherit default thinking", Options: thinkingOptions},
+			{Key: "thinking", Label: "Thinking", Value: profile.Thinking, Placeholder: "Inherit", Options: thinkingOptions},
 			{Key: "enabled", Label: "Enabled", Value: enabledValue, Placeholder: "y", Options: []string{"y", "n"}},
 			{Key: "prompt", Label: "Prompt", Value: profile.Prompt, Placeholder: "System prompt"},
 		},
@@ -2515,7 +2515,7 @@ func agentsModalModelLabel(model string) string {
 func agentsModalThinkingLabel(thinking string) string {
 	thinking = strings.TrimSpace(thinking)
 	if thinking == "" {
-		return "inherit default thinking"
+		return "Inherit"
 	}
 	return thinking
 }

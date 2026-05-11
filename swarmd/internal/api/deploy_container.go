@@ -648,6 +648,61 @@ func (s *Server) handleDeployContainerSyncPermissions(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerSyncPermissions, "bundle": bundle})
 }
 
+func (s *Server) handleDeployContainerSyncModelDefaults(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.deployContainers == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
+		return
+	}
+	var req struct {
+		DeploymentID    string `json:"deployment_id"`
+		BootstrapSecret string `json:"bootstrap_secret"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	syncSvc, ok := s.deployContainers.(interface {
+		SyncModelDefaultsBundle(context.Context, deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncModelDefaultsBundle, error)
+	})
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container model defaults sync not configured"))
+		return
+	}
+	bundle, err := syncSvc.SyncModelDefaultsBundle(context.Background(), syncRequestWithPeerAuth(r, deployruntime.ContainerSyncCredentialRequestInput{DeploymentID: req.DeploymentID, BootstrapSecret: req.BootstrapSecret}))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSyncModelDefaults, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerSyncModelDefaults, "bundle": bundle})
+}
+
+func (s *Server) handleDeployContainerManagedModelDefaultsApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	syncSvc, ok := s.deployContainers.(interface {
+		ApplyManagedModelDefaultsBundle(context.Context, deployruntime.ContainerSyncModelDefaultsBundle) error
+	})
+	if !ok {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container model defaults sync not configured"))
+		return
+	}
+	var bundle deployruntime.ContainerSyncModelDefaultsBundle
+	if err := decodeJSON(r, &bundle); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := syncSvc.ApplyManagedModelDefaultsBundle(context.Background(), bundle); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerManagedModelDefaultsApply, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerManagedModelDefaultsApply})
+}
 func (s *Server) handleDeployContainerManagedCredentialsApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

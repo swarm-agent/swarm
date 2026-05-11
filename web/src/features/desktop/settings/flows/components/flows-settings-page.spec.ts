@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { formToCreateInput, workspaceOptionsFromEntries } from './flows-settings-page'
+import { formToCreateInput, groupedAgentOptions, workspaceOptionsFromEntries } from './flows-settings-page'
 import type { FlowAgentProfile, FlowSwarmTarget, FlowWorkspaceEntry } from '../api'
 
 test('formToCreateInput maps manual and scheduled flows without auto-run intent', () => {
@@ -37,7 +37,7 @@ test('formToCreateInput maps manual and scheduled flows without auto-run intent'
   }
   const targets = [{ key: 'target', label: 'Local', helper: 'self', target }]
   const workspaces = [{ key: workspace.path, label: workspace.path, helper: 'active', workspace }]
-  const agents = [{ key: 'missile::subagent', label: 'missile', helper: 'subagent', contractSummary: '', profile }]
+  const agents = [{ key: 'missile::subagent', label: 'missile', helper: 'subagent', contractSummary: '', groupLabel: 'Assigned Subagents', profile }]
 
   const baseForm = {
     name: 'One shot',
@@ -137,4 +137,101 @@ test('workspaceOptionsFromEntries only exposes supplied target workspace records
   const options = workspaceOptionsFromEntries(currentTargetWorkspaces)
   assert.deepEqual(options.map((option) => option.key), ['/target-a/one'])
   assert.equal(options[0]?.workspace.path, '/target-a/one')
+})
+
+test('groupedAgentOptions keeps section labels separate from agent option values', () => {
+  const profile = (name: string, mode: string): FlowAgentProfile => ({
+    name,
+    mode,
+    description: '',
+    enabled: true,
+    provider: '',
+    model: '',
+    thinking: '',
+    prompt: '',
+    executionSetting: '',
+    exitPlanModeEnabled: false,
+    toolScope: null,
+    protected: false,
+    updatedAt: 0,
+  })
+  const agents = [
+    { key: 'swarm::primary', label: 'swarm', helper: '', contractSummary: '', groupLabel: 'Primary', profile: profile('swarm', 'primary') },
+    { key: 'explorer::subagent', label: 'explorer', helper: '', contractSummary: '', groupLabel: 'Assigned Subagents', profile: profile('explorer', 'subagent') },
+    { key: 'cleanup::background', label: 'cleanup', helper: '', contractSummary: '', groupLabel: 'Background', profile: profile('cleanup', 'background') },
+  ]
+
+  const groups = groupedAgentOptions(agents)
+
+  assert.deepEqual(groups.map((group) => group.label), ['Primary', 'Assigned Subagents', 'Background'])
+  assert.deepEqual(groups.map((group) => group.options.map((option) => option.label)), [['swarm'], ['explorer'], ['cleanup']])
+  assert.deepEqual(groups.flatMap((group) => group.options.map((option) => option.key)), ['swarm::primary', 'explorer::subagent', 'cleanup::background'])
+})
+
+test('formToCreateInput stores only selected real agent identifiers from every group', () => {
+  const target: FlowSwarmTarget = { swarm_id: 'local-swarm', kind: 'self', name: 'Local', online: true, selectable: true, current: true }
+  const workspace: FlowWorkspaceEntry = {
+    path: '/tmp/workspace',
+    workspaceName: 'workspace',
+    themeId: '',
+    directories: [],
+    isGitRepo: true,
+    replicationLinks: [],
+    sortIndex: 0,
+    addedAt: 0,
+    updatedAt: 0,
+    lastSelectedAt: 0,
+    active: true,
+    worktreeEnabled: false,
+  }
+  const profile = (name: string, mode: string): FlowAgentProfile => ({
+    name,
+    mode,
+    description: '',
+    enabled: true,
+    provider: '',
+    model: '',
+    thinking: '',
+    prompt: '',
+    executionSetting: '',
+    exitPlanModeEnabled: false,
+    toolScope: null,
+    protected: false,
+    updatedAt: 0,
+  })
+  const targets = [{ key: 'target', label: 'Local', helper: 'self', target }]
+  const workspaces = [{ key: workspace.path, label: workspace.path, helper: 'active', workspace }]
+  const agents = [
+    { key: 'swarm::primary', label: 'swarm', helper: '', contractSummary: '', groupLabel: 'Primary', profile: profile('swarm', 'primary') },
+    { key: 'explorer::subagent', label: 'explorer', helper: '', contractSummary: '', groupLabel: 'Assigned Subagents', profile: profile('explorer', 'subagent') },
+    { key: 'cleanup::background', label: 'cleanup', helper: '', contractSummary: '', groupLabel: 'Background', profile: profile('cleanup', 'background') },
+  ]
+
+  for (const agent of agents) {
+    const input = formToCreateInput({
+      name: 'Grouped agent flow',
+      agentKey: agent.key,
+      targetKey: 'target',
+      scheduleMode: 'guided' as const,
+      scheduleCadence: 'Daily' as const,
+      dailyMode: 'once' as const,
+      scheduleTimes: ['9:00 AM'],
+      dailyRunCount: '1',
+      dailyIntervalHours: '2',
+      dailyWindowStart: '9:00 AM',
+      dailyWindowEnd: '5:00 PM',
+      highRunCountConfirmed: false,
+      scheduleDay: 'Mon',
+      scheduleDate: '1',
+      timezone: 'UTC',
+      cronExpression: '',
+      workspacePath: workspace.path,
+      task: 'Run task',
+    }, targets, workspaces, agents)
+
+    assert.equal(input.agent.profile_name, agent.profile.name)
+    assert.equal(input.agent.profile_mode, agent.profile.mode)
+    assert.equal(input.agent.profile_name.includes(agent.groupLabel), false)
+    assert.equal(input.agent.profile_name.includes('—'), false)
+  }
 })

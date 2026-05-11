@@ -101,25 +101,26 @@ const flowSwarmTargetsQueryKey = ['flows', 'swarm-targets'] as const
 const flowWorkspacesQueryKey = ['flows', 'workspaces'] as const
 const flowWorkspacesForTargetQueryKey = (targetKey: string) => [...flowWorkspacesQueryKey, 'target', targetKey] as const
 
-interface FlowTargetOption {
+export interface FlowTargetOption {
   key: string
   label: string
   helper: string
   target: FlowSwarmTarget
 }
 
-interface FlowWorkspaceOption {
+export interface FlowWorkspaceOption {
   key: string
   label: string
   helper: string
   workspace: FlowWorkspaceEntry
 }
 
-interface FlowAgentOption {
+export interface FlowAgentOption {
   key: string
   label: string
   helper: string
   contractSummary: string
+  groupLabel: string
   profile: FlowAgentProfile
 }
 
@@ -513,9 +514,46 @@ function agentOptionLabel(profile: FlowAgentProfile): string {
   return profile.name.trim() || 'Unnamed agent'
 }
 
+function agentOptionGroupLabel(profile: FlowAgentProfile): string {
+  switch (profile.mode.trim().toLowerCase()) {
+    case 'primary':
+      return 'Primary'
+    case 'background':
+      return 'Background'
+    default:
+      return 'Assigned Subagents'
+  }
+}
+
+function agentOptionGroupRank(profile: FlowAgentProfile): number {
+  switch (profile.mode.trim().toLowerCase()) {
+    case 'primary':
+      return 0
+    case 'background':
+      return 2
+    default:
+      return 1
+  }
+}
+
+export function groupedAgentOptions(options: FlowAgentOption[]): Array<{ label: string; options: FlowAgentOption[] }> {
+  const groups: Array<{ label: string; options: FlowAgentOption[] }> = []
+  for (const option of options) {
+    let group = groups.find((candidate) => candidate.label === option.groupLabel)
+    if (!group) {
+      group = { label: option.groupLabel, options: [] }
+      groups.push(group)
+    }
+    group.options.push(option)
+  }
+  return groups
+}
+
 function agentOptionHelper(profile: FlowAgentProfile): string {
-  const parts = [profile.mode.trim(), profile.provider.trim(), profile.model.trim()].filter(Boolean)
-  return parts.join(' • ')
+  const provider = profile.provider.trim() || 'Inherit'
+  const model = profile.model.trim() || 'Inherit'
+  const thinking = profile.thinking.trim() || 'Inherit'
+  return `${provider} / ${model} • thinking ${thinking}`
 }
 
 function agentContractSummary(profile: FlowAgentProfile): string {
@@ -1123,7 +1161,11 @@ function FlowSettingsModal({
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Agent</span>
                 <select data-testid="flows-add-agent" value={form.agentKey} onChange={update('agentKey')} className={fieldClass} disabled={loadingOptions || !agentOptions.length}>
-                  {agentOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                  {groupedAgentOptions(agentOptions).map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.options.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                    </optgroup>
+                  ))}
                 </select>
                 <span className={helperClass}>
                   {loadingOptions ? 'Loading saved agents…' : selectedAgent?.helper || 'No enabled saved agents returned by the controller.'}
@@ -1498,6 +1540,7 @@ export function FlowsSettingsPage() {
         label: agentOptionLabel(profile),
         helper: agentOptionHelper(profile),
         contractSummary: agentContractSummary(profile),
+        groupLabel: agentOptionGroupLabel(profile),
         profile,
       }))
       .filter((option) => {
@@ -1507,7 +1550,7 @@ export function FlowsSettingsPage() {
         seen.add(option.key)
         return true
       })
-      .sort((left, right) => left.label.localeCompare(right.label))
+      .sort((left, right) => agentOptionGroupRank(left.profile) - agentOptionGroupRank(right.profile) || left.label.localeCompare(right.label))
   }, [agentStateQuery.data?.profiles])
   const loadingAddFlowOptions = swarmTargetsQuery.isLoading || agentStateQuery.isLoading
   const loadFlowWorkspacesForTarget = useCallback((target: FlowSwarmTarget, signal?: AbortSignal) => {

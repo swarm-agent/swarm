@@ -110,7 +110,7 @@ func TestAgentsModalModelThinkingInheritanceLabel(t *testing.T) {
 	if got := agentsModalModelLabel(""); got != "inherit default model" {
 		t.Fatalf("agentsModalModelLabel(\"\") = %q", got)
 	}
-	if got := agentsModalThinkingLabel(""); got != "inherit default thinking" {
+	if got := agentsModalThinkingLabel(""); got != "Inherit" {
 		t.Fatalf("agentsModalThinkingLabel(\"\") = %q", got)
 	}
 	if got := agentsModalModelLabel("codex-latest"); got != "codex-latest" {

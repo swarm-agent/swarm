@@ -392,12 +392,8 @@ func (s *Server) flowRunSessionPreference(agent resolvedFlowRunAgent) (pref stru
 }, err error) {
 	profile := agent.Profile
 	pref.Provider = strings.TrimSpace(profile.Provider)
-	if pref.Model == "" {
-		pref.Model = strings.TrimSpace(profile.Model)
-	}
-	if pref.Thinking == "" {
-		pref.Thinking = strings.TrimSpace(profile.Thinking)
-	}
+	pref.Model = strings.TrimSpace(profile.Model)
+	pref.Thinking = strings.TrimSpace(profile.Thinking)
 	if pref.Provider == "" || pref.Model == "" || pref.Thinking == "" {
 		if s != nil && s.model != nil {
 			global, globalErr := s.model.GetGlobalPreference()

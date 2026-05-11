@@ -135,7 +135,7 @@ func TestSwarmReplicateDefaultsSyncModulesToManagedDefaults(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
-	if got, want := fakeDeploy.lastCreateInput.SyncModules, []string{"credentials", "agents", "custom_tools", "skills", "permissions"}; len(got) != len(want) {
+	if got, want := fakeDeploy.lastCreateInput.SyncModules, []string{"credentials", "agents", "custom_tools", "skills", "permissions", "model_defaults"}; len(got) != len(want) {
 		t.Fatalf("create sync modules = %#v, want %#v", got, want)
 	} else {
 		for i := range want {
