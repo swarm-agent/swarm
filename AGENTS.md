@@ -89,36 +89,46 @@ If a rule below conflicts with convenience, the rule wins.
 
 Before diagnosing config, storage, service, install, routing, `/workspaces`, or target-selection behavior, identify which runtime plane you are touching. Do not guess from old notes, path shape, or host assumptions.
 
-### Three runtime planes that must not be conflated
+### Runtime planes and target classes that must not be conflated
+
+The target catalog in `swarmd/internal/api/swarm_targets.go` is the source of truth for current UI/Flow target identity. Always identify targets by `relationship`, `kind`, `swarm_id`, `deployment_id`, `backend_url`, and route/session metadata before choosing a path. Never collapse these into "remote" or infer them from `/workspaces`.
+
+There are only three current canonical runtime planes for this guidance:
 
 1. Primary host (`relationship=self`, `kind=self`)
    - This is the daemon/UI the user is directly operating. It is the controller/owner for local resources and the default desktop target.
    - It owns the host-local system install, systemd service, startup config, storage roots, and local transport socket listed below.
-   - It may create and manage local container children, and it may pair with managed hosts, but it is not itself a local container or a managed host.
+   - The primary host can own local container children. That means the primary host has containers; it does not mean the primary host is a container.
+   - The primary host can pair with managed hosts. That means the primary host can route to other host machines; it does not mean those managed hosts are local containers.
    - Do not rename current product language to "master" in new docs or UI. Only use legacy `master` where existing code/config compatibility requires it.
 
 2. Local container children (`relationship=child`, `kind=local`)
    - These are Swarm child daemons running inside containers on the primary host's local container runtime.
-   - They are created/listed/updated through the local container/deploy-container paths, not through managed-host pairing or remote deploy.
-   - Their `/workspaces`, daemon storage, ports, and process namespace are container-local unless an explicit mount/published port says otherwise.
-   - A local container target being attached/selectable does not make the primary host managed, remote, or containerized.
+   - They are created/listed/updated through the local-container APIs and services listed below, not through managed-host pairing.
+   - Their runtime workspace mount root is the container path from the local container service (`defaultContainerPath = /workspaces`) unless an explicit container mount says otherwise.
+   - A local-container workspace/runtime path such as `/workspaces/<name>` is inside the container child. It is not the managed-host destination root and is not a primary-host daemon storage path.
+   - A local container target being attached/selectable does not make the primary host managed or containerized.
 
 3. Managed hosts (`relationship=managed`, `kind=host`)
-   - These are separate host machines paired/trusted by the primary host. The supported managed remote shape is `ssh + tailscale`.
-   - They are selected/routed as managed host targets and use peer-authenticated host-to-host APIs for sessions, workspace inventory, replication, and sync.
-   - Their workspaces and daemon storage are host-local to that managed machine. Do not substitute primary-host paths, container paths, or local-user home fallbacks.
-   - A managed host is not a local container child, and remote reachability alone does not mean Swarm provisions arbitrary networking.
+   - These are separate host machines paired/trusted by the primary host. The supported managed host transport shape is `ssh + tailscale`.
+   - They are selected/routed as managed host targets and use peer-authenticated host-to-host APIs for sessions, workspace inventory, replication, sync, and managed-host Flow/session execution.
+   - Managed-host workspace destinations are resolved on the managed machine by managed-host workspace preflight/import/link code. Defaults are managed-user home-relative paths such as `$HOME/workspaces/<source-folder>` when the source is home-relative, not local-container `/workspaces` paths.
+   - Their daemon storage is host-local to that managed machine. Do not substitute primary-host paths, local-container paths, or local-user home fallbacks.
+   - A managed host is not a local container child. If a request says "managed host", do not use local container create/list/update paths unless the user separately asks about containers running on that managed machine.
 
-Remote deploy sessions are a separate child-target path (`relationship=child`, `kind=remote`). Keep them separate from all three planes above unless code explicitly bridges them.
+Do not introduce or rely on any remote-deploy runtime plane for current Flow, workspace, or target-selection work. If legacy remote-deploy code appears during cleanup/removal work, treat it as legacy code under removal, not as a canonical architecture category and not as a substitute for managed hosts or local containers.
 
 ### Architecture authority map
 
 Authoritative code locations:
-- `swarmd/internal/api/swarm_targets.go` — target catalog semantics: self, local container children, remote deploy children, and managed host peers.
-- `swarmd/internal/api/managed_host_sessions.go` — managed-host session routing and mirrored-session metadata.
-- `swarmd/internal/api/swarm_managed_workspace_replication.go` — managed-host workspace inventory/replication boundary.
-- `swarmd/internal/localcontainers/service.go` and `swarmd/internal/deploy/` — local container lifecycle and deploy-container child records.
-- `swarmd/internal/remotedeploy/` — remote deploy child sessions; not the managed-host pairing model.
+- `swarmd/internal/api/swarm_targets.go` — target catalog semantics for self, local container children, and managed host peers. Legacy remote target references are not a current canonical plane for new Flow/workspace work.
+- `swarmd/internal/api/swarm_local_containers.go` — primary local-container API handlers: `GET /v1/swarm/containers/local/runtime`, `GET /v1/swarm/containers/local`, `POST /v1/swarm/containers/local/create`, `POST /v1/swarm/containers/local/action`, `POST /v1/swarm/containers/local/delete`, `POST /v1/swarm/containers/local/prune-missing`, and `POST /v1/swarm/containers/local/update-job`.
+- `swarmd/internal/api/deploy_container.go` — deploy-container child attach/sync/bootstrap API handlers used by local container children: `/v1/deploy/container/...`, including attach, sync credentials/agents/skills/permissions, settings/action/delete, and workspace bootstrap.
+- `swarmd/internal/localcontainers/service.go` — local container runtime lifecycle. This owns the local container runtime path contract, including `defaultContainerPath = /workspaces`.
+- `swarmd/internal/deploy/service.go` — deploy-container child records, attach state, child backend URL, sync bundles, and workspace bootstrap for local container children.
+- `swarmd/internal/api/managed_host_sessions.go` — managed-host session API handlers: `POST /v1/swarm/managed-hosts/sessions/open`, `/message`, `/run`, and `/stop`, plus peer session/run/event routing.
+- `swarmd/internal/api/swarm_managed_workspace_replication.go` — managed-host workspace APIs: `POST /v1/swarm/managed-workspaces/preflight`, `POST /v1/swarm/managed-workspaces/replicate`, `GET /v1/swarm/managed-workspaces/inventory`, and peer preflight/link/import handlers.
+- `swarmd/internal/api/swarm_pairing.go` — managed-host pairing/link/remove and managed-host initial sync endpoints.
 - `pkg/startupconfig/config.go` — startup config filename and `startupconfig.ResolvePath()`.
 - `pkg/storagecontract/storagecontract.go` — Linux/macOS storage root contract and systemd directory env overrides.
 - `swarmd/internal/config/config.go` — daemon flag/default resolution for data dir, DB path, lock path, and startup CWD.
@@ -167,10 +177,20 @@ System install and service paths:
 - User-scoped systemd service files are host-local service manager configuration, not daemon startup config.
 
 Workspace path rules:
-- `/workspaces` is workspace discovery/browse behavior only. It is not a startup config path and is not proof that the target is the primary host, a local container, a managed host, or remote deployed.
+- `/workspaces` is workspace discovery/browse behavior only. It is not a startup config path and is not proof that the target is the primary host, a local container, or a managed host.
 - Workspaces are local to the selected runtime plane unless explicitly mapped, mounted, provisioned, or replicated by the relevant Swarm flow.
-- Diagnose workspace issues from the active target metadata first: self/local container/managed host/remote deploy, relationship, kind, swarm ID, backend URL, attach status, and selected route.
+- Local-container runtime workspace paths are container paths. The canonical local-container mount root is `/workspaces`; when the user says local container path, use the explicit container mount/target path, not a managed-host destination path.
+- Managed-host workspace paths are resolved on the managed machine by managed-host preflight/link/import APIs. They are not local-container `/workspaces` paths and not primary-host paths.
+- Diagnose workspace issues from the active target metadata first: self/local container/managed host, relationship, kind, swarm ID, backend URL, attach status, and selected route.
 - Do not add implicit fallbacks to home-local storage, hidden config locations, or duplicate legacy paths. If a route/path/config is absent, fail clearly and report the canonical path that was checked.
+
+Flow target/path rules:
+- Flows are target-owned scheduled jobs. The controller stores desired definitions/outbox state; the selected target stores accepted assignments, due rows, run claims, and target-local run history.
+- Flow target selection must reuse the swarm target catalog and must preserve `relationship` and `kind`. A Flow aimed at `relationship=child`, `kind=local` runs on a local container child; a Flow aimed at `relationship=managed`, `kind=host` runs on a managed host.
+- Do not route Flow work through legacy remote-deploy paths. Current Flow work is self, local-container child, or managed-host only.
+- For local-container Flow targets, runtime workspace paths must be translated through the workspace replication link to the child container path (normally `/workspaces/...`). Do not replace that with a managed-host `$HOME/...` destination.
+- For managed-host Flow targets, use managed-host peer/session/workspace routing and managed-machine workspace paths. Do not call local container create/update/list or assume `/workspaces` unless the managed host itself explicitly reports that path.
+- For self Flow targets, use the primary-host workspace path directly; do not route through child or managed-host translation.
 
 ## Current Active Testing Focus
 
@@ -192,12 +212,13 @@ Canonical harness map (not exhaustive; use `list`/`search` for current tests bef
 - `swarmd/tests/internal/deploy/sync_credentials_test.go` — backend sync-credential coverage used by child/host sync paths.
 - `tests/swarmd/internal/...` — preferred relocated backend test tree for new package-level backend tests when feasible.
 
-Remote/local/managed testing boundaries:
-- Local replicate/local container coverage, remote deploy coverage, and managed-host coverage are separate. Do not use one harness as proof for another plane.
-- Local container checks prove child daemons inside local containers on the primary host; they do not prove managed-host pairing or remote deploy.
-- Remote deploy checks prove the remote deploy child-session path; they do not prove managed-host session routing or managed workspace replication.
+Local/managed testing boundaries:
+- Local replicate/local container coverage and managed-host coverage are separate. Do not use one harness as proof for another plane.
+- Local container checks prove child daemons inside local containers on the primary host; they do not prove managed-host pairing.
+- Local-container Flow checks must show a `relationship=child`, `kind=local` target and the child runtime workspace path, normally `/workspaces/...` from the container mount/replication link.
 - Managed-host checks must exercise the managed-host peer/session/workspace paths and verify the target is `relationship=managed`, `kind=host`.
-- Supported managed remote shape is `ssh + tailscale`; generic reachable endpoints are user-managed networking and must not imply Swarm sets up non-Tailscale networks.
+- Managed-host Flow checks must show managed-host target metadata and managed-host peer/session/workspace routing; they must not use local container APIs as setup or proof unless separately testing containers on that managed machine.
+- Supported managed host shape is `ssh + tailscale`; generic reachable endpoints are user-managed networking and must not imply Swarm sets up non-Tailscale networks.
 - Normal workstation testing should stay loopback-only unless the user explicitly asks for private/LAN coverage.
 - Do not use `0.0.0.0` for normal host testing.
 - When private/LAN coverage is explicitly needed, use deliberate private addresses only; do not use public or wildcard addresses.
@@ -304,9 +325,13 @@ Required behavior:
 
 ## 6. Architecture Rules
 
-- Keep the runtime-plane boundary explicit in names, docs, tests, APIs, and UI state: primary host, local container children, managed hosts, and remote deploy children are different things.
+- Keep the runtime-plane boundary explicit in names, docs, tests, APIs, and UI state: primary host, local container children, and managed hosts are different things.
+- The primary host owns local containers; managed hosts are separate paired host machines. These are not aliases for each other.
+- Do not add new Flow/workspace/target behavior on remote-deploy code paths; legacy remote-deploy references are not a current canonical architecture category.
 - When adding target-aware behavior, thread `relationship`, `kind`, `swarm_id`, `deployment_id`, `backend_url`, and route/session metadata through the existing target catalog instead of inventing a second classifier.
-- Do not infer architecture from a filesystem path. In particular, `/workspaces` can appear in more than one plane and is never sufficient proof of container, managed-host, or remote-deploy mode.
+- Do not infer architecture from a filesystem path. In particular, `/workspaces` can appear in more than one plane and is never sufficient proof of container or managed-host mode.
+- If the user explicitly says "local container" or "container path", stay in the local-container child plane (`relationship=child`, `kind=local`) and use local-container mount/replication path semantics unless target metadata proves a different container runtime on a different host was selected.
+- If the user explicitly says "managed host", stay in the managed-host plane (`relationship=managed`, `kind=host`) and use managed-host peer/session/workspace APIs; do not reinterpret it as a local container request.
 - Provider-specific behavior belongs in provider adapter/runner packages, not generic orchestration paths.
 - Shared run/session/auth flows should remain provider-agnostic where possible.
 - New functionality should be additive and modular.

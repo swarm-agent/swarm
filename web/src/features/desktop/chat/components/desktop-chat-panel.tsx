@@ -18,7 +18,6 @@ import {
   uiSettingsQueryOptions,
 } from '../../../queries/query-options'
 import {
-  activatePrimaryAgent,
   createSession,
   fetchActiveSessionPlan,
   resolveSessionPermission,
@@ -853,7 +852,6 @@ export function DesktopChatPanel({
   const [panelError, setPanelError] = useState<string | null>(null)
   const [selectedPrimaryAgent, setSelectedPrimaryAgent] = useState('swarm')
   const [currentSessionAgent, setCurrentSessionAgent] = useState('swarm')
-  const lastActivatedAgentRef = useRef('')
   const lastAutoModeSyncRef = useRef('')
   const [permissionError, setPermissionError] = useState<string | null>(null)
   const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(() => new Set())
@@ -1507,6 +1505,16 @@ export function DesktopChatPanel({
       }
       return
     }
+    if (!sessionId) {
+      if (selectableAgents.some((profile) => profile.name === selectedPrimaryAgent)) {
+        return
+      }
+      const nextSelectedAgent = agentState.activePrimary || selectableAgents[0].name || 'swarm'
+      if (nextSelectedAgent !== selectedPrimaryAgent) {
+        setSelectedPrimaryAgent(nextSelectedAgent)
+      }
+      return
+    }
     const effectiveAgent = resolveSessionEffectiveAgentName(liveSession ?? session, agentState.activePrimary)
     if (selectableAgents.some((profile) => profile.name === effectiveAgent)) {
       if (effectiveAgent !== selectedPrimaryAgent) {
@@ -1521,7 +1529,7 @@ export function DesktopChatPanel({
     if (nextSelectedAgent !== selectedPrimaryAgent) {
       setSelectedPrimaryAgent(nextSelectedAgent)
     }
-  }, [agentState.activePrimary, isFlowSession, liveSession, selectableAgents, selectedPrimaryAgent, session])
+  }, [agentState.activePrimary, isFlowSession, liveSession, selectableAgents, selectedPrimaryAgent, session, sessionId])
 
   useEffect(() => {
     if (!sessionId) {
@@ -1627,36 +1635,6 @@ export function DesktopChatPanel({
       setPanelError(error instanceof Error ? error.message : 'Failed to update session mode')
     })
   }, [activeModeSourceProfile, draftSessionMode, isFlowSession, liveSession?.mode, session?.mode, sessionId])
-
-  useEffect(() => {
-    if (isFlowSession || !selectedPrimaryAgentProfile) {
-      return
-    }
-    const effectiveAgent = resolveSessionEffectiveAgentName(liveSession ?? session, agentState.activePrimary).trim()
-    if (effectiveAgent && effectiveAgent === selectedPrimaryAgentProfile.name.trim()) {
-      lastActivatedAgentRef.current = ''
-      return
-    }
-    if (selectedPrimaryAgentProfile.mode !== 'primary') {
-      lastActivatedAgentRef.current = ''
-      return
-    }
-    const currentPrimary = agentState.activePrimary.trim()
-    const nextSelectedAgent = selectedPrimaryAgentProfile.name.trim()
-    if (nextSelectedAgent === '' || currentPrimary === '' || currentPrimary === nextSelectedAgent) {
-      lastActivatedAgentRef.current = ''
-      return
-    }
-    if (lastActivatedAgentRef.current === nextSelectedAgent) {
-      return
-    }
-    lastActivatedAgentRef.current = nextSelectedAgent
-    void activatePrimaryAgent(nextSelectedAgent).catch((error) => {
-      console.error('[desktop-chat] activate primary agent failed', error)
-      lastActivatedAgentRef.current = ''
-      setPanelError(error instanceof Error ? error.message : 'Failed to activate agent')
-    })
-  }, [agentState.activePrimary, isFlowSession, liveSession, selectedPrimaryAgentProfile, session])
 
   const handleAgentSelect = useCallback(async (value: string) => {
     if (isFlowSession) {

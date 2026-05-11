@@ -163,6 +163,43 @@ func TestResolveAgentAllowsEnabledNonPrimaryProfiles(t *testing.T) {
 	}
 }
 
+func TestActivatePrimaryIsIdempotentForCurrentPrimary(t *testing.T) {
+	svc, _ := newTestService(t)
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+
+	published := make([]pebblestore.EventEnvelope, 0, 1)
+	svc.SetEventPublisher(func(event pebblestore.EventEnvelope) {
+		published = append(published, event)
+	})
+
+	active, version, event, err := svc.ActivatePrimary("swarm")
+	if err != nil {
+		t.Fatalf("ActivatePrimary(swarm) error = %v", err)
+	}
+	if active != "swarm" {
+		t.Fatalf("active primary = %q, want swarm", active)
+	}
+	if version == 0 {
+		t.Fatalf("version = 0, want current store version")
+	}
+	if event != nil {
+		t.Fatalf("event = %+v, want nil for idempotent activation", event)
+	}
+	if len(published) != 0 {
+		t.Fatalf("published event count = %d, want 0", len(published))
+	}
+
+	state, err := svc.ListState(200)
+	if err != nil {
+		t.Fatalf("ListState() error = %v", err)
+	}
+	if state.Version != version {
+		t.Fatalf("state version = %d, want %d", state.Version, version)
+	}
+}
+
 func TestDeleteSwarmRequiresAnotherPrimary(t *testing.T) {
 	svc, _ := newTestService(t)
 	if err := svc.EnsureDefaults(); err != nil {
