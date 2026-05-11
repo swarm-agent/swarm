@@ -315,6 +315,66 @@ func TestFlowAssignmentDeliveryTranslatesReplicatedWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestFlowAssignmentDeliveryRequiresValidContainerAck(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	var observed bool
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed = true
+		if r.URL.Path != flowPeerApplyPath {
+			http.NotFound(w, r)
+			return
+		}
+		var command flow.AssignmentCommand
+		if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+			t.Fatalf("decode child command: %v", err)
+		}
+		writeJSON(w, http.StatusOK, flowAssignmentApplyResponse{OK: true, Ack: flow.AssignmentAck{
+			CommandID:        "wrong-command",
+			FlowID:           command.FlowID,
+			AcceptedRevision: command.Revision,
+			Status:           flow.AssignmentAccepted,
+			TargetSwarmID:    "child-invalid-ack",
+			TargetClock:      time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC),
+		}})
+	}))
+	defer child.Close()
+	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
+		SwarmID:      "child-invalid-ack",
+		Name:         "invalid ack child",
+		Relationship: "child",
+		Kind:         "local",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   child.URL,
+	}}})
+	command := testAPIFlowCommand("cmd-invalid-ack", testAPIFlowAssignment("flow-invalid-ack", 1), flow.CommandInstall)
+	command.Assignment.Target = flow.TargetSelection{SwarmID: "child-invalid-ack", Kind: "local", Name: "invalid ack child"}
+
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	if err != nil {
+		t.Fatalf("enqueue deliver: %v", err)
+	}
+	if !observed {
+		t.Fatal("child server did not observe assignment command")
+	}
+	if !result.PendingSync || result.Delivered || result.AssignmentState.Status != flow.AssignmentTargetUnusable {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Outbox.Status != pebblestore.FlowOutboxStatusPending {
+		t.Fatalf("outbox status = %q", result.Outbox.Status)
+	}
+	if _, ok, err := flows.GetAcceptedAssignment("flow-invalid-ack"); err != nil || ok {
+		t.Fatalf("primary accepted assignment ok=%v err=%v", ok, err)
+	}
+	stored, ok, err := flows.GetAssignmentStatus("flow-invalid-ack", "child-invalid-ack")
+	if err != nil || !ok {
+		t.Fatalf("assignment status ok=%v err=%v", ok, err)
+	}
+	if !stored.PendingSync || stored.Status != flow.AssignmentTargetUnusable {
+		t.Fatalf("stored status = %+v", stored)
+	}
+}
+
 func TestFlowAssignmentDeliveryStoresRejection(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

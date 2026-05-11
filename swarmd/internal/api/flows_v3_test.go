@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -222,6 +223,94 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	}
 	if _, ok, err := flows.GetAcceptedAssignment("flow-v3-remote"); err != nil || ok {
 		t.Fatalf("accepted after delete ok=%v err=%v", ok, err)
+	}
+}
+
+func TestFlowsV3LocalContainerCRUDSyncsAcrossHTTPBoundary(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	workspace := t.TempDir()
+	var delivered []flow.AssignmentCommand
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != flowPeerApplyPath {
+			http.NotFound(w, r)
+			return
+		}
+		var command flow.AssignmentCommand
+		if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+			t.Fatalf("decode child command: %v", err)
+		}
+		delivered = append(delivered, command)
+		ack, inserted, err := server.applyFlowAssignmentCommandLocally(r.Context(), command, "child-local")
+		if err != nil {
+			t.Fatalf("apply child command: %v", err)
+		}
+		writeJSON(w, http.StatusOK, flowAssignmentApplyResponse{OK: true, Ack: ack, Inserted: inserted})
+	}))
+	defer child.Close()
+	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
+		SwarmID:      "child-local",
+		Name:         "local child",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "pc-child-local",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   child.URL,
+	}}})
+	req := flowV3UpsertRequest{
+		FlowID:  "flow-v3-local-crud",
+		Name:    "Local V3 flow",
+		Enabled: boolPtr(true),
+		Target:  flow.TargetSelection{SwarmID: "child-local", Kind: "local", DeploymentID: "pc-child-local", Name: "local child"},
+		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath: workspace,
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Sync to local container."},
+	}
+	createRec := httptest.NewRecorder()
+	createHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
+	createHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(createRec, createHTTP)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	updateReq := req
+	updateReq.Name = "Local V3 flow updated"
+	updateReq.Workspace.WorkspacePath = filepath.Join(workspace, "updated")
+	updateRec := httptest.NewRecorder()
+	updateHTTP := httptest.NewRequest(http.MethodPut, "/v3/flows/flow-v3-local-crud", jsonReader(t, updateReq))
+	updateHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(updateRec, updateHTTP)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", updateRec.Code, updateRec.Body.String())
+	}
+	deleteRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(deleteRec, httptest.NewRequest(http.MethodDelete, "/v3/flows/flow-v3-local-crud", nil))
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if len(delivered) != 3 {
+		t.Fatalf("delivered commands = %d, want 3: %+v", len(delivered), delivered)
+	}
+	if delivered[0].Action != flow.CommandInstall || delivered[1].Action != flow.CommandUpdate || delivered[2].Action != flow.CommandDelete {
+		t.Fatalf("delivered actions = %q/%q/%q", delivered[0].Action, delivered[1].Action, delivered[2].Action)
+	}
+	if delivered[0].Assignment.Target.SwarmID != "child-local" || delivered[0].Assignment.Target.Kind != "local" || delivered[0].Assignment.Target.DeploymentID != "pc-child-local" {
+		t.Fatalf("delivered target = %+v", delivered[0].Assignment.Target)
+	}
+	if _, ok, err := flows.GetAcceptedAssignment("flow-v3-local-crud"); err != nil || ok {
+		t.Fatalf("accepted after delete ok=%v err=%v", ok, err)
+	}
+	status, ok, err := flows.GetAssignmentStatus("flow-v3-local-crud", "child-local")
+	if err != nil || !ok {
+		t.Fatalf("assignment status ok=%v err=%v", ok, err)
+	}
+	if status.PendingSync || status.Status != flow.AssignmentAccepted || status.AcceptedRevision != 2 {
+		t.Fatalf("assignment status = %+v", status)
 	}
 }
 

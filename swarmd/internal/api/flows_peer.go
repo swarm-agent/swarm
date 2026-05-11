@@ -256,6 +256,14 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 			}
 			return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, PendingSync: true}, nil
 		}
+		ack = normalizeFlowAssignmentAckForAPI(ack)
+		if validationErr := validateFlowAssignmentAckForRecord(record, ack); validationErr != nil {
+			updated, state, updateErr := s.markFlowAssignmentPending(record, flow.AssignmentTargetUnusable, validationErr.Error(), nil)
+			if updateErr != nil {
+				return flowAssignmentDeliverResult{}, updateErr
+			}
+			return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, Ack: ack, PendingSync: true}, nil
+		}
 		updated, state, err := s.applyFlowAssignmentAck(record, ack)
 		if err != nil {
 			return flowAssignmentDeliverResult{}, err
@@ -294,10 +302,13 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 		}
 		return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, PendingSync: true}, nil
 	}
-	ack := resp.Ack
-	if ack.Status == "" {
-		ack.Status = flow.AssignmentRejected
-		ack.Reason = "target response did not include assignment status"
+	ack, validationErr := validateFlowAssignmentApplyResponse(record, resp)
+	if validationErr != nil {
+		updated, state, updateErr := s.markFlowAssignmentPending(record, flow.AssignmentTargetUnusable, validationErr.Error(), nil)
+		if updateErr != nil {
+			return flowAssignmentDeliverResult{}, updateErr
+		}
+		return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, Ack: ack, PendingSync: true}, nil
 	}
 	updated, state, err := s.applyFlowAssignmentAck(record, ack)
 	if err != nil {
@@ -312,7 +323,68 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 	}, nil
 }
 
+func validateFlowAssignmentApplyResponse(record pebblestore.FlowOutboxCommandRecord, resp flowAssignmentApplyResponse) (flow.AssignmentAck, error) {
+	ack := normalizeFlowAssignmentAckForAPI(resp.Ack)
+	if !resp.OK {
+		return ack, errors.New("target response did not acknowledge assignment command")
+	}
+	if err := validateFlowAssignmentAckForRecord(record, ack); err != nil {
+		return ack, err
+	}
+	return ack, nil
+}
+
+func validateFlowAssignmentAckForRecord(record pebblestore.FlowOutboxCommandRecord, ack flow.AssignmentAck) error {
+	record = normalizeAPIFlowOutboxCommand(record)
+	key := record.Command.IdempotencyKey()
+	if strings.TrimSpace(ack.CommandID) == "" {
+		return errors.New("target response did not include assignment command_id")
+	}
+	if ack.CommandID != key.CommandID {
+		return fmt.Errorf("target response command_id %q does not match command %q", ack.CommandID, key.CommandID)
+	}
+	if strings.TrimSpace(ack.FlowID) == "" {
+		return errors.New("target response did not include assignment flow_id")
+	}
+	if ack.FlowID != key.FlowID {
+		return fmt.Errorf("target response flow_id %q does not match command flow_id %q", ack.FlowID, key.FlowID)
+	}
+	targetSwarmID := strings.TrimSpace(record.TargetSwarmID)
+	if targetSwarmID != "" {
+		if strings.TrimSpace(ack.TargetSwarmID) == "" {
+			return errors.New("target response did not include target_swarm_id")
+		}
+		if !strings.EqualFold(ack.TargetSwarmID, targetSwarmID) {
+			return fmt.Errorf("target response target_swarm_id %q does not match target %q", ack.TargetSwarmID, targetSwarmID)
+		}
+	}
+	switch ack.Status {
+	case flow.AssignmentAccepted, flow.AssignmentDuplicate:
+		if ack.AcceptedRevision != key.Revision {
+			return fmt.Errorf("target response accepted_revision %d does not match command revision %d", ack.AcceptedRevision, key.Revision)
+		}
+	case flow.AssignmentRejected, flow.AssignmentOutOfOrder:
+		return nil
+	case "":
+		return errors.New("target response did not include assignment status")
+	default:
+		return fmt.Errorf("target response included unsupported assignment status %q", ack.Status)
+	}
+	return nil
+}
+
+func normalizeFlowAssignmentAckForAPI(ack flow.AssignmentAck) flow.AssignmentAck {
+	ack.CommandID = strings.TrimSpace(ack.CommandID)
+	ack.FlowID = strings.TrimSpace(ack.FlowID)
+	ack.Status = flow.AssignmentStatus(strings.TrimSpace(strings.ToLower(string(ack.Status))))
+	ack.Reason = strings.TrimSpace(ack.Reason)
+	ack.TargetSwarmID = strings.TrimSpace(ack.TargetSwarmID)
+	ack.TargetClock = ack.TargetClock.UTC()
+	return ack
+}
+
 func (s *Server) applyFlowAssignmentAck(record pebblestore.FlowOutboxCommandRecord, ack flow.AssignmentAck) (pebblestore.FlowOutboxCommandRecord, pebblestore.FlowAssignmentStatusRecord, error) {
+	ack = normalizeFlowAssignmentAckForAPI(ack)
 	previous := record
 	if ack.Status == flow.AssignmentAccepted || ack.Status == flow.AssignmentDuplicate {
 		record.Status = pebblestore.FlowOutboxStatusDelivered
