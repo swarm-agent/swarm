@@ -85,7 +85,8 @@ func (s *Server) RunAcceptedFlowNowAt(ctx context.Context, accepted flow.Accepte
 	if !inserted {
 		return s.existingFlowRunStart(claim)
 	}
-	return s.runAcceptedFlow(ctx, accepted, flow.RunRequest{FlowID: accepted.FlowID, Revision: accepted.Revision, ScheduledAt: scheduledAt, RunNow: true, RunID: claim.RunID})
+	request := flow.RunRequest{FlowID: accepted.FlowID, Revision: accepted.Revision, ScheduledAt: scheduledAt, RunNow: true, RunID: claim.RunID, Background: true}
+	return s.runAcceptedFlow(ctx, accepted, request)
 }
 
 func (s *Server) existingFlowRunStart(claim pebblestore.FlowRunClaimRecord) (flow.RunStart, error) {
@@ -231,38 +232,55 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 	if err := s.putFlowRunSummary(start, startedAt, time.Time{}, ""); err != nil {
 		return flow.RunStart{}, err
 	}
-	result, err := s.runner.RunTurnStreaming(ctx, session.ID, runReq, runruntime.RunStartMeta{
-		RunID:          runID,
-		OwnerTransport: "flow_scheduler",
-		AllowSubagent:  resolvedAgent.RuntimeTargetKind == runruntime.RunTargetKindSubagent,
-	}, func(event runruntime.StreamEvent) {
-		if strings.TrimSpace(event.SessionID) == "" {
-			event.SessionID = session.ID
+	run := func(ctx context.Context) {
+		result, err := s.runner.RunTurnStreaming(ctx, session.ID, runReq, runruntime.RunStartMeta{
+			RunID:          runID,
+			OwnerTransport: "flow_scheduler",
+			AllowSubagent:  resolvedAgent.RuntimeTargetKind == runruntime.RunTargetKindSubagent,
+		}, func(event runruntime.StreamEvent) {
+			if strings.TrimSpace(event.SessionID) == "" {
+				event.SessionID = session.ID
+			}
+			if strings.TrimSpace(event.RunID) == "" {
+				event.RunID = runID
+			}
+			if event.Metadata == nil {
+				event.Metadata = make(map[string]any, 4)
+			}
+			event.Metadata["flow_id"] = strings.TrimSpace(assignment.FlowID)
+			event.Metadata["flow_run_id"] = runID
+			event.Metadata["source"] = "flow"
+			event.Metadata["owner_transport"] = "flow_scheduler"
+		})
+		finishedAt := time.Now().UTC()
+		if err != nil {
+			_ = result
+			if summaryErr := s.putFlowRunSummary(start, startedAt, finishedAt, err.Error()); summaryErr != nil {
+				flowRouteDiagLog("target_run_summary_failed",
+					"flow_id", assignment.FlowID,
+					"run_id", runID,
+					"session_id", session.ID,
+					"err", summaryErr.Error(),
+				)
+			}
+			return
 		}
-		if strings.TrimSpace(event.RunID) == "" {
-			event.RunID = runID
+		if s.flowRunFinished(result, session.ID, runID) {
+			if summaryErr := s.putFlowRunSummary(start, startedAt, finishedAt, ""); summaryErr != nil {
+				flowRouteDiagLog("target_run_summary_failed",
+					"flow_id", assignment.FlowID,
+					"run_id", runID,
+					"session_id", session.ID,
+					"err", summaryErr.Error(),
+				)
+			}
 		}
-		if event.Metadata == nil {
-			event.Metadata = make(map[string]any, 4)
-		}
-		event.Metadata["flow_id"] = strings.TrimSpace(assignment.FlowID)
-		event.Metadata["flow_run_id"] = runID
-		event.Metadata["source"] = "flow"
-		event.Metadata["owner_transport"] = "flow_scheduler"
-	})
-	finishedAt := time.Now().UTC()
-	if err != nil {
-		_ = result
-		if summaryErr := s.putFlowRunSummary(start, startedAt, finishedAt, err.Error()); summaryErr != nil {
-			return flow.RunStart{}, summaryErr
-		}
-		return flow.RunStart{}, err
 	}
-	if s.flowRunFinished(result, session.ID, runID) {
-		if summaryErr := s.putFlowRunSummary(start, startedAt, finishedAt, ""); summaryErr != nil {
-			return flow.RunStart{}, summaryErr
-		}
+	if request.Background {
+		go run(context.Background())
+		return start, nil
 	}
+	run(ctx)
 	return start, nil
 }
 

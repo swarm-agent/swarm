@@ -73,15 +73,10 @@ func (s *Server) applyFlowRunNowCommand(ctx context.Context, command flow.Assign
 	if scheduledAt.IsZero() {
 		scheduledAt = now
 	}
-	start, err := s.RunAcceptedFlowNowAt(ctx, accepted, scheduledAt, key.CommandID)
-	if err != nil {
-		return reject(flow.AssignmentRejected, err.Error())
-	}
 	ack := baseAck
 	ack.AcceptedRevision = accepted.Revision
 	ack.Status = flow.AssignmentAccepted
-	ack.Reason = strings.TrimSpace(fmt.Sprintf("run_now started %s", strings.TrimSpace(start.RunID)))
-	_, inserted, err := s.flows.PutCommandLedger(pebblestore.FlowCommandLedgerRecord{
+	ledger, inserted, err := s.flows.PutCommandLedger(pebblestore.FlowCommandLedgerRecord{
 		CommandID: key.CommandID,
 		FlowID:    key.FlowID,
 		Revision:  key.Revision,
@@ -90,5 +85,17 @@ func (s *Server) applyFlowRunNowCommand(ctx context.Context, command flow.Assign
 		Ack:       ack,
 		AppliedAt: now,
 	})
-	return ack, inserted, err
+	if err != nil || !inserted {
+		return ledger.Ack, inserted, err
+	}
+	start, err := s.RunAcceptedFlowNowAt(ctx, accepted, scheduledAt, key.CommandID)
+	if err != nil {
+		return reject(flow.AssignmentRejected, err.Error())
+	}
+	ack.Reason = strings.TrimSpace(fmt.Sprintf("run_now started %s", strings.TrimSpace(start.RunID)))
+	ledger.Ack = ack
+	ledger.Status = ack.Status
+	ledger.AppliedAt = now
+	stored, _, err := s.flows.PutCommandLedger(ledger)
+	return stored.Ack, inserted, err
 }

@@ -218,6 +218,9 @@ func TestSchedulerClaimsDueRunsOnceAndSchedulesNext(t *testing.T) {
 	if runner.calls != 1 {
 		t.Fatalf("runner calls = %d", runner.calls)
 	}
+	if !runner.lastRequest.Background {
+		t.Fatalf("scheduler run request was not background: %+v", runner.lastRequest)
+	}
 	if len(store.deleted) != 1 || store.deleted[0].FlowID != "flow-1" {
 		t.Fatalf("deleted due = %+v", store.deleted)
 	}
@@ -293,11 +296,13 @@ func (s *fakeSchedulerStore) ScheduleNext(_ context.Context, assignment Accepted
 }
 
 type fakeFlowRunner struct {
-	calls int
+	calls       int
+	lastRequest RunRequest
 }
 
 func (r *fakeFlowRunner) RunAcceptedFlow(_ context.Context, assignment AcceptedAssignment, request RunRequest) (RunStart, error) {
 	r.calls++
+	r.lastRequest = request
 	return RunStart{
 		FlowID:      assignment.FlowID,
 		Revision:    assignment.Revision,

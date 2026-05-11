@@ -248,6 +248,7 @@ type RunRequest struct {
 	ScheduledAt time.Time `json:"scheduled_at"`
 	RunNow      bool      `json:"run_now,omitempty"`
 	RunID       string    `json:"run_id,omitempty"`
+	Background  bool      `json:"background,omitempty"`
 }
 
 type RunClaimKey struct {

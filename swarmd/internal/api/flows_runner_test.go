@@ -247,7 +247,8 @@ func TestFlowRunSessionTitlePrefersFlowNameThenTaskTitleDetailThenPrompt(t *test
 func TestRunAcceptedFlowNowUsesTargetLocalAcceptedAssignment(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)
-	runner := &fakeFlowRunService{}
+	done := make(chan struct{})
+	runner := &fakeFlowRunService{done: done}
 	server.runner = runner
 	assignment := testAPIFlowAssignment("flow-run-now", 5)
 	assignment.Agent = flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"}
@@ -264,6 +265,7 @@ func TestRunAcceptedFlowNowUsesTargetLocalAcceptedAssignment(t *testing.T) {
 	if start.FlowID != assignment.FlowID || start.Revision != assignment.Revision {
 		t.Fatalf("start = %+v", start)
 	}
+	waitForFakeFlowRunCall(t, runner)
 	normalizedAgent := flow.NormalizeAgentSelection(assignment.Agent)
 	if runner.lastRequest.TargetKind != normalizedAgent.TargetKind || runner.lastRequest.TargetName != normalizedAgent.TargetName {
 		t.Fatalf("run request = %+v", runner.lastRequest)
@@ -288,6 +290,48 @@ func TestRunAcceptedFlowNowUsesTargetLocalAcceptedAssignment(t *testing.T) {
 	if createdPayload.ID != start.SessionID || createdPayload.Title != "Memory sweep" {
 		t.Fatalf("run-now created payload = %+v, want flow name", createdPayload)
 	}
+	waitForFakeFlowRunDone(t, done)
+	eventuallyFlowRunStatus(t, flows, assignment.FlowID, pebblestore.FlowRunStatusSuccess)
+}
+
+func TestRunAcceptedFlowNowReturnsAfterStartingBackgroundSession(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	done := make(chan struct{})
+	runner := &fakeFlowRunService{started: started, block: unblock, done: done}
+	server.runner = runner
+	assignment := testAPIFlowAssignment("flow-run-now-background", 5)
+	assignment.Agent = flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"}
+	assignment.Workspace.WorkspacePath = t.TempDir()
+	assignment.Workspace.WorktreeMode = runruntime.RunWorktreeModeOff
+	if _, err := flows.PutAcceptedAssignment(flow.AcceptedAssignment{Assignment: assignment}); err != nil {
+		t.Fatalf("put accepted assignment: %v", err)
+	}
+
+	start, err := server.RunAcceptedFlowNow(t.Context(), assignment.FlowID)
+	if err != nil {
+		t.Fatalf("run now: %v", err)
+	}
+	if start.Status != pebblestore.FlowRunStatusRunning || strings.TrimSpace(start.SessionID) == "" || strings.TrimSpace(start.RunID) == "" {
+		t.Fatalf("start = %+v", start)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background run did not start")
+	}
+	runs, err := flows.ListTargetRuns(assignment.FlowID, 10)
+	if err != nil {
+		t.Fatalf("list target runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != pebblestore.FlowRunStatusRunning || runs[0].SessionID != start.SessionID {
+		t.Fatalf("running target run = %+v", runs)
+	}
+	close(unblock)
+	waitForFakeFlowRunDone(t, done)
+	eventuallyFlowRunStatus(t, flows, assignment.FlowID, pebblestore.FlowRunStatusSuccess)
 }
 
 func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
@@ -295,7 +339,8 @@ func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
 	ensureFlowTestAgent(t, server)
 	started := make(chan struct{})
 	unblock := make(chan struct{})
-	runner := &fakeFlowRunService{started: started, block: unblock}
+	done := make(chan struct{})
+	runner := &fakeFlowRunService{started: started, block: unblock, done: done}
 	server.runner = runner
 	assignment := testAPIFlowAssignment("flow-run-now-replay", 7)
 	assignment.Agent = flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"}
@@ -328,7 +373,7 @@ func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second run-now command: %v", err)
 	}
-	if !secondInserted || secondAck.Status != flow.AssignmentAccepted {
+	if secondInserted || secondAck.Status != flow.AssignmentAccepted {
 		t.Fatalf("second ack inserted=%v ack=%+v", secondInserted, secondAck)
 	}
 	close(unblock)
@@ -337,10 +382,12 @@ func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("first run-now command did not finish")
 	}
+	waitForFakeFlowRunDone(t, done)
 
 	if got := runner.callCount(); got != 1 {
 		t.Fatalf("runner call count = %d, want 1", got)
 	}
+	eventuallyFlowRunStatus(t, flows, assignment.FlowID, pebblestore.FlowRunStatusSuccess)
 	runs, err := flows.ListTargetRuns(assignment.FlowID, 10)
 	if err != nil {
 		t.Fatalf("list target runs: %v", err)
@@ -354,6 +401,48 @@ func TestFlowRunNowCommandReplaysUseOriginalCommandCreatedAt(t *testing.T) {
 	if !strings.Contains(runs[0].RunID, sanitizeFlowRunIDPart(command.CommandID)) {
 		t.Fatalf("run id %q does not include command id %q", runs[0].RunID, command.CommandID)
 	}
+}
+
+func waitForFakeFlowRunCall(t *testing.T, runner *fakeFlowRunService) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if runner.callCount() > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("fake flow runner was not called")
+}
+
+func waitForFakeFlowRunDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fake flow runner did not finish")
+	}
+}
+
+func eventuallyFlowRunStatus(t *testing.T, flows *pebblestore.FlowStore, flowID, status string) pebblestore.FlowRunSummaryRecord {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var last []pebblestore.FlowRunSummaryRecord
+	for time.Now().Before(deadline) {
+		runs, err := flows.ListTargetRuns(flowID, 10)
+		if err != nil {
+			t.Fatalf("list target runs: %v", err)
+		}
+		last = runs
+		for _, run := range runs {
+			if run.Status == status {
+				return run
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("flow %q did not reach status %q; last runs=%+v", flowID, status, last)
+	return pebblestore.FlowRunSummaryRecord{}
 }
 
 func ensureFlowPrimaryAgentRunnable(t *testing.T, server *Server) {
@@ -441,6 +530,7 @@ type fakeFlowRunService struct {
 	err            error
 	started        chan struct{}
 	block          chan struct{}
+	done           chan struct{}
 	calls          int
 }
 
@@ -456,9 +546,13 @@ func (f *fakeFlowRunService) RunTurnStreaming(_ context.Context, sessionID strin
 	f.lastMeta = meta
 	started := f.started
 	block := f.block
+	done := f.done
 	emitEvents := append([]runruntime.StreamEvent(nil), f.emitEvents...)
 	err := f.err
 	f.mu.Unlock()
+	if done != nil {
+		defer close(done)
+	}
 	if started != nil {
 		close(started)
 	}
