@@ -226,12 +226,17 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	groupID := strings.TrimSpace(state.CurrentGroupID)
-	if groupID == "" {
-		writeError(w, http.StatusBadRequest, errors.New("current swarm group is not selected"))
-		return
+	groupID := ""
+	groupName := ""
+	groupNetworkName := ""
+	if targetHostIsLocal {
+		groupID = strings.TrimSpace(state.CurrentGroupID)
+		if groupID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("current swarm group is not selected"))
+			return
+		}
+		groupName, groupNetworkName = lookupCurrentGroupDetails(state, groupID)
 	}
-	groupName, groupNetworkName := lookupCurrentGroupDetails(state, groupID)
 
 	mounts, childWorkspacePaths, bootstrap := buildReplicationPlan(normalizedWorkspaces, workspaceCatalog, syncConfig)
 	if !targetHostIsLocal {

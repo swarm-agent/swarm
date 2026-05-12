@@ -34,9 +34,17 @@ func (s *Server) createReplicatedContainer(ctx context.Context, targetHost *swar
 	if targetHost == nil {
 		return deployruntime.ContainerDeployment{}, errors.New("managed host target was not resolved")
 	}
+	// The target host owns container launch and child attachment. Do not send the
+	// Primary's swarm group to the managed host: that group is only valid in the
+	// Primary's swarm state and is mirrored locally after the remote create.
+	mirrorPayload := payload
+	payload.GroupID = ""
+	payload.GroupName = ""
+	payload.GroupNetworkName = ""
 	if strings.TrimSpace(payload.DeploymentID) == "" {
 		payload.DeploymentID = suggestedReplicatedDeploymentID(payload.Name)
 	}
+	mirrorPayload.DeploymentID = payload.DeploymentID
 	var response struct {
 		OK         bool                              `json:"ok"`
 		Deployment deployruntime.ContainerDeployment `json:"deployment"`
@@ -51,7 +59,7 @@ func (s *Server) createReplicatedContainer(ctx context.Context, targetHost *swar
 		}
 		return response.Deployment, errors.New("managed host container create failed")
 	}
-	deployment, err := s.mirrorManagedHostDeployment(response.Deployment, *targetHost, payload)
+	deployment, err := s.mirrorManagedHostDeployment(response.Deployment, *targetHost, mirrorPayload)
 	if err != nil {
 		return deployment, err
 	}
@@ -72,9 +80,9 @@ func (s *Server) mirrorManagedHostDeployment(deployment deployruntime.ContainerD
 	deployment.Kind = firstNonEmptyString(strings.TrimSpace(deployment.Kind), "container")
 	deployment.Name = firstNonEmptyString(strings.TrimSpace(deployment.Name), strings.TrimSpace(payload.Name))
 	deployment.Status = firstNonEmptyString(strings.TrimSpace(deployment.Status), "running")
-	deployment.GroupID = firstNonEmptyString(strings.TrimSpace(deployment.GroupID), strings.TrimSpace(payload.GroupID))
-	deployment.GroupName = firstNonEmptyString(strings.TrimSpace(deployment.GroupName), strings.TrimSpace(payload.GroupName))
-	deployment.GroupNetworkName = firstNonEmptyString(strings.TrimSpace(deployment.GroupNetworkName), strings.TrimSpace(payload.GroupNetworkName))
+	deployment.GroupID = strings.TrimSpace(payload.GroupID)
+	deployment.GroupName = strings.TrimSpace(payload.GroupName)
+	deployment.GroupNetworkName = strings.TrimSpace(payload.GroupNetworkName)
 	deployment.SyncEnabled = payload.SyncEnabled
 	deployment.SyncMode = strings.TrimSpace(payload.SyncMode)
 	deployment.SyncModules = append([]string(nil), payload.SyncModules...)

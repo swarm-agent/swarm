@@ -191,7 +191,14 @@ func TestSwarmReplicateLocalManagedTargetValidatesTargetWithoutRemoteMode(t *tes
 		case peerWorkspaceDiscoverPath:
 			writeJSON(w, http.StatusOK, peerWorkspaceDiscoverResponse{OK: true, Workspaces: []peerWorkspaceInfo{{Path: workspacePath, Name: "workspace", GitWorkspace: true}}})
 		case "/v1/deploy/container/create":
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deployment": deployruntime.ContainerDeployment{ID: "deployment-1", Name: "replica-managed-host-target", Status: "running", AttachStatus: "attached", ChildSwarmID: "child-swarm-1", ChildDisplayName: "replica-managed-host-target"}})
+			var payload deployContainerCreatePayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode managed host create payload: %v", err)
+			}
+			if payload.GroupID != "" || payload.GroupName != "" || payload.GroupNetworkName != "" {
+				t.Fatalf("managed host create got primary group fields: group_id=%q group_name=%q group_network_name=%q", payload.GroupID, payload.GroupName, payload.GroupNetworkName)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deployment": deployruntime.ContainerDeployment{ID: "deployment-1", Name: "replica-managed-host-target", Status: "running", AttachStatus: "attached", GroupID: "managed-host-local-group", GroupName: "Managed Host Local Group", ChildSwarmID: "child-swarm-1", ChildDisplayName: "replica-managed-host-target"}})
 		default:
 			t.Fatalf("managed host path = %q", r.URL.Path)
 		}
@@ -222,6 +229,9 @@ func TestSwarmReplicateLocalManagedTargetValidatesTargetWithoutRemoteMode(t *tes
 	}
 	if fakeDeploy.lastMirroredDeployment.HostSwarmID != "managed-swarm-1" {
 		t.Fatalf("mirrored host swarm id = %q, want managed-swarm-1", fakeDeploy.lastMirroredDeployment.HostSwarmID)
+	}
+	if fakeDeploy.lastMirroredDeployment.GroupID != "" {
+		t.Fatalf("mirrored group id = %q, want empty for managed host target", fakeDeploy.lastMirroredDeployment.GroupID)
 	}
 	var response swarmReplicateResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {

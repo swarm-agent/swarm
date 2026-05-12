@@ -534,8 +534,14 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 		return ContainerDeployment{}, err
 	}
 	groupID := strings.TrimSpace(group.ID)
-	groupName := firstNonEmpty(group.Name, groupID)
-	groupNetworkName := firstNonEmpty(group.NetworkName, swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
+	groupName := ""
+	groupNetworkName := ""
+	if groupID != "" {
+		groupName = firstNonEmpty(group.Name, groupID)
+		groupNetworkName = firstNonEmpty(group.NetworkName, swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
+	} else if strings.TrimSpace(input.GroupNetworkName) != "" {
+		groupNetworkName = strings.TrimSpace(input.GroupNetworkName)
+	}
 	deploymentID := firstNonEmpty(strings.TrimSpace(input.DeploymentID), suggestedDeploymentID(input.Name))
 	syncConfig := workspaceruntime.NormalizeReplicationSync(workspaceruntime.ReplicationSyncInput{
 		Enabled: input.SyncEnabled,
@@ -1925,49 +1931,50 @@ func (s *Service) finalizeApprovedAttach(record *pebblestore.DeployContainerReco
 		return err
 	}
 	groupID := strings.TrimSpace(record.GroupID)
-	if groupID == "" {
-		return fmt.Errorf("attach approval is missing target group id")
-	}
-	group, ok, err := s.swarmStore.GetGroup(groupID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("target group %q does not exist", groupID)
-	}
-	if err := requireHostedGroupForLocalSwarm(hostState, groupID); err != nil {
-		return err
-	}
-	groupName := firstNonEmpty(group.Name, record.GroupName, groupID)
-	groupNetworkName := firstNonEmpty(group.NetworkName, record.GroupNetworkName, swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
-	if group.Name != groupName || group.NetworkName != groupNetworkName || group.HostSwarmID == "" {
-		group.Name = groupName
-		group.NetworkName = groupNetworkName
-		group.HostSwarmID = firstNonEmpty(group.HostSwarmID, strings.TrimSpace(hostState.Node.SwarmID))
-		if _, err := s.swarmStore.PutGroup(group); err != nil {
+	groupName := strings.TrimSpace(record.GroupName)
+	groupNetworkName := strings.TrimSpace(record.GroupNetworkName)
+	if groupID != "" {
+		group, ok, err := s.swarmStore.GetGroup(groupID)
+		if err != nil {
 			return err
 		}
-	}
-	if currentGroupID := strings.TrimSpace(hostState.CurrentGroupID); currentGroupID != "" && !strings.EqualFold(currentGroupID, groupID) {
-		log.Printf("deploy finalize approved attach honoring requested group deployment_id=%q requested_group_id=%q host_current_group_id=%q", record.ID, groupID, currentGroupID)
-	}
-	if _, err := s.swarms.UpsertGroupMember(swarmruntime.UpsertGroupMemberInput{
-		GroupID:        groupID,
-		SwarmID:        hostState.Node.SwarmID,
-		Name:           firstNonEmpty(hostState.Node.Name, "Primary"),
-		SwarmRole:      "master",
-		MembershipRole: "host",
-	}); err != nil {
-		return err
-	}
-	if _, err := s.swarms.UpsertGroupMember(swarmruntime.UpsertGroupMemberInput{
-		GroupID:        groupID,
-		SwarmID:        record.ChildSwarmID,
-		Name:           firstNonEmpty(record.ChildDisplayName, record.Name),
-		SwarmRole:      "child",
-		MembershipRole: "member",
-	}); err != nil {
-		return err
+		if !ok {
+			return fmt.Errorf("target group %q does not exist", groupID)
+		}
+		if err := requireHostedGroupForLocalSwarm(hostState, groupID); err != nil {
+			return err
+		}
+		groupName = firstNonEmpty(group.Name, groupName, groupID)
+		groupNetworkName = firstNonEmpty(group.NetworkName, groupNetworkName, swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
+		if group.Name != groupName || group.NetworkName != groupNetworkName || group.HostSwarmID == "" {
+			group.Name = groupName
+			group.NetworkName = groupNetworkName
+			group.HostSwarmID = firstNonEmpty(group.HostSwarmID, strings.TrimSpace(hostState.Node.SwarmID))
+			if _, err := s.swarmStore.PutGroup(group); err != nil {
+				return err
+			}
+		}
+		if currentGroupID := strings.TrimSpace(hostState.CurrentGroupID); currentGroupID != "" && !strings.EqualFold(currentGroupID, groupID) {
+			log.Printf("deploy finalize approved attach honoring requested group deployment_id=%q requested_group_id=%q host_current_group_id=%q", record.ID, groupID, currentGroupID)
+		}
+		if _, err := s.swarms.UpsertGroupMember(swarmruntime.UpsertGroupMemberInput{
+			GroupID:        groupID,
+			SwarmID:        hostState.Node.SwarmID,
+			Name:           firstNonEmpty(hostState.Node.Name, "Primary"),
+			SwarmRole:      "master",
+			MembershipRole: "host",
+		}); err != nil {
+			return err
+		}
+		if _, err := s.swarms.UpsertGroupMember(swarmruntime.UpsertGroupMemberInput{
+			GroupID:        groupID,
+			SwarmID:        record.ChildSwarmID,
+			Name:           firstNonEmpty(record.ChildDisplayName, record.Name),
+			SwarmRole:      "child",
+			MembershipRole: "member",
+		}); err != nil {
+			return err
+		}
 	}
 	if _, err := s.swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{
 		SwarmID:               record.ChildSwarmID,
@@ -2774,16 +2781,12 @@ func (s *Service) postLocalAttachRequest(ctx context.Context, endpoint, socketPa
 
 func buildLocalAttachApprovePayload(cfg startupconfig.FileConfig, state swarmruntime.LocalState, attachState ContainerAttachState) (map[string]any, error) {
 	groupID := strings.TrimSpace(attachState.GroupID)
-	if groupID == "" {
-		if groupID = strings.TrimSpace(cfg.ParentSwarmID); groupID == "" {
-			groupID = strings.TrimSpace(attachState.HostSwarmID)
-		}
+	groupName := ""
+	groupNetworkName := ""
+	if groupID != "" {
+		groupName = firstNonEmpty(attachState.GroupName, groupID)
+		groupNetworkName = firstNonEmpty(attachState.GroupNetworkName, swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
 	}
-	if groupID == "" {
-		return nil, fmt.Errorf("attach approval is missing group id")
-	}
-	groupName := firstNonEmpty(attachState.GroupName, groupID)
-	groupNetworkName := firstNonEmpty(attachState.GroupNetworkName, swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
 	payload := map[string]any{
 		"deployment_id":                 strings.TrimSpace(cfg.DeployContainer.DeploymentID),
 		"bootstrap_secret":              strings.TrimSpace(cfg.DeployContainer.BootstrapSecret),
@@ -2794,9 +2797,11 @@ func buildLocalAttachApprovePayload(cfg startupconfig.FileConfig, state swarmrun
 		"host_backend_url":              strings.TrimSpace(attachState.HostBackendURL),
 		"host_to_child_peer_auth_token": strings.TrimSpace(attachState.HostToChildPeerAuthToken),
 		"child_to_host_peer_auth_token": strings.TrimSpace(attachState.ChildToHostPeerAuthToken),
-		"group_id":                      groupID,
-		"group_name":                    groupName,
-		"group_network_name":            groupNetworkName,
+	}
+	if groupID != "" {
+		payload["group_id"] = groupID
+		payload["group_name"] = groupName
+		payload["group_network_name"] = groupNetworkName
 	}
 	if desktopURL := strings.TrimSpace(attachState.HostDesktopURL); desktopURL != "" {
 		payload["host_desktop_url"] = desktopURL
@@ -4658,7 +4663,7 @@ func containsTrimmedString(values []string, target string) bool {
 func (s *Service) resolveTargetGroupForCreate(hostState swarmruntime.LocalState, input ContainerCreateInput) (pebblestore.SwarmGroupRecord, error) {
 	groupID := strings.TrimSpace(input.GroupID)
 	if groupID == "" {
-		return pebblestore.SwarmGroupRecord{}, fmt.Errorf("group_id is required")
+		return pebblestore.SwarmGroupRecord{}, nil
 	}
 	if err := requireHostedGroupForLocalSwarm(hostState, groupID); err != nil {
 		return pebblestore.SwarmGroupRecord{}, err

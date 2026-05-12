@@ -22,9 +22,9 @@ type deployContainerCreatePayload struct {
 	Name               string                                      `json:"name"`
 	Runtime            string                                      `json:"runtime"`
 	Image              string                                      `json:"image"`
-	GroupID            string                                      `json:"group_id"`
-	GroupName          string                                      `json:"group_name"`
-	GroupNetworkName   string                                      `json:"group_network_name"`
+	GroupID            string                                      `json:"group_id,omitempty"`
+	GroupName          string                                      `json:"group_name,omitempty"`
+	GroupNetworkName   string                                      `json:"group_network_name,omitempty"`
 	SyncEnabled        bool                                        `json:"sync_enabled"`
 	SyncMode           string                                      `json:"sync_mode,omitempty"`
 	SyncModules        []string                                    `json:"sync_modules,omitempty"`
