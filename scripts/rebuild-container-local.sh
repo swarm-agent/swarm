@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -P -- "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck disable=SC1091
 source "${ROOT_DIR}/scripts/lib-lane.sh"
+# shellcheck disable=SC1091
+source "${ROOT_DIR}/scripts/lib-pnpm.sh"
 
 LANE="${SWARM_LANE:-$(swarm_lane_default)}"
 swarm_lane_export_profile "${LANE}" "${ROOT_DIR}"
@@ -93,11 +95,11 @@ build_web_assets() {
   fi
 
   if [[ "${node_major}" =~ ^[0-9]+$ ]] && ((node_major >= 20)); then
-    npm run build
+    swarm_pnpm run build
     return
   fi
 
-  npm exec --yes --package=node@22 -- npm run build
+  swarm_pnpm exec --package=node@22 -- pnpm run build
 }
 
 build_local_artifacts_without_restart() {

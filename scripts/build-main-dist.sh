@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 GO_LIB="${SCRIPT_DIR}/lib-go.sh"
+PNPM_LIB="${SCRIPT_DIR}/lib-pnpm.sh"
 MODULE_PATH="$(awk '/^module / { print $2; exit }' "${ROOT_DIR}/go.mod")"
 
 usage() {
@@ -21,7 +22,7 @@ Build the same local artifact layout used by .github/workflows/build-main.yml:
 
 Options:
   --output-dir <path>  Artifact root. Default: ./dist
-  --skip-web           Skip npm ci, web build, and dist/web staging
+  --skip-web           Skip pnpm install, web build, and dist/web staging
   --version <value>    Release version to embed/package. Default: derived from git
   -h, --help           Show this help text
 EOF
@@ -69,8 +70,14 @@ if [[ ! -f "${GO_LIB}" ]]; then
   echo "missing go resolver script at ${GO_LIB}" >&2
   exit 1
 fi
+if [[ ! -f "${PNPM_LIB}" ]]; then
+  echo "missing pnpm resolver script at ${PNPM_LIB}" >&2
+  exit 1
+fi
 # shellcheck disable=SC1091
 source "${GO_LIB}"
+# shellcheck disable=SC1091
+source "${PNPM_LIB}"
 
 swarm_require_go "${ROOT_DIR}"
 require_cmd git
@@ -133,13 +140,11 @@ echo "building swarmd binaries into ${SWARMD_ARTIFACT_DIR}"
 cp "${ROOT_DIR}/swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so" "${SWARMD_ARTIFACT_DIR}/libfff_c.so"
 
 if [[ "${BUILD_WEB}" == "true" ]]; then
-  require_cmd node
-  require_cmd npm
   echo "building desktop assets into ${WEB_ARTIFACT_DIR}"
   (
     cd "${ROOT_DIR}/web"
-    npm ci
-    npm run build
+    swarm_pnpm install --frozen-lockfile
+    swarm_pnpm run build
   )
   mkdir -p "${WEB_ARTIFACT_DIR}"
   cp -R "${ROOT_DIR}/web/dist/." "${WEB_ARTIFACT_DIR}/"

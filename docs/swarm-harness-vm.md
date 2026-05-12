@@ -208,7 +208,7 @@ If you want to throw away guest changes but keep the cached reusable baseline:
 - rerun `sync` before harness work if the checkout changed
 - `run`, `local-replicate`, and `local-replicate-recovery` still sync by default; use `--no-sync` only when you intentionally want to reuse the existing guest checkout
 - use `--rebootstrap` only when you want to refresh guest packages; normal repeat runs should reuse the existing bootstrap stamp
-- if the host checkout already has `web/node_modules`, the sync step carries it into the guest so desktop builds do not need a separate guest-side `npm ci`
+- if the host checkout already has `web/node_modules`, the sync step carries it into the guest so desktop builds do not need a separate guest-side `pnpm install --frozen-lockfile`
 
 ## Relevant filepaths
 

@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 LANE_LIB="${ROOT_DIR}/scripts/lib-lane.sh"
 GO_LIB="${ROOT_DIR}/scripts/lib-go.sh"
+PNPM_LIB="${ROOT_DIR}/scripts/lib-pnpm.sh"
 
 usage() {
   cat <<'EOF'
@@ -12,7 +13,7 @@ Usage:
   ./setup [--with-web] [--start-main]
 
 Options:
-  --with-web    install web/ npm dependencies and desktop assets
+  --with-web    install web/ pnpm dependencies and desktop assets
   --start-main  start the main-lane backend after building
   -h, --help    show this help
 EOF
@@ -41,7 +42,7 @@ install_desktop_assets() {
 
   if [[ ! -f "${source_dir}/index.html" ]]; then
     echo "missing built desktop assets under ${source_dir}" >&2
-    echo "run rebuild f after npm install to refresh the installed desktop runtime" >&2
+    echo "run rebuild f after pnpm install to refresh the installed desktop runtime" >&2
     exit 1
   fi
 
@@ -116,8 +117,14 @@ if [[ ! -f "${LANE_LIB}" ]]; then
   echo "missing lane resolver script at ${LANE_LIB}" >&2
   exit 1
 fi
+if [[ ! -f "${PNPM_LIB}" ]]; then
+  echo "missing pnpm resolver script at ${PNPM_LIB}" >&2
+  exit 1
+fi
 # shellcheck disable=SC1091
 source "${LANE_LIB}"
+# shellcheck disable=SC1091
+source "${PNPM_LIB}"
 
 echo "installing swarm/swarmdev/rebuild launchers..."
 swarm_provision_system_paths main
@@ -143,12 +150,11 @@ require_executable "${SWARM_BIN_DIR}/swarm-fff-search"
 require_executable "${SWARM_BIN_DIR}/swarmtui"
 
 if [[ "${install_web}" == "1" ]]; then
-  require_cmd npm
   echo "installing web dependencies..."
   (
     cd "${ROOT_DIR}/web"
-    npm install
-    npm run build
+    swarm_pnpm install --frozen-lockfile
+    swarm_pnpm run build
   )
   install_desktop_assets
 elif [[ -f "${ROOT_DIR}/web/dist/index.html" ]]; then

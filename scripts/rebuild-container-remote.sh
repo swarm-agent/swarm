@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 GO_LIB="${ROOT_DIR}/scripts/lib-go.sh"
+PNPM_LIB="${ROOT_DIR}/scripts/lib-pnpm.sh"
 
 IMAGE_NAME="${IMAGE_NAME:-localhost/swarm-container-mvp:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-swarm-container-mvp}"
@@ -29,7 +30,7 @@ GOMODCACHE_DIR="${GOMODCACHE_DIR:-${GO_CACHE_ROOT}/mod}"
 GOPATH_DIR="${GOPATH_DIR:-${GO_CACHE_ROOT}/path}"
 BIN_DIR="${BIN_DIR:-${ROOT_DIR}/.bin/main}"
 
-for required in podman npm; do
+for required in podman; do
   command -v "${required}" > /dev/null 2>&1 || {
     echo "missing required command: ${required}" >&2
     exit 1
@@ -40,8 +41,14 @@ if [[ ! -f "${GO_LIB}" ]]; then
   echo "missing go resolver script at ${GO_LIB}" >&2
   exit 1
 fi
+if [[ ! -f "${PNPM_LIB}" ]]; then
+  echo "missing pnpm resolver script at ${PNPM_LIB}" >&2
+  exit 1
+fi
 # shellcheck disable=SC1091
 source "${GO_LIB}"
+# shellcheck disable=SC1091
+source "${PNPM_LIB}"
 swarm_require_go "${ROOT_DIR}"
 
 ensure_podman_volume() {
@@ -80,7 +87,7 @@ build_container_artifacts() {
   echo "[rebuild-container-remote] building web assets"
   (
     cd "${ROOT_DIR}/web"
-    npm run build
+    swarm_pnpm run build
   )
 }
 

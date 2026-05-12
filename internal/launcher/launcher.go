@@ -1959,7 +1959,7 @@ func frontendSourceFingerprint(webDir string) (string, error) {
 	paths := []string{
 		filepath.Join(webDir, "index.html"),
 		filepath.Join(webDir, "package.json"),
-		filepath.Join(webDir, "package-lock.json"),
+		filepath.Join(webDir, "pnpm-lock.yaml"),
 		filepath.Join(webDir, "tsconfig.json"),
 		filepath.Join(webDir, "vite.config.ts"),
 		filepath.Join(webDir, "public"),

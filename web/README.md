@@ -36,11 +36,11 @@ That launcher:
 
 ```bash
 cd web
-npm install
-npm run dev
+corepack pnpm install --frozen-lockfile
+corepack pnpm run dev
 ```
 
-The checked-in launcher keeps the Vite workflow usable on local Node 18 environments by providing the missing `crypto.hash` API that Vite 7 expects. Use the package scripts instead of calling `vite` directly.
+Dependencies are managed with pnpm and the checked-in `pnpm-workspace.yaml` enables supply-chain hardening: a seven-day `minimumReleaseAge`, strict release-age enforcement, blocked exotic transitive dependencies, and an explicit build-script allowlist. Use the package scripts instead of calling `vite` directly.
 
 Default Vite URL:
 - main desktop: `http://127.0.0.1:5555`

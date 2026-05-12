@@ -1,0 +1,8 @@
+minimumReleaseAge: 10080
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+blockExoticSubdeps: true
+allowBuilds:
+  esbuild: true
+  fsevents: true
+  node: true

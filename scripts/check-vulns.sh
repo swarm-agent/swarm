@@ -4,14 +4,21 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 GO_LIB="${ROOT_DIR}/scripts/lib-go.sh"
+PNPM_LIB="${ROOT_DIR}/scripts/lib-pnpm.sh"
 cd "${ROOT_DIR}"
 
 if [[ ! -f "${GO_LIB}" ]]; then
   echo "missing go resolver script at ${GO_LIB}" >&2
   exit 1
 fi
+if [[ ! -f "${PNPM_LIB}" ]]; then
+  echo "missing pnpm resolver script at ${PNPM_LIB}" >&2
+  exit 1
+fi
 # shellcheck disable=SC1091
 source "${GO_LIB}"
+# shellcheck disable=SC1091
+source "${PNPM_LIB}"
 swarm_require_go "${ROOT_DIR}"
 
 CACHE_ROOT="${GO_CACHE_ROOT:-${ROOT_DIR}/.cache/go}"
@@ -85,28 +92,31 @@ run_govuln_module() {
   fi
 }
 
-run_npm_audit() {
-  echo "[vuln-check] running npm audit (web lockfile, all deps)"
+run_pnpm_audit() {
+  echo "[vuln-check] running pnpm audit (web lockfile, all deps)"
   if ! (
     cd "${ROOT_DIR}/web"
-    if [[ ! -f "package-lock.json" ]]; then
-      echo "[vuln-check] FAIL: missing web/package-lock.json" >&2
+    if [[ ! -f "pnpm-lock.yaml" ]]; then
+      echo "[vuln-check] FAIL: missing web/pnpm-lock.yaml" >&2
       exit 1
     fi
-    npm audit --package-lock-only --audit-level=low
+    swarm_pnpm audit --audit-level=low
   ); then
-    echo "[vuln-check] FAIL: npm audit reported web dependency vulnerabilities" >&2
+    echo "[vuln-check] FAIL: pnpm audit reported web dependency vulnerabilities" >&2
     fail_count=$((fail_count + 1))
   fi
 }
 
-need_cmd npm || true
+if ! command -v pnpm > /dev/null 2>&1 && ! command -v corepack > /dev/null 2>&1; then
+  echo "[vuln-check] FAIL: missing required command: pnpm or corepack" >&2
+  fail_count=$((fail_count + 1))
+fi
 GOVULN_BIN=""
 if GOVULN_BIN="$(ensure_govulncheck)"; then
   run_govuln_module "${ROOT_DIR}" "root module" "${GOVULN_BIN}"
   run_govuln_module "${ROOT_DIR}/swarmd" "swarmd module" "${GOVULN_BIN}"
 fi
-run_npm_audit
+run_pnpm_audit
 
 if (( fail_count > 0 )); then
   echo "[vuln-check] CRITICAL: vulnerability scan failed; treat this as a commit blocker." >&2
