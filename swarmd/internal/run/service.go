@@ -3192,7 +3192,7 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				s.emitSessionTitleWarning(sessionID, "final", fmt.Errorf("session title background panic: %v", recovered), nil)
+				s.emitSessionTitleWarning(sessionID, "final", fmt.Errorf("session title background panic: %v", recovered), emit)
 			}
 		}()
 		timer := time.NewTimer(sessionTitleFinalDelay)
@@ -3200,10 +3200,10 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 		<-timer.C
 		conversation, convErr := s.buildSessionTitleConversation(sessionID, firstPrompt)
 		if convErr != nil {
-			s.emitSessionTitleWarning(sessionID, "final", convErr, nil)
+			s.emitSessionTitleWarning(sessionID, "final", convErr, emit)
 			return
 		}
-		s.generateAndApplySessionTitle(sessionID, conversation, "final", sessionTitleFinalWordsMin, sessionTitleFinalWordsMax, basePreference, memoryProfile, nil)
+		s.generateAndApplySessionTitle(sessionID, conversation, "final", sessionTitleFinalWordsMin, sessionTitleFinalWordsMax, basePreference, memoryProfile, emit)
 	}()
 }
 

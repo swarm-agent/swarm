@@ -69,8 +69,11 @@ func (streamMirrorHostedSync) SetMode(context.Context, sessionruntime.HostedSess
 	return pebblestore.SessionSnapshot{}, nil
 }
 
-func (streamMirrorHostedSync) SetTitle(context.Context, sessionruntime.HostedSessionDescriptor, string, string) (pebblestore.SessionSnapshot, error) {
-	return pebblestore.SessionSnapshot{}, nil
+func (s streamMirrorHostedSync) SetTitle(_ context.Context, _ sessionruntime.HostedSessionDescriptor, sessionID, title string) (pebblestore.SessionSnapshot, error) {
+	if s.sessions == nil {
+		return pebblestore.SessionSnapshot{ID: sessionID, Title: title, UpdatedAt: time.Now().UnixMilli()}, nil
+	}
+	return s.sessions.StoreMirroredTitle(sessionID, title, time.Now().UnixMilli())
 }
 
 func (streamMirrorHostedSync) UpdateMetadata(context.Context, sessionruntime.HostedSessionDescriptor, string, map[string]any) (pebblestore.SessionSnapshot, error) {
