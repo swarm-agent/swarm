@@ -515,8 +515,63 @@ func (s *Server) proxyManagedHostRunStreamWebsocket(w http.ResponseWriter, r *ht
 	if err := upstream.WriteMessage(gorillaws.TextMessage, patched); err != nil {
 		return err
 	}
-	bridgeWebsocketText(downstream, upstream)
+	bridgeWebsocketTextWithUpstreamObserver(downstream, upstream, func(payload []byte) {
+		s.mirrorManagedHostRunStreamFrame(sessionID, payload)
+	})
 	return nil
+}
+
+func (s *Server) mirrorManagedHostRunStreamFrame(sessionID string, payload []byte) {
+	if s == nil || s.sessions == nil || len(payload) == 0 {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	var msg runStreamWireEvent
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return
+	}
+	eventType := strings.TrimSpace(msg.Type)
+	if eventType == "" {
+		return
+	}
+	if strings.TrimSpace(msg.SessionID) == "" {
+		msg.SessionID = sessionID
+	}
+	if !strings.EqualFold(strings.TrimSpace(msg.SessionID), sessionID) {
+		log.Printf("warning: ignore managed-host run stream frame for mismatched session_id=%q expected=%q event_type=%q", strings.TrimSpace(msg.SessionID), sessionID, eventType)
+		return
+	}
+	encoded, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("warning: marshal managed-host run stream frame failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
+		return
+	}
+	var payloadMap map[string]any
+	if err := json.Unmarshal(encoded, &payloadMap); err != nil {
+		log.Printf("warning: decode managed-host run stream frame payload failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
+		return
+	}
+	env, err := s.sessions.StoreMirroredEvent(sessionID, eventType, payloadMap, strings.TrimSpace(msg.RunID), "")
+	if err != nil {
+		log.Printf("warning: store managed-host run stream event failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
+	} else if env.GlobalSeq != 0 && s.hub != nil {
+		s.hub.Publish(env)
+	}
+	if err := s.storeMirroredEventPayloadLifecycle(sessionID, payloadMap); err != nil {
+		log.Printf("warning: store managed-host run stream lifecycle failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
+	}
+	if err := s.storeMirroredEventPayloadMessage(sessionID, payloadMap); err != nil {
+		log.Printf("warning: store managed-host run stream message failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
+	}
+	if err := s.storeMirroredEventPayloadPermission(sessionID, payloadMap); err != nil {
+		log.Printf("warning: store managed-host run stream permission failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
+	}
+	if err := s.publishManagedHostSessionEventToPrimaryRunStream(sessionID, eventType, payloadMap); err != nil {
+		log.Printf("warning: publish managed-host run stream event to local replay failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
+	}
 }
 
 func managedHostRunStreamStartPayloadWithSession(raw []byte, sessionID string) ([]byte, error) {

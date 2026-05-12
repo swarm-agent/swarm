@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	gorillaws "github.com/gorilla/websocket"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/permission"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -235,6 +237,105 @@ func TestManagedHostRunStreamStartPayloadWithSession(t *testing.T) {
 	}
 }
 
+func TestManagedHostRunStreamWebsocketProxyMirrorsUpstreamFrames(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != peerManagedHostSessionRunStreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		conn, err := (&gorillaws.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade managed websocket: %v", err)
+		}
+		defer conn.Close()
+		_, rawStart, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read start frame: %v", err)
+		}
+		var start runStreamInboundMessage
+		if err := json.Unmarshal(rawStart, &start); err != nil {
+			t.Fatalf("decode start frame: %v", err)
+		}
+		if start.SessionID != "managed-session" || start.Type != "run.start" || start.Prompt != "hello managed" {
+			t.Fatalf("start frame = %+v", start)
+		}
+		frames := []runStreamWireEvent{
+			{Type: runruntime.StreamEventSessionLifecycle, SessionID: "managed-session", RunID: "managed-run", Lifecycle: &pebblestore.SessionLifecycleSnapshot{SessionID: "managed-session", RunID: "managed-run", Phase: "running", Active: true, OwnerTransport: "managed_host_peer", StartedAt: 123, UpdatedAt: 124}},
+			{Type: "assistant.message", SessionID: "managed-session", RunID: "managed-run", Message: &pebblestore.MessageSnapshot{ID: "msg_00000000000000000021", SessionID: "managed-session", GlobalSeq: 21, Role: "assistant", Content: "hello from managed", CreatedAt: 125}},
+			{Type: "assistant.delta", SessionID: "managed-session", RunID: "managed-run", Delta: "hello"},
+		}
+		for _, frame := range frames {
+			raw, err := json.Marshal(frame)
+			if err != nil {
+				t.Fatalf("marshal frame: %v", err)
+			}
+			if err := conn.WriteMessage(gorillaws.TextMessage, raw); err != nil {
+				t.Fatalf("write frame: %v", err)
+			}
+		}
+	}))
+	defer managed.Close()
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm", "swarm_managed_host_backend_url": managed.URL}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store mirror: %v", err)
+	}
+	seedManagedHostTarget(t, server, managed.URL)
+
+	primary := httptest.NewServer(server.Handler())
+	defer primary.Close()
+	wsURL := "ws" + strings.TrimPrefix(primary.URL, "http") + "/v1/sessions/managed-session/run/stream?swarm_id=managed-swarm"
+	client, _, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial primary websocket: %v", err)
+	}
+	defer client.Close()
+	if err := client.WriteMessage(gorillaws.TextMessage, []byte(`{"type":"run.start","prompt":"hello managed"}`)); err != nil {
+		t.Fatalf("write start: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		_, raw, err := client.ReadMessage()
+		if err != nil {
+			t.Fatalf("read proxied frame %d: %v", i, err)
+		}
+		var frame runStreamWireEvent
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode proxied frame %d: %v", i, err)
+		}
+		if frame.SessionID != "managed-session" || frame.RunID != "managed-run" {
+			t.Fatalf("proxied frame %d = %+v", i, frame)
+		}
+	}
+
+	messages, err := sessionSvc.ListMessages("managed-session", 0, 30)
+	if err != nil {
+		t.Fatalf("list mirrored messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "hello from managed" || messages[0].GlobalSeq != 21 {
+		t.Fatalf("mirrored messages = %+v", messages)
+	}
+	lifecycle, ok, err := sessionSvc.GetLifecycle("managed-session")
+	if err != nil {
+		t.Fatalf("get mirrored lifecycle: %v", err)
+	}
+	if !ok || lifecycle.RunID != "managed-run" || !lifecycle.Active {
+		t.Fatalf("mirrored lifecycle ok=%v lifecycle=%+v", ok, lifecycle)
+	}
+	state, sub, replay, err := server.runStreams.subscribe("managed-run", 0)
+	if err != nil {
+		t.Fatalf("subscribe mirrored run stream: %v", err)
+	}
+	defer server.runStreams.unsubscribe("managed-run", sub.id)
+	if state.sessionID != "managed-session" {
+		t.Fatalf("run stream session = %q, want managed-session", state.sessionID)
+	}
+	if len(replay) != 3 {
+		t.Fatalf("replay len = %d, want 3", len(replay))
+	}
+}
+
 func TestPeerManagedHostSessionEventPublishesToPrimaryRunStream(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"session_id":"managed-session","event_type":"assistant.delta","payload":{"type":"assistant.delta","session_id":"managed-session","run_id":"managed-run","delta":"hello"},"causation_id":"managed-run"}`))
@@ -289,7 +390,8 @@ func seedManagedHostTarget(t *testing.T, server *Server, backendURL string) {
 	}
 	server.SetSwarmNodeStore(nodes)
 	server.swarmTargetHealth.entries = map[string]swarmTargetHealthEntry{
-		"host|managed-swarm|" + backendURL: {online: true, checkedAt: time.Now()},
+		"host|managed-swarm|" + backendURL:   {online: true, checkedAt: time.Now()},
+		"manual|managed-swarm|" + backendURL: {online: true, checkedAt: time.Now()},
 	}
 }
 

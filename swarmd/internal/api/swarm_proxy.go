@@ -152,6 +152,10 @@ func summarizeWebsocketDialError(err error, resp *http.Response) error {
 }
 
 func bridgeWebsocketText(downstream *transportws.Conn, upstream *gorillaws.Conn) {
+	bridgeWebsocketTextWithUpstreamObserver(downstream, upstream, nil)
+}
+
+func bridgeWebsocketTextWithUpstreamObserver(downstream *transportws.Conn, upstream *gorillaws.Conn, upstreamObserver func([]byte)) {
 	var closeOnce sync.Once
 	closeBoth := func() {
 		closeOnce.Do(func() {
@@ -184,6 +188,9 @@ func bridgeWebsocketText(downstream *transportws.Conn, upstream *gorillaws.Conn)
 			}
 			if messageType != gorillaws.TextMessage {
 				continue
+			}
+			if upstreamObserver != nil {
+				upstreamObserver(payload)
 			}
 			if err := downstream.WriteText(payload); err != nil {
 				errCh <- err
