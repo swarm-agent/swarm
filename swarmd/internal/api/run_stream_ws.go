@@ -89,6 +89,7 @@ type runStreamWireEvent struct {
 	UsageSummary *pebblestore.SessionUsageSummary      `json:"usage_summary,omitempty"`
 	Title        string                                `json:"title,omitempty"`
 	TitleStage   string                                `json:"title_stage,omitempty"`
+	UpdatedAt    int64                                 `json:"updated_at,omitempty"`
 	Warning      string                                `json:"warning,omitempty"`
 	Lifecycle    *pebblestore.SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
 	Result       runruntime.RunResult                  `json:"result,omitempty"`

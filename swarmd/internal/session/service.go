@@ -365,6 +365,48 @@ func (s *Service) StoreMirroredEvent(sessionID, eventType string, payload map[st
 	return s.events.Append("session:"+sessionID, eventType, sessionID, payloadBytes, strings.TrimSpace(causationID), strings.TrimSpace(correlationID))
 }
 
+func (s *Service) StoreMirroredTitle(sessionID, title string, updatedAt int64) (pebblestore.SessionSnapshot, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.SessionSnapshot{}, errors.New("session service is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return pebblestore.SessionSnapshot{}, errors.New("session id is required")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return pebblestore.SessionSnapshot{}, errors.New("title is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok, err := s.store.GetSession(sessionID)
+	if err != nil {
+		return pebblestore.SessionSnapshot{}, err
+	}
+	if !ok {
+		return pebblestore.SessionSnapshot{}, fmt.Errorf("session %q not found", sessionID)
+	}
+	session.Mode = NormalizeMode(session.Mode)
+	if strings.TrimSpace(session.Title) == title {
+		return session, nil
+	}
+	session.Title = title
+	nextUpdatedAt := time.Now().UnixMilli()
+	if updatedAt > nextUpdatedAt {
+		nextUpdatedAt = updatedAt
+	}
+	if session.UpdatedAt > nextUpdatedAt {
+		nextUpdatedAt = session.UpdatedAt
+	}
+	session.UpdatedAt = nextUpdatedAt
+	if err := s.store.UpdateSession(session); err != nil {
+		return pebblestore.SessionSnapshot{}, err
+	}
+	return session, nil
+}
+
 func (s *Service) DeleteSession(sessionID string) error {
 	if s == nil || s.store == nil {
 		return errors.New("session service is not configured")

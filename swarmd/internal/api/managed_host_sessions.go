@@ -566,11 +566,66 @@ func (s *Server) mirrorManagedHostRunStreamFrame(sessionID string, payload []byt
 	if err := s.storeMirroredEventPayloadMessage(sessionID, payloadMap); err != nil {
 		log.Printf("warning: store managed-host run stream message failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
 	}
+	if err := s.storeMirroredEventPayloadTitle(sessionID, eventType, payloadMap); err != nil {
+		log.Printf("warning: store managed-host run stream title failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
+	}
 	if err := s.storeMirroredEventPayloadPermission(sessionID, payloadMap); err != nil {
 		log.Printf("warning: store managed-host run stream permission failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
 	}
 	if err := s.publishManagedHostSessionEventToPrimaryRunStream(sessionID, eventType, payloadMap); err != nil {
 		log.Printf("warning: publish managed-host run stream event to local replay failed session_id=%q event_type=%q: %v", sessionID, eventType, err)
+	}
+}
+
+func (s *Server) storeMirroredEventPayloadTitle(sessionID, eventType string, payload map[string]any) error {
+	if s == nil || s.sessions == nil || len(payload) == 0 {
+		return nil
+	}
+	eventType = strings.TrimSpace(eventType)
+	if !isManagedHostSessionTitleEvent(eventType) {
+		return nil
+	}
+	var envelope struct {
+		Type       string `json:"type"`
+		SessionID  string `json:"session_id"`
+		Title      string `json:"title"`
+		TitleStage string `json:"title_stage"`
+		UpdatedAt  int64  `json:"updated_at"`
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return err
+	}
+	if eventType == "" {
+		eventType = strings.TrimSpace(envelope.Type)
+	}
+	if !isManagedHostSessionTitleEvent(eventType) {
+		return nil
+	}
+	title := strings.TrimSpace(envelope.Title)
+	if title == "" {
+		return nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if strings.TrimSpace(envelope.SessionID) == "" {
+		envelope.SessionID = sessionID
+	}
+	if sessionID == "" || !strings.EqualFold(strings.TrimSpace(envelope.SessionID), sessionID) {
+		return nil
+	}
+	_, err = s.sessions.StoreMirroredTitle(sessionID, title, envelope.UpdatedAt)
+	return err
+}
+
+func isManagedHostSessionTitleEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case runruntime.StreamEventSessionTitle, "run.session.title.updated":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -810,6 +865,9 @@ func (s *Server) handlePeerManagedHostSessionEvent(w http.ResponseWriter, r *htt
 	}
 	if err := s.storeMirroredEventPayloadMessage(req.SessionID, req.Payload); err != nil {
 		log.Printf("warning: store managed-host mirrored event message failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
+	}
+	if err := s.storeMirroredEventPayloadTitle(req.SessionID, req.EventType, req.Payload); err != nil {
+		log.Printf("warning: store managed-host mirrored event title failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
 	}
 	if err := s.storeMirroredEventPayloadPermission(req.SessionID, req.Payload); err != nil {
 		log.Printf("warning: store managed-host mirrored event permission failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)

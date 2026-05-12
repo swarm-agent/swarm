@@ -336,6 +336,78 @@ func TestManagedHostRunStreamWebsocketProxyMirrorsUpstreamFrames(t *testing.T) {
 	}
 }
 
+func TestManagedHostRunStreamWebsocketProxyPersistsSessionTitle(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != peerManagedHostSessionRunStreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		conn, err := (&gorillaws.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade managed websocket: %v", err)
+		}
+		defer conn.Close()
+		_, rawStart, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read start frame: %v", err)
+		}
+		var start runStreamInboundMessage
+		if err := json.Unmarshal(rawStart, &start); err != nil {
+			t.Fatalf("decode start frame: %v", err)
+		}
+		if start.SessionID != "managed-session" || start.Type != "run.start" {
+			t.Fatalf("start frame = %+v", start)
+		}
+		titleFrame := runStreamWireEvent{Type: runruntime.StreamEventSessionTitle, SessionID: "managed-session", RunID: "managed-run", Title: "Managed title from host", TitleStage: "final", UpdatedAt: 456}
+		rawTitle, err := json.Marshal(titleFrame)
+		if err != nil {
+			t.Fatalf("marshal title frame: %v", err)
+		}
+		if err := conn.WriteMessage(gorillaws.TextMessage, rawTitle); err != nil {
+			t.Fatalf("write title frame: %v", err)
+		}
+	}))
+	defer managed.Close()
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "auto", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm", "swarm_managed_host_backend_url": managed.URL}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store mirror: %v", err)
+	}
+	seedManagedHostTarget(t, server, managed.URL)
+
+	primary := httptest.NewServer(server.Handler())
+	defer primary.Close()
+	wsURL := "ws" + strings.TrimPrefix(primary.URL, "http") + "/v1/sessions/managed-session/run/stream?swarm_id=managed-swarm"
+	client, _, err := gorillaws.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial primary websocket: %v", err)
+	}
+	defer client.Close()
+	if err := client.WriteMessage(gorillaws.TextMessage, []byte(`{"type":"run.start","prompt":"title me"}`)); err != nil {
+		t.Fatalf("write start: %v", err)
+	}
+	_, raw, err := client.ReadMessage()
+	if err != nil {
+		t.Fatalf("read title frame: %v", err)
+	}
+	var frame runStreamWireEvent
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatalf("decode title frame: %v", err)
+	}
+	if frame.Type != runruntime.StreamEventSessionTitle || frame.Title != "Managed title from host" || frame.TitleStage != "final" || frame.SessionID != "managed-session" {
+		t.Fatalf("proxied title frame = %+v", frame)
+	}
+	mirrored, ok, err := sessionSvc.GetSession("managed-session")
+	if err != nil {
+		t.Fatalf("get mirrored session: %v", err)
+	}
+	if !ok || mirrored.Title != "Managed title from host" {
+		t.Fatalf("mirrored session ok=%v title=%q", ok, mirrored.Title)
+	}
+}
+
 func TestPeerManagedHostSessionEventPublishesToPrimaryRunStream(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"session_id":"managed-session","event_type":"assistant.delta","payload":{"type":"assistant.delta","session_id":"managed-session","run_id":"managed-run","delta":"hello"},"causation_id":"managed-run"}`))
