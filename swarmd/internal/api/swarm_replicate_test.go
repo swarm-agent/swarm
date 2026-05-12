@@ -190,6 +190,8 @@ func TestSwarmReplicateLocalManagedTargetValidatesTargetWithoutRemoteMode(t *tes
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		case peerWorkspaceDiscoverPath:
 			writeJSON(w, http.StatusOK, peerWorkspaceDiscoverResponse{OK: true, Workspaces: []peerWorkspaceInfo{{Path: workspacePath, Name: "workspace", GitWorkspace: true}}})
+		case "/v1/deploy/container/create":
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deployment": deployruntime.ContainerDeployment{ID: "deployment-1", Name: "replica-managed-host-target", Status: "running", AttachStatus: "attached", ChildSwarmID: "child-swarm-1", ChildDisplayName: "replica-managed-host-target"}})
 		default:
 			t.Fatalf("managed host path = %q", r.URL.Path)
 		}
@@ -215,8 +217,11 @@ func TestSwarmReplicateLocalManagedTargetValidatesTargetWithoutRemoteMode(t *tes
 	if !sawHealth {
 		t.Fatal("managed host target was not health checked")
 	}
-	if fakeDeploy.lastCreateInput.Name != "replica-managed-host-target" {
-		t.Fatalf("create input name = %q, want managed target request to stay on local create path", fakeDeploy.lastCreateInput.Name)
+	if fakeDeploy.lastCreateInput.Name != "" {
+		t.Fatalf("create input name = %q, want managed target request to avoid primary local create path", fakeDeploy.lastCreateInput.Name)
+	}
+	if fakeDeploy.lastMirroredDeployment.HostSwarmID != "managed-swarm-1" {
+		t.Fatalf("mirrored host swarm id = %q, want managed-swarm-1", fakeDeploy.lastMirroredDeployment.HostSwarmID)
 	}
 	var response swarmReplicateResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
@@ -537,6 +542,7 @@ type fakeReplicateDeployService struct {
 	lastSyncAgentBundleInput    deployruntime.ContainerSyncCredentialRequestInput
 	lastAppliedCredentialBundle deployruntime.ContainerSyncCredentialBundle
 	lastAppliedAgentBundle      deployruntime.ContainerSyncAgentBundle
+	lastMirroredDeployment      deployruntime.ContainerDeployment
 }
 
 func (f *fakeReplicateDeployService) RuntimeStatus(context.Context) (deployruntime.ContainerRuntimeStatus, error) {
@@ -576,6 +582,11 @@ func (f *fakeReplicateDeployService) Act(context.Context, deployruntime.Containe
 
 func (f *fakeReplicateDeployService) Delete(context.Context, []string) (localcontainers.DeleteResult, error) {
 	return localcontainers.DeleteResult{}, nil
+}
+
+func (f *fakeReplicateDeployService) MirrorDeployment(_ context.Context, deployment deployruntime.ContainerDeployment) (deployruntime.ContainerDeployment, error) {
+	f.lastMirroredDeployment = deployment
+	return deployment, nil
 }
 
 func (f *fakeReplicateDeployService) ChildAttachState(context.Context, deployruntime.ContainerAttachStatusInput) (swarmruntime.LocalState, error) {

@@ -1,10 +1,6 @@
 package api
 
-import (
-	"net/http"
-
-	deployruntime "swarm/packages/swarmd/internal/deploy"
-)
+import "net/http"
 
 func (s *Server) registerCoreRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -97,14 +93,12 @@ func (s *Server) registerDeployRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/deploy/container/runtime", s.handleDeployContainerRuntime)
 	mux.HandleFunc("/v1/deploy/container", s.handleDeployContainers)
 	mux.HandleFunc("/v1/deploy/container/create", s.handleDeployContainerCreate)
-	mux.HandleFunc(deployruntime.PeerContainerCreatePath, s.handleDeployContainerPeerCreate)
-	mux.HandleFunc(deployruntime.PeerContainerDeletePath, s.handleDeployContainerPeerDelete)
 	mux.HandleFunc("/v1/deploy/container/package/defaults", s.handleDeployContainerPackageDefaults)
 	mux.HandleFunc("/v1/deploy/container/package/validate", s.handleDeployContainerPackageValidate)
 	mux.HandleFunc("/v1/deploy/container/package/suggest", s.handleDeployContainerPackageSuggest)
 	mux.HandleFunc("/v1/deploy/container/settings", s.handleDeployContainerSettings)
 	mux.HandleFunc("/v1/deploy/container/action", s.handleDeployContainerAction)
-	mux.HandleFunc("/v1/deploy/container/delete", s.handleDeployContainerDelete)
+	mux.HandleFunc("/v1/deploy/container/delete", s.handleDeployContainerDeleteRequest)
 	mux.HandleFunc("/v1/deploy/container/attach/child-state", s.handleDeployContainerAttachChildState)
 	mux.HandleFunc("/v1/deploy/container/attach/request", s.handleDeployContainerAttachRequest)
 	mux.HandleFunc("/v1/deploy/container/attach/approve", s.handleDeployContainerAttachApprove)

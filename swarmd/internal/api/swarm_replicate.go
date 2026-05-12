@@ -252,16 +252,7 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 	if cfg.DevMode {
 		containerPackages = mapReplicateContainerPackagesInput(req.ContainerPackages)
 	}
-	var deployTargetHost *deployruntime.ContainerTargetHost
-	if !targetHostIsLocal && targetHost != nil {
-		deployTargetHost = &deployruntime.ContainerTargetHost{
-			SwarmID:     strings.TrimSpace(targetHost.SwarmID),
-			DisplayName: firstNonEmpty(strings.TrimSpace(targetHost.Name), strings.TrimSpace(targetHost.SwarmID)),
-			BackendURL:  strings.TrimSpace(targetHost.BackendURL),
-			DesktopURL:  strings.TrimSpace(targetHost.DesktopURL),
-		}
-	}
-	deployment, err := s.deployContainers.Create(context.Background(), deployruntime.ContainerCreateInput{
+	createPayload := deployContainerCreatePayload{
 		Name:               swarmName,
 		Runtime:            strings.TrimSpace(req.Runtime),
 		BypassPermissions:  req.BypassPermissions,
@@ -276,8 +267,8 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		Mounts:             mounts,
 		WorkspaceBootstrap: bootstrap,
 		ContainerPackages:  containerPackages,
-		TargetHost:         deployTargetHost,
-	})
+	}
+	deployment, err := s.createReplicatedContainer(r.Context(), targetHost, createPayload, targetHostIsLocal)
 	if err != nil {
 		statusCode := http.StatusBadRequest
 		if strings.Contains(strings.ToLower(err.Error()), "start ") {
