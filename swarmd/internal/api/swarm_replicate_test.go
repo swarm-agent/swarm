@@ -184,11 +184,15 @@ func TestSwarmReplicateLocalManagedTargetValidatesTargetWithoutRemoteMode(t *tes
 
 	var sawHealth bool
 	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/readyz" && r.URL.Path != "/healthz" {
+		switch r.URL.Path {
+		case "/readyz", "/healthz":
+			sawHealth = true
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		case peerWorkspaceDiscoverPath:
+			writeJSON(w, http.StatusOK, peerWorkspaceDiscoverResponse{OK: true, Workspaces: []peerWorkspaceInfo{{Path: workspacePath, Name: "workspace", GitWorkspace: true}}})
+		default:
 			t.Fatalf("managed host path = %q", r.URL.Path)
 		}
-		sawHealth = true
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}))
 	t.Cleanup(managedHost.Close)
 	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(managedHost.URL, "host-to-managed-token"))

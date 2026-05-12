@@ -145,6 +145,111 @@ func (s *Server) handleDeployContainerCreate(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+type deployContainerPeerCreateRequest struct {
+	DeploymentID          string                                      `json:"DeploymentID,omitempty"`
+	Name                  string                                      `json:"Name"`
+	Runtime               string                                      `json:"Runtime,omitempty"`
+	Image                 string                                      `json:"Image,omitempty"`
+	Mounts                []localcontainers.Mount                     `json:"Mounts,omitempty"`
+	WorkspaceBootstrap    []deployruntime.ContainerWorkspaceBootstrap `json:"WorkspaceBootstrap,omitempty"`
+	ContainerPackages     deployruntime.ContainerPackageManifest      `json:"ContainerPackages,omitempty"`
+	GroupID               string                                      `json:"GroupID,omitempty"`
+	GroupName             string                                      `json:"GroupName,omitempty"`
+	GroupNetworkName      string                                      `json:"GroupNetworkName,omitempty"`
+	SyncEnabled           bool                                        `json:"SyncEnabled,omitempty"`
+	SyncMode              string                                      `json:"SyncMode,omitempty"`
+	SyncModules           []string                                    `json:"SyncModules,omitempty"`
+	SyncVaultPassword     string                                      `json:"SyncVaultPassword,omitempty"`
+	BypassPermissions     bool                                        `json:"BypassPermissions,omitempty"`
+	AlwaysOn              bool                                        `json:"AlwaysOn,omitempty"`
+	PeerManagedHostCreate bool                                        `json:"PeerManagedHostCreate,omitempty"`
+	RequestingHostSwarmID string                                      `json:"RequestingHostSwarmID,omitempty"`
+	RequestingHostName    string                                      `json:"RequestingHostName,omitempty"`
+}
+
+func (s *Server) handleDeployContainerPeerCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.deployContainers == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
+		return
+	}
+	peerSwarmID, ok := authorizedPeerSwarmID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errors.New("peer auth is required"))
+		return
+	}
+	var req deployContainerPeerCreateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(req.RequestingHostSwarmID) != "" && !strings.EqualFold(strings.TrimSpace(req.RequestingHostSwarmID), peerSwarmID) {
+		writeError(w, http.StatusBadRequest, errors.New("requesting host does not match peer auth"))
+		return
+	}
+	deployment, err := s.deployContainers.Create(context.Background(), deployruntime.ContainerCreateInput{
+		DeploymentID:          req.DeploymentID,
+		Name:                  req.Name,
+		Runtime:               req.Runtime,
+		Image:                 req.Image,
+		Mounts:                req.Mounts,
+		WorkspaceBootstrap:    req.WorkspaceBootstrap,
+		ContainerPackages:     req.ContainerPackages,
+		GroupID:               req.GroupID,
+		GroupName:             req.GroupName,
+		GroupNetworkName:      req.GroupNetworkName,
+		SyncEnabled:           req.SyncEnabled,
+		SyncMode:              req.SyncMode,
+		SyncModules:           req.SyncModules,
+		SyncVaultPassword:     req.SyncVaultPassword,
+		BypassPermissions:     req.BypassPermissions,
+		AlwaysOn:              req.AlwaysOn,
+		PeerManagedHostCreate: true,
+		RequestingHostSwarmID: peerSwarmID,
+		RequestingHostName:    req.RequestingHostName,
+	})
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if strings.Contains(strings.ToLower(err.Error()), "start ") {
+			statusCode = http.StatusConflict
+		}
+		writeJSON(w, statusCode, map[string]any{"ok": false, "path_id": deployruntime.PathContainerPeerCreate, "deployment": deployment, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerPeerCreate, "deployment": deployment})
+}
+
+func (s *Server) handleDeployContainerPeerDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s.deployContainers == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
+		return
+	}
+	if _, ok := authorizedPeerSwarmID(r); !ok {
+		writeError(w, http.StatusUnauthorized, errors.New("peer auth is required"))
+		return
+	}
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.deployContainers.Delete(context.Background(), req.IDs)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerPeerDelete, "result": result, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerPeerDelete, "result": result})
+}
+
 func (s *Server) handleDeployContainerSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

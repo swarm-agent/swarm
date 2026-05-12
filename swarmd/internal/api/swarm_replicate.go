@@ -200,11 +200,16 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 	}
 	localSwarmID := strings.TrimSpace(state.Node.SwarmID)
 	targetHostIsLocal := targetHostSwarmID == "" || strings.EqualFold(targetHostSwarmID, "local") || strings.EqualFold(targetHostSwarmID, "self") || strings.EqualFold(targetHostSwarmID, localSwarmID)
+	var targetHost *swarmTarget
+	peerToken := ""
 	if !targetHostIsLocal {
-		if _, _, _, status, err := s.resolveManagedHostSessionTarget(requestWithSwarmTargetQuery(r, targetHostSwarmID), targetHostSwarmID); err != nil {
+		resolved, _, token, status, err := s.resolveManagedHostSessionTarget(requestWithSwarmTargetQuery(r, targetHostSwarmID), targetHostSwarmID)
+		if err != nil {
 			writeError(w, status, err)
 			return
 		}
+		targetHost = resolved
+		peerToken = token
 	}
 	workspaceCatalog, err := s.replicateWorkspaceCatalog(normalizedWorkspaces)
 	if err != nil {
@@ -229,9 +234,32 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 	groupName, groupNetworkName := lookupCurrentGroupDetails(state, groupID)
 
 	mounts, childWorkspacePaths, bootstrap := buildReplicationPlan(normalizedWorkspaces, workspaceCatalog, syncConfig)
+	if !targetHostIsLocal {
+		if targetHost == nil {
+			writeError(w, http.StatusBadRequest, errors.New("managed host target was not resolved"))
+			return
+		}
+		remotePaths, materializeErr := s.materializeManagedHostReplicationWorkspaces(r.Context(), *targetHost, localSwarmID, peerToken, normalizedWorkspaces, workspaceCatalog, syncConfig)
+		if materializeErr != nil {
+			writeError(w, http.StatusBadGateway, materializeErr)
+			return
+		}
+		mounts = rewriteReplicationMountsForTargetHost(mounts, remotePaths)
+		bootstrap = rewriteReplicationBootstrapForTargetHost(bootstrap, remotePaths)
+		childWorkspacePaths = remotePaths
+	}
 	containerPackages := deployruntime.ContainerPackageManifest{}
 	if cfg.DevMode {
 		containerPackages = mapReplicateContainerPackagesInput(req.ContainerPackages)
+	}
+	var deployTargetHost *deployruntime.ContainerTargetHost
+	if !targetHostIsLocal && targetHost != nil {
+		deployTargetHost = &deployruntime.ContainerTargetHost{
+			SwarmID:     strings.TrimSpace(targetHost.SwarmID),
+			DisplayName: firstNonEmpty(strings.TrimSpace(targetHost.Name), strings.TrimSpace(targetHost.SwarmID)),
+			BackendURL:  strings.TrimSpace(targetHost.BackendURL),
+			DesktopURL:  strings.TrimSpace(targetHost.DesktopURL),
+		}
 	}
 	deployment, err := s.deployContainers.Create(context.Background(), deployruntime.ContainerCreateInput{
 		Name:               swarmName,
@@ -248,6 +276,7 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		Mounts:             mounts,
 		WorkspaceBootstrap: bootstrap,
 		ContainerPackages:  containerPackages,
+		TargetHost:         deployTargetHost,
 	})
 	if err != nil {
 		statusCode := http.StatusBadRequest
@@ -305,10 +334,18 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		Workspaces: make([]swarmReplicateWorkspaceResponse, 0, len(normalizedWorkspaces)),
 	}
 	for _, normalized := range normalizedWorkspaces {
+		linkTargetKind := targetMode
+		linkTargetSwarmID := childSwarmID
+		linkTargetSwarmName := childSwarmName
+		if !targetHostIsLocal && targetHost != nil {
+			linkTargetKind = "host"
+			linkTargetSwarmID = strings.TrimSpace(targetHost.SwarmID)
+			linkTargetSwarmName = firstNonEmpty(strings.TrimSpace(targetHost.Name), strings.TrimSpace(targetHost.SwarmID))
+		}
 		storedLink, linkErr := s.workspace.AddReplicationLink(normalized.SourceWorkspacePath, pebblestore.WorkspaceReplicationLink{
-			TargetKind:          targetMode,
-			TargetSwarmID:       childSwarmID,
-			TargetSwarmName:     childSwarmName,
+			TargetKind:          linkTargetKind,
+			TargetSwarmID:       linkTargetSwarmID,
+			TargetSwarmName:     linkTargetSwarmName,
 			TargetWorkspacePath: childWorkspacePaths[normalized.SourceWorkspacePath],
 			ReplicationMode:     normalized.ReplicationMode,
 			Writable:            normalized.Writable,
@@ -330,6 +367,68 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) materializeManagedHostReplicationWorkspaces(ctx context.Context, target swarmTarget, localSwarmID, peerToken string, workspaces []workspace.NormalizedReplicationWorkspace, catalog map[string]replicateWorkspaceCatalogEntry, syncConfig workspace.NormalizedReplicationSync) (map[string]string, error) {
+	remoteWorkspaces, err := s.discoverPeerWorkspaces(ctx, target, localSwarmID, peerToken)
+	if err != nil {
+		return nil, err
+	}
+	remotePaths := make(map[string]string, len(workspaces))
+	for _, normalized := range workspaces {
+		workspaceCatalog := catalog[normalized.SourceWorkspacePath]
+		remotePath := matchingPeerWorkspacePath(remoteWorkspaces, normalized.SourceWorkspacePath, workspaceCatalog)
+		if remotePath == "" {
+			if normalized.ReplicationMode != workspace.ReplicationModeBundle {
+				return nil, fmt.Errorf("managed host container creation for workspace %q currently supports git bundle mode only; archive copy is not implemented", normalized.SourceWorkspacePath)
+			}
+			if !normalized.GitWorkspace {
+				return nil, fmt.Errorf("managed host container creation for workspace %q requires a git workspace", normalized.SourceWorkspacePath)
+			}
+			remotePath, err = s.importWorkspaceBundleToPeer(ctx, target, localSwarmID, peerToken, normalized, workspaceCatalog)
+			if err != nil {
+				return nil, err
+			}
+			remoteWorkspaces = append(remoteWorkspaces, peerWorkspaceInfo{Path: remotePath, Name: workspaceCatalog.Name, GitWorkspace: true})
+		}
+		remotePaths[normalized.SourceWorkspacePath] = remotePath
+		_ = syncConfig
+	}
+	return remotePaths, nil
+}
+
+func rewriteReplicationMountsForTargetHost(mounts []localcontainers.Mount, remotePaths map[string]string) []localcontainers.Mount {
+	out := make([]localcontainers.Mount, 0, len(mounts))
+	for _, mount := range mounts {
+		next := mount
+		if remotePath := strings.TrimSpace(remotePaths[mount.WorkspacePath]); remotePath != "" {
+			if strings.EqualFold(strings.TrimSpace(mount.SourcePath), strings.TrimSpace(mount.WorkspacePath)) {
+				next.SourcePath = remotePath
+			} else if rel, err := filepath.Rel(strings.TrimSpace(mount.WorkspacePath), strings.TrimSpace(mount.SourcePath)); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+				next.SourcePath = filepath.Join(remotePath, rel)
+			}
+			next.WorkspacePath = remotePath
+		}
+		out = append(out, next)
+	}
+	return out
+}
+
+func rewriteReplicationBootstrapForTargetHost(items []deployruntime.ContainerWorkspaceBootstrap, remotePaths map[string]string) []deployruntime.ContainerWorkspaceBootstrap {
+	out := make([]deployruntime.ContainerWorkspaceBootstrap, 0, len(items))
+	for _, item := range items {
+		next := item
+		if remotePath := strings.TrimSpace(remotePaths[item.SourceWorkspacePath]); remotePath != "" {
+			next.TargetWorkspacePath = remotePath
+			for index, directory := range next.Directories {
+				if rel, err := filepath.Rel(strings.TrimSpace(item.SourceWorkspacePath), strings.TrimSpace(directory.SourcePath)); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+					next.Directories[index].TargetPath = filepath.Join(remotePath, rel)
+				}
+			}
+		}
+		out = append(out, next)
+	}
+	return out
 }
 
 func (s *Server) replicateToRemoteSwarm(r *http.Request, workspaces []workspace.NormalizedReplicationWorkspace, catalog map[string]replicateWorkspaceCatalogEntry, syncConfig workspace.NormalizedReplicationSync) (swarmReplicateResponse, int, error) {

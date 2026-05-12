@@ -55,6 +55,10 @@ const (
 	PathContainerManagedPermissionsApply   = "deploy.container.managed.permissions.apply.v1"
 	PathContainerSettings                  = "deploy.container.settings.v1"
 	PathContainerWorkspaceBootstrap        = "deploy.container.workspace-bootstrap.v1"
+	PathContainerPeerCreate                = "deploy.container.peer.create.v1"
+	PathContainerPeerDelete                = "deploy.container.peer.delete.v1"
+	PeerContainerCreatePath                = "/v1/deploy/container/peer/create"
+	PeerContainerDeletePath                = "/v1/deploy/container/peer/delete"
 
 	childLocalTransportMountTargetDir = "/run/swarm-parent-transport"
 	childLocalTransportSocketPath     = childLocalTransportMountTargetDir + "/api.sock"
@@ -106,6 +110,9 @@ type ContainerDeployment struct {
 	ContainerID         string                        `json:"container_id,omitempty"`
 	HostAPIBaseURL      string                        `json:"host_api_base_url,omitempty"`
 	HostSwarmID         string                        `json:"host_swarm_id,omitempty"`
+	HostDisplayName     string                        `json:"host_display_name,omitempty"`
+	HostBackendURL      string                        `json:"host_backend_url,omitempty"`
+	HostDesktopURL      string                        `json:"host_desktop_url,omitempty"`
 	BackendHostPort     int                           `json:"backend_host_port"`
 	DesktopHostPort     int                           `json:"desktop_host_port"`
 	Image               string                        `json:"image,omitempty"`
@@ -125,21 +132,33 @@ type ContainerDeployment struct {
 }
 
 type ContainerCreateInput struct {
-	Name               string
-	Runtime            string
-	Image              string
-	Mounts             []localcontainers.Mount
-	WorkspaceBootstrap []ContainerWorkspaceBootstrap
-	ContainerPackages  ContainerPackageManifest
-	GroupID            string
-	GroupName          string
-	GroupNetworkName   string
-	SyncEnabled        bool
-	SyncMode           string
-	SyncModules        []string
-	SyncVaultPassword  string
-	BypassPermissions  bool
-	AlwaysOn           bool
+	DeploymentID          string
+	Name                  string
+	Runtime               string
+	Image                 string
+	Mounts                []localcontainers.Mount
+	WorkspaceBootstrap    []ContainerWorkspaceBootstrap
+	ContainerPackages     ContainerPackageManifest
+	GroupID               string
+	GroupName             string
+	GroupNetworkName      string
+	SyncEnabled           bool
+	SyncMode              string
+	SyncModules           []string
+	SyncVaultPassword     string
+	BypassPermissions     bool
+	AlwaysOn              bool
+	TargetHost            *ContainerTargetHost
+	PeerManagedHostCreate bool
+	RequestingHostSwarmID string
+	RequestingHostName    string
+}
+
+type ContainerTargetHost struct {
+	SwarmID     string `json:"swarm_id"`
+	DisplayName string `json:"display_name,omitempty"`
+	BackendURL  string `json:"backend_url"`
+	DesktopURL  string `json:"desktop_url,omitempty"`
 }
 
 type ContainerActionInput struct {
@@ -503,6 +522,11 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 	if err != nil {
 		return ContainerDeployment{}, err
 	}
+	if !input.PeerManagedHostCreate {
+		if delegated, handled, err := s.createOnTargetHost(ctx, input, startupCfg, hostState); handled {
+			return delegated, err
+		}
+	}
 	bootstrapSecret, err := generateSecretToken(24)
 	if err != nil {
 		return ContainerDeployment{}, err
@@ -532,7 +556,7 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 	groupID := strings.TrimSpace(group.ID)
 	groupName := firstNonEmpty(group.Name, groupID)
 	groupNetworkName := firstNonEmpty(group.NetworkName, swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
-	deploymentID := suggestedDeploymentID(input.Name)
+	deploymentID := firstNonEmpty(strings.TrimSpace(input.DeploymentID), suggestedDeploymentID(input.Name))
 	syncConfig := workspaceruntime.NormalizeReplicationSync(workspaceruntime.ReplicationSyncInput{
 		Enabled: input.SyncEnabled,
 		Mode:    input.SyncMode,
@@ -607,33 +631,34 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 	}
 	now := time.Now()
 	record := pebblestore.DeployContainerRecord{
-		ID:                  firstNonEmpty(deploymentID, container.ID),
-		Kind:                "container",
-		Name:                createResultDisplayName(input, container),
-		Status:              normalizeDeploymentStatus(container.Status),
-		Runtime:             resolvedRuntimeName,
-		GroupNetworkName:    groupNetworkName,
-		ContainerName:       container.ContainerName,
-		ContainerID:         container.ContainerID,
-		HostAPIBaseURL:      container.HostAPIBaseURL,
-		HostBackendURL:      hostAPIBaseURL,
-		HostDesktopURL:      hostDesktopURL,
-		BackendHostPort:     container.HostPort,
-		DesktopHostPort:     container.HostPort + 1,
-		Image:               container.Image,
-		SyncEnabled:         syncEnabled,
-		SyncMode:            syncMode,
-		SyncModules:         append([]string(nil), syncModules...),
-		SyncOwnerSwarmID:    syncOwnerSwarmID,
-		SyncCredentialURL:   syncCredentialURL,
-		SyncAgentURL:        syncAgentURL,
-		GroupID:             groupID,
-		GroupName:           groupName,
-		WorkspaceBootstrap:  append([]pebblestore.DeployContainerWorkspaceBootstrap(nil), input.WorkspaceBootstrap...),
-		ContainerPackages:   mapContainerPackageManifest(input.ContainerPackages),
-		AttachStatus:        "launching",
-		BootstrapSecret:     bootstrapSecret,
-		BootstrapExpiresAt:  now.Add(10 * time.Minute).UnixMilli(),
+		ID:                 firstNonEmpty(deploymentID, container.ID),
+		Kind:               "container",
+		Name:               createResultDisplayName(input, container),
+		Status:             normalizeDeploymentStatus(container.Status),
+		Runtime:            resolvedRuntimeName,
+		GroupNetworkName:   groupNetworkName,
+		ContainerName:      container.ContainerName,
+		ContainerID:        container.ContainerID,
+		HostAPIBaseURL:     container.HostAPIBaseURL,
+		HostBackendURL:     hostAPIBaseURL,
+		HostDesktopURL:     hostDesktopURL,
+		BackendHostPort:    container.HostPort,
+		DesktopHostPort:    container.HostPort + 1,
+		Image:              container.Image,
+		SyncEnabled:        syncEnabled,
+		SyncMode:           syncMode,
+		SyncModules:        append([]string(nil), syncModules...),
+		SyncOwnerSwarmID:   syncOwnerSwarmID,
+		SyncCredentialURL:  syncCredentialURL,
+		SyncAgentURL:       syncAgentURL,
+		GroupID:            groupID,
+		GroupName:          groupName,
+		WorkspaceBootstrap: append([]pebblestore.DeployContainerWorkspaceBootstrap(nil), input.WorkspaceBootstrap...),
+		ContainerPackages:  mapContainerPackageManifest(input.ContainerPackages),
+		AttachStatus:       "launching",
+		BootstrapSecret:    bootstrapSecret,
+		BootstrapExpiresAt: now.Add(10 * time.Minute).UnixMilli(),
+
 		BootstrapSecretSent: true,
 		BypassPermissions:   input.BypassPermissions,
 		AlwaysOn:            input.AlwaysOn,
@@ -656,6 +681,137 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 		return mapContainerRecord(attached), nil
 	}
 	return mapContainerRecord(saved), createErr
+}
+
+func (s *Service) createOnTargetHost(ctx context.Context, input ContainerCreateInput, startupCfg startupconfig.FileConfig, hostState swarmruntime.LocalState) (ContainerDeployment, bool, error) {
+	target := normalizeContainerTargetHost(input.TargetHost)
+	if strings.TrimSpace(target.SwarmID) == "" {
+		return ContainerDeployment{}, false, nil
+	}
+	localSwarmID := strings.TrimSpace(hostState.Node.SwarmID)
+	if localSwarmID == "" {
+		return ContainerDeployment{}, true, fmt.Errorf("local swarm id is not configured")
+	}
+	if strings.EqualFold(strings.TrimSpace(target.SwarmID), localSwarmID) {
+		return ContainerDeployment{}, false, nil
+	}
+	if strings.TrimSpace(target.BackendURL) == "" {
+		return ContainerDeployment{}, true, fmt.Errorf("target host backend URL is required")
+	}
+	if s.swarmStore == nil {
+		return ContainerDeployment{}, true, fmt.Errorf("swarm store is not configured")
+	}
+	peer, ok, err := s.swarmStore.GetTrustedPeer(strings.TrimSpace(target.SwarmID))
+	if err != nil {
+		return ContainerDeployment{}, true, err
+	}
+	if !ok || strings.TrimSpace(peer.OutgoingPeerAuthToken) == "" {
+		return ContainerDeployment{}, true, fmt.Errorf("target host peer auth is not configured")
+	}
+	requestingHostName := firstNonEmpty(strings.TrimSpace(hostState.Node.Name), strings.TrimSpace(startupCfg.SwarmName), "Primary")
+	peerInput := input
+	peerInput.TargetHost = nil
+	peerInput.PeerManagedHostCreate = true
+	peerInput.RequestingHostSwarmID = localSwarmID
+	peerInput.RequestingHostName = requestingHostName
+	if strings.TrimSpace(peerInput.DeploymentID) == "" {
+		peerInput.DeploymentID = suggestedDeploymentID(input.Name)
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + PeerContainerCreatePath
+	raw, err := json.Marshal(peerInput)
+	if err != nil {
+		return ContainerDeployment{}, true, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return ContainerDeployment{}, true, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, localSwarmID)
+	req.Header.Set(peerAuthTokenHeader, strings.TrimSpace(peer.OutgoingPeerAuthToken))
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ContainerDeployment{}, true, err
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		OK         bool                `json:"ok"`
+		PathID     string              `json:"path_id"`
+		Deployment ContainerDeployment `json:"deployment"`
+		Error      string              `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return ContainerDeployment{}, true, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !payload.OK {
+		if strings.TrimSpace(payload.Error) != "" {
+			return payload.Deployment, true, errors.New(strings.TrimSpace(payload.Error))
+		}
+		return payload.Deployment, true, fmt.Errorf("managed host container create failed: %s", resp.Status)
+	}
+	deployment := payload.Deployment
+	deployment.HostSwarmID = strings.TrimSpace(target.SwarmID)
+	deployment.HostDisplayName = firstNonEmpty(strings.TrimSpace(target.DisplayName), deployment.HostDisplayName, strings.TrimSpace(peer.Name), strings.TrimSpace(target.SwarmID))
+	deployment.HostAPIBaseURL = firstNonEmpty(strings.TrimSpace(target.BackendURL), deployment.HostAPIBaseURL)
+	deployment.HostBackendURL = firstNonEmpty(strings.TrimSpace(target.BackendURL), deployment.HostBackendURL, deployment.HostAPIBaseURL)
+	deployment.HostDesktopURL = firstNonEmpty(strings.TrimSpace(target.DesktopURL), deployment.HostDesktopURL)
+	saved, saveErr := s.store.Put(pebblestore.DeployContainerRecord{
+		ID:                 firstNonEmpty(strings.TrimSpace(deployment.ID), strings.TrimSpace(peerInput.DeploymentID)),
+		Kind:               "container",
+		Name:               firstNonEmpty(strings.TrimSpace(deployment.Name), strings.TrimSpace(input.Name)),
+		Status:             firstNonEmpty(strings.TrimSpace(deployment.Status), "running"),
+		Runtime:            strings.TrimSpace(deployment.Runtime),
+		GroupNetworkName:   firstNonEmpty(strings.TrimSpace(deployment.GroupNetworkName), strings.TrimSpace(input.GroupNetworkName)),
+		ContainerName:      strings.TrimSpace(deployment.ContainerName),
+		ContainerID:        strings.TrimSpace(deployment.ContainerID),
+		HostAPIBaseURL:     deployment.HostAPIBaseURL,
+		HostSwarmID:        deployment.HostSwarmID,
+		HostDisplayName:    deployment.HostDisplayName,
+		HostBackendURL:     deployment.HostBackendURL,
+		HostDesktopURL:     deployment.HostDesktopURL,
+		BackendHostPort:    deployment.BackendHostPort,
+		DesktopHostPort:    deployment.DesktopHostPort,
+		Image:              strings.TrimSpace(deployment.Image),
+		SyncEnabled:        input.SyncEnabled,
+		SyncMode:           strings.TrimSpace(input.SyncMode),
+		SyncModules:        append([]string(nil), input.SyncModules...),
+		SyncOwnerSwarmID:   strings.TrimSpace(deployment.SyncOwnerSwarmID),
+		GroupID:            firstNonEmpty(strings.TrimSpace(deployment.GroupID), strings.TrimSpace(input.GroupID)),
+		GroupName:          firstNonEmpty(strings.TrimSpace(deployment.GroupName), strings.TrimSpace(input.GroupName)),
+		WorkspaceBootstrap: append([]pebblestore.DeployContainerWorkspaceBootstrap(nil), input.WorkspaceBootstrap...),
+		ContainerPackages:  mapContainerPackageManifest(input.ContainerPackages),
+		AttachStatus:       strings.TrimSpace(deployment.AttachStatus),
+		BypassPermissions:  input.BypassPermissions,
+		AlwaysOn:           input.AlwaysOn,
+		ChildSwarmID:       strings.TrimSpace(deployment.ChildSwarmID),
+		ChildDisplayName:   strings.TrimSpace(deployment.ChildDisplayName),
+		ChildBackendURL:    strings.TrimSpace(deployment.ChildBackendURL),
+		ChildDesktopURL:    strings.TrimSpace(deployment.ChildDesktopURL),
+		LastAttachError:    strings.TrimSpace(deployment.LastAttachError),
+		CreatedAt:          deployment.CreatedAt,
+		UpdatedAt:          deployment.UpdatedAt,
+	})
+	if saveErr != nil {
+		return deployment, true, saveErr
+	}
+	return mapContainerRecord(saved), true, nil
+}
+
+func normalizeContainerTargetHost(input *ContainerTargetHost) ContainerTargetHost {
+	if input == nil {
+		return ContainerTargetHost{}
+	}
+	return ContainerTargetHost{
+		SwarmID:     strings.TrimSpace(input.SwarmID),
+		DisplayName: strings.TrimSpace(input.DisplayName),
+		BackendURL:  strings.TrimRight(strings.TrimSpace(input.BackendURL), "/"),
+		DesktopURL:  strings.TrimRight(strings.TrimSpace(input.DesktopURL), "/"),
+	}
 }
 
 func (s *Service) requireManagedSyncVaultPassword(syncVaultPassword string) error {
@@ -835,6 +991,70 @@ func (s *Service) Delete(ctx context.Context, deploymentIDs []string) (localcont
 	return result, nil
 }
 
+func (s *Service) deleteTargetHostDeployment(ctx context.Context, record pebblestore.DeployContainerRecord) error {
+	if s == nil || s.swarmStore == nil {
+		return nil
+	}
+	targetSwarmID := strings.TrimSpace(record.HostSwarmID)
+	if targetSwarmID == "" {
+		return nil
+	}
+	_, hostState, err := s.resolveBootstrapContext()
+	if err != nil {
+		return err
+	}
+	localSwarmID := strings.TrimSpace(hostState.Node.SwarmID)
+	if localSwarmID == "" || strings.EqualFold(targetSwarmID, localSwarmID) {
+		return nil
+	}
+	backendURL := firstNonEmpty(strings.TrimSpace(record.HostBackendURL), strings.TrimSpace(record.HostAPIBaseURL))
+	if backendURL == "" {
+		return fmt.Errorf("target host backend URL is not configured")
+	}
+	peer, ok, err := s.swarmStore.GetTrustedPeer(targetSwarmID)
+	if err != nil {
+		return err
+	}
+	if !ok || strings.TrimSpace(peer.OutgoingPeerAuthToken) == "" {
+		return fmt.Errorf("target host peer auth is not configured")
+	}
+	payload := map[string]any{"ids": []string{strings.TrimSpace(record.ID)}}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimRight(backendURL, "/") + PeerContainerDeletePath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, localSwarmID)
+	req.Header.Set(peerAuthTokenHeader, strings.TrimSpace(peer.OutgoingPeerAuthToken))
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var decoded struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&decoded)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !decoded.OK {
+		if strings.TrimSpace(decoded.Error) != "" {
+			return errors.New(strings.TrimSpace(decoded.Error))
+		}
+		return fmt.Errorf("managed host container delete failed: %s", resp.Status)
+	}
+	return nil
+}
+
 func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachRequestInput) (ContainerAttachState, error) {
 	if s == nil || s.store == nil {
 		return ContainerAttachState{}, fmt.Errorf("deploy container service is not configured")
@@ -928,6 +1148,10 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 		item.ChildInfoDetected = true
 	}
 
+	if err := s.deleteTargetHostDeployment(ctx, record); err != nil {
+		item.Error = err.Error()
+		return item
+	}
 	if record.Runtime != "" && record.ContainerName != "" {
 		if err := localcontainers.RemoveRuntimeContainer(ctx, record.Runtime, record.ContainerName); err != nil && !localcontainers.IsMissingRuntimeContainerError(err) {
 			item.Error = err.Error()
@@ -2148,6 +2372,9 @@ func mapContainerRecord(record pebblestore.DeployContainerRecord) ContainerDeplo
 		ContainerID:         record.ContainerID,
 		HostAPIBaseURL:      record.HostAPIBaseURL,
 		HostSwarmID:         record.HostSwarmID,
+		HostDisplayName:     record.HostDisplayName,
+		HostBackendURL:      record.HostBackendURL,
+		HostDesktopURL:      record.HostDesktopURL,
 		GroupNetworkName:    record.GroupNetworkName,
 		SyncEnabled:         record.SyncEnabled,
 		SyncMode:            record.SyncMode,
@@ -4613,7 +4840,10 @@ func (s *Service) resolveTargetGroupForCreate(hostState swarmruntime.LocalState,
 	groupName := firstNonEmpty(group.Name, strings.TrimSpace(input.GroupName), groupID)
 	groupNetworkName := firstNonEmpty(group.NetworkName, strings.TrimSpace(input.GroupNetworkName), swarmruntime.SuggestedGroupNetworkName(groupName, groupID))
 	if strings.TrimSpace(group.HostSwarmID) != "" && !strings.EqualFold(strings.TrimSpace(group.HostSwarmID), strings.TrimSpace(hostState.Node.SwarmID)) {
-		return pebblestore.SwarmGroupRecord{}, fmt.Errorf("target group %q is hosted by another swarm", groupID)
+		if !input.PeerManagedHostCreate {
+			return pebblestore.SwarmGroupRecord{}, fmt.Errorf("target group %q is hosted by another swarm", groupID)
+		}
+		group.HostSwarmID = strings.TrimSpace(hostState.Node.SwarmID)
 	}
 	if group.Name != groupName || group.NetworkName != groupNetworkName || group.HostSwarmID == "" {
 		group.Name = groupName
