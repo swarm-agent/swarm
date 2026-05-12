@@ -1686,10 +1686,6 @@ func gitCommandSummary(toolName string, argv []string, exitCode int, timedOut, t
 	return summary
 }
 
-func executeGlob(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
-	return "", errors.New("glob is disabled; use list for path discovery and search for canonical FFF-backed retrieval")
-}
-
 func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	queries, err := parseSearchQueries(args)
 	if err != nil {
@@ -1945,13 +1941,6 @@ func selectSearchContentPayload(style, searchRoot string, queries []string, incl
 		return buildSearchContentLegacyPayload(searchRoot, queries, include, results, maxResults)
 	}
 	return buildSearchContentPayload(searchRoot, queries, include, results, maxResults)
-}
-
-func selectSearchFilePayload(style, searchRoot string, queries []string, include string, results []searchQueryExecution, maxResults int) map[string]any {
-	if strings.EqualFold(strings.TrimSpace(style), "legacy") {
-		return buildSearchFileLegacyPayload(searchRoot, queries, include, results, maxResults)
-	}
-	return buildSearchFilePayload(searchRoot, queries, include, results, maxResults)
 }
 
 func encodeSearchPayload(payload map[string]any) (string, error) {
@@ -2491,91 +2480,6 @@ func buildSearchContentPayload(searchRoot string, queries []string, include stri
 	return response
 }
 
-func buildSearchFileLegacyPayload(searchRoot string, queries []string, include string, results []searchQueryExecution, maxResults int) map[string]any {
-	merged, mergeTruncated := mergeSearchFileRows(results, maxResults)
-	totals := aggregateSearchTotals(results)
-	truncated, timedOut := searchBatchFlags(results)
-	truncated = truncated || mergeTruncated
-
-	files := make([]map[string]any, 0, len(merged))
-	for _, item := range merged {
-		files = append(files, map[string]any{
-			"query":         item.Query,
-			"path":          item.Path,
-			"relative_path": item.RelativePath,
-			"file_name":     item.FileName,
-			"git_status":    item.GitStatus,
-			"score":         item.Score,
-		})
-	}
-
-	response := map[string]any{
-		"pattern":              firstSearchQuery(queries),
-		"query":                firstSearchQuery(queries),
-		"queries":              queries,
-		"query_count":          len(queries),
-		"path":                 searchRoot,
-		"include":              include,
-		"count":                len(files),
-		"files":                files,
-		"truncated":            truncated,
-		"output_truncated":     false,
-		"timed_out":            timedOut,
-		"path_id":              toolPathID("search"),
-		"summary":              searchSummaryForQueries(queries, searchRoot, len(files), truncated, timedOut, false),
-		"details_truncated":    truncated,
-		"search_mode":          "files",
-		"provider":             "fff",
-		"total_matched":        totals.TotalMatched,
-		"total_files":          totals.TotalFiles,
-		"query_results":        buildSearchQuerySummaries(results),
-		"truncated_queries":    false,
-		"merge_strategy":       "round_robin_by_query",
-		"prompt_injection_tag": "tool_output_untrusted",
-		"safety":               buildUntrustedSafety(""),
-	}
-	if fallback := strings.TrimSpace(totals.RegexFallbackError); fallback != "" {
-		response["regex_fallback_error"] = fallback
-	}
-	return response
-}
-
-func buildSearchFilePayload(searchRoot string, queries []string, include string, results []searchQueryExecution, maxResults int) map[string]any {
-	merged, mergeTruncated := mergeSearchFileRows(results, maxResults)
-	totals := aggregateSearchTotals(results)
-	truncated, timedOut := searchBatchFlags(results)
-	truncated = truncated || mergeTruncated
-	queryResults := buildSearchQuerySummaries(results)
-
-	response := map[string]any{
-		"path_id":              toolPathID("search"),
-		"search_mode":          "files",
-		"path":                 searchRoot,
-		"count":                len(merged),
-		"results":              buildCompactSearchFileResults(merged, len(queryResults) > 1),
-		"truncated":            truncated,
-		"timed_out":            timedOut,
-		"summary":              searchSummaryForQueries(queries, searchRoot, len(merged), truncated, timedOut, false),
-		"details_truncated":    truncated,
-		"provider":             "fff",
-		"total_matched":        totals.TotalMatched,
-		"total_files":          totals.TotalFiles,
-		"query_results":        queryResults,
-		"prompt_injection_tag": "tool_output_untrusted",
-		"safety":               buildUntrustedSafety(""),
-	}
-	if trimmed := strings.TrimSpace(include); trimmed != "" {
-		response["include"] = trimmed
-	}
-	if totals.NextFileOffset > 0 {
-		response["next_file_offset"] = totals.NextFileOffset
-	}
-	if fallback := strings.TrimSpace(totals.RegexFallbackError); fallback != "" {
-		response["regex_fallback_error"] = fallback
-	}
-	return response
-}
-
 func hasSearchResultRows(results []searchQueryExecution) bool {
 	for _, result := range results {
 		if len(result.ContentRows) > 0 || len(result.FileRows) > 0 {
@@ -2631,46 +2535,6 @@ func buildCompactSearchContentResults(rows []searchContentRow, multiQuery bool) 
 	return out
 }
 
-func buildCompactSearchFileResults(rows []searchFileRow, multiQuery bool) []map[string]any {
-	if len(rows) == 0 {
-		return []map[string]any{}
-	}
-	order := make([]string, 0, len(rows))
-	groups := make(map[string]map[string]any, len(rows))
-	for _, row := range rows {
-		pathValue := strings.TrimSpace(row.RelativePath)
-		if pathValue == "" {
-			pathValue = strings.TrimSpace(row.Path)
-		}
-		key := strings.ToLower(pathValue)
-		if key == "" {
-			key = fmt.Sprintf("__pathless_%d", len(order))
-		}
-		group, ok := groups[key]
-		if !ok {
-			group = map[string]any{
-				"path":  pathValue,
-				"items": make([]map[string]any, 0, 4),
-			}
-			groups[key] = group
-			order = append(order, key)
-		}
-		item := map[string]any{}
-		if multiQuery && strings.TrimSpace(row.Query) != "" {
-			item["query"] = row.Query
-		}
-		if row.Score > 0 {
-			item["score"] = row.Score
-		}
-		group["items"] = append(group["items"].([]map[string]any), item)
-	}
-	out := make([]map[string]any, 0, len(order))
-	for _, key := range order {
-		out = append(out, groups[key])
-	}
-	return out
-}
-
 func mergeSearchRows(results []searchQueryExecution, maxResults int) ([]searchContentRow, bool, string) {
 	merged := make([]searchContentRow, 0, maxResults)
 	positions := make([]int, len(results))
@@ -2714,36 +2578,6 @@ func mergeSearchRows(results []searchQueryExecution, maxResults int) ([]searchCo
 		}
 	}
 	return merged, truncated, safetySource.String()
-}
-
-func mergeSearchFileRows(results []searchQueryExecution, maxResults int) ([]searchFileRow, bool) {
-	merged := make([]searchFileRow, 0, maxResults)
-	positions := make([]int, len(results))
-	for len(merged) < maxResults {
-		progressed := false
-		for idx, result := range results {
-			if positions[idx] >= len(result.FileRows) {
-				continue
-			}
-			merged = append(merged, result.FileRows[positions[idx]])
-			positions[idx]++
-			progressed = true
-			if len(merged) >= maxResults {
-				break
-			}
-		}
-		if !progressed {
-			break
-		}
-	}
-	truncated := false
-	for idx, result := range results {
-		if positions[idx] < len(result.FileRows) {
-			truncated = true
-			break
-		}
-	}
-	return merged, truncated
 }
 
 func aggregateSearchTotals(results []searchQueryExecution) searchAggregateTotals {
@@ -5122,128 +4956,6 @@ func boolArgDefault(raw any, defaultValue bool) bool {
 		return defaultValue
 	}
 	return asBool(raw)
-}
-
-type agenticSearchCandidate struct {
-	Path         string `json:"path"`
-	RelativePath string `json:"relative_path"`
-	Score        int    `json:"score"`
-}
-
-type agenticSearchLineContext struct {
-	Line int    `json:"line"`
-	Text string `json:"text"`
-}
-
-type agenticSearchMatch struct {
-	Query  string                     `json:"query,omitempty"`
-	Path   string                     `json:"path"`
-	Line   int                        `json:"line"`
-	Column int                        `json:"column"`
-	Text   string                     `json:"text"`
-	Before []agenticSearchLineContext `json:"before,omitempty"`
-	After  []agenticSearchLineContext `json:"after,omitempty"`
-}
-
-type agenticSearchFileContext struct {
-	Query          string   `json:"query,omitempty"`
-	Path           string   `json:"path"`
-	RelativePath   string   `json:"relative_path"`
-	Score          int      `json:"score"`
-	MatchCount     int      `json:"match_count"`
-	FirstMatchLine int      `json:"first_match_line,omitempty"`
-	LastMatchLine  int      `json:"last_match_line,omitempty"`
-	SampleMatches  []string `json:"sample_matches,omitempty"`
-}
-
-type agenticSearchReadSuggestion struct {
-	Query     string `json:"query,omitempty"`
-	Path      string `json:"path"`
-	LineStart int    `json:"line_start"`
-	MaxLines  int    `json:"max_lines"`
-	Reason    string `json:"reason"`
-}
-
-type agenticSearchQueryResult struct {
-	Query               string                        `json:"query"`
-	MatchModeRequested  string                        `json:"match_mode_requested"`
-	MatchModeUsed       string                        `json:"match_mode_used"`
-	MaxFiles            int                           `json:"max_files"`
-	MaxResults          int                           `json:"max_results"`
-	ContextBefore       int                           `json:"context_before"`
-	ContextAfter        int                           `json:"context_after"`
-	RankedCandidates    int                           `json:"ranked_candidates"`
-	Files               []agenticSearchCandidate      `json:"files"`
-	Matches             []agenticSearchMatch          `json:"matches"`
-	Count               int                           `json:"count"`
-	Truncated           bool                          `json:"truncated"`
-	DetailsTruncated    bool                          `json:"details_truncated"`
-	BudgetLimited       bool                          `json:"budget_limited,omitempty"`
-	FileContexts        []agenticSearchFileContext    `json:"file_contexts,omitempty"`
-	ReadSuggestions     []agenticSearchReadSuggestion `json:"read_suggestions,omitempty"`
-	FileErrors          []string                      `json:"file_errors,omitempty"`
-	FileErrorsTruncated bool                          `json:"file_errors_truncated,omitempty"`
-	Summary             string                        `json:"summary"`
-}
-
-func executeAgenticSearch(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
-	return "", errors.New("agentic_search is removed; use the canonical search tool")
-}
-
-func executeAgenticSearchQuery(ctx context.Context, rgPath, searchRoot, query, matchMode string, maxFiles, maxResults int, caseSensitive bool, contextBefore, contextAfter int) agenticSearchQueryResult {
-	return agenticSearchQueryResult{}
-}
-
-func runAgenticSearchMatches(ctx context.Context, rgPath, searchRoot, query string, tokens []string, requestedMode string, maxResults int, caseSensitive bool, contextBefore, contextAfter int) ([]agenticSearchMatch, string, bool, []string) {
-	return nil, "none", false, []string{"agentic_search is removed; use search"}
-}
-
-func runRipgrepAgenticSearchMatchesForMode(ctx context.Context, rgPath, searchRoot, query string, tokens []string, mode string, maxResults int, caseSensitive bool) ([]agenticSearchMatch, bool, []string, error) {
-	return nil, false, nil, errors.New("agentic_search is removed; use search")
-}
-
-func appendAgenticSearchLineContexts(matches []agenticSearchMatch, contextBefore, contextAfter int) ([]agenticSearchMatch, []string) {
-	return matches, nil
-}
-
-func parseRipgrepAgenticSearchErrors(stderrText string) []string {
-	return nil
-}
-
-func buildAgenticSearchCandidatesFromMatches(searchRoot string, matches []agenticSearchMatch, query string, tokens []string, maxFiles int) []agenticSearchCandidate {
-	return nil
-}
-
-func scoreAgenticSearchPath(relPath, queryLower string, tokens []string) int {
-	return 0
-}
-
-func tokenizeAgenticSearchQuery(query string, caseSensitive bool) []string {
-	return nil
-}
-
-func readAgenticSearchLines(path string) ([]string, bool, error) {
-	return nil, false, errors.New("agentic_search is removed; use search")
-}
-
-func buildAgenticSearchLineContext(lines []string, start, end int) []agenticSearchLineContext {
-	return nil
-}
-
-func buildAgenticSearchFileContexts(searchRoot, query string, candidates []agenticSearchCandidate, matches []agenticSearchMatch, limit int) []agenticSearchFileContext {
-	return nil
-}
-
-func buildAgenticSearchReadSuggestions(query string, fileContexts []agenticSearchFileContext, limit int, contextBefore, contextAfter int) []agenticSearchReadSuggestion {
-	return nil
-}
-
-func parseAgenticSearchQueries(args map[string]any) ([]string, error) {
-	return nil, errors.New("agentic_search is removed; use search")
-}
-
-func truncateAgenticSearchLine(value string, maxChars int) string {
-	return value
 }
 
 type listEntry struct {
@@ -8086,14 +7798,6 @@ func stubToolPathID(name string) string {
 	}
 }
 
-func runRipgrepFiles(ctx context.Context, rgPath, searchRoot, pattern string) ([]string, bool, bool, error) {
-	return nil, false, false, errors.New("ripgrep file search removed; use FFF-backed search")
-}
-
-func runRipgrepGrep(ctx context.Context, rgPath, searchRoot, pattern, include string) ([]map[string]any, bool, bool, error) {
-	return nil, false, false, errors.New("ripgrep grep removed; use FFF-backed search")
-}
-
 func resolveWorkspacePath(scope WorkspaceScope, requested string) (string, error) {
 	workspacePath := strings.TrimSpace(scope.PrimaryPath)
 	if workspacePath == "" {
@@ -8585,27 +8289,6 @@ func bashSummary(command string, exitCode int, timedOut, truncated, binarySuppre
 	return parentheticalSummary(label, notes...)
 }
 
-func globSummary(pattern, root string, count int, truncated, timedOut bool) string {
-	label := "glob"
-	if pattern = strings.TrimSpace(truncateSummary(pattern, 80)); pattern != "" {
-		label += " " + fmt.Sprintf("%q", pattern)
-	}
-	if root = strings.TrimSpace(truncateSummary(root, 120)); root != "" {
-		label += " in " + root
-	}
-	notes := []string{countSummary(count, "file", "files")}
-	if timedOut {
-		notes = append(notes, "timed out")
-	} else if truncated {
-		notes = append(notes, "partial results")
-	}
-	return parentheticalSummary(label, notes...)
-}
-
-func searchSummary(pattern, root string, count int, truncated, timedOut, contentMode bool) string {
-	return searchSummaryForQueries([]string{pattern}, root, count, truncated, timedOut, contentMode)
-}
-
 func searchSummaryForQueries(queries []string, root string, count int, truncated, timedOut, contentMode bool) string {
 	label := "search"
 	queries = compactSearchQueries(queries)
@@ -8648,51 +8331,6 @@ func compactSearchQueries(queries []string) []string {
 		out = append(out, query)
 	}
 	return out
-}
-
-func grepSummary(pattern, root string, count int, truncated, timedOut bool) string {
-	return searchSummary(pattern, root, count, truncated, timedOut, true)
-}
-
-func agenticSearchSummary(query string, candidates, matches int, truncated bool, mode string) string {
-	label := "agentic_search"
-	if query = strings.TrimSpace(truncateSummary(query, 80)); query != "" {
-		label += " " + fmt.Sprintf("%q", query)
-	}
-	notes := []string{
-		countSummary(candidates, "candidate", "candidates"),
-		countSummary(matches, "match", "matches"),
-	}
-	if mode = strings.TrimSpace(mode); mode != "" {
-		notes = append(notes, mode+" mode")
-	}
-	if truncated {
-		notes = append(notes, "partial results")
-	}
-	return parentheticalSummary(label, notes...)
-}
-
-func agenticSearchBatchSummary(results []agenticSearchQueryResult) string {
-	if len(results) == 0 {
-		return "agentic_search (no queries)"
-	}
-	if len(results) == 1 {
-		return results[0].Summary
-	}
-
-	totalCandidates := 0
-	totalMatches := 0
-	for _, result := range results {
-		totalCandidates += result.RankedCandidates
-		totalMatches += result.Count
-	}
-
-	return parentheticalSummary(
-		"agentic_search batch",
-		countSummary(len(results), "query", "queries"),
-		countSummary(totalCandidates, "candidate", "candidates"),
-		countSummary(totalMatches, "match", "matches"),
-	)
 }
 
 func listSummary(path, mode string, count, totalFound int, truncated, scanLimited bool) string {
@@ -8869,33 +8507,4 @@ func detectPromptInjectionSignals(text string) ([]string, bool) {
 		}
 	}
 	return signals, scanTruncated
-}
-
-func collectGrepSafetyText(matches []map[string]any) string {
-	if len(matches) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, match := range matches {
-		text := strings.TrimSpace(asString(match["text"]))
-		if text == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			if b.Len()+1 >= maxSafetyScanChars {
-				break
-			}
-			b.WriteByte('\n')
-		}
-		remaining := maxSafetyScanChars - b.Len()
-		if remaining <= 0 {
-			break
-		}
-		if len(text) > remaining {
-			b.WriteString(text[:remaining])
-			break
-		}
-		b.WriteString(text)
-	}
-	return b.String()
 }

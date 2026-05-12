@@ -312,10 +312,6 @@ func (i *Instance) GrepWithConfig(query string, opts GrepOptions) ([]GrepMatch, 
 	return extractGrepResult((*C.struct_FffGrepResult)(res.ptr.handle), start)
 }
 
-func (i *Instance) MultiGrep(patterns []string, constraints string, pageLimit uint32) ([]GrepMatch, GrepMetrics, error) {
-	return i.MultiGrepWithOptions(patterns, constraints, pageLimit, 0, 0, 0, 0, false)
-}
-
 func (i *Instance) MultiGrepWithOptions(patterns []string, constraints string, pageLimit uint32, timeBudget time.Duration, fileOffset uint32, beforeContext uint32, afterContext uint32, classifyDefinitions bool) ([]GrepMatch, GrepMetrics, error) {
 	if i == nil || i.handle == nil {
 		return nil, GrepMetrics{}, fmt.Errorf("nil FFF instance")
@@ -354,25 +350,6 @@ type ScanProgress struct {
 	IsScanning        bool
 }
 
-func (i *Instance) ScanFiles() error {
-	if i == nil || i.handle == nil {
-		return fmt.Errorf("nil FFF instance")
-	}
-	res, err := wrapResult(C.fff_scan_files(i.handle))
-	if err != nil {
-		return err
-	}
-	defer res.free()
-	return nil
-}
-
-func (i *Instance) IsScanning() (bool, error) {
-	if i == nil || i.handle == nil {
-		return false, fmt.Errorf("nil FFF instance")
-	}
-	return bool(C.fff_is_scanning(i.handle)), nil
-}
-
 func (i *Instance) GetScanProgress() (ScanProgress, error) {
 	if i == nil || i.handle == nil {
 		return ScanProgress{}, fmt.Errorf("nil FFF instance")
@@ -392,32 +369,6 @@ func (i *Instance) GetScanProgress() (ScanProgress, error) {
 		ScannedFilesCount: uint64(progress.scanned_files_count),
 		IsScanning:        bool(progress.is_scanning),
 	}, nil
-}
-
-func (i *Instance) RestartIndex(newPath string) error {
-	if i == nil || i.handle == nil {
-		return fmt.Errorf("nil FFF instance")
-	}
-	cPath := cString(newPath)
-	defer C.free(unsafe.Pointer(cPath))
-	res, err := wrapResult(C.fff_restart_index(i.handle, cPath))
-	if err != nil {
-		return err
-	}
-	defer res.free()
-	return nil
-}
-
-func (i *Instance) RefreshGitStatus() (int64, error) {
-	if i == nil || i.handle == nil {
-		return 0, fmt.Errorf("nil FFF instance")
-	}
-	res, err := wrapResult(C.fff_refresh_git_status(i.handle))
-	if err != nil {
-		return 0, err
-	}
-	defer res.free()
-	return int64(res.ptr.int_value), nil
 }
 
 func (i *Instance) TrackQuery(query, filePath string) (bool, error) {

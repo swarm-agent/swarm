@@ -832,14 +832,6 @@ func (a *App) startSessionEventStream() {
 	go a.runSessionEventStream(ctx)
 }
 
-func (a *App) stopSessionEventStream() {
-	if a == nil || a.streamCancel == nil {
-		return
-	}
-	a.streamCancel()
-	a.streamCancel = nil
-}
-
 func (a *App) runSessionEventStream(ctx context.Context) {
 	if a == nil || a.api == nil {
 		return
@@ -2885,70 +2877,6 @@ func (a *App) currentChatAgentRuntime() (string, string, bool, bool) {
 	return fallbackAgent, fallbackExecution, fallbackExitPlanMode, fallbackRuntimeKnown
 }
 
-func normalizeBackgroundStatus(status string, pendingPermissions int) string {
-	if pendingPermissions > 0 {
-		return "blocked"
-	}
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "", "ready":
-		return "idle"
-	default:
-		return strings.TrimSpace(status)
-	}
-}
-
-func backgroundStatusBadge(record model.BackgroundSessionSummary) string {
-	status := normalizeBackgroundStatus(record.Status, record.PendingPermissions)
-	if status == "" {
-		status = "idle"
-	}
-	if record.PendingPermissions > 0 {
-		return fmt.Sprintf("bg %d blocked", record.PendingPermissions)
-	}
-	return "bg " + status
-}
-
-func backgroundHeaderBadge(records []model.BackgroundSessionSummary) string {
-	if len(records) == 0 {
-		return ""
-	}
-	blocked := 0
-	running := 0
-	for _, record := range records {
-		switch normalizeBackgroundStatus(record.Status, record.PendingPermissions) {
-		case "blocked":
-			blocked++
-		case "running":
-			running++
-		}
-	}
-	parts := []string{fmt.Sprintf("bg:%d", len(records))}
-	if running > 0 {
-		parts = append(parts, fmt.Sprintf("run:%d", running))
-	}
-	if blocked > 0 {
-		parts = append(parts, fmt.Sprintf("blocked:%d", blocked))
-	}
-	return strings.Join(parts, " ")
-}
-
-func (a *App) latestBackgroundSummaryForChat() *model.BackgroundSessionSummary {
-	if a == nil || a.chat == nil {
-		return nil
-	}
-	current := strings.TrimSpace(a.chat.SessionID())
-	if current == "" {
-		return nil
-	}
-	for _, record := range a.homeModel.BackgroundSessions {
-		if strings.TrimSpace(record.ChildSessionID) == current || strings.TrimSpace(record.ParentSessionID) == current {
-			copy := record
-			return &copy
-		}
-	}
-	return nil
-}
-
 func normalizeAppSessionMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "auto":
@@ -3346,42 +3274,6 @@ func metadataMap(metadata map[string]any, key string) map[string]any {
 		return nil
 	}
 	return mapped
-}
-
-func backgroundSessionPaletteItemsFromSummaries(records []model.BackgroundSessionSummary) []ui.ChatSessionPaletteItem {
-	items := make([]ui.ChatSessionPaletteItem, 0, len(records))
-	for _, record := range records {
-		title := strings.TrimSpace(record.ChildTitle)
-		if title == "" {
-			title = strings.TrimSpace(record.ChildSessionID)
-		}
-		workspaceName := strings.TrimSpace(record.WorkspaceName)
-		if label := strings.TrimSpace(record.TargetName); label != "" {
-			workspaceName = strings.TrimSpace(strings.Join([]string{workspaceName, label}, " ← "))
-		} else if parent := strings.TrimSpace(record.ParentTitle); parent != "" {
-			workspaceName = fmt.Sprintf("%s ← %s", emptyFallback(workspaceName, "background"), parent)
-		}
-		meta := strings.TrimSpace(record.Status)
-		if meta == "" {
-			meta = strings.TrimSpace(record.TargetName)
-		}
-		items = append(items, ui.ChatSessionPaletteItem{
-			ID:              strings.TrimSpace(record.ChildSessionID),
-			Title:           title,
-			WorkspaceName:   workspaceName,
-			WorkspacePath:   strings.TrimSpace(record.CWD),
-			Mode:            "background",
-			UpdatedAgo:      meta,
-			Background:      true,
-			ParentSessionID: strings.TrimSpace(record.ParentSessionID),
-			LineageKind:     "background_agent",
-			LineageLabel:    ui.SessionLineageDisplay(ui.SessionLineage{Background: true, ParentSessionID: strings.TrimSpace(record.ParentSessionID), LineageKind: "background_agent", LineageLabel: strings.TrimSpace(record.TargetName), TargetKind: strings.TrimSpace(record.TargetKind), TargetName: strings.TrimSpace(record.TargetName)}),
-			TargetKind:      strings.TrimSpace(record.TargetKind),
-			TargetName:      strings.TrimSpace(record.TargetName),
-			Depth:           0,
-		})
-	}
-	return items
 }
 
 func (a *App) backgroundSessionSummaries() []model.BackgroundSessionSummary {
@@ -3986,32 +3878,6 @@ func (a *App) consumeHomeActions() {
 	}
 }
 
-func (a *App) consumeModelsModalActions() {
-	if a.home == nil {
-		return
-	}
-	for {
-		action, ok := a.home.PopModelsModalAction()
-		if !ok {
-			return
-		}
-		a.handleModelsModalAction(action)
-	}
-}
-
-func (a *App) consumeThemeModalActions() {
-	if a.home == nil {
-		return
-	}
-	for {
-		action, ok := a.home.PopThemeModalAction()
-		if !ok {
-			return
-		}
-		a.handleThemeModalAction(action)
-	}
-}
-
 func cloneClientSessionLifecycle(lifecycle *client.SessionLifecycleSnapshot) *client.SessionLifecycleSnapshot {
 	if lifecycle == nil {
 		return nil
@@ -4140,10 +4006,6 @@ func filterSessionSummariesForExactPath(summaries []model.SessionSummary, path s
 
 func scopedSessionTabsForPath(path string, summaries []model.SessionSummary, extras []client.SessionSummary) []ui.ChatSessionTab {
 	return chatSessionTabsWithExtras(filterSessionSummariesForExactPath(summaries, path), extras)
-}
-
-func chatSessionTabsFromClientSummaries(records []client.SessionSummary) []ui.ChatSessionTab {
-	return chatSessionTabsWithExtras(nil, records)
 }
 
 const (
@@ -4338,40 +4200,6 @@ func (a *App) handleChatAction(action ui.ChatAction) {
 	case ui.ChatActionToggleBypassPermissions:
 		a.setPermissionsBypass(!a.homeModel.BypassPermissions)
 	}
-}
-
-func (a *App) backgroundModalOrCommandOpen() bool {
-	if a == nil || a.route != "home" || a.home == nil {
-		return false
-	}
-	return a.home.SessionsModalVisible() ||
-		a.home.AuthModalVisible() ||
-		a.home.WorkspaceModalVisible() ||
-		a.home.WorktreesModalVisible() ||
-		a.home.SwarmModalVisible() ||
-		a.home.ModelsModalVisible() ||
-		a.home.AgentsModalVisible() ||
-		a.home.VoiceModalVisible() ||
-		a.home.ThemeModalVisible() ||
-		a.home.KeybindsModalVisible()
-}
-
-func (a *App) openBackgroundSessionsModal() {
-	if a == nil || a.home == nil {
-		return
-	}
-	a.home.ClearCommandOverlay()
-	if a.backgroundModalOrCommandOpen() {
-		a.home.SetStatus("background summary unavailable while another modal is open")
-		return
-	}
-	a.refreshBackgroundSessions()
-	items := backgroundSessionPaletteItemsFromSummaries(a.homeModel.BackgroundSessions)
-	if !a.home.OpenSessionsModal(items, "") {
-		a.home.SetStatus("background summary unavailable while another modal is open")
-		return
-	}
-	a.home.SetStatus("background agents")
 }
 
 func (a *App) handleHomeAction(action ui.HomeAction) {
@@ -5593,21 +5421,6 @@ func (a *App) openWorktreesModal() {
 	a.refreshWorktreesModalData("Loading worktrees settings...")
 }
 
-func (a *App) openMCPModal() {
-	a.home.ClearCommandOverlay()
-	a.home.HideSessionsModal()
-	a.home.HideAuthModal()
-	a.home.HideWorkspaceModal()
-	a.home.HideWorktreesModal()
-	a.home.HideModelsModal()
-	a.home.HideAgentsModal()
-	a.home.HideVoiceModal()
-	a.home.HideThemeModal()
-	a.home.HideKeybindsModal()
-	a.home.ShowMCPModal()
-	a.refreshMCPModalData("Loading MCP servers...")
-}
-
 func (a *App) refreshMCPModalData(statusHint string) {
 	if !a.home.MCPModalVisible() {
 		return
@@ -6432,10 +6245,6 @@ func (a *App) openWorkspaceModalForAddDirectory(prefill string) {
 		return
 	}
 	a.home.SetStatus("workspace link-directory flow")
-}
-
-func (a *App) showMCPManager() {
-	a.openMCPModal()
 }
 
 func (a *App) showAgentsManager() {
@@ -7603,16 +7412,6 @@ func workspacePathMatchDepth(root, target string) int {
 	return -1
 }
 
-func workspaceEntryMatchDepth(entry client.WorkspaceOverviewWorkspace, target string) int {
-	best := workspacePathMatchDepth(entry.Path, target)
-	for _, root := range entry.Directories {
-		if depth := workspacePathMatchDepth(root, target); depth > best {
-			best = depth
-		}
-	}
-	return best
-}
-
 func workspaceModelMatchDepth(entry model.Workspace, target string) int {
 	best := workspacePathMatchDepth(entry.Path, target)
 	for _, root := range entry.Directories {
@@ -8611,14 +8410,6 @@ func (a *App) worktreesStatusSummary(settings client.WorktreeSettings) string {
 	return fmt.Sprintf("worktrees %s • workspace=%s • created=%s/<id> • source=%s • resolved=%s", onOffLabel(settings.Enabled), scope, createdBranch, worktreeBranchLabel(settings.UseCurrentBranch, strings.TrimSpace(settings.BaseBranch)), resolved)
 }
 
-func worktreeStatusLabel(settings client.WorktreeSettings) string {
-	createdBranch := normalizeWorktreeBranchPrefix(strings.TrimSpace(settings.BranchName))
-	if createdBranch == "" {
-		createdBranch = "agent"
-	}
-	return fmt.Sprintf("worktrees %s (created=%s/<id>, source=%s)", onOffLabel(settings.Enabled), createdBranch, worktreeBranchLabel(settings.UseCurrentBranch, strings.TrimSpace(settings.BaseBranch)))
-}
-
 func mapMCPModalServers(servers []client.MCPServer) []ui.MCPModalServer {
 	out := make([]ui.MCPModalServer, 0, len(servers))
 	for _, server := range servers {
@@ -8712,17 +8503,6 @@ func copyTextToClipboardOSC52(text string) error {
 		return err
 	}
 	return nil
-}
-
-func envMouseEnabled(raw string) bool {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "true", "yes", "on":
-		return true
-	case "", "0", "false", "no", "off":
-		return false
-	default:
-		return false
-	}
 }
 
 func (a *App) handlePermissionsCommand(args []string) {
@@ -8841,21 +8621,6 @@ func (a *App) handlePermissionsCommand(args []string) {
 		a.home.SetStatus("permission explain loaded")
 	default:
 		a.home.SetStatus("usage: /permissions [on|off|show|allow|ask|deny|remove|reset|explain]")
-	}
-}
-
-func (a *App) previewPermissionRule(rule client.PermissionRule) string {
-	decision := strings.TrimSpace(rule.Decision)
-	if decision == "" {
-		decision = "allow"
-	}
-	switch strings.TrimSpace(rule.Kind) {
-	case "bash_prefix":
-		return fmt.Sprintf("%s bash command prefix: %s", decision, strings.TrimSpace(rule.Pattern))
-	case "phrase":
-		return fmt.Sprintf("%s phrase: %s", decision, strings.TrimSpace(rule.Pattern))
-	default:
-		return fmt.Sprintf("%s tool: %s", decision, strings.TrimSpace(rule.Tool))
 	}
 }
 

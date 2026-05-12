@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -191,22 +190,6 @@ func (p *HomePage) SetWorkspaceModalData(entries []WorkspaceModalWorkspace) {
 
 func (p *HomePage) OpenWorkspaceModalSaveEditor(path string, allowPathEdit bool) {
 	p.openWorkspaceModalSaveEditorForPath(path, allowPathEdit, "")
-}
-
-func (p *HomePage) OpenWorkspaceModalSaveAndLinkEditor(path, linkedDirectory string, allowPathEdit bool) {
-	p.openWorkspaceModalSaveEditorForPath(path, allowPathEdit, linkedDirectory)
-}
-
-func (p *HomePage) OpenWorkspaceModalAddDirectoryEditor(workspacePath, directoryPath string) {
-	if workspace, ok := p.workspaceByPath(workspacePath); ok {
-		p.openWorkspaceModalAddDirectoryEditorForWorkspace(workspace, directoryPath)
-	}
-}
-
-func (p *HomePage) OpenWorkspaceModalRemoveDirectoryEditor(workspacePath string) {
-	if workspace, ok := p.workspaceByPath(workspacePath); ok {
-		p.openWorkspaceModalRemoveDirectoryEditorForWorkspace(workspace)
-	}
 }
 
 func (p *HomePage) PopWorkspaceModalAction() (WorkspaceModalAction, bool) {
@@ -825,43 +808,6 @@ func (p *HomePage) enqueueWorkspaceModalAction(action WorkspaceModalAction) {
 	p.workspaceModal.Error = ""
 }
 
-func (p *HomePage) advanceWorkspaceModalFocus(delta int) {
-	order := []workspaceModalFocus{
-		workspaceModalFocusList,
-		workspaceModalFocusDetails,
-		workspaceModalFocusSearch,
-	}
-	idx := 0
-	for i, focus := range order {
-		if focus == p.workspaceModal.Focus {
-			idx = i
-			break
-		}
-	}
-	idx = (idx + delta + len(order)) % len(order)
-	p.setWorkspaceModalFocus(order[idx], order[idx] == workspaceModalFocusDetails)
-}
-
-func (p *HomePage) focusWorkspaceModalLeft() {
-	switch p.workspaceModal.Focus {
-	case workspaceModalFocusSearch:
-		p.setWorkspaceModalFocus(workspaceModalFocusDetails, true)
-	case workspaceModalFocusDetails:
-		p.setWorkspaceModalFocus(workspaceModalFocusList, false)
-	default:
-		p.setWorkspaceModalFocus(workspaceModalFocusList, false)
-	}
-}
-
-func (p *HomePage) focusWorkspaceModalRight() {
-	switch p.workspaceModal.Focus {
-	case workspaceModalFocusList:
-		p.setWorkspaceModalFocus(workspaceModalFocusDetails, true)
-	case workspaceModalFocusDetails:
-		p.setWorkspaceModalFocus(workspaceModalFocusSearch, false)
-	}
-}
-
 func (p *HomePage) moveWorkspaceModalSelectionByDirection(dx, dy int) {
 	if p.workspaceModal.ActionMenuVisible || p.workspaceModal.Focus == workspaceModalFocusDetails {
 		if dy != 0 {
@@ -911,17 +857,6 @@ func (p *HomePage) moveWorkspaceModalSelectionByDirection(dx, dy int) {
 		target = 0
 	}
 	p.workspaceModal.SelectedWorkspace = matches[target]
-}
-
-func (p *HomePage) moveWorkspaceModalSelection(delta int) {
-	p.moveWorkspaceModalSelectionByDirection(0, delta)
-}
-
-func (p *HomePage) setWorkspaceModalFocus(focus workspaceModalFocus, resetAction bool) {
-	p.workspaceModal.Focus = focus
-	if focus == workspaceModalFocusDetails {
-		p.reconcileWorkspaceModalActionSelection(resetAction)
-	}
 }
 
 func (p *HomePage) moveWorkspaceModalActionSelection(delta int) {
@@ -1093,24 +1028,6 @@ func (p *HomePage) setWorkspaceModalEditorOptionByPrefix(prefix string) {
 	}
 }
 
-func (p *HomePage) deleteWorkspaceModalSearchRune() {
-	if p.workspaceModal.Focus != workspaceModalFocusSearch || len(p.workspaceModal.Search) == 0 {
-		return
-	}
-	_, sz := utf8.DecodeLastRuneInString(p.workspaceModal.Search)
-	if sz > 0 {
-		p.workspaceModal.Search = p.workspaceModal.Search[:len(p.workspaceModal.Search)-sz]
-	}
-	p.workspaceModal.reconcileSelections()
-	p.reconcileWorkspaceModalActionSelection(false)
-}
-
-func (p *HomePage) clearWorkspaceModalSearch() {
-	p.workspaceModal.Search = ""
-	p.workspaceModal.reconcileSelections()
-	p.reconcileWorkspaceModalActionSelection(false)
-}
-
 func (s *workspaceModalState) reconcileSelections() {
 	matches := s.filteredIndexes()
 	if len(matches) == 0 {
@@ -1188,10 +1105,6 @@ func (s *workspaceModalState) filteredIndexes() []int {
 		out = append(out, i)
 	}
 	return out
-}
-
-func workspaceModalMatchesQuery(workspace WorkspaceModalWorkspace, query string) bool {
-	return true
 }
 
 func (p *HomePage) currentWorkspaceModalDirectoryPath() string {
@@ -1603,27 +1516,6 @@ func (p *HomePage) workspaceModalEditorFooterLines(editor *workspaceModalEditor,
 		fmt.Sprintf("%s %s", submitLabel, action),
 		fmt.Sprintf("Left/Right change options • %s cancel", closeLabel),
 	}
-}
-
-func workspaceModalHasRemovableDirectory(workspace WorkspaceModalWorkspace) bool {
-	for _, directory := range workspace.Directories {
-		directory = strings.TrimSpace(directory)
-		if directory == "" || directory == strings.TrimSpace(workspace.Path) {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-func workspaceModalRemoveDirectoryHint(selected WorkspaceModalWorkspace, ok bool) string {
-	if !ok {
-		return "Select a workspace first, then remove one of its linked directories."
-	}
-	if !workspaceModalHasRemovableDirectory(selected) {
-		return "This workspace only has its primary root. Add another directory first."
-	}
-	return "Remove a linked directory from the selected workspace. The primary root stays attached. You can also use /workspace and choose an Unlink action for a specific linked root."
 }
 
 func workspaceModalWorkspaceContainsPath(workspace WorkspaceModalWorkspace, target string) bool {
@@ -2312,13 +2204,6 @@ func boolLabel(value bool) string {
 		return "yes"
 	}
 	return "no"
-}
-
-func workspaceModalTimeLabel(unixMillis int64) string {
-	if unixMillis <= 0 {
-		return "-"
-	}
-	return time.UnixMilli(unixMillis).Local().Format("2006-01-02 15:04")
 }
 
 func workspaceModalDisplayPath(path string) string {
