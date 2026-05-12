@@ -999,6 +999,7 @@ export function DesktopSwarmDashboard() {
   const [swarmTargets, setSwarmTargets] = useState<SwarmTarget[]>([])
   const [mirrorResources, setMirrorResources] = useState<SwarmMirrorResources>(emptySwarmMirrorResources)
   const [localRuntime, setLocalRuntime] = useState<SwarmLocalRuntimeStatus>({ recommended: '', available: [], installed: [], issues: {}, warning: '' })
+  const [hiddenLocalRuntimeWarning, setHiddenLocalRuntimeWarning] = useState('')
   const [localContainers, setLocalContainers] = useState<SwarmLocalContainer[]>([])
   const [deployments, setDeployments] = useState<DeployContainerDeployment[]>([])
   const [remoteSessions, setRemoteSessions] = useState<RemoteDeploySession[]>([])
@@ -2296,9 +2297,14 @@ export function DesktopSwarmDashboard() {
               </div>
             </div>
 
-            {localRuntime.warning ? (
+            {localRuntime.warning && hiddenLocalRuntimeWarning !== localRuntime.warning ? (
               <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-transparent px-3 py-2 text-sm text-[var(--app-warning-text)]">
-                <div className="flex items-start gap-2"><TriangleAlert size={16} className="mt-0.5" /><div>{localRuntime.warning}</div></div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex items-start gap-2"><TriangleAlert size={16} className="mt-0.5 shrink-0" /><div>{localRuntime.warning}</div></div>
+                  <Button type="button" variant="outline" size="sm" className="h-8 text-[11px]" onClick={() => setHiddenLocalRuntimeWarning(localRuntime.warning)}>
+                    Hide
+                  </Button>
+                </div>
               </div>
             ) : null}
 
@@ -2354,6 +2360,7 @@ export function DesktopSwarmDashboard() {
                 })
               )}
             </div>
+            <div className="mt-3 text-xs text-[var(--app-text-muted)]">To remount containers with new paths, please delete the old container and recreate a new one.</div>
           </div>
         </section>
 

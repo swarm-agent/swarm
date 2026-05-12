@@ -21,6 +21,11 @@ export interface WorkspaceEditorAvailableDirectory {
   meta: string
 }
 
+export interface WorkspaceEditorManagedLinkDraft {
+  targetSwarmID: string
+  destinationPath: string
+}
+
 interface WorkspaceEditorModalProps {
   open: boolean
   mode: 'create' | 'edit'
@@ -30,6 +35,7 @@ interface WorkspaceEditorModalProps {
   themeId: string
   linkedDirectories: string[]
   availableDirectories: WorkspaceEditorAvailableDirectory[]
+  pendingManagedLinks?: WorkspaceEditorManagedLinkDraft[]
   workspaces?: WorkspaceEntry[]
   availableSwarmTargets?: SwarmTarget[]
   canRemoveLinkedDirectories?: boolean
@@ -42,6 +48,9 @@ interface WorkspaceEditorModalProps {
   onMoveWorkspaceToIndex?: (path: string, index: number) => void
   onAddLinkedDirectory: (path: string) => void
   onRemoveLinkedDirectory: (path: string) => void
+  onAddManagedLink?: (targetSwarmID: string, destinationPath: string) => void
+  onRemoveManagedLink?: (linkID: string) => void
+  onRemovePendingManagedLink?: (targetSwarmID: string, destinationPath: string) => void
   onClose: () => void
   onSubmit: () => void
 }
@@ -76,6 +85,7 @@ export function WorkspaceEditorModal({
   themeId,
   linkedDirectories,
   availableDirectories,
+  pendingManagedLinks = [],
   workspaces = [],
   availableSwarmTargets = [],
   canRemoveLinkedDirectories = false,
@@ -88,6 +98,9 @@ export function WorkspaceEditorModal({
   onMoveWorkspaceToIndex,
   onAddLinkedDirectory,
   onRemoveLinkedDirectory,
+  onAddManagedLink,
+  onRemoveManagedLink,
+  onRemovePendingManagedLink,
   onClose,
   onSubmit,
 }: WorkspaceEditorModalProps) {
@@ -96,6 +109,8 @@ export function WorkspaceEditorModal({
   }
 
   const [draggingWorkspacePath, setDraggingWorkspacePath] = useState<string | null>(null)
+  const [managedTargetID, setManagedTargetID] = useState('')
+  const [managedDestinationPath, setManagedDestinationPath] = useState('')
   const normalizedThemeId = normalizeThemeId(themeId)
   const themePreviewStyle = createWorkspaceThemeStyle(normalizedThemeId === INHERIT_THEME_ID ? 'black' : normalizedThemeId, '--workspace-theme-preview')
   const themeOptions = [
@@ -105,6 +120,11 @@ export function WorkspaceEditorModal({
   const selectedWorkspaceIndex = workspaces.findIndex((workspace) => workspace.path === workspacePath)
   const selectedWorkspace = selectedWorkspaceIndex >= 0 ? workspaces[selectedWorkspaceIndex] : null
   const placementLinks = workspacePlacementLinks(selectedWorkspace?.replicationLinks ?? [], availableSwarmTargets)
+  const managedHostTargets = availableSwarmTargets.filter((target) => {
+    const relationship = String(target.relationship || '').trim().toLowerCase()
+    const role = String(target.role || '').trim().toLowerCase()
+    return target.selectable && (relationship === 'managed' || role === 'managed' || target.kind === 'host')
+  })
 
   return (
     <div className="fixed inset-0 z-[70] grid place-items-center p-4 sm:p-6" role="dialog" aria-modal="true" aria-label={mode === 'create' ? 'Create workspace' : 'Edit workspace'}>
@@ -214,10 +234,13 @@ export function WorkspaceEditorModal({
             />
           </label>
 
-          {mode === 'edit' ? (
-            <div className="grid gap-3">
-              <span className={fieldLabelClass}>Available on</span>
-              {placementLinks.length > 0 ? (
+          <div className="grid gap-3">
+              <span className={fieldLabelClass}>Managed Host links</span>
+              <div className={subtleCardClass}>
+                <strong className="text-sm font-semibold text-[var(--app-text)]">Flat routing links</strong>
+                <p className={helperTextClass}>These links are separate from linked folders. Adding one creates/registers the destination folder on the Managed Host and saves local routing metadata. Removing one only removes the local link.</p>
+              </div>
+              {placementLinks.length > 0 || pendingManagedLinks.length > 0 ? (
                 <div className="grid gap-2">
                   {placementLinks.map(({ link, target, targetType }) => {
                     const displayPath = workspaceLinkDisplayPath(link)
@@ -232,18 +255,70 @@ export function WorkspaceEditorModal({
                           {displayPath ? <span className="truncate text-xs text-[var(--app-text-muted)]">{displayPath}</span> : null}
                           <span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceLinkModeLabel(link)}</span>
                         </div>
-                        <span className="shrink-0 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-elevated)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-muted)]">
-                          {targetType}
-                        </span>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface-elevated)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-muted)]">
+                            {targetType}
+                          </span>
+                          {onRemoveManagedLink ? <Button type="button" onClick={() => onRemoveManagedLink(link.id)}>Remove</Button> : null}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  {pendingManagedLinks.map((link) => {
+                    const target = availableSwarmTargets.find((item) => item.swarm_id === link.targetSwarmID)
+                    return (
+                      <div key={`pending:${link.targetSwarmID}:${link.destinationPath}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                        <div className="grid min-w-0 gap-1">
+                          <span className="truncate text-sm font-medium text-[var(--app-text)]">{target?.name || link.targetSwarmID}</span>
+                          <span className="truncate text-xs text-[var(--app-text-muted)]">{link.destinationPath || 'Default path on save'}</span>
+                          <span className="truncate text-xs text-[var(--app-text-muted)]">Pending until workspace is saved</span>
+                        </div>
+                        {onRemovePendingManagedLink ? <Button type="button" onClick={() => onRemovePendingManagedLink(link.targetSwarmID, link.destinationPath)}>Remove</Button> : null}
                       </div>
                     )
                   })}
                 </div>
               ) : (
-                <p className={helperTextClass}>On this host only. No Managed Host or container link is saved for this workspace.</p>
+                <p className={helperTextClass}>No Managed Host route link is saved for this workspace.</p>
               )}
+              <div className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+                  <label className="grid gap-1 text-sm">
+                    <span className={fieldLabelClass}>Managed Host</span>
+                    <select
+                      value={managedTargetID}
+                      onChange={(event) => setManagedTargetID(event.target.value)}
+                      className="min-h-11 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5 text-[var(--app-text)] outline-none transition hover:border-[var(--app-border-strong)] focus-visible:border-[var(--app-border-accent)]"
+                    >
+                      <option value="">Select host…</option>
+                      {managedHostTargets.map((target) => (
+                        <option key={target.swarm_id} value={target.swarm_id}>{target.name || target.swarm_id}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="grid gap-1 text-sm">
+                    <span className={fieldLabelClass}>Destination path</span>
+                    <input
+                      value={managedDestinationPath}
+                      onChange={(event) => setManagedDestinationPath(event.target.value)}
+                      placeholder="Blank uses ~/same-relative-path"
+                      className="min-h-11 w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5 text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-subtle)] hover:border-[var(--app-border-strong)] focus-visible:border-[var(--app-border-accent)]"
+                    />
+                  </label>
+                  <Button
+                    type="button"
+                    disabled={!managedTargetID || !onAddManagedLink || saving}
+                    onClick={() => {
+                      onAddManagedLink?.(managedTargetID, managedDestinationPath)
+                      setManagedDestinationPath('')
+                    }}
+                  >
+                    Add link
+                  </Button>
+                </div>
+                {managedHostTargets.length === 0 ? <p className={helperTextClass}>No selectable Managed Hosts are available. Link a Managed Host first.</p> : null}
+              </div>
             </div>
-          ) : null}
 
           <div className="grid gap-2">
             <span className={fieldLabelClass}>Theme</span>

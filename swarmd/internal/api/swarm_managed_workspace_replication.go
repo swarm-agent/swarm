@@ -29,6 +29,7 @@ const (
 	managedWorkspaceReplicatePath        = "/v1/swarm/managed-workspaces/replicate"
 	managedWorkspaceInventoryPath        = "/v1/swarm/managed-workspaces/inventory"
 	peerManagedWorkspacePreflightPath    = "/v1/swarm/peer/managed-workspaces/preflight"
+	peerManagedWorkspaceEnsureLinkPath   = "/v1/swarm/peer/managed-workspaces/ensure-link"
 	peerManagedWorkspaceLinkExistingPath = "/v1/swarm/peer/managed-workspaces/link-existing"
 	peerManagedWorkspaceImportBundlePath = "/v1/swarm/peer/managed-workspaces/import-bundle"
 	peerManagedWorkspaceInventoryPath    = "/v1/swarm/peer/managed-workspaces/inventory"
@@ -105,6 +106,31 @@ type managedWorkspaceReplicateResponse struct {
 	Workspaces []managedWorkspaceResultResponse `json:"workspaces"`
 }
 
+type workspaceManagedLinkUpsertRequest struct {
+	WorkspacePath   string `json:"workspace_path"`
+	TargetSwarmID   string `json:"target_swarm_id"`
+	DestinationRoot string `json:"destination_root,omitempty"`
+	DestinationPath string `json:"destination_path,omitempty"`
+	WorkspaceName   string `json:"workspace_name,omitempty"`
+	Provision       *bool  `json:"provision,omitempty"`
+}
+
+type workspaceManagedLinkRemoveRequest struct {
+	WorkspacePath string `json:"workspace_path"`
+	LinkID        string `json:"link_id"`
+}
+
+type workspaceManagedLinkResponse struct {
+	OK              bool                                 `json:"ok"`
+	Target          managedWorkspaceTargetResponse       `json:"target,omitempty"`
+	WorkspacePath   string                               `json:"workspace_path"`
+	DestinationPath string                               `json:"destination_path,omitempty"`
+	Exists          bool                                 `json:"exists,omitempty"`
+	Created         bool                                 `json:"created,omitempty"`
+	Registered      bool                                 `json:"registered,omitempty"`
+	Link            pebblestore.WorkspaceReplicationLink `json:"link,omitempty"`
+}
+
 type managedWorkspaceActiveCWDResponse struct {
 	Path          string `json:"path"`
 	WorkspacePath string `json:"workspace_path"`
@@ -159,6 +185,24 @@ type peerManagedWorkspaceLinkExistingRequest struct {
 	SourceWorkspacePath    string `json:"source_workspace_path"`
 	SourceWorkspaceName    string `json:"source_workspace_name,omitempty"`
 	SourceHomeRelativePath string `json:"source_home_relative_path,omitempty"`
+}
+
+type peerManagedWorkspaceEnsureLinkRequest struct {
+	DestinationRoot        string `json:"destination_root"`
+	DestinationPath        string `json:"destination_path,omitempty"`
+	WorkspaceName          string `json:"workspace_name"`
+	SourceWorkspacePath    string `json:"source_workspace_path"`
+	SourceHomeRelativePath string `json:"source_home_relative_path,omitempty"`
+	Provision              bool   `json:"provision"`
+}
+
+type peerManagedWorkspaceEnsureLinkResponse struct {
+	OK              bool   `json:"ok"`
+	DestinationPath string `json:"destination_path"`
+	WorkspaceName   string `json:"workspace_name"`
+	Exists          bool   `json:"exists"`
+	Created         bool   `json:"created"`
+	Registered      bool   `json:"registered"`
 }
 
 type peerManagedWorkspaceLinkExistingResponse struct {
@@ -253,6 +297,70 @@ func (s *Server) handlePeerManagedWorkspaceInventory(w http.ResponseWriter, r *h
 		return
 	}
 	response, status, err := s.peerManagedWorkspaceInventory(r)
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleWorkspaceManagedLinkUpsert(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req workspaceManagedLinkUpsertRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	response, status, err := s.workspaceManagedLinkUpsert(r, req)
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleWorkspaceManagedLinkRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s == nil || s.workspace == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("workspace service is not configured"))
+		return
+	}
+	var req workspaceManagedLinkRemoveRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.workspace.RemoveReplicationLink(req.WorkspacePath, req.LinkID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workspaceManagedLinkResponse{OK: true, WorkspacePath: strings.TrimSpace(req.WorkspacePath)})
+}
+
+func (s *Server) handlePeerManagedWorkspaceEnsureLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requirePeerAuth(w, r) {
+		return
+	}
+	if s.workspace == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("workspace service is not configured"))
+		return
+	}
+	var req peerManagedWorkspaceEnsureLinkRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	response, status, err := s.peerManagedWorkspaceEnsureLink(req)
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -419,6 +527,69 @@ func (s *Server) managedWorkspaceInventory(r *http.Request, targetSwarmID string
 	}, http.StatusOK, nil
 }
 
+func (s *Server) workspaceManagedLinkUpsert(r *http.Request, req workspaceManagedLinkUpsertRequest) (workspaceManagedLinkResponse, int, error) {
+	if s == nil || s.workspace == nil {
+		return workspaceManagedLinkResponse{}, http.StatusInternalServerError, errors.New("workspace service is not configured")
+	}
+	workspacePath := strings.TrimSpace(req.WorkspacePath)
+	if workspacePath == "" {
+		return workspaceManagedLinkResponse{}, http.StatusBadRequest, errors.New("workspace_path is required")
+	}
+	normalized, catalog, status, err := s.normalizeManagedWorkspaceSelections([]managedWorkspaceSelectionRequest{{SourceWorkspacePath: workspacePath, DestinationPath: strings.TrimSpace(req.DestinationPath)}})
+	if err != nil {
+		return workspaceManagedLinkResponse{}, status, err
+	}
+	if len(normalized) != 1 {
+		return workspaceManagedLinkResponse{}, http.StatusBadRequest, errors.New("exactly one workspace is required")
+	}
+	normalizedWorkspace := normalized[0]
+	workspaceName := sanitizeReplicationMountName(firstNonEmpty(strings.TrimSpace(req.WorkspaceName), strings.TrimSpace(catalog[normalizedWorkspace.SourceWorkspacePath].Name), defaultReplicatedWorkspaceName(normalizedWorkspace.SourceWorkspacePath)))
+	if workspaceName == "" {
+		workspaceName = "workspace"
+	}
+	target, localSwarmID, peerToken, status, err := s.resolveManagedWorkspaceTarget(r, req.TargetSwarmID)
+	if err != nil {
+		return workspaceManagedLinkResponse{}, status, err
+	}
+	provision := true
+	if req.Provision != nil {
+		provision = *req.Provision
+	}
+	peerResp, err := ensureManagedWorkspaceLinkOnPeer(r.Context(), *target, localSwarmID, peerToken, peerManagedWorkspaceEnsureLinkRequest{
+		DestinationRoot:        strings.TrimSpace(req.DestinationRoot),
+		DestinationPath:        strings.TrimSpace(req.DestinationPath),
+		WorkspaceName:          workspaceName,
+		SourceWorkspacePath:    normalizedWorkspace.SourceWorkspacePath,
+		SourceHomeRelativePath: sourceHomeRelativePath(normalizedWorkspace.SourceWorkspacePath),
+		Provision:              provision,
+	})
+	if err != nil {
+		return workspaceManagedLinkResponse{}, http.StatusBadGateway, err
+	}
+	storedLink, err := s.workspace.AddReplicationLink(normalizedWorkspace.SourceWorkspacePath, pebblestore.WorkspaceReplicationLink{
+		ID:                  managedWorkspaceLinkID(target.SwarmID, normalizedWorkspace.SourceWorkspacePath),
+		TargetKind:          managedWorkspaceTargetKind,
+		TargetSwarmID:       strings.TrimSpace(target.SwarmID),
+		TargetSwarmName:     firstNonEmpty(strings.TrimSpace(target.Name), strings.TrimSpace(target.SwarmID)),
+		TargetWorkspacePath: peerResp.DestinationPath,
+		ReplicationMode:     workspace.ReplicationModeBundle,
+		Writable:            true,
+	})
+	if err != nil {
+		return workspaceManagedLinkResponse{}, http.StatusInternalServerError, err
+	}
+	return workspaceManagedLinkResponse{
+		OK:              true,
+		Target:          managedWorkspaceTargetResponse{SwarmID: target.SwarmID, Name: firstNonEmpty(target.Name, target.SwarmID), Online: true},
+		WorkspacePath:   normalizedWorkspace.SourceWorkspacePath,
+		DestinationPath: peerResp.DestinationPath,
+		Exists:          peerResp.Exists,
+		Created:         peerResp.Created,
+		Registered:      peerResp.Registered,
+		Link:            storedLink,
+	}, http.StatusOK, nil
+}
+
 func getPeerManagedWorkspaceInventory(ctx context.Context, target swarmTarget, localSwarmID, peerToken string) (peerManagedWorkspaceInventoryResponse, error) {
 	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + peerManagedWorkspaceInventoryPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -465,6 +636,44 @@ func (s *Server) peerManagedWorkspaceInventory(r *http.Request) (peerManagedWork
 		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, err
 	}
 	return peerManagedWorkspaceInventoryResponse{OK: true, ManagedHome: filepath.Clean(home), SavedWorkspaces: saved, DiscoveredDirectories: discovered, ActiveCWDs: activeCWDs}, http.StatusOK, nil
+}
+
+func (s *Server) peerManagedWorkspaceEnsureLink(req peerManagedWorkspaceEnsureLinkRequest) (peerManagedWorkspaceEnsureLinkResponse, int, error) {
+	workspaceName := sanitizeReplicationMountName(firstNonEmpty(strings.TrimSpace(req.WorkspaceName), defaultReplicatedWorkspaceName(req.SourceWorkspacePath)))
+	if workspaceName == "" {
+		workspaceName = "workspace"
+	}
+	root, err := normalizeManagedWorkspaceDestinationRoot(req.DestinationRoot)
+	if err != nil {
+		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusBadRequest, err
+	}
+	destination, err := managedWorkspaceDestinationPath(root, workspaceName, cleanManagedWorkspaceRelativePath(req.SourceHomeRelativePath), strings.TrimSpace(req.DestinationPath))
+	if err != nil {
+		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusBadRequest, err
+	}
+	created := false
+	registered := false
+	info, statErr := os.Stat(destination)
+	if statErr == nil {
+		if !info.IsDir() {
+			return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusConflict, errors.New("destination exists and is not a directory")
+		}
+	} else if os.IsNotExist(statErr) {
+		if !req.Provision {
+			return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusNotFound, errors.New("destination does not exist")
+		}
+		if err := os.MkdirAll(destination, 0o755); err != nil {
+			return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, err
+		}
+		created = true
+	} else {
+		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, statErr
+	}
+	if _, err := s.workspace.Add(destination, workspaceName, "", false); err != nil {
+		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, err
+	}
+	registered = true
+	return peerManagedWorkspaceEnsureLinkResponse{OK: true, DestinationPath: destination, WorkspaceName: workspaceName, Exists: true, Created: created, Registered: registered}, http.StatusOK, nil
 }
 
 func (s *Server) managedWorkspaceActiveCWDs(limit int) ([]managedWorkspaceActiveCWDResponse, error) {
@@ -978,6 +1187,36 @@ func pathWithinManagedWorkspaceRoot(root, target string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func ensureManagedWorkspaceLinkOnPeer(ctx context.Context, target swarmTarget, localSwarmID, peerToken string, payload peerManagedWorkspaceEnsureLinkRequest) (peerManagedWorkspaceEnsureLinkResponse, error) {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return peerManagedWorkspaceEnsureLinkResponse{}, err
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(target.BackendURL), "/") + peerManagedWorkspaceEnsureLinkPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return peerManagedWorkspaceEnsureLinkResponse{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(localSwarmID))
+	req.Header.Set(peerAuthTokenHeader, strings.TrimSpace(peerToken))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return peerManagedWorkspaceEnsureLinkResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return peerManagedWorkspaceEnsureLinkResponse{}, fmt.Errorf("managed host workspace ensure link failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var decoded peerManagedWorkspaceEnsureLinkResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return peerManagedWorkspaceEnsureLinkResponse{}, err
+	}
+	return decoded, nil
 }
 
 func linkExistingManagedWorkspaceOnPeer(ctx context.Context, target swarmTarget, localSwarmID, peerToken, destinationRoot string, plan managedWorkspacePlanResponse) error {
