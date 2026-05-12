@@ -41,6 +41,7 @@ type swarmReplicateContainerPackagesRequest struct {
 type swarmReplicateRequest struct {
 	Mode              string                                 `json:"mode"`
 	SwarmName         string                                 `json:"swarm_name"`
+	TargetHostSwarmID string                                 `json:"target_host_swarm_id,omitempty"`
 	Runtime           string                                 `json:"runtime,omitempty"`
 	BypassPermissions bool                                   `json:"bypass_permissions,omitempty"`
 	AlwaysOn          bool                                   `json:"always_on,omitempty"`
@@ -142,6 +143,11 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("deploy container service is not configured"))
 		return
 	}
+	targetHostSwarmID := strings.TrimSpace(req.TargetHostSwarmID)
+	if targetHostSwarmID != "" && targetMode != workspace.ReplicationTargetModeLocal {
+		writeError(w, http.StatusBadRequest, errors.New("target_host_swarm_id is only supported for local container creation"))
+		return
+	}
 	if len(req.Workspaces) == 0 {
 		writeError(w, http.StatusBadRequest, errors.New("at least one workspace is required"))
 		return
@@ -191,6 +197,14 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	localSwarmID := strings.TrimSpace(state.Node.SwarmID)
+	targetHostIsLocal := targetHostSwarmID == "" || strings.EqualFold(targetHostSwarmID, "local") || strings.EqualFold(targetHostSwarmID, "self") || strings.EqualFold(targetHostSwarmID, localSwarmID)
+	if !targetHostIsLocal {
+		if _, _, _, status, err := s.resolveManagedHostSessionTarget(requestWithSwarmTargetQuery(r, targetHostSwarmID), targetHostSwarmID); err != nil {
+			writeError(w, status, err)
+			return
+		}
 	}
 	workspaceCatalog, err := s.replicateWorkspaceCatalog(normalizedWorkspaces)
 	if err != nil {

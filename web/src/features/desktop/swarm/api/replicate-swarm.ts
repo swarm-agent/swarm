@@ -31,6 +31,7 @@ export interface ReplicateSwarmRequest {
   mode: 'local' | 'remote'
   swarmName: string
   targetSwarmID?: string
+  targetHostSwarmID?: string
   runtime?: 'podman' | 'docker' | ''
   bypassPermissions?: boolean
   alwaysOn?: boolean
@@ -185,6 +186,7 @@ export async function replicateSwarm(input: ReplicateSwarmRequest): Promise<Repl
     body: JSON.stringify({
       mode: input.mode,
       swarm_name: input.swarmName,
+      target_host_swarm_id: input.targetHostSwarmID?.trim() || undefined,
       runtime: input.runtime,
       bypass_permissions: input.bypassPermissions,
       always_on: input.alwaysOn,

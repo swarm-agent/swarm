@@ -9,6 +9,7 @@ import {
   DialogPanel,
 } from '../../../../components/ui/dialog'
 import { Input } from '../../../../components/ui/input'
+import { Select } from '../../../../components/ui/select'
 import {
   fetchDesktopOnboardingStatus,
   fetchSwarmLocalRuntimeStatus,
@@ -25,6 +26,7 @@ import {
   replicateSwarm,
   ReplicateSwarmLaunchError,
 } from '../api/replicate-swarm'
+import { fetchSwarmTargets, type SwarmTarget } from '../api/swarm-targets'
 import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -51,6 +53,7 @@ interface ContainerPackageDraft {
 
 const FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE = 'docker.io/ubuntu:26.04'
 const FALLBACK_CONTAINER_PACKAGE_MANAGER = 'apt'
+const LOCAL_TARGET_SWARM_ID = '__local__'
 const DEFAULT_CONTAINER_PACKAGES: ContainerPackageDraft[] = [
   'bash',
   'ca-certificates',
@@ -185,6 +188,18 @@ function selectedWorkspaceCount(items: ReplicateWorkspaceDraft[]): number {
   return items.filter((item) => item.selected).length
 }
 
+function managedHostTargets(targets: SwarmTarget[]): SwarmTarget[] {
+  return (targets ?? []).filter((target) => {
+    const relationship = String(target.relationship ?? '').trim().toLowerCase()
+    return (
+      relationship === 'managed' &&
+      Boolean(target.selectable) &&
+      Boolean(target.online) &&
+      String(target.swarm_id ?? '').trim().length > 0
+    )
+  })
+}
+
 export function AddSwarmModal({
   open,
   onboardingStatus,
@@ -207,6 +222,8 @@ export function AddSwarmModal({
     'podman' | 'docker' | ''
   >('')
   const [swarmName, setSwarmName] = useState('')
+  const [targetHosts, setTargetHosts] = useState<SwarmTarget[]>([])
+  const [selectedTargetHostSwarmID, setSelectedTargetHostSwarmID] = useState(LOCAL_TARGET_SWARM_ID)
   const [syncEnabled, setSyncEnabled] = useState(true)
   const [syncVaultPassword, setSyncVaultPassword] = useState('')
   const [bypassPermissions, setBypassPermissions] = useState(false)
@@ -252,6 +269,19 @@ export function AddSwarmModal({
       'This host',
     [group, hostSwarmID],
   )
+  const managedTargetHosts = useMemo(
+    () => managedHostTargets(targetHosts),
+    [targetHosts],
+  )
+  const selectedManagedTargetHost = useMemo(
+    () =>
+      managedTargetHosts.find(
+        (target) => target.swarm_id === selectedTargetHostSwarmID,
+      ) ?? null,
+    [managedTargetHosts, selectedTargetHostSwarmID],
+  )
+  const launchTargetLabel = selectedManagedTargetHost?.name?.trim() || managerName
+  const launchTargetIsManaged = Boolean(selectedManagedTargetHost)
   const selectedWorkspaceCountValue = useMemo(
     () => selectedWorkspaceCount(workspaceDrafts),
     [workspaceDrafts],
@@ -321,6 +351,8 @@ export function AddSwarmModal({
     setError(null)
     setStatus(null)
     setSelectedRuntime('')
+    setTargetHosts([])
+    setSelectedTargetHostSwarmID(LOCAL_TARGET_SWARM_ID)
     setSyncEnabled(true)
     setSyncVaultPassword('')
     setBypassPermissions(false)
@@ -339,6 +371,7 @@ export function AddSwarmModal({
         baseImage: FALLBACK_CONTAINER_PACKAGE_BASE_IMAGE,
         packageManager: FALLBACK_CONTAINER_PACKAGE_MANAGER,
       })),
+      fetchSwarmTargets().catch(() => ({ ok: false, targets: [] })),
       onboardingStatus
         ? Promise.resolve(onboardingStatus)
         : fetchDesktopOnboardingStatus().catch(() => null),
@@ -348,10 +381,23 @@ export function AddSwarmModal({
           nextWorkspaces,
           nextRuntimeStatus,
           nextPackageDefaults,
+          nextTargetsResponse,
           nextOnboardingStatus,
         ]) => {
           if (cancelled) return
           setWorkspaceDrafts(buildWorkspaceDrafts(nextWorkspaces))
+          const nextTargets = Array.isArray(nextTargetsResponse.targets)
+            ? nextTargetsResponse.targets
+            : []
+          setTargetHosts(nextTargets)
+          setSelectedTargetHostSwarmID((current) => {
+            if (current === LOCAL_TARGET_SWARM_ID) return current
+            return managedHostTargets(nextTargets).some(
+              (target) => target.swarm_id === current,
+            )
+              ? current
+              : LOCAL_TARGET_SWARM_ID
+          })
           setRuntimeStatus(nextRuntimeStatus)
           setContainerPackageBaseImage(
             nextPackageDefaults.baseImage ||
@@ -468,12 +514,19 @@ export function AddSwarmModal({
     }
     setSubmitting(true)
     setError(null)
-    setStatus('Creating local container…')
+    setStatus(
+      launchTargetIsManaged
+        ? `Creating container on ${launchTargetLabel}…`
+        : 'Creating local container…',
+    )
     try {
       const syncModules = ['credentials', 'agents', 'custom_tools', 'skills']
       const result = await replicateSwarm({
         mode: 'local',
         swarmName: swarmName.trim(),
+        targetHostSwarmID: launchTargetIsManaged
+          ? selectedManagedTargetHost?.swarm_id.trim()
+          : undefined,
         runtime: runtimeChoice,
         bypassPermissions,
         alwaysOn,
@@ -498,7 +551,9 @@ export function AddSwarmModal({
           : undefined,
       })
       await finishSuccess(
-        `Added ${result.swarm.name || swarmName.trim()} as a local container.`,
+        launchTargetIsManaged
+          ? `Added ${result.swarm.name || swarmName.trim()} as a container on ${launchTargetLabel}.`
+          : `Added ${result.swarm.name || swarmName.trim()} as a local container.`,
       )
     } catch (err) {
       if (err instanceof ReplicateSwarmLaunchError) {
@@ -562,7 +617,7 @@ export function AddSwarmModal({
   })()
   const footerStatusText =
     launchPendingReason ||
-    `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be added to a local container using ${runtimeChoice || 'the selected runtime'} with sync ${syncEnabled ? 'enabled' : 'disabled'}.`
+    `${selectedWorkspaceCountValue} selected workspace${selectedWorkspaceCountValue === 1 ? '' : 's'} will be added to ${launchTargetIsManaged ? launchTargetLabel : 'a local container'} using ${runtimeChoice || 'the selected runtime'} with sync ${syncEnabled ? 'enabled' : 'disabled'}.`
 
   return (
     <Dialog>
@@ -575,7 +630,7 @@ export function AddSwarmModal({
                 Add Container
               </h2>
               <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                Launch a local container from selected workspaces.
+                Launch a container from selected workspaces on this device or a managed host.
               </p>
             </div>
             <Badge tone={runtimeChoice ? 'live' : 'warning'}>
@@ -615,7 +670,7 @@ export function AddSwarmModal({
                   Name this container
                 </div>
                 <div className="text-xs text-[var(--app-text-muted)]">
-                  Choose the display name used to identify this local container after launch.
+                  Choose the display name used to identify this container after launch.
                 </div>
               </div>
               <Input
@@ -629,12 +684,46 @@ export function AddSwarmModal({
           </Card>
 
           <Card className={sectionClassName}>
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(240px,340px)] sm:items-center">
+              <div className="grid gap-1">
+                <div className="text-sm font-semibold text-[var(--app-text)]">
+                  Host target
+                </div>
+                <div className="text-xs text-[var(--app-text-muted)]">
+                  Choose where this container should be created. Managed hosts
+                  are listed only when online and selectable.
+                </div>
+              </div>
+              <Select
+                data-testid="add-swarm-target-host"
+                value={selectedTargetHostSwarmID}
+                onChange={(event) =>
+                  setSelectedTargetHostSwarmID(event.target.value)
+                }
+                disabled={submitting}
+              >
+                <option value={LOCAL_TARGET_SWARM_ID}>Local — {managerName}</option>
+                {managedTargetHosts.map((target) => (
+                  <option key={target.swarm_id} value={target.swarm_id}>
+                    {target.name || target.swarm_id}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="text-xs text-[var(--app-text-muted)]">
+              {launchTargetIsManaged
+                ? `This request will stay in local create mode and target managed host ${launchTargetLabel}.`
+                : 'Default: create on this primary host.'}
+            </div>
+          </Card>
+
+          <Card className={sectionClassName}>
             <div className="flex flex-col gap-1">
               <div className="text-sm font-semibold text-[var(--app-text)]">
-                Local runtime
+                Container runtime
               </div>
               <div className="text-xs text-[var(--app-text-muted)]">
-                Choose which local container runtime should launch the container.
+                Choose which container runtime should launch the container on the selected host.
               </div>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -995,13 +1084,13 @@ export function AddSwarmModal({
                 <span className="font-medium text-[var(--app-text)]">
                   Target:
                 </span>{' '}
-                Local container
+                {launchTargetIsManaged ? `Managed host — ${launchTargetLabel}` : 'Local container'}
               </div>
               <div>
                 <span className="font-medium text-[var(--app-text)]">
                   Manager:
                 </span>{' '}
-                {managerName}
+                {launchTargetLabel}
               </div>
               <div>
                 <span className="font-medium text-[var(--app-text)]">

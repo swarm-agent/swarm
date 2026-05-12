@@ -179,6 +179,95 @@ func TestSwarmReplicatePassesRequestedSyncModulesThroughToDeployCreate(t *testin
 	}
 }
 
+func TestSwarmReplicateLocalManagedTargetValidatesTargetWithoutRemoteMode(t *testing.T) {
+	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
+
+	var sawHealth bool
+	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/readyz" && r.URL.Path != "/healthz" {
+			t.Fatalf("managed host path = %q", r.URL.Path)
+		}
+		sawHealth = true
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}))
+	t.Cleanup(managedHost.Close)
+	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(managedHost.URL, "host-to-managed-token"))
+
+	recorder := postReplicateRequest(t, handler, map[string]any{
+		"mode":                 "local",
+		"swarm_name":           "replica-managed-host-target",
+		"target_host_swarm_id": "managed-swarm-1",
+		"sync":                 map[string]any{"enabled": true, "mode": "managed"},
+		"workspaces": []map[string]any{{
+			"source_workspace_path": workspacePath,
+			"replication_mode":      "bundle",
+			"writable":              true,
+		}},
+	})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if !sawHealth {
+		t.Fatal("managed host target was not health checked")
+	}
+	if fakeDeploy.lastCreateInput.Name != "replica-managed-host-target" {
+		t.Fatalf("create input name = %q, want managed target request to stay on local create path", fakeDeploy.lastCreateInput.Name)
+	}
+	var response swarmReplicateResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Swarm.Mode != "local" {
+		t.Fatalf("response mode = %q, want local", response.Swarm.Mode)
+	}
+}
+
+func TestSwarmReplicateLocalManagedTargetDoesNotFallbackToPrimary(t *testing.T) {
+	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
+
+	recorder := postReplicateRequest(t, handler, map[string]any{
+		"mode":                 "local",
+		"swarm_name":           "replica-missing-managed-host",
+		"target_host_swarm_id": "missing-managed-host",
+		"sync":                 map[string]any{"enabled": true, "mode": "managed"},
+		"workspaces": []map[string]any{{
+			"source_workspace_path": workspacePath,
+			"replication_mode":      "bundle",
+			"writable":              true,
+		}},
+	})
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if fakeDeploy.lastCreateInput.Name != "" {
+		t.Fatalf("managed target failure fell back to primary create: %+v", fakeDeploy.lastCreateInput)
+	}
+}
+
+func TestSwarmReplicateRejectsTargetHostForRemoteMode(t *testing.T) {
+	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
+
+	recorder := postReplicateRequest(t, handler, map[string]any{
+		"mode":                 "remote",
+		"target_host_swarm_id": "managed-swarm-1",
+		"sync":                 map[string]any{"enabled": true, "mode": "managed"},
+		"workspaces": []map[string]any{{
+			"source_workspace_path": workspacePath,
+			"replication_mode":      "bundle",
+			"writable":              true,
+		}},
+	}, "managed-swarm-1")
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if fakeDeploy.lastCreateInput.Name != "" {
+		t.Fatalf("remote mode with target_host_swarm_id should not create local container: %+v", fakeDeploy.lastCreateInput)
+	}
+}
+
 func TestSwarmReplicateRemoteMatchingWorkspaceCreatesLink(t *testing.T) {
 	handler, fakeDeploy, workspacePath := newReplicateTestHandler(t)
 	_ = fakeDeploy
