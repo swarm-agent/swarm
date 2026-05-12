@@ -21,6 +21,17 @@ func TestIsMissingRuntimeContainerErrorAcceptsPodmanNoSuchObject(t *testing.T) {
 	}
 }
 
+func TestInstalledRuntimeRootForExecutable(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "usr", "local", "share", "swarm")
+	exePath := filepath.Join(root, "bin", "swarmd")
+	if got := installedRuntimeRootForExecutable(exePath); got != root {
+		t.Fatalf("installedRuntimeRootForExecutable() = %q, want %q", got, root)
+	}
+	if got := installedRuntimeRootForExecutable(filepath.Join(root, "swarmd")); got != "" {
+		t.Fatalf("installedRuntimeRootForExecutable() = %q, want empty for non-bin executable", got)
+	}
+}
+
 func TestCurrentRuntimeMountFallsBackToSharedRuntimeFFFLibWhenRepoRuntimeMissing(t *testing.T) {
 	repoRoot := t.TempDir()
 	sharedRoot := t.TempDir()

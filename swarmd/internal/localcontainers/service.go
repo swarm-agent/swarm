@@ -2557,6 +2557,7 @@ func CurrentRuntimeMount() *RuntimeMount {
 	if override := strings.TrimSpace(os.Getenv("SWARM_SHARED_RUNTIME_ROOT")); override != "" {
 		appendRoot(override)
 	}
+	appendInstalledRuntimeRootFromExecutable(appendRoot)
 	if repoRoot, _, err := resolveCanonicalRebuildScript(); err == nil {
 		repoMount := normalizeRuntimeMount(&RuntimeMount{
 			BinDir:     filepath.Join(repoRoot, ".bin", "main"),
@@ -2600,7 +2601,7 @@ func CurrentRuntimeMount() *RuntimeMount {
 			bestScore = score
 		}
 	}
-	if best != nil {
+	if best != nil && (bestScore > 0 || isReadableFile(best.FFFLibPath)) {
 		return best
 	}
 	for _, root := range roots {
@@ -2610,6 +2611,35 @@ func CurrentRuntimeMount() *RuntimeMount {
 		}
 	}
 	return normalizeRuntimeMount(&RuntimeMount{FFFLibPath: repoFFFLibPath})
+}
+
+func appendInstalledRuntimeRootFromExecutable(appendRoot func(string)) {
+	if appendRoot == nil {
+		return
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if root := installedRuntimeRootForExecutable(exePath); root != "" {
+		appendRoot(root)
+	}
+}
+
+func installedRuntimeRootForExecutable(exePath string) string {
+	exePath = strings.TrimSpace(exePath)
+	if exePath == "" {
+		return ""
+	}
+	binDir := filepath.Dir(exePath)
+	if filepath.Base(binDir) != "bin" {
+		return ""
+	}
+	root := filepath.Dir(binDir)
+	if root == "." || root == string(filepath.Separator) {
+		return ""
+	}
+	return root
 }
 
 func fffLibraryPlatformDir() string {
