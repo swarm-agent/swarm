@@ -52,6 +52,7 @@ const (
 	PathContainerManagedCredentialsApply   = "deploy.container.managed.credentials.apply.v1"
 	PathContainerManagedAgentsApply        = "deploy.container.managed.agents.apply.v1"
 	PathContainerManagedModelDefaultsApply = "deploy.container.managed.model_defaults.apply.v1"
+	PathContainerManagedPermissionsApply   = "deploy.container.managed.permissions.apply.v1"
 	PathContainerSettings                  = "deploy.container.settings.v1"
 	PathContainerWorkspaceBootstrap        = "deploy.container.workspace-bootstrap.v1"
 
@@ -721,19 +722,26 @@ func (s *Service) UpdateSettings(ctx context.Context, input ContainerSettingsUpd
 }
 
 func (s *Service) ReconcilePermissionSync(ctx context.Context) error {
-	if s == nil || s.store == nil {
+	if s == nil {
 		return fmt.Errorf("deploy container service is not configured")
 	}
-	records, err := s.store.List(500)
-	if err != nil {
-		return err
-	}
 	var joined error
-	for _, record := range records {
-		if !record.SyncEnabled || record.BypassPermissions {
-			continue
+	if s.store != nil {
+		records, err := s.store.List(500)
+		if err != nil {
+			return err
 		}
-		if err := s.reconcileLocalDeploymentSync(ctx, record); err != nil {
+		for _, record := range records {
+			if !record.SyncEnabled || record.BypassPermissions {
+				continue
+			}
+			if err := s.reconcileLocalDeploymentSync(ctx, record); err != nil {
+				joined = errors.Join(joined, err)
+			}
+		}
+	}
+	if s.swarmStore != nil && s.swarmNodeStore != nil {
+		if err := s.PushManagedSyncToManagedHosts(ctx, "permissions"); err != nil {
 			joined = errors.Join(joined, err)
 		}
 	}
@@ -4149,6 +4157,13 @@ func (s *Service) pushManagedSyncToManagedHost(ctx context.Context, client *http
 		if err := s.postManagedHostJSON(ctx, client, managedSwarmID, baseURL+"/v1/deploy/container/managed/model-defaults/apply", modelDefaultsBundle); err != nil {
 			return err
 		}
+	}
+	permissionBundle, err := s.SyncManagedHostPermissionBundle(ctx, ContainerSyncCredentialRequestInput{PeerSwarmID: managedSwarmID, PeerAuthorized: true})
+	if err != nil {
+		return err
+	}
+	if err := s.postManagedHostJSON(ctx, client, managedSwarmID, baseURL+"/v1/permissions/managed/apply", permissionBundle.State); err != nil {
+		return err
 	}
 	return nil
 }

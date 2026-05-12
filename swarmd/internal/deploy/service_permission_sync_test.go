@@ -232,10 +232,16 @@ func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
 		t.Fatalf("upsert credential: %v", err)
 	}
-	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), swarmNodeStore)
+	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
+	permSvc.SetBypassPermissions(true)
+	if _, err := permSvc.UpsertRule(permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "read"}); err != nil {
+		t.Fatalf("upsert permission rule: %v", err)
+	}
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), permSvc, swarmNodeStore)
 
 	agentApplyCount := 0
 	credentialApplyCount := 0
+	permissionApplyCount := 0
 	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get(peerAuthSwarmIDHeader); got != "manager-swarm" {
 			t.Fatalf("peer auth swarm id = %q, want manager-swarm", got)
@@ -264,6 +270,28 @@ func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 				t.Fatalf("agent bundle incomplete: %#v", bundle)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "path_id": PathContainerManagedAgentsApply})
+		case "/v1/permissions/managed/apply":
+			permissionApplyCount++
+			var state permission.ManagedPolicyState
+			if err := json.NewDecoder(r.Body).Decode(&state); err != nil {
+				t.Fatalf("decode permission state: %v", err)
+			}
+			if !state.BypassPermissions {
+				t.Fatalf("permission bypass = false, want true")
+			}
+			if len(state.Policy.Rules) == 0 {
+				t.Fatalf("permission policy rules empty")
+			}
+			foundReadAllow := false
+			for _, rule := range state.Policy.Rules {
+				if rule.Kind == permission.PolicyRuleKindTool && rule.Decision == permission.PolicyDecisionAllow && rule.Tool == "read" {
+					foundReadAllow = true
+				}
+			}
+			if !foundReadAllow {
+				t.Fatalf("permission policy did not include read allow rule: %#v", state.Policy.Rules)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "path_id": PathContainerManagedPermissionsApply})
 		default:
 			t.Fatalf("unexpected managed path %s", r.URL.Path)
 		}
@@ -281,6 +309,61 @@ func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 	}
 	if agentApplyCount != 1 {
 		t.Fatalf("agent apply count = %d, want 1", agentApplyCount)
+	}
+	if permissionApplyCount != 1 {
+		t.Fatalf("permission apply count = %d, want 1", permissionApplyCount)
+	}
+}
+
+func TestReconcilePermissionSyncPushesManagedHosts(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "swarm.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	swarmStore := pebblestore.NewSwarmStore(store)
+	swarmNodeStore := pebblestore.NewSwarmNodeStore(store)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "manager-swarm", Name: "Manager", Role: "master"}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if _, err := swarmStore.PutTrustedPeer(pebblestore.SwarmTrustedPeerRecord{SwarmID: "managed-swarm", Name: "Managed", Relationship: swarmruntime.RelationshipManaged, OutgoingPeerAuthToken: "manager-to-managed-token"}); err != nil {
+		t.Fatalf("put trusted peer: %v", err)
+	}
+	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+		t.Fatalf("upsert credential: %v", err)
+	}
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
+	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), permSvc, swarmNodeStore)
+
+	permissionApplyCount := 0
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/deploy/container/managed/credentials/apply", "/v1/deploy/container/managed/agents/apply":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		case "/v1/permissions/managed/apply":
+			permissionApplyCount++
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			t.Fatalf("unexpected managed path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(managed.Close)
+	if _, err := swarmNodeStore.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed", Role: swarmruntime.RelationshipManaged, BackendURL: managed.URL, Status: "online"}); err != nil {
+		t.Fatalf("put swarm node: %v", err)
+	}
+
+	if err := deploySvc.ReconcilePermissionSync(context.Background()); err != nil {
+		t.Fatalf("ReconcilePermissionSync() error = %v", err)
+	}
+	if permissionApplyCount != 1 {
+		t.Fatalf("permission apply count = %d, want 1", permissionApplyCount)
 	}
 }
 
