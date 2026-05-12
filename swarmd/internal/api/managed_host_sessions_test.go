@@ -18,6 +18,133 @@ import (
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
+func TestManagedHostSessionMirrorPersistsForRefreshFetches(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	storedSession, sessionCreatedEvent, err := sessionSvc.StoreMirroredSessionWithEvent(pebblestore.SessionSnapshot{
+		ID:            "managed-refresh-session",
+		WorkspacePath: "/managed/workspace",
+		WorkspaceName: "workspace",
+		Title:         "Managed refresh",
+		Mode:          sessionruntime.ModeAuto,
+		Metadata: map[string]any{
+			"swarm_managed_host_session":  true,
+			"swarm_managed_host_swarm_id": "managed-swarm",
+		},
+		CreatedAt: 100,
+		UpdatedAt: 100,
+	})
+	if err != nil {
+		t.Fatalf("store mirrored session: %v", err)
+	}
+	if sessionCreatedEvent == nil {
+		t.Fatal("mirrored session creation should produce a durable created event")
+	}
+	storedSession, err = sessionSvc.StoreMirroredMessage(storedSession, pebblestore.MessageSnapshot{
+		ID:        "msg_00000000000000000005",
+		SessionID: storedSession.ID,
+		GlobalSeq: 5,
+		Role:      "assistant",
+		Content:   "durable managed payload",
+		CreatedAt: 250,
+	})
+	if err != nil {
+		t.Fatalf("store mirrored message: %v", err)
+	}
+	if err := sessionSvc.StoreMirroredLifecycle(pebblestore.SessionLifecycleSnapshot{SessionID: storedSession.ID, RunID: "managed-run", Active: true, Phase: "running", StartedAt: 300, UpdatedAt: 350, OwnerTransport: "managed_host_peer"}); err != nil {
+		t.Fatalf("store mirrored lifecycle: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+storedSession.ID, nil)
+	getRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want %d, body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	var getPayload struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if getPayload.Session.ID != storedSession.ID || getPayload.Session.MessageCount != 5 || getPayload.Session.LastMessageAt != 250 {
+		t.Fatalf("refresh session payload = %+v", getPayload.Session)
+	}
+	if getPayload.Session.Lifecycle == nil || getPayload.Session.Lifecycle.RunID != "managed-run" || !getPayload.Session.Lifecycle.Active {
+		t.Fatalf("refresh lifecycle = %+v", getPayload.Session.Lifecycle)
+	}
+
+	messagesReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+storedSession.ID+"/messages?limit=20", nil)
+	messagesRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(messagesRec, messagesReq)
+	if messagesRec.Code != http.StatusOK {
+		t.Fatalf("messages status = %d, want %d, body=%s", messagesRec.Code, http.StatusOK, messagesRec.Body.String())
+	}
+	var messagesPayload struct {
+		Messages []pebblestore.MessageSnapshot `json:"messages"`
+	}
+	if err := json.Unmarshal(messagesRec.Body.Bytes(), &messagesPayload); err != nil {
+		t.Fatalf("decode messages response: %v", err)
+	}
+	if len(messagesPayload.Messages) != 1 || messagesPayload.Messages[0].Content != "durable managed payload" || messagesPayload.Messages[0].GlobalSeq != 5 {
+		t.Fatalf("refresh messages = %+v", messagesPayload.Messages)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/sessions?limit=20", nil)
+	listRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want %d, body=%s", listRec.Code, http.StatusOK, listRec.Body.String())
+	}
+	var listPayload struct {
+		Sessions []pebblestore.SessionSnapshot `json:"sessions"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listPayload.Sessions) == 0 || listPayload.Sessions[0].ID != storedSession.ID || listPayload.Sessions[0].Lifecycle == nil {
+		t.Fatalf("refresh list sessions = %+v", listPayload.Sessions)
+	}
+}
+
+func TestPeerManagedHostSessionEventStoresMirroredPayloadsWithoutTopLevelSessionID(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-event-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: sessionruntime.ModeAuto, Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm"}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store mirror: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"event_type":"run.message.stored","payload":{"type":"message.stored","run_id":"managed-run","message":{"id":"msg_00000000000000000009","session_id":"managed-event-session","global_seq":9,"role":"assistant","content":"nested durable payload","created_at":456},"lifecycle":{"session_id":"managed-event-session","run_id":"managed-run","active":true,"phase":"running","updated_at":457}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, "managed-swarm")
+	req.Header.Set(peerAuthTokenHeader, "managed-token")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	messages, err := sessionSvc.ListMessages("managed-event-session", 0, 20)
+	if err != nil {
+		t.Fatalf("list mirrored messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != "nested durable payload" || messages[0].GlobalSeq != 9 {
+		t.Fatalf("mirrored messages = %+v", messages)
+	}
+	session, ok, err := sessionSvc.GetSession("managed-event-session")
+	if err != nil || !ok {
+		t.Fatalf("get mirrored session ok=%v err=%v", ok, err)
+	}
+	if session.MessageCount != 9 || session.LastMessageAt != 456 || session.UpdatedAt != 457 {
+		t.Fatalf("mirrored session counters = %+v", session)
+	}
+	lifecycle, ok, err := sessionSvc.GetLifecycle("managed-event-session")
+	if err != nil || !ok {
+		t.Fatalf("get mirrored lifecycle ok=%v err=%v", ok, err)
+	}
+	if lifecycle.RunID != "managed-run" || !lifecycle.Active || lifecycle.Phase != "running" {
+		t.Fatalf("mirrored lifecycle = %+v", lifecycle)
+	}
+}
+
 func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T) {
 	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
 	var oldPeerHits atomic.Int32
