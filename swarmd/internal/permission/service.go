@@ -91,9 +91,23 @@ type sessionLookup interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
 }
 
+type ResolveInput struct {
+	SessionID         string
+	PermissionID      string
+	Action            string
+	Reason            string
+	ApprovedArguments string
+}
+
+type ResolveResult struct {
+	Record    pebblestore.PermissionRecord
+	SavedRule *PolicyRule
+}
+
 type HostedPermissionSync interface {
 	CreatePending(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, input CreateInput) (pebblestore.PermissionRecord, error)
 	WaitForResolution(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, permissionID string) (pebblestore.PermissionRecord, error)
+	Resolve(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, input ResolveInput) (ResolveResult, error)
 	CancelRunPending(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, runID, reason string) ([]pebblestore.PermissionRecord, error)
 	MarkToolStarted(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, runID, callID string, step int, startedAt int64) (pebblestore.PermissionRecord, bool, error)
 	MarkToolCompleted(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, runID, callID string, step int, result tool.Result, completedAt int64) (pebblestore.PermissionRecord, bool, error)
@@ -1358,12 +1372,18 @@ func (s *Service) hostedDescriptorForSession(sessionID string) (sessionruntime.H
 	if !ok {
 		return sessionruntime.HostedSessionDescriptor{}, false, nil
 	}
+	descriptor, hosted := sessionruntime.HostedSessionFromMetadata(session.Metadata)
+	if !hosted {
+		return sessionruntime.HostedSessionDescriptor{}, false, nil
+	}
 	localSwarmID := ""
 	if s.localSwarmIDResolver != nil {
 		localSwarmID = strings.TrimSpace(s.localSwarmIDResolver())
 	}
-	descriptor, hosted := sessionruntime.HostedSessionFromMetadataForLocal(session.Metadata, localSwarmID)
-	return descriptor, hosted, nil
+	if localSwarmID != "" && strings.EqualFold(strings.TrimSpace(descriptor.HostSwarmID), localSwarmID) {
+		return sessionruntime.HostedSessionDescriptor{}, false, nil
+	}
+	return descriptor, true, nil
 }
 
 func (s *Service) storeMirroredPermissions(records []pebblestore.PermissionRecord) error {
@@ -1378,6 +1398,10 @@ func (s *Service) storeMirroredPermissions(records []pebblestore.PermissionRecor
 		}
 	}
 	return nil
+}
+
+func (s *Service) StoreMirroredPermission(record pebblestore.PermissionRecord) error {
+	return s.storeMirroredPermission(record)
 }
 
 func (s *Service) storeMirroredPermission(record pebblestore.PermissionRecord) error {

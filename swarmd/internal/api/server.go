@@ -228,6 +228,7 @@ type permissionService interface {
 	ExplainTool(mode, toolName, toolArguments string, overlay *permission.Policy) (permission.PolicyExplain, error)
 	ResolveWithPolicy(sessionID, permissionID, action, reason string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
 	ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *permission.PolicyRule, error)
+	StoreMirroredPermission(record pebblestore.PermissionRecord) error
 	MarkToolStarted(sessionID, runID, callID string, step int, startedAt int64) (pebblestore.PermissionRecord, bool, error)
 	MarkToolCompleted(sessionID, runID, callID string, step int, result tool.Result, completedAt int64) (pebblestore.PermissionRecord, bool, error)
 	SetBypassPermissions(enabled bool)
@@ -263,7 +264,7 @@ type mcpService interface {
 
 func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
 	runCtx, runCancel := context.WithCancel(context.Background())
-	return &Server{
+	server := &Server{
 		auth:                 authSvc,
 		agents:               agentSvc,
 		model:                modelSvc,
@@ -287,6 +288,10 @@ func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Servic
 		runCtx:               runCtx,
 		runCancel:            runCancel,
 	}
+	if permissionSvc, ok := permSvc.(*permission.Service); ok {
+		permissionSvc.SetHostedSync(NewManagedHostPermissionControlClient(server))
+	}
+	return server
 }
 
 func (s *Server) SetBypassPermissions(enabled bool) {
@@ -2226,6 +2231,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				"swarm_route_id":          "swarm:" + strings.TrimSpace(remoteTarget.SwarmID) + ":" + strings.TrimSpace(req.RuntimeWorkspacePath),
 				"swarm_route_label":       firstNonEmpty(strings.TrimSpace(remoteTarget.Name), strings.TrimSpace(remoteTarget.SwarmID)),
 				"swarm_route_target_kind": strings.TrimSpace(remoteTarget.Kind),
+				"owner_transport":         "routed_session_peer",
 				sessionruntime.HostedSessionMetadataHostBackendURL:       hostBackendURL,
 				sessionruntime.HostedSessionMetadataChildSwarmID:         strings.TrimSpace(remoteTarget.SwarmID),
 				sessionruntime.HostedSessionMetadataHostWorkspacePath:    strings.TrimSpace(req.HostWorkspacePath),
@@ -2264,6 +2270,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				HostWorkspacePath:    strings.TrimSpace(req.HostWorkspacePath),
 				RuntimeWorkspacePath: strings.TrimSpace(req.RuntimeWorkspacePath),
 				ChildSwarmID:         strings.TrimSpace(remoteTarget.SwarmID),
+				OwnerTransport:       "routed_session_peer",
 			}
 			var childResp struct {
 				OK      bool                        `json:"ok"`
@@ -2941,6 +2948,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.routeMirroredPermissionToManagedHost(r.Context(), sessionID, record, savedRule); err != nil {
+			writeError(w, http.StatusBadGateway, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -3955,13 +3966,20 @@ func isTailscaleIP(ip net.IP) bool {
 	return err == nil && cidr.Contains(ip)
 }
 
-func decodeJSON(r *http.Request, out any) error {
+func readRequestBody(r *http.Request) ([]byte, error) {
 	if r.Body == nil {
-		return errors.New("missing request body")
+		return nil, errors.New("missing request body")
 	}
 	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
-	return decodeJSONObject(decoder, out)
+	return io.ReadAll(r.Body)
+}
+
+func decodeJSON(r *http.Request, out any) error {
+	body, err := readRequestBody(r)
+	if err != nil {
+		return err
+	}
+	return decodeJSONBytes(body, out)
 }
 
 func decodeLenientJSON(r *http.Request, out any) error {

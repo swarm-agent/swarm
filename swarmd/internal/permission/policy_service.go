@@ -1,6 +1,7 @@
 package permission
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,6 +190,25 @@ func (s *Service) ResolveWithPolicy(sessionID, permissionID, action, reason stri
 }
 
 func (s *Service) ResolveWithPolicyAndArguments(sessionID, permissionID, action, reason, approvedArguments string) (pebblestore.PermissionRecord, *PolicyRule, error) {
+	if descriptor, hosted, err := s.hostedDescriptorForSession(sessionID); err != nil {
+		return pebblestore.PermissionRecord{}, nil, err
+	} else if hosted {
+		result, err := s.hosted.Resolve(context.Background(), descriptor, ResolveInput{
+			SessionID:         sessionID,
+			PermissionID:      permissionID,
+			Action:            action,
+			Reason:            reason,
+			ApprovedArguments: approvedArguments,
+		})
+		if err != nil {
+			return pebblestore.PermissionRecord{}, nil, err
+		}
+		if err := s.storeMirroredPermission(result.Record); err != nil {
+			return pebblestore.PermissionRecord{}, nil, err
+		}
+		return result.Record, result.SavedRule, nil
+	}
+
 	action, err := normalizeResolveAction(action)
 	if err != nil {
 		return pebblestore.PermissionRecord{}, nil, err

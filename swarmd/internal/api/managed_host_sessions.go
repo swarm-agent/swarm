@@ -534,19 +534,38 @@ func (s *Server) handlePeerManagedHostSessionRunStream(w http.ResponseWriter, r 
 	if !s.requirePeerAuth(w, r) {
 		return
 	}
-	if s.runner == nil || s.runStreams == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
-		return
-	}
 	if r.Method == http.MethodPost {
-		var inbound runStreamInboundMessage
-		if err := decodeJSON(r, &inbound); err != nil {
+		raw, err := readRequestBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		var control managedHostPermissionControlRequest
+		if err := json.Unmarshal(raw, &control); err == nil && isManagedHostPermissionControlType(control.Type) {
+			if strings.TrimSpace(control.SessionID) == "" {
+				writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
+				return
+			}
+			response := s.applyManagedHostPermissionControl(r.Context(), control)
+			status := http.StatusOK
+			if !response.OK {
+				status = http.StatusBadRequest
+			}
+			writeJSON(w, status, response)
+			return
+		}
+		inbound, err := decodeRunStreamInbound(raw)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		sessionID := strings.TrimSpace(inbound.SessionID)
 		if sessionID == "" {
 			writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
+			return
+		}
+		if s.runner == nil || s.runStreams == nil {
+			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
 			return
 		}
 		switch strings.ToLower(strings.TrimSpace(inbound.Type)) {
@@ -577,6 +596,10 @@ func (s *Server) handlePeerManagedHostSessionRunStream(w http.ResponseWriter, r 
 		writeError(w, http.StatusUpgradeRequired, errors.New("run stream requires websocket upgrade (GET) or control POST"))
 		return
 	}
+	if s.runner == nil || s.runStreams == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
+		return
+	}
 	conn, err := transportws.Accept(w, r)
 	if err != nil {
 		if errors.Is(err, transportws.ErrUpgradeRequired) {
@@ -599,6 +622,24 @@ func (s *Server) handlePeerManagedHostSessionRunStream(w http.ResponseWriter, r 
 	sessionID := strings.TrimSpace(inbound.SessionID)
 	if sessionID == "" {
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, Error: "session_id is required"})
+		return
+	}
+	if isManagedHostPermissionControlType(inbound.Type) {
+		var control managedHostPermissionControlRequest
+		if err := json.Unmarshal(raw, &control); err != nil {
+			s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, Error: err.Error()})
+			return
+		}
+		if strings.TrimSpace(control.SessionID) == "" {
+			control.SessionID = sessionID
+		}
+		response := s.applyManagedHostPermissionControl(r.Context(), control)
+		rawResponse, err := json.Marshal(response)
+		if err != nil {
+			s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: err.Error()})
+			return
+		}
+		_ = conn.WriteText(rawResponse)
 		return
 	}
 	switch inbound.Type {
@@ -714,6 +755,9 @@ func (s *Server) handlePeerManagedHostSessionEvent(w http.ResponseWriter, r *htt
 	}
 	if err := s.storeMirroredEventPayloadMessage(req.SessionID, req.Payload); err != nil {
 		log.Printf("warning: store managed-host mirrored event message failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
+	}
+	if err := s.storeMirroredEventPayloadPermission(req.SessionID, req.Payload); err != nil {
+		log.Printf("warning: store managed-host mirrored event permission failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)
 	}
 	if err := s.publishManagedHostSessionEventToPrimaryRunStream(req.SessionID, req.EventType, req.Payload); err != nil {
 		log.Printf("warning: publish managed-host mirrored event to run stream failed session_id=%q event_type=%q: %v", strings.TrimSpace(req.SessionID), strings.TrimSpace(req.EventType), err)

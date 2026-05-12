@@ -29,6 +29,10 @@ func (s *Server) handlePeerPermissionCreate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := s.routeMirroredPermissionToManagedHost(r.Context(), req.Input.SessionID, record, nil); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"permission": record,
@@ -55,6 +59,10 @@ func (s *Server) handlePeerPermissionWait(w http.ResponseWriter, r *http.Request
 	record, err := s.perm.WaitForResolution(r.Context(), req.SessionID, req.PermissionID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.routeMirroredPermissionToManagedHost(r.Context(), req.SessionID, record, nil); err != nil {
+		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -86,6 +94,12 @@ func (s *Server) handlePeerPermissionCancelRun(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	for _, record := range records {
+		if err := s.routeMirroredPermissionToManagedHost(r.Context(), req.SessionID, record, nil); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
 		"permissions": records,
@@ -116,6 +130,12 @@ func (s *Server) handlePeerPermissionMarkStarted(w http.ResponseWriter, r *http.
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if ok {
+		if err := s.routeMirroredPermissionToManagedHost(r.Context(), req.SessionID, record, nil); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
@@ -149,6 +169,12 @@ func (s *Server) handlePeerPermissionMarkCompleted(w http.ResponseWriter, r *htt
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if ok {
+		if err := s.routeMirroredPermissionToManagedHost(r.Context(), req.SessionID, record, nil); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -288,5 +290,226 @@ func seedManagedHostTarget(t *testing.T, server *Server, backendURL string) {
 	server.SetSwarmNodeStore(nodes)
 	server.swarmTargetHealth.entries = map[string]swarmTargetHealthEntry{
 		"host|managed-swarm|" + backendURL: {online: true, checkedAt: time.Now()},
+	}
+}
+
+func TestHostedPermissionSyncUsesManagedHostRunStreamPath(t *testing.T) {
+	server, sessionSvc, permissionSvc, _ := newRoutedSessionTestServer(t)
+	permissionSvc.SetLocalSwarmIDResolver(func() string { return "managed-swarm" })
+	server.SetSwarmService(fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-swarm", Name: "managed-swarm", Role: "worker"}}, token: "peer-token"})
+	server.SetSessionRouteStore(nil)
+
+	var streamPeerHits atomic.Int32
+	var legacyPermissionHits atomic.Int32
+	var received managedHostPermissionControlRequest
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/swarm/peer/permissions/") {
+			legacyPermissionHits.Add(1)
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path != peerManagedHostSessionRunStreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		streamPeerHits.Add(1)
+		if r.Header.Get(peerAuthSwarmIDHeader) != "managed-swarm" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeJSON(w, http.StatusOK, managedHostPermissionControlResponse{OK: true, Type: managedHostPermissionControlResult, RequestID: received.RequestID, SessionID: received.SessionID, Permission: pebblestore.PermissionRecord{ID: "perm-managed", SessionID: received.SessionID, RunID: received.RunID, CallID: received.CallID, ToolName: "bash", Status: pebblestore.PermissionStatusPending}})
+	}))
+	defer primary.Close()
+
+	if _, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:     "managed-session",
+		Title:         "Managed Session",
+		WorkspacePath: "/managed/workspace",
+		WorkspaceName: "workspace",
+		Mode:          sessionruntime.ModePlan,
+		Preference:    &pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"},
+		Metadata: sessionruntime.HostedSessionDescriptor{
+			HostSwarmID:          "primary-swarm",
+			HostBackendURL:       primary.URL,
+			HostWorkspacePath:    "/host/workspace",
+			RuntimeWorkspacePath: "/managed/workspace",
+			ChildSwarmID:         "managed-swarm",
+			OwnerTransport:       "routed_session_peer",
+		}.WithMetadata(nil),
+	}); err != nil {
+		t.Fatalf("create hosted session: %v", err)
+	}
+
+	record, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: "managed-session", RunID: "run-1", CallID: "call-1", ToolName: "bash", ToolArguments: `{"cmd":"pwd"}`, Requirement: "tool", Mode: "plan"})
+	if err != nil {
+		t.Fatalf("create pending: %v", err)
+	}
+	if streamPeerHits.Load() != 1 {
+		t.Fatalf("stream peer hits = %d, want 1", streamPeerHits.Load())
+	}
+	if legacyPermissionHits.Load() != 0 {
+		t.Fatalf("legacy permission hits = %d, want 0", legacyPermissionHits.Load())
+	}
+	if received.Type != managedHostPermissionControlCreate || received.SessionID != "managed-session" || received.Input.ToolName != "bash" {
+		t.Fatalf("permission control request = %+v", received)
+	}
+	if record.ID != "perm-managed" || record.Status != pebblestore.PermissionStatusPending {
+		t.Fatalf("record = %+v", record)
+	}
+}
+
+func TestPrimaryResolvePublishesPermissionUpdateToManagedHostEventPath(t *testing.T) {
+	server, sessionSvc, permissionSvc, _ := newRoutedSessionTestServer(t)
+	server.SetSessionRouteStore(nil)
+	var eventPeerHits atomic.Int32
+	var streamPeerHits atomic.Int32
+	var received managedHostSessionEventRequest
+	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		switch r.URL.Path {
+		case peerManagedHostSessionEventPath:
+			eventPeerHits.Add(1)
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatalf("decode event request: %v", err)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		case peerManagedHostSessionRunStreamPath:
+			streamPeerHits.Add(1)
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer managed.Close()
+
+	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{ID: "managed-session", WorkspacePath: "/managed/workspace", WorkspaceName: "workspace", Title: "Managed", Mode: "plan", Metadata: map[string]any{"swarm_managed_host_session": true, "swarm_managed_host_swarm_id": "managed-swarm", "swarm_managed_host_backend_url": managed.URL}, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatalf("store mirror: %v", err)
+	}
+	record, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: "managed-session", RunID: "managed-run", CallID: "call-1", ToolName: "bash", ToolArguments: `{"cmd":"pwd"}`, Requirement: "tool", Mode: "plan"})
+	if err != nil {
+		t.Fatalf("create pending: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/managed-session/permissions/"+record.ID+"/resolve", bytes.NewBufferString(`{"action":"approve","reason":"ok"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if eventPeerHits.Load() != 1 {
+		t.Fatalf("event peer hits = %d, want 1", eventPeerHits.Load())
+	}
+	if streamPeerHits.Load() != 0 {
+		t.Fatalf("stream peer hits = %d, want 0 for resolution propagation", streamPeerHits.Load())
+	}
+	if received.SessionID != "managed-session" || received.EventType != "permission.updated" {
+		t.Fatalf("event request = %+v", received)
+	}
+	payloadPermission, ok := received.Payload["permission"].(map[string]any)
+	if !ok || payloadPermission["id"] != record.ID || payloadPermission["status"] != pebblestore.PermissionStatusApproved {
+		t.Fatalf("permission payload = %#v", received.Payload["permission"])
+	}
+}
+
+func TestPeerManagedHostSessionEventStoresMirroredPermission(t *testing.T) {
+	server, _, permissionSvc, _ := newRoutedSessionTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionEventPath, bytes.NewBufferString(`{"session_id":"managed-session","event_type":"permission.updated","payload":{"type":"permission.updated","session_id":"managed-session","run_id":"managed-run","permission":{"id":"perm-managed","session_id":"managed-session","run_id":"managed-run","call_id":"call-1","tool_name":"bash","status":"approved","decision":"allow_once","reason":"ok"}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, "managed-swarm")
+	req.Header.Set(peerAuthTokenHeader, "managed-token")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	stored, err := permissionSvc.ListPermissions("managed-session", 10)
+	if err != nil {
+		t.Fatalf("list mirrored permissions: %v", err)
+	}
+	if len(stored) != 1 || stored[0].ID != "perm-managed" || stored[0].Status != pebblestore.PermissionStatusApproved {
+		t.Fatalf("stored mirrored permission = %+v", stored)
+	}
+}
+
+func TestManagedHostPermissionControlPostResolvesOnPrimary(t *testing.T) {
+	server, sessionSvc, permissionSvc, _ := newRoutedSessionTestServer(t)
+	if _, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: "managed-session", Title: "Managed", WorkspacePath: "/workspace", WorkspaceName: "workspace", Mode: sessionruntime.ModePlan, Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"}}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	pending, err := permissionSvc.CreatePending(permission.CreateInput{SessionID: "managed-session", RunID: "managed-run", CallID: "call-1", ToolName: "bash", ToolArguments: `{"cmd":"pwd"}`, Requirement: "tool", Mode: "plan"})
+	if err != nil {
+		t.Fatalf("create pending: %v", err)
+	}
+	body, err := json.Marshal(managedHostPermissionControlRequest{Type: managedHostPermissionControlResolve, SessionID: "managed-session", PermissionID: pending.ID, ResolveInput: permission.ResolveInput{SessionID: "managed-session", PermissionID: pending.ID, Action: "approve", Reason: "ok"}})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, peerManagedHostSessionRunStreamPath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, "managed-swarm")
+	req.Header.Set(peerAuthTokenHeader, "managed-token")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response managedHostPermissionControlResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.OK || response.Permission.ID != pending.ID || response.Permission.Status != pebblestore.PermissionStatusApproved {
+		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestManagedHostPermissionControlClientResolveUsesRunStreamPath(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	var streamPeerHits atomic.Int32
+	var legacyPermissionHits atomic.Int32
+	var received managedHostPermissionControlRequest
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/swarm/peer/permissions/") {
+			legacyPermissionHits.Add(1)
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path != peerManagedHostSessionRunStreamPath {
+			http.NotFound(w, r)
+			return
+		}
+		streamPeerHits.Add(1)
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeJSON(w, http.StatusOK, managedHostPermissionControlResponse{OK: true, Type: managedHostPermissionControlResult, RequestID: received.RequestID, SessionID: received.SessionID, Permission: pebblestore.PermissionRecord{ID: received.PermissionID, SessionID: received.SessionID, Status: pebblestore.PermissionStatusApproved}})
+	}))
+	defer primary.Close()
+
+	client := NewManagedHostPermissionControlClient(server)
+	result, err := client.Resolve(context.Background(), sessionruntime.HostedSessionDescriptor{HostSwarmID: "primary-swarm", HostBackendURL: primary.URL, ChildSwarmID: "managed-swarm", OwnerTransport: "routed_session_peer"}, permission.ResolveInput{SessionID: "managed-session", PermissionID: "perm-1", Action: "approve", Reason: "ok"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if streamPeerHits.Load() != 1 || legacyPermissionHits.Load() != 0 {
+		t.Fatalf("stream hits=%d legacy hits=%d", streamPeerHits.Load(), legacyPermissionHits.Load())
+	}
+	if received.Type != managedHostPermissionControlResolve || received.ResolveInput.PermissionID != "perm-1" {
+		t.Fatalf("control request = %+v", received)
+	}
+	if result.Record.Status != pebblestore.PermissionStatusApproved {
+		t.Fatalf("result = %+v", result)
 	}
 }

@@ -23,6 +23,7 @@ type HostedSessionDescriptor struct {
 	HostWorkspacePath    string
 	RuntimeWorkspacePath string
 	ChildSwarmID         string
+	OwnerTransport       string
 }
 
 type HostedSessionSync interface {
@@ -56,6 +57,7 @@ func HostedSessionFromMetadata(metadata map[string]any) (HostedSessionDescriptor
 	hostWorkspacePath := stringMetadataValue(metadata, HostedSessionMetadataHostWorkspacePath)
 	runtimeWorkspacePath := stringMetadataValue(metadata, HostedSessionMetadataRuntimeWorkspacePath)
 	childSwarmID := stringMetadataValue(metadata, HostedSessionMetadataChildSwarmID)
+	ownerTransport := stringMetadataValue(metadata, "owner_transport")
 	if hostSwarmID == "" {
 		return HostedSessionDescriptor{}, false
 	}
@@ -65,6 +67,7 @@ func HostedSessionFromMetadata(metadata map[string]any) (HostedSessionDescriptor
 		HostWorkspacePath:    hostWorkspacePath,
 		RuntimeWorkspacePath: runtimeWorkspacePath,
 		ChildSwarmID:         childSwarmID,
+		OwnerTransport:       ownerTransport,
 	}, true
 }
 
@@ -99,6 +102,9 @@ func (d HostedSessionDescriptor) WithMetadata(metadata map[string]any) map[strin
 	}
 	if strings.TrimSpace(d.ChildSwarmID) != "" {
 		cloned[HostedSessionMetadataChildSwarmID] = strings.TrimSpace(d.ChildSwarmID)
+	}
+	if strings.TrimSpace(d.OwnerTransport) != "" {
+		cloned["owner_transport"] = strings.TrimSpace(d.OwnerTransport)
 	}
 	return cloned
 }

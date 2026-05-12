@@ -706,6 +706,7 @@ func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service,
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, nil)
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, nil)
+	permissionSvc.SetSessionResolver(sessionSvc)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
 	if err := agentSvc.EnsureDefaults(); err != nil {
 		t.Fatalf("ensure agent defaults: %v", err)

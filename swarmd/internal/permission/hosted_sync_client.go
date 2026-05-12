@@ -71,6 +71,10 @@ func (c *HostedSyncClient) WaitForResolution(ctx context.Context, descriptor ses
 	return response.Permission, nil
 }
 
+func (c *HostedSyncClient) Resolve(context.Context, sessionruntime.HostedSessionDescriptor, ResolveInput) (ResolveResult, error) {
+	return ResolveResult{}, errors.New("hosted permission resolve requires managed-host stream control routing")
+}
+
 func (c *HostedSyncClient) CancelRunPending(ctx context.Context, descriptor sessionruntime.HostedSessionDescriptor, sessionID, runID, reason string) ([]pebblestore.PermissionRecord, error) {
 	var response struct {
 		OK          bool                           `json:"ok"`

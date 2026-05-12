@@ -212,6 +212,10 @@ func (f *fakeHostedPermissionSync) WaitForResolution(context.Context, sessionrun
 	return f.waitRecord, nil
 }
 
+func (f *fakeHostedPermissionSync) Resolve(context.Context, sessionruntime.HostedSessionDescriptor, ResolveInput) (ResolveResult, error) {
+	return ResolveResult{}, nil
+}
+
 func (f *fakeHostedPermissionSync) CancelRunPending(context.Context, sessionruntime.HostedSessionDescriptor, string, string, string) ([]pebblestore.PermissionRecord, error) {
 	return nil, nil
 }
