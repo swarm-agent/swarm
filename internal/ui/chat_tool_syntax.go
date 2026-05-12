@@ -915,30 +915,6 @@ func stylesEquivalent(a, b tcell.Style) bool {
 	return afg == bfg && aa == ba
 }
 
-func (p *ChatPage) toolTokenVerbStyle() tcell.Style {
-	return toolStyleWithoutBackground(p.theme.Accent.Bold(true))
-}
-
-func (p *ChatPage) toolTokenKeywordStyle() tcell.Style {
-	return toolStyleWithoutBackground(p.theme.MarkdownCodeKeyword)
-}
-
-func (p *ChatPage) toolTokenPathStyle() tcell.Style {
-	return toolStyleWithoutBackground(p.theme.MarkdownCodeFunction)
-}
-
-func (p *ChatPage) toolTokenStringStyle() tcell.Style {
-	return toolStyleWithoutBackground(p.theme.MarkdownCodeString)
-}
-
-func (p *ChatPage) toolTokenNumberStyle() tcell.Style {
-	return toolStyleWithoutBackground(p.theme.MarkdownCodeNumber)
-}
-
-func (p *ChatPage) toolTokenOperatorStyle() tcell.Style {
-	return toolStyleWithoutBackground(p.theme.MarkdownCodeOperator)
-}
-
 func toolStyleWithoutBackground(style tcell.Style) tcell.Style {
 	return styleForCurrentCellBackground(style)
 }

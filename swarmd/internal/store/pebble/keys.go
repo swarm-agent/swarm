@@ -106,6 +106,10 @@ func KeySession(sessionID string) string {
 	return fmt.Sprintf("session/%s", keyPart(sessionID))
 }
 
+func KeySessionMode(sessionID string) string {
+	return fmt.Sprintf("session_mode/%s", keyPart(sessionID))
+}
+
 func SessionPrefix() string {
 	return "session/"
 }
@@ -148,10 +152,6 @@ func ImageThreadPrefix() string {
 
 func KeyWorktreeConfig(workspacePath string) string {
 	return KeyWorktreeConfigPrefix + keyPart(workspacePath)
-}
-
-func WorktreeConfigPrefix() string {
-	return KeyWorktreeConfigPrefix
 }
 
 func WorkspaceEntryPrefix() string {
@@ -242,14 +242,6 @@ func KeyAuthCredentialTag(tag, providerID, credentialID string) string {
 	return fmt.Sprintf("%s%s/%s/%s", KeyAuthCredentialTagPrefix, keyPart(tag), keyPart(providerID), keyPart(credentialID))
 }
 
-func AuthCredentialTagPrefix(tag string) string {
-	part := keyPart(tag)
-	if part == "" {
-		return KeyAuthCredentialTagPrefix
-	}
-	return fmt.Sprintf("%s%s/", KeyAuthCredentialTagPrefix, part)
-}
-
 func KeyAuthManagedVaultKey(scopeID string) string {
 	return KeyAuthManagedVaultKeyPrefix + keyPart(scopeID)
 }
@@ -260,10 +252,6 @@ func KeyMessage(sessionID string, globalSeq uint64) string {
 
 func MessagePrefix(sessionID string) string {
 	return fmt.Sprintf("msg/%s/", keyPart(sessionID))
-}
-
-func KeySessionMode(sessionID string) string {
-	return fmt.Sprintf("session_mode/%s", keyPart(sessionID))
 }
 
 func KeySessionPlan(sessionID, planID string) string {
@@ -330,14 +318,6 @@ func KeyPermissionPolicy() string {
 	return "perm_policy/current"
 }
 
-func PermissionSummaryPrefix(principalID string) string {
-	part := keyPart(principalID)
-	if part == "" {
-		return "perm_summary/"
-	}
-	return fmt.Sprintf("perm_summary/%s/", part)
-}
-
 func KeyRunWait(sessionID, runID string) string {
 	return fmt.Sprintf("run_wait/%s/%s", keyPart(sessionID), keyPart(runID))
 }
@@ -366,20 +346,8 @@ func RunPermissionPrefix(sessionID, runID string) string {
 	return fmt.Sprintf("run_perm/%s/%s/", sessionPart, runPart)
 }
 
-func KeyClientCursor(clientID, streamID string) string {
-	return fmt.Sprintf("client_cursor/%s/%s", keyPart(clientID), keyPart(streamID))
-}
-
 func KeyNotification(swarmID, notificationID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyNotificationPrefix, keyPart(swarmID), keyPart(notificationID))
-}
-
-func NotificationPrefix(swarmID string) string {
-	part := keyPart(swarmID)
-	if part == "" {
-		return KeyNotificationPrefix
-	}
-	return fmt.Sprintf("%s%s/", KeyNotificationPrefix, part)
 }
 
 func KeyNotificationBySwarm(swarmID string, createdAt int64, notificationID string) string {
@@ -424,10 +392,6 @@ func FlowAssignmentStatusPrefix(flowID string) string {
 
 func KeyFlowOutbox(commandID string) string {
 	return KeyFlowOutboxPrefix + keyPart(commandID)
-}
-
-func FlowOutboxPrefix() string {
-	return KeyFlowOutboxPrefix
 }
 
 func KeyFlowOutboxStatus(status string, nextAttemptAt int64, commandID string) string {
@@ -502,14 +466,6 @@ func KeyFlowTargetRunClaim(flowID string, revision int64, scheduledAt int64) str
 	return fmt.Sprintf("%s%s/%020d/%020d", KeyFlowTargetRunClaimPrefix, keyPart(flowID), revision, scheduledAt)
 }
 
-func FlowTargetRunClaimPrefix(flowID string) string {
-	part := keyPart(flowID)
-	if part == "" {
-		return KeyFlowTargetRunClaimPrefix
-	}
-	return fmt.Sprintf("%s%s/", KeyFlowTargetRunClaimPrefix, part)
-}
-
 func KeyAgentProfile(name string) string {
 	return KeyAgentProfilePrefix + keyPart(name)
 }
@@ -578,10 +534,6 @@ func KeySwarmMirrorLocalEvent(sequence uint64) string {
 	return fmt.Sprintf("%s%020d", KeySwarmMirrorLocalEventPrefix, sequence)
 }
 
-func SwarmMirrorLocalEventPrefix() string {
-	return KeySwarmMirrorLocalEventPrefix
-}
-
 func KeySwarmMirrorLocalResource(kind, id string) string {
 	return fmt.Sprintf("%s%s/%s", KeySwarmMirrorLocalResourcePrefix, keyPart(kind), keyPart(id))
 }
@@ -604,10 +556,6 @@ func SwarmMirrorRemoteResourcePrefix() string {
 
 func KeySwarmMirrorRemoteResourcePrefixForSwarm(managedSwarmID string) string {
 	return KeySwarmMirrorRemoteResourcePrefix + keyPart(managedSwarmID) + "/"
-}
-
-func SwarmInvitePrefix() string {
-	return KeySwarmInvitePrefix
 }
 
 func KeySwarmInviteToken(token string) string {

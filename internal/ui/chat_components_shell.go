@@ -417,33 +417,6 @@ func isCompactRunPrompt(prompt string) bool {
 	return strings.HasPrefix(strings.TrimSpace(prompt), "/compact")
 }
 
-func (p *ChatPage) liveToolAnchorLine(maxWidth int) (string, tcell.Style) {
-	if maxWidth <= 0 {
-		return "", p.theme.TextMuted
-	}
-	entries := p.liveToolEntries(1)
-	if len(entries) == 0 {
-		return "", p.theme.TextMuted
-	}
-	entry := entries[len(entries)-1]
-	state := strings.ToLower(strings.TrimSpace(entry.State))
-	symbol := p.toolRunningSymbol
-	style := p.thinkingPulseStyle()
-	switch state {
-	case "done", "ok", "success":
-		symbol = p.toolSuccessSymbol
-		style = p.theme.Secondary
-	case "error":
-		symbol = p.toolErrorSymbol
-		style = p.theme.Error
-	}
-	label := toolHeadline(entry, maxInt(8, maxWidth-8))
-	if duration := p.toolEntryDurationLabel(entry); duration != "" {
-		label += "  ·  " + duration
-	}
-	return clampEllipsis(fmt.Sprintf("%s %s", symbol, label), maxWidth), style
-}
-
 func (p *ChatPage) footerContextUsageLabel() string {
 	if !p.contextUsageSet || p.contextWindow <= 0 {
 		return ""
@@ -477,69 +450,6 @@ func (p *ChatPage) footerRightLine(maxWidth int) string {
 	return clampEllipsis(strings.Join(segments, "  "), maxWidth)
 }
 
-func (p *ChatPage) footerStatusText() string {
-	status := strings.TrimSpace(p.statusLine)
-	if errLine := strings.TrimSpace(p.errorLine); errLine != "" {
-		status = errLine
-	}
-	if status == "" {
-		return "ready"
-	}
-	return status
-}
-
-func (p *ChatPage) drawFooterSessionTabs(s tcell.Screen, rect Rect) {
-	if rect.W <= 0 {
-		return
-	}
-
-	prefix := "sessions "
-	DrawText(s, rect.X, rect.Y, rect.W, p.theme.TextMuted, prefix)
-	x := rect.X + utf8.RuneCountInString(prefix)
-	maxX := rect.X + rect.W
-	if x >= maxX {
-		return
-	}
-
-	currentID := strings.TrimSpace(p.sessionID)
-	for _, tab := range p.sessionTabs {
-		title := strings.TrimSpace(tab.Title)
-		if title == "" {
-			title = strings.TrimSpace(tab.ID)
-		}
-		if title == "" {
-			continue
-		}
-		label := "[" + clampEllipsis(title, 26) + "]"
-		style := p.theme.TextMuted
-		if strings.TrimSpace(tab.ID) == currentID {
-			label = "[" + clampEllipsis(title, 24) + "*]"
-			style = p.theme.Primary
-		}
-
-		remaining := maxX - x
-		if remaining <= 0 {
-			return
-		}
-		label = clampEllipsis(label, remaining)
-		labelW := utf8.RuneCountInString(label)
-		if labelW <= 0 {
-			return
-		}
-		DrawText(s, x, rect.Y, remaining, style, label)
-		x += labelW
-		if x >= maxX {
-			return
-		}
-		DrawText(s, x, rect.Y, maxX-x, p.theme.TextMuted, " ")
-		x++
-	}
-}
-
-func (p *ChatPage) thinkingAvatar() string {
-	return p.pulseFrame()
-}
-
 func (p *ChatPage) pulseFrame() string {
 	if len(p.toolPulseFrames) == 0 {
 		return chatDefaultToolRunningSymbol
@@ -555,16 +465,6 @@ func (p *ChatPage) thinkingPulseStyle() tcell.Style {
 		return p.theme.Accent
 	}
 	return p.theme.Accent.Bold(true)
-}
-
-func (p *ChatPage) statusStyle() tcell.Style {
-	if strings.TrimSpace(p.errorLine) != "" {
-		return p.theme.Error
-	}
-	if p.effectiveRunActive() {
-		return p.theme.Primary
-	}
-	return p.theme.TextMuted
 }
 
 func emptyValue(value, fallback string) string {

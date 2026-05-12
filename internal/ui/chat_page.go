@@ -1280,38 +1280,6 @@ func (p *ChatPage) shiftPermissionSelection(delta int) {
 	p.statusLine = "selected pending permission"
 }
 
-func (p *ChatPage) shiftAskUserOption(delta int) {
-	if delta == 0 || len(p.pendingPerms) == 0 {
-		return
-	}
-	p.ensurePermissionSelection()
-	selected := p.pendingPerms[p.permSelected]
-	options := askUserOptionsFromPermission(selected)
-	if len(options) == 0 {
-		return
-	}
-	p.askUserOption += delta
-	if p.askUserOption < 0 {
-		p.askUserOption = 0
-	}
-	if p.askUserOption >= len(options) {
-		p.askUserOption = len(options) - 1
-	}
-	p.statusLine = fmt.Sprintf("ask-user option %d/%d", p.askUserOption+1, len(options))
-}
-
-func (p *ChatPage) selectedAskUserOptionText(record ChatPermissionRecord) string {
-	options := askUserOptionsFromPermission(record)
-	if len(options) == 0 {
-		return ""
-	}
-	p.syncAskUserOption()
-	if p.askUserOption < 0 || p.askUserOption >= len(options) {
-		return ""
-	}
-	return strings.TrimSpace(options[p.askUserOption])
-}
-
 func (p *ChatPage) syncAskUserOption() {
 	if len(p.pendingPerms) == 0 {
 		p.askUserOption = 0
@@ -2830,33 +2798,6 @@ func (p *ChatPage) upsertPendingPermission(record ChatPermissionRecord) {
 	}
 }
 
-func (p *ChatPage) applyPermissionUpdate(record ChatPermissionRecord) {
-	record.Status = strings.ToLower(strings.TrimSpace(record.Status))
-	if strings.TrimSpace(record.ID) == "" {
-		return
-	}
-	next := p.pendingPerms[:0]
-	existingRecord := ChatPermissionRecord{}
-	existingFound := false
-	for _, existing := range p.pendingPerms {
-		if strings.TrimSpace(existing.ID) == strings.TrimSpace(record.ID) {
-			existingRecord = existing
-			existingFound = true
-			continue
-		}
-		next = append(next, existing)
-	}
-	if existingFound {
-		record = mergePermissionRecord(existingRecord, record)
-	}
-	p.pendingPerms = append([]ChatPermissionRecord(nil), next...)
-	if record.Status == "pending" {
-		p.pendingPerms = append(p.pendingPerms, record)
-	}
-	p.ensurePermissionSelection()
-	p.syncSpecialPermissionModals()
-}
-
 func (p *ChatPage) applyHistory(messages []ChatMessageRecord) {
 	for _, message := range messages {
 		p.ingestMessageRecord(message)
@@ -3606,96 +3547,6 @@ func (p *ChatPage) completeThinkingTimeline(state string, atUnix int64, text str
 	}
 	p.reasoningActive = false
 	p.setThinkingTimelineMessage(text, atUnix, state, p.currentThinkingTimelineDurationMS())
-}
-
-func (p *ChatPage) applyOwnedReasoningMessage(messageID, text string, createdAt int64) {
-	if p == nil {
-		return
-	}
-	text = canonicalThinkingText(text)
-	if strings.TrimSpace(text) == "" {
-		return
-	}
-	if createdAt <= 0 {
-		createdAt = time.Now().UnixMilli()
-	}
-
-	messageID = strings.TrimSpace(messageID)
-	currentID := strings.TrimSpace(p.activeReasoningMessageID)
-	currentIdx := p.currentThinkingTimelineIndex()
-
-	switch {
-	case messageID == "":
-		if !p.reasoningActive || currentIdx < 0 {
-			p.startReasoningSegment(createdAt)
-		}
-	case currentID == "":
-		if !p.reasoningActive || currentIdx < 0 {
-			p.startReasoningSegment(createdAt)
-		}
-		p.activeReasoningMessageID = messageID
-	case currentID != messageID:
-		if p.reasoningActive || currentIdx >= 0 {
-			p.completeThinkingTimeline("done", createdAt, "")
-		}
-		p.startReasoningSegment(createdAt)
-		p.activeReasoningMessageID = messageID
-	default:
-		if !p.reasoningActive || currentIdx < 0 {
-			p.startReasoningSegment(createdAt)
-		}
-	}
-
-	p.liveThinking = text
-	p.updateThinkingTimelineMessage(text, createdAt)
-}
-
-func (p *ChatPage) upsertReasoningMessage(summary string, createdAt int64) {
-	summary = canonicalThinkingText(summary)
-	if summary == "" {
-		return
-	}
-	p.thinkingSummary = normalizeThinkingSummary(summary)
-	if p.reasoningActive && p.currentThinkingTimelineIndex() >= 0 {
-		p.completeThinkingTimeline("done", createdAt, summary)
-		return
-	}
-
-	if !p.timelineHasReasoningSummary(summary) {
-		p.timeline = append(p.timeline, chatMessageItem{
-			Role:      "reasoning",
-			Text:      summary,
-			CreatedAt: createdAt,
-			ToolState: "done",
-		})
-		if len(p.timeline) > chatMaxTimelineMessages {
-			drop := len(p.timeline) - chatMaxTimelineMessages
-			p.timeline = append([]chatMessageItem(nil), p.timeline[drop:]...)
-			p.resetTimelineRenderCache()
-			return
-		}
-		p.ensureTimelineRenderCacheLen()
-		p.bumpTimelineRenderGeneration()
-	}
-}
-
-func (p *ChatPage) timelineHasReasoningSummary(summary string) bool {
-	summary = thinkingSummaryKey(summary)
-	if summary == "" || len(p.timeline) == 0 {
-		return false
-	}
-	checked := 0
-	for i := len(p.timeline) - 1; i >= 0 && checked < 24; i-- {
-		checked++
-		item := p.timeline[i]
-		if strings.ToLower(strings.TrimSpace(item.Role)) != "reasoning" {
-			continue
-		}
-		if thinkingSummaryKey(item.Text) == summary {
-			return true
-		}
-	}
-	return false
 }
 
 func (p *ChatPage) appendSystemMessage(text string) {

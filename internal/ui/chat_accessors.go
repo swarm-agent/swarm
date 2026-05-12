@@ -2,7 +2,6 @@ package ui
 
 import (
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
@@ -272,10 +271,6 @@ func (p *ChatPage) SetActivePlan(plan string) {
 
 func (p *ChatPage) ShowToast(level ToastLevel, message string) {
 	p.toast.show(level, message, toastDefaultDuration)
-}
-
-func (p *ChatPage) ShowToastForDuration(level ToastLevel, message string, duration time.Duration) {
-	p.toast.show(level, message, duration)
 }
 
 func (p *ChatPage) RunInProgress() bool {

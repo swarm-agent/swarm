@@ -429,25 +429,6 @@ func mapSlice(source map[string]any, key string) []any {
 	return items
 }
 
-func jsonObjectSlice(payload map[string]any, key string) []map[string]any {
-	items := mapSlice(payload, key)
-	if len(items) == 0 {
-		return nil
-	}
-	out := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		typed, ok := item.(map[string]any)
-		if !ok || len(typed) == 0 {
-			continue
-		}
-		out = append(out, typed)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 func compactEditHistoryPreview(value string) (string, bool) {
 	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "\r\n", "\n"), "\r", "\n"))
 	if value == "" {
@@ -739,10 +720,6 @@ func summarizeSearchToolOutput(raw string) string {
 	return summarizeWithNotes(label, flags...)
 }
 
-func summarizeGrepToolOutput(raw string) string {
-	return summarizeSearchToolOutput(raw)
-}
-
 func countSummaryLabel(count int, singular, plural string) string {
 	if count == 1 {
 		return fmt.Sprintf("%d %s", count, singular)
@@ -1003,56 +980,6 @@ func sessionGitCommitCount(metadata map[string]any) int {
 		return 0
 	}
 	return mapInt(gitMeta, "commit_count")
-}
-
-func SessionGitCommitCount(metadata map[string]any) int {
-	return sessionGitCommitCount(metadata)
-}
-
-func metadataGitCommitDetected(metadata map[string]any) bool {
-	gitMeta, _ := metadata["git"].(map[string]any)
-	if gitMeta == nil {
-		return false
-	}
-	return mapBool(gitMeta, "commit_detected")
-}
-
-func MetadataGitCommitDetected(metadata map[string]any) bool {
-	return metadataGitCommitDetected(metadata)
-}
-
-func metadataGitStatusFields(metadata map[string]any) (gitStatusResponseFields, bool) {
-	gitMeta, _ := metadata["git"].(map[string]any)
-	if gitMeta == nil {
-		return gitStatusResponseFields{}, false
-	}
-	statusMeta, _ := gitMeta["status"].(map[string]any)
-	if statusMeta == nil {
-		return gitStatusResponseFields{}, false
-	}
-	branch := strings.TrimSpace(mapString(statusMeta, "branch"))
-	if branch == "-" {
-		branch = ""
-	}
-	return gitStatusResponseFields{
-		GitBranch:             branch,
-		GitHasGit:             mapBool(statusMeta, "has_git"),
-		GitClean:              mapBool(statusMeta, "clean"),
-		GitDirtyCount:         mapInt(statusMeta, "dirty_count"),
-		GitStagedCount:        mapInt(statusMeta, "staged_count"),
-		GitModifiedCount:      mapInt(statusMeta, "modified_count"),
-		GitUntrackedCount:     mapInt(statusMeta, "untracked_count"),
-		GitConflictCount:      mapInt(statusMeta, "conflict_count"),
-		GitAheadCount:         mapInt(statusMeta, "ahead_count"),
-		GitBehindCount:        mapInt(statusMeta, "behind_count"),
-		GitCommittedFileCount: mapInt(statusMeta, "committed_file_count"),
-		GitCommittedAdditions: mapInt(statusMeta, "committed_additions"),
-		GitCommittedDeletions: mapInt(statusMeta, "committed_deletions"),
-	}, true
-}
-
-func MetadataGitStatusFields(metadata map[string]any) (gitStatusResponseFields, bool) {
-	return metadataGitStatusFields(metadata)
 }
 
 func buildGitStatusMetadata(workspacePath, baseBranch string) (map[string]any, bool) {

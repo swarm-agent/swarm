@@ -849,156 +849,6 @@ func (s *Server) resolveWorktreeConfigPathForValue(path string) (string, error) 
 	return strings.TrimSpace(scope.ResolvedPath), nil
 }
 
-func (s *Server) handleMCPServers(w http.ResponseWriter, r *http.Request) {
-	if s.mcp == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("mcp service not configured"))
-		return
-	}
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-	limit := 500
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed <= 0 {
-			writeError(w, http.StatusBadRequest, errors.New("limit must be a positive integer"))
-			return
-		}
-		limit = parsed
-	}
-	servers, err := s.mcp.List(limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"servers": servers,
-		"count":   len(servers),
-	})
-}
-
-func (s *Server) handleMCPServerUpsert(w http.ResponseWriter, r *http.Request) {
-	if s.mcp == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("mcp service not configured"))
-		return
-	}
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	var req struct {
-		ID        string            `json:"id"`
-		Name      string            `json:"name"`
-		Transport string            `json:"transport"`
-		URL       string            `json:"url"`
-		Command   string            `json:"command"`
-		Args      []string          `json:"args"`
-		Env       map[string]string `json:"env"`
-		Headers   map[string]string `json:"headers"`
-		Enabled   *bool             `json:"enabled"`
-		Source    string            `json:"source"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	server, event, err := s.mcp.Upsert(mcpruntime.UpsertInput{
-		ID:        req.ID,
-		Name:      req.Name,
-		Transport: req.Transport,
-		URL:       req.URL,
-		Command:   req.Command,
-		Args:      req.Args,
-		Env:       req.Env,
-		Headers:   req.Headers,
-		Enabled:   req.Enabled,
-		Source:    req.Source,
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if event != nil {
-		s.hub.Publish(*event)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":     true,
-		"server": server,
-	})
-}
-
-func (s *Server) handleMCPServerDelete(w http.ResponseWriter, r *http.Request) {
-	if s.mcp == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("mcp service not configured"))
-		return
-	}
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	var req struct {
-		ID string `json:"id"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	deleted, event, err := s.mcp.Delete(req.ID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if !deleted {
-		writeError(w, http.StatusNotFound, errors.New("mcp server not found"))
-		return
-	}
-	if event != nil {
-		s.hub.Publish(*event)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"deleted": true,
-		"id":      strings.ToLower(strings.TrimSpace(req.ID)),
-	})
-}
-
-func (s *Server) handleMCPServerEnabled(w http.ResponseWriter, r *http.Request) {
-	if s.mcp == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("mcp service not configured"))
-		return
-	}
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	var req struct {
-		ID      string `json:"id"`
-		Enabled *bool  `json:"enabled"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if req.Enabled == nil {
-		writeError(w, http.StatusBadRequest, errors.New("enabled is required"))
-		return
-	}
-	server, event, err := s.mcp.SetEnabled(req.ID, *req.Enabled)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if event != nil {
-		s.hub.Publish(*event)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":     true,
-		"server": server,
-	})
-}
-
 func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -3235,14 +3085,6 @@ func (s *Server) codexSessionConfigResponse(sessionID string, config pebblestore
 	}
 }
 
-func (s *Server) codexSessionEffectiveContextWindow(config pebblestore.ModelPreference) int {
-	resolved, err := s.model.ResolvePreference(config)
-	if err != nil {
-		return 0
-	}
-	return resolved.ContextWindow
-}
-
 func (s *Server) handleSTTTranscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -3856,7 +3698,7 @@ func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 		return r.Method == http.MethodPost && (loopback || isTailscaleIP(remoteRequestIP(r)))
 	case "/v1/swarm/remote-pairing/finalize", "/v1/swarm/managed-host/remove":
 		return false
-	case "/v1/deploy/container/attach/child-state", "/v1/deploy/container/attach/request", "/v1/deploy/container/attach/approve", "/v1/deploy/container/attach/finalize", "/v1/deploy/container/sync/credentials", "/v1/deploy/container/sync/agents", "/v1/deploy/container/sync/skills", "/v1/deploy/container/sync/permissions", "/v1/deploy/container/sync/model-defaults", "/v1/deploy/container/managed/credentials/apply", "/v1/deploy/container/managed/agents/apply", "/v1/deploy/container/managed/model-defaults/apply", "/v1/deploy/container/managed/skills/apply", deployruntime.PeerContainerCreatePath, deployruntime.PeerContainerDeletePath, "/v1/permissions/managed/apply", "/v1/permissions/bypass", "/v1/deploy/container/workspaces/bootstrap", "/v1/deploy/remote/session/sync/credentials":
+	case "/v1/deploy/container/attach/child-state", "/v1/deploy/container/attach/request", "/v1/deploy/container/attach/approve", "/v1/deploy/container/attach/finalize", "/v1/deploy/container/sync/credentials", "/v1/deploy/container/sync/agents", "/v1/deploy/container/sync/skills", "/v1/deploy/container/sync/permissions", "/v1/deploy/container/sync/model-defaults", "/v1/deploy/container/managed/credentials/apply", "/v1/deploy/container/managed/agents/apply", "/v1/deploy/container/managed/model-defaults/apply", "/v1/deploy/container/managed/skills/apply", "/v1/permissions/managed/apply", "/v1/permissions/bypass", "/v1/deploy/container/workspaces/bootstrap", "/v1/deploy/remote/session/sync/credentials":
 		return trustedNetwork && r.Method == http.MethodPost
 	default:
 		return false
@@ -3980,22 +3822,6 @@ func decodeJSON(r *http.Request, out any) error {
 		return err
 	}
 	return decodeJSONBytes(body, out)
-}
-
-func decodeLenientJSON(r *http.Request, out any) error {
-	if r.Body == nil {
-		return errors.New("missing request body")
-	}
-	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
-	if err := decoder.Decode(out); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return errors.New("request body must contain one JSON object")
-	}
-	return nil
 }
 
 func decodeJSONBytes(body []byte, out any) error {

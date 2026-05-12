@@ -1649,56 +1649,6 @@ func ChildReachableHostAlias(runtimeName string) string {
 	}
 }
 
-func ResolveChildReachableHostAliasIP(runtimeName string) (string, error) {
-	host := ChildReachableHostAlias(runtimeName)
-	if host == "" {
-		return "", fmt.Errorf("runtime %q does not define a child-reachable host alias", strings.TrimSpace(runtimeName))
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var cmd *exec.Cmd
-	switch normalizeRuntimeSelection(runtimeName) {
-	case "podman":
-		cmd = exec.CommandContext(ctx, "podman", "run", "--rm", "docker.io/library/busybox:latest", "sh", "-c", fmt.Sprintf("awk '/%s/ {print $1; exit}' %s", regexpQuoteForSingleQuotedAwk(host), systemHostsFilePath()))
-	case "docker":
-		cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "--add-host", "host.docker.internal:host-gateway", "busybox:latest", "sh", "-c", fmt.Sprintf("awk '/%s/ {print $1; exit}' %s", regexpQuoteForSingleQuotedAwk(host), systemHostsFilePath()))
-	default:
-		return "", fmt.Errorf("runtime %q does not define a child-reachable host alias", strings.TrimSpace(runtimeName))
-	}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		message := strings.TrimSpace(string(output))
-		if message == "" {
-			message = err.Error()
-		}
-		return "", fmt.Errorf("resolve %s alias IP from %s container: %s", host, runtimeName, message)
-	}
-	ipText := strings.TrimSpace(string(output))
-	if net.ParseIP(ipText) == nil {
-		return "", fmt.Errorf("resolve %s alias IP from %s container: invalid IP %q", host, runtimeName, ipText)
-	}
-	return ipText, nil
-}
-
-func regexpQuoteForSingleQuotedAwk(value string) string {
-	value = strings.TrimSpace(value)
-	value = strings.ReplaceAll(value, `\`, `\\`)
-	value = strings.ReplaceAll(value, `.`, `\.`)
-	return value
-}
-
-func systemHostsFilePath() string {
-	return string(filepath.Separator) + filepath.Join("etc", "hosts")
-}
-
-func (s *Service) defaultHostAPIBaseURL(runtimeName string) (string, error) {
-	cfg, err := s.loadStartupConfig()
-	if err != nil {
-		return "", err
-	}
-	return s.defaultHostAPIBaseURLFromConfig(runtimeName, cfg)
-}
-
 func (s *Service) defaultHostAPIBaseURLFromConfig(runtimeName string, cfg startupconfig.FileConfig) (string, error) {
 	callbackPort := cfg.Port
 	if cfg.AdvertisePort >= 1 && cfg.AdvertisePort <= 65535 {
@@ -1774,17 +1724,6 @@ func ResolveChildReachableHostAPIBaseURL(runtimeName string, port int) (string, 
 	host := ChildReachableHostAlias(runtimeName)
 	if host == "" {
 		return "", fmt.Errorf("runtime %q does not define a child-reachable host api base url; set host_api_base_url explicitly", strings.TrimSpace(runtimeName))
-	}
-	return fmt.Sprintf("http://%s", net.JoinHostPort(host, strconv.Itoa(port))), nil
-}
-
-func ResolveChildReachableHostDesktopURL(runtimeName string, port int) (string, error) {
-	if port < 1 || port > 65535 {
-		return "", nil
-	}
-	host := ChildReachableHostAlias(runtimeName)
-	if host == "" {
-		return "", fmt.Errorf("runtime %q does not define a child-reachable host desktop url; set host_api_base_url explicitly", strings.TrimSpace(runtimeName))
 	}
 	return fmt.Sprintf("http://%s", net.JoinHostPort(host, strconv.Itoa(port))), nil
 }
@@ -1899,14 +1838,6 @@ type ProductionImageMetadata struct {
 }
 
 type productionImageMetadata = ProductionImageMetadata
-
-func productionImageRef() (string, error) {
-	version := strings.TrimSpace(buildinfo.DisplayVersion())
-	if buildinfo.IsDevVersionString(version) {
-		return "", fmt.Errorf("production local Add Swarm requires an installed release version, got %q", version)
-	}
-	return productionImagePrefix + ":" + version, nil
-}
 
 func productionImageMetadataURL(version string) string {
 	return fmt.Sprintf(productionMetadataURLTmpl, url.PathEscape(strings.TrimSpace(version)))

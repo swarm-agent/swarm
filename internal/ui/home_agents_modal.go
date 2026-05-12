@@ -166,20 +166,6 @@ func (p *HomePage) AgentsModalVisible() bool {
 	return p.agentsModal.Visible
 }
 
-func (p *HomePage) HandleAgentsModalKey(ev *tcell.EventKey) {
-	if p == nil || !p.agentsModal.Visible {
-		return
-	}
-	p.handleAgentsModalKey(ev)
-}
-
-func (p *HomePage) DrawAgentsModalOverlay(s tcell.Screen) {
-	if p == nil || !p.agentsModal.Visible {
-		return
-	}
-	p.drawAgentsModal(s)
-}
-
 func (p *HomePage) SetAgentsModalLoading(loading bool) {
 	p.agentsModal.Loading = loading
 }
@@ -2446,15 +2432,6 @@ func agentsModalEditorFieldEditCursorValue(field agentsModalEditorField) string 
 	return value + "|"
 }
 
-func agentsModalEditorFieldOptionsDisplay(options []string) []string {
-	unique := dedupeAgentsModalOptions(options)
-	out := make([]string, 0, len(unique))
-	for _, option := range unique {
-		out = append(out, agentsModalEditorOptionDisplay(option))
-	}
-	return out
-}
-
 func agentsModalPromptTokenEstimate(prompt string) int {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
@@ -2495,13 +2472,6 @@ func agentsModalModeLabel(mode string) string {
 		return "background"
 	}
 	return "subagent"
-}
-
-func agentsModalEnabledLabel(enabled bool) string {
-	if enabled {
-		return "on"
-	}
-	return "off"
 }
 
 func agentsModalModelLabel(model string) string {
@@ -2556,23 +2526,6 @@ func agentsModalExecutionSettingLabel(setting string) string {
 		return "read"
 	default:
 		return setting
-	}
-}
-
-func agentsModalRuntimeLabel(profile AgentModalProfile) string {
-	if strings.TrimSpace(profile.Mode) == "" {
-		return "unset"
-	}
-	if strings.EqualFold(strings.TrimSpace(profile.Name), "swarm") {
-		return "plan → auto"
-	}
-	switch strings.ToLower(strings.TrimSpace(profile.Mode)) {
-	case "primary":
-		return "primary"
-	case "background":
-		return "background"
-	default:
-		return "subagent"
 	}
 }
 

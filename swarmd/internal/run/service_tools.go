@@ -2438,29 +2438,6 @@ func canonicalToolName(name string) string {
 	}
 }
 
-func blockedToolReason(mode, toolName string) (bool, string) {
-	mode = strings.TrimSpace(strings.ToLower(mode))
-	toolName = canonicalToolName(toolName)
-	if mode == sessionruntime.ModePlan {
-		switch toolName {
-		case "write", "edit":
-			return true, fmt.Sprintf("%s is unavailable in plan mode", toolName)
-		}
-	}
-	if mode == pebblestore.AgentExecutionSettingRead {
-		switch toolName {
-		case "write", "edit", "bash":
-			return true, fmt.Sprintf("%s is unavailable for read execution setting", toolName)
-		}
-	}
-	if mode == pebblestore.AgentExecutionSettingReadWrite {
-		if toolName == "bash" {
-			return true, "bash is unavailable for readwrite execution setting"
-		}
-	}
-	return false, ""
-}
-
 func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	mode = strings.TrimSpace(strings.ToLower(mode))
 	toolName = canonicalToolName(toolName)
@@ -2623,16 +2600,6 @@ func runPermissionDebugPreview(text string, max int) string {
 	return text[:max] + "…"
 }
 
-func runToolDBDebugEnabled() bool {
-	return false
-}
-
-func runToolDBDebugf(format string, args ...any) {
-}
-
 func isToolDBDebugMessage(content string) bool {
 	return false
-}
-
-func (s *Service) appendToolDBDebug(sessionID string, payload map[string]any) {
 }

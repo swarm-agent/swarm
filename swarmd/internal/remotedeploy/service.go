@@ -3476,10 +3476,6 @@ func (s *Service) requireManagedSyncVaultPassword(syncVaultPassword string) erro
 	return nil
 }
 
-func systemdUnitName(sessionID string) string {
-	return fmt.Sprintf("swarm-remote-child-%s.service", sanitizeSlug(sessionID))
-}
-
 func remoteContainerNameForSession(sessionID string) string {
 	slug := sanitizeSlug(sessionID)
 	if slug == "" {
@@ -5949,8 +5945,4 @@ func lastMatchingLine(output, prefix string) string {
 		}
 	}
 	return match
-}
-
-func encodeStartupConfigEnv(value string) string {
-	return value
 }

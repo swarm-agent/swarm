@@ -171,106 +171,6 @@ type remoteSwarmDiscoverySeed struct {
 	Transports    []onboardingTransportPayload
 }
 
-func (s *Server) discoverRemoteSwarms(cfg startupconfig.FileConfig, localState *swarmruntime.LocalState, tailscaleStatus *tailscaleStatusWire) []onboardingDiscoveredSwarmPayload {
-	seeds := collectRemoteSwarmDiscoverySeeds(cfg, tailscaleStatus)
-	if len(seeds) == 0 {
-		return nil
-	}
-	relationshipBySwarmID := map[string]string{}
-	localSwarmID := ""
-	if localState != nil {
-		localSwarmID = strings.TrimSpace(localState.Node.SwarmID)
-		for _, peer := range localState.TrustedPeers {
-			swarmID := strings.TrimSpace(peer.SwarmID)
-			if swarmID == "" {
-				continue
-			}
-			relationshipBySwarmID[swarmID] = strings.TrimSpace(peer.Relationship)
-		}
-	}
-	merged := map[string]onboardingDiscoveredSwarmPayload{}
-	order := make([]string, 0, len(seeds))
-	for _, seed := range seeds {
-		candidate := onboardingDiscoveredSwarmPayload{
-			Name:                 strings.TrimSpace(seed.Name),
-			Endpoint:             strings.TrimSpace(seed.Endpoint),
-			TailnetURL:           strings.TrimSpace(seed.TailnetURL),
-			DNSName:              strings.TrimSpace(seed.DNSName),
-			IPs:                  append([]string(nil), seed.IPs...),
-			Online:               seed.Online,
-			Source:               strings.TrimSpace(seed.Source),
-			Running:              false,
-			TransportMode:        strings.TrimSpace(seed.TransportMode),
-			RendezvousTransports: append([]onboardingTransportPayload(nil), seed.Transports...),
-		}
-		if seed.Probe && strings.TrimSpace(seed.Endpoint) != "" {
-			if remote, err := fetchRemoteSwarmDiscovery(seed); err == nil && remote.OK {
-				candidate.ID = strings.TrimSpace(remote.SwarmID)
-				candidate.Name = firstNonEmpty(strings.TrimSpace(remote.Name), candidate.Name)
-				candidate.Role = firstNonEmpty(strings.TrimSpace(remote.Role), candidate.Role, bootstrapRoleStandalone)
-				candidate.Endpoint = firstNonEmpty(strings.TrimSpace(remote.Endpoint), candidate.Endpoint)
-				candidate.Running = true
-				candidate.TransportMode = firstNonEmpty(strings.TrimSpace(remote.TransportMode), candidate.TransportMode)
-				if len(remote.RendezvousTransports) > 0 {
-					candidate.RendezvousTransports = append([]onboardingTransportPayload(nil), remote.RendezvousTransports...)
-				}
-			}
-		}
-		if candidate.Role == "" {
-			candidate.Role = bootstrapRoleStandalone
-		}
-		if candidate.Name == "" {
-			candidate.Name = firstNonEmpty(candidate.DNSName, firstString(candidate.IPs), "Unnamed device")
-		}
-		if candidate.Endpoint == "" {
-			candidate.Endpoint = firstNonEmpty(candidate.TailnetURL, candidate.DNSName)
-		}
-		if candidate.ID != "" {
-			if candidate.ID == localSwarmID {
-				continue
-			}
-			if relationship := relationshipBySwarmID[candidate.ID]; relationship != "" {
-				candidate.InCurrentGroup = true
-				candidate.CurrentRelationship = relationship
-			}
-		}
-		key := discoveredSwarmMergeKey(candidate)
-		if key == "" {
-			continue
-		}
-		if existing, ok := merged[key]; ok {
-			merged[key] = mergeDiscoveredSwarmPayload(existing, candidate)
-			continue
-		}
-		merged[key] = candidate
-		order = append(order, key)
-	}
-	out := make([]onboardingDiscoveredSwarmPayload, 0, len(order))
-	for _, key := range order {
-		out = append(out, merged[key])
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Running != out[j].Running {
-			return out[i].Running
-		}
-		if out[i].Online != out[j].Online {
-			return out[i].Online
-		}
-		if out[i].Source != out[j].Source {
-			return out[i].Source < out[j].Source
-		}
-		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
-	})
-	return out
-}
-
-func collectRemoteSwarmDiscoverySeeds(cfg startupconfig.FileConfig, tailscaleStatus *tailscaleStatusWire) []remoteSwarmDiscoverySeed {
-	seeds := make([]remoteSwarmDiscoverySeed, 0)
-	seeds = append(seeds, discoverTailscaleSwarmSeeds(tailscaleStatus)...)
-	seeds = append(seeds, discoverLANSwarmSeeds(cfg)...)
-	return dedupeRemoteSwarmDiscoverySeeds(seeds)
-}
-
 func discoverTailscaleSwarmSeeds(tailscaleStatus *tailscaleStatusWire) []remoteSwarmDiscoverySeed {
 	if tailscaleStatus == nil || len(tailscaleStatus.Peer) == 0 {
 		return nil
@@ -309,74 +209,12 @@ func discoverTailscaleSwarmSeeds(tailscaleStatus *tailscaleStatusWire) []remoteS
 	return seeds
 }
 
-func discoverLANSwarmSeeds(cfg startupconfig.FileConfig) []remoteSwarmDiscoverySeed {
-	_ = cfg
-	return nil
-}
-
-func dedupeRemoteSwarmDiscoverySeeds(seeds []remoteSwarmDiscoverySeed) []remoteSwarmDiscoverySeed {
-	seen := map[string]struct{}{}
-	out := make([]remoteSwarmDiscoverySeed, 0, len(seeds))
-	for _, seed := range seeds {
-		key := strings.ToLower(strings.TrimSpace(strings.Join([]string{
-			seed.Source,
-			seed.DNSName,
-			seed.Endpoint,
-			seed.TailnetURL,
-			firstString(seed.IPs),
-		}, "|")))
-		if key == "" {
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, seed)
-	}
-	return out
-}
-
 func fetchRemoteSwarmDiscovery(seed remoteSwarmDiscoverySeed) (swarmDiscoveryResponse, error) {
 	var remote swarmDiscoveryResponse
 	if err := getRemoteSwarmJSONWithTransportFallback(seed.Endpoint, "/v1/swarm/discovery", seed.Transports, &remote); err != nil {
 		return swarmDiscoveryResponse{}, err
 	}
 	return remote, nil
-}
-
-func discoveredSwarmMergeKey(candidate onboardingDiscoveredSwarmPayload) string {
-	return strings.ToLower(strings.TrimSpace(firstNonEmpty(
-		candidate.ID,
-		candidate.TailnetURL,
-		candidate.Endpoint,
-		candidate.DNSName,
-		firstString(candidate.IPs),
-		candidate.Name,
-	)))
-}
-
-func mergeDiscoveredSwarmPayload(left, right onboardingDiscoveredSwarmPayload) onboardingDiscoveredSwarmPayload {
-	merged := left
-	merged.ID = firstNonEmpty(left.ID, right.ID)
-	merged.Name = firstNonEmpty(left.Name, right.Name)
-	merged.Role = firstNonEmpty(left.Role, right.Role)
-	merged.Endpoint = firstNonEmpty(left.Endpoint, right.Endpoint)
-	merged.TailnetURL = firstNonEmpty(left.TailnetURL, right.TailnetURL)
-	merged.DNSName = firstNonEmpty(left.DNSName, right.DNSName)
-	if len(merged.IPs) == 0 {
-		merged.IPs = append([]string(nil), right.IPs...)
-	}
-	merged.Online = left.Online || right.Online
-	merged.Source = firstNonEmpty(left.Source, right.Source)
-	merged.Running = left.Running || right.Running
-	merged.InCurrentGroup = left.InCurrentGroup || right.InCurrentGroup
-	merged.CurrentRelationship = firstNonEmpty(left.CurrentRelationship, right.CurrentRelationship)
-	merged.TransportMode = firstNonEmpty(left.TransportMode, right.TransportMode)
-	if len(merged.RendezvousTransports) == 0 {
-		merged.RendezvousTransports = append([]onboardingTransportPayload(nil), right.RendezvousTransports...)
-	}
-	return merged
 }
 
 func remoteSwarmProbeEndpoint(mode, dnsName string, ips []string) string {
@@ -908,20 +746,6 @@ func isUsableLANHost(value string) bool {
 		return false
 	}
 	return true
-}
-
-func isLoopbackBindHost(value string) bool {
-	value = strings.TrimSpace(strings.Trim(strings.TrimSpace(value), "[]"))
-	if value == "" {
-		return false
-	}
-	if strings.EqualFold(value, "localhost") {
-		return true
-	}
-	if ip := net.ParseIP(value); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
 }
 
 func firstString(values []string) string {

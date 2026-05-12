@@ -20,10 +20,6 @@ import (
 
 const (
 	gitCommandTimeout           = 12 * time.Second
-	sessionBranchMaxSlugRunes   = 42
-	sessionBranchFallbackSlug   = "session"
-	worktreePathMaxSlugRunes    = 36
-	worktreePathFallbackSlug    = "session"
 	defaultWorktreeBranchName   = "agent/<id>"
 	defaultWorktreeBranchPrefix = "agent"
 	worktreeBranchIDPlaceholder = "<id>"
@@ -31,10 +27,7 @@ const (
 
 const detachedWorkspaceFallbackWarning = "Opened without git worktree support; use a git repository and make sure git is installed for the app to work properly."
 
-var (
-	nonBranchSlugRune      = regexp.MustCompile(`[^a-z0-9]+`)
-	validWorktreeWorkspace = regexp.MustCompile(`^ws_[a-z0-9]+$`)
-)
+var validWorktreeWorkspace = regexp.MustCompile(`^ws_[a-z0-9]+$`)
 
 func DetachedWorkspaceFallbackWarning(err error) string {
 	if err == nil {
@@ -498,14 +491,6 @@ func resolveGitPath(basePath, reportedPath string) (string, error) {
 	return filepath.Clean(resolvedPath), nil
 }
 
-func resolveBranchCommit(repoRoot, baseBranch string) (string, error) {
-	commit, err := runGit(repoRoot, "rev-parse", "--verify", baseBranch)
-	if err == nil {
-		return strings.TrimSpace(commit), nil
-	}
-	return "", fmt.Errorf("resolve base branch %q: %w", baseBranch, err)
-}
-
 type gitWorktreeListEntry struct {
 	Path     string
 	Branch   string
@@ -594,26 +579,6 @@ func ensureWorktreeParent(repoRoot string) error {
 	return nil
 }
 
-func reserveWorktreePath(repoRoot, nameSeed string) (string, error) {
-	parent, err := worktreeCacheRoot(repoRoot)
-	if err != nil {
-		return "", fmt.Errorf("create worktree parent directory: %w", err)
-	}
-	prefix := "worktree-" + worktreePathSlug(nameSeed) + "-"
-	temporary, err := os.MkdirTemp(parent, prefix)
-	if err != nil {
-		return "", fmt.Errorf("allocate worktree path: %w", err)
-	}
-	if err := os.Chmod(temporary, appstorage.PrivateDirPerm); err != nil {
-		_ = os.RemoveAll(temporary)
-		return "", fmt.Errorf("set temporary worktree path permissions: %w", err)
-	}
-	if err := os.Remove(temporary); err != nil {
-		return "", fmt.Errorf("prepare worktree path: %w", err)
-	}
-	return temporary, nil
-}
-
 func worktreeCacheRoot(repoRoot string) (string, error) {
 	return appstorage.WorkspaceCacheDir(repoRoot, "worktrees")
 }
@@ -643,10 +608,6 @@ func sessionWorkspaceID(sessionID string) string {
 
 func WorkspaceIdentityForSession(sessionID string) string {
 	return sessionWorkspaceID(sessionID)
-}
-
-func sessionWorkspaceBranchName(sessionID string) string {
-	return effectiveWorktreeBranchName(defaultWorktreeBranchPrefix, sessionID)
 }
 
 func normalizeWorktreeBranchPrefix(configured string) string {
@@ -707,44 +668,6 @@ func runGit(path string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), output)
 	}
 	return output, nil
-}
-
-func sessionBranchName(sessionID, title string) string {
-	return sessionWorkspaceBranchName(sessionID)
-}
-
-func branchSlug(title string) string {
-	title = strings.ToLower(strings.TrimSpace(title))
-	title = nonBranchSlugRune.ReplaceAllString(title, "-")
-	title = strings.Trim(title, "-")
-	if title == "" {
-		return sessionBranchFallbackSlug
-	}
-	runes := []rune(title)
-	if len(runes) > sessionBranchMaxSlugRunes {
-		title = strings.Trim(string(runes[:sessionBranchMaxSlugRunes]), "-")
-	}
-	if title == "" {
-		return sessionBranchFallbackSlug
-	}
-	return title
-}
-
-func worktreePathSlug(seed string) string {
-	seed = strings.ToLower(strings.TrimSpace(seed))
-	seed = nonBranchSlugRune.ReplaceAllString(seed, "-")
-	seed = strings.Trim(seed, "-")
-	if seed == "" {
-		return worktreePathFallbackSlug
-	}
-	runes := []rune(seed)
-	if len(runes) > worktreePathMaxSlugRunes {
-		seed = strings.Trim(string(runes[:worktreePathMaxSlugRunes]), "-")
-	}
-	if seed == "" {
-		return worktreePathFallbackSlug
-	}
-	return seed
 }
 
 func sameCleanPath(left, right string) bool {
