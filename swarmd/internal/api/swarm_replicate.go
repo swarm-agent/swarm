@@ -415,11 +415,28 @@ func rewriteReplicationBootstrapForTargetHost(items []deployruntime.ContainerWor
 	for _, item := range items {
 		next := item
 		if remotePath := strings.TrimSpace(remotePaths[item.SourceWorkspacePath]); remotePath != "" {
-			next.TargetWorkspacePath = remotePath
+			originalSource := strings.TrimSpace(item.SourceWorkspacePath)
+			originalTarget := strings.TrimSpace(item.TargetWorkspacePath)
+			if originalTarget == "" {
+				originalTarget = originalSource
+			}
+			// The managed host must launch the container from its own materialized
+			// workspace path, but the child must register the path where that workspace
+			// is mounted inside the container. Keep those namespaces separate:
+			// SourceWorkspacePath = managed-host filesystem path used for replication
+			// metadata; TargetWorkspacePath = child/container filesystem path.
+			next.SourceWorkspacePath = remotePath
+			next.TargetWorkspacePath = originalTarget
 			for index, directory := range next.Directories {
-				if rel, err := filepath.Rel(strings.TrimSpace(item.SourceWorkspacePath), strings.TrimSpace(directory.SourcePath)); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
-					next.Directories[index].TargetPath = filepath.Join(remotePath, rel)
+				originalDirectorySource := strings.TrimSpace(directory.SourcePath)
+				originalDirectoryTarget := strings.TrimSpace(directory.TargetPath)
+				if originalDirectoryTarget == "" {
+					originalDirectoryTarget = originalDirectorySource
 				}
+				if rel, err := filepath.Rel(originalSource, originalDirectorySource); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+					next.Directories[index].SourcePath = filepath.Join(remotePath, rel)
+				}
+				next.Directories[index].TargetPath = originalDirectoryTarget
 			}
 		}
 		out = append(out, next)
