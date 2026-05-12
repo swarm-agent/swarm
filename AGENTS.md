@@ -332,6 +332,16 @@ Required behavior:
 - Do not infer architecture from a filesystem path. In particular, `/workspaces` can appear in more than one plane and is never sufficient proof of container or managed-host mode.
 - If the user explicitly says "local container" or "container path", stay in the local-container child plane (`relationship=child`, `kind=local`) and use local-container mount/replication path semantics unless target metadata proves a different container runtime on a different host was selected.
 - If the user explicitly says "managed host", stay in the managed-host plane (`relationship=managed`, `kind=host`) and use managed-host peer/session/workspace APIs; do not reinterpret it as a local container request.
+- If using managed hosts, use the existing managed-host transport paths proven in code:
+  - Target catalog: `/v1/swarm/targets` in `swarmd/internal/api/server_routes.go`, implemented by `handleSwarmTargets` in `swarmd/internal/api/swarm_targets.go`.
+  - Pairing/trust/peer auth: `/v1/swarm/remote-pairing/start`, `/offer`, `/request`, `/pending`, `/finalize`, `/approve`, and `/v1/swarm/managed-host/remove` in `swarmd/internal/api/server_routes.go` and `swarmd/internal/api/swarm_pairing.go`.
+  - Primary-to-managed session/control API: `/v1/swarm/managed-hosts/sessions/open`, `/message`, `/run`, `/stop` constants in `swarmd/internal/api/managed_host_sessions.go`.
+  - Peer managed-session transport: `/v1/swarm/peer/managed-host-sessions/open`, `/message`, `/run`, `/run/stream`, `/stop`, `/event` constants in `swarmd/internal/api/managed_host_sessions.go`.
+  - Managed workspace APIs: `/v1/swarm/managed-workspaces/preflight`, `/replicate`, `/inventory` constants in `swarmd/internal/api/swarm_managed_workspace_replication.go`.
+  - Peer managed-workspace transport: `/v1/swarm/peer/managed-workspaces/preflight`, `/ensure-link`, `/link-existing`, `/import-bundle`, `/inventory` constants in `swarmd/internal/api/swarm_managed_workspace_replication.go`.
+  - Peer workspace materialization transport: `/v1/swarm/peer/workspaces/discover`, `/create`, `/import-bundle`, `/transfer/` constants in `swarmd/internal/api/swarm_peer_workspaces.go`.
+  - Managed-host Flow/session routing must use the existing managed-host session and peer/session transport above.
+  - Do not invent new managed-host routes, auth bridges, transport wrappers, or parallel APIs. If those paths seem insufficient, stop and report the exact gap instead of creating a new path.
 - Provider-specific behavior belongs in provider adapter/runner packages, not generic orchestration paths.
 - Shared run/session/auth flows should remain provider-agnostic where possible.
 - New functionality should be additive and modular.
