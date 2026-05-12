@@ -385,6 +385,29 @@ func (m *runStreamManager) unsubscribe(runID, subscriberID string) {
 }
 
 func (m *runStreamManager) publishRuntimeEvent(runID string, event runruntime.StreamEvent) {
+	if m == nil {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		runID = strings.TrimSpace(event.RunID)
+	}
+	if runID == "" {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(event.Type), runruntime.StreamEventSessionTitle) {
+		sessionID := strings.TrimSpace(event.SessionID)
+		if state := m.stateForRun(runID); state != nil {
+			state.mu.Lock()
+			if sessionID == "" {
+				sessionID = state.sessionID
+			}
+			state.done = false
+			state.updatedAt = time.Now()
+			state.mu.Unlock()
+		}
+		event.SessionID = sessionID
+	}
 	msg := runStreamWireEvent{
 		Type:         strings.TrimSpace(event.Type),
 		SessionID:    strings.TrimSpace(event.SessionID),
@@ -455,6 +478,20 @@ func (m *runStreamManager) publishError(runID, sessionID string, runErr error) {
 	m.publish(runID, msg)
 }
 
+func (m *runStreamManager) stateForRun(runID string) *runStreamState {
+	if m == nil {
+		return nil
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil
+	}
+	m.mu.Lock()
+	state := m.runs[runID]
+	m.mu.Unlock()
+	return state
+}
+
 func (m *runStreamManager) publish(runID string, msg runStreamWireEvent) {
 	if m == nil {
 		return
@@ -496,6 +533,8 @@ func (m *runStreamManager) publish(runID string, msg runStreamWireEvent) {
 	}
 	if frame.evtType == "turn.completed" || frame.evtType == "turn.error" {
 		state.done = true
+	} else if frame.evtType == runruntime.StreamEventSessionTitle {
+		state.done = false
 	}
 	state.updatedAt = time.Now()
 
@@ -944,9 +983,6 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 func (s *Server) streamRunFrames(conn *transportws.Conn, runID string, sub *runStreamSubscriber, replay []runStreamReplayFrame) {
 	for _, frame := range replay {
 		if err := conn.WriteText(frame.payload); err != nil {
-			return
-		}
-		if isTerminalRunFrame(frame.evtType) {
 			return
 		}
 	}

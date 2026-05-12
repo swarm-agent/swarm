@@ -3203,7 +3203,7 @@ func (s *Service) startMemorySessionTitleFlow(sessionID, firstPrompt string, bas
 			s.emitSessionTitleWarning(sessionID, "final", convErr, nil)
 			return
 		}
-		s.generateAndApplySessionTitle(sessionID, conversation, "final", sessionTitleFinalWordsMin, sessionTitleFinalWordsMax, basePreference, memoryProfile, nil)
+		s.generateAndApplySessionTitle(sessionID, conversation, "final", sessionTitleFinalWordsMin, sessionTitleFinalWordsMax, basePreference, memoryProfile, emit)
 	}()
 }
 
