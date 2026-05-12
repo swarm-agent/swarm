@@ -313,44 +313,22 @@ func (s *Service) SyncHostedMirrorOpenState(sessionID string, source pebblestore
 }
 
 func (s *Service) StoreMirroredMessage(session pebblestore.SessionSnapshot, message pebblestore.MessageSnapshot) (pebblestore.SessionSnapshot, error) {
-	message.SessionID = strings.TrimSpace(message.SessionID)
-	message.Role = strings.ToLower(strings.TrimSpace(message.Role))
-	message.Content = strings.TrimSpace(message.Content)
-	message.Metadata = cloneSessionMetadataMap(message.Metadata)
-	if message.SessionID == "" {
-		message.SessionID = strings.TrimSpace(session.ID)
-	}
-	if message.SessionID == "" {
-		return pebblestore.SessionSnapshot{}, errors.New("message session id is required")
-	}
-	if message.GlobalSeq == 0 {
-		return pebblestore.SessionSnapshot{}, errors.New("message global sequence is required")
-	}
-	if strings.TrimSpace(session.ID) == "" {
-		session.ID = message.SessionID
-	}
 	mirrored, err := s.StoreMirroredSession(session)
 	if err != nil {
 		return pebblestore.SessionSnapshot{}, err
 	}
+	message.Metadata = cloneSessionMetadataMap(message.Metadata)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	shouldPutMessage := true
 	if existing, ok, err := s.store.GetMessage(message.SessionID, message.GlobalSeq); err != nil {
 		return pebblestore.SessionSnapshot{}, err
 	} else if ok && mirroredMessageSnapshotsEqual(existing, message) {
-		shouldPutMessage = false
+		return mirrored, nil
 	}
-	if shouldPutMessage {
-		if err := s.store.PutMessage(message); err != nil {
-			return pebblestore.SessionSnapshot{}, err
-		}
-	}
-	updated := mirroredSessionWithStoredMessage(mirrored, message)
-	if err := s.store.UpdateSession(updated); err != nil {
+	if err := s.store.PutMessage(message); err != nil {
 		return pebblestore.SessionSnapshot{}, err
 	}
-	return updated, nil
+	return mirrored, nil
 }
 
 func (s *Service) StoreMirroredLifecycle(snapshot pebblestore.SessionLifecycleSnapshot) error {
@@ -358,10 +336,7 @@ func (s *Service) StoreMirroredLifecycle(snapshot pebblestore.SessionLifecycleSn
 	if snapshot.SessionID == "" {
 		return errors.New("session id is required")
 	}
-	if err := s.store.UpsertSessionLifecycle(snapshot); err != nil {
-		return err
-	}
-	return s.updateSessionTimestampFromMirroredLifecycle(snapshot)
+	return s.store.UpsertSessionLifecycle(snapshot)
 }
 
 func (s *Service) PublishHostedEvent(ctx context.Context, descriptor HostedSessionDescriptor, sessionID, eventType string, payload map[string]any, causationID, correlationID string) (pebblestore.EventEnvelope, error) {
@@ -374,11 +349,6 @@ func (s *Service) PublishHostedEvent(ctx context.Context, descriptor HostedSessi
 func (s *Service) StoreMirroredEvent(sessionID, eventType string, payload map[string]any, causationID, correlationID string) (pebblestore.EventEnvelope, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	eventType = strings.TrimSpace(eventType)
-	if sessionID == "" {
-		if payloadSessionID := mirroredEventPayloadSessionID(payload); payloadSessionID != "" {
-			sessionID = payloadSessionID
-		}
-	}
 	if sessionID == "" {
 		return pebblestore.EventEnvelope{}, errors.New("session id is required")
 	}
@@ -1304,74 +1274,6 @@ func cloneSessionMetadataValue(value any) any {
 	default:
 		return value
 	}
-}
-
-func mirroredSessionWithStoredMessage(session pebblestore.SessionSnapshot, message pebblestore.MessageSnapshot) pebblestore.SessionSnapshot {
-	if session.MessageCount <= 0 || int(message.GlobalSeq) > session.MessageCount {
-		session.MessageCount = int(message.GlobalSeq)
-	}
-	if message.CreatedAt > session.LastMessageAt {
-		session.LastMessageAt = message.CreatedAt
-	}
-	if message.CreatedAt > session.UpdatedAt {
-		session.UpdatedAt = message.CreatedAt
-	}
-	return session
-}
-
-func (s *Service) updateSessionTimestampFromMirroredLifecycle(snapshot pebblestore.SessionLifecycleSnapshot) error {
-	updatedAt := snapshot.UpdatedAt
-	if updatedAt == 0 {
-		updatedAt = snapshot.StartedAt
-	}
-	if snapshot.EndedAt > updatedAt {
-		updatedAt = snapshot.EndedAt
-	}
-	if updatedAt == 0 {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	session, ok, err := s.store.GetSession(snapshot.SessionID)
-	if err != nil || !ok {
-		return err
-	}
-	if updatedAt <= session.UpdatedAt {
-		return nil
-	}
-	session.UpdatedAt = updatedAt
-	return s.store.UpdateSession(session)
-}
-
-func mirroredEventPayloadSessionID(payload map[string]any) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	if value, ok := payload["session_id"]; ok {
-		if text := strings.TrimSpace(fmt.Sprint(value)); text != "" {
-			return text
-		}
-	}
-	for _, key := range []string{"message", "lifecycle"} {
-		raw, ok := payload[key]
-		if !ok || raw == nil {
-			continue
-		}
-		encoded, err := json.Marshal(raw)
-		if err != nil {
-			continue
-		}
-		var nested struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal(encoded, &nested); err != nil {
-			continue
-		}
-		if text := strings.TrimSpace(nested.SessionID); text != "" {
-			return text
-		}
-	}
-	return ""
 }
 
 func (s *Service) ListMessages(sessionID string, afterGlobalSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error) {

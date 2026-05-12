@@ -521,14 +521,9 @@ func (s *Server) storeMirroredEventPayloadLifecycle(sessionID string, payload ma
 	if lifecycle.SessionID == "" {
 		lifecycle.SessionID = sessionID
 	}
-	lifecycleSessionID := strings.TrimSpace(lifecycle.SessionID)
-	if sessionID == "" {
-		sessionID = lifecycleSessionID
-	}
-	if sessionID == "" || lifecycleSessionID == "" || !strings.EqualFold(lifecycleSessionID, sessionID) {
+	if sessionID == "" || !strings.EqualFold(strings.TrimSpace(lifecycle.SessionID), sessionID) {
 		return nil
 	}
-	lifecycle.SessionID = lifecycleSessionID
 	return s.sessions.StoreMirroredLifecycle(lifecycle)
 }
 
@@ -552,14 +547,9 @@ func (s *Server) storeMirroredEventPayloadMessage(sessionID string, payload map[
 	if message.SessionID == "" {
 		message.SessionID = sessionID
 	}
-	messageSessionID := strings.TrimSpace(message.SessionID)
-	if sessionID == "" {
-		sessionID = messageSessionID
-	}
-	if sessionID == "" || messageSessionID == "" || !strings.EqualFold(messageSessionID, sessionID) || message.GlobalSeq == 0 {
+	if sessionID == "" || !strings.EqualFold(strings.TrimSpace(message.SessionID), sessionID) || message.GlobalSeq == 0 {
 		return nil
 	}
-	message.SessionID = messageSessionID
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil || !ok {
 		return err
