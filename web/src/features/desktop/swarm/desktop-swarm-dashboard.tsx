@@ -382,6 +382,37 @@ function summarizeContainerMount(mount: SwarmLocalContainer['mounts'][number]): 
   return details.length > 0 ? `${label} · ${details.join(' · ')}` : label
 }
 
+function mirrorResourceLocalContainer(record: unknown): SwarmLocalContainer {
+  const item = record as Partial<SwarmLocalContainer> & Record<string, unknown>
+  const rawMounts = Array.isArray(item.mounts) ? item.mounts : []
+  return {
+    id: String(item.id ?? '').trim(),
+    name: String(item.name ?? '').trim(),
+    containerName: String(item.containerName ?? item.container_name ?? '').trim(),
+    runtime: String(item.runtime ?? '').trim(),
+    networkName: String(item.networkName ?? item.network_name ?? '').trim(),
+    status: String(item.status ?? '').trim(),
+    containerID: String(item.containerID ?? item.container_id ?? '').trim(),
+    hostAPIBaseURL: String(item.hostAPIBaseURL ?? item.host_api_base_url ?? '').trim(),
+    hostPort: typeof item.hostPort === 'number' ? item.hostPort : (typeof item.host_port === 'number' ? item.host_port : 0),
+    runtimePort: typeof item.runtimePort === 'number' ? item.runtimePort : (typeof item.runtime_port === 'number' ? item.runtime_port : 0),
+    image: String(item.image ?? '').trim(),
+    warning: String(item.warning ?? '').trim(),
+    mounts: rawMounts.map((mount) => {
+      const value = mount as unknown as Record<string, unknown>
+      return {
+        sourcePath: String(value.sourcePath ?? value.source_path ?? '').trim(),
+        targetPath: String(value.targetPath ?? value.target_path ?? '').trim(),
+        mode: String(value.mode ?? '').trim() === 'ro' ? 'ro' : 'rw',
+        workspacePath: String(value.workspacePath ?? value.workspace_path ?? '').trim(),
+        workspaceName: String(value.workspaceName ?? value.workspace_name ?? '').trim(),
+      }
+    }),
+    createdAt: typeof item.createdAt === 'number' ? item.createdAt : (typeof item.created_at === 'number' ? item.created_at : 0),
+    updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : (typeof item.updated_at === 'number' ? item.updated_at : 0),
+  }
+}
+
 function flowDisplayName(flow: FlowSummaryRecord): string {
   return flow.definition.name || flow.definition.flow_id || 'Untitled flow'
 }
@@ -406,7 +437,6 @@ function flowMatchesContainerTarget(flow: FlowSummaryRecord, input: {
   const normalizedSwarmIDs = new Set([
     input.swarmID,
     input.deployment?.child_swarm_id,
-    targetDetail?.swarm_id,
   ].map((value) => String(value ?? '').trim().toLowerCase()).filter(Boolean))
   const normalizedDeploymentIDs = new Set([
     input.deploymentID,
@@ -419,9 +449,13 @@ function flowMatchesContainerTarget(flow: FlowSummaryRecord, input: {
   ].map((value) => String(value ?? '').trim().toLowerCase()).filter(Boolean))
   const targetSwarmID = String(target.swarm_id ?? '').trim().toLowerCase()
   const targetDeploymentID = String(target.deployment_id ?? '').trim().toLowerCase()
+  const detailSwarmID = String(targetDetail?.swarm_id ?? '').trim().toLowerCase()
+  const detailDeploymentID = String((targetDetail as { deployment_id?: unknown } | null | undefined)?.deployment_id ?? '').trim().toLowerCase()
   return (
     (!!targetSwarmID && normalizedSwarmIDs.has(targetSwarmID))
+    || (!!detailSwarmID && normalizedSwarmIDs.has(detailSwarmID))
     || (!!targetDeploymentID && normalizedDeploymentIDs.has(targetDeploymentID))
+    || (!!detailDeploymentID && normalizedDeploymentIDs.has(detailDeploymentID))
   )
 }
 
@@ -476,10 +510,16 @@ function MountedWorkspaceDetails({ items }: { items: string[] }) {
 }
 
 interface DeleteCandidate {
+  selectionID: string
+  kind: 'local' | 'managed-host'
+  hostSwarmID: string
+  hostName: string
   container: SwarmLocalContainer
   attachment: DeployContainerDeployment | null
   flows: FlowSummaryRecord[]
   mounts: string[]
+  canDelete: boolean
+  disabledReason?: string
 }
 
 interface DeleteSwarmCandidate {
@@ -616,7 +656,7 @@ function DeleteContainersModal({
             <div>
               <h2 className="text-xl font-semibold text-[var(--app-text)]">Delete containers</h2>
               <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                Remove selected local containers. If a container has an attached child swarm, its linked master-side child info will also be removed.
+                Remove selected local or managed-host containers. Assigned flows are unassigned first, then Swarm asks the owning host to delete the container and cleans linked records.
               </p>
             </div>
             <ModalCloseButton onClick={onClose} aria-label="Close delete containers dialog" />
@@ -626,33 +666,36 @@ function DeleteContainersModal({
         <div className="flex max-h-[min(76vh,760px)] flex-col gap-4 overflow-y-auto px-6 py-6">
           {candidates.length === 0 ? (
             <Card className="border-dashed p-5 text-sm text-[var(--app-text-muted)]">
-              No local containers available to delete.
+              No containers available to delete.
             </Card>
           ) : (
             <div className="grid gap-3">
-              {candidates.map(({ container, attachment, flows, mounts }) => {
-                const checked = selectedIDs.has(container.id)
+              {candidates.map(({ selectionID, kind, hostName, container, attachment, flows, mounts, canDelete, disabledReason }) => {
+                const checked = selectedIDs.has(selectionID)
                 const childLabel = attachment?.child_display_name || attachment?.child_swarm_id || ''
                 return (
-                  <label key={container.id} className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}`}>
+                  <label key={selectionID} className={`flex items-start gap-3 rounded-2xl border p-4 transition ${canDelete ? 'cursor-pointer' : 'cursor-not-allowed opacity-70'} ${checked ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]' : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]'}` }>
                     <input
                       type="checkbox"
                       className="mt-1 h-4 w-4 rounded border-[var(--app-border)]"
                       checked={checked}
-                      onChange={() => onToggle(container.id)}
-                      disabled={busy}
+                      onChange={() => onToggle(selectionID)}
+                      disabled={busy || !canDelete}
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="truncate text-sm font-semibold text-[var(--app-text)]">{container.name}</div>
                         <Badge tone={container.status === 'running' ? 'live' : 'neutral'}>{container.status || 'created'}</Badge>
+                        <Badge tone={kind === 'managed-host' ? 'warning' : 'neutral'}>{kind === 'managed-host' ? `managed host · ${hostName}` : hostName}</Badge>
                         {attachment ? <Badge tone="warning">removes child info</Badge> : null}
                       </div>
                       <div className="mt-1 text-xs text-[var(--app-text-muted)]">{container.containerName}</div>
                       <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)]">
+                        <div>Host: {hostName}</div>
                         <div>Runtime: {container.runtime || 'unknown'}</div>
                         {childLabel ? <div>Connected child swarm: {childLabel}</div> : null}
-                        {attachment ? <div>Also removes linked deployment, trusted peer, and group membership info from this master.</div> : null}
+                        {attachment ? <div>Also removes linked deployment, trusted peer, and group membership info from this manager.</div> : null}
+                        {!canDelete && disabledReason ? <div className="text-[var(--app-warning-text)]">{disabledReason}</div> : null}
                         {flowImpactSummary(flows) ? <div className="text-[var(--app-warning-text)]">{flowImpactSummary(flows)}</div> : null}
                       </div>
                       <MountedWorkspaceDetails items={mounts} />
@@ -1554,8 +1597,8 @@ export function DesktopSwarmDashboard() {
     })
     return mapped
   }, [deployments, flows, localContainers])
-  const deleteCandidates = useMemo<DeleteCandidate[]>(() => (
-    localContainers.map((container) => {
+  const deleteCandidates = useMemo<DeleteCandidate[]>(() => {
+    const localCandidates = localContainers.map((container): DeleteCandidate => {
       const attachment = deployments.find((deployment) => (
         String(deployment.attach_status ?? '').trim() === 'attached'
         && deploymentMatchesContainer(deployment, container)
@@ -1563,13 +1606,50 @@ export function DesktopSwarmDashboard() {
       const bootstrapMounts = attachment?.workspace_bootstrap?.map(summarizeWorkspaceBootstrap) ?? []
       const containerMounts = container.mounts.map(summarizeContainerMount)
       return {
+        selectionID: `local:${container.id}`,
+        kind: 'local',
+        hostSwarmID: localSwarmID,
+        hostName: localSwarmName,
         container,
         attachment,
         flows: flowsByLocalContainerID.get(container.id) ?? [],
         mounts: bootstrapMounts.length > 0 ? bootstrapMounts : containerMounts,
+        canDelete: true,
       }
     })
-  ), [deployments, flowsByLocalContainerID, localContainers])
+
+    const managedCandidates = mirrorResources.containers.map((mirrored): DeleteCandidate => {
+      const container = mirrorResourceLocalContainer(mirrored.resource)
+      const attachment = [container.id, container.containerID, container.containerName]
+        .map((value) => mirroredDeploymentByContainerID.get(String(value ?? '').trim()) ?? null)
+        .find(Boolean) ?? null
+      const target = swarmTargetByID(swarmTargets, mirrored.managedSwarmID)
+      const member = managedHostMembers.find((item) => item.swarmID === mirrored.managedSwarmID) ?? null
+      const hostName = target?.name || member?.name || mirrored.managedSwarmID || 'Managed Host'
+      const bootstrapMounts = attachment?.workspace_bootstrap?.map(summarizeWorkspaceBootstrap) ?? []
+      const containerMounts = container.mounts.map(summarizeContainerMount)
+      const canDelete = Boolean(attachment?.id)
+      return {
+        selectionID: `managed-host:${mirrored.managedSwarmID}:${attachment?.id || container.id || mirrored.id}`,
+        kind: 'managed-host',
+        hostSwarmID: mirrored.managedSwarmID,
+        hostName,
+        container,
+        attachment,
+        flows: flows.filter((flow) => flowMatchesContainerTarget(flow, {
+          deployment: attachment,
+          container,
+          swarmID: attachment?.child_swarm_id,
+          deploymentID: attachment?.id || container.id,
+        })),
+        mounts: bootstrapMounts.length > 0 ? bootstrapMounts : containerMounts,
+        canDelete,
+        disabledReason: canDelete ? undefined : 'This mirrored container has no mirrored deployment record yet; refresh the managed host before deleting it from the manager.',
+      }
+    })
+
+    return [...localCandidates, ...managedCandidates]
+  }, [deployments, flows, flowsByLocalContainerID, localContainers, localSwarmID, localSwarmName, managedHostMembers, mirrorResources.containers, mirroredDeploymentByContainerID, swarmTargets])
   const deleteSwarmCandidates = useMemo<DeleteSwarmCandidate[]>(() => {
     if (deleteSwarmCandidateContainerIDs.length === 0) {
       return baseDeleteSwarmCandidates
@@ -1761,6 +1841,10 @@ export function DesktopSwarmDashboard() {
   }
 
   const toggleDeleteContainer = (id: string) => {
+    const candidate = deleteCandidates.find((item) => item.selectionID === id)
+    if (candidate && !candidate.canDelete) {
+      return
+    }
     setSelectedDeleteContainerIDs((current) => (
       current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
     ))
@@ -1790,16 +1874,68 @@ export function DesktopSwarmDashboard() {
     setError(null)
     setStatus(null)
     try {
-      const selectedCandidates = deleteCandidates.filter((candidate) => selectedDeleteIDs.has(candidate.container.id))
+      const selectedCandidates = deleteCandidates.filter((candidate) => selectedDeleteIDs.has(candidate.selectionID) && candidate.canDelete)
+      if (selectedCandidates.length === 0) {
+        setStatus('No containers were selected.')
+        return
+      }
       const removedFlowCount = await unassignImpactedFlows(selectedCandidates.flatMap((candidate) => candidate.flows))
-      const result = await deleteSwarmLocalContainers(selectedDeleteContainerIDs)
+      const localContainerIDs = selectedCandidates
+        .filter((candidate) => candidate.kind === 'local' && !candidate.attachment?.id)
+        .map((candidate) => candidate.container.id)
+      const deploymentIDs = selectedCandidates
+        .map((candidate) => candidate.attachment?.id || '')
+        .filter((id) => id.trim() !== '')
+
+      const [localOutcome, deploymentOutcome] = await Promise.allSettled([
+        localContainerIDs.length > 0 ? deleteSwarmLocalContainers(localContainerIDs) : Promise.resolve(null),
+        deploymentIDs.length > 0 ? deleteDeployContainers(deploymentIDs) : Promise.resolve(null),
+      ])
       await refresh()
-      setDeleteResult(result)
       setSelectedDeleteContainerIDs([])
       setDeleteContainersOpen(false)
-      setStatus(result.failed > 0
-        ? `Deleted ${result.count} container${result.count === 1 ? '' : 's'} with ${result.failed} failure${result.failed === 1 ? '' : 's'}.${removedFlowCount > 0 ? ` Unassigned and turned off ${removedFlowCount} assigned flow${removedFlowCount === 1 ? '' : 's'} first.` : ''}`
-        : `Deleted ${result.count} container${result.count === 1 ? '' : 's'}.${result.childInfoRemoved > 0 ? ` Removed linked child info for ${result.childInfoRemoved}.` : ''}${removedFlowCount > 0 ? ` Unassigned and turned off ${removedFlowCount} assigned flow${removedFlowCount === 1 ? '' : 's'} first.` : ''}`)
+
+      const messages: string[] = []
+      const failures: string[] = []
+      let combinedCount = 0
+      let combinedFailed = 0
+      let combinedChildInfoRemoved = 0
+
+      if (localOutcome.status === 'fulfilled' && localOutcome.value) {
+        combinedCount += localOutcome.value.count
+        combinedFailed += localOutcome.value.failed
+        combinedChildInfoRemoved += localOutcome.value.childInfoRemoved
+        messages.push(localOutcome.value.failed > 0
+          ? `Deleted ${localOutcome.value.count} local container${localOutcome.value.count === 1 ? '' : 's'} with ${localOutcome.value.failed} failure${localOutcome.value.failed === 1 ? '' : 's'}.`
+          : `Deleted ${localOutcome.value.count} local container${localOutcome.value.count === 1 ? '' : 's'}.`)
+      } else if (localOutcome.status === 'rejected') {
+        failures.push(localOutcome.reason instanceof Error ? localOutcome.reason.message : 'Failed to delete local containers')
+      }
+
+      if (deploymentOutcome.status === 'fulfilled' && deploymentOutcome.value) {
+        combinedCount += deploymentOutcome.value.count
+        combinedFailed += deploymentOutcome.value.failed
+        combinedChildInfoRemoved += deploymentOutcome.value.childInfoRemoved
+        messages.push(deploymentOutcome.value.failed > 0
+          ? `Deleted ${deploymentOutcome.value.count} managed container${deploymentOutcome.value.count === 1 ? '' : 's'} with ${deploymentOutcome.value.failed} failure${deploymentOutcome.value.failed === 1 ? '' : 's'}.`
+          : `Deleted ${deploymentOutcome.value.count} managed container${deploymentOutcome.value.count === 1 ? '' : 's'} and cleaned linked records.`)
+      } else if (deploymentOutcome.status === 'rejected') {
+        failures.push(deploymentOutcome.reason instanceof Error ? deploymentOutcome.reason.message : 'Failed to delete managed containers')
+      }
+
+      if (removedFlowCount > 0) {
+        messages.push(`Unassigned and turned off ${removedFlowCount} assigned flow${removedFlowCount === 1 ? '' : 's'} first.`)
+      }
+      if (combinedChildInfoRemoved > 0) {
+        messages.push(`Removed linked child info for ${combinedChildInfoRemoved}.`)
+      }
+      setDeleteResult({ deleted: [], count: combinedCount, failed: combinedFailed, childInfoRemoved: combinedChildInfoRemoved, items: [] })
+      if (messages.length > 0) {
+        setStatus(messages.join(' '))
+      }
+      if (failures.length > 0) {
+        setError(failures.join(' '))
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete selected containers')
     } finally {
@@ -2513,6 +2649,13 @@ export function DesktopSwarmDashboard() {
                                   <Badge tone={running ? 'live' : container.status === 'missing' ? 'warning' : 'neutral'}>{container.status || 'created'}</Badge>
                                   {childDesktopURL ? <a href={childDesktopURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">Desktop</a> : null}
                                   {childAPIURL ? <a href={childAPIURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">API</a> : null}
+                                  {attachedDeployment ? <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => {
+                                    setSelectedDeleteContainerIDs([`managed-host:${mirroredContainer.managedSwarmID}:${attachedDeployment.id}`])
+                                    setDeleteResult(null)
+                                    setDeleteContainersOpen(true)
+                                    setError(null)
+                                    setStatus(null)
+                                  }} disabled={busy}>Delete</Button> : null}
                                 </div>
                               </div>
                               <MountedWorkspaceDetails items={mountedWorkspaces} />
