@@ -23,8 +23,8 @@ func TestChatCommandPaletteIncludesCopyBlockCommands(t *testing.T) {
 	if matches[0].Command != "/copy 1" {
 		t.Fatalf("expected /copy 1 as first match, got %q", matches[0].Command)
 	}
-	if !strings.Contains(matches[0].Hint, "restart command") {
-		t.Fatalf("expected copy block label in hint, got %q", matches[0].Hint)
+	if matches[0].Hint != "swarm restart" {
+		t.Fatalf("expected copied content preview in hint, got %q", matches[0].Hint)
 	}
 
 	selected, ok := page.selectedCommandSuggestion()

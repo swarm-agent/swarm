@@ -196,7 +196,7 @@ func (p *ChatPage) drawCommandPalette(s tcell.Screen, inputRect Rect, topBound, 
 			prefix = "› "
 			style = p.theme.Primary.Bold(true)
 		}
-		DrawText(s, popup.X+2, rowY, popup.W-4, style, prefix+suggestion.Command)
+		drawCommandSuggestionRow(s, popup.X+2, rowY, popup.W-4, style, p.theme.TextMuted, prefix, suggestion)
 		rowY++
 	}
 

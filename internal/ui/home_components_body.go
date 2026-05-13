@@ -174,7 +174,7 @@ func (p *HomePage) drawCommandPalette(s tcell.Screen, inputRect Rect, variant la
 		}
 		baseX := popup.X + 2
 		available := popup.W - 4
-		written := DrawTextCount(s, baseX, rowY, available, style, prefix+suggestion.Command)
+		written := drawCommandSuggestionRow(s, baseX, rowY, available, style, p.theme.TextMuted, prefix, suggestion)
 		if written > 0 {
 			p.commandPaletteTargets = append(p.commandPaletteTargets, clickTarget{
 				Rect:   Rect{X: baseX, Y: rowY, W: written, H: 1},

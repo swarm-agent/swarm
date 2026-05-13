@@ -172,6 +172,16 @@ func normalizeChatCopyContent(content string) string {
 	return content
 }
 
+func chatCopyCommandPreview(content string) string {
+	content = normalizeChatCopyContent(content)
+	content = strings.ReplaceAll(content, "\t", " ")
+	fields := strings.Fields(content)
+	if len(fields) == 0 {
+		return "(empty copy block)"
+	}
+	return strings.Join(fields, " ")
+}
+
 func countChatCopyBlocks(text string) int {
 	count := 0
 	for _, segment := range splitChatCopySegments(text) {
@@ -261,11 +271,7 @@ func (p *ChatPage) copyBlockCommandSuggestions() []CommandSuggestion {
 				continue
 			}
 			current++
-			label := strings.TrimSpace(segment.Copy.Label)
-			hint := fmt.Sprintf("Copy assistant tagged copy block %d", current)
-			if label != "" {
-				hint += ": " + label
-			}
+			hint := chatCopyCommandPreview(segment.Copy.Content)
 			suggestions = append(suggestions, CommandSuggestion{
 				Command: fmt.Sprintf("/copy %d", current),
 				Hint:    hint,
