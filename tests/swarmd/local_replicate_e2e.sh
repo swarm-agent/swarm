@@ -29,6 +29,7 @@ Options:
   --workspace-path <path>             Source workspace path. Default: repo root
   --workspace-name <name>             Workspace display name. Default: basename of workspace path
   --replication-mode <bundle|copy>    Explicit replication mode. Default: handler default
+  --replicate-count <n>               Repeat local replication n times on the same isolated host. Default: 1
   --readonly                          Mark replicated workspace read-only
   --sync-enabled                      Enable managed sync in the replicate request
   --sync-mode <managed>               Explicit sync mode. Default when enabled: managed
@@ -41,6 +42,7 @@ Options:
   --host-vault-password-file <path>   Read the host vault password from a local file
   --verify-sync-state                 After attach, create a host credential plus a custom agent/tool and wait for the child to read them
   --verify-sync-crud-flow             After attach, prove real Fireworks credential CRUD plus synced agent/tool routed execution on the child
+  --prove-routed-ai                   After attach, run an optional final routed AI proof session on the replicated child
   --sync-verify-timeout <seconds>     Managed sync propagation wait timeout. Default: 45
   --proof-provider <id>               Provider for the routed proof. Default: fireworks
   --proof-model <id>                  Model for the routed proof. Default: accounts/fireworks/models/minimax-m2p5
@@ -99,6 +101,21 @@ trim() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "${value}"
+}
+
+url_encode() {
+  local input="${1-}"
+  local output=""
+  local i char encoded
+  LC_CTYPE=C
+  for ((i = 0; i < ${#input}; i += 1)); do
+    char="${input:i:1}"
+    case "${char}" in
+      [a-zA-Z0-9.~_-]) output+="${char}" ;;
+      *) printf -v encoded '%%%02X' "'${char}"; output+="${encoded}" ;;
+    esac
+  done
+  printf '%s' "${output}"
 }
 
 write_artifact() {
@@ -264,7 +281,8 @@ child_api_request() {
   local method="${1:-GET}"
   local path="${2:-}"
   local body="${3:-}"
-  child_api_request_capture "${method}" "${path}" "${body}" "30"
+  local max_time="${4:-30}"
+  child_api_request_capture "${method}" "${path}" "${body}" "${max_time}"
   if [[ "${JSON_REQUEST_STATUS}" != 2* ]]; then
     fail "${method} child:${path} failed with status ${JSON_REQUEST_STATUS}: ${JSON_REQUEST_BODY}"
   fi
@@ -276,41 +294,76 @@ child_api_request_capture() {
   local path="${2:-}"
   local body="${3:-}"
   local max_time="${4:-30}"
-  [[ "${method}" == "GET" ]] || fail "child_api_request only supports GET in the local replicate harness"
-  [[ -z "${body}" ]] || fail "child_api_request does not support a request body in the local replicate harness"
+  local response
   [[ -n "${CONTAINER_NAME:-}" ]] || fail "child container name is not set"
 
-  local response payload_file http_code
-  payload_file="$(mktemp)"
-  response="$("${RUNTIME}" exec --env SWARM_CHILD_API_PATH="${path}" --env SWARM_CHILD_API_TIMEOUT="${max_time}" "${CONTAINER_NAME}" sh -lc '
-    cookie_file="$(mktemp)"
-    response_file="$(mktemp)"
-    trap "rm -f -- \"${cookie_file}\" \"${response_file}\"" EXIT
-    curl -fsS -c "${cookie_file}" -b "${cookie_file}" \
-      -H "Origin: http://127.0.0.1:5555" \
-      -H "Referer: http://127.0.0.1:5555/" \
-      -H "Sec-Fetch-Site: same-origin" \
-      "http://127.0.0.1:5555/v1/auth/desktop/session" >/dev/null
-    http_code="$(curl -sS --connect-timeout 3 --max-time "${SWARM_CHILD_API_TIMEOUT}" \
-      -c "${cookie_file}" -b "${cookie_file}" \
-      -H "Origin: http://127.0.0.1:7781" \
-      -H "Referer: http://127.0.0.1:7781/" \
-      -H "Sec-Fetch-Site: same-origin" \
-      -H "Accept: application/json" \
-      -o "${response_file}" -w "%{http_code}" \
-      "http://127.0.0.1:7781${SWARM_CHILD_API_PATH}")"
-    cat "${response_file}"
-    printf "\n__SWARM_HTTP_CODE__=%s\n" "${http_code}"
-  ')"
-  http_code="$(printf '%s' "${response}" | sed -n 's/^__SWARM_HTTP_CODE__=//p' | tail -n 1)"
-  printf '%s' "${response}" | sed '/^__SWARM_HTTP_CODE__=/d' > "${payload_file}"
-  JSON_REQUEST_STATUS="${http_code:-000}"
-  JSON_REQUEST_BODY="$(cat -- "${payload_file}")"
-  rm -f -- "${payload_file}"
+  if [[ -n "${body}" ]]; then
+    response="$(printf '%s' "${body}" | "${RUNTIME}" exec -i \
+      --env SWARM_CHILD_API_METHOD="${method}" \
+      --env SWARM_CHILD_API_PATH="${path}" \
+      --env SWARM_CHILD_API_TIMEOUT="${max_time}" \
+      "${CONTAINER_NAME}" sh -lc '
+        cookie_file="$(mktemp)"
+        response_file="$(mktemp)"
+        request_body_file="$(mktemp)"
+        trap "rm -f -- \"${cookie_file}\" \"${response_file}\" \"${request_body_file}\"" EXIT
+        cat >"${request_body_file}"
+        curl -fsS -c "${cookie_file}" -b "${cookie_file}" \
+          -H "Origin: http://127.0.0.1:5555" \
+          -H "Referer: http://127.0.0.1:5555/" \
+          -H "Sec-Fetch-Site: same-origin" \
+          "http://127.0.0.1:5555/v1/auth/desktop/session" >/dev/null
+        http_code="$(curl -sS --connect-timeout 3 --max-time "${SWARM_CHILD_API_TIMEOUT}" \
+          -c "${cookie_file}" -b "${cookie_file}" \
+          -H "Origin: http://127.0.0.1:7781" \
+          -H "Referer: http://127.0.0.1:7781/" \
+          -H "Sec-Fetch-Site: same-origin" \
+          -H "Accept: application/json" \
+          -H "Content-Type: application/json" \
+          -o "${response_file}" -w "%{http_code}" \
+          -X "${SWARM_CHILD_API_METHOD}" \
+          --data-binary "@${request_body_file}" \
+          "http://127.0.0.1:7781${SWARM_CHILD_API_PATH}")"
+        cat "${response_file}"
+        printf "\n__SWARM_HTTP_CODE__=%s\n" "${http_code}"
+      ')"
+  else
+    response="$("${RUNTIME}" exec \
+      --env SWARM_CHILD_API_METHOD="${method}" \
+      --env SWARM_CHILD_API_PATH="${path}" \
+      --env SWARM_CHILD_API_TIMEOUT="${max_time}" \
+      "${CONTAINER_NAME}" sh -lc '
+        cookie_file="$(mktemp)"
+        response_file="$(mktemp)"
+        trap "rm -f -- \"${cookie_file}\" \"${response_file}\"" EXIT
+        curl -fsS -c "${cookie_file}" -b "${cookie_file}" \
+          -H "Origin: http://127.0.0.1:5555" \
+          -H "Referer: http://127.0.0.1:5555/" \
+          -H "Sec-Fetch-Site: same-origin" \
+          "http://127.0.0.1:5555/v1/auth/desktop/session" >/dev/null
+        http_code="$(curl -sS --connect-timeout 3 --max-time "${SWARM_CHILD_API_TIMEOUT}" \
+          -c "${cookie_file}" -b "${cookie_file}" \
+          -H "Origin: http://127.0.0.1:7781" \
+          -H "Referer: http://127.0.0.1:7781/" \
+          -H "Sec-Fetch-Site: same-origin" \
+          -H "Accept: application/json" \
+          -o "${response_file}" -w "%{http_code}" \
+          -X "${SWARM_CHILD_API_METHOD}" \
+          "http://127.0.0.1:7781${SWARM_CHILD_API_PATH}")"
+        cat "${response_file}"
+        printf "\n__SWARM_HTTP_CODE__=%s\n" "${http_code}"
+      ')"
+  fi
+  JSON_REQUEST_STATUS="$(printf '%s' "${response}" | sed -n 's/^__SWARM_HTTP_CODE__=//p' | tail -n 1)"
+  JSON_REQUEST_BODY="$(printf '%s' "${response}" | sed '/^__SWARM_HTTP_CODE__=/d')"
 }
 
 child_api_get() {
-  child_api_request GET "$1"
+  child_api_request GET "$1" "" "${2:-30}"
+}
+
+child_api_post() {
+  child_api_request POST "$1" "${2:-}" "${3:-30}"
 }
 
 prepare_proof_provider_key_file() {
@@ -464,10 +517,11 @@ sync_modules_json() {
 create_routed_host_session() {
   local session_title="${1:-}"
   local agent_name="${2:-}"
+  local session_mode="${3:-auto}"
   [[ -n "${CHILD_SWARM_ID:-}" ]] || fail "child swarm id is not set for routed session create"
   [[ -n "${TARGET_WORKSPACE_PATH:-}" ]] || fail "target workspace path is not set for routed session create"
   local payload
-  payload="$(build_routed_session_payload "${session_title}" "${agent_name}")"
+  payload="$(build_routed_session_payload "${session_title}" "${agent_name}" "${session_mode}")"
   api_post "/v1/sessions?swarm_id=${CHILD_SWARM_ID}" "${payload}"
 }
 
@@ -832,6 +886,7 @@ prepare_isolated_host() {
   HOST_DESKTOP_URL="http://${HOST_ADVERTISE_HOST}:${HOST_DESKTOP_PORT}"
 
   ARTIFACT_DIR="${HOST_ROOT}/artifacts"
+  ROOT_ARTIFACT_DIR="${ARTIFACT_DIR}"
   mkdir -p "${ARTIFACT_DIR}"
 
   write_host_control_files
@@ -839,6 +894,106 @@ prepare_isolated_host() {
     install_host_desktop_assets
   fi
   write_artifact "host-startup-config.txt" "$(cat -- "${HOST_STARTUP_CONFIG}")"
+}
+
+replication_swarm_name_for_run() {
+  local run_index="${1:-1}"
+  if (( REPLICATION_COUNT <= 1 )); then
+    printf '%s' "${SWARM_NAME_BASE}"
+    return 0
+  fi
+  printf '%s-run-%02d' "${SWARM_NAME_BASE}" "${run_index}"
+}
+
+prepare_run_artifact_dir() {
+  local run_index="${1:-1}"
+  local run_swarm_name="${2:-}"
+  if (( REPLICATION_COUNT <= 1 )); then
+    RUN_ARTIFACT_DIR="${ROOT_ARTIFACT_DIR}"
+    ARTIFACT_DIR="${ROOT_ARTIFACT_DIR}"
+    return 0
+  fi
+
+  RUN_ARTIFACT_DIR="${ROOT_ARTIFACT_DIR}/run-$(printf '%02d' "${run_index}")"
+  mkdir -p "${RUN_ARTIFACT_DIR}"
+  ARTIFACT_DIR="${RUN_ARTIFACT_DIR}"
+  write_artifact "run-meta.json" "$(jq -nc --argjson run_index "${run_index}" --arg swarm_name "${run_swarm_name}" --arg artifact_dir "${RUN_ARTIFACT_DIR}" '{run_index:$run_index,swarm_name:$swarm_name,artifact_dir:$artifact_dir}')"
+}
+
+reset_replication_run_state() {
+  if [[ -n "${CHILD_DESKTOP_SESSION_COOKIE_FILE:-}" && -f "${CHILD_DESKTOP_SESSION_COOKIE_FILE}" ]]; then
+    rm -f -- "${CHILD_DESKTOP_SESSION_COOKIE_FILE}"
+  fi
+
+  DEPLOYMENT_ID=""
+  DEPLOYMENT_JSON=""
+  DEPLOYMENT_HOST_CONTAINER_ID=""
+  DEPLOYMENT_ATTACHMENT_ID=""
+  REPLICATE_RESPONSE_JSON=""
+  REPLICATE_GROUP_ID=""
+  CHILD_SWARM_ID_FROM_RESPONSE=""
+  TARGET_WORKSPACE_PATH=""
+  CHILD_SWARM_ID=""
+  CONTAINER_NAME=""
+  LOCAL_CONTAINER_JSON=""
+  WORKSPACE_ENTRY_JSON=""
+  WORKSPACE_LINK_JSON=""
+  SUMMARY_JSON=""
+  BACKEND_PROBE_JSON=""
+  DESKTOP_PROBE_JSON=""
+  CHILD_API_URL=""
+  CHILD_ATTACH_TOKEN=""
+  CHILD_DESKTOP_SESSION_COOKIE_FILE=""
+  JSON_REQUEST_STATUS=""
+  JSON_REQUEST_BODY=""
+  CURRENT_STEP=""
+  FAILURE_CONTEXT_CAPTURED="false"
+  PROOF_PRIMARY_CREDENTIAL_ID=""
+  PROOF_SECONDARY_CREDENTIAL_ID=""
+  PROOF_SESSION_ID=""
+  DIAGNOSTIC_PROOF_SESSION_ID=""
+  PROOF_DIAGNOSTIC_CAPTURED="false"
+  PROOF_RUN_PROMPT=""
+  PROOF_SUCCESS_TOKEN=""
+  SYNC_PROBE_CREDENTIAL_PROVIDER=""
+  SYNC_PROBE_CREDENTIAL_ID=""
+  SYNC_PROBE_TOOL_NAME=""
+  SYNC_PROBE_TOOL_CONTRACT_NAME=""
+  SYNC_PROBE_TOOL_COMMAND=""
+  SYNC_PROBE_TOOL_COMMAND_FINAL=""
+  SYNC_PROBE_AGENT_NAME=""
+  SYNC_PROBE_AGENT_PROMPT=""
+  SYNC_PROBE_AGENT_PROMPT_FINAL=""
+}
+
+write_aggregate_summary() {
+  if (( REPLICATION_COUNT <= 1 )); then
+    return 0
+  fi
+
+  ARTIFACT_DIR="${ROOT_ARTIFACT_DIR}"
+  jq -s \
+    --arg runtime "${RUNTIME}" \
+    --arg host_root "${HOST_ROOT}" \
+    --arg host_swarm_id "${HOST_SWARM_ID}" \
+    --arg host_api_url "${HOST_ADMIN_API_URL}" \
+    --arg host_desktop_url "${HOST_DESKTOP_URL}" \
+    --arg source_workspace_path "${SOURCE_WORKSPACE_PATH}" \
+    --arg group_id "${TARGET_GROUP_ID}" \
+    --arg group_name "${TARGET_GROUP_NAME}" \
+    --arg group_network_name "${TARGET_GROUP_NETWORK_NAME}" \
+    --arg swarm_name_base "${SWARM_NAME_BASE}" \
+    --argjson requested_runs "${REPLICATION_COUNT}" \
+    --argjson completed_runs "${#RUN_SUMMARY_FILES[@]}" \
+    '{mode:"multi",runtime:$runtime,host_root:$host_root,host_swarm_id:$host_swarm_id,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,source_workspace_path:$source_workspace_path,swarm_name_base:$swarm_name_base,target_group:{id:$group_id,name:$group_name,network_name:$group_network_name},requested_runs:$requested_runs,completed_runs:$completed_runs,runs:.}' \
+    "${RUN_SUMMARY_FILES[@]}" >"${ROOT_ARTIFACT_DIR}/aggregate-summary.json"
+  cp "${ROOT_ARTIFACT_DIR}/aggregate-summary.json" "${ROOT_ARTIFACT_DIR}/summary.json"
+
+  log ""
+  log "Aggregate verification summary"
+  jq . "${ROOT_ARTIFACT_DIR}/aggregate-summary.json"
+  log ""
+  log "Artifacts root: ${ROOT_ARTIFACT_DIR}"
 }
 
 ensure_host_running() {
@@ -1220,13 +1375,14 @@ capture_session_snapshot() {
 build_routed_session_payload() {
   local session_title="${1:-}"
   local agent_name="${2:-}"
+  local mode="${3:-auto}"
   jq -nc \
     --arg title "${session_title}" \
     --arg workspace_path "${SOURCE_WORKSPACE_PATH}" \
     --arg host_workspace_path "${SOURCE_WORKSPACE_PATH}" \
     --arg runtime_workspace_path "${TARGET_WORKSPACE_PATH}" \
     --arg workspace_name "${WORKSPACE_NAME}" \
-    --arg mode "auto" \
+    --arg mode "${mode}" \
     --arg agent_name "${agent_name}" \
     --arg provider "${PROOF_PROVIDER}" \
     --arg model "${PROOF_MODEL}" \
@@ -1402,6 +1558,80 @@ exercise_sync_state() {
 
     sleep "${POLL_INTERVAL_SECONDS}"
   done
+}
+
+run_final_routed_ai_proof() {
+  [[ "${PROVE_ROUTED_AI}" == "true" ]] || return 0
+
+  ensure_child_attach_token
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY_FILE" "PROOF_PROVIDER_KEY_ENV" "PROOF_PROVIDER_KEY_TMP_FILE" "final routed proof provider key" "true"
+
+  local probe_suffix proof_session_create_response proof_prompt proof_run_start_response
+  local proof_provider_seed_payload proof_provider_seed_response
+  local proof_permission_json proof_permission_id proof_permission_resolve
+  local proof_provider_label proof_provider_credential_id child_credentials_json start_ts
+
+  probe_suffix="$(printf '%s' "${DEPLOYMENT_ID}" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
+  probe_suffix="${probe_suffix:0:18}"
+  if [[ -z "${probe_suffix}" ]]; then
+    probe_suffix="$(date +%s)"
+  fi
+  proof_provider_label="final-routed-proof-${probe_suffix}"
+
+  set_step "proof:seed-child-provider"
+  proof_provider_seed_payload="$(jq -nc \
+    --arg provider "${PROOF_PROVIDER}" \
+    --arg label "${proof_provider_label}" \
+    --argjson active true \
+    --rawfile api_key "${PROOF_PROVIDER_KEY_FILE}" \
+    '{provider:$provider,type:"api",label:$label,api_key:($api_key | sub("\r?\n$";"")),active:$active}')"
+  proof_provider_seed_response="$(child_api_post '/v1/auth/credentials' "${proof_provider_seed_payload}" 60)"
+  write_artifact "child-final-proof-provider-seed.json" "${proof_provider_seed_response}"
+
+  start_ts="$(date +%s)"
+  while :; do
+    child_credentials_json="$(child_api_get "/v1/auth/credentials?provider=${PROOF_PROVIDER}&limit=50" 30)"
+    proof_provider_credential_id="$(printf '%s' "${child_credentials_json}" | jq -r --arg label "${proof_provider_label}" '[.records[]? | select((.label // "") == $label and .active == true) | .id] | first // empty')"
+    if [[ -n "${proof_provider_credential_id}" ]]; then
+      write_artifact "child-final-proof-provider-state.json" "${child_credentials_json}"
+      break
+    fi
+    if (( "$(date +%s)" - start_ts >= SYNC_VERIFY_TIMEOUT_SECONDS )); then
+      write_artifact "child-final-proof-provider-state.timeout.json" "${child_credentials_json}"  
+      fail "timed out waiting for child final routed proof provider ${PROOF_PROVIDER} label=${proof_provider_label}"
+    fi
+    sleep "${POLL_INTERVAL_SECONDS}"
+  done
+
+  set_step "proof:create-final-routed-session"
+  proof_session_create_response="$(create_routed_host_session "final-proof-${probe_suffix}" "" "plan")"
+  write_artifact "final-proof-routed-session-create.json" "${proof_session_create_response}"
+  PROOF_SESSION_ID="$(printf '%s' "${proof_session_create_response}" | jq -r '.session.id // empty')"
+  [[ -n "${PROOF_SESSION_ID}" ]] || fail "final routed proof session create returned no session id"
+
+  PROOF_SUCCESS_TOKEN="FINAL_ROUTED_PROOF_${probe_suffix}"
+  proof_prompt="Exit plan mode. After approval, reply with exactly: ${PROOF_SUCCESS_TOKEN}"
+  PROOF_RUN_PROMPT="${proof_prompt}"
+
+  set_step "proof:start-final-routed-run"
+  proof_run_start_response="$(start_background_routed_run "${PROOF_SESSION_ID}" "${proof_prompt}" "" "exit_plan_mode")"
+  write_artifact "final-proof-routed-run-start.json" "${proof_run_start_response}"
+
+  set_step "proof:approve-final-exit-plan"
+  proof_permission_json="$(wait_for_pending_permission "${PROOF_SESSION_ID}" "exit_plan_mode")"
+  write_artifact "final-proof-routed-exit-plan-pending.json" "${proof_permission_json}"
+  proof_permission_id="$(printf '%s' "${proof_permission_json}" | jq -r '.id // empty')"
+  [[ -n "${proof_permission_id}" ]] || fail "pending final routed exit_plan_mode permission returned no id"
+  proof_permission_resolve="$(resolve_session_permission "${PROOF_SESSION_ID}" "${proof_permission_id}" "approve" "ok")"
+  write_artifact "final-proof-routed-exit-plan-resolve.json" "${proof_permission_resolve}"
+
+  set_step "proof:wait-final-routed-success"
+  wait_for_assistant_message_content "${PROOF_SESSION_ID}" "${PROOF_SUCCESS_TOKEN}" "final-proof-routed-success"
+
+  if [[ -n "${proof_provider_credential_id}" ]]; then
+    set_step "proof:cleanup-child-provider"
+    write_artifact "child-final-proof-provider-delete.json" "$(child_api_post '/v1/auth/credentials/delete' "$(jq -nc --arg provider "${PROOF_PROVIDER}" --arg id "${proof_provider_credential_id}" '{provider:$provider,id:$id}')" 60)"
+  fi
 }
 
 exercise_sync_crud_flow() {
@@ -1613,6 +1843,71 @@ verify_workspace_link() {
   fi
 }
 
+verify_canonical_topology() {
+  local host_swarm_id_query runtime_swarm_id_query source_workspace_path_query
+  local topology_snapshot_json topology_host_containers_json topology_runtime_owner_json topology_workspace_bindings_json
+  local snapshot_runtime_json snapshot_host_container_json snapshot_attachment_json listed_host_container_json binding_json
+
+  [[ -n "${HOST_SWARM_ID:-}" ]] || fail "host swarm id is not set for topology verification"
+  [[ -n "${CHILD_SWARM_ID:-}" ]] || fail "child swarm id is not set for topology verification"
+  [[ -n "${DEPLOYMENT_HOST_CONTAINER_ID:-}" ]] || fail "deployment host_container_id is not set for topology verification"
+  [[ -n "${DEPLOYMENT_ATTACHMENT_ID:-}" ]] || fail "deployment attachment_id is not set for topology verification"
+
+  host_swarm_id_query="$(url_encode "${HOST_SWARM_ID}")"
+  runtime_swarm_id_query="$(url_encode "${CHILD_SWARM_ID}")"
+  source_workspace_path_query="$(url_encode "${SOURCE_WORKSPACE_PATH}")"
+
+  topology_snapshot_json="$(api_get '/v1/swarm/topology')"
+  topology_host_containers_json="$(api_get "/v1/swarm/topology/host-containers?host_swarm_id=${host_swarm_id_query}")"
+  topology_runtime_owner_json="$(api_get "/v1/swarm/topology/runtime-owner?runtime_swarm_id=${runtime_swarm_id_query}")"
+  topology_workspace_bindings_json="$(api_get "/v1/swarm/topology/workspace-bindings?source_workspace_path=${source_workspace_path_query}")"
+
+  write_artifact "topology-snapshot-final.json" "${topology_snapshot_json}"
+  write_artifact "topology-host-containers-final.json" "${topology_host_containers_json}"
+  write_artifact "topology-runtime-owner-final.json" "${topology_runtime_owner_json}"
+  write_artifact "topology-workspace-bindings-final.json" "${topology_workspace_bindings_json}"
+
+  [[ "$(printf '%s' "${topology_snapshot_json}" | jq -r '.path_id // empty')" == "swarm.topology.snapshot.v1" ]] || fail "topology snapshot path_id mismatch"
+  [[ "$(printf '%s' "${topology_host_containers_json}" | jq -r '.path_id // empty')" == "swarm.topology.host_containers.v1" ]] || fail "topology host-containers path_id mismatch"
+  [[ "$(printf '%s' "${topology_runtime_owner_json}" | jq -r '.path_id // empty')" == "swarm.topology.runtime_owner.v1" ]] || fail "topology runtime-owner path_id mismatch"
+  [[ "$(printf '%s' "${topology_workspace_bindings_json}" | jq -r '.path_id // empty')" == "swarm.topology.workspace_bindings.v1" ]] || fail "topology workspace-bindings path_id mismatch"
+
+  snapshot_runtime_json="$(printf '%s' "${topology_snapshot_json}" | jq -c --arg swarm_id "${CHILD_SWARM_ID}" '.runtimes[]? | select(.swarm_id == $swarm_id)' | head -n 1)"
+  snapshot_host_container_json="$(printf '%s' "${topology_snapshot_json}" | jq -c --arg id "${DEPLOYMENT_HOST_CONTAINER_ID}" '.host_containers[]? | select(.host_container_id == $id)' | head -n 1)"
+  snapshot_attachment_json="$(printf '%s' "${topology_snapshot_json}" | jq -c --arg id "${DEPLOYMENT_ATTACHMENT_ID}" '.attachments[]? | select(.attachment_id == $id)' | head -n 1)"
+  listed_host_container_json="$(printf '%s' "${topology_host_containers_json}" | jq -c --arg id "${DEPLOYMENT_HOST_CONTAINER_ID}" '.host_containers[]? | select(.host_container_id == $id)' | head -n 1)"
+  binding_json="$(printf '%s' "${topology_workspace_bindings_json}" | jq -c --arg child_swarm_id "${CHILD_SWARM_ID}" --arg target_workspace_path "${TARGET_WORKSPACE_PATH:-}" '.bindings[]? | select(.destination_runtime_swarm_id == $child_swarm_id and ($target_workspace_path == "" or .destination_workspace_path == $target_workspace_path))' | head -n 1)"
+
+  [[ -n "${snapshot_runtime_json}" ]] || fail "topology snapshot is missing runtime ${CHILD_SWARM_ID}"
+  [[ -n "${snapshot_host_container_json}" ]] || fail "topology snapshot is missing host_container_id ${DEPLOYMENT_HOST_CONTAINER_ID}"
+  [[ -n "${snapshot_attachment_json}" ]] || fail "topology snapshot is missing attachment_id ${DEPLOYMENT_ATTACHMENT_ID}"
+  [[ -n "${listed_host_container_json}" ]] || fail "topology host-containers is missing host_container_id ${DEPLOYMENT_HOST_CONTAINER_ID}"
+  [[ -n "${binding_json}" ]] || fail "topology workspace-bindings is missing child swarm ${CHILD_SWARM_ID}"
+
+  [[ "$(printf '%s' "${topology_runtime_owner_json}" | jq -r '.runtime_swarm_id // empty')" == "${CHILD_SWARM_ID}" ]] || fail "topology runtime-owner runtime_swarm_id mismatch"
+  [[ "$(printf '%s' "${topology_runtime_owner_json}" | jq -r '.host_container.host_container_id // empty')" == "${DEPLOYMENT_HOST_CONTAINER_ID}" ]] || fail "topology runtime-owner host_container_id mismatch"
+  [[ "$(printf '%s' "${topology_runtime_owner_json}" | jq -r '.attachment.attachment_id // empty')" == "${DEPLOYMENT_ATTACHMENT_ID}" ]] || fail "topology runtime-owner attachment_id mismatch"
+  [[ "$(printf '%s' "${topology_runtime_owner_json}" | jq -r '.host_container.host_swarm_id // empty')" == "${HOST_SWARM_ID}" ]] || fail "topology runtime-owner host_swarm_id mismatch"
+  [[ "$(printf '%s' "${topology_runtime_owner_json}" | jq -r '.host_container.container_name // empty')" == "${CONTAINER_NAME}" ]] || fail "topology runtime-owner container_name mismatch"
+  [[ "$(printf '%s' "${topology_runtime_owner_json}" | jq -r '.attachment.runtime_swarm_id // empty')" == "${CHILD_SWARM_ID}" ]] || fail "topology runtime-owner attachment runtime_swarm_id mismatch"
+
+  [[ "$(printf '%s' "${snapshot_runtime_json}" | jq -r '.owner_host_swarm_id // empty')" == "${HOST_SWARM_ID}" ]] || fail "topology snapshot runtime owner_host_swarm_id mismatch"
+  [[ "$(printf '%s' "${snapshot_runtime_json}" | jq -r '.owner_host_container_id // empty')" == "${DEPLOYMENT_HOST_CONTAINER_ID}" ]] || fail "topology snapshot runtime owner_host_container_id mismatch"
+  [[ "$(printf '%s' "${snapshot_host_container_json}" | jq -r '.container_name // empty')" == "${CONTAINER_NAME}" ]] || fail "topology snapshot host container name mismatch"
+  [[ "$(printf '%s' "${snapshot_attachment_json}" | jq -r '.runtime_swarm_id // empty')" == "${CHILD_SWARM_ID}" ]] || fail "topology snapshot attachment runtime_swarm_id mismatch"
+  [[ "$(printf '%s' "${listed_host_container_json}" | jq -r '.host_swarm_id // empty')" == "${HOST_SWARM_ID}" ]] || fail "topology host-containers host_swarm_id mismatch"
+
+  [[ "$(printf '%s' "${binding_json}" | jq -r '.source_workspace_path // empty')" == "${SOURCE_WORKSPACE_PATH}" ]] || fail "topology workspace binding source_workspace_path mismatch"
+  [[ "$(printf '%s' "${binding_json}" | jq -r '.destination_runtime_swarm_id // empty')" == "${CHILD_SWARM_ID}" ]] || fail "topology workspace binding destination_runtime_swarm_id mismatch"
+  [[ "$(printf '%s' "${binding_json}" | jq -r '.writable')" == "${WORKSPACE_WRITABLE}" ]] || fail "topology workspace binding writable mismatch"
+  if [[ -n "${TARGET_WORKSPACE_PATH}" ]]; then
+    [[ "$(printf '%s' "${binding_json}" | jq -r '.destination_workspace_path // empty')" == "${TARGET_WORKSPACE_PATH}" ]] || fail "topology workspace binding destination_workspace_path mismatch"
+  fi
+  if [[ -n "${REPLICATION_MODE}" ]]; then
+    [[ "$(printf '%s' "${binding_json}" | jq -r '.replication_mode // empty')" == "${REPLICATION_MODE}" ]] || fail "topology workspace binding replication_mode mismatch"
+  fi
+}
+
 verify_final_state() {
   local host_state_json deployments_json containers_json groups_json
   host_state_json="$(api_get '/v1/swarm/state')"
@@ -1631,21 +1926,28 @@ verify_final_state() {
   [[ -n "${DEPLOYMENT_JSON}" ]] || fail "final deployment state missing for ${DEPLOYMENT_ID}"
 
   local persisted_group_id attach_status backend_host_port desktop_host_port child_backend_url child_desktop_url
+  local persisted_host_container_id persisted_attachment_id
   persisted_group_id="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.group_id // empty')"
   attach_status="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.attach_status // empty')"
   backend_host_port="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.backend_host_port // 0')"
   desktop_host_port="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.desktop_host_port // 0')"
   child_backend_url="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.child_backend_url // empty')"
   child_desktop_url="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.child_desktop_url // empty')"
+  persisted_host_container_id="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.host_container_id // empty')"
+  persisted_attachment_id="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.attachment_id // empty')"
   CHILD_API_URL="${child_backend_url}"
   CHILD_SWARM_ID="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.child_swarm_id // empty')"
   CONTAINER_NAME="$(printf '%s' "${DEPLOYMENT_JSON}" | jq -r '.container_name // empty')"
+  DEPLOYMENT_HOST_CONTAINER_ID="${persisted_host_container_id}"
+  DEPLOYMENT_ATTACHMENT_ID="${persisted_attachment_id}"
 
   [[ "${attach_status}" == "attached" ]] || fail "deployment ${DEPLOYMENT_ID} did not finish attached (attach_status=${attach_status})"
   [[ "${persisted_group_id}" == "${TARGET_GROUP_ID}" ]] || fail "deployment ${DEPLOYMENT_ID} saved group_id=${persisted_group_id}, expected ${TARGET_GROUP_ID}"
   [[ "${REPLICATE_GROUP_ID}" == "${TARGET_GROUP_ID}" ]] || fail "replicate response group_id=${REPLICATE_GROUP_ID}, expected ${TARGET_GROUP_ID}"
   [[ "${CHILD_SWARM_ID}" == "${CHILD_SWARM_ID_FROM_RESPONSE}" ]] || fail "deployment child_swarm_id=${CHILD_SWARM_ID}, expected ${CHILD_SWARM_ID_FROM_RESPONSE}"
   [[ -n "${CONTAINER_NAME}" ]] || fail "deployment ${DEPLOYMENT_ID} is missing container_name"
+  [[ -n "${DEPLOYMENT_HOST_CONTAINER_ID}" ]] || fail "deployment ${DEPLOYMENT_ID} is missing host_container_id"
+  [[ -n "${DEPLOYMENT_ATTACHMENT_ID}" ]] || fail "deployment ${DEPLOYMENT_ID} is missing attachment_id"
 
   LOCAL_CONTAINER_JSON="$(printf '%s' "${containers_json}" | jq -c --arg container_name "${CONTAINER_NAME}" '.containers[] | select(.container_name == $container_name or .id == $container_name)' | head -n 1)"
   [[ -n "${LOCAL_CONTAINER_JSON}" ]] || fail "local container record missing for ${CONTAINER_NAME}"
@@ -1688,8 +1990,10 @@ verify_final_state() {
   [[ "${child_current_group}" == "${TARGET_GROUP_ID}" ]] || fail "child current_group_id=${child_current_group} does not match target group ${TARGET_GROUP_ID}"
 
   verify_workspace_link
+  verify_canonical_topology
   exercise_sync_state
   exercise_sync_crud_flow
+  run_final_routed_ai_proof
   capture_logs
 
   SUMMARY_JSON="$(jq -nc \
@@ -1703,12 +2007,17 @@ verify_final_state() {
     --arg host_log_file "${LOG_FILE}" \
     --arg source_workspace_path "${SOURCE_WORKSPACE_PATH}" \
     --arg workspace_name "${WORKSPACE_NAME}" \
+    --arg swarm_name "${SWARM_NAME}" \
+    --argjson run_index "${RUN_INDEX:-1}" \
+    --arg artifact_dir "${ARTIFACT_DIR}" \
     --arg replication_mode "${REPLICATION_MODE}" \
     --arg group_id "${TARGET_GROUP_ID}" \
     --arg group_name "${TARGET_GROUP_NAME}" \
     --arg group_network_name "${TARGET_GROUP_NETWORK_NAME}" \
     --arg deployment_id "${DEPLOYMENT_ID}" \
     --arg container_name "${CONTAINER_NAME}" \
+    --arg host_container_id "${DEPLOYMENT_HOST_CONTAINER_ID:-}" \
+    --arg attachment_id "${DEPLOYMENT_ATTACHMENT_ID:-}" \
     --arg child_swarm_id "${CHILD_SWARM_ID}" \
     --arg child_backend_url "${child_backend_url}" \
     --arg child_desktop_url "${child_desktop_url}" \
@@ -1732,7 +2041,7 @@ verify_final_state() {
     --arg sync_probe_agent_name "${SYNC_PROBE_AGENT_NAME:-}" \
     --argjson backend_probe "${BACKEND_PROBE_JSON}" \
     --argjson desktop_probe "${DESKTOP_PROBE_JSON}" \
-    '{runtime:$runtime,host_root:$host_root,host_install_mode:$host_install_mode,host_install_artifact_root:$host_install_artifact_root,host_swarm_name:$host_swarm_name,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_log_file:$host_log_file,source_workspace_path:$source_workspace_path,workspace_name:$workspace_name,replication_mode:$replication_mode,writable:$writable,sync_enabled:$sync_enabled,sync_mode:$sync_mode,sync_modules:$sync_modules,verify_sync_state:$verify_sync_state,verify_sync_crud_flow:$verify_sync_crud_flow,group_id:$group_id,group_name:$group_name,group_network_name:$group_network_name,deployment_id:$deployment_id,container_name:$container_name,child_swarm_id:$child_swarm_id,child_backend_url:$child_backend_url,child_desktop_url:$child_desktop_url,target_workspace_path:$target_workspace_path,proof:{provider:$proof_provider,model:$proof_model,thinking:$proof_thinking,primary_credential_id:$proof_primary_credential_id,secondary_credential_id:$proof_secondary_credential_id,session_id:$proof_session_id,success_token:$proof_success_token},sync_probe:{credential_provider:$sync_probe_credential_provider,credential_id:$sync_probe_credential_id,tool_name:$sync_probe_tool_name,agent_name:$sync_probe_agent_name},backend_probe:$backend_probe,desktop_probe:$desktop_probe}')"
+    '{runtime:$runtime,host_root:$host_root,host_install_mode:$host_install_mode,host_install_artifact_root:$host_install_artifact_root,host_swarm_name:$host_swarm_name,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_log_file:$host_log_file,source_workspace_path:$source_workspace_path,workspace_name:$workspace_name,swarm_name:$swarm_name,run_index:$run_index,artifact_dir:$artifact_dir,replication_mode:$replication_mode,writable:$writable,sync_enabled:$sync_enabled,sync_mode:$sync_mode,sync_modules:$sync_modules,verify_sync_state:$verify_sync_state,verify_sync_crud_flow:$verify_sync_crud_flow,group_id:$group_id,group_name:$group_name,group_network_name:$group_network_name,deployment_id:$deployment_id,container_name:$container_name,host_container_id:$host_container_id,attachment_id:$attachment_id,child_swarm_id:$child_swarm_id,child_backend_url:$child_backend_url,child_desktop_url:$child_desktop_url,target_workspace_path:$target_workspace_path,proof:{provider:$proof_provider,model:$proof_model,thinking:$proof_thinking,primary_credential_id:$proof_primary_credential_id,secondary_credential_id:$proof_secondary_credential_id,session_id:$proof_session_id,success_token:$proof_success_token},sync_probe:{credential_provider:$sync_probe_credential_provider,credential_id:$sync_probe_credential_id,tool_name:$sync_probe_tool_name,agent_name:$sync_probe_agent_name},backend_probe:$backend_probe,desktop_probe:$desktop_probe}')"
   write_artifact "summary.json" "${SUMMARY_JSON}"
 
   log ""
@@ -1775,6 +2084,7 @@ HOST_VAULT_PASSWORD_ENV=""
 HOST_VAULT_PASSWORD_FILE=""
 VERIFY_SYNC_STATE="false"
 VERIFY_SYNC_CRUD_FLOW="false"
+PROVE_ROUTED_AI="false"
 SYNC_VERIFY_TIMEOUT_SECONDS="45"
 PROOF_PROVIDER="fireworks"
 PROOF_MODEL="accounts/fireworks/models/minimax-m2p5"
@@ -1790,6 +2100,7 @@ GROUP_ID=""
 GROUP_NAME=""
 GROUP_NETWORK_NAME=""
 HOST_SWARM_NAME="${HOST_SWARM_NAME:-Replicate Test Host}"
+REPLICATE_COUNT="1"
 HOST_ADVERTISE_HOST_OVERRIDE="${HOST_ADVERTISE_HOST:-}"
 HOST_BACKEND_PORT="7781"
 HOST_DESKTOP_PORT="5555"
@@ -1826,6 +2137,11 @@ SYNC_PROBE_TOOL_COMMAND_FINAL=""
 SYNC_PROBE_AGENT_NAME=""
 SYNC_PROBE_AGENT_PROMPT=""
 SYNC_PROBE_AGENT_PROMPT_FINAL=""
+ROOT_ARTIFACT_DIR=""
+RUN_ARTIFACT_DIR=""
+RUN_INDEX="1"
+SWARM_NAME_BASE=""
+RUN_SUMMARY_FILES=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -1847,6 +2163,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --replication-mode)
       REPLICATION_MODE="${2:-}"
+      shift 2
+      ;;
+    --replicate-count)
+      REPLICATE_COUNT="${2:-}"
       shift 2
       ;;
     --readonly)
@@ -1895,6 +2215,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --verify-sync-crud-flow)
       VERIFY_SYNC_CRUD_FLOW="true"
+      shift
+      ;;
+    --prove-routed-ai)
+      PROVE_ROUTED_AI="true"
       shift
       ;;
     --sync-verify-timeout)
@@ -2007,6 +2331,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+[[ "${REPLICATE_COUNT}" =~ ^[0-9]+$ ]] || fail "--replicate-count must be a positive integer"
+(( REPLICATE_COUNT > 0 )) || fail "--replicate-count must be greater than zero"
 [[ "${POLL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || fail "--poll-timeout must be a positive integer"
 [[ "${POLL_INTERVAL_SECONDS}" =~ ^[0-9]+$ ]] || fail "--poll-interval must be a positive integer"
 [[ "${SYNC_VERIFY_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || fail "--sync-verify-timeout must be a positive integer"
@@ -2035,6 +2361,7 @@ WORKSPACE_NAME="$(trim "${WORKSPACE_NAME}")"
 if [[ -z "${SWARM_NAME}" ]]; then
   SWARM_NAME="local-replicate-child-$(date +%Y%m%d-%H%M%S)"
 fi
+SWARM_NAME_BASE="${SWARM_NAME}"
 
 if [[ -n "${REPLICATION_MODE}" ]]; then
   case "${REPLICATION_MODE}" in
@@ -2072,6 +2399,9 @@ if [[ "${VERIFY_SYNC_STATE}" == "true" && "${SYNC_ENABLED}" != "true" ]]; then
 fi
 if [[ "${VERIFY_SYNC_CRUD_FLOW}" == "true" && "${SYNC_ENABLED}" != "true" ]]; then
   fail "--verify-sync-crud-flow requires --sync-enabled"
+fi
+if [[ "${PROVE_ROUTED_AI}" == "true" && "${VERIFY_SYNC_CRUD_FLOW}" == "true" ]]; then
+  fail "--prove-routed-ai cannot be combined with --verify-sync-crud-flow in the local replicate harness"
 fi
 if [[ "${VERIFY_SYNC_STATE}" == "true" && -z "${SYNC_MODULES_RAW}" ]]; then
   SYNC_MODULES_RAW="credentials,agents,custom_tools"
@@ -2145,17 +2475,34 @@ log "sync mode: ${SYNC_MODE:-<default>}"
 log "sync modules: $(IFS=, ; printf '%s' "${SYNC_MODULES[*]:-}")"
 log "verify sync state: ${VERIFY_SYNC_STATE}"
 log "verify sync CRUD flow: ${VERIFY_SYNC_CRUD_FLOW}"
+log "prove routed ai: ${PROVE_ROUTED_AI}"
 log "proof provider: ${PROOF_PROVIDER}"
 log "proof model: ${PROOF_MODEL}"
 log "proof thinking: ${PROOF_THINKING}"
-log "swarm name: ${SWARM_NAME}"
+log "replicate count: ${REPLICATE_COUNT}"
+log "swarm name base: ${SWARM_NAME_BASE}"
 log "target group: ${TARGET_GROUP_ID} (${TARGET_GROUP_NAME:-<unnamed>})"
 log "target group network: ${TARGET_GROUP_NETWORK_NAME:-<unset>}"
 log "artifacts: ${ARTIFACT_DIR}"
 
-set_step "replicate:run"
-run_replicate
-set_step "replicate:wait-attach"
-wait_for_attach
-set_step "replicate:verify-final-state"
-verify_final_state
+for ((RUN_INDEX = 1; RUN_INDEX <= REPLICATE_COUNT; RUN_INDEX += 1)); do
+  reset_replication_run_state
+  SWARM_NAME="$(replication_swarm_name_for_run "${RUN_INDEX}")"
+  prepare_run_artifact_dir "${RUN_INDEX}" "${SWARM_NAME}"
+
+  log ""
+  log "== replication run ${RUN_INDEX}/${REPLICATE_COUNT}: ${SWARM_NAME}"
+  log "run artifacts: ${ARTIFACT_DIR}"
+
+  set_step "replicate:${RUN_INDEX}:run"
+  run_replicate
+  set_step "replicate:${RUN_INDEX}:wait-attach"
+  wait_for_attach
+  set_step "replicate:${RUN_INDEX}:verify-final-state"
+  verify_final_state
+
+  [[ -f "${ARTIFACT_DIR}/summary.json" ]] || fail "run ${RUN_INDEX} did not produce summary.json"
+  RUN_SUMMARY_FILES+=("${ARTIFACT_DIR}/summary.json")
+done
+
+write_aggregate_summary
