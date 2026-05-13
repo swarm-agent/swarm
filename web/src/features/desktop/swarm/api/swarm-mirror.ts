@@ -69,6 +69,25 @@ export async function fetchSwarmMirrorResources(): Promise<SwarmMirrorResources>
   }
 }
 
+export async function deleteSwarmMirrorResources(input: {
+  managedSwarmID: string
+  kind: 'container' | 'deployment'
+  ids: string[]
+}): Promise<string[]> {
+  const response = await requestJson<{ ok?: boolean; deleted?: string[] }>('/v1/swarm/mirror/resources/delete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      managed_swarm_id: input.managedSwarmID,
+      kind: input.kind,
+      ids: input.ids,
+    }),
+  })
+  return Array.isArray(response.deleted) ? response.deleted.map((id) => String(id ?? '').trim()).filter(Boolean) : []
+}
+
 function mapMirrorResource(record: SwarmMirrorResourceWire): SwarmMirrorResource {
   return {
     managedSwarmID: String(record.managed_swarm_id ?? '').trim(),

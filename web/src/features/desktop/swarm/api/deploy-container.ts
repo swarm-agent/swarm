@@ -1,4 +1,4 @@
-import { apiFetch, requestJson, readErrorMessage } from '../../../../app/api'
+import { apiFetch, requestJson } from '../../../../app/api'
 import type { ContainerProfileMount } from '../types/container-mounts'
 import type { SwarmLocalContainerDeleteResult } from '../../onboarding/api'
 
@@ -309,21 +309,49 @@ export async function deleteDeployContainersViaHost(childBackendURL: string, ids
   if (!target) {
     throw new Error('child backend url is required')
   }
-  const response = await apiFetch(`/v1/swarm/targets/proxy/v1/deploy/container/delete?swarm_id=${encodeURIComponent(target)}`, {
+  const response = await requestJson<{ ok?: boolean; result?: any; error?: string }>('/v1/deploy/container/delete', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ ids }),
   })
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response))
+  if (!response.result) {
+    throw new Error(response.error || 'deployment delete response was missing result data')
   }
-  const payload = await response.json() as { ok?: boolean; result?: any; error?: string }
-  if (!payload.result) {
-    throw new Error(payload.error || 'deployment delete response was missing result data')
+  return mapDeleteResult(response.result)
+}
+
+export async function deleteManagedHostLocalContainersViaManager(input: {
+  managedSwarmID: string
+  managedHostName?: string
+  backendURL?: string
+  ids: string[]
+}): Promise<SwarmLocalContainerDeleteResult> {
+  const managedSwarmID = String(input.managedSwarmID ?? '').trim()
+  if (!managedSwarmID) {
+    throw new Error('managed swarm id is required')
   }
-  return mapDeleteResult(payload.result)
+  const ids = input.ids.map((id) => String(id ?? '').trim()).filter(Boolean)
+  if (ids.length === 0) {
+    throw new Error('at least one managed host container id is required')
+  }
+  const response = await requestJson<{ ok?: boolean; result?: any; error?: string }>('/v1/swarm/managed-host/container/delete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      managed_swarm_id: managedSwarmID,
+      managed_host_name: input.managedHostName,
+      backend_url: input.backendURL,
+      ids,
+    }),
+  })
+  if (!response.result) {
+    throw new Error(response.error || 'managed host local container delete response was missing result data')
+  }
+  return mapDeleteResult(response.result)
 }
 
 

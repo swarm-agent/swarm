@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
+	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 )
 
 func (s *Server) createReplicatedContainer(ctx context.Context, targetHost *swarmTarget, payload deployContainerCreatePayload, targetHostIsLocal bool) (deployruntime.ContainerDeployment, error) {
@@ -141,6 +142,75 @@ func (s *Server) deleteTargetHostDeployment(ctx context.Context, deployment depl
 		return errors.New("managed host container delete failed")
 	}
 	return nil
+}
+
+func (s *Server) handleSwarmManagedHostContainerDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req struct {
+		ManagedSwarmID  string   `json:"managed_swarm_id"`
+		ManagedHostName string   `json:"managed_host_name"`
+		BackendURL      string   `json:"backend_url"`
+		IDs             []string `json:"ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	target := swarmTarget{SwarmID: strings.TrimSpace(req.ManagedSwarmID), Name: strings.TrimSpace(req.ManagedHostName), BackendURL: strings.TrimSpace(req.BackendURL)}
+	if target.SwarmID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("managed_swarm_id is required"))
+		return
+	}
+	if target.BackendURL == "" {
+		if resolved, ok, err := s.findSwarmTargetByID(r, target.SwarmID); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		} else if ok {
+			target = resolved
+		}
+	}
+	if target.BackendURL == "" {
+		writeError(w, http.StatusBadRequest, errors.New("managed host backend URL is not configured"))
+		return
+	}
+	var response struct {
+		OK     bool                         `json:"ok"`
+		Result localcontainers.DeleteResult `json:"result"`
+		Error  string                       `json:"error"`
+	}
+	if err := s.postPeerJSONToSwarmTarget(r.Context(), target, "/v1/swarm/containers/local/delete", map[string]any{"ids": req.IDs}, &response); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "result": response.Result, "error": err.Error()})
+		return
+	}
+	if !response.OK {
+		message := strings.TrimSpace(response.Error)
+		if message == "" {
+			message = "managed host container delete failed"
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "result": response.Result, "error": message})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": response.Result})
+}
+
+func (s *Server) findSwarmTargetByID(r *http.Request, swarmID string) (swarmTarget, bool, error) {
+	swarmID = strings.TrimSpace(swarmID)
+	if swarmID == "" {
+		return swarmTarget{}, false, nil
+	}
+	targets, _, err := s.swarmTargetsForRequest(r)
+	if err != nil {
+		return swarmTarget{}, false, err
+	}
+	for _, target := range targets {
+		if strings.EqualFold(strings.TrimSpace(target.SwarmID), swarmID) {
+			return target, true, nil
+		}
+	}
+	return swarmTarget{}, false, nil
 }
 
 func managedHostResponseStatus(err error) int {

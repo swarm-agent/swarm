@@ -100,6 +100,40 @@ func (s *SwarmMirrorStore) UpsertLocalResource(kind, id string, resource any) (S
 	return record, &event, nil
 }
 
+func (s *SwarmMirrorStore) DeleteLocalResource(kind, id string) (SwarmMirrorResourceRecord, *SwarmMirrorEventRecord, error) {
+	if s == nil || s.store == nil {
+		return SwarmMirrorResourceRecord{}, nil, errors.New("swarm mirror store is not configured")
+	}
+	kind = normalizeMirrorPart(kind)
+	id = strings.TrimSpace(id)
+	if kind == "" || id == "" {
+		return SwarmMirrorResourceRecord{}, nil, errors.New("mirror resource kind and id are required")
+	}
+	key := KeySwarmMirrorLocalResource(kind, id)
+	var existing SwarmMirrorResourceRecord
+	ok, err := s.store.GetJSON(key, &existing)
+	if err != nil {
+		return SwarmMirrorResourceRecord{}, nil, err
+	}
+	if ok && existing.Deleted {
+		return existing, nil, nil
+	}
+	seq, err := s.nextLocalSequence()
+	if err != nil {
+		return SwarmMirrorResourceRecord{}, nil, err
+	}
+	now := time.Now().UnixMilli()
+	record := SwarmMirrorResourceRecord{Kind: kind, ID: id, Sequence: seq, Deleted: true, UpdatedAt: now}
+	event := SwarmMirrorEventRecord{Sequence: seq, EventType: SwarmMirrorEventTypeDelete, Kind: kind, ID: id, Deleted: true, TsUnixMs: now}
+	if err := s.store.PutJSON(key, record); err != nil {
+		return SwarmMirrorResourceRecord{}, nil, err
+	}
+	if err := s.store.PutJSON(KeySwarmMirrorLocalEvent(seq), event); err != nil {
+		return SwarmMirrorResourceRecord{}, nil, err
+	}
+	return record, &event, nil
+}
+
 func (s *SwarmMirrorStore) ListLocalResources(kinds []string, limit int) ([]SwarmMirrorResourceRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("swarm mirror store is not configured")
@@ -179,6 +213,23 @@ func (s *SwarmMirrorStore) UpsertRemoteResource(managedSwarmID string, event Swa
 	}
 	record := SwarmMirrorResourceRecord{ManagedSwarmID: managedSwarmID, Kind: event.Kind, ID: event.ID, Sequence: event.Sequence, Deleted: event.Deleted || event.EventType == SwarmMirrorEventTypeDelete, Resource: append([]byte(nil), event.Resource...), UpdatedAt: time.Now().UnixMilli()}
 	if err := s.store.PutJSON(KeySwarmMirrorRemoteResource(managedSwarmID, event.Kind, event.ID), record); err != nil {
+		return SwarmMirrorResourceRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *SwarmMirrorStore) DeleteRemoteResource(managedSwarmID, kind, id string) (SwarmMirrorResourceRecord, error) {
+	if s == nil || s.store == nil {
+		return SwarmMirrorResourceRecord{}, errors.New("swarm mirror store is not configured")
+	}
+	managedSwarmID = strings.TrimSpace(managedSwarmID)
+	kind = normalizeMirrorPart(kind)
+	id = strings.TrimSpace(id)
+	if managedSwarmID == "" || kind == "" || id == "" {
+		return SwarmMirrorResourceRecord{}, errors.New("managed swarm id, mirror resource kind, and id are required")
+	}
+	record := SwarmMirrorResourceRecord{ManagedSwarmID: managedSwarmID, Kind: kind, ID: id, Deleted: true, UpdatedAt: time.Now().UnixMilli()}
+	if err := s.store.PutJSON(KeySwarmMirrorRemoteResource(managedSwarmID, kind, id), record); err != nil {
 		return SwarmMirrorResourceRecord{}, err
 	}
 	return record, nil

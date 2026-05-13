@@ -83,6 +83,17 @@ type swarmMirrorResourcesResponse struct {
 	Resources []swarmMirrorResourceView `json:"resources"`
 }
 
+type swarmMirrorResourceDeleteRequest struct {
+	ManagedSwarmID string   `json:"managed_swarm_id"`
+	Kind           string   `json:"kind"`
+	IDs            []string `json:"ids"`
+}
+
+type swarmMirrorResourceDeleteResponse struct {
+	OK      bool     `json:"ok"`
+	Deleted []string `json:"deleted"`
+}
+
 func (s *Server) SetSwarmMirrorStore(store *pebblestore.SwarmMirrorStore) {
 	if s == nil {
 		return
@@ -119,6 +130,54 @@ func (s *Server) handleSwarmMirrorResources(w http.ResponseWriter, r *http.Reque
 		out = append(out, swarmMirrorResourceView{ManagedSwarmID: resource.ManagedSwarmID, Kind: resource.Kind, ID: resource.ID, Sequence: resource.Sequence, UpdatedAt: resource.UpdatedAt, Resource: append([]byte(nil), resource.Resource...)})
 	}
 	writeJSON(w, http.StatusOK, swarmMirrorResourcesResponse{OK: true, Resources: out})
+}
+
+func (s *Server) handleSwarmMirrorResourceDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s == nil || s.swarmMirror == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("swarm mirror store is not configured"))
+		return
+	}
+	var req swarmMirrorResourceDeleteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	managedSwarmID := strings.TrimSpace(req.ManagedSwarmID)
+	kind := normalizeMirrorResourceKind(req.Kind)
+	if managedSwarmID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("managed_swarm_id is required"))
+		return
+	}
+	if kind == "" {
+		writeError(w, http.StatusBadRequest, errors.New("mirror resource kind is required"))
+		return
+	}
+	deleted := make([]string, 0, len(req.IDs))
+	seen := map[string]struct{}{}
+	for _, rawID := range req.IDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, err := s.swarmMirror.DeleteRemoteResource(managedSwarmID, kind, id); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		deleted = append(deleted, id)
+	}
+	if len(deleted) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("at least one mirror resource id is required"))
+		return
+	}
+	writeJSON(w, http.StatusOK, swarmMirrorResourceDeleteResponse{OK: true, Deleted: deleted})
 }
 
 func (s *Server) handlePeerMirrorSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -264,14 +323,19 @@ func (s *Server) refreshLocalMirrorProjections(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		currentIDs := map[string]struct{}{}
 		for _, item := range containers {
 			id := strings.TrimSpace(item.ID)
 			if id == "" {
 				continue
 			}
+			currentIDs[id] = struct{}{}
 			if _, _, err := s.swarmMirror.UpsertLocalResource(mirrorResourceContainer, id, item); err != nil {
 				return err
 			}
+		}
+		if err := s.deleteMissingLocalMirrorResources(mirrorResourceContainer, currentIDs); err != nil {
+			return err
 		}
 	}
 	if s.deployContainers != nil {
@@ -279,19 +343,60 @@ func (s *Server) refreshLocalMirrorProjections(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		currentDeploymentIDs := map[string]struct{}{}
+		currentTargetIDs := map[string]struct{}{}
 		for _, item := range deployments {
 			id := strings.TrimSpace(item.ID)
 			if id == "" {
 				continue
 			}
+			currentDeploymentIDs[id] = struct{}{}
 			if _, _, err := s.swarmMirror.UpsertLocalResource(mirrorResourceDeployment, id, item); err != nil {
 				return err
 			}
 			if target, ok := mapDeployContainerTarget(item); ok {
-				if _, _, err := s.swarmMirror.UpsertLocalResource(mirrorResourceTarget, firstNonEmpty(target.SwarmID, target.DeploymentID), target); err != nil {
+				targetID := firstNonEmpty(target.SwarmID, target.DeploymentID)
+				if targetID == "" {
+					continue
+				}
+				currentTargetIDs[targetID] = struct{}{}
+				if _, _, err := s.swarmMirror.UpsertLocalResource(mirrorResourceTarget, targetID, target); err != nil {
 					return err
 				}
 			}
+		}
+		if err := s.deleteMissingLocalMirrorResources(mirrorResourceDeployment, currentDeploymentIDs); err != nil {
+			return err
+		}
+		if err := s.deleteMissingLocalMirrorResources(mirrorResourceTarget, currentTargetIDs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) deleteMissingLocalMirrorResources(kind string, currentIDs map[string]struct{}) error {
+	if s == nil || s.swarmMirror == nil {
+		return nil
+	}
+	kind = normalizeMirrorResourceKind(kind)
+	if kind == "" {
+		return nil
+	}
+	resources, err := s.swarmMirror.ListLocalResources([]string{kind}, 100000)
+	if err != nil {
+		return err
+	}
+	for _, resource := range resources {
+		id := strings.TrimSpace(resource.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := currentIDs[id]; ok {
+			continue
+		}
+		if _, _, err := s.swarmMirror.DeleteLocalResource(kind, id); err != nil {
+			return err
 		}
 	}
 	return nil

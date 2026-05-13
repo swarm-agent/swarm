@@ -32,7 +32,7 @@ import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settin
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { AddSwarmModal } from './components/add-swarm-modal'
 import { fetchSwarmTargets, type SwarmTarget } from './api/swarm-targets'
-import { fetchSwarmMirrorResources, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
+import { deleteSwarmMirrorResources, fetchSwarmMirrorResources, type SwarmMirrorResources, type SwarmMirrorWorkspaceResource } from './api/swarm-mirror'
 import { LinkSwarmModal } from './components/link-swarm-modal'
 import { ManagedHostLinkRequestModal, activePendingPairings, managedHostTargetFromPairingResult } from './components/managed-host-link-request-modal'
 import { fetchFlows, updateFlow, type FlowSummaryRecord } from '../settings/flows/api'
@@ -45,6 +45,7 @@ import {
   updateDeployContainerSettings,
   deleteDeployContainers,
   deleteDeployContainersViaHost,
+  deleteManagedHostLocalContainersViaManager,
   deleteRemoteDeploySessions,
   fetchDeployContainers,
   fetchRemoteDeploySessions,
@@ -382,6 +383,14 @@ function summarizeContainerMount(mount: SwarmLocalContainer['mounts'][number]): 
   return details.length > 0 ? `${label} · ${details.join(' · ')}` : label
 }
 
+function isMissingManagedHostContainerDeleteError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase()
+  return message.includes('local container not found')
+    || message.includes('no such container')
+    || message.includes('no such object')
+    || (message.includes('container') && message.includes('not found'))
+}
+
 function mirrorResourceLocalContainer(record: unknown): SwarmLocalContainer {
   const item = record as Partial<SwarmLocalContainer> & Record<string, unknown>
   const rawMounts = Array.isArray(item.mounts) ? item.mounts : []
@@ -520,6 +529,8 @@ interface DeleteCandidate {
   mounts: string[]
   canDelete: boolean
   disabledReason?: string
+  mirrorResourceID?: string
+  managedHostBackendURL?: string
 }
 
 interface DeleteSwarmCandidate {
@@ -1628,9 +1639,10 @@ export function DesktopSwarmDashboard() {
       const hostName = target?.name || member?.name || mirrored.managedSwarmID || 'Managed Host'
       const bootstrapMounts = attachment?.workspace_bootstrap?.map(summarizeWorkspaceBootstrap) ?? []
       const containerMounts = container.mounts.map(summarizeContainerMount)
-      const canDelete = Boolean(attachment?.id)
+      const localDeleteID = container.id || container.containerID || container.containerName || mirrored.id
+      const canDelete = Boolean(attachment?.id || localDeleteID)
       return {
-        selectionID: `managed-host:${mirrored.managedSwarmID}:${attachment?.id || container.id || mirrored.id}`,
+        selectionID: `managed-host:${mirrored.managedSwarmID}:${attachment?.id || localDeleteID || mirrored.id}`,
         kind: 'managed-host',
         hostSwarmID: mirrored.managedSwarmID,
         hostName,
@@ -1644,7 +1656,9 @@ export function DesktopSwarmDashboard() {
         })),
         mounts: bootstrapMounts.length > 0 ? bootstrapMounts : containerMounts,
         canDelete,
-        disabledReason: canDelete ? undefined : 'This mirrored container has no mirrored deployment record yet; refresh the managed host before deleting it from the manager.',
+        disabledReason: canDelete ? undefined : 'This mirrored container has no stable mirrored id yet; refresh the managed host before deleting it from the manager.',
+        mirrorResourceID: mirrored.id,
+        managedHostBackendURL: target?.backend_url || container.hostAPIBaseURL,
       }
     })
 
@@ -1886,10 +1900,47 @@ export function DesktopSwarmDashboard() {
       const deploymentIDs = selectedCandidates
         .map((candidate) => candidate.attachment?.id || '')
         .filter((id) => id.trim() !== '')
+      const staleManagedByHost = new Map<string, { hostName: string; backendURL?: string; ids: string[]; mirrorIDs: string[] }>()
+      selectedCandidates
+        .filter((candidate) => candidate.kind === 'managed-host' && !candidate.attachment?.id)
+        .forEach((candidate) => {
+          const deleteID = candidate.container.id || candidate.container.containerID || candidate.container.containerName || candidate.mirrorResourceID || ''
+          if (!deleteID.trim()) {
+            return
+          }
+          const current = staleManagedByHost.get(candidate.hostSwarmID) ?? { hostName: candidate.hostName, backendURL: candidate.managedHostBackendURL, ids: [], mirrorIDs: [] }
+          current.ids.push(deleteID)
+          if (candidate.mirrorResourceID) {
+            current.mirrorIDs.push(candidate.mirrorResourceID)
+          }
+          staleManagedByHost.set(candidate.hostSwarmID, current)
+        })
 
-      const [localOutcome, deploymentOutcome] = await Promise.allSettled([
+      const staleManagedDeletes = Array.from(staleManagedByHost.entries()).map(async ([managedSwarmID, group]) => {
+        try {
+          const result = await deleteManagedHostLocalContainersViaManager({
+            managedSwarmID,
+            managedHostName: group.hostName,
+            backendURL: group.backendURL,
+            ids: group.ids,
+          })
+          if (group.mirrorIDs.length > 0) {
+            await deleteSwarmMirrorResources({ managedSwarmID, kind: 'container', ids: group.mirrorIDs })
+          }
+          return result
+        } catch (err) {
+          if (isMissingManagedHostContainerDeleteError(err) && group.mirrorIDs.length > 0) {
+            await deleteSwarmMirrorResources({ managedSwarmID, kind: 'container', ids: group.mirrorIDs })
+            return { deleted: group.ids, count: group.ids.length, failed: 0, childInfoRemoved: 0, items: [] }
+          }
+          throw err
+        }
+      })
+
+      const [localOutcome, deploymentOutcome, staleManagedOutcome] = await Promise.allSettled([
         localContainerIDs.length > 0 ? deleteSwarmLocalContainers(localContainerIDs) : Promise.resolve(null),
         deploymentIDs.length > 0 ? deleteDeployContainers(deploymentIDs) : Promise.resolve(null),
+        staleManagedDeletes.length > 0 ? Promise.all(staleManagedDeletes) : Promise.resolve([]),
       ])
       await refresh()
       setSelectedDeleteContainerIDs([])
@@ -1921,6 +1972,23 @@ export function DesktopSwarmDashboard() {
           : `Deleted ${deploymentOutcome.value.count} managed container${deploymentOutcome.value.count === 1 ? '' : 's'} and cleaned linked records.`)
       } else if (deploymentOutcome.status === 'rejected') {
         failures.push(deploymentOutcome.reason instanceof Error ? deploymentOutcome.reason.message : 'Failed to delete managed containers')
+      }
+
+      if (staleManagedOutcome.status === 'fulfilled') {
+        staleManagedOutcome.value.forEach((result) => {
+          combinedCount += result.count
+          combinedFailed += result.failed
+          combinedChildInfoRemoved += result.childInfoRemoved
+        })
+        if (staleManagedOutcome.value.length > 0) {
+          const deleted = staleManagedOutcome.value.reduce((sum, result) => sum + result.count, 0)
+          const failed = staleManagedOutcome.value.reduce((sum, result) => sum + result.failed, 0)
+          messages.push(failed > 0
+            ? `Deleted ${deleted} stale managed-host container${deleted === 1 ? '' : 's'} with ${failed} failure${failed === 1 ? '' : 's'}.`
+            : `Deleted ${deleted} stale managed-host container${deleted === 1 ? '' : 's'} and removed mirrored records.`)
+        }
+      } else if (staleManagedOutcome.status === 'rejected') {
+        failures.push(staleManagedOutcome.reason instanceof Error ? staleManagedOutcome.reason.message : 'Failed to delete stale managed-host containers')
       }
 
       if (removedFlowCount > 0) {
@@ -2649,13 +2717,14 @@ export function DesktopSwarmDashboard() {
                                   <Badge tone={running ? 'live' : container.status === 'missing' ? 'warning' : 'neutral'}>{container.status || 'created'}</Badge>
                                   {childDesktopURL ? <a href={childDesktopURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">Desktop</a> : null}
                                   {childAPIURL ? <a href={childAPIURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">API</a> : null}
-                                  {attachedDeployment ? <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => {
-                                    setSelectedDeleteContainerIDs([`managed-host:${mirroredContainer.managedSwarmID}:${attachedDeployment.id}`])
+                                  <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => {
+                                    const localDeleteID = container.id || container.containerID || container.containerName || mirroredContainer.id
+                                    setSelectedDeleteContainerIDs([`managed-host:${mirroredContainer.managedSwarmID}:${attachedDeployment?.id || localDeleteID}`])
                                     setDeleteResult(null)
                                     setDeleteContainersOpen(true)
                                     setError(null)
                                     setStatus(null)
-                                  }} disabled={busy}>Delete</Button> : null}
+                                  }} disabled={busy || !(attachedDeployment?.id || container.id || container.containerID || container.containerName || mirroredContainer.id)}>Delete</Button>
                                 </div>
                               </div>
                               <MountedWorkspaceDetails items={mountedWorkspaces} />
