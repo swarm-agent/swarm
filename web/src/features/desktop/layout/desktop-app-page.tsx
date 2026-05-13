@@ -332,15 +332,6 @@ function gitSummaryTooltip(status: GitSnapshot | null | undefined): string {
   return [header, ...lines].filter(Boolean).join('\n')
 }
 
-function gitBadgeClass(status: GitSnapshot | null | undefined, loading: boolean): string {
-  if (loading && !status) return 'border-[var(--app-border)] text-[var(--app-text-subtle)]'
-  if (!status?.has_git) return 'border-[var(--app-border)] text-[var(--app-text-subtle)] opacity-55'
-  if (status.conflict_count > 0) return 'border-[var(--app-danger)] bg-[var(--app-danger-bg)] text-[var(--app-danger)]'
-  if (status.dirty_count > 0) return 'border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] text-[var(--app-warning)]'
-  if (status.ahead_count > 0 || status.behind_count > 0) return 'border-[var(--app-primary)] bg-[var(--app-selection-bg)] text-[var(--app-primary)]'
-  return 'border-[color-mix(in_srgb,var(--app-success)_55%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-success)_10%,transparent)] text-[var(--app-success)]'
-}
-
 function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): WorkspaceEntry {
   return {
     path,
