@@ -318,6 +318,7 @@ func (s *Server) refreshLocalMirrorProjections(ctx context.Context) error {
 			}
 		}
 	}
+	currentTargetIDs := map[string]struct{}{}
 	if s.localContainers != nil {
 		containers, err := s.localContainers.List(ctx)
 		if err != nil {
@@ -333,6 +334,13 @@ func (s *Server) refreshLocalMirrorProjections(ctx context.Context) error {
 			if _, _, err := s.swarmMirror.UpsertLocalResource(mirrorResourceContainer, id, item); err != nil {
 				return err
 			}
+			if target, ok := mapLocalContainerTarget(item, localSwarmID); ok {
+				targetID := strings.TrimSpace(target.SwarmID)
+				currentTargetIDs[targetID] = struct{}{}
+				if _, _, err := s.swarmMirror.UpsertLocalResource(mirrorResourceTarget, targetID, target); err != nil {
+					return err
+				}
+			}
 		}
 		if err := s.deleteMissingLocalMirrorResources(mirrorResourceContainer, currentIDs); err != nil {
 			return err
@@ -344,7 +352,6 @@ func (s *Server) refreshLocalMirrorProjections(ctx context.Context) error {
 			return err
 		}
 		currentDeploymentIDs := map[string]struct{}{}
-		currentTargetIDs := map[string]struct{}{}
 		for _, item := range deployments {
 			id := strings.TrimSpace(item.ID)
 			if id == "" {
@@ -368,9 +375,9 @@ func (s *Server) refreshLocalMirrorProjections(ctx context.Context) error {
 		if err := s.deleteMissingLocalMirrorResources(mirrorResourceDeployment, currentDeploymentIDs); err != nil {
 			return err
 		}
-		if err := s.deleteMissingLocalMirrorResources(mirrorResourceTarget, currentTargetIDs); err != nil {
-			return err
-		}
+	}
+	if err := s.deleteMissingLocalMirrorResources(mirrorResourceTarget, currentTargetIDs); err != nil {
+		return err
 	}
 	return nil
 }
@@ -583,6 +590,9 @@ func (s *Server) listMirroredSwarmTargets() ([]swarmTarget, error) {
 		}
 		if strings.TrimSpace(target.SwarmID) == "" {
 			continue
+		}
+		if target.ManagedSwarmID == "" {
+			target.ManagedSwarmID = strings.TrimSpace(resource.ManagedSwarmID)
 		}
 		target.Kind = "mirrored"
 		if target.Relationship == "" {

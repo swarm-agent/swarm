@@ -135,6 +135,13 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		return
 	}
 	target, localSwarmID, _, status, err := s.resolveManagedHostSessionTarget(r, req.TargetSwarmID)
+	if err == nil && strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
+		if managedTarget, ok := s.managedHostForMirroredChildTarget(*target); ok {
+			target = &managedTarget
+		}
+		s.handleMirroredChildSessionOpen(w, r, req, *target, localSwarmID)
+		return
+	}
 	if err != nil {
 		writeError(w, status, err)
 		return
@@ -194,6 +201,98 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		s.hub.Publish(*event)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": mirrored, "target": managedHostSessionTargetResponse(*target), "warning": strings.TrimSpace(peerResp.Warning)})
+}
+
+func (s *Server) managedHostForMirroredChildTarget(target swarmTarget) (swarmTarget, bool) {
+	managedSwarmID := strings.TrimSpace(target.ManagedSwarmID)
+	if managedSwarmID == "" || s == nil || s.swarmNodes == nil {
+		return target, false
+	}
+	node, ok, err := s.swarmNodes.Get(managedSwarmID)
+	if err != nil || !ok || strings.TrimSpace(node.BackendURL) == "" {
+		return target, false
+	}
+	managed := target
+	managed.SwarmID = managedSwarmID
+	managed.Name = firstNonEmpty(strings.TrimSpace(node.Name), managedSwarmID)
+	managed.Role = firstNonEmpty(strings.TrimSpace(node.Role), swarmruntime.RelationshipManaged)
+	managed.Relationship = swarmruntime.RelationshipManaged
+	managed.Kind = firstNonEmpty(strings.TrimSpace(node.Kind), "host")
+	managed.BackendURL = strings.TrimSpace(node.BackendURL)
+	managed.DesktopURL = strings.TrimSpace(node.DesktopURL)
+	managed.Online = true
+	managed.Selectable = true
+	return managed, true
+}
+
+func (s *Server) handleMirroredChildSessionOpen(w http.ResponseWriter, r *http.Request, req managedHostSessionOpenRequest, target swarmTarget, localSwarmID string) {
+	if s.sessionRoutes == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("session route store not configured"))
+		return
+	}
+	sessionID := sessionruntime.NewSessionID()
+	workspacePath := firstNonEmpty(strings.TrimSpace(req.HostWorkspacePath), strings.TrimSpace(req.WorkspacePath), strings.TrimSpace(req.RuntimeWorkspacePath))
+	runtimeWorkspacePath := firstNonEmpty(strings.TrimSpace(req.RuntimeWorkspacePath), strings.TrimSpace(req.WorkspacePath), workspacePath)
+	if runtimeWorkspacePath == "" {
+		writeError(w, http.StatusBadRequest, errors.New("workspace_path is required"))
+		return
+	}
+	hostBackendURL := hostedSessionHostBackendURLFromServer(s)
+	routeMetadata := map[string]any{
+		"swarm_route_id":                                         "swarm:" + strings.TrimSpace(req.TargetSwarmID) + ":" + runtimeWorkspacePath,
+		"swarm_route_label":                                      firstNonEmpty(strings.TrimSpace(req.TargetSwarmID), strings.TrimSpace(target.Name), strings.TrimSpace(target.SwarmID)),
+		"swarm_route_target_kind":                                strings.TrimSpace(target.Kind),
+		"swarm_route_target_relationship":                        strings.TrimSpace(target.Relationship),
+		"owner_transport":                                        "routed_session_peer",
+		sessionruntime.HostedSessionMetadataHostSwarmID:          localSwarmID,
+		sessionruntime.HostedSessionMetadataHostBackendURL:       hostBackendURL,
+		sessionruntime.HostedSessionMetadataChildSwarmID:         strings.TrimSpace(req.TargetSwarmID),
+		sessionruntime.HostedSessionMetadataHostWorkspacePath:    workspacePath,
+		sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: runtimeWorkspacePath,
+	}
+	childReq := sessionCreateRequest{
+		Title:                req.Title,
+		WorkspacePath:        strings.TrimSpace(req.WorkspacePath),
+		HostWorkspacePath:    workspacePath,
+		RuntimeWorkspacePath: runtimeWorkspacePath,
+		WorkspaceName:        req.WorkspaceName,
+		Mode:                 req.Mode,
+		AgentName:            req.AgentName,
+		Metadata:             req.Metadata,
+		Preference:           req.Preference,
+	}
+	session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, routeMetadata, false, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, err := s.sessionRoutes.Put(pebblestore.SessionRouteRecord{SessionID: session.ID, ChildSwarmID: strings.TrimSpace(req.TargetSwarmID), ChildBackendURL: firstNonEmpty(strings.TrimSpace(target.ChildBackendURL), strings.TrimSpace(target.BackendURL)), HostWorkspacePath: workspacePath, RuntimeWorkspacePath: runtimeWorkspacePath, CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt}); err != nil {
+		_ = s.sessions.DeleteSession(session.ID)
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	childDescriptor := sessionruntime.HostedSessionDescriptor{HostSwarmID: localSwarmID, HostBackendURL: hostBackendURL, HostWorkspacePath: workspacePath, RuntimeWorkspacePath: runtimeWorkspacePath, ChildSwarmID: strings.TrimSpace(req.TargetSwarmID), OwnerTransport: "routed_session_peer"}
+	var childResp struct {
+		OK      bool                        `json:"ok"`
+		Session pebblestore.SessionSnapshot `json:"session"`
+		Warning string                      `json:"warning,omitempty"`
+	}
+	if err := s.postPeerJSONToSwarmTarget(r.Context(), target, "/v1/swarm/peer/sessions/open", peerSessionOpenRequest{SessionID: session.ID, Request: childReq, Hosted: childDescriptor}, &childResp); err != nil {
+		if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+			log.Printf("hosted session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+		}
+		writeError(w, http.StatusBadGateway, hostedSessionOpenError(target, err))
+		return
+	}
+	if syncedSession, syncErr := s.sessions.SyncHostedMirrorOpenState(session.ID, childResp.Session); syncErr != nil {
+		log.Printf("hosted session create mirror sync failed session_id=%q err=%v", session.ID, syncErr)
+	} else {
+		session = syncedSession
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session": session, "target": managedHostSessionTargetResponse(target), "warning": strings.TrimSpace(strings.Join([]string{warning, modeWarning, childResp.Warning}, " "))})
 }
 
 func (s *Server) handleManagedHostSessionMessage(w http.ResponseWriter, r *http.Request) {
@@ -1024,6 +1123,9 @@ func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID 
 	if s == nil || s.swarm == nil {
 		return nil, "", "", http.StatusInternalServerError, errors.New("swarm service is not configured")
 	}
+	if r == nil {
+		r = httptestRequestWithTarget(targetSwarmID)
+	}
 	targetSwarmID = strings.TrimSpace(targetSwarmID)
 	if targetSwarmID == "" {
 		return nil, "", "", http.StatusBadRequest, errors.New("target_swarm_id is required")
@@ -1048,7 +1150,7 @@ func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID 
 	if target == nil {
 		return nil, "", "", http.StatusBadRequest, errors.New("managed host target was not found")
 	}
-	if !strings.EqualFold(strings.TrimSpace(target.Relationship), swarmruntime.RelationshipManaged) || strings.EqualFold(strings.TrimSpace(target.Kind), "manager") || strings.EqualFold(strings.TrimSpace(target.Relationship), "self") {
+	if !managedHostSessionTargetCanProxy(*target) {
 		return nil, "", "", http.StatusBadRequest, errors.New("target must be a managed host")
 	}
 	if strings.TrimSpace(target.BackendURL) == "" {
@@ -1079,6 +1181,15 @@ func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID 
 		return nil, "", "", http.StatusInternalServerError, errors.New("local swarm id is not configured")
 	}
 	return target, localSwarmID, peerToken, http.StatusOK, nil
+}
+
+func managedHostSessionTargetCanProxy(target swarmTarget) bool {
+	relationship := strings.ToLower(strings.TrimSpace(target.Relationship))
+	kind := strings.ToLower(strings.TrimSpace(target.Kind))
+	if relationship == "self" || kind == "manager" {
+		return false
+	}
+	return relationship == swarmruntime.RelationshipManaged || kind == "host" || kind == "mirrored"
 }
 
 func managedHostSessionStringMetadata(metadata map[string]any, key string) string {

@@ -31,6 +31,8 @@ type SwarmLocalContainerRecord struct {
 	RuntimePort    int                        `json:"runtime_port,omitempty"`
 	Image          string                     `json:"image,omitempty"`
 	Warning        string                     `json:"warning,omitempty"`
+	ChildSwarmID   string                     `json:"child_swarm_id,omitempty"`
+	ChildBackendURL string                    `json:"child_backend_url,omitempty"`
 	Mounts         []SwarmLocalContainerMount `json:"mounts,omitempty"`
 	CreatedAt      int64                      `json:"created_at"`
 	UpdatedAt      int64                      `json:"updated_at"`
@@ -149,6 +151,8 @@ func normalizeSwarmLocalContainerRecord(record SwarmLocalContainerRecord) SwarmL
 	record.HostAPIBaseURL = strings.TrimSpace(record.HostAPIBaseURL)
 	record.Image = strings.TrimSpace(record.Image)
 	record.Warning = strings.TrimSpace(record.Warning)
+	record.ChildSwarmID = strings.TrimSpace(record.ChildSwarmID)
+	record.ChildBackendURL = strings.TrimSpace(record.ChildBackendURL)
 	if record.HostPort < 0 {
 		record.HostPort = 0
 	}

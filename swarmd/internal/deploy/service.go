@@ -576,6 +576,7 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 		extraRunArgs = s.localTransportMountArgs()
 	}
 	runtimeMount := localcontainers.CurrentRuntimeMount()
+	childBackendURL := runtimeHTTPURL(startupconfig.DefaultHost, hostPort)
 	container, createErr := s.containers.Create(ctx, localcontainers.CreateInput{
 		Name:              input.Name,
 		Runtime:           input.Runtime,
@@ -609,6 +610,11 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 	})
 	if createErr != nil && !createResultCanBePersisted(container) {
 		return ContainerDeployment{}, createErr
+	}
+	if strings.TrimSpace(container.ID) != "" {
+		if err := s.syncLocalContainerChildMetadata(ctx, localcontainers.ChildTargetMetadataInput{ID: strings.TrimSpace(container.ID), ContainerName: strings.TrimSpace(container.ContainerName), DeploymentID: deploymentID, ChildBackendURL: childBackendURL}); err != nil {
+			return ContainerDeployment{}, err
+		}
 	}
 	log.Printf("deploy create launched runtime=%q deployment_id=%q group_id=%q group_network_name=%q host_port=%d create_err=%v", strings.TrimSpace(input.Runtime), deploymentID, groupID, groupNetworkName, hostPort, createErr)
 	resolvedRuntimeName := firstNonEmpty(container.Runtime, strings.TrimSpace(input.Runtime), runtimeStatus.Recommended)
@@ -855,6 +861,19 @@ func (s *Service) MirrorDeployment(ctx context.Context, deployment ContainerDepl
 	return mapContainerRecord(saved), nil
 }
 
+func (s *Service) syncLocalContainerChildMetadata(ctx context.Context, input localcontainers.ChildTargetMetadataInput) error {
+	if s == nil || s.containers == nil {
+		return nil
+	}
+	if strings.TrimSpace(input.ID) == "" && strings.TrimSpace(input.ContainerName) == "" && strings.TrimSpace(input.DeploymentID) == "" {
+		return nil
+	}
+	if strings.TrimSpace(input.ChildSwarmID) == "" && strings.TrimSpace(input.ChildBackendURL) == "" {
+		return nil
+	}
+	return s.containers.SetChildTargetMetadata(ctx, input)
+}
+
 func (s *Service) deleteDeployments(ctx context.Context, deploymentIDs []string) (localcontainers.DeleteResult, error) {
 	if s == nil || s.store == nil {
 		return localcontainers.DeleteResult{}, fmt.Errorf("deploy container service is not configured")
@@ -966,6 +985,9 @@ func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachReques
 	saved, saveErr := s.store.Put(record)
 	if saveErr != nil {
 		return ContainerAttachState{}, saveErr
+	}
+	if err := s.syncLocalContainerChildMetadata(ctx, localcontainers.ChildTargetMetadataInput{ID: saved.ID, ContainerName: saved.ContainerName, DeploymentID: saved.ID, ChildSwarmID: saved.ChildSwarmID, ChildBackendURL: saved.ChildBackendURL}); err != nil {
+		return ContainerAttachState{}, err
 	}
 	log.Printf("deploy service attach request stored deployment_id=%q attach_status=%q child_swarm_id=%q", saved.ID, saved.AttachStatus, saved.ChildSwarmID)
 	return mapAttachState(saved), nil
