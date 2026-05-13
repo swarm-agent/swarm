@@ -121,11 +121,19 @@ type SwarmGroupMembershipRecord struct {
 }
 
 type SwarmStore struct {
-	store *Store
+	store    *Store
+	topology *TopologyStore
 }
 
-func NewSwarmStore(store *Store) *SwarmStore {
-	return &SwarmStore{store: store}
+func NewSwarmStore(store *Store, extras ...any) *SwarmStore {
+	swarmStore := &SwarmStore{store: store}
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case *TopologyStore:
+			swarmStore.topology = value
+		}
+	}
+	return swarmStore
 }
 
 func (s *SwarmStore) GetLocalNode() (SwarmLocalNodeRecord, bool, error) {
@@ -155,6 +163,9 @@ func (s *SwarmStore) PutLocalNode(record SwarmLocalNodeRecord) (SwarmLocalNodeRe
 	}
 	record.UpdatedAt = now
 	if err := s.store.PutJSON(KeySwarmLocalNodeDefault, record); err != nil {
+		return SwarmLocalNodeRecord{}, err
+	}
+	if err := syncTopologyRuntimeFromLocalNode(s.topology, record); err != nil {
 		return SwarmLocalNodeRecord{}, err
 	}
 	return record, nil
@@ -661,6 +672,9 @@ func (s *SwarmStore) PutTrustedPeer(record SwarmTrustedPeerRecord) (SwarmTrusted
 	if err := s.store.PutJSON(KeySwarmTrustedPeer(record.SwarmID), record); err != nil {
 		return SwarmTrustedPeerRecord{}, err
 	}
+	if err := syncTopologyRuntimeFromTrustedPeer(s.topology, record); err != nil {
+		return SwarmTrustedPeerRecord{}, err
+	}
 	return record, nil
 }
 
@@ -691,7 +705,10 @@ func (s *SwarmStore) DeleteTrustedPeer(swarmID string) error {
 	if swarmID == "" {
 		return errors.New("trusted peer swarm id is required")
 	}
-	return s.store.Delete(KeySwarmTrustedPeer(swarmID))
+	if err := s.store.Delete(KeySwarmTrustedPeer(swarmID)); err != nil {
+		return err
+	}
+	return removeTopologyRuntimeTrustedPeer(s.topology, swarmID)
 }
 
 func (s *SwarmStore) ListTrustedPeers(limit int) ([]SwarmTrustedPeerRecord, error) {

@@ -159,7 +159,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		modelCatalog,
 		pebblestore.NewModelFavoriteStore(store),
 	)
-	swarmStore := pebblestore.NewSwarmStore(store)
+	topologyStore := pebblestore.NewTopologyStore(store)
+	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	sessionSvc.SetHostedSync(sessionruntime.NewHostedSyncClient(cfg.ConfigPath, swarmStore))
 	sessionSvc.SetLocalSwarmIDResolver(func() string {
@@ -203,10 +204,10 @@ func New(cfg config.Config) (*Daemon, error) {
 		workspaceSvc,
 		cfg.ConfigPath,
 		cfg.DataDir,
+		topologyStore,
 	)
-	swarmNodeStore := pebblestore.NewSwarmNodeStore(store)
-	topologyStore := pebblestore.NewTopologyStore(store)
-	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc, modelSvc, swarmNodeStore)
+	swarmNodeStore := pebblestore.NewSwarmNodeStore(store, topologyStore)
+	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc, modelSvc, swarmNodeStore, topologyStore)
 	publishAndSync := func(env pebblestore.EventEnvelope) {
 		hub.Publish(env)
 		if deployContainerSvc == nil {
@@ -227,7 +228,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	authSvc.SetEventPublisher(publishAndSync)
 	modelSvc.SetEventPublisher(publishAndSync)
 	remoteDeployStore := pebblestore.NewRemoteDeploySessionStore(store)
-	remoteDeploySvc := remotedeploy.NewService(remoteDeployStore, swarmNodeStore, swarmSvc, swarmStore, localContainerSvc, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD)
+	remoteDeploySvc := remotedeploy.NewService(remoteDeployStore, swarmNodeStore, swarmSvc, swarmStore, localContainerSvc, authSvc, workspaceSvc, cfg.ConfigPath, cfg.StartupCWD, topologyStore)
 	topologySvc := topologyruntime.NewService(topologyStore, swarmStore, swarmNodeStore, pebblestore.NewSwarmLocalContainerStore(store), pebblestore.NewDeployContainerStore(store), remoteDeployStore, pebblestore.NewSessionRouteStore(store), pebblestore.NewWorkspaceStore(store))
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)

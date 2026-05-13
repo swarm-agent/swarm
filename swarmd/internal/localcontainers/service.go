@@ -245,6 +245,7 @@ type Service struct {
 	swarmStore                *pebblestore.SwarmStore
 	authStore                 *pebblestore.AuthStore
 	workspace                 *workspaceruntime.Service
+	topology                  *pebblestore.TopologyStore
 	startupPath               string
 	dataDir                   string
 	inspectContainerFn        func(string, string) (string, string, error)
@@ -261,12 +262,12 @@ type Service struct {
 	hostCallbackURLs          map[string]string
 }
 
-func NewService(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath string) *Service {
-	return NewServiceWithDataDir(store, deployments, swarmStore, authStore, workspaceSvc, startupPath, "")
+func NewService(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath string, extras ...any) *Service {
+	return NewServiceWithDataDir(store, deployments, swarmStore, authStore, workspaceSvc, startupPath, "", extras...)
 }
 
-func NewServiceWithDataDir(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath, dataDir string) *Service {
-	return &Service{
+func NewServiceWithDataDir(store *pebblestore.SwarmLocalContainerStore, deployments *pebblestore.DeployContainerStore, swarmStore *pebblestore.SwarmStore, authStore *pebblestore.AuthStore, workspaceSvc *workspaceruntime.Service, startupPath, dataDir string, extras ...any) *Service {
+	service := &Service{
 		store:                     store,
 		deployments:               deployments,
 		swarmStore:                swarmStore,
@@ -286,6 +287,13 @@ func NewServiceWithDataDir(store *pebblestore.SwarmLocalContainerStore, deployme
 		controlContainerFn:        controlContainer,
 		hostCallbackURLs:          make(map[string]string),
 	}
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case *pebblestore.TopologyStore:
+			service.topology = value
+		}
+	}
+	return service
 }
 
 func (s *Service) SetControlContainerFuncForTest(fn func(context.Context, string, string, string) error) {
@@ -795,6 +803,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Container, err
 	if saveErr != nil {
 		return Container{}, saveErr
 	}
+	if err := s.syncTopologyHostContainer(saved); err != nil {
+		return Container{}, err
+	}
 	resolved, resolveErr := s.resolveRecord(saved)
 	if resolveErr != nil && strings.TrimSpace(resolved.Warning) == "" {
 		resolved.Warning = resolveErr.Error()
@@ -834,6 +845,9 @@ func (s *Service) Act(ctx context.Context, input ActionInput) (Container, error)
 	saved, saveErr := s.store.Put(record)
 	if saveErr != nil {
 		return Container{}, saveErr
+	}
+	if err := s.syncTopologyHostContainer(saved); err != nil {
+		return Container{}, err
 	}
 	resolved, resolveErr := s.resolveRecord(saved)
 	if resolveErr != nil && strings.TrimSpace(resolved.Warning) == "" {
@@ -899,7 +913,11 @@ func (s *Service) deleteContainer(ctx context.Context, containerID string) Delet
 		Name:          record.Name,
 		ContainerName: record.ContainerName,
 	}
-	attachments := s.findChildAttachments(record)
+	attachments, err := s.findChildAttachments(record)
+	if err != nil {
+		item.Error = err.Error()
+		return item
+	}
 	if len(attachments) > 0 {
 		item.ChildInfoDetected = true
 		for _, attachment := range attachments {
@@ -920,6 +938,10 @@ func (s *Service) deleteContainer(ctx context.Context, containerID string) Delet
 		return item
 	}
 	if err := s.store.Delete(record.ID); err != nil {
+		item.Error = err.Error()
+		return item
+	}
+	if err := s.deleteTopologyHostContainer(record); err != nil {
 		item.Error = err.Error()
 		return item
 	}
@@ -983,36 +1005,46 @@ func (s *Service) deleteContainer(ctx context.Context, containerID string) Delet
 }
 
 type childAttachment struct {
+	attachmentID     string
+	hostContainerID  string
 	deploymentID     string
 	childSwarmID     string
 	childDisplayName string
 }
 
-func (s *Service) findChildAttachments(record pebblestore.SwarmLocalContainerRecord) []childAttachment {
-	if s == nil || s.deployments == nil {
-		return nil
+func (s *Service) findChildAttachments(record pebblestore.SwarmLocalContainerRecord) ([]childAttachment, error) {
+	if s == nil || s.topology == nil {
+		return nil, nil
 	}
-	deployments, err := s.deployments.List(500)
+	hostSwarmID, err := s.localHostSwarmID()
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	attachments := make([]childAttachment, 0, 1)
-	seenDeployments := map[string]struct{}{}
-	for _, deployment := range deployments {
-		if !deploymentMatchesRecord(deployment, record) {
-			continue
+	hostContainer, ok, err := pebblestore.FindTopologyHostContainerByRefs(s.topology, hostSwarmID, record.ContainerID, record.ContainerName, record.ID)
+	if err != nil || !ok {
+		return nil, err
+	}
+	attachmentRecords, err := s.topology.ListAttachmentsByHostContainer(hostContainer.HostContainerID, 500)
+	if err != nil {
+		return nil, err
+	}
+	attachments := make([]childAttachment, 0, len(attachmentRecords))
+	for _, attachmentRecord := range attachmentRecords {
+		childDisplayName := strings.TrimSpace(attachmentRecord.RuntimeSwarmID)
+		if runtimeRecord, ok, err := s.topology.GetRuntime(attachmentRecord.RuntimeSwarmID); err != nil {
+			return nil, err
+		} else if ok {
+			childDisplayName = firstNonEmpty(runtimeRecord.Name, runtimeRecord.SwarmID)
 		}
-		if _, seen := seenDeployments[deployment.ID]; seen {
-			continue
-		}
-		seenDeployments[deployment.ID] = struct{}{}
 		attachments = append(attachments, childAttachment{
-			deploymentID:     deployment.ID,
-			childSwarmID:     deployment.ChildSwarmID,
-			childDisplayName: firstNonEmpty(deployment.ChildDisplayName, deployment.ChildSwarmID),
+			attachmentID:     attachmentRecord.AttachmentID,
+			hostContainerID:  attachmentRecord.HostContainerID,
+			deploymentID:     attachmentRecord.DeploymentID,
+			childSwarmID:     attachmentRecord.RuntimeSwarmID,
+			childDisplayName: childDisplayName,
 		})
 	}
-	return attachments
+	return attachments, nil
 }
 
 func deploymentMatchesRecord(deployment pebblestore.DeployContainerRecord, record pebblestore.SwarmLocalContainerRecord) bool {
@@ -1149,6 +1181,9 @@ func (s *Service) PruneMissing(ctx context.Context) (DeleteResult, error) {
 			continue
 		}
 		if err := s.store.Delete(record.ID); err != nil {
+			return result, err
+		}
+		if err := s.deleteTopologyHostContainer(record); err != nil {
 			return result, err
 		}
 		result.Deleted = append(result.Deleted, record.ID)

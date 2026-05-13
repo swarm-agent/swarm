@@ -31,11 +31,19 @@ type SwarmNodeRecord struct {
 }
 
 type SwarmNodeStore struct {
-	store *Store
+	store    *Store
+	topology *TopologyStore
 }
 
-func NewSwarmNodeStore(store *Store) *SwarmNodeStore {
-	return &SwarmNodeStore{store: store}
+func NewSwarmNodeStore(store *Store, extras ...any) *SwarmNodeStore {
+	nodeStore := &SwarmNodeStore{store: store}
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case *TopologyStore:
+			nodeStore.topology = value
+		}
+	}
+	return nodeStore
 }
 
 func (s *SwarmNodeStore) Get(swarmID string) (SwarmNodeRecord, bool, error) {
@@ -89,6 +97,9 @@ func (s *SwarmNodeStore) Put(record SwarmNodeRecord) (SwarmNodeRecord, error) {
 	if err := s.store.PutJSON(KeySwarmNode(record.SwarmID), record); err != nil {
 		return SwarmNodeRecord{}, err
 	}
+	if err := syncTopologyRuntimeFromNode(s.topology, record); err != nil {
+		return SwarmNodeRecord{}, err
+	}
 	return record, nil
 }
 
@@ -100,7 +111,10 @@ func (s *SwarmNodeStore) Delete(swarmID string) error {
 	if swarmID == "" {
 		return errors.New("swarm node swarm id is required")
 	}
-	return s.store.Delete(KeySwarmNode(swarmID))
+	if err := s.store.Delete(KeySwarmNode(swarmID)); err != nil {
+		return err
+	}
+	return removeTopologyRuntimeNodeObservation(s.topology, swarmID)
 }
 
 func (s *SwarmNodeStore) List(limit int) ([]SwarmNodeRecord, error) {

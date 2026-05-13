@@ -18,8 +18,9 @@ func TestDeleteRemovesMatchingLocalContainerInventoryRecord(t *testing.T) {
 
 	localStore := pebblestore.NewSwarmLocalContainerStore(store)
 	deploymentStore := pebblestore.NewDeployContainerStore(store)
-	localSvc := localcontainers.NewService(localStore, deploymentStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
-	deploySvc := NewService(deploymentStore, localSvc, nil, nil, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"))
+	topologyStore := pebblestore.NewTopologyStore(store)
+	localSvc := localcontainers.NewService(localStore, deploymentStore, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
+	deploySvc := NewService(deploymentStore, localSvc, nil, nil, nil, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
 
 	deployment := pebblestore.DeployContainerRecord{
 		ID:            "pc-child333",

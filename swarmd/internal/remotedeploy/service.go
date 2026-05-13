@@ -282,6 +282,7 @@ type Session struct {
 type Service struct {
 	store       *pebblestore.RemoteDeploySessionStore
 	nodeStore   *pebblestore.SwarmNodeStore
+	topology    *pebblestore.TopologyStore
 	swarms      *swarmruntime.Service
 	swarmStore  *pebblestore.SwarmStore
 	containers  *localcontainers.Service
@@ -358,8 +359,8 @@ type remotePairingFinalizeRequest struct {
 	RendezvousTransports []remotePairingTransport `json:"rendezvous_transports,omitempty"`
 }
 
-func NewService(store *pebblestore.RemoteDeploySessionStore, nodeStore *pebblestore.SwarmNodeStore, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, containers *localcontainers.Service, authSvc *authruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath, startupCWD string) *Service {
-	return &Service{
+func NewService(store *pebblestore.RemoteDeploySessionStore, nodeStore *pebblestore.SwarmNodeStore, swarms *swarmruntime.Service, swarmStore *pebblestore.SwarmStore, containers *localcontainers.Service, authSvc *authruntime.Service, workspaceSvc *workspaceruntime.Service, startupPath, startupCWD string, extras ...any) *Service {
+	service := &Service{
 		store:       store,
 		nodeStore:   nodeStore,
 		swarms:      swarms,
@@ -370,6 +371,13 @@ func NewService(store *pebblestore.RemoteDeploySessionStore, nodeStore *pebblest
 		startupPath: strings.TrimSpace(startupPath),
 		startupCWD:  strings.TrimSpace(startupCWD),
 	}
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case *pebblestore.TopologyStore:
+			service.topology = value
+		}
+	}
+	return service
 }
 
 func remoteDeployImagePrefix() string {
@@ -731,7 +739,7 @@ func (s *Service) Delete(ctx context.Context, input DeleteSessionInput) (localco
 		deletedSessions[record.ID] = struct{}{}
 		item.Deleted = true
 		item.RemovedDeployment = true
-		if err := s.cleanupRemoteChildState(strings.TrimSpace(record.ChildSwarmID), &item); err != nil {
+		if err := s.cleanupRemoteChildState(record, &item); err != nil {
 			item.Error = err.Error()
 		}
 		items = append(items, item)
@@ -774,7 +782,7 @@ func (s *Service) Delete(ctx context.Context, input DeleteSessionInput) (localco
 			}
 		}
 		if item.Error == "" {
-			if err := s.cleanupRemoteChildState(childSwarmID, &item); err != nil {
+			if err := s.cleanupRemoteChildState(pebblestore.RemoteDeploySessionRecord{ChildSwarmID: childSwarmID}, &item); err != nil {
 				item.Error = err.Error()
 			}
 		}
@@ -1248,6 +1256,11 @@ func (s *Service) RunUpdateJob(ctx context.Context, input UpdateJobInput) (Updat
 				item.Error = saveErr.Error()
 			} else {
 				record = saved
+				if err := s.syncCanonicalRemoteDeployState(record); err != nil {
+					item.State = "failed"
+					item.Reason = "topology_sync_failed"
+					item.Error = err.Error()
+				}
 			}
 		}
 		result.addUpdateJobItem(item)
@@ -1432,6 +1445,9 @@ func (s *Service) Approve(ctx context.Context, input ApproveSessionInput) (Sessi
 	}
 	saved, err := s.store.Put(record)
 	if err != nil {
+		return Session{}, err
+	}
+	if err := s.syncCanonicalRemoteDeployState(saved); err != nil {
 		return Session{}, err
 	}
 	_ = ctx
@@ -1837,6 +1853,11 @@ func (s *Service) refreshRemoteSessionState(ctx context.Context, record pebblest
 			return record, err
 		}
 		record = saved
+		if strings.EqualFold(strings.TrimSpace(record.Status), "attached") {
+			if err := s.syncCanonicalRemoteDeployState(record); err != nil {
+				return record, err
+			}
+		}
 	}
 	return record, refreshErr
 }
@@ -3376,41 +3397,49 @@ func formatByteCount(bytes int64) string {
 	return fmt.Sprintf("%.1f %s", value, units[unit])
 }
 
-func (s *Service) cleanupRemoteChildState(childSwarmID string, item *localcontainers.DeleteItemResult) error {
-	childSwarmID = strings.TrimSpace(childSwarmID)
-	if childSwarmID == "" {
+func (s *Service) cleanupRemoteChildState(record pebblestore.RemoteDeploySessionRecord, item *localcontainers.DeleteItemResult) error {
+	childSwarmIDs, err := s.canonicalChildSwarmIDs(record)
+	if err != nil {
+		return err
+	}
+	if len(childSwarmIDs) == 0 {
 		return nil
 	}
-	if s.nodeStore != nil {
-		if err := s.nodeStore.Delete(childSwarmID); err != nil {
-			return err
-		}
-	}
-	if s.swarmStore != nil {
-		memberships, err := s.swarmStore.ListGroupMembershipsBySwarm(childSwarmID, 500)
-		if err != nil {
-			return err
-		}
-		for _, membership := range memberships {
-			if err := s.swarmStore.DeleteGroupMembership(membership.GroupID, membership.SwarmID); err != nil {
+	for _, childSwarmID := range childSwarmIDs {
+		if s.nodeStore != nil {
+			if err := s.nodeStore.Delete(childSwarmID); err != nil {
 				return err
 			}
-			item.RemovedGroupMemberships++
 		}
-		if err := s.swarmStore.DeleteTrustedPeer(childSwarmID); err != nil {
-			return err
+		if s.swarmStore != nil {
+			memberships, err := s.swarmStore.ListGroupMembershipsBySwarm(childSwarmID, 500)
+			if err != nil {
+				return err
+			}
+			for _, membership := range memberships {
+				if err := s.swarmStore.DeleteGroupMembership(membership.GroupID, membership.SwarmID); err != nil {
+					return err
+				}
+				item.RemovedGroupMemberships++
+			}
+			if err := s.swarmStore.DeleteTrustedPeer(childSwarmID); err != nil {
+				return err
+			}
+			item.RemovedTrustedPeer = true
 		}
-		item.RemovedTrustedPeer = true
+		if s.auth != nil {
+			if _, err := s.auth.DeleteManagedCredentialsByOwnerSwarmID(childSwarmID); err != nil {
+				return err
+			}
+		}
+		if s.workspace != nil {
+			if err := s.workspace.RemoveReplicationLinksByTargetSwarmID(childSwarmID); err != nil {
+				return err
+			}
+		}
 	}
-	if s.auth != nil {
-		if _, err := s.auth.DeleteManagedCredentialsByOwnerSwarmID(childSwarmID); err != nil {
-			return err
-		}
-	}
-	if s.workspace != nil {
-		if err := s.workspace.RemoveReplicationLinksByTargetSwarmID(childSwarmID); err != nil {
-			return err
-		}
+	if err := s.deleteCanonicalRemoteDeployState(record); err != nil {
+		return err
 	}
 	return nil
 }

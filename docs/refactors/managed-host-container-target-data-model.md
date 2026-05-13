@@ -605,6 +605,20 @@ Once the canonical topology model exists, networking work can operate on explici
 
 This section is the **non-negotiable implementation contract** for any AI or human performing this refactor.
 
+### I0. Refactor intent (explicit)
+
+This plan is a **refactor to establish canonical topology and routing data structures**.
+
+It is **not** a bandaid plan, **not** a fallback plan, **not** a mapper-on-mapper plan, and **not** a "keep the old shape and patch around it" plan.
+
+The required outcome is explicit:
+- the primary host, managed hosts, and host-owned containers must be represented in one canonical ownership graph
+- local containers on self and containers on managed hosts must use the same canonical host-container model
+- container\u2192runtime ownership and session/workspace routing must resolve from canonical records, not inference glue
+- the backend must have one source of truth to decide how to launch, route, attach, list, act on, and delete the addressed thing
+
+If a proposed change preserves split truth, adds fallback behavior, or keeps multiple competing identity paths alive, it is outside this plan.
+
 ### I1. Hard rules
 
 1. **Canonical records own truth; everything else is a projection**
@@ -639,6 +653,11 @@ This section is the **non-negotiable implementation contract** for any AI or hum
 8. **Read paths must stop stitching unrelated truths**
    - if a read model still needs to infer topology by combining unrelated durable stores, the checkpoint is not complete
 
+9. **No fallbacks, no shadow paths, no permanent compatibility truth**
+   - do not add fallback routing, fallback ownership resolution, fallback container lookup, or fallback target interpretation to preserve broken shapes
+   - do not keep old and new identity paths alive as co-equal runtime behavior
+   - compatibility output is allowed only as a projection of canonical truth during migration; it may not remain an alternative execution path
+
 ### I2. Quick rejection test for proposed changes
 
 Reject any implementation step that does one of these:
@@ -649,6 +668,8 @@ Reject any implementation step that does one of these:
 - keeps managed-host create and delete operating through different identities
 - lets mirror/cache state continue to define canonical discovery
 - teaches the frontend new inference rules because backend truth is still ambiguous
+- adds fallback logic so launch/routing/container actions can keep working without canonical ownership being fixed
+- preserves separate execution behavior for primary-local containers vs managed-host containers instead of unifying them under the canonical host-container model
 
 ---
 
