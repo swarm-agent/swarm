@@ -217,6 +217,10 @@ export function formatAgentTodoBadge(summary: { openCount: number; inProgressCou
   const open = Math.max(0, summary.openCount)
   const active = Math.max(0, summary.inProgressCount)
   const completed = Math.min(total, Math.max(0, total - open))
+  const activeText = summary.activeText?.trim() ?? ''
+  if (active > 0 && activeText) {
+    return activeText
+  }
   if (open === 0) {
     return `Complete · ${completed}/${total}`
   }
@@ -226,7 +230,7 @@ export function formatAgentTodoBadge(summary: { openCount: number; inProgressCou
   return `${completed}/${total} complete`
 }
 
-export function formatMobileAgentTodoBadge(summary: { openCount: number; inProgressCount: number; taskCount: number } | null): string {
+export function formatMobileAgentTodoBadge(summary: { openCount: number; inProgressCount: number; taskCount: number; activeText?: string } | null): string {
   if (!summary || summary.taskCount <= 0) {
     return ''
   }
@@ -234,6 +238,10 @@ export function formatMobileAgentTodoBadge(summary: { openCount: number; inProgr
   const open = Math.max(0, summary.openCount)
   const active = Math.max(0, summary.inProgressCount)
   const completed = Math.min(total, Math.max(0, total - open))
+  const activeText = summary.activeText?.trim() ?? ''
+  if (active > 0 && activeText) {
+    return activeText
+  }
   if (open === 0) {
     return 'Complete'
   }
@@ -2628,8 +2636,8 @@ export function DesktopChatPanel({
                 ) : null}
               </div>
               {mobileAgentTodoBadgeLabel ? (
-                <div className="inline-flex max-w-[45%] shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]" title={agentTodoSummary?.activeText || 'Agent checklist for this session'}>
-                  <ListChecks size={10} className="shrink-0" />
+                <div className="inline-flex max-w-[48%] shrink-0 items-center gap-1 text-[10px] font-medium text-[var(--app-text-muted)]" title={agentTodoSummary?.activeText || 'Agent checklist for this session'}>
+                  <ListChecks size={10} className="shrink-0 text-[var(--app-text-subtle)]" />
                   <span className="truncate">{mobileAgentTodoBadgeLabel}</span>
                 </div>
               ) : null}
@@ -2645,11 +2653,9 @@ export function DesktopChatPanel({
               <span className="truncate text-[var(--app-text-muted)] font-normal" title={workspaceName}>{workspaceName}</span>
             </h1>
             {agentTodoBadgeLabel ? (
-              <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden">
-                <div className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]" title="Agent checklist for this session">
-                  <ListChecks size={12} className="shrink-0" />
-                  <span className="truncate">{agentTodoBadgeLabel}</span>
-                </div>
+              <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)]" title={agentTodoSummary?.activeText || 'Agent checklist for this session'}>
+                <ListChecks size={12} className="shrink-0 text-[var(--app-text-subtle)]" />
+                <span className="truncate">{agentTodoBadgeLabel}</span>
               </div>
             ) : null}
           </div>

@@ -873,10 +873,18 @@ func clearInProgressForScope(items []TodoItem, ownerKind, sessionID, exceptID st
 	}
 }
 
-func syncAgentSummaryMetadataMap(current map[string]any, summary TodoSummary) (map[string]any, bool) {
+func syncAgentSummaryMetadataMap(current map[string]any, summary TodoSummary, activeTodo map[string]any) (map[string]any, bool) {
 	next := cloneMetadataMap(current)
 	if next == nil {
 		next = make(map[string]any, 1)
+	}
+	agent := map[string]any{
+		"task_count":        summary.Agent.TaskCount,
+		"open_count":        summary.Agent.OpenCount,
+		"in_progress_count": summary.Agent.InProgressCount,
+	}
+	if activeTodo != nil {
+		agent["active_todo"] = activeTodo
 	}
 	serialized := map[string]any{
 		"task_count":        summary.TaskCount,
@@ -887,11 +895,7 @@ func syncAgentSummaryMetadataMap(current map[string]any, summary TodoSummary) (m
 			"open_count":        summary.User.OpenCount,
 			"in_progress_count": summary.User.InProgressCount,
 		},
-		"agent": map[string]any{
-			"task_count":        summary.Agent.TaskCount,
-			"open_count":        summary.Agent.OpenCount,
-			"in_progress_count": summary.Agent.InProgressCount,
-		},
+		"agent": agent,
 	}
 	if metadataEqual(next[agentTodoSummaryMetadataKey], serialized) {
 		return next, false
@@ -947,6 +951,31 @@ func metadataEqual(left, right any) bool {
 	return string(leftJSON) == string(rightJSON)
 }
 
+func activeAgentTodoMetadata(items []TodoItem, sessionID string) map[string]any {
+	sessionID = strings.TrimSpace(sessionID)
+	for _, item := range items {
+		if item.OwnerKind != pebblestore.WorkspaceTodoOwnerKindAgent {
+			continue
+		}
+		if strings.TrimSpace(item.SessionID) != sessionID {
+			continue
+		}
+		if item.Done || !item.InProgress {
+			continue
+		}
+		text := strings.TrimSpace(item.Text)
+		id := strings.TrimSpace(item.ID)
+		if id == "" || text == "" {
+			continue
+		}
+		return map[string]any{
+			"id":   id,
+			"text": text,
+		}
+	}
+	return nil
+}
+
 func affectedAgentSessionIDs(before, after []TodoItem) []string {
 	seen := make(map[string]struct{})
 	for _, item := range before {
@@ -991,7 +1020,7 @@ func (s *Service) syncAgentTodoSessionMetadata(before, after []TodoItem) error {
 		var nextMetadata map[string]any
 		var changed bool
 		if summary.Agent.TaskCount > 0 {
-			nextMetadata, changed = syncAgentSummaryMetadataMap(metadata, summary)
+			nextMetadata, changed = syncAgentSummaryMetadataMap(metadata, summary, activeAgentTodoMetadata(after, sessionID))
 		} else {
 			nextMetadata, changed = clearAgentSummaryMetadataMap(metadata)
 		}

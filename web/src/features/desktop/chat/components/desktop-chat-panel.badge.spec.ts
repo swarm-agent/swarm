@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { formatAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, metadataTodoSummary, resolveSessionEffectiveAgentName, sessionUsesReadOnlyFlowIdentity, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, metadataTodoSummary, resolveSessionEffectiveAgentName, sessionUsesReadOnlyFlowIdentity, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -11,6 +11,13 @@ test('formatAgentTodoBadge shows progress-first badge with active count', () => 
 
 test('formatAgentTodoBadge shows complete state when no tasks remain open', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 0, inProgressCount: 0, activeText: '' }), 'Complete · 6/6')
+})
+
+test('formatAgentTodoBadge shows active todo text when available', () => {
+  const summary = { taskCount: 6, openCount: 2, inProgressCount: 1, activeText: 'Validate task badge states on mobile' }
+
+  assert.equal(formatAgentTodoBadge(summary), 'Validate task badge states on mobile')
+  assert.equal(formatMobileAgentTodoBadge(summary), 'Validate task badge states on mobile')
 })
 
 test('metadataTodoSummary reads agent-scoped counts from metadata', () => {
