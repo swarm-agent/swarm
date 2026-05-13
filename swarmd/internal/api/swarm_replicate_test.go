@@ -345,9 +345,9 @@ func TestSwarmReplicateRemoteMatchingWorkspaceCreatesLink(t *testing.T) {
 	if len(response.Workspaces) != 1 {
 		t.Fatalf("workspaces len = %d", len(response.Workspaces))
 	}
-	link := response.Workspaces[0].Link
-	if link.TargetKind != "remote" || link.TargetSwarmID != "managed-swarm-1" || link.TargetWorkspacePath != "/managed/workspace-one" {
-		t.Fatalf("link = %+v", link)
+	binding := response.Workspaces[0].Binding
+	if binding.LegacyTargetKind != "remote" || binding.DestinationRuntimeSwarmID != "managed-swarm-1" || binding.DestinationWorkspacePath != "/managed/workspace-one" {
+		t.Fatalf("binding = %+v", binding)
 	}
 }
 
@@ -496,6 +496,7 @@ func newReplicateTestHandler(t *testing.T) (*Server, *fakeReplicateDeployService
 	}
 
 	server := NewServer("test", nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, nil))
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)
@@ -589,13 +590,13 @@ func swarmStateWithManagedPeer(backendURL, token string) swarmruntime.LocalState
 }
 
 type fakeReplicateDeployService struct {
-	lastCreateInput               deployruntime.ContainerCreateInput
-	lastAttachApproveInput        deployruntime.ContainerAttachApproveInput
-	lastSyncAgentBundleInput      deployruntime.ContainerSyncCredentialRequestInput
-	lastAppliedCredentialBundle   deployruntime.ContainerSyncCredentialBundle
-	lastAppliedAgentBundle        deployruntime.ContainerSyncAgentBundle
-	lastMirroredDeployment        deployruntime.ContainerDeployment
-	lastManagedHostCanonicalIDs   []string
+	lastCreateInput             deployruntime.ContainerCreateInput
+	lastAttachApproveInput      deployruntime.ContainerAttachApproveInput
+	lastSyncAgentBundleInput    deployruntime.ContainerSyncCredentialRequestInput
+	lastAppliedCredentialBundle deployruntime.ContainerSyncCredentialBundle
+	lastAppliedAgentBundle      deployruntime.ContainerSyncAgentBundle
+	lastMirroredDeployment      deployruntime.ContainerDeployment
+	lastManagedHostCanonicalIDs []string
 }
 
 func (f *fakeReplicateDeployService) RuntimeStatus(context.Context) (deployruntime.ContainerRuntimeStatus, error) {

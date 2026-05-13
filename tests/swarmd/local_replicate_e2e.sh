@@ -21,7 +21,7 @@ isolated host swarm:
   6. create or select the current swarm group
   7. call /v1/swarm/replicate with the chosen runtime and workspace
   8. wait for child attach/finalize
-  9. verify deployment state, workspace replication link, group membership, and child current group
+  9. verify deployment state, canonical workspace binding, group membership, and child current group
 
 Options:
   --runtime <podman|docker>           Explicit local container runtime. Default: host recommendation
@@ -250,7 +250,8 @@ api_request() {
   local method="${1:-GET}"
   local path="${2:-}"
   local body="${3:-}"
-  json_request "${HOST_ADMIN_API_URL}" "${ATTACH_TOKEN}" "${method}" "${path}" "${body}" "30" "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}"
+  local max_time="${4:-30}"
+  json_request "${HOST_ADMIN_API_URL}" "${ATTACH_TOKEN}" "${method}" "${path}" "${body}" "${max_time}" "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}"
 }
 
 api_request_capture() {
@@ -779,11 +780,13 @@ write_host_control_files() {
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${ROOT_DIR}"
-XDG_BIN_HOME="${HOST_XDG_BIN_HOME}" \\
-XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \\
-XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \\
-XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \\
-XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \\
+export XDG_BIN_HOME="${HOST_XDG_BIN_HOME}"
+export XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}"
+export XDG_DATA_HOME="${HOST_XDG_DATA_HOME}"
+export XDG_STATE_HOME="${HOST_XDG_STATE_HOME}"
+export XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}"
+export SWARM_CHILD_STARTUP_CONFIG="$(cat -- "${HOST_STARTUP_CONFIG}")"
+export SWARM_SKIP_LOCAL_ARTIFACT_REBUILD="\${SWARM_SKIP_LOCAL_ARTIFACT_REBUILD:-1}"
 "${HOST_XDG_BIN_HOME}/swarm" main server on
 EOF
   else
@@ -791,12 +794,13 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${ROOT_DIR}"
-XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \\
-XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \\
-XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \\
-XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}" \\
-SWARM_LANE=main \\
-./swarmd/scripts/dev-up.sh
+export XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}"
+export XDG_DATA_HOME="${HOST_XDG_DATA_HOME}"
+export XDG_STATE_HOME="${HOST_XDG_STATE_HOME}"
+export XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}"
+export SWARM_CHILD_STARTUP_CONFIG="$(cat -- "${HOST_STARTUP_CONFIG}")"
+export SWARM_SKIP_LOCAL_ARTIFACT_REBUILD="\${SWARM_SKIP_LOCAL_ARTIFACT_REBUILD:-1}"
+SWARM_LANE=main ./swarmd/scripts/dev-up.sh
 EOF
   fi
   chmod 0755 "${HOST_ROOT}/start-host.sh"
@@ -898,7 +902,7 @@ prepare_isolated_host() {
 
 replication_swarm_name_for_run() {
   local run_index="${1:-1}"
-  if (( REPLICATION_COUNT <= 1 )); then
+  if (( REPLICATE_COUNT <= 1 )); then
     printf '%s' "${SWARM_NAME_BASE}"
     return 0
   fi
@@ -908,7 +912,7 @@ replication_swarm_name_for_run() {
 prepare_run_artifact_dir() {
   local run_index="${1:-1}"
   local run_swarm_name="${2:-}"
-  if (( REPLICATION_COUNT <= 1 )); then
+  if (( REPLICATE_COUNT <= 1 )); then
     RUN_ARTIFACT_DIR="${ROOT_ARTIFACT_DIR}"
     ARTIFACT_DIR="${ROOT_ARTIFACT_DIR}"
     return 0
@@ -936,7 +940,6 @@ reset_replication_run_state() {
   CHILD_SWARM_ID=""
   CONTAINER_NAME=""
   LOCAL_CONTAINER_JSON=""
-  WORKSPACE_ENTRY_JSON=""
   WORKSPACE_LINK_JSON=""
   SUMMARY_JSON=""
   BACKEND_PROBE_JSON=""
@@ -967,7 +970,7 @@ reset_replication_run_state() {
 }
 
 write_aggregate_summary() {
-  if (( REPLICATION_COUNT <= 1 )); then
+  if (( REPLICATE_COUNT <= 1 )); then
     return 0
   fi
 
@@ -983,7 +986,7 @@ write_aggregate_summary() {
     --arg group_name "${TARGET_GROUP_NAME}" \
     --arg group_network_name "${TARGET_GROUP_NETWORK_NAME}" \
     --arg swarm_name_base "${SWARM_NAME_BASE}" \
-    --argjson requested_runs "${REPLICATION_COUNT}" \
+    --argjson requested_runs "${REPLICATE_COUNT}" \
     --argjson completed_runs "${#RUN_SUMMARY_FILES[@]}" \
     '{mode:"multi",runtime:$runtime,host_root:$host_root,host_swarm_id:$host_swarm_id,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,source_workspace_path:$source_workspace_path,swarm_name_base:$swarm_name_base,target_group:{id:$group_id,name:$group_name,network_name:$group_network_name},requested_runs:$requested_runs,completed_runs:$completed_runs,runs:.}' \
     "${RUN_SUMMARY_FILES[@]}" >"${ROOT_ARTIFACT_DIR}/aggregate-summary.json"
@@ -1259,13 +1262,13 @@ run_replicate() {
   local payload response
   payload="$(replicate_payload)"
   write_artifact "replicate-request.redacted.json" "$(redacted_replicate_payload)"
-  response="$(api_post '/v1/swarm/replicate' "${payload}")"
+  response="$(api_request POST '/v1/swarm/replicate' "${payload}" "180")"
   write_artifact "replicate-response.json" "${response}"
   REPLICATE_RESPONSE_JSON="${response}"
   DEPLOYMENT_ID="$(printf '%s' "${response}" | jq -r '.swarm.deployment_id // empty')"
   CHILD_SWARM_ID_FROM_RESPONSE="$(printf '%s' "${response}" | jq -r '.swarm.id // empty')"
   REPLICATE_GROUP_ID="$(printf '%s' "${response}" | jq -r '.swarm.group_id // empty')"
-  TARGET_WORKSPACE_PATH="$(printf '%s' "${response}" | jq -r '.workspaces[0].link.target_workspace_path // empty')"
+  TARGET_WORKSPACE_PATH="$(printf '%s' "${response}" | jq -r '.workspaces[0].binding.destination_workspace_path // empty')"
   [[ -n "${DEPLOYMENT_ID}" ]] || fail "replicate response was missing swarm.deployment_id"
   [[ -n "${CHILD_SWARM_ID_FROM_RESPONSE}" ]] || fail "replicate response was missing swarm.id"
 }
@@ -1805,41 +1808,36 @@ exercise_sync_crud_flow() {
 }
 
 verify_workspace_link() {
-  local workspaces_json
-  workspaces_json="$(api_get '/v1/workspace/list?limit=1000')"
-  write_artifact "workspace-list-final.json" "${workspaces_json}"
+  [[ -n "${REPLICATE_RESPONSE_JSON}" ]] || fail "replicate response is not set"
 
-  WORKSPACE_ENTRY_JSON="$(printf '%s' "${workspaces_json}" | jq -c --arg path "${SOURCE_WORKSPACE_PATH}" '.workspaces[] | select(.path == $path)' | head -n 1)"
-  [[ -n "${WORKSPACE_ENTRY_JSON}" ]] || fail "workspace list is missing source workspace ${SOURCE_WORKSPACE_PATH}"
+  WORKSPACE_LINK_JSON="$(printf '%s' "${REPLICATE_RESPONSE_JSON}" | jq -c '.workspaces[0].binding // empty')"
+  [[ -n "${WORKSPACE_LINK_JSON}" ]] || fail "replicate response is missing canonical workspace binding"
 
-  WORKSPACE_LINK_JSON="$(printf '%s' "${WORKSPACE_ENTRY_JSON}" | jq -c --arg child_swarm_id "${CHILD_SWARM_ID}" '.replication_links[]? | select(.target_swarm_id == $child_swarm_id)' | head -n 1)"
-  [[ -n "${WORKSPACE_LINK_JSON}" ]] || fail "workspace ${SOURCE_WORKSPACE_PATH} is missing a replication link for child swarm ${CHILD_SWARM_ID}"
+  local binding_runtime_swarm_id binding_workspace_path binding_writable binding_replication_mode binding_sync_enabled binding_sync_mode binding_sync_modules
+  binding_runtime_swarm_id="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.destination_runtime_swarm_id // empty')"
+  binding_workspace_path="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.destination_workspace_path // empty')"
+  binding_writable="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.writable')"
+  binding_replication_mode="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.replication_mode // empty')"
+  binding_sync_enabled="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.sync.enabled')"
+  binding_sync_mode="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.sync.mode // empty')"
+  binding_sync_modules="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -cr '.sync.modules // []')"
 
-  local link_target_kind link_target_workspace_path link_writable link_replication_mode link_sync_enabled link_sync_mode link_sync_modules
-  link_target_kind="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.target_kind // empty')"
-  link_target_workspace_path="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.target_workspace_path // empty')"
-  link_writable="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.writable')"
-  link_replication_mode="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.replication_mode // empty')"
-  link_sync_enabled="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.sync.enabled')"
-  link_sync_mode="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -r '.sync.mode // empty')"
-  link_sync_modules="$(printf '%s' "${WORKSPACE_LINK_JSON}" | jq -cr '.sync.modules // []')"
-
-  [[ "${link_target_kind}" == "local" ]] || fail "workspace replication link target_kind=${link_target_kind}, expected local"
-  [[ "${link_writable}" == "${WORKSPACE_WRITABLE}" ]] || fail "workspace replication link writable=${link_writable}, expected ${WORKSPACE_WRITABLE}"
+  [[ "${binding_runtime_swarm_id}" == "${CHILD_SWARM_ID}" ]] || fail "replicate workspace binding destination_runtime_swarm_id=${binding_runtime_swarm_id}, expected ${CHILD_SWARM_ID}"
+  [[ "${binding_writable}" == "${WORKSPACE_WRITABLE}" ]] || fail "replicate workspace binding writable=${binding_writable}, expected ${WORKSPACE_WRITABLE}"
   if [[ -n "${TARGET_WORKSPACE_PATH}" ]]; then
-    [[ "${link_target_workspace_path}" == "${TARGET_WORKSPACE_PATH}" ]] || fail "workspace replication link target_workspace_path=${link_target_workspace_path}, expected ${TARGET_WORKSPACE_PATH}"
+    [[ "${binding_workspace_path}" == "${TARGET_WORKSPACE_PATH}" ]] || fail "replicate workspace binding destination_workspace_path=${binding_workspace_path}, expected ${TARGET_WORKSPACE_PATH}"
   fi
   if [[ -n "${REPLICATION_MODE}" ]]; then
-    [[ "${link_replication_mode}" == "${REPLICATION_MODE}" ]] || fail "workspace replication link replication_mode=${link_replication_mode}, expected ${REPLICATION_MODE}"
+    [[ "${binding_replication_mode}" == "${REPLICATION_MODE}" ]] || fail "replicate workspace binding replication_mode=${binding_replication_mode}, expected ${REPLICATION_MODE}"
   fi
   if [[ "${SYNC_ENABLED}" == "true" ]]; then
-    [[ "${link_sync_enabled}" == "true" ]] || fail "workspace replication link sync.enabled=${link_sync_enabled}, expected true"
+    [[ "${binding_sync_enabled}" == "true" ]] || fail "replicate workspace binding sync.enabled=${binding_sync_enabled}, expected true"
     if [[ -n "${SYNC_MODE}" ]]; then
-      [[ "${link_sync_mode}" == "${SYNC_MODE}" ]] || fail "workspace replication link sync.mode=${link_sync_mode}, expected ${SYNC_MODE}"
+      [[ "${binding_sync_mode}" == "${SYNC_MODE}" ]] || fail "replicate workspace binding sync.mode=${binding_sync_mode}, expected ${SYNC_MODE}"
     fi
-    [[ "${link_sync_modules}" == "$(sync_modules_json)" ]] || fail "workspace replication link sync.modules=${link_sync_modules}, expected $(sync_modules_json)"
+    [[ "${binding_sync_modules}" == "$(sync_modules_json)" ]] || fail "replicate workspace binding sync.modules=${binding_sync_modules}, expected $(sync_modules_json)"
   else
-    [[ "${link_sync_enabled}" == "false" ]] || fail "workspace replication link sync.enabled=${link_sync_enabled}, expected false"
+    [[ "${binding_sync_enabled}" == "false" ]] || fail "replicate workspace binding sync.enabled=${binding_sync_enabled}, expected false"
   fi
 }
 
@@ -1876,7 +1874,7 @@ verify_canonical_topology() {
   snapshot_host_container_json="$(printf '%s' "${topology_snapshot_json}" | jq -c --arg id "${DEPLOYMENT_HOST_CONTAINER_ID}" '.host_containers[]? | select(.host_container_id == $id)' | head -n 1)"
   snapshot_attachment_json="$(printf '%s' "${topology_snapshot_json}" | jq -c --arg id "${DEPLOYMENT_ATTACHMENT_ID}" '.attachments[]? | select(.attachment_id == $id)' | head -n 1)"
   listed_host_container_json="$(printf '%s' "${topology_host_containers_json}" | jq -c --arg id "${DEPLOYMENT_HOST_CONTAINER_ID}" '.host_containers[]? | select(.host_container_id == $id)' | head -n 1)"
-  binding_json="$(printf '%s' "${topology_workspace_bindings_json}" | jq -c --arg child_swarm_id "${CHILD_SWARM_ID}" --arg target_workspace_path "${TARGET_WORKSPACE_PATH:-}" '.bindings[]? | select(.destination_runtime_swarm_id == $child_swarm_id and ($target_workspace_path == "" or .destination_workspace_path == $target_workspace_path))' | head -n 1)"
+  binding_json="$(printf '%s' "${topology_workspace_bindings_json}" | jq -c --arg child_swarm_id "${CHILD_SWARM_ID}" --arg target_workspace_path "${TARGET_WORKSPACE_PATH:-}" '.bindings[]? | select(((.destination_runtime_swarm_id // .target_swarm_id // "") == $child_swarm_id) and ($target_workspace_path == "" or (.destination_workspace_path // .target_workspace_path // "") == $target_workspace_path))' | head -n 1)"
 
   [[ -n "${snapshot_runtime_json}" ]] || fail "topology snapshot is missing runtime ${CHILD_SWARM_ID}"
   [[ -n "${snapshot_host_container_json}" ]] || fail "topology snapshot is missing host_container_id ${DEPLOYMENT_HOST_CONTAINER_ID}"
@@ -1898,10 +1896,10 @@ verify_canonical_topology() {
   [[ "$(printf '%s' "${listed_host_container_json}" | jq -r '.host_swarm_id // empty')" == "${HOST_SWARM_ID}" ]] || fail "topology host-containers host_swarm_id mismatch"
 
   [[ "$(printf '%s' "${binding_json}" | jq -r '.source_workspace_path // empty')" == "${SOURCE_WORKSPACE_PATH}" ]] || fail "topology workspace binding source_workspace_path mismatch"
-  [[ "$(printf '%s' "${binding_json}" | jq -r '.destination_runtime_swarm_id // empty')" == "${CHILD_SWARM_ID}" ]] || fail "topology workspace binding destination_runtime_swarm_id mismatch"
+  [[ "$(printf '%s' "${binding_json}" | jq -r '.destination_runtime_swarm_id // .target_swarm_id // empty')" == "${CHILD_SWARM_ID}" ]] || fail "topology workspace binding destination_runtime_swarm_id mismatch"
   [[ "$(printf '%s' "${binding_json}" | jq -r '.writable')" == "${WORKSPACE_WRITABLE}" ]] || fail "topology workspace binding writable mismatch"
   if [[ -n "${TARGET_WORKSPACE_PATH}" ]]; then
-    [[ "$(printf '%s' "${binding_json}" | jq -r '.destination_workspace_path // empty')" == "${TARGET_WORKSPACE_PATH}" ]] || fail "topology workspace binding destination_workspace_path mismatch"
+    [[ "$(printf '%s' "${binding_json}" | jq -r '.destination_workspace_path // .target_workspace_path // empty')" == "${TARGET_WORKSPACE_PATH}" ]] || fail "topology workspace binding destination_workspace_path mismatch"
   fi
   if [[ -n "${REPLICATION_MODE}" ]]; then
     [[ "$(printf '%s' "${binding_json}" | jq -r '.replication_mode // empty')" == "${REPLICATION_MODE}" ]] || fail "topology workspace binding replication_mode mismatch"
@@ -1989,8 +1987,8 @@ verify_final_state() {
   child_current_group="$(printf '%s' "${child_state_json}" | jq -r '.state.current_group_id // empty')"
   [[ "${child_current_group}" == "${TARGET_GROUP_ID}" ]] || fail "child current_group_id=${child_current_group} does not match target group ${TARGET_GROUP_ID}"
 
-  verify_workspace_link
   verify_canonical_topology
+  verify_workspace_link
   exercise_sync_state
   exercise_sync_crud_flow
   run_final_routed_ai_proof

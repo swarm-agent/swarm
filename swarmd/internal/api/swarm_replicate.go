@@ -19,6 +19,7 @@ import (
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/workspace"
@@ -92,9 +93,9 @@ type swarmReplicateSwarmResponse struct {
 }
 
 type swarmReplicateWorkspaceResponse struct {
-	SourceWorkspacePath string                               `json:"source_workspace_path"`
-	SourceWorkspaceName string                               `json:"source_workspace_name"`
-	Link                pebblestore.WorkspaceReplicationLink `json:"link"`
+	SourceWorkspacePath string                                     `json:"source_workspace_path"`
+	SourceWorkspaceName string                                     `json:"source_workspace_name"`
+	Binding             pebblestore.TopologyWorkspaceBindingRecord `json:"binding"`
 }
 
 type replicateWorkspaceCatalogEntry struct {
@@ -226,6 +227,11 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.topology == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("topology service is not configured"))
+		return
+	}
+
 	groupID := ""
 	groupName := ""
 	groupNetworkName := ""
@@ -332,37 +338,54 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 	for _, normalized := range normalizedWorkspaces {
 		linkTargetKind := targetMode
 		linkTargetSwarmID := childSwarmID
-		linkTargetSwarmName := childSwarmName
 		if !targetHostIsLocal && targetHost != nil {
 			linkTargetKind = "host"
 			linkTargetSwarmID = strings.TrimSpace(targetHost.SwarmID)
-			linkTargetSwarmName = firstNonEmpty(strings.TrimSpace(targetHost.Name), strings.TrimSpace(targetHost.SwarmID))
 		}
-		storedLink, linkErr := s.workspace.AddReplicationLink(normalized.SourceWorkspacePath, pebblestore.WorkspaceReplicationLink{
-			TargetKind:          linkTargetKind,
-			TargetSwarmID:       linkTargetSwarmID,
-			TargetSwarmName:     linkTargetSwarmName,
-			TargetWorkspacePath: childWorkspacePaths[normalized.SourceWorkspacePath],
-			ReplicationMode:     normalized.ReplicationMode,
-			Writable:            normalized.Writable,
+		bindingTargetSwarmID := linkTargetSwarmID
+		bindingHostSwarmID := ""
+		if targetHostIsLocal {
+			bindingTargetSwarmID = childSwarmID
+		} else if targetHost != nil {
+			bindingTargetSwarmID = childSwarmID
+			bindingHostSwarmID = strings.TrimSpace(targetHost.SwarmID)
+		}
+		binding := pebblestore.TopologyWorkspaceBindingRecord{
+			BindingID:                 newWorkspaceBindingID(),
+			SourceWorkspacePath:       normalized.SourceWorkspacePath,
+			SourceWorkspaceName:       workspaceCatalog[normalized.SourceWorkspacePath].Name,
+			DestinationRuntimeSwarmID: bindingTargetSwarmID,
+			DestinationHostSwarmID:    bindingHostSwarmID,
+			DestinationWorkspacePath:  childWorkspacePaths[normalized.SourceWorkspacePath],
+			ReplicationMode:           normalized.ReplicationMode,
+			Writable:                  normalized.Writable,
 			Sync: pebblestore.WorkspaceReplicationSync{
 				Enabled: syncConfig.Enabled,
 				Mode:    syncConfig.Mode,
 				Modules: append([]string(nil), syncConfig.Modules...),
 			},
-		})
-		if linkErr != nil {
-			writeError(w, http.StatusInternalServerError, linkErr)
+			LegacyTargetKind: linkTargetKind,
+			CreatedAt:        time.Now().UnixMilli(),
+		}
+		binding.UpdatedAt = binding.CreatedAt
+		storedBinding, err := s.topology.UpsertWorkspaceBinding(binding)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		binding = storedBinding
 		response.Workspaces = append(response.Workspaces, swarmReplicateWorkspaceResponse{
 			SourceWorkspacePath: normalized.SourceWorkspacePath,
 			SourceWorkspaceName: workspaceCatalog[normalized.SourceWorkspacePath].Name,
-			Link:                storedLink,
+			Binding:             binding,
 		})
 	}
 
 	writeJSON(w, http.StatusOK, response)
+}
+
+func newWorkspaceBindingID() string {
+	return "binding_" + strings.ReplaceAll(sessionruntime.NewSessionID(), "-", "")
 }
 
 func (s *Server) materializeManagedHostReplicationWorkspaces(ctx context.Context, target swarmTarget, localSwarmID, peerToken string, workspaces []workspace.NormalizedReplicationWorkspace, catalog map[string]replicateWorkspaceCatalogEntry, syncConfig workspace.NormalizedReplicationSync) (map[string]string, error) {
@@ -521,7 +544,7 @@ func (s *Server) replicateToRemoteSwarm(r *http.Request, workspaces []workspace.
 		if err != nil {
 			return swarmReplicateResponse{}, http.StatusInternalServerError, err
 		}
-		addWorkspaceReplicationResponse(&response, normalized, workspaceCatalog, storedLink)
+		addWorkspaceReplicationResponse(&response, normalized, workspaceCatalog, topologyWorkspaceBindingFromReplicationLink(normalized, workspaceCatalog, storedLink))
 	}
 	return response, http.StatusOK, nil
 }

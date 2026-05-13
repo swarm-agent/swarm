@@ -57,18 +57,19 @@ type topologyAttachmentResponse struct {
 }
 
 type topologyWorkspaceBindingResponse struct {
-	BindingID                 string `json:"binding_id"`
-	SourceWorkspacePath       string `json:"source_workspace_path"`
-	SourceWorkspaceName       string `json:"source_workspace_name,omitempty"`
-	DestinationRuntimeSwarmID string `json:"destination_runtime_swarm_id,omitempty"`
-	DestinationHostSwarmID    string `json:"destination_host_swarm_id,omitempty"`
-	DestinationContainerID    string `json:"destination_container_id,omitempty"`
-	DestinationWorkspacePath  string `json:"destination_workspace_path,omitempty"`
-	ReplicationMode           string `json:"replication_mode,omitempty"`
-	Writable                  bool   `json:"writable"`
-	LegacyTargetKind          string `json:"legacy_target_kind,omitempty"`
-	CreatedAt                 int64  `json:"created_at"`
-	UpdatedAt                 int64  `json:"updated_at"`
+	BindingID                 string                               `json:"binding_id"`
+	SourceWorkspacePath       string                               `json:"source_workspace_path"`
+	SourceWorkspaceName       string                               `json:"source_workspace_name,omitempty"`
+	DestinationRuntimeSwarmID string                               `json:"destination_runtime_swarm_id,omitempty"`
+	DestinationHostSwarmID    string                               `json:"destination_host_swarm_id,omitempty"`
+	DestinationContainerID    string                               `json:"destination_container_id,omitempty"`
+	DestinationWorkspacePath  string                               `json:"destination_workspace_path,omitempty"`
+	ReplicationMode           string                               `json:"replication_mode,omitempty"`
+	Writable                  bool                                 `json:"writable"`
+	Sync                      pebblestore.WorkspaceReplicationSync `json:"sync,omitempty"`
+	LegacyTargetKind          string                               `json:"legacy_target_kind,omitempty"`
+	CreatedAt                 int64                                `json:"created_at"`
+	UpdatedAt                 int64                                `json:"updated_at"`
 }
 
 type topologySessionRouteResponse struct {
@@ -393,6 +394,7 @@ func mapTopologyWorkspaceBindingResponse(record pebblestore.TopologyWorkspaceBin
 		DestinationWorkspacePath:  record.DestinationWorkspacePath,
 		ReplicationMode:           record.ReplicationMode,
 		Writable:                  record.Writable,
+		Sync:                      record.Sync,
 		LegacyTargetKind:          record.LegacyTargetKind,
 		CreatedAt:                 record.CreatedAt,
 		UpdatedAt:                 record.UpdatedAt,
