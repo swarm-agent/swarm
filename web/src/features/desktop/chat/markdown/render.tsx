@@ -233,7 +233,7 @@ function CopyBlock({ label, content }: { label: string; content: string }) {
     <div className="my-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-inset)]">
       <div className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-3 py-2 text-xs text-[var(--app-text-muted)]">
         <span className="min-w-0 truncate font-mono text-[var(--app-primary)]">
-          /copy{label.trim() ? ` · ${label.trim()}` : ''}
+          Copy{label.trim() ? ` · ${label.trim()}` : ''}
         </span>
         <button
           type="button"

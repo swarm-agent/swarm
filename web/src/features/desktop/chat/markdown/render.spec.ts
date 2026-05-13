@@ -33,7 +33,8 @@ test('MarkdownRenderer renders tagged copy blocks without swallowing markdown', 
   const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
 
   assert.match(html, />Before</)
-  assert.match(html, /\/copy · command/)
+  assert.match(html, />Copy · command</)
+  assert.doesNotMatch(html, /\/copy · command/)
   assert.match(html, /swarm status/)
   assert.match(html, /<ul[\s\S]*after item[\s\S]*<\/ul>/)
 })
@@ -43,7 +44,7 @@ test('MarkdownRenderer leaves copy tags inside code fences literal', () => {
 
   const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
 
-  assert.doesNotMatch(html, /\/copy · literal/)
+  assert.doesNotMatch(html, /Copy · literal/)
   assert.match(html, /&lt;copy label=&quot;literal&quot;&gt;not actionable&lt;\/copy&gt;/)
 })
 
@@ -52,7 +53,7 @@ test('MarkdownRenderer leaves unclosed copy tags as markdown while streaming', (
 
   const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
 
-  assert.doesNotMatch(html, /\/copy · partial/)
+  assert.doesNotMatch(html, /Copy · partial/)
   assert.match(html, /<strong>\s*<span>bold<\/span>\s*<\/strong>/)
   assert.match(html, /&lt;copy label=&quot;partial&quot;&gt;still streaming/)
   assert.match(html, /<ul[\s\S]*visible item[\s\S]*<\/ul>/)
