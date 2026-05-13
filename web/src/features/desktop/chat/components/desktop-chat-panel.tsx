@@ -187,7 +187,7 @@ function metadataString(metadata: Record<string, unknown> | null, key: string): 
   return typeof value === 'string' ? value.trim() : ''
 }
 
-export function metadataTodoSummary(metadata: Record<string, unknown> | null): { openCount: number; inProgressCount: number; taskCount: number } | null {
+export function metadataTodoSummary(metadata: Record<string, unknown> | null): { openCount: number; inProgressCount: number; taskCount: number; activeText: string } | null {
   const raw = metadata?.agent_todo_summary
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return null
@@ -202,10 +202,14 @@ export function metadataTodoSummary(metadata: Record<string, unknown> | null): {
   if (taskCount <= 0 && openCount <= 0 && inProgressCount <= 0) {
     return null
   }
-  return { taskCount, openCount, inProgressCount }
+  const activeTodo = agent.active_todo && typeof agent.active_todo === 'object' && !Array.isArray(agent.active_todo)
+    ? agent.active_todo as Record<string, unknown>
+    : null
+  const activeText = typeof activeTodo?.text === 'string' ? activeTodo.text.trim() : ''
+  return { taskCount, openCount, inProgressCount, activeText }
 }
 
-export function formatAgentTodoBadge(summary: { openCount: number; inProgressCount: number; taskCount: number } | null): string {
+export function formatAgentTodoBadge(summary: { openCount: number; inProgressCount: number; taskCount: number; activeText?: string } | null): string {
   if (!summary || summary.taskCount <= 0) {
     return ''
   }
@@ -220,6 +224,23 @@ export function formatAgentTodoBadge(summary: { openCount: number; inProgressCou
     return `${completed}/${total} complete • ${active} active`
   }
   return `${completed}/${total} complete`
+}
+
+export function formatMobileAgentTodoBadge(summary: { openCount: number; inProgressCount: number; taskCount: number } | null): string {
+  if (!summary || summary.taskCount <= 0) {
+    return ''
+  }
+  const total = Math.max(0, summary.taskCount)
+  const open = Math.max(0, summary.openCount)
+  const active = Math.max(0, summary.inProgressCount)
+  const completed = Math.min(total, Math.max(0, total - open))
+  if (open === 0) {
+    return 'Complete'
+  }
+  if (completed === 0 && active > 0) {
+    return 'Active'
+  }
+  return `${completed}/${total}`
 }
 
 function lineageAgentName(label: string): string {
@@ -1290,6 +1311,7 @@ export function DesktopChatPanel({
   const contextBadgeTooltip = formatContextUsageTooltip(liveSession?.usage ?? null)
   const agentTodoSummary = metadataTodoSummary(metadataRecord(liveSession?.metadata))
   const agentTodoBadgeLabel = formatAgentTodoBadge(agentTodoSummary)
+  const mobileAgentTodoBadgeLabel = formatMobileAgentTodoBadge(agentTodoSummary)
   const renderItems = useMemo(() => {
     const handoff = liveAssistantHandoffRef.current
     const lastDisplayedMessage = displayedMessages[displayedMessages.length - 1]
@@ -2594,27 +2616,27 @@ export function DesktopChatPanel({
         <div className="min-w-0 flex-1">
           <div className="sm:hidden">
             <div className="hidden min-w-0 items-center gap-1.5 min-[390px]:flex">
-              <div className="truncate text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-muted)]" title={workspaceName || workspacePath}>
-                {workspaceName || workspacePath}
+              <div className="min-w-0 flex flex-1 items-center gap-1.5">
+                <div className="truncate text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-muted)]" title={workspaceName || workspacePath}>
+                  {workspaceName || workspacePath}
+                </div>
+                {showRunTimer ? (
+                  <div className="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full border border-transparent bg-transparent px-1 text-[10px] font-medium tabular-nums text-[var(--app-text-muted)]">
+                    <Clock3 size={10} className="shrink-0" />
+                    <span>{runTimerLabel}</span>
+                  </div>
+                ) : null}
               </div>
-              {showRunTimer ? (
-                <div className="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full border border-transparent bg-transparent px-1 text-[10px] font-medium tabular-nums text-[var(--app-text-muted)]">
-                  <Clock3 size={10} className="shrink-0" />
-                  <span>{runTimerLabel}</span>
+              {mobileAgentTodoBadgeLabel ? (
+                <div className="inline-flex max-w-[45%] shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]" title={agentTodoSummary?.activeText || 'Agent checklist for this session'}>
+                  <ListChecks size={10} className="shrink-0" />
+                  <span className="truncate">{mobileAgentTodoBadgeLabel}</span>
                 </div>
               ) : null}
             </div>
             <h1 className="truncate text-[13px] font-semibold leading-tight text-[var(--app-text)]" title={liveSession?.title || 'New conversation'}>
               {liveSession?.title || 'New conversation'}
             </h1>
-            {agentTodoBadgeLabel ? (
-              <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden">
-                <div className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]" title="Agent checklist for this session">
-                  <ListChecks size={12} className="shrink-0" />
-                  <span className="truncate">{agentTodoBadgeLabel}</span>
-                </div>
-              </div>
-            ) : null}
           </div>
           <div className="hidden min-w-0 sm:block">
             <h1 className="flex items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)]">

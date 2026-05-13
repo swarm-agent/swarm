@@ -6,11 +6,11 @@ import type { ChatMessageRecord } from '../types/chat'
 import { formatAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, metadataTodoSummary, resolveSessionEffectiveAgentName, sessionUsesReadOnlyFlowIdentity, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
-  assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1 }), '4/6 complete • 1 active')
+  assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
 })
 
 test('formatAgentTodoBadge shows complete state when no tasks remain open', () => {
-  assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 0, inProgressCount: 0 }), 'Complete · 6/6')
+  assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 0, inProgressCount: 0, activeText: '' }), 'Complete · 6/6')
 })
 
 test('metadataTodoSummary reads agent-scoped counts from metadata', () => {
@@ -20,12 +20,13 @@ test('metadataTodoSummary reads agent-scoped counts from metadata', () => {
       open_count: 3,
       in_progress_count: 1,
       user: { task_count: 2, open_count: 1, in_progress_count: 0 },
-      agent: { task_count: 3, open_count: 2, in_progress_count: 1 },
+      agent: { task_count: 3, open_count: 2, in_progress_count: 1, active_todo: { text: 'Make mobile badge readable' } },
     },
   }), {
     taskCount: 3,
     openCount: 2,
     inProgressCount: 1,
+    activeText: 'Make mobile badge readable',
   })
 })
 
