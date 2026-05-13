@@ -19,16 +19,18 @@ import (
 )
 
 const (
-	managedHostSessionOpenPath          = "/v1/swarm/managed-hosts/sessions/open"
-	managedHostSessionMessagePath       = "/v1/swarm/managed-hosts/sessions/message"
-	managedHostSessionRunPath           = "/v1/swarm/managed-hosts/sessions/run"
-	managedHostSessionStopPath          = "/v1/swarm/managed-hosts/sessions/stop"
-	peerManagedHostSessionOpenPath      = "/v1/swarm/peer/managed-host-sessions/open"
-	peerManagedHostSessionMessagePath   = "/v1/swarm/peer/managed-host-sessions/message"
-	peerManagedHostSessionRunPath       = "/v1/swarm/peer/managed-host-sessions/run"
-	peerManagedHostSessionRunStreamPath = "/v1/swarm/peer/managed-host-sessions/run/stream"
-	peerManagedHostSessionStopPath      = "/v1/swarm/peer/managed-host-sessions/stop"
-	peerManagedHostSessionEventPath     = "/v1/swarm/peer/managed-host-sessions/event"
+	managedHostSessionOpenPath            = "/v1/swarm/managed-hosts/sessions/open"
+	managedHostSessionMessagePath         = "/v1/swarm/managed-hosts/sessions/message"
+	managedHostSessionRunPath             = "/v1/swarm/managed-hosts/sessions/run"
+	managedHostSessionStopPath            = "/v1/swarm/managed-hosts/sessions/stop"
+	managedHostWorkspaceGitCommitPath     = "/v1/swarm/managed-hosts/workspace/git/commit"
+	peerManagedHostSessionOpenPath        = "/v1/swarm/peer/managed-host-sessions/open"
+	peerManagedHostSessionMessagePath     = "/v1/swarm/peer/managed-host-sessions/message"
+	peerManagedHostSessionRunPath         = "/v1/swarm/peer/managed-host-sessions/run"
+	peerManagedHostSessionRunStreamPath   = "/v1/swarm/peer/managed-host-sessions/run/stream"
+	peerManagedHostWorkspaceGitCommitPath = "/v1/workspace/git/commit"
+	peerManagedHostSessionStopPath        = "/v1/swarm/peer/managed-host-sessions/stop"
+	peerManagedHostSessionEventPath       = "/v1/swarm/peer/managed-host-sessions/event"
 )
 
 type managedHostSessionOpenRequest struct {

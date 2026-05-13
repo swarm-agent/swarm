@@ -61,6 +61,7 @@ import {
 import {
   buildDesktopChatRouteOptions,
   desktopChatRoutesEqual,
+  isManagedHostDesktopChatRoute,
   resolveDesktopChatRouteById,
   resolveDesktopChatRouteFromSession,
 } from '../services/chat-routing'
@@ -71,6 +72,7 @@ import type { QuickSettingsTabID } from '../../settings/components/desktop-quick
 import type { SwarmTarget } from '../../swarm/api/swarm-targets'
 import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
 import { ImageSessionSidebar, type ImageSessionSidebarState } from '../../tools/components/image-session-sidebar'
+import { commitWorkspaceChanges } from '../../git/api'
 
 const THINKING_OPTIONS = ['off', 'low', 'medium', 'high', 'xhigh']
 const FAST_ON_OFF_OPTIONS = ['off', 'on']
@@ -750,16 +752,6 @@ function buildCommitAgentInstructions(userInstructions: string): string {
   return instructions.join('\n')
 }
 
-function manualCommitToolScope(userInstructions: string): NonNullable<Parameters<typeof startSessionRun>[0]['toolScope']> {
-  const prefixes = ['git status', 'git diff', 'git log', 'git show', 'git add', 'git commit']
-  if (userInstructions.toLowerCase().includes('push')) {
-    prefixes.push('git push')
-  }
-  return {
-    preset: 'background_commit',
-    bash_prefixes: prefixes,
-  }
-}
 
 function commitExecutionContext(session: DesktopSessionRecord): NonNullable<Parameters<typeof startSessionRun>[0]['executionContext']> {
   const metadata = session.metadata && typeof session.metadata === 'object' ? session.metadata : null
@@ -816,7 +808,7 @@ function commitStatusLabel(state: CommitModalState): string {
     case 'running':
       return state.mode === 'manual' ? 'Manual commit running…' : 'Memory commit running…'
     case 'success':
-      return 'Save completed. You can save again.'
+      return state.mode === 'manual' ? 'Manual git commit completed. You can commit again.' : 'Save completed. You can save again.'
     case 'error':
       return state.error || 'Save failed.'
     default:
@@ -2278,7 +2270,6 @@ export function DesktopChatPanel({
       let runInstructions = ''
       let targetKind = ''
       let targetName = ''
-      let toolScope: Parameters<typeof startSessionRun>[0]['toolScope'] | undefined
 
       if (commitModal.mode === 'agent') {
         const createdSession = await createSession({
@@ -2308,13 +2299,47 @@ export function DesktopChatPanel({
         targetKind = 'background'
         targetName = 'memory'
       } else {
-        prompt = instructions || 'Review the git diff in scope, stage the appropriate files, and create the commit now.'
-        runInstructions = instructions
-        agentName = 'swarm'
-        toolScope = manualCommitToolScope(instructions)
+        if (!instructions) {
+          setCommitModal((current) => ({
+            ...current,
+            status: 'error',
+            error: 'Enter an exact commit message for manual commit.',
+          }))
+          return
+        }
+        const committed = await commitWorkspaceChanges({
+          workspacePath: executionContext.workspace_path || activeChatRoute.runtimeWorkspacePath,
+          cwd: executionContext.cwd || executionContext.workspace_path || activeChatRoute.runtimeWorkspacePath,
+          message: instructions,
+          all: true,
+          endpoint: isManagedHostDesktopChatRoute(activeChatRoute)
+            ? `/v1/swarm/managed-hosts/workspace/git/commit?swarm_id=${encodeURIComponent(activeChatRoute.swarmId || '')}`
+            : undefined,
+        })
+        setCommitModal((current) => ({
+          ...current,
+          status: 'success',
+          error: null,
+          runId: null,
+          targetSessionId: session.id,
+          open: true,
+        }))
+        setPanelError(null)
+        const summary = committed.output?.trim() || committed.summary?.trim() || 'Manual git commit completed.'
+        upsertSession({
+          ...session,
+          live: {
+            ...session.live,
+            status: 'idle',
+            awaitingAck: false,
+            summary,
+            error: null,
+          },
+        })
+        return
       }
 
-      const accepted = await startSessionRun({
+      await startSessionRun({
         sessionId: targetSession.id,
         prompt,
         agentName,
@@ -2323,7 +2348,6 @@ export function DesktopChatPanel({
         compact: false,
         targetKind,
         targetName,
-        toolScope,
         executionContext,
       })
 
@@ -2335,28 +2359,6 @@ export function DesktopChatPanel({
         return
       }
 
-      setCommitModal((current) => ({
-        ...current,
-        status: 'running',
-        error: null,
-        runId: accepted.run_id?.trim() || null,
-        targetSessionId: targetSession.id,
-        open: true,
-      }))
-      if (commitModal.mode === 'manual') {
-        upsertSession({
-          ...session,
-          live: {
-            ...session.live,
-            status: 'starting',
-            runId: accepted.run_id?.trim() || session.live.runId,
-            awaitingAck: true,
-            agentName: 'swarm',
-            summary: 'Starting save…',
-            error: null,
-          },
-        })
-      }
     } catch (error) {
       setCommitModal((current) => ({
         ...current,
@@ -3149,7 +3151,7 @@ export function DesktopChatPanel({
               <div className="min-w-0 flex-1">
                 <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Save changes</h2>
                 <p className="mt-1 text-sm text-[var(--app-text-muted)]">
-                  Commit from the desktop header with Memory or a manual git commit flow.
+                  Commit from the desktop header with Memory, or run an exact manual git commit directly.
                 </p>
               </div>
               <ModalCloseButton onClick={closeCommitModal} aria-label="Close save dialog" />
@@ -3174,24 +3176,24 @@ export function DesktopChatPanel({
                   onClick={() => handleCommitModeChange('manual')}
                 >
                   <div className="text-sm font-semibold text-[var(--app-text)]">Manual commit</div>
-                  <div className="mt-1 text-xs text-[var(--app-text-muted)]">Provide commit instructions or exact commit text and run a restricted git commit flow.</div>
+                  <div className="mt-1 text-xs text-[var(--app-text-muted)]">Use the text below as the exact git commit message and run git commit directly.</div>
                 </button>
               </div>
               <label className="grid gap-2">
                 <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-                  {commitModal.mode === 'manual' ? 'Commit instructions / message' : 'Extra commit instructions'}
+                  {commitModal.mode === 'manual' ? 'Exact commit message' : 'Extra commit instructions'}
                 </span>
                 <Textarea
                   value={commitModal.instructions}
                   onChange={(event) => handleCommitInstructionsChange(event.target.value)}
                   placeholder={commitModal.mode === 'manual'
-                    ? 'Example: commit as "feat: add save modal" and include only the staged UI files.'
+                    ? 'Example: feat: add save modal'
                     : 'Optional: mention what should be emphasized in the commit message.'}
                   className="min-h-[140px] resize-y bg-[var(--app-bg-alt)]"
                 />
               </label>
               <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-sm text-[var(--app-text-muted)]">
-                {commitStatusLabel(commitModal) || 'Save runs in the background, including while the current session is still running.'}
+                {commitStatusLabel(commitModal) || (commitModal.mode === 'manual' ? 'Manual commit runs git commit --all directly in the workspace.' : 'Save runs in the background, including while the current session is still running.')}
               </div>
               {commitModal.error ? (
                 <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-sm text-[var(--app-danger)]">
@@ -3212,7 +3214,7 @@ export function DesktopChatPanel({
                 disabled={commitModal.status === 'starting' || commitModal.status === 'running' || !sessionId}
               >
                 {commitModal.status === 'starting' || commitModal.status === 'running' ? <LoaderCircle size={16} className="animate-spin" /> : <Save size={16} />}
-                Save now
+                {commitModal.mode === 'manual' ? 'Commit now' : 'Save now'}
               </Button>
             </div>
           </DialogPanel>
