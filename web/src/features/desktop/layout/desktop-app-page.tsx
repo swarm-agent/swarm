@@ -2541,9 +2541,8 @@ export function DesktopAppPage() {
         </div>
       ) : (
         <div className="flex h-full flex-col min-h-0">
-          <div className="border-b border-[var(--app-border)] font-mono">
-            <div className="min-h-[124px] border border-[color-mix(in_srgb,var(--app-border)_74%,transparent)] bg-[var(--app-surface)]">
-              <div className="p-[12px_0_11px_13px]">
+          <div className="font-mono">
+            <div className="grid h-[60px] items-center border-b border-[var(--app-border)] bg-[var(--app-surface)] pl-[13px] pr-0">
                 <div className={headerActionRowClass}>
                   <div className="min-w-0">
                     <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
@@ -2608,8 +2607,10 @@ export function DesktopAppPage() {
                     </button>
                   </SidebarActionRail>
                 </div>
+            </div>
 
-                <div className="mr-4 mt-[7px] grid gap-1 border border-[color-mix(in_srgb,var(--app-border)_62%,transparent)] bg-[var(--app-surface)] p-1 text-[11px] text-[var(--app-text-subtle)]">
+            <div className="border-b border-[var(--app-border)] bg-[var(--app-surface)] px-[9px] py-2">
+              <div className="grid gap-0.5 text-[11px] text-[var(--app-text-subtle)]">
                   <div>
                     <div
                       className={cn(
@@ -2849,10 +2850,8 @@ export function DesktopAppPage() {
                     <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                     <span className="truncate">Settings</span>
                   </button>
-                </div>
               </div>
             </div>
-
           </div>
           <div className="flex min-h-0 flex-1 flex-col">
             <div ref={sidebarBodyRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
