@@ -855,19 +855,6 @@ func (s *Service) MirrorDeployment(ctx context.Context, deployment ContainerDepl
 	return mapContainerRecord(saved), nil
 }
 
-func (s *Service) syncLocalContainerChildMetadata(ctx context.Context, input localcontainers.ChildTargetMetadataInput) error {
-	if s == nil || s.containers == nil {
-		return nil
-	}
-	if strings.TrimSpace(input.ID) == "" && strings.TrimSpace(input.ContainerName) == "" && strings.TrimSpace(input.DeploymentID) == "" {
-		return nil
-	}
-	if strings.TrimSpace(input.ChildSwarmID) == "" && strings.TrimSpace(input.ChildBackendURL) == "" {
-		return nil
-	}
-	return s.containers.SetChildTargetMetadata(ctx, input)
-}
-
 func (s *Service) deleteDeployments(ctx context.Context, deploymentIDs []string) (localcontainers.DeleteResult, error) {
 	if s == nil || s.store == nil {
 		return localcontainers.DeleteResult{}, fmt.Errorf("deploy container service is not configured")
@@ -979,9 +966,6 @@ func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachReques
 	saved, saveErr := s.store.Put(record)
 	if saveErr != nil {
 		return ContainerAttachState{}, saveErr
-	}
-	if err := s.syncLocalContainerChildMetadata(ctx, localcontainers.ChildTargetMetadataInput{ID: saved.ID, ContainerName: saved.ContainerName, DeploymentID: saved.ID, ChildSwarmID: saved.ChildSwarmID, ChildBackendURL: saved.ChildBackendURL}); err != nil {
-		return ContainerAttachState{}, err
 	}
 	log.Printf("deploy service attach request stored deployment_id=%q attach_status=%q child_swarm_id=%q", saved.ID, saved.AttachStatus, saved.ChildSwarmID)
 	return mapAttachState(saved), nil
