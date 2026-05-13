@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, Clock3, Home, ListChecks, LoaderCircle, Menu, Mic, Minimize2, Plus, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
+import { ChevronDown, Clock3, Home, ListChecks, LoaderCircle, MessageSquareText, Mic, Minimize2, Plus, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import { useDesktopStore } from '../../state/use-desktop-store'
@@ -1877,7 +1877,7 @@ export function DesktopChatPanel({
     }))
   }, [])
 
-  const handleMobileQuickCommand = useCallback((command: 'new-session' | 'change-workspace' | 'save') => {
+  const handleMobileQuickCommand = useCallback((command: 'new-session' | 'change-workspace' | 'save' | 'chats') => {
     setMobileQuickCommandsOpen(false)
     switch (command) {
       case 'new-session':
@@ -1889,10 +1889,13 @@ export function DesktopChatPanel({
       case 'save':
         openCommitModal()
         return
+      case 'chats':
+        onOpenSidebarMenu()
+        return
       default:
         return
     }
-  }, [onOpenWorkspaceLauncher, onStartNewSession, openCommitModal, workspaceName, workspacePath])
+  }, [onOpenSidebarMenu, onOpenWorkspaceLauncher, onStartNewSession, openCommitModal, workspaceName, workspacePath])
 
   const openPlanModal = useCallback(async () => {
     if (!sessionId) {
@@ -2584,10 +2587,20 @@ export function DesktopChatPanel({
             <h1 className="truncate text-sm font-semibold text-[var(--app-text)]" title={liveSession?.title || 'New conversation'}>
               {liveSession?.title || 'New conversation'}
             </h1>
-            {agentTodoBadgeLabel ? (
-              <div className="mt-1 inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]" title="Agent checklist for this session">
-                <ListChecks size={12} />
-                <span className="truncate">{agentTodoBadgeLabel}</span>
+            {agentTodoBadgeLabel || showRunTimer ? (
+              <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden">
+                {agentTodoBadgeLabel ? (
+                  <div className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]" title="Agent checklist for this session">
+                    <ListChecks size={12} className="shrink-0" />
+                    <span className="truncate">{agentTodoBadgeLabel}</span>
+                  </div>
+                ) : null}
+                {showRunTimer ? (
+                  <div className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 text-[11px] font-medium tabular-nums text-[var(--app-text-muted)]">
+                    <Clock3 size={12} className="shrink-0" />
+                    <span>{runTimerLabel}</span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -2597,10 +2610,20 @@ export function DesktopChatPanel({
               <span className="shrink-0 text-[var(--app-text-subtle)] font-normal">/</span>
               <span className="truncate text-[var(--app-text-muted)] font-normal" title={workspaceName}>{workspaceName}</span>
             </h1>
-            {agentTodoBadgeLabel ? (
-              <div className="mt-1 inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]" title="Agent checklist for this session">
-                <ListChecks size={12} />
-                <span className="truncate">{agentTodoBadgeLabel}</span>
+            {agentTodoBadgeLabel || showRunTimer ? (
+              <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden">
+                {agentTodoBadgeLabel ? (
+                  <div className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-muted)]" title="Agent checklist for this session">
+                    <ListChecks size={12} className="shrink-0" />
+                    <span className="truncate">{agentTodoBadgeLabel}</span>
+                  </div>
+                ) : null}
+                {showRunTimer ? (
+                  <div className="inline-flex h-[22px] shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 text-[11px] font-medium tabular-nums text-[var(--app-text-muted)]">
+                    <Clock3 size={12} className="shrink-0" />
+                    <span>{runTimerLabel}</span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -2614,12 +2637,6 @@ export function DesktopChatPanel({
               <ShieldAlert size={14} />
               <span>{pendingPermissionCount > 1 ? `${pendingPermissionCount} pending` : '1 pending'}</span>
             </button>
-          ) : null}
-          {showRunTimer ? (
-            <div className="inline-flex h-9 shrink-0 items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 text-xs font-medium tabular-nums text-[var(--app-text-muted)] sm:h-10">
-              <Clock3 size={14} />
-              {runTimerLabel}
-            </div>
           ) : null}
           <div className="relative shrink-0">
             <button
@@ -2645,6 +2662,18 @@ export function DesktopChatPanel({
                 aria-label="Quick actions"
                 className="absolute right-0 top-[calc(100%+0.5rem)] z-50 w-56 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 text-sm shadow-[var(--shadow-panel)]"
               >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] sm:hidden"
+                  onClick={() => handleMobileQuickCommand('chats')}
+                >
+                  <MessageSquareText size={17} className="shrink-0 text-[var(--app-text-subtle)]" />
+                  <span className="min-w-0">
+                    <span className="block font-medium">Chats</span>
+                    <span className="block text-xs text-[var(--app-text-muted)]">Open conversations</span>
+                  </span>
+                </button>
                 <button
                   type="button"
                   role="menuitem"
@@ -2685,16 +2714,6 @@ export function DesktopChatPanel({
               </div>
             ) : null}
           </div>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-11 w-11 shrink-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0 text-[var(--app-text)] hover:border-[var(--app-border-accent)] sm:hidden"
-            onClick={onOpenSidebarMenu}
-            aria-label="Open sidebar"
-            title="Open sidebar"
-          >
-            <Menu size={24} />
-          </Button>
         </div>
       </header>
 
