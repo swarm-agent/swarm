@@ -207,14 +207,20 @@ func (s *Server) outgoingPeerAuthTokenForTarget(r *http.Request, target swarmTar
 	if s.swarm == nil {
 		return "", errors.New("swarm service not configured")
 	}
-	token, ok, err := s.swarm.OutgoingPeerAuthToken(target.SwarmID)
-	if err != nil {
-		return "", err
+	for _, swarmID := range []string{target.ManagedSwarmID, target.SwarmID} {
+		swarmID = strings.TrimSpace(swarmID)
+		if swarmID == "" {
+			continue
+		}
+		token, ok, err := s.swarm.OutgoingPeerAuthToken(swarmID)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return token, nil
+		}
 	}
-	if ok {
-		return token, nil
-	}
-	return "", fmt.Errorf("selected swarm target %q is missing peer auth", strings.TrimSpace(target.SwarmID))
+	return "", fmt.Errorf("selected swarm target %q is missing peer auth", strings.TrimSpace(firstNonEmpty(target.ManagedSwarmID, target.SwarmID)))
 }
 
 func isWebsocketUpgradeRequest(r *http.Request) bool {

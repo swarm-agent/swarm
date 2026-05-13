@@ -13,6 +13,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/localcontainers"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -36,19 +37,21 @@ type swarmTargetHealthCache struct {
 }
 
 type swarmTarget struct {
-	SwarmID      string `json:"swarm_id"`
-	Name         string `json:"name"`
-	Role         string `json:"role"`
-	Relationship string `json:"relationship"`
-	Kind         string `json:"kind"`
-	DeploymentID string `json:"deployment_id,omitempty"`
-	AttachStatus string `json:"attach_status,omitempty"`
-	Online       bool   `json:"online"`
-	Selectable   bool   `json:"selectable"`
-	Current      bool   `json:"current"`
-	BackendURL   string `json:"backend_url,omitempty"`
-	DesktopURL   string `json:"desktop_url,omitempty"`
-	LastError    string `json:"last_error,omitempty"`
+	SwarmID         string `json:"swarm_id"`
+	Name            string `json:"name"`
+	Role            string `json:"role"`
+	Relationship    string `json:"relationship"`
+	Kind            string `json:"kind"`
+	ManagedSwarmID  string `json:"managed_swarm_id,omitempty"`
+	DeploymentID    string `json:"deployment_id,omitempty"`
+	AttachStatus    string `json:"attach_status,omitempty"`
+	Online          bool   `json:"online"`
+	Selectable      bool   `json:"selectable"`
+	Current         bool   `json:"current"`
+	BackendURL      string `json:"backend_url,omitempty"`
+	DesktopURL      string `json:"desktop_url,omitempty"`
+	ChildBackendURL string `json:"child_backend_url,omitempty"`
+	LastError       string `json:"last_error,omitempty"`
 }
 
 type swarmTargetsResponse struct {
@@ -270,7 +273,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		markSwarmTargetSeen(seenTargets, deployment)
 	}
 	for _, mirrored := range mirroredTargets {
-		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, mirrored.SwarmID) {
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, mirrored.SwarmID) && !swarmTargetInCurrentGroup(currentGroupSwarmIDs, mirrored.ManagedSwarmID) {
 			continue
 		}
 		if swarmTargetSeen(seenTargets, mirrored) {
@@ -692,6 +695,30 @@ func firstTrustedPeerTransportValue(transport swarmruntime.TransportSummary) str
 		}
 	}
 	return ""
+}
+
+func mapLocalContainerTarget(item localcontainers.Container, hostSwarmID string) (swarmTarget, bool) {
+	swarmID := strings.TrimSpace(item.ChildSwarmID)
+	backendURL := strings.TrimSpace(item.ChildBackendURL)
+	if swarmID == "" || backendURL == "" {
+		return swarmTarget{}, false
+	}
+	online := strings.EqualFold(strings.TrimSpace(item.Status), "running")
+	return swarmTarget{
+		SwarmID:         swarmID,
+		Name:            firstNonEmpty(strings.TrimSpace(item.Name), strings.TrimSpace(item.ContainerName), swarmID),
+		Role:            "child",
+		Relationship:    swarmruntime.RelationshipChild,
+		Kind:            "mirrored",
+		ManagedSwarmID:  strings.TrimSpace(hostSwarmID),
+		DeploymentID:    strings.TrimSpace(item.ID),
+		AttachStatus:    firstNonEmpty(strings.TrimSpace(item.Status), "attached"),
+		Online:          online,
+		Selectable:      online,
+		BackendURL:      backendURL,
+		DesktopURL:      backendURL,
+		ChildBackendURL: backendURL,
+	}, true
 }
 
 func mapDeployContainerTarget(item deployruntime.ContainerDeployment) (swarmTarget, bool) {

@@ -333,10 +333,8 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		linkTargetKind := targetMode
 		linkTargetSwarmID := childSwarmID
 		linkTargetSwarmName := childSwarmName
-		if !targetHostIsLocal && targetHost != nil {
-			linkTargetKind = "host"
-			linkTargetSwarmID = strings.TrimSpace(targetHost.SwarmID)
-			linkTargetSwarmName = firstNonEmpty(strings.TrimSpace(targetHost.Name), strings.TrimSpace(targetHost.SwarmID))
+		if !targetHostIsLocal {
+			linkTargetKind = "mirrored"
 		}
 		storedLink, linkErr := s.workspace.AddReplicationLink(normalized.SourceWorkspacePath, pebblestore.WorkspaceReplicationLink{
 			TargetKind:          linkTargetKind,
