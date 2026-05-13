@@ -842,19 +842,6 @@ function sessionStatusTooltip(session: DesktopSessionRecord): string {
   return lines.join('\n')
 }
 
-function workspaceGitBarTone(workspace: WorkspaceEntry): string {
-  if (!workspace.isGitRepo || !workspace.gitHasGit) {
-    return 'text-[var(--app-text-muted)]'
-  }
-  if (Math.max(0, Number(workspace.gitConflictCount ?? 0)) > 0) {
-    return 'text-[var(--app-danger)]'
-  }
-  if (Math.max(0, Number(workspace.gitDirtyCount ?? 0)) > 0) {
-    return 'text-[var(--app-warning)]'
-  }
-  return 'text-[var(--app-text-subtle)]'
-}
-
 function workspaceWorktreeTitle(enabled: boolean, busy: boolean): string {
   if (busy) {
     return 'Updating worktree setting…'
@@ -876,7 +863,6 @@ function renderWorkspaceGitBar(args: {
   const { workspace, worktreeBusy, gitSnapshot, gitLoading, gitError, onOpenGit, onToggle } = args
   const enabled = workspace.worktreeEnabled
   const title = workspaceWorktreeTitle(enabled, worktreeBusy)
-  const tone = gitSnapshot ? gitBadgeClass(gitSnapshot, gitLoading) : workspaceGitBarTone(workspace)
   const branch = gitSnapshot?.branch?.trim() || workspace.gitBranch?.trim() || 'git'
   const ahead = Math.max(0, Number(gitSnapshot?.ahead_count ?? workspace.gitAheadCount ?? 0))
   const behind = Math.max(0, Number(gitSnapshot?.behind_count ?? workspace.gitBehindCount ?? 0))
@@ -902,11 +888,11 @@ function renderWorkspaceGitBar(args: {
         title={gitTitle}
         aria-label={`Open git status for ${workspace.workspaceName}`}
       >
-        <span className={cn('truncate font-semibold', tone, gitLoading && 'animate-pulse')}>{branch}</span>
+        <span className={cn('truncate font-semibold text-[var(--app-text-muted)]', gitLoading && 'animate-pulse')}>{branch}</span>
         <span className="shrink-0 text-[var(--app-text-muted)]">/</span>
         <span className="shrink-0 text-[var(--app-text-muted)]">{syncLabel}</span>
         {dirtyLabel ? <span className="shrink-0 text-[var(--app-text-muted)]">/</span> : null}
-        {dirtyLabel ? <span className={cn('shrink-0 text-[10px]', tone)}>{dirtyLabel}</span> : null}
+        {dirtyLabel ? <span className="shrink-0 text-[10px] text-[var(--app-text-muted)]">{dirtyLabel}</span> : null}
       </button>
       <SidebarActionRail>
         <SidebarActionRailSpacer />
