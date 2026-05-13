@@ -79,23 +79,21 @@ type RuntimeStatus struct {
 }
 
 type Container struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	ContainerName   string  `json:"container_name"`
-	Runtime         string  `json:"runtime"`
-	NetworkName     string  `json:"network_name,omitempty"`
-	Status          string  `json:"status"`
-	ContainerID     string  `json:"container_id,omitempty"`
-	HostAPIBaseURL  string  `json:"host_api_base_url,omitempty"`
-	HostPort        int     `json:"host_port"`
-	RuntimePort     int     `json:"runtime_port"`
-	Image           string  `json:"image,omitempty"`
-	Warning         string  `json:"warning,omitempty"`
-	ChildSwarmID    string  `json:"child_swarm_id,omitempty"`
-	ChildBackendURL string  `json:"child_backend_url,omitempty"`
-	Mounts          []Mount `json:"mounts,omitempty"`
-	CreatedAt       int64   `json:"created_at"`
-	UpdatedAt       int64   `json:"updated_at"`
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	ContainerName  string  `json:"container_name"`
+	Runtime        string  `json:"runtime"`
+	NetworkName    string  `json:"network_name,omitempty"`
+	Status         string  `json:"status"`
+	ContainerID    string  `json:"container_id,omitempty"`
+	HostAPIBaseURL string  `json:"host_api_base_url,omitempty"`
+	HostPort       int     `json:"host_port"`
+	RuntimePort    int     `json:"runtime_port"`
+	Image          string  `json:"image,omitempty"`
+	Warning        string  `json:"warning,omitempty"`
+	Mounts         []Mount `json:"mounts,omitempty"`
+	CreatedAt      int64   `json:"created_at"`
+	UpdatedAt      int64   `json:"updated_at"`
 }
 
 type CreateInput struct {
@@ -110,14 +108,6 @@ type CreateInput struct {
 	Env               []string
 	ExtraRunArgs      []string
 	RuntimeMount      *RuntimeMount
-}
-
-type ChildTargetMetadataInput struct {
-	ID              string
-	ContainerName   string
-	DeploymentID    string
-	ChildSwarmID    string
-	ChildBackendURL string
 }
 
 type ActionInput struct {
@@ -349,19 +339,7 @@ func (s *Service) RuntimeStatus(ctx context.Context) (RuntimeStatus, error) {
 	return status, nil
 }
 
-func (s *Service) List(ctx context.Context) ([]Container, error) {
-	records, err := s.ListRecords(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Container, 0, len(records))
-	for _, record := range records {
-		out = append(out, mapRecord(record))
-	}
-	return out, nil
-}
-
-func (s *Service) ListRecords(context.Context) ([]pebblestore.SwarmLocalContainerRecord, error) {
+func (s *Service) List(context.Context) ([]Container, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("local container service is not configured")
 	}
@@ -369,91 +347,15 @@ func (s *Service) ListRecords(context.Context) ([]pebblestore.SwarmLocalContaine
 	if err != nil {
 		return nil, err
 	}
-	out := make([]pebblestore.SwarmLocalContainerRecord, 0, len(records))
+	out := make([]Container, 0, len(records))
 	for _, record := range records {
 		resolved, resolveErr := s.resolveRecord(record)
 		if resolveErr != nil {
 			resolved.Warning = resolveErr.Error()
 		}
-		out = append(out, resolved)
+		out = append(out, mapRecord(resolved))
 	}
 	return out, nil
-}
-
-func (s *Service) SetChildTargetMetadata(_ context.Context, input ChildTargetMetadataInput) error {
-	if s == nil || s.store == nil {
-		return errors.New("local container service is not configured")
-	}
-	childSwarmID := strings.TrimSpace(input.ChildSwarmID)
-	childBackendURL := strings.TrimSpace(input.ChildBackendURL)
-	if childSwarmID == "" && childBackendURL == "" {
-		return nil
-	}
-	record, ok, err := s.findLocalContainerRecordForChildMetadata(input)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errors.New("local container record not found for child target metadata")
-	}
-	if childSwarmID != "" {
-		record.ChildSwarmID = childSwarmID
-	}
-	if childBackendURL != "" {
-		record.ChildBackendURL = childBackendURL
-	}
-	_, err = s.store.Put(record)
-	return err
-}
-
-func (s *Service) findLocalContainerRecordForChildMetadata(input ChildTargetMetadataInput) (pebblestore.SwarmLocalContainerRecord, bool, error) {
-	if s == nil || s.store == nil {
-		return pebblestore.SwarmLocalContainerRecord{}, false, errors.New("local container service is not configured")
-	}
-	seen := map[string]struct{}{}
-	for _, candidate := range []string{input.ID, input.ContainerName, input.DeploymentID} {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		key := strings.ToLower(candidate)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		record, ok, err := s.store.Get(candidate)
-		if err != nil || ok {
-			return record, ok, err
-		}
-	}
-	records, err := s.store.List(500)
-	if err != nil {
-		return pebblestore.SwarmLocalContainerRecord{}, false, err
-	}
-	for _, record := range records {
-		if localContainerRecordMatchesChildMetadataInput(record, input) {
-			return record, true, nil
-		}
-	}
-	return pebblestore.SwarmLocalContainerRecord{}, false, nil
-}
-
-func localContainerRecordMatchesChildMetadataInput(record pebblestore.SwarmLocalContainerRecord, input ChildTargetMetadataInput) bool {
-	recordID := strings.TrimSpace(record.ID)
-	recordContainerName := strings.TrimSpace(record.ContainerName)
-	for _, candidate := range []string{input.ID, input.ContainerName, input.DeploymentID} {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		if recordID != "" && strings.EqualFold(recordID, candidate) {
-			return true
-		}
-		if recordContainerName != "" && strings.EqualFold(recordContainerName, candidate) {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Service) UpdatePlan(ctx context.Context, input UpdatePlanInput) (UpdatePlan, error) {
@@ -3115,22 +3017,20 @@ func firstNonEmpty(values ...string) string {
 
 func mapRecord(record pebblestore.SwarmLocalContainerRecord) Container {
 	return Container{
-		ID:              record.ID,
-		Name:            record.Name,
-		ContainerName:   record.ContainerName,
-		Runtime:         record.Runtime,
-		NetworkName:     record.NetworkName,
-		Status:          record.Status,
-		ContainerID:     record.ContainerID,
-		HostAPIBaseURL:  record.HostAPIBaseURL,
-		HostPort:        record.HostPort,
-		RuntimePort:     record.RuntimePort,
-		Image:           record.Image,
-		Warning:         record.Warning,
-		ChildSwarmID:    record.ChildSwarmID,
-		ChildBackendURL: record.ChildBackendURL,
-		Mounts:          append([]Mount(nil), record.Mounts...),
-		CreatedAt:       record.CreatedAt,
-		UpdatedAt:       record.UpdatedAt,
+		ID:             record.ID,
+		Name:           record.Name,
+		ContainerName:  record.ContainerName,
+		Runtime:        record.Runtime,
+		NetworkName:    record.NetworkName,
+		Status:         record.Status,
+		ContainerID:    record.ContainerID,
+		HostAPIBaseURL: record.HostAPIBaseURL,
+		HostPort:       record.HostPort,
+		RuntimePort:    record.RuntimePort,
+		Image:          record.Image,
+		Warning:        record.Warning,
+		Mounts:         append([]Mount(nil), record.Mounts...),
+		CreatedAt:      record.CreatedAt,
+		UpdatedAt:      record.UpdatedAt,
 	}
 }

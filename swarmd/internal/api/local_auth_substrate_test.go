@@ -428,14 +428,6 @@ func (f fakeLocalContainerUpdatePlanner) List(context.Context) ([]localcontainer
 	return nil, nil
 }
 
-func (f fakeLocalContainerUpdatePlanner) ListRecords(context.Context) ([]pebblestore.SwarmLocalContainerRecord, error) {
-	return nil, nil
-}
-
-func (f fakeLocalContainerUpdatePlanner) SetChildTargetMetadata(context.Context, localcontainers.ChildTargetMetadataInput) error {
-	return nil
-}
-
 func (f fakeLocalContainerUpdatePlanner) Create(context.Context, localcontainers.CreateInput) (localcontainers.Container, error) {
 	return localcontainers.Container{}, nil
 }

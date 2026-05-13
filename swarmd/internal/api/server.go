@@ -168,9 +168,7 @@ type containerProfileService interface {
 type localContainerService interface {
 	RuntimeStatus(ctx context.Context) (localcontainers.RuntimeStatus, error)
 	List(ctx context.Context) ([]localcontainers.Container, error)
-	ListRecords(ctx context.Context) ([]pebblestore.SwarmLocalContainerRecord, error)
 	Create(ctx context.Context, input localcontainers.CreateInput) (localcontainers.Container, error)
-	SetChildTargetMetadata(ctx context.Context, input localcontainers.ChildTargetMetadataInput) error
 	Act(ctx context.Context, input localcontainers.ActionInput) (localcontainers.Container, error)
 	BulkDelete(ctx context.Context, containerIDs []string) (localcontainers.DeleteResult, error)
 	PruneMissing(ctx context.Context) (localcontainers.DeleteResult, error)
