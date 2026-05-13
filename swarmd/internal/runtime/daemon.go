@@ -47,8 +47,8 @@ import (
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/todo"
-	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/tool"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	update "swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/voice"
@@ -347,6 +347,12 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed mcp defaults: %w", err)
+	}
+	if _, err := topologySvc.EnsureSnapshot(); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("seed topology snapshot: %w", err)
 	}
 	if err := runSvc.ReconcileActiveLifecycles("daemon restarted"); err != nil {
 		log.Printf("warning: reconcile active session lifecycles: %v", err)

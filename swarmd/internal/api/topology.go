@@ -150,7 +150,7 @@ func (s *Server) handleSwarmTopologySnapshot(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
 		return
 	}
-	if _, err := s.topology.Rebuild(); err != nil {
+	if _, err := s.topology.EnsureSnapshot(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -185,7 +185,7 @@ func (s *Server) handleSwarmTopologyHostContainers(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, errors.New("host_swarm_id is required"))
 		return
 	}
-	if _, err := s.topology.Rebuild(); err != nil {
+	if _, err := s.topology.EnsureSnapshot(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -216,7 +216,7 @@ func (s *Server) handleSwarmTopologyRuntimeOwner(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, errors.New("runtime_swarm_id is required"))
 		return
 	}
-	if _, err := s.topology.Rebuild(); err != nil {
+	if _, err := s.topology.EnsureSnapshot(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -249,7 +249,7 @@ func (s *Server) handleSwarmTopologyWorkspaceBindings(w http.ResponseWriter, r *
 		writeError(w, http.StatusBadRequest, errors.New("source_workspace_path is required"))
 		return
 	}
-	if _, err := s.topology.Rebuild(); err != nil {
+	if _, err := s.topology.EnsureSnapshot(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -280,7 +280,7 @@ func (s *Server) handleSwarmTopologySessionRoute(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, errors.New("session_id is required"))
 		return
 	}
-	if _, err := s.topology.Rebuild(); err != nil {
+	if _, err := s.topology.EnsureSnapshot(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

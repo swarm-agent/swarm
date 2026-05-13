@@ -58,6 +58,20 @@ func (s *Service) Rebuild() (pebblestore.TopologyMigrationStatusRecord, error) {
 	return snapshot.MigrationStatus, nil
 }
 
+func (s *Service) EnsureSnapshot() (pebblestore.TopologyMigrationStatusRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyMigrationStatusRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	status, ok, err := s.topologyStore.GetMigrationStatus(pebblestore.DefaultTopologyMigrationStatusID)
+	if err != nil {
+		return pebblestore.TopologyMigrationStatusRecord{}, err
+	}
+	if ok {
+		return status, nil
+	}
+	return s.Rebuild()
+}
+
 func (s *Service) Snapshot() (pebblestore.TopologySnapshot, error) {
 	if s == nil || s.topologyStore == nil {
 		return pebblestore.TopologySnapshot{}, fmt.Errorf("topology service is not configured")
@@ -185,22 +199,22 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 			runtimeContainerRef := firstNonEmpty(container.ContainerID, container.ContainerName, container.ID)
 			hostContainerID := canonicalHostContainerID(hostSwarmID, runtimeContainerRef)
 			mergeHostContainer(hostContainerMap, pebblestore.TopologyHostContainerRecord{
-				HostContainerID:    hostContainerID,
-				HostSwarmID:        hostSwarmID,
+				HostContainerID:     hostContainerID,
+				HostSwarmID:         hostSwarmID,
 				RuntimeContainerRef: runtimeContainerRef,
-				Name:               firstNonEmpty(container.Name, container.ContainerName, container.ID),
-				ContainerName:      firstNonEmpty(container.ContainerName, container.ID),
-				ContainerID:        container.ContainerID,
-				Runtime:            container.Runtime,
-				Image:              container.Image,
-				Status:             container.Status,
-				HostAPIBaseURL:     container.HostAPIBaseURL,
-				HostPort:           container.HostPort,
-				RuntimePort:        container.RuntimePort,
-				Mounts:             container.Mounts,
-				ObservedSources:    []string{"swarm_local_container"},
-				CreatedAt:          container.CreatedAt,
-				UpdatedAt:          container.UpdatedAt,
+				Name:                firstNonEmpty(container.Name, container.ContainerName, container.ID),
+				ContainerName:       firstNonEmpty(container.ContainerName, container.ID),
+				ContainerID:         container.ContainerID,
+				Runtime:             container.Runtime,
+				Image:               container.Image,
+				Status:              container.Status,
+				HostAPIBaseURL:      container.HostAPIBaseURL,
+				HostPort:            container.HostPort,
+				RuntimePort:         container.RuntimePort,
+				Mounts:              container.Mounts,
+				ObservedSources:     []string{"swarm_local_container"},
+				CreatedAt:           container.CreatedAt,
+				UpdatedAt:           container.UpdatedAt,
 			})
 		}
 	}
@@ -215,21 +229,21 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 			runtimeContainerRef := firstNonEmpty(strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID))
 			hostContainerID := canonicalHostContainerID(hostSwarmID, runtimeContainerRef)
 			mergeHostContainer(hostContainerMap, pebblestore.TopologyHostContainerRecord{
-				HostContainerID:    hostContainerID,
-				HostSwarmID:        hostSwarmID,
+				HostContainerID:     hostContainerID,
+				HostSwarmID:         hostSwarmID,
 				RuntimeContainerRef: runtimeContainerRef,
-				Name:               firstNonEmpty(deployment.Name, deployment.ContainerName, deployment.ID),
-				ContainerName:      firstNonEmpty(deployment.ContainerName, deployment.Name, deployment.ID),
-				ContainerID:        deployment.ContainerID,
-				Runtime:            deployment.Runtime,
-				Image:              deployment.Image,
-				Status:             firstNonEmpty(deployment.AttachStatus, deployment.Status),
-				HostAPIBaseURL:     firstNonEmpty(deployment.HostAPIBaseURL, deployment.HostBackendURL),
-				HostPort:           deployment.BackendHostPort,
-				RuntimePort:        deployment.DesktopHostPort,
-				ObservedSources:    []string{"deploy_container"},
-				CreatedAt:          deployment.CreatedAt,
-				UpdatedAt:          deployment.UpdatedAt,
+				Name:                firstNonEmpty(deployment.Name, deployment.ContainerName, deployment.ID),
+				ContainerName:       firstNonEmpty(deployment.ContainerName, deployment.Name, deployment.ID),
+				ContainerID:         deployment.ContainerID,
+				Runtime:             deployment.Runtime,
+				Image:               deployment.Image,
+				Status:              firstNonEmpty(deployment.AttachStatus, deployment.Status),
+				HostAPIBaseURL:      firstNonEmpty(deployment.HostAPIBaseURL, deployment.HostBackendURL),
+				HostPort:            deployment.BackendHostPort,
+				RuntimePort:         deployment.DesktopHostPort,
+				ObservedSources:     []string{"deploy_container"},
+				CreatedAt:           deployment.CreatedAt,
+				UpdatedAt:           deployment.UpdatedAt,
 			})
 			if strings.TrimSpace(deployment.ChildSwarmID) != "" {
 				mergeRuntime(runtimeMap, pebblestore.TopologyRuntimeRecord{
@@ -306,14 +320,14 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 	sortTopologySessionRoutes(sessionRouteRecords)
 
 	migrationStatus := pebblestore.TopologyMigrationStatusRecord{
-		ID:                   pebblestore.DefaultTopologyMigrationStatusID,
-		Version:              SnapshotVersion,
-		RebuiltAt:            now,
-		RuntimeCount:         len(runtimes),
-		HostContainerCount:   len(hostContainers),
-		AttachmentCount:      len(attachments),
+		ID:                    pebblestore.DefaultTopologyMigrationStatusID,
+		Version:               SnapshotVersion,
+		RebuiltAt:             now,
+		RuntimeCount:          len(runtimes),
+		HostContainerCount:    len(hostContainers),
+		AttachmentCount:       len(attachments),
 		WorkspaceBindingCount: len(workspaceBindings),
-		SessionRouteCount:    len(sessionRouteRecords),
+		SessionRouteCount:     len(sessionRouteRecords),
 	}
 	return pebblestore.TopologySnapshot{
 		Runtimes:          runtimes,

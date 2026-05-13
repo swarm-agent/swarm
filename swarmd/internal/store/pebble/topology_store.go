@@ -32,22 +32,22 @@ type TopologyRuntimeRecord struct {
 }
 
 type TopologyHostContainerRecord struct {
-	HostContainerID    string                     `json:"host_container_id"`
-	HostSwarmID        string                     `json:"host_swarm_id"`
-	RuntimeContainerRef string                    `json:"runtime_container_ref"`
-	Name               string                     `json:"name"`
-	ContainerName      string                     `json:"container_name,omitempty"`
-	ContainerID        string                     `json:"container_id,omitempty"`
-	Runtime            string                     `json:"runtime,omitempty"`
-	Image              string                     `json:"image,omitempty"`
-	Status             string                     `json:"status,omitempty"`
-	HostAPIBaseURL     string                     `json:"host_api_base_url,omitempty"`
-	HostPort           int                        `json:"host_port,omitempty"`
-	RuntimePort        int                        `json:"runtime_port,omitempty"`
-	Mounts             []SwarmLocalContainerMount `json:"mounts,omitempty"`
-	ObservedSources    []string                   `json:"observed_sources,omitempty"`
-	CreatedAt          int64                      `json:"created_at"`
-	UpdatedAt          int64                      `json:"updated_at"`
+	HostContainerID     string                     `json:"host_container_id"`
+	HostSwarmID         string                     `json:"host_swarm_id"`
+	RuntimeContainerRef string                     `json:"runtime_container_ref"`
+	Name                string                     `json:"name"`
+	ContainerName       string                     `json:"container_name,omitempty"`
+	ContainerID         string                     `json:"container_id,omitempty"`
+	Runtime             string                     `json:"runtime,omitempty"`
+	Image               string                     `json:"image,omitempty"`
+	Status              string                     `json:"status,omitempty"`
+	HostAPIBaseURL      string                     `json:"host_api_base_url,omitempty"`
+	HostPort            int                        `json:"host_port,omitempty"`
+	RuntimePort         int                        `json:"runtime_port,omitempty"`
+	Mounts              []SwarmLocalContainerMount `json:"mounts,omitempty"`
+	ObservedSources     []string                   `json:"observed_sources,omitempty"`
+	CreatedAt           int64                      `json:"created_at"`
+	UpdatedAt           int64                      `json:"updated_at"`
 }
 
 type TopologyAttachmentRecord struct {
@@ -63,19 +63,19 @@ type TopologyAttachmentRecord struct {
 }
 
 type TopologyWorkspaceBindingRecord struct {
-	BindingID                string                   `json:"binding_id"`
-	SourceWorkspacePath      string                   `json:"source_workspace_path"`
-	SourceWorkspaceName      string                   `json:"source_workspace_name,omitempty"`
-	DestinationRuntimeSwarmID string                  `json:"destination_runtime_swarm_id,omitempty"`
-	DestinationHostSwarmID   string                   `json:"destination_host_swarm_id,omitempty"`
-	DestinationContainerID   string                   `json:"destination_container_id,omitempty"`
-	DestinationWorkspacePath string                   `json:"destination_workspace_path,omitempty"`
-	ReplicationMode          string                   `json:"replication_mode,omitempty"`
-	Writable                 bool                     `json:"writable"`
-	Sync                     WorkspaceReplicationSync `json:"sync,omitempty"`
-	LegacyTargetKind         string                   `json:"legacy_target_kind,omitempty"`
-	CreatedAt                int64                    `json:"created_at"`
-	UpdatedAt                int64                    `json:"updated_at"`
+	BindingID                 string                   `json:"binding_id"`
+	SourceWorkspacePath       string                   `json:"source_workspace_path"`
+	SourceWorkspaceName       string                   `json:"source_workspace_name,omitempty"`
+	DestinationRuntimeSwarmID string                   `json:"destination_runtime_swarm_id,omitempty"`
+	DestinationHostSwarmID    string                   `json:"destination_host_swarm_id,omitempty"`
+	DestinationContainerID    string                   `json:"destination_container_id,omitempty"`
+	DestinationWorkspacePath  string                   `json:"destination_workspace_path,omitempty"`
+	ReplicationMode           string                   `json:"replication_mode,omitempty"`
+	Writable                  bool                     `json:"writable"`
+	Sync                      WorkspaceReplicationSync `json:"sync,omitempty"`
+	LegacyTargetKind          string                   `json:"legacy_target_kind,omitempty"`
+	CreatedAt                 int64                    `json:"created_at"`
+	UpdatedAt                 int64                    `json:"updated_at"`
 }
 
 type TopologySessionRouteRecord struct {
@@ -92,23 +92,23 @@ type TopologySessionRouteRecord struct {
 }
 
 type TopologyMigrationStatusRecord struct {
-	ID                 string `json:"id"`
-	Version            string `json:"version"`
-	RebuiltAt          int64  `json:"rebuilt_at"`
-	RuntimeCount       int    `json:"runtime_count"`
-	HostContainerCount int    `json:"host_container_count"`
-	AttachmentCount    int    `json:"attachment_count"`
-	WorkspaceBindingCount int `json:"workspace_binding_count"`
-	SessionRouteCount  int    `json:"session_route_count"`
+	ID                    string `json:"id"`
+	Version               string `json:"version"`
+	RebuiltAt             int64  `json:"rebuilt_at"`
+	RuntimeCount          int    `json:"runtime_count"`
+	HostContainerCount    int    `json:"host_container_count"`
+	AttachmentCount       int    `json:"attachment_count"`
+	WorkspaceBindingCount int    `json:"workspace_binding_count"`
+	SessionRouteCount     int    `json:"session_route_count"`
 }
 
 type TopologySnapshot struct {
-	Runtimes          []TopologyRuntimeRecord         `json:"runtimes,omitempty"`
-	HostContainers    []TopologyHostContainerRecord   `json:"host_containers,omitempty"`
-	Attachments       []TopologyAttachmentRecord      `json:"attachments,omitempty"`
+	Runtimes          []TopologyRuntimeRecord          `json:"runtimes,omitempty"`
+	HostContainers    []TopologyHostContainerRecord    `json:"host_containers,omitempty"`
+	Attachments       []TopologyAttachmentRecord       `json:"attachments,omitempty"`
 	WorkspaceBindings []TopologyWorkspaceBindingRecord `json:"workspace_bindings,omitempty"`
-	SessionRoutes     []TopologySessionRouteRecord    `json:"session_routes,omitempty"`
-	MigrationStatus   TopologyMigrationStatusRecord   `json:"migration_status"`
+	SessionRoutes     []TopologySessionRouteRecord     `json:"session_routes,omitempty"`
+	MigrationStatus   TopologyMigrationStatusRecord    `json:"migration_status"`
 }
 
 type TopologyStore struct {
@@ -259,6 +259,39 @@ func (s *TopologyStore) GetRuntime(swarmID string) (TopologyRuntimeRecord, bool,
 	return record, true, nil
 }
 
+func (s *TopologyStore) PutRuntime(record TopologyRuntimeRecord) (TopologyRuntimeRecord, error) {
+	if s == nil || s.store == nil {
+		return TopologyRuntimeRecord{}, errors.New("topology store is not configured")
+	}
+	record = normalizeTopologyRuntimeRecord(record)
+	if record.SwarmID == "" {
+		return TopologyRuntimeRecord{}, errors.New("topology runtime swarm id is required")
+	}
+	if record.Name == "" {
+		record.Name = record.SwarmID
+	}
+	now := time.Now().UnixMilli()
+	if record.CreatedAt <= 0 {
+		record.CreatedAt = now
+	}
+	record.UpdatedAt = now
+	if err := s.store.PutJSON(KeyTopologyRuntime(record.SwarmID), record); err != nil {
+		return TopologyRuntimeRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *TopologyStore) DeleteRuntime(swarmID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("topology store is not configured")
+	}
+	swarmID = normalizeTopologyKeyValue(swarmID)
+	if swarmID == "" {
+		return errors.New("topology runtime swarm id is required")
+	}
+	return s.store.Delete(KeyTopologyRuntime(swarmID))
+}
+
 func (s *TopologyStore) ListRuntimes(limit int) ([]TopologyRuntimeRecord, error) {
 	return s.listTopologyRuntimeRecords(limit)
 }
@@ -306,6 +339,104 @@ func (s *TopologyStore) GetHostContainer(hostContainerID string) (TopologyHostCo
 		record.HostContainerID = hostContainerID
 	}
 	return record, true, nil
+}
+
+func (s *TopologyStore) PutHostContainer(record TopologyHostContainerRecord) (TopologyHostContainerRecord, error) {
+	if s == nil || s.store == nil {
+		return TopologyHostContainerRecord{}, errors.New("topology store is not configured")
+	}
+	record = normalizeTopologyHostContainerRecord(record)
+	if record.HostContainerID == "" {
+		return TopologyHostContainerRecord{}, errors.New("topology host container id is required")
+	}
+	if record.HostSwarmID == "" {
+		return TopologyHostContainerRecord{}, errors.New("topology host container host swarm id is required")
+	}
+	if record.RuntimeContainerRef == "" {
+		return TopologyHostContainerRecord{}, errors.New("topology host container runtime container ref is required")
+	}
+	if record.Name == "" {
+		record.Name = firstNonEmpty(record.ContainerName, record.ContainerID, record.HostContainerID)
+	}
+	now := time.Now().UnixMilli()
+	if record.CreatedAt <= 0 {
+		record.CreatedAt = now
+	}
+	record.UpdatedAt = now
+	if err := s.store.PutJSON(KeyTopologyHostContainer(record.HostContainerID), record); err != nil {
+		return TopologyHostContainerRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *TopologyStore) DeleteHostContainer(hostContainerID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("topology store is not configured")
+	}
+	hostContainerID = normalizeTopologyKeyValue(hostContainerID)
+	if hostContainerID == "" {
+		return errors.New("topology host container id is required")
+	}
+	return s.store.Delete(KeyTopologyHostContainer(hostContainerID))
+}
+
+func (s *TopologyStore) GetAttachment(attachmentID string) (TopologyAttachmentRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return TopologyAttachmentRecord{}, false, nil
+	}
+	attachmentID = normalizeTopologyKeyValue(attachmentID)
+	if attachmentID == "" {
+		return TopologyAttachmentRecord{}, false, errors.New("topology attachment id is required")
+	}
+	var record TopologyAttachmentRecord
+	ok, err := s.store.GetJSON(KeyTopologyAttachment(attachmentID), &record)
+	if err != nil {
+		return TopologyAttachmentRecord{}, false, err
+	}
+	if !ok {
+		return TopologyAttachmentRecord{}, false, nil
+	}
+	record = normalizeTopologyAttachmentRecord(record)
+	if record.AttachmentID == "" {
+		record.AttachmentID = attachmentID
+	}
+	return record, true, nil
+}
+
+func (s *TopologyStore) PutAttachment(record TopologyAttachmentRecord) (TopologyAttachmentRecord, error) {
+	if s == nil || s.store == nil {
+		return TopologyAttachmentRecord{}, errors.New("topology store is not configured")
+	}
+	record = normalizeTopologyAttachmentRecord(record)
+	if record.AttachmentID == "" {
+		return TopologyAttachmentRecord{}, errors.New("topology attachment id is required")
+	}
+	if record.HostContainerID == "" {
+		return TopologyAttachmentRecord{}, errors.New("topology attachment host container id is required")
+	}
+	if record.RuntimeSwarmID == "" {
+		return TopologyAttachmentRecord{}, errors.New("topology attachment runtime swarm id is required")
+	}
+	now := time.Now().UnixMilli()
+	if record.CreatedAt <= 0 {
+		record.CreatedAt = now
+	}
+	record.UpdatedAt = now
+	if err := s.store.PutJSON(KeyTopologyAttachment(record.AttachmentID), record); err != nil {
+		return TopologyAttachmentRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *TopologyStore) DeleteAttachment(attachmentID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("topology store is not configured")
+	}
+	attachmentID = normalizeTopologyKeyValue(attachmentID)
+	if attachmentID == "" {
+		return errors.New("topology attachment id is required")
+	}
+	return s.store.Delete(KeyTopologyAttachment(attachmentID))
 }
 
 func (s *TopologyStore) ListAttachments(limit int) ([]TopologyAttachmentRecord, error) {
@@ -392,6 +523,39 @@ func (s *TopologyStore) GetWorkspaceBinding(bindingID string) (TopologyWorkspace
 	return record, true, nil
 }
 
+func (s *TopologyStore) PutWorkspaceBinding(record TopologyWorkspaceBindingRecord) (TopologyWorkspaceBindingRecord, error) {
+	if s == nil || s.store == nil {
+		return TopologyWorkspaceBindingRecord{}, errors.New("topology store is not configured")
+	}
+	record = normalizeTopologyWorkspaceBindingRecord(record)
+	if record.BindingID == "" {
+		return TopologyWorkspaceBindingRecord{}, errors.New("topology workspace binding id is required")
+	}
+	if record.SourceWorkspacePath == "" {
+		return TopologyWorkspaceBindingRecord{}, errors.New("topology source workspace path is required")
+	}
+	now := time.Now().UnixMilli()
+	if record.CreatedAt <= 0 {
+		record.CreatedAt = now
+	}
+	record.UpdatedAt = now
+	if err := s.store.PutJSON(KeyTopologyWorkspaceBinding(record.BindingID), record); err != nil {
+		return TopologyWorkspaceBindingRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *TopologyStore) DeleteWorkspaceBinding(bindingID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("topology store is not configured")
+	}
+	bindingID = normalizeTopologyKeyValue(bindingID)
+	if bindingID == "" {
+		return errors.New("topology workspace binding id is required")
+	}
+	return s.store.Delete(KeyTopologyWorkspaceBinding(bindingID))
+}
+
 func (s *TopologyStore) ListSessionRoutes(limit int) ([]TopologySessionRouteRecord, error) {
 	return s.listTopologySessionRouteRecords(limit)
 }
@@ -419,6 +583,36 @@ func (s *TopologyStore) GetSessionRoute(sessionID string) (TopologySessionRouteR
 	return record, true, nil
 }
 
+func (s *TopologyStore) PutSessionRoute(record TopologySessionRouteRecord) (TopologySessionRouteRecord, error) {
+	if s == nil || s.store == nil {
+		return TopologySessionRouteRecord{}, errors.New("topology store is not configured")
+	}
+	record = normalizeTopologySessionRouteRecord(record)
+	if record.SessionID == "" {
+		return TopologySessionRouteRecord{}, errors.New("topology session id is required")
+	}
+	now := time.Now().UnixMilli()
+	if record.CreatedAt <= 0 {
+		record.CreatedAt = now
+	}
+	record.UpdatedAt = now
+	if err := s.store.PutJSON(KeyTopologySessionRoute(record.SessionID), record); err != nil {
+		return TopologySessionRouteRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *TopologyStore) DeleteSessionRoute(sessionID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("topology store is not configured")
+	}
+	sessionID = normalizeTopologyKeyValue(sessionID)
+	if sessionID == "" {
+		return errors.New("topology session id is required")
+	}
+	return s.store.Delete(KeyTopologySessionRoute(sessionID))
+}
+
 func (s *TopologyStore) GetMigrationStatus(id string) (TopologyMigrationStatusRecord, bool, error) {
 	if s == nil || s.store == nil {
 		return TopologyMigrationStatusRecord{}, false, nil
@@ -440,6 +634,20 @@ func (s *TopologyStore) GetMigrationStatus(id string) (TopologyMigrationStatusRe
 		record.ID = id
 	}
 	return record, true, nil
+}
+
+func (s *TopologyStore) PutMigrationStatus(record TopologyMigrationStatusRecord) (TopologyMigrationStatusRecord, error) {
+	if s == nil || s.store == nil {
+		return TopologyMigrationStatusRecord{}, errors.New("topology store is not configured")
+	}
+	record = normalizeTopologyMigrationStatusRecord(record)
+	if record.RebuiltAt <= 0 {
+		record.RebuiltAt = time.Now().UnixMilli()
+	}
+	if err := s.store.PutJSON(KeyTopologyMigrationStatus(record.ID), record); err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
+	return record, nil
 }
 
 func (s *TopologyStore) listTopologyRuntimeRecords(limit int) ([]TopologyRuntimeRecord, error) {
@@ -844,6 +1052,15 @@ func normalizeTopologyMigrationStatusRecord(record TopologyMigrationStatusRecord
 
 func normalizeTopologyKeyValue(value string) string {
 	return strings.TrimSpace(value)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func normalizeTopologyStringList(values []string) []string {
