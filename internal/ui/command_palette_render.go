@@ -12,7 +12,10 @@ func drawCommandSuggestionRow(s tcell.Screen, x, y, maxWidth int, commandStyle, 
 		return 0
 	}
 	label := prefix + suggestion.Command
-	hint := strings.TrimSpace(suggestion.Hint)
+	hint := ""
+	if suggestion.InlineHint {
+		hint = strings.TrimSpace(suggestion.Hint)
+	}
 	if hint == "" {
 		return DrawTextCount(s, x, y, maxWidth, commandStyle, label)
 	}

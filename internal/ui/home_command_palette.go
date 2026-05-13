@@ -6,9 +6,10 @@ import (
 )
 
 type CommandSuggestion struct {
-	Command   string
-	Hint      string
-	QuickTips []string
+	Command    string
+	Hint       string
+	InlineHint bool
+	QuickTips  []string
 }
 
 type commandPaletteOption struct {
@@ -24,9 +25,10 @@ func (p *HomePage) SetCommandSuggestions(items []CommandSuggestion) {
 			continue
 		}
 		p.commandSuggestions = append(p.commandSuggestions, CommandSuggestion{
-			Command:   command,
-			Hint:      strings.TrimSpace(item.Hint),
-			QuickTips: append([]string(nil), item.QuickTips...),
+			Command:    command,
+			Hint:       strings.TrimSpace(item.Hint),
+			InlineHint: item.InlineHint,
+			QuickTips:  append([]string(nil), item.QuickTips...),
 		})
 	}
 	p.commandPaletteIndex = 0

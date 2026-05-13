@@ -26,6 +26,9 @@ func TestChatCommandPaletteIncludesCopyBlockCommands(t *testing.T) {
 	if matches[0].Hint != "swarm restart" {
 		t.Fatalf("expected copied content preview in hint, got %q", matches[0].Hint)
 	}
+	if !matches[0].InlineHint {
+		t.Fatal("expected copy block command to render preview inline")
+	}
 
 	selected, ok := page.selectedCommandSuggestion()
 	if !ok {
@@ -52,6 +55,9 @@ func TestChatCommandPaletteIncludesLiveCopyBlockCommands(t *testing.T) {
 	}
 	if selected.Command != "/copy 1" {
 		t.Fatalf("expected selected live /copy 1, got %q", selected.Command)
+	}
+	if !selected.InlineHint {
+		t.Fatal("expected live copy block command to render preview inline")
 	}
 }
 

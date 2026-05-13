@@ -15,9 +15,10 @@ func (p *ChatPage) setCommandSuggestions(items []CommandSuggestion) {
 			continue
 		}
 		p.commandSuggestions = append(p.commandSuggestions, CommandSuggestion{
-			Command:   command,
-			Hint:      item.Hint,
-			QuickTips: append([]string(nil), item.QuickTips...),
+			Command:    command,
+			Hint:       item.Hint,
+			InlineHint: item.InlineHint,
+			QuickTips:  append([]string(nil), item.QuickTips...),
 		})
 	}
 	p.commandPaletteIndex = 0

@@ -182,7 +182,7 @@ func (p *HomePage) drawCommandPalette(s tcell.Screen, inputRect Rect, variant la
 				Index:  idx,
 			})
 		}
-		if idx == p.commandPaletteIndex {
+		if idx == p.commandPaletteIndex && !suggestion.InlineHint {
 			p.drawCommandPaletteOptions(s, suggestion, baseX+written, rowY, maxInt(0, available-written))
 		}
 		rowY++

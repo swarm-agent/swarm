@@ -273,8 +273,9 @@ func (p *ChatPage) copyBlockCommandSuggestions() []CommandSuggestion {
 			current++
 			hint := chatCopyCommandPreview(segment.Copy.Content)
 			suggestions = append(suggestions, CommandSuggestion{
-				Command: fmt.Sprintf("/copy %d", current),
-				Hint:    hint,
+				Command:    fmt.Sprintf("/copy %d", current),
+				Hint:       hint,
+				InlineHint: true,
 			})
 		}
 	}
