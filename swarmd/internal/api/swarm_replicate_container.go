@@ -9,6 +9,7 @@ import (
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func (s *Server) createReplicatedContainer(ctx context.Context, targetHost *swarmTarget, payload deployContainerCreatePayload, targetHostIsLocal bool) (deployruntime.ContainerDeployment, error) {
@@ -96,7 +97,176 @@ func (s *Server) mirrorManagedHostDeployment(deployment deployruntime.ContainerD
 	deployment.HostAPIBaseURL = firstNonEmptyString(strings.TrimSpace(target.BackendURL), strings.TrimSpace(deployment.HostAPIBaseURL))
 	deployment.HostBackendURL = firstNonEmptyString(strings.TrimSpace(target.BackendURL), strings.TrimSpace(deployment.HostBackendURL), strings.TrimSpace(deployment.HostAPIBaseURL))
 	deployment.HostDesktopURL = firstNonEmptyString(strings.TrimSpace(target.DesktopURL), strings.TrimSpace(deployment.HostDesktopURL))
+	hostContainerID := canonicalHostContainerIDForManagedDeployment(deployment)
+	deployment.HostContainerID = hostContainerID
+	if strings.TrimSpace(deployment.ChildSwarmID) != "" && hostContainerID != "" {
+		deployment.AttachmentID = pebblestore.CanonicalTopologyAttachmentID(hostContainerID, strings.TrimSpace(deployment.ChildSwarmID))
+	}
+	if err := s.syncManagedHostCanonicalTopology(deployment); err != nil {
+		return deployment, err
+	}
 	return mirror.MirrorDeployment(context.Background(), deployment)
+}
+
+func canonicalHostContainerIDForManagedDeployment(deployment deployruntime.ContainerDeployment) string {
+	hostSwarmID := strings.TrimSpace(deployment.HostSwarmID)
+	runtimeContainerRef := firstNonEmptyString(strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID))
+	return pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef)
+}
+
+func (s *Server) syncManagedHostCanonicalTopology(deployment deployruntime.ContainerDeployment) error {
+	if s == nil || s.topology == nil {
+		return nil
+	}
+	hostContainerID := firstNonEmptyString(strings.TrimSpace(deployment.HostContainerID), canonicalHostContainerIDForManagedDeployment(deployment))
+	if hostContainerID == "" {
+		return nil
+	}
+	if err := s.topology.UpsertHostContainer(pebblestore.TopologyHostContainerRecord{
+		HostContainerID:     hostContainerID,
+		HostSwarmID:         strings.TrimSpace(deployment.HostSwarmID),
+		RuntimeContainerRef: firstNonEmptyString(strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID)),
+		Name:                firstNonEmptyString(strings.TrimSpace(deployment.Name), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID)),
+		ContainerName:       firstNonEmptyString(strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.Name), strings.TrimSpace(deployment.ID)),
+		ContainerID:         strings.TrimSpace(deployment.ContainerID),
+		Runtime:             strings.TrimSpace(deployment.Runtime),
+		Image:               strings.TrimSpace(deployment.Image),
+		Status:              firstNonEmptyString(strings.TrimSpace(deployment.AttachStatus), strings.TrimSpace(deployment.Status)),
+		HostAPIBaseURL:      firstNonEmptyString(strings.TrimSpace(deployment.HostAPIBaseURL), strings.TrimSpace(deployment.HostBackendURL)),
+		HostPort:            deployment.BackendHostPort,
+		RuntimePort:         deployment.DesktopHostPort,
+		ObservedSources:     []string{pebblestore.TopologyHostContainerSourceDeployContainer},
+		CreatedAt:           deployment.CreatedAt,
+		UpdatedAt:           deployment.UpdatedAt,
+	}); err != nil {
+		return err
+	}
+	childSwarmID := strings.TrimSpace(deployment.ChildSwarmID)
+	if childSwarmID == "" {
+		return nil
+	}
+	if err := s.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:              childSwarmID,
+		Name:                 firstNonEmptyString(strings.TrimSpace(deployment.ChildDisplayName), strings.TrimSpace(deployment.Name), childSwarmID),
+		Role:                 "child",
+		Relationship:         "child",
+		BackendURL:           strings.TrimSpace(deployment.ChildBackendURL),
+		DesktopURL:           strings.TrimSpace(deployment.ChildDesktopURL),
+		Status:               firstNonEmptyString(strings.TrimSpace(deployment.AttachStatus), strings.TrimSpace(deployment.Status)),
+		OwnerHostSwarmID:     strings.TrimSpace(deployment.HostSwarmID),
+		OwnerHostContainerID: hostContainerID,
+		ObservedSources:      []string{pebblestore.TopologyRuntimeSourceDeployContainer},
+		CreatedAt:            deployment.CreatedAt,
+		UpdatedAt:            deployment.UpdatedAt,
+	}); err != nil {
+		return err
+	}
+	attachmentID := firstNonEmptyString(strings.TrimSpace(deployment.AttachmentID), pebblestore.CanonicalTopologyAttachmentID(hostContainerID, childSwarmID))
+	return s.topology.UpsertAttachment(pebblestore.TopologyAttachmentRecord{
+		AttachmentID:    attachmentID,
+		HostContainerID: hostContainerID,
+		RuntimeSwarmID:  childSwarmID,
+		State:           firstNonEmptyString(strings.TrimSpace(deployment.AttachStatus), strings.TrimSpace(deployment.Status)),
+		DeploymentID:    strings.TrimSpace(deployment.ID),
+		LastError:       strings.TrimSpace(deployment.LastAttachError),
+		CreatedAt:       deployment.CreatedAt,
+		UpdatedAt:       deployment.UpdatedAt,
+	})
+}
+
+func (s *Server) resolveManagedHostCanonicalDeleteIDs(managedSwarmID string, ids []string) ([]string, error) {
+	managedSwarmID = strings.TrimSpace(managedSwarmID)
+	if managedSwarmID == "" {
+		return nil, errors.New("managed swarm id is required")
+	}
+	resolved := make([]string, 0, len(ids))
+	seen := map[string]struct{}{}
+	if s != nil && s.topology != nil {
+		hostContainers, err := s.topology.ListHostContainersByHost(managedSwarmID, 100000)
+		if err != nil {
+			return nil, err
+		}
+		for _, rawID := range ids {
+			candidateID := strings.TrimSpace(rawID)
+			if candidateID == "" {
+				continue
+			}
+			canonicalID := ""
+			for _, hostContainer := range hostContainers {
+				if candidateID == strings.TrimSpace(hostContainer.HostContainerID) ||
+					candidateID == strings.TrimSpace(hostContainer.ContainerID) ||
+					candidateID == strings.TrimSpace(hostContainer.ContainerName) {
+					canonicalID = strings.TrimSpace(hostContainer.HostContainerID)
+					break
+				}
+				attachments, err := s.topology.ListAttachmentsByHostContainer(hostContainer.HostContainerID, 100)
+				if err != nil {
+					return nil, err
+				}
+				for _, attachment := range attachments {
+					if candidateID == strings.TrimSpace(attachment.DeploymentID) {
+						canonicalID = strings.TrimSpace(hostContainer.HostContainerID)
+						break
+					}
+				}
+				if canonicalID != "" {
+					break
+				}
+			}
+			if canonicalID == "" {
+				canonicalID = candidateID
+			}
+			if _, ok := seen[canonicalID]; ok {
+				continue
+			}
+			seen[canonicalID] = struct{}{}
+			resolved = append(resolved, canonicalID)
+		}
+	}
+	if len(resolved) == 0 {
+		deploymentSvc, ok := s.deployContainers.(interface {
+			List(context.Context) ([]deployruntime.ContainerDeployment, error)
+		})
+		if !ok {
+			return nil, errors.New("deploy container service does not support deployment listing")
+		}
+		deployments, err := deploymentSvc.List(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		for _, rawID := range ids {
+			candidateID := strings.TrimSpace(rawID)
+			if candidateID == "" {
+				continue
+			}
+			canonicalID := ""
+			for _, deployment := range deployments {
+				if !strings.EqualFold(strings.TrimSpace(deployment.HostSwarmID), managedSwarmID) {
+					continue
+				}
+				if candidateID != strings.TrimSpace(deployment.ID) &&
+					candidateID != strings.TrimSpace(deployment.HostContainerID) &&
+					candidateID != strings.TrimSpace(deployment.ContainerID) &&
+					candidateID != strings.TrimSpace(deployment.ContainerName) {
+					continue
+				}
+				canonicalID = firstNonEmptyString(strings.TrimSpace(deployment.HostContainerID), canonicalHostContainerIDForManagedDeployment(deployment), candidateID)
+				break
+			}
+			if canonicalID == "" {
+				canonicalID = candidateID
+			}
+			if _, ok := seen[canonicalID]; ok {
+				continue
+			}
+			seen[canonicalID] = struct{}{}
+			resolved = append(resolved, canonicalID)
+		}
+	}
+	if len(resolved) == 0 {
+		return nil, errors.New("at least one managed host container id is required")
+	}
+	return resolved, nil
 }
 
 func (s *Server) deleteTargetHostDeployment(ctx context.Context, deployment deployruntime.ContainerDeployment) error {
@@ -128,11 +298,18 @@ func (s *Server) deleteTargetHostDeployment(ctx context.Context, deployment depl
 	if strings.TrimSpace(target.BackendURL) == "" {
 		return fmt.Errorf("target host backend URL is not configured")
 	}
+	deleteID := strings.TrimSpace(deployment.ID)
+	if strings.TrimSpace(deployment.HostContainerID) != "" {
+		deleteID = strings.TrimSpace(deployment.HostContainerID)
+	}
+	if deleteID == "" {
+		return fmt.Errorf("managed host container identity is not configured")
+	}
 	var response struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 	}
-	if err := s.postPeerJSONToSwarmTarget(ctx, target, "/v1/deploy/container/delete", map[string]any{"ids": []string{strings.TrimSpace(deployment.ID)}}, &response); err != nil {
+	if err := s.postPeerJSONToSwarmTarget(ctx, target, "/v1/swarm/containers/local/delete", map[string]any{"ids": []string{deleteID}}, &response); err != nil {
 		return err
 	}
 	if !response.OK {
@@ -176,12 +353,17 @@ func (s *Server) handleSwarmManagedHostContainerDelete(w http.ResponseWriter, r 
 		writeError(w, http.StatusBadRequest, errors.New("managed host backend URL is not configured"))
 		return
 	}
+	canonicalDeleteIDs, err := s.resolveManagedHostCanonicalDeleteIDs(target.SwarmID, req.IDs)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	var response struct {
 		OK     bool                         `json:"ok"`
 		Result localcontainers.DeleteResult `json:"result"`
 		Error  string                       `json:"error"`
 	}
-	if err := s.postPeerJSONToSwarmTarget(r.Context(), target, "/v1/swarm/containers/local/delete", map[string]any{"ids": req.IDs}, &response); err != nil {
+	if err := s.postPeerJSONToSwarmTarget(r.Context(), target, "/v1/swarm/containers/local/delete", map[string]any{"ids": canonicalDeleteIDs}, &response); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "result": response.Result, "error": err.Error()})
 		return
 	}

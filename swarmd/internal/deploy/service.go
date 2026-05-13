@@ -106,9 +106,11 @@ type ContainerDeployment struct {
 	ContainerID         string                        `json:"container_id,omitempty"`
 	HostAPIBaseURL      string                        `json:"host_api_base_url,omitempty"`
 	HostSwarmID         string                        `json:"host_swarm_id,omitempty"`
+	HostContainerID     string                        `json:"host_container_id,omitempty"`
 	HostDisplayName     string                        `json:"host_display_name,omitempty"`
 	HostBackendURL      string                        `json:"host_backend_url,omitempty"`
 	HostDesktopURL      string                        `json:"host_desktop_url,omitempty"`
+	AttachmentID        string                        `json:"attachment_id,omitempty"`
 	BackendHostPort     int                           `json:"backend_host_port"`
 	DesktopHostPort     int                           `json:"desktop_host_port"`
 	Image               string                        `json:"image,omitempty"`
@@ -331,6 +333,7 @@ type Service struct {
 	swarms                       *swarmruntime.Service
 	swarmStore                   *pebblestore.SwarmStore
 	swarmNodeStore               *pebblestore.SwarmNodeStore
+	topology                     *pebblestore.TopologyStore
 	auth                         *auth.Service
 	agents                       *agentruntime.Service
 	discovery                    *discovery.Service
@@ -352,6 +355,7 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 	var permissionSvc *permission.Service
 	var modelSvc *modelruntime.Service
 	var swarmNodeStore *pebblestore.SwarmNodeStore
+	var topologyStore *pebblestore.TopologyStore
 	for _, extra := range extras {
 		switch value := extra.(type) {
 		case *discovery.Service:
@@ -362,6 +366,8 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 			modelSvc = value
 		case *pebblestore.SwarmNodeStore:
 			swarmNodeStore = value
+		case *pebblestore.TopologyStore:
+			topologyStore = value
 		}
 	}
 	return &Service{
@@ -370,6 +376,7 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 		swarms:                    swarms,
 		swarmStore:                swarmStore,
 		swarmNodeStore:            swarmNodeStore,
+		topology:                  topologyStore,
 		auth:                      authSvc,
 		agents:                    agentSvc,
 		discovery:                 discoverySvc,
@@ -652,9 +659,12 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 		CreatedAt:           container.CreatedAt,
 		UpdatedAt:           container.UpdatedAt,
 	}
-	saved, saveErr := s.store.Put(record)
+	saved, saveErr := s.persistRecord(record)
 	if saveErr != nil {
 		return ContainerDeployment{}, saveErr
+	}
+	if err := s.syncCanonicalDeploymentState(saved); err != nil {
+		return ContainerDeployment{}, err
 	}
 	if syncEnabled && syncVaultPassword != "" {
 		s.rememberPendingSyncVaultPassword(saved.ID, syncVaultPassword, saved.BootstrapExpiresAt)
@@ -725,8 +735,11 @@ func (s *Service) UpdateSettings(ctx context.Context, input ContainerSettingsUpd
 	if record.SyncEnabled && strings.TrimSpace(input.SyncVaultPassword) != "" {
 		s.rememberPendingSyncVaultPassword(record.ID, strings.TrimSpace(input.SyncVaultPassword), time.Now().Add(10*time.Minute).UnixMilli())
 	}
-	saved, err := s.store.Put(record)
+	saved, err := s.persistRecord(record)
 	if err != nil {
+		return ContainerDeployment{}, err
+	}
+	if err := s.syncCanonicalDeploymentState(saved); err != nil {
 		return ContainerDeployment{}, err
 	}
 	return mapContainerRecord(saved), nil
@@ -786,9 +799,12 @@ func (s *Service) Act(ctx context.Context, input ContainerActionInput) (Containe
 	if record.Status == "running" && record.AttachStatus == "" {
 		record.AttachStatus = "launching"
 	}
-	saved, saveErr := s.store.Put(record)
+	saved, saveErr := s.persistRecord(record)
 	if saveErr != nil {
 		return ContainerDeployment{}, saveErr
+	}
+	if err := s.syncCanonicalDeploymentState(saved); err != nil {
+		return ContainerDeployment{}, err
 	}
 	if strings.EqualFold(strings.TrimSpace(input.Action), "start") {
 		if strings.TrimSpace(saved.ChildBackendURL) != "" {
@@ -828,9 +844,11 @@ func (s *Service) MirrorDeployment(ctx context.Context, deployment ContainerDepl
 		ContainerID:         strings.TrimSpace(deployment.ContainerID),
 		HostAPIBaseURL:      strings.TrimSpace(deployment.HostAPIBaseURL),
 		HostSwarmID:         strings.TrimSpace(deployment.HostSwarmID),
+		HostContainerID:     strings.TrimSpace(deployment.HostContainerID),
 		HostDisplayName:     strings.TrimSpace(deployment.HostDisplayName),
 		HostBackendURL:      strings.TrimSpace(deployment.HostBackendURL),
 		HostDesktopURL:      strings.TrimSpace(deployment.HostDesktopURL),
+		AttachmentID:        strings.TrimSpace(deployment.AttachmentID),
 		BackendHostPort:     deployment.BackendHostPort,
 		DesktopHostPort:     deployment.DesktopHostPort,
 		Image:               strings.TrimSpace(deployment.Image),
@@ -848,8 +866,11 @@ func (s *Service) MirrorDeployment(ctx context.Context, deployment ContainerDepl
 		CreatedAt:           deployment.CreatedAt,
 		UpdatedAt:           deployment.UpdatedAt,
 	}
-	saved, err := s.store.Put(record)
+	saved, err := s.persistRecord(record)
 	if err != nil {
+		return ContainerDeployment{}, err
+	}
+	if err := s.syncCanonicalDeploymentState(saved); err != nil {
 		return ContainerDeployment{}, err
 	}
 	return mapContainerRecord(saved), nil
@@ -919,7 +940,7 @@ func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachReques
 	if record.BootstrapSecretUsedAt > 0 {
 		record.AttachStatus = "failed"
 		record.LastAttachError = "bootstrap secret already used"
-		saved, saveErr := s.store.Put(record)
+		saved, saveErr := s.persistRecord(record)
 		if saveErr != nil {
 			return ContainerAttachState{}, saveErr
 		}
@@ -928,7 +949,7 @@ func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachReques
 	if time.Now().UnixMilli() > record.BootstrapExpiresAt {
 		record.AttachStatus = "failed"
 		record.LastAttachError = "bootstrap secret expired"
-		saved, saveErr := s.store.Put(record)
+		saved, saveErr := s.persistRecord(record)
 		if saveErr != nil {
 			return ContainerAttachState{}, saveErr
 		}
@@ -937,7 +958,7 @@ func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachReques
 	if subtleTrim(record.BootstrapSecret) != subtleTrim(input.BootstrapSecret) {
 		record.AttachStatus = "failed"
 		record.LastAttachError = "bootstrap secret mismatch"
-		saved, saveErr := s.store.Put(record)
+		saved, saveErr := s.persistRecord(record)
 		if saveErr != nil {
 			return ContainerAttachState{}, saveErr
 		}
@@ -946,7 +967,7 @@ func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachReques
 	if err := validateChildIdentity(input); err != nil {
 		record.AttachStatus = "failed"
 		record.LastAttachError = err.Error()
-		saved, saveErr := s.store.Put(record)
+		saved, saveErr := s.persistRecord(record)
 		if saveErr != nil {
 			return ContainerAttachState{}, saveErr
 		}
@@ -963,9 +984,12 @@ func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachReques
 	record.AttachStatus = "attach_requested"
 	record.Status = "running"
 	record.LastAttachError = ""
-	saved, saveErr := s.store.Put(record)
+	saved, saveErr := s.persistRecord(record)
 	if saveErr != nil {
 		return ContainerAttachState{}, saveErr
+	}
+	if err := s.syncCanonicalDeploymentState(saved); err != nil {
+		return ContainerAttachState{}, err
 	}
 	log.Printf("deploy service attach request stored deployment_id=%q attach_status=%q child_swarm_id=%q", saved.ID, saved.AttachStatus, saved.ChildSwarmID)
 	return mapAttachState(saved), nil
@@ -990,6 +1014,18 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 	if item.ChildSwarmID != "" || item.ChildDisplayName != "" {
 		item.ChildInfoDetected = true
 	}
+	childSwarmIDs, err := s.childSwarmIDsFromCanonicalAttachments(record)
+	if err != nil {
+		item.Error = err.Error()
+		return item
+	}
+	if len(childSwarmIDs) > 0 {
+		item.ChildSwarmID = childSwarmIDs[0]
+		item.ChildInfoDetected = true
+		if item.ChildDisplayName == "" {
+			item.ChildDisplayName = childSwarmIDs[0]
+		}
+	}
 
 	if record.Runtime != "" && record.ContainerName != "" {
 		if err := localcontainers.RemoveRuntimeContainer(ctx, record.Runtime, record.ContainerName); err != nil && !localcontainers.IsMissingRuntimeContainerError(err) {
@@ -1007,6 +1043,10 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 		item.Error = err.Error()
 		return item
 	}
+	if err := s.deleteCanonicalDeploymentState(record); err != nil {
+		item.Error = err.Error()
+		return item
+	}
 	s.clearPendingSyncVaultPassword(record.ID)
 	if s.auth != nil {
 		if err := s.auth.DeleteManagedVaultKey(record.ID); err != nil && !errors.Is(err, pebblestore.ErrVaultLocked) {
@@ -1017,39 +1057,40 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 	item.Deleted = true
 	item.RemovedDeployment = true
 
-	childSwarmID := strings.TrimSpace(record.ChildSwarmID)
-	if childSwarmID == "" {
+	if len(childSwarmIDs) == 0 {
 		return item
 	}
-	if s.swarmStore != nil {
-		memberships, err := s.swarmStore.ListGroupMembershipsBySwarm(childSwarmID, 500)
-		if err != nil {
-			item.Error = err.Error()
-			return item
-		}
-		for _, membership := range memberships {
-			if err := s.swarmStore.DeleteGroupMembership(membership.GroupID, membership.SwarmID); err != nil {
+	for _, childSwarmID := range childSwarmIDs {
+		if s.swarmStore != nil {
+			memberships, err := s.swarmStore.ListGroupMembershipsBySwarm(childSwarmID, 500)
+			if err != nil {
 				item.Error = err.Error()
 				return item
 			}
-			item.RemovedGroupMemberships++
+			for _, membership := range memberships {
+				if err := s.swarmStore.DeleteGroupMembership(membership.GroupID, membership.SwarmID); err != nil {
+					item.Error = err.Error()
+					return item
+				}
+				item.RemovedGroupMemberships++
+			}
+			if err := s.swarmStore.DeleteTrustedPeer(childSwarmID); err != nil {
+				item.Error = err.Error()
+				return item
+			}
+			item.RemovedTrustedPeer = true
 		}
-		if err := s.swarmStore.DeleteTrustedPeer(childSwarmID); err != nil {
-			item.Error = err.Error()
-			return item
+		if s.auth != nil {
+			if _, err := s.auth.DeleteManagedCredentialsByOwnerSwarmID(childSwarmID); err != nil && !errors.Is(err, pebblestore.ErrVaultLocked) {
+				item.Error = err.Error()
+				return item
+			}
 		}
-		item.RemovedTrustedPeer = true
-	}
-	if s.auth != nil {
-		if _, err := s.auth.DeleteManagedCredentialsByOwnerSwarmID(childSwarmID); err != nil && !errors.Is(err, pebblestore.ErrVaultLocked) {
-			item.Error = err.Error()
-			return item
-		}
-	}
-	if s.workspace != nil {
-		if err := s.workspace.RemoveReplicationLinksByTargetSwarmID(childSwarmID); err != nil {
-			item.Error = err.Error()
-			return item
+		if s.workspace != nil {
+			if err := s.workspace.RemoveReplicationLinksByTargetSwarmID(childSwarmID); err != nil {
+				item.Error = err.Error()
+				return item
+			}
 		}
 	}
 	return item
@@ -1148,7 +1189,7 @@ func (s *Service) AttachApprove(ctx context.Context, input ContainerAttachApprov
 	if err := s.finalizeApprovedAttach(&record, hostToChildPeerAuthToken, childToHostPeerAuthToken, syncVaultPassword); err != nil {
 		record.AttachStatus = "failed"
 		record.LastAttachError = err.Error()
-		saved, saveErr := s.store.Put(record)
+		saved, saveErr := s.persistRecord(record)
 		if saveErr != nil {
 			return ContainerAttachState{}, saveErr
 		}
@@ -1158,9 +1199,12 @@ func (s *Service) AttachApprove(ctx context.Context, input ContainerAttachApprov
 	record.Status = "attached"
 	record.DecidedAt = time.Now().UnixMilli()
 	record.LastAttachError = ""
-	saved, saveErr := s.store.Put(record)
+	saved, saveErr := s.persistRecord(record)
 	if saveErr != nil {
 		return ContainerAttachState{}, saveErr
+	}
+	if err := s.syncCanonicalDeploymentState(saved); err != nil {
+		return ContainerAttachState{}, err
 	}
 	log.Printf("deploy service attach approve stored deployment_id=%q attach_status=%q child_swarm_id=%q host_swarm_id=%q", saved.ID, saved.AttachStatus, saved.ChildSwarmID, saved.HostSwarmID)
 	state := mapAttachState(saved)
@@ -1236,7 +1280,7 @@ func (s *Service) SyncCredentialBundle(ctx context.Context, input ContainerSyncC
 	record.SyncBundleExportCount = exported
 	record.SyncBundleExportedAt = time.Now().UnixMilli()
 	record.SyncCredentialSnapshotHash = strings.TrimSpace(metadata.SnapshotHash)
-	if _, err := s.store.Put(record); err != nil {
+	if _, err := s.persistRecord(record); err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
 	return ContainerSyncCredentialBundle{
@@ -1598,6 +1642,50 @@ func (s *Service) localSwarmID() string {
 	return strings.TrimSpace(node.SwarmID)
 }
 
+func (s *Service) syncCanonicalFields(record *pebblestore.DeployContainerRecord) error {
+	if s == nil || record == nil {
+		return nil
+	}
+	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.SyncOwnerSwarmID), s.localSwarmID())
+	if strings.TrimSpace(record.HostSwarmID) == "" {
+		record.HostSwarmID = hostSwarmID
+	}
+	if strings.TrimSpace(record.HostContainerID) == "" {
+		runtimeContainerRef := firstNonEmpty(strings.TrimSpace(record.ContainerID), strings.TrimSpace(record.ContainerName), strings.TrimSpace(record.ID))
+		record.HostContainerID = pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef)
+		if strings.TrimSpace(record.HostContainerID) == "" && s.topology != nil {
+			hostContainer, ok, err := pebblestore.FindTopologyHostContainerByRefs(s.topology, hostSwarmID, record.ContainerID, record.ContainerName, record.ID)
+			if err != nil {
+				return err
+			}
+			if ok {
+				record.HostContainerID = strings.TrimSpace(hostContainer.HostContainerID)
+			}
+		}
+	}
+	if strings.TrimSpace(record.AttachmentID) == "" && strings.TrimSpace(record.HostContainerID) != "" && strings.TrimSpace(record.ChildSwarmID) != "" {
+		record.AttachmentID = pebblestore.CanonicalTopologyAttachmentID(record.HostContainerID, record.ChildSwarmID)
+		if strings.TrimSpace(record.AttachmentID) == "" && s.topology != nil {
+			attachmentID := pebblestore.CanonicalTopologyAttachmentID(record.HostContainerID, record.ChildSwarmID)
+			if attachmentID != "" {
+				if attachment, ok, err := s.topology.GetAttachment(attachmentID); err != nil {
+					return err
+				} else if ok {
+					record.AttachmentID = strings.TrimSpace(attachment.AttachmentID)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Service) persistRecord(record pebblestore.DeployContainerRecord) (pebblestore.DeployContainerRecord, error) {
+	if err := s.syncCanonicalFields(&record); err != nil {
+		return pebblestore.DeployContainerRecord{}, err
+	}
+	return s.store.Put(record)
+}
+
 func (s *Service) WorkspaceBootstrap(ctx context.Context, input ContainerWorkspaceBootstrapRequestInput) ([]ContainerWorkspaceBootstrap, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("deploy container service is not configured")
@@ -1768,7 +1856,7 @@ func (s *Service) ReconcileLocalDeployments(ctx context.Context) error {
 			record, runtimeChanged = applyLocalContainerRuntimeState(record, local)
 		}
 		if runtimeChanged && record.AlwaysOn && !record.SyncEnabled && strings.TrimSpace(record.Status) == "running" {
-			if _, err := s.store.Put(record); err != nil {
+			if _, err := s.persistRecord(record); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", record.ID, err))
 				continue
 			}
@@ -1850,7 +1938,7 @@ func (s *Service) reconcileLocalDeploymentSync(ctx context.Context, record pebbl
 	if syncErr != nil {
 		record.SyncLastError = syncErr.Error()
 	}
-	if _, err := s.store.Put(record); err != nil {
+	if _, err := s.persistRecord(record); err != nil {
 		if syncErr != nil {
 			return errors.Join(syncErr, err)
 		}
@@ -2212,9 +2300,11 @@ func mapContainerRecord(record pebblestore.DeployContainerRecord) ContainerDeplo
 		ContainerID:         record.ContainerID,
 		HostAPIBaseURL:      record.HostAPIBaseURL,
 		HostSwarmID:         record.HostSwarmID,
+		HostContainerID:     record.HostContainerID,
 		HostDisplayName:     record.HostDisplayName,
 		HostBackendURL:      record.HostBackendURL,
 		HostDesktopURL:      record.HostDesktopURL,
+		AttachmentID:        record.AttachmentID,
 		GroupNetworkName:    record.GroupNetworkName,
 		SyncEnabled:         record.SyncEnabled,
 		SyncMode:            record.SyncMode,
@@ -2650,7 +2740,7 @@ func (s *Service) failDeploymentAttach(id string, err error) (pebblestore.Deploy
 	record.Status = "running"
 	record.LastAttachError = strings.TrimSpace(err.Error())
 	record.UpdatedAt = time.Now().UnixMilli()
-	saved, saveErr := s.store.Put(record)
+	saved, saveErr := s.persistRecord(record)
 	if saveErr != nil {
 		return pebblestore.DeployContainerRecord{}, saveErr
 	}
@@ -4143,7 +4233,7 @@ func (s *Service) PushManagedSyncToLocalChildren(ctx context.Context, reason str
 		} else {
 			log.Printf("deploy managed sync pushed deployment_id=%q reason=%q", record.ID, strings.TrimSpace(reason))
 		}
-		if _, putErr := s.store.Put(record); putErr != nil {
+		if _, putErr := s.persistRecord(record); putErr != nil {
 			errs = append(errs, fmt.Errorf("%s: record sync status: %w", record.ID, putErr))
 		}
 	}

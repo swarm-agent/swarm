@@ -93,6 +93,76 @@ func (s *Service) ListHostContainersByHost(hostSwarmID string, limit int) ([]peb
 	return s.topologyStore.ListHostContainersByHost(hostSwarmID, limit)
 }
 
+func (s *Service) GetHostContainer(hostContainerID string) (pebblestore.TopologyHostContainerRecord, bool, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyHostContainerRecord{}, false, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.GetHostContainer(hostContainerID)
+}
+
+func (s *Service) GetAttachment(attachmentID string) (pebblestore.TopologyAttachmentRecord, bool, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyAttachmentRecord{}, false, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.GetAttachment(attachmentID)
+}
+
+func (s *Service) FindHostContainer(hostSwarmID string, refs ...string) (pebblestore.TopologyHostContainerRecord, bool, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyHostContainerRecord{}, false, fmt.Errorf("topology service is not configured")
+	}
+	return pebblestore.FindTopologyHostContainerByRefs(s.topologyStore, hostSwarmID, refs...)
+}
+
+func (s *Service) UpsertRuntime(record pebblestore.TopologyRuntimeRecord) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return pebblestore.UpsertTopologyRuntimeRecord(s.topologyStore, record)
+}
+
+func (s *Service) UpsertHostContainer(record pebblestore.TopologyHostContainerRecord) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return pebblestore.UpsertTopologyHostContainer(s.topologyStore, record)
+}
+
+func (s *Service) UpsertAttachment(record pebblestore.TopologyAttachmentRecord) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return pebblestore.UpsertTopologyAttachment(s.topologyStore, record)
+}
+
+func (s *Service) ListAttachmentsByHostContainer(hostContainerID string, limit int) ([]pebblestore.TopologyAttachmentRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return nil, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.ListAttachmentsByHostContainer(hostContainerID, limit)
+}
+
+func (s *Service) DeleteHostContainer(hostContainerID string) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.DeleteHostContainer(hostContainerID)
+}
+
+func (s *Service) DeleteAttachment(attachmentID string) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.DeleteAttachment(attachmentID)
+}
+
+func (s *Service) RemoveRuntimeObservedSource(swarmID, source string) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return pebblestore.RemoveTopologyRuntimeObservedSource(s.topologyStore, swarmID, source)
+}
+
 func (s *Service) ResolveRuntimeHostContainer(runtimeSwarmID string) (pebblestore.TopologyHostContainerRecord, pebblestore.TopologyAttachmentRecord, bool, error) {
 	if s == nil || s.topologyStore == nil {
 		return pebblestore.TopologyHostContainerRecord{}, pebblestore.TopologyAttachmentRecord{}, false, fmt.Errorf("topology service is not configured")

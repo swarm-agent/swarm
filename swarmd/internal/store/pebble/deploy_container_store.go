@@ -62,11 +62,13 @@ type DeployContainerRecord struct {
 	ChildPublicKey             string                              `json:"child_public_key,omitempty"`
 	ChildFingerprint           string                              `json:"child_fingerprint,omitempty"`
 	HostSwarmID                string                              `json:"host_swarm_id,omitempty"`
+	HostContainerID            string                              `json:"host_container_id,omitempty"`
 	HostDisplayName            string                              `json:"host_display_name,omitempty"`
 	HostPublicKey              string                              `json:"host_public_key,omitempty"`
 	HostFingerprint            string                              `json:"host_fingerprint,omitempty"`
 	HostBackendURL             string                              `json:"host_backend_url,omitempty"`
 	HostDesktopURL             string                              `json:"host_desktop_url,omitempty"`
+	AttachmentID               string                              `json:"attachment_id,omitempty"`
 	GroupID                    string                              `json:"group_id,omitempty"`
 	GroupName                  string                              `json:"group_name,omitempty"`
 	GroupNetworkName           string                              `json:"group_network_name,omitempty"`
@@ -225,11 +227,13 @@ func normalizeDeployContainerRecord(record DeployContainerRecord) DeployContaine
 	record.ChildPublicKey = strings.TrimSpace(record.ChildPublicKey)
 	record.ChildFingerprint = strings.TrimSpace(record.ChildFingerprint)
 	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)
+	record.HostContainerID = strings.TrimSpace(record.HostContainerID)
 	record.HostDisplayName = strings.TrimSpace(record.HostDisplayName)
 	record.HostPublicKey = strings.TrimSpace(record.HostPublicKey)
 	record.HostFingerprint = strings.TrimSpace(record.HostFingerprint)
 	record.HostBackendURL = strings.TrimSpace(record.HostBackendURL)
 	record.HostDesktopURL = strings.TrimSpace(record.HostDesktopURL)
+	record.AttachmentID = strings.TrimSpace(record.AttachmentID)
 	record.GroupID = strings.TrimSpace(record.GroupID)
 	record.GroupName = strings.TrimSpace(record.GroupName)
 	record.GroupNetworkName = normalizeContainerSlug(record.GroupNetworkName)
