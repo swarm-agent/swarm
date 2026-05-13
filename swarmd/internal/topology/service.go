@@ -135,6 +135,13 @@ func (s *Service) UpsertAttachment(record pebblestore.TopologyAttachmentRecord) 
 	return pebblestore.UpsertTopologyAttachment(s.topologyStore, record)
 }
 
+func (s *Service) UpsertWorkspaceBinding(record pebblestore.TopologyWorkspaceBindingRecord) (pebblestore.TopologyWorkspaceBindingRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.PutWorkspaceBinding(record)
+}
+
 func (s *Service) ListAttachmentsByHostContainer(hostContainerID string, limit int) ([]pebblestore.TopologyAttachmentRecord, error) {
 	if s == nil || s.topologyStore == nil {
 		return nil, fmt.Errorf("topology service is not configured")

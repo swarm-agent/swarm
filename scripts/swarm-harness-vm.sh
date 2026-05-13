@@ -574,6 +574,7 @@ sync_repo() {
     --exclude '.cache/' \
     --exclude '.swarm/' \
     --exclude '.tmp/' \
+    --exclude 'tmp/' \
     --exclude 'web/dist/' \
     --exclude 'web/tsconfig.tsbuildinfo' \
     -e "$(rsync_ssh_command)" \
