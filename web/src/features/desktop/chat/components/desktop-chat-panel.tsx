@@ -2259,15 +2259,6 @@ export function DesktopChatPanel({
       }))
       return
     }
-    if (session.lifecycle?.active) {
-      setCommitModal((current) => ({
-        ...current,
-        status: 'error',
-        error: 'Wait for the current run to finish before saving again.',
-      }))
-      return
-    }
-
     const instructions = commitModal.instructions.trim()
     const executionContext = commitExecutionContext(session)
     setCommitModal((current) => ({
@@ -2659,7 +2650,6 @@ export function DesktopChatPanel({
                   role="menuitem"
                   className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                   onClick={() => handleMobileQuickCommand('new-session')}
-                  disabled={submitting || canStop}
                 >
                   <Plus size={17} className="shrink-0 text-[var(--app-text-subtle)]" />
                   <span className="min-w-0">
@@ -2684,7 +2674,7 @@ export function DesktopChatPanel({
                   role="menuitem"
                   className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
                   onClick={() => handleMobileQuickCommand('save')}
-                  disabled={!sessionId || submitting || canStop}
+                  disabled={!sessionId}
                 >
                   <Save size={17} className="shrink-0 text-[var(--app-text-subtle)]" />
                   <span className="min-w-0">
@@ -3182,7 +3172,7 @@ export function DesktopChatPanel({
                 />
               </label>
               <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-sm text-[var(--app-text-muted)]">
-                {commitStatusLabel(commitModal) || 'Save runs in the background and can be used again after completion.'}
+                {commitStatusLabel(commitModal) || 'Save runs in the background, including while the current session is still running.'}
               </div>
               {commitModal.error ? (
                 <div className="rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-sm text-[var(--app-danger)]">
