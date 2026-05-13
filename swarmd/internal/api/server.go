@@ -40,6 +40,7 @@ import (
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/todo"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/update"
@@ -99,6 +100,7 @@ type Server struct {
 	remotePairingPending        map[string]swarmRemotePairingPendingRequest
 	swarmNodes                  *pebblestore.SwarmNodeStore
 	update                      *update.Service
+	topology                    *topologyruntime.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	sessionRoutes               *pebblestore.SessionRouteStore
 	flows                       *pebblestore.FlowStore

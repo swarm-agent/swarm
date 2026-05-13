@@ -51,6 +51,12 @@ const (
 	KeySwarmEnrollmentPrefix           = "swarm/enrollment/"
 	KeySwarmTrustedPeerPrefix          = "swarm/trusted_peer/"
 	KeySwarmDesktopTargetCurrent       = "swarm/desktop_target/current"
+	KeyTopologyRuntimePrefix           = "topology/runtime/"
+	KeyTopologyHostContainerPrefix     = "topology/host_container/"
+	KeyTopologyAttachmentPrefix        = "topology/attachment/"
+	KeyTopologyWorkspaceBindingPrefix  = "topology/workspace_binding/"
+	KeyTopologySessionRoutePrefix      = "topology/session_route/"
+	KeyTopologyMigrationStatusPrefix   = "topology/migration_status/"
 	KeySwarmMirrorLocalSeq             = "swarm/mirror/local/seq"
 	KeySwarmMirrorLocalEventPrefix     = "swarm/mirror/local/event/"
 	KeySwarmMirrorLocalResourcePrefix  = "swarm/mirror/local/resource/"
@@ -120,6 +126,54 @@ func KeySessionRoute(sessionID string) string {
 
 func SessionRoutePrefix() string {
 	return "session_route/"
+}
+
+func KeyTopologyRuntime(swarmID string) string {
+	return KeyTopologyRuntimePrefix + keyPart(swarmID)
+}
+
+func TopologyRuntimePrefix() string {
+	return KeyTopologyRuntimePrefix
+}
+
+func KeyTopologyHostContainer(hostContainerID string) string {
+	return KeyTopologyHostContainerPrefix + keyPart(hostContainerID)
+}
+
+func TopologyHostContainerPrefix() string {
+	return KeyTopologyHostContainerPrefix
+}
+
+func KeyTopologyAttachment(attachmentID string) string {
+	return KeyTopologyAttachmentPrefix + keyPart(attachmentID)
+}
+
+func TopologyAttachmentPrefix() string {
+	return KeyTopologyAttachmentPrefix
+}
+
+func KeyTopologyWorkspaceBinding(bindingID string) string {
+	return KeyTopologyWorkspaceBindingPrefix + keyPart(bindingID)
+}
+
+func TopologyWorkspaceBindingPrefix() string {
+	return KeyTopologyWorkspaceBindingPrefix
+}
+
+func KeyTopologySessionRoute(sessionID string) string {
+	return KeyTopologySessionRoutePrefix + keyPart(sessionID)
+}
+
+func TopologySessionRoutePrefix() string {
+	return KeyTopologySessionRoutePrefix
+}
+
+func KeyTopologyMigrationStatus(statusID string) string {
+	return KeyTopologyMigrationStatusPrefix + keyPart(statusID)
+}
+
+func TopologyMigrationStatusPrefix() string {
+	return KeyTopologyMigrationStatusPrefix
 }
 
 func KeySessionLifecycle(sessionID string) string {

@@ -1,10 +1,11 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, Film, Image, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { cn } from '../../../../lib/cn'
 import { useDesktopStore } from '../../state/use-desktop-store'
+import { fetchSwarmTopologySnapshot, type SwarmTopologySnapshotResponse } from '../../swarm/api/swarm-topology'
 
 type ToolCard = {
   id: string
@@ -12,6 +13,11 @@ type ToolCard = {
   description: string
   status: string
   icon: 'video' | 'image'
+}
+
+type ToolSummary = {
+  label: string
+  value: number
 }
 
 const toolCards: ToolCard[] = [
@@ -33,6 +39,8 @@ const toolCards: ToolCard[] = [
 
 export function SwarmToolsPage() {
   const navigate = useNavigate()
+  const [topology, setTopology] = useState<SwarmTopologySnapshotResponse | null>(null)
+  const [topologyError, setTopologyError] = useState('')
   const matchRoute = useMatchRoute()
   const toolsRouteMatch = matchRoute({ to: '/tools', fuzzy: false })
   const workspaceToolsRouteMatch = matchRoute({ to: '/$workspaceSlug/tools', fuzzy: false })
@@ -60,6 +68,36 @@ export function SwarmToolsPage() {
       void navigate({ to: '/' })
     }
   }, [activeSessionId, navigate, routeWorkspaceSlug, toolsRouteMatch])
+
+  useEffect(() => {
+    let cancelled = false
+    void fetchSwarmTopologySnapshot()
+      .then((response) => {
+        if (cancelled) return
+        setTopology(response)
+        setTopologyError('')
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setTopology(null)
+        setTopologyError(error instanceof Error ? error.message : String(error))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const topologySummary = useMemo<ToolSummary[]>(() => {
+    const snapshot = topology
+    if (!snapshot) return []
+    return [
+      { label: 'Runtimes', value: snapshot.migration_status.runtime_count },
+      { label: 'Host containers', value: snapshot.migration_status.host_container_count },
+      { label: 'Attachments', value: snapshot.migration_status.attachment_count },
+      { label: 'Bindings', value: snapshot.migration_status.workspace_binding_count },
+      { label: 'Session routes', value: snapshot.migration_status.session_route_count },
+    ]
+  }, [topology])
 
   const openTool = (toolID: string) => {
     if (toolID !== 'video' && toolID !== 'image') return
@@ -95,6 +133,34 @@ export function SwarmToolsPage() {
         </header>
 
         <main className="flex-1 py-8">
+          <section className="mb-8 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">Checkpoint 1 topology</p>
+                <h2 className="mt-1 text-lg font-semibold tracking-[-0.04em] text-[var(--app-text)]">Canonical topology snapshot</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">
+                  New backend topology records now project the current runtime, host-container, attachment, binding, and session-route graph.
+                </p>
+              </div>
+              {topology?.migration_status ? (
+                <div className="rounded-full border border-[var(--app-border)] px-3 py-1 text-[11px] font-medium text-[var(--app-text-muted)]">
+                  {topology.migration_status.version}
+                </div>
+              ) : null}
+            </div>
+            {topologyError ? (
+              <p className="mt-4 text-sm text-[var(--app-danger)]">{topologyError}</p>
+            ) : (
+              <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                {topologySummary.map((item) => (
+                  <Card key={item.label} className="border-[var(--app-border)] bg-[var(--app-bg)] p-4">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">{item.label}</p>
+                    <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[var(--app-text)]">{item.value}</p>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </section>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {toolCards.map((tool) => (
               <button
