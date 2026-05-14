@@ -124,6 +124,20 @@ func TestLocalContainerDeleteUsesCanonicalAttachmentsForCleanup(t *testing.T) {
 	if err := pebblestore.UpsertTopologyAttachment(topologyStore, pebblestore.TopologyAttachmentRecord{AttachmentID: attachmentID, HostContainerID: pebblestore.CanonicalTopologyHostContainerID("host-swarm", "ctr-1"), RuntimeSwarmID: "child-swarm", DeploymentID: "deploy-1", State: "attached"}); err != nil {
 		t.Fatalf("put topology attachment: %v", err)
 	}
+	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 "binding:replica:pc-child:/workspace",
+		SourceWorkspacePath:       "/workspace",
+		SourceWorkspaceName:       "workspace",
+		DestinationRuntimeSwarmID: "child-swarm",
+		DestinationWorkspacePath:  "/workspaces/workspace",
+		ReplicationMode:           "bundle",
+		Writable:                  true,
+	}); err != nil {
+		t.Fatalf("put topology workspace binding: %v", err)
+	}
+	if _, err := topologyStore.PutSessionRoute(pebblestore.TopologySessionRouteRecord{SessionID: "session-1", RuntimeSwarmID: "child-swarm", WorkspaceBindingID: "binding:replica:pc-child:/workspace", HostWorkspacePath: "/workspace", RuntimeWorkspacePath: "/workspaces/workspace"}); err != nil {
+		t.Fatalf("put topology session route: %v", err)
+	}
 
 	result, err := localSvc.BulkDelete(context.Background(), []string{"pc-child"})
 	if err != nil {
@@ -137,5 +151,11 @@ func TestLocalContainerDeleteUsesCanonicalAttachmentsForCleanup(t *testing.T) {
 	}
 	if _, ok, err := topologyStore.GetHostContainer(pebblestore.CanonicalTopologyHostContainerID("host-swarm", "ctr-1")); err != nil || ok {
 		t.Fatalf("host container remaining ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := topologyStore.GetWorkspaceBinding("binding:replica:pc-child:/workspace"); err != nil || ok {
+		t.Fatalf("workspace binding remaining ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := topologyStore.GetSessionRoute("session-1"); err != nil || ok {
+		t.Fatalf("session route remaining ok=%t err=%v", ok, err)
 	}
 }

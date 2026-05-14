@@ -126,6 +126,7 @@ type DeleteItemResult struct {
 	RemovedDeployment       bool   `json:"removed_deployment,omitempty"`
 	RemovedTrustedPeer      bool   `json:"removed_trusted_peer,omitempty"`
 	RemovedGroupMemberships int    `json:"removed_group_memberships,omitempty"`
+	RemovedWorkspaceRoutes  int    `json:"removed_workspace_routes,omitempty"`
 	Error                   string `json:"error,omitempty"`
 }
 
@@ -889,7 +890,7 @@ func (s *Service) BulkDelete(ctx context.Context, containerIDs []string) (Delete
 		if item.Error != "" {
 			result.Failed++
 		}
-		if item.RemovedDeployment || item.RemovedTrustedPeer || item.RemovedGroupMemberships > 0 {
+		if item.RemovedDeployment || item.RemovedTrustedPeer || item.RemovedGroupMemberships > 0 || item.RemovedWorkspaceRoutes > 0 {
 			result.ChildInfoRemoved++
 		}
 	}
@@ -993,15 +994,83 @@ func (s *Service) deleteContainer(ctx context.Context, containerID string) Delet
 			}
 		}
 	}
-	if s.workspace != nil {
-		for childSwarmID := range childSwarmIDs {
+	for childSwarmID := range childSwarmIDs {
+		if s.workspace != nil {
 			if err := s.workspace.RemoveReplicationLinksByTargetSwarmID(childSwarmID); err != nil {
 				item.Error = err.Error()
 				return item
 			}
 		}
+		removed, err := s.deleteTopologyWorkspaceBindingsByRuntime(childSwarmID)
+		if err != nil {
+			item.Error = err.Error()
+			return item
+		}
+		item.RemovedWorkspaceRoutes += removed
 	}
 	return item
+}
+
+func (s *Service) deleteTopologyWorkspaceBindingsByRuntime(runtimeSwarmID string) (int, error) {
+	if s == nil || s.topology == nil {
+		return 0, nil
+	}
+	runtimeSwarmID = strings.TrimSpace(runtimeSwarmID)
+	if runtimeSwarmID == "" {
+		return 0, nil
+	}
+	bindings, err := s.topology.ListWorkspaceBindings(100000)
+	if err != nil {
+		return 0, err
+	}
+	routes, err := s.topology.ListSessionRoutes(100000)
+	if err != nil {
+		return 0, err
+	}
+	bindingIDs := make(map[string]struct{})
+	for _, binding := range bindings {
+		if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), runtimeSwarmID) {
+			continue
+		}
+		bindingID := strings.TrimSpace(binding.BindingID)
+		if bindingID != "" {
+			bindingIDs[strings.ToLower(bindingID)] = struct{}{}
+		}
+	}
+	removed := 0
+	deletedRoutes := make(map[string]struct{})
+	for _, route := range routes {
+		sessionID := strings.TrimSpace(route.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		_, routeBindingMatches := bindingIDs[strings.ToLower(strings.TrimSpace(route.WorkspaceBindingID))]
+		if !routeBindingMatches && !strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), runtimeSwarmID) {
+			continue
+		}
+		if _, seen := deletedRoutes[strings.ToLower(sessionID)]; seen {
+			continue
+		}
+		if err := s.topology.DeleteSessionRoute(sessionID); err != nil {
+			return removed, err
+		}
+		deletedRoutes[strings.ToLower(sessionID)] = struct{}{}
+		removed++
+	}
+	for _, binding := range bindings {
+		if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), runtimeSwarmID) {
+			continue
+		}
+		bindingID := strings.TrimSpace(binding.BindingID)
+		if bindingID == "" {
+			continue
+		}
+		if err := s.topology.DeleteWorkspaceBinding(bindingID); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 type childAttachment struct {

@@ -41,7 +41,11 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 			},
 		}},
 	})
-	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(pebblestore.NewTopologyStore(store), pebblestore.TopologyWorkspaceBindingRecord{
+	topologyStore := pebblestore.NewTopologyStore(store)
+	if err := pebblestore.UpsertTopologyRuntimeRecord(topologyStore, pebblestore.TopologyRuntimeRecord{SwarmID: "managed-swarm-1", Name: "managed-host", Relationship: "managed", BackendURL: "https://managed.example.test", ObservedSources: []string{pebblestore.TopologyRuntimeSourceDeployContainer}}); err != nil {
+		t.Fatalf("upsert topology runtime: %v", err)
+	}
+	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
 		BindingID:                 "binding-1",
 		SourceWorkspacePath:       workspacePath,
 		SourceWorkspaceName:       "workspace-one",
@@ -91,6 +95,62 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 	}
 	if len(response.Workspaces[0].ReplicationLinks) != 0 {
 		t.Fatalf("test must prove topology routes do not come from legacy replication links: %+v", response.Workspaces[0].ReplicationLinks)
+	}
+}
+
+func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
+	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
+	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
+		Node:           swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
+		CurrentGroupID: "group-1",
+		TrustedPeers: []swarmruntime.TrustedPeer{{
+			SwarmID:      "live-swarm",
+			Name:         "Live",
+			Role:         swarmruntime.RelationshipManaged,
+			Relationship: swarmruntime.RelationshipManaged,
+			RendezvousTransports: []swarmruntime.TransportSummary{{
+				Kind:    startupconfig.NetworkModeTailscale,
+				Primary: "http://live.example",
+				All:     []string{"http://live.example"},
+			}},
+		}},
+		Groups: []swarmruntime.GroupState{{
+			Group: swarmruntime.Group{ID: "group-1", Name: "Primary Group", HostSwarmID: "host-swarm-id"},
+			Members: []swarmruntime.GroupMember{
+				{GroupID: "group-1", SwarmID: "host-swarm-id", Name: "host-swarm", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost},
+				{GroupID: "group-1", SwarmID: "live-swarm", Name: "Live", SwarmRole: swarmruntime.RelationshipChild, MembershipRole: swarmruntime.GroupMembershipRoleMember},
+			},
+		}},
+	})
+	topologyStore := pebblestore.NewTopologyStore(store)
+	for _, binding := range []pebblestore.TopologyWorkspaceBindingRecord{
+		{BindingID: "binding-live", SourceWorkspacePath: workspacePath, DestinationRuntimeSwarmID: "live-swarm", DestinationWorkspacePath: "/workspaces/live", Writable: true},
+		{BindingID: "binding-stale", SourceWorkspacePath: workspacePath, DestinationRuntimeSwarmID: "missing-swarm", DestinationWorkspacePath: "/workspaces/stale", Writable: true},
+	} {
+		if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, binding); err != nil {
+			t.Fatalf("upsert binding %q: %v", binding.BindingID, err)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/workspace/overview?limit=25&discover_limit=1", nil)
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response workspaceOverviewResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	if len(response.Workspaces) != 1 {
+		t.Fatalf("workspace count=%d response=%+v", len(response.Workspaces), response)
+	}
+	routes := response.Workspaces[0].TopologyRoutes
+	if len(routes) != 1 {
+		t.Fatalf("topology route count=%d routes=%+v", len(routes), routes)
+	}
+	if routes[0].WorkspaceBindingID != "binding-live" || routes[0].RuntimeSwarmID != "live-swarm" {
+		t.Fatalf("unexpected route after stale filter: %+v", routes[0])
 	}
 }
 

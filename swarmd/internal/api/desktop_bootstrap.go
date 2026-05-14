@@ -425,6 +425,10 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 		if routeID == "" {
 			continue
 		}
+		runtimeTarget, runtimeAlive := runtimeTargets[strings.ToLower(runtimeSwarmID)]
+		if !runtimeAlive {
+			continue
+		}
 		if seenByWorkspace[workspacePath] == nil {
 			seenByWorkspace[workspacePath] = make(map[string]struct{})
 		}
@@ -433,7 +437,6 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 		}
 		seenByWorkspace[workspacePath][routeID] = struct{}{}
 
-		runtimeTarget := runtimeTargets[strings.ToLower(runtimeSwarmID)]
 		out[workspacePath] = append(out[workspacePath], workspaceOverviewTopologyRoute{
 			RouteID:              routeID,
 			RouteSource:          workspaceOverviewTopologyRouteSource,
