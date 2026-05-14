@@ -158,6 +158,37 @@ func TestRepoGitWatcherEmitsOnWorkingTreeChange(t *testing.T) {
 	awaitWatcherRefresh(t, triggered, "working tree change")
 }
 
+func TestRepoGitWatcherDoesNotRecursivelyWatchHomeRepo(t *testing.T) {
+	repo := initGitRepo(t)
+	nested := filepath.Join(repo, "project", "deep")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	writeFile(t, filepath.Join(nested, "file.txt"), "hello\n")
+
+	oldHome := os.Getenv("HOME")
+	t.Setenv("HOME", repo)
+	if oldHome != "" {
+		t.Setenv("USERPROFILE", repo)
+	}
+
+	watcher, err := newRepoGitWatcher(repo)
+	if err != nil {
+		t.Fatalf("newRepoGitWatcher: %v", err)
+	}
+	defer watcher.stopWatching()
+
+	if _, ok := watcher.watched[repo]; !ok {
+		t.Fatalf("home repo root was not watched: %#v", watcher.watched)
+	}
+	if _, ok := watcher.watched[nested]; ok {
+		t.Fatalf("home repo nested directory was watched: %#v", watcher.watched)
+	}
+	if len(watcher.watched) != 1 {
+		t.Fatalf("watched %d paths, want only home root: %#v", len(watcher.watched), watcher.watched)
+	}
+}
+
 func initGitRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

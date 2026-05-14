@@ -160,6 +160,9 @@ func (w *repoGitWatcher) addRecursiveWorktreeWatches() error {
 	if w == nil {
 		return nil
 	}
+	if isUserHomePath(w.repoRoot) {
+		return w.addWatchPath(w.repoRoot)
+	}
 	return filepath.WalkDir(w.repoRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -184,6 +187,12 @@ func (w *repoGitWatcher) addRecursiveFromPath(path string) error {
 	}
 	clean := normalizePath(path)
 	if clean == "" {
+		return nil
+	}
+	if isUserHomePath(w.repoRoot) {
+		if pathsEqual(clean, w.repoRoot) {
+			return w.addWatchPath(w.repoRoot)
+		}
 		return nil
 	}
 	info, err := os.Stat(clean)
@@ -343,6 +352,18 @@ func resolveReportedGitPath(basePath, reportedPath string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(resolvedPath), nil
+}
+
+func isUserHomePath(path string) bool {
+	clean := normalizePath(path)
+	if clean == "" {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	return pathsEqual(clean, home)
 }
 
 func runGitPathQuery(path string, args ...string) (string, error) {
