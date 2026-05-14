@@ -93,6 +93,14 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 		t.Fatalf("route backend url = %q", routeRecord.BackendURL)
 	}
 
+	refreshedStatus, ok, err := topology.GetMigrationStatus(DefaultTopologyMigrationStatusID)
+	if err != nil || !ok {
+		t.Fatalf("get refreshed migration status ok=%t err=%v", ok, err)
+	}
+	if refreshedStatus.RuntimeCount != 1 || refreshedStatus.HostContainerCount != 1 || refreshedStatus.AttachmentCount != 1 || refreshedStatus.WorkspaceBindingCount != 1 || refreshedStatus.SessionRouteCount != 1 {
+		t.Fatalf("unexpected refreshed migration counts after direct writes: %+v", refreshedStatus)
+	}
+
 	statusRecord, err := topology.PutMigrationStatus(TopologyMigrationStatusRecord{
 		Version:               "checkpoint1-v1",
 		RuntimeCount:          1,
@@ -155,6 +163,13 @@ func TestTopologyStoreDirectWritersAndSnapshot(t *testing.T) {
 	}
 	if err := topology.DeleteRuntime(runtimeRecord.SwarmID); err != nil {
 		t.Fatalf("delete runtime: %v", err)
+	}
+	refreshedStatus, ok, err = topology.GetMigrationStatus(DefaultTopologyMigrationStatusID)
+	if err != nil || !ok {
+		t.Fatalf("get refreshed migration status after deletes ok=%t err=%v", ok, err)
+	}
+	if refreshedStatus.RuntimeCount != 0 || refreshedStatus.HostContainerCount != 0 || refreshedStatus.AttachmentCount != 0 || refreshedStatus.WorkspaceBindingCount != 0 || refreshedStatus.SessionRouteCount != 0 {
+		t.Fatalf("unexpected refreshed migration counts after direct deletes: %+v", refreshedStatus)
 	}
 }
 

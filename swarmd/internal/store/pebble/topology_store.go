@@ -281,7 +281,7 @@ func (s *TopologyStore) PutRuntime(record TopologyRuntimeRecord) (TopologyRuntim
 	if err := s.store.PutJSON(KeyTopologyRuntime(record.SwarmID), record); err != nil {
 		return TopologyRuntimeRecord{}, err
 	}
-	if err := s.refreshMigrationStatus(); err != nil {
+	if _, err := s.refreshMigrationStatus(); err != nil {
 		return TopologyRuntimeRecord{}, err
 	}
 	return record, nil
@@ -298,7 +298,8 @@ func (s *TopologyStore) DeleteRuntime(swarmID string) error {
 	if err := s.store.Delete(KeyTopologyRuntime(swarmID)); err != nil {
 		return err
 	}
-	return s.refreshMigrationStatus()
+	_, err := s.refreshMigrationStatus()
+	return err
 }
 
 func (s *TopologyStore) ListRuntimes(limit int) ([]TopologyRuntimeRecord, error) {
@@ -375,7 +376,7 @@ func (s *TopologyStore) PutHostContainer(record TopologyHostContainerRecord) (To
 	if err := s.store.PutJSON(KeyTopologyHostContainer(record.HostContainerID), record); err != nil {
 		return TopologyHostContainerRecord{}, err
 	}
-	if err := s.refreshMigrationStatus(); err != nil {
+	if _, err := s.refreshMigrationStatus(); err != nil {
 		return TopologyHostContainerRecord{}, err
 	}
 	return record, nil
@@ -392,7 +393,8 @@ func (s *TopologyStore) DeleteHostContainer(hostContainerID string) error {
 	if err := s.store.Delete(KeyTopologyHostContainer(hostContainerID)); err != nil {
 		return err
 	}
-	return s.refreshMigrationStatus()
+	_, err := s.refreshMigrationStatus()
+	return err
 }
 
 func (s *TopologyStore) GetAttachment(attachmentID string) (TopologyAttachmentRecord, bool, error) {
@@ -440,7 +442,7 @@ func (s *TopologyStore) PutAttachment(record TopologyAttachmentRecord) (Topology
 	if err := s.store.PutJSON(KeyTopologyAttachment(record.AttachmentID), record); err != nil {
 		return TopologyAttachmentRecord{}, err
 	}
-	if err := s.refreshMigrationStatus(); err != nil {
+	if _, err := s.refreshMigrationStatus(); err != nil {
 		return TopologyAttachmentRecord{}, err
 	}
 	return record, nil
@@ -457,7 +459,8 @@ func (s *TopologyStore) DeleteAttachment(attachmentID string) error {
 	if err := s.store.Delete(KeyTopologyAttachment(attachmentID)); err != nil {
 		return err
 	}
-	return s.refreshMigrationStatus()
+	_, err := s.refreshMigrationStatus()
+	return err
 }
 
 func (s *TopologyStore) ListAttachments(limit int) ([]TopologyAttachmentRecord, error) {
@@ -563,7 +566,7 @@ func (s *TopologyStore) PutWorkspaceBinding(record TopologyWorkspaceBindingRecor
 	if err := s.store.PutJSON(KeyTopologyWorkspaceBinding(record.BindingID), record); err != nil {
 		return TopologyWorkspaceBindingRecord{}, err
 	}
-	if err := s.refreshMigrationStatus(); err != nil {
+	if _, err := s.refreshMigrationStatus(); err != nil {
 		return TopologyWorkspaceBindingRecord{}, err
 	}
 	return record, nil
@@ -580,7 +583,8 @@ func (s *TopologyStore) DeleteWorkspaceBinding(bindingID string) error {
 	if err := s.store.Delete(KeyTopologyWorkspaceBinding(bindingID)); err != nil {
 		return err
 	}
-	return s.refreshMigrationStatus()
+	_, err := s.refreshMigrationStatus()
+	return err
 }
 
 func (s *TopologyStore) ListSessionRoutes(limit int) ([]TopologySessionRouteRecord, error) {
@@ -626,7 +630,7 @@ func (s *TopologyStore) PutSessionRoute(record TopologySessionRouteRecord) (Topo
 	if err := s.store.PutJSON(KeyTopologySessionRoute(record.SessionID), record); err != nil {
 		return TopologySessionRouteRecord{}, err
 	}
-	if err := s.refreshMigrationStatus(); err != nil {
+	if _, err := s.refreshMigrationStatus(); err != nil {
 		return TopologySessionRouteRecord{}, err
 	}
 	return record, nil
@@ -643,7 +647,8 @@ func (s *TopologyStore) DeleteSessionRoute(sessionID string) error {
 	if err := s.store.Delete(KeyTopologySessionRoute(sessionID)); err != nil {
 		return err
 	}
-	return s.refreshMigrationStatus()
+	_, err := s.refreshMigrationStatus()
+	return err
 }
 
 func (s *TopologyStore) GetMigrationStatus(id string) (TopologyMigrationStatusRecord, bool, error) {
