@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,9 +31,33 @@ type workspaceOverviewSession struct {
 
 type workspaceOverviewWorkspace struct {
 	workspace.Entry
-	Sessions    []workspaceOverviewSession       `json:"sessions"`
-	TodoSummary pebblestore.WorkspaceTodoSummary `json:"todo_summary"`
+	Sessions       []workspaceOverviewSession       `json:"sessions"`
+	TodoSummary    pebblestore.WorkspaceTodoSummary `json:"todo_summary"`
+	TopologyRoutes []workspaceOverviewTopologyRoute `json:"topology_routes,omitempty"`
 	gitStatusResponseFields
+}
+
+const workspaceOverviewTopologyRouteSource = "topology/workspace_binding"
+
+type workspaceOverviewTopologyRoute struct {
+	RouteID              string                               `json:"route_id"`
+	RouteSource          string                               `json:"route_source"`
+	WorkspaceBindingID   string                               `json:"workspace_binding_id"`
+	RuntimeSwarmID       string                               `json:"runtime_swarm_id"`
+	RuntimeSwarmName     string                               `json:"runtime_swarm_name,omitempty"`
+	RuntimeKind          string                               `json:"runtime_kind,omitempty"`
+	RuntimeRelationship  string                               `json:"runtime_relationship,omitempty"`
+	RuntimeBackendURL    string                               `json:"runtime_backend_url,omitempty"`
+	HostSwarmID          string                               `json:"host_swarm_id,omitempty"`
+	HostWorkspacePath    string                               `json:"host_workspace_path"`
+	HostWorkspaceName    string                               `json:"host_workspace_name,omitempty"`
+	RuntimeWorkspacePath string                               `json:"runtime_workspace_path"`
+	ContainerID          string                               `json:"container_id,omitempty"`
+	ReplicationMode      string                               `json:"replication_mode,omitempty"`
+	Writable             bool                                 `json:"writable"`
+	Sync                 pebblestore.WorkspaceReplicationSync `json:"sync,omitempty"`
+	CreatedAt            int64                                `json:"created_at"`
+	UpdatedAt            int64                                `json:"updated_at"`
 }
 
 func (s *Server) applyWorkspaceWorktreeStatus(entries []workspace.Entry) ([]workspace.Entry, error) {
@@ -67,7 +92,7 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		methodNotAllowed(w)
 		return
 	}
-	_, currentTarget, err := s.swarmTargetsForRequest(r)
+	swarmTargets, currentTarget, err := s.swarmTargetsForRequest(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -170,12 +195,20 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	topologyRoutesByWorkspace, err := s.workspaceOverviewTopologyRoutesByWorkspace(swarmTargets)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
 	responseWorkspaces := make([]workspaceOverviewWorkspace, 0, len(workspaces))
 	for _, entry := range workspaces {
+		workspacePath := strings.TrimSpace(entry.Path)
 		responseWorkspaces = append(responseWorkspaces, workspaceOverviewWorkspace{
 			Entry:                   entry,
-			Sessions:                sessionsByWorkspace[strings.TrimSpace(entry.Path)],
-			TodoSummary:             todoSummaries[strings.TrimSpace(entry.Path)],
+			Sessions:                sessionsByWorkspace[workspacePath],
+			TodoSummary:             todoSummaries[workspacePath],
+			TopologyRoutes:          topologyRoutesByWorkspace[workspacePath],
 			gitStatusResponseFields: gitStatusResponseForPath(entry.Path),
 		})
 	}
@@ -360,6 +393,88 @@ func (s *Server) workspaceOverviewSessionsByWorkspace(groups []pebblestore.Works
 	}
 	wg.Wait()
 	return result, nil
+}
+
+func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarmTarget) (map[string][]workspaceOverviewTopologyRoute, error) {
+	out := make(map[string][]workspaceOverviewTopologyRoute)
+	if s == nil || s.topology == nil {
+		return out, nil
+	}
+	if _, err := s.topology.EnsureSnapshot(); err != nil {
+		return nil, err
+	}
+	bindings, err := s.topology.ListWorkspaceBindings(100000)
+	if err != nil {
+		return nil, err
+	}
+	runtimeTargets := make(map[string]swarmTarget, len(swarmTargets))
+	for _, target := range swarmTargets {
+		if swarmID := strings.TrimSpace(target.SwarmID); swarmID != "" {
+			runtimeTargets[strings.ToLower(swarmID)] = target
+		}
+	}
+	seenByWorkspace := make(map[string]map[string]struct{})
+	for _, binding := range bindings {
+		workspacePath := strings.TrimSpace(binding.SourceWorkspacePath)
+		runtimeSwarmID := strings.TrimSpace(binding.DestinationRuntimeSwarmID)
+		runtimeWorkspacePath := strings.TrimSpace(binding.DestinationWorkspacePath)
+		if workspacePath == "" || runtimeSwarmID == "" || runtimeWorkspacePath == "" {
+			continue
+		}
+		routeID := workspaceOverviewTopologyRouteID(runtimeSwarmID, runtimeWorkspacePath)
+		if routeID == "" {
+			continue
+		}
+		if seenByWorkspace[workspacePath] == nil {
+			seenByWorkspace[workspacePath] = make(map[string]struct{})
+		}
+		if _, seen := seenByWorkspace[workspacePath][routeID]; seen {
+			continue
+		}
+		seenByWorkspace[workspacePath][routeID] = struct{}{}
+
+		runtimeTarget := runtimeTargets[strings.ToLower(runtimeSwarmID)]
+		out[workspacePath] = append(out[workspacePath], workspaceOverviewTopologyRoute{
+			RouteID:              routeID,
+			RouteSource:          workspaceOverviewTopologyRouteSource,
+			WorkspaceBindingID:   strings.TrimSpace(binding.BindingID),
+			RuntimeSwarmID:       runtimeSwarmID,
+			RuntimeSwarmName:     firstNonEmpty(strings.TrimSpace(runtimeTarget.Name), runtimeSwarmID),
+			RuntimeKind:          firstNonEmpty(strings.TrimSpace(runtimeTarget.Kind), strings.TrimSpace(binding.LegacyTargetKind)),
+			RuntimeRelationship:  strings.TrimSpace(runtimeTarget.Relationship),
+			RuntimeBackendURL:    strings.TrimSpace(runtimeTarget.BackendURL),
+			HostSwarmID:          strings.TrimSpace(binding.DestinationHostSwarmID),
+			HostWorkspacePath:    workspacePath,
+			HostWorkspaceName:    strings.TrimSpace(binding.SourceWorkspaceName),
+			RuntimeWorkspacePath: runtimeWorkspacePath,
+			ContainerID:          strings.TrimSpace(binding.DestinationContainerID),
+			ReplicationMode:      strings.TrimSpace(binding.ReplicationMode),
+			Writable:             binding.Writable,
+			Sync:                 binding.Sync,
+			CreatedAt:            binding.CreatedAt,
+			UpdatedAt:            binding.UpdatedAt,
+		})
+	}
+	for workspacePath := range out {
+		sort.SliceStable(out[workspacePath], func(i, j int) bool {
+			left := strings.ToLower(out[workspacePath][i].RuntimeSwarmName)
+			right := strings.ToLower(out[workspacePath][j].RuntimeSwarmName)
+			if left == right {
+				return out[workspacePath][i].RouteID < out[workspacePath][j].RouteID
+			}
+			return left < right
+		})
+	}
+	return out, nil
+}
+
+func workspaceOverviewTopologyRouteID(runtimeSwarmID, runtimeWorkspacePath string) string {
+	runtimeSwarmID = strings.TrimSpace(runtimeSwarmID)
+	runtimeWorkspacePath = strings.TrimSpace(runtimeWorkspacePath)
+	if runtimeSwarmID == "" || runtimeWorkspacePath == "" {
+		return ""
+	}
+	return "swarm:" + runtimeSwarmID + ":" + runtimeWorkspacePath
 }
 
 func workspaceOverviewSessionStatus(lifecycle *pebblestore.SessionLifecycleSnapshot) string {
