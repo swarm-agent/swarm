@@ -92,12 +92,12 @@ type managedWorkspacePreflightResponse struct {
 }
 
 type managedWorkspaceResultResponse struct {
-	SourceWorkspacePath string                               `json:"source_workspace_path"`
-	SourceWorkspaceName string                               `json:"source_workspace_name"`
-	ManagedHostName     string                               `json:"managed_host_name"`
-	DestinationPath     string                               `json:"destination_path"`
-	Action              string                               `json:"action"`
-	Link                pebblestore.WorkspaceReplicationLink `json:"link"`
+	SourceWorkspacePath string                                     `json:"source_workspace_path"`
+	SourceWorkspaceName string                                     `json:"source_workspace_name"`
+	ManagedHostName     string                                     `json:"managed_host_name"`
+	DestinationPath     string                                     `json:"destination_path"`
+	Action              string                                     `json:"action"`
+	Binding             pebblestore.TopologyWorkspaceBindingRecord `json:"binding"`
 }
 
 type managedWorkspaceReplicateResponse struct {
@@ -121,14 +121,14 @@ type workspaceManagedLinkRemoveRequest struct {
 }
 
 type workspaceManagedLinkResponse struct {
-	OK              bool                                 `json:"ok"`
-	Target          managedWorkspaceTargetResponse       `json:"target,omitempty"`
-	WorkspacePath   string                               `json:"workspace_path"`
-	DestinationPath string                               `json:"destination_path,omitempty"`
-	Exists          bool                                 `json:"exists,omitempty"`
-	Created         bool                                 `json:"created,omitempty"`
-	Registered      bool                                 `json:"registered,omitempty"`
-	Link            pebblestore.WorkspaceReplicationLink `json:"link,omitempty"`
+	OK              bool                                       `json:"ok"`
+	Target          managedWorkspaceTargetResponse             `json:"target,omitempty"`
+	WorkspacePath   string                                     `json:"workspace_path"`
+	DestinationPath string                                     `json:"destination_path,omitempty"`
+	Exists          bool                                       `json:"exists,omitempty"`
+	Created         bool                                       `json:"created,omitempty"`
+	Registered      bool                                       `json:"registered,omitempty"`
+	Binding         pebblestore.TopologyWorkspaceBindingRecord `json:"binding,omitempty"`
 }
 
 type managedWorkspaceActiveCWDResponse struct {
@@ -566,15 +566,7 @@ func (s *Server) workspaceManagedLinkUpsert(r *http.Request, req workspaceManage
 	if err != nil {
 		return workspaceManagedLinkResponse{}, http.StatusBadGateway, err
 	}
-	storedLink, err := s.workspace.AddReplicationLink(normalizedWorkspace.SourceWorkspacePath, pebblestore.WorkspaceReplicationLink{
-		ID:                  managedWorkspaceLinkID(target.SwarmID, normalizedWorkspace.SourceWorkspacePath),
-		TargetKind:          managedWorkspaceTargetKind,
-		TargetSwarmID:       strings.TrimSpace(target.SwarmID),
-		TargetSwarmName:     firstNonEmpty(strings.TrimSpace(target.Name), strings.TrimSpace(target.SwarmID)),
-		TargetWorkspacePath: peerResp.DestinationPath,
-		ReplicationMode:     workspace.ReplicationModeBundle,
-		Writable:            true,
-	})
+	binding, err := s.upsertManagedWorkspaceBinding(*target, normalizedWorkspace.SourceWorkspacePath, workspaceName, peerResp.DestinationPath)
 	if err != nil {
 		return workspaceManagedLinkResponse{}, http.StatusInternalServerError, err
 	}
@@ -586,7 +578,7 @@ func (s *Server) workspaceManagedLinkUpsert(r *http.Request, req workspaceManage
 		Exists:          peerResp.Exists,
 		Created:         peerResp.Created,
 		Registered:      peerResp.Registered,
-		Link:            storedLink,
+		Binding:         binding,
 	}, http.StatusOK, nil
 }
 
@@ -788,15 +780,7 @@ func (s *Server) managedWorkspaceReplicate(r *http.Request, req managedWorkspace
 				return managedWorkspaceReplicateResponse{}, http.StatusBadGateway, err
 			}
 		}
-		storedLink, err := s.workspace.AddReplicationLink(plan.SourceWorkspacePath, pebblestore.WorkspaceReplicationLink{
-			ID:                  managedWorkspaceLinkID(target.SwarmID, plan.SourceWorkspacePath),
-			TargetKind:          managedWorkspaceTargetKind,
-			TargetSwarmID:       strings.TrimSpace(target.SwarmID),
-			TargetSwarmName:     firstNonEmpty(strings.TrimSpace(target.Name), strings.TrimSpace(target.SwarmID)),
-			TargetWorkspacePath: plan.DestinationPath,
-			ReplicationMode:     workspace.ReplicationModeBundle,
-			Writable:            true,
-		})
+		binding, err := s.upsertManagedWorkspaceBinding(*target, plan.SourceWorkspacePath, plan.SourceWorkspaceName, plan.DestinationPath)
 		if err != nil {
 			return managedWorkspaceReplicateResponse{}, http.StatusInternalServerError, err
 		}
@@ -806,7 +790,7 @@ func (s *Server) managedWorkspaceReplicate(r *http.Request, req managedWorkspace
 			ManagedHostName:     firstNonEmpty(strings.TrimSpace(target.Name), strings.TrimSpace(target.SwarmID)),
 			DestinationPath:     plan.DestinationPath,
 			Action:              plan.Action,
-			Link:                storedLink,
+			Binding:             binding,
 		})
 	}
 	return managedWorkspaceReplicateResponse{OK: true, Target: managedWorkspaceTargetResponse{SwarmID: target.SwarmID, Name: firstNonEmpty(target.Name, target.SwarmID), Online: true}, Workspaces: results}, http.StatusOK, nil
@@ -1376,6 +1360,21 @@ func managedWorkspacePlanID(source, root, destination, action string) string {
 	return "managed_workspace_" + hex.EncodeToString(sum[:8])
 }
 
-func managedWorkspaceLinkID(targetSwarmID, sourceWorkspacePath string) string {
-	return "managed_" + sanitizeReplicationMountName(strings.TrimSpace(targetSwarmID)+"_"+strings.TrimSpace(sourceWorkspacePath))
+func (s *Server) upsertManagedWorkspaceBinding(target swarmTarget, sourceWorkspacePath, sourceWorkspaceName, destinationPath string) (pebblestore.TopologyWorkspaceBindingRecord, error) {
+	if s == nil || s.topology == nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, errors.New("topology service is not configured")
+	}
+	targetSwarmID := strings.TrimSpace(target.SwarmID)
+	sourceWorkspacePath = strings.TrimSpace(sourceWorkspacePath)
+	return s.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(targetSwarmID, sourceWorkspacePath),
+		SourceWorkspacePath:       sourceWorkspacePath,
+		SourceWorkspaceName:       firstNonEmpty(strings.TrimSpace(sourceWorkspaceName), defaultReplicatedWorkspaceName(sourceWorkspacePath)),
+		DestinationRuntimeSwarmID: targetSwarmID,
+		DestinationHostSwarmID:    targetSwarmID,
+		DestinationWorkspacePath:  strings.TrimSpace(destinationPath),
+		ReplicationMode:           workspace.ReplicationModeBundle,
+		Writable:                  true,
+		LegacyTargetKind:          managedWorkspaceTargetKind,
+	})
 }

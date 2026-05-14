@@ -1455,7 +1455,7 @@ func (s *Service) Approve(ctx context.Context, input ApproveSessionInput) (Sessi
 }
 
 func (s *Service) ensureWorkspaceReplicationLinks(record pebblestore.RemoteDeploySessionRecord) error {
-	if s == nil || s.workspace == nil {
+	if s == nil || s.workspace == nil || s.topology == nil {
 		return nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(record.Status), "attached") {
@@ -1473,12 +1473,13 @@ func (s *Service) ensureWorkspaceReplicationLinks(record pebblestore.RemoteDeplo
 	for _, entry := range knownEntries {
 		knownByPath[strings.TrimSpace(entry.Path)] = entry
 	}
-	childSwarmName := firstNonEmpty(strings.TrimSpace(record.ChildName), strings.TrimSpace(record.Name), childSwarmID)
+	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.MasterSwarmID))
+	hostContainerID := pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, remoteContainerNameForSession(record.ID))
 	syncMode := strings.TrimSpace(record.SyncMode)
 	if record.SyncEnabled && syncMode == "" {
 		syncMode = workspaceruntime.ReplicationSyncModeManaged
 	}
-	for idx, payload := range record.Payloads {
+	for _, payload := range record.Payloads {
 		workspacePath := firstNonEmpty(strings.TrimSpace(payload.WorkspacePath), strings.TrimSpace(payload.SourcePath))
 		if workspacePath == "" {
 			continue
@@ -1503,36 +1504,32 @@ func (s *Service) ensureWorkspaceReplicationLinks(record pebblestore.RemoteDeplo
 		} else {
 			workspacePath = strings.TrimSpace(entry.Path)
 		}
-		linkID := strings.TrimSpace(payload.ID)
-		if linkID == "" {
-			linkID = fmt.Sprintf("payload-%02d", idx+1)
-		}
-		linkID = fmt.Sprintf("remote:%s:%s", strings.TrimSpace(record.ID), linkID)
 		writable := !strings.EqualFold(strings.TrimSpace(payload.Mode), "ro")
 		targetWorkspacePath := firstNonEmpty(strings.TrimSpace(payload.TargetPath), "/workspaces")
 		if linkedTarget, ok := remotePayloadLinkedTargetWorkspacePath(record.Payloads, payload); ok {
 			targetWorkspacePath = linkedTarget
 		}
-		desired := pebblestore.WorkspaceReplicationLink{
-			ID:                  linkID,
-			TargetKind:          workspaceruntime.ReplicationTargetModeRemote,
-			TargetSwarmID:       childSwarmID,
-			TargetSwarmName:     childSwarmName,
-			TargetWorkspacePath: targetWorkspacePath,
-			ReplicationMode:     workspaceruntime.ReplicationModeBundle,
-			Writable:            writable,
+		_, err := pebblestore.UpsertTopologyWorkspaceBinding(s.topology, pebblestore.TopologyWorkspaceBindingRecord{
+			BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(strings.TrimSpace(record.ID), workspacePath),
+			SourceWorkspacePath:       workspacePath,
+			SourceWorkspaceName:       firstNonEmpty(strings.TrimSpace(payload.WorkspaceName), filepath.Base(workspacePath)),
+			DestinationRuntimeSwarmID: childSwarmID,
+			DestinationHostSwarmID:    hostSwarmID,
+			DestinationContainerID:    hostContainerID,
+			DestinationWorkspacePath:  targetWorkspacePath,
+			ReplicationMode:           workspaceruntime.ReplicationModeBundle,
+			Writable:                  writable,
 			Sync: pebblestore.WorkspaceReplicationSync{
 				Enabled: record.SyncEnabled,
 				Mode:    syncMode,
 			},
-		}
-		if existing, ok := findWorkspaceReplicationLink(entry.ReplicationLinks, linkID); ok && workspaceReplicationLinksEqual(existing, desired) {
-			continue
-		}
-		if _, err := s.workspace.AddReplicationLink(workspacePath, desired); err != nil {
+			LegacyTargetKind: workspaceruntime.ReplicationTargetModeRemote,
+			CreatedAt:        record.CreatedAt,
+			UpdatedAt:        record.UpdatedAt,
+		})
+		if err != nil {
 			return err
 		}
-		entry.ReplicationLinks = upsertWorkspaceReplicationLink(entry.ReplicationLinks, desired)
 		knownByPath[workspacePath] = entry
 	}
 	return nil
@@ -1558,44 +1555,6 @@ func remotePayloadLinkedTargetWorkspacePath(payloads []pebblestore.RemoteDeployP
 		}
 	}
 	return "", false
-}
-
-func findWorkspaceReplicationLink(links []pebblestore.WorkspaceReplicationLink, linkID string) (pebblestore.WorkspaceReplicationLink, bool) {
-	for _, link := range links {
-		if strings.EqualFold(strings.TrimSpace(link.ID), strings.TrimSpace(linkID)) {
-			return link, true
-		}
-	}
-	return pebblestore.WorkspaceReplicationLink{}, false
-}
-
-func workspaceReplicationLinksEqual(left, right pebblestore.WorkspaceReplicationLink) bool {
-	return strings.EqualFold(strings.TrimSpace(left.ID), strings.TrimSpace(right.ID)) &&
-		strings.EqualFold(strings.TrimSpace(left.TargetKind), strings.TrimSpace(right.TargetKind)) &&
-		strings.EqualFold(strings.TrimSpace(left.TargetSwarmID), strings.TrimSpace(right.TargetSwarmID)) &&
-		strings.TrimSpace(left.TargetSwarmName) == strings.TrimSpace(right.TargetSwarmName) &&
-		strings.TrimSpace(left.TargetWorkspacePath) == strings.TrimSpace(right.TargetWorkspacePath) &&
-		strings.EqualFold(strings.TrimSpace(left.ReplicationMode), strings.TrimSpace(right.ReplicationMode)) &&
-		left.Writable == right.Writable &&
-		left.Sync.Enabled == right.Sync.Enabled &&
-		strings.EqualFold(strings.TrimSpace(left.Sync.Mode), strings.TrimSpace(right.Sync.Mode))
-}
-
-func upsertWorkspaceReplicationLink(links []pebblestore.WorkspaceReplicationLink, desired pebblestore.WorkspaceReplicationLink) []pebblestore.WorkspaceReplicationLink {
-	out := make([]pebblestore.WorkspaceReplicationLink, 0, len(links)+1)
-	replaced := false
-	for _, link := range links {
-		if strings.EqualFold(strings.TrimSpace(link.ID), strings.TrimSpace(desired.ID)) {
-			out = append(out, desired)
-			replaced = true
-			continue
-		}
-		out = append(out, link)
-	}
-	if !replaced {
-		out = append(out, desired)
-	}
-	return out
 }
 
 func (s *Service) finalizeApprovedRemotePairing(ctx context.Context, record pebblestore.RemoteDeploySessionRecord, hostState swarmruntime.LocalState) error {

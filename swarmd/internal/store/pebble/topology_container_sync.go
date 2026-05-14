@@ -28,6 +28,15 @@ func CanonicalTopologyAttachmentID(hostContainerID, runtimeSwarmID string) strin
 	return hostContainerID + "=>" + runtimeSwarmID
 }
 
+func CanonicalTopologyWorkspaceBindingID(replicationID, sourceWorkspacePath string) string {
+	replicationID = strings.TrimSpace(replicationID)
+	sourceWorkspacePath = strings.TrimSpace(sourceWorkspacePath)
+	if replicationID == "" || sourceWorkspacePath == "" {
+		return ""
+	}
+	return "binding:replica:" + replicationID + ":" + sourceWorkspacePath
+}
+
 func FindTopologyHostContainerByRefs(topology *TopologyStore, hostSwarmID string, refs ...string) (TopologyHostContainerRecord, bool, error) {
 	if topology == nil {
 		return TopologyHostContainerRecord{}, false, nil
@@ -91,6 +100,24 @@ func UpsertTopologyAttachment(topology *TopologyStore, incoming TopologyAttachme
 	}
 	_, err = topology.PutAttachment(incoming)
 	return err
+}
+
+func UpsertTopologyWorkspaceBinding(topology *TopologyStore, incoming TopologyWorkspaceBindingRecord) (TopologyWorkspaceBindingRecord, error) {
+	if topology == nil {
+		return TopologyWorkspaceBindingRecord{}, nil
+	}
+	incoming = normalizeTopologyWorkspaceBindingRecord(incoming)
+	if incoming.BindingID == "" || incoming.SourceWorkspacePath == "" {
+		return incoming, nil
+	}
+	existing, ok, err := topology.GetWorkspaceBinding(incoming.BindingID)
+	if err != nil {
+		return TopologyWorkspaceBindingRecord{}, err
+	}
+	if ok && incoming.CreatedAt <= 0 {
+		incoming.CreatedAt = existing.CreatedAt
+	}
+	return topology.PutWorkspaceBinding(incoming)
 }
 
 func RemoveTopologyRuntimeObservedSource(topology *TopologyStore, swarmID, source string) error {

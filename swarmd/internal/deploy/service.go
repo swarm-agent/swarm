@@ -3886,7 +3886,6 @@ func (s *Service) applyBootstrapWorkspaces(cfg startupconfig.FileConfig, status 
 	}
 	currentAssigned := hasCurrent && strings.TrimSpace(current.WorkspacePath) != ""
 	hostSwarmID := firstNonEmpty(status.HostSwarmID, strings.TrimSpace(cfg.ParentSwarmID))
-	hostSwarmName := firstNonEmpty(status.HostDisplayName, "Primary")
 	for _, item := range items {
 		workspacePath := strings.TrimSpace(item.TargetWorkspacePath)
 		if workspacePath == "" {
@@ -3920,18 +3919,22 @@ func (s *Service) applyBootstrapWorkspaces(cfg startupconfig.FileConfig, status 
 			}
 			entry.Directories = append(entry.Directories, targetPath)
 		}
-		_, err := s.workspace.AddReplicationLink(workspacePath, pebblestore.WorkspaceReplicationLink{
-			ID:                  fmt.Sprintf("bootstrap:%s:%s", deploymentID, strings.TrimSpace(item.SourceWorkspacePath)),
-			TargetKind:          "local",
-			TargetSwarmID:       hostSwarmID,
-			TargetSwarmName:     hostSwarmName,
-			TargetWorkspacePath: strings.TrimSpace(item.SourceWorkspacePath),
-			ReplicationMode:     strings.TrimSpace(item.ReplicationMode),
-			Writable:            item.Writable,
-			Sync:                item.Sync,
-		})
-		if err != nil {
-			return err
+		if s.topology != nil {
+			_, err := pebblestore.UpsertTopologyWorkspaceBinding(s.topology, pebblestore.TopologyWorkspaceBindingRecord{
+				BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID(deploymentID, strings.TrimSpace(item.SourceWorkspacePath)),
+				SourceWorkspacePath:       strings.TrimSpace(item.SourceWorkspacePath),
+				SourceWorkspaceName:       strings.TrimSpace(item.SourceWorkspaceName),
+				DestinationRuntimeSwarmID: strings.TrimSpace(status.ChildSwarmID),
+				DestinationHostSwarmID:    hostSwarmID,
+				DestinationWorkspacePath:  workspacePath,
+				ReplicationMode:           strings.TrimSpace(item.ReplicationMode),
+				Writable:                  item.Writable,
+				Sync:                      item.Sync,
+				LegacyTargetKind:          "local",
+			})
+			if err != nil {
+				return err
+			}
 		}
 		if item.MakeCurrent && !currentAssigned {
 			if _, err := s.workspace.Select(workspacePath); err != nil {

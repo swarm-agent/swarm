@@ -14,7 +14,7 @@ func (s *Service) syncCanonicalRemoteDeployState(record pebblestore.RemoteDeploy
 	if childSwarmID == "" {
 		return nil
 	}
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.ChildSwarmID), strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.MasterSwarmID))
+	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.MasterSwarmID))
 	runtimeContainerRef := remoteContainerNameForSession(record.ID)
 	hostContainerID := pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef)
 	if hostContainerID == "" {
@@ -66,7 +66,7 @@ func (s *Service) deleteCanonicalRemoteDeployState(record pebblestore.RemoteDepl
 	if s == nil || s.topology == nil {
 		return nil
 	}
-	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.ChildSwarmID), strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.MasterSwarmID))
+	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.MasterSwarmID))
 	hostContainerID := pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, remoteContainerNameForSession(record.ID))
 	childSwarmIDs, err := s.canonicalChildSwarmIDs(record)
 	if err != nil {
@@ -100,7 +100,7 @@ func (s *Service) canonicalChildSwarmIDs(record pebblestore.RemoteDeploySessionR
 	seen := map[string]struct{}{}
 	out := make([]string, 0, 1)
 	if s != nil && s.topology != nil {
-		hostSwarmID := firstNonEmpty(strings.TrimSpace(record.ChildSwarmID), strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.MasterSwarmID))
+		hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(record.MasterSwarmID))
 		hostContainerID := pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, remoteContainerNameForSession(record.ID))
 		if hostContainerID != "" {
 			attachments, err := s.topology.ListAttachmentsByHostContainer(hostContainerID, 500)

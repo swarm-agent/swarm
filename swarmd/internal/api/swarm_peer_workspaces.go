@@ -289,10 +289,6 @@ func detectGitDefaultBranch(ctx context.Context, workspacePath string) string {
 	return branch
 }
 
-func linkIDForRemoteReplication(targetSwarmID, sourceWorkspacePath string) string {
-	return "remote_" + sanitizeReplicationMountName(strings.TrimSpace(targetSwarmID)+"_"+strings.TrimSpace(sourceWorkspacePath))
-}
-
 func addWorkspaceReplicationResponse(response *swarmReplicateResponse, source workspace.NormalizedReplicationWorkspace, catalog replicateWorkspaceCatalogEntry, binding pebblestore.TopologyWorkspaceBindingRecord) {
 	if response == nil {
 		return
@@ -302,20 +298,4 @@ func addWorkspaceReplicationResponse(response *swarmReplicateResponse, source wo
 		SourceWorkspaceName: firstNonEmpty(strings.TrimSpace(catalog.Name), defaultReplicatedWorkspaceName(source.SourceWorkspacePath)),
 		Binding:             binding,
 	})
-}
-
-func topologyWorkspaceBindingFromReplicationLink(source workspace.NormalizedReplicationWorkspace, catalog replicateWorkspaceCatalogEntry, link pebblestore.WorkspaceReplicationLink) pebblestore.TopologyWorkspaceBindingRecord {
-	return pebblestore.TopologyWorkspaceBindingRecord{
-		BindingID:                 strings.TrimSpace(link.ID),
-		SourceWorkspacePath:       strings.TrimSpace(source.SourceWorkspacePath),
-		SourceWorkspaceName:       firstNonEmpty(strings.TrimSpace(catalog.Name), defaultReplicatedWorkspaceName(source.SourceWorkspacePath)),
-		DestinationRuntimeSwarmID: strings.TrimSpace(link.TargetSwarmID),
-		DestinationWorkspacePath:  strings.TrimSpace(link.TargetWorkspacePath),
-		ReplicationMode:           strings.TrimSpace(link.ReplicationMode),
-		Writable:                  link.Writable,
-		Sync:                      link.Sync,
-		LegacyTargetKind:          strings.TrimSpace(link.TargetKind),
-		CreatedAt:                 link.CreatedAt,
-		UpdatedAt:                 link.UpdatedAt,
-	}
 }

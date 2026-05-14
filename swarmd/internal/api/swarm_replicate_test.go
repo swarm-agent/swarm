@@ -247,6 +247,19 @@ func TestSwarmReplicateLocalManagedTargetValidatesTargetWithoutRemoteMode(t *tes
 	if response.Swarm.Mode != "local" {
 		t.Fatalf("response mode = %q, want local", response.Swarm.Mode)
 	}
+	if len(response.Workspaces) != 1 {
+		t.Fatalf("workspaces len = %d", len(response.Workspaces))
+	}
+	binding := response.Workspaces[0].Binding
+	if binding.DestinationHostSwarmID != "managed-swarm-1" || binding.DestinationRuntimeSwarmID != "child-swarm-1" {
+		t.Fatalf("binding destination chain = host %q runtime %q", binding.DestinationHostSwarmID, binding.DestinationRuntimeSwarmID)
+	}
+	if binding.DestinationContainerID != fakeDeploy.lastMirroredDeployment.HostContainerID {
+		t.Fatalf("binding container id = %q, want %q", binding.DestinationContainerID, fakeDeploy.lastMirroredDeployment.HostContainerID)
+	}
+	if binding.DestinationWorkspacePath == workspacePath {
+		t.Fatalf("binding destination workspace path = %q, want child-internal path", binding.DestinationWorkspacePath)
+	}
 }
 
 func TestSwarmReplicateLocalManagedTargetDoesNotFallbackToPrimary(t *testing.T) {
@@ -604,6 +617,9 @@ func (f *fakeReplicateDeployService) RuntimeStatus(context.Context) (deployrunti
 }
 
 func (f *fakeReplicateDeployService) List(context.Context) ([]deployruntime.ContainerDeployment, error) {
+	if strings.TrimSpace(f.lastMirroredDeployment.ID) != "" {
+		return []deployruntime.ContainerDeployment{f.lastMirroredDeployment}, nil
+	}
 	return []deployruntime.ContainerDeployment{{
 		ID:                "deployment-1",
 		Name:              "replica",

@@ -139,7 +139,7 @@ func (s *Service) UpsertWorkspaceBinding(record pebblestore.TopologyWorkspaceBin
 	if s == nil || s.topologyStore == nil {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("topology service is not configured")
 	}
-	return s.topologyStore.PutWorkspaceBinding(record)
+	return pebblestore.UpsertTopologyWorkspaceBinding(s.topologyStore, record)
 }
 
 func (s *Service) UpsertSessionRoute(record pebblestore.SessionRouteRecord) (pebblestore.TopologySessionRouteRecord, error) {
