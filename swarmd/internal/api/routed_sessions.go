@@ -46,42 +46,63 @@ type peerSessionOpenRequest struct {
 }
 
 func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, error) {
-	if s == nil || s.sessionRoutes == nil {
+	if s == nil || s.topology == nil {
 		return nil, false, nil
 	}
-	record, ok, err := s.sessionRoutes.Get(sessionID)
+	if _, err := s.topology.EnsureSnapshot(); err != nil {
+		return nil, false, err
+	}
+	record, ok, err := s.topology.GetSessionRoute(sessionID)
 	if err != nil {
 		return nil, false, err
 	}
 	if !ok {
 		return nil, false, nil
 	}
-	retired, err := s.retireStaleRoutedSessionTarget(record)
+	retired, err := s.retireStaleRoutedTopologySessionTarget(record)
 	if err != nil {
 		return nil, false, err
 	}
 	if retired {
 		return nil, false, nil
 	}
-	if strings.TrimSpace(record.ChildSwarmID) == "" || strings.TrimSpace(record.ChildBackendURL) == "" {
-		return nil, false, errors.New("routed session is missing child route details")
+	if strings.TrimSpace(record.RuntimeSwarmID) == "" || strings.TrimSpace(record.BackendURL) == "" {
+		return nil, false, errors.New("routed session is missing canonical topology route details")
+	}
+	runtimeRecord, _, err := s.topology.GetRuntime(record.RuntimeSwarmID)
+	if err != nil {
+		return nil, false, err
+	}
+	var binding pebblestore.TopologyWorkspaceBindingRecord
+	if strings.TrimSpace(record.WorkspaceBindingID) != "" {
+		var err error
+		binding, _, err = s.topology.GetWorkspaceBinding(record.WorkspaceBindingID)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	flowRouteDiagLog("routed_session_target_lookup",
 		"session_id", record.SessionID,
-		"route_child_swarm_id", record.ChildSwarmID,
-		"route_child_backend_url_present", strings.TrimSpace(record.ChildBackendURL) != "",
+		"route_child_swarm_id", record.RuntimeSwarmID,
+		"route_child_backend_url_present", strings.TrimSpace(record.BackendURL) != "",
+		"route_host_swarm_id", firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID)),
+		"route_host_container_id", firstNonEmpty(strings.TrimSpace(record.HostContainerID), strings.TrimSpace(binding.DestinationContainerID), strings.TrimSpace(runtimeRecord.OwnerHostContainerID)),
+		"route_workspace_binding_id", record.WorkspaceBindingID,
 		"route_host_workspace_path", record.HostWorkspacePath,
-		"route_runtime_workspace_path", record.RuntimeWorkspacePath,
+		"route_runtime_workspace_path", firstNonEmpty(strings.TrimSpace(record.RuntimeWorkspacePath), strings.TrimSpace(binding.DestinationWorkspacePath)),
 	)
 	target := &swarmTarget{
-		SwarmID:      strings.TrimSpace(record.ChildSwarmID),
-		Name:         strings.TrimSpace(record.ChildSwarmID),
-		Role:         "child",
-		Relationship: "child",
+		SwarmID:      strings.TrimSpace(record.RuntimeSwarmID),
+		Name:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Name), strings.TrimSpace(record.RuntimeSwarmID)),
+		Role:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Role), "child"),
+		Relationship: firstNonEmpty(strings.TrimSpace(runtimeRecord.Relationship), "child"),
+		Kind:         strings.TrimSpace(binding.LegacyTargetKind),
+		DeploymentID: strings.TrimPrefix(strings.TrimSpace(binding.BindingID), "binding:replica:"),
 		Online:       true,
 		Selectable:   true,
 		Current:      true,
-		BackendURL:   strings.TrimSpace(record.ChildBackendURL),
+		BackendURL:   strings.TrimSpace(record.BackendURL),
+		DesktopURL:   strings.TrimSpace(runtimeRecord.DesktopURL),
 	}
 	return target, true, nil
 }
@@ -141,6 +162,37 @@ func (s *Server) retireStaleRoutedSessionTarget(record pebblestore.SessionRouteR
 		return false, err
 	}
 	log.Printf("retired stale routed session session_id=%q old_child_swarm_id=%q replacement_child_swarm_id=%q child_backend_url=%q", strings.TrimSpace(record.SessionID), strings.TrimSpace(record.ChildSwarmID), replacementChildSwarmID, normalizeRoutedSessionBackendURL(record.ChildBackendURL))
+	return true, nil
+}
+
+func (s *Server) retireStaleRoutedTopologySessionTarget(record pebblestore.TopologySessionRouteRecord) (bool, error) {
+	if s == nil || s.topology == nil {
+		return false, nil
+	}
+	replacementChildSwarmID, err := s.replacementChildSwarmIDForRoutedSession(pebblestore.SessionRouteRecord{
+		SessionID:            record.SessionID,
+		ChildSwarmID:         record.RuntimeSwarmID,
+		ChildBackendURL:      record.BackendURL,
+		HostWorkspacePath:    record.HostWorkspacePath,
+		RuntimeWorkspacePath: record.RuntimeWorkspacePath,
+		CreatedAt:            record.CreatedAt,
+		UpdatedAt:            record.UpdatedAt,
+	})
+	if err != nil {
+		return false, err
+	}
+	if replacementChildSwarmID == "" {
+		return false, nil
+	}
+	if err := s.deleteTopologySessionRoute(record.SessionID); err != nil {
+		return false, err
+	}
+	if s.sessionRoutes != nil {
+		if err := s.sessionRoutes.Delete(record.SessionID); err != nil {
+			return false, err
+		}
+	}
+	log.Printf("retired stale routed session session_id=%q old_child_swarm_id=%q replacement_child_swarm_id=%q child_backend_url=%q", strings.TrimSpace(record.SessionID), strings.TrimSpace(record.RuntimeSwarmID), replacementChildSwarmID, normalizeRoutedSessionBackendURL(record.BackendURL))
 	return true, nil
 }
 

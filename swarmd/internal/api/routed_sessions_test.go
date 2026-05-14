@@ -24,6 +24,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 )
 
 var errTestRemoteUpdateFailure = errors.New("remote update failed")
@@ -714,6 +715,7 @@ func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service,
 	routeStore := pebblestore.NewSessionRouteStore(store)
 	nodeStore := pebblestore.NewSwarmNodeStore(store)
 	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmNodeStore(nodeStore)
 	server.SetSwarmService(fakeRoutedSwarmService{

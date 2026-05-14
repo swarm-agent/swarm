@@ -150,16 +150,19 @@ func (s *Service) UpsertSessionRoute(record pebblestore.SessionRouteRecord) (peb
 	if err != nil {
 		return pebblestore.TopologySessionRouteRecord{}, err
 	}
-	return s.topologyStore.PutSessionRoute(pebblestore.TopologySessionRouteRecord{
+	bindingID := matchingWorkspaceBindingID(bindings, record)
+	route := pebblestore.TopologySessionRouteRecord{
 		SessionID:            strings.TrimSpace(record.SessionID),
 		RuntimeSwarmID:       strings.TrimSpace(record.ChildSwarmID),
-		WorkspaceBindingID:   matchingWorkspaceBindingID(bindings, record),
+		WorkspaceBindingID:   bindingID,
 		BackendURL:           strings.TrimSpace(record.ChildBackendURL),
 		HostWorkspacePath:    strings.TrimSpace(record.HostWorkspacePath),
 		RuntimeWorkspacePath: strings.TrimSpace(record.RuntimeWorkspacePath),
 		CreatedAt:            record.CreatedAt,
 		UpdatedAt:            record.UpdatedAt,
-	})
+	}
+	enrichTopologySessionRouteFromBinding(&route, findWorkspaceBindingByID(bindings, bindingID))
+	return s.topologyStore.PutSessionRoute(route)
 }
 
 func (s *Service) DeleteSessionRoute(sessionID string) error {
@@ -212,6 +215,13 @@ func (s *Service) ResolveRuntimeHostContainer(runtimeSwarmID string) (pebblestor
 	return hostContainer, attachment, true, nil
 }
 
+func (s *Service) ListWorkspaceBindings(limit int) ([]pebblestore.TopologyWorkspaceBindingRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return nil, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.ListWorkspaceBindings(limit)
+}
+
 func (s *Service) ListWorkspaceBindingsBySourcePath(sourceWorkspacePath string, limit int) ([]pebblestore.TopologyWorkspaceBindingRecord, error) {
 	if s == nil || s.topologyStore == nil {
 		return nil, fmt.Errorf("topology service is not configured")
@@ -224,6 +234,20 @@ func (s *Service) GetSessionRoute(sessionID string) (pebblestore.TopologySession
 		return pebblestore.TopologySessionRouteRecord{}, false, fmt.Errorf("topology service is not configured")
 	}
 	return s.topologyStore.GetSessionRoute(sessionID)
+}
+
+func (s *Service) GetRuntime(swarmID string) (pebblestore.TopologyRuntimeRecord, bool, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyRuntimeRecord{}, false, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.GetRuntime(swarmID)
+}
+
+func (s *Service) GetWorkspaceBinding(bindingID string) (pebblestore.TopologyWorkspaceBindingRecord, bool, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.GetWorkspaceBinding(bindingID)
 }
 
 func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
@@ -500,16 +524,19 @@ func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBin
 	}
 	out := make([]pebblestore.TopologySessionRouteRecord, 0, len(routes))
 	for _, route := range routes {
-		out = append(out, pebblestore.TopologySessionRouteRecord{
+		bindingID := matchingWorkspaceBindingID(bindings, route)
+		record := pebblestore.TopologySessionRouteRecord{
 			SessionID:            strings.TrimSpace(route.SessionID),
 			RuntimeSwarmID:       strings.TrimSpace(route.ChildSwarmID),
-			WorkspaceBindingID:   matchingWorkspaceBindingID(bindings, route),
+			WorkspaceBindingID:   bindingID,
 			BackendURL:           strings.TrimSpace(route.ChildBackendURL),
 			HostWorkspacePath:    strings.TrimSpace(route.HostWorkspacePath),
 			RuntimeWorkspacePath: strings.TrimSpace(route.RuntimeWorkspacePath),
 			CreatedAt:            route.CreatedAt,
 			UpdatedAt:            route.UpdatedAt,
-		})
+		}
+		enrichTopologySessionRouteFromBinding(&record, findWorkspaceBindingByID(bindings, bindingID))
+		out = append(out, record)
 	}
 	return out, nil
 }
@@ -531,6 +558,37 @@ func matchingWorkspaceBindingID(bindings []pebblestore.TopologyWorkspaceBindingR
 		return strings.TrimSpace(binding.BindingID)
 	}
 	return ""
+}
+
+func findWorkspaceBindingByID(bindings []pebblestore.TopologyWorkspaceBindingRecord, bindingID string) pebblestore.TopologyWorkspaceBindingRecord {
+	bindingID = strings.TrimSpace(bindingID)
+	if bindingID == "" {
+		return pebblestore.TopologyWorkspaceBindingRecord{}
+	}
+	for _, binding := range bindings {
+		if strings.EqualFold(strings.TrimSpace(binding.BindingID), bindingID) {
+			return binding
+		}
+	}
+	return pebblestore.TopologyWorkspaceBindingRecord{}
+}
+
+func enrichTopologySessionRouteFromBinding(route *pebblestore.TopologySessionRouteRecord, binding pebblestore.TopologyWorkspaceBindingRecord) {
+	if route == nil {
+		return
+	}
+	if strings.TrimSpace(binding.BindingID) == "" {
+		return
+	}
+	if strings.TrimSpace(route.HostSwarmID) == "" {
+		route.HostSwarmID = strings.TrimSpace(binding.DestinationHostSwarmID)
+	}
+	if strings.TrimSpace(route.HostContainerID) == "" {
+		route.HostContainerID = strings.TrimSpace(binding.DestinationContainerID)
+	}
+	if strings.TrimSpace(route.RuntimeWorkspacePath) == "" {
+		route.RuntimeWorkspacePath = strings.TrimSpace(binding.DestinationWorkspacePath)
+	}
 }
 
 func mergeRuntime(dst map[string]pebblestore.TopologyRuntimeRecord, incoming pebblestore.TopologyRuntimeRecord) {

@@ -259,52 +259,31 @@ func (s *WorkspaceStore) Move(path string, delta int) (WorkspaceEntry, error) {
 }
 
 func (s *WorkspaceStore) AddReplicationLink(path string, link WorkspaceReplicationLink) (WorkspaceEntry, WorkspaceReplicationLink, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return WorkspaceEntry{}, WorkspaceReplicationLink{}, fmt.Errorf("workspace path is required")
-	}
+	return WorkspaceEntry{}, WorkspaceReplicationLink{}, fmt.Errorf("legacy workspace replication links are disabled; write topology workspace bindings instead")
+}
 
-	entry, ok, err := s.Get(path)
+func (s *WorkspaceStore) PurgeAllReplicationLinks() (int, error) {
+	if s == nil || s.store == nil {
+		return 0, fmt.Errorf("workspace store is not configured")
+	}
+	entries, err := s.listAll()
 	if err != nil {
-		return WorkspaceEntry{}, WorkspaceReplicationLink{}, err
+		return 0, err
 	}
-	if !ok {
-		return WorkspaceEntry{}, WorkspaceReplicationLink{}, fmt.Errorf("workspace %q not found", path)
-	}
-
+	removed := 0
 	now := time.Now().UnixMilli()
-	link = normalizeWorkspaceReplicationLink(link)
-	if link.ID == "" {
-		link.ID = fmt.Sprintf("replication_%d", now)
-	}
-	if link.CreatedAt <= 0 {
-		link.CreatedAt = now
-	}
-	link.UpdatedAt = now
-
-	updated := make([]WorkspaceReplicationLink, 0, len(entry.ReplicationLinks)+1)
-	replaced := false
-	for _, existing := range entry.ReplicationLinks {
-		if existing.ID == link.ID {
-			if link.CreatedAt <= 0 {
-				link.CreatedAt = existing.CreatedAt
-			}
-			updated = append(updated, link)
-			replaced = true
+	for _, entry := range entries {
+		if len(entry.ReplicationLinks) == 0 {
 			continue
 		}
-		updated = append(updated, existing)
+		removed += len(entry.ReplicationLinks)
+		entry.ReplicationLinks = nil
+		entry.UpdatedAt = now
+		if err := s.store.PutJSON(KeyWorkspaceEntry(entry.Path), entry); err != nil {
+			return removed, err
+		}
 	}
-	if !replaced {
-		updated = append(updated, link)
-	}
-	entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(updated)
-	entry.UpdatedAt = now
-	if err := s.store.PutJSON(KeyWorkspaceEntry(entry.Path), entry); err != nil {
-		return WorkspaceEntry{}, WorkspaceReplicationLink{}, err
-	}
-	stored := findWorkspaceReplicationLinkByID(entry.ReplicationLinks, link.ID)
-	return entry, stored, nil
+	return removed, nil
 }
 
 func (s *WorkspaceStore) RemoveReplicationLink(path, linkID string) (WorkspaceEntry, error) {

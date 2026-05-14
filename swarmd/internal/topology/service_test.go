@@ -28,8 +28,13 @@ func TestRebuildIgnoresLegacyWorkspaceReplicationLinks(t *testing.T) {
 		ReplicationMode:     "mirror",
 		Writable:            true,
 	}
-	if _, _, err := workspaceStore.AddReplicationLink("/src", legacyLink); err != nil {
-		t.Fatalf("add legacy replication link: %v", err)
+	legacyEntry, ok, err := workspaceStore.Get("/src")
+	if err != nil || !ok {
+		t.Fatalf("get workspace ok=%t err=%v", ok, err)
+	}
+	legacyEntry.ReplicationLinks = []pebblestore.WorkspaceReplicationLink{legacyLink}
+	if err := store.PutJSON(pebblestore.KeyWorkspaceEntry(legacyEntry.Path), legacyEntry); err != nil {
+		t.Fatalf("seed legacy replication link: %v", err)
 	}
 
 	service := NewService(topologyStore, nil, nil, nil, nil, nil, nil, workspaceStore)
@@ -71,8 +76,13 @@ func TestRebuildPreservesCanonicalWorkspaceBindings(t *testing.T) {
 		ReplicationMode:     "mirror",
 		Writable:            true,
 	}
-	if _, _, err := workspaceStore.AddReplicationLink("/src", legacyLink); err != nil {
-		t.Fatalf("add legacy replication link: %v", err)
+	legacyEntry, ok, err := workspaceStore.Get("/src")
+	if err != nil || !ok {
+		t.Fatalf("get workspace ok=%t err=%v", ok, err)
+	}
+	legacyEntry.ReplicationLinks = []pebblestore.WorkspaceReplicationLink{legacyLink}
+	if err := store.PutJSON(pebblestore.KeyWorkspaceEntry(legacyEntry.Path), legacyEntry); err != nil {
+		t.Fatalf("seed legacy replication link: %v", err)
 	}
 
 	canonicalBinding, err := topologyStore.PutWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{

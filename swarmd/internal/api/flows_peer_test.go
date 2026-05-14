@@ -22,6 +22,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
@@ -248,17 +249,7 @@ func TestFlowAssignmentDeliveryTranslatesReplicatedWorkspacePath(t *testing.T) {
 	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
-	if _, err := server.workspace.AddReplicationLink(hostWorkspace, pebblestore.WorkspaceReplicationLink{
-		ID:                  "pc-container",
-		TargetKind:          "local",
-		TargetSwarmID:       "child-container",
-		TargetSwarmName:     "pc container",
-		TargetWorkspacePath: "/root/swarm-go",
-		ReplicationMode:     workspaceruntime.ReplicationModeBundle,
-		Writable:            true,
-	}); err != nil {
-		t.Fatalf("add replication link: %v", err)
-	}
+	seedFlowTopologyWorkspaceBinding(t, server, hostWorkspace, "swarm-go", "pc-container", "local", "child-container", "/root/swarm-go")
 
 	var delivered flow.AssignmentCommand
 	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -452,6 +443,7 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 	modelSvc := modelruntime.NewService(modelStore, eventLog, nil)
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
 	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, pebblestore.NewWorkspaceStore(store)))
 	flows := pebblestore.NewFlowStore(store)
 	server.SetFlowStore(flows)
 	server.SetSessionRouteStore(pebblestore.NewSessionRouteStore(store))

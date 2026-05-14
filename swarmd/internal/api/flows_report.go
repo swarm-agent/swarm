@@ -331,7 +331,7 @@ func cloneFlowReportMetadata(metadata map[string]any) map[string]any {
 }
 
 func (s *Server) resolveControllerFlowWorkspacePath(runtimeWorkspacePath, targetSwarmID string, selection flow.TargetSelection) string {
-	if s == nil || s.workspace == nil {
+	if s == nil || s.topology == nil {
 		return ""
 	}
 	runtimeWorkspacePath = filepath.Clean(strings.TrimSpace(runtimeWorkspacePath))
@@ -339,33 +339,22 @@ func (s *Server) resolveControllerFlowWorkspacePath(runtimeWorkspacePath, target
 		return ""
 	}
 	targetSwarmID = firstNonEmpty(strings.TrimSpace(targetSwarmID), strings.TrimSpace(selection.SwarmID))
-	targetKind := strings.TrimSpace(selection.Kind)
 	deploymentID := strings.TrimSpace(selection.DeploymentID)
-	entries, err := s.workspace.ListKnown(100000)
+	bindings, err := s.topology.ListWorkspaceBindings(100000)
 	if err != nil {
 		return ""
 	}
-	bestSource := ""
-	bestTarget := ""
-	for _, entry := range entries {
-		for _, link := range entry.ReplicationLinks {
-			linkTargetPath := strings.TrimSpace(link.TargetWorkspacePath)
-			if linkTargetPath == "" || !flowReplicationLinkMatchesTarget(link, targetSwarmID, targetKind, deploymentID) {
-				continue
-			}
-			if !flowPathWithinRoot(linkTargetPath, runtimeWorkspacePath) {
-				continue
-			}
-			if len(linkTargetPath) > len(bestTarget) {
-				bestSource = strings.TrimSpace(entry.Path)
-				bestTarget = linkTargetPath
-			}
+	for _, binding := range bindings {
+		if !flowWorkspaceBindingMatchesTarget(binding, targetSwarmID, deploymentID) {
+			continue
 		}
+		linkTargetPath := strings.TrimSpace(binding.DestinationWorkspacePath)
+		if linkTargetPath == "" || !flowPathWithinRoot(linkTargetPath, runtimeWorkspacePath) {
+			continue
+		}
+		return translateFlowSubpath(linkTargetPath, strings.TrimSpace(binding.SourceWorkspacePath), runtimeWorkspacePath)
 	}
-	if bestSource == "" || bestTarget == "" {
-		return ""
-	}
-	return translateFlowSubpath(bestTarget, bestSource, runtimeWorkspacePath)
+	return ""
 }
 
 func (s *Server) reportFlowRunSummary(ctx context.Context, summary pebblestore.FlowRunSummaryRecord) error {

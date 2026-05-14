@@ -13,7 +13,6 @@ import (
 	"swarm/packages/swarmd/internal/flow"
 	"swarm/packages/swarmd/internal/flowdiaglog"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
 const flowPeerApplyPath = "/v1/swarm/peer/flows/apply"
@@ -592,7 +591,7 @@ func (s *Server) flowWorkspaceForTarget(workspace flow.WorkspaceContext, target 
 }
 
 func (s *Server) resolveReplicatedFlowWorkspacePath(hostWorkspacePath string, target swarmTarget, resolved flow.ResolvedTarget) string {
-	if s == nil || s.workspace == nil {
+	if s == nil || s.topology == nil {
 		return ""
 	}
 	hostWorkspacePath = filepath.Clean(strings.TrimSpace(hostWorkspacePath))
@@ -600,29 +599,25 @@ func (s *Server) resolveReplicatedFlowWorkspacePath(hostWorkspacePath string, ta
 		return ""
 	}
 	targetSwarmID := firstNonEmpty(strings.TrimSpace(resolved.SwarmID), strings.TrimSpace(target.SwarmID))
-	targetKind := firstNonEmpty(strings.TrimSpace(resolved.Kind), strings.TrimSpace(target.Kind))
 	deploymentID := firstNonEmpty(strings.TrimSpace(resolved.DeploymentID), strings.TrimSpace(target.DeploymentID))
-	entries, err := s.workspace.ListKnown(100000)
+	bindings, err := s.topology.ListWorkspaceBindings(100000)
 	if err != nil {
 		return ""
 	}
 	bestSource := ""
 	bestTarget := ""
-	for _, entry := range entries {
-		for _, link := range entry.ReplicationLinks {
-			targetPath := strings.TrimSpace(link.TargetWorkspacePath)
-			if targetPath == "" || !flowReplicationLinkMatchesTarget(link, targetSwarmID, targetKind, deploymentID) {
-				continue
-			}
-			for _, source := range flowWorkspaceLinkSources(entry) {
-				if !flowPathWithinRoot(source, hostWorkspacePath) {
-					continue
-				}
-				if len(source) > len(bestSource) {
-					bestSource = source
-					bestTarget = targetPath
-				}
-			}
+	for _, binding := range bindings {
+		if !flowWorkspaceBindingMatchesTarget(binding, targetSwarmID, deploymentID) {
+			continue
+		}
+		source := strings.TrimSpace(binding.SourceWorkspacePath)
+		targetPath := strings.TrimSpace(binding.DestinationWorkspacePath)
+		if source == "" || targetPath == "" || !flowPathWithinRoot(source, hostWorkspacePath) {
+			continue
+		}
+		if len(source) > len(bestSource) {
+			bestSource = source
+			bestTarget = targetPath
 		}
 	}
 	if bestSource == "" || bestTarget == "" {
@@ -638,35 +633,18 @@ func isSelfFlowTarget(target swarmTarget, resolved flow.ResolvedTarget) bool {
 		strings.EqualFold(strings.TrimSpace(resolved.Kind), "self")
 }
 
-func flowReplicationLinkMatchesTarget(link pebblestore.WorkspaceReplicationLink, targetSwarmID, targetKind, deploymentID string) bool {
-	if targetSwarmID != "" && strings.EqualFold(strings.TrimSpace(link.TargetSwarmID), targetSwarmID) {
+func flowWorkspaceBindingMatchesTarget(binding pebblestore.TopologyWorkspaceBindingRecord, targetSwarmID, deploymentID string) bool {
+	if targetSwarmID != "" && strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), targetSwarmID) {
 		return true
 	}
-	if deploymentID != "" && strings.EqualFold(strings.TrimSpace(link.ID), deploymentID) {
+	if deploymentID == "" {
+		return false
+	}
+	bindingID := strings.TrimSpace(binding.BindingID)
+	if strings.EqualFold(bindingID, deploymentID) {
 		return true
 	}
-	if targetKind != "" && strings.TrimSpace(link.TargetSwarmID) == "" && strings.EqualFold(strings.TrimSpace(link.TargetKind), targetKind) {
-		return true
-	}
-	return false
-}
-
-func flowWorkspaceLinkSources(entry workspaceruntime.Entry) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, 1+len(entry.Directories))
-	for _, raw := range append([]string{entry.Path}, entry.Directories...) {
-		source := strings.TrimSpace(raw)
-		if source == "" {
-			continue
-		}
-		source = filepath.Clean(source)
-		if _, ok := seen[source]; ok {
-			continue
-		}
-		seen[source] = struct{}{}
-		out = append(out, source)
-	}
-	return out
+	return strings.Contains(bindingID, ":"+deploymentID+":")
 }
 
 func flowPathWithinRoot(root, candidate string) bool {

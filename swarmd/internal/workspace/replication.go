@@ -230,6 +230,13 @@ func (s *Service) AddReplicationLink(path string, link pebblestore.WorkspaceRepl
 	return stored, nil
 }
 
+func (s *Service) PurgeAllReplicationLinks() (int, error) {
+	if s == nil || s.store == nil {
+		return 0, fmt.Errorf("workspace store is not configured")
+	}
+	return s.store.PurgeAllReplicationLinks()
+}
+
 func (s *Service) RemoveReplicationLink(path, linkID string) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("workspace store is not configured")

@@ -349,6 +349,14 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("seed mcp defaults: %w", err)
 	}
+	if removed, err := workspaceSvc.PurgeAllReplicationLinks(); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("purge legacy workspace replication links: %w", err)
+	} else if removed > 0 {
+		log.Printf("purged %d legacy workspace replication links; canonical topology workspace bindings are authoritative", removed)
+	}
 	if _, err := topologySvc.EnsureSnapshot(); err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()

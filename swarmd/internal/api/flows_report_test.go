@@ -17,7 +17,6 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
-	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
 func TestPeerFlowReportStoresMirroredSummary(t *testing.T) {
@@ -65,17 +64,7 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
-	if _, err := server.workspace.AddReplicationLink(hostWorkspace, pebblestore.WorkspaceReplicationLink{
-		ID:                  "pc-container",
-		TargetKind:          "local",
-		TargetSwarmID:       "target-swarm-1",
-		TargetSwarmName:     "pc container",
-		TargetWorkspacePath: "/workspaces/swarm-go",
-		ReplicationMode:     workspaceruntime.ReplicationModeBundle,
-		Writable:            true,
-	}); err != nil {
-		t.Fatalf("add replication link: %v", err)
-	}
+	seedFlowTopologyWorkspaceBinding(t, server, hostWorkspace, "swarm-go", "pc-container", "local", "target-swarm-1", "/workspaces/swarm-go")
 	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
 		SwarmID:      "target-swarm-1",
 		Name:         "pc container",
@@ -212,17 +201,7 @@ func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T
 	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
-	if _, err := server.workspace.AddReplicationLink(hostWorkspace, pebblestore.WorkspaceReplicationLink{
-		ID:                  "pc-container",
-		TargetKind:          "local",
-		TargetSwarmID:       "target-swarm-1",
-		TargetSwarmName:     "pc container",
-		TargetWorkspacePath: "/workspaces/swarm-go",
-		ReplicationMode:     workspaceruntime.ReplicationModeBundle,
-		Writable:            true,
-	}); err != nil {
-		t.Fatalf("add replication link: %v", err)
-	}
+	seedFlowTopologyWorkspaceBinding(t, server, hostWorkspace, "swarm-go", "pc-container", "local", "target-swarm-1", "/workspaces/swarm-go")
 	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
 		SwarmID:      "target-swarm-1",
 		Name:         "pc container",
@@ -322,17 +301,7 @@ func TestPeerFlowReportMirrorsRemoteChildSessionWithCanonicalTargetIdentity(t *t
 	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
-	if _, err := server.workspace.AddReplicationLink(hostWorkspace, pebblestore.WorkspaceReplicationLink{
-		ID:                  "swarm-child-4-e2727893",
-		TargetKind:          "remote",
-		TargetSwarmID:       "child-4-swarm",
-		TargetSwarmName:     "swarm child 4",
-		TargetWorkspacePath: "/workspaces/swarm-go",
-		ReplicationMode:     workspaceruntime.ReplicationModeBundle,
-		Writable:            true,
-	}); err != nil {
-		t.Fatalf("add replication link: %v", err)
-	}
+	seedFlowTopologyWorkspaceBinding(t, server, hostWorkspace, "swarm-go", "swarm-child-4-e2727893", "remote", "child-4-swarm", "/workspaces/swarm-go")
 	server.SetRemoteDeployService(&fakeRemoteDeployService{sessions: []remotedeploy.Session{{
 		ID:             "swarm-child-4-e2727893",
 		Name:           "swarm child 4",
