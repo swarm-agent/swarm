@@ -457,44 +457,10 @@ func (s *Service) loadGroupIDsBySwarm() (map[string][]string, error) {
 }
 
 func (s *Service) buildWorkspaceBindings() ([]pebblestore.TopologyWorkspaceBindingRecord, error) {
-	if s == nil || s.workspaceStore == nil {
+	if s == nil || s.topologyStore == nil {
 		return nil, nil
 	}
-	entries, err := s.workspaceStore.List(100000)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]pebblestore.TopologyWorkspaceBindingRecord, 0)
-	for _, entry := range entries {
-		for _, link := range entry.ReplicationLinks {
-			bindingID := strings.TrimSpace(link.ID)
-			targetSwarmID := strings.TrimSpace(link.TargetSwarmID)
-			targetWorkspacePath := strings.TrimSpace(link.TargetWorkspacePath)
-			targetKind := strings.TrimSpace(link.TargetKind)
-			if bindingID == "" {
-				bindingID = canonicalWorkspaceBindingID(entry.Path, targetSwarmID, targetWorkspacePath, targetKind)
-			}
-			hostSwarmID := ""
-			if strings.EqualFold(targetKind, "managed_host") || strings.EqualFold(targetKind, "host") {
-				hostSwarmID = targetSwarmID
-			}
-			out = append(out, pebblestore.TopologyWorkspaceBindingRecord{
-				BindingID:                 bindingID,
-				SourceWorkspacePath:       strings.TrimSpace(entry.Path),
-				SourceWorkspaceName:       strings.TrimSpace(entry.Name),
-				DestinationRuntimeSwarmID: targetSwarmID,
-				DestinationHostSwarmID:    hostSwarmID,
-				DestinationWorkspacePath:  targetWorkspacePath,
-				ReplicationMode:           strings.TrimSpace(link.ReplicationMode),
-				Writable:                  link.Writable,
-				Sync:                      link.Sync,
-				LegacyTargetKind:          targetKind,
-				CreatedAt:                 link.CreatedAt,
-				UpdatedAt:                 link.UpdatedAt,
-			})
-		}
-	}
-	return out, nil
+	return s.topologyStore.ListWorkspaceBindings(100000)
 }
 
 func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBindingRecord) ([]pebblestore.TopologySessionRouteRecord, error) {
