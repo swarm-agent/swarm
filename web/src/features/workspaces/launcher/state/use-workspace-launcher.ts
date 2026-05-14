@@ -24,7 +24,7 @@ import type {
   WorkspaceEntry,
   WorkspaceResolution,
 } from '../types/workspace'
-import type { WorkspaceOverviewResponse } from '../types/workspace-overview'
+import type { WorkspaceOverviewResponse, WorkspaceOverviewTopologyRoute } from '../types/workspace-overview'
 
 interface SaveWorkspaceInput {
   path: string
@@ -130,6 +130,49 @@ function patchWorkspaceWorktreeEnabled(workspaces: WorkspaceEntry[], path: strin
   return changed ? next : workspaces
 }
 
+function topologyRouteArraysEqual(left: WorkspaceOverviewTopologyRoute[], right: WorkspaceOverviewTopologyRoute[]): boolean {
+  if (left === right) {
+    return true
+  }
+  if (left.length !== right.length) {
+    return false
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    const leftRoute = left[index]
+    const rightRoute = right[index]
+    if (
+      leftRoute.routeId !== rightRoute.routeId
+      || leftRoute.routeSource !== rightRoute.routeSource
+      || leftRoute.workspaceBindingId !== rightRoute.workspaceBindingId
+      || leftRoute.runtimeSwarmId !== rightRoute.runtimeSwarmId
+      || leftRoute.runtimeSwarmName !== rightRoute.runtimeSwarmName
+      || leftRoute.runtimeKind !== rightRoute.runtimeKind
+      || leftRoute.runtimeRelationship !== rightRoute.runtimeRelationship
+      || leftRoute.runtimeBackendUrl !== rightRoute.runtimeBackendUrl
+      || leftRoute.hostSwarmId !== rightRoute.hostSwarmId
+      || leftRoute.hostWorkspacePath !== rightRoute.hostWorkspacePath
+      || leftRoute.hostWorkspaceName !== rightRoute.hostWorkspaceName
+      || leftRoute.runtimeWorkspacePath !== rightRoute.runtimeWorkspacePath
+      || leftRoute.containerId !== rightRoute.containerId
+      || leftRoute.replicationMode !== rightRoute.replicationMode
+      || leftRoute.writable !== rightRoute.writable
+      || leftRoute.sync.enabled !== rightRoute.sync.enabled
+      || leftRoute.sync.mode !== rightRoute.sync.mode
+      || leftRoute.sync.modules.length !== rightRoute.sync.modules.length
+      || leftRoute.createdAt !== rightRoute.createdAt
+      || leftRoute.updatedAt !== rightRoute.updatedAt
+    ) {
+      return false
+    }
+    for (let moduleIndex = 0; moduleIndex < leftRoute.sync.modules.length; moduleIndex += 1) {
+      if (leftRoute.sync.modules[moduleIndex] !== rightRoute.sync.modules[moduleIndex]) {
+        return false
+      }
+    }
+  }
+  return true
+}
+
 function workspacesEqual(left: WorkspaceEntry[], right: WorkspaceEntry[]): boolean {
   if (left === right) {
     return true
@@ -175,6 +218,7 @@ function workspacesEqual(left: WorkspaceEntry[], right: WorkspaceEntry[]): boole
       || leftWorkspace.todoSummary?.agent?.inProgressCount !== rightWorkspace.todoSummary?.agent?.inProgressCount
       || leftWorkspace.directories.length !== rightWorkspace.directories.length
       || leftWorkspace.replicationLinks.length !== rightWorkspace.replicationLinks.length
+      || !topologyRouteArraysEqual(leftWorkspace.topologyRoutes, rightWorkspace.topologyRoutes)
     ) {
       return false
     }
