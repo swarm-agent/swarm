@@ -28,11 +28,33 @@ type WorkspaceReplicationLink struct {
 	UpdatedAt           int64
 }
 
+type WorkspaceTopologyRoute struct {
+	RouteID              string
+	RouteSource          string
+	WorkspaceBindingID   string
+	RuntimeSwarmID       string
+	RuntimeSwarmName     string
+	RuntimeKind          string
+	RuntimeRelationship  string
+	RuntimeBackendURL    string
+	HostSwarmID          string
+	HostWorkspacePath    string
+	HostWorkspaceName    string
+	RuntimeWorkspacePath string
+	ContainerID          string
+	ReplicationMode      string
+	Writable             bool
+	Sync                 WorkspaceReplicationSync
+	CreatedAt            int64
+	UpdatedAt            int64
+}
+
 type Workspace struct {
 	Name             string
 	Path             string
 	Directories      []string
 	ReplicationLinks []WorkspaceReplicationLink
+	TopologyRoutes   []WorkspaceTopologyRoute
 	ThemeID          string
 	Icon             string
 	Active           bool

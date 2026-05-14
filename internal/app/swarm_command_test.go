@@ -15,10 +15,17 @@ func TestSwarmSelectorOverlayContentIsMinimal(t *testing.T) {
 		homeModel: model.HomeModel{Workspaces: []model.Workspace{{
 			Name: "repo",
 			Path: workspacePath,
-			ReplicationLinks: []model.WorkspaceReplicationLink{{
-				TargetSwarmID:       "child",
-				TargetSwarmName:     "Child",
-				TargetWorkspacePath: workspacePath,
+			TopologyRoutes: []model.WorkspaceTopologyRoute{{
+				RouteID:              "swarm:child:" + workspacePath,
+				RouteSource:          "topology/workspace_binding",
+				WorkspaceBindingID:   "binding-1",
+				RuntimeSwarmID:       "child",
+				RuntimeSwarmName:     "Child",
+				RuntimeKind:          "remote",
+				RuntimeRelationship:  "child",
+				HostWorkspacePath:    workspacePath,
+				HostWorkspaceName:    "repo",
+				RuntimeWorkspacePath: workspacePath,
 			}},
 		}}},
 	}

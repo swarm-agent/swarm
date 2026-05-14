@@ -15,10 +15,29 @@ func testRoutingWorkspaces() []model.Workspace {
 	return []model.Workspace{{
 		Name: "Host Repo",
 		Path: testWorkspacePath,
+		TopologyRoutes: []model.WorkspaceTopologyRoute{{
+			RouteID:              testRemoteRouteID,
+			RouteSource:          "topology/workspace_binding",
+			WorkspaceBindingID:   "binding-1",
+			RuntimeSwarmID:       "child-swarm",
+			RuntimeSwarmName:     "Child Desk",
+			RuntimeKind:          "remote",
+			RuntimeRelationship:  "child",
+			HostWorkspacePath:    testWorkspacePath,
+			HostWorkspaceName:    "Host Repo",
+			RuntimeWorkspacePath: "/workspaces/swarm-go",
+		}},
+	}}
+}
+
+func testLegacyReplicationLinkWorkspaces() []model.Workspace {
+	return []model.Workspace{{
+		Name: "Host Repo",
+		Path: testWorkspacePath,
 		ReplicationLinks: []model.WorkspaceReplicationLink{{
-			TargetSwarmID:       "child-swarm",
-			TargetSwarmName:     "Child Desk",
-			TargetWorkspacePath: "/workspaces/swarm-go",
+			TargetSwarmID:       "legacy-child",
+			TargetSwarmName:     "Legacy Child",
+			TargetWorkspacePath: "/legacy/workspace",
 		}},
 	}}
 }
@@ -38,6 +57,17 @@ func TestBuildChatRoutesForWorkspacesKeepsTargetSwarmID(t *testing.T) {
 	}
 	if remote.RuntimeWorkspacePath != "/workspaces/swarm-go" {
 		t.Fatalf("remote RuntimeWorkspacePath = %q, want /workspaces/swarm-go", remote.RuntimeWorkspacePath)
+	}
+}
+
+func TestBuildChatRoutesForWorkspacesIgnoresLegacyReplicationLinks(t *testing.T) {
+	routes := buildChatRoutesForWorkspaces(testLegacyReplicationLinkWorkspaces(), testWorkspacePath)
+
+	if len(routes) != 1 {
+		t.Fatalf("route count = %d, want host-only from topology routes", len(routes))
+	}
+	if routes[0].ID != "host" {
+		t.Fatalf("route ID = %q, want host", routes[0].ID)
 	}
 }
 

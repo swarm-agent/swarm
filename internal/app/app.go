@@ -7088,6 +7088,7 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 				Path:             entryPath,
 				Directories:      directories,
 				ReplicationLinks: modelReplicationLinksFromClient(entry.ReplicationLinks),
+				TopologyRoutes:   modelTopologyRoutesFromClient(entry.TopologyRoutes),
 				ThemeID:          strings.TrimSpace(entry.ThemeID),
 				Icon:             workspaceIcon(i),
 			})
@@ -7510,22 +7511,34 @@ func buildChatRoutesForWorkspaces(workspaces []model.Workspace, workspacePath st
 			break
 		}
 	}
-	for _, link := range active.ReplicationLinks {
-		swarmID := strings.TrimSpace(link.TargetSwarmID)
-		runtimePath := strings.TrimSpace(link.TargetWorkspacePath)
-		if swarmID == "" || runtimePath == "" {
+	seen := map[string]struct{}{"host": {}}
+	for _, route := range active.TopologyRoutes {
+		swarmID := strings.TrimSpace(route.RuntimeSwarmID)
+		runtimePath := strings.TrimSpace(route.RuntimeWorkspacePath)
+		routeID := strings.TrimSpace(route.RouteID)
+		if routeID == "" {
+			routeID = "swarm:" + swarmID + ":" + runtimePath
+		}
+		if swarmID == "" || runtimePath == "" || routeID == "" {
 			continue
 		}
-		routeID := "swarm:" + swarmID + ":" + runtimePath
-		label := strings.TrimSpace(link.TargetSwarmName)
+		if _, exists := seen[routeID]; exists {
+			continue
+		}
+		seen[routeID] = struct{}{}
+		label := strings.TrimSpace(route.RuntimeSwarmName)
 		if label == "" {
 			label = swarmID
+		}
+		hostWorkspacePath := normalizePath(strings.TrimSpace(route.HostWorkspacePath))
+		if hostWorkspacePath == "" {
+			hostWorkspacePath = workspacePath
 		}
 		routes = append(routes, model.ChatRoute{
 			ID:                   routeID,
 			Label:                label,
 			SwarmID:              swarmID,
-			HostWorkspacePath:    workspacePath,
+			HostWorkspacePath:    hostWorkspacePath,
 			RuntimeWorkspacePath: runtimePath,
 		})
 	}
@@ -7685,6 +7698,48 @@ func routeIDSwarmLabel(routeID string) string {
 		return strings.TrimSpace(parts[1])
 	}
 	return strings.TrimSpace(routeID)
+}
+
+func modelTopologyRoutesFromClient(routes []client.WorkspaceTopologyRoute) []model.WorkspaceTopologyRoute {
+	if len(routes) == 0 {
+		return nil
+	}
+	out := make([]model.WorkspaceTopologyRoute, 0, len(routes))
+	for _, route := range routes {
+		runtimeSwarmID := strings.TrimSpace(route.RuntimeSwarmID)
+		runtimeWorkspacePath := strings.TrimSpace(route.RuntimeWorkspacePath)
+		if runtimeSwarmID == "" || runtimeWorkspacePath == "" {
+			continue
+		}
+		out = append(out, model.WorkspaceTopologyRoute{
+			RouteID:              strings.TrimSpace(route.RouteID),
+			RouteSource:          strings.TrimSpace(route.RouteSource),
+			WorkspaceBindingID:   strings.TrimSpace(route.WorkspaceBindingID),
+			RuntimeSwarmID:       runtimeSwarmID,
+			RuntimeSwarmName:     strings.TrimSpace(route.RuntimeSwarmName),
+			RuntimeKind:          strings.TrimSpace(route.RuntimeKind),
+			RuntimeRelationship:  strings.TrimSpace(route.RuntimeRelationship),
+			RuntimeBackendURL:    strings.TrimSpace(route.RuntimeBackendURL),
+			HostSwarmID:          strings.TrimSpace(route.HostSwarmID),
+			HostWorkspacePath:    strings.TrimSpace(route.HostWorkspacePath),
+			HostWorkspaceName:    strings.TrimSpace(route.HostWorkspaceName),
+			RuntimeWorkspacePath: runtimeWorkspacePath,
+			ContainerID:          strings.TrimSpace(route.ContainerID),
+			ReplicationMode:      strings.TrimSpace(route.ReplicationMode),
+			Writable:             route.Writable,
+			Sync: model.WorkspaceReplicationSync{
+				Enabled: route.Sync.Enabled,
+				Mode:    strings.TrimSpace(route.Sync.Mode),
+				Modules: append([]string(nil), route.Sync.Modules...),
+			},
+			CreatedAt: route.CreatedAt,
+			UpdatedAt: route.UpdatedAt,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func modelReplicationLinksFromClient(links []client.WorkspaceReplicationLink) []model.WorkspaceReplicationLink {
