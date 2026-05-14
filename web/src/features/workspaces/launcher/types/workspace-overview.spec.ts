@@ -40,6 +40,30 @@ function responseForTarget(kind: string, relationship: string): WorkspaceOvervie
         },
         session_status: 'idle',
       }],
+      topology_routes: [{
+        route_id: 'swarm:child-swarm:/workspaces/swarm',
+        route_source: 'topology/workspace_binding',
+        workspace_binding_id: 'binding-1',
+        runtime_swarm_id: 'child-swarm',
+        runtime_swarm_name: 'Child Swarm',
+        runtime_kind: 'remote',
+        runtime_relationship: 'child',
+        runtime_backend_url: 'https://child.example.test',
+        host_swarm_id: 'host-swarm',
+        host_workspace_path: '/workspaces/host-swarm',
+        host_workspace_name: 'host-swarm',
+        runtime_workspace_path: '/workspaces/swarm',
+        container_id: 'container-1',
+        replication_mode: 'mirror',
+        writable: true,
+        sync: {
+          enabled: true,
+          mode: 'mirror',
+          modules: ['sessions'],
+        },
+        created_at: 1,
+        updated_at: 2,
+      }],
     }],
     directories: [],
   }
@@ -51,6 +75,9 @@ test('remote child workspace overview groups routed sessions under runtime works
   assert.equal(overview.swarmTarget?.kind, 'remote')
   assert.equal(overview.workspaces[0]?.sessions[0]?.workspacePath, '/workspaces/swarm')
   assert.equal(overview.workspaces[0]?.sessions[0]?.runtimeWorkspacePath, '/workspaces/swarm')
+  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.routeSource, 'topology/workspace_binding')
+  assert.equal(overview.workspaces[0]?.topologyRoutes[0]?.runtimeSwarmId, 'child-swarm')
+  assert.deepEqual(overview.workspaces[0]?.topologyRoutes[0]?.sync.modules, ['sessions'])
 })
 
 test('self workspace overview keeps routed mirror sessions under host workspace path', () => {

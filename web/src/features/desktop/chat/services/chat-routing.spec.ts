@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { applyDesktopChatRouteToSession, desktopChatRouteFromSessionMetadata, isManagedHostDesktopChatRoute, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
+import { applyDesktopChatRouteToSession, buildDesktopChatRouteOptions, desktopChatRouteFromSessionMetadata, desktopChatRouteID, isManagedHostDesktopChatRoute, resolveDesktopChatRouteById, resolveDesktopChatRouteFromSession, withDesktopChatRoute, type DesktopChatRoute } from './chat-routing'
 import type { DesktopSessionRecord } from '../../types/realtime'
 
 const remoteRoute: DesktopChatRoute = {
@@ -222,4 +222,88 @@ test('flow sessions preserve their own workspace identity under routed child hyd
   assert.equal(mapped.workspacePath, '/workspaces/swarm')
   assert.equal(mapped.workspaceName, 'child swarm')
   assert.equal(mapped.runtimeWorkspacePath, '/workspaces/swarm')
+})
+
+import type { WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
+
+function topologyRoute(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}): WorkspaceOverviewTopologyRoute {
+  return {
+    routeId: 'swarm:child-swarm:/runtime/workspace',
+    routeSource: 'topology/workspace_binding',
+    workspaceBindingId: 'binding-1',
+    runtimeSwarmId: 'child-swarm',
+    runtimeSwarmName: 'Child Swarm',
+    runtimeKind: 'remote',
+    runtimeRelationship: 'child',
+    runtimeBackendUrl: 'https://child.example.test',
+    hostSwarmId: 'host-swarm',
+    hostWorkspacePath: '/host/workspace',
+    hostWorkspaceName: 'Host Workspace',
+    runtimeWorkspacePath: '/runtime/workspace',
+    containerId: '',
+    replicationMode: 'mirror',
+    writable: true,
+    sync: {
+      enabled: true,
+      mode: 'mirror',
+      modules: [],
+    },
+    createdAt: 1,
+    updatedAt: 2,
+    ...overrides,
+  }
+}
+
+test('buildDesktopChatRouteOptions derives routes from topology route data', () => {
+  const routes = buildDesktopChatRouteOptions({
+    hostSwarmName: 'Host Swarm',
+    workspacePath: '/host/workspace',
+    workspaceName: 'Host Workspace',
+    topologyRoutes: [topologyRoute()],
+  })
+
+  assert.equal(routes.length, 2)
+  assert.deepEqual(routes[0], {
+    id: 'host',
+    label: 'Host Swarm',
+    swarmId: null,
+    targetKind: 'host',
+    targetRelationship: 'self',
+    hostWorkspacePath: '/host/workspace',
+    hostWorkspaceName: 'Host Workspace',
+    runtimeWorkspacePath: '/host/workspace',
+  })
+  assert.deepEqual(routes[1], {
+    id: 'swarm:child-swarm:/runtime/workspace',
+    label: 'Child Swarm',
+    swarmId: 'child-swarm',
+    targetKind: 'remote',
+    targetRelationship: 'child',
+    hostWorkspacePath: '/host/workspace',
+    hostWorkspaceName: 'Host Workspace',
+    runtimeWorkspacePath: '/runtime/workspace',
+  })
+})
+
+test('buildDesktopChatRouteOptions does not require replication links or swarm target lookups', () => {
+  const routes = buildDesktopChatRouteOptions({
+    hostSwarmName: 'Host Swarm',
+    workspacePath: '/host/workspace',
+    workspaceName: 'Host Workspace',
+    topologyRoutes: [topologyRoute({ routeId: '' })],
+  })
+
+  assert.equal(routes[1]?.id, desktopChatRouteID('child-swarm', '/runtime/workspace'))
+  assert.equal(routes[1]?.label, 'Child Swarm')
+})
+
+test('buildDesktopChatRouteOptions deduplicates topology routes by route id', () => {
+  const routes = buildDesktopChatRouteOptions({
+    hostSwarmName: 'Host Swarm',
+    workspacePath: '/host/workspace',
+    workspaceName: 'Host Workspace',
+    topologyRoutes: [topologyRoute(), topologyRoute({ workspaceBindingId: 'binding-duplicate' })],
+  })
+
+  assert.equal(routes.length, 2)
 })

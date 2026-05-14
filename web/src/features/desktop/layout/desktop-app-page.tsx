@@ -340,6 +340,7 @@ function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): Work
     directories: [path],
     isGitRepo: false,
     replicationLinks: [],
+    topologyRoutes: [],
     sortIndex: -1,
     addedAt: 0,
     updatedAt: 0,
@@ -2914,8 +2915,7 @@ export function DesktopAppPage() {
                   hostSwarmName: swarmName,
                   workspacePath: workspace.path,
                   workspaceName: workspace.workspaceName,
-                  replicationLinks: workspace.replicationLinks,
-                  availableSwarmTargets: swarmTargets,
+                  topologyRoutes: workspace.topologyRoutes,
                 })
                 const handleToggleWorkspaceWorktree = () => {
                   if (worktreeBusy) {
@@ -3110,8 +3110,7 @@ export function DesktopAppPage() {
             workspacePath={chatWorkspacePath}
             workspaceName={chatWorkspaceName}
             workspaceWorktreeEnabled={selectedWorkspace?.worktreeEnabled ?? false}
-            workspaceReplicationLinks={selectedWorkspace?.replicationLinks ?? []}
-            availableSwarmTargets={swarmTargets}
+            workspaceTopologyRoutes={selectedWorkspace?.topologyRoutes ?? []}
             session={selectedSession}
             onSessionCreated={handleSessionCreated}
             onOpenSettingsTab={handleOpenSettingsTab}

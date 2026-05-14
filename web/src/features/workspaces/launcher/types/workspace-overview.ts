@@ -94,9 +94,35 @@ export interface WorkspaceOverviewSessionWire {
   lifecycle?: WorkspaceOverviewLifecycleWire | null
 }
 
+export interface WorkspaceOverviewTopologyRouteWire {
+  route_id?: string
+  route_source?: string
+  workspace_binding_id?: string
+  runtime_swarm_id?: string
+  runtime_swarm_name?: string
+  runtime_kind?: string
+  runtime_relationship?: string
+  runtime_backend_url?: string
+  host_swarm_id?: string
+  host_workspace_path?: string
+  host_workspace_name?: string
+  runtime_workspace_path?: string
+  container_id?: string
+  replication_mode?: string
+  writable?: boolean
+  sync?: {
+    enabled?: boolean
+    mode?: string
+    modules?: string[]
+  }
+  created_at?: number
+  updated_at?: number
+}
+
 export interface WorkspaceOverviewWorkspaceWire extends WorkspaceEntryWire {
   sessions?: WorkspaceOverviewSessionWire[]
   todo_summary?: WorkspaceTodoSummaryWire
+  topology_routes?: WorkspaceOverviewTopologyRouteWire[]
 }
 
 export interface WorkspaceOverviewSwarmTargetWire {
@@ -116,9 +142,35 @@ export interface WorkspaceOverviewResponseWire {
   swarm_target?: WorkspaceOverviewSwarmTargetWire | null
 }
 
+export interface WorkspaceOverviewTopologyRoute {
+  routeId: string
+  routeSource: string
+  workspaceBindingId: string
+  runtimeSwarmId: string
+  runtimeSwarmName: string
+  runtimeKind: string
+  runtimeRelationship: string
+  runtimeBackendUrl: string
+  hostSwarmId: string
+  hostWorkspacePath: string
+  hostWorkspaceName: string
+  runtimeWorkspacePath: string
+  containerId: string
+  replicationMode: string
+  writable: boolean
+  sync: {
+    enabled: boolean
+    mode: string
+    modules: string[]
+  }
+  createdAt: number
+  updatedAt: number
+}
+
 export interface WorkspaceOverviewWorkspace extends WorkspaceEntry {
   sessions: DesktopSessionRecord[]
   todoSummary?: WorkspaceTodoSummary
+  topologyRoutes: WorkspaceOverviewTopologyRoute[]
 }
 
 export interface WorkspaceOverviewSwarmTarget {
@@ -175,6 +227,33 @@ function overviewPrefersRuntimeWorkspacePaths(response: WorkspaceOverviewRespons
   }
   const relationship = target.relationship.trim().toLowerCase()
   return relationship !== '' && relationship !== 'self'
+}
+
+function mapOverviewTopologyRoute(route: WorkspaceOverviewTopologyRouteWire): WorkspaceOverviewTopologyRoute {
+  return {
+    routeId: String(route.route_id ?? '').trim(),
+    routeSource: String(route.route_source ?? '').trim(),
+    workspaceBindingId: String(route.workspace_binding_id ?? '').trim(),
+    runtimeSwarmId: String(route.runtime_swarm_id ?? '').trim(),
+    runtimeSwarmName: String(route.runtime_swarm_name ?? '').trim(),
+    runtimeKind: String(route.runtime_kind ?? '').trim(),
+    runtimeRelationship: String(route.runtime_relationship ?? '').trim(),
+    runtimeBackendUrl: String(route.runtime_backend_url ?? '').trim(),
+    hostSwarmId: String(route.host_swarm_id ?? '').trim(),
+    hostWorkspacePath: String(route.host_workspace_path ?? '').trim(),
+    hostWorkspaceName: String(route.host_workspace_name ?? '').trim(),
+    runtimeWorkspacePath: String(route.runtime_workspace_path ?? '').trim(),
+    containerId: String(route.container_id ?? '').trim(),
+    replicationMode: String(route.replication_mode ?? '').trim(),
+    writable: Boolean(route.writable),
+    sync: {
+      enabled: Boolean(route.sync?.enabled),
+      mode: String(route.sync?.mode ?? '').trim(),
+      modules: Array.isArray(route.sync?.modules) ? route.sync.modules.map((entry) => String(entry).trim()).filter(Boolean) : [],
+    },
+    createdAt: typeof route.created_at === 'number' ? route.created_at : 0,
+    updatedAt: typeof route.updated_at === 'number' ? route.updated_at : 0,
+  }
 }
 
 function mapOverviewPermission(permission: WorkspaceOverviewPermissionWire): DesktopPermissionRecord {
@@ -326,6 +405,9 @@ function mapOverviewWorkspace(workspace: WorkspaceOverviewWorkspaceWire, preferR
       ? workspace.sessions.map((session) => mapOverviewSession(session, preferRuntimeWorkspacePath)).filter((session) => session.id)
       : [],
     todoSummary: mapWorkspaceTodoSummary(workspace.todo_summary),
+    topologyRoutes: Array.isArray(workspace.topology_routes)
+      ? workspace.topology_routes.map(mapOverviewTopologyRoute).filter((route) => route.routeId && route.runtimeSwarmId && route.runtimeWorkspacePath)
+      : [],
   }
 }
 

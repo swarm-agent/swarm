@@ -69,8 +69,7 @@ import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from '../serv
 import { appendPendingUserMessage, createPendingUserMessage, removePendingUserMessage } from '../services/message-cache'
 import type { SettingsTabID } from '../../settings/types/settings-tabs'
 import type { QuickSettingsTabID } from '../../settings/components/desktop-quick-settings-modal'
-import type { SwarmTarget } from '../../swarm/api/swarm-targets'
-import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
+import type { WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
 import { ImageSessionSidebar, type ImageSessionSidebarState } from '../../tools/components/image-session-sidebar'
 import { commitWorkspaceChanges } from '../../git/api'
 
@@ -320,8 +319,7 @@ interface DesktopChatPanelProps {
   workspacePath: string
   workspaceName: string
   workspaceWorktreeEnabled: boolean
-  workspaceReplicationLinks: WorkspaceReplicationLink[]
-  availableSwarmTargets: SwarmTarget[]
+  workspaceTopologyRoutes: WorkspaceOverviewTopologyRoute[]
   session: DesktopSessionRecord | null
   onSessionCreated: (session: DesktopSessionRecord) => void
   onOpenSettingsTab: (tab: SettingsTabID) => void
@@ -850,8 +848,7 @@ export function DesktopChatPanel({
   workspacePath,
   workspaceName,
   workspaceWorktreeEnabled,
-  workspaceReplicationLinks,
-  availableSwarmTargets,
+  workspaceTopologyRoutes,
   session,
   onSessionCreated,
   onOpenSettingsTab,
@@ -921,9 +918,8 @@ export function DesktopChatPanel({
     hostSwarmName,
     workspacePath,
     workspaceName,
-    replicationLinks: workspaceReplicationLinks,
-    availableSwarmTargets,
-  }), [availableSwarmTargets, hostSwarmName, workspacePath, workspaceName, workspaceReplicationLinks])
+    topologyRoutes: workspaceTopologyRoutes,
+  }), [hostSwarmName, workspacePath, workspaceName, workspaceTopologyRoutes])
   const defaultChatRoute = routeOptions[0]!
   const [selectedRouteId, setSelectedRouteId] = useState(() => defaultChatRoute?.id ?? 'host')
   const [draftRouteOverrideId, setDraftRouteOverrideId] = useState<string | null>(null)

@@ -1,4 +1,5 @@
 import type { WorkspaceTodoSummary } from '../../todos/types'
+import type { WorkspaceOverviewTopologyRoute } from './workspace-overview'
 
 export interface WorkspaceEntry {
   path: string
@@ -27,6 +28,7 @@ export interface WorkspaceEntry {
   gitCommittedAdditions?: number
   gitCommittedDeletions?: number
   todoSummary?: WorkspaceTodoSummary
+  topologyRoutes: WorkspaceOverviewTopologyRoute[]
 }
 
 export interface WorkspaceReplicationSync {
@@ -204,6 +206,7 @@ export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
     gitCommittedAdditions: typeof entry.git_committed_additions === 'number' ? entry.git_committed_additions : 0,
     gitCommittedDeletions: typeof entry.git_committed_deletions === 'number' ? entry.git_committed_deletions : 0,
     todoSummary: undefined,
+    topologyRoutes: [],
   }
 }
 

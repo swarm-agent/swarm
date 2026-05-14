@@ -1,6 +1,5 @@
 import type { DesktopSessionRecord } from '../../types/realtime'
-import type { SwarmTarget } from '../../swarm/api/swarm-targets'
-import type { WorkspaceReplicationLink } from '../../../workspaces/launcher/types/workspace'
+import type { WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
 
 export interface DesktopChatRoute {
   id: string
@@ -40,45 +39,35 @@ export function buildDesktopChatRouteOptions(input: {
   hostSwarmName: string
   workspacePath: string
   workspaceName: string
-  replicationLinks: WorkspaceReplicationLink[]
-  availableSwarmTargets?: Pick<SwarmTarget, 'swarm_id' | 'kind' | 'relationship' | 'role'>[]
+  topologyRoutes: WorkspaceOverviewTopologyRoute[]
 }): DesktopChatRoute[] {
   const hostRoute = buildHostDesktopChatRoute(input.hostSwarmName, input.workspacePath, input.workspaceName)
   const options: DesktopChatRoute[] = [hostRoute]
   const seen = new Set<string>([desktopChatRouteID(hostRoute.swarmId, hostRoute.runtimeWorkspacePath)])
-  const availableSwarmTargets = input.availableSwarmTargets
-    ? new Map(input.availableSwarmTargets
-      .map((target) => [target.swarm_id.trim().toLowerCase(), target] as const)
-      .filter(([swarmId]) => Boolean(swarmId)))
-    : null
-  for (const link of input.replicationLinks) {
-    const swarmId = link.targetSwarmId.trim()
-    const runtimeWorkspacePath = link.targetWorkspacePath.trim()
-    const availableTarget = availableSwarmTargets?.get(swarmId.toLowerCase()) ?? null
-    const targetRelationship = String(availableTarget?.relationship ?? '').trim().toLowerCase()
-    const targetRole = String(availableTarget?.role ?? '').trim().toLowerCase()
-    const targetKind = targetRelationship === 'managed' || targetRole === 'managed'
-      ? 'host'
-      : (String(availableTarget?.kind ?? '').trim() || link.targetKind.trim())
-    if (!swarmId || !runtimeWorkspacePath) {
+  for (const topologyRoute of input.topologyRoutes) {
+    const swarmId = topologyRoute.runtimeSwarmId.trim()
+    const runtimeWorkspacePath = topologyRoute.runtimeWorkspacePath.trim()
+    const id = topologyRoute.routeId.trim() || desktopChatRouteID(swarmId, runtimeWorkspacePath)
+    if (!swarmId || !runtimeWorkspacePath || !id) {
       continue
     }
-    if (availableSwarmTargets && !availableSwarmTargets.has(swarmId.toLowerCase())) {
-      continue
-    }
-    const id = desktopChatRouteID(swarmId, runtimeWorkspacePath)
     if (seen.has(id)) {
       continue
     }
     seen.add(id)
+    const targetRelationship = topologyRoute.runtimeRelationship.trim().toLowerCase()
+    const runtimeKind = topologyRoute.runtimeKind.trim()
+    const targetKind = targetRelationship === 'managed'
+      ? 'host'
+      : runtimeKind
     options.push({
       id,
-      label: link.targetSwarmName.trim() || swarmId,
+      label: topologyRoute.runtimeSwarmName.trim() || swarmId,
       swarmId,
       targetKind,
       targetRelationship,
-      hostWorkspacePath: hostRoute.hostWorkspacePath,
-      hostWorkspaceName: hostRoute.hostWorkspaceName,
+      hostWorkspacePath: topologyRoute.hostWorkspacePath.trim() || hostRoute.hostWorkspacePath,
+      hostWorkspaceName: topologyRoute.hostWorkspaceName.trim() || hostRoute.hostWorkspaceName,
       runtimeWorkspacePath,
     })
   }

@@ -503,6 +503,27 @@ type WorkspaceResolution struct {
 	ReplicationLinks []WorkspaceReplicationLink `json:"replication_links,omitempty"`
 }
 
+type WorkspaceTopologyRoute struct {
+	RouteID              string                   `json:"route_id"`
+	RouteSource          string                   `json:"route_source"`
+	WorkspaceBindingID   string                   `json:"workspace_binding_id"`
+	RuntimeSwarmID       string                   `json:"runtime_swarm_id"`
+	RuntimeSwarmName     string                   `json:"runtime_swarm_name,omitempty"`
+	RuntimeKind          string                   `json:"runtime_kind,omitempty"`
+	RuntimeRelationship  string                   `json:"runtime_relationship,omitempty"`
+	RuntimeBackendURL    string                   `json:"runtime_backend_url,omitempty"`
+	HostSwarmID          string                   `json:"host_swarm_id,omitempty"`
+	HostWorkspacePath    string                   `json:"host_workspace_path"`
+	HostWorkspaceName    string                   `json:"host_workspace_name,omitempty"`
+	RuntimeWorkspacePath string                   `json:"runtime_workspace_path"`
+	ContainerID          string                   `json:"container_id,omitempty"`
+	ReplicationMode      string                   `json:"replication_mode,omitempty"`
+	Writable             bool                     `json:"writable"`
+	Sync                 WorkspaceReplicationSync `json:"sync,omitempty"`
+	CreatedAt            int64                    `json:"created_at"`
+	UpdatedAt            int64                    `json:"updated_at"`
+}
+
 type WorkspaceEntry struct {
 	Path             string                     `json:"path"`
 	WorkspaceName    string                     `json:"workspace_name"`
@@ -519,7 +540,8 @@ type WorkspaceEntry struct {
 
 type WorkspaceOverviewWorkspace struct {
 	WorkspaceEntry
-	Sessions []SessionSummary `json:"sessions"`
+	Sessions       []SessionSummary         `json:"sessions"`
+	TopologyRoutes []WorkspaceTopologyRoute `json:"topology_routes,omitempty"`
 }
 
 type WorkspaceOverviewResponse struct {
