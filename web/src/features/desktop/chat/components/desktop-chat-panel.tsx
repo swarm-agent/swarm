@@ -3095,7 +3095,7 @@ export function DesktopChatPanel({
                   </div>
                 ) : null}
 
-                <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_minmax(0,max-content)_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_minmax(0,0.7fr)_40px] sm:gap-2">
+                <div className={showRoutePicker ? "grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_minmax(0,max-content)_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_minmax(0,0.7fr)_40px] sm:gap-2" : "grid w-full min-w-0 grid-cols-[minmax(0,1fr)_48px_40px] items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_56px_40px] sm:gap-2"}>
                   {/* The Summary/Settings Quick Toggle */}
                   <button 
                     ref={mobileSettingsTriggerRef}
