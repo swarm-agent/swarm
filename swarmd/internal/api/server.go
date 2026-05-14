@@ -40,8 +40,8 @@ import (
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/todo"
-	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/tool"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/voice"
@@ -2101,7 +2101,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				}
 				writeError(w, http.StatusBadGateway, cause)
 			}
-			if _, err := s.sessionRoutes.Put(pebblestore.SessionRouteRecord{
+			routeRecord := pebblestore.SessionRouteRecord{
 				SessionID:            session.ID,
 				ChildSwarmID:         strings.TrimSpace(remoteTarget.SwarmID),
 				ChildBackendURL:      strings.TrimSpace(remoteTarget.BackendURL),
@@ -2109,8 +2109,16 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				RuntimeWorkspacePath: strings.TrimSpace(req.RuntimeWorkspacePath),
 				CreatedAt:            session.CreatedAt,
 				UpdatedAt:            session.UpdatedAt,
-			}); err != nil {
+			}
+			if _, err := s.sessionRoutes.Put(routeRecord); err != nil {
 				if cleanupErr := s.sessions.DeleteSession(session.ID); cleanupErr != nil {
+					log.Printf("hosted session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+				}
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
+				if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
 					log.Printf("hosted session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
 				}
 				writeError(w, http.StatusInternalServerError, err)
@@ -2194,6 +2202,8 @@ func (s *Server) rollbackHostedSessionCreate(sessionID string) error {
 	if s.sessionRoutes != nil {
 		if err := s.sessionRoutes.Delete(sessionID); err != nil {
 			failures = append(failures, "delete session route: "+err.Error())
+		} else if err := s.deleteTopologySessionRoute(sessionID); err != nil {
+			failures = append(failures, "delete topology session route: "+err.Error())
 		}
 	}
 	if s.sessions != nil {

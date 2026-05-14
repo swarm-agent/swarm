@@ -192,6 +192,9 @@ func (s *Server) mirrorFlowRunSessionFromReport(summary pebblestore.FlowRunSumma
 		if _, err := s.sessionRoutes.Put(route); err != nil {
 			return err
 		}
+		if err := s.upsertTopologySessionRoute(route); err != nil {
+			return err
+		}
 	}
 	if s.hub != nil {
 		if sessionCreatedEvent != nil {

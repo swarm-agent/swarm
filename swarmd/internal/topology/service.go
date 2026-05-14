@@ -9,7 +9,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-const SnapshotVersion = "checkpoint1-v1"
+const SnapshotVersion = pebblestore.TopologySnapshotVersion
 
 type Service struct {
 	topologyStore   *pebblestore.TopologyStore
@@ -62,12 +62,12 @@ func (s *Service) EnsureSnapshot() (pebblestore.TopologyMigrationStatusRecord, e
 	if s == nil || s.topologyStore == nil {
 		return pebblestore.TopologyMigrationStatusRecord{}, fmt.Errorf("topology service is not configured")
 	}
-	status, ok, err := s.topologyStore.GetMigrationStatus(pebblestore.DefaultTopologyMigrationStatusID)
+	_, ok, err := s.topologyStore.GetMigrationStatus(pebblestore.DefaultTopologyMigrationStatusID)
 	if err != nil {
 		return pebblestore.TopologyMigrationStatusRecord{}, err
 	}
 	if ok {
-		return status, nil
+		return s.topologyStore.RefreshMigrationStatus()
 	}
 	return s.Rebuild()
 }
@@ -140,6 +140,33 @@ func (s *Service) UpsertWorkspaceBinding(record pebblestore.TopologyWorkspaceBin
 		return pebblestore.TopologyWorkspaceBindingRecord{}, fmt.Errorf("topology service is not configured")
 	}
 	return s.topologyStore.PutWorkspaceBinding(record)
+}
+
+func (s *Service) UpsertSessionRoute(record pebblestore.SessionRouteRecord) (pebblestore.TopologySessionRouteRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologySessionRouteRecord{}, fmt.Errorf("topology service is not configured")
+	}
+	bindings, err := s.buildWorkspaceBindings()
+	if err != nil {
+		return pebblestore.TopologySessionRouteRecord{}, err
+	}
+	return s.topologyStore.PutSessionRoute(pebblestore.TopologySessionRouteRecord{
+		SessionID:            strings.TrimSpace(record.SessionID),
+		RuntimeSwarmID:       strings.TrimSpace(record.ChildSwarmID),
+		WorkspaceBindingID:   matchingWorkspaceBindingID(bindings, record),
+		BackendURL:           strings.TrimSpace(record.ChildBackendURL),
+		HostWorkspacePath:    strings.TrimSpace(record.HostWorkspacePath),
+		RuntimeWorkspacePath: strings.TrimSpace(record.RuntimeWorkspacePath),
+		CreatedAt:            record.CreatedAt,
+		UpdatedAt:            record.UpdatedAt,
+	})
+}
+
+func (s *Service) DeleteSessionRoute(sessionID string) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.DeleteSessionRoute(sessionID)
 }
 
 func (s *Service) ListAttachmentsByHostContainer(hostContainerID string, limit int) ([]pebblestore.TopologyAttachmentRecord, error) {

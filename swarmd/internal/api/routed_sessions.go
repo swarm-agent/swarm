@@ -137,6 +137,9 @@ func (s *Server) retireStaleRoutedSessionTarget(record pebblestore.SessionRouteR
 	if err := s.sessionRoutes.Delete(record.SessionID); err != nil {
 		return false, err
 	}
+	if err := s.deleteTopologySessionRoute(record.SessionID); err != nil {
+		return false, err
+	}
 	log.Printf("retired stale routed session session_id=%q old_child_swarm_id=%q replacement_child_swarm_id=%q child_backend_url=%q", strings.TrimSpace(record.SessionID), strings.TrimSpace(record.ChildSwarmID), replacementChildSwarmID, normalizeRoutedSessionBackendURL(record.ChildBackendURL))
 	return true, nil
 }
@@ -164,6 +167,9 @@ func (s *Server) retireStaleSessionRoutesForChild(childSwarmID, childBackendURL 
 			continue
 		}
 		if err := s.sessionRoutes.Delete(record.SessionID); err != nil {
+			return err
+		}
+		if err := s.deleteTopologySessionRoute(record.SessionID); err != nil {
 			return err
 		}
 		log.Printf("retired stale routed session session_id=%q old_child_swarm_id=%q replacement_child_swarm_id=%q child_backend_url=%q", strings.TrimSpace(record.SessionID), recordChildSwarmID, childSwarmID, childBackendURL)

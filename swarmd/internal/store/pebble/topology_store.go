@@ -12,7 +12,10 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-const DefaultTopologyMigrationStatusID = "default"
+const (
+	DefaultTopologyMigrationStatusID = "default"
+	TopologySnapshotVersion          = "checkpoint1-v1"
+)
 
 type TopologyRuntimeRecord struct {
 	SwarmID              string   `json:"swarm_id"`
@@ -278,6 +281,9 @@ func (s *TopologyStore) PutRuntime(record TopologyRuntimeRecord) (TopologyRuntim
 	if err := s.store.PutJSON(KeyTopologyRuntime(record.SwarmID), record); err != nil {
 		return TopologyRuntimeRecord{}, err
 	}
+	if err := s.refreshMigrationStatus(); err != nil {
+		return TopologyRuntimeRecord{}, err
+	}
 	return record, nil
 }
 
@@ -289,7 +295,10 @@ func (s *TopologyStore) DeleteRuntime(swarmID string) error {
 	if swarmID == "" {
 		return errors.New("topology runtime swarm id is required")
 	}
-	return s.store.Delete(KeyTopologyRuntime(swarmID))
+	if err := s.store.Delete(KeyTopologyRuntime(swarmID)); err != nil {
+		return err
+	}
+	return s.refreshMigrationStatus()
 }
 
 func (s *TopologyStore) ListRuntimes(limit int) ([]TopologyRuntimeRecord, error) {
@@ -366,6 +375,9 @@ func (s *TopologyStore) PutHostContainer(record TopologyHostContainerRecord) (To
 	if err := s.store.PutJSON(KeyTopologyHostContainer(record.HostContainerID), record); err != nil {
 		return TopologyHostContainerRecord{}, err
 	}
+	if err := s.refreshMigrationStatus(); err != nil {
+		return TopologyHostContainerRecord{}, err
+	}
 	return record, nil
 }
 
@@ -377,7 +389,10 @@ func (s *TopologyStore) DeleteHostContainer(hostContainerID string) error {
 	if hostContainerID == "" {
 		return errors.New("topology host container id is required")
 	}
-	return s.store.Delete(KeyTopologyHostContainer(hostContainerID))
+	if err := s.store.Delete(KeyTopologyHostContainer(hostContainerID)); err != nil {
+		return err
+	}
+	return s.refreshMigrationStatus()
 }
 
 func (s *TopologyStore) GetAttachment(attachmentID string) (TopologyAttachmentRecord, bool, error) {
@@ -425,6 +440,9 @@ func (s *TopologyStore) PutAttachment(record TopologyAttachmentRecord) (Topology
 	if err := s.store.PutJSON(KeyTopologyAttachment(record.AttachmentID), record); err != nil {
 		return TopologyAttachmentRecord{}, err
 	}
+	if err := s.refreshMigrationStatus(); err != nil {
+		return TopologyAttachmentRecord{}, err
+	}
 	return record, nil
 }
 
@@ -436,7 +454,10 @@ func (s *TopologyStore) DeleteAttachment(attachmentID string) error {
 	if attachmentID == "" {
 		return errors.New("topology attachment id is required")
 	}
-	return s.store.Delete(KeyTopologyAttachment(attachmentID))
+	if err := s.store.Delete(KeyTopologyAttachment(attachmentID)); err != nil {
+		return err
+	}
+	return s.refreshMigrationStatus()
 }
 
 func (s *TopologyStore) ListAttachments(limit int) ([]TopologyAttachmentRecord, error) {
@@ -542,6 +563,9 @@ func (s *TopologyStore) PutWorkspaceBinding(record TopologyWorkspaceBindingRecor
 	if err := s.store.PutJSON(KeyTopologyWorkspaceBinding(record.BindingID), record); err != nil {
 		return TopologyWorkspaceBindingRecord{}, err
 	}
+	if err := s.refreshMigrationStatus(); err != nil {
+		return TopologyWorkspaceBindingRecord{}, err
+	}
 	return record, nil
 }
 
@@ -553,7 +577,10 @@ func (s *TopologyStore) DeleteWorkspaceBinding(bindingID string) error {
 	if bindingID == "" {
 		return errors.New("topology workspace binding id is required")
 	}
-	return s.store.Delete(KeyTopologyWorkspaceBinding(bindingID))
+	if err := s.store.Delete(KeyTopologyWorkspaceBinding(bindingID)); err != nil {
+		return err
+	}
+	return s.refreshMigrationStatus()
 }
 
 func (s *TopologyStore) ListSessionRoutes(limit int) ([]TopologySessionRouteRecord, error) {
@@ -599,6 +626,9 @@ func (s *TopologyStore) PutSessionRoute(record TopologySessionRouteRecord) (Topo
 	if err := s.store.PutJSON(KeyTopologySessionRoute(record.SessionID), record); err != nil {
 		return TopologySessionRouteRecord{}, err
 	}
+	if err := s.refreshMigrationStatus(); err != nil {
+		return TopologySessionRouteRecord{}, err
+	}
 	return record, nil
 }
 
@@ -610,7 +640,10 @@ func (s *TopologyStore) DeleteSessionRoute(sessionID string) error {
 	if sessionID == "" {
 		return errors.New("topology session id is required")
 	}
-	return s.store.Delete(KeyTopologySessionRoute(sessionID))
+	if err := s.store.Delete(KeyTopologySessionRoute(sessionID)); err != nil {
+		return err
+	}
+	return s.refreshMigrationStatus()
 }
 
 func (s *TopologyStore) GetMigrationStatus(id string) (TopologyMigrationStatusRecord, bool, error) {
@@ -648,6 +681,46 @@ func (s *TopologyStore) PutMigrationStatus(record TopologyMigrationStatusRecord)
 		return TopologyMigrationStatusRecord{}, err
 	}
 	return record, nil
+}
+
+func (s *TopologyStore) RefreshMigrationStatus() (TopologyMigrationStatusRecord, error) {
+	if s == nil || s.store == nil {
+		return TopologyMigrationStatusRecord{}, errors.New("topology store is not configured")
+	}
+	return s.refreshMigrationStatus()
+}
+
+func (s *TopologyStore) refreshMigrationStatus() (TopologyMigrationStatusRecord, error) {
+	runtimes, err := s.ListRuntimes(100000)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
+	hostContainers, err := s.ListHostContainers(100000)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
+	attachments, err := s.ListAttachments(100000)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
+	workspaceBindings, err := s.ListWorkspaceBindings(100000)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
+	sessionRoutes, err := s.ListSessionRoutes(100000)
+	if err != nil {
+		return TopologyMigrationStatusRecord{}, err
+	}
+	return s.PutMigrationStatus(TopologyMigrationStatusRecord{
+		ID:                    DefaultTopologyMigrationStatusID,
+		Version:               TopologySnapshotVersion,
+		RebuiltAt:             time.Now().UnixMilli(),
+		RuntimeCount:          len(runtimes),
+		HostContainerCount:    len(hostContainers),
+		AttachmentCount:       len(attachments),
+		WorkspaceBindingCount: len(workspaceBindings),
+		SessionRouteCount:     len(sessionRoutes),
+	})
 }
 
 func (s *TopologyStore) listTopologyRuntimeRecords(limit int) ([]TopologyRuntimeRecord, error) {
