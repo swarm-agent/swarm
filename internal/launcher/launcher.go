@@ -1364,6 +1364,9 @@ func Status(profile Profile) ServerStatus {
 const localTransportSocketEnv = "SWARMD_LOCAL_TRANSPORT_SOCKET"
 
 func LocalTransportSocketPath(profile Profile) string {
+	if strings.TrimSpace(profile.DataDir) == "" {
+		return ""
+	}
 	return filepath.Join(profile.DataDir, "local-transport", "api.sock")
 }
 
@@ -1445,6 +1448,10 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	}
 	if strings.TrimSpace(profile.Root) == "" {
 		return errors.New("update dev requires a source checkout")
+	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Checking managed host dev sync requirements.", "")
+	if err := runManagedDevHostUpdatePhase(profile); err != nil {
+		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Stopping Swarm backend for dev rebuild.", "")
 	fmt.Fprintln(os.Stdout, "\nRebuilding local dev checkout...")
