@@ -2874,36 +2874,36 @@ export function DesktopAppPage() {
                     ) : null}
                   </div>
 
-                  <div className="grid grid-cols-3 gap-1">
+                  <div className="grid gap-0.5 pt-1">
                     <button
                       type="button"
-                      className="grid min-h-[34px] place-items-center gap-1 rounded-md px-1 text-center font-inherit text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
                       onClick={handleOpenIntegrations}
                       aria-label="Open Integrations"
                       title="Integrations"
                     >
                       <Plug size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="truncate">Integrations</span>
+                      <span className="min-w-0 truncate">Integrations</span>
                     </button>
                     <button
                       type="button"
-                      className="grid min-h-[34px] place-items-center gap-1 rounded-md px-1 text-center font-inherit text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
                       onClick={handleOpenTools}
                       aria-label="Open Swarm Tools"
                       title="Tools"
                     >
                       <LayoutGrid size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="truncate">Tools</span>
+                      <span className="min-w-0 truncate">Tools</span>
                     </button>
                     <button
                       type="button"
-                      className="grid min-h-[34px] place-items-center gap-1 rounded-md px-1 text-center font-inherit text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
                       onClick={() => handleOpenSettingsTab('agents')}
                       aria-label="Open agent settings"
                       title="Settings"
                     >
                       <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="truncate">Settings</span>
+                      <span className="min-w-0 truncate">Settings</span>
                     </button>
                   </div>
               </div>
