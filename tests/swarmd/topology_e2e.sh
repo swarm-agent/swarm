@@ -158,7 +158,7 @@ scenario_local_cleanup() {
   run_local_replicate "${host_root}" 1 --group-name "topology-cleanup-$(date +%Y%m%d-%H%M%S)" --verify-topology-cleanup
   local summary_file="${host_root}/artifacts/summary.json"
   [[ -f "${summary_file}" ]] || fail "local-cleanup summary missing: ${summary_file}"
-  [[ "$(json_get "${summary_file}" '.runs[0].verify_topology_cleanup // false')" == "true" ]] || fail "local-cleanup summary did not record verify_topology_cleanup=true"
+  [[ "$(json_get "${summary_file}" '(.runs[0].verify_topology_cleanup // .verify_topology_cleanup // false)')" == "true" ]] || fail "local-cleanup summary did not record verify_topology_cleanup=true"
   record_result "local-cleanup" "PASS" "${summary_file}"
 }
 

@@ -161,7 +161,11 @@ func (s *Service) UpsertSessionRoute(record pebblestore.SessionRouteRecord) (peb
 		CreatedAt:            record.CreatedAt,
 		UpdatedAt:            record.UpdatedAt,
 	}
-	enrichTopologySessionRouteFromBinding(&route, findWorkspaceBindingByID(bindings, bindingID))
+	runtime, err := s.lookupRuntimeForSessionRoute(route.RuntimeSwarmID)
+	if err != nil {
+		return pebblestore.TopologySessionRouteRecord{}, err
+	}
+	enrichTopologySessionRouteFromBinding(&route, findWorkspaceBindingByID(bindings, bindingID), runtime)
 	return s.topologyStore.PutSessionRoute(route)
 }
 
@@ -430,7 +434,7 @@ func (s *Service) buildSnapshot() (pebblestore.TopologySnapshot, error) {
 	if err != nil {
 		return pebblestore.TopologySnapshot{}, err
 	}
-	sessionRouteRecords, err := s.buildSessionRoutes(workspaceBindings)
+	sessionRouteRecords, err := s.buildSessionRoutes(workspaceBindings, runtimeMap)
 	if err != nil {
 		return pebblestore.TopologySnapshot{}, err
 	}
@@ -514,7 +518,7 @@ func (s *Service) buildWorkspaceBindings() ([]pebblestore.TopologyWorkspaceBindi
 	return s.topologyStore.ListWorkspaceBindings(100000)
 }
 
-func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBindingRecord) ([]pebblestore.TopologySessionRouteRecord, error) {
+func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBindingRecord, runtimes map[string]pebblestore.TopologyRuntimeRecord) ([]pebblestore.TopologySessionRouteRecord, error) {
 	if s == nil || s.sessionRoutes == nil {
 		return nil, nil
 	}
@@ -535,7 +539,7 @@ func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBin
 			CreatedAt:            route.CreatedAt,
 			UpdatedAt:            route.UpdatedAt,
 		}
-		enrichTopologySessionRouteFromBinding(&record, findWorkspaceBindingByID(bindings, bindingID))
+		enrichTopologySessionRouteFromBinding(&record, findWorkspaceBindingByID(bindings, bindingID), findRuntimeBySwarmID(runtimes, record.RuntimeSwarmID))
 		out = append(out, record)
 	}
 	return out, nil
@@ -573,20 +577,104 @@ func findWorkspaceBindingByID(bindings []pebblestore.TopologyWorkspaceBindingRec
 	return pebblestore.TopologyWorkspaceBindingRecord{}
 }
 
-func enrichTopologySessionRouteFromBinding(route *pebblestore.TopologySessionRouteRecord, binding pebblestore.TopologyWorkspaceBindingRecord) {
+func findRuntimeBySwarmID(runtimes map[string]pebblestore.TopologyRuntimeRecord, swarmID string) pebblestore.TopologyRuntimeRecord {
+	swarmID = strings.TrimSpace(swarmID)
+	if swarmID == "" {
+		return pebblestore.TopologyRuntimeRecord{}
+	}
+	for key, runtime := range runtimes {
+		if strings.EqualFold(strings.TrimSpace(key), swarmID) || strings.EqualFold(strings.TrimSpace(runtime.SwarmID), swarmID) {
+			return runtime
+		}
+	}
+	return pebblestore.TopologyRuntimeRecord{}
+}
+
+func (s *Service) lookupRuntimeForSessionRoute(swarmID string) (pebblestore.TopologyRuntimeRecord, error) {
+	if s == nil || s.topologyStore == nil {
+		return pebblestore.TopologyRuntimeRecord{}, nil
+	}
+	swarmID = strings.TrimSpace(swarmID)
+	if swarmID == "" {
+		return pebblestore.TopologyRuntimeRecord{}, nil
+	}
+	runtime, ok, err := s.topologyStore.GetRuntime(swarmID)
+	if err != nil {
+		return runtime, err
+	}
+	if !ok {
+		return s.runtimeFromDeployments(swarmID)
+	}
+	if strings.TrimSpace(runtime.OwnerHostSwarmID) != "" && strings.TrimSpace(runtime.OwnerHostContainerID) != "" {
+		return runtime, nil
+	}
+	fallback, err := s.runtimeFromDeployments(swarmID)
+	if err != nil {
+		return pebblestore.TopologyRuntimeRecord{}, err
+	}
+	runtime.OwnerHostSwarmID = firstNonEmpty(runtime.OwnerHostSwarmID, fallback.OwnerHostSwarmID)
+	runtime.OwnerHostContainerID = firstNonEmpty(runtime.OwnerHostContainerID, fallback.OwnerHostContainerID)
+	return runtime, nil
+}
+
+func (s *Service) runtimeFromDeployments(swarmID string) (pebblestore.TopologyRuntimeRecord, error) {
+	if s == nil || s.deployments == nil {
+		return pebblestore.TopologyRuntimeRecord{}, nil
+	}
+	swarmID = strings.TrimSpace(swarmID)
+	if swarmID == "" {
+		return pebblestore.TopologyRuntimeRecord{}, nil
+	}
+	deployments, err := s.deployments.List(100000)
+	if err != nil {
+		return pebblestore.TopologyRuntimeRecord{}, err
+	}
+	for _, deployment := range deployments {
+		if !strings.EqualFold(strings.TrimSpace(deployment.ChildSwarmID), swarmID) {
+			continue
+		}
+		hostSwarmID := strings.TrimSpace(deployment.HostSwarmID)
+		hostContainerID := strings.TrimSpace(deployment.HostContainerID)
+		if hostContainerID == "" {
+			runtimeContainerRef := firstNonEmpty(strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID))
+			hostContainerID = canonicalHostContainerID(hostSwarmID, runtimeContainerRef)
+		}
+		return pebblestore.TopologyRuntimeRecord{
+			SwarmID:              strings.TrimSpace(deployment.ChildSwarmID),
+			Name:                 firstNonEmpty(deployment.ChildDisplayName, deployment.Name, deployment.ChildSwarmID),
+			Role:                 "child",
+			Relationship:         "child",
+			BackendURL:           deployment.ChildBackendURL,
+			DesktopURL:           deployment.ChildDesktopURL,
+			Status:               firstNonEmpty(deployment.AttachStatus, deployment.Status),
+			OwnerHostSwarmID:     hostSwarmID,
+			OwnerHostContainerID: hostContainerID,
+			ObservedSources:      []string{"deploy_container"},
+			CreatedAt:            deployment.CreatedAt,
+			UpdatedAt:            deployment.UpdatedAt,
+		}, nil
+	}
+	return pebblestore.TopologyRuntimeRecord{}, nil
+}
+
+func enrichTopologySessionRouteFromBinding(route *pebblestore.TopologySessionRouteRecord, binding pebblestore.TopologyWorkspaceBindingRecord, runtime pebblestore.TopologyRuntimeRecord) {
 	if route == nil {
 		return
 	}
-	if strings.TrimSpace(binding.BindingID) == "" {
-		return
-	}
-	if strings.TrimSpace(route.HostSwarmID) == "" {
+	bindingPresent := strings.TrimSpace(binding.BindingID) != ""
+	if strings.TrimSpace(route.HostSwarmID) == "" && bindingPresent {
 		route.HostSwarmID = strings.TrimSpace(binding.DestinationHostSwarmID)
 	}
-	if strings.TrimSpace(route.HostContainerID) == "" {
+	if strings.TrimSpace(route.HostSwarmID) == "" {
+		route.HostSwarmID = strings.TrimSpace(runtime.OwnerHostSwarmID)
+	}
+	if strings.TrimSpace(route.HostContainerID) == "" && bindingPresent {
 		route.HostContainerID = strings.TrimSpace(binding.DestinationContainerID)
 	}
-	if strings.TrimSpace(route.RuntimeWorkspacePath) == "" {
+	if strings.TrimSpace(route.HostContainerID) == "" {
+		route.HostContainerID = strings.TrimSpace(runtime.OwnerHostContainerID)
+	}
+	if strings.TrimSpace(route.RuntimeWorkspacePath) == "" && bindingPresent {
 		route.RuntimeWorkspacePath = strings.TrimSpace(binding.DestinationWorkspacePath)
 	}
 }

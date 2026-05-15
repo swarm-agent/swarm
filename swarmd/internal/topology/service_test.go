@@ -55,6 +55,68 @@ func TestRebuildIgnoresLegacyWorkspaceReplicationLinks(t *testing.T) {
 	}
 }
 
+func TestSessionRouteEnrichmentFallsBackToRuntimeOwner(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "topology-session-route-owner.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	topologyStore := pebblestore.NewTopologyStore(store)
+	sessionRouteStore := pebblestore.NewSessionRouteStore(store)
+	deployStore := pebblestore.NewDeployContainerStore(store)
+
+	if _, err := deployStore.Put(pebblestore.DeployContainerRecord{
+		ID:              "deployment-1",
+		Name:            "Child",
+		Status:          "running",
+		AttachStatus:    "attached",
+		ContainerName:   "container-1",
+		ChildSwarmID:    "child-swarm",
+		HostSwarmID:     "host-swarm",
+		HostContainerID: "host-swarm:container-1",
+	}); err != nil {
+		t.Fatalf("put deployment: %v", err)
+	}
+	if _, err := topologyStore.PutWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 "binding:replica:deployment-1",
+		SourceWorkspacePath:       "/src",
+		DestinationRuntimeSwarmID: "child-swarm",
+		DestinationWorkspacePath:  "/workspaces/src",
+		ReplicationMode:           "mirror",
+		Writable:                  true,
+	}); err != nil {
+		t.Fatalf("put workspace binding: %v", err)
+	}
+	if _, err := sessionRouteStore.Put(pebblestore.SessionRouteRecord{
+		SessionID:            "session-1",
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      "http://127.0.0.1:3900",
+		HostWorkspacePath:    "/src",
+		RuntimeWorkspacePath: "/workspaces/src",
+	}); err != nil {
+		t.Fatalf("put session route: %v", err)
+	}
+
+	service := NewService(topologyStore, nil, nil, nil, deployStore, nil, sessionRouteStore, nil)
+	if _, err := service.Rebuild(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	route, ok, err := topologyStore.GetSessionRoute("session-1")
+	if err != nil || !ok {
+		t.Fatalf("get topology session route ok=%t err=%v", ok, err)
+	}
+	if route.HostSwarmID != "host-swarm" {
+		t.Fatalf("host swarm id = %q, want %q", route.HostSwarmID, "host-swarm")
+	}
+	if route.HostContainerID != "host-swarm:container-1" {
+		t.Fatalf("host container id = %q, want %q", route.HostContainerID, "host-swarm:container-1")
+	}
+	if route.WorkspaceBindingID != "binding:replica:deployment-1" {
+		t.Fatalf("workspace binding id = %q, want %q", route.WorkspaceBindingID, "binding:replica:deployment-1")
+	}
+}
+
 func TestRebuildPreservesCanonicalWorkspaceBindings(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "topology-rebuild-canonical.pebble"))
 	if err != nil {

@@ -107,7 +107,69 @@ func (s *Service) deleteCanonicalDeploymentState(record pebblestore.DeployContai
 		}
 	}
 	if childSwarmID != "" {
+		if err := s.deleteCanonicalWorkspaceRoutesForRuntime(childSwarmID); err != nil {
+			return err
+		}
 		if err := pebblestore.RemoveTopologyRuntimeObservedSource(s.topology, childSwarmID, pebblestore.TopologyRuntimeSourceDeployContainer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) deleteCanonicalWorkspaceRoutesForRuntime(runtimeSwarmID string) error {
+	if s == nil || s.topology == nil {
+		return nil
+	}
+	runtimeSwarmID = strings.TrimSpace(runtimeSwarmID)
+	if runtimeSwarmID == "" {
+		return nil
+	}
+	bindings, err := s.topology.ListWorkspaceBindings(100000)
+	if err != nil {
+		return err
+	}
+	routes, err := s.topology.ListSessionRoutes(100000)
+	if err != nil {
+		return err
+	}
+	bindingIDs := make(map[string]struct{})
+	for _, binding := range bindings {
+		if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), runtimeSwarmID) {
+			continue
+		}
+		bindingID := strings.TrimSpace(binding.BindingID)
+		if bindingID != "" {
+			bindingIDs[strings.ToLower(bindingID)] = struct{}{}
+		}
+	}
+	deletedRoutes := make(map[string]struct{})
+	for _, route := range routes {
+		sessionID := strings.TrimSpace(route.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		_, bindingMatches := bindingIDs[strings.ToLower(strings.TrimSpace(route.WorkspaceBindingID))]
+		if !bindingMatches && !strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), runtimeSwarmID) {
+			continue
+		}
+		if _, seen := deletedRoutes[strings.ToLower(sessionID)]; seen {
+			continue
+		}
+		if err := s.topology.DeleteSessionRoute(sessionID); err != nil {
+			return err
+		}
+		deletedRoutes[strings.ToLower(sessionID)] = struct{}{}
+	}
+	for _, binding := range bindings {
+		if !strings.EqualFold(strings.TrimSpace(binding.DestinationRuntimeSwarmID), runtimeSwarmID) {
+			continue
+		}
+		bindingID := strings.TrimSpace(binding.BindingID)
+		if bindingID == "" {
+			continue
+		}
+		if err := s.topology.DeleteWorkspaceBinding(bindingID); err != nil {
 			return err
 		}
 	}
