@@ -14,6 +14,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
+	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -603,13 +604,14 @@ func swarmStateWithManagedPeer(backendURL, token string) swarmruntime.LocalState
 }
 
 type fakeReplicateDeployService struct {
-	lastCreateInput             deployruntime.ContainerCreateInput
-	lastAttachApproveInput      deployruntime.ContainerAttachApproveInput
-	lastSyncAgentBundleInput    deployruntime.ContainerSyncCredentialRequestInput
-	lastAppliedCredentialBundle deployruntime.ContainerSyncCredentialBundle
-	lastAppliedAgentBundle      deployruntime.ContainerSyncAgentBundle
-	lastMirroredDeployment      deployruntime.ContainerDeployment
-	lastManagedHostCanonicalIDs []string
+	lastCreateInput               deployruntime.ContainerCreateInput
+	lastAttachApproveInput        deployruntime.ContainerAttachApproveInput
+	lastSyncCredentialBundleInput deployruntime.ContainerSyncCredentialRequestInput
+	lastSyncAgentBundleInput      deployruntime.ContainerSyncCredentialRequestInput
+	lastAppliedCredentialBundle   deployruntime.ContainerSyncCredentialBundle
+	lastAppliedAgentBundle        deployruntime.ContainerSyncAgentBundle
+	lastMirroredDeployment        deployruntime.ContainerDeployment
+	lastManagedHostCanonicalIDs   []string
 }
 
 func (f *fakeReplicateDeployService) RuntimeStatus(context.Context) (deployruntime.ContainerRuntimeStatus, error) {
@@ -747,7 +749,8 @@ func (f *fakeReplicateDeployService) FinalizeAttachFromHost(context.Context, dep
 	return nil
 }
 
-func (f *fakeReplicateDeployService) SyncCredentialBundle(context.Context, deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error) {
+func (f *fakeReplicateDeployService) SyncCredentialBundle(_ context.Context, input deployruntime.ContainerSyncCredentialRequestInput) (deployruntime.ContainerSyncCredentialBundle, error) {
+	f.lastSyncCredentialBundleInput = input
 	return deployruntime.ContainerSyncCredentialBundle{}, nil
 }
 
@@ -866,3 +869,37 @@ var (
 	_ deployContainerService = (*fakeReplicateDeployService)(nil)
 	_ swarmService           = fakeReplicateSwarmService{}
 )
+
+func TestDeployContainerSyncCredentialsPreservesPeerAuthBeforeTrustedNetworkExemption(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "auth.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("event log: %v", err)
+	}
+	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, security.NewService(pebblestore.NewClientAuthStore(store), events), nil, nil, nil, events, stream.NewHub(events))
+	fakeDeploy := &fakeReplicateDeployService{}
+	server.SetDeployContainerService(fakeDeploy)
+	server.SetSwarmService(fakeReplicateSwarmService{incomingTokens: map[string]string{"manager-swarm": "manager-token"}})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/container/sync/credentials", bytes.NewReader([]byte(`{}`)))
+	req.RemoteAddr = "100.64.0.1:12345"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(peerAuthSwarmIDHeader, "manager-swarm")
+	req.Header.Set(peerAuthTokenHeader, "manager-token")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !fakeDeploy.lastSyncCredentialBundleInput.PeerAuthorized {
+		t.Fatalf("peer auth was not propagated to sync credentials handler")
+	}
+	if got := fakeDeploy.lastSyncCredentialBundleInput.PeerSwarmID; got != "manager-swarm" {
+		t.Fatalf("peer swarm id = %q, want manager-swarm", got)
+	}
+}

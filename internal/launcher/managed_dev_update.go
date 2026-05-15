@@ -85,7 +85,18 @@ type managedDevManagedHostUpdateRunResponse struct {
 		SwarmID string `json:"swarm_id,omitempty"`
 		Name    string `json:"name,omitempty"`
 	} `json:"target,omitempty"`
-	Error string `json:"error,omitempty"`
+	Job   *managedDevUpdateJobSummary `json:"job,omitempty"`
+	Error string                      `json:"error,omitempty"`
+}
+
+type managedDevUpdateJobSummary struct {
+	ID        string `json:"id,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Error     string `json:"error,omitempty"`
+	HelperPID int    `json:"helper_pid,omitempty"`
+	LogPath   string `json:"log_path,omitempty"`
 }
 
 func runManagedDevHostUpdatePhase(profile Profile) error {
@@ -95,51 +106,84 @@ func runManagedDevHostUpdatePhase(profile Profile) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
-	inspect, err := inspectManagedDevGitSource(ctx, profile, false)
+	plan, err := inspectManagedDevPlan(ctx, profile, false)
 	if err != nil {
-		return fmt.Errorf("inspect dev git source before managed host update: %w", err)
+		return err
+	}
+	if len(plan.ManagedTargets) == 0 {
+		return nil
+	}
+	if err := validateManagedDevPlanClean(plan); err != nil {
+		return err
+	}
+	if err := syncManagedDevPlan(ctx, profile, plan); err != nil {
+		return err
+	}
+	return startManagedDevRemoteUpdates(ctx, profile, plan)
+}
+
+type managedDevPlan struct {
+	Inspect        managedDevGitInspectResponse                 `json:"inspect"`
+	Bindings       []managedDevTopologyWorkspaceBindingResponse `json:"bindings,omitempty"`
+	Targets        []managedDevSwarmTarget                      `json:"targets,omitempty"`
+	ManagedTargets []managedDevSwarmTarget                      `json:"managed_targets,omitempty"`
+}
+
+func inspectManagedDevPlan(ctx context.Context, profile Profile, requireClean bool) (managedDevPlan, error) {
+	inspect, err := inspectManagedDevGitSource(ctx, profile, requireClean)
+	if err != nil {
+		return managedDevPlan{}, fmt.Errorf("inspect dev git source before managed host update: %w", err)
 	}
 	if strings.TrimSpace(inspect.RepoRoot) == "" {
-		return errors.New("inspect dev git source before managed host update: repo_root is empty")
+		return managedDevPlan{}, errors.New("inspect dev git source before managed host update: repo_root is empty")
 	}
 
 	bindings, err := listManagedDevTopologyWorkspaceBindings(ctx, profile, inspect.RepoRoot)
 	if err != nil {
-		return fmt.Errorf("list managed dev workspace bindings: %w", err)
-	}
-	if len(bindings) == 0 {
-		return nil
+		return managedDevPlan{}, fmt.Errorf("list managed dev workspace bindings: %w", err)
 	}
 	targets, err := listManagedDevSwarmTargets(ctx, profile)
 	if err != nil {
-		return fmt.Errorf("list managed dev swarm targets: %w", err)
+		return managedDevPlan{}, fmt.Errorf("list managed dev swarm targets: %w", err)
 	}
-	managedTargets := managedDevTargetsForBindings(bindings, targets)
-	if len(managedTargets) == 0 {
-		return nil
-	}
+	return managedDevPlan{
+		Inspect:        inspect,
+		Bindings:       bindings,
+		Targets:        targets,
+		ManagedTargets: managedDevTargetsForBindings(bindings, targets),
+	}, nil
+}
+
+func validateManagedDevPlanClean(plan managedDevPlan) error {
+	inspect := plan.Inspect
 	if !inspect.Clean {
 		return fmt.Errorf("managed dev update requires clean source checkout at %s; uncommitted changes: %s", inspect.RepoRoot, strings.Join(inspect.StatusShort, "; "))
 	}
 	if strings.TrimSpace(inspect.Branch) == "" || strings.TrimSpace(inspect.Head) == "" || strings.TrimSpace(inspect.Tree) == "" {
 		return errors.New("managed dev update requires source branch, commit, and tree identity")
 	}
+	return nil
+}
 
-	headLabel := firstNonEmptyString(inspect.HeadShort, shortGitIdentity(inspect.Head), inspect.Head)
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, fmt.Sprintf("Syncing %d managed host dev checkout(s) to %s.", len(managedTargets), headLabel), "")
-	fmt.Fprintf(os.Stdout, "Syncing %d managed host dev checkout(s) to %s before rebuild...\n", len(managedTargets), headLabel)
-	for _, target := range managedTargets {
+func syncManagedDevPlan(ctx context.Context, profile Profile, plan managedDevPlan) error {
+	headLabel := firstNonEmptyString(plan.Inspect.HeadShort, shortGitIdentity(plan.Inspect.Head), plan.Inspect.Head)
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, fmt.Sprintf("Syncing %d managed host dev checkout(s) to %s.", len(plan.ManagedTargets), headLabel), "")
+	fmt.Fprintf(os.Stdout, "Syncing %d managed host dev checkout(s) to %s before rebuild...\n", len(plan.ManagedTargets), headLabel)
+	for _, target := range plan.ManagedTargets {
 		advanceManagedDevHostStatus(profile, target, managedDevPhaseInspect, updateJobStatusCompleted, "Managed host dev checkout selected for sync.", "")
 		advanceManagedDevHostStatus(profile, target, managedDevPhaseSync, updateJobStatusRunning, fmt.Sprintf("Hard-resetting managed dev checkout to %s.", headLabel), "")
-		if err := syncManagedDevHostGit(ctx, profile, target.SwarmID, inspect); err != nil {
+		if err := syncManagedDevHostGit(ctx, profile, target.SwarmID, plan.Inspect); err != nil {
 			advanceManagedDevHostStatus(profile, target, managedDevPhaseSync, updateJobStatusFailed, "", err.Error())
 			return err
 		}
 		advanceManagedDevHostStatus(profile, target, managedDevPhaseSync, updateJobStatusCompleted, fmt.Sprintf("Managed dev checkout is synced to %s.", headLabel), "")
 	}
+	return nil
+}
 
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, fmt.Sprintf("Requesting dev rebuild on %d managed host(s).", len(managedTargets)), "")
-	for _, target := range managedTargets {
+func startManagedDevRemoteUpdates(ctx context.Context, profile Profile, plan managedDevPlan) error {
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, fmt.Sprintf("Requesting dev rebuild on %d managed host(s).", len(plan.ManagedTargets)), "")
+	for _, target := range plan.ManagedTargets {
 		advanceManagedDevHostStatus(profile, target, managedDevPhaseRebuild, updateJobStatusRunning, "Remote dev rebuild requested.", "")
 		if err := runManagedDevHostUpdate(ctx, profile, target.SwarmID); err != nil {
 			advanceManagedDevHostStatus(profile, target, managedDevPhaseRebuild, updateJobStatusFailed, "", err.Error())
@@ -434,4 +478,100 @@ func shortGitIdentity(value string) string {
 		return value[:12]
 	}
 	return value
+}
+func RunManagedDevUpdateStep(profile Profile, rawStep string) error {
+	step := strings.ToLower(strings.TrimSpace(rawStep))
+	if step == "" {
+		return errors.New("managed dev update step is required")
+	}
+	if strings.TrimSpace(profile.URL) == "" || strings.TrimSpace(profile.Root) == "" {
+		return errors.New("managed dev update steps require a running backend and source checkout")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	plan, err := inspectManagedDevPlan(ctx, profile, false)
+	if err != nil {
+		return err
+	}
+	printManagedDevPlanSummary(plan)
+
+	switch step {
+	case "inspect", "plan":
+		return nil
+	case "sync":
+		if err := validateManagedDevPlanClean(plan); err != nil {
+			return err
+		}
+		return syncManagedDevPlan(ctx, profile, plan)
+	case "remote-start", "remote", "start-remote":
+		if err := validateManagedDevPlanClean(plan); err != nil {
+			return err
+		}
+		return startManagedDevRemoteUpdates(ctx, profile, plan)
+	case "verify", "status", "remote-status":
+		return verifyManagedDevPlan(ctx, profile, plan)
+	default:
+		return fmt.Errorf("unknown managed dev update step %q (expected inspect, sync, remote-start, verify/status)", rawStep)
+	}
+}
+
+func printManagedDevPlanSummary(plan managedDevPlan) {
+	inspect := plan.Inspect
+	fmt.Fprintf(os.Stdout, "source repo: %s\n", firstNonEmptyString(inspect.RepoRoot, inspect.Path))
+	fmt.Fprintf(os.Stdout, "source branch: %s\n", inspect.Branch)
+	fmt.Fprintf(os.Stdout, "source head: %s\n", firstNonEmptyString(inspect.HeadShort, shortGitIdentity(inspect.Head), inspect.Head))
+	fmt.Fprintf(os.Stdout, "source tree: %s\n", shortGitIdentity(inspect.Tree))
+	fmt.Fprintf(os.Stdout, "source clean: %t\n", inspect.Clean)
+	if len(inspect.StatusShort) > 0 {
+		fmt.Fprintf(os.Stdout, "source changes: %s\n", strings.Join(inspect.StatusShort, "; "))
+	}
+	fmt.Fprintf(os.Stdout, "workspace bindings: %d\n", len(plan.Bindings))
+	fmt.Fprintf(os.Stdout, "managed targets: %d\n", len(plan.ManagedTargets))
+	for _, target := range plan.ManagedTargets {
+		fmt.Fprintf(os.Stdout, "- %s (%s)\n", firstNonEmptyString(target.Name, target.SwarmID), target.SwarmID)
+	}
+}
+
+func verifyManagedDevPlan(ctx context.Context, profile Profile, plan managedDevPlan) error {
+	if len(plan.ManagedTargets) == 0 {
+		return nil
+	}
+	var failed []string
+	for _, target := range plan.ManagedTargets {
+		remoteStatus, err := inspectManagedDevHostUpdateStatus(ctx, profile, target.SwarmID)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", firstNonEmptyString(target.Name, target.SwarmID), err))
+			continue
+		}
+		fmt.Fprintf(os.Stdout, "%s update job: status=%s message=%q error=%q pid=%d log=%s\n", firstNonEmptyString(target.Name, target.SwarmID), remoteStatus.Status, remoteStatus.Message, remoteStatus.Error, remoteStatus.HelperPID, remoteStatus.LogPath)
+		if remoteStatus.Status == updateJobStatusFailed || strings.TrimSpace(remoteStatus.Error) != "" {
+			failed = append(failed, fmt.Sprintf("%s: %s", firstNonEmptyString(target.Name, target.SwarmID), firstNonEmptyString(remoteStatus.Error, remoteStatus.Status)))
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("managed dev verify failed: %s", strings.Join(failed, "; "))
+	}
+	return nil
+}
+
+func inspectManagedDevHostUpdateStatus(ctx context.Context, profile Profile, targetSwarmID string) (managedDevUpdateJobSummary, error) {
+	payload := map[string]any{"target_swarm_id": strings.TrimSpace(targetSwarmID)}
+	body, status, err := httpRequest(ctx, profile, http.MethodPost, profile.URL+"/v1/swarm/managed-hosts/update/status", map[string]string{"Accept": "application/json", "Content-Type": "application/json"}, payload)
+	if err != nil {
+		return managedDevUpdateJobSummary{}, fmt.Errorf("inspect managed host %s update status: %w", targetSwarmID, err)
+	}
+	var response managedDevManagedHostUpdateRunResponse
+	if len(body) > 0 {
+		if decodeErr := json.Unmarshal(body, &response); decodeErr != nil {
+			return managedDevUpdateJobSummary{}, fmt.Errorf("decode managed host update status response for %s: %w", targetSwarmID, decodeErr)
+		}
+	}
+	if status < 200 || status >= 300 || !response.OK {
+		return managedDevUpdateJobSummary{}, fmt.Errorf("inspect managed host %s update status failed (%d): %s", targetSwarmID, status, firstNonEmptyString(response.Error, responseErrorMessage(body)))
+	}
+	if response.Job == nil {
+		return managedDevUpdateJobSummary{}, nil
+	}
+	return *response.Job, nil
 }

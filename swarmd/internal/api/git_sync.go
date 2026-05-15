@@ -20,6 +20,7 @@ const (
 	managedHostGitSyncApplyPath = "/v1/swarm/managed-hosts/git/sync/apply"
 	peerGitSyncApplyPath        = "/v1/swarm/peer/git/sync/apply"
 	peerUpdateRunPath           = "/v1/swarm/peer/update/run"
+	peerUpdateStatusPath        = "/v1/swarm/peer/update/status"
 )
 
 type gitSyncInspectRequest struct {

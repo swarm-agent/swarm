@@ -130,7 +130,7 @@ func run(argv0 string, args []string) error {
 		return launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, Bootstrap: bootstrap})
 	case "update":
 		if len(args) < 2 {
-			return errors.New("usage: swarm [main|dev] update [apply|dev]")
+			return errors.New("usage: swarm [main|dev] update [apply|dev|dev-step]")
 		}
 		switch args[1] {
 		case "apply":
@@ -144,8 +144,17 @@ func run(argv0 string, args []string) error {
 				return err
 			}
 			return launcher.RunDevUpdate(buildProfile, nil)
+		case "dev-step":
+			if len(args) < 3 {
+				return errors.New("usage: swarm [main|dev] update dev-step <inspect|sync|remote-start|verify>")
+			}
+			buildProfile, err := loadBuildProfile(lane, bypassOverride)
+			if err != nil {
+				return err
+			}
+			return launcher.RunManagedDevUpdateStep(buildProfile, args[2])
 		default:
-			return errors.New("usage: swarm [main|dev] update [apply|dev]")
+			return errors.New("usage: swarm [main|dev] update [apply|dev|dev-step]")
 		}
 	case "backend-build":
 		buildProfile, err := loadBuildProfile(lane, bypassOverride)
@@ -367,6 +376,7 @@ Usage:
   swarm [main|dev] backend-build
   swarm [main|dev] update apply
   swarm [main|dev] update dev
+  swarm [main|dev] update dev-step <inspect|sync|remote-start|verify>
   swarm [main|dev] info
   swarm help
 
@@ -378,5 +388,6 @@ Alias:
   swarmdev auth <swarmctl-auth-args...>
   swarmdev backend-up|down|restart|rebuild|build|info
   swarmdev update dev
+  swarmdev update dev-step <inspect|sync|remote-start|verify>
 `)
 }

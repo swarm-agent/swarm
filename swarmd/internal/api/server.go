@@ -3569,7 +3569,25 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		}
 
 		loopback := isLoopbackRequest(r)
-		if isAuthExemptRequest(r, loopback, isTrustedNetworkRequest(r)) {
+		trustedNetwork := isTrustedNetworkRequest(r)
+		peerSwarmID, peerToken := extractPeerAuth(r)
+		if peerSwarmID != "" && peerToken != "" && s.swarm != nil {
+			peerOK, err := s.swarm.ValidateIncomingPeerAuth(peerSwarmID, peerToken)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if peerOK {
+				ctx := context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: peerSwarmID})
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			log.Printf("peer auth denied method=%s path=%s remote_addr=%s peer_swarm_id=%q", r.Method, r.URL.Path, strings.TrimSpace(r.RemoteAddr), peerSwarmID)
+			s.security.AuditDenied(r.Method, r.URL.Path, r.RemoteAddr, "invalid peer auth", peerToken)
+			writeError(w, http.StatusUnauthorized, errors.New("invalid peer auth"))
+			return
+		}
+		if isAuthExemptRequest(r, loopback, trustedNetwork) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -3605,30 +3623,11 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		peerSwarmID, peerToken := extractPeerAuth(r)
-		if peerSwarmID != "" && peerToken != "" && s.swarm != nil {
-			peerOK, err := s.swarm.ValidateIncomingPeerAuth(peerSwarmID, peerToken)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			if peerOK {
-				ctx := context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: peerSwarmID})
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-			log.Printf("peer auth denied method=%s path=%s remote_addr=%s peer_swarm_id=%q", r.Method, r.URL.Path, strings.TrimSpace(r.RemoteAddr), peerSwarmID)
-			s.security.AuditDenied(r.Method, r.URL.Path, r.RemoteAddr, "invalid peer auth", peerToken)
-			writeError(w, http.StatusUnauthorized, errors.New("invalid peer auth"))
-			return
-		}
-
 		log.Printf("attach auth denied method=%s path=%s remote_addr=%s", r.Method, r.URL.Path, strings.TrimSpace(r.RemoteAddr))
 		s.security.AuditDenied(r.Method, r.URL.Path, r.RemoteAddr, "invalid attach token", token)
 		writeError(w, http.StatusUnauthorized, errors.New("invalid or missing attach token"))
 	})
 }
-
 func authorizeBootstrapRequest(r *http.Request) (bool, *http.Request, error) {
 	if r == nil {
 		return false, r, nil
