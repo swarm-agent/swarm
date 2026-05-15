@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type DragEvent as ReactDragEvent, type ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Clock3, Home, ListChecks, LoaderCircle, MessageSquareText, Mic, Minimize2, Plus, Save, Send, Settings2, ShieldAlert, Sparkles, Square } from 'lucide-react'
@@ -318,6 +318,13 @@ interface DesktopChatPanelProps {
   workspaceWorktreeEnabled: boolean
   workspaceTopologyRoutes: WorkspaceOverviewTopologyRoute[]
   session: DesktopSessionRecord | null
+  sessionCreateOverride?: (input: {
+    title?: string
+    mode: string
+    agentName?: string
+    preference: ResolvedSessionPreference['preference']
+    metadata?: Record<string, unknown>
+  }) => Promise<DesktopSessionRecord>
   onSessionCreated: (session: DesktopSessionRecord) => void
   onOpenSettingsTab: (tab: SettingsTabID) => void
   onOpenQuickSettings: (tab: QuickSettingsTabID) => void
@@ -325,6 +332,8 @@ interface DesktopChatPanelProps {
   onOpenWorkspaceLauncher: () => void
   onOpenSidebarMenu: () => void
   onStartNewSession: (workspacePath: string, workspaceName: string) => void
+  compactHeader?: boolean
+  emptyStateMessage?: ReactNode
 }
 
 type CommitMode = 'agent' | 'manual'
@@ -861,6 +870,9 @@ export function DesktopChatPanel({
   onOpenWorkspaceLauncher,
   onOpenSidebarMenu,
   onStartNewSession,
+  sessionCreateOverride,
+  compactHeader = false,
+  emptyStateMessage,
 }: DesktopChatPanelProps) {
   const queryClient = useQueryClient()
   const sessionId = session?.id ?? null
@@ -2149,15 +2161,21 @@ export function DesktopChatPanel({
         throw new Error('Select an authenticated model and thinking level before sending')
       }
       if (!targetSession) {
-        targetSession = await createSession({
-          workspacePath: activeChatRoute.runtimeWorkspacePath,
-          workspaceName,
-          mode: effectiveSessionMode,
-          agentName: currentSessionAgent,
-          preference: activePreferenceRecord.preference,
-          route: activeChatRoute,
-          worktreeMode: activeChatRoute.swarmId && workspaceWorktreeEnabled ? 'on' : undefined,
-        })
+        targetSession = sessionCreateOverride
+          ? await sessionCreateOverride({
+            mode: effectiveSessionMode,
+            agentName: currentSessionAgent,
+            preference: activePreferenceRecord.preference,
+          })
+          : await createSession({
+            workspacePath: activeChatRoute.runtimeWorkspacePath,
+            workspaceName,
+            mode: effectiveSessionMode,
+            agentName: currentSessionAgent,
+            preference: activePreferenceRecord.preference,
+            route: activeChatRoute,
+            worktreeMode: activeChatRoute.swarmId && workspaceWorktreeEnabled ? 'on' : undefined,
+          })
         upsertSession(targetSession)
         queryClient.setQueryData(sessionPreferenceQueryKey(targetSession.id), {
           ...activePreferenceRecord,
@@ -2196,7 +2214,7 @@ export function DesktopChatPanel({
         void queryClient.invalidateQueries({ queryKey: sessionMessagesQueryKey(targetSession.id) })
       }
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, currentSessionAgent, effectiveSessionMode, mentionSubagents, onSessionCreated, queryClient, session, sessionId, stopDictation, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, currentSessionAgent, effectiveSessionMode, mentionSubagents, onSessionCreated, queryClient, session, sessionCreateOverride, sessionId, stopDictation, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {
@@ -2632,7 +2650,7 @@ export function DesktopChatPanel({
   return (
     <Card className="flex h-full w-full flex-1 min-h-0 min-w-0 flex-row overflow-hidden rounded-none border-0 bg-[var(--app-surface)]">
       <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-      <header className="shrink-0 flex min-h-[60px] items-center gap-1.5 border-b border-[var(--app-border)] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:gap-2 sm:px-4 sm:py-0">
+      <header className={`${compactHeader ? 'min-h-[48px] px-2.5 py-1.5' : 'min-h-[60px] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:px-4 sm:py-0'} shrink-0 flex items-center gap-1.5 border-b border-[var(--app-border)] sm:gap-2`}>
         <button
           type="button"
           className="inline-flex h-9 w-9 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-transparent bg-transparent text-[var(--app-text-muted)] transition duration-150 hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)] sm:hidden"
@@ -2821,10 +2839,10 @@ export function DesktopChatPanel({
         {loadingMessages && messages.length === 0 ? (
           <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text-muted)]">Loading conversation…</div>
         ) : null}
-        {!loadingMessages && messages.length === 0 && !sessionId ? (
+        {!loadingMessages && messages.length === 0 && (!sessionId || emptyStateMessage) ? (
           <div className="flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text-muted)]">
             <Sparkles size={16} />
-            No conversation yet. Ask Swarm to do something in this workspace.
+            {emptyStateMessage ?? 'No conversation yet. Ask Swarm to do something in this workspace.'}
           </div>
         ) : null}
         <div

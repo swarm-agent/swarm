@@ -20,6 +20,11 @@ function validateImageToolParams(params: Record<string, unknown>): { imageSessio
   return { imageSessionId }
 }
 
+function validateIntegrationSessionParams(params: Record<string, unknown>): { sessionId: string } {
+  const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : ''
+  return { sessionId }
+}
+
 function validateWorkspaceImageToolParams(params: Record<string, unknown>): { workspaceSlug: string; imageSessionId: string } {
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
   const imageSessionId = typeof params.imageSessionId === 'string' ? params.imageSessionId.trim() : ''
@@ -68,6 +73,13 @@ const settingsRoute = createRoute({
 const integrationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/integrations',
+  component: IntegrationsPage,
+})
+
+const integrationSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/integrations/$sessionId',
+  parseParams: validateIntegrationSessionParams,
   component: IntegrationsPage,
 })
 
@@ -177,6 +189,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   settingsRoute,
   integrationsRoute,
+  integrationSessionRoute,
   toolsRoute,
   videoToolRoute,
   imageToolRoute,

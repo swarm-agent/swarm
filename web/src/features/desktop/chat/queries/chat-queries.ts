@@ -381,6 +381,10 @@ function routeFromSessionMetadata(session: DesktopSessionRecord): DesktopChatRou
   return desktopChatRouteFromSessionMetadata(session);
 }
 
+export function mapDesktopSession(session: unknown): DesktopSessionRecord {
+  return mapSession(session as SessionWire);
+}
+
 function mapSession(session: SessionWire): DesktopSessionRecord {
   const lifecycle =
     session.lifecycle && typeof session.lifecycle === "object"

@@ -78,8 +78,8 @@ export function SwarmToolSidebar({
   children,
 }: SwarmToolSidebarProps) {
   return (
-    <aside className="mr-5 flex w-[276px] shrink-0 flex-col border-r border-[var(--app-border)] pr-4 font-mono text-[12px] text-[var(--app-text-muted)]">
-      <div className="mb-4 flex items-center justify-between gap-2">
+    <aside className="mr-5 flex w-[276px] shrink-0 flex-col border-r border-[var(--app-border)] py-5 pl-3 pr-4 font-mono text-[12px] text-[var(--app-text-muted)]">
+      <div className="mb-5 flex items-center justify-between gap-2">
         <button type="button" onClick={onBack} className="flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
           <ArrowLeft size={14} />
           <span className="truncate">{backLabel}</span>
