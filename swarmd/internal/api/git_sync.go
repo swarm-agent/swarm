@@ -10,11 +10,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const gitSyncCommandTimeout = 45 * time.Second
 
-const peerGitSyncApplyPath = "/v1/swarm/peer/git/sync/apply"
+const (
+	managedHostGitSyncApplyPath = "/v1/swarm/managed-hosts/git/sync/apply"
+	peerGitSyncApplyPath        = "/v1/swarm/peer/git/sync/apply"
+)
 
 type gitSyncInspectRequest struct {
 	Path          string `json:"path,omitempty"`
@@ -39,6 +44,23 @@ type gitSyncApplyRequest struct {
 	RequireClean  *bool  `json:"require_clean,omitempty"`
 }
 
+type managedHostGitSyncApplyRequest struct {
+	TargetSwarmID       string `json:"target_swarm_id,omitempty"`
+	SourceWorkspacePath string `json:"source_workspace_path,omitempty"`
+	WorkspacePath       string `json:"workspace_path,omitempty"`
+	Path                string `json:"path,omitempty"`
+	DevRoot             string `json:"dev_root,omitempty"`
+	SourceRepo          string `json:"source_repo,omitempty"`
+	SyncRef             string `json:"sync_ref,omitempty"`
+	Branch              string `json:"branch,omitempty"`
+	CommitSHA           string `json:"commit_sha,omitempty"`
+	Commit              string `json:"commit,omitempty"`
+	TreeSHA             string `json:"tree_sha,omitempty"`
+	Tree                string `json:"tree,omitempty"`
+	Destructive         bool   `json:"destructive,omitempty"`
+	RequireClean        *bool  `json:"require_clean,omitempty"`
+}
+
 type gitSyncInspectResponse struct {
 	OK          bool     `json:"ok"`
 	Path        string   `json:"path,omitempty"`
@@ -59,6 +81,24 @@ type gitSyncApplyResponse struct {
 	After    gitSyncInspectResponse `json:"after,omitempty"`
 	Commands []gitSyncCommandResult `json:"commands,omitempty"`
 	Error    string                 `json:"error,omitempty"`
+}
+
+type managedHostGitSyncApplyResponse struct {
+	OK      bool                                  `json:"ok"`
+	Warning string                                `json:"warning,omitempty"`
+	Source  gitSyncInspectResponse                `json:"source,omitempty"`
+	Targets []managedHostGitSyncApplyTargetResult `json:"targets,omitempty"`
+	Error   string                                `json:"error,omitempty"`
+}
+
+type managedHostGitSyncApplyTargetResult struct {
+	OK         bool                                       `json:"ok"`
+	SwarmID    string                                     `json:"swarm_id,omitempty"`
+	Name       string                                     `json:"name,omitempty"`
+	TargetPath string                                     `json:"target_path,omitempty"`
+	Binding    pebblestore.TopologyWorkspaceBindingRecord `json:"binding,omitempty"`
+	Apply      gitSyncApplyResponse                       `json:"apply,omitempty"`
+	Error      string                                     `json:"error,omitempty"`
 }
 
 type gitSyncCommandResult struct {
@@ -112,8 +152,151 @@ func (s *Server) handleGitSyncApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *Server) handleManagedHostGitSyncApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req managedHostGitSyncApplyRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(req.TargetSwarmID) == "" {
+		req.TargetSwarmID = strings.TrimSpace(r.URL.Query().Get("swarm_id"))
+	}
+	resp, status, err := s.applyManagedHostGitSync(r.Context(), r, req)
+	if err != nil {
+		resp.OK = false
+		resp.Error = err.Error()
+		writeJSON(w, status, resp)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) handlePeerGitSyncApply(w http.ResponseWriter, r *http.Request) {
 	s.handleGitSyncApply(w, r)
+}
+
+func (s *Server) applyManagedHostGitSync(ctx context.Context, r *http.Request, req managedHostGitSyncApplyRequest) (managedHostGitSyncApplyResponse, int, error) {
+	if s == nil || s.topology == nil {
+		return managedHostGitSyncApplyResponse{Warning: gitSyncDestructiveWarning()}, http.StatusInternalServerError, errors.New("topology service is not configured")
+	}
+	sourcePath := firstNonEmpty(req.SourceWorkspacePath, req.WorkspacePath, req.Path, req.DevRoot)
+	if sourcePath == "" {
+		return managedHostGitSyncApplyResponse{Warning: gitSyncDestructiveWarning()}, http.StatusBadRequest, errors.New("source_workspace_path is required")
+	}
+	if strings.TrimSpace(req.TargetSwarmID) == "" {
+		return managedHostGitSyncApplyResponse{Warning: gitSyncDestructiveWarning()}, http.StatusBadRequest, errors.New("target_swarm_id is required")
+	}
+	if !req.Destructive {
+		return managedHostGitSyncApplyResponse{Warning: gitSyncDestructiveWarning()}, http.StatusBadRequest, errors.New("destructive=true is required because managed git sync resets --hard and runs git clean -fd on managed hosts")
+	}
+	source, err := inspectGitSyncRepo(ctx, sourcePath, true)
+	if err != nil {
+		return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusBadRequest, fmt.Errorf("inspect source workspace: %w", err)
+	}
+	branch := firstNonEmpty(req.Branch, source.Branch)
+	commit := firstNonEmpty(req.CommitSHA, req.Commit, source.Head)
+	tree := firstNonEmpty(req.TreeSHA, req.Tree, source.Tree)
+	if commit != source.Head {
+		return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusConflict, fmt.Errorf("source head mismatch: got %s want %s", source.Head, commit)
+	}
+	if tree != source.Tree {
+		return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusConflict, fmt.Errorf("source tree mismatch: got %s want %s", source.Tree, tree)
+	}
+
+	bindings, err := s.managedGitSyncWorkspaceBindings(source.RepoRoot, req.TargetSwarmID)
+	if err != nil {
+		return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusBadRequest, err
+	}
+	if len(bindings) == 0 {
+		return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusNotFound, errors.New("no topology workspace bindings found for managed git sync")
+	}
+
+	response := managedHostGitSyncApplyResponse{OK: true, Warning: gitSyncDestructiveWarning(), Source: source, Targets: make([]managedHostGitSyncApplyTargetResult, 0, len(bindings))}
+	for _, binding := range bindings {
+		targetSwarmID := strings.TrimSpace(binding.DestinationRuntimeSwarmID)
+		if targetSwarmID == "" {
+			targetSwarmID = strings.TrimSpace(binding.DestinationHostSwarmID)
+		}
+		if targetSwarmID == "" {
+			result := managedHostGitSyncApplyTargetResult{TargetPath: strings.TrimSpace(binding.DestinationWorkspacePath), Binding: binding, Error: "topology workspace binding is missing destination runtime swarm id"}
+			response.OK = false
+			response.Targets = append(response.Targets, result)
+			return response, http.StatusBadRequest, errors.New(result.Error)
+		}
+		target, _, _, status, err := s.resolveManagedHostSessionTarget(requestWithSwarmTargetQuery(r, targetSwarmID), targetSwarmID)
+		result := managedHostGitSyncApplyTargetResult{SwarmID: targetSwarmID, TargetPath: strings.TrimSpace(binding.DestinationWorkspacePath), Binding: binding}
+		if err != nil {
+			result.Error = err.Error()
+			response.OK = false
+			response.Targets = append(response.Targets, result)
+			return response, status, err
+		}
+		result.SwarmID = strings.TrimSpace(target.SwarmID)
+		result.Name = strings.TrimSpace(target.Name)
+		applyReq := gitSyncApplyRequest{
+			TargetPath:   strings.TrimSpace(binding.DestinationWorkspacePath),
+			SourceRepo:   strings.TrimSpace(req.SourceRepo),
+			SyncRef:      strings.TrimSpace(req.SyncRef),
+			Branch:       branch,
+			CommitSHA:    commit,
+			TreeSHA:      tree,
+			Destructive:  true,
+			RequireClean: req.RequireClean,
+		}
+		var peerResp gitSyncApplyResponse
+		if err := s.postPeerJSONToSwarmTarget(ctx, *target, peerGitSyncApplyPath, applyReq, &peerResp); err != nil {
+			result.Apply = peerResp
+			result.Error = err.Error()
+			response.OK = false
+			response.Targets = append(response.Targets, result)
+			return response, http.StatusBadGateway, err
+		}
+		result.OK = peerResp.OK
+		result.Apply = peerResp
+		if !peerResp.OK {
+			response.OK = false
+			if strings.TrimSpace(peerResp.Error) != "" {
+				result.Error = peerResp.Error
+			}
+			response.Targets = append(response.Targets, result)
+			return response, http.StatusBadGateway, errors.New(firstNonEmpty(result.Error, "managed host git sync failed"))
+		}
+		response.Targets = append(response.Targets, result)
+	}
+	return response, http.StatusOK, nil
+}
+
+func (s *Server) managedGitSyncWorkspaceBindings(sourceRepoRoot, targetSwarmID string) ([]pebblestore.TopologyWorkspaceBindingRecord, error) {
+	if s == nil || s.topology == nil {
+		return nil, errors.New("topology service is not configured")
+	}
+	if _, err := s.topology.EnsureSnapshot(); err != nil {
+		return nil, err
+	}
+	bindings, err := s.topology.ListWorkspaceBindingsBySourcePath(strings.TrimSpace(sourceRepoRoot), 100000)
+	if err != nil {
+		return nil, err
+	}
+	targetSwarmID = strings.TrimSpace(targetSwarmID)
+	out := make([]pebblestore.TopologyWorkspaceBindingRecord, 0, len(bindings))
+	for _, binding := range bindings {
+		runtimeSwarmID := strings.TrimSpace(binding.DestinationRuntimeSwarmID)
+		if runtimeSwarmID == "" {
+			runtimeSwarmID = strings.TrimSpace(binding.DestinationHostSwarmID)
+		}
+		if runtimeSwarmID == "" || strings.TrimSpace(binding.DestinationWorkspacePath) == "" {
+			continue
+		}
+		if targetSwarmID != "" && !strings.EqualFold(runtimeSwarmID, targetSwarmID) {
+			continue
+		}
+		out = append(out, binding)
+	}
+	return out, nil
 }
 
 func inspectGitSyncRepo(ctx context.Context, path string, requireClean bool) (gitSyncInspectResponse, error) {

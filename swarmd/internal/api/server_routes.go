@@ -49,6 +49,7 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(managedHostSessionRunPath, s.handleManagedHostSessionRun)
 	mux.HandleFunc(managedHostSessionStopPath, s.handleManagedHostSessionStop)
 	mux.HandleFunc(managedHostWorkspaceGitCommitPath, s.handleManagedHostWorkspaceGitCommit)
+	mux.HandleFunc(managedHostGitSyncApplyPath, s.handleManagedHostGitSyncApply)
 	mux.HandleFunc("/v1/swarm/enroll", s.handleSwarmEnroll)
 	mux.HandleFunc("/v1/swarm/pending-children", s.handleSwarmPendingChildren)
 	mux.HandleFunc("/v1/swarm/enrollment/", s.handleSwarmEnrollmentDecision)

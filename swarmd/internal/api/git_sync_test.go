@@ -1,11 +1,21 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"swarm-refactor/swarmtui/pkg/startupconfig"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 )
 
 func TestInspectGitSyncRepoRequiresCleanNamedBranch(t *testing.T) {
@@ -105,5 +115,141 @@ func TestApplyGitSyncFetchesResetsCleansAndVerifies(t *testing.T) {
 	}
 	if string(content) != "synced\n" {
 		t.Fatalf("target note = %q, want synced", string(content))
+	}
+}
+
+func TestManagedHostGitSyncApplyRejectsMissingDestructiveBeforePeer(t *testing.T) {
+	server := newManagedGitSyncTestServer(t)
+	source := initGitCommitTestRepo(t)
+	state, err := inspectGitSyncRepo(context.Background(), source, true)
+	if err != nil {
+		t.Fatalf("inspect source: %v", err)
+	}
+
+	var peerHits int
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		peerHits++
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(peer.Close)
+	seedManagedGitSyncTopologyBinding(t, server, source, peer.URL)
+
+	body, _ := json.Marshal(managedHostGitSyncApplyRequest{TargetSwarmID: "managed-swarm", SourceWorkspacePath: source, Branch: state.Branch, CommitSHA: state.Head, TreeSHA: state.Tree})
+	req := httptest.NewRequest(http.MethodPost, managedHostGitSyncApplyPath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if peerHits != 0 {
+		t.Fatalf("peer hits=%d, want 0 before destructive confirmation", peerHits)
+	}
+	if !strings.Contains(rec.Body.String(), "destructive=true") {
+		t.Fatalf("body=%s, want destructive warning", rec.Body.String())
+	}
+}
+
+func TestManagedHostGitSyncApplyRoutesThroughTopologyWorkspaceBinding(t *testing.T) {
+	server := newManagedGitSyncTestServer(t)
+	source := initGitCommitTestRepo(t)
+	state, err := inspectGitSyncRepo(context.Background(), source, true)
+	if err != nil {
+		t.Fatalf("inspect source: %v", err)
+	}
+
+	var peerReq gitSyncApplyRequest
+	var peerHits int
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path != peerGitSyncApplyPath {
+			t.Fatalf("peer path=%q want %q", r.URL.Path, peerGitSyncApplyPath)
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("peer auth=%q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		peerHits++
+		if err := json.NewDecoder(r.Body).Decode(&peerReq); err != nil {
+			t.Fatalf("decode peer request: %v", err)
+		}
+		writeJSON(w, http.StatusOK, gitSyncApplyResponse{OK: true, After: gitSyncInspectResponse{Branch: peerReq.Branch, Head: peerReq.CommitSHA, Tree: peerReq.TreeSHA, Clean: true}})
+	}))
+	t.Cleanup(peer.Close)
+	seedManagedGitSyncTopologyBinding(t, server, source, peer.URL)
+
+	body, _ := json.Marshal(managedHostGitSyncApplyRequest{TargetSwarmID: "managed-swarm", SourceWorkspacePath: source, Branch: state.Branch, CommitSHA: state.Head, TreeSHA: state.Tree, Destructive: true})
+	req := httptest.NewRequest(http.MethodPost, managedHostGitSyncApplyPath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if peerHits != 1 {
+		t.Fatalf("peer hits=%d want 1", peerHits)
+	}
+	if peerReq.TargetPath != "/managed/swarm-go" || peerReq.Branch != state.Branch || peerReq.CommitSHA != state.Head || peerReq.TreeSHA != state.Tree || !peerReq.Destructive {
+		t.Fatalf("peer request=%+v", peerReq)
+	}
+	var response managedHostGitSyncApplyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.OK || len(response.Targets) != 1 || !response.Targets[0].OK || response.Targets[0].Binding.BindingID == "" {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func newManagedGitSyncTestServer(t *testing.T) *Server {
+	t.Helper()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "managed-git-sync.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, nil))
+	server.SetSwarmNodeStore(pebblestore.NewSwarmNodeStore(store))
+	server.SetSwarmService(fakeRoutedSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"}}, token: "peer-token"})
+	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
+	cfg := startupconfig.Default(startupPath)
+	cfg.SwarmMode = true
+	cfg.SwarmName = "host-swarm"
+	if err := startupconfig.Write(cfg); err != nil {
+		t.Fatalf("write startup config: %v", err)
+	}
+	server.SetStartupConfigPath(startupPath)
+	return server
+}
+
+func seedManagedGitSyncTopologyBinding(t *testing.T, server *Server, sourceRepo, backendURL string) {
+	t.Helper()
+	if _, err := server.swarmNodes.Put(pebblestore.SwarmNodeRecord{SwarmID: "managed-swarm", Name: "Managed Host", Role: "managed", Kind: "manual", BackendURL: backendURL, Status: "online"}); err != nil {
+		t.Fatalf("put managed node: %v", err)
+	}
+	server.swarmTargetHealth.entries = map[string]swarmTargetHealthEntry{
+		"host|managed-swarm|" + backendURL:   {online: true, checkedAt: time.Now()},
+		"manual|managed-swarm|" + backendURL: {online: true, checkedAt: time.Now()},
+	}
+	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 pebblestore.CanonicalTopologyWorkspaceBindingID("managed-swarm", sourceRepo),
+		SourceWorkspacePath:       sourceRepo,
+		SourceWorkspaceName:       "swarm-go",
+		DestinationRuntimeSwarmID: "managed-swarm",
+		DestinationHostSwarmID:    "managed-swarm",
+		DestinationWorkspacePath:  "/managed/swarm-go",
+		ReplicationMode:           "bundle",
+		Writable:                  true,
+	}); err != nil {
+		t.Fatalf("upsert topology binding: %v", err)
 	}
 }
