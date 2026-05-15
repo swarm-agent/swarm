@@ -429,6 +429,9 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 		if !runtimeAlive {
 			continue
 		}
+		if !runtimeTarget.Online || !runtimeTarget.Selectable {
+			continue
+		}
 		if seenByWorkspace[workspacePath] == nil {
 			seenByWorkspace[workspacePath] = make(map[string]struct{})
 		}

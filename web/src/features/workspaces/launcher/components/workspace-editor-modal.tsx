@@ -4,10 +4,10 @@ import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import type { SwarmTarget } from '../../../desktop/swarm/api/swarm-targets'
 import {
-  workspaceLinkDisplayPath,
-  workspaceLinkHoverTitle,
-  workspaceLinkModeLabel,
-  workspaceLinkTargetName,
+  workspaceRouteDisplayPath,
+  workspaceRouteHoverTitle,
+  workspaceRouteModeLabel,
+  workspaceRouteTargetName,
   workspacePlacementLinks,
 } from '../services/workspace-placement'
 import { formatWorkspacePath } from '../services/workspace-format'
@@ -119,7 +119,7 @@ export function WorkspaceEditorModal({
   ]
   const selectedWorkspaceIndex = workspaces.findIndex((workspace) => workspace.path === workspacePath)
   const selectedWorkspace = selectedWorkspaceIndex >= 0 ? workspaces[selectedWorkspaceIndex] : null
-  const placementLinks = workspacePlacementLinks(selectedWorkspace?.replicationLinks ?? [], availableSwarmTargets)
+  const placementLinks = workspacePlacementLinks(selectedWorkspace?.topologyRoutes ?? [], availableSwarmTargets)
   const managedHostTargets = availableSwarmTargets.filter((target) => {
     const relationship = String(target.relationship || '').trim().toLowerCase()
     const role = String(target.role || '').trim().toLowerCase()
@@ -242,24 +242,24 @@ export function WorkspaceEditorModal({
               </div>
               {placementLinks.length > 0 || pendingManagedLinks.length > 0 ? (
                 <div className="grid gap-2">
-                  {placementLinks.map(({ link, target, targetType }) => {
-                    const displayPath = workspaceLinkDisplayPath(link)
+                  {placementLinks.map(({ route, target, targetType }) => {
+                    const displayPath = workspaceRouteDisplayPath(route)
                     return (
                       <div
-                        key={link.id || `${link.targetSwarmId}:${link.targetWorkspacePath}`}
+                        key={route.workspaceBindingId || route.routeId}
                         className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3 transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]"
-                        title={workspaceLinkHoverTitle(link, target)}
+                        title={workspaceRouteHoverTitle(route, target)}
                       >
                         <div className="grid min-w-0 gap-1">
-                          <span className="truncate text-sm font-medium text-[var(--app-text)]">{workspaceLinkTargetName(link, target)}</span>
+                          <span className="truncate text-sm font-medium text-[var(--app-text)]">{workspaceRouteTargetName(route, target)}</span>
                           {displayPath ? <span className="truncate text-xs text-[var(--app-text-muted)]">{displayPath}</span> : null}
-                          <span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceLinkModeLabel(link)}</span>
+                          <span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceRouteModeLabel(route)}</span>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
                           <span className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface-elevated)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-muted)]">
                             {targetType}
                           </span>
-                          {onRemoveManagedLink ? <Button type="button" onClick={() => onRemoveManagedLink(link.id)}>Remove</Button> : null}
+                          {onRemoveManagedLink ? <Button type="button" onClick={() => onRemoveManagedLink(route.workspaceBindingId)}>Remove</Button> : null}
                         </div>
                       </div>
                     )

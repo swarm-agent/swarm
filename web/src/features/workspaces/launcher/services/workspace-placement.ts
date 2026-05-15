@@ -1,8 +1,8 @@
 import type { SwarmTarget } from '../../../desktop/swarm/api/swarm-targets'
-import type { WorkspaceReplicationLink } from '../types/workspace'
+import type { WorkspaceOverviewTopologyRoute } from '../types/workspace-overview'
 
 export interface WorkspacePlacementLink {
-  link: WorkspaceReplicationLink
+  route: WorkspaceOverviewTopologyRoute
   target: SwarmTarget | null
   targetType: string
 }
@@ -11,67 +11,72 @@ function normalizeTargetValue(value: string | undefined): string {
   return value?.trim().toLowerCase() ?? ''
 }
 
-export function resolveWorkspaceLinkTarget(link: WorkspaceReplicationLink, targets: SwarmTarget[]): SwarmTarget | null {
-  const targetSwarmId = normalizeTargetValue(link.targetSwarmId)
-  if (!targetSwarmId) {
+export function resolveWorkspaceRouteTarget(route: WorkspaceOverviewTopologyRoute, targets: SwarmTarget[]): SwarmTarget | null {
+  const runtimeSwarmId = normalizeTargetValue(route.runtimeSwarmId)
+  if (!runtimeSwarmId) {
     return null
   }
-  return targets.find((target) => normalizeTargetValue(target.swarm_id) === targetSwarmId) ?? null
+  return targets.find((target) => normalizeTargetValue(target.swarm_id) === runtimeSwarmId) ?? null
 }
 
-export function workspacePlacementLinks(links: WorkspaceReplicationLink[], targets: SwarmTarget[]): WorkspacePlacementLink[] {
-  return links
-    .map((link) => {
-      const target = resolveWorkspaceLinkTarget(link, targets)
-      const targetType = workspaceLinkTargetType(link, target)
-      return targetType ? { link, target, targetType } : null
+export function workspacePlacementLinks(routes: WorkspaceOverviewTopologyRoute[], targets: SwarmTarget[]): WorkspacePlacementLink[] {
+  return routes
+    .map((route) => {
+      const target = resolveWorkspaceRouteTarget(route, targets)
+      const targetType = workspaceRouteTargetType(route, target)
+      return targetType ? { route, target, targetType } : null
     })
     .filter((entry): entry is WorkspacePlacementLink => Boolean(entry))
 }
 
-export function workspaceLinkTargetName(link: WorkspaceReplicationLink, target: SwarmTarget | null): string {
-  return target?.name?.trim() || link.targetSwarmName.trim() || link.targetWorkspacePath.trim() || link.targetSwarmId.trim() || 'target'
+export function workspaceRouteTargetName(route: WorkspaceOverviewTopologyRoute, target: SwarmTarget | null): string {
+  return target?.name?.trim() || route.runtimeSwarmName.trim() || route.runtimeWorkspacePath.trim() || route.runtimeSwarmId.trim() || 'target'
 }
 
-export function workspaceLinkDisplayPath(link: WorkspaceReplicationLink): string {
-  return link.targetWorkspacePath.trim()
+export function workspaceRouteDisplayPath(route: WorkspaceOverviewTopologyRoute): string {
+  return route.runtimeWorkspacePath.trim()
 }
 
-function workspaceLinkKind(link: WorkspaceReplicationLink, target: SwarmTarget | null): string {
-  return normalizeTargetValue(target?.kind || link.targetKind)
+function workspaceRouteKind(route: WorkspaceOverviewTopologyRoute, target: SwarmTarget | null): string {
+  return normalizeTargetValue(target?.kind || route.runtimeKind)
 }
 
-export function workspaceLinkTargetType(link: WorkspaceReplicationLink, target: SwarmTarget | null): string {
-  const relationship = normalizeTargetValue(target?.relationship)
+export function workspaceRouteTargetType(route: WorkspaceOverviewTopologyRoute, target: SwarmTarget | null): string {
+  const source = normalizeTargetValue(route.routeSource)
+  if (source !== 'topology/workspace_binding') {
+    return ''
+  }
+  const relationship = normalizeTargetValue(target?.relationship || route.runtimeRelationship)
   const role = normalizeTargetValue(target?.role)
-  const kind = workspaceLinkKind(link, target)
-  const linkKind = normalizeTargetValue(link.targetKind)
-  if (relationship === 'managed' || role === 'managed' || kind === 'host' || linkKind === 'managed_host' || linkKind === 'managed') {
+  const kind = workspaceRouteKind(route, target)
+  if (relationship === 'managed' || role === 'managed' || kind === 'host') {
     return 'Managed Host'
   }
-  if (target?.deployment_id?.trim() || kind === 'local' || linkKind === 'container') {
+  if (target?.deployment_id?.trim() || route.containerId.trim() || kind === 'local' || kind === 'container') {
     return 'Container'
   }
-  return ''
+  return 'Managed Host'
 }
 
-export function workspaceLinkPlacementLabel(link: WorkspaceReplicationLink, target: SwarmTarget | null): string {
-  const type = workspaceLinkTargetType(link, target)
-  return type ? `${workspaceLinkTargetName(link, target)} (${type})` : ''
+export function workspaceRoutePlacementLabel(route: WorkspaceOverviewTopologyRoute, target: SwarmTarget | null): string {
+  const type = workspaceRouteTargetType(route, target)
+  return type ? `${workspaceRouteTargetName(route, target)} (${type})` : ''
 }
 
-export function workspaceLinkModeLabel(link: WorkspaceReplicationLink): string {
-  const mode = link.replicationMode.trim() || link.sync.mode.trim() || 'linked'
-  const sync = link.sync.enabled ? `sync ${link.sync.mode.trim() || 'enabled'}` : 'manual sync'
-  return `${link.writable ? 'writable' : 'read-only'} · ${mode} · ${sync}`
+export function workspaceRouteModeLabel(route: WorkspaceOverviewTopologyRoute): string {
+  const mode = route.replicationMode.trim() || route.sync.mode.trim() || 'linked'
+  const modules = route.sync.modules.length > 0 ? route.sync.modules.join(', ') : ''
+  const sync = route.sync.enabled ? `sync ${route.sync.mode.trim() || modules || 'enabled'}` : 'manual sync'
+  return `${route.writable ? 'writable' : 'read-only'} · ${mode} · ${sync}`
 }
 
-export function workspaceLinkHoverTitle(link: WorkspaceReplicationLink, target: SwarmTarget | null): string {
+export function workspaceRouteHoverTitle(route: WorkspaceOverviewTopologyRoute, target: SwarmTarget | null): string {
   const parts = [
-    workspaceLinkPlacementLabel(link, target),
-    link.targetSwarmId.trim() ? `Swarm ID: ${link.targetSwarmId.trim()}` : '',
-    workspaceLinkDisplayPath(link) ? `Target path: ${workspaceLinkDisplayPath(link)}` : '',
-    workspaceLinkModeLabel(link),
+    workspaceRoutePlacementLabel(route, target),
+    route.workspaceBindingId.trim() ? `Binding ID: ${route.workspaceBindingId.trim()}` : '',
+    route.runtimeSwarmId.trim() ? `Runtime swarm ID: ${route.runtimeSwarmId.trim()}` : '',
+    workspaceRouteDisplayPath(route) ? `Runtime path: ${workspaceRouteDisplayPath(route)}` : '',
+    workspaceRouteModeLabel(route),
   ].filter(Boolean)
   return parts.join('\n')
 }

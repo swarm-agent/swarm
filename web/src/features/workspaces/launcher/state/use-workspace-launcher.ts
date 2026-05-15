@@ -67,7 +67,7 @@ interface UseWorkspaceLauncherState {
   deleteWorkspace: (path: string) => Promise<void>
   unlinkWorkspaceDirectory: (workspacePath: string, directoryPath: string) => Promise<void>
   upsertWorkspaceManagedLink: (input: UpsertWorkspaceManagedLinkInput) => Promise<void>
-  removeWorkspaceManagedLink: (workspacePath: string, linkID: string) => Promise<void>
+  removeWorkspaceManagedLink: (workspacePath: string, bindingID: string) => Promise<void>
   setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<void>
   createFolder: (parentPath: string, name: string) => Promise<string>
@@ -217,32 +217,12 @@ function workspacesEqual(left: WorkspaceEntry[], right: WorkspaceEntry[]): boole
       || leftWorkspace.todoSummary?.agent?.openCount !== rightWorkspace.todoSummary?.agent?.openCount
       || leftWorkspace.todoSummary?.agent?.inProgressCount !== rightWorkspace.todoSummary?.agent?.inProgressCount
       || leftWorkspace.directories.length !== rightWorkspace.directories.length
-      || leftWorkspace.replicationLinks.length !== rightWorkspace.replicationLinks.length
       || !topologyRouteArraysEqual(leftWorkspace.topologyRoutes, rightWorkspace.topologyRoutes)
     ) {
       return false
     }
     for (let i = 0; i < leftWorkspace.directories.length; i += 1) {
       if (leftWorkspace.directories[i] !== rightWorkspace.directories[i]) {
-        return false
-      }
-    }
-    for (let i = 0; i < leftWorkspace.replicationLinks.length; i += 1) {
-      const leftLink = leftWorkspace.replicationLinks[i]
-      const rightLink = rightWorkspace.replicationLinks[i]
-      if (
-        leftLink.id !== rightLink.id
-        || leftLink.targetKind !== rightLink.targetKind
-        || leftLink.targetSwarmId !== rightLink.targetSwarmId
-        || leftLink.targetSwarmName !== rightLink.targetSwarmName
-        || leftLink.targetWorkspacePath !== rightLink.targetWorkspacePath
-        || leftLink.replicationMode !== rightLink.replicationMode
-        || leftLink.writable !== rightLink.writable
-        || leftLink.createdAt !== rightLink.createdAt
-        || leftLink.updatedAt !== rightLink.updatedAt
-        || leftLink.sync.enabled !== rightLink.sync.enabled
-        || leftLink.sync.mode !== rightLink.sync.mode
-      ) {
         return false
       }
     }
@@ -603,16 +583,16 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [refresh])
 
-  const removeWorkspaceManagedLink = useCallback(async (workspacePath: string, linkID: string) => {
+  const removeWorkspaceManagedLink = useCallback(async (workspacePath: string, bindingID: string) => {
     const trimmedWorkspacePath = workspacePath.trim()
-    const trimmedLinkID = linkID.trim()
-    if (trimmedWorkspacePath === '' || trimmedLinkID === '') {
+    const trimmedBindingID = bindingID.trim()
+    if (trimmedWorkspacePath === '' || trimmedBindingID === '') {
       return
     }
     setSavingPath(trimmedWorkspacePath)
     setActionError(null)
     try {
-      await removeWorkspaceManagedLinkAPI({ workspacePath: trimmedWorkspacePath, linkID: trimmedLinkID })
+      await removeWorkspaceManagedLinkAPI({ workspacePath: trimmedWorkspacePath, bindingID: trimmedBindingID })
       await refresh()
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to remove managed host link')

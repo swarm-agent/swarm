@@ -154,6 +154,54 @@ func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
 	}
 }
 
+func TestWorkspaceOverviewSkipsOfflineTopologyBindings(t *testing.T) {
+	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
+	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
+		Node:           swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
+		CurrentGroupID: "group-1",
+		TrustedPeers: []swarmruntime.TrustedPeer{{
+			SwarmID:      "offline-swarm",
+			Name:         "Offline",
+			Role:         swarmruntime.RelationshipManaged,
+			Relationship: swarmruntime.RelationshipManaged,
+		}},
+		Groups: []swarmruntime.GroupState{{
+			Group: swarmruntime.Group{ID: "group-1", Name: "Primary Group", HostSwarmID: "host-swarm-id"},
+			Members: []swarmruntime.GroupMember{
+				{GroupID: "group-1", SwarmID: "host-swarm-id", Name: "host-swarm", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost},
+				{GroupID: "group-1", SwarmID: "offline-swarm", Name: "Offline", SwarmRole: swarmruntime.RelationshipManaged, MembershipRole: swarmruntime.GroupMembershipRoleMember},
+			},
+		}},
+	})
+	topologyStore := pebblestore.NewTopologyStore(store)
+	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 "binding-offline",
+		SourceWorkspacePath:       workspacePath,
+		DestinationRuntimeSwarmID: "offline-swarm",
+		DestinationWorkspacePath:  "/workspaces/offline",
+		Writable:                  true,
+	}); err != nil {
+		t.Fatalf("upsert topology binding: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/workspace/overview?limit=25&discover_limit=1", nil)
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response workspaceOverviewResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	if len(response.Workspaces) != 1 {
+		t.Fatalf("workspace count=%d response=%+v", len(response.Workspaces), response)
+	}
+	if routes := response.Workspaces[0].TopologyRoutes; len(routes) != 0 {
+		t.Fatalf("expected offline route to be hidden, got %+v", routes)
+	}
+}
+
 func newWorkspaceOverviewTopologyTestServer(t *testing.T) (*Server, string, *pebblestore.Store) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "workspace-overview.pebble"))

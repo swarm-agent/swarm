@@ -488,9 +488,9 @@ function workspaceOptionLabel(workspace: FlowWorkspaceEntry): string {
 }
 
 function workspaceOptionHelper(workspace: FlowWorkspaceEntry): string {
-  const linkedCount = workspace.replicationLinks.length
+  const routeCount = workspace.topologyRoutes.length
   const directoryCount = workspace.directories.length
-  return [workspace.active ? 'active' : '', linkedCount ? `${linkedCount} linked swarm${linkedCount === 1 ? '' : 's'}` : '', directoryCount ? `${directoryCount} director${directoryCount === 1 ? 'y' : 'ies'}` : '']
+  return [workspace.active ? 'active' : '', routeCount ? `${routeCount} topology route${routeCount === 1 ? '' : 's'}` : '', directoryCount ? `${directoryCount} director${directoryCount === 1 ? 'y' : 'ies'}` : '']
     .filter(Boolean)
     .join(' • ')
 }

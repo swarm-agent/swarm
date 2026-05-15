@@ -117,7 +117,7 @@ type workspaceManagedLinkUpsertRequest struct {
 
 type workspaceManagedLinkRemoveRequest struct {
 	WorkspacePath string `json:"workspace_path"`
-	LinkID        string `json:"link_id"`
+	BindingID     string `json:"binding_id"`
 }
 
 type workspaceManagedLinkResponse struct {
@@ -327,8 +327,8 @@ func (s *Server) handleWorkspaceManagedLinkRemove(w http.ResponseWriter, r *http
 		methodNotAllowed(w)
 		return
 	}
-	if s == nil || s.workspace == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("workspace service is not configured"))
+	if s == nil || s.topology == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("topology service is not configured"))
 		return
 	}
 	var req workspaceManagedLinkRemoveRequest
@@ -336,11 +336,26 @@ func (s *Server) handleWorkspaceManagedLinkRemove(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.workspace.RemoveReplicationLink(req.WorkspacePath, req.LinkID); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	workspacePath := strings.TrimSpace(req.WorkspacePath)
+	bindingID := strings.TrimSpace(req.BindingID)
+	if workspacePath == "" || bindingID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("workspace_path and binding_id are required"))
 		return
 	}
-	writeJSON(w, http.StatusOK, workspaceManagedLinkResponse{OK: true, WorkspacePath: strings.TrimSpace(req.WorkspacePath)})
+	binding, ok, err := s.topology.GetWorkspaceBinding(bindingID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !ok || strings.TrimSpace(binding.SourceWorkspacePath) != workspacePath {
+		writeError(w, http.StatusNotFound, errors.New("topology workspace binding not found"))
+		return
+	}
+	if err := s.topology.DeleteWorkspaceBinding(bindingID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workspaceManagedLinkResponse{OK: true, WorkspacePath: workspacePath, Binding: binding})
 }
 
 func (s *Server) handlePeerManagedWorkspaceEnsureLink(w http.ResponseWriter, r *http.Request) {

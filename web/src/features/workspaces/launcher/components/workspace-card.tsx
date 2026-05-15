@@ -5,9 +5,9 @@ import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
 import type { SwarmTarget } from '../../../desktop/swarm/api/swarm-targets'
 import {
-  workspaceLinkDisplayPath,
-  workspaceLinkHoverTitle,
-  workspaceLinkTargetName,
+  workspaceRouteDisplayPath,
+  workspaceRouteHoverTitle,
+  workspaceRouteTargetName,
   workspacePlacementLinks,
 } from '../services/workspace-placement'
 import { formatWorkspaceDirectories } from '../services/workspace-format'
@@ -48,7 +48,7 @@ export function WorkspaceCard({
 }: WorkspaceCardProps) {
   const directories = formatWorkspaceDirectories(workspace.directories)
   const cardThemeStyle = createWorkspaceAccentStyle(workspace.themeId, '--workspace-card-theme') as CSSProperties
-  const placementLinks = workspacePlacementLinks(workspace.replicationLinks, availableSwarmTargets)
+  const placementLinks = workspacePlacementLinks(workspace.topologyRoutes, availableSwarmTargets)
   const [linksExpanded, setLinksExpanded] = useState(false)
   const collapseLinks = placementLinks.length > 2 && !linksExpanded
   const visiblePlacementLinks = collapseLinks ? placementLinks.slice(0, 2) : placementLinks
@@ -146,16 +146,16 @@ export function WorkspaceCard({
           <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Available on</span>
           {placementLinks.length > 0 ? (
             <div className="grid gap-1.5">
-              {visiblePlacementLinks.map(({ link, target, targetType }) => {
-                const displayPath = workspaceLinkDisplayPath(link)
+              {visiblePlacementLinks.map(({ route, target, targetType }) => {
+                const displayPath = workspaceRouteDisplayPath(route)
                 return (
                   <div
-                    key={link.id || `${link.targetSwarmId}:${link.targetWorkspacePath}`}
+                    key={route.workspaceBindingId || route.routeId}
                     className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-2 text-xs transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]"
-                    title={workspaceLinkHoverTitle(link, target)}
+                    title={workspaceRouteHoverTitle(route, target)}
                   >
                     <div className="min-w-0">
-                      <div className="truncate font-medium text-[var(--app-text)]">{workspaceLinkTargetName(link, target)}</div>
+                      <div className="truncate font-medium text-[var(--app-text)]">{workspaceRouteTargetName(route, target)}</div>
                       {displayPath ? <div className="truncate text-[var(--app-text-subtle)]">{displayPath}</div> : null}
                     </div>
                     <span className="shrink-0 rounded bg-[var(--app-surface-elevated)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">

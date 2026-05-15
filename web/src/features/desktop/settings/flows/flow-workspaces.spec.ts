@@ -7,7 +7,7 @@ function workspaceWire(path: string, name: string) {
     workspace_name: name,
     directories: [],
     is_git_repo: true,
-    replication_links: [],
+    topology_routes: [],
     sort_index: 0,
     added_at: 0,
     updated_at: 0,

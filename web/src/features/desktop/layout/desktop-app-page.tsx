@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
+import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plug, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -342,7 +342,6 @@ function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): Work
     themeId: '',
     directories: [path],
     isGitRepo: false,
-    replicationLinks: [],
     topologyRoutes: [],
     sortIndex: -1,
     addedAt: 0,
@@ -1232,6 +1231,7 @@ interface SessionRowProps {
   session: DesktopSessionRecord
   fallbackSwarmName: string
   routeOptions: DesktopChatRoute[]
+  workspaceSlug: string
   depth?: number
   childLabel?: string | null
   childKind?: SidebarSessionNode['kind']
@@ -1242,7 +1242,7 @@ interface SessionRowProps {
   onToggleAgents: (sessionId: string) => void
 }
 
-function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, depth = 0, childLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
+function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childLabel = null, childKind = 'root', agentSummary, agentsExpanded, onSelect, onPrefetch, onToggleAgents }: SessionRowProps) {
   const session = useDesktopStore((state) => state.sessions[initialSession.id] ?? initialSession)
   const activeSession = sessionIsActive(session)
   const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
@@ -1264,12 +1264,18 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const agentDescriptor = agentSummaryDescriptor(agentSummary)
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onSelect(session.id)}
+    <Link
+      to="/$workspaceSlug/$sessionId"
+      params={{ workspaceSlug, sessionId: session.id }}
+      onClick={(event) => {
+        if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) {
+          return
+        }
+        event.preventDefault()
+        onSelect(session.id)
+      }}
       onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
+        if (event.key === ' ') {
           event.preventDefault()
           onSelect(session.id)
         }
@@ -1372,7 +1378,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
           </div>
         </div>
       ) : null}
-    </div>
+    </Link>
   )
 }
 
@@ -2288,19 +2294,12 @@ export function DesktopAppPage() {
   }, [handleOpenSettingsTab])
 
   const handleOpenTools = useCallback(() => {
-    if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug: routeWorkspaceSlug } })
-      return
-    }
-    const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
-    if (workspacePath) {
-      const workspaceSlug = workspaceSlugByPath.get(workspacePath)
-        ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: selectedWorkspace?.workspaceName ?? '' })
-      void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug } })
-      return
-    }
     void navigate({ to: '/tools' })
-  }, [navigate, routeWorkspaceSlug, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, workspaceSlugByPath])
+  }, [navigate])
+
+  const handleOpenIntegrations = useCallback(() => {
+    void navigate({ to: '/integrations' })
+  }, [navigate])
 
   useEffect(() => {
     if (!updateAvailable) {
@@ -2875,26 +2874,38 @@ export function DesktopAppPage() {
                     ) : null}
                   </div>
 
-                  <button
-                    type="button"
-                    className="grid min-h-[30px] grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                    onClick={handleOpenTools}
-                    aria-label="Open Swarm Tools"
-                    title="Tools"
-                  >
-                    <LayoutGrid size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                    <span className="truncate">Tools</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="grid min-h-[30px] grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[12px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                    onClick={() => handleOpenSettingsTab('agents')}
-                    aria-label="Open agent settings"
-                    title="Settings"
-                  >
-                    <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                    <span className="truncate">Settings</span>
-                  </button>
+                  <div className="grid grid-cols-3 gap-1">
+                    <button
+                      type="button"
+                      className="grid min-h-[34px] place-items-center gap-1 rounded-md px-1 text-center font-inherit text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      onClick={handleOpenIntegrations}
+                      aria-label="Open Integrations"
+                      title="Integrations"
+                    >
+                      <Plug size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="truncate">Integrations</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="grid min-h-[34px] place-items-center gap-1 rounded-md px-1 text-center font-inherit text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      onClick={handleOpenTools}
+                      aria-label="Open Swarm Tools"
+                      title="Tools"
+                    >
+                      <LayoutGrid size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="truncate">Tools</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="grid min-h-[34px] place-items-center gap-1 rounded-md px-1 text-center font-inherit text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                      onClick={() => handleOpenSettingsTab('agents')}
+                      aria-label="Open agent settings"
+                      title="Settings"
+                    >
+                      <Settings size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="truncate">Settings</span>
+                    </button>
+                  </div>
               </div>
             </div>
           </div>
@@ -2955,6 +2966,8 @@ export function DesktopAppPage() {
                 const workspaceGitSnapshot = gitSnapshotByPath.get(workspace.path) ?? (workspace.path === selectedGitWorkspacePath ? gitSnapshot : null)
                 const workspaceGitLoading = workspace.path === selectedGitWorkspacePath && gitStatusQuery.isFetching
                 const workspaceGitError = gitRealtimeErrors[workspace.path] ?? (workspace.path === selectedGitWorkspacePath && gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : null)
+                const workspaceSlug = workspaceSlugByPath.get(workspace.path)
+                  ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName })
                 const workspaceRouteOptions = buildDesktopChatRouteOptions({
                   hostSwarmName: swarmName,
                   workspacePath: workspace.path,
@@ -3030,6 +3043,7 @@ export function DesktopAppPage() {
                               session={node.session}
                               fallbackSwarmName={swarmName}
                               routeOptions={workspaceRouteOptions}
+                              workspaceSlug={workspaceSlug}
                               depth={node.depth}
                               childLabel={node.label}
                               childKind={node.kind}

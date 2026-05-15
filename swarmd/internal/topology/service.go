@@ -176,6 +176,13 @@ func (s *Service) DeleteSessionRoute(sessionID string) error {
 	return s.topologyStore.DeleteSessionRoute(sessionID)
 }
 
+func (s *Service) DeleteWorkspaceBinding(bindingID string) error {
+	if s == nil || s.topologyStore == nil {
+		return fmt.Errorf("topology service is not configured")
+	}
+	return s.topologyStore.DeleteWorkspaceBinding(bindingID)
+}
+
 func (s *Service) ListAttachmentsByHostContainer(hostContainerID string, limit int) ([]pebblestore.TopologyAttachmentRecord, error) {
 	if s == nil || s.topologyStore == nil {
 		return nil, fmt.Errorf("topology service is not configured")

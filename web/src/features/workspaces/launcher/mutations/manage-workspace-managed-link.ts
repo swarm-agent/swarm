@@ -1,6 +1,5 @@
 import { requestJson } from '../../../../app/api'
-import type { WorkspaceReplicationLink, WorkspaceReplicationLinkWire } from '../types/workspace'
-import { mapWorkspaceReplicationLink } from '../types/workspace'
+import type { WorkspaceOverviewTopologyRouteWire } from '../types/workspace-overview'
 
 interface ManagedLinkTargetWire {
   swarm_id?: string
@@ -16,7 +15,7 @@ interface ManagedLinkResponseWire {
   exists?: boolean
   created?: boolean
   registered?: boolean
-  link?: WorkspaceReplicationLinkWire
+  binding?: WorkspaceOverviewTopologyRouteWire
 }
 
 export interface ManagedLinkResponse {
@@ -31,7 +30,7 @@ export interface ManagedLinkResponse {
   exists: boolean
   created: boolean
   registered: boolean
-  link: WorkspaceReplicationLink | null
+  binding: WorkspaceOverviewTopologyRouteWire | null
 }
 
 function mapManagedLinkResponse(payload: ManagedLinkResponseWire): ManagedLinkResponse {
@@ -47,7 +46,7 @@ function mapManagedLinkResponse(payload: ManagedLinkResponseWire): ManagedLinkRe
     exists: Boolean(payload.exists),
     created: Boolean(payload.created),
     registered: Boolean(payload.registered),
-    link: payload.link ? mapWorkspaceReplicationLink(payload.link) : null,
+    binding: payload.binding ?? null,
   }
 }
 
@@ -78,7 +77,7 @@ export async function upsertWorkspaceManagedLink(input: {
 
 export async function removeWorkspaceManagedLink(input: {
   workspacePath: string
-  linkID: string
+  bindingID: string
 }): Promise<ManagedLinkResponse> {
   const payload = await requestJson<ManagedLinkResponseWire>('/v1/workspace/managed-links/remove', {
     method: 'POST',
@@ -87,7 +86,7 @@ export async function removeWorkspaceManagedLink(input: {
     },
     body: JSON.stringify({
       workspace_path: input.workspacePath,
-      link_id: input.linkID,
+      binding_id: input.bindingID,
     }),
   })
   return mapManagedLinkResponse(payload)

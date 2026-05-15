@@ -22,7 +22,7 @@ export interface SwarmMirrorWorkspaceResource {
   theme_id?: string
   directories?: string[]
   is_git_repo?: boolean
-  replication_links?: unknown[]
+  topology_routes?: unknown[]
   sort_index?: number
   added_at?: number
   updated_at?: number

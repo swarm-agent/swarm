@@ -1,6 +1,11 @@
-import { workspaceLinkPlacementLabel, workspaceLinkTargetName, workspaceLinkTargetType, workspacePlacementLinks } from './workspace-placement'
+import {
+  workspaceRoutePlacementLabel,
+  workspaceRouteTargetName,
+  workspaceRouteTargetType,
+  workspacePlacementLinks,
+} from './workspace-placement'
 import type { SwarmTarget } from '../../../desktop/swarm/api/swarm-targets'
-import type { WorkspaceReplicationLink } from '../types/workspace'
+import type { WorkspaceOverviewTopologyRoute } from '../types/workspace-overview'
 
 function assertEqual(actual: string, expected: string, message: string): void {
   if (actual !== expected) {
@@ -8,16 +13,24 @@ function assertEqual(actual: string, expected: string, message: string): void {
   }
 }
 
-function link(overrides: Partial<WorkspaceReplicationLink> = {}): WorkspaceReplicationLink {
+function route(overrides: Partial<WorkspaceOverviewTopologyRoute> = {}): WorkspaceOverviewTopologyRoute {
   return {
-    id: 'link-1',
-    targetKind: '',
-    targetSwarmId: 'target-swarm',
-    targetSwarmName: 'Target Name',
-    targetWorkspacePath: '/workspace',
+    routeId: 'target-swarm:/workspace',
+    routeSource: 'topology/workspace_binding',
+    workspaceBindingId: 'binding-1',
+    runtimeSwarmId: 'target-swarm',
+    runtimeSwarmName: 'Target Name',
+    runtimeKind: 'host',
+    runtimeRelationship: 'managed',
+    runtimeBackendUrl: 'http://target.example',
+    hostSwarmId: 'host-swarm',
+    hostWorkspacePath: '/source',
+    hostWorkspaceName: 'Source',
+    runtimeWorkspacePath: '/workspace',
+    containerId: '',
     replicationMode: 'bundle',
     writable: true,
-    sync: { enabled: false, mode: '' },
+    sync: { enabled: false, mode: '', modules: [] },
     createdAt: 0,
     updatedAt: 0,
     ...overrides,
@@ -38,37 +51,39 @@ function target(overrides: Partial<SwarmTarget> = {}): SwarmTarget {
   }
 }
 
-function testManagedHostLinkKindDoesNotFallBackToGenericTarget(): void {
-  const managedLink = link({ targetKind: 'managed_host', targetSwarmName: 'Laptop' })
-  assertEqual(workspaceLinkTargetType(managedLink, null), 'Managed Host', 'managed_host links should be labeled as Managed Host')
-  assertEqual(workspaceLinkPlacementLabel(managedLink, null), 'Laptop (Managed Host)', 'managed_host placement label should lead with the link name')
+function testManagedHostTopologyRouteIsVisibleFromTopologyBinding(): void {
+  const managedRoute = route({ runtimeSwarmName: 'Laptop' })
+  assertEqual(workspaceRouteTargetType(managedRoute, null), 'Managed Host', 'topology workspace bindings should be labeled as Managed Host')
+  assertEqual(workspaceRoutePlacementLabel(managedRoute, null), 'Laptop (Managed Host)', 'topology placement label should lead with the route name')
 }
 
-function testTargetPathCanProvideVisibleLinkName(): void {
-  const pathOnlyLink = link({ targetSwarmName: '', targetWorkspacePath: '/srv/workspaces/project' })
-  assertEqual(workspaceLinkTargetName(pathOnlyLink, null), '/srv/workspaces/project', 'target path should be visible when no target name is stored')
+function testRuntimePathCanProvideVisibleRouteName(): void {
+  const pathOnlyRoute = route({ runtimeSwarmName: '', runtimeWorkspacePath: '/srv/workspaces/project' })
+  assertEqual(workspaceRouteTargetName(pathOnlyRoute, null), '/srv/workspaces/project', 'runtime path should be visible when no runtime name is stored')
 }
 
-function testDeadLegacyLinksAreRemovedFromVisibleLinks(): void {
-  const links = workspacePlacementLinks([link({ targetKind: 'legacy_unused_target' })], [])
-  assertEqual(String(links.length), '0', 'dead legacy links should not render as visible placement links')
+function testNonTopologyRoutesAreRemovedFromVisibleLinks(): void {
+  const links = workspacePlacementLinks([route({ routeSource: 'workspace/entry/deleted' })], [])
+  assertEqual(String(links.length), '0', 'non-topology routes must not render as visible placement links')
 }
 
 function testManagedRelationshipMapsToManagedHost(): void {
   const managedTarget = target({ kind: 'host', relationship: 'managed', role: 'managed' })
-  assertEqual(workspaceLinkTargetType(link({ targetKind: 'managed_host' }), managedTarget), 'Managed Host', 'managed relationship should map to Managed Host')
+  assertEqual(workspaceRouteTargetType(route(), managedTarget), 'Managed Host', 'managed relationship should map to Managed Host')
 }
 
-function testDeadLegacyLinksAreHidden(): void {
-  assertEqual(workspaceLinkTargetType(link({ targetKind: 'legacy_unused_target' }), null), '', 'dead legacy target kind should not be displayed')
+function testTopologyRoutesRenderWithoutTargetRecord(): void {
+  const links = workspacePlacementLinks([route({ runtimeRelationship: '', runtimeKind: '' })], [])
+  assertEqual(String(links.length), '1', 'topology workspace bindings should render even when the target list is unavailable')
+  assertEqual(links[0]?.targetType ?? '', 'Managed Host', 'target-less topology workspace binding should still be a Managed Host route')
 }
 
 function main(): void {
-  testManagedHostLinkKindDoesNotFallBackToGenericTarget()
-  testTargetPathCanProvideVisibleLinkName()
-  testDeadLegacyLinksAreRemovedFromVisibleLinks()
+  testManagedHostTopologyRouteIsVisibleFromTopologyBinding()
+  testRuntimePathCanProvideVisibleRouteName()
+  testNonTopologyRoutesAreRemovedFromVisibleLinks()
   testManagedRelationshipMapsToManagedHost()
-  testDeadLegacyLinksAreHidden()
+  testTopologyRoutesRenderWithoutTargetRecord()
   console.log('workspace-placement tests passed')
 }
 

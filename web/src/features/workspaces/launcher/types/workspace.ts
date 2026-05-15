@@ -7,7 +7,6 @@ export interface WorkspaceEntry {
   themeId: string
   directories: string[]
   isGitRepo: boolean
-  replicationLinks: WorkspaceReplicationLink[]
   sortIndex: number
   addedAt: number
   updatedAt: number
@@ -29,24 +28,6 @@ export interface WorkspaceEntry {
   gitCommittedDeletions?: number
   todoSummary?: WorkspaceTodoSummary
   topologyRoutes: WorkspaceOverviewTopologyRoute[]
-}
-
-export interface WorkspaceReplicationSync {
-  enabled: boolean
-  mode: string
-}
-
-export interface WorkspaceReplicationLink {
-  id: string
-  targetKind: string
-  targetSwarmId: string
-  targetSwarmName: string
-  targetWorkspacePath: string
-  replicationMode: string
-  writable: boolean
-  sync: WorkspaceReplicationSync
-  createdAt: number
-  updatedAt: number
 }
 
 export interface WorkspaceResolution {
@@ -104,7 +85,6 @@ export interface WorkspaceEntryWire {
   theme_id?: string
   directories: string[]
   is_git_repo: boolean
-  replication_links?: WorkspaceReplicationLinkWire[]
   sort_index: number
   added_at: number
   updated_at: number
@@ -124,24 +104,6 @@ export interface WorkspaceEntryWire {
   git_committed_file_count?: number
   git_committed_additions?: number
   git_committed_deletions?: number
-}
-
-export interface WorkspaceReplicationSyncWire {
-  enabled?: boolean
-  mode?: string
-}
-
-export interface WorkspaceReplicationLinkWire {
-  id: string
-  target_kind: string
-  target_swarm_id: string
-  target_swarm_name: string
-  target_workspace_path: string
-  replication_mode: string
-  writable: boolean
-  sync?: WorkspaceReplicationSyncWire
-  created_at: number
-  updated_at: number
 }
 
 export interface WorkspaceResolutionWire {
@@ -185,7 +147,6 @@ export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
     themeId: entry.theme_id ?? '',
     directories: entry.directories,
     isGitRepo: Boolean(entry.is_git_repo),
-    replicationLinks: Array.isArray(entry.replication_links) ? entry.replication_links.map(mapWorkspaceReplicationLink) : [],
     sortIndex: entry.sort_index,
     addedAt: entry.added_at,
     updatedAt: entry.updated_at,
@@ -207,24 +168,6 @@ export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
     gitCommittedDeletions: typeof entry.git_committed_deletions === 'number' ? entry.git_committed_deletions : 0,
     todoSummary: undefined,
     topologyRoutes: [],
-  }
-}
-
-export function mapWorkspaceReplicationLink(entry: WorkspaceReplicationLinkWire): WorkspaceReplicationLink {
-  return {
-    id: String(entry.id ?? '').trim(),
-    targetKind: String(entry.target_kind ?? '').trim(),
-    targetSwarmId: String(entry.target_swarm_id ?? '').trim(),
-    targetSwarmName: String(entry.target_swarm_name ?? '').trim(),
-    targetWorkspacePath: String(entry.target_workspace_path ?? '').trim(),
-    replicationMode: String(entry.replication_mode ?? '').trim(),
-    writable: Boolean(entry.writable),
-    sync: {
-      enabled: Boolean(entry.sync?.enabled),
-      mode: String(entry.sync?.mode ?? '').trim(),
-    },
-    createdAt: typeof entry.created_at === 'number' ? entry.created_at : 0,
-    updatedAt: typeof entry.updated_at === 'number' ? entry.updated_at : 0,
   }
 }
 
