@@ -37,6 +37,7 @@ type gitSyncApplyRequest struct {
 	DevRoot       string `json:"dev_root,omitempty"`
 	SourceRepo    string `json:"source_repo,omitempty"`
 	SyncRef       string `json:"sync_ref,omitempty"`
+	GitBundle     []byte `json:"git_bundle,omitempty"`
 	Branch        string `json:"branch,omitempty"`
 	CommitSHA     string `json:"commit_sha,omitempty"`
 	Commit        string `json:"commit,omitempty"`
@@ -217,6 +218,19 @@ func (s *Server) applyManagedHostGitSync(ctx context.Context, r *http.Request, r
 		return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusNotFound, errors.New("no topology workspace bindings found for managed git sync")
 	}
 
+	var gitBundle []byte
+	if strings.TrimSpace(req.SourceRepo) == "" {
+		bundlePath, err := createGitBundle(ctx, source.RepoRoot)
+		if err != nil {
+			return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusInternalServerError, err
+		}
+		defer os.Remove(bundlePath)
+		gitBundle, err = os.ReadFile(bundlePath)
+		if err != nil {
+			return managedHostGitSyncApplyResponse{Source: source, Warning: gitSyncDestructiveWarning()}, http.StatusInternalServerError, fmt.Errorf("read git sync bundle: %w", err)
+		}
+	}
+
 	response := managedHostGitSyncApplyResponse{OK: true, Warning: gitSyncDestructiveWarning(), Source: source, Targets: make([]managedHostGitSyncApplyTargetResult, 0, len(bindings))}
 	for _, binding := range bindings {
 		targetSwarmID := strings.TrimSpace(binding.DestinationRuntimeSwarmID)
@@ -243,6 +257,7 @@ func (s *Server) applyManagedHostGitSync(ctx context.Context, r *http.Request, r
 			TargetPath:   strings.TrimSpace(binding.DestinationWorkspacePath),
 			SourceRepo:   strings.TrimSpace(req.SourceRepo),
 			SyncRef:      strings.TrimSpace(req.SyncRef),
+			GitBundle:    gitBundle,
 			Branch:       branch,
 			CommitSHA:    commit,
 			TreeSHA:      tree,
@@ -404,13 +419,22 @@ func applyGitSync(ctx context.Context, req gitSyncApplyRequest) (gitSyncApplyRes
 		repoRoot = before.Path
 	}
 
-	commands := make([]gitSyncCommandResult, 0, 6)
+	commands := make([]gitSyncCommandResult, 0, 7)
 	run := func(args ...string) error {
 		result, err := runGitSyncCommand(ctx, repoRoot, args...)
 		commands = append(commands, result)
 		return err
 	}
-	if strings.TrimSpace(req.SourceRepo) != "" || strings.TrimSpace(req.SyncRef) != "" {
+	if len(req.GitBundle) > 0 {
+		bundlePath, err := writeGitSyncBundleTemp(req.GitBundle)
+		if err != nil {
+			return gitSyncApplyResponse{Before: before, Commands: commands, Warning: gitSyncDestructiveWarning()}, err
+		}
+		defer os.Remove(bundlePath)
+		if err := run("fetch", bundlePath, commit); err != nil {
+			return gitSyncApplyResponse{Before: before, Commands: commands, Warning: gitSyncDestructiveWarning()}, fmt.Errorf("git bundle fetch failed: %w", err)
+		}
+	} else if strings.TrimSpace(req.SourceRepo) != "" || strings.TrimSpace(req.SyncRef) != "" {
 		sourceRepo := strings.TrimSpace(req.SourceRepo)
 		if sourceRepo == "" {
 			sourceRepo = "."
@@ -456,6 +480,27 @@ func applyGitSync(ctx context.Context, req gitSyncApplyRequest) (gitSyncApplyRes
 		return resp, fmt.Errorf("tree mismatch after sync: got %s want %s", after.Tree, tree)
 	}
 	return resp, nil
+}
+
+func writeGitSyncBundleTemp(bundle []byte) (string, error) {
+	if len(bundle) == 0 {
+		return "", errors.New("git_bundle is empty")
+	}
+	file, err := os.CreateTemp("", "swarm-git-sync-*.bundle")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	if _, err := file.Write(bundle); err != nil {
+		file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write git sync bundle: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 func runGitSyncCommand(parent context.Context, dir string, args ...string) (gitSyncCommandResult, error) {

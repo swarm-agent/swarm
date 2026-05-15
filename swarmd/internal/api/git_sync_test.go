@@ -197,8 +197,8 @@ func TestManagedHostGitSyncApplyRoutesThroughTopologyWorkspaceBinding(t *testing
 	if peerHits != 1 {
 		t.Fatalf("peer hits=%d want 1", peerHits)
 	}
-	if peerReq.TargetPath != "/managed/swarm-go" || peerReq.Branch != state.Branch || peerReq.CommitSHA != state.Head || peerReq.TreeSHA != state.Tree || !peerReq.Destructive {
-		t.Fatalf("peer request=%+v", peerReq)
+	if peerReq.TargetPath != "/managed/swarm-go" || peerReq.Branch != state.Branch || peerReq.CommitSHA != state.Head || peerReq.TreeSHA != state.Tree || !peerReq.Destructive || len(peerReq.GitBundle) == 0 {
+		t.Fatalf("peer request=%+v bundle_bytes=%d", peerReq, len(peerReq.GitBundle))
 	}
 	var response managedHostGitSyncApplyResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
@@ -206,6 +206,58 @@ func TestManagedHostGitSyncApplyRoutesThroughTopologyWorkspaceBinding(t *testing
 	}
 	if !response.OK || len(response.Targets) != 1 || !response.Targets[0].OK || response.Targets[0].Binding.BindingID == "" {
 		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestApplyGitSyncImportsBundleWhenCommitIsMissing(t *testing.T) {
+	source := initGitCommitTestRepo(t)
+	branch := strings.TrimSpace(runGitCommitTestCommand(t, source, "branch", "--show-current"))
+	target := filepath.Join(t.TempDir(), "target")
+	runGitCommitTestCommand(t, t.TempDir(), "clone", source, target)
+
+	if err := os.WriteFile(filepath.Join(source, "bundled.txt"), []byte("from bundle\n"), 0o644); err != nil {
+		t.Fatalf("write source change: %v", err)
+	}
+	runGitCommitTestCommand(t, source, "add", "bundled.txt")
+	runGitCommitTestCommand(t, source, "commit", "-m", "feat: bundled sync")
+	sourceState, err := inspectGitSyncRepo(context.Background(), source, true)
+	if err != nil {
+		t.Fatalf("inspect source: %v", err)
+	}
+	if _, err := runGitSyncCommand(context.Background(), target, "cat-file", "-e", sourceState.Head+"^{commit}"); err == nil {
+		t.Fatalf("target unexpectedly already has source commit")
+	}
+
+	bundlePath, err := createGitBundle(context.Background(), source)
+	if err != nil {
+		t.Fatalf("create bundle: %v", err)
+	}
+	defer os.Remove(bundlePath)
+	bundle, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatalf("read bundle: %v", err)
+	}
+
+	result, err := applyGitSync(context.Background(), gitSyncApplyRequest{
+		TargetPath:  target,
+		GitBundle:   bundle,
+		Branch:      branch,
+		CommitSHA:   sourceState.Head,
+		TreeSHA:     sourceState.Tree,
+		Destructive: true,
+	})
+	if err != nil {
+		t.Fatalf("applyGitSync error = %v result=%+v", err, result)
+	}
+	if result.After.Head != sourceState.Head || result.After.Tree != sourceState.Tree || !result.After.Clean {
+		t.Fatalf("after=%+v want source head/tree clean", result.After)
+	}
+	content, err := os.ReadFile(filepath.Join(target, "bundled.txt"))
+	if err != nil {
+		t.Fatalf("read bundled file: %v", err)
+	}
+	if string(content) != "from bundle\n" {
+		t.Fatalf("bundled file=%q", string(content))
 	}
 }
 
