@@ -237,10 +237,6 @@ export function formatMobileAgentTodoBadge(summary: { openCount: number; inProgr
   const open = Math.max(0, summary.openCount)
   const active = Math.max(0, summary.inProgressCount)
   const completed = Math.min(total, Math.max(0, total - open))
-  const activeText = summary.activeText?.trim() ?? ''
-  if (active > 0 && activeText) {
-    return activeText
-  }
   if (open === 0) {
     return 'Complete'
   }

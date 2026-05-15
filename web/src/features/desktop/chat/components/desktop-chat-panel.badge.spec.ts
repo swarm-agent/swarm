@@ -14,10 +14,20 @@ test('formatAgentTodoBadge shows complete state when no tasks remain open', () =
 })
 
 test('formatAgentTodoBadge shows active todo text when available', () => {
+  const summary = { taskCount: 6, openCount: 2, inProgressCount: 1, activeText: 'Validate task badge states on desktop' }
+
+  assert.equal(formatAgentTodoBadge(summary), 'Validate task badge states on desktop')
+})
+
+test('formatMobileAgentTodoBadge stays compact when active todo text is available', () => {
   const summary = { taskCount: 6, openCount: 2, inProgressCount: 1, activeText: 'Validate task badge states on mobile' }
 
-  assert.equal(formatAgentTodoBadge(summary), 'Validate task badge states on mobile')
-  assert.equal(formatMobileAgentTodoBadge(summary), 'Validate task badge states on mobile')
+  assert.equal(formatMobileAgentTodoBadge(summary), '4/6')
+})
+
+test('formatMobileAgentTodoBadge shows state labels at mobile edges', () => {
+  assert.equal(formatMobileAgentTodoBadge({ taskCount: 5, openCount: 5, inProgressCount: 1, activeText: 'Start the checklist' }), 'Active')
+  assert.equal(formatMobileAgentTodoBadge({ taskCount: 5, openCount: 0, inProgressCount: 0, activeText: '' }), 'Complete')
 })
 
 test('metadataTodoSummary reads agent-scoped counts from metadata', () => {
