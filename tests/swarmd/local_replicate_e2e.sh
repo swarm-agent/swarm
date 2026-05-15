@@ -1845,8 +1845,13 @@ verify_workspace_link() {
 
 topology_json_count() {
   local json="${1:-}"
-  local filter="${2:-}"
-  printf '%s' "${json}" | jq -r "${filter} | length"
+  shift || true
+  local jq_args=("$@")
+  local last_index=$(( ${#jq_args[@]} - 1 ))
+  (( last_index >= 0 )) || fail "topology_json_count requires a jq filter"
+  local filter="${jq_args[${last_index}]}"
+  unset 'jq_args[${last_index}]'
+  printf '%s' "${json}" | jq -r "${jq_args[@]}" "[${filter}] | length"
 }
 
 verify_topology_session_route() {
