@@ -789,6 +789,9 @@ bootstrap_if_needed() {
   if [[ -n "${HOST_VAULT_PASSWORD}" ]]; then
     args+=("--host-vault-password" "${HOST_VAULT_PASSWORD}")
   fi
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    args+=("--dev-mode")
+  fi
   if [[ "${REBUILD_HOST}" != "true" ]]; then
     args+=("--skip-host-rebuild")
   fi
@@ -958,6 +961,7 @@ LAST_DEPLOYMENTS_JSON=""
 LAST_DEPLOYMENT_JSON=""
 SCENARIO_NOTE=""
 OWN_BOOTSTRAP_ENV="false"
+DEV_MODE="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -1031,6 +1035,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-image-rebuild)
       REBUILD_IMAGE="false"
+      shift
+      ;;
+    --dev-mode)
+      DEV_MODE="true"
       shift
       ;;
     --attach-timeout)

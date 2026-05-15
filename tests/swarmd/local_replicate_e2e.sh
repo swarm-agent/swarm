@@ -775,12 +775,57 @@ remote_deploy_host_desktop_url =
 EOF
 }
 
+write_host_env_file() {
+  cat >"${HOST_ENV_FILE}" <<EOF
+#!/usr/bin/env bash
+export XDG_BIN_HOME="${HOST_XDG_BIN_HOME}"
+export XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}"
+export XDG_DATA_HOME="${HOST_XDG_DATA_HOME}"
+export XDG_STATE_HOME="${HOST_XDG_STATE_HOME}"
+export XDG_CACHE_HOME="${HOST_XDG_CACHE_HOME}"
+export SWARM_LANE="${SWARM_LANE}"
+export SWARM_LANE_PORT="${SWARM_LANE_PORT}"
+export SWARM_STATE_HOME="${SWARM_STATE_HOME}"
+export SWARM_CONFIG_HOME="${SWARM_CONFIG_HOME}"
+export SWARM_STARTUP_CONFIG="${SWARM_STARTUP_CONFIG}"
+export SWARM_STARTUP_MODE="${SWARM_STARTUP_MODE}"
+export SWARM_DEV_MODE="${SWARM_DEV_MODE}"
+export SWARM_DEV_ROOT="${SWARM_DEV_ROOT}"
+export SWARM_BYPASS_PERMISSIONS="${SWARM_BYPASS_PERMISSIONS}"
+export SWARMD_LISTEN="${SWARMD_LISTEN}"
+export SWARMD_URL="${SWARMD_URL}"
+export LISTEN="${SWARMD_LISTEN}"
+export ADDR="${SWARMD_URL}"
+export SWARM_DESKTOP_PORT="${SWARM_DESKTOP_PORT}"
+export STATE_ROOT="${STATE_ROOT}"
+export DATA_DIR="${DATA_DIR}"
+export DB_PATH="${DB_PATH}"
+export LOCK_PATH="${LOCK_PATH}"
+export PID_FILE="${PID_FILE}"
+export LOG_FILE="${LOG_FILE}"
+export STATE_DIRECTORY="${STATE_DIRECTORY}"
+export RUNTIME_DIRECTORY="${RUNTIME_DIRECTORY}"
+export CACHE_DIRECTORY="${CACHE_DIRECTORY}"
+export CONFIGURATION_DIRECTORY="${CONFIGURATION_DIRECTORY}"
+export LOGS_DIRECTORY="${LOGS_DIRECTORY}"
+export SWARM_PORTS_DIR="${SWARM_PORTS_DIR}"
+export SWARM_PORT_RECORD="${SWARM_PORT_RECORD}"
+export SWARM_BIN_DIR="${SWARM_BIN_DIR}"
+export SWARM_TOOL_BIN_DIR="${SWARM_TOOL_BIN_DIR}"
+export SWARM_WEB_DIR="${SWARM_WEB_DIR}"
+export SWARM_WEB_DIST_DIR="${SWARM_WEB_DIST_DIR}"
+EOF
+  chmod 0644 "${HOST_ENV_FILE}"
+}
+
 write_host_control_files() {
   if [[ -n "${HOST_INSTALL_ARTIFACT_ROOT}" ]]; then
     cat >"${HOST_ROOT}/start-host.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${ROOT_DIR}"
+# shellcheck source=/dev/null
+source "${HOST_ENV_FILE}"
 export XDG_BIN_HOME="${HOST_XDG_BIN_HOME}"
 export XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}"
 export XDG_DATA_HOME="${HOST_XDG_DATA_HOME}"
@@ -795,6 +840,8 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${ROOT_DIR}"
+# shellcheck source=/dev/null
+source "${HOST_ENV_FILE}"
 export XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}"
 export XDG_DATA_HOME="${HOST_XDG_DATA_HOME}"
 export XDG_STATE_HOME="${HOST_XDG_STATE_HOME}"
@@ -811,6 +858,8 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${ROOT_DIR}"
+# shellcheck source=/dev/null
+source "${HOST_ENV_FILE}"
 XDG_BIN_HOME="${HOST_XDG_BIN_HOME}" \\
 XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \\
 XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \\
@@ -823,6 +872,8 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "${ROOT_DIR}"
+# shellcheck source=/dev/null
+source "${HOST_ENV_FILE}"
 XDG_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}" \\
 XDG_DATA_HOME="${HOST_XDG_DATA_HOME}" \\
 XDG_STATE_HOME="${HOST_XDG_STATE_HOME}" \\
@@ -868,6 +919,7 @@ prepare_isolated_host() {
   HOST_XDG_DATA_HOME="${HOST_ROOT}/xdg/data"
   HOST_XDG_STATE_HOME="${HOST_ROOT}/xdg/state"
   HOST_XDG_CACHE_HOME="${HOST_ROOT}/xdg/cache"
+  HOST_ENV_FILE="${HOST_ROOT}/host-env.sh"
   HOST_DAEMON_DATA_ROOT="${HOST_ROOT}/daemon/data"
   HOST_DAEMON_RUNTIME_ROOT="${HOST_ROOT}/daemon/run"
   HOST_DAEMON_CACHE_ROOT="${HOST_ROOT}/daemon/cache"
@@ -929,6 +981,7 @@ prepare_isolated_host() {
   ROOT_ARTIFACT_DIR="${ARTIFACT_DIR}"
   mkdir -p "${ARTIFACT_DIR}"
 
+  write_host_env_file
   write_host_control_files
   if [[ -z "${HOST_INSTALL_ARTIFACT_ROOT}" ]]; then
     install_host_desktop_assets

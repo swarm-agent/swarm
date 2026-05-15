@@ -30,6 +30,7 @@ Options:
   --sync-vault-password-env <name>                         Forward child vault secret env var name
   --skip-host-rebuild                                      Reuse current host binaries
   --skip-image-rebuild                                     Reuse current child image
+  --dev-mode                                               Run isolated hosts in dev mode using the source checkout/image
   --poll-timeout <seconds>                                 Attach timeout. Default: 120
   --poll-interval <seconds>                                Poll interval. Default: 2
   --log-tail <lines>                                       Log tail lines. Default: 200
@@ -105,6 +106,7 @@ run_local_replicate() {
   [[ "${SYNC_ENABLED}" == "true" ]] && args+=("--sync-enabled")
   [[ -n "${HOST_VAULT_PASSWORD_ENV}" ]] && args+=("--host-vault-password-env" "${HOST_VAULT_PASSWORD_ENV}")
   [[ -n "${SYNC_VAULT_PASSWORD_ENV}" ]] && args+=("--sync-vault-password-env" "${SYNC_VAULT_PASSWORD_ENV}")
+  [[ "${DEV_MODE}" == "true" ]] && args+=("--dev-mode")
   [[ "${REBUILD_HOST}" != "true" ]] && args+=("--skip-host-rebuild")
   [[ "${REBUILD_IMAGE}" != "true" ]] && args+=("--skip-image-rebuild")
   args+=("$@")
@@ -193,6 +195,7 @@ scenario_local_recovery() {
   [[ "${SYNC_ENABLED}" == "true" ]] && args+=("--sync-enabled")
   [[ -n "${HOST_VAULT_PASSWORD_ENV}" ]] && args+=("--host-vault-password-env" "${HOST_VAULT_PASSWORD_ENV}")
   [[ -n "${SYNC_VAULT_PASSWORD_ENV}" ]] && args+=("--sync-vault-password-env" "${SYNC_VAULT_PASSWORD_ENV}")
+  [[ "${DEV_MODE}" == "true" ]] && args+=("--dev-mode")
   [[ "${REBUILD_HOST}" != "true" ]] && args+=("--skip-host-rebuild")
   [[ "${REBUILD_IMAGE}" != "true" ]] && args+=("--skip-image-rebuild")
   (cd "${ROOT_DIR}" && "${args[@]}")
@@ -220,6 +223,7 @@ HOST_VAULT_PASSWORD_ENV=""
 SYNC_VAULT_PASSWORD_ENV=""
 REBUILD_HOST="true"
 REBUILD_IMAGE="true"
+DEV_MODE="false"
 POLL_TIMEOUT_SECONDS="120"
 POLL_INTERVAL_SECONDS="2"
 LOG_TAIL="200"
@@ -241,6 +245,7 @@ while [[ $# -gt 0 ]]; do
     --sync-vault-password-env) shift; [[ $# -gt 0 ]] || fail "--sync-vault-password-env requires a value"; SYNC_VAULT_PASSWORD_ENV="$1" ;;
     --skip-host-rebuild) REBUILD_HOST="false" ;;
     --skip-image-rebuild) REBUILD_IMAGE="false" ;;
+    --dev-mode) DEV_MODE="true" ;;
     --poll-timeout) shift; [[ $# -gt 0 ]] || fail "--poll-timeout requires a value"; POLL_TIMEOUT_SECONDS="$1" ;;
     --poll-interval) shift; [[ $# -gt 0 ]] || fail "--poll-interval requires a value"; POLL_INTERVAL_SECONDS="$1" ;;
     --log-tail) shift; [[ $# -gt 0 ]] || fail "--log-tail requires a value"; LOG_TAIL="$1" ;;
