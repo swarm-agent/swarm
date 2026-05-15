@@ -752,8 +752,8 @@ swarm_mode = true
 child = false
 mode = lan
 tailscale_url =
-local_transport_port = 7790
-peer_transport_port = 7791
+local_transport_port = $((HOST_BACKEND_PORT + 9))
+peer_transport_port = $((HOST_BACKEND_PORT + 10))
 parent_swarm_id =
 pairing_state =
 deploy_container_enabled = false
@@ -886,7 +886,31 @@ prepare_isolated_host() {
   HOST_STARTUP_CONFIG="${HOST_XDG_CONFIG_HOME}/swarm/swarm.conf"
   write_host_startup_config
 
-  SWARMD_URL="http://${HOST_BIND_HOST}:${HOST_BACKEND_PORT}"
+  export SWARM_LANE="main"
+  export SWARM_LANE_PORT="${HOST_BACKEND_PORT}"
+  export SWARM_STATE_HOME="${HOST_XDG_STATE_HOME}/swarm"
+  export SWARM_CONFIG_HOME="${HOST_XDG_CONFIG_HOME}/swarm"
+  export SWARM_STARTUP_CONFIG="${HOST_STARTUP_CONFIG}"
+  export SWARM_STARTUP_MODE="box"
+  export SWARM_DEV_MODE="${DEV_MODE}"
+  export SWARM_DEV_ROOT="${ROOT_DIR}"
+  export SWARM_BYPASS_PERMISSIONS="${BYPASS_PERMISSIONS}"
+  export SWARMD_LISTEN="${HOST_BIND_HOST}:${HOST_BACKEND_PORT}"
+  export SWARMD_URL="http://${HOST_BIND_HOST}:${HOST_BACKEND_PORT}"
+  export SWARM_DESKTOP_PORT="${HOST_DESKTOP_PORT}"
+  export STATE_ROOT="${HOST_XDG_STATE_HOME}/swarm"
+  export DATA_DIR="${HOST_XDG_DATA_HOME}/swarm"
+  export DB_PATH="${DATA_DIR}/swarmd.pebble"
+  export LOCK_PATH="${STATE_ROOT}/swarmd.lock"
+  export PID_FILE="${STATE_ROOT}/swarmd.pid"
+  export LOG_FILE="${HOST_XDG_STATE_HOME}/swarmd.log"
+  export SWARM_PORTS_DIR="${HOST_ROOT}/ports"
+  export SWARM_PORT_RECORD="${SWARM_PORTS_DIR}/swarmd-main.env"
+  export SWARM_BIN_DIR="$(swarm_lane_bin_dir main)"
+  export SWARM_TOOL_BIN_DIR="$(swarm_lane_tool_bin_dir)"
+  export SWARM_WEB_DIR="${ROOT_DIR}/web"
+  export SWARM_WEB_DIST_DIR="$(swarm_lane_desktop_dist_dir)"
+  mkdir -p "${STATE_ROOT}" "${DATA_DIR}" "${SWARM_PORTS_DIR}"
   HOST_ADMIN_API_URL="${SWARMD_URL}"
   HOST_DESKTOP_URL="http://${HOST_ADVERTISE_HOST}:${HOST_DESKTOP_PORT}"
 
