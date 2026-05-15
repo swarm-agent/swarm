@@ -61,6 +61,9 @@ const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
+const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
+const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
+const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
 const SWARM_TARGET_REFETCH_INTERVAL_MS = 10_000
 const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
@@ -1429,6 +1432,7 @@ export function DesktopAppPage() {
   const [routeSessionPending, setRouteSessionPending] = useState(false)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
+  const mobileSidebarSwipeRef = useRef<{ startX: number; startY: number; tracking: boolean; opened: boolean } | null>(null)
   const resizeStateRef = useRef<SidebarResizeState | null>(null)
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
@@ -2466,6 +2470,46 @@ export function DesktopAppPage() {
     setMobileSidebarOpen(true)
   }, [])
 
+  const handleMobileSidebarTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    if (mobileSidebarOpen || event.touches.length !== 1) {
+      mobileSidebarSwipeRef.current = null
+      return
+    }
+    const touch = event.touches[0]
+    if (!touch || touch.clientX > MOBILE_SIDEBAR_SWIPE_EDGE_PX) {
+      mobileSidebarSwipeRef.current = null
+      return
+    }
+    mobileSidebarSwipeRef.current = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+      tracking: true,
+      opened: false,
+    }
+  }, [mobileSidebarOpen])
+
+  const handleMobileSidebarTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const swipe = mobileSidebarSwipeRef.current
+    const touch = event.touches[0]
+    if (!swipe?.tracking || !touch || swipe.opened) {
+      return
+    }
+    const deltaX = touch.clientX - swipe.startX
+    const deltaY = Math.abs(touch.clientY - swipe.startY)
+    if (deltaY > MOBILE_SIDEBAR_SWIPE_MAX_Y_PX && deltaY > deltaX) {
+      mobileSidebarSwipeRef.current = null
+      return
+    }
+    if (deltaX >= MOBILE_SIDEBAR_SWIPE_MIN_X_PX && deltaY <= MOBILE_SIDEBAR_SWIPE_MAX_Y_PX) {
+      swipe.opened = true
+      handleOpenMobileSidebar()
+    }
+  }, [handleOpenMobileSidebar])
+
+  const handleMobileSidebarTouchEnd = useCallback(() => {
+    mobileSidebarSwipeRef.current = null
+  }, [])
+
   const handlePrefetchSession = useCallback((sessionId: string) => {
     void prefetchSessionRuntimeData(queryClient, sessionId)
   }, [queryClient])
@@ -3038,7 +3082,13 @@ export function DesktopAppPage() {
     : 0
 
   return (
-    <div className="absolute inset-0 flex h-full min-h-0 w-full overflow-hidden bg-[var(--app-surface)] p-0 text-[var(--app-text)]">
+    <div
+      className="absolute inset-0 flex h-full min-h-0 w-full overflow-hidden bg-[var(--app-surface)] p-0 text-[var(--app-text)]"
+      onTouchStart={handleMobileSidebarTouchStart}
+      onTouchMove={handleMobileSidebarTouchMove}
+      onTouchEnd={handleMobileSidebarTouchEnd}
+      onTouchCancel={handleMobileSidebarTouchEnd}
+    >
       <aside data-testid="desktop-workspace-sidebar" className={cn('hidden shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] sm:flex', sidebarCollapsed ? 'sm:w-[56px]' : 'sm:w-[320px]')}>
         {sidebarContent}
       </aside>

@@ -2677,7 +2677,37 @@ export function DesktopChatPanel({
               <span>{runTimerLabel}</span>
             </div>
           ) : null}
-          <div className="relative shrink-0">
+          <div className="hidden h-9 shrink-0 items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1 text-[11px] font-medium text-[var(--app-text-muted)] shadow-sm sm:inline-flex">
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+              onClick={() => handleMobileQuickCommand('new-session')}
+              aria-label="Start new session"
+              title="Start a new session in this workspace"
+            >
+              <Plus size={13} className="shrink-0" />
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+              onClick={() => handleMobileQuickCommand('change-workspace')}
+              aria-label="Change workspace"
+              title="Change workspace"
+            >
+              <Home size={13} className="shrink-0" />
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+              onClick={() => handleMobileQuickCommand('save')}
+              disabled={!sessionId}
+              aria-label="Save changes"
+              title={sessionId ? 'Save changes from this session' : 'Open a session before saving changes'}
+            >
+              <Save size={13} className="shrink-0" />
+            </button>
+          </div>
+          <div className="relative shrink-0 sm:hidden">
             <button
               ref={mobileQuickCommandsTriggerRef}
               type="button"
