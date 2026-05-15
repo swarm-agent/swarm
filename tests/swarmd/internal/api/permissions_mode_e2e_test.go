@@ -299,7 +299,7 @@ func setSessionModeViaAPI(t *testing.T, handler http.Handler, sessionID, mode st
 func listPendingViaAPI(t *testing.T, handler http.Handler, sessionID string) apiPendingPermissionsResponse {
 	t.Helper()
 	resp := apiPendingPermissionsResponse{}
-	status := doJSONRequest(t, handler, http.MethodGet, fmt.Sprintf("/v1/sessions/%s/permissions", sessionID), nil, &resp)
+	status := doJSONRequest(t, handler, http.MethodGet, fmt.Sprintf("/v1/sessions/%s/permissions?status=pending", sessionID), nil, &resp)
 	if status != http.StatusOK {
 		t.Fatalf("list pending status=%d", status)
 	}

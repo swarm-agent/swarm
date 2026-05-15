@@ -2849,7 +2849,17 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			}
 			limit = parsed
 		}
-		pending, err := s.perm.ListPermissions(sessionID, limit)
+		var permissions []pebblestore.PermissionRecord
+		var err error
+		switch status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status"))); status {
+		case "", "all":
+			permissions, err = s.perm.ListPermissions(sessionID, limit)
+		case pebblestore.PermissionStatusPending:
+			permissions, err = s.perm.ListPending(sessionID, limit)
+		default:
+			writeError(w, http.StatusBadRequest, errors.New("unsupported permission status"))
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -2857,8 +2867,8 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":          true,
 			"session_id":  sessionID,
-			"count":       len(pending),
-			"permissions": pending,
+			"count":       len(permissions),
+			"permissions": permissions,
 		})
 		return
 	}

@@ -2835,7 +2835,7 @@ func (c *API) ListPendingPermissions(ctx context.Context, sessionID string, limi
 	if limit <= 0 {
 		limit = 200
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/permissions?limit=" + strconv.Itoa(limit)
+	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/permissions?status=pending&limit=" + strconv.Itoa(limit)
 	var resp struct {
 		OK          bool               `json:"ok"`
 		SessionID   string             `json:"session_id"`
@@ -2845,13 +2845,7 @@ func (c *API) ListPendingPermissions(ctx context.Context, sessionID string, limi
 	if err := c.getJSON(ctx, path, &resp, true); err != nil {
 		return nil, err
 	}
-	out := make([]PermissionRecord, 0, len(resp.Permissions))
-	for _, record := range resp.Permissions {
-		if strings.EqualFold(strings.TrimSpace(record.Status), "pending") {
-			out = append(out, record)
-		}
-	}
-	return out, nil
+	return resp.Permissions, nil
 }
 
 func (c *API) ListPermissions(ctx context.Context, sessionID string, limit int) ([]PermissionRecord, error) {

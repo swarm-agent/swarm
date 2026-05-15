@@ -1354,7 +1354,7 @@ export async function fetchSessionPendingPermissions(
   signal?: AbortSignal,
 ): Promise<DesktopPermissionRecord[]> {
   const response = await requestJson<PendingPermissionsResponseWire>(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/permissions?limit=200`,
+    `/v1/sessions/${encodeURIComponent(sessionId)}/permissions?status=pending&limit=200`,
     { signal },
   );
   return Array.isArray(response.permissions)

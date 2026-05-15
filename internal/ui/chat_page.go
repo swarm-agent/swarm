@@ -253,10 +253,12 @@ type chatRunStreamEnqueueResult struct {
 }
 
 type chatPermissionLoadResult struct {
-	Mode       string
-	Records    []ChatPermissionRecord
-	ModeErr    error
-	PendingErr error
+	Mode           string
+	Records        []ChatPermissionRecord
+	Pending        []ChatPermissionRecord
+	ModeErr        error
+	PermissionsErr error
+	PendingErr     error
 }
 
 type chatPermissionActionResult struct {
@@ -644,21 +646,26 @@ func NewChatPage(opts ChatPageOptions) *ChatPage {
 	go func() {
 		mode := ""
 		var (
-			modeErr    error
-			pendingErr error
-			records    []ChatPermissionRecord
+			modeErr        error
+			permissionsErr error
+			pendingErr     error
+			records        []ChatPermissionRecord
+			pending        []ChatPermissionRecord
 		)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		mode, modeErr = p.backend.GetSessionMode(ctx, p.sessionID)
-		records, pendingErr = p.backend.ListPermissions(ctx, p.sessionID, 200)
+		records, permissionsErr = p.backend.ListPermissions(ctx, p.sessionID, 200)
+		pending, pendingErr = p.backend.ListPendingPermissions(ctx, p.sessionID, 200)
 
 		result := chatPermissionLoadResult{
-			Mode:       mode,
-			Records:    records,
-			ModeErr:    modeErr,
-			PendingErr: pendingErr,
+			Mode:           mode,
+			Records:        records,
+			Pending:        pending,
+			ModeErr:        modeErr,
+			PermissionsErr: permissionsErr,
+			PendingErr:     pendingErr,
 		}
 		select {
 		case p.permissionResults <- result:
@@ -2433,11 +2440,12 @@ func (p *ChatPage) drainPermissionLoads() bool {
 		if result.ModeErr == nil {
 			p.applySessionMode(result.Mode, len(p.timeline) == 0 && normalizeSessionMode(result.Mode) == "plan")
 		}
-		if result.PendingErr == nil {
+		if result.PermissionsErr == nil || result.PendingErr == nil {
 			p.permissions = mergePermissionHistory(nil, result.Records)
+			p.permissions = mergePermissionHistory(p.permissions, result.Pending)
 			p.rebuildToolLifecycleViews()
 		}
-		if result.ModeErr != nil && result.PendingErr != nil {
+		if result.ModeErr != nil && result.PermissionsErr != nil && result.PendingErr != nil {
 			p.statusLine = "permission state unavailable"
 		}
 		return true
