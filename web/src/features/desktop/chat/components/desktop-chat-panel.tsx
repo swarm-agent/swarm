@@ -2615,28 +2615,30 @@ export function DesktopChatPanel({
         </button>
         <div className="min-w-0 flex-1">
           <div className="sm:hidden">
-            <div className="hidden min-w-0 items-center gap-1.5 min-[390px]:flex">
-              <div className="min-w-0 flex flex-1 items-center gap-1.5">
-                <div className="truncate text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-muted)]" title={workspaceName || workspacePath}>
-                  {workspaceName || workspacePath}
-                </div>
+            <h1 className="truncate text-[13px] font-semibold leading-tight text-[var(--app-text)]" title={liveSession?.title || 'New conversation'}>
+              {liveSession?.title || 'New conversation'}
+            </h1>
+            <div className="mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 overflow-hidden">
+              <div className="inline-flex min-w-0 items-center text-[10px] font-medium text-[var(--app-text-muted)]" title={workspaceName || workspacePath}>
+                <span className="truncate text-left">{workspaceName || workspacePath}</span>
+              </div>
+              <div className="flex shrink-0 justify-center">
                 {showRunTimer ? (
-                  <div className="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full border border-transparent bg-transparent px-1 text-[10px] font-medium tabular-nums text-[var(--app-text-muted)]">
+                  <div className="inline-flex h-[18px] items-center gap-1 rounded-full border border-transparent bg-transparent text-[10px] font-medium tabular-nums text-[var(--app-text-muted)]" title="Run time">
                     <Clock3 size={10} className="shrink-0" />
                     <span>{runTimerLabel}</span>
                   </div>
                 ) : null}
               </div>
-              {mobileAgentTodoBadgeLabel ? (
-                <div className="inline-flex max-w-[48%] shrink-0 items-center gap-1 text-[10px] font-medium text-[var(--app-text-muted)]" title={agentTodoSummary?.activeText || 'Agent checklist for this session'}>
-                  <ListChecks size={10} className="shrink-0 text-[var(--app-text-subtle)]" />
-                  <span className="truncate">{mobileAgentTodoBadgeLabel}</span>
-                </div>
-              ) : null}
+              <div className="flex min-w-0 items-center justify-end">
+                {mobileAgentTodoBadgeLabel ? (
+                  <div className="inline-flex max-w-[72px] items-center gap-1 text-[10px] font-medium text-[var(--app-text-muted)]" title={agentTodoSummary?.activeText || 'Agent checklist for this session'}>
+                    <ListChecks size={10} className="shrink-0 text-[var(--app-text-subtle)]" />
+                    <span className="truncate">{mobileAgentTodoBadgeLabel}</span>
+                  </div>
+                ) : null}
+              </div>
             </div>
-            <h1 className="truncate text-[13px] font-semibold leading-tight text-[var(--app-text)]" title={liveSession?.title || 'New conversation'}>
-              {liveSession?.title || 'New conversation'}
-            </h1>
           </div>
           <div className="hidden min-w-0 sm:block">
             <h1 className="flex items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)]">
