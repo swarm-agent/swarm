@@ -61,17 +61,21 @@ reserve_port_pair() {
   local backend_port="${1:-7781}"
   local desktop_port="${2:-5555}"
   local attempts=0
+  local offset ports_available
   while (( attempts < 200 )); do
-    if port_is_available "${backend_port}" \
-      && port_is_available "$((backend_port + 1))" \
-      && port_is_available "$((backend_port + 2))" \
-      && port_is_available "$((backend_port + 10))" \
-      && port_is_available "${desktop_port}"; then
+    ports_available="true"
+    for offset in {0..10}; do
+      if ! port_is_available "$((backend_port + offset))"; then
+        ports_available="false"
+        break
+      fi
+    done
+    if [[ "${ports_available}" == "true" ]] && port_is_available "${desktop_port}"; then
       RESERVED_BACKEND_PORT="${backend_port}"
       RESERVED_DESKTOP_PORT="${desktop_port}"
       return 0
     fi
-    backend_port=$((backend_port + 3))
+    backend_port=$((backend_port + 11))
     desktop_port=$((desktop_port + 1))
     attempts=$((attempts + 1))
   done
@@ -121,8 +125,26 @@ assert_multi_summary() {
   child_count="$(json_get "${summary_file}" '.runs | map(.child_swarm_id) | length')"
   [[ -n "${host_api}" ]] || fail "local-multi summary is missing host_api_url"
   [[ "${child_count}" == "2" ]] || fail "local-multi expected 2 child_swarm_ids, got ${child_count}"
-  topology_json="$(curl -sS --connect-timeout 3 --max-time 30 "${host_api%/}/v1/swarm/topology")"
+  local cookie_file
+  cookie_file="$(mktemp)"
+  curl -fsS \
+    -c "${cookie_file}" \
+    -b "${cookie_file}" \
+    -H "Origin: ${host_api%/}" \
+    -H "Referer: ${host_api%/}/" \
+    -H 'Sec-Fetch-Site: same-origin' \
+    "${host_api%/}/v1/auth/desktop/session" >/dev/null
+  topology_json="$(curl -fsS --connect-timeout 3 --max-time 30 \
+    -c "${cookie_file}" \
+    -b "${cookie_file}" \
+    -H "Origin: ${host_api%/}" \
+    -H "Referer: ${host_api%/}/" \
+    -H 'Sec-Fetch-Site: same-origin' \
+    -H 'Accept: application/json' \
+    "${host_api%/}/v1/swarm/topology")"
+  rm -f -- "${cookie_file}"
   printf '%s' "${topology_json}" >"${BENCH_ROOT}/local-multi-topology.json"
+  [[ "$(printf '%s' "${topology_json}" | jq -r '.path_id // empty')" == "swarm.topology.snapshot.v1" ]] || fail "local-multi topology snapshot path_id mismatch"
   runtimes="$(printf '%s' "${topology_json}" | jq -r --slurpfile summary "${summary_file}" '[.runtimes[]? | select(.swarm_id as $id | ($summary[0].runs | map(.child_swarm_id) | index($id)))] | length')"
   bindings="$(printf '%s' "${topology_json}" | jq -r --slurpfile summary "${summary_file}" '[.workspace_bindings[]? | select(.destination_runtime_swarm_id as $id | ($summary[0].runs | map(.child_swarm_id) | index($id)))] | length')"
   host_containers="$(printf '%s' "${topology_json}" | jq -r '[.host_containers[]? | select(.host_container_id != "")] | length')"
@@ -182,7 +204,6 @@ scenario_local_recovery() {
   local recovery_root="$(mktemp -d "${TMPDIR:-/tmp}/swarm-topology-recovery-XXXXXX")"
   local args=(
     "./tests/swarmd/local_replicate_recovery_e2e.sh"
-    "--host-root" "${recovery_root}"
     "--runtime" "${RUNTIME}"
     "--workspace-path" "${WORKSPACE_PATH}"
     "--group-name" "topology-recovery-$(date +%Y%m%d-%H%M%S)"
@@ -200,8 +221,8 @@ scenario_local_recovery() {
   [[ "${REBUILD_IMAGE}" != "true" ]] && args+=("--skip-image-rebuild")
   (cd "${ROOT_DIR}" && "${args[@]}")
   local summary_file
-  summary_file="$(find "${recovery_root}/recovery-artifacts" -name summary.json -type f | sort | tail -n 1)"
-  [[ -n "${summary_file}" && -f "${summary_file}" ]] || fail "local-recovery summary missing under ${recovery_root}"
+  summary_file="$(find "${TMPDIR:-/tmp}" -maxdepth 4 -path '*/recovery-artifacts/*/summary.json' -type f -newer "${recovery_root}" 2>/dev/null | sort | tail -n 1 || true)"
+  [[ -n "${summary_file}" && -f "${summary_file}" ]] || fail "local-recovery summary missing after marker ${recovery_root}"
   record_result "local-recovery" "PASS" "${summary_file}"
 }
 

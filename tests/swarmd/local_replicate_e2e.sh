@@ -1295,10 +1295,12 @@ redacted_replicate_payload() {
     --arg sync_mode "${SYNC_MODE}" \
     --argjson sync_modules "$(sync_modules_json)" \
     --argjson writable "${WORKSPACE_WRITABLE}" \
-    --argjson sync_enabled "${SYNC_ENABLED}" '
+    --argjson sync_enabled "${SYNC_ENABLED}" \
+    --argjson always_on "${ALWAYS_ON}" '
       {
         mode: $mode,
         swarm_name: $swarm_name,
+        always_on: $always_on,
         sync: (
           {enabled: $sync_enabled}
           + (if $sync_enabled and $sync_mode != "" then {mode: $sync_mode} else {} end)
@@ -1327,10 +1329,12 @@ replicate_payload() {
     --arg vault_password "${SYNC_VAULT_PASSWORD}" \
     --argjson sync_modules "$(sync_modules_json)" \
     --argjson writable "${WORKSPACE_WRITABLE}" \
-    --argjson sync_enabled "${SYNC_ENABLED}" '
+    --argjson sync_enabled "${SYNC_ENABLED}" \
+    --argjson always_on "${ALWAYS_ON}" '
       {
         mode: $mode,
         swarm_name: $swarm_name,
+        always_on: $always_on,
         sync: (
           {enabled: $sync_enabled}
           + (if $sync_enabled and $sync_mode != "" then {mode: $sync_mode} else {} end)
@@ -2321,6 +2325,7 @@ WORKSPACE_NAME=""
 REPLICATION_MODE=""
 WORKSPACE_WRITABLE="true"
 SYNC_ENABLED="false"
+ALWAYS_ON="false"
 SYNC_MODE=""
 SYNC_MODULES_RAW=""
 SYNC_MODULES=()
@@ -2425,6 +2430,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sync-enabled)
       SYNC_ENABLED="true"
+      shift
+      ;;
+    --always-on)
+      ALWAYS_ON="true"
       shift
       ;;
     --sync-mode)
@@ -2725,6 +2734,7 @@ log "source workspace: ${SOURCE_WORKSPACE_PATH}"
 log "replication mode: ${REPLICATION_MODE:-<default>}"
 log "writable: ${WORKSPACE_WRITABLE}"
 log "sync enabled: ${SYNC_ENABLED}"
+log "always on: ${ALWAYS_ON}"
 log "sync mode: ${SYNC_MODE:-<default>}"
 log "sync modules: $(IFS=, ; printf '%s' "${SYNC_MODULES[*]:-}")"
 log "verify sync state: ${VERIFY_SYNC_STATE}"

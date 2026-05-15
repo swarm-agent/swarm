@@ -600,7 +600,9 @@ verify_topology_state() {
   [[ "${route_host_workspace}" == "${SOURCE_WORKSPACE_PATH}" ]] || return 1
   [[ -n "${route_runtime_workspace}" ]] || return 1
   [[ -n "${route_host_container}" ]] || return 1
-  [[ -n "${route_binding}" ]] || return 1
+  if [[ "${route_runtime_workspace}" != "${SOURCE_WORKSPACE_PATH}" ]]; then
+    [[ -n "${route_binding}" ]] || return 1
+  fi
   [[ -n "${route_backend}" ]] || return 1
   [[ "${owner_runtime}" == "${CHILD_SWARM_ID}" ]] || return 1
   [[ "${owner_host_container}" == "${route_host_container}" ]] || return 1
@@ -673,7 +675,7 @@ scenario_s403() {
   wait_for_runtime_state "stopped" || return 1
   stop_host || return 1
   ensure_host_running || return 1
-  verify_session_state "s4-03-host-only" || return 1
+  verify_topology_state "s4-03-host-only" || return 1
   if wait_for_deployment_attached; then
     if [[ -n "${SYNC_VAULT_PASSWORD}" ]]; then
       verify_vaulted_child_unlocked "s4-03"
@@ -767,6 +769,7 @@ bootstrap_if_needed() {
     "--workspace-path" "${WORKSPACE_PATH}"
     "--group-name" "${GROUP_NAME}"
     "--bypass-permissions" "${BYPASS_PERMISSIONS}"
+    "--always-on"
     "--poll-timeout" "${ATTACH_TIMEOUT_SECONDS}"
     "--poll-interval" "${POLL_INTERVAL_SECONDS}"
     "--log-tail" "${LOG_TAIL}"
