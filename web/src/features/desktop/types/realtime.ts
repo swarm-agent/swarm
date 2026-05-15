@@ -232,6 +232,7 @@ export interface DesktopStoreState {
   clearOnboardingFlow: () => void
   hydrate: () => Promise<void>
   connect: () => Promise<void>
+  reconnectIfStale: (reason: string) => Promise<void>
   disconnect: () => void
   submitPrompt: (input: {
     sessionId: string | null
