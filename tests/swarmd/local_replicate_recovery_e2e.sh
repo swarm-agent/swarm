@@ -112,6 +112,21 @@ trim() {
   printf '%s' "${value}"
 }
 
+url_encode() {
+  local input="${1-}"
+  local output=""
+  local i char encoded
+  LC_CTYPE=C
+  for ((i = 0; i < ${#input}; i += 1)); do
+    char="${input:i:1}"
+    case "${char}" in
+      [a-zA-Z0-9.~_-]) output+="${char}" ;;
+      *) printf -v encoded '%%%02X' "'${char}"; output+="${encoded}" ;;
+    esac
+  done
+  printf '%s' "${output}"
+}
+
 resolve_secret_value() {
   local value_var="${1:-}"
   local env_var="${2:-}"
@@ -554,6 +569,45 @@ append_message_and_verify() {
   [[ "${found}" != "0" ]]
 }
 
+verify_topology_state() {
+  local label="${1:-topology}"
+  local session_id_query runtime_swarm_id_query route_json owner_json snapshot_json route_payload route_runtime route_host_workspace route_runtime_workspace route_host_container route_binding route_backend owner_host_container owner_runtime
+  [[ -n "${SESSION_ID}" ]] || return 1
+  [[ -n "${CHILD_SWARM_ID}" ]] || return 1
+  [[ -n "${SOURCE_WORKSPACE_PATH}" ]] || return 1
+
+  session_id_query="$(url_encode "${SESSION_ID}")"
+  runtime_swarm_id_query="$(url_encode "${CHILD_SWARM_ID}")"
+  route_json="$(api_get "/v1/swarm/topology/session-route?session_id=${session_id_query}")" || return 1
+  owner_json="$(api_get "/v1/swarm/topology/runtime-owner?runtime_swarm_id=${runtime_swarm_id_query}")" || return 1
+  snapshot_json="$(api_get '/v1/swarm/topology')" || return 1
+  write_artifact "${label}-topology-session-route.json" "${route_json}"
+  write_artifact "${label}-topology-runtime-owner.json" "${owner_json}"
+  write_artifact "${label}-topology-snapshot.json" "${snapshot_json}"
+
+  route_payload="$(printf '%s' "${route_json}" | jq -c '.route // empty')"
+  [[ -n "${route_payload}" ]] || return 1
+  route_runtime="$(printf '%s' "${route_payload}" | jq -r '.runtime_swarm_id // empty')"
+  route_host_workspace="$(printf '%s' "${route_payload}" | jq -r '.host_workspace_path // empty')"
+  route_runtime_workspace="$(printf '%s' "${route_payload}" | jq -r '.runtime_workspace_path // empty')"
+  route_host_container="$(printf '%s' "${route_payload}" | jq -r '.host_container_id // empty')"
+  route_binding="$(printf '%s' "${route_payload}" | jq -r '.workspace_binding_id // empty')"
+  route_backend="$(printf '%s' "${route_payload}" | jq -r '.backend_url // empty')"
+  owner_runtime="$(printf '%s' "${owner_json}" | jq -r '.runtime_swarm_id // empty')"
+  owner_host_container="$(printf '%s' "${owner_json}" | jq -r '.host_container.host_container_id // empty')"
+
+  [[ "${route_runtime}" == "${CHILD_SWARM_ID}" ]] || return 1
+  [[ "${route_host_workspace}" == "${SOURCE_WORKSPACE_PATH}" ]] || return 1
+  [[ -n "${route_runtime_workspace}" ]] || return 1
+  [[ -n "${route_host_container}" ]] || return 1
+  [[ -n "${route_binding}" ]] || return 1
+  [[ -n "${route_backend}" ]] || return 1
+  [[ "${owner_runtime}" == "${CHILD_SWARM_ID}" ]] || return 1
+  [[ "${owner_host_container}" == "${route_host_container}" ]] || return 1
+  printf '%s' "${snapshot_json}" | jq -e --arg child_swarm_id "${CHILD_SWARM_ID}" --arg session_id "${SESSION_ID}" '.runtimes[]? | select(.swarm_id == $child_swarm_id)' >/dev/null || return 1
+  printf '%s' "${snapshot_json}" | jq -e --arg session_id "${SESSION_ID}" '.session_routes[]? | select(.session_id == $session_id)' >/dev/null || return 1
+}
+
 verify_session_state() {
   local label="${1:-}"
   local session_json messages_json permissions_json sessions_json child_meta found_seed
@@ -571,7 +625,8 @@ verify_session_state() {
   [[ "${found_seed}" != "0" ]] || return 1
   local session_list_found
   session_list_found="$(printf '%s' "${sessions_json}" | jq -r --arg session_id "${SESSION_ID}" '[.sessions[] | select(.id == $session_id)] | length')"
-  [[ "${session_list_found}" != "0" ]]
+  [[ "${session_list_found}" != "0" ]] || return 1
+  verify_topology_state "${label}"
 }
 
 record_runtime_state() {

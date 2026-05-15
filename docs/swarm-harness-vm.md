@@ -155,6 +155,24 @@ Run the recovery harness inside the VM:
 ./scripts/swarm-harness-vm.sh local-replicate-recovery
 ```
 
+Run the real topology E2E bench inside the VM:
+
+```bash
+./scripts/swarm-harness-vm.sh topology -- --runtime podman
+```
+
+For a faster focused rerun after the checkout is already synced:
+
+```bash
+./scripts/swarm-harness-vm.sh topology --no-sync -- --scenario local-basic --runtime podman --skip-host-rebuild --skip-image-rebuild
+```
+
+For the critical removal/stale-state lane, run the cleanup scenario:
+
+```bash
+./scripts/swarm-harness-vm.sh topology --no-sync -- --scenario local-cleanup --runtime podman --skip-host-rebuild --skip-image-rebuild
+```
+
 Or skip rsync when reusing the same guest checkout:
 
 ```bash
@@ -204,9 +222,10 @@ If you want to throw away guest changes but keep the cached reusable baseline:
 
 - prefer `swarm-harness` for `tests/swarmd/local_replicate_e2e.sh`
 - prefer `swarm-harness` for `tests/swarmd/local_replicate_recovery_e2e.sh`
+- prefer `swarm-harness` for `tests/swarmd/topology_e2e.sh`
 - use the workstation directly only when the test does not depend on local container networking, attach, or fixed-port isolation
 - rerun `sync` before harness work if the checkout changed
-- `run`, `local-replicate`, and `local-replicate-recovery` still sync by default; use `--no-sync` only when you intentionally want to reuse the existing guest checkout
+- `run`, `local-replicate`, `local-replicate-recovery`, and `topology` still sync by default; use `--no-sync` only when you intentionally want to reuse the existing guest checkout
 - use `--rebootstrap` only when you want to refresh guest packages; normal repeat runs should reuse the existing bootstrap stamp
 - if the host checkout already has `web/node_modules`, the sync step carries it into the guest so desktop builds do not need a separate guest-side `pnpm install --frozen-lockfile`
 
@@ -215,5 +234,6 @@ If you want to throw away guest changes but keep the cached reusable baseline:
 - `scripts/swarm-harness-vm.sh`
 - `tests/swarmd/local_replicate_e2e.sh`
 - `tests/swarmd/local_replicate_recovery_e2e.sh`
+- `tests/swarmd/topology_e2e.sh`
 - `tests/swarmd/remote_deploy_e2e.sh`
 - `AGENTS.md`

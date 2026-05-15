@@ -43,6 +43,7 @@ Options:
   --verify-sync-state                 After attach, create a host credential plus a custom agent/tool and wait for the child to read them
   --verify-sync-crud-flow             After attach, prove real Fireworks credential CRUD plus synced agent/tool routed execution on the child
   --prove-routed-ai                   After attach, run an optional final routed AI proof session on the replicated child
+  --verify-topology-cleanup           Delete the real child through /v1/deploy/container/delete and prove no stale topology remains
   --sync-verify-timeout <seconds>     Managed sync propagation wait timeout. Default: 45
   --proof-provider <id>               Provider for the routed proof. Default: fireworks
   --proof-model <id>                  Model for the routed proof. Default: accounts/fireworks/models/minimax-m2p5
@@ -958,6 +959,7 @@ reset_replication_run_state() {
   PROOF_DIAGNOSTIC_CAPTURED="false"
   PROOF_RUN_PROMPT=""
   PROOF_SUCCESS_TOKEN=""
+  TOPOLOGY_PROBE_SESSION_ID=""
   SYNC_PROBE_CREDENTIAL_PROVIDER=""
   SYNC_PROBE_CREDENTIAL_ID=""
   SYNC_PROBE_TOOL_NAME=""
@@ -1841,6 +1843,86 @@ verify_workspace_link() {
   fi
 }
 
+topology_json_count() {
+  local json="${1:-}"
+  local filter="${2:-}"
+  printf '%s' "${json}" | jq -r "${filter} | length"
+}
+
+verify_topology_session_route() {
+  local session_id="${1:-}"
+  local artifact_prefix="${2:-topology-session-route}"
+  [[ -n "${session_id}" ]] || fail "session id is required for topology session-route verification"
+  [[ -n "${CHILD_SWARM_ID:-}" ]] || fail "child swarm id is not set for topology session-route verification"
+
+  local session_id_query route_json route_payload route_runtime route_host_workspace route_runtime_workspace route_backend route_host_swarm route_host_container route_binding
+  session_id_query="$(url_encode "${session_id}")"
+  route_json="$(api_get "/v1/swarm/topology/session-route?session_id=${session_id_query}")"
+  write_artifact "${artifact_prefix}.json" "${route_json}"
+
+  [[ "$(printf '%s' "${route_json}" | jq -r '.path_id // empty')" == "swarm.topology.session_route.v1" ]] || fail "topology session-route path_id mismatch"
+  route_payload="$(printf '%s' "${route_json}" | jq -c '.route // empty')"
+  [[ -n "${route_payload}" ]] || fail "topology session-route is missing route for ${session_id}"
+
+  route_runtime="$(printf '%s' "${route_payload}" | jq -r '.runtime_swarm_id // empty')"
+  route_host_workspace="$(printf '%s' "${route_payload}" | jq -r '.host_workspace_path // empty')"
+  route_runtime_workspace="$(printf '%s' "${route_payload}" | jq -r '.runtime_workspace_path // empty')"
+  route_backend="$(printf '%s' "${route_payload}" | jq -r '.backend_url // empty')"
+  route_host_swarm="$(printf '%s' "${route_payload}" | jq -r '.host_swarm_id // empty')"
+  route_host_container="$(printf '%s' "${route_payload}" | jq -r '.host_container_id // empty')"
+  route_binding="$(printf '%s' "${route_payload}" | jq -r '.workspace_binding_id // empty')"
+
+  [[ "${route_runtime}" == "${CHILD_SWARM_ID}" ]] || fail "topology session-route runtime_swarm_id=${route_runtime}, expected ${CHILD_SWARM_ID}"
+  [[ "${route_host_workspace}" == "${SOURCE_WORKSPACE_PATH}" ]] || fail "topology session-route host_workspace_path=${route_host_workspace}, expected ${SOURCE_WORKSPACE_PATH}"
+  if [[ -n "${TARGET_WORKSPACE_PATH:-}" ]]; then
+    [[ "${route_runtime_workspace}" == "${TARGET_WORKSPACE_PATH}" ]] || fail "topology session-route runtime_workspace_path=${route_runtime_workspace}, expected ${TARGET_WORKSPACE_PATH}"
+  fi
+  if [[ -n "${CHILD_API_URL:-}" ]]; then
+    [[ "${route_backend}" == "${CHILD_API_URL}" ]] || fail "topology session-route backend_url=${route_backend}, expected ${CHILD_API_URL}"
+  fi
+  [[ "${route_host_swarm}" == "${HOST_SWARM_ID}" ]] || fail "topology session-route host_swarm_id=${route_host_swarm}, expected ${HOST_SWARM_ID}"
+  [[ "${route_host_container}" == "${DEPLOYMENT_HOST_CONTAINER_ID}" ]] || fail "topology session-route host_container_id=${route_host_container}, expected ${DEPLOYMENT_HOST_CONTAINER_ID}"
+  [[ -n "${route_binding}" ]] || fail "topology session-route is missing workspace_binding_id"
+}
+
+verify_workspace_overview_topology_routes() {
+  local source_workspace_path_query overview_json route_json route_source route_runtime route_workspace route_container route_writable route_mode
+  source_workspace_path_query="$(url_encode "${SOURCE_WORKSPACE_PATH}")"
+  overview_json="$(api_get "/v1/workspace/overview?workspace_limit=200&session_limit=1&permission_limit=1&limit=200&cwd=${source_workspace_path_query}")"
+  write_artifact "workspace-overview-topology-final.json" "${overview_json}"
+  [[ "$(printf '%s' "${overview_json}" | jq -r '.ok // false')" == "true" ]] || fail "workspace overview did not return ok=true"
+
+  route_json="$(printf '%s' "${overview_json}" | jq -c --arg workspace_path "${SOURCE_WORKSPACE_PATH}" --arg child_swarm_id "${CHILD_SWARM_ID}" --arg target_workspace_path "${TARGET_WORKSPACE_PATH:-}" '.workspaces[]? | select(.path == $workspace_path) | .topology_routes[]? | select(.runtime_swarm_id == $child_swarm_id and ($target_workspace_path == "" or .runtime_workspace_path == $target_workspace_path))' | head -n 1)"
+  [[ -n "${route_json}" ]] || fail "workspace overview is missing topology route for child ${CHILD_SWARM_ID}"
+
+  route_source="$(printf '%s' "${route_json}" | jq -r '.route_source // empty')"
+  route_runtime="$(printf '%s' "${route_json}" | jq -r '.runtime_swarm_id // empty')"
+  route_workspace="$(printf '%s' "${route_json}" | jq -r '.runtime_workspace_path // empty')"
+  route_container="$(printf '%s' "${route_json}" | jq -r '.container_id // empty')"
+  route_writable="$(printf '%s' "${route_json}" | jq -r '.writable')"
+  route_mode="$(printf '%s' "${route_json}" | jq -r '.replication_mode // empty')"
+
+  [[ "${route_source}" == "topology/workspace_binding" ]] || fail "workspace overview route_source=${route_source}, expected topology/workspace_binding"
+  [[ "${route_runtime}" == "${CHILD_SWARM_ID}" ]] || fail "workspace overview runtime_swarm_id mismatch"
+  if [[ -n "${TARGET_WORKSPACE_PATH:-}" ]]; then
+    [[ "${route_workspace}" == "${TARGET_WORKSPACE_PATH}" ]] || fail "workspace overview runtime_workspace_path=${route_workspace}, expected ${TARGET_WORKSPACE_PATH}"
+  fi
+  [[ "${route_container}" == "${DEPLOYMENT_HOST_CONTAINER_ID}" ]] || fail "workspace overview container_id=${route_container}, expected ${DEPLOYMENT_HOST_CONTAINER_ID}"
+  [[ "${route_writable}" == "${WORKSPACE_WRITABLE}" ]] || fail "workspace overview writable=${route_writable}, expected ${WORKSPACE_WRITABLE}"
+  if [[ -n "${REPLICATION_MODE}" ]]; then
+    [[ "${route_mode}" == "${REPLICATION_MODE}" ]] || fail "workspace overview replication_mode=${route_mode}, expected ${REPLICATION_MODE}"
+  fi
+}
+
+exercise_topology_routed_session_route() {
+  local response
+  response="$(create_routed_host_session "topology-route-${RUN_INDEX:-1}-$(date +%s)" "" "auto")"
+  write_artifact "topology-routed-session-create.json" "${response}"
+  TOPOLOGY_PROBE_SESSION_ID="$(printf '%s' "${response}" | jq -r '.session.id // empty')"
+  [[ -n "${TOPOLOGY_PROBE_SESSION_ID}" ]] || fail "topology routed session create returned no session id"
+  verify_topology_session_route "${TOPOLOGY_PROBE_SESSION_ID}" "topology-session-route-final"
+}
+
 verify_canonical_topology() {
   local host_swarm_id_query runtime_swarm_id_query source_workspace_path_query
   local topology_snapshot_json topology_host_containers_json topology_runtime_owner_json topology_workspace_bindings_json
@@ -1894,6 +1976,22 @@ verify_canonical_topology() {
   [[ "$(printf '%s' "${snapshot_host_container_json}" | jq -r '.container_name // empty')" == "${CONTAINER_NAME}" ]] || fail "topology snapshot host container name mismatch"
   [[ "$(printf '%s' "${snapshot_attachment_json}" | jq -r '.runtime_swarm_id // empty')" == "${CHILD_SWARM_ID}" ]] || fail "topology snapshot attachment runtime_swarm_id mismatch"
   [[ "$(printf '%s' "${listed_host_container_json}" | jq -r '.host_swarm_id // empty')" == "${HOST_SWARM_ID}" ]] || fail "topology host-containers host_swarm_id mismatch"
+  if ! printf '%s' "${snapshot_runtime_json}" | jq -e '.observed_sources[]? | select(. == "deploy_container")' >/dev/null; then
+    fail "topology runtime is missing deploy_container observed source"
+  fi
+  if ! printf '%s' "${snapshot_host_container_json}" | jq -e '.observed_sources[]? | select(. == "deploy_container" or . == "swarm_local_container")' >/dev/null; then
+    fail "topology host container is missing a real container observed source"
+  fi
+
+  local snapshot_runtime_count snapshot_host_container_count snapshot_attachment_count snapshot_binding_count
+  snapshot_runtime_count="$(topology_json_count "${topology_snapshot_json}" --arg child_swarm_id "${CHILD_SWARM_ID}" '.runtimes[]? | select(.swarm_id == $child_swarm_id)')"
+  snapshot_host_container_count="$(topology_json_count "${topology_snapshot_json}" --arg id "${DEPLOYMENT_HOST_CONTAINER_ID}" '.host_containers[]? | select(.host_container_id == $id)')"
+  snapshot_attachment_count="$(topology_json_count "${topology_snapshot_json}" --arg id "${DEPLOYMENT_ATTACHMENT_ID}" '.attachments[]? | select(.attachment_id == $id)')"
+  snapshot_binding_count="$(topology_json_count "${topology_snapshot_json}" --arg child_swarm_id "${CHILD_SWARM_ID}" --arg target_workspace_path "${TARGET_WORKSPACE_PATH:-}" '.workspace_bindings[]? | select(.destination_runtime_swarm_id == $child_swarm_id and ($target_workspace_path == "" or .destination_workspace_path == $target_workspace_path))')"
+  [[ "${snapshot_runtime_count}" == "1" ]] || fail "topology snapshot runtime count for ${CHILD_SWARM_ID} = ${snapshot_runtime_count}, expected 1"
+  [[ "${snapshot_host_container_count}" == "1" ]] || fail "topology snapshot host container count for ${DEPLOYMENT_HOST_CONTAINER_ID} = ${snapshot_host_container_count}, expected 1"
+  [[ "${snapshot_attachment_count}" == "1" ]] || fail "topology snapshot attachment count for ${DEPLOYMENT_ATTACHMENT_ID} = ${snapshot_attachment_count}, expected 1"
+  [[ "${snapshot_binding_count}" == "1" ]] || fail "topology snapshot binding count for ${CHILD_SWARM_ID} = ${snapshot_binding_count}, expected 1"
 
   [[ "$(printf '%s' "${binding_json}" | jq -r '.source_workspace_path // empty')" == "${SOURCE_WORKSPACE_PATH}" ]] || fail "topology workspace binding source_workspace_path mismatch"
   [[ "$(printf '%s' "${binding_json}" | jq -r '.destination_runtime_swarm_id // .target_swarm_id // empty')" == "${CHILD_SWARM_ID}" ]] || fail "topology workspace binding destination_runtime_swarm_id mismatch"
@@ -1904,6 +2002,60 @@ verify_canonical_topology() {
   if [[ -n "${REPLICATION_MODE}" ]]; then
     [[ "$(printf '%s' "${binding_json}" | jq -r '.replication_mode // empty')" == "${REPLICATION_MODE}" ]] || fail "topology workspace binding replication_mode mismatch"
   fi
+}
+
+verify_topology_cleanup_absent() {
+  local delete_response topology_json route_json owner_json bindings_json deployments_json containers_json groups_json overview_json
+  local source_workspace_path_query session_id_query runtime_swarm_id_query
+  [[ -n "${DEPLOYMENT_ID:-}" ]] || fail "deployment id is required for topology cleanup verification"
+  [[ -n "${CHILD_SWARM_ID:-}" ]] || fail "child swarm id is required for topology cleanup verification"
+  [[ -n "${DEPLOYMENT_HOST_CONTAINER_ID:-}" ]] || fail "host container id is required for topology cleanup verification"
+  [[ -n "${DEPLOYMENT_ATTACHMENT_ID:-}" ]] || fail "attachment id is required for topology cleanup verification"
+  [[ -n "${TOPOLOGY_PROBE_SESSION_ID:-}" ]] || fail "topology probe session id is required for cleanup verification"
+
+  delete_response="$(api_post '/v1/deploy/container/delete' "$(jq -nc --arg id "${DEPLOYMENT_ID}" '{ids:[$id]}')" 120)"
+  write_artifact "topology-cleanup-delete-response.json" "${delete_response}"
+  [[ "$(printf '%s' "${delete_response}" | jq -r '.ok // false')" == "true" ]] || fail "topology cleanup delete did not return ok=true"
+  [[ "$(printf '%s' "${delete_response}" | jq -r --arg id "${DEPLOYMENT_ID}" '[.result.deleted[]? | select(. == $id)] | length')" == "1" ]] || fail "topology cleanup delete result did not include ${DEPLOYMENT_ID}"
+
+  if "${RUNTIME}" inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+    fail "topology cleanup left runtime container ${CONTAINER_NAME} behind"
+  fi
+
+  source_workspace_path_query="$(url_encode "${SOURCE_WORKSPACE_PATH}")"
+  session_id_query="$(url_encode "${TOPOLOGY_PROBE_SESSION_ID}")"
+  runtime_swarm_id_query="$(url_encode "${CHILD_SWARM_ID}")"
+  topology_json="$(api_get '/v1/swarm/topology')"
+  route_json="$(api_get "/v1/swarm/topology/session-route?session_id=${session_id_query}")"
+  owner_json="$(api_get "/v1/swarm/topology/runtime-owner?runtime_swarm_id=${runtime_swarm_id_query}")"
+  bindings_json="$(api_get "/v1/swarm/topology/workspace-bindings?source_workspace_path=${source_workspace_path_query}")"
+  deployments_json="$(api_get '/v1/deploy/container')"
+  containers_json="$(api_get '/v1/swarm/containers/local')"
+  groups_json="$(fetch_groups_json)"
+  overview_json="$(api_get "/v1/workspace/overview?workspace_limit=200&session_limit=1&permission_limit=1&limit=200&cwd=${source_workspace_path_query}")"
+
+  write_artifact "topology-cleanup-snapshot.json" "${topology_json}"
+  write_artifact "topology-cleanup-session-route.json" "${route_json}"
+  write_artifact "topology-cleanup-runtime-owner.json" "${owner_json}"
+  write_artifact "topology-cleanup-workspace-bindings.json" "${bindings_json}"
+  write_artifact "topology-cleanup-deployments.json" "${deployments_json}"
+  write_artifact "topology-cleanup-local-containers.json" "${containers_json}"
+  write_artifact "topology-cleanup-groups.json" "${groups_json}"
+  write_artifact "topology-cleanup-workspace-overview.json" "${overview_json}"
+
+  [[ "$(printf '%s' "${deployments_json}" | jq -r --arg id "${DEPLOYMENT_ID}" '[.deployments[]? | select(.id == $id)] | length')" == "0" ]] || fail "topology cleanup left deployment ${DEPLOYMENT_ID} behind"
+  [[ "$(printf '%s' "${containers_json}" | jq -r --arg name "${CONTAINER_NAME}" '[.containers[]? | select(.container_name == $name or .id == $name)] | length')" == "0" ]] || fail "topology cleanup left local container record ${CONTAINER_NAME} behind"
+  [[ "$(printf '%s' "${groups_json}" | jq -r --arg child_swarm_id "${CHILD_SWARM_ID}" '[.groups[]?.members[]? | select((.swarm_id // .swarmID // "") == $child_swarm_id)] | length')" == "0" ]] || fail "topology cleanup left group membership for ${CHILD_SWARM_ID} behind"
+
+  [[ "$(printf '%s' "${topology_json}" | jq -r --arg child_swarm_id "${CHILD_SWARM_ID}" '[.runtimes[]? | select(.swarm_id == $child_swarm_id)] | length')" == "0" ]] || fail "topology cleanup left runtime ${CHILD_SWARM_ID} behind"
+  [[ "$(printf '%s' "${topology_json}" | jq -r --arg id "${DEPLOYMENT_HOST_CONTAINER_ID}" '[.host_containers[]? | select(.host_container_id == $id)] | length')" == "0" ]] || fail "topology cleanup left host container ${DEPLOYMENT_HOST_CONTAINER_ID} behind"
+  [[ "$(printf '%s' "${topology_json}" | jq -r --arg id "${DEPLOYMENT_ATTACHMENT_ID}" '[.attachments[]? | select(.attachment_id == $id)] | length')" == "0" ]] || fail "topology cleanup left attachment ${DEPLOYMENT_ATTACHMENT_ID} behind"
+  [[ "$(printf '%s' "${topology_json}" | jq -r --arg child_swarm_id "${CHILD_SWARM_ID}" '[.workspace_bindings[]? | select(.destination_runtime_swarm_id == $child_swarm_id)] | length')" == "0" ]] || fail "topology cleanup left workspace binding for ${CHILD_SWARM_ID} behind"
+  [[ "$(printf '%s' "${topology_json}" | jq -r --arg session_id "${TOPOLOGY_PROBE_SESSION_ID}" --arg child_swarm_id "${CHILD_SWARM_ID}" '[.session_routes[]? | select(.session_id == $session_id or .runtime_swarm_id == $child_swarm_id)] | length')" == "0" ]] || fail "topology cleanup left session route for ${CHILD_SWARM_ID} behind"
+  [[ "$(printf '%s' "${route_json}" | jq -r '.route // empty')" == "" ]] || fail "topology cleanup session-route lookup still resolves ${TOPOLOGY_PROBE_SESSION_ID}"
+  [[ "$(printf '%s' "${owner_json}" | jq -r '.host_container.host_container_id // empty')" == "" ]] || fail "topology cleanup runtime-owner still resolves ${CHILD_SWARM_ID}"
+  [[ "$(printf '%s' "${bindings_json}" | jq -r --arg child_swarm_id "${CHILD_SWARM_ID}" '[.bindings[]? | select(.destination_runtime_swarm_id == $child_swarm_id)] | length')" == "0" ]] || fail "topology cleanup workspace-bindings endpoint still returns ${CHILD_SWARM_ID}"
+  [[ "$(printf '%s' "${overview_json}" | jq -r --arg child_swarm_id "${CHILD_SWARM_ID}" '[.workspaces[]?.topology_routes[]? | select(.runtime_swarm_id == $child_swarm_id)] | length')" == "0" ]] || fail "topology cleanup workspace overview still exposes route for ${CHILD_SWARM_ID}"
 }
 
 verify_final_state() {
@@ -1988,10 +2140,15 @@ verify_final_state() {
   [[ "${child_current_group}" == "${TARGET_GROUP_ID}" ]] || fail "child current_group_id=${child_current_group} does not match target group ${TARGET_GROUP_ID}"
 
   verify_canonical_topology
+  verify_workspace_overview_topology_routes
+  exercise_topology_routed_session_route
   verify_workspace_link
   exercise_sync_state
   exercise_sync_crud_flow
   run_final_routed_ai_proof
+  if [[ "${VERIFY_TOPOLOGY_CLEANUP}" == "true" ]]; then
+    verify_topology_cleanup_absent
+  fi
   capture_logs
 
   SUMMARY_JSON="$(jq -nc \
@@ -2026,6 +2183,7 @@ verify_final_state() {
     --argjson sync_modules "$(sync_modules_json)" \
     --argjson verify_sync_state "${VERIFY_SYNC_STATE}" \
     --argjson verify_sync_crud_flow "${VERIFY_SYNC_CRUD_FLOW}" \
+    --argjson verify_topology_cleanup "${VERIFY_TOPOLOGY_CLEANUP}" \
     --arg proof_provider "${PROOF_PROVIDER}" \
     --arg proof_model "${PROOF_MODEL}" \
     --arg proof_thinking "${PROOF_THINKING}" \
@@ -2033,13 +2191,14 @@ verify_final_state() {
     --arg proof_secondary_credential_id "${PROOF_SECONDARY_CREDENTIAL_ID:-}" \
     --arg proof_session_id "${PROOF_SESSION_ID:-}" \
     --arg proof_success_token "${PROOF_SUCCESS_TOKEN:-}" \
+    --arg topology_probe_session_id "${TOPOLOGY_PROBE_SESSION_ID:-}" \
     --arg sync_probe_credential_provider "${SYNC_PROBE_CREDENTIAL_PROVIDER:-}" \
     --arg sync_probe_credential_id "${SYNC_PROBE_CREDENTIAL_ID:-}" \
     --arg sync_probe_tool_name "${SYNC_PROBE_TOOL_NAME:-}" \
     --arg sync_probe_agent_name "${SYNC_PROBE_AGENT_NAME:-}" \
     --argjson backend_probe "${BACKEND_PROBE_JSON}" \
     --argjson desktop_probe "${DESKTOP_PROBE_JSON}" \
-    '{runtime:$runtime,host_root:$host_root,host_install_mode:$host_install_mode,host_install_artifact_root:$host_install_artifact_root,host_swarm_name:$host_swarm_name,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_log_file:$host_log_file,source_workspace_path:$source_workspace_path,workspace_name:$workspace_name,swarm_name:$swarm_name,run_index:$run_index,artifact_dir:$artifact_dir,replication_mode:$replication_mode,writable:$writable,sync_enabled:$sync_enabled,sync_mode:$sync_mode,sync_modules:$sync_modules,verify_sync_state:$verify_sync_state,verify_sync_crud_flow:$verify_sync_crud_flow,group_id:$group_id,group_name:$group_name,group_network_name:$group_network_name,deployment_id:$deployment_id,container_name:$container_name,host_container_id:$host_container_id,attachment_id:$attachment_id,child_swarm_id:$child_swarm_id,child_backend_url:$child_backend_url,child_desktop_url:$child_desktop_url,target_workspace_path:$target_workspace_path,proof:{provider:$proof_provider,model:$proof_model,thinking:$proof_thinking,primary_credential_id:$proof_primary_credential_id,secondary_credential_id:$proof_secondary_credential_id,session_id:$proof_session_id,success_token:$proof_success_token},sync_probe:{credential_provider:$sync_probe_credential_provider,credential_id:$sync_probe_credential_id,tool_name:$sync_probe_tool_name,agent_name:$sync_probe_agent_name},backend_probe:$backend_probe,desktop_probe:$desktop_probe}')"
+    '{runtime:$runtime,host_root:$host_root,host_install_mode:$host_install_mode,host_install_artifact_root:$host_install_artifact_root,host_swarm_name:$host_swarm_name,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_log_file:$host_log_file,source_workspace_path:$source_workspace_path,workspace_name:$workspace_name,swarm_name:$swarm_name,run_index:$run_index,artifact_dir:$artifact_dir,replication_mode:$replication_mode,writable:$writable,sync_enabled:$sync_enabled,sync_mode:$sync_mode,sync_modules:$sync_modules,verify_sync_state:$verify_sync_state,verify_sync_crud_flow:$verify_sync_crud_flow,verify_topology_cleanup:$verify_topology_cleanup,group_id:$group_id,group_name:$group_name,group_network_name:$group_network_name,deployment_id:$deployment_id,container_name:$container_name,host_container_id:$host_container_id,attachment_id:$attachment_id,child_swarm_id:$child_swarm_id,child_backend_url:$child_backend_url,child_desktop_url:$child_desktop_url,target_workspace_path:$target_workspace_path,proof:{provider:$proof_provider,model:$proof_model,thinking:$proof_thinking,primary_credential_id:$proof_primary_credential_id,secondary_credential_id:$proof_secondary_credential_id,session_id:$proof_session_id,success_token:$proof_success_token},topology_probe:{session_id:$topology_probe_session_id,cleanup_verified:$verify_topology_cleanup},sync_probe:{credential_provider:$sync_probe_credential_provider,credential_id:$sync_probe_credential_id,tool_name:$sync_probe_tool_name,agent_name:$sync_probe_agent_name},backend_probe:$backend_probe,desktop_probe:$desktop_probe}')"
   write_artifact "summary.json" "${SUMMARY_JSON}"
 
   log ""
@@ -2082,6 +2241,7 @@ HOST_VAULT_PASSWORD_ENV=""
 HOST_VAULT_PASSWORD_FILE=""
 VERIFY_SYNC_STATE="false"
 VERIFY_SYNC_CRUD_FLOW="false"
+VERIFY_TOPOLOGY_CLEANUP="false"
 PROVE_ROUTED_AI="false"
 SYNC_VERIFY_TIMEOUT_SECONDS="45"
 PROOF_PROVIDER="fireworks"
@@ -2123,6 +2283,7 @@ PROOF_PRIMARY_CREDENTIAL_ID=""
 PROOF_SECONDARY_CREDENTIAL_ID=""
 PROOF_SESSION_ID=""
 DIAGNOSTIC_PROOF_SESSION_ID=""
+TOPOLOGY_PROBE_SESSION_ID=""
 PROOF_DIAGNOSTIC_CAPTURED="false"
 PROOF_RUN_PROMPT=""
 PROOF_SUCCESS_TOKEN=""
@@ -2217,6 +2378,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --prove-routed-ai)
       PROVE_ROUTED_AI="true"
+      shift
+      ;;
+    --verify-topology-cleanup)
+      VERIFY_TOPOLOGY_CLEANUP="true"
       shift
       ;;
     --sync-verify-timeout)

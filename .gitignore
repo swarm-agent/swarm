@@ -69,3 +69,6 @@ coverage.out
 /scripts/benchmark-*.sh
 /scripts/debug-*.sh
 /scripts/demo-*.sh
+
+# Local prod sync helper
+/scripts/pull-from-prod-swarm.sh

@@ -32,6 +32,7 @@ Usage:
   ./scripts/swarm-harness-vm.sh run [--repo-root PATH] [--no-sync] -- <command...>
   ./scripts/swarm-harness-vm.sh local-replicate [--repo-root PATH] [--no-sync] -- [harness-args...]
   ./scripts/swarm-harness-vm.sh local-replicate-recovery [--repo-root PATH] [--no-sync] -- [harness-args...]
+  ./scripts/swarm-harness-vm.sh topology [--repo-root PATH] [--no-sync] -- [bench-args...]
   ./scripts/swarm-harness-vm.sh live-prod-update [--repo-root PATH] [--no-sync] -- [harness-args...]
 
 Environment overrides:
@@ -57,7 +58,7 @@ Behavior:
   - keeps repo sync explicit via rsync; no host bind mounts are used
   - refuses to boot without writable /dev/kvm unless SWARM_HARNESS_VM_ALLOW_TCG=true
   - installs guest-side test prerequisites with apt during bootstrap, then skips repeat bootstrap when the stamp exists unless --rebootstrap is passed
-  - run/local-replicate/local-replicate-recovery/live-prod-update sync by default; pass --no-sync only when the existing guest checkout is already current
+  - run/local-replicate/local-replicate-recovery/topology/live-prod-update sync by default; pass --no-sync only when the existing guest checkout is already current
   - can install required Ubuntu host packages with install-host-deps
 EOF
 }
@@ -675,6 +676,10 @@ run_local_replicate_recovery() {
   run_in_guest_repo ./tests/swarmd/local_replicate_recovery_e2e.sh "$@"
 }
 
+run_topology_bench() {
+  run_in_guest_repo ./tests/swarmd/topology_e2e.sh "$@"
+}
+
 run_live_prod_update() {
   run_in_guest_repo env SWARM_HARNESS_VM_GUEST=1 ./tests/swarmd/live_prod_update_e2e.sh "$@"
 }
@@ -744,7 +749,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "${COMMAND}" in
-  create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|setup|bootstrap|sync|provision|ssh|shell|run|local-replicate|local-replicate-recovery|live-prod-update)
+  create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|setup|bootstrap|sync|provision|ssh|shell|run|local-replicate|local-replicate-recovery|topology|live-prod-update)
     ;;
   ""|help|-h|--help)
     usage
@@ -791,7 +796,7 @@ case "${COMMAND}" in
     [[ "${NO_SYNC}" != "true" ]] || fail "--no-sync is not supported for sync"
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for sync"
     ;;
-  run|local-replicate|local-replicate-recovery|live-prod-update)
+  run|local-replicate|local-replicate-recovery|topology|live-prod-update)
     [[ "${FORCE_REBOOTSTRAP}" != "true" ]] || fail "--rebootstrap is not supported for ${COMMAND}; run bootstrap/provision --rebootstrap first"
     ;;
   create|start|stop|restart|reset|nuke|fast|status|track|logs|doctor|install-host-deps|ssh|shell)
@@ -875,6 +880,10 @@ case "${COMMAND}" in
   local-replicate-recovery)
     load_vm_config || create_vm
     run_local_replicate_recovery "${ARGS[@]}"
+    ;;
+  topology)
+    load_vm_config || create_vm
+    run_topology_bench "${ARGS[@]}"
     ;;
   live-prod-update)
     load_vm_config || create_vm

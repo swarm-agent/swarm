@@ -70,6 +70,7 @@ Options:
   --proof-provider-key-env <name>       Environment variable containing the provider API key for child seeding
   --proof-bash-command <cmd>            Command for the bash approval proof. Default: pwd
   --proof-bash-expected <text>          Expected assistant text after the bash proof. Default: runtime workspace path
+  --verify-topology-cleanup             Delete remote sessions through API and prove no stale topology remains
   --teardown-only                       Reuse an existing --host-root, clean remote sessions, stop the host, and exit
   --no-wait                             Start remote sessions and print auth URLs, but do not wait for attach
   --teardown                            Stop the isolated host and remove remote child state at the end
@@ -1038,6 +1039,74 @@ approve_remote_session() {
   write_timing_artifact "remote-session-${session_id}-approve-timing.json" "remote_session_approve" "${duration_ms}" "${timing_extra_json}"
 }
 
+verify_remote_topology() {
+  refresh_remote_sessions
+  local topology_json session_id session_json child_swarm_id runtime_json binding_json attachment_json transport status observed_source_count binding_count attachment_count owner_host_container_id
+  topology_json="$(api_get '/v1/swarm/topology')"
+  write_artifact "topology-snapshot-final.json" "${topology_json}"
+  [[ "$(printf '%s' "${topology_json}" | jq -r '.path_id // empty')" == "swarm.topology.snapshot.v1" ]] || fail "remote topology snapshot path_id mismatch"
+
+  local idx
+  for idx in "${!SESSION_IDS[@]}"; do
+    session_id="${SESSION_IDS[$idx]}"
+    session_json="$(session_json_by_id "${session_id}")"
+    [[ -n "${session_json}" ]] || fail "remote topology session ${session_id} disappeared"
+    child_swarm_id="$(printf '%s' "${session_json}" | jq -r '.child_swarm_id // empty')"
+    transport="$(printf '%s' "${session_json}" | jq -r '.transport_mode // empty')"
+    status="$(printf '%s' "${session_json}" | jq -r '.status // empty')"
+    [[ -n "${child_swarm_id}" ]] || fail "remote topology session ${session_id} is missing child_swarm_id"
+    [[ "${status}" == "attached" ]] || fail "remote topology session ${session_id} status=${status}, expected attached"
+
+    runtime_json="$(printf '%s' "${topology_json}" | jq -c --arg child_swarm_id "${child_swarm_id}" '.runtimes[]? | select(.swarm_id == $child_swarm_id)' | head -n 1)"
+    [[ -n "${runtime_json}" ]] || fail "remote topology snapshot missing runtime ${child_swarm_id}"
+    observed_source_count="$(printf '%s' "${runtime_json}" | jq -r '[.observed_sources[]? | select(. == "remote_deploy_session")] | length')"
+    [[ "${observed_source_count}" == "1" ]] || fail "remote runtime ${child_swarm_id} missing remote_deploy_session observed source"
+    [[ "$(printf '%s' "${runtime_json}" | jq -r '.transport // empty')" == "${transport}" ]] || fail "remote runtime ${child_swarm_id} transport mismatch"
+
+    owner_host_container_id="$(printf '%s' "${runtime_json}" | jq -r '.owner_host_container_id // empty')"
+    [[ -n "${owner_host_container_id}" ]] || fail "remote runtime ${child_swarm_id} missing owner_host_container_id"
+    attachment_count="$(printf '%s' "${topology_json}" | jq -r --arg child_swarm_id "${child_swarm_id}" --arg session_id "${session_id}" '[.attachments[]? | select(.runtime_swarm_id == $child_swarm_id and .remote_deploy_session_id == $session_id)] | length')"
+    [[ "${attachment_count}" == "1" ]] || fail "remote topology attachment count for ${child_swarm_id} = ${attachment_count}, expected 1"
+    attachment_json="$(printf '%s' "${topology_json}" | jq -c --arg child_swarm_id "${child_swarm_id}" --arg session_id "${session_id}" '.attachments[]? | select(.runtime_swarm_id == $child_swarm_id and .remote_deploy_session_id == $session_id)' | head -n 1)"
+    [[ "$(printf '%s' "${attachment_json}" | jq -r '.host_container_id // empty')" == "${owner_host_container_id}" ]] || fail "remote topology attachment host container mismatch for ${child_swarm_id}"
+
+    binding_count="$(printf '%s' "${topology_json}" | jq -r --arg child_swarm_id "${child_swarm_id}" '[.workspace_bindings[]? | select(.destination_runtime_swarm_id == $child_swarm_id)] | length')"
+    [[ "${binding_count}" != "0" ]] || fail "remote topology snapshot missing workspace binding for ${child_swarm_id}"
+    binding_json="$(printf '%s' "${topology_json}" | jq -c --arg child_swarm_id "${child_swarm_id}" '.workspace_bindings[]? | select(.destination_runtime_swarm_id == $child_swarm_id)' | head -n 1)"
+    if [[ "${SYNC_ENABLED}" == "true" ]]; then
+      [[ "$(printf '%s' "${binding_json}" | jq -r '.sync.enabled // false')" == "true" ]] || fail "remote topology binding sync.enabled mismatch for ${child_swarm_id}"
+    fi
+  done
+}
+
+verify_remote_topology_cleanup_absent() {
+  refresh_remote_sessions
+  local ids_json child_ids_json delete_response topology_json sessions_json groups_json
+  ids_json="$(printf '%s\n' "${SESSION_IDS[@]}" | jq -R . | jq -s .)"
+  child_ids_json="$(printf '%s' "${REMOTE_SESSIONS_JSON}" | jq -c --argjson ids "${ids_json}" '[.sessions[]? | select(.id as $id | $ids | index($id)) | .child_swarm_id // empty | select(. != "")]')"
+  [[ "$(printf '%s' "${ids_json}" | jq -r 'length')" != "0" ]] || fail "remote cleanup requires at least one session id"
+  [[ "$(printf '%s' "${child_ids_json}" | jq -r 'length')" != "0" ]] || fail "remote cleanup found no child swarm ids"
+
+  delete_response="$(api_post_with_timeout '/v1/deploy/remote/session/delete' "$(jq -nc --argjson ids "${ids_json}" '{ids:$ids,teardown_remote:true}')" "${REMOTE_START_MAX_TIME_SECONDS}")"
+  write_artifact "topology-cleanup-remote-delete-response.json" "${delete_response}"
+  [[ "$(printf '%s' "${delete_response}" | jq -r '.ok // false')" == "true" ]] || fail "remote topology cleanup delete did not return ok=true"
+  [[ "$(printf '%s' "${delete_response}" | jq -r --argjson ids "${ids_json}" '[.result.deleted[]? | select(. as $id | $ids | index($id))] | length')" == "$(printf '%s' "${ids_json}" | jq -r 'length')" ]] || fail "remote topology cleanup delete result did not include every session"
+
+  sessions_json="$(api_get '/v1/deploy/remote/session?refresh=1')"
+  topology_json="$(api_get '/v1/swarm/topology')"
+  groups_json="$(fetch_groups_json)"
+  write_artifact "topology-cleanup-remote-sessions.json" "${sessions_json}"
+  write_artifact "topology-cleanup-remote-snapshot.json" "${topology_json}"
+  write_artifact "topology-cleanup-remote-groups.json" "${groups_json}"
+
+  [[ "$(printf '%s' "${sessions_json}" | jq -r --argjson ids "${ids_json}" '[.sessions[]? | select(.id as $id | $ids | index($id))] | length')" == "0" ]] || fail "remote topology cleanup left session records behind"
+  [[ "$(printf '%s' "${topology_json}" | jq -r --argjson child_ids "${child_ids_json}" '[.runtimes[]? | select(.swarm_id as $id | $child_ids | index($id))] | length')" == "0" ]] || fail "remote topology cleanup left runtime records behind"
+  [[ "$(printf '%s' "${topology_json}" | jq -r --argjson child_ids "${child_ids_json}" '[.attachments[]? | select(.runtime_swarm_id as $id | $child_ids | index($id))] | length')" == "0" ]] || fail "remote topology cleanup left attachments behind"
+  [[ "$(printf '%s' "${topology_json}" | jq -r --argjson child_ids "${child_ids_json}" '[.workspace_bindings[]? | select(.destination_runtime_swarm_id as $id | $child_ids | index($id))] | length')" == "0" ]] || fail "remote topology cleanup left workspace bindings behind"
+  [[ "$(printf '%s' "${topology_json}" | jq -r --argjson ids "${ids_json}" '[.host_containers[]? | select(.observed_sources[]? == "remote_deploy_session") | select(.host_container_id as $host_id | any($ids[]; . as $session_id | ($host_id | contains($session_id))))] | length')" == "0" ]] || fail "remote topology cleanup left remote host containers behind"
+  [[ "$(printf '%s' "${groups_json}" | jq -r --argjson child_ids "${child_ids_json}" '[.groups[]?.members[]? | select((.swarm_id // .swarmID // "") as $id | $child_ids | index($id))] | length')" == "0" ]] || fail "remote topology cleanup left group memberships behind"
+}
+
 wait_for_remote_attach() {
   local start_ts
   start_ts="$(date +%s)"
@@ -1220,6 +1289,7 @@ TAILSCALE_AUTH_MODE="manual"
 TAILSCALE_AUTH_KEY_ENV=""
 TEARDOWN="false"
 TEARDOWN_ONLY="false"
+VERIFY_TOPOLOGY_CLEANUP="false"
 PROVE_ROUTED_AI="false"
 
 HOST_ROOT_OVERRIDE=""
@@ -1461,6 +1531,9 @@ while (($# > 0)); do
       [[ $# -gt 0 ]] || fail "--proof-bash-expected requires a value"
       PROOF_BASH_EXPECTED="$1"
       ;;
+    --verify-topology-cleanup)
+      VERIFY_TOPOLOGY_CLEANUP="true"
+      ;;
     --teardown-only)
       TEARDOWN_ONLY="true"
       ;;
@@ -1614,6 +1687,7 @@ print_next_steps
 
 if [[ "${WAIT_FOR_ATTACH}" == "true" ]]; then
   wait_for_remote_attach
+  verify_remote_topology
   if [[ "${PROVE_ROUTED_AI}" == "true" ]]; then
     refresh_remote_sessions
     idx=""
@@ -1625,6 +1699,9 @@ if [[ "${WAIT_FOR_ATTACH}" == "true" ]]; then
       [[ -n "${session_json}" ]] || fail "remote session ${session_id} disappeared before routed AI proof"
       run_routed_ai_proof_for_session "${session_json}" "${session_id}"
     done
+  fi
+  if [[ "${VERIFY_TOPOLOGY_CLEANUP}" == "true" ]]; then
+    verify_remote_topology_cleanup_absent
   fi
   write_summary
   print_next_steps
