@@ -11,11 +11,19 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"swarm-refactor/swarmtui/pkg/localupdate"
 )
 
 const (
 	managedHostGitSyncApplyPath = "/v1/swarm/managed-hosts/git/sync/apply"
 	managedHostUpdateRunPath    = "/v1/swarm/managed-hosts/update/run"
+
+	managedDevPhaseInspect   = "inspect"
+	managedDevPhaseSync      = "sync"
+	managedDevPhaseRebuild   = "rebuild"
+	managedDevPhaseReconnect = "reconnect"
+	managedDevPhaseVerify    = "verify"
 )
 
 type managedDevGitInspectResponse struct {
@@ -106,7 +114,7 @@ func runManagedDevHostUpdatePhase(profile Profile) error {
 	if err != nil {
 		return fmt.Errorf("list managed dev swarm targets: %w", err)
 	}
-	managedTargets := managedDevTargetIDsForBindings(bindings, targets)
+	managedTargets := managedDevTargetsForBindings(bindings, targets)
 	if len(managedTargets) == 0 {
 		return nil
 	}
@@ -120,17 +128,26 @@ func runManagedDevHostUpdatePhase(profile Profile) error {
 	headLabel := firstNonEmptyString(inspect.HeadShort, shortGitIdentity(inspect.Head), inspect.Head)
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, fmt.Sprintf("Syncing %d managed host dev checkout(s) to %s.", len(managedTargets), headLabel), "")
 	fmt.Fprintf(os.Stdout, "Syncing %d managed host dev checkout(s) to %s before rebuild...\n", len(managedTargets), headLabel)
-	for _, targetSwarmID := range managedTargets {
-		if err := syncManagedDevHostGit(ctx, profile, targetSwarmID, inspect); err != nil {
+	for _, target := range managedTargets {
+		advanceManagedDevHostStatus(profile, target, managedDevPhaseInspect, updateJobStatusCompleted, "Managed host dev checkout selected for sync.", "")
+		advanceManagedDevHostStatus(profile, target, managedDevPhaseSync, updateJobStatusRunning, fmt.Sprintf("Hard-resetting managed dev checkout to %s.", headLabel), "")
+		if err := syncManagedDevHostGit(ctx, profile, target.SwarmID, inspect); err != nil {
+			advanceManagedDevHostStatus(profile, target, managedDevPhaseSync, updateJobStatusFailed, "", err.Error())
 			return err
 		}
+		advanceManagedDevHostStatus(profile, target, managedDevPhaseSync, updateJobStatusCompleted, fmt.Sprintf("Managed dev checkout is synced to %s.", headLabel), "")
 	}
 
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, fmt.Sprintf("Requesting dev rebuild on %d managed host(s).", len(managedTargets)), "")
-	for _, targetSwarmID := range managedTargets {
-		if err := runManagedDevHostUpdate(ctx, profile, targetSwarmID); err != nil {
+	for _, target := range managedTargets {
+		advanceManagedDevHostStatus(profile, target, managedDevPhaseRebuild, updateJobStatusRunning, "Remote dev rebuild requested.", "")
+		if err := runManagedDevHostUpdate(ctx, profile, target.SwarmID); err != nil {
+			advanceManagedDevHostStatus(profile, target, managedDevPhaseRebuild, updateJobStatusFailed, "", err.Error())
 			return err
 		}
+		advanceManagedDevHostStatus(profile, target, managedDevPhaseRebuild, updateJobStatusCompleted, "Remote dev rebuild helper accepted the request.", "")
+		advanceManagedDevHostStatus(profile, target, managedDevPhaseReconnect, updateJobStatusRunning, "Waiting for managed host backend to restart.", "")
+		advanceManagedDevHostStatus(profile, target, managedDevPhaseVerify, updateJobStatusRunning, "Verify from the primary after local rebuild completes.", "")
 	}
 	return nil
 }
@@ -238,7 +255,16 @@ func runManagedDevHostUpdate(ctx context.Context, profile Profile, targetSwarmID
 }
 
 func managedDevTargetIDsForBindings(bindings []managedDevTopologyWorkspaceBindingResponse, targets []managedDevSwarmTarget) []string {
-	managed := map[string]bool{}
+	selected := managedDevTargetsForBindings(bindings, targets)
+	out := make([]string, 0, len(selected))
+	for _, target := range selected {
+		out = append(out, target.SwarmID)
+	}
+	return out
+}
+
+func managedDevTargetsForBindings(bindings []managedDevTopologyWorkspaceBindingResponse, targets []managedDevSwarmTarget) []managedDevSwarmTarget {
+	managed := map[string]managedDevSwarmTarget{}
 	for _, target := range targets {
 		swarmID := strings.TrimSpace(target.SwarmID)
 		if swarmID == "" || !target.Selectable {
@@ -250,22 +276,146 @@ func managedDevTargetIDsForBindings(bindings []managedDevTopologyWorkspaceBindin
 		if strings.EqualFold(strings.TrimSpace(target.Kind), "manager") || strings.EqualFold(strings.TrimSpace(target.Relationship), "self") {
 			continue
 		}
-		managed[swarmID] = true
+		target.SwarmID = swarmID
+		target.Name = firstNonEmptyString(target.Name, swarmID)
+		managed[swarmID] = target
 	}
 	seen := map[string]struct{}{}
-	out := make([]string, 0)
+	out := make([]managedDevSwarmTarget, 0)
 	for _, binding := range bindings {
 		swarmID := firstNonEmptyString(binding.DestinationRuntimeSwarmID, binding.DestinationHostSwarmID)
-		if swarmID == "" || !managed[swarmID] {
+		target, ok := managed[swarmID]
+		if swarmID == "" || !ok {
 			continue
 		}
 		if _, ok := seen[swarmID]; ok {
 			continue
 		}
 		seen[swarmID] = struct{}{}
-		out = append(out, swarmID)
+		out = append(out, target)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].SwarmID < out[j].SwarmID })
+	return out
+}
+
+func updateLauncherHostStatus(profile Profile, host localupdate.UpdateJobHostStatus) error {
+	jobID := strings.TrimSpace(os.Getenv(updateJobIDEnv))
+	if jobID == "" || strings.TrimSpace(profile.DataDir) == "" || strings.TrimSpace(host.HostID) == "" {
+		return nil
+	}
+	existing, ok, _ := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(profile.DataDir))
+	if !ok || existing.ID != jobID {
+		return nil
+	}
+	host.HostID = strings.TrimSpace(host.HostID)
+	if strings.TrimSpace(host.Name) == "" {
+		host.Name = host.HostID
+	}
+	host.Role = firstNonEmptyString(host.Role, "managed")
+	nextHosts := make([]localupdate.UpdateJobHostStatus, 0, len(existing.Hosts)+1)
+	replaced := false
+	for _, existingHost := range existing.Hosts {
+		if strings.TrimSpace(existingHost.HostID) == host.HostID {
+			nextHosts = append(nextHosts, host)
+			replaced = true
+			continue
+		}
+		nextHosts = append(nextHosts, existingHost)
+	}
+	if !replaced {
+		nextHosts = append(nextHosts, host)
+	}
+	existing.Hosts = nextHosts
+	existing.UpdatedAtUnix = time.Now().UnixMilli()
+	return localupdate.WriteUpdateJobStatus(profile.DataDir, existing)
+}
+
+func newManagedDevHostStatus(target managedDevSwarmTarget, phaseName, phaseStatus, message, errorMessage string) localupdate.UpdateJobHostStatus {
+	now := time.Now().UnixMilli()
+	phase := localupdate.UpdateJobHostPhase{
+		Name:          strings.TrimSpace(phaseName),
+		Status:        strings.TrimSpace(phaseStatus),
+		Message:       strings.TrimSpace(message),
+		Error:         strings.TrimSpace(errorMessage),
+		StartedAtUnix: now,
+		UpdatedAtUnix: now,
+	}
+	if phase.Status == updateJobStatusCompleted || phase.Status == updateJobStatusFailed {
+		phase.CompletedAtUnix = now
+	}
+	hostStatus := phase.Status
+	if phase.Status == updateJobStatusCompleted {
+		hostStatus = updateJobStatusRunning
+	}
+	if strings.EqualFold(phase.Name, managedDevPhaseVerify) && phase.Status == updateJobStatusCompleted {
+		hostStatus = updateJobStatusCompleted
+	}
+	return localupdate.UpdateJobHostStatus{
+		HostID:       strings.TrimSpace(target.SwarmID),
+		Name:         firstNonEmptyString(target.Name, target.SwarmID),
+		Role:         "managed",
+		CurrentPhase: phase.Name,
+		Status:       hostStatus,
+		Message:      strings.TrimSpace(message),
+		Error:        strings.TrimSpace(errorMessage),
+		Phases:       []localupdate.UpdateJobHostPhase{phase},
+	}
+}
+
+func advanceManagedDevHostStatus(profile Profile, target managedDevSwarmTarget, phaseName, phaseStatus, message, errorMessage string) {
+	jobID := strings.TrimSpace(os.Getenv(updateJobIDEnv))
+	if jobID == "" || strings.TrimSpace(profile.DataDir) == "" || strings.TrimSpace(target.SwarmID) == "" {
+		return
+	}
+	existing, ok, _ := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(profile.DataDir))
+	if !ok || existing.ID != jobID {
+		return
+	}
+	host := newManagedDevHostStatus(target, phaseName, phaseStatus, message, errorMessage)
+	for _, existingHost := range existing.Hosts {
+		if strings.TrimSpace(existingHost.HostID) != strings.TrimSpace(target.SwarmID) {
+			continue
+		}
+		host.Phases = mergeUpdateHostPhases(existingHost.Phases, host.Phases[0])
+		break
+	}
+	_ = updateLauncherHostStatus(profile, host)
+}
+
+func markManagedDevHostPhase(profile Profile, phaseName, phaseStatus, message, errorMessage string) {
+	jobID := strings.TrimSpace(os.Getenv(updateJobIDEnv))
+	if jobID == "" || strings.TrimSpace(profile.DataDir) == "" {
+		return
+	}
+	existing, ok, _ := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(profile.DataDir))
+	if !ok || existing.ID != jobID {
+		return
+	}
+	for _, host := range existing.Hosts {
+		if !strings.EqualFold(strings.TrimSpace(host.Role), "managed") {
+			continue
+		}
+		advanceManagedDevHostStatus(profile, managedDevSwarmTarget{SwarmID: host.HostID, Name: host.Name}, phaseName, phaseStatus, message, errorMessage)
+	}
+}
+
+func mergeUpdateHostPhases(existing []localupdate.UpdateJobHostPhase, next localupdate.UpdateJobHostPhase) []localupdate.UpdateJobHostPhase {
+	out := make([]localupdate.UpdateJobHostPhase, 0, len(existing)+1)
+	replaced := false
+	for _, phase := range existing {
+		if strings.EqualFold(strings.TrimSpace(phase.Name), strings.TrimSpace(next.Name)) {
+			if phase.StartedAtUnix > 0 && (next.StartedAtUnix == 0 || next.StartedAtUnix > phase.StartedAtUnix) {
+				next.StartedAtUnix = phase.StartedAtUnix
+			}
+			out = append(out, next)
+			replaced = true
+			continue
+		}
+		out = append(out, phase)
+	}
+	if !replaced {
+		out = append(out, next)
+	}
 	return out
 }
 

@@ -306,6 +306,7 @@ func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorM
 		Command:       strings.TrimSpace(existing.Command),
 		HelperPID:     existing.HelperPID,
 		LogPath:       strings.TrimSpace(existing.LogPath),
+		Hosts:         existing.Hosts,
 		StartedAtUnix: startedAt,
 		UpdatedAtUnix: now,
 	}

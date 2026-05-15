@@ -1504,9 +1504,11 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Restarting Swarm backend.", "")
+	markManagedDevHostPhase(profile, managedDevPhaseReconnect, updateJobStatusCompleted, "Primary backend restarted; managed hosts should reconnect after their remote rebuilds.", "")
 	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return err
 	}
+	markManagedDevHostPhase(profile, managedDevPhaseVerify, updateJobStatusCompleted, "Primary restart completed; verify managed host session routing from the desktop.", "")
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Updating local and remote container images.", "")
 	if err := runDevLocalContainerUpdateJobAfterRestart(profile); err != nil {
 		return err

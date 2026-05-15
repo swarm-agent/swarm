@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"testing"
+
+	"swarm-refactor/swarmtui/pkg/localupdate"
 )
 
 func TestManagedDevTargetIDsForBindingsSelectsUniqueManagedTargets(t *testing.T) {
@@ -55,5 +58,73 @@ func TestSyncManagedDevHostGitPostsDestructiveIdentity(t *testing.T) {
 	}
 	if payload["target_swarm_id"] != "managed-swarm" || payload["source_workspace_path"] != "/repo" || payload["branch"] != "dev" || payload["commit_sha"] != inspect.Head || payload["tree_sha"] != inspect.Tree || payload["destructive"] != true {
 		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestAdvanceManagedDevHostStatusMergesPhases(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv(updateJobIDEnv, "job-1")
+	if err := localupdate.WriteUpdateJobStatus(dataDir, localupdate.UpdateJobStatus{ID: "job-1", Kind: updateKindDev, Status: updateJobStatusRunning}); err != nil {
+		t.Fatalf("WriteUpdateJobStatus: %v", err)
+	}
+	profile := Profile{DataDir: dataDir}
+	target := managedDevSwarmTarget{SwarmID: "managed-1", Name: "swarm-bomb-2"}
+
+	advanceManagedDevHostStatus(profile, target, managedDevPhaseInspect, updateJobStatusCompleted, "selected", "")
+	advanceManagedDevHostStatus(profile, target, managedDevPhaseSync, updateJobStatusRunning, "syncing", "")
+	advanceManagedDevHostStatus(profile, target, managedDevPhaseSync, updateJobStatusCompleted, "synced", "")
+
+	status, ok, err := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(dataDir))
+	if err != nil || !ok {
+		t.Fatalf("ReadUpdateJobStatusPath ok=%v err=%v", ok, err)
+	}
+	if len(status.Hosts) != 1 {
+		t.Fatalf("hosts = %#v", status.Hosts)
+	}
+	host := status.Hosts[0]
+	if host.HostID != "managed-1" || host.Name != "swarm-bomb-2" || host.CurrentPhase != managedDevPhaseSync || host.Status != updateJobStatusRunning {
+		t.Fatalf("host = %#v", host)
+	}
+	if len(host.Phases) != 2 || host.Phases[0].Name != managedDevPhaseInspect || host.Phases[1].Name != managedDevPhaseSync || host.Phases[1].Status != updateJobStatusCompleted {
+		t.Fatalf("phases = %#v", host.Phases)
+	}
+}
+
+func TestMarkManagedDevHostPhaseCompletesExistingManagedHosts(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv(updateJobIDEnv, "job-1")
+	if err := localupdate.WriteUpdateJobStatus(dataDir, localupdate.UpdateJobStatus{
+		ID:     "job-1",
+		Kind:   updateKindDev,
+		Status: updateJobStatusRunning,
+		Hosts:  []localupdate.UpdateJobHostStatus{{HostID: "managed-1", Name: "swarm-bomb-2", Role: "managed"}},
+	}); err != nil {
+		t.Fatalf("WriteUpdateJobStatus: %v", err)
+	}
+	profile := Profile{DataDir: dataDir}
+	markManagedDevHostPhase(profile, managedDevPhaseVerify, updateJobStatusCompleted, "verified", "")
+
+	status, ok, err := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(dataDir))
+	if err != nil || !ok {
+		t.Fatalf("ReadUpdateJobStatusPath ok=%v err=%v", ok, err)
+	}
+	if len(status.Hosts) != 1 || status.Hosts[0].Status != updateJobStatusCompleted || status.Hosts[0].CurrentPhase != managedDevPhaseVerify {
+		t.Fatalf("hosts = %#v", status.Hosts)
+	}
+}
+
+func TestAdvanceManagedDevHostStatusRequiresJobID(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := localupdate.WriteUpdateJobStatus(dataDir, localupdate.UpdateJobStatus{ID: "job-1", Kind: updateKindDev, Status: updateJobStatusRunning}); err != nil {
+		t.Fatalf("WriteUpdateJobStatus: %v", err)
+	}
+	_ = os.Unsetenv(updateJobIDEnv)
+	advanceManagedDevHostStatus(Profile{DataDir: dataDir}, managedDevSwarmTarget{SwarmID: "managed-1"}, managedDevPhaseSync, updateJobStatusRunning, "syncing", "")
+	status, ok, err := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(dataDir))
+	if err != nil || !ok {
+		t.Fatalf("ReadUpdateJobStatusPath ok=%v err=%v", ok, err)
+	}
+	if len(status.Hosts) != 0 {
+		t.Fatalf("hosts = %#v", status.Hosts)
 	}
 }

@@ -74,11 +74,13 @@ const SIDEBAR_ACTION_BUTTON_CLASS = `${SIDEBAR_ACTION_BOX_CLASS} text-[var(--app
 const PWA_DEBUG_QUERY_PARAM = 'pwaDebug'
 const UPDATE_PROGRESS_STEP_TITLES = [
   'Start update helper',
-  'Stop Swarm backend',
+  'Inspect managed hosts',
+  'Sync managed checkouts',
   'Rebuild/apply Swarm',
-  'Restart backend',
-  'Update container images',
+  'Restart/reconnect backends',
+  'Verify/update containers',
 ] as const
+const MANAGED_DEV_UPDATE_PHASES = ['inspect', 'sync', 'rebuild', 'reconnect', 'verify'] as const
 
 function SidebarActionRail({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn(SIDEBAR_ACTION_RAIL_CLASS, className)}>{children}</div>
@@ -170,6 +172,7 @@ interface SwarmTargetMenuState {
 interface LocalContainerUpdateConfirmState {
   plan: LocalContainerUpdatePlan
   remoteSessions: RemoteDeploySession[]
+  managedHostCount: number
   pendingDismiss: boolean
 }
 
@@ -423,6 +426,10 @@ function remoteDeployUpdateSessionCount(sessions: RemoteDeploySession[]): number
   return sessions.filter((session) => session.status?.trim().toLowerCase() === 'attached' && Boolean(session.ssh_session_target?.trim())).length
 }
 
+function managedHostUpdateTargetCount(targets: SwarmTarget[]): number {
+  return targets.filter((target) => target.selectable && target.relationship?.trim().toLowerCase() === 'managed' && target.kind !== 'self').length
+}
+
 function updateJobMessage(job: DesktopUpdateJob | null): string {
   const message = job?.error?.trim() || job?.message?.trim()
   if (message) {
@@ -477,16 +484,19 @@ function updateProgressStepIndex(job: DesktopUpdateJob | null): number {
   if (status === 'completed') {
     return UPDATE_PROGRESS_STEP_TITLES.length
   }
-  if (message.includes('container image') || message.includes('container images') || message.includes('local and remote')) {
-    return 4
+  if (message.includes('container image') || message.includes('container images') || message.includes('local and remote') || message.includes('verify')) {
+    return 5
   }
   if (message.includes('restart') || message.includes('reconnect')) {
+    return 4
+  }
+  if (message.includes('rebuild') || message.includes('build') || message.includes('applying') || message.includes('installing') || message.includes('staging') || message.includes('fingerprint')) {
     return 3
   }
-  if (message.includes('rebuild') || message.includes('build') || message.includes('applying') || message.includes('installing') || message.includes('staging') || message.includes('fingerprint') || message.includes('syncing')) {
+  if (message.includes('syncing') || message.includes('sync')) {
     return 2
   }
-  if (message.includes('shut down') || message.includes('stop')) {
+  if (message.includes('inspect') || message.includes('checking managed')) {
     return 1
   }
   return status === 'running' ? 1 : 0
@@ -2404,11 +2414,12 @@ export function DesktopAppPage() {
     try {
       const remoteSessions = await fetchRemoteDeploySessions()
       const remoteUpdateCount = remoteDeployUpdateSessionCount(remoteSessions)
+      const managedHostCount = status.dev_mode ? managedHostUpdateTargetCount(swarmTargetsQuery.data?.targets ?? []) : 0
       const warningDismissed = localContainerUpdateWarningDismissed(settings)
-      if (!warningDismissed || remoteUpdateCount > 0) {
+      if (!warningDismissed || remoteUpdateCount > 0 || managedHostCount > 0) {
         const plan = await fetchLocalContainerUpdatePlan({ devMode: status.dev_mode, targetVersion: status.latest_version, postRebuildCheck: status.dev_mode })
-        if ((!warningDismissed && localContainerUpdateAffected(plan)) || remoteUpdateCount > 0) {
-          setLocalContainerUpdateConfirm({ plan, remoteSessions, pendingDismiss: false })
+        if ((!warningDismissed && localContainerUpdateAffected(plan)) || remoteUpdateCount > 0 || managedHostCount > 0) {
+          setLocalContainerUpdateConfirm({ plan, remoteSessions, managedHostCount, pendingDismiss: false })
           return
         }
       }
@@ -2418,7 +2429,7 @@ export function DesktopAppPage() {
       return
     }
     await runDesktopUpdate()
-  }, [effectiveUISettings, localContainerUpdateConfirm, runDesktopUpdate, uiSettingsQuery, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
+  }, [effectiveUISettings, localContainerUpdateConfirm, runDesktopUpdate, swarmTargetsQuery.data?.targets, uiSettingsQuery, updateRunning, updateStatus, updateStatusError, updateStatusQuery])
 
   const handleConfirmLocalContainerUpdate = useCallback(async () => {
     const confirmState = localContainerUpdateConfirm
@@ -3082,6 +3093,7 @@ export function DesktopAppPage() {
 
   const localContainerConfirmPlan = localContainerUpdateConfirm?.plan ?? null
   const remoteContainerUpdateCount = localContainerUpdateConfirm ? remoteDeployUpdateSessionCount(localContainerUpdateConfirm.remoteSessions) : 0
+  const managedHostUpdateCount = localContainerUpdateConfirm?.managedHostCount ?? 0
   const localContainerConfirmSummary = localContainerConfirmPlan?.summary ?? null
   const updateProgressJob = updateProgress.job
   const updateProgressMessage = updateJobMessage(updateProgressJob)
@@ -3332,6 +3344,31 @@ export function DesktopAppPage() {
             <div className={cn('mt-4 rounded-xl border p-4 text-sm', updateProgressFailed ? 'border-[var(--app-error)] bg-[color-mix(in_srgb,var(--app-error)_10%,transparent)] text-[var(--app-error)]' : 'border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-text)]')}>
               {updateProgressMessage}
             </div>
+            {updateProgressJob?.hosts?.length ? (
+              <div className="mt-4 space-y-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-sm">
+                <div className="font-medium">Managed host phases</div>
+                {updateProgressJob.hosts.map((host) => (
+                  <div key={host.host_id || host.name} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium">{host.name || host.host_id || 'managed host'}</span>
+                      <span className={cn('text-xs uppercase tracking-wide', host.status === 'failed' ? 'text-[var(--app-error)]' : host.status === 'completed' ? 'text-[var(--app-success)]' : 'text-[var(--app-text-muted)]')}>{host.status || 'running'}</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-5 gap-1 text-[11px]">
+                      {MANAGED_DEV_UPDATE_PHASES.map((phaseName) => {
+                        const phase = host.phases?.find((entry) => entry.name === phaseName)
+                        const phaseStatus = phase?.status ?? 'pending'
+                        return (
+                          <div key={phaseName} className={cn('rounded border px-2 py-1 text-center capitalize', phaseStatus === 'failed' ? 'border-[var(--app-error)] text-[var(--app-error)]' : phaseStatus === 'completed' ? 'border-[var(--app-success)] text-[var(--app-success)]' : phaseStatus === 'running' ? 'border-[var(--app-primary)] text-[var(--app-primary)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)]')}>
+                            {phaseName}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {(host.error || host.message) ? <div className="mt-2 text-xs text-[var(--app-text-muted)]">{host.error || host.message}</div> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <ol className="mt-4 space-y-3">
               {UPDATE_PROGRESS_STEP_TITLES.map((title, index) => {
                 const done = updateProgressCompleted || index < updateProgressStep
@@ -3382,6 +3419,11 @@ export function DesktopAppPage() {
               {remoteContainerUpdateCount > 0 ? (
                 <div className="mt-1 text-sm text-[var(--app-text)]">{remoteContainerUpdateCount} remote SSH session{remoteContainerUpdateCount === 1 ? '' : 's'} will be checked.</div>
               ) : null}
+              {managedHostUpdateCount > 0 ? (
+                <div className="mt-2 rounded-lg border border-[var(--app-warning-border)] bg-[color-mix(in_srgb,var(--app-warning)_12%,transparent)] p-3 text-sm text-[var(--app-text)]">
+                  Dev update will hard-reset and clean {managedHostUpdateCount} managed host dev checkout{managedHostUpdateCount === 1 ? '' : 's'} before rebuilding them.
+                </div>
+              ) : null}
               <div className="mt-2 text-xs text-[var(--app-text-muted)]">
                 {formatLocalContainerUpdateTarget(localContainerConfirmPlan)}
               </div>
@@ -3397,7 +3439,7 @@ export function DesktopAppPage() {
             <p className="mt-3 text-xs text-[var(--app-text-muted)]">
               {localContainerConfirmPlan.contract?.failure_semantics || 'Swarm update succeeds independently; local or remote container update failures are reported as resumable follow-up work.'}
             </p>
-            {remoteContainerUpdateCount === 0 ? (
+            {remoteContainerUpdateCount === 0 && managedHostUpdateCount === 0 ? (
               <label className="mt-4 flex items-center gap-2 text-sm text-[var(--app-text-muted)]">
                 <input
                   type="checkbox"

@@ -25,6 +25,29 @@ export interface DesktopUpdateJob {
   command?: string
   helper_pid?: number
   log_path?: string
+  hosts?: DesktopUpdateHostStatus[]
+  started_at_unix_ms?: number
+  updated_at_unix_ms?: number
+  completed_at_unix_ms?: number
+}
+
+export interface DesktopUpdateHostStatus {
+  host_id?: string
+  name?: string
+  role?: string
+  current_phase?: string
+  status?: 'idle' | 'running' | 'completed' | 'failed' | string
+  message?: string
+  error?: string
+  phases?: DesktopUpdateHostPhase[]
+  metadata?: Record<string, unknown>
+}
+
+export interface DesktopUpdateHostPhase {
+  name: string
+  status: 'idle' | 'running' | 'completed' | 'failed' | string
+  message?: string
+  error?: string
   started_at_unix_ms?: number
   updated_at_unix_ms?: number
   completed_at_unix_ms?: number

@@ -34,18 +34,19 @@ const (
 )
 
 type desktopUpdateJob struct {
-	ID              string `json:"id"`
-	Kind            string `json:"kind"`
-	Status          string `json:"status"`
-	Message         string `json:"message,omitempty"`
-	Error           string `json:"error,omitempty"`
-	Lane            string `json:"lane,omitempty"`
-	Command         string `json:"command,omitempty"`
-	HelperPID       int    `json:"helper_pid,omitempty"`
-	LogPath         string `json:"log_path,omitempty"`
-	StartedAtUnix   int64  `json:"started_at_unix_ms,omitempty"`
-	UpdatedAtUnix   int64  `json:"updated_at_unix_ms,omitempty"`
-	CompletedAtUnix int64  `json:"completed_at_unix_ms,omitempty"`
+	ID              string                            `json:"id"`
+	Kind            string                            `json:"kind"`
+	Status          string                            `json:"status"`
+	Message         string                            `json:"message,omitempty"`
+	Error           string                            `json:"error,omitempty"`
+	Lane            string                            `json:"lane,omitempty"`
+	Command         string                            `json:"command,omitempty"`
+	HelperPID       int                               `json:"helper_pid,omitempty"`
+	LogPath         string                            `json:"log_path,omitempty"`
+	Hosts           []localupdate.UpdateJobHostStatus `json:"hosts,omitempty"`
+	StartedAtUnix   int64                             `json:"started_at_unix_ms,omitempty"`
+	UpdatedAtUnix   int64                             `json:"updated_at_unix_ms,omitempty"`
+	CompletedAtUnix int64                             `json:"completed_at_unix_ms,omitempty"`
 }
 
 type updateLaunchDetails struct {
@@ -414,6 +415,7 @@ func (s *Server) readPersistedUpdateJobStatus() (desktopUpdateJob, bool) {
 		Command:         status.Command,
 		HelperPID:       status.HelperPID,
 		LogPath:         status.LogPath,
+		Hosts:           status.Hosts,
 		StartedAtUnix:   status.StartedAtUnix,
 		UpdatedAtUnix:   status.UpdatedAtUnix,
 		CompletedAtUnix: status.CompletedAtUnix,
@@ -434,6 +436,7 @@ func (s *Server) writePersistedUpdateJobStatus(job desktopUpdateJob) error {
 		Command:         job.Command,
 		HelperPID:       job.HelperPID,
 		LogPath:         job.LogPath,
+		Hosts:           job.Hosts,
 		StartedAtUnix:   job.StartedAtUnix,
 		UpdatedAtUnix:   job.UpdatedAtUnix,
 		CompletedAtUnix: job.CompletedAtUnix,

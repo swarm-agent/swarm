@@ -28,15 +28,38 @@ type RebuildStatus struct {
 // restarted backend keep reporting "running" until container image propagation
 // has been attempted.
 type UpdateJobStatus struct {
-	ID              string `json:"id"`
-	Kind            string `json:"kind"`
+	ID              string                `json:"id"`
+	Kind            string                `json:"kind"`
+	Status          string                `json:"status"`
+	Message         string                `json:"message,omitempty"`
+	Error           string                `json:"error,omitempty"`
+	Lane            string                `json:"lane,omitempty"`
+	Command         string                `json:"command,omitempty"`
+	HelperPID       int                   `json:"helper_pid,omitempty"`
+	LogPath         string                `json:"log_path,omitempty"`
+	Hosts           []UpdateJobHostStatus `json:"hosts,omitempty"`
+	StartedAtUnix   int64                 `json:"started_at_unix_ms,omitempty"`
+	UpdatedAtUnix   int64                 `json:"updated_at_unix_ms,omitempty"`
+	CompletedAtUnix int64                 `json:"completed_at_unix_ms,omitempty"`
+}
+
+type UpdateJobHostStatus struct {
+	HostID       string                 `json:"host_id,omitempty"`
+	Name         string                 `json:"name,omitempty"`
+	Role         string                 `json:"role,omitempty"`
+	CurrentPhase string                 `json:"current_phase,omitempty"`
+	Status       string                 `json:"status,omitempty"`
+	Message      string                 `json:"message,omitempty"`
+	Error        string                 `json:"error,omitempty"`
+	Phases       []UpdateJobHostPhase   `json:"phases,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type UpdateJobHostPhase struct {
+	Name            string `json:"name"`
 	Status          string `json:"status"`
 	Message         string `json:"message,omitempty"`
 	Error           string `json:"error,omitempty"`
-	Lane            string `json:"lane,omitempty"`
-	Command         string `json:"command,omitempty"`
-	HelperPID       int    `json:"helper_pid,omitempty"`
-	LogPath         string `json:"log_path,omitempty"`
 	StartedAtUnix   int64  `json:"started_at_unix_ms,omitempty"`
 	UpdatedAtUnix   int64  `json:"updated_at_unix_ms,omitempty"`
 	CompletedAtUnix int64  `json:"completed_at_unix_ms,omitempty"`
@@ -115,6 +138,9 @@ func WriteUpdateJobStatus(dataDir string, status UpdateJobStatus) error {
 	status.Lane = strings.TrimSpace(status.Lane)
 	status.Command = strings.TrimSpace(status.Command)
 	status.LogPath = strings.TrimSpace(status.LogPath)
+	for i := range status.Hosts {
+		status.Hosts[i] = normalizeUpdateJobHostStatus(status.Hosts[i])
+	}
 	raw, err := json.MarshalIndent(status, "", "  ")
 	if err != nil {
 		return err
@@ -146,5 +172,25 @@ func ReadUpdateJobStatusPath(path string) (UpdateJobStatus, bool, error) {
 	status.Lane = strings.TrimSpace(status.Lane)
 	status.Command = strings.TrimSpace(status.Command)
 	status.LogPath = strings.TrimSpace(status.LogPath)
+	for i := range status.Hosts {
+		status.Hosts[i] = normalizeUpdateJobHostStatus(status.Hosts[i])
+	}
 	return status, true, nil
+}
+
+func normalizeUpdateJobHostStatus(host UpdateJobHostStatus) UpdateJobHostStatus {
+	host.HostID = strings.TrimSpace(host.HostID)
+	host.Name = strings.TrimSpace(host.Name)
+	host.Role = strings.TrimSpace(host.Role)
+	host.CurrentPhase = strings.TrimSpace(host.CurrentPhase)
+	host.Status = strings.TrimSpace(host.Status)
+	host.Message = strings.TrimSpace(host.Message)
+	host.Error = strings.TrimSpace(host.Error)
+	for i := range host.Phases {
+		host.Phases[i].Name = strings.TrimSpace(host.Phases[i].Name)
+		host.Phases[i].Status = strings.TrimSpace(host.Phases[i].Status)
+		host.Phases[i].Message = strings.TrimSpace(host.Phases[i].Message)
+		host.Phases[i].Error = strings.TrimSpace(host.Phases[i].Error)
+	}
+	return host
 }
