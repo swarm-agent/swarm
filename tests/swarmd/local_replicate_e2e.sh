@@ -886,7 +886,7 @@ prepare_isolated_host() {
   HOST_STARTUP_CONFIG="${HOST_XDG_CONFIG_HOME}/swarm/swarm.conf"
   write_host_startup_config
 
-  swarm_lane_export_profile main "${ROOT_DIR}"
+  SWARMD_URL="http://${HOST_BIND_HOST}:${HOST_BACKEND_PORT}"
   HOST_ADMIN_API_URL="${SWARMD_URL}"
   HOST_DESKTOP_URL="http://${HOST_ADVERTISE_HOST}:${HOST_DESKTOP_PORT}"
 
