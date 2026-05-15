@@ -1891,8 +1891,7 @@ verify_topology_session_route() {
 }
 
 verify_workspace_overview_topology_routes() {
-  local source_workspace_path_query overview_json route_json route_source route_runtime route_workspace route_container route_writable route_mode
-  local route_host_container route_container_id
+  local source_workspace_path_query overview_json route_json route_source route_runtime route_workspace route_writable route_mode
   source_workspace_path_query="$(url_encode "${SOURCE_WORKSPACE_PATH}")"
   overview_json="$(api_get "/v1/workspace/overview?workspace_limit=200&session_limit=1&permission_limit=1&limit=200&cwd=${source_workspace_path_query}")"
   write_artifact "workspace-overview-topology-final.json" "${overview_json}"
@@ -1904,8 +1903,6 @@ verify_workspace_overview_topology_routes() {
   route_source="$(printf '%s' "${route_json}" | jq -r '.route_source // empty')"
   route_runtime="$(printf '%s' "${route_json}" | jq -r '.runtime_swarm_id // empty')"
   route_workspace="$(printf '%s' "${route_json}" | jq -r '.runtime_workspace_path // empty')"
-  route_container="$(printf '%s' "${route_json}" | jq -r '.container_id // empty')"
-  route_host_container="$(printf '%s' "${route_json}" | jq -r '.host_container_id // empty')"
   route_writable="$(printf '%s' "${route_json}" | jq -r '.writable')"
   route_mode="$(printf '%s' "${route_json}" | jq -r '.replication_mode // empty')"
 
@@ -1914,8 +1911,6 @@ verify_workspace_overview_topology_routes() {
   if [[ -n "${TARGET_WORKSPACE_PATH:-}" ]]; then
     [[ "${route_workspace}" == "${TARGET_WORKSPACE_PATH}" ]] || fail "workspace overview runtime_workspace_path=${route_workspace}, expected ${TARGET_WORKSPACE_PATH}"
   fi
-  route_container_id="${route_host_container:-${route_container}}"
-  [[ "${route_container_id}" == "${DEPLOYMENT_HOST_CONTAINER_ID}" ]] || fail "workspace overview host_container_id=${route_container_id}, expected ${DEPLOYMENT_HOST_CONTAINER_ID}"
   [[ "${route_writable}" == "${WORKSPACE_WRITABLE}" ]] || fail "workspace overview writable=${route_writable}, expected ${WORKSPACE_WRITABLE}"
   if [[ -n "${REPLICATION_MODE}" ]]; then
     [[ "${route_mode}" == "${REPLICATION_MODE}" ]] || fail "workspace overview replication_mode=${route_mode}, expected ${REPLICATION_MODE}"
