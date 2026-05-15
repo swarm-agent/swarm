@@ -64,6 +64,7 @@ reserve_port_pair() {
     if port_is_available "${backend_port}" \
       && port_is_available "$((backend_port + 1))" \
       && port_is_available "$((backend_port + 2))" \
+      && port_is_available "$((backend_port + 10))" \
       && port_is_available "${desktop_port}"; then
       RESERVED_BACKEND_PORT="${backend_port}"
       RESERVED_DESKTOP_PORT="${desktop_port}"
