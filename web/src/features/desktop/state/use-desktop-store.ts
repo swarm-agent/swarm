@@ -85,7 +85,6 @@ const RECONNECT_MAX_DELAY_MS = 15_000
 const RECONNECT_JITTER_RATIO = 0.2
 const HEARTBEAT_INTERVAL_MS = 15_000
 const LIVENESS_TIMEOUT_MS = 45_000
-const RESUME_STALE_GRACE_MS = 5_000
 const NEW_SESSION_DRAFT_KEY_PREFIX = '__workspace__:'
 const MAX_LIVE_TOOL_OUTPUT_CHARS = 4000
 
@@ -101,8 +100,6 @@ const draftFlushTimers = new Map<string, number>()
 const pendingDraftFlush = new Map<string, DraftFlushState>()
 const pendingSessionSnapshotHydrations = new Set<string>()
 let desktopRealtimeSocket: WebSocket | null = null
-let desktopRealtimeLastActivityAt = 0
-let desktopRealtimeConnectingStartedAt = 0
 let runStreamController: DesktopRunStreamController | null = null
 
 function requireRunStreamController(): DesktopRunStreamController {
@@ -326,8 +323,6 @@ function clearDesktopRuntimeState(state: DesktopStoreState): Partial<DesktopStor
   clearHeartbeatTimer(state)
   clearLivenessTimer(state)
   desktopRealtimeSocket = null
-  desktopRealtimeLastActivityAt = 0
-  desktopRealtimeConnectingStartedAt = 0
   socket?.close()
   requireRunStreamController().closeAll()
   saveDesktopActiveSessionId(null)
@@ -448,8 +443,6 @@ function scheduleReconnect(reason: string): void {
   clearLivenessTimer(current)
   desktopRealtimeSocket?.close()
   desktopRealtimeSocket = null
-  desktopRealtimeLastActivityAt = 0
-  desktopRealtimeConnectingStartedAt = 0
   const attempt = current.reconnectAttempt
   const timer = window.setTimeout(() => {
     const state = useDesktopStore.getState()
@@ -491,35 +484,6 @@ function setConnectionClosed(generation: number): void {
     reconnectAttempt: 0,
     connectionState: state.realtimeDesired ? 'closed' : 'idle',
   })
-}
-
-function desktopRealtimeStaleReason(state: DesktopStoreState, reason: string): string | null {
-  if (!shouldMaintainDesktopRealtime(state)) {
-    return null
-  }
-  const now = Date.now()
-  if (state.connectionState === 'connecting') {
-    return desktopRealtimeConnectingStartedAt > 0 && now - desktopRealtimeConnectingStartedAt >= HEARTBEAT_INTERVAL_MS + RESUME_STALE_GRACE_MS
-      ? `stuck connecting after ${reason}`
-      : null
-  }
-  if (!desktopRealtimeSocket) {
-    return `missing socket after ${reason}`
-  }
-  if (desktopRealtimeSocket.readyState !== WebSocket.OPEN) {
-    return `socket not open after ${reason}`
-  }
-  if (state.connectionState !== 'open') {
-    return `state ${state.connectionState} after ${reason}`
-  }
-  if (desktopRealtimeLastActivityAt > 0 && now - desktopRealtimeLastActivityAt >= LIVENESS_TIMEOUT_MS + RESUME_STALE_GRACE_MS) {
-    // When a mobile PWA is suspended, Safari/Chrome can preserve the page and
-    // WebSocket object but stop delivering close/error. If we resume after the
-    // liveness timeout should have fired, treat the socket as suspect and force
-    // a clean subscribe/resume cycle instead of letting connect() no-op forever.
-    return `stale socket after ${reason}`
-  }
-  return null
 }
 
 function emptyLiveState(): DesktopSessionRecord['live'] {
@@ -2683,8 +2647,6 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
           return
         }
         clearReconnectTimer(state)
-        desktopRealtimeLastActivityAt = Date.now()
-        desktopRealtimeConnectingStartedAt = 0
         set({ connectionState: 'open', reconnectAttempt: 0, reconnectTimer: null })
         startHeartbeat(socket, generation)
         socket.send(JSON.stringify({ type: 'subscribe', channel: 'session:*', last_seen_seq: get().lastGlobalSeq }))
@@ -2706,7 +2668,6 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
         if (state.connectionGeneration !== generation || desktopRealtimeSocket !== socket) {
           return
         }
-        desktopRealtimeLastActivityAt = Date.now()
         armLivenessTimer(generation)
         try {
           const message = JSON.parse(String(event.data)) as SocketMessage
@@ -2756,7 +2717,6 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
         set({ connectionState: 'error' })
       })
       desktopRealtimeSocket = socket
-      desktopRealtimeConnectingStartedAt = Date.now()
       set({ heartbeatTimer: null, livenessTimer: null })
     } catch (error) {
       console.error('[desktop-store] connect failed', error)
@@ -2770,46 +2730,10 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
         return
       }
       desktopRealtimeSocket = null
-      desktopRealtimeLastActivityAt = 0
-      desktopRealtimeConnectingStartedAt = 0
       set({ connectionState: 'error' })
       scheduleReconnect('connect failure')
       finish({ ok: false })
     }
-  },
-  reconnectIfStale: async (reason) => {
-    const current = get()
-    const staleReason = desktopRealtimeStaleReason(current, reason)
-    debugLog('desktop-store', 'reconnect-if-stale:check', {
-      reason,
-      staleReason,
-      connectionState: current.connectionState,
-      hasSocket: Boolean(desktopRealtimeSocket),
-      socketState: desktopRealtimeSocket?.readyState ?? null,
-      lastActivityAt: desktopRealtimeLastActivityAt,
-      connectingStartedAt: desktopRealtimeConnectingStartedAt,
-    })
-    if (!staleReason) {
-      await get().connect()
-      return
-    }
-    clearReconnectTimer(current)
-    clearHeartbeatTimer(current)
-    clearLivenessTimer(current)
-    const socket = desktopRealtimeSocket
-    desktopRealtimeSocket = null
-    desktopRealtimeLastActivityAt = 0
-    desktopRealtimeConnectingStartedAt = 0
-    set({
-      reconnectTimer: null,
-      heartbeatTimer: null,
-      livenessTimer: null,
-      connectionGeneration: current.connectionGeneration + 1,
-      connectionState: 'closed',
-    })
-    socket?.close()
-    console.warn(`[desktop-store] forcing realtime reconnect: ${staleReason}`)
-    await get().connect()
   },
   disconnect: () => {
     const current = get()
@@ -2825,8 +2749,6 @@ export const useDesktopStore = create<DesktopStoreState>((set, get) => ({
     const nextGeneration = current.connectionGeneration + 1
     const socket = desktopRealtimeSocket
     desktopRealtimeSocket = null
-    desktopRealtimeLastActivityAt = 0
-    desktopRealtimeConnectingStartedAt = 0
     set({
       reconnectTimer: null,
       heartbeatTimer: null,

@@ -6,7 +6,7 @@ import { useDesktopStore } from '../state/use-desktop-store'
 export function DesktopRealtimeBootstrap() {
   const hydrate = useDesktopStore((state) => state.hydrate)
   const disconnect = useDesktopStore((state) => state.disconnect)
-  const reconnectIfStale = useDesktopStore((state) => state.reconnectIfStale)
+  const connect = useDesktopStore((state) => state.connect)
   const vault = useDesktopStore((state) => state.vault)
   const refreshNotifications = useDesktopStore((state) => state.refreshNotifications)
   const matchRoute = useMatchRoute()
@@ -45,37 +45,31 @@ export function DesktopRealtimeBootstrap() {
     if (!inDesktopApp || (vault.enabled && !vault.unlocked)) {
       return
     }
-    const refreshRealtime = (reason: string) => {
-      debugLog('desktop-realtime-bootstrap', 'browser:realtime-resume-check', { reason })
-      void reconnectIfStale(reason)
-    }
     const handleOnline = () => {
-      refreshRealtime('browser online')
+      debugLog('desktop-realtime-bootstrap', 'browser:online-event')
+      void connect()
     }
     const handleVisible = () => {
       if (document.visibilityState !== 'visible') {
         return
       }
-      refreshRealtime('visibility restored')
+      debugLog('desktop-realtime-bootstrap', 'browser:visibility-restored')
+      void connect()
     }
     const handleFocus = () => {
-      refreshRealtime('window focus')
-    }
-    const handlePageShow = (event: PageTransitionEvent) => {
-      refreshRealtime(event.persisted ? 'pageshow persisted' : 'pageshow')
+      debugLog('desktop-realtime-bootstrap', 'browser:focus-event')
+      void connect()
     }
     window.addEventListener('online', handleOnline)
     window.addEventListener('focus', handleFocus)
-    window.addEventListener('pageshow', handlePageShow)
     document.addEventListener('visibilitychange', handleVisible)
     return () => {
       debugLog('desktop-realtime-bootstrap', 'effect:remove-online-listener')
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('focus', handleFocus)
-      window.removeEventListener('pageshow', handlePageShow)
       document.removeEventListener('visibilitychange', handleVisible)
     }
-  }, [inDesktopApp, reconnectIfStale, vault.enabled, vault.unlocked])
+  }, [connect, inDesktopApp, vault.enabled, vault.unlocked])
 
   return null
 }
