@@ -78,6 +78,7 @@ const FAST_ON_OFF_OPTIONS = ['off', 'on']
 const TODO_DRAG_MIME = 'application/x-swarm-workspace-todo'
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
+const ALWAYS_APPLY_SAVED_NOTICE_MS = 5_000
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 
@@ -650,6 +651,13 @@ function reasoningElapsedLabel(startedAt: number | null, timerNow: number): stri
   return formatDurationCompact(timerNow - startedAt)
 }
 
+export function savedRuleCountdownSeconds(expiresAt: number | null, now: number): number {
+  if (!expiresAt) {
+    return 0
+  }
+  return Math.max(0, Math.ceil((expiresAt - now) / 1000))
+}
+
 function reasoningHeadline(state: DesktopSessionRecord['live']['reasoningState'], startedAt: number | null, timerNow: number): string {
   const label = reasoningStateLabel(state)
   const elapsed = reasoningElapsedLabel(startedAt, timerNow)
@@ -870,6 +878,8 @@ export function DesktopChatPanel({
   const [permissionError, setPermissionError] = useState<string | null>(null)
   const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(() => new Set())
   const [lastSavedRulePreview, setLastSavedRulePreview] = useState<string | null>(null)
+  const [lastSavedRuleExpiresAt, setLastSavedRuleExpiresAt] = useState<number | null>(null)
+  const [savedRuleCountdownNow, setSavedRuleCountdownNow] = useState(() => Date.now())
   const [commitModal, setCommitModal] = useState<CommitModalState>(EMPTY_COMMIT_MODAL_STATE)
   const [planModal, setPlanModal] = useState<PlanModalState>(EMPTY_PLAN_MODAL_STATE)
   const [timerNow, setTimerNow] = useState(() => Date.now())
@@ -1255,6 +1265,7 @@ export function DesktopChatPanel({
   const canStop = (lifecycleActive && lifecycleRunId !== '') || reconnectingRun || (awaitingLifecycleStart && liveRunId !== '')
   const showRunTimer = lifecycleActive && lifecycleStartedAt > 0
   const runTimerLabel = showRunTimer ? formatDurationCompact(timerNow - lifecycleStartedAt) : reconnectingRun ? 'Reconnecting…' : ''
+  const savedRuleCountdown = savedRuleCountdownSeconds(lastSavedRuleExpiresAt, savedRuleCountdownNow)
   const composerDisabled = awaitingLifecycleStart || reconnectingRun || (lifecycleActive && lifecyclePhase === 'starting')
   const runActive = canStop || submitting || lifecycleActive
   const showDictationButton = !runActive && dictationSupported
@@ -1771,6 +1782,22 @@ export function DesktopChatPanel({
     const intervalID = window.setInterval(() => setTimerNow(Date.now()), 100)
     return () => window.clearInterval(intervalID)
   }, [showRunTimer])
+
+  useEffect(() => {
+    if (!lastSavedRulePreview || !lastSavedRuleExpiresAt) {
+      return
+    }
+    setSavedRuleCountdownNow(Date.now())
+    const intervalID = window.setInterval(() => setSavedRuleCountdownNow(Date.now()), 250)
+    const timeoutID = window.setTimeout(() => {
+      setLastSavedRulePreview(null)
+      setLastSavedRuleExpiresAt(null)
+    }, Math.max(0, lastSavedRuleExpiresAt - Date.now()))
+    return () => {
+      window.clearInterval(intervalID)
+      window.clearTimeout(timeoutID)
+    }
+  }, [lastSavedRuleExpiresAt, lastSavedRulePreview])
 
   useEffect(() => {
     rowVirtualizer.measure()
@@ -2486,9 +2513,11 @@ export function DesktopChatPanel({
           },
         }
       })
-      setLastSavedRulePreview(resolved.savedRule
+      const savedRulePreview = resolved.savedRule
         ? [resolved.savedRule.decision, resolved.savedRule.kind === 'bash_prefix' ? 'bash prefix:' : resolved.savedRule.kind === 'phrase' ? 'phrase:' : 'tool:', resolved.savedRule.kind === 'phrase' ? (resolved.savedRule.pattern || '') : resolved.savedRule.kind === 'bash_prefix' ? (resolved.savedRule.pattern || '') : (resolved.savedRule.tool || '')].filter(Boolean).join(' ')
-        : null)
+        : null
+      setLastSavedRulePreview(savedRulePreview)
+      setLastSavedRuleExpiresAt(savedRulePreview ? Date.now() + ALWAYS_APPLY_SAVED_NOTICE_MS : null)
       setPermissionError(null)
     } catch (error) {
       setPermissionError(error instanceof Error ? error.message : 'Failed to resolve permission')
@@ -2929,7 +2958,12 @@ export function DesktopChatPanel({
           {panelError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{panelError}</div> : null}
           {permissionError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{permissionError}</div> : null}
           {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">{dictationError}</div> : null}
-          {lastSavedRulePreview ? <div className="rounded-xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-3 py-2 text-sm text-[var(--app-success)]">Always apply saved: {lastSavedRulePreview}</div> : null}
+          {lastSavedRulePreview ? (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-3 py-2 text-sm text-[var(--app-success)]">
+              <span className="min-w-0 truncate">Always apply saved: {lastSavedRulePreview}</span>
+              <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Disappears in {savedRuleCountdown}s</span>
+            </div>
+          ) : null}
           {!lifecycleActive && (lifecyclePhase === 'cancelled' || lifecyclePhase === 'canceled') ? (
             <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">
               {lifecycleStopReason || liveSession?.live.summary || 'Stream cancelled by user.'}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, metadataTodoSummary, resolveSessionEffectiveAgentName, sessionUsesReadOnlyFlowIdentity, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, metadataTodoSummary, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -45,6 +45,14 @@ test('metadataTodoSummary reads agent-scoped counts from metadata', () => {
     inProgressCount: 1,
     activeText: 'Make mobile badge readable',
   })
+})
+
+test('savedRuleCountdownSeconds counts down the visible saved-rule notice', () => {
+  assert.equal(savedRuleCountdownSeconds(5_000, 0), 5)
+  assert.equal(savedRuleCountdownSeconds(5_000, 1), 5)
+  assert.equal(savedRuleCountdownSeconds(5_000, 1_001), 4)
+  assert.equal(savedRuleCountdownSeconds(5_000, 5_000), 0)
+  assert.equal(savedRuleCountdownSeconds(null, 0), 0)
 })
 
 function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
