@@ -1038,6 +1038,23 @@ func (s *Server) managedHostTargetForSessionRequest(r *http.Request, sessionID, 
 	return target, http.StatusOK, nil
 }
 
+func managedHostTargetBySwarmID(targets []swarmTarget, targetSwarmID string) *swarmTarget {
+	targetSwarmID = strings.TrimSpace(targetSwarmID)
+	if targetSwarmID == "" {
+		return nil
+	}
+	for i := range targets {
+		if !strings.EqualFold(strings.TrimSpace(targets[i].SwarmID), targetSwarmID) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(targets[i].Relationship), swarmruntime.RelationshipManaged) && !strings.EqualFold(strings.TrimSpace(targets[i].Kind), "manager") && !strings.EqualFold(strings.TrimSpace(targets[i].Relationship), "self") {
+			target := targets[i]
+			return &target
+		}
+	}
+	return nil
+}
+
 func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID string) (*swarmTarget, string, string, int, error) {
 	if s == nil || s.swarm == nil {
 		return nil, "", "", http.StatusInternalServerError, errors.New("swarm service is not configured")
@@ -1065,6 +1082,11 @@ func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID 
 	}
 	if target == nil {
 		return nil, "", "", http.StatusBadRequest, errors.New("managed host target was not found")
+	}
+	if !strings.EqualFold(strings.TrimSpace(target.Relationship), swarmruntime.RelationshipManaged) || strings.EqualFold(strings.TrimSpace(target.Kind), "manager") || strings.EqualFold(strings.TrimSpace(target.Relationship), "self") {
+		if byID := managedHostTargetBySwarmID(targets, targetSwarmID); byID != nil {
+			target = byID
+		}
 	}
 	if !strings.EqualFold(strings.TrimSpace(target.Relationship), swarmruntime.RelationshipManaged) || strings.EqualFold(strings.TrimSpace(target.Kind), "manager") || strings.EqualFold(strings.TrimSpace(target.Relationship), "self") {
 		return nil, "", "", http.StatusBadRequest, errors.New("target must be a managed host")
