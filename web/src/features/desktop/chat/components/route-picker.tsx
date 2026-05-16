@@ -43,7 +43,7 @@ function routeCaption(route: DesktopChatRoute): string {
   }
   if (kind === 'remote') {
     const hostName = route.hostSwarmName.trim() || route.hostSwarmId.trim()
-    return hostName ? `Swarm target: ${hostName}` : 'Remote swarm'
+    return hostName || 'Remote swarm'
   }
   return 'Local swarm'
 }

@@ -571,7 +571,7 @@ function swarmTargetPrimaryLabel(target: SwarmTarget): string {
 function swarmTargetSecondaryLabel(target: SwarmTarget, targets: SwarmTarget[]): string {
   if (target.kind === 'mirrored') {
     const source = swarmHostDisplayName(target.host_swarm_id, targets)
-    return source ? `Swarm target: ${source}` : 'Swarm target: managed host'
+    return source || 'managed host'
   }
   return `${swarmKindLabel(target)} · ${swarmTargetStatusLabel(target)}`
 }
