@@ -200,42 +200,53 @@ func TestRoutedSessionGetUsesStoredRouteWithoutSwarmID(t *testing.T) {
 	}
 }
 
-func TestRoutedSessionMessagePostUsesStoredRouteWithoutSwarmID(t *testing.T) {
+func TestRoutedSessionTargetUsesOwnerHostPeerAuth(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
-	var hits atomic.Int32
-	var requestPath atomic.Value
-	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		requestPath.Store(r.URL.Path)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-	}))
-	defer child.Close()
-
 	sessionID := "session-routed"
 	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
 		ChildSwarmID:         "child-swarm",
-		ChildBackendURL:      child.URL,
+		ChildBackendURL:      "http://127.0.0.1:7782",
 		HostWorkspacePath:    "/host/workspace",
 		RuntimeWorkspacePath: "/runtime/workspace",
 	}); err != nil {
 		t.Fatalf("put route: %v", err)
 	}
-
-	body := bytes.NewBufferString(`{"role":"user","content":"hello"}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/messages", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:          "child-swarm",
+		Name:             "child",
+		Relationship:     "child",
+		BackendURL:       "http://127.0.0.1:7782",
+		Status:           "attached",
+		OwnerHostSwarmID: "managed-swarm",
+	}); err != nil {
+		t.Fatalf("upsert runtime: %v", err)
 	}
-	if hits.Load() != 1 {
-		t.Fatalf("child hits = %d, want 1", hits.Load())
+	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
+		SessionID:            sessionID,
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      "http://127.0.0.1:7782",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/runtime/workspace",
+	}); err != nil {
+		t.Fatalf("upsert topology route: %v", err)
 	}
-	if got, _ := requestPath.Load().(string); got != "/v1/sessions/"+sessionID+"/messages" {
-		t.Fatalf("child path = %q, want %q", got, "/v1/sessions/"+sessionID+"/messages")
+
+	target, ok, err := server.routedSessionTarget(sessionID)
+	if err != nil {
+		t.Fatalf("routed target: %v", err)
+	}
+	if !ok || target == nil {
+		t.Fatalf("routed target not found")
+	}
+	if target.HostSwarmID != "managed-swarm" {
+		t.Fatalf("target host swarm id = %q, want managed-swarm", target.HostSwarmID)
+	}
+	if target.Kind != "mirrored" {
+		t.Fatalf("target kind = %q, want mirrored", target.Kind)
+	}
+	if token, err := server.outgoingPeerAuthTokenForTarget(nil, *target); err != nil || token != "peer-token" {
+		t.Fatalf("target token = %q err=%v, want peer-token", token, err)
 	}
 }
 
