@@ -7,77 +7,88 @@ import (
 )
 
 const (
-	KeyAuthCodexDefault                = "auth/codex/default" // legacy single-record key; retained for migration.
-	KeyAuthAttachDefault               = "auth/attach/default"
-	KeyAuthVaultMeta                   = "auth/vault/meta"
-	KeyAuthCredentialPrefix            = "auth/credential/"
-	KeyAuthCredentialActivePrefix      = "auth/credential_active/"
-	KeyAuthCredentialTagPrefix         = "auth/index/auth_tag/"
-	KeyAuthManagedVaultKeyPrefix       = "auth/managed_vault_key/"
-	KeyUISettingsDefault               = "ui/settings/default"
-	KeyUIChatSettingsDefault           = "ui/chat_settings/default"
-	KeyVoiceConfigDefault              = "voice/config/default"
-	KeyVoiceProfilePrefix              = "voice/profile/"
-	KeyVoiceProfileActiveSTT           = "voice/profile_active/stt"
-	KeyModelPrefGlobal                 = "model_pref/global/default"
-	KeyModelFavoritePrefix             = "model_favorite/"
-	KeyWorktreeGlobalConfig            = "worktree/global/config"
-	KeyWorktreeConfigPrefix            = "worktree/config/"
-	KeyMCPServerPrefix                 = "mcp/server/"
-	KeyWorkspaceCurrent                = "workspace/current"
-	KeyWorkspaceEntryPrefix            = "workspace/entry/"
-	KeyWorkspaceTodoItemPrefix         = "workspace_todo/item/"
-	KeyVideoThreadPrefix               = "video/thread/"
-	KeyImageThreadPrefix               = "image/thread/"
-	KeyModelCatalogMeta                = "model_catalog/meta"
-	KeyAgentProfilePrefix              = "agent/profile/"
-	KeyAgentCustomToolPrefix           = "agent/custom_tool/"
-	KeyAgentActivePrimary              = "agent/active/primary"
-	KeyAgentActiveSubagentPrefix       = "agent/active/subagent/"
-	KeyAgentVersion                    = "agent/version"
-	KeySwarmLocalNodeDefault           = "swarm/local_node/default"
-	KeySwarmLocalPairingDefault        = "swarm/local_pairing/default"
-	KeySwarmCurrentGroupDefault        = "swarm/current_group/default"
-	KeySwarmGroupPrefix                = "swarm/group/"
-	KeySwarmGroupMembershipPrefix      = "swarm/group_membership/"
-	KeySwarmGroupBySwarmPrefix         = "swarm/group_membership_by_swarm/"
-	KeySwarmContainerProfilePrefix     = "swarm/container_profile/"
-	KeySwarmLocalContainerPrefix       = "swarm/local_container/"
-	KeySwarmNodePrefix                 = "swarm/node/"
-	KeyDeployContainerPrefix           = "deploy/container/"
-	KeyRemoteDeploySessionPrefix       = "deploy/remote_session/"
-	KeySwarmInvitePrefix               = "swarm/invite/"
-	KeySwarmInviteTokenPrefix          = "swarm/invite_token/"
-	KeySwarmEnrollmentPrefix           = "swarm/enrollment/"
-	KeySwarmTrustedPeerPrefix          = "swarm/trusted_peer/"
-	KeySwarmDesktopTargetCurrent       = "swarm/desktop_target/current"
-	KeyTopologyRuntimePrefix           = "topology/runtime/"
-	KeyTopologyHostContainerPrefix     = "topology/host_container/"
-	KeyTopologyAttachmentPrefix        = "topology/attachment/"
-	KeyTopologyWorkspaceBindingPrefix  = "topology/workspace_binding/"
-	KeyTopologySessionRoutePrefix      = "topology/session_route/"
-	KeyTopologyMigrationStatusPrefix   = "topology/migration_status/"
-	KeySwarmMirrorLocalSeq             = "swarm/mirror/local/seq"
-	KeySwarmMirrorLocalEventPrefix     = "swarm/mirror/local/event/"
-	KeySwarmMirrorLocalResourcePrefix  = "swarm/mirror/local/resource/"
-	KeySwarmMirrorRemoteCursorPrefix   = "swarm/mirror/remote/cursor/"
-	KeySwarmMirrorRemoteResourcePrefix = "swarm/mirror/remote/resource/"
-	KeyNotificationPrefix              = "notification/"
-	KeyNotificationBySwarmPrefix       = "notification_by_swarm/"
-	KeyNotificationPermissionRefPrefix = "notification_permission_ref/"
-	KeyNotificationSummaryPrefix       = "notification_summary/"
-	KeyFlowDefinitionPrefix            = "flow/definition/"
-	KeyFlowAssignmentStatusPrefix      = "flow/assignment_status/"
-	KeyFlowOutboxPrefix                = "flow/outbox/"
-	KeyFlowOutboxStatusPrefix          = "flow/outbox_status/"
-	KeyFlowMirroredRunPrefix           = "flow/mirrored_run/"
-	KeyFlowTargetAcceptedPrefix        = "flow_target/accepted/"
-	KeyFlowTargetCommandLedgerPrefix   = "flow_target/command_ledger/"
-	KeyFlowTargetDuePrefix             = "flow_target/due/"
-	KeyFlowTargetRunPrefix             = "flow_target/run/"
-	KeyFlowTargetRunByFlowPrefix       = "flow_target/run_by_flow/"
-	KeyFlowTargetRunClaimPrefix        = "flow_target/run_claim/"
-	keyGlobalSequenceCounter           = "meta/global_seq"
+	KeyAuthCodexDefault                         = "auth/codex/default" // legacy single-record key; retained for migration.
+	KeyAuthAttachDefault                        = "auth/attach/default"
+	KeyAuthVaultMeta                            = "auth/vault/meta"
+	KeyAuthCredentialPrefix                     = "auth/credential/"
+	KeyAuthCredentialActivePrefix               = "auth/credential_active/"
+	KeyAuthCredentialTagPrefix                  = "auth/index/auth_tag/"
+	KeyAuthManagedVaultKeyPrefix                = "auth/managed_vault_key/"
+	KeyUISettingsDefault                        = "ui/settings/default"
+	KeyUIChatSettingsDefault                    = "ui/chat_settings/default"
+	KeyVoiceConfigDefault                       = "voice/config/default"
+	KeyVoiceProfilePrefix                       = "voice/profile/"
+	KeyVoiceProfileActiveSTT                    = "voice/profile_active/stt"
+	KeyModelPrefGlobal                          = "model_pref/global/default"
+	KeyModelFavoritePrefix                      = "model_favorite/"
+	KeyWorktreeGlobalConfig                     = "worktree/global/config"
+	KeyWorktreeConfigPrefix                     = "worktree/config/"
+	KeyMCPServerPrefix                          = "mcp/server/"
+	KeyWorkspaceCurrent                         = "workspace/current"
+	KeyWorkspaceEntryPrefix                     = "workspace/entry/"
+	KeyWorkspaceTodoItemPrefix                  = "workspace_todo/item/"
+	KeyVideoThreadPrefix                        = "video/thread/"
+	KeyImageThreadPrefix                        = "image/thread/"
+	KeyModelCatalogMeta                         = "model_catalog/meta"
+	KeyAgentProfilePrefix                       = "agent/profile/"
+	KeyAgentCustomToolPrefix                    = "agent/custom_tool/"
+	KeyAgentActivePrimary                       = "agent/active/primary"
+	KeyAgentActiveSubagentPrefix                = "agent/active/subagent/"
+	KeyAgentVersion                             = "agent/version"
+	KeySwarmLocalNodeDefault                    = "swarm/local_node/default"
+	KeySwarmLocalPairingDefault                 = "swarm/local_pairing/default"
+	KeySwarmCurrentGroupDefault                 = "swarm/current_group/default"
+	KeySwarmGroupPrefix                         = "swarm/group/"
+	KeySwarmGroupMembershipPrefix               = "swarm/group_membership/"
+	KeySwarmGroupBySwarmPrefix                  = "swarm/group_membership_by_swarm/"
+	KeySwarmContainerProfilePrefix              = "swarm/container_profile/"
+	KeySwarmLocalContainerPrefix                = "swarm/local_container/"
+	KeySwarmNodePrefix                          = "swarm/node/"
+	KeyDeployContainerPrefix                    = "deploy/container/"
+	KeyRemoteDeploySessionPrefix                = "deploy/remote_session/"
+	KeySwarmInvitePrefix                        = "swarm/invite/"
+	KeySwarmInviteTokenPrefix                   = "swarm/invite_token/"
+	KeySwarmEnrollmentPrefix                    = "swarm/enrollment/"
+	KeySwarmTrustedPeerPrefix                   = "swarm/trusted_peer/"
+	KeySwarmDesktopTargetCurrent                = "swarm/desktop_target/current"
+	KeyTopologyRuntimePrefix                    = "topology/runtime/"
+	KeyTopologyHostContainerPrefix              = "topology/host_container/"
+	KeyTopologyAttachmentPrefix                 = "topology/attachment/"
+	KeyTopologyWorkspaceBindingPrefix           = "topology/workspace_binding/"
+	KeyTopologySessionRoutePrefix               = "topology/session_route/"
+	KeyTopologyMigrationStatusPrefix            = "topology/migration_status/"
+	KeySwarmMirrorLocalSeq                      = "swarm/mirror/local/seq"
+	KeySwarmMirrorLocalEventPrefix              = "swarm/mirror/local/event/"
+	KeySwarmMirrorLocalResourcePrefix           = "swarm/mirror/local/resource/"
+	KeySwarmMirrorRemoteCursorPrefix            = "swarm/mirror/remote/cursor/"
+	KeySwarmMirrorRemoteResourcePrefix          = "swarm/mirror/remote/resource/"
+	KeyNotificationPrefix                       = "notification/"
+	KeyNotificationBySwarmPrefix                = "notification_by_swarm/"
+	KeyNotificationPermissionRefPrefix          = "notification_permission_ref/"
+	KeyNotificationSummaryPrefix                = "notification_summary/"
+	KeyFlowDefinitionPrefix                     = "flow/definition/"
+	KeyFlowAssignmentStatusPrefix               = "flow/assignment_status/"
+	KeyFlowOutboxPrefix                         = "flow/outbox/"
+	KeyFlowOutboxStatusPrefix                   = "flow/outbox_status/"
+	KeyFlowMirroredRunPrefix                    = "flow/mirrored_run/"
+	KeyFlowTargetAcceptedPrefix                 = "flow_target/accepted/"
+	KeyFlowTargetCommandLedgerPrefix            = "flow_target/command_ledger/"
+	KeyFlowTargetDuePrefix                      = "flow_target/due/"
+	KeyFlowTargetRunPrefix                      = "flow_target/run/"
+	KeyFlowTargetRunByFlowPrefix                = "flow_target/run_by_flow/"
+	KeyFlowTargetRunClaimPrefix                 = "flow_target/run_claim/"
+	KeyIntegrationPackPrefix                    = "integration/pack/"
+	KeyIntegrationPackVersionPrefix             = "integration/pack_version/"
+	KeyIntegrationToolPrefix                    = "integration/tool/"
+	KeyIntegrationAdapterPrefix                 = "integration/adapter/"
+	KeyIntegrationPromptFragmentPrefix          = "integration/prompt_fragment/"
+	KeyIntegrationAssignmentPrefix              = "integration/assignment/"
+	KeyIntegrationAssignmentAgentPrefix         = "integration/assignment_by_agent/"
+	KeyIntegrationAssignmentPackPrefix          = "integration/assignment_by_pack/"
+	KeyIntegrationWorkspacePrefix               = "integration/workspace/"
+	KeyIntegrationWorkspaceSessionPrefix        = "integration/workspace_session/"
+	KeyIntegrationWorkspaceSessionUpdatedPrefix = "integration/workspace_session_updated/"
+	keyGlobalSequenceCounter                    = "meta/global_seq"
 )
 
 func EventKey(sequence uint64) string {
@@ -538,6 +549,142 @@ func AgentCustomToolPrefix() string {
 
 func KeyAgentActiveSubagent(purpose string) string {
 	return KeyAgentActiveSubagentPrefix + keyPart(purpose)
+}
+
+func KeyIntegrationPack(packID string) string {
+	return KeyIntegrationPackPrefix + keyPart(packID)
+}
+
+func IntegrationPackPrefix() string {
+	return KeyIntegrationPackPrefix
+}
+
+func KeyIntegrationPackVersion(packID, versionID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyIntegrationPackVersionPrefix, keyPart(packID), keyPart(versionID))
+}
+
+func IntegrationPackVersionPrefix(packID string) string {
+	part := keyPart(packID)
+	if part == "" {
+		return KeyIntegrationPackVersionPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyIntegrationPackVersionPrefix, part)
+}
+
+func KeyIntegrationTool(packID, versionID, toolID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyIntegrationToolPrefix, keyPart(packID), keyPart(versionID), keyPart(toolID))
+}
+
+func IntegrationToolPrefix(packID, versionID string) string {
+	packPart := keyPart(packID)
+	if packPart == "" {
+		return KeyIntegrationToolPrefix
+	}
+	versionPart := keyPart(versionID)
+	if versionPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationToolPrefix, packPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyIntegrationToolPrefix, packPart, versionPart)
+}
+
+func KeyIntegrationAdapter(packID, versionID, adapterID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyIntegrationAdapterPrefix, keyPart(packID), keyPart(versionID), keyPart(adapterID))
+}
+
+func IntegrationAdapterPrefix(packID, versionID string) string {
+	packPart := keyPart(packID)
+	if packPart == "" {
+		return KeyIntegrationAdapterPrefix
+	}
+	versionPart := keyPart(versionID)
+	if versionPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationAdapterPrefix, packPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyIntegrationAdapterPrefix, packPart, versionPart)
+}
+
+func KeyIntegrationPromptFragment(packID, versionID, fragmentID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyIntegrationPromptFragmentPrefix, keyPart(packID), keyPart(versionID), keyPart(fragmentID))
+}
+
+func IntegrationPromptFragmentPrefix(packID, versionID string) string {
+	packPart := keyPart(packID)
+	if packPart == "" {
+		return KeyIntegrationPromptFragmentPrefix
+	}
+	versionPart := keyPart(versionID)
+	if versionPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationPromptFragmentPrefix, packPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyIntegrationPromptFragmentPrefix, packPart, versionPart)
+}
+
+func KeyIntegrationAssignment(assignmentID string) string {
+	return KeyIntegrationAssignmentPrefix + keyPart(assignmentID)
+}
+
+func IntegrationAssignmentPrefix() string {
+	return KeyIntegrationAssignmentPrefix
+}
+
+func KeyIntegrationAssignmentByAgent(agentName, assignmentID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyIntegrationAssignmentAgentPrefix, keyPart(agentName), keyPart(assignmentID))
+}
+
+func IntegrationAssignmentByAgentPrefix(agentName string) string {
+	part := keyPart(agentName)
+	if part == "" {
+		return KeyIntegrationAssignmentAgentPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyIntegrationAssignmentAgentPrefix, part)
+}
+
+func KeyIntegrationAssignmentByPack(packID, versionID, assignmentID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyIntegrationAssignmentPackPrefix, keyPart(packID), keyPart(versionID), keyPart(assignmentID))
+}
+
+func IntegrationAssignmentByPackPrefix(packID, versionID string) string {
+	packPart := keyPart(packID)
+	if packPart == "" {
+		return KeyIntegrationAssignmentPackPrefix
+	}
+	versionPart := keyPart(versionID)
+	if versionPart == "" {
+		return fmt.Sprintf("%s%s/", KeyIntegrationAssignmentPackPrefix, packPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyIntegrationAssignmentPackPrefix, packPart, versionPart)
+}
+
+func KeyIntegrationWorkspace(workspaceID string) string {
+	return KeyIntegrationWorkspacePrefix + keyPart(workspaceID)
+}
+
+func IntegrationWorkspacePrefix() string {
+	return KeyIntegrationWorkspacePrefix
+}
+
+func KeyIntegrationWorkspaceSession(workspaceID, sessionID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyIntegrationWorkspaceSessionPrefix, keyPart(workspaceID), keyPart(sessionID))
+}
+
+func IntegrationWorkspaceSessionPrefix(workspaceID string) string {
+	part := keyPart(workspaceID)
+	if part == "" {
+		return KeyIntegrationWorkspaceSessionPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyIntegrationWorkspaceSessionPrefix, part)
+}
+
+func KeyIntegrationWorkspaceSessionUpdated(workspaceID string, updatedAt int64, sessionID string) string {
+	return fmt.Sprintf("%s%s/%020d/%s", KeyIntegrationWorkspaceSessionUpdatedPrefix, keyPart(workspaceID), reverseMillis(updatedAt), keyPart(sessionID))
+}
+
+func IntegrationWorkspaceSessionUpdatedPrefix(workspaceID string) string {
+	part := keyPart(workspaceID)
+	if part == "" {
+		return KeyIntegrationWorkspaceSessionUpdatedPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyIntegrationWorkspaceSessionUpdatedPrefix, part)
 }
 
 func KeySwarmInvite(inviteID string) string {
