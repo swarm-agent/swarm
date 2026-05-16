@@ -187,8 +187,24 @@ func (s *Server) handleManagedHostSessionOpen(w http.ResponseWriter, r *http.Req
 		mirror.ID = sessionID
 	}
 	mirror.Metadata = managedHostSessionMetadata(mirror.Metadata, route)
+	routeRecord := pebblestore.SessionRouteRecord{
+		SessionID:            strings.TrimSpace(mirror.ID),
+		ChildSwarmID:         strings.TrimSpace(route.ManagedHostSwarmID),
+		ChildBackendURL:      strings.TrimSpace(route.ManagedHostBackendURL),
+		HostWorkspacePath:    strings.TrimSpace(route.HostWorkspacePath),
+		RuntimeWorkspacePath: strings.TrimSpace(route.RuntimeWorkspacePath),
+		CreatedAt:            mirror.CreatedAt,
+		UpdatedAt:            mirror.UpdatedAt,
+	}
+	if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	mirrored, event, err := s.sessions.StoreMirroredSessionWithEvent(mirror)
 	if err != nil {
+		if cleanupErr := s.rollbackHostedSessionCreate(routeRecord.SessionID); cleanupErr != nil {
+			log.Printf("managed-host session route rollback failed session_id=%q err=%v", routeRecord.SessionID, cleanupErr)
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

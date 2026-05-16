@@ -94,11 +94,22 @@ func TestManagedHostSessionMessageUsesNewPeerAPIWithAuthAndMirrors(t *testing.T)
 }
 
 func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
-	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
 	var openedWorkspacePath atomic.Value
 	var openedHostWorkspacePath atomic.Value
 	var openedRuntimeWorkspacePath atomic.Value
 	var openedMetadata atomic.Value
+	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 "managed-binding",
+		SourceWorkspacePath:       "/host/workspace",
+		SourceWorkspaceName:       "workspace",
+		DestinationRuntimeSwarmID: "managed-swarm",
+		DestinationHostSwarmID:    "managed-swarm",
+		DestinationWorkspacePath:  "/managed/workspace",
+		LegacyTargetKind:          "managed_host",
+	}); err != nil {
+		t.Fatalf("put managed workspace binding: %v", err)
+	}
 	managed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != peerManagedHostSessionOpenPath {
 			http.NotFound(w, r)
@@ -168,6 +179,23 @@ func TestManagedHostSessionOpenSendsRuntimeWorkspacePathToPeer(t *testing.T) {
 	}
 	if mirrored.Metadata["swarm_route_id"] != "swarm:managed-swarm:/managed/workspace" || mirrored.Metadata[sessionruntime.HostedSessionMetadataHostWorkspacePath] != "/host/workspace" || mirrored.Metadata[sessionruntime.HostedSessionMetadataRuntimeWorkspacePath] != "/managed/workspace" {
 		t.Fatalf("mirrored metadata = %+v", mirrored.Metadata)
+	}
+	routeRecord, ok, err := server.topology.GetSessionRoute(payload.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get topology session route ok=%t err=%v", ok, err)
+	}
+	if routeRecord.RuntimeSwarmID != "managed-swarm" || routeRecord.BackendURL != managed.URL || routeRecord.WorkspaceBindingID != "managed-binding" {
+		t.Fatalf("topology session route = %+v", routeRecord)
+	}
+	if routeRecord.HostSwarmID != "managed-swarm" || routeRecord.HostWorkspacePath != "/host/workspace" || routeRecord.RuntimeWorkspacePath != "/managed/workspace" {
+		t.Fatalf("topology session route enrichment = %+v", routeRecord)
+	}
+	baseRoute, ok, err := routeStore.Get(payload.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get base session route ok=%t err=%v", ok, err)
+	}
+	if baseRoute.ChildSwarmID != "managed-swarm" || baseRoute.ChildBackendURL != managed.URL {
+		t.Fatalf("base session route = %+v", baseRoute)
 	}
 }
 
