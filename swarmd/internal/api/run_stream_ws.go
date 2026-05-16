@@ -902,9 +902,24 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 		defer runCancel()
 
 		startSignaled := false
+		integrationCtx, contextErr := s.applyIntegrationBuilderRunContext(sessionID, &sessionRunRequestAdapter{
+			agentName:       func() string { return inbound.RunRequest.AgentName },
+			setAgentName:    func(value string) { inbound.RunRequest.AgentName = value },
+			instructions:    func() string { return inbound.RunRequest.Instructions },
+			setInstructions: func(value string) { inbound.RunRequest.Instructions = value },
+		})
+		if contextErr != nil {
+			select {
+			case started <- contextErr:
+			default:
+			}
+			s.runStreams.publishError(runID, sessionID, contextErr)
+			return
+		}
 		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, inbound.RunRequest, runruntime.RunStartMeta{
-			RunID:          runID,
-			OwnerTransport: "background_api",
+			RunID:           runID,
+			OwnerTransport:  "background_api",
+			IntegrationFlow: integrationCtx.IntegrationFlow,
 		}, func(event runruntime.StreamEvent) {
 			if !startSignaled && strings.EqualFold(strings.TrimSpace(event.Type), runruntime.StreamEventSessionLifecycle) && event.Lifecycle != nil && event.Lifecycle.Active {
 				startSignaled = true

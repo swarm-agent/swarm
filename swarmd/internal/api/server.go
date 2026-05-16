@@ -2962,10 +2962,20 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		integrationCtx, err := s.applyIntegrationBuilderRunContext(sessionID, &sessionRunRequestAdapter{
+			agentName:       func() string { return req.AgentName },
+			setAgentName:    func(value string) { req.AgentName = value },
+			instructions:    func() string { return req.Instructions },
+			setInstructions: func(value string) { req.Instructions = value },
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 
 		s.beginActiveRun()
 		defer s.endActiveRun()
-		result, err := s.runner.RunTurn(r.Context(), sessionID, req, runruntime.RunStartMeta{})
+		result, err := s.runner.RunTurn(r.Context(), sessionID, req, runruntime.RunStartMeta{IntegrationFlow: integrationCtx.IntegrationFlow})
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, runruntime.ErrSessionAlreadyActive) {

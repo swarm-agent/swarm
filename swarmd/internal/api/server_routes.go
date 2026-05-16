@@ -214,6 +214,8 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/git/sync/inspect", s.handleGitSyncInspect)
 	mux.HandleFunc("/v1/git/sync/apply", s.handleGitSyncApply)
 	mux.HandleFunc("/v1/integrations", s.handleIntegrations)
+	mux.HandleFunc("/v1/integrations/workspaces", s.handleIntegrationWorkspaces)
+	mux.HandleFunc("/v1/integrations/workspaces/", s.handleIntegrationWorkspaceByID)
 	mux.HandleFunc("/v1/integrations/builder/sessions", s.handleIntegrationBuilderSessions)
 	mux.HandleFunc("/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/v1/sessions/", s.handleSessionByID)

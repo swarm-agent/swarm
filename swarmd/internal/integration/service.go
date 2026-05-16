@@ -361,6 +361,55 @@ func (s *Service) Handle(req Request) (map[string]any, error) {
 	}
 }
 
+func (s *Service) UpsertWorkspaceContext(record pebblestore.IntegrationWorkspaceRecord) (pebblestore.IntegrationWorkspaceRecord, error) {
+	if err := s.configured(); err != nil {
+		return pebblestore.IntegrationWorkspaceRecord{}, err
+	}
+	return s.store.PutWorkspace(record)
+}
+
+func (s *Service) GetWorkspace(workspaceID string) (pebblestore.IntegrationWorkspaceRecord, bool, error) {
+	if err := s.configured(); err != nil {
+		return pebblestore.IntegrationWorkspaceRecord{}, false, err
+	}
+	return s.store.GetWorkspace(workspaceID)
+}
+
+func (s *Service) ListWorkspaces(limit int) ([]pebblestore.IntegrationWorkspaceRecord, error) {
+	if err := s.configured(); err != nil {
+		return nil, err
+	}
+	return s.store.ListWorkspaces(normalizeLimit(limit))
+}
+
+func (s *Service) AttachWorkspaceSession(record pebblestore.IntegrationWorkspaceSessionRecord) (pebblestore.IntegrationWorkspaceSessionRecord, error) {
+	if err := s.configured(); err != nil {
+		return pebblestore.IntegrationWorkspaceSessionRecord{}, err
+	}
+	return s.store.PutWorkspaceSession(record)
+}
+
+func (s *Service) GetWorkspaceSession(workspaceID, sessionID string) (pebblestore.IntegrationWorkspaceSessionRecord, bool, error) {
+	if err := s.configured(); err != nil {
+		return pebblestore.IntegrationWorkspaceSessionRecord{}, false, err
+	}
+	return s.store.GetWorkspaceSession(workspaceID, sessionID)
+}
+
+func (s *Service) ListWorkspaceSessions(workspaceID string, limit int) ([]pebblestore.IntegrationWorkspaceSessionRecord, error) {
+	if err := s.configured(); err != nil {
+		return nil, err
+	}
+	return s.store.ListWorkspaceSessions(workspaceID, normalizeLimit(limit))
+}
+
+func (s *Service) LatestWorkspaceSession(workspaceID string) (pebblestore.IntegrationWorkspaceSessionRecord, bool, error) {
+	if err := s.configured(); err != nil {
+		return pebblestore.IntegrationWorkspaceSessionRecord{}, false, err
+	}
+	return s.store.LatestWorkspaceSession(workspaceID)
+}
+
 func (s *Service) configured() error {
 	if s == nil || s.store == nil {
 		return errors.New("integration service is not configured")
