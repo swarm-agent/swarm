@@ -870,7 +870,7 @@ checkpoint_6() {
   printf '%s\n' "${session_id}" >"${cp_dir}/session_id.txt"
 
   api_json POST "/v1/sessions/${session_id}/messages" \
-    "$(jq -nc --arg content "${CHECKPOINT6_PROMPT}" '{role:"user",content:$content,metadata:{launch_gate_checkpoint:"6"}}')" \
+    "$(jq -nc --arg content "${CHECKPOINT6_PROMPT}" '{role:"user",content:$content}')" \
     "${cp_dir}/user_message.json" 60
 
   run_body="$(jq -nc --arg prompt "${CHECKPOINT6_PROMPT}" '{type:"run.start",prompt:$prompt,background:true}')"
