@@ -64,14 +64,19 @@ export function buildDesktopChatRouteOptions(input: {
     const targetKind = targetRelationship === 'managed'
       ? 'host'
       : runtimeKind
+    const hostSwarmName = topologyRoute.hostSwarmName.trim()
+    const targetKindLabel = targetKind.trim().toLowerCase()
+    const label = targetKindLabel === 'mirrored'
+      ? hostSwarmName || topologyRoute.runtimeSwarmName.trim() || swarmId
+      : topologyRoute.runtimeSwarmName.trim() || swarmId
     options.push({
       id,
-      label: topologyRoute.runtimeSwarmName.trim() || swarmId,
+      label,
       swarmId,
       targetKind,
       targetRelationship,
       hostSwarmId: topologyRoute.hostSwarmId.trim(),
-      hostSwarmName: topologyRoute.hostSwarmName.trim(),
+      hostSwarmName,
       hostWorkspacePath: topologyRoute.hostWorkspacePath.trim() || hostRoute.hostWorkspacePath,
       hostWorkspaceName: topologyRoute.hostWorkspaceName.trim() || hostRoute.hostWorkspaceName,
       runtimeWorkspacePath,

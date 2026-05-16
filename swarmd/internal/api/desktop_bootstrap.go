@@ -414,6 +414,16 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 			runtimeTargets[strings.ToLower(swarmID)] = target
 		}
 	}
+	topologyRuntimes := make(map[string]pebblestore.TopologyRuntimeRecord)
+	if runtimes, err := s.topology.ListRuntimes(100000); err == nil {
+		for _, runtime := range runtimes {
+			if swarmID := strings.TrimSpace(runtime.SwarmID); swarmID != "" {
+				topologyRuntimes[strings.ToLower(swarmID)] = runtime
+			}
+		}
+	} else {
+		return nil, err
+	}
 	seenByWorkspace := make(map[string]map[string]struct{})
 	for _, binding := range bindings {
 		workspacePath := strings.TrimSpace(binding.SourceWorkspacePath)
@@ -446,6 +456,11 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 		if hostSwarmID != "" {
 			if hostTarget, ok := runtimeTargets[strings.ToLower(hostSwarmID)]; ok {
 				hostSwarmName = firstNonEmpty(strings.TrimSpace(hostTarget.Name), hostSwarmID)
+			}
+			if hostSwarmName == "" {
+				if hostRuntime, ok := topologyRuntimes[strings.ToLower(hostSwarmID)]; ok {
+					hostSwarmName = firstNonEmpty(strings.TrimSpace(hostRuntime.Name), hostSwarmID)
+				}
 			}
 		}
 

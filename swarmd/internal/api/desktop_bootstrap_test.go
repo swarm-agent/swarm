@@ -93,6 +93,9 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 	if route.RouteID != "swarm:managed-swarm-1:/workspaces/workspace-one" {
 		t.Fatalf("route id=%q", route.RouteID)
 	}
+	if route.HostSwarmName != "host-swarm" {
+		t.Fatalf("host swarm name=%q route=%+v", route.HostSwarmName, route)
+	}
 	if len(response.Workspaces[0].ReplicationLinks) != 0 {
 		t.Fatalf("test must prove topology routes do not come from legacy replication links: %+v", response.Workspaces[0].ReplicationLinks)
 	}

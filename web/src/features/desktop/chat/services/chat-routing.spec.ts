@@ -310,6 +310,26 @@ test('buildDesktopChatRouteOptions does not require replication links or swarm t
   assert.equal(routes[1]?.label, 'Child Swarm')
 })
 
+test('buildDesktopChatRouteOptions labels mirrored child routes with their host swarm name', () => {
+  const routes = buildDesktopChatRouteOptions({
+    hostSwarmName: 'Primary Host',
+    workspacePath: '/host/workspace',
+    workspaceName: 'Host Workspace',
+    topologyRoutes: [topologyRoute({
+      runtimeSwarmId: 'container-swarm',
+      runtimeSwarmName: 'swarmbomb2',
+      runtimeKind: 'mirrored',
+      runtimeRelationship: 'child',
+      hostSwarmId: 'managed-host-swarm',
+      hostSwarmName: 'swarm-bomb-2',
+    })],
+  })
+
+  assert.equal(routes[1]?.label, 'swarm-bomb-2')
+  assert.equal(routes[1]?.hostSwarmName, 'swarm-bomb-2')
+  assert.equal(routes[1]?.targetKind, 'mirrored')
+})
+
 test('buildDesktopChatRouteOptions deduplicates topology routes by route id', () => {
   const routes = buildDesktopChatRouteOptions({
     hostSwarmName: 'Host Swarm',
