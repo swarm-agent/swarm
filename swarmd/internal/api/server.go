@@ -2091,7 +2091,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			routeBackendURL := strings.TrimSpace(remoteTarget.BackendURL)
 			proxyTarget := *remoteTarget
 			if strings.EqualFold(strings.TrimSpace(remoteTarget.Kind), "mirrored") {
-				if backendURL := s.proxyBackendURLForTarget(*remoteTarget); backendURL != "" {
+				if backendURL := s.ownerHostBackendURLForTarget(*remoteTarget); backendURL != "" {
 					proxyTarget.BackendURL = backendURL
 				}
 			}
@@ -2157,6 +2157,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				SessionID: session.ID,
 				Request:   req,
 				Hosted:    childDescriptor,
+				Route:     routeRecord,
 			}, &childResp); err != nil {
 				rollbackHostedCreate(hostedSessionOpenError(*remoteTarget, err))
 				return

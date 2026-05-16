@@ -598,7 +598,7 @@ EOF
 
 # Managed Host Link Mode sync. Active whenever swarm_role = managed and pairing_state = paired.
 # To stop management sync, unlink/detach this Managed Host from its Manager.
-managed_host_sync_mode =
+managed_host_sync_mode = managed
 managed_host_sync_modules =
 managed_host_sync_owner_swarm_id =
 managed_host_sync_host_api_base_url =

@@ -155,7 +155,7 @@ func buildChatCompletionRequest(req provideriface.Request) chatCompletionRequest
 				Function: chatCompletionToolFunction{
 					Name:        name,
 					Description: strings.TrimSpace(definition.Description),
-					Parameters:  definition.Parameters,
+					Parameters:  sanitizeFireworksToolParameters(definition.Parameters),
 				},
 			})
 		}
@@ -243,6 +243,97 @@ func mapFunctionOutputMessage(item map[string]any) map[string]any {
 		"role":         "tool",
 		"tool_call_id": strings.TrimSpace(callID),
 		"content":      strings.TrimSpace(output),
+	}
+}
+
+func sanitizeFireworksToolParameters(parameters map[string]any) map[string]any {
+	out := sanitizeFireworksSchemaMap(parameters, false)
+	if len(out) == 0 {
+		out = map[string]any{}
+	}
+	if strings.TrimSpace(schemaString(out["type"])) == "" {
+		out["type"] = "object"
+	}
+	if strings.EqualFold(strings.TrimSpace(schemaString(out["type"])), "object") {
+		if _, ok := out["properties"].(map[string]any); !ok {
+			out["properties"] = map[string]any{}
+		}
+	}
+	return out
+}
+
+func sanitizeFireworksRequired(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(schemaString(item)); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func sanitizeFireworksSchemaMap(input map[string]any, keepRequired bool) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		if value == nil {
+			continue
+		}
+		if key == "required" {
+			if !keepRequired {
+				if required := sanitizeFireworksRequired(value); len(required) > 0 {
+					out[key] = required
+				}
+			}
+			continue
+		}
+		out[key] = sanitizeFireworksSchemaValue(value, key == "properties")
+	}
+	return out
+}
+
+func sanitizeFireworksSchemaValue(value any, keepRequired bool) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return sanitizeFireworksSchemaMap(typed, keepRequired)
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			if item != nil {
+				out = append(out, sanitizeFireworksSchemaValue(item, keepRequired))
+			}
+		}
+		return out
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
+	}
+}
+
+func schemaString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	default:
+		return ""
 	}
 }
 

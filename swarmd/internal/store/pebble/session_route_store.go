@@ -11,8 +11,11 @@ type SessionRouteRecord struct {
 	SessionID            string `json:"session_id"`
 	ChildSwarmID         string `json:"child_swarm_id"`
 	ChildBackendURL      string `json:"child_backend_url,omitempty"`
+	HostSwarmID          string `json:"host_swarm_id,omitempty"`
+	HostContainerID      string `json:"host_container_id,omitempty"`
 	HostWorkspacePath    string `json:"host_workspace_path,omitempty"`
 	RuntimeWorkspacePath string `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID   string `json:"workspace_binding_id,omitempty"`
 	CreatedAt            int64  `json:"created_at"`
 	UpdatedAt            int64  `json:"updated_at"`
 }
@@ -95,7 +98,10 @@ func normalizeSessionRouteRecord(record SessionRouteRecord) SessionRouteRecord {
 	record.SessionID = strings.TrimSpace(record.SessionID)
 	record.ChildSwarmID = strings.TrimSpace(record.ChildSwarmID)
 	record.ChildBackendURL = strings.TrimSpace(record.ChildBackendURL)
+	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)
+	record.HostContainerID = strings.TrimSpace(record.HostContainerID)
 	record.HostWorkspacePath = strings.TrimSpace(record.HostWorkspacePath)
 	record.RuntimeWorkspacePath = strings.TrimSpace(record.RuntimeWorkspacePath)
+	record.WorkspaceBindingID = strings.TrimSpace(record.WorkspaceBindingID)
 	return record
 }

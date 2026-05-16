@@ -124,12 +124,45 @@ func (s *Server) proxyWebsocketToSwarmTarget(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) proxyBackendURLForTarget(target swarmTarget) string {
-	if strings.TrimSpace(target.HostSwarmID) != "" || strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
-		if backendURL := s.ownerHostBackendURLForTarget(target); backendURL != "" {
-			return backendURL
+	backendURL := strings.TrimSpace(target.BackendURL)
+	if strings.TrimSpace(target.HostSwarmID) != "" && s.isLocalSwarmID(target.HostSwarmID) {
+		return backendURL
+	}
+	if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") || strings.TrimSpace(target.HostSwarmID) != "" {
+		if ownerBackendURL := s.ownerHostBackendURLForTarget(target); ownerBackendURL != "" && !sameBackendURL(ownerBackendURL, backendURL) {
+			return ownerBackendURL
 		}
 	}
-	return strings.TrimSpace(target.BackendURL)
+	return backendURL
+}
+
+func sameBackendURL(a, b string) bool {
+	return strings.EqualFold(strings.TrimRight(strings.TrimSpace(a), "/"), strings.TrimRight(strings.TrimSpace(b), "/"))
+}
+
+func (s *Server) isLocalSwarmID(swarmID string) bool {
+	swarmID = strings.TrimSpace(swarmID)
+	if s == nil || s.swarm == nil || swarmID == "" {
+		return false
+	}
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		return false
+	}
+	state, err := s.currentSwarmState(cfg)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(state.Node.SwarmID), swarmID)
+}
+
+func isLoopbackBackendURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
 func websocketEndpointForBackend(endpoint string) (string, error) {

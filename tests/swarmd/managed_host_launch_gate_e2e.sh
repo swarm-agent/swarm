@@ -30,9 +30,17 @@ Implemented checkpoints:
   6  Managed container AI: create a managed-host child container, open/message/run
      a session through primary routed session APIs, verify proof token, topology,
      mirror, and route cleanup.
+  7  Flow A: create/run a primary self-target flow and verify status/history,
+     session report, and assistant proof token on primary.
+  8  Flow B: create/run a primary local-container flow, verify route/report/history,
+     then disable/unassign before deleting the container and verify cleanup.
+  9  Flow C: create/run a managed-host main flow via primary flow APIs and verify
+     managed execution report/history/session evidence returned to primary.
+  10 Flow D: create/run a managed-host container flow, verify attribution/report,
+     then disable/unassign before deleting the managed container and verify cleanup.
 
 Options:
-  --scenario <0|1|2|4|5|6|0-1|0-2|0-4|0-5|0-6|all>    Default: 0-1
+  --scenario <0|1|2|4|5|6|7|8|9|10|0-1|0-2|0-4|0-5|0-6|7-10|0-10|all>    Default: 0-1
   --primary-url <url>                      Primary swarmd URL. Or SWARM_PRIMARY_URL.
                                            Default for SSH testbench: http://127.0.0.1:7781
   --managed-swarm-id <id>                  Managed host swarm_id. Or SWARM_MANAGED_SWARM_ID.
@@ -49,6 +57,11 @@ Options:
   --cp5-recreate-container-name <name>     Recreated child name for checkpoint 5. Or SWARM_LAUNCH_GATE_CP5_RECREATE_CONTAINER_NAME.
   --cp6-container-name <name>              Child container/swarm name for checkpoint 6. Or SWARM_LAUNCH_GATE_CP6_CONTAINER_NAME.
   --cp6-prompt <text>                      Prompt for checkpoint 6. Or SWARM_LAUNCH_GATE_CP6_PROMPT.
+  --flow-agent-name <name>                 Agent profile used by checkpoints 7-10. Default: swarm.
+  --flow-agent-mode <mode>                 Agent profile mode used by checkpoints 7-10. Default: primary.
+  --cp8-container-name <name>              Primary local child name for checkpoint 8.
+  --cp10-container-name <name>             Managed-host child name for checkpoint 10.
+  --flow-timeout-seconds <seconds>         Flow run wait timeout for checkpoints 7-10. Default: 360.
   --runtime <podman|docker>                Container runtime for checkpoints 4/5. Optional; managed host default is used when empty.
   --evidence-dir <path>                    Evidence directory. Default: tmp launch-gate directory.
   --cleanup-existing-managed-containers    Delete managed-host containers seen in primary topology via primary API.
@@ -65,6 +78,9 @@ Environment shortcuts:
   SWARM_LAUNCH_GATE_CONTAINER_NAME, SWARM_LAUNCH_GATE_CP5_CONTAINER_NAME,
   SWARM_LAUNCH_GATE_CP5_RECREATE_CONTAINER_NAME, SWARM_LAUNCH_GATE_CP6_CONTAINER_NAME,
   SWARM_LAUNCH_GATE_CP6_PROMPT, SWARM_LAUNCH_GATE_RUNTIME,
+  SWARM_LAUNCH_GATE_FLOW_AGENT_NAME, SWARM_LAUNCH_GATE_FLOW_AGENT_MODE,
+  SWARM_LAUNCH_GATE_CP8_CONTAINER_NAME, SWARM_LAUNCH_GATE_CP10_CONTAINER_NAME,
+  SWARM_LAUNCH_GATE_FLOW_TIMEOUT_SECONDS,
   SWARM_LAUNCH_GATE_EVIDENCE_DIR, SWARM_LAUNCH_GATE_ALLOW_LOCAL
 
 Artifacts:
@@ -75,6 +91,10 @@ Artifacts:
   <evidence-dir>/checkpoint-4/*.json
   <evidence-dir>/checkpoint-5/*.json
   <evidence-dir>/checkpoint-6/*.json
+  <evidence-dir>/checkpoint-7/*.json
+  <evidence-dir>/checkpoint-8/*.json
+  <evidence-dir>/checkpoint-9/*.json
+  <evidence-dir>/checkpoint-10/*.json
 EOF
 }
 
@@ -367,11 +387,11 @@ checkpoint_1() {
     --arg root_dir "${ROOT_DIR}" \
     --arg runner_host "$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)" \
     --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{harness:$harness,evidence_dir:$evidence_dir,root_dir:$root_dir,runner_host:$runner_host,created_at:$created_at,implemented_checkpoints:["0","1","2","4","5","6"],product_path:"primary swarmd API to managed-host swarmd API only",execution_scope:"ssh testbench host only"}' \
+    '{harness:$harness,evidence_dir:$evidence_dir,root_dir:$root_dir,runner_host:$runner_host,created_at:$created_at,implemented_checkpoints:["0","1","2","4","5","6","7","8","9","10"],product_path:"primary swarmd API to managed-host swarmd API only",execution_scope:"ssh testbench host only"}' \
     >"${cp_dir}/harness_metadata.json"
-  jq -nc '{checkpoint_0:"implemented",checkpoint_1:"implemented",checkpoint_2:"implemented_provider_key_required",checkpoint_3:"completed_external_cold_db_proof",checkpoint_4:"implemented",checkpoint_5:"implemented",checkpoint_6:"implemented_provider_key_required",checkpoint_7:"pending",checkpoint_8:"pending",checkpoint_9:"pending",checkpoint_10:"pending",checkpoint_11:"pending"}' \
+  jq -nc '{checkpoint_0:"implemented",checkpoint_1:"implemented",checkpoint_2:"implemented_provider_key_required",checkpoint_3:"completed_external_cold_db_proof",checkpoint_4:"implemented",checkpoint_5:"implemented",checkpoint_6:"implemented_provider_key_required",checkpoint_7:"implemented_provider_key_required",checkpoint_8:"implemented_provider_key_required",checkpoint_9:"implemented_provider_key_required",checkpoint_10:"implemented_provider_key_required",checkpoint_11:"pending"}' \
     >"${cp_dir}/matrix_template.json"
-  record_checkpoint "1" "PASS" "repeatable evidence directory and matrix status created; checkpoints 0-2 and 4-6 implemented" "${cp_dir}"
+  record_checkpoint "1" "PASS" "repeatable evidence directory and matrix status created; checkpoints 0-2 and 4-10 implemented" "${cp_dir}"
 }
 
 ensure_checkpoint2_inputs() {
@@ -925,6 +945,328 @@ checkpoint_6() {
   record_checkpoint "6" "PASS" "managed-host container session opened, messaged, and run through primary routed session APIs; assistant response mirrored, topology route verified, and delete cleaned route" "${cp_dir}"
 }
 
+
+ensure_flow_inputs() {
+  [[ -n "${SOURCE_WORKSPACE_PATH}" ]] || fail "--source-workspace-path is required for flow checkpoints"
+  if [[ -z "${MANAGED_WORKSPACE_PATH}" ]]; then
+    MANAGED_WORKSPACE_PATH="${SOURCE_WORKSPACE_PATH}"
+  fi
+  if [[ -z "${CHECKPOINT_FLOW_AGENT_NAME}" ]]; then
+    CHECKPOINT_FLOW_AGENT_NAME="swarm"
+  fi
+  if [[ -z "${CHECKPOINT_FLOW_AGENT_MODE}" ]]; then
+    CHECKPOINT_FLOW_AGENT_MODE="primary"
+  fi
+}
+
+flow_prompt_for_checkpoint() {
+  local checkpoint="${1:-}"
+  case "${checkpoint}" in
+    7) printf '%s' "${CHECKPOINT7_PROMPT:-Launch Gate checkpoint 7 flow run. Reply with exactly: LAUNCH_GATE_CP7_OK}" ;;
+    8) printf '%s' "${CHECKPOINT8_PROMPT:-Launch Gate checkpoint 8 container flow run. Reply with exactly: LAUNCH_GATE_CP8_OK}" ;;
+    9) printf '%s' "${CHECKPOINT9_PROMPT:-Launch Gate checkpoint 9 managed-host flow run. Reply with exactly: LAUNCH_GATE_CP9_OK}" ;;
+    10) printf '%s' "${CHECKPOINT10_PROMPT:-Launch Gate checkpoint 10 managed-container flow run. Reply with exactly: LAUNCH_GATE_CP10_OK}" ;;
+    *) fail "unknown flow checkpoint prompt: ${checkpoint}" ;;
+  esac
+}
+
+flow_token_for_checkpoint() {
+  local checkpoint="${1:-}"
+  case "${checkpoint}" in
+    7) printf '%s' "LAUNCH_GATE_CP7_OK" ;;
+    8) printf '%s' "LAUNCH_GATE_CP8_OK" ;;
+    9) printf '%s' "LAUNCH_GATE_CP9_OK" ;;
+    10) printf '%s' "LAUNCH_GATE_CP10_OK" ;;
+    *) fail "unknown flow checkpoint token: ${checkpoint}" ;;
+  esac
+}
+
+capture_flow_agent_state() {
+  local cp_dir="${1:-}"
+  api_json GET "/v2/agents?limit=200" "" "${cp_dir}/agents_state.json" 30
+  jq -e --arg name "${CHECKPOINT_FLOW_AGENT_NAME}" '.state.profiles[]? | select((.name // "") == $name)' "${cp_dir}/agents_state.json" >"${cp_dir}/flow_agent_profile.json" \
+    || fail "flow agent profile ${CHECKPOINT_FLOW_AGENT_NAME} was not found"
+  local enabled mode
+  enabled="$(jq -r '.enabled // true' "${cp_dir}/flow_agent_profile.json")"
+  mode="$(jq -r '.mode // empty' "${cp_dir}/flow_agent_profile.json")"
+  [[ "${enabled}" == "true" ]] || fail "flow agent profile ${CHECKPOINT_FLOW_AGENT_NAME} is disabled"
+  [[ -n "${mode}" ]] || fail "flow agent profile ${CHECKPOINT_FLOW_AGENT_NAME} has empty mode"
+}
+
+flow_target_from_targets() {
+  local targets_file="${1:-}"
+  local selector="${2:-}"
+  local output_file="${3:-}"
+  case "${selector}" in
+    self)
+      jq -c '.targets[]? | select(((.relationship // "") == "self") or ((.kind // "") == "self"))' "${targets_file}" | head -n 1 | jq '.' >"${output_file}"
+      ;;
+    managed)
+      jq -c --arg id "${MANAGED_SWARM_ID}" '.targets[]? | select((.swarm_id // "") == $id)' "${targets_file}" | head -n 1 | jq '.' >"${output_file}"
+      ;;
+    *)
+      jq -c --arg id "${selector}" '.targets[]? | select((.swarm_id // "") == $id)' "${targets_file}" | head -n 1 | jq '.' >"${output_file}"
+      ;;
+  esac
+  if [[ ! -s "${output_file}" ]] || ! jq empty "${output_file}" >/dev/null 2>&1; then
+    fail "flow target ${selector} was not found in ${targets_file}"
+  fi
+}
+
+flow_selection_from_target() {
+  local target_file="${1:-}"
+  local output_file="${2:-}"
+  jq '{swarm_id:(.swarm_id // ""),kind:(.kind // ""),deployment_id:(.deployment_id // ""),name:(.name // "")}' "${target_file}" >"${output_file}"
+  [[ -n "$(jq -r '.swarm_id // empty' "${output_file}")" ]] || fail "flow target selection has empty swarm_id"
+}
+
+flow_payload() {
+  local flow_id="${1:-}"
+  local name="${2:-}"
+  local target_file="${3:-}"
+  local prompt="${4:-}"
+  local workspace_path="${5:-}"
+  local host_workspace_path="${6:-}"
+  local runtime_workspace_path="${7:-}"
+  jq -nc \
+    --arg flow_id "${flow_id}" \
+    --arg name "${name}" \
+    --slurpfile target "${target_file}" \
+    --arg agent_name "${CHECKPOINT_FLOW_AGENT_NAME}" \
+    --arg agent_mode "${CHECKPOINT_FLOW_AGENT_MODE}" \
+    --arg workspace_path "${workspace_path}" \
+    --arg host_workspace_path "${host_workspace_path}" \
+    --arg runtime_workspace_path "${runtime_workspace_path}" \
+    --arg prompt "${prompt}" \
+    '{flow_id:$flow_id,name:$name,enabled:true,target:$target[0],agent:{profile_name:$agent_name,profile_mode:$agent_mode},workspace:{workspace_path:$workspace_path,host_workspace_path:$host_workspace_path,runtime_workspace_path:$runtime_workspace_path},schedule:{cadence:"on_demand",timezone:"UTC"},catch_up_policy:{mode:"once"},intent:{prompt:$prompt,mode:"one_shot_background"}}'
+}
+
+poll_flow_run_success() {
+  local cp_dir="${1:-}"
+  local flow_id="${2:-}"
+  local token="${3:-}"
+  local expected_swarm_id="${4:-}"
+  local deadline=$((SECONDS + FLOW_RUN_TIMEOUT_SECONDS))
+  local status session_id run_id now
+  while :; do
+    api_json GET "/v3/flows/${flow_id}/status?limit=100" "" "${cp_dir}/flow_status_poll.json" 30
+    api_json GET "/v3/flows/${flow_id}/history?limit=100" "" "${cp_dir}/flow_history_poll.json" 30
+    status="$(jq -r '[.history[]? | select((.status // "") == "success" or (.status // "") == "failed")] | sort_by(.started_at // .scheduled_at // "") | last | .status // empty' "${cp_dir}/flow_history_poll.json")"
+    session_id="$(jq -r '[.history[]? | select((.status // "") == "success" or (.status // "") == "failed")] | sort_by(.started_at // .scheduled_at // "") | last | .session_id // empty' "${cp_dir}/flow_history_poll.json")"
+    run_id="$(jq -r '[.history[]? | select((.status // "") == "success" or (.status // "") == "failed")] | sort_by(.started_at // .scheduled_at // "") | last | .run_id // empty' "${cp_dir}/flow_history_poll.json")"
+    if [[ "${status}" == "success" && -n "${session_id}" ]]; then
+      cp -- "${cp_dir}/flow_status_poll.json" "${cp_dir}/flow_status.json"
+      cp -- "${cp_dir}/flow_history_poll.json" "${cp_dir}/flow_history.json"
+      printf '%s\n' "${session_id}" >"${cp_dir}/flow_session_id.txt"
+      printf '%s\n' "${run_id}" >"${cp_dir}/flow_run_id.txt"
+      break
+    fi
+    if [[ "${status}" == "failed" ]]; then
+      cp -- "${cp_dir}/flow_status_poll.json" "${cp_dir}/flow_status.json"
+      cp -- "${cp_dir}/flow_history_poll.json" "${cp_dir}/flow_history.json"
+      fail "flow ${flow_id} failed: $(jq -c '[.history[]? | select((.status // "") == "failed")] | last' "${cp_dir}/flow_history.json")"
+    fi
+    now=${SECONDS}
+    if [[ "${now}" -ge "${deadline}" ]]; then
+      cp -- "${cp_dir}/flow_status_poll.json" "${cp_dir}/flow_status.json"
+      cp -- "${cp_dir}/flow_history_poll.json" "${cp_dir}/flow_history.json"
+      fail "timed out waiting for flow ${flow_id} success"
+    fi
+    sleep 5
+  done
+
+  api_json GET "/v1/sessions/${session_id}" "" "${cp_dir}/flow_session.json" 30
+  api_json GET "/v1/sessions/${session_id}/metadata" "" "${cp_dir}/flow_session_metadata.json" 30
+  api_json GET "/v1/sessions/${session_id}/messages?limit=100" "" "${cp_dir}/flow_messages.json" 30
+  [[ "$(jq -r --arg token "${token}" '[.messages[]? | select((.role // "") == "assistant" and ((.content // "") | contains($token)))] | length' "${cp_dir}/flow_messages.json")" -ge 1 ]] \
+    || fail "flow ${flow_id} assistant messages did not contain ${token}"
+  if [[ -n "${expected_swarm_id}" ]]; then
+    api_json GET "/v1/swarm/topology/session-route?session_id=$(urlencode "${session_id}")" "" "${cp_dir}/flow_session_route.json" 30
+    if [[ "$(jq -r '.route | if . == null then 0 else 1 end' "${cp_dir}/flow_session_route.json")" == "1" ]]; then
+      local route_runtime route_child
+      route_runtime="$(jq -r '.route.runtime_swarm_id // empty' "${cp_dir}/flow_session_route.json")"
+      route_child="$(jq -r '.route.child_swarm_id // empty' "${cp_dir}/flow_session_route.json")"
+      [[ "${route_runtime}" == "${expected_swarm_id}" || "${route_child}" == "${expected_swarm_id}" ]] \
+        || fail "flow ${flow_id} session route did not point at ${expected_swarm_id}"
+    else
+      [[ "$(jq -r --arg id "${expected_swarm_id}" '(.metadata.target_swarm_id // .metadata.swarm_target_swarm_id // .metadata.swarm_routed_child_swarm_id // empty) == $id' "${cp_dir}/flow_session_metadata.json")" == "true" ]] \
+        || fail "flow ${flow_id} had no topology route and metadata did not point at ${expected_swarm_id}"
+    fi
+  fi
+}
+
+create_run_verify_flow() {
+  local cp_dir="${1:-}"
+  local checkpoint="${2:-}"
+  local target_selection_file="${3:-}"
+  local workspace_path="${4:-}"
+  local host_workspace_path="${5:-}"
+  local runtime_workspace_path="${6:-}"
+  local expected_swarm_id="${7:-}"
+  local flow_id="launch-gate-cp${checkpoint}-$(date +%Y%m%d-%H%M%S)"
+  local name="Launch Gate CP${checkpoint} flow"
+  local prompt token payload
+  prompt="$(flow_prompt_for_checkpoint "${checkpoint}")"
+  token="$(flow_token_for_checkpoint "${checkpoint}")"
+  payload="$(flow_payload "${flow_id}" "${name}" "${target_selection_file}" "${prompt}" "${workspace_path}" "${host_workspace_path}" "${runtime_workspace_path}")"
+  printf '%s' "${payload}" >"${cp_dir}/flow_create_request.json"
+  api_json POST "/v3/flows" "${payload}" "${cp_dir}/flow_create_response.json" 60
+  [[ "$(jq -r '.ok // false' "${cp_dir}/flow_create_response.json")" == "true" ]] || fail "checkpoint ${checkpoint} flow create ok=false"
+  api_json POST "/v3/flows/${flow_id}/run-now" "" "${cp_dir}/flow_run_now_response.json" 60
+  [[ "$(jq -r '.ok // false' "${cp_dir}/flow_run_now_response.json")" == "true" ]] || fail "checkpoint ${checkpoint} flow run-now ok=false"
+  poll_flow_run_success "${cp_dir}" "${flow_id}" "${token}" "${expected_swarm_id}"
+  printf '%s\n' "${flow_id}" >"${cp_dir}/flow_id.txt"
+  jq -nc --arg flow_id "${flow_id}" --arg token "${token}" --arg expected_swarm_id "${expected_swarm_id}" '{flow_id:$flow_id,proof_token:$token,expected_target_swarm_id:$expected_swarm_id}' >"${cp_dir}/flow_run_summary.json"
+}
+
+wait_for_target_by_swarm_id() {
+  local cp_dir="${1:-}"
+  local swarm_id="${2:-}"
+  local output_file="${3:-}"
+  local deadline=$((SECONDS + 60))
+  while :; do
+    api_json GET "/v1/swarm/targets?swarm_id=$(urlencode "${swarm_id}")" "" "${cp_dir}/targets_${swarm_id}_poll.json" 30
+    if jq -e --arg id "${swarm_id}" '.targets[]? | select((.swarm_id // "") == $id)' "${cp_dir}/targets_${swarm_id}_poll.json" >/dev/null; then
+      jq -c --arg id "${swarm_id}" '.targets[]? | select((.swarm_id // "") == $id)' "${cp_dir}/targets_${swarm_id}_poll.json" | head -n 1 | jq '.' >"${output_file}"
+      return 0
+    fi
+    [[ "${SECONDS}" -lt "${deadline}" ]] || fail "timed out waiting for target ${swarm_id}"
+    sleep 3
+  done
+}
+
+create_flow_container() {
+  local cp_dir="${1:-}"
+  local checkpoint="${2:-}"
+  local container_name="${3:-}"
+  local target_host_swarm_id="${4:-}"
+  local payload
+  payload="$(jq -nc \
+    --arg mode "local" \
+    --arg swarm_name "${container_name}" \
+    --arg target_host_swarm_id "${target_host_swarm_id}" \
+    --arg runtime "${CHECKPOINT4_RUNTIME}" \
+    --arg source_workspace_path "${SOURCE_WORKSPACE_PATH}" \
+    '{mode:$mode,swarm_name:$swarm_name,sync:{enabled:true,mode:"managed"},workspaces:[{source_workspace_path:$source_workspace_path,replication_mode:"bundle",writable:true}]} + (if $target_host_swarm_id != "" then {target_host_swarm_id:$target_host_swarm_id} else {} end) + (if $runtime != "" then {runtime:$runtime} else {} end)')"
+  printf '%s' "${payload}" | jq 'del(.sync.vault_password)' >"${cp_dir}/replicate_request.redacted.json"
+  api_json POST "/v1/swarm/replicate" "${payload}" "${cp_dir}/replicate_response.json" 240
+  [[ "$(jq -r '.ok // false' "${cp_dir}/replicate_response.json")" == "true" ]] || fail "checkpoint ${checkpoint} replicate response ok=false"
+  FLOW_DEPLOYMENT_ID="$(jq -r '.swarm.deployment_id // empty' "${cp_dir}/replicate_response.json")"
+  FLOW_CHILD_SWARM_ID="$(jq -r '.swarm.id // empty' "${cp_dir}/replicate_response.json")"
+  FLOW_RUNTIME_WORKSPACE_PATH="$(jq -r '.workspaces[0].binding.destination_workspace_path // empty' "${cp_dir}/replicate_response.json")"
+  [[ -n "${FLOW_DEPLOYMENT_ID}" ]] || fail "checkpoint ${checkpoint} missing deployment id"
+  [[ -n "${FLOW_CHILD_SWARM_ID}" ]] || fail "checkpoint ${checkpoint} missing child swarm id"
+  [[ -n "${FLOW_RUNTIME_WORKSPACE_PATH}" ]] || fail "checkpoint ${checkpoint} missing runtime workspace path"
+  api_json GET "/v1/deploy/container" "" "${cp_dir}/deployments_after_create.json" 30
+  FLOW_HOST_CONTAINER_ID="$(jq -r --arg id "${FLOW_DEPLOYMENT_ID}" '.deployments[]? | select(.id == $id) | .host_container_id // empty' "${cp_dir}/deployments_after_create.json" | head -n 1)"
+  FLOW_ATTACHMENT_ID="$(jq -r --arg id "${FLOW_DEPLOYMENT_ID}" '.deployments[]? | select(.id == $id) | .attachment_id // empty' "${cp_dir}/deployments_after_create.json" | head -n 1)"
+  [[ -n "${FLOW_HOST_CONTAINER_ID}" ]] || fail "checkpoint ${checkpoint} missing host container id"
+  [[ -n "${FLOW_ATTACHMENT_ID}" ]] || fail "checkpoint ${checkpoint} missing attachment id"
+  api_json GET "/v1/swarm/topology" "" "${cp_dir}/topology_after_container_create.json" 30
+  wait_for_target_by_swarm_id "${cp_dir}" "${FLOW_CHILD_SWARM_ID}" "${cp_dir}/container_target.json"
+  flow_selection_from_target "${cp_dir}/container_target.json" "${cp_dir}/container_flow_target_selection.json"
+}
+
+deactivate_flow_before_container_delete() {
+  local cp_dir="${1:-}"
+  local flow_id="${2:-}"
+  api_json PUT "/v3/flows/${flow_id}" "$(jq -nc '{enabled:false,target:{},unassign_target:true}')" "${cp_dir}/flow_deactivate_response.json" 60
+  [[ "$(jq -r '.ok // false' "${cp_dir}/flow_deactivate_response.json")" == "true" ]] || fail "flow ${flow_id} deactivate ok=false"
+  api_json GET "/v3/flows/${flow_id}" "" "${cp_dir}/flow_after_deactivate.json" 30
+  [[ "$(jq -r '.definition.enabled // true' "${cp_dir}/flow_after_deactivate.json")" == "false" ]] || fail "flow ${flow_id} was not disabled before container delete"
+  [[ "$(jq -r '[(.definition.target.swarm_id // ""),(.definition.target.kind // ""),(.definition.target.deployment_id // ""),(.definition.target.name // "")] | map(select(. != "")) | length' "${cp_dir}/flow_after_deactivate.json")" == "0" ]] \
+    || fail "flow ${flow_id} target was not cleared before container delete"
+}
+
+delete_flow_container_and_verify() {
+  local cp_dir="${1:-}"
+  local checkpoint="${2:-}"
+  local flow_id="${3:-}"
+  local deployment_id="${4:-}"
+  local child_swarm_id="${5:-}"
+  local host_container_id="${6:-}"
+  local attachment_id="${7:-}"
+  api_json POST "/v1/deploy/container/delete" "$(jq -nc --arg id "${deployment_id}" '{ids:[$id]}')" "${cp_dir}/delete_response.json" 180
+  [[ "$(jq -r '.ok // false' "${cp_dir}/delete_response.json")" == "true" ]] || fail "checkpoint ${checkpoint} container delete ok=false"
+  assert_checkpoint5_deleted_absent "${cp_dir}" "${deployment_id}" "${child_swarm_id}" "${host_container_id}" "${attachment_id}"
+  api_json GET "/v3/flows/${flow_id}" "" "${cp_dir}/flow_after_container_delete.json" 30
+  [[ "$(jq -r '.definition.enabled // true' "${cp_dir}/flow_after_container_delete.json")" == "false" ]] || fail "flow ${flow_id} was not disabled after container delete"
+  [[ "$(jq -r '[(.definition.target.swarm_id // ""),(.definition.target.kind // ""),(.definition.target.deployment_id // ""),(.definition.target.name // "")] | map(select(. != "")) | length' "${cp_dir}/flow_after_container_delete.json")" == "0" ]] \
+    || fail "flow ${flow_id} target was not cleared after container delete"
+}
+
+checkpoint_7() {
+  local cp_dir="${EVIDENCE_DIR}/checkpoint-7"
+  mkdir -p -- "${cp_dir}"
+  log "== checkpoint 7: Flow A primary main flow =="
+  ensure_flow_inputs
+  capture_flow_agent_state "${cp_dir}"
+  api_json GET "/v1/swarm/targets" "" "${cp_dir}/targets.json" 30
+  flow_target_from_targets "${cp_dir}/targets.json" self "${cp_dir}/self_target.json"
+  flow_selection_from_target "${cp_dir}/self_target.json" "${cp_dir}/flow_target_selection.json"
+  local self_swarm_id
+  self_swarm_id="$(jq -r '.swarm_id // empty' "${cp_dir}/self_target.json")"
+  create_run_verify_flow "${cp_dir}" 7 "${cp_dir}/flow_target_selection.json" "${SOURCE_WORKSPACE_PATH}" "${SOURCE_WORKSPACE_PATH}" "${SOURCE_WORKSPACE_PATH}" "${self_swarm_id}"
+  record_checkpoint "7" "PASS" "primary main flow created and run; primary status/history/report session and assistant proof token verified" "${cp_dir}"
+}
+
+checkpoint_8() {
+  local cp_dir="${EVIDENCE_DIR}/checkpoint-8"
+  mkdir -p -- "${cp_dir}"
+  log "== checkpoint 8: Flow B primary local container flow =="
+  ensure_flow_inputs
+  capture_flow_agent_state "${cp_dir}"
+  local container_name flow_id
+  container_name="${CHECKPOINT8_CONTAINER_NAME:-launch-gate-cp8-$(date +%Y%m%d-%H%M%S)}"
+  create_flow_container "${cp_dir}" 8 "${container_name}" ""
+  create_run_verify_flow "${cp_dir}" 8 "${cp_dir}/container_flow_target_selection.json" "${SOURCE_WORKSPACE_PATH}" "${SOURCE_WORKSPACE_PATH}" "${FLOW_RUNTIME_WORKSPACE_PATH}" "${FLOW_CHILD_SWARM_ID}"
+  flow_id="$(cat "${cp_dir}/flow_id.txt")"
+  deactivate_flow_before_container_delete "${cp_dir}" "${flow_id}"
+  delete_flow_container_and_verify "${cp_dir}" 8 "${flow_id}" "${FLOW_DEPLOYMENT_ID}" "${FLOW_CHILD_SWARM_ID}" "${FLOW_HOST_CONTAINER_ID}" "${FLOW_ATTACHMENT_ID}"
+  jq -nc --arg flow_id "${flow_id}" --arg deployment_id "${FLOW_DEPLOYMENT_ID}" --arg child_swarm_id "${FLOW_CHILD_SWARM_ID}" '{flow_id:$flow_id,deployment_id:$deployment_id,child_swarm_id:$child_swarm_id,deactivation:"flow disabled and target cleared before API container delete; state verified after delete"}' >"${cp_dir}/checkpoint_8_summary.json"
+  record_checkpoint "8" "PASS" "primary local container flow created/run with route/report/history proof; flow deactivated and target cleared before container delete, then verified after delete" "${cp_dir}"
+}
+
+checkpoint_9() {
+  local cp_dir="${EVIDENCE_DIR}/checkpoint-9"
+  mkdir -p -- "${cp_dir}"
+  log "== checkpoint 9: Flow C managed host main flow =="
+  if [[ -z "${MANAGED_SWARM_ID}" ]]; then
+    api_json GET "/v1/swarm/targets" "" "${cp_dir}/targets_for_resolve.json" 30
+    resolve_managed_target "${cp_dir}/targets_for_resolve.json" "${cp_dir}/managed_target_resolved.json"
+  fi
+  ensure_flow_inputs
+  capture_flow_agent_state "${cp_dir}"
+  api_json GET "/v1/swarm/targets" "" "${cp_dir}/targets.json" 30
+  flow_target_from_targets "${cp_dir}/targets.json" managed "${cp_dir}/managed_target.json"
+  flow_selection_from_target "${cp_dir}/managed_target.json" "${cp_dir}/flow_target_selection.json"
+  create_run_verify_flow "${cp_dir}" 9 "${cp_dir}/flow_target_selection.json" "${SOURCE_WORKSPACE_PATH}" "${SOURCE_WORKSPACE_PATH}" "${MANAGED_WORKSPACE_PATH}" "${MANAGED_SWARM_ID}"
+  record_checkpoint "9" "PASS" "managed-host main flow created from primary, assignment executed on managed host, and report/history/session proof returned to primary" "${cp_dir}"
+}
+
+checkpoint_10() {
+  local cp_dir="${EVIDENCE_DIR}/checkpoint-10"
+  mkdir -p -- "${cp_dir}"
+  log "== checkpoint 10: Flow D managed-host container flow =="
+  if [[ -z "${MANAGED_SWARM_ID}" ]]; then
+    api_json GET "/v1/swarm/targets" "" "${cp_dir}/targets_for_resolve.json" 30
+    resolve_managed_target "${cp_dir}/targets_for_resolve.json" "${cp_dir}/managed_target_resolved.json"
+  fi
+  ensure_flow_inputs
+  capture_flow_agent_state "${cp_dir}"
+  local container_name flow_id managed_query
+  container_name="${CHECKPOINT10_CONTAINER_NAME:-launch-gate-cp10-$(date +%Y%m%d-%H%M%S)}"
+  create_flow_container "${cp_dir}" 10 "${container_name}" "${MANAGED_SWARM_ID}"
+  managed_query="$(urlencode "${MANAGED_SWARM_ID}")"
+  api_json GET "/v1/swarm/mirror/resources?managed_swarm_id=${managed_query}&resources=container,deployment,target" "" "${cp_dir}/mirror_resources_after_container_create.json" 30
+  create_run_verify_flow "${cp_dir}" 10 "${cp_dir}/container_flow_target_selection.json" "${SOURCE_WORKSPACE_PATH}" "${SOURCE_WORKSPACE_PATH}" "${FLOW_RUNTIME_WORKSPACE_PATH}" "${FLOW_CHILD_SWARM_ID}"
+  flow_id="$(cat "${cp_dir}/flow_id.txt")"
+  deactivate_flow_before_container_delete "${cp_dir}" "${flow_id}"
+  delete_flow_container_and_verify "${cp_dir}" 10 "${flow_id}" "${FLOW_DEPLOYMENT_ID}" "${FLOW_CHILD_SWARM_ID}" "${FLOW_HOST_CONTAINER_ID}" "${FLOW_ATTACHMENT_ID}"
+  api_json GET "/v1/swarm/mirror/resources?managed_swarm_id=${managed_query}&resources=container,deployment,target" "" "${cp_dir}/mirror_resources_after_delete.json" 30
+  jq -nc --arg flow_id "${flow_id}" --arg deployment_id "${FLOW_DEPLOYMENT_ID}" --arg child_swarm_id "${FLOW_CHILD_SWARM_ID}" --arg managed_swarm_id "${MANAGED_SWARM_ID}" '{flow_id:$flow_id,deployment_id:$deployment_id,child_swarm_id:$child_swarm_id,managed_swarm_id:$managed_swarm_id,deactivation:"flow disabled and target cleared before managed-host API container delete; state verified after delete"}' >"${cp_dir}/checkpoint_10_summary.json"
+  record_checkpoint "10" "PASS" "managed-host container flow created/run with primary-visible attribution/report/history; flow deactivated and target cleared before managed container delete, then verified after delete" "${cp_dir}"
+}
 checkpoint_2() {
   local cp_dir="${EVIDENCE_DIR}/checkpoint-2"
   mkdir -p -- "${cp_dir}"
@@ -958,8 +1300,8 @@ checkpoint_2() {
     "$(jq -nc --arg target_swarm_id "${MANAGED_SWARM_ID}" --arg session_id "${session_id}" --arg content "${CHECKPOINT2_PROMPT}" '{target_swarm_id:$target_swarm_id,session_id:$session_id,role:"user",content:$content,metadata:{launch_gate_checkpoint:"2"}}')" \
     "${cp_dir}/user_message.json" 60
 
-  run_body="$(jq -nc --arg target_swarm_id "${MANAGED_SWARM_ID}" --arg session_id "${session_id}" --arg prompt "${CHECKPOINT2_PROMPT}" '{target_swarm_id:$target_swarm_id,session_id:$session_id,type:"run.start",prompt:$prompt,background:true}')"
-  api_json POST "/v1/sessions/${session_id}/run/stream" "${run_body}" "${cp_dir}/run_start.json" 60
+  run_body="$(jq -nc --arg session_id "${session_id}" --arg prompt "${CHECKPOINT2_PROMPT}" '{session_id:$session_id,type:"run.start",prompt:$prompt,background:true}')"
+  api_json POST "/v1/sessions/${session_id}/run/stream?target_swarm_id=$(urlencode "${MANAGED_SWARM_ID}")" "${run_body}" "${cp_dir}/run_start.json" 60
   run_id="$(jq -r '.run_id // empty' "${cp_dir}/run_start.json")"
   [[ -n "${run_id}" ]] || fail "checkpoint 2 run start did not return run_id"
   printf '%s\n' "${run_id}" >"${cp_dir}/run_id.txt"
@@ -1011,6 +1353,15 @@ CHECKPOINT5_CONTAINER_NAME="${SWARM_LAUNCH_GATE_CP5_CONTAINER_NAME:-${SWARM_LAUN
 CHECKPOINT5_RECREATE_CONTAINER_NAME="${SWARM_LAUNCH_GATE_CP5_RECREATE_CONTAINER_NAME:-}"
 CHECKPOINT6_CONTAINER_NAME="${SWARM_LAUNCH_GATE_CP6_CONTAINER_NAME:-${SWARM_LAUNCH_GATE_CONTAINER_NAME:-}}"
 CHECKPOINT6_PROMPT="${SWARM_LAUNCH_GATE_CP6_PROMPT:-}"
+CHECKPOINT7_PROMPT="${SWARM_LAUNCH_GATE_CP7_PROMPT:-}"
+CHECKPOINT8_PROMPT="${SWARM_LAUNCH_GATE_CP8_PROMPT:-}"
+CHECKPOINT9_PROMPT="${SWARM_LAUNCH_GATE_CP9_PROMPT:-}"
+CHECKPOINT10_PROMPT="${SWARM_LAUNCH_GATE_CP10_PROMPT:-}"
+CHECKPOINT8_CONTAINER_NAME="${SWARM_LAUNCH_GATE_CP8_CONTAINER_NAME:-}"
+CHECKPOINT10_CONTAINER_NAME="${SWARM_LAUNCH_GATE_CP10_CONTAINER_NAME:-}"
+CHECKPOINT_FLOW_AGENT_NAME="${SWARM_LAUNCH_GATE_FLOW_AGENT_NAME:-swarm}"
+CHECKPOINT_FLOW_AGENT_MODE="${SWARM_LAUNCH_GATE_FLOW_AGENT_MODE:-primary}"
+FLOW_RUN_TIMEOUT_SECONDS="${SWARM_LAUNCH_GATE_FLOW_TIMEOUT_SECONDS:-360}"
 CHECKPOINT4_RUNTIME="${SWARM_LAUNCH_GATE_RUNTIME:-}"
 EVIDENCE_DIR="${SWARM_LAUNCH_GATE_EVIDENCE_DIR:-}"
 STATUS_FILE=""
@@ -1040,6 +1391,15 @@ while [[ $# -gt 0 ]]; do
     --cp5-recreate-container-name) CHECKPOINT5_RECREATE_CONTAINER_NAME="${2:-}"; shift 2 ;;
     --cp6-container-name) CHECKPOINT6_CONTAINER_NAME="${2:-}"; shift 2 ;;
     --cp6-prompt) CHECKPOINT6_PROMPT="${2:-}"; shift 2 ;;
+    --cp7-prompt) CHECKPOINT7_PROMPT="${2:-}"; shift 2 ;;
+    --cp8-prompt) CHECKPOINT8_PROMPT="${2:-}"; shift 2 ;;
+    --cp9-prompt) CHECKPOINT9_PROMPT="${2:-}"; shift 2 ;;
+    --cp10-prompt) CHECKPOINT10_PROMPT="${2:-}"; shift 2 ;;
+    --cp8-container-name) CHECKPOINT8_CONTAINER_NAME="${2:-}"; shift 2 ;;
+    --cp10-container-name) CHECKPOINT10_CONTAINER_NAME="${2:-}"; shift 2 ;;
+    --flow-agent-name) CHECKPOINT_FLOW_AGENT_NAME="${2:-}"; shift 2 ;;
+    --flow-agent-mode) CHECKPOINT_FLOW_AGENT_MODE="${2:-}"; shift 2 ;;
+    --flow-timeout-seconds) FLOW_RUN_TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
     --runtime) CHECKPOINT4_RUNTIME="${2:-}"; shift 2 ;;
     --evidence-dir) EVIDENCE_DIR="${2:-}"; shift 2 ;;
     --cleanup-existing-managed-containers) CLEANUP_EXISTING_MANAGED_CONTAINERS="true"; shift ;;
@@ -1065,11 +1425,17 @@ case "${SCENARIO}" in
   4|checkpoint-4) start_desktop_session; checkpoint_4 ;;
   5|checkpoint-5) start_desktop_session; checkpoint_5 ;;
   6|checkpoint-6) start_desktop_session; checkpoint_6 ;;
+  7|checkpoint-7) start_desktop_session; checkpoint_7 ;;
+  8|checkpoint-8) start_desktop_session; checkpoint_8 ;;
+  9|checkpoint-9) start_desktop_session; checkpoint_9 ;;
+  10|checkpoint-10) start_desktop_session; checkpoint_10 ;;
   0-1) checkpoint_0; checkpoint_1 ;;
   0-2) checkpoint_0; checkpoint_1; checkpoint_2 ;;
   0-4) checkpoint_0; checkpoint_1; checkpoint_2; checkpoint_4 ;;
   0-5) checkpoint_0; checkpoint_1; checkpoint_2; checkpoint_4; checkpoint_5 ;;
-  0-6|all) checkpoint_0; checkpoint_1; checkpoint_2; checkpoint_4; checkpoint_5; checkpoint_6 ;;
+  0-6) checkpoint_0; checkpoint_1; checkpoint_2; checkpoint_4; checkpoint_5; checkpoint_6 ;;
+  7-10) start_desktop_session; checkpoint_7; checkpoint_8; checkpoint_9; checkpoint_10 ;;
+  0-10|all) checkpoint_0; checkpoint_1; checkpoint_2; checkpoint_4; checkpoint_5; checkpoint_6; checkpoint_7; checkpoint_8; checkpoint_9; checkpoint_10 ;;
   *) fail "unknown scenario: ${SCENARIO}" ;;
 esac
 

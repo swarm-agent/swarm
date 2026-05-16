@@ -43,6 +43,7 @@ type peerSessionOpenRequest struct {
 	SessionID string                                 `json:"session_id"`
 	Request   sessionCreateRequest                   `json:"request"`
 	Hosted    sessionruntime.HostedSessionDescriptor `json:"hosted"`
+	Route     pebblestore.SessionRouteRecord         `json:"route,omitempty"`
 }
 
 func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, error) {
@@ -81,11 +82,20 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 			return nil, false, err
 		}
 	}
+	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID))
+	backendURL := strings.TrimSpace(record.BackendURL)
+	if hostSwarmID != "" && isLoopbackBackendURL(backendURL) {
+		if ownerBackendURL := s.ownerHostBackendURLForTarget(swarmTarget{SwarmID: strings.TrimSpace(record.RuntimeSwarmID), HostSwarmID: hostSwarmID}); ownerBackendURL != "" {
+			backendURL = ownerBackendURL
+		}
+	}
 	flowRouteDiagLog("routed_session_target_lookup",
 		"session_id", record.SessionID,
 		"route_child_swarm_id", record.RuntimeSwarmID,
 		"route_child_backend_url_present", strings.TrimSpace(record.BackendURL) != "",
-		"route_host_swarm_id", firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID)),
+		"route_child_backend_url_loopback", isLoopbackBackendURL(record.BackendURL),
+		"route_proxy_backend_url", backendURL,
+		"route_host_swarm_id", hostSwarmID,
 		"route_host_container_id", firstNonEmpty(strings.TrimSpace(record.HostContainerID), strings.TrimSpace(binding.DestinationContainerID), strings.TrimSpace(runtimeRecord.OwnerHostContainerID)),
 		"route_workspace_binding_id", record.WorkspaceBindingID,
 		"route_host_workspace_path", record.HostWorkspacePath,
@@ -98,11 +108,11 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 		Relationship: firstNonEmpty(strings.TrimSpace(runtimeRecord.Relationship), "child"),
 		Kind:         firstNonEmpty(strings.TrimSpace(binding.LegacyTargetKind), swarmTargetKindForRoutedSession(runtimeRecord)),
 		DeploymentID: strings.TrimPrefix(strings.TrimSpace(binding.BindingID), "binding:replica:"),
-		HostSwarmID:  firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID)),
+		HostSwarmID:  hostSwarmID,
 		Online:       true,
 		Selectable:   true,
 		Current:      true,
-		BackendURL:   strings.TrimSpace(record.BackendURL),
+		BackendURL:   backendURL,
 		DesktopURL:   strings.TrimSpace(runtimeRecord.DesktopURL),
 	}
 	return target, true, nil
@@ -380,6 +390,31 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if strings.TrimSpace(req.Route.SessionID) != "" {
+		routeRecord := req.Route
+		if strings.TrimSpace(routeRecord.SessionID) == "" {
+			routeRecord.SessionID = req.SessionID
+		}
+		if strings.TrimSpace(routeRecord.HostSwarmID) == "" {
+			routeRecord.HostSwarmID = strings.TrimSpace(req.Hosted.HostSwarmID)
+		}
+		if strings.TrimSpace(routeRecord.HostWorkspacePath) == "" {
+			routeRecord.HostWorkspacePath = strings.TrimSpace(req.Hosted.HostWorkspacePath)
+		}
+		if strings.TrimSpace(routeRecord.RuntimeWorkspacePath) == "" {
+			routeRecord.RuntimeWorkspacePath = strings.TrimSpace(req.Hosted.RuntimeWorkspacePath)
+		}
+		if routeRecord.CreatedAt == 0 {
+			routeRecord.CreatedAt = session.CreatedAt
+		}
+		if routeRecord.UpdatedAt == 0 {
+			routeRecord.UpdatedAt = session.UpdatedAt
+		}
+		if err := s.upsertTopologySessionRoute(routeRecord); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,

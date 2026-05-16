@@ -24,8 +24,11 @@ func (s *Server) upsertTopologySessionRoute(record pebblestore.SessionRouteRecor
 		SessionID:            route.SessionID,
 		ChildSwarmID:         route.RuntimeSwarmID,
 		ChildBackendURL:      route.BackendURL,
+		HostSwarmID:          route.HostSwarmID,
+		HostContainerID:      route.HostContainerID,
 		HostWorkspacePath:    route.HostWorkspacePath,
 		RuntimeWorkspacePath: route.RuntimeWorkspacePath,
+		WorkspaceBindingID:   route.WorkspaceBindingID,
 		CreatedAt:            route.CreatedAt,
 		UpdatedAt:            route.UpdatedAt,
 	})

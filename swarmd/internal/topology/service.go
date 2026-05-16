@@ -150,10 +150,12 @@ func (s *Service) UpsertSessionRoute(record pebblestore.SessionRouteRecord) (peb
 	if err != nil {
 		return pebblestore.TopologySessionRouteRecord{}, err
 	}
-	bindingID := matchingWorkspaceBindingID(bindings, record)
+	bindingID := firstNonEmpty(strings.TrimSpace(record.WorkspaceBindingID), matchingWorkspaceBindingID(bindings, record))
 	route := pebblestore.TopologySessionRouteRecord{
 		SessionID:            strings.TrimSpace(record.SessionID),
 		RuntimeSwarmID:       strings.TrimSpace(record.ChildSwarmID),
+		HostSwarmID:          strings.TrimSpace(record.HostSwarmID),
+		HostContainerID:      strings.TrimSpace(record.HostContainerID),
 		WorkspaceBindingID:   bindingID,
 		BackendURL:           strings.TrimSpace(record.ChildBackendURL),
 		HostWorkspacePath:    strings.TrimSpace(record.HostWorkspacePath),
@@ -535,10 +537,12 @@ func (s *Service) buildSessionRoutes(bindings []pebblestore.TopologyWorkspaceBin
 	}
 	out := make([]pebblestore.TopologySessionRouteRecord, 0, len(routes))
 	for _, route := range routes {
-		bindingID := matchingWorkspaceBindingID(bindings, route)
+		bindingID := firstNonEmpty(strings.TrimSpace(route.WorkspaceBindingID), matchingWorkspaceBindingID(bindings, route))
 		record := pebblestore.TopologySessionRouteRecord{
 			SessionID:            strings.TrimSpace(route.SessionID),
 			RuntimeSwarmID:       strings.TrimSpace(route.ChildSwarmID),
+			HostSwarmID:          strings.TrimSpace(route.HostSwarmID),
+			HostContainerID:      strings.TrimSpace(route.HostContainerID),
 			WorkspaceBindingID:   bindingID,
 			BackendURL:           strings.TrimSpace(route.ChildBackendURL),
 			HostWorkspacePath:    strings.TrimSpace(route.HostWorkspacePath),

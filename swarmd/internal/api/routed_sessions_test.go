@@ -27,6 +27,214 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 )
 
+func TestPeerSessionOpenPersistsRouteForManagedHostContainer(t *testing.T) {
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:              "child-swarm",
+		Name:                 "managed child",
+		Relationship:         "child",
+		BackendURL:           "http://127.0.0.1:7782",
+		OwnerHostSwarmID:     "managed-swarm",
+		OwnerHostContainerID: "managed-container",
+	}); err != nil {
+		t.Fatalf("upsert child runtime: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:      "managed-swarm",
+		Name:         "managed host",
+		Relationship: "managed",
+		BackendURL:   "https://managed.example.test",
+	}); err != nil {
+		t.Fatalf("upsert managed runtime: %v", err)
+	}
+
+	payload, err := json.Marshal(peerSessionOpenRequest{
+		SessionID: "session-managed-child",
+		Request: func() sessionCreateRequest {
+			req := sessionCreateRequest{
+				Title:                "managed child",
+				WorkspacePath:        "/workspaces/swarm-go",
+				HostWorkspacePath:    "/workspaces/swarm-go",
+				RuntimeWorkspacePath: "/workspaces/swarm-go",
+				WorkspaceName:        "swarm-go",
+				Mode:                 sessionruntime.ModeAuto,
+				AgentName:            "swarm",
+			}
+			req.Preference.Provider = "codex"
+			req.Preference.Model = "gpt-5.4"
+			req.Preference.Thinking = "medium"
+			return req
+		}(),
+		Hosted: sessionruntime.HostedSessionDescriptor{
+			HostSwarmID:          "managed-swarm",
+			HostBackendURL:       "https://primary.example.test",
+			HostWorkspacePath:    "/host/swarm-go",
+			RuntimeWorkspacePath: "/workspaces/swarm-go",
+			ChildSwarmID:         "child-swarm",
+			OwnerTransport:       "routed_session_peer",
+		},
+		Route: pebblestore.SessionRouteRecord{
+			SessionID:            "session-managed-child",
+			ChildSwarmID:         "child-swarm",
+			ChildBackendURL:      "http://127.0.0.1:7782",
+			HostSwarmID:          "managed-swarm",
+			HostContainerID:      "managed-container",
+			HostWorkspacePath:    "/host/swarm-go",
+			RuntimeWorkspacePath: "/workspaces/swarm-go",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/open", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if _, ok, err := sessionSvc.GetSession("session-managed-child"); err != nil || !ok {
+		t.Fatalf("get child session ok=%t err=%v", ok, err)
+	}
+	route, ok, err := routeStore.Get("session-managed-child")
+	if err != nil || !ok {
+		t.Fatalf("get session route ok=%t err=%v", ok, err)
+	}
+	if route.ChildSwarmID != "child-swarm" || route.HostSwarmID != "managed-swarm" || route.HostContainerID != "managed-container" || route.ChildBackendURL != "http://127.0.0.1:7782" {
+		t.Fatalf("session route = %+v", route)
+	}
+	topologyRoute, ok, err := server.topology.GetSessionRoute("session-managed-child")
+	if err != nil || !ok {
+		t.Fatalf("get topology session route ok=%t err=%v", ok, err)
+	}
+	if topologyRoute.RuntimeSwarmID != "child-swarm" || topologyRoute.HostSwarmID != "managed-swarm" || topologyRoute.HostContainerID != "managed-container" || topologyRoute.BackendURL != "http://127.0.0.1:7782" {
+		t.Fatalf("topology session route = %+v", topologyRoute)
+	}
+	target, ok, err := server.routedSessionTarget("session-managed-child")
+	if err != nil || !ok {
+		t.Fatalf("routed session target ok=%t err=%v", ok, err)
+	}
+	if target.BackendURL != "https://managed.example.test" || target.HostSwarmID != "managed-swarm" {
+		t.Fatalf("routed target = %+v", target)
+	}
+}
+
+func TestProxyBackendURLUsesChildLoopbackOnOwnerHost(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:      "managed-swarm",
+		Relationship: "managed",
+		BackendURL:   "http://127.0.0.1:7782",
+	}); err != nil {
+		t.Fatalf("upsert managed runtime: %v", err)
+	}
+	got := server.proxyBackendURLForTarget(swarmTarget{
+		SwarmID:     "child-swarm",
+		Kind:        "mirrored",
+		HostSwarmID: "managed-swarm",
+		BackendURL:  "http://127.0.0.1:7782",
+	})
+	if got != "http://127.0.0.1:7782" {
+		t.Fatalf("backend url = %q, want child loopback backend", got)
+	}
+}
+
+func TestRoutedRunStreamControlProxiesHostedMirrorSession(t *testing.T) {
+	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
+	var hits atomic.Int32
+	var requestPath atomic.Value
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		requestPath.Store(r.URL.Path)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": "session-routed", "run_id": "run-1"})
+	}))
+	defer child.Close()
+
+	sessionID := seedRoutedSession(t, sessionSvc)
+	if _, _, err := sessionSvc.UpdateMetadata(sessionID, map[string]any{
+		"swarm_managed_host_session":  "true",
+		"swarm_managed_host_swarm_id": "managed-swarm",
+	}); err != nil {
+		t.Fatalf("update metadata: %v", err)
+	}
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
+		SessionID:            sessionID,
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      child.URL,
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/runtime/workspace",
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"type":"run.start","prompt":"hello","background":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/run/stream", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("child hits = %d, want 1", hits.Load())
+	}
+	if got, _ := requestPath.Load().(string); got != "/v1/sessions/"+sessionID+"/run/stream" {
+		t.Fatalf("child path = %q, want %q", got, "/v1/sessions/"+sessionID+"/run/stream")
+	}
+}
+
+func TestRoutedSessionTargetRewritesManagedLoopbackBackendToHostBackend(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:              "child-swarm",
+		Name:                 "managed child",
+		Role:                 "child",
+		Relationship:         "child",
+		BackendURL:           "http://127.0.0.1:7782",
+		Status:               "attached",
+		OwnerHostSwarmID:     "managed-swarm",
+		OwnerHostContainerID: "managed-swarm:container-1",
+	}); err != nil {
+		t.Fatalf("upsert runtime: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:      "managed-swarm",
+		Name:         "managed host",
+		Relationship: "managed",
+		BackendURL:   "https://managed.example.test",
+		Status:       "online",
+	}); err != nil {
+		t.Fatalf("upsert managed runtime: %v", err)
+	}
+	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
+		SessionID:            "session-managed-child",
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      "http://127.0.0.1:7782",
+		HostSwarmID:          "managed-swarm",
+		HostContainerID:      "managed-swarm:container-1",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/workspaces/swarm-go",
+	}); err != nil {
+		t.Fatalf("upsert topology route: %v", err)
+	}
+
+	target, ok, err := server.routedSessionTarget("session-managed-child")
+	if err != nil {
+		t.Fatalf("routed target: %v", err)
+	}
+	if !ok || target == nil {
+		t.Fatal("routed target not found")
+	}
+	if target.BackendURL != "https://managed.example.test" {
+		t.Fatalf("backend url = %q, want managed host backend", target.BackendURL)
+	}
+	if target.HostSwarmID != "managed-swarm" {
+		t.Fatalf("host swarm id = %q, want managed-swarm", target.HostSwarmID)
+	}
+}
+
 var errTestRemoteUpdateFailure = errors.New("remote update failed")
 
 func TestPeerSessionEventStoresAndPublishesMirroredRunEvent(t *testing.T) {

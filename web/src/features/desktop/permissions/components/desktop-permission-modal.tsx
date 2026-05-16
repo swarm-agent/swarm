@@ -155,12 +155,12 @@ function ModalShell({
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      className="z-[80] p-1.5 pt-[calc(var(--app-safe-area-top)_+_0.375rem)] sm:p-4"
+      className="z-[80] overflow-hidden p-1.5 pt-[calc(var(--app-safe-area-top)_+_0.375rem)] pb-[calc(var(--app-safe-area-bottom)_+_0.375rem)] sm:p-4"
     >
       <DialogBackdrop onClick={handleRequestClose} />
       <DialogPanel
         className={cn(
-          'flex min-h-0 max-h-[calc(100dvh_-_var(--app-safe-area-top)_-_var(--app-safe-area-bottom)_-_12px)] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100vh-32px)]',
+          'flex min-h-0 max-h-[calc(100dvh_-_var(--app-safe-area-top)_-_var(--app-safe-area-bottom)_-_12px)] flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)] sm:max-h-[calc(100dvh-32px)]',
           widthClassName,
         )}
       >
@@ -179,7 +179,7 @@ function ModalShell({
           </div>
           <ModalCloseButton onClick={handleRequestClose} aria-label="Close permission modal" />
         </div>
-        <div className={cn('min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 sm:px-5 sm:py-4', bodyClassName)}>{children}</div>
+        <div className={cn('min-h-0 flex-auto overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 sm:px-5 sm:py-4', bodyClassName)}>{children}</div>
         {footer}
       </DialogPanel>
     </Dialog>
@@ -385,6 +385,20 @@ function GenericPermissionModal({
       sessionMode={sessionMode}
       widthClassName="w-full sm:w-[min(920px,calc(100vw-32px))]"
       bodyClassName="py-2.5 sm:py-3"
+      footer={
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          onAlwaysAllow={persistentAllowed ? () => void resolve('approve_always') : undefined}
+          onAlwaysDeny={persistentAllowed ? () => void resolve('always_deny') : undefined}
+          showPersistentActions={persistentAllowed}
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Response note"
+          notePlaceholder="Optional note…"
+        />
+      }
       showSessionMeta={false}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
@@ -398,28 +412,10 @@ function GenericPermissionModal({
         {persistentAllowed ? (
           <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-xs text-[var(--app-text-muted)]">
             <span className="font-medium text-[var(--app-text-subtle)]">Always allow prefix</span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[var(--app-text)]">{persistentRuleDescription || 'available after approval'}</span>
+            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[var(--app-text)] [overflow-wrap:anywhere]">{persistentRuleDescription || 'available after approval'}</span>
           </div>
         ) : null}
-        <label className="grid gap-1.5">
-          <span className="text-xs font-medium text-[var(--app-text-subtle)]">Response note</span>
-          <Textarea
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            placeholder="Optional note…"
-            className="min-h-[56px] resize-y bg-[var(--app-bg-alt)] sm:min-h-[72px]"
-            rows={2}
-          />
-        </label>
       </div>
-      <PermissionActionBar
-        loading={loading}
-        onApprove={() => void resolve('approve')}
-        onDeny={() => void resolve('deny')}
-        onAlwaysAllow={persistentAllowed ? () => void resolve('approve_always') : undefined}
-        onAlwaysDeny={persistentAllowed ? () => void resolve('always_deny') : undefined}
-        showPersistentActions={persistentAllowed}
-      />
     </ModalShell>
   )
 }
@@ -923,6 +919,7 @@ function AskUserModal({
       pendingCount={pendingCount}
       sessionMode={sessionMode}
       widthClassName="w-full sm:w-[min(1140px,calc(100vw-48px))]"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} approveLabel="Submit response" />}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void submit('approve')}
       onDenyShortcut={() => void submit('deny')}
@@ -992,7 +989,6 @@ function AskUserModal({
 
         {error ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
       </div>
-      <PermissionActionBar loading={loading} onApprove={() => void submit('approve')} onDeny={() => void submit('deny')} approveLabel="Submit response" />
     </ModalShell>
   )
 }
@@ -1037,6 +1033,35 @@ function WorkspaceScopeModal({
       pendingCount={pendingCount}
       sessionMode={sessionMode}
       widthClassName="w-full sm:w-[min(1120px,calc(100vw-48px))]"
+      footer={
+        <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 pb-[max(0.5rem,var(--app-safe-area-bottom))] shadow-[0_-18px_36px_rgba(0,0,0,0.16)] sm:px-5 sm:py-3 sm:pb-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+            <Button
+              type="button"
+              variant="primary"
+              className="order-1 w-full sm:order-3 sm:w-auto"
+              title={payload.sessionAllow.label}
+              onClick={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.sessionAllow.decision))}
+              disabled={loading}
+            >
+              <span className="min-w-0 whitespace-normal text-center leading-5">{payload.sessionAllow.label}</span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="order-2 w-full sm:w-auto"
+              title={payload.addToWorkspace.label}
+              onClick={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.addToWorkspace.decision))}
+              disabled={loading || !payload.addToWorkspace.available}
+            >
+              <span className="min-w-0 whitespace-normal text-center leading-5">{payload.addToWorkspace.label}</span>
+            </Button>
+            <Button type="button" variant="ghost" className="order-3 w-full sm:order-1 sm:w-auto" onClick={() => void resolve('deny', '')} disabled={loading}>
+              Deny
+            </Button>
+          </div>
+        </div>
+      }
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.sessionAllow.decision))}
       onDenyShortcut={() => void resolve('deny', '')}
@@ -1071,15 +1096,6 @@ function WorkspaceScopeModal({
             <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Temporary access</div>
             <h3 className="mt-2 text-base font-semibold text-[var(--app-text)]">{payload.sessionAllow.label}</h3>
             <p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{payload.sessionAllow.description || payload.temporaryBehavior}</p>
-            <Button
-              type="button"
-              variant="primary"
-              className="mt-4 w-full sm:w-auto"
-              onClick={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.sessionAllow.decision))}
-              disabled={loading}
-            >
-              {payload.sessionAllow.label}
-            </Button>
           </section>
 
           <section
@@ -1093,24 +1109,10 @@ function WorkspaceScopeModal({
             <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Persistent access</div>
             <h3 className="mt-2 text-base font-semibold text-[var(--app-text)]">{payload.addToWorkspace.label}</h3>
             <p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{payload.addToWorkspace.description || payload.persistentBehavior}</p>
-            <Button
-              type="button"
-              variant="ghost"
-              className="mt-4 w-full sm:w-auto"
-              onClick={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.addToWorkspace.decision))}
-              disabled={loading || !payload.addToWorkspace.available}
-            >
-              {payload.addToWorkspace.label}
-            </Button>
           </section>
         </div>
       </div>
 
-      <div className="flex flex-col gap-2 border-t border-[var(--app-border)] px-3 py-2.5 pb-[max(0.625rem,var(--app-safe-area-bottom))] sm:flex-row sm:justify-end sm:px-6 sm:py-4 sm:pb-4">
-        <Button type="button" variant="ghost" className="w-full sm:w-auto" onClick={() => void resolve('deny', '')} disabled={loading}>
-          Deny
-        </Button>
-      </div>
     </ModalShell>
   )
 }
@@ -1886,6 +1888,7 @@ function AgentChangeModal({
       pendingCount={pendingCount}
       sessionMode={sessionMode}
       widthClassName="w-full sm:w-[min(1040px,calc(100vw-48px))]"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Apply change" />}
       onOpenChange={onOpenChange}
       onPrimaryShortcut={() => void resolve('approve')}
       onDenyShortcut={() => void resolve('deny')}
@@ -1918,7 +1921,6 @@ function AgentChangeModal({
         ) : null}
 
       </div>
-      <PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} approveLabel="Apply change" />
     </ModalShell>
   )
 }

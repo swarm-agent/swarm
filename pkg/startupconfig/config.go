@@ -224,7 +224,7 @@ func Default(path string) FileConfig {
 		PeerTransportPort:       DefaultPeerTransportPort,
 		ParentSwarmID:           "",
 		PairingState:            "",
-		ManagedHostSync:         ManagedHostSyncConfig{},
+		ManagedHostSync:         ManagedHostSyncConfig{Mode: "managed"},
 		DeployContainer:         DeployContainerBootstrap{},
 		RemoteDeploy:            RemoteDeployBootstrap{},
 	}
