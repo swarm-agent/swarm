@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ChevronLeft, ChevronRight, Link2, Loader2, Plus, Sparkles } from 'lucide-react'
+import { ArrowLeft, Bot, CheckCircle2, ChevronLeft, ChevronRight, Link2, Loader2, MessageSquarePlus, Plus, Settings2, Sparkles } from 'lucide-react'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
@@ -16,22 +16,43 @@ import { normalizeGlobalThemeSettings } from '../../settings/swarm/types/swarm-s
 import { createWorkspaceThemeStyle } from '../../../workspaces/launcher/services/workspace-theme'
 import { SwarmToolSidebar } from '../../tools/components/swarm-tool-sidebar'
 import {
-  createIntegrationBuilderSession,
-  fetchIntegrationBuilderSessions,
+  createIntegrationWorkspaceChildSession,
+  fetchIntegrationWorkspace,
+  fetchIntegrationWorkspaces,
+  INTEGRATION_BUILDER_AGENT_ID,
   INTEGRATION_BUILDER_WORKSPACE_NAME,
   INTEGRATION_BUILDER_WORKSPACE_PATH,
   isIntegrationBuilderSession,
+  openIntegrationWorkspace,
+  switchIntegrationWorkspaceSession,
+  type IntegrationWorkspaceRecord,
+  type IntegrationWorkspaceSnapshot,
+  workspaceIdFromName,
 } from '../services/integration-builder-sessions'
 
-function integrationSessionSubtitle(session: DesktopSessionRecord): string {
-  if (session.live.status === 'running' || session.live.status === 'starting') return 'AI working'
-  if (session.pendingPermissionCount > 0) return 'needs review'
-  if (session.messageCount > 0) return `${session.messageCount} messages`
-  return 'draft integration'
+function workspaceStatus(workspace: IntegrationWorkspaceRecord): string {
+  if (workspace.latestChildSessionId) return 'Drafting'
+  return 'Ready to start'
 }
 
-function integrationDisplayName(session: DesktopSessionRecord | null): string {
-  return session?.title?.trim() || 'New integration'
+function metadataString(metadata: Record<string, unknown> | null | undefined, key: string): string {
+  const value = metadata?.[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function workspaceIdFromSession(session: DesktopSessionRecord | null | undefined): string {
+  const metadata = session?.metadata && typeof session.metadata === 'object' && !Array.isArray(session.metadata)
+    ? session.metadata as Record<string, unknown>
+    : null
+  return metadataString(metadata, 'integration_workspace_id')
+}
+
+function sortWorkspaces(workspaces: IntegrationWorkspaceRecord[]): IntegrationWorkspaceRecord[] {
+  return [...workspaces].sort((left, right) => {
+    const leftTime = Date.parse(left.latestChildSessionAt || left.updatedAt || left.createdAt || '') || 0
+    const rightTime = Date.parse(right.latestChildSessionAt || right.updatedAt || right.createdAt || '') || 0
+    return rightTime - leftTime
+  })
 }
 
 export function IntegrationsPage() {
@@ -44,22 +65,23 @@ export function IntegrationsPage() {
   const setActiveWorkspacePath = useDesktopStore((state) => state.setActiveWorkspacePath)
   const upsertSession = useDesktopStore((state) => state.upsertSession)
 
-  const [newSessionTitle, setNewSessionTitle] = useState('')
-  const [creatingSession, setCreatingSession] = useState(false)
+  const [newIntegrationName, setNewIntegrationName] = useState('')
+  const [creatingIntegration, setCreatingIntegration] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
-  const [darkModeEnabled, setDarkModeEnabled] = useState(false)
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [darkModeEnabled, setDarkModeEnabled] = useState(false)
   const [aiSidebarOpen, setAiSidebarOpen] = useState(true)
+  const [selectedWorkspaceIdState, setSelectedWorkspaceIdState] = useState('')
 
-  const sessionsQuery = useQuery({
-    queryKey: ['integration-builder-sessions'],
-    queryFn: () => fetchIntegrationBuilderSessions(200),
+  const workspacesQuery = useQuery({
+    queryKey: ['integration-workspaces'],
+    queryFn: () => fetchIntegrationWorkspaces(200),
     staleTime: 15_000,
   })
   const routeSessionQuery = useQuery({
     queryKey: ['integration-builder-session', routeSessionId],
     queryFn: () => fetchSession(routeSessionId),
-    enabled: routeSessionId !== '' && !(sessionsQuery.data ?? []).some((session) => session.id === routeSessionId),
+    enabled: routeSessionId !== '',
     staleTime: 15_000,
   })
   const draftModelQuery = useQuery({
@@ -74,94 +96,161 @@ export function IntegrationsPage() {
     staleTime: 30_000,
   })
 
-  const sessions = useMemo(() => {
-    const byId = new Map<string, DesktopSessionRecord>()
-    for (const session of sessionsQuery.data ?? []) byId.set(session.id, session)
-    const routeSession = routeSessionQuery.data
-    if (routeSession && isIntegrationBuilderSession(routeSession)) byId.set(routeSession.id, routeSession)
-    return [...byId.values()].sort((left, right) => right.updatedAt - left.updatedAt)
-  }, [routeSessionQuery.data, sessionsQuery.data])
-  const selectedSession = routeSessionId
-    ? sessions.find((session) => session.id === routeSessionId) ?? null
-    : null
-  const selectedSessionIsLoading = Boolean(routeSessionId && routeSessionQuery.isLoading && !selectedSession)
+  const workspaces = useMemo(() => sortWorkspaces(workspacesQuery.data ?? []), [workspacesQuery.data])
+  const routeSession = routeSessionQuery.data && isIntegrationBuilderSession(routeSessionQuery.data) ? routeSessionQuery.data : null
+  const inferredWorkspaceId = useMemo(() => {
+    const fromSession = workspaceIdFromSession(routeSession)
+    if (fromSession) return fromSession
+    const fromLatest = workspaces.find((workspace) => workspace.latestChildSessionId === routeSessionId)?.workspaceId ?? ''
+    return fromLatest
+  }, [routeSession, routeSessionId, workspaces])
+  const selectedWorkspaceId = selectedWorkspaceIdState || inferredWorkspaceId || workspaces[0]?.workspaceId || ''
+
+  useEffect(() => {
+    if (inferredWorkspaceId && inferredWorkspaceId !== selectedWorkspaceIdState) {
+      setSelectedWorkspaceIdState(inferredWorkspaceId)
+    }
+  }, [inferredWorkspaceId, selectedWorkspaceIdState])
+
+  const snapshotQuery = useQuery({
+    queryKey: ['integration-workspace', selectedWorkspaceId],
+    queryFn: () => fetchIntegrationWorkspace(selectedWorkspaceId),
+    enabled: selectedWorkspaceId !== '',
+    staleTime: 10_000,
+  })
+
+  const selectedWorkspace = snapshotQuery.data?.workspace
+    ?? workspaces.find((workspace) => workspace.workspaceId === selectedWorkspaceId)
+    ?? null
+  const selectedSession = useMemo(() => {
+    if (routeSession && workspaceIdFromSession(routeSession) === selectedWorkspaceId) return routeSession
+    const snapshotSession = snapshotQuery.data?.session ?? null
+    if (snapshotSession?.id) return snapshotSession
+    return null
+  }, [routeSession, selectedWorkspaceId, snapshotQuery.data?.session])
+  const childSessions = snapshotQuery.data?.sessions ?? []
   const swarmName = swarmSettingsQuery.data?.name?.trim() || 'Local'
   const userThemeId = normalizeGlobalThemeSettings(uiSettingsQuery.data).activeId
   const darkOverrideButtonStyle = useMemo(() => createWorkspaceThemeStyle(userThemeId, '--integration-builder-theme'), [userThemeId])
-  const hasSessions = sessions.length > 0
 
-  const handleSelectSession = useCallback((sessionId: string) => {
-    const session = sessions.find((item) => item.id === sessionId)
-    if (session) {
-      setActiveSession(session.id)
-      setActiveWorkspacePath(session.workspacePath || null)
+  const setSessionActive = useCallback((session: DesktopSessionRecord | null) => {
+    setActiveSession(session?.id ?? null)
+    setActiveWorkspacePath(session?.workspacePath || null)
+    if (session) upsertSession(session)
+  }, [setActiveSession, setActiveWorkspacePath, upsertSession])
+
+  const requirePreference = useCallback(() => {
+    const preference = draftModelQuery.data?.preference
+    if (!preference?.provider || !preference.model || !preference.thinking) {
+      throw new Error('Select an authenticated model before starting an integration builder chat.')
     }
-    setAiSidebarOpen(true)
-    void navigate({ to: '/integrations/$sessionId', params: { sessionId } })
-  }, [navigate, sessions, setActiveSession, setActiveWorkspacePath])
+    return preference
+  }, [draftModelQuery.data?.preference])
 
-  const handleSessionCreated = useCallback((session: DesktopSessionRecord) => {
-    upsertSession(session)
-    setActiveSession(session.id)
-    setActiveWorkspacePath(session.workspacePath || null)
-    queryClient.setQueryData<DesktopSessionRecord[]>(['integration-builder-sessions'], (current = []) => {
-      const withoutSession = current.filter((item) => item.id !== session.id)
-      return [session, ...withoutSession]
+  const cacheWorkspaceSnapshot = useCallback((workspaceId: string, snapshot: IntegrationWorkspaceSnapshot) => {
+    queryClient.setQueryData(['integration-workspace', workspaceId], snapshot)
+    if (snapshot.workspace) {
+      const nextWorkspace = snapshot.workspace
+      queryClient.setQueryData<IntegrationWorkspaceRecord[]>(['integration-workspaces'], (current = []) => {
+        const without = current.filter((workspace) => workspace.workspaceId !== nextWorkspace.workspaceId)
+        return sortWorkspaces([nextWorkspace, ...without])
+      })
+    }
+    for (const child of snapshot.sessions) upsertSession(child.session)
+    if (snapshot.session) upsertSession(snapshot.session)
+  }, [queryClient, upsertSession])
+
+  const handleOpenWorkspace = useCallback(async (workspace: IntegrationWorkspaceRecord, newChild = false) => {
+    setCreateError(null)
+    const preference = requirePreference()
+    const snapshot = await openIntegrationWorkspace({
+      workspaceId: workspace.workspaceId,
+      displayName: workspace.displayName,
+      packId: workspace.packId,
+      draftVersionId: workspace.draftVersionId,
+      title: workspace.displayName,
+      mode: 'plan',
+      createChild: !workspace.latestChildSessionId,
+      newChild,
+      preference,
     })
+    cacheWorkspaceSnapshot(workspace.workspaceId, snapshot)
+    setSelectedWorkspaceIdState(workspace.workspaceId)
     setAiSidebarOpen(true)
-    void navigate({ to: '/integrations/$sessionId', params: { sessionId: session.id } })
-  }, [navigate, queryClient, setActiveSession, setActiveWorkspacePath, upsertSession])
+    setSessionActive(snapshot.session)
+    if (snapshot.session?.id) {
+      void navigate({ to: '/integrations/$sessionId', params: { sessionId: snapshot.session.id } })
+    } else {
+      void navigate({ to: '/integrations' })
+    }
+  }, [cacheWorkspaceSnapshot, navigate, requirePreference, setSessionActive])
 
-  const handleCreateSession = useCallback(async () => {
-    const title = newSessionTitle.trim()
-    if (!title) {
+  const handleCreateIntegration = useCallback(async () => {
+    const name = newIntegrationName.trim()
+    if (!name) {
       setCreateError('Name the integration first.')
       setCreateDialogOpen(true)
       return
     }
-    const preference = draftModelQuery.data?.preference
-    if (!preference?.provider || !preference.model || !preference.thinking) {
-      setCreateError('Select an authenticated model before starting an integration builder session.')
-      setCreateDialogOpen(true)
-      return
-    }
-    setCreatingSession(true)
+    setCreatingIntegration(true)
     setCreateError(null)
     try {
-      const created = await createIntegrationBuilderSession({
-        title,
+      const preference = requirePreference()
+      const workspaceId = workspaceIdFromName(name)
+      const snapshot = await openIntegrationWorkspace({
+        workspaceId,
+        displayName: name,
+        title: name,
         mode: 'plan',
-        agentName: 'swarm',
+        createChild: true,
+        newChild: true,
+        metadata: { source: 'integrations_page' },
         preference,
       })
-      handleSessionCreated(created)
-      setNewSessionTitle('')
+      cacheWorkspaceSnapshot(workspaceId, snapshot)
+      setSelectedWorkspaceIdState(workspaceId)
+      setSessionActive(snapshot.session)
+      setNewIntegrationName('')
       setCreateDialogOpen(false)
-      await queryClient.invalidateQueries({ queryKey: ['integration-builder-sessions'] })
+      setAiSidebarOpen(true)
+      await queryClient.invalidateQueries({ queryKey: ['integration-workspaces'] })
+      if (snapshot.session?.id) void navigate({ to: '/integrations/$sessionId', params: { sessionId: snapshot.session.id } })
     } catch (error) {
-      setCreateError(error instanceof Error ? error.message : 'Failed to start integration builder session')
+      setCreateError(error instanceof Error ? error.message : 'Failed to create integration')
     } finally {
-      setCreatingSession(false)
+      setCreatingIntegration(false)
     }
-  }, [draftModelQuery.data?.preference, handleSessionCreated, newSessionTitle, queryClient])
+  }, [cacheWorkspaceSnapshot, navigate, newIntegrationName, queryClient, requirePreference, setSessionActive])
 
-  const openCreateDialog = useCallback(() => {
-    setCreateError(null)
-    setCreateDialogOpen(true)
-  }, [])
+  const handleCreateChildSession = useCallback(async (): Promise<DesktopSessionRecord> => {
+    if (!selectedWorkspace) throw new Error('Select an integration first.')
+    const preference = requirePreference()
+    const session = await createIntegrationWorkspaceChildSession({
+      workspaceId: selectedWorkspace.workspaceId,
+      title: selectedWorkspace.displayName,
+      mode: 'plan',
+      metadata: { source: 'integrations_page_new_chat' },
+      preference,
+    })
+    setSessionActive(session)
+    await queryClient.invalidateQueries({ queryKey: ['integration-workspace', selectedWorkspace.workspaceId] })
+    await queryClient.invalidateQueries({ queryKey: ['integration-workspaces'] })
+    void navigate({ to: '/integrations/$sessionId', params: { sessionId: session.id } })
+    return session
+  }, [navigate, queryClient, requirePreference, selectedWorkspace, setSessionActive])
 
-  const handleStartNewSession = useCallback(() => {
-    setActiveSession(null)
-    setActiveWorkspacePath(null)
-    setCreateError(null)
-    setCreateDialogOpen(true)
-    void navigate({ to: '/integrations' })
-  }, [navigate, setActiveSession, setActiveWorkspacePath])
+  const handleSwitchChildSession = useCallback(async (sessionId: string) => {
+    if (!selectedWorkspace) return
+    const session = await switchIntegrationWorkspaceSession(selectedWorkspace.workspaceId, sessionId)
+    setSessionActive(session)
+    setAiSidebarOpen(true)
+    void navigate({ to: '/integrations/$sessionId', params: { sessionId: session.id } })
+  }, [navigate, selectedWorkspace, setSessionActive])
 
-  const sidebarSessions = sessions.map((session) => ({
-    id: session.id,
-    title: session.title || 'New integration',
-    subtitle: integrationSessionSubtitle(session),
+  const sidebarWorkspaces = workspaces.map((workspace) => ({
+    id: workspace.workspaceId,
+    title: workspace.displayName || 'New integration',
+    subtitle: workspaceStatus(workspace),
   }))
 
   return (
@@ -174,20 +263,23 @@ export function IntegrationsPage() {
         darkModeStyle={darkOverrideButtonStyle}
         toolIcon={<Link2 size={17} strokeWidth={1.8} />}
         toolTitle="Integrations"
-        toolDescription="Swarm-wide integration drafts. Open one to build tools with AI and review permissions before anything runs."
+        toolDescription="Scoped Integration Packs. Select a draft to review settings and work with the hidden Integration Builder."
         createLabel="Create"
-        createTitle={newSessionTitle}
-        onCreateTitleChange={setNewSessionTitle}
+        createTitle={newIntegrationName}
+        onCreateTitleChange={setNewIntegrationName}
         createPlaceholder="Integration name"
-        onCreate={openCreateDialog}
-        creating={creatingSession}
+        onCreate={() => setCreateDialogOpen(true)}
+        creating={creatingIntegration}
         createButtonLabel="Add integration"
         creatingButtonLabel="Starting…"
-        sessionsLabel="Integrations"
-        sessionsLoading={sessionsQuery.isLoading || selectedSessionIsLoading}
-        sessions={sidebarSessions}
-        selectedSessionId={selectedSession?.id ?? null}
-        onSelectSession={handleSelectSession}
+        sessionsLabel="Drafts"
+        sessionsLoading={workspacesQuery.isLoading || snapshotQuery.isLoading}
+        sessions={sidebarWorkspaces}
+        selectedSessionId={selectedWorkspace?.workspaceId ?? null}
+        onSelectSession={(workspaceId) => {
+          const workspace = workspaces.find((item) => item.workspaceId === workspaceId)
+          if (workspace) void handleOpenWorkspace(workspace)
+        }}
         emptySessionsMessage="No integrations yet. Add one from the main panel."
         defaultSessionTitle="New integration"
       >
@@ -195,181 +287,232 @@ export function IntegrationsPage() {
       </SwarmToolSidebar>
 
       <main className="min-w-0 flex-1 overflow-hidden">
-        {selectedSession ? (
-          <div className="flex h-full min-w-0 bg-[var(--app-bg)]">
-            <section className="min-w-0 flex-1 overflow-y-auto px-7 py-8 sm:px-10 sm:py-10 lg:px-14">
-              <div className="mx-auto w-full max-w-5xl">
-                <div className="flex items-start justify-between gap-5 border-b border-[var(--app-border)] pb-6">
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--app-text-subtle)]">Integration draft</p>
-                    <h1 className="mt-2 truncate text-3xl font-semibold tracking-[-0.055em] text-[var(--app-text)]">{integrationDisplayName(selectedSession)}</h1>
-                    <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">
-                      Use the AI builder on the right. Paste API docs, auth notes, endpoint examples, or links. Swarm will turn them into tools, permission controls, and a final review request before anything is enabled.
-                    </p>
-                  </div>
-                  <Button variant="outline" className="shrink-0" onClick={() => setAiSidebarOpen((open) => !open)}>
-                    {aiSidebarOpen ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
-                    {aiSidebarOpen ? 'Hide AI' : 'Show AI'}
-                  </Button>
-                </div>
-
-                <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-                  <div className="rounded-2xl border border-dashed border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-6">
-                    <p className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">Workspace preview</p>
-                    <div className="mt-5 min-h-[300px] rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] p-5">
-                      <div className="h-3 w-40 rounded-full bg-[var(--app-surface-hover)]" />
-                      <div className="mt-4 h-3 w-64 rounded-full bg-[var(--app-surface-hover)]" />
-                      <div className="mt-8 grid gap-3 sm:grid-cols-2">
-                        <div className="h-24 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]" />
-                        <div className="h-24 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]" />
-                      </div>
-                      <div className="mt-4 h-28 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]" />
-                    </div>
-                  </div>
-
-                  <aside className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5">
-                    <p className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">What to give the AI</p>
-                    <ol className="mt-4 space-y-4 text-sm leading-6 text-[var(--app-text-muted)]">
-                      <li><span className="font-medium text-[var(--app-text)]">1.</span> Paste API docs or a link to the docs.</li>
-                      <li><span className="font-medium text-[var(--app-text)]">2.</span> Tell it what actions humans should review.</li>
-                      <li><span className="font-medium text-[var(--app-text)]">3.</span> Review the proposed tools, auth, and permissions at the end.</li>
-                    </ol>
-                  </aside>
-                </div>
-              </div>
-            </section>
-
-            <aside className={`${aiSidebarOpen ? 'w-[420px] xl:w-[480px]' : 'w-[48px]'} flex h-full shrink-0 border-l border-[var(--app-border)] bg-[var(--app-surface)] transition-[width] duration-200`}>
-              {aiSidebarOpen ? (
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <div className="flex h-12 shrink-0 items-center justify-between border-b border-[var(--app-border)] px-3">
-                    <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-[var(--app-text)]">
-                      <Sparkles size={15} className="text-[var(--app-primary)]" />
-                      <span className="truncate">AI builder</span>
-                    </div>
-                    <button type="button" className="grid h-8 w-8 place-items-center rounded-lg text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => setAiSidebarOpen(false)} aria-label="Collapse AI builder">
-                      <ChevronRight size={16} />
-                    </button>
-                  </div>
-                  <DesktopChatPanel
-                    hostSwarmName={swarmName}
-                    workspacePath={selectedSession.workspacePath || INTEGRATION_BUILDER_WORKSPACE_PATH}
-                    workspaceName={selectedSession.workspaceName || INTEGRATION_BUILDER_WORKSPACE_NAME}
-                    workspaceWorktreeEnabled={false}
-                    workspaceTopologyRoutes={[]}
-                    session={selectedSession}
-                    sessionCreateOverride={createIntegrationBuilderSession}
-                    onSessionCreated={handleSessionCreated}
-                    onOpenSettingsTab={(tab) => void navigate({ to: '/settings', search: { tab } })}
-                    onOpenQuickSettings={(tab) => void navigate({ to: '/settings', search: { tab } })}
-                    onOpenPermissions={() => void navigate({ to: '/settings', search: { tab: 'permissions' } })}
-                    onOpenWorkspaceLauncher={() => void navigate({ to: '/' })}
-                    onOpenSidebarMenu={() => {}}
-                    onStartNewSession={handleStartNewSession}
-                    compactHeader
-                    emptyStateMessage="Paste API docs, endpoint examples, auth notes, or links. I’ll build the integration tools and permission review flow."
-                  />
-                </div>
-              ) : (
-                <button type="button" className="flex h-full w-full items-start justify-center pt-4 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => setAiSidebarOpen(true)} aria-label="Expand AI builder">
-                  <ChevronLeft size={18} />
-                </button>
-              )}
-            </aside>
-          </div>
-        ) : selectedSessionIsLoading ? (
-          <div className="flex h-full items-center justify-center px-6">
-            <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
-              <Loader2 className="mx-auto mb-3 animate-spin text-[var(--app-primary)]" size={24} />
-              <div className="text-lg font-semibold">Loading integration…</div>
-            </Card>
-          </div>
-        ) : routeSessionId ? (
-          <div className="flex h-full items-center justify-center px-6">
-            <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
-              <div className="text-lg font-semibold">Integration not found</div>
-              <p className="mt-2 text-sm text-[var(--app-text-muted)]">We couldn’t find that builder session on this swarm.</p>
-            </Card>
-          </div>
-        ) : (
-          <div className="h-full overflow-y-auto">
-            <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-7 pb-10 pt-10 sm:px-10 sm:pt-12 lg:px-14 lg:pt-14">
-              <header className="flex flex-col gap-6 border-b border-[var(--app-border)] pb-7 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex h-full min-w-0 bg-[var(--app-bg)]">
+          <section className="min-w-0 flex-1 overflow-y-auto px-7 py-8 sm:px-10 sm:py-10 lg:px-14">
+            <div className="mx-auto w-full max-w-6xl">
+              <header className="flex flex-col gap-5 border-b border-[var(--app-border)] pb-7 lg:flex-row lg:items-end lg:justify-between">
                 <div className="min-w-0">
                   <Button variant="ghost" className="mb-7 h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={() => void navigate({ to: '/' })}>
                     <ArrowLeft size={15} />
                     Back to launcher
                   </Button>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--app-text-subtle)]">Swarm-wide</p>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--app-text-subtle)]">Swarm-wide drafts</p>
                   <h1 className="mt-2 text-4xl font-semibold tracking-[-0.065em] text-[var(--app-text)]">Integrations</h1>
                   <p className="mt-4 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">
-                    Create integrations by talking to AI. Name it first, then paste API docs or links and review the generated tools before enabling them.
+                    Build scoped Integration Packs as reviewable drafts. Cards stay integration-first; the compact AI builder on the right owns reusable child chats for the selected integration.
                   </p>
                 </div>
+                <Button onClick={() => setCreateDialogOpen(true)}>
+                  <Plus size={16} />
+                  Add integration
+                </Button>
               </header>
 
-              <main className="flex-1 py-8">
-                <button
-                  type="button"
-                  onClick={openCreateDialog}
-                  className="group flex min-h-[260px] w-full items-center justify-center rounded-3xl border border-dashed border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-8 text-center transition hover:border-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)]"
-                >
-                  <span className="flex max-w-md flex-col items-center">
-                    <span className="grid h-14 w-14 place-items-center rounded-2xl border border-dashed border-[var(--app-border-strong)] bg-[var(--app-bg)] text-[var(--app-text-muted)] transition group-hover:border-[var(--app-primary)] group-hover:text-[var(--app-primary)]">
-                      <Plus size={22} strokeWidth={1.8} />
-                    </span>
-                    <span className="mt-5 text-lg font-semibold tracking-[-0.035em] text-[var(--app-text)]">Add integration</span>
-                    <span className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]">This empty space becomes the integration dashboard after the AI builds it.</span>
-                  </span>
-                </button>
-
-                {hasSessions ? (
-                  <section className="mt-8">
-                    <p className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">Recent drafts</p>
-                    <div className="mt-3 divide-y divide-[var(--app-border)] border-y border-[var(--app-border)]">
-                      {sessions.slice(0, 5).map((session) => (
-                        <button key={session.id} type="button" onClick={() => handleSelectSession(session.id)} className="flex w-full items-center justify-between gap-4 py-3 text-left hover:text-[var(--app-primary)]">
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-medium text-[var(--app-text)]">{session.title || 'New integration'}</span>
-                            <span className="mt-1 block text-xs text-[var(--app-text-muted)]">{integrationSessionSubtitle(session)}</span>
-                          </span>
-                          <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" />
-                        </button>
-                      ))}
-                    </div>
-                  </section>
+              <div className="mt-8 grid gap-4">
+                {workspacesQuery.isLoading ? (
+                  <Card className="border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-sm text-[var(--app-text-muted)]">
+                    <Loader2 className="mr-2 inline animate-spin" size={16} /> Loading integration drafts…
+                  </Card>
                 ) : null}
-              </main>
+                {!workspacesQuery.isLoading && workspaces.length === 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setCreateDialogOpen(true)}
+                    className="group flex min-h-[220px] w-full items-center justify-center rounded-3xl border border-dashed border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-8 text-center transition hover:border-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)]"
+                  >
+                    <span className="flex max-w-md flex-col items-center">
+                      <span className="grid h-14 w-14 place-items-center rounded-2xl border border-dashed border-[var(--app-border-strong)] bg-[var(--app-bg)] text-[var(--app-text-muted)] transition group-hover:border-[var(--app-primary)] group-hover:text-[var(--app-primary)]">
+                        <Plus size={22} strokeWidth={1.8} />
+                      </span>
+                      <span className="mt-5 text-lg font-semibold tracking-[-0.035em] text-[var(--app-text)]">Add integration</span>
+                      <span className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]">Name a draft, then use the AI builder to design tools, auth, prompts, and permission reviews.</span>
+                    </span>
+                  </button>
+                ) : workspaces.map((workspace) => {
+                  const selected = workspace.workspaceId === selectedWorkspace?.workspaceId
+                  return (
+                    <button
+                      key={workspace.workspaceId}
+                      type="button"
+                      onClick={() => void handleOpenWorkspace(workspace)}
+                      className={selected
+                        ? 'rounded-3xl border border-[var(--app-border-accent)] bg-[var(--app-bg-alt)] p-5 text-left shadow-sm transition'
+                        : 'rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 text-left shadow-sm transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]'}
+                    >
+                      <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-muted)]">
+                              <CheckCircle2 size={12} /> {workspaceStatus(workspace)}
+                            </span>
+                            <span className="rounded-full border border-dashed border-[var(--app-border)] px-2.5 py-1 text-[11px] text-[var(--app-text-subtle)]">execution inactive</span>
+                          </div>
+                          <h2 className="mt-3 truncate text-xl font-semibold tracking-[-0.04em] text-[var(--app-text)]">{workspace.displayName || 'New integration'}</h2>
+                          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">
+                            {workspace.packId ? `Pack ${workspace.packId}` : 'Draft workspace'}{workspace.draftVersionId ? ` · ${workspace.draftVersionId}` : ''}. Review settings, tools, prompts, and permissions before any runtime adapter is enabled.
+                          </p>
+                        </div>
+                        <div className="grid min-w-[220px] gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-2 lg:text-right">
+                          <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2">
+                            <div className="font-medium text-[var(--app-text)]">Settings</div>
+                            <div>draft metadata</div>
+                          </div>
+                          <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2">
+                            <div className="font-medium text-[var(--app-text)]">AI chats</div>
+                            <div>{workspace.latestChildSessionId ? 'latest saved' : 'none yet'}</div>
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              {selectedWorkspace ? (
+                <div className="mt-8 grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+                  <Card className="border-[var(--app-border)] bg-[var(--app-surface)] p-5">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">Selected integration</p>
+                        <h2 className="mt-2 text-2xl font-semibold tracking-[-0.05em]">{selectedWorkspace.displayName}</h2>
+                      </div>
+                      <Button variant="outline" onClick={() => setAiSidebarOpen((open) => !open)}>
+                        {aiSidebarOpen ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
+                        {aiSidebarOpen ? 'Hide AI' : 'Show AI'}
+                      </Button>
+                    </div>
+                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                        <Settings2 className="text-[var(--app-text-subtle)]" size={17} />
+                        <div className="mt-3 text-sm font-semibold">Settings</div>
+                        <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Draft metadata and pack context are inspectable.</div>
+                      </div>
+                      <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                        <Bot className="text-[var(--app-text-subtle)]" size={17} />
+                        <div className="mt-3 text-sm font-semibold">Builder</div>
+                        <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Hidden Integration Builder only.</div>
+                      </div>
+                      <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+                        <Sparkles className="text-[var(--app-text-subtle)]" size={17} />
+                        <div className="mt-3 text-sm font-semibold">Validation</div>
+                        <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Planned in a later checkpoint.</div>
+                      </div>
+                    </div>
+                  </Card>
+                  <Card className="border-[var(--app-border)] bg-[var(--app-surface)] p-5">
+                    <p className="text-xs font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">What to give AI</p>
+                    <ol className="mt-4 space-y-3 text-sm leading-6 text-[var(--app-text-muted)]">
+                      <li><span className="font-medium text-[var(--app-text)]">1.</span> Paste API docs or local CLI help.</li>
+                      <li><span className="font-medium text-[var(--app-text)]">2.</span> Say which actions need human review.</li>
+                      <li><span className="font-medium text-[var(--app-text)]">3.</span> Review generated pack records before enabling runtime work.</li>
+                    </ol>
+                  </Card>
+                </div>
+              ) : null}
             </div>
-          </div>
-        )}
+          </section>
+
+          <aside className={`${aiSidebarOpen && selectedWorkspace ? 'w-[420px] xl:w-[480px]' : 'w-[48px]'} flex h-full shrink-0 border-l border-[var(--app-border)] bg-[var(--app-surface)] transition-[width] duration-200`}>
+            {aiSidebarOpen && selectedWorkspace ? (
+              <div className="flex min-w-0 flex-1 flex-col">
+                <div className="shrink-0 border-b border-[var(--app-border)] px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-[var(--app-text)]">
+                        <Sparkles size={15} className="text-[var(--app-primary)]" />
+                        <span className="truncate">Integration Builder</span>
+                      </div>
+                      <div className="mt-0.5 truncate text-[11px] text-[var(--app-text-muted)]">{selectedWorkspace.displayName}</div>
+                    </div>
+                    <button type="button" className="grid h-8 w-8 place-items-center rounded-lg text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => setAiSidebarOpen(false)} aria-label="Collapse AI builder">
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                  <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                    <button
+                      type="button"
+                      onClick={() => { void handleCreateChildSession() }}
+                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 text-xs font-medium text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
+                    >
+                      <MessageSquarePlus size={14} /> New Chat
+                    </button>
+                    {childSessions.map((child, index) => (
+                      <button
+                        key={child.session.id}
+                        type="button"
+                        onClick={() => { void handleSwitchChildSession(child.session.id) }}
+                        className={child.session.id === selectedSession?.id
+                          ? 'inline-flex h-8 max-w-[170px] shrink-0 items-center rounded-xl border border-[var(--app-border-accent)] bg-[var(--app-bg-alt)] px-2.5 text-xs font-medium text-[var(--app-text)]'
+                          : 'inline-flex h-8 max-w-[170px] shrink-0 items-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}
+                        title={child.title}
+                      >
+                        <span className="truncate">{child.title || `Chat ${index + 1}`}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <DesktopChatPanel
+                  hostSwarmName={swarmName}
+                  workspacePath={selectedSession?.workspacePath || INTEGRATION_BUILDER_WORKSPACE_PATH}
+                  workspaceName={selectedSession?.workspaceName || INTEGRATION_BUILDER_WORKSPACE_NAME}
+                  workspaceWorktreeEnabled={false}
+                  workspaceTopologyRoutes={[]}
+                  session={selectedSession}
+                  sessionCreateOverride={handleCreateChildSession}
+                  onSessionCreated={(session) => {
+                    setSessionActive(session)
+                    void queryClient.invalidateQueries({ queryKey: ['integration-workspace', selectedWorkspace.workspaceId] })
+                  }}
+                  onOpenSettingsTab={(tab) => void navigate({ to: '/settings', search: { tab } })}
+                  onOpenQuickSettings={(tab) => void navigate({ to: '/settings', search: { tab } })}
+                  onOpenPermissions={() => void navigate({ to: '/settings', search: { tab: 'permissions' } })}
+                  onOpenWorkspaceLauncher={() => void navigate({ to: '/' })}
+                  onOpenSidebarMenu={() => {}}
+                  onStartNewSession={() => { void handleCreateChildSession() }}
+                  lockedAgentName={INTEGRATION_BUILDER_AGENT_ID}
+                  lockedAgentLabel="Integration Builder"
+                  hideModeSelector
+                  hideRouteSelector
+                  hideWorkspaceActions
+                  newSessionLabel="New Chat"
+                  compactHeader
+                  emptyStateMessage="Paste API docs, endpoint examples, auth notes, CLI help, or links. I’ll draft scoped tools and permission review notes for this integration."
+                />
+              </div>
+            ) : (
+              <button type="button" className="flex h-full w-full items-start justify-center pt-4 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => setAiSidebarOpen(true)} aria-label="Expand AI builder">
+                <ChevronLeft size={18} />
+              </button>
+            )}
+          </aside>
+        </div>
       </main>
 
       {createDialogOpen ? (
         <Dialog role="dialog" aria-modal="true" aria-label="Name integration" className="z-[80] p-4">
-          <DialogBackdrop onClick={creatingSession ? undefined : () => setCreateDialogOpen(false)} />
+          <DialogBackdrop onClick={creatingIntegration ? undefined : () => setCreateDialogOpen(false)} />
           <DialogPanel className="w-[min(460px,calc(100vw-32px))] rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-0 shadow-[var(--shadow-panel)]">
             <form
               className="p-5"
               onSubmit={(event) => {
                 event.preventDefault()
-                void handleCreateSession()
+                void handleCreateIntegration()
               }}
             >
               <h2 className="text-lg font-semibold tracking-[-0.04em] text-[var(--app-text)]">Name this integration</h2>
               <p className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]">Use a human name like “GitHub publisher” or “Stripe reporting”.</p>
               <Input
                 autoFocus
-                value={newSessionTitle}
-                onChange={(event) => setNewSessionTitle(event.currentTarget.value)}
+                value={newIntegrationName}
+                onChange={(event) => setNewIntegrationName(event.currentTarget.value)}
                 placeholder="Integration name"
                 className="mt-5"
               />
               {createError ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{createError}</div> : null}
               <div className="mt-5 flex justify-end gap-2">
-                <Button variant="ghost" type="button" onClick={() => setCreateDialogOpen(false)} disabled={creatingSession}>Cancel</Button>
-                <Button type="submit" disabled={creatingSession}>
-                  {creatingSession ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                <Button variant="ghost" type="button" onClick={() => setCreateDialogOpen(false)} disabled={creatingIntegration}>Cancel</Button>
+                <Button type="submit" disabled={creatingIntegration}>
+                  {creatingIntegration ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
                   Create
                 </Button>
               </div>

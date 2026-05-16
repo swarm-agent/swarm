@@ -326,6 +326,12 @@ interface DesktopChatPanelProps {
     metadata?: Record<string, unknown>
   }) => Promise<DesktopSessionRecord>
   onSessionCreated: (session: DesktopSessionRecord) => void
+  lockedAgentName?: string
+  lockedAgentLabel?: string
+  hideModeSelector?: boolean
+  hideRouteSelector?: boolean
+  hideWorkspaceActions?: boolean
+  newSessionLabel?: string
   onOpenSettingsTab: (tab: SettingsTabID) => void
   onOpenQuickSettings: (tab: QuickSettingsTabID) => void
   onOpenPermissions: () => void
@@ -871,6 +877,12 @@ export function DesktopChatPanel({
   onOpenSidebarMenu,
   onStartNewSession,
   sessionCreateOverride,
+  lockedAgentName,
+  lockedAgentLabel,
+  hideModeSelector = false,
+  hideRouteSelector = false,
+  hideWorkspaceActions = false,
+  newSessionLabel = 'New chat',
   compactHeader = false,
   emptyStateMessage,
 }: DesktopChatPanelProps) {
@@ -1201,7 +1213,9 @@ export function DesktopChatPanel({
     () => routeOptions.find((entry) => entry.id === selectedRouteId) ?? defaultChatRoute,
     [defaultChatRoute, routeOptions, selectedRouteId],
   )
-  const showRoutePicker = routeOptions.length > 1
+  const showRoutePicker = !hideRouteSelector && routeOptions.length > 1
+  const resolvedLockedAgentName = lockedAgentName?.trim() ?? ''
+  const resolvedLockedAgentLabel = lockedAgentLabel?.trim() || resolvedLockedAgentName
 
   const refreshUISettings = useCallback(async () => {
     try {
@@ -1533,7 +1547,7 @@ export function DesktopChatPanel({
   }, [scrollToLatest])
 
   useEffect(() => {
-    if (isFlowSession) {
+    if (isFlowSession || resolvedLockedAgentName) {
       return
     }
     if (selectableAgents.length === 0) {
@@ -1566,10 +1580,14 @@ export function DesktopChatPanel({
     if (nextSelectedAgent !== selectedPrimaryAgent) {
       setSelectedPrimaryAgent(nextSelectedAgent)
     }
-  }, [agentState.activePrimary, isFlowSession, liveSession, selectableAgents, selectedPrimaryAgent, session, sessionId])
+  }, [agentState.activePrimary, isFlowSession, liveSession, resolvedLockedAgentName, selectableAgents, selectedPrimaryAgent, session, sessionId])
 
   useEffect(() => {
     if (!sessionId) {
+      return
+    }
+    if (resolvedLockedAgentName) {
+      setCurrentSessionAgent(resolvedLockedAgentName)
       return
     }
     if (isFlowSession) {
@@ -1580,14 +1598,14 @@ export function DesktopChatPanel({
       ? resolvedSessionAgent
       : agentState.activePrimary.trim() || selectableAgents[0]?.name || 'swarm'
     setCurrentSessionAgent(nextAgent)
-  }, [agentState.activePrimary, isFlowSession, selectableAgents, resolvedSessionAgent, sessionId])
+  }, [agentState.activePrimary, isFlowSession, resolvedLockedAgentName, selectableAgents, resolvedSessionAgent, sessionId])
 
   useEffect(() => {
     if (sessionId) {
       return
     }
-    setCurrentSessionAgent(selectedPrimaryAgent)
-  }, [selectedPrimaryAgent, sessionId])
+    setCurrentSessionAgent(resolvedLockedAgentName || selectedPrimaryAgent)
+  }, [resolvedLockedAgentName, selectedPrimaryAgent, sessionId])
 
   useEffect(() => {
     if (isFlowSession || !activeModeSourceProfile) {
@@ -1674,7 +1692,7 @@ export function DesktopChatPanel({
   }, [activeModeSourceProfile, draftSessionMode, isFlowSession, liveSession?.mode, session?.mode, sessionId])
 
   const handleAgentSelect = useCallback(async (value: string) => {
-    if (isFlowSession) {
+    if (isFlowSession || resolvedLockedAgentName) {
       return
     }
     const nextAgent = value.trim() || 'swarm'
@@ -1697,7 +1715,7 @@ export function DesktopChatPanel({
       setCurrentSessionAgent(previousAgent)
       setPanelError(error instanceof Error ? error.message : 'Failed to update session agent')
     }
-  }, [activeChatRoute, currentSessionAgent, isFlowSession, liveSession?.metadata, sessionId, upsertSession])
+  }, [activeChatRoute, currentSessionAgent, isFlowSession, liveSession?.metadata, resolvedLockedAgentName, sessionId, upsertSession])
 
   useEffect(() => {
     setPanelError(null)
@@ -1911,13 +1929,13 @@ export function DesktopChatPanel({
         workspacePath,
         workspaceName,
         prompt: parsed.note,
-        agentName: currentSessionAgent,
+        agentName: resolvedLockedAgentName || currentSessionAgent,
         compact: true,
       })
     } catch (error) {
       setPanelError(error instanceof Error ? error.message : 'Failed to compact context')
     }
-  }, [activeChatRoute, canStop, currentSessionAgent, liveSession?.metadata, sessionId, submitPrompt, submitting, upsertSession, workspaceName, workspacePath])
+  }, [activeChatRoute, canStop, currentSessionAgent, liveSession?.metadata, resolvedLockedAgentName, sessionId, submitPrompt, submitting, upsertSession, workspaceName, workspacePath])
 
   const openCommitModal = useCallback(() => {
     setCommitModal((current) => ({
@@ -2164,14 +2182,14 @@ export function DesktopChatPanel({
         targetSession = sessionCreateOverride
           ? await sessionCreateOverride({
             mode: effectiveSessionMode,
-            agentName: currentSessionAgent,
+            agentName: resolvedLockedAgentName || currentSessionAgent,
             preference: activePreferenceRecord.preference,
           })
           : await createSession({
             workspacePath: activeChatRoute.runtimeWorkspacePath,
             workspaceName,
             mode: effectiveSessionMode,
-            agentName: currentSessionAgent,
+            agentName: resolvedLockedAgentName || currentSessionAgent,
             preference: activePreferenceRecord.preference,
             route: activeChatRoute,
             worktreeMode: activeChatRoute.swarmId && workspaceWorktreeEnabled ? 'on' : undefined,
@@ -2201,7 +2219,7 @@ export function DesktopChatPanel({
         workspacePath,
         workspaceName,
         prompt: runPrompt,
-        agentName: currentSessionAgent,
+        agentName: resolvedLockedAgentName || currentSessionAgent,
         targetKind: runTargetKind,
         targetName: runTargetName,
       })
@@ -2214,7 +2232,7 @@ export function DesktopChatPanel({
         void queryClient.invalidateQueries({ queryKey: sessionMessagesQueryKey(targetSession.id) })
       }
     }
-  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, currentSessionAgent, effectiveSessionMode, mentionSubagents, onSessionCreated, queryClient, session, sessionCreateOverride, sessionId, stopDictation, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
+  }, [activeChatRoute, activePreferenceRecord, canSendWithSelectedPreference, commitDictationDraft, currentSessionAgent, effectiveSessionMode, mentionSubagents, onSessionCreated, queryClient, resolvedLockedAgentName, session, sessionCreateOverride, sessionId, stopDictation, submitPrompt, submitting, upsertSession, workspaceName, workspacePath, workspaceWorktreeEnabled])
 
   const handleStop = useCallback(async () => {
     if (!sessionId) {
@@ -2715,8 +2733,8 @@ export function DesktopChatPanel({
             type="button"
             className="inline-flex h-9 w-9 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-transparent bg-transparent text-[var(--app-text-muted)] transition duration-150 hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)] sm:hidden"
             onClick={() => handleMobileQuickCommand('new-session')}
-            aria-label="Start new chat"
-            title="New chat"
+            aria-label={newSessionLabel}
+            title={newSessionLabel}
           >
             <Plus size={19} />
           </button>
@@ -2726,13 +2744,13 @@ export function DesktopChatPanel({
               <span>{runTimerLabel}</span>
             </div>
           ) : null}
-          <div className="hidden h-9 shrink-0 items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1 text-[11px] font-medium text-[var(--app-text-muted)] shadow-sm sm:inline-flex">
+          {!hideWorkspaceActions ? <div className="hidden h-9 shrink-0 items-center gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1 text-[11px] font-medium text-[var(--app-text-muted)] shadow-sm sm:inline-flex">
             <button
               type="button"
               className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
               onClick={() => handleMobileQuickCommand('new-session')}
-              aria-label="Start new session"
-              title="Start a new session in this workspace"
+              aria-label={newSessionLabel}
+              title={newSessionLabel}
             >
               <Plus size={13} className="shrink-0" />
             </button>
@@ -2755,8 +2773,8 @@ export function DesktopChatPanel({
             >
               <Save size={13} className="shrink-0" />
             </button>
-          </div>
-          <div className="relative shrink-0 sm:hidden">
+          </div> : null}
+          {!hideWorkspaceActions ? <div className="relative shrink-0 sm:hidden">
             <button
               ref={mobileQuickCommandsTriggerRef}
               type="button"
@@ -2831,7 +2849,7 @@ export function DesktopChatPanel({
                 </button>
               </div>
             ) : null}
-          </div>
+          </div> : null}
         </div>
       </header>
 
@@ -3069,7 +3087,12 @@ export function DesktopChatPanel({
                         {currentSessionAgent || 'flow'}
                       </span>
                     </span>
-                  ) : selectedPrimaryAgentProfile?.exitPlanModeEnabled ? (
+                  ) : resolvedLockedAgentLabel ? (
+                    <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
+                      <span className="text-[var(--app-text-subtle)]">Agent:</span>
+                      <span className="font-semibold text-[var(--app-text)]">{resolvedLockedAgentLabel}</span>
+                    </span>
+                  ) : !hideModeSelector && selectedPrimaryAgentProfile?.exitPlanModeEnabled ? (
                     <ModePicker
                       mode={sessionMode === 'auto' ? 'auto' : 'plan'}
                       onSelect={handleModeChange}
@@ -3085,7 +3108,7 @@ export function DesktopChatPanel({
                     </span>
                   ) : null}
 
-                  {!isFlowSession ? (
+                  {!isFlowSession && !resolvedLockedAgentName ? (
                     <AgentPicker
                       currentAgent={currentSessionAgent}
                       selectedPrimaryAgent={selectedPrimaryAgent}
@@ -3167,8 +3190,9 @@ export function DesktopChatPanel({
               <div className="flex w-full min-w-0 relative min-[1000px]:hidden">
                 {mobileSettingsOpen ? (
                   <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
-                    {!isFlowSession ? <ModePicker mode={sessionMode === 'auto' ? 'auto' : 'plan'} onSelect={handleModeChange} /> : null}
-                    {!isFlowSession ? <AgentPicker currentAgent={currentSessionAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={(value) => { void handleAgentSelect(value) }} dropdownAlign="left" /> : null}
+                    {!isFlowSession && resolvedLockedAgentLabel ? <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-xs font-medium text-[var(--app-text)]">Agent: {resolvedLockedAgentLabel}</div> : null}
+                    {!isFlowSession && !resolvedLockedAgentName && !hideModeSelector ? <ModePicker mode={sessionMode === 'auto' ? 'auto' : 'plan'} onSelect={handleModeChange} /> : null}
+                    {!isFlowSession && !resolvedLockedAgentName ? <AgentPicker currentAgent={currentSessionAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={(value) => { void handleAgentSelect(value) }} dropdownAlign="left" /> : null}
                     <ModelPicker options={resolvedModelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={handleModelChange} openSignal={modelPickerOpenSignal} />
                     <ThinkingPicker value={normalizedThinking} options={THINKING_OPTIONS} onSelect={handleThinkingChange} label="Thinking" tagsEnabled={thinkingTagsEnabled} onToggleTags={(enabled) => { void handleThinkingTagsToggle(enabled) }} tagsBusy={thinkingTagsSaving} />
                     {fastSupported ? <ThinkingPicker value={fastValue} options={FAST_ON_OFF_OPTIONS} onSelect={handleFastChange} label="Fast" /> : null}
@@ -3186,7 +3210,7 @@ export function DesktopChatPanel({
                   >
                     <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
                     <span className="flex min-w-0 flex-col leading-tight">
-                      <span className="truncate text-[11px] sm:text-[12px] font-medium text-[var(--app-text)]">{isFlowSession ? 'Flow' : currentSessionAgent}</span>
+                      <span className="truncate text-[11px] sm:text-[12px] font-medium text-[var(--app-text)]">{isFlowSession ? 'Flow' : (resolvedLockedAgentLabel || currentSessionAgent)}</span>
                       <span className="truncate text-[10px] text-[var(--app-text-muted)]">
                         {sessionMode === 'auto' ? 'auto' : 'plan'} · {resolvedModelOptions.find(o => o.key === selectedModelKey)?.label || 'Model'} · {normalizedThinking}{fastSupported ? ` · fast ${fastValue}` : ''}
                       </span>
