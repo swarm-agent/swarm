@@ -760,9 +760,9 @@ assert_checkpoint6_route() {
     [[ "$(jq -r '.route.runtime_workspace_path // empty' "${cp_dir}/primary_topology_session_route.json")" == "${runtime_workspace_path}" ]] || fail "checkpoint 6 route runtime workspace path mismatch"
     [[ "$(jq -r '.route.backend_url // empty' "${cp_dir}/primary_topology_session_route.json")" != "" ]] || fail "checkpoint 6 route backend_url missing"
   else
-    [[ "$(jq -r --arg id "${session_id}" '.session.id // empty == $id' "${cp_dir}/primary_session.json")" == "true" ]] || fail "checkpoint 6 primary session missing ${session_id}"
-    [[ "$(jq -r --arg runtime "${child_swarm_id}" '.session.metadata.swarm_routed_child_swarm_id // empty == $runtime' "${cp_dir}/primary_session.json")" == "true" ]] || fail "checkpoint 6 primary session metadata child mismatch"
-    [[ "$(jq -r --arg runtime_path "${runtime_workspace_path}" '.session.metadata.swarm_routed_runtime_workspace_path // empty == $runtime_path' "${cp_dir}/primary_session.json")" == "true" ]] || fail "checkpoint 6 primary session metadata runtime workspace path mismatch"
+    [[ "$(jq -r --arg id "${session_id}" '(.session.id // empty) == $id' "${cp_dir}/primary_session.json")" == "true" ]] || fail "checkpoint 6 primary session missing ${session_id}"
+    [[ "$(jq -r --arg runtime "${child_swarm_id}" '(.session.metadata.swarm_routed_child_swarm_id // empty) == $runtime' "${cp_dir}/primary_session.json")" == "true" ]] || fail "checkpoint 6 primary session metadata child mismatch"
+    [[ "$(jq -r --arg runtime_path "${runtime_workspace_path}" '(.session.metadata.swarm_routed_runtime_workspace_path // empty) == $runtime_path' "${cp_dir}/primary_session.json")" == "true" ]] || fail "checkpoint 6 primary session metadata runtime workspace path mismatch"
     jq -nc --arg session_id "${session_id}" --arg runtime_swarm_id "${child_swarm_id}" --arg host_swarm_id "${MANAGED_SWARM_ID}" --arg host_container_id "${host_container_id}" --arg runtime_workspace_path "${runtime_workspace_path}" --arg source "session_metadata_fallback" '{ok:true,source:$source,route:{session_id:$session_id,runtime_swarm_id:$runtime_swarm_id,host_swarm_id:$host_swarm_id,host_container_id:$host_container_id,runtime_workspace_path:$runtime_workspace_path}}' >"${cp_dir}/primary_topology_session_route_fallback.json"
   fi
   if [[ "$(jq -r --arg id "${session_id}" --arg runtime "${child_swarm_id}" '[.session_routes[]? | select(.session_id == $id and .runtime_swarm_id == $runtime)] | length' "${cp_dir}/primary_topology_after_session.json")" != "1" ]]; then
