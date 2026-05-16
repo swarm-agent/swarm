@@ -96,7 +96,7 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 		Name:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Name), strings.TrimSpace(record.RuntimeSwarmID)),
 		Role:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Role), "child"),
 		Relationship: firstNonEmpty(strings.TrimSpace(runtimeRecord.Relationship), "child"),
-		Kind:         firstNonEmpty(strings.TrimSpace(binding.LegacyTargetKind), "mirrored"),
+		Kind:         strings.TrimSpace(binding.LegacyTargetKind),
 		DeploymentID: strings.TrimPrefix(strings.TrimSpace(binding.BindingID), "binding:replica:"),
 		HostSwarmID:  firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID)),
 		Online:       true,

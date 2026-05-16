@@ -124,7 +124,7 @@ func (s *Server) proxyWebsocketToSwarmTarget(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) proxyBackendURLForTarget(target swarmTarget) string {
-	if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
+	if strings.TrimSpace(target.HostSwarmID) != "" || strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
 		if backendURL := s.ownerHostBackendURLForTarget(target); backendURL != "" {
 			return backendURL
 		}
@@ -229,10 +229,10 @@ func (s *Server) outgoingPeerAuthTokenForTarget(r *http.Request, target swarmTar
 }
 
 func (s *Server) peerAuthSwarmIDForTarget(target swarmTarget) string {
+	if hostSwarmID := strings.TrimSpace(target.HostSwarmID); hostSwarmID != "" {
+		return hostSwarmID
+	}
 	if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
-		if hostSwarmID := strings.TrimSpace(target.HostSwarmID); hostSwarmID != "" {
-			return hostSwarmID
-		}
 		if hostSwarmID := s.ownerHostSwarmIDForTarget(target); hostSwarmID != "" {
 			return hostSwarmID
 		}
