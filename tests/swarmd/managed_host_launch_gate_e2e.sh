@@ -765,7 +765,9 @@ checkpoint_5() {
     --arg managed_swarm_id "${MANAGED_SWARM_ID}" \
     '{deployment_id:$deployment_id,child_swarm_id:$child_swarm_id,recreate_deployment_id:$recreate_deployment_id,recreate_child_swarm_id:$recreate_child_swarm_id,managed_swarm_id:$managed_swarm_id,product_path:"primary /v1/deploy/container/settings|action|delete plus /v1/swarm/replicate -> managed host deploy service",fallback_allowed:false}' \
     >"${cp_dir}/checkpoint_5_summary.json"
-  record_checkpoint "5" "PASS" "managed-host container settings update, stop/start, delete topology cleanup, and recreate all succeeded through primary API without primary-local fallback" "${cp_dir}"
+  cleanup_checkpoint6_container "${cp_dir}" "${recreate_deployment_id}" "${recreate_child_swarm_id}" "${recreate_host_container_id}" "${recreate_attachment_id}"
+
+  record_checkpoint "5" "PASS" "managed-host container settings update, stop/start, delete topology cleanup, and recreate all succeeded through primary API without primary-local fallback; recreated container cleaned up" "${cp_dir}"
 }
 
 assert_checkpoint6_route() {
