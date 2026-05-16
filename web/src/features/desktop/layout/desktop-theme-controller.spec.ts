@@ -16,8 +16,14 @@ test('returns null while a URL-selected workspace has not resolved', () => {
   assert.equal(themeId, null)
 })
 
+test('returns null while a URL-selected workspace path has not resolved', () => {
+  const themeId = desktopEffectiveThemeId(null, [], { theme: { active_id: 'crimson' } })
+
+  assert.equal(themeId, null)
+})
+
 test('can fall back to global settings when there is no URL-selected workspace to wait for', () => {
-  const themeId = desktopEffectiveThemeId('/repo', [], { theme: { active_id: 'crimson' } }, false)
+  const themeId = desktopEffectiveThemeId(null, [], { theme: { active_id: 'crimson' } }, false)
 
   assert.equal(themeId, 'crimson')
 })

@@ -9,15 +9,17 @@ export function desktopEffectiveThemeId(
   waitForSelectedWorkspace = true,
 ): string | null {
   const normalizedWorkspacePath = selectedWorkspacePath?.trim() ?? ''
-  if (normalizedWorkspacePath) {
-    const workspace = workspaces.find((entry) => entry.path === normalizedWorkspacePath)
-    if (!workspace) {
-      return waitForSelectedWorkspace ? null : normalizeGlobalThemeSettings(settings).activeId
-    }
-    const workspaceThemeId = workspace.themeId?.trim().toLowerCase() ?? ''
-    if (workspaceThemeId) {
-      return workspaceThemeId
-    }
+  if (!normalizedWorkspacePath) {
+    return waitForSelectedWorkspace ? null : normalizeGlobalThemeSettings(settings).activeId
+  }
+
+  const workspace = workspaces.find((entry) => entry.path === normalizedWorkspacePath)
+  if (!workspace) {
+    return waitForSelectedWorkspace ? null : normalizeGlobalThemeSettings(settings).activeId
+  }
+  const workspaceThemeId = workspace.themeId?.trim().toLowerCase() ?? ''
+  if (workspaceThemeId) {
+    return workspaceThemeId
   }
   return normalizeGlobalThemeSettings(settings).activeId
 }
