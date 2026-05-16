@@ -29,6 +29,7 @@ import (
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/imagegen"
+	integrationruntime "swarm/packages/swarmd/internal/integration"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
@@ -152,6 +153,7 @@ type Runtime struct {
 	themeWorkspace    manageThemeWorkspaceService
 	imageGen          manageImageService
 	imageThreads      manageImageThreadService
+	integrations      manageIntegrationService
 }
 
 type ExaRuntimeConfig struct {
@@ -210,6 +212,10 @@ type manageImageService interface {
 type manageImageThreadService interface {
 	Create(pebblestore.ImageThreadSnapshot) (pebblestore.ImageThreadSnapshot, error)
 	Get(threadID string) (pebblestore.ImageThreadSnapshot, bool, error)
+}
+
+type manageIntegrationService interface {
+	Handle(integrationruntime.Request) (map[string]any, error)
 }
 
 type manageTodoService interface {
@@ -389,6 +395,13 @@ func (r *Runtime) SetManageImageServices(imageGen manageImageService, imageThrea
 	}
 	r.imageGen = imageGen
 	r.imageThreads = imageThreads
+}
+
+func (r *Runtime) SetManageIntegrationService(integrations manageIntegrationService) {
+	if r == nil {
+		return
+	}
+	r.integrations = integrations
 }
 
 func (r *Runtime) Definitions() []Definition {
@@ -857,6 +870,29 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		{
 			Type:        "function",
+			Name:        "manage-integrations",
+			Description: "Inspect and manage Integration Pack drafts through the sanctioned integration management path; supports inspect/list/get/create/update/delete for packs, versions, tools, adapters, prompt fragments, and workspaces. Execution, validation, publish, assignment runtime, and host routing are not active yet. Adapter output never includes raw credential reference values.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action":     map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete"},
+					"resource":   map[string]any{"type": "string", "description": "Resource: pack|version|tool|adapter|prompt_fragment|workspace"},
+					"pack_id":    map[string]any{"type": "string", "description": "Pack id for scoped resources"},
+					"version_id": map[string]any{"type": "string", "description": "Version/draft id for scoped resources"},
+					"id":         map[string]any{"type": "string", "description": "Resource id for get/update/delete"},
+					"limit":      map[string]any{"type": "integer", "description": "Maximum records to return"},
+					"content": map[string]any{
+						"type":                 "object",
+						"description":          "Draft resource payload. Use credential_refs for references only; never place raw secrets in settings or credential_refs.",
+						"additionalProperties": true,
+					},
+				},
+				"required":             []string{"action"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "manage-image",
 			Description: "Inspect available image generation providers/models and run background workspace image generation jobs into durable host-managed image sessions; supports inspect/generate and returns compact session/asset refs only, never raw image bytes",
 			Parameters: map[string]any{
@@ -1232,6 +1268,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return executeManageSkill(scope, args)
 	case "manage-agent", "manage_agent":
 		return r.executeManageAgent(scope, args)
+	case "manage-integrations", "manage_integrations":
+		return r.executeManageIntegrations(args)
 	case "manage-image", "manage_image":
 		return r.executeManageImage(ctx, scope, args, onProgress)
 	case "manage-theme", "manage_theme":
@@ -5358,6 +5396,39 @@ func (r *Runtime) executeManageAgent(scope WorkspaceScope, args map[string]any) 
 	}
 }
 
+func (r *Runtime) executeManageIntegrations(args map[string]any) (string, error) {
+	if r == nil || r.integrations == nil {
+		return "", errors.New("manage-integrations service is not configured")
+	}
+	content, err := integrationContentObject(args)
+	if err != nil {
+		return "", err
+	}
+	limit := asInt(args["limit"], 0)
+	request := integrationruntime.Request{
+		Action:    strings.TrimSpace(asString(args["action"])),
+		Resource:  strings.TrimSpace(asString(args["resource"])),
+		PackID:    strings.TrimSpace(asString(args["pack_id"])),
+		VersionID: strings.TrimSpace(asString(args["version_id"])),
+		ID:        strings.TrimSpace(asString(args["id"])),
+		Content:   content,
+		Limit:     limit,
+	}
+	response, err := r.integrations.Handle(request)
+	if err != nil {
+		return "", err
+	}
+	response["path_id"] = toolPathID("manage-integrations")
+	response["details_truncated"] = false
+	response["prompt_injection_tag"] = "tool_output_untrusted"
+	response["safety"] = buildUntrustedSafety("")
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
 func (r *Runtime) executeManageImage(ctx context.Context, scope WorkspaceScope, args map[string]any, onProgress func(Progress)) (string, error) {
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	if action == "" {
@@ -6804,6 +6875,39 @@ func validateManageAgentMutationInput(input agentruntime.UpsertInput, mustExist 
 	return nil
 }
 
+func integrationContentObject(args map[string]any) (map[string]any, error) {
+	raw, ok := args["content"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	switch typed := raw.(type) {
+	case map[string]any:
+		return cloneStringAnyMap(typed), nil
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return nil, nil
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(text), &payload); err != nil {
+			return nil, fmt.Errorf("manage-integrations content must be a JSON object string or object payload: %w", err)
+		}
+		return payload, nil
+	case []byte:
+		text := strings.TrimSpace(string(typed))
+		if text == "" {
+			return nil, nil
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(typed, &payload); err != nil {
+			return nil, fmt.Errorf("manage-integrations content must be a JSON object string or object payload: %w", err)
+		}
+		return payload, nil
+	default:
+		return nil, errors.New("manage-integrations content must be an object or JSON object string")
+	}
+}
+
 func manageAgentContentObject(args map[string]any) (map[string]any, error) {
 	raw, ok := args["content"]
 	if !ok || raw == nil {
@@ -7220,7 +7324,7 @@ func manageAgentToolGroup(name string) string {
 		return "conversation_control"
 	case "git_status", "git_diff", "git_add", "git_commit":
 		return "git_commit"
-	case "skill-use", "skill_use", "manage-skill", "manage_skill", "manage-agent", "manage_agent", "manage-image", "manage_image", "manage-theme", "manage_theme", "manage-worktree", "manage_worktree", "manage_todos":
+	case "skill-use", "skill_use", "manage-skill", "manage_skill", "manage-agent", "manage_agent", "manage-integrations", "manage_integrations", "manage-image", "manage_image", "manage-theme", "manage_theme", "manage-worktree", "manage_worktree", "manage_todos":
 		return "management"
 	default:
 		return "other"
@@ -7758,6 +7862,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_agent"
 	case "manage-image", "manage_image":
 		return "manage_image"
+	case "manage-integrations", "manage_integrations":
+		return "manage_integrations"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
@@ -7783,6 +7889,8 @@ func stubToolPathID(name string) string {
 		return "tool.manage-agent.v1"
 	case "manage_image":
 		return "tool.manage-image.v1"
+	case "manage_integrations":
+		return "tool.manage-integrations.v1"
 	case "manage_worktree":
 		return "tool.manage-worktree.v1"
 	case "manage_todos":
@@ -8203,6 +8311,8 @@ func toolPathID(name string) string {
 		return "tool.manage-agent.v1"
 	case "manage-image", "manage_image":
 		return "tool.manage-image.v1"
+	case "manage-integrations", "manage_integrations":
+		return "tool.manage-integrations.v1"
 	case "manage-worktree", "manage_worktree":
 		return "tool.manage-worktree.v1"
 	case "manage-todos", "manage_todos":

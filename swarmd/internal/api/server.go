@@ -26,6 +26,7 @@ import (
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/imagegen"
+	integrationruntime "swarm/packages/swarmd/internal/integration"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
@@ -107,6 +108,7 @@ type Server struct {
 	videoThreads                *pebblestore.VideoThreadStore
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
+	integrations                *integrationruntime.Service
 	mode                        string
 	dataDir                     string
 	startupConfigPath           string
@@ -360,6 +362,13 @@ func (s *Server) SetTodoService(todoSvc *todo.Service) {
 		return
 	}
 	s.todos = todoSvc
+}
+
+func (s *Server) SetIntegrationService(integrationSvc *integrationruntime.Service) {
+	if s == nil {
+		return
+	}
+	s.integrations = integrationSvc
 }
 
 func (s *Server) SetImageThreadStore(store *pebblestore.ImageThreadStore) {

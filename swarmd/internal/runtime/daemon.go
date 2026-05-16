@@ -25,6 +25,7 @@ import (
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/imagegen"
+	integrationruntime "swarm/packages/swarmd/internal/integration"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	"swarm/packages/swarmd/internal/lock"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
@@ -241,6 +242,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish, sessionSvc)
+	integrationSvc := integrationruntime.NewService(pebblestore.NewIntegrationStore(store))
 	startupCfg, startupCfgErr := startupconfig.Load(cfg.ConfigPath)
 	if startupCfgErr != nil {
 		_ = secretStore.Close()
@@ -258,6 +260,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageWorktreeServices(sessionSvc, workspaceSvc, worktreeSvc)
 	toolRuntime.SetManageAgentService(agentSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
+	toolRuntime.SetManageIntegrationService(integrationSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	toolRuntime.SetExaConfigResolver(func(context.Context) (tool.ExaRuntimeConfig, error) {
 		mcpConfig, err := mcpSvc.ResolveExaRuntimeConfig()
@@ -396,6 +399,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
 	apiServer.SetTodoService(todoSvc)
+	apiServer.SetIntegrationService(integrationSvc)
 	apiServer.SetSwarmService(swarmSvc)
 	apiServer.SetContainerProfileService(containerProfileSvc)
 	apiServer.SetLocalContainerService(localContainerSvc)

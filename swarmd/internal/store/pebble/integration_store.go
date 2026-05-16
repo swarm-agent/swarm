@@ -162,6 +162,17 @@ func (s *IntegrationStore) GetPack(packID string) (IntegrationPackRecord, bool, 
 	return normalizeIntegrationPack(record), true, nil
 }
 
+func (s *IntegrationStore) DeletePack(packID string) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	packID = normalizeIntegrationID(packID)
+	if packID == "" {
+		return errors.New("pack_id is required")
+	}
+	return s.store.Delete(KeyIntegrationPack(packID))
+}
+
 func (s *IntegrationStore) ListPacks(limit int) ([]IntegrationPackRecord, error) {
 	out, err := listIntegrationRecords(s, IntegrationPackPrefix(), limit, func(value []byte) (IntegrationPackRecord, error) {
 		var record IntegrationPackRecord
@@ -209,6 +220,18 @@ func (s *IntegrationStore) GetPackVersion(packID, versionID string) (Integration
 		return IntegrationPackVersionRecord{}, ok, err
 	}
 	return normalizeIntegrationPackVersion(record), true, nil
+}
+
+func (s *IntegrationStore) DeletePackVersion(packID, versionID string) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	packID = normalizeIntegrationID(packID)
+	versionID = normalizeIntegrationID(versionID)
+	if packID == "" || versionID == "" {
+		return errors.New("pack_id and version_id are required")
+	}
+	return s.store.Delete(KeyIntegrationPackVersion(packID, versionID))
 }
 
 func (s *IntegrationStore) ListPackVersions(packID string, limit int) ([]IntegrationPackVersionRecord, error) {
@@ -263,6 +286,19 @@ func (s *IntegrationStore) GetTool(packID, versionID, toolID string) (Integratio
 	return normalizeIntegrationTool(record), true, nil
 }
 
+func (s *IntegrationStore) DeleteTool(packID, versionID, toolID string) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	packID = normalizeIntegrationID(packID)
+	versionID = normalizeIntegrationID(versionID)
+	toolID = normalizeIntegrationID(toolID)
+	if packID == "" || versionID == "" || toolID == "" {
+		return errors.New("pack_id, version_id, and tool_id are required")
+	}
+	return s.store.Delete(KeyIntegrationTool(packID, versionID, toolID))
+}
+
 func (s *IntegrationStore) ListTools(packID, versionID string, limit int) ([]IntegrationToolRecord, error) {
 	out, err := listIntegrationRecords(s, IntegrationToolPrefix(packID, versionID), limit, func(value []byte) (IntegrationToolRecord, error) {
 		var record IntegrationToolRecord
@@ -312,6 +348,19 @@ func (s *IntegrationStore) GetAdapter(packID, versionID, adapterID string) (Inte
 	return normalizeIntegrationAdapter(record), true, nil
 }
 
+func (s *IntegrationStore) DeleteAdapter(packID, versionID, adapterID string) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	packID = normalizeIntegrationID(packID)
+	versionID = normalizeIntegrationID(versionID)
+	adapterID = normalizeIntegrationID(adapterID)
+	if packID == "" || versionID == "" || adapterID == "" {
+		return errors.New("pack_id, version_id, and adapter_id are required")
+	}
+	return s.store.Delete(KeyIntegrationAdapter(packID, versionID, adapterID))
+}
+
 func (s *IntegrationStore) ListAdapters(packID, versionID string, limit int) ([]IntegrationAdapterRecord, error) {
 	out, err := listIntegrationRecords(s, IntegrationAdapterPrefix(packID, versionID), limit, func(value []byte) (IntegrationAdapterRecord, error) {
 		var record IntegrationAdapterRecord
@@ -356,6 +405,19 @@ func (s *IntegrationStore) GetPromptFragment(packID, versionID, promptID string)
 		return IntegrationPromptFragmentRecord{}, ok, err
 	}
 	return normalizeIntegrationPromptFragment(record), true, nil
+}
+
+func (s *IntegrationStore) DeletePromptFragment(packID, versionID, promptID string) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	packID = normalizeIntegrationID(packID)
+	versionID = normalizeIntegrationID(versionID)
+	promptID = normalizeIntegrationID(promptID)
+	if packID == "" || versionID == "" || promptID == "" {
+		return errors.New("pack_id, version_id, and prompt_id are required")
+	}
+	return s.store.Delete(KeyIntegrationPromptFragment(packID, versionID, promptID))
 }
 
 func (s *IntegrationStore) ListPromptFragments(packID, versionID string, limit int) ([]IntegrationPromptFragmentRecord, error) {
@@ -489,6 +551,17 @@ func (s *IntegrationStore) GetWorkspace(workspaceID string) (IntegrationWorkspac
 		return IntegrationWorkspaceRecord{}, ok, err
 	}
 	return normalizeIntegrationWorkspace(record), true, nil
+}
+
+func (s *IntegrationStore) DeleteWorkspace(workspaceID string) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	workspaceID = normalizeIntegrationID(workspaceID)
+	if workspaceID == "" {
+		return errors.New("workspace_id is required")
+	}
+	return s.store.Delete(KeyIntegrationWorkspace(workspaceID))
 }
 
 func (s *IntegrationStore) ListWorkspaces(limit int) ([]IntegrationWorkspaceRecord, error) {
