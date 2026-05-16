@@ -549,10 +549,37 @@ function swarmKindDotClass(kind: SwarmTarget['kind'] | undefined, online = true)
   if (!online) {
     return 'bg-[var(--app-warning)]'
   }
-  if (kind === 'remote') {
+  if (kind === 'remote' || kind === 'mirrored') {
     return 'bg-[var(--app-info)]'
   }
   return 'bg-[var(--app-success)]'
+}
+
+function swarmHostDisplayName(hostSwarmID: string | undefined, targets: SwarmTarget[]): string {
+  const normalizedHostSwarmID = hostSwarmID?.trim() ?? ''
+  if (!normalizedHostSwarmID) {
+    return ''
+  }
+  const host = targets.find((target) => target.swarm_id.trim() === normalizedHostSwarmID)
+  return host?.name?.trim() || normalizedHostSwarmID
+}
+
+function swarmTargetPrimaryLabel(target: SwarmTarget): string {
+  return target.name?.trim() || target.swarm_id?.trim() || 'Swarm'
+}
+
+function swarmTargetSecondaryLabel(target: SwarmTarget, targets: SwarmTarget[]): string {
+  if (target.kind === 'mirrored') {
+    const source = swarmHostDisplayName(target.host_swarm_id, targets)
+    return source ? `Swarm target: ${source}` : 'Swarm target: managed host'
+  }
+  return `${swarmKindLabel(target)} · ${swarmTargetStatusLabel(target)}`
+}
+
+function swarmTargetTitle(target: SwarmTarget, targets: SwarmTarget[]): string {
+  const secondary = swarmTargetSecondaryLabel(target, targets)
+  const openURL = swarmTargetOpenURL(target)
+  return `${secondary}${!target.current && target.online && openURL ? ' · open in new window' : ''}`
 }
 
 function swarmRoleLabel(target: Pick<SwarmTarget, 'role'> | null | undefined): string {
@@ -1632,7 +1659,7 @@ export function DesktopAppPage() {
     }), [swarmTargets])
   const selfSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'self' || target.current), [sortedSwarmTargets])
   const localSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => target.kind === 'local' && !target.current), [sortedSwarmTargets])
-  const remoteSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => (target.kind === 'remote' || target.kind === 'host') && !target.current), [sortedSwarmTargets])
+  const remoteSwarmTargets = useMemo(() => sortedSwarmTargets.filter((target) => (target.kind === 'remote' || target.kind === 'host' || target.kind === 'mirrored') && !target.current), [sortedSwarmTargets])
   const swarmTargetCounts = useMemo(() => {
     const local = selfSwarmTargets.length + localSwarmTargets.length
     const remote = remoteSwarmTargets.length
@@ -2701,6 +2728,7 @@ export function DesktopAppPage() {
                         ) : swarmTargets.map((target) => {
                           const openURL = swarmTargetOpenURL(target)
                           const statusLabel = swarmTargetStatusLabel(target)
+                          const secondaryLabel = swarmTargetSecondaryLabel(target, swarmTargets)
                           return (
                             <button
                               key={target.swarm_id}
@@ -2712,15 +2740,20 @@ export function DesktopAppPage() {
                                 target.current && 'bg-[var(--app-surface-active)] text-[var(--app-text)] shadow-[inset_2px_0_0_var(--app-success)]',
                                 !target.online && !target.current && 'opacity-65',
                               )}
-                              title={`${swarmKindLabel(target)} · ${statusLabel}${!target.current && target.online && openURL ? ' · open in new window' : ''}`}
+                              title={swarmTargetTitle(target, swarmTargets)}
                             >
-                              <span className="flex min-w-0 items-center gap-2">
-                                <span className={cn('h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
-                                <span className="truncate">{target.name}</span>
-                                {!target.current && target.online && openURL ? <ExternalLink size={11} strokeWidth={1.8} className="shrink-0 opacity-70" /> : null}
+                              <span className="flex min-w-0 items-start gap-2">
+                                <span className={cn('mt-[6px] h-[5px] w-[5px] shrink-0 rounded-full', swarmKindDotClass(target.kind, target.online))} />
+                                <span className="grid min-w-0 gap-0.5">
+                                  <span className="truncate">{swarmTargetPrimaryLabel(target)}</span>
+                                  {target.kind === 'mirrored' ? (
+                                    <span className="truncate text-[10px] leading-tight text-[var(--app-text-subtle)]">{secondaryLabel}</span>
+                                  ) : null}
+                                </span>
+                                {!target.current && target.online && openURL ? <ExternalLink size={11} strokeWidth={1.8} className="mt-[2px] shrink-0 opacity-70" /> : null}
                               </span>
                               <span className="shrink-0 truncate text-right text-[10px] text-[var(--app-text-subtle)]">
-                                {swarmKindLabel(target)} · {statusLabel}
+                                {target.kind === 'mirrored' ? statusLabel : secondaryLabel}
                               </span>
                             </button>
                           )

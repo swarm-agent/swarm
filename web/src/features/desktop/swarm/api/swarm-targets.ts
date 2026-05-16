@@ -5,9 +5,10 @@ export interface SwarmTarget {
   name: string
   role: string
   relationship: string
-  kind: 'self' | 'local' | 'remote' | 'host'
+  kind: 'self' | 'local' | 'remote' | 'host' | 'mirrored'
   deployment_id?: string
   attach_status?: string
+  host_swarm_id?: string
   online: boolean
   selectable: boolean
   current: boolean
