@@ -7,6 +7,8 @@ export interface DesktopChatRoute {
   swarmId: string | null
   targetKind: string
   targetRelationship: string
+  hostSwarmId: string
+  hostSwarmName: string
   hostWorkspacePath: string
   hostWorkspaceName: string
   runtimeWorkspacePath: string
@@ -29,6 +31,8 @@ export function buildHostDesktopChatRoute(hostSwarmName: string, workspacePath: 
     swarmId: null,
     targetKind: 'host',
     targetRelationship: 'self',
+    hostSwarmId: '',
+    hostSwarmName: hostSwarmName.trim() || 'host',
     hostWorkspacePath: normalizedWorkspacePath,
     hostWorkspaceName: workspaceName.trim(),
     runtimeWorkspacePath: normalizedWorkspacePath,
@@ -66,6 +70,8 @@ export function buildDesktopChatRouteOptions(input: {
       swarmId,
       targetKind,
       targetRelationship,
+      hostSwarmId: topologyRoute.hostSwarmId.trim(),
+      hostSwarmName: topologyRoute.hostSwarmName.trim(),
       hostWorkspacePath: topologyRoute.hostWorkspacePath.trim() || hostRoute.hostWorkspacePath,
       hostWorkspaceName: topologyRoute.hostWorkspaceName.trim() || hostRoute.hostWorkspaceName,
       runtimeWorkspacePath,
@@ -120,6 +126,8 @@ export function desktopChatRouteFromSessionMetadata(session: DesktopSessionRecor
     swarmId: metadataSwarmId,
     targetKind: sessionMetadataString(metadata, 'swarm_route_target_kind') || sessionMetadataString(metadata, 'swarm_target_kind'),
     targetRelationship: sessionMetadataString(metadata, 'swarm_route_target_relationship') || sessionMetadataString(metadata, 'swarm_target_relationship'),
+    hostSwarmId: sessionMetadataString(metadata, 'swarm_routed_host_swarm_id'),
+    hostSwarmName: sessionMetadataString(metadata, 'swarm_routed_host_swarm_name'),
     hostWorkspacePath: sessionMetadataString(metadata, 'swarm_routed_host_workspace_path') || session?.workspacePath?.trim() || '',
     hostWorkspaceName: session?.workspaceName?.trim() || '',
     runtimeWorkspacePath,

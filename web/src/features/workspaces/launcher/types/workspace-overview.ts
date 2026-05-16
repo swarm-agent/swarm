@@ -104,6 +104,7 @@ export interface WorkspaceOverviewTopologyRouteWire {
   runtime_relationship?: string
   runtime_backend_url?: string
   host_swarm_id?: string
+  host_swarm_name?: string
   host_workspace_path?: string
   host_workspace_name?: string
   runtime_workspace_path?: string
@@ -152,6 +153,7 @@ export interface WorkspaceOverviewTopologyRoute {
   runtimeRelationship: string
   runtimeBackendUrl: string
   hostSwarmId: string
+  hostSwarmName: string
   hostWorkspacePath: string
   hostWorkspaceName: string
   runtimeWorkspacePath: string
@@ -240,6 +242,7 @@ function mapOverviewTopologyRoute(route: WorkspaceOverviewTopologyRouteWire): Wo
     runtimeRelationship: String(route.runtime_relationship ?? '').trim(),
     runtimeBackendUrl: String(route.runtime_backend_url ?? '').trim(),
     hostSwarmId: String(route.host_swarm_id ?? '').trim(),
+    hostSwarmName: String(route.host_swarm_name ?? '').trim(),
     hostWorkspacePath: String(route.host_workspace_path ?? '').trim(),
     hostWorkspaceName: String(route.host_workspace_name ?? '').trim(),
     runtimeWorkspacePath: String(route.runtime_workspace_path ?? '').trim(),

@@ -9,6 +9,8 @@ const managedHostRoute: DesktopChatRoute = {
   swarmId: 'managed-swarm',
   targetKind: 'host',
   targetRelationship: 'managed',
+  hostSwarmId: 'host-swarm-id',
+  hostSwarmName: 'Host Swarm',
   hostWorkspacePath: '/workspaces/host-swarm',
   hostWorkspaceName: 'host swarm',
   runtimeWorkspacePath: '/managed/workspace',

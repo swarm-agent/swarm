@@ -49,6 +49,7 @@ type workspaceOverviewTopologyRoute struct {
 	RuntimeRelationship  string                               `json:"runtime_relationship,omitempty"`
 	RuntimeBackendURL    string                               `json:"runtime_backend_url,omitempty"`
 	HostSwarmID          string                               `json:"host_swarm_id,omitempty"`
+	HostSwarmName        string                               `json:"host_swarm_name,omitempty"`
 	HostWorkspacePath    string                               `json:"host_workspace_path"`
 	HostWorkspaceName    string                               `json:"host_workspace_name,omitempty"`
 	RuntimeWorkspacePath string                               `json:"runtime_workspace_path"`
@@ -440,6 +441,14 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 		}
 		seenByWorkspace[workspacePath][routeID] = struct{}{}
 
+		hostSwarmID := strings.TrimSpace(binding.DestinationHostSwarmID)
+		hostSwarmName := ""
+		if hostSwarmID != "" {
+			if hostTarget, ok := runtimeTargets[strings.ToLower(hostSwarmID)]; ok {
+				hostSwarmName = firstNonEmpty(strings.TrimSpace(hostTarget.Name), hostSwarmID)
+			}
+		}
+
 		out[workspacePath] = append(out[workspacePath], workspaceOverviewTopologyRoute{
 			RouteID:              routeID,
 			RouteSource:          workspaceOverviewTopologyRouteSource,
@@ -449,7 +458,8 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 			RuntimeKind:          firstNonEmpty(strings.TrimSpace(runtimeTarget.Kind), strings.TrimSpace(binding.LegacyTargetKind)),
 			RuntimeRelationship:  strings.TrimSpace(runtimeTarget.Relationship),
 			RuntimeBackendURL:    strings.TrimSpace(runtimeTarget.BackendURL),
-			HostSwarmID:          strings.TrimSpace(binding.DestinationHostSwarmID),
+			HostSwarmID:          hostSwarmID,
+			HostSwarmName:        hostSwarmName,
 			HostWorkspacePath:    workspacePath,
 			HostWorkspaceName:    strings.TrimSpace(binding.SourceWorkspaceName),
 			RuntimeWorkspacePath: runtimeWorkspacePath,

@@ -24,7 +24,7 @@ function routeKind(route: DesktopChatRoute): 'managed' | 'remote' | 'local' {
   if (route.swarmId && (targetRelationship === 'managed' || targetKind === 'host')) {
     return 'managed'
   }
-  return route.swarmId && targetKind === 'remote' ? 'remote' : 'local'
+  return route.swarmId && (targetKind === 'remote' || targetKind === 'mirrored') ? 'remote' : 'local'
 }
 
 function RouteIcon({ route, className }: { route: DesktopChatRoute; className?: string }) {
@@ -41,7 +41,11 @@ function routeCaption(route: DesktopChatRoute): string {
   if (kind === 'managed') {
     return 'Managed host'
   }
-  return kind === 'remote' ? 'Remote swarm' : 'Local swarm'
+  if (kind === 'remote') {
+    const hostName = route.hostSwarmName.trim() || route.hostSwarmId.trim()
+    return hostName ? `Swarm target: ${hostName}` : 'Remote swarm'
+  }
+  return 'Local swarm'
 }
 
 export function RoutePicker({ currentRoute, routes, onSelect, defaultRouteId, onSetDefault, defaultDisabled = false, disabled = false, title }: RoutePickerProps) {

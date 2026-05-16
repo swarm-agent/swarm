@@ -96,7 +96,7 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 		Name:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Name), strings.TrimSpace(record.RuntimeSwarmID)),
 		Role:         firstNonEmpty(strings.TrimSpace(runtimeRecord.Role), "child"),
 		Relationship: firstNonEmpty(strings.TrimSpace(runtimeRecord.Relationship), "child"),
-		Kind:         strings.TrimSpace(binding.LegacyTargetKind),
+		Kind:         firstNonEmpty(strings.TrimSpace(binding.LegacyTargetKind), swarmTargetKindForRoutedSession(runtimeRecord)),
 		DeploymentID: strings.TrimPrefix(strings.TrimSpace(binding.BindingID), "binding:replica:"),
 		HostSwarmID:  firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID)),
 		Online:       true,
@@ -106,6 +106,13 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 		DesktopURL:   strings.TrimSpace(runtimeRecord.DesktopURL),
 	}
 	return target, true, nil
+}
+
+func swarmTargetKindForRoutedSession(runtimeRecord pebblestore.TopologyRuntimeRecord) string {
+	if strings.TrimSpace(runtimeRecord.OwnerHostSwarmID) != "" {
+		return "mirrored"
+	}
+	return "remote"
 }
 
 func normalizeRoutedSessionBackendURL(raw string) string {
