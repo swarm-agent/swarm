@@ -833,6 +833,15 @@ checkpoint_6() {
   api_json GET "/v1/swarm/topology/workspace-bindings?source_workspace_path=${source_query}" "" "${cp_dir}/primary_topology_workspace_bindings.json" 30
   local mirror_deadline=$((SECONDS + 45))
   while :; do
+    api_json GET "/v1/swarm/targets?swarm_id=${runtime_query}" "" "${cp_dir}/targets_after_create_poll.json" 30
+    if jq -e --arg id "${child_swarm_id}" '[.targets[]? | select(.swarm_id == $id and .kind == "mirrored")] | length > 0' "${cp_dir}/targets_after_create_poll.json" >/dev/null; then
+      cp -- "${cp_dir}/targets_after_create_poll.json" "${cp_dir}/targets_after_create.json"
+      break
+    fi
+    [[ "${SECONDS}" -lt "${mirror_deadline}" ]] || fail "checkpoint 6 timed out waiting for mirrored child target ${child_swarm_id}"
+    sleep 3
+  done
+  while :; do
     api_json GET "/v1/swarm/mirror/resources?managed_swarm_id=${managed_query}&resources=container,deployment,target" "" "${cp_dir}/mirror_resources_after_create.json" 30
     if jq -e --arg id "${deployment_id}" '[.resources[]? | select(.kind == "deployment" and .id == $id)] | length > 0' "${cp_dir}/mirror_resources_after_create.json" >/dev/null; then
       break
