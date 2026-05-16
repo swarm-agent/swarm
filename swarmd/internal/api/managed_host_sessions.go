@@ -1089,7 +1089,7 @@ func (s *Server) resolveManagedHostSessionTarget(r *http.Request, targetSwarmID 
 		}
 	}
 	if !strings.EqualFold(strings.TrimSpace(target.Relationship), swarmruntime.RelationshipManaged) || strings.EqualFold(strings.TrimSpace(target.Kind), "manager") || strings.EqualFold(strings.TrimSpace(target.Relationship), "self") {
-		return nil, "", "", http.StatusBadRequest, errors.New("target must be a managed host")
+		return nil, "", "", http.StatusBadRequest, fmt.Errorf("target must be a managed host (resolved swarm_id=%q name=%q relationship=%q kind=%q)", target.SwarmID, target.Name, target.Relationship, target.Kind)
 	}
 	if strings.TrimSpace(target.BackendURL) == "" {
 		return nil, "", "", http.StatusBadRequest, errors.New("managed host route is missing")
