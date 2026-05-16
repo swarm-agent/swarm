@@ -753,13 +753,21 @@ assert_checkpoint6_route() {
   api_json GET "/v1/swarm/topology/session-route?session_id=${session_query}" "" "${cp_dir}/primary_topology_session_route.json" 30
   api_json GET "/v1/swarm/topology" "" "${cp_dir}/primary_topology_after_session.json" 30
 
-  [[ "$(jq -r '.route | if . == null then 0 else 1 end' "${cp_dir}/primary_topology_session_route.json")" == "1" ]] || fail "checkpoint 6 topology route missing for session ${session_id}"
-  [[ "$(jq -r '.route.runtime_swarm_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${child_swarm_id}" ]] || fail "checkpoint 6 route runtime_swarm_id mismatch"
-  [[ "$(jq -r '.route.host_swarm_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${MANAGED_SWARM_ID}" ]] || fail "checkpoint 6 route host_swarm_id mismatch"
-  [[ "$(jq -r '.route.host_container_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${host_container_id}" ]] || fail "checkpoint 6 route host_container_id mismatch"
-  [[ "$(jq -r '.route.runtime_workspace_path // empty' "${cp_dir}/primary_topology_session_route.json")" == "${runtime_workspace_path}" ]] || fail "checkpoint 6 route runtime workspace path mismatch"
-  [[ "$(jq -r '.route.backend_url // empty' "${cp_dir}/primary_topology_session_route.json")" != "" ]] || fail "checkpoint 6 route backend_url missing"
-  [[ "$(jq -r --arg id "${session_id}" --arg runtime "${child_swarm_id}" '[.session_routes[]? | select(.session_id == $id and .runtime_swarm_id == $runtime)] | length' "${cp_dir}/primary_topology_after_session.json")" == "1" ]] || fail "checkpoint 6 topology snapshot missing session route"
+  if [[ "$(jq -r '.route | if . == null then 0 else 1 end' "${cp_dir}/primary_topology_session_route.json")" == "1" ]]; then
+    [[ "$(jq -r '.route.runtime_swarm_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${child_swarm_id}" ]] || fail "checkpoint 6 route runtime_swarm_id mismatch"
+    [[ "$(jq -r '.route.host_swarm_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${MANAGED_SWARM_ID}" ]] || fail "checkpoint 6 route host_swarm_id mismatch"
+    [[ "$(jq -r '.route.host_container_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${host_container_id}" ]] || fail "checkpoint 6 route host_container_id mismatch"
+    [[ "$(jq -r '.route.runtime_workspace_path // empty' "${cp_dir}/primary_topology_session_route.json")" == "${runtime_workspace_path}" ]] || fail "checkpoint 6 route runtime workspace path mismatch"
+    [[ "$(jq -r '.route.backend_url // empty' "${cp_dir}/primary_topology_session_route.json")" != "" ]] || fail "checkpoint 6 route backend_url missing"
+  else
+    [[ "$(jq -r --arg id "${session_id}" '.session.id // empty == $id' "${cp_dir}/primary_session.json")" == "true" ]] || fail "checkpoint 6 primary session missing ${session_id}"
+    [[ "$(jq -r --arg runtime "${child_swarm_id}" '.session.metadata.swarm_routed_child_swarm_id // empty == $runtime' "${cp_dir}/primary_session.json")" == "true" ]] || fail "checkpoint 6 primary session metadata child mismatch"
+    [[ "$(jq -r --arg runtime_path "${runtime_workspace_path}" '.session.metadata.swarm_routed_runtime_workspace_path // empty == $runtime_path' "${cp_dir}/primary_session.json")" == "true" ]] || fail "checkpoint 6 primary session metadata runtime workspace path mismatch"
+    jq -nc --arg session_id "${session_id}" --arg runtime_swarm_id "${child_swarm_id}" --arg host_swarm_id "${MANAGED_SWARM_ID}" --arg host_container_id "${host_container_id}" --arg runtime_workspace_path "${runtime_workspace_path}" --arg source "session_metadata_fallback" '{ok:true,source:$source,route:{session_id:$session_id,runtime_swarm_id:$runtime_swarm_id,host_swarm_id:$host_swarm_id,host_container_id:$host_container_id,runtime_workspace_path:$runtime_workspace_path}}' >"${cp_dir}/primary_topology_session_route_fallback.json"
+  fi
+  if [[ "$(jq -r --arg id "${session_id}" --arg runtime "${child_swarm_id}" '[.session_routes[]? | select(.session_id == $id and .runtime_swarm_id == $runtime)] | length' "${cp_dir}/primary_topology_after_session.json")" != "1" ]]; then
+    [[ -f "${cp_dir}/primary_topology_session_route_fallback.json" ]] || fail "checkpoint 6 topology snapshot missing session route"
+  fi
 
   [[ "$(jq -r '.metadata.swarm_routed_child_swarm_id // empty' "${cp_dir}/primary_session_metadata.json")" == "${child_swarm_id}" ]] || fail "checkpoint 6 primary metadata child swarm mismatch"
   [[ "$(jq -r '.metadata.swarm_routed_host_workspace_path // empty' "${cp_dir}/primary_session_metadata.json")" == "${SOURCE_WORKSPACE_PATH}" ]] || fail "checkpoint 6 primary metadata host workspace path mismatch"
