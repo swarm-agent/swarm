@@ -855,7 +855,9 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 		}
 		warning = nextWarning
 		if descriptor, hosted := sessionruntime.HostedSessionFromMetadata(createOptions.Metadata); hosted && strings.TrimSpace(createOptions.WorkspacePath) != "" {
-			descriptor.RuntimeWorkspacePath = strings.TrimSpace(createOptions.WorkspacePath)
+			if strings.TrimSpace(descriptor.RuntimeWorkspacePath) == "" {
+				descriptor.RuntimeWorkspacePath = strings.TrimSpace(createOptions.WorkspacePath)
+			}
 			createOptions.Metadata = descriptor.WithMetadata(createOptions.Metadata)
 		}
 	}
