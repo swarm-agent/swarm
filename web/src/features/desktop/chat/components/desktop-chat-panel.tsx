@@ -331,6 +331,7 @@ interface DesktopChatPanelProps {
   hideModeSelector?: boolean
   hideRouteSelector?: boolean
   hideWorkspaceActions?: boolean
+  compactControls?: boolean
   newSessionLabel?: string
   onOpenSettingsTab: (tab: SettingsTabID) => void
   onOpenQuickSettings: (tab: QuickSettingsTabID) => void
@@ -882,6 +883,7 @@ export function DesktopChatPanel({
   hideModeSelector = false,
   hideRouteSelector = false,
   hideWorkspaceActions = false,
+  compactControls = false,
   newSessionLabel = 'New chat',
   compactHeader = false,
   emptyStateMessage,
@@ -1470,7 +1472,8 @@ export function DesktopChatPanel({
         activePreferenceRecord.preference.contextMode,
       )
     : ''
-  const selectedModelAvailable = selectedModelKey !== '' && resolvedModelOptions.some((option) => option.key === selectedModelKey)
+  const selectedModelOption = resolvedModelOptions.find((option) => option.key === selectedModelKey) ?? null
+  const selectedModelAvailable = selectedModelKey !== '' && selectedModelOption !== null
   const selectedContextWindow = useMemo(
     () => effectiveContextWindow(
       activePreferenceRecord.preference.provider,
@@ -3076,7 +3079,7 @@ export function DesktopChatPanel({
 
             <div className="border-t border-[var(--app-border)] px-4 py-2 text-[11px]">
               {/* DESKTOP LAYOUT (>= 1000px; thinking/fast collapse from 1000px to 1100px) */}
-              <div className="hidden min-[1000px]:flex min-w-0 items-center gap-2 justify-between">
+              <div className={`${compactControls ? 'hidden' : 'hidden min-[1000px]:flex'} min-w-0 items-center gap-2 justify-between`}>
                 <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                   {isFlowSession ? (
                     <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
@@ -3187,10 +3190,9 @@ export function DesktopChatPanel({
               </div>
 
               {/* MOBILE 1-ROW COMPACT LAYOUT (< 1000px) */}
-              <div className="flex w-full min-w-0 relative min-[1000px]:hidden">
+              <div className={`${compactControls ? 'flex' : 'flex min-[1000px]:hidden'} w-full min-w-0 relative`}>
                 {mobileSettingsOpen ? (
                   <div ref={mobileSettingsRef} className="absolute bottom-[100%] left-0 z-50 mb-2 flex w-[max(260px,100%)] flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-[var(--shadow-panel)]">
-                    {!isFlowSession && resolvedLockedAgentLabel ? <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-xs font-medium text-[var(--app-text)]">Agent: {resolvedLockedAgentLabel}</div> : null}
                     {!isFlowSession && !resolvedLockedAgentName && !hideModeSelector ? <ModePicker mode={sessionMode === 'auto' ? 'auto' : 'plan'} onSelect={handleModeChange} /> : null}
                     {!isFlowSession && !resolvedLockedAgentName ? <AgentPicker currentAgent={currentSessionAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} onSelect={(value) => { void handleAgentSelect(value) }} dropdownAlign="left" /> : null}
                     <ModelPicker options={resolvedModelOptions} selectedKey={selectedModelAvailable ? selectedModelKey : ''} onSelect={handleModelChange} openSignal={modelPickerOpenSignal} />
@@ -3206,13 +3208,13 @@ export function DesktopChatPanel({
                     type="button" 
                     onClick={() => setMobileSettingsOpen(!mobileSettingsOpen)} 
                     className="flex h-10 min-w-0 items-center gap-1.5 overflow-hidden rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-2 shadow-sm text-left hover:bg-[var(--app-surface-hover)] transition"
-                    title="Open mode, agent, model, thinking, and speed settings"
+                    title={resolvedLockedAgentName ? 'Open model, thinking, and speed settings' : 'Open mode, agent, model, thinking, and speed settings'}
                   >
                     <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" />
                     <span className="flex min-w-0 flex-col leading-tight">
-                      <span className="truncate text-[11px] sm:text-[12px] font-medium text-[var(--app-text)]">{isFlowSession ? 'Flow' : (resolvedLockedAgentLabel || currentSessionAgent)}</span>
+                      <span className="truncate text-[11px] sm:text-[12px] font-medium text-[var(--app-text)]">{resolvedLockedAgentName ? 'Model settings' : isFlowSession ? 'Flow' : currentSessionAgent}</span>
                       <span className="truncate text-[10px] text-[var(--app-text-muted)]">
-                        {sessionMode === 'auto' ? 'auto' : 'plan'} · {resolvedModelOptions.find(o => o.key === selectedModelKey)?.label || 'Model'} · {normalizedThinking}{fastSupported ? ` · fast ${fastValue}` : ''}
+                        {!resolvedLockedAgentName && !hideModeSelector ? `${sessionMode === 'auto' ? 'auto' : 'plan'} · ` : ''}{selectedModelOption?.label || 'Model'} · {normalizedThinking}{fastSupported ? ` · fast ${fastValue}` : ''}
                       </span>
                     </span>
                   </button>

@@ -474,6 +474,7 @@ export function IntegrationsPage() {
                   hideModeSelector
                   hideRouteSelector
                   hideWorkspaceActions
+                  compactControls
                   newSessionLabel="New Chat"
                   compactHeader
                   emptyStateMessage="Paste API docs, endpoint examples, auth notes, CLI help, or links. I’ll draft scoped tools and permission review notes for this integration."
