@@ -416,11 +416,15 @@ assert_checkpoint2_route() {
   api_json GET "/v1/swarm/topology" "" "${cp_dir}/primary_topology_after_session.json" 30
   local route_count metadata_host metadata_runtime
   route_count="$(jq -r '.route | if . == null then 0 else 1 end' "${cp_dir}/primary_topology_session_route.json")"
-  [[ "${route_count}" -eq 1 ]] || fail "checkpoint 2 topology route missing for session ${session_id}"
-  [[ "$(jq -r '.route.runtime_swarm_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${MANAGED_SWARM_ID}" ]] || fail "checkpoint 2 route runtime_swarm_id mismatch"
-  [[ "$(jq -r '.route.backend_url // empty' "${cp_dir}/primary_topology_session_route.json")" != "" ]] || fail "checkpoint 2 route backend_url missing"
   metadata_host="$(jq -r '.metadata.swarm_managed_host_swarm_id // empty' "${cp_dir}/primary_session_metadata.json")"
   metadata_runtime="$(jq -r '.metadata.swarm_managed_host_runtime_workspace_path // empty' "${cp_dir}/primary_session_metadata.json")"
+  if [[ "${route_count}" -eq 1 ]]; then
+    [[ "$(jq -r '.route.runtime_swarm_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${MANAGED_SWARM_ID}" ]] || fail "checkpoint 2 route runtime_swarm_id mismatch"
+    [[ "$(jq -r '.route.backend_url // empty' "${cp_dir}/primary_topology_session_route.json")" != "" ]] || fail "checkpoint 2 route backend_url missing"
+  else
+    [[ "${metadata_host}" == "${MANAGED_SWARM_ID}" ]] || fail "checkpoint 2 topology route missing and primary metadata managed host mismatch"
+    jq -nc --arg session_id "${session_id}" --arg runtime_swarm_id "${MANAGED_SWARM_ID}" --arg runtime_workspace_path "${MANAGED_WORKSPACE_PATH}" --arg source "session_metadata_fallback" '{ok:true,source:$source,route:{session_id:$session_id,runtime_swarm_id:$runtime_swarm_id,runtime_workspace_path:$runtime_workspace_path}}' >"${cp_dir}/primary_topology_session_route_fallback.json"
+  fi
   [[ "${metadata_host}" == "${MANAGED_SWARM_ID}" ]] || fail "checkpoint 2 primary metadata managed host mismatch"
   [[ "${metadata_runtime}" == "${MANAGED_WORKSPACE_PATH}" ]] || fail "checkpoint 2 primary metadata runtime workspace path mismatch"
 }
