@@ -36,6 +36,14 @@ type deployContainerCreatePayload struct {
 	Mounts             []localcontainers.Mount                     `json:"mounts"`
 }
 
+type deployContainerSettingsPayload struct {
+	ID                string   `json:"id"`
+	SyncEnabled       *bool    `json:"sync_enabled,omitempty"`
+	SyncModules       []string `json:"sync_modules,omitempty"`
+	SyncVaultPassword string   `json:"sync_vault_password,omitempty"`
+	BypassPermissions *bool    `json:"bypass_permissions,omitempty"`
+}
+
 func (s *Server) handleDeployContainerRuntime(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -200,13 +208,7 @@ func (s *Server) handleDeployContainerSettings(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
 		return
 	}
-	var req struct {
-		ID                string   `json:"id"`
-		SyncEnabled       *bool    `json:"sync_enabled,omitempty"`
-		SyncModules       []string `json:"sync_modules,omitempty"`
-		SyncVaultPassword string   `json:"sync_vault_password,omitempty"`
-		BypassPermissions *bool    `json:"bypass_permissions,omitempty"`
-	}
+	var req deployContainerSettingsPayload
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -215,6 +217,20 @@ func (s *Server) handleDeployContainerSettings(w http.ResponseWriter, r *http.Re
 	if err := decodeJSONBytes(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if _, peerAuthorized := authorizedPeerSwarmID(r); !peerAuthorized {
+		if deployment, ok, err := s.findRemoteManagedDeployment(context.Background(), req.ID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSettings, "error": err.Error()})
+			return
+		} else if ok {
+			updated, forwardErr := s.updateTargetHostDeploymentSettings(r.Context(), deployment, req)
+			if forwardErr != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSettings, "deployment": updated, "error": forwardErr.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerSettings, "deployment": updated})
+			return
+		}
 	}
 	var rawFields map[string]json.RawMessage
 	_ = json.NewDecoder(bytes.NewReader(body)).Decode(&rawFields)
@@ -257,6 +273,20 @@ func (s *Server) handleDeployContainerAction(w http.ResponseWriter, r *http.Requ
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if _, peerAuthorized := authorizedPeerSwarmID(r); !peerAuthorized {
+		if deployment, ok, err := s.findRemoteManagedDeployment(context.Background(), req.ID); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerAction, "error": err.Error()})
+			return
+		} else if ok {
+			updated, forwardErr := s.actTargetHostDeployment(r.Context(), deployment, req.Action)
+			if forwardErr != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerAction, "deployment": updated, "error": forwardErr.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path_id": deployruntime.PathContainerAction, "deployment": updated})
+			return
+		}
 	}
 	deployment, err := s.deployContainers.Act(context.Background(), deployruntime.ContainerActionInput{ID: req.ID, Action: req.Action})
 	if err != nil {

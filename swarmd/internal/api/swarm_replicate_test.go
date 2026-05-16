@@ -612,6 +612,8 @@ type fakeReplicateDeployService struct {
 	lastAppliedAgentBundle        deployruntime.ContainerSyncAgentBundle
 	lastMirroredDeployment        deployruntime.ContainerDeployment
 	lastManagedHostCanonicalIDs   []string
+	lastActionInput               deployruntime.ContainerActionInput
+	lastSettingsInput             deployruntime.ContainerSettingsUpdateInput
 }
 
 func (f *fakeReplicateDeployService) RuntimeStatus(context.Context) (deployruntime.ContainerRuntimeStatus, error) {
@@ -648,12 +650,28 @@ func (f *fakeReplicateDeployService) Create(_ context.Context, input deployrunti
 	}, nil
 }
 
-func (f *fakeReplicateDeployService) Act(context.Context, deployruntime.ContainerActionInput) (deployruntime.ContainerDeployment, error) {
-	return deployruntime.ContainerDeployment{}, nil
+func (f *fakeReplicateDeployService) Act(_ context.Context, input deployruntime.ContainerActionInput) (deployruntime.ContainerDeployment, error) {
+	f.lastActionInput = input
+	return deployruntime.ContainerDeployment{ID: input.ID, Name: input.ID, Status: input.Action, ContainerName: input.ID}, nil
 }
 
 func (f *fakeReplicateDeployService) Delete(context.Context, []string) (localcontainers.DeleteResult, error) {
 	return localcontainers.DeleteResult{}, nil
+}
+
+func (f *fakeReplicateDeployService) UpdateSettings(_ context.Context, input deployruntime.ContainerSettingsUpdateInput) (deployruntime.ContainerDeployment, error) {
+	f.lastSettingsInput = input
+	deployment := deployruntime.ContainerDeployment{ID: input.ID, Name: input.ID, Status: "running", ContainerName: input.ID}
+	if input.BypassPermissions != nil {
+		deployment.BypassPermissions = *input.BypassPermissions
+	}
+	if input.SyncEnabled != nil {
+		deployment.SyncEnabled = *input.SyncEnabled
+	}
+	if input.SyncModulesSet {
+		deployment.SyncModules = append([]string(nil), input.SyncModules...)
+	}
+	return deployment, nil
 }
 
 func (f *fakeReplicateDeployService) MirrorDeployment(_ context.Context, deployment deployruntime.ContainerDeployment) (deployruntime.ContainerDeployment, error) {
@@ -723,8 +741,107 @@ func TestSwarmManagedHostContainerDeleteResolvesCanonicalHostContainerIDs(t *tes
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}
-	if len(fakeDeploy.lastManagedHostCanonicalIDs) != 1 || fakeDeploy.lastManagedHostCanonicalIDs[0] != "managed-swarm-1:ctr-123" {
+	if len(fakeDeploy.lastManagedHostCanonicalIDs) != 1 || fakeDeploy.lastManagedHostCanonicalIDs[0] != "managed-child" {
 		t.Fatalf("canonical delete ids = %#v", fakeDeploy.lastManagedHostCanonicalIDs)
+	}
+}
+
+func TestDeleteTargetHostDeploymentUsesManagedDeployDeletePath(t *testing.T) {
+	server, fakeDeploy, _ := newReplicateTestHandler(t)
+	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		if r.URL.Path != "/v1/deploy/container/delete" {
+			t.Fatalf("managed host path = %q", r.URL.Path)
+		}
+		var payload struct {
+			IDs []string `json:"ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode delete payload: %v", err)
+		}
+		fakeDeploy.lastManagedHostCanonicalIDs = append([]string(nil), payload.IDs...)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}))
+	t.Cleanup(managedHost.Close)
+	setReplicateFakeSwarmState(server, swarmStateWithManagedPeer(managedHost.URL, "host-to-managed-token"))
+
+	err := server.deleteTargetHostDeployment(context.Background(), deployruntime.ContainerDeployment{
+		ID:              "launch-gate-cp4-verify-20260516013708",
+		HostSwarmID:     "managed-swarm-1",
+		HostBackendURL:  managedHost.URL,
+		HostContainerID: "managed-swarm-1:0c2f-runtime-id",
+		ContainerID:     "0c2f-runtime-id",
+		ContainerName:   "launch-gate-cp4-verify-20260516013708",
+	})
+	if err != nil {
+		t.Fatalf("deleteTargetHostDeployment() error = %v", err)
+	}
+	if len(fakeDeploy.lastManagedHostCanonicalIDs) != 1 || fakeDeploy.lastManagedHostCanonicalIDs[0] != "launch-gate-cp4-verify-20260516013708" {
+		t.Fatalf("managed host delete ids = %#v", fakeDeploy.lastManagedHostCanonicalIDs)
+	}
+}
+
+func TestSwarmManagedHostContainerDeleteResolvesDeploymentIDToManagedLocalIdentity(t *testing.T) {
+	server, fakeDeploy, _ := newReplicateTestHandler(t)
+	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		if r.URL.Path != "/v1/swarm/containers/local/delete" {
+			t.Fatalf("managed host path = %q", r.URL.Path)
+		}
+		var payload struct {
+			IDs []string `json:"ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode delete payload: %v", err)
+		}
+		fakeDeploy.lastManagedHostCanonicalIDs = append([]string(nil), payload.IDs...)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": localcontainers.DeleteResult{Deleted: payload.IDs, Count: len(payload.IDs)}})
+	}))
+	t.Cleanup(managedHost.Close)
+	setReplicateFakeSwarmState(server, swarmStateWithManagedPeer(managedHost.URL, "host-to-managed-token"))
+	topologyBackingStore, err := pebblestore.Open(filepath.Join(t.TempDir(), "managed-host-delete-topology.pebble"))
+	if err != nil {
+		t.Fatalf("open topology store: %v", err)
+	}
+	defer func() { _ = topologyBackingStore.Close() }()
+	topologyStore := pebblestore.NewTopologyStore(topologyBackingStore)
+	topologySvc := topologyruntime.NewService(topologyStore, nil, nil, nil, nil, nil, nil, nil)
+	server.SetTopologyService(topologySvc)
+	if err := topologySvc.UpsertHostContainer(pebblestore.TopologyHostContainerRecord{
+		HostContainerID:     "managed-swarm-1:ctr-123",
+		HostSwarmID:         "managed-swarm-1",
+		RuntimeContainerRef: "ctr-123",
+		Name:                "managed-child",
+		ContainerName:       "managed-child",
+		ContainerID:         "ctr-123",
+		ObservedSources:     []string{pebblestore.TopologyHostContainerSourceDeployContainer},
+	}); err != nil {
+		t.Fatalf("upsert topology host container: %v", err)
+	}
+	if err := topologySvc.UpsertAttachment(pebblestore.TopologyAttachmentRecord{
+		AttachmentID:    "managed-swarm-1:ctr-123=>child-swarm-1",
+		HostContainerID: "managed-swarm-1:ctr-123",
+		RuntimeSwarmID:  "child-swarm-1",
+		DeploymentID:    "deployment-1",
+	}); err != nil {
+		t.Fatalf("upsert topology attachment: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/managed-host/container/delete", strings.NewReader(`{"managed_swarm_id":"managed-swarm-1","ids":["deployment-1"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if len(fakeDeploy.lastManagedHostCanonicalIDs) != 1 || fakeDeploy.lastManagedHostCanonicalIDs[0] != "managed-child" {
+		t.Fatalf("managed host delete ids = %#v", fakeDeploy.lastManagedHostCanonicalIDs)
 	}
 }
 
@@ -901,5 +1018,88 @@ func TestDeployContainerSyncCredentialsPreservesPeerAuthBeforeTrustedNetworkExem
 	}
 	if got := fakeDeploy.lastSyncCredentialBundleInput.PeerSwarmID; got != "manager-swarm" {
 		t.Fatalf("peer swarm id = %q, want manager-swarm", got)
+	}
+}
+
+func TestDeployContainerActionForMirroredManagedDeploymentForwardsToManagedHost(t *testing.T) {
+	server, fakeDeploy, _ := newReplicateTestHandler(t)
+	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		if r.URL.Path != "/v1/deploy/container/action" {
+			t.Fatalf("managed host path = %q", r.URL.Path)
+		}
+		var payload struct {
+			ID     string `json:"id"`
+			Action string `json:"action"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode action payload: %v", err)
+		}
+		if payload.ID != "deployment-1" || payload.Action != "stop" {
+			t.Fatalf("payload = %#v", payload)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deployment": deployruntime.ContainerDeployment{ID: payload.ID, Name: "replica", Status: "stopped", ContainerName: "replica", HostSwarmID: "managed-swarm-1"}})
+	}))
+	t.Cleanup(managedHost.Close)
+	setReplicateFakeSwarmState(server, swarmStateWithManagedPeer(managedHost.URL, "host-to-managed-token"))
+	fakeDeploy.lastMirroredDeployment = deployruntime.ContainerDeployment{ID: "deployment-1", Name: "replica", Status: "running", HostSwarmID: "managed-swarm-1", HostBackendURL: managedHost.URL, ContainerName: "replica", SyncOwnerSwarmID: "managed-swarm-1"}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/container/action", strings.NewReader(`{"id":"deployment-1","action":"stop"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if fakeDeploy.lastActionInput.ID != "" {
+		t.Fatalf("primary local deploy Act was called: %#v", fakeDeploy.lastActionInput)
+	}
+	if fakeDeploy.lastMirroredDeployment.Status != "stopped" {
+		t.Fatalf("mirrored status = %q, want stopped", fakeDeploy.lastMirroredDeployment.Status)
+	}
+}
+
+func TestDeployContainerSettingsForMirroredManagedDeploymentForwardsToManagedHost(t *testing.T) {
+	server, fakeDeploy, _ := newReplicateTestHandler(t)
+	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		if r.URL.Path != "/v1/deploy/container/settings" {
+			t.Fatalf("managed host path = %q", r.URL.Path)
+		}
+		var payload struct {
+			ID                string   `json:"id"`
+			BypassPermissions *bool    `json:"bypass_permissions"`
+			SyncModules       []string `json:"sync_modules"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode settings payload: %v", err)
+		}
+		if payload.ID != "deployment-1" || payload.BypassPermissions == nil || !*payload.BypassPermissions {
+			t.Fatalf("payload = %#v", payload)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deployment": deployruntime.ContainerDeployment{ID: payload.ID, Name: "replica", Status: "running", ContainerName: "replica", HostSwarmID: "managed-swarm-1", BypassPermissions: true, SyncModules: payload.SyncModules}})
+	}))
+	t.Cleanup(managedHost.Close)
+	setReplicateFakeSwarmState(server, swarmStateWithManagedPeer(managedHost.URL, "host-to-managed-token"))
+	fakeDeploy.lastMirroredDeployment = deployruntime.ContainerDeployment{ID: "deployment-1", Name: "replica", Status: "running", HostSwarmID: "managed-swarm-1", HostBackendURL: managedHost.URL, ContainerName: "replica", SyncOwnerSwarmID: "managed-swarm-1"}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/container/settings", strings.NewReader(`{"id":"deployment-1","bypass_permissions":true,"sync_modules":["permissions"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if fakeDeploy.lastSettingsInput.ID != "" {
+		t.Fatalf("primary local deploy UpdateSettings was called: %#v", fakeDeploy.lastSettingsInput)
+	}
+	if !fakeDeploy.lastMirroredDeployment.BypassPermissions {
+		t.Fatalf("mirrored bypass_permissions = false, want true")
 	}
 }

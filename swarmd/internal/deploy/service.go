@@ -501,6 +501,9 @@ func (s *Service) List(ctx context.Context) ([]ContainerDeployment, error) {
 	}
 	out := make([]ContainerDeployment, 0, len(records))
 	for _, record := range records {
+		if err := s.syncCanonicalFields(&record); err != nil {
+			return nil, err
+		}
 		out = append(out, mapContainerRecord(record))
 	}
 	return out, nil
@@ -1027,16 +1030,18 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 		}
 	}
 
-	if record.Runtime != "" && record.ContainerName != "" {
-		if err := localcontainers.RemoveRuntimeContainer(ctx, record.Runtime, record.ContainerName); err != nil && !localcontainers.IsMissingRuntimeContainerError(err) {
-			item.Error = err.Error()
-			return item
+	if s.deploymentBelongsToLocalHost(record) {
+		if record.Runtime != "" && record.ContainerName != "" {
+			if err := localcontainers.RemoveRuntimeContainer(ctx, record.Runtime, record.ContainerName); err != nil && !localcontainers.IsMissingRuntimeContainerError(err) {
+				item.Error = err.Error()
+				return item
+			}
 		}
-	}
-	if s.containers != nil {
-		if _, err := s.containers.RemoveStoredRecordForDeployment(record); err != nil {
-			item.Error = err.Error()
-			return item
+		if s.containers != nil {
+			if _, err := s.containers.RemoveStoredRecordForDeployment(record); err != nil {
+				item.Error = err.Error()
+				return item
+			}
 		}
 	}
 	if err := s.store.Delete(record.ID); err != nil {
@@ -1631,6 +1636,18 @@ func (s *Service) ManagedHostSyncStatus() (ManagedHostSyncStatus, error) {
 	return ManagedHostSyncStatus{OwnerSwarmID: pairing.ManagedAuthOwnerSwarmID, SnapshotHash: snapshotHash, AppliedAt: pairing.ManagedAuthAppliedAt, LastAttemptAt: pairing.ManagedAuthLastAttemptAt, LastError: pairing.ManagedAuthLastError, Modules: modules, HostAPIBaseURL: strings.TrimSpace(cfg.ManagedHostSync.HostAPIBaseURL), Current: snapshotHash != "" && strings.TrimSpace(pairing.ManagedAuthLastError) == ""}, nil
 }
 
+func (s *Service) deploymentBelongsToLocalHost(record pebblestore.DeployContainerRecord) bool {
+	hostSwarmID := strings.TrimSpace(record.HostSwarmID)
+	if hostSwarmID == "" {
+		return true
+	}
+	localSwarmID := s.localSwarmID()
+	if localSwarmID == "" {
+		return false
+	}
+	return strings.EqualFold(hostSwarmID, localSwarmID)
+}
+
 func (s *Service) localSwarmID() string {
 	if s == nil || s.swarmStore == nil {
 		return ""
@@ -1912,6 +1929,9 @@ func applyLocalContainerRuntimeState(record pebblestore.DeployContainerRecord, c
 }
 
 func (s *Service) reconcileLocalDeployment(ctx context.Context, record pebblestore.DeployContainerRecord) error {
+	if !s.deploymentBelongsToLocalHost(record) {
+		return nil
+	}
 	if record.AlwaysOn && strings.TrimSpace(record.Status) != "running" {
 		log.Printf("deploy startup recovery starting local child deployment_id=%q status=%q attach_status=%q runtime=%q container=%q", record.ID, record.Status, record.AttachStatus, record.Runtime, record.ContainerName)
 		deployment, err := s.Act(ctx, ContainerActionInput{ID: record.ID, Action: "start"})

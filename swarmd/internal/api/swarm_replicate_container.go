@@ -109,7 +109,7 @@ func (s *Server) mirrorManagedHostDeployment(deployment deployruntime.ContainerD
 }
 
 func canonicalHostContainerIDForManagedDeployment(deployment deployruntime.ContainerDeployment) string {
-	hostSwarmID := strings.TrimSpace(deployment.HostSwarmID)
+	hostSwarmID := firstNonEmptyString(strings.TrimSpace(deployment.HostSwarmID), strings.TrimSpace(deployment.SyncOwnerSwarmID))
 	runtimeContainerRef := firstNonEmptyString(strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ID))
 	return pebblestore.CanonicalTopologyHostContainerID(hostSwarmID, runtimeContainerRef)
 }
@@ -195,8 +195,9 @@ func (s *Server) resolveManagedHostCanonicalDeleteIDs(managedSwarmID string, ids
 			for _, hostContainer := range hostContainers {
 				if candidateID == strings.TrimSpace(hostContainer.HostContainerID) ||
 					candidateID == strings.TrimSpace(hostContainer.ContainerID) ||
-					candidateID == strings.TrimSpace(hostContainer.ContainerName) {
-					canonicalID = strings.TrimSpace(hostContainer.HostContainerID)
+					candidateID == strings.TrimSpace(hostContainer.ContainerName) ||
+					candidateID == strings.TrimSpace(hostContainer.RuntimeContainerRef) {
+					canonicalID = managedHostLocalDeleteID(hostContainer, candidateID)
 					break
 				}
 				attachments, err := s.topology.ListAttachmentsByHostContainer(hostContainer.HostContainerID, 100)
@@ -205,7 +206,7 @@ func (s *Server) resolveManagedHostCanonicalDeleteIDs(managedSwarmID string, ids
 				}
 				for _, attachment := range attachments {
 					if candidateID == strings.TrimSpace(attachment.DeploymentID) {
-						canonicalID = strings.TrimSpace(hostContainer.HostContainerID)
+						canonicalID = managedHostLocalDeleteID(hostContainer, candidateID)
 						break
 					}
 				}
@@ -250,7 +251,7 @@ func (s *Server) resolveManagedHostCanonicalDeleteIDs(managedSwarmID string, ids
 					candidateID != strings.TrimSpace(deployment.ContainerName) {
 					continue
 				}
-				canonicalID = firstNonEmptyString(strings.TrimSpace(deployment.HostContainerID), canonicalHostContainerIDForManagedDeployment(deployment), candidateID)
+				canonicalID = firstNonEmptyString(strings.TrimSpace(deployment.ContainerName), strings.TrimSpace(deployment.ContainerID), strings.TrimSpace(deployment.ID), candidateID)
 				break
 			}
 			if canonicalID == "" {
@@ -269,25 +270,76 @@ func (s *Server) resolveManagedHostCanonicalDeleteIDs(managedSwarmID string, ids
 	return resolved, nil
 }
 
-func (s *Server) deleteTargetHostDeployment(ctx context.Context, deployment deployruntime.ContainerDeployment) error {
-	if s == nil {
-		return errors.New("server is not configured")
+func managedHostLocalDeleteID(hostContainer pebblestore.TopologyHostContainerRecord, fallback string) string {
+	return firstNonEmptyString(
+		strings.TrimSpace(hostContainer.ContainerName),
+		strings.TrimSpace(hostContainer.ContainerID),
+		strings.TrimSpace(hostContainer.RuntimeContainerRef),
+		strings.TrimSpace(fallback),
+	)
+}
+
+func (s *Server) findRemoteManagedDeployment(ctx context.Context, id string) (deployruntime.ContainerDeployment, bool, error) {
+	if s == nil || s.deployContainers == nil {
+		return deployruntime.ContainerDeployment{}, false, nil
 	}
-	targetSwarmID := strings.TrimSpace(deployment.HostSwarmID)
-	if targetSwarmID == "" {
-		return nil
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return deployruntime.ContainerDeployment{}, false, nil
+	}
+	deployments, err := s.deployContainers.List(ctx)
+	if err != nil {
+		return deployruntime.ContainerDeployment{}, false, err
+	}
+	localSwarmID, err := s.localSwarmIDForManagedDeploymentRouting()
+	if err != nil {
+		return deployruntime.ContainerDeployment{}, false, err
+	}
+	for _, deployment := range deployments {
+		if id != strings.TrimSpace(deployment.ID) &&
+			id != strings.TrimSpace(deployment.HostContainerID) &&
+			id != strings.TrimSpace(deployment.ContainerID) &&
+			id != strings.TrimSpace(deployment.ContainerName) {
+			continue
+		}
+		hostSwarmID := firstNonEmptyString(strings.TrimSpace(deployment.HostSwarmID), strings.TrimSpace(deployment.SyncOwnerSwarmID))
+		if hostSwarmID == "" || localSwarmID == "" || strings.EqualFold(hostSwarmID, localSwarmID) {
+			return deployruntime.ContainerDeployment{}, false, nil
+		}
+		return deployment, true, nil
+	}
+	return deployruntime.ContainerDeployment{}, false, nil
+}
+
+func (s *Server) localSwarmIDForManagedDeploymentRouting() (string, error) {
+	if s == nil {
+		return "", errors.New("server is not configured")
 	}
 	cfg, err := s.loadStartupConfig()
 	if err != nil {
-		return err
+		return "", err
 	}
 	state, err := s.currentSwarmState(cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
-	localSwarmID := strings.TrimSpace(state.Node.SwarmID)
+	return strings.TrimSpace(state.Node.SwarmID), nil
+}
+
+func (s *Server) targetForRemoteManagedDeployment(deployment deployruntime.ContainerDeployment) (swarmTarget, bool, error) {
+	if s == nil {
+		return swarmTarget{}, false, errors.New("server is not configured")
+	}
+	targetSwarmID := strings.TrimSpace(deployment.HostSwarmID)
+	if targetSwarmID == "" {
+		return swarmTarget{}, false, nil
+	}
+	localSwarmID, err := s.localSwarmIDForManagedDeploymentRouting()
+	if err != nil {
+		return swarmTarget{}, false, err
+	}
 	if localSwarmID == "" || strings.EqualFold(targetSwarmID, localSwarmID) {
-		return nil
+		return swarmTarget{}, false, nil
 	}
 	target := swarmTarget{
 		SwarmID:    targetSwarmID,
@@ -296,20 +348,25 @@ func (s *Server) deleteTargetHostDeployment(ctx context.Context, deployment depl
 		DesktopURL: strings.TrimSpace(deployment.HostDesktopURL),
 	}
 	if strings.TrimSpace(target.BackendURL) == "" {
-		return fmt.Errorf("target host backend URL is not configured")
+		return swarmTarget{}, true, fmt.Errorf("target host backend URL is not configured")
+	}
+	return target, true, nil
+}
+
+func (s *Server) deleteTargetHostDeployment(ctx context.Context, deployment deployruntime.ContainerDeployment) error {
+	target, remote, err := s.targetForRemoteManagedDeployment(deployment)
+	if err != nil || !remote {
+		return err
 	}
 	deleteID := strings.TrimSpace(deployment.ID)
-	if strings.TrimSpace(deployment.HostContainerID) != "" {
-		deleteID = strings.TrimSpace(deployment.HostContainerID)
-	}
 	if deleteID == "" {
-		return fmt.Errorf("managed host container identity is not configured")
+		return fmt.Errorf("managed host deployment identity is not configured")
 	}
 	var response struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 	}
-	if err := s.postPeerJSONToSwarmTarget(ctx, target, "/v1/swarm/containers/local/delete", map[string]any{"ids": []string{deleteID}}, &response); err != nil {
+	if err := s.postPeerJSONToSwarmTarget(ctx, target, "/v1/deploy/container/delete", map[string]any{"ids": []string{deleteID}}, &response); err != nil {
 		return err
 	}
 	if !response.OK {
@@ -319,6 +376,125 @@ func (s *Server) deleteTargetHostDeployment(ctx context.Context, deployment depl
 		return errors.New("managed host container delete failed")
 	}
 	return nil
+}
+
+func (s *Server) actTargetHostDeployment(ctx context.Context, deployment deployruntime.ContainerDeployment, action string) (deployruntime.ContainerDeployment, error) {
+	target, remote, err := s.targetForRemoteManagedDeployment(deployment)
+	if err != nil || !remote {
+		return deployment, err
+	}
+	requestID := strings.TrimSpace(deployment.ID)
+	if requestID == "" {
+		return deployment, fmt.Errorf("managed host deployment identity is not configured")
+	}
+	var response struct {
+		OK         bool                              `json:"ok"`
+		Deployment deployruntime.ContainerDeployment `json:"deployment"`
+		Error      string                            `json:"error"`
+	}
+	if err := s.postPeerJSONToSwarmTarget(ctx, target, "/v1/deploy/container/action", map[string]any{"id": requestID, "action": strings.TrimSpace(action)}, &response); err != nil {
+		return deployment, err
+	}
+	if !response.OK {
+		if strings.TrimSpace(response.Error) != "" {
+			return response.Deployment, errors.New(strings.TrimSpace(response.Error))
+		}
+		return response.Deployment, errors.New("managed host container action failed")
+	}
+	response.Deployment = mergeDeploymentMirrorResponse(deployment, response.Deployment)
+	return s.mirrorManagedHostDeployment(response.Deployment, target, deploymentToMirrorPayload(response.Deployment))
+}
+
+func (s *Server) updateTargetHostDeploymentSettings(ctx context.Context, deployment deployruntime.ContainerDeployment, payload deployContainerSettingsPayload) (deployruntime.ContainerDeployment, error) {
+	target, remote, err := s.targetForRemoteManagedDeployment(deployment)
+	if err != nil || !remote {
+		return deployment, err
+	}
+	payload.ID = strings.TrimSpace(deployment.ID)
+	if payload.ID == "" {
+		return deployment, fmt.Errorf("managed host deployment identity is not configured")
+	}
+	var response struct {
+		OK         bool                              `json:"ok"`
+		Deployment deployruntime.ContainerDeployment `json:"deployment"`
+		Error      string                            `json:"error"`
+	}
+	if err := s.postPeerJSONToSwarmTarget(ctx, target, "/v1/deploy/container/settings", payload, &response); err != nil {
+		return deployment, err
+	}
+	if !response.OK {
+		if strings.TrimSpace(response.Error) != "" {
+			return response.Deployment, errors.New(strings.TrimSpace(response.Error))
+		}
+		return response.Deployment, errors.New("managed host container settings update failed")
+	}
+	response.Deployment = mergeDeploymentMirrorResponse(deployment, response.Deployment)
+	return s.mirrorManagedHostDeployment(response.Deployment, target, deploymentToMirrorPayload(response.Deployment))
+}
+
+func deploymentToMirrorPayload(deployment deployruntime.ContainerDeployment) deployContainerCreatePayload {
+	return deployContainerCreatePayload{
+		DeploymentID:       strings.TrimSpace(deployment.ID),
+		Name:               strings.TrimSpace(deployment.Name),
+		Runtime:            strings.TrimSpace(deployment.Runtime),
+		Image:              strings.TrimSpace(deployment.Image),
+		GroupID:            strings.TrimSpace(deployment.GroupID),
+		GroupName:          strings.TrimSpace(deployment.GroupName),
+		GroupNetworkName:   strings.TrimSpace(deployment.GroupNetworkName),
+		SyncEnabled:        deployment.SyncEnabled,
+		SyncMode:           strings.TrimSpace(deployment.SyncMode),
+		SyncModules:        append([]string(nil), deployment.SyncModules...),
+		BypassPermissions:  deployment.BypassPermissions,
+		AlwaysOn:           deployment.AlwaysOn,
+		WorkspaceBootstrap: append([]deployruntime.ContainerWorkspaceBootstrap(nil), deployment.WorkspaceBootstrap...),
+		ContainerPackages:  deployment.ContainerPackages,
+	}
+}
+
+func mergeDeploymentMirrorResponse(previous deployruntime.ContainerDeployment, updated deployruntime.ContainerDeployment) deployruntime.ContainerDeployment {
+	updated.ID = firstNonEmptyString(strings.TrimSpace(updated.ID), strings.TrimSpace(previous.ID))
+	updated.Name = firstNonEmptyString(strings.TrimSpace(updated.Name), strings.TrimSpace(previous.Name))
+	updated.Runtime = firstNonEmptyString(strings.TrimSpace(updated.Runtime), strings.TrimSpace(previous.Runtime))
+	updated.Image = firstNonEmptyString(strings.TrimSpace(updated.Image), strings.TrimSpace(previous.Image))
+	updated.GroupID = firstNonEmptyString(strings.TrimSpace(updated.GroupID), strings.TrimSpace(previous.GroupID))
+	updated.GroupName = firstNonEmptyString(strings.TrimSpace(updated.GroupName), strings.TrimSpace(previous.GroupName))
+	updated.GroupNetworkName = firstNonEmptyString(strings.TrimSpace(updated.GroupNetworkName), strings.TrimSpace(previous.GroupNetworkName))
+	updated.HostSwarmID = firstNonEmptyString(strings.TrimSpace(updated.HostSwarmID), strings.TrimSpace(previous.HostSwarmID), strings.TrimSpace(previous.SyncOwnerSwarmID))
+	updated.HostDisplayName = firstNonEmptyString(strings.TrimSpace(updated.HostDisplayName), strings.TrimSpace(previous.HostDisplayName))
+	updated.HostBackendURL = firstNonEmptyString(strings.TrimSpace(updated.HostBackendURL), strings.TrimSpace(previous.HostBackendURL), strings.TrimSpace(previous.HostAPIBaseURL))
+	updated.HostAPIBaseURL = firstNonEmptyString(strings.TrimSpace(updated.HostAPIBaseURL), strings.TrimSpace(previous.HostAPIBaseURL), strings.TrimSpace(previous.HostBackendURL))
+	updated.HostDesktopURL = firstNonEmptyString(strings.TrimSpace(updated.HostDesktopURL), strings.TrimSpace(previous.HostDesktopURL))
+	updated.HostContainerID = firstNonEmptyString(strings.TrimSpace(updated.HostContainerID), strings.TrimSpace(previous.HostContainerID))
+	updated.AttachmentID = firstNonEmptyString(strings.TrimSpace(updated.AttachmentID), strings.TrimSpace(previous.AttachmentID))
+	updated.SyncOwnerSwarmID = firstNonEmptyString(strings.TrimSpace(updated.SyncOwnerSwarmID), strings.TrimSpace(previous.SyncOwnerSwarmID), strings.TrimSpace(previous.HostSwarmID))
+	updated.ChildSwarmID = firstNonEmptyString(strings.TrimSpace(updated.ChildSwarmID), strings.TrimSpace(previous.ChildSwarmID))
+	updated.ChildDisplayName = firstNonEmptyString(strings.TrimSpace(updated.ChildDisplayName), strings.TrimSpace(previous.ChildDisplayName))
+	updated.ChildBackendURL = firstNonEmptyString(strings.TrimSpace(updated.ChildBackendURL), strings.TrimSpace(previous.ChildBackendURL))
+	updated.ChildDesktopURL = firstNonEmptyString(strings.TrimSpace(updated.ChildDesktopURL), strings.TrimSpace(previous.ChildDesktopURL))
+	updated.SyncEnabled = updated.SyncEnabled || previous.SyncEnabled
+	updated.SyncMode = firstNonEmptyString(strings.TrimSpace(updated.SyncMode), strings.TrimSpace(previous.SyncMode))
+	if len(updated.SyncModules) == 0 {
+		updated.SyncModules = append([]string(nil), previous.SyncModules...)
+	}
+	updated.BypassPermissions = updated.BypassPermissions || previous.BypassPermissions
+	updated.AlwaysOn = updated.AlwaysOn || previous.AlwaysOn
+	updated.WorkspaceBootstrap = append([]deployruntime.ContainerWorkspaceBootstrap(nil), firstNonEmptyWorkspaceBootstrap(updated.WorkspaceBootstrap, previous.WorkspaceBootstrap)...)
+	updated.ContainerPackages = firstNonEmptyContainerPackageManifest(updated.ContainerPackages, previous.ContainerPackages)
+	return updated
+}
+
+func firstNonEmptyWorkspaceBootstrap(primary []deployruntime.ContainerWorkspaceBootstrap, fallback []deployruntime.ContainerWorkspaceBootstrap) []deployruntime.ContainerWorkspaceBootstrap {
+	if len(primary) > 0 {
+		return primary
+	}
+	return fallback
+}
+
+func firstNonEmptyContainerPackageManifest(primary deployruntime.ContainerPackageManifest, fallback deployruntime.ContainerPackageManifest) deployruntime.ContainerPackageManifest {
+	if strings.TrimSpace(primary.BaseImage) != "" || strings.TrimSpace(primary.PackageManager) != "" || len(primary.Packages) > 0 {
+		return primary
+	}
+	return fallback
 }
 
 func (s *Server) handleSwarmManagedHostContainerDelete(w http.ResponseWriter, r *http.Request) {
