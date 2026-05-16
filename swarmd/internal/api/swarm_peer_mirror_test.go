@@ -136,6 +136,12 @@ func TestMirroredManagedHostChildTargetIsSelectableViaOwnerHostGroup(t *testing.
 	if !foundCurrent {
 		t.Fatalf("targets = %#v, want current mirrored managed child", resp.Targets)
 	}
+	if peerSwarmID := primary.peerAuthSwarmIDForTarget(swarmTarget{SwarmID: "child-swarm-1", Kind: "mirrored"}); peerSwarmID != "managed-swarm-1" {
+		t.Fatalf("peer auth swarm id = %q, want managed-swarm-1", peerSwarmID)
+	}
+	if token, err := primary.outgoingPeerAuthTokenForTarget(req, swarmTarget{SwarmID: "child-swarm-1", Kind: "mirrored"}); err != nil || token != "host-to-managed-token" {
+		t.Fatalf("mirrored child peer token = %q err=%v, want managed host token", token, err)
+	}
 }
 
 func TestSyncMirrorFromTargetAppliesTargetToSwarmTargets(t *testing.T) {

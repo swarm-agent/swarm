@@ -43,6 +43,7 @@ type swarmTarget struct {
 	Kind         string `json:"kind"`
 	DeploymentID string `json:"deployment_id,omitempty"`
 	AttachStatus string `json:"attach_status,omitempty"`
+	HostSwarmID  string `json:"host_swarm_id,omitempty"`
 	Online       bool   `json:"online"`
 	Selectable   bool   `json:"selectable"`
 	Current      bool   `json:"current"`
@@ -741,6 +742,7 @@ func mapDeployContainerTarget(item deployruntime.ContainerDeployment) (swarmTarg
 		Kind:         "local",
 		DeploymentID: strings.TrimSpace(item.ID),
 		AttachStatus: attachStatus,
+		HostSwarmID:  strings.TrimSpace(item.HostSwarmID),
 		Online:       online,
 		Selectable:   online,
 		BackendURL:   strings.TrimSpace(item.ChildBackendURL),

@@ -585,6 +585,9 @@ func (s *Server) listMirroredSwarmTargets() ([]swarmTarget, error) {
 			continue
 		}
 		target.Kind = "mirrored"
+		if strings.TrimSpace(target.HostSwarmID) == "" {
+			target.HostSwarmID = strings.TrimSpace(resource.ManagedSwarmID)
+		}
 		if target.Relationship == "" {
 			target.Relationship = "child"
 		}

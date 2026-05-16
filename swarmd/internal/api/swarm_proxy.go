@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -207,7 +208,8 @@ func (s *Server) outgoingPeerAuthTokenForTarget(r *http.Request, target swarmTar
 	if s.swarm == nil {
 		return "", errors.New("swarm service not configured")
 	}
-	token, ok, err := s.swarm.OutgoingPeerAuthToken(target.SwarmID)
+	peerSwarmID := s.peerAuthSwarmIDForTarget(target)
+	token, ok, err := s.swarm.OutgoingPeerAuthToken(peerSwarmID)
 	if err != nil {
 		return "", err
 	}
@@ -215,6 +217,52 @@ func (s *Server) outgoingPeerAuthTokenForTarget(r *http.Request, target swarmTar
 		return token, nil
 	}
 	return "", fmt.Errorf("selected swarm target %q is missing peer auth", strings.TrimSpace(target.SwarmID))
+}
+
+func (s *Server) peerAuthSwarmIDForTarget(target swarmTarget) string {
+	if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
+		if hostSwarmID := strings.TrimSpace(target.HostSwarmID); hostSwarmID != "" {
+			return hostSwarmID
+		}
+		if hostSwarmID := s.ownerHostSwarmIDForTarget(target); hostSwarmID != "" {
+			return hostSwarmID
+		}
+	}
+	return strings.TrimSpace(target.SwarmID)
+}
+
+func (s *Server) ownerHostSwarmIDForTarget(target swarmTarget) string {
+	swarmID := strings.TrimSpace(target.SwarmID)
+	if swarmID == "" || s == nil {
+		return ""
+	}
+	if s.topology != nil {
+		if runtimeRecord, ok, err := s.topology.GetRuntime(swarmID); err == nil && ok {
+			if hostSwarmID := strings.TrimSpace(runtimeRecord.OwnerHostSwarmID); hostSwarmID != "" {
+				return hostSwarmID
+			}
+		}
+		if _, err := s.topology.EnsureSnapshot(); err == nil {
+			if runtimeRecord, ok, err := s.topology.GetRuntime(swarmID); err == nil && ok {
+				if hostSwarmID := strings.TrimSpace(runtimeRecord.OwnerHostSwarmID); hostSwarmID != "" {
+					return hostSwarmID
+				}
+			}
+		}
+	}
+	if s.deployContainers == nil {
+		return ""
+	}
+	deployments, err := s.deployContainers.List(context.Background())
+	if err != nil {
+		return ""
+	}
+	for _, deployment := range deployments {
+		if strings.EqualFold(strings.TrimSpace(deployment.ChildSwarmID), swarmID) {
+			return strings.TrimSpace(deployment.HostSwarmID)
+		}
+	}
+	return ""
 }
 
 func isWebsocketUpgradeRequest(r *http.Request) bool {
