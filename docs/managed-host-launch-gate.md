@@ -13,7 +13,7 @@ Remote SSH/deploy paths are out of scope for product-path evidence. Operator she
 | 3 | Managed DB persistence | Stop both daemons and inspect Pebble DB cold for session + assistant response on both hosts | Completed externally; artifacts captured on testbench |
 | 4 | Managed container create | Create managed-host container from primary `/v1/swarm/replicate` API and prove managed topology/router/mirror attribution with no primary-local fallback | Implemented |
 | 5 | Managed container CRUD | Update settings, stop/start, delete, prove stale routes/containers are gone, then recreate through primary APIs | Implemented |
-| 6 | Managed container AI | Run session through primary routing to managed-host container and prove DB placement | Pending |
+| 6 | Managed container AI | Run session through primary routing to managed-host container and prove response, topology route, mirror, and route cleanup | Implemented, provider key required |
 | 7 | Flow A | Primary main flow report/history | Pending |
 | 8 | Flow B | Primary local-container flow report/history | Pending |
 | 9 | Flow C | Managed host main flow report/history | Pending |
@@ -72,6 +72,19 @@ ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed
   --source-workspace-path ${SWARM_GO_ROOT:-/path/to/swarm-go} \
   --cp5-container-name launch-gate-cp5 \
   --cp5-recreate-container-name launch-gate-cp5-recreate'
+</copy>
+
+Checkpoint 6 creates a managed-host child container, opens a session through primary `/v1/sessions?swarm_id=<child>`, sends a deterministic prompt through `/v1/sessions/<id>/messages`, starts the run through `/v1/sessions/<id>/run/stream`, verifies the proof token and topology route, then deletes the deployment and proves the route is gone.
+
+<copy label="ssh checkpoint 6 managed container ai">
+ssh swarm-bomb 'cd ${SWARM_GO_ROOT:-/path/to/swarm-go} && ./tests/swarmd/managed_host_launch_gate_e2e.sh \
+  --scenario 6 \
+  --managed-name swarm-bomb-2 \
+  --source-workspace-path ${SWARM_GO_ROOT:-/path/to/swarm-go} \
+  --provider codex \
+  --model gpt-5.5 \
+  --thinking low \
+  --cp6-container-name launch-gate-cp6'
 </copy>
 
 The harness writes `matrix_status.json` plus checkpoint subdirectories under the evidence directory on the SSH host. By default that directory is created under `/tmp`; set `--evidence-dir` or `SWARM_LAUNCH_GATE_EVIDENCE_DIR` for a stable remote location.
@@ -149,3 +162,31 @@ The harness writes `matrix_status.json` plus checkpoint subdirectories under the
 - `checkpoint-5/primary_topology_after_recreate.json`
 - `checkpoint-5/primary_deployments_after_recreate.json`
 - `checkpoint-5/checkpoint_5_summary.json`
+
+## Checkpoint 6 required artifacts
+
+- `checkpoint-6/primary_topology_before_create.json`
+- `checkpoint-6/baseline_counts.json`
+- `checkpoint-6/replicate_request.redacted.json`
+- `checkpoint-6/replicate_response.json`
+- `checkpoint-6/primary_deployments_after_create.json`
+- `checkpoint-6/primary_topology_after_create.json`
+- `checkpoint-6/primary_topology_host_containers.json`
+- `checkpoint-6/primary_topology_runtime_owner.json`
+- `checkpoint-6/primary_topology_workspace_bindings.json`
+- `checkpoint-6/mirror_resources_after_create.json`
+- `checkpoint-6/open_session.json`
+- `checkpoint-6/user_message.json`
+- `checkpoint-6/run_start.json`
+- `checkpoint-6/primary_session.json`
+- `checkpoint-6/primary_session_metadata.json`
+- `checkpoint-6/primary_messages.json`
+- `checkpoint-6/primary_topology_session_route.json`
+- `checkpoint-6/primary_topology_after_session.json`
+- `checkpoint-6/mirror_resources_after_run.json`
+- `checkpoint-6/delete_response.json`
+- `checkpoint-6/primary_topology_after_delete.json`
+- `checkpoint-6/primary_deployments_after_delete.json`
+- `checkpoint-6/primary_workspace_bindings_after_delete.json`
+- `checkpoint-6/primary_topology_session_route_after_delete.json`
+- `checkpoint-6/checkpoint_6_summary.json`

@@ -27,9 +27,12 @@ Implemented checkpoints:
      and capture exact primary topology/router/mirror identities.
   5  Managed container CRUD: update settings, stop/start, delete, prove topology
      cleanup, then recreate through the primary API.
+  6  Managed container AI: create a managed-host child container, open/message/run
+     a session through primary routed session APIs, verify proof token, topology,
+     mirror, and route cleanup.
 
 Options:
-  --scenario <0|1|2|4|5|0-1|0-2|0-4|0-5|all>    Default: 0-1
+  --scenario <0|1|2|4|5|6|0-1|0-2|0-4|0-5|0-6|all>    Default: 0-1
   --primary-url <url>                      Primary swarmd URL. Or SWARM_PRIMARY_URL.
                                            Default for SSH testbench: http://127.0.0.1:7781
   --managed-swarm-id <id>                  Managed host swarm_id. Or SWARM_MANAGED_SWARM_ID.
@@ -44,6 +47,8 @@ Options:
   --container-name <name>                  Child container/swarm name for checkpoints 4/5. Or SWARM_LAUNCH_GATE_CONTAINER_NAME.
   --cp5-container-name <name>              Child container/swarm name for checkpoint 5. Or SWARM_LAUNCH_GATE_CP5_CONTAINER_NAME.
   --cp5-recreate-container-name <name>     Recreated child name for checkpoint 5. Or SWARM_LAUNCH_GATE_CP5_RECREATE_CONTAINER_NAME.
+  --cp6-container-name <name>              Child container/swarm name for checkpoint 6. Or SWARM_LAUNCH_GATE_CP6_CONTAINER_NAME.
+  --cp6-prompt <text>                      Prompt for checkpoint 6. Or SWARM_LAUNCH_GATE_CP6_PROMPT.
   --runtime <podman|docker>                Container runtime for checkpoints 4/5. Optional; managed host default is used when empty.
   --evidence-dir <path>                    Evidence directory. Default: tmp launch-gate directory.
   --cleanup-existing-managed-containers    Delete managed-host containers seen in primary topology via primary API.
@@ -58,7 +63,8 @@ Environment shortcuts:
   SWARM_SOURCE_WORKSPACE_PATH, SWARM_MANAGED_WORKSPACE_PATH,
   SWARM_PROVIDER, SWARM_MODEL, SWARM_THINKING, SWARM_LAUNCH_GATE_PROMPT,
   SWARM_LAUNCH_GATE_CONTAINER_NAME, SWARM_LAUNCH_GATE_CP5_CONTAINER_NAME,
-  SWARM_LAUNCH_GATE_CP5_RECREATE_CONTAINER_NAME, SWARM_LAUNCH_GATE_RUNTIME,
+  SWARM_LAUNCH_GATE_CP5_RECREATE_CONTAINER_NAME, SWARM_LAUNCH_GATE_CP6_CONTAINER_NAME,
+  SWARM_LAUNCH_GATE_CP6_PROMPT, SWARM_LAUNCH_GATE_RUNTIME,
   SWARM_LAUNCH_GATE_EVIDENCE_DIR, SWARM_LAUNCH_GATE_ALLOW_LOCAL
 
 Artifacts:
@@ -68,6 +74,7 @@ Artifacts:
   <evidence-dir>/checkpoint-2/*.json
   <evidence-dir>/checkpoint-4/*.json
   <evidence-dir>/checkpoint-5/*.json
+  <evidence-dir>/checkpoint-6/*.json
 EOF
 }
 
@@ -360,11 +367,11 @@ checkpoint_1() {
     --arg root_dir "${ROOT_DIR}" \
     --arg runner_host "$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)" \
     --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{harness:$harness,evidence_dir:$evidence_dir,root_dir:$root_dir,runner_host:$runner_host,created_at:$created_at,implemented_checkpoints:["0","1","2","4","5"],product_path:"primary swarmd API to managed-host swarmd API only",execution_scope:"ssh testbench host only"}' \
+    '{harness:$harness,evidence_dir:$evidence_dir,root_dir:$root_dir,runner_host:$runner_host,created_at:$created_at,implemented_checkpoints:["0","1","2","4","5","6"],product_path:"primary swarmd API to managed-host swarmd API only",execution_scope:"ssh testbench host only"}' \
     >"${cp_dir}/harness_metadata.json"
-  jq -nc '{checkpoint_0:"implemented",checkpoint_1:"implemented",checkpoint_2:"implemented_provider_key_required",checkpoint_3:"completed_external_cold_db_proof",checkpoint_4:"implemented",checkpoint_5:"implemented",checkpoint_6:"pending",checkpoint_7:"pending",checkpoint_8:"pending",checkpoint_9:"pending",checkpoint_10:"pending",checkpoint_11:"pending"}' \
+  jq -nc '{checkpoint_0:"implemented",checkpoint_1:"implemented",checkpoint_2:"implemented_provider_key_required",checkpoint_3:"completed_external_cold_db_proof",checkpoint_4:"implemented",checkpoint_5:"implemented",checkpoint_6:"implemented_provider_key_required",checkpoint_7:"pending",checkpoint_8:"pending",checkpoint_9:"pending",checkpoint_10:"pending",checkpoint_11:"pending"}' \
     >"${cp_dir}/matrix_template.json"
-  record_checkpoint "1" "PASS" "repeatable evidence directory and matrix status created; checkpoints 0-2 and 4-5 implemented" "${cp_dir}"
+  record_checkpoint "1" "PASS" "repeatable evidence directory and matrix status created; checkpoints 0-2 and 4-6 implemented" "${cp_dir}"
 }
 
 ensure_checkpoint2_inputs() {
@@ -427,6 +434,22 @@ ensure_checkpoint5_inputs() {
   fi
   if [[ -z "${CHECKPOINT5_RECREATE_CONTAINER_NAME}" ]]; then
     CHECKPOINT5_RECREATE_CONTAINER_NAME="${CHECKPOINT5_CONTAINER_NAME}-recreate"
+  fi
+}
+
+ensure_checkpoint6_inputs() {
+  [[ -n "${MANAGED_SWARM_ID}" ]] || fail "managed target must be resolved before checkpoint 6"
+  [[ -n "${SOURCE_WORKSPACE_PATH}" ]] || fail "--source-workspace-path is required for checkpoint 6"
+  [[ -n "${PROVIDER}" ]] || fail "--provider or SWARM_PROVIDER is required for checkpoint 6"
+  [[ -n "${MODEL}" ]] || fail "--model or SWARM_MODEL is required for checkpoint 6"
+  if [[ -z "${CHECKPOINT6_CONTAINER_NAME}" ]]; then
+    CHECKPOINT6_CONTAINER_NAME="launch-gate-cp6-$(date +%Y%m%d-%H%M%S)"
+  fi
+  if [[ -z "${CHECKPOINT6_PROMPT}" ]]; then
+    CHECKPOINT6_PROMPT="Launch Gate checkpoint 6. Reply with exactly: LAUNCH_GATE_CP6_OK"
+  fi
+  if [[ -z "${CHECKPOINT2_PROMPT}" ]]; then
+    CHECKPOINT2_PROMPT="Launch Gate checkpoint 2. Reply with exactly: LAUNCH_GATE_CP2_OK"
   fi
 }
 
@@ -718,6 +741,173 @@ checkpoint_5() {
     >"${cp_dir}/checkpoint_5_summary.json"
   record_checkpoint "5" "PASS" "managed-host container settings update, stop/start, delete topology cleanup, and recreate all succeeded through primary API without primary-local fallback" "${cp_dir}"
 }
+
+assert_checkpoint6_route() {
+  local cp_dir="${1:-}"
+  local session_id="${2:-}"
+  local child_swarm_id="${3:-}"
+  local host_container_id="${4:-}"
+  local runtime_workspace_path="${5:-}"
+  local session_query
+  session_query="$(urlencode "${session_id}")"
+  api_json GET "/v1/swarm/topology/session-route?session_id=${session_query}" "" "${cp_dir}/primary_topology_session_route.json" 30
+  api_json GET "/v1/swarm/topology" "" "${cp_dir}/primary_topology_after_session.json" 30
+
+  [[ "$(jq -r '.route | if . == null then 0 else 1 end' "${cp_dir}/primary_topology_session_route.json")" == "1" ]] || fail "checkpoint 6 topology route missing for session ${session_id}"
+  [[ "$(jq -r '.route.runtime_swarm_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${child_swarm_id}" ]] || fail "checkpoint 6 route runtime_swarm_id mismatch"
+  [[ "$(jq -r '.route.host_swarm_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${MANAGED_SWARM_ID}" ]] || fail "checkpoint 6 route host_swarm_id mismatch"
+  [[ "$(jq -r '.route.host_container_id // empty' "${cp_dir}/primary_topology_session_route.json")" == "${host_container_id}" ]] || fail "checkpoint 6 route host_container_id mismatch"
+  [[ "$(jq -r '.route.runtime_workspace_path // empty' "${cp_dir}/primary_topology_session_route.json")" == "${runtime_workspace_path}" ]] || fail "checkpoint 6 route runtime workspace path mismatch"
+  [[ "$(jq -r '.route.backend_url // empty' "${cp_dir}/primary_topology_session_route.json")" != "" ]] || fail "checkpoint 6 route backend_url missing"
+  [[ "$(jq -r --arg id "${session_id}" --arg runtime "${child_swarm_id}" '[.session_routes[]? | select(.session_id == $id and .runtime_swarm_id == $runtime)] | length' "${cp_dir}/primary_topology_after_session.json")" == "1" ]] || fail "checkpoint 6 topology snapshot missing session route"
+
+  [[ "$(jq -r '.metadata.swarm_routed_child_swarm_id // empty' "${cp_dir}/primary_session_metadata.json")" == "${child_swarm_id}" ]] || fail "checkpoint 6 primary metadata child swarm mismatch"
+  [[ "$(jq -r '.metadata.swarm_routed_host_workspace_path // empty' "${cp_dir}/primary_session_metadata.json")" == "${SOURCE_WORKSPACE_PATH}" ]] || fail "checkpoint 6 primary metadata host workspace path mismatch"
+  [[ "$(jq -r '.metadata.swarm_routed_runtime_workspace_path // empty' "${cp_dir}/primary_session_metadata.json")" == "${runtime_workspace_path}" ]] || fail "checkpoint 6 primary metadata runtime workspace path mismatch"
+}
+
+assert_checkpoint6_messages() {
+  local cp_dir="${1:-}"
+  local session_id="${2:-}"
+  api_json GET "/v1/sessions/${session_id}/messages?limit=100" "" "${cp_dir}/primary_messages.json" 30
+  [[ "$(jq -r '[.messages[]? | select((.role // "") == "user")] | length' "${cp_dir}/primary_messages.json")" -ge 1 ]] || fail "checkpoint 6 primary mirror has no user message"
+  [[ "$(jq -r '[.messages[]? | select((.role // "") == "assistant")] | length' "${cp_dir}/primary_messages.json")" -ge 1 ]] || fail "checkpoint 6 primary mirror has no assistant message"
+  [[ "$(jq -r '[.messages[]? | select((.role // "") == "assistant" and ((.content // "") | contains("LAUNCH_GATE_CP6_OK")))] | length' "${cp_dir}/primary_messages.json")" -ge 1 ]] || fail "checkpoint 6 assistant response did not contain LAUNCH_GATE_CP6_OK"
+}
+
+cleanup_checkpoint6_container() {
+  local cp_dir="${1:-}"
+  local deployment_id="${2:-}"
+  local child_swarm_id="${3:-}"
+  local host_container_id="${4:-}"
+  local attachment_id="${5:-}"
+  [[ -n "${deployment_id}" ]] || return 0
+  api_json POST "/v1/deploy/container/delete" "$(jq -nc --arg id "${deployment_id}" '{ids:[$id]}')" "${cp_dir}/delete_response.json" 180
+  [[ "$(jq -r '.ok // false' "${cp_dir}/delete_response.json")" == "true" ]] || fail "checkpoint 6 delete ok=false"
+  assert_checkpoint5_deleted_absent "${cp_dir}" "${deployment_id}" "${child_swarm_id}" "${host_container_id}" "${attachment_id}"
+}
+
+checkpoint_6() {
+  local cp_dir="${EVIDENCE_DIR}/checkpoint-6"
+  mkdir -p -- "${cp_dir}"
+  log "== checkpoint 6: managed container AI via primary routed session =="
+  if [[ -z "${MANAGED_SWARM_ID}" ]]; then
+    api_json GET "/v1/swarm/targets" "" "${cp_dir}/targets.json" 30
+    resolve_managed_target "${cp_dir}/targets.json" "${cp_dir}/managed_target.json"
+  fi
+  ensure_checkpoint6_inputs
+
+  local before_container_count payload deployment_id child_swarm_id runtime_workspace_path host_container_id attachment_id container_name child_backend_url managed_query host_query runtime_query source_query
+  api_json GET "/v1/swarm/topology" "" "${cp_dir}/primary_topology_before_create.json" 30
+  before_container_count="$(jq -r --arg id "${MANAGED_SWARM_ID}" '[.host_containers[]? | select(.host_swarm_id == $id)] | length' "${cp_dir}/primary_topology_before_create.json")"
+  jq -nc --argjson managed_container_count "${before_container_count}" '{managed_container_count:$managed_container_count}' >"${cp_dir}/baseline_counts.json"
+  [[ "${before_container_count}" == "0" ]] || fail "checkpoint 6 requires clean managed container baseline; found ${before_container_count}"
+
+  payload="$(jq -nc \
+    --arg mode "local" \
+    --arg swarm_name "${CHECKPOINT6_CONTAINER_NAME}" \
+    --arg target_host_swarm_id "${MANAGED_SWARM_ID}" \
+    --arg runtime "${CHECKPOINT4_RUNTIME}" \
+    --arg source_workspace_path "${SOURCE_WORKSPACE_PATH}" \
+    '{mode:$mode,swarm_name:$swarm_name,target_host_swarm_id:$target_host_swarm_id,sync:{enabled:true,mode:"managed"},workspaces:[{source_workspace_path:$source_workspace_path,replication_mode:"bundle",writable:true}]} + (if $runtime != "" then {runtime:$runtime} else {} end)')"
+  printf '%s' "${payload}" | jq 'del(.sync.vault_password)' >"${cp_dir}/replicate_request.redacted.json"
+  api_json POST "/v1/swarm/replicate" "${payload}" "${cp_dir}/replicate_response.json" 240
+  [[ "$(jq -r '.ok // false' "${cp_dir}/replicate_response.json")" == "true" ]] || fail "checkpoint 6 replicate response ok=false"
+
+  deployment_id="$(jq -r '.swarm.deployment_id // empty' "${cp_dir}/replicate_response.json")"
+  child_swarm_id="$(jq -r '.swarm.id // empty' "${cp_dir}/replicate_response.json")"
+  runtime_workspace_path="$(jq -r '.workspaces[0].binding.destination_workspace_path // empty' "${cp_dir}/replicate_response.json")"
+  api_json GET "/v1/deploy/container" "" "${cp_dir}/primary_deployments_after_create.json" 30
+  host_container_id="$(jq -r --arg id "${deployment_id}" '.deployments[]? | select(.id == $id) | .host_container_id // empty' "${cp_dir}/primary_deployments_after_create.json" | head -n 1)"
+  attachment_id="$(jq -r --arg id "${deployment_id}" '.deployments[]? | select(.id == $id) | .attachment_id // empty' "${cp_dir}/primary_deployments_after_create.json" | head -n 1)"
+  container_name="$(jq -r --arg id "${deployment_id}" '.deployments[]? | select(.id == $id) | .container_name // empty' "${cp_dir}/primary_deployments_after_create.json" | head -n 1)"
+  child_backend_url="$(jq -r --arg id "${deployment_id}" '.deployments[]? | select(.id == $id) | .child_backend_url // empty' "${cp_dir}/primary_deployments_after_create.json" | head -n 1)"
+
+  host_query="$(urlencode "${MANAGED_SWARM_ID}")"
+  runtime_query="$(urlencode "${child_swarm_id}")"
+  source_query="$(urlencode "${SOURCE_WORKSPACE_PATH}")"
+  managed_query="$(urlencode "${MANAGED_SWARM_ID}")"
+  api_json GET "/v1/swarm/topology" "" "${cp_dir}/primary_topology_after_create.json" 30
+  api_json GET "/v1/swarm/topology/host-containers?host_swarm_id=${host_query}" "" "${cp_dir}/primary_topology_host_containers.json" 30
+  api_json GET "/v1/swarm/topology/runtime-owner?runtime_swarm_id=${runtime_query}" "" "${cp_dir}/primary_topology_runtime_owner.json" 30
+  api_json GET "/v1/swarm/topology/workspace-bindings?source_workspace_path=${source_query}" "" "${cp_dir}/primary_topology_workspace_bindings.json" 30
+  local mirror_deadline=$((SECONDS + 45))
+  while :; do
+    api_json GET "/v1/swarm/mirror/resources?managed_swarm_id=${managed_query}&resources=container,deployment,target" "" "${cp_dir}/mirror_resources_after_create.json" 30
+    if jq -e --arg id "${deployment_id}" '[.resources[]? | select(.kind == "deployment" and .id == $id)] | length > 0' "${cp_dir}/mirror_resources_after_create.json" >/dev/null; then
+      break
+    fi
+    [[ "${SECONDS}" -lt "${mirror_deadline}" ]] || fail "checkpoint 6 timed out waiting for managed deployment mirror resource ${deployment_id}"
+    sleep 3
+  done
+  assert_checkpoint4_create "${cp_dir}" "${deployment_id}" "${child_swarm_id}" "${host_container_id}" "${attachment_id}" "${container_name}" "${runtime_workspace_path}"
+
+  local open_body session_id run_body run_id deadline now
+  open_body="$(jq -nc \
+    --arg title "Launch Gate checkpoint 6" \
+    --arg workspace_path "${SOURCE_WORKSPACE_PATH}" \
+    --arg host_workspace_path "${SOURCE_WORKSPACE_PATH}" \
+    --arg runtime_workspace_path "${runtime_workspace_path}" \
+    --arg workspace_name "$(basename "${SOURCE_WORKSPACE_PATH}")" \
+    --arg mode "auto" \
+    --arg agent_name "swarm" \
+    --arg provider "${PROVIDER}" \
+    --arg model "${MODEL}" \
+    --arg thinking "${THINKING}" \
+    '{title:$title,workspace_path:$workspace_path,host_workspace_path:$host_workspace_path,runtime_workspace_path:$runtime_workspace_path,workspace_name:$workspace_name,mode:$mode,agent_name:$agent_name,preference:{provider:$provider,model:$model,thinking:$thinking},metadata:{launch_gate_checkpoint:"6"}}')"
+  api_json POST "/v1/sessions?swarm_id=$(urlencode "${child_swarm_id}")" "${open_body}" "${cp_dir}/open_session.json" 60
+  session_id="$(jq -r '.session.id // empty' "${cp_dir}/open_session.json")"
+  [[ -n "${session_id}" ]] || fail "checkpoint 6 open did not return session id"
+  printf '%s\n' "${session_id}" >"${cp_dir}/session_id.txt"
+
+  api_json POST "/v1/sessions/${session_id}/messages" \
+    "$(jq -nc --arg content "${CHECKPOINT6_PROMPT}" '{role:"user",content:$content,metadata:{launch_gate_checkpoint:"6"}}')" \
+    "${cp_dir}/user_message.json" 60
+
+  run_body="$(jq -nc --arg prompt "${CHECKPOINT6_PROMPT}" '{type:"run.start",prompt:$prompt,background:true}')"
+  api_json POST "/v1/sessions/${session_id}/run/stream" "${run_body}" "${cp_dir}/run_start.json" 60
+  run_id="$(jq -r '.run_id // empty' "${cp_dir}/run_start.json")"
+  [[ -n "${run_id}" ]] || fail "checkpoint 6 run start did not return run_id"
+  printf '%s\n' "${run_id}" >"${cp_dir}/run_id.txt"
+
+  deadline=$((SECONDS + 240))
+  while :; do
+    api_json GET "/v1/sessions/${session_id}" "" "${cp_dir}/primary_session.json" 30
+    api_json GET "/v1/sessions/${session_id}/messages?limit=100" "" "${cp_dir}/primary_messages_poll.json" 30
+    if jq -e '[.messages[]? | select((.role // "") == "assistant" and ((.content // "") | contains("LAUNCH_GATE_CP6_OK")))] | length > 0' "${cp_dir}/primary_messages_poll.json" >/dev/null; then
+      cp -- "${cp_dir}/primary_messages_poll.json" "${cp_dir}/primary_messages.json"
+      break
+    fi
+    now=${SECONDS}
+    if [[ "${now}" -ge "${deadline}" ]]; then
+      cp -- "${cp_dir}/primary_messages_poll.json" "${cp_dir}/primary_messages.json"
+      fail "checkpoint 6 timed out waiting for assistant proof token"
+    fi
+    sleep 5
+  done
+
+  api_json GET "/v1/sessions/${session_id}/metadata" "" "${cp_dir}/primary_session_metadata.json" 30
+  assert_checkpoint6_route "${cp_dir}" "${session_id}" "${child_swarm_id}" "${host_container_id}" "${runtime_workspace_path}"
+  assert_checkpoint6_messages "${cp_dir}" "${session_id}"
+  api_json GET "/v1/swarm/mirror/resources?managed_swarm_id=${managed_query}&resources=container,deployment,target" "" "${cp_dir}/mirror_resources_after_run.json" 30
+
+  cleanup_checkpoint6_container "${cp_dir}" "${deployment_id}" "${child_swarm_id}" "${host_container_id}" "${attachment_id}"
+  api_json GET "/v1/swarm/topology/session-route?session_id=$(urlencode "${session_id}")" "" "${cp_dir}/primary_topology_session_route_after_delete.json" 30
+  [[ "$(jq -r '.route | if . == null then 0 else 1 end' "${cp_dir}/primary_topology_session_route_after_delete.json")" == "0" ]] || fail "checkpoint 6 delete left routed session route ${session_id}"
+
+  jq -nc \
+    --arg deployment_id "${deployment_id}" \
+    --arg child_swarm_id "${child_swarm_id}" \
+    --arg managed_swarm_id "${MANAGED_SWARM_ID}" \
+    --arg host_container_id "${host_container_id}" \
+    --arg session_id "${session_id}" \
+    --arg run_id "${run_id}" \
+    --arg runtime_workspace_path "${runtime_workspace_path}" \
+    '{deployment_id:$deployment_id,child_swarm_id:$child_swarm_id,managed_swarm_id:$managed_swarm_id,host_container_id:$host_container_id,session_id:$session_id,run_id:$run_id,runtime_workspace_path:$runtime_workspace_path,proof_token:"LAUNCH_GATE_CP6_OK",product_path:"primary /v1/sessions?swarm_id=child -> primary routed session proxy -> managed-host child container",fallback_allowed:false}' \
+    >"${cp_dir}/checkpoint_6_summary.json"
+  record_checkpoint "6" "PASS" "managed-host container session opened, messaged, and run through primary routed session APIs; assistant response mirrored, topology route verified, and delete cleaned route" "${cp_dir}"
+}
+
 checkpoint_2() {
   local cp_dir="${EVIDENCE_DIR}/checkpoint-2"
   mkdir -p -- "${cp_dir}"
@@ -802,6 +992,8 @@ CHECKPOINT2_PROMPT="${SWARM_LAUNCH_GATE_PROMPT:-}"
 CHECKPOINT4_CONTAINER_NAME="${SWARM_LAUNCH_GATE_CONTAINER_NAME:-}"
 CHECKPOINT5_CONTAINER_NAME="${SWARM_LAUNCH_GATE_CP5_CONTAINER_NAME:-${SWARM_LAUNCH_GATE_CONTAINER_NAME:-}}"
 CHECKPOINT5_RECREATE_CONTAINER_NAME="${SWARM_LAUNCH_GATE_CP5_RECREATE_CONTAINER_NAME:-}"
+CHECKPOINT6_CONTAINER_NAME="${SWARM_LAUNCH_GATE_CP6_CONTAINER_NAME:-${SWARM_LAUNCH_GATE_CONTAINER_NAME:-}}"
+CHECKPOINT6_PROMPT="${SWARM_LAUNCH_GATE_CP6_PROMPT:-}"
 CHECKPOINT4_RUNTIME="${SWARM_LAUNCH_GATE_RUNTIME:-}"
 EVIDENCE_DIR="${SWARM_LAUNCH_GATE_EVIDENCE_DIR:-}"
 STATUS_FILE=""
@@ -826,9 +1018,11 @@ while [[ $# -gt 0 ]]; do
     --model) MODEL="${2:-}"; shift 2 ;;
     --thinking) THINKING="${2:-}"; shift 2 ;;
     --prompt) CHECKPOINT2_PROMPT="${2:-}"; shift 2 ;;
-    --container-name) CHECKPOINT4_CONTAINER_NAME="${2:-}"; CHECKPOINT5_CONTAINER_NAME="${2:-}"; shift 2 ;;
+    --container-name) CHECKPOINT4_CONTAINER_NAME="${2:-}"; CHECKPOINT5_CONTAINER_NAME="${2:-}"; CHECKPOINT6_CONTAINER_NAME="${2:-}"; shift 2 ;;
     --cp5-container-name) CHECKPOINT5_CONTAINER_NAME="${2:-}"; shift 2 ;;
     --cp5-recreate-container-name) CHECKPOINT5_RECREATE_CONTAINER_NAME="${2:-}"; shift 2 ;;
+    --cp6-container-name) CHECKPOINT6_CONTAINER_NAME="${2:-}"; shift 2 ;;
+    --cp6-prompt) CHECKPOINT6_PROMPT="${2:-}"; shift 2 ;;
     --runtime) CHECKPOINT4_RUNTIME="${2:-}"; shift 2 ;;
     --evidence-dir) EVIDENCE_DIR="${2:-}"; shift 2 ;;
     --cleanup-existing-managed-containers) CLEANUP_EXISTING_MANAGED_CONTAINERS="true"; shift ;;
@@ -853,10 +1047,12 @@ case "${SCENARIO}" in
   2|checkpoint-2) start_desktop_session; checkpoint_2 ;;
   4|checkpoint-4) start_desktop_session; checkpoint_4 ;;
   5|checkpoint-5) start_desktop_session; checkpoint_5 ;;
+  6|checkpoint-6) start_desktop_session; checkpoint_6 ;;
   0-1) checkpoint_0; checkpoint_1 ;;
   0-2) checkpoint_0; checkpoint_1; checkpoint_2 ;;
   0-4) checkpoint_0; checkpoint_1; checkpoint_2; checkpoint_4 ;;
-  0-5|all) checkpoint_0; checkpoint_1; checkpoint_2; checkpoint_4; checkpoint_5 ;;
+  0-5) checkpoint_0; checkpoint_1; checkpoint_2; checkpoint_4; checkpoint_5 ;;
+  0-6|all) checkpoint_0; checkpoint_1; checkpoint_2; checkpoint_4; checkpoint_5; checkpoint_6 ;;
   *) fail "unknown scenario: ${SCENARIO}" ;;
 esac
 
