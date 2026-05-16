@@ -1301,7 +1301,7 @@ checkpoint_2() {
     "${cp_dir}/user_message.json" 60
 
   run_body="$(jq -nc --arg session_id "${session_id}" --arg prompt "${CHECKPOINT2_PROMPT}" '{session_id:$session_id,type:"run.start",prompt:$prompt,background:true}')"
-  api_json POST "/v1/sessions/${session_id}/run/stream?target_swarm_id=$(urlencode "${MANAGED_SWARM_ID}")" "${run_body}" "${cp_dir}/run_start.json" 60
+  api_json POST "/v1/sessions/${session_id}/run/stream?swarm_id=$(urlencode "${MANAGED_SWARM_ID}")" "${run_body}" "${cp_dir}/run_start.json" 60
   run_id="$(jq -r '.run_id // empty' "${cp_dir}/run_start.json")"
   [[ -n "${run_id}" ]] || fail "checkpoint 2 run start did not return run_id"
   printf '%s\n' "${run_id}" >"${cp_dir}/run_id.txt"
