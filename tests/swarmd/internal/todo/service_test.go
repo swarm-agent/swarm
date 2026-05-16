@@ -116,6 +116,61 @@ func TestListSummariesScopeAgentTodosPerSession(t *testing.T) {
 	}
 }
 
+func TestAgentTodoMetadataSyncPreservesSessionUpdatedAt(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "todo-metadata-updated-at.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+
+	sessionStore := pebblestore.NewSessionStore(store)
+	sessionSvc := sessionruntime.NewService(sessionStore, eventLog)
+	service := NewService(pebblestore.NewWorkspaceTodoStore(store), eventLog, nil, sessionSvc)
+
+	const sessionID = "session-older"
+	const originalUpdatedAt int64 = 1234
+	workspace := "/workspace/demo"
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{
+		ID:            sessionID,
+		WorkspacePath: workspace,
+		Title:         "Older Session",
+		Mode:          "auto",
+		CreatedAt:     1000,
+		UpdatedAt:     originalUpdatedAt,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	if _, _, _, err := service.Create(CreateInput{
+		WorkspacePath: workspace,
+		OwnerKind:     pebblestore.WorkspaceTodoOwnerKindAgent,
+		Text:          "agent todo",
+		SessionID:     sessionID,
+	}); err != nil {
+		t.Fatalf("create agent todo: %v", err)
+	}
+
+	session, ok, err := sessionStore.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if !ok {
+		t.Fatal("session missing")
+	}
+	if session.UpdatedAt != originalUpdatedAt {
+		t.Fatalf("session updated_at = %d, want %d", session.UpdatedAt, originalUpdatedAt)
+	}
+	summary := metadataSummaryMap(t, session.Metadata)
+	if taskCount := metadataInt(summary, "task_count"); taskCount != 1 {
+		t.Fatalf("metadata task_count = %d, want 1", taskCount)
+	}
+}
+
 func metadataSummaryMap(t *testing.T, metadata map[string]any) map[string]any {
 	t.Helper()
 	if metadata == nil {

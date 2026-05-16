@@ -367,23 +367,23 @@ func TestSwarmReplicateRemoteMatchingWorkspaceCreatesLink(t *testing.T) {
 
 func TestRewriteReplicationBootstrapForTargetHostKeepsChildTargetPath(t *testing.T) {
 	items := []deployruntime.ContainerWorkspaceBootstrap{{
-		SourceWorkspacePath: "/home/primary/swarm-go",
+		SourceWorkspacePath: "/source/primary/swarm-go",
 		SourceWorkspaceName: "swarm-go",
 		TargetWorkspacePath: "/workspaces/swarm-go",
 		Directories: []deployruntime.ContainerWorkspaceBootstrapDirectory{{
-			SourcePath: "/home/primary/swarm-go/pkg",
+			SourcePath: "/source/primary/swarm-go/pkg",
 			TargetPath: "/workspaces/swarm-go/pkg",
 		}},
 	}}
 
 	rewritten := rewriteReplicationBootstrapForTargetHost(items, map[string]string{
-		"/home/primary/swarm-go": "/home/managed/swarm-go",
+		"/source/primary/swarm-go": "/source/managed/swarm-go",
 	})
 	if len(rewritten) != 1 {
 		t.Fatalf("rewritten len = %d, want 1", len(rewritten))
 	}
 	item := rewritten[0]
-	if item.SourceWorkspacePath != "/home/managed/swarm-go" {
+	if item.SourceWorkspacePath != "/source/managed/swarm-go" {
 		t.Fatalf("SourceWorkspacePath = %q, want managed host materialized path", item.SourceWorkspacePath)
 	}
 	if item.TargetWorkspacePath != "/workspaces/swarm-go" {
@@ -392,7 +392,7 @@ func TestRewriteReplicationBootstrapForTargetHostKeepsChildTargetPath(t *testing
 	if len(item.Directories) != 1 {
 		t.Fatalf("directories len = %d, want 1", len(item.Directories))
 	}
-	if item.Directories[0].SourcePath != "/home/managed/swarm-go/pkg" {
+	if item.Directories[0].SourcePath != "/source/managed/swarm-go/pkg" {
 		t.Fatalf("directory SourcePath = %q, want managed host materialized subpath", item.Directories[0].SourcePath)
 	}
 	if item.Directories[0].TargetPath != "/workspaces/swarm-go/pkg" {

@@ -19,6 +19,10 @@ type SessionMetadataStore interface {
 	UpdateMetadata(sessionID string, metadata map[string]any) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error)
 }
 
+type derivedSessionMetadataStore interface {
+	UpdateDerivedMetadata(sessionID string, metadata map[string]any) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error)
+}
+
 type Service struct {
 	store    *pebblestore.WorkspaceTodoStore
 	events   *pebblestore.EventLog
@@ -1027,9 +1031,15 @@ func (s *Service) syncAgentTodoSessionMetadata(before, after []TodoItem) error {
 		if !changed {
 			continue
 		}
-		_, event, err := s.sessions.UpdateMetadata(sessionID, nextMetadata)
-		if err != nil {
-			return err
+		var event *pebblestore.EventEnvelope
+		var updateErr error
+		if derivedStore, ok := s.sessions.(derivedSessionMetadataStore); ok {
+			_, event, updateErr = derivedStore.UpdateDerivedMetadata(sessionID, nextMetadata)
+		} else {
+			_, event, updateErr = s.sessions.UpdateMetadata(sessionID, nextMetadata)
+		}
+		if updateErr != nil {
+			return updateErr
 		}
 		if event != nil && s.publish != nil {
 			s.publish(*event)

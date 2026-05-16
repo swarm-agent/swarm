@@ -473,6 +473,14 @@ func (s *Service) SetWorktreeBranch(sessionID, branch string) (pebblestore.Sessi
 }
 
 func (s *Service) UpdateMetadata(sessionID string, metadata map[string]any) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
+	return s.updateMetadata(sessionID, metadata, false)
+}
+
+func (s *Service) UpdateDerivedMetadata(sessionID string, metadata map[string]any) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
+	return s.updateMetadata(sessionID, metadata, true)
+}
+
+func (s *Service) updateMetadata(sessionID string, metadata map[string]any, preserveUpdatedAt bool) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return pebblestore.SessionSnapshot{}, nil, errors.New("session id is required")
@@ -485,7 +493,7 @@ func (s *Service) UpdateMetadata(sessionID string, metadata map[string]any) (peb
 	if !ok {
 		return pebblestore.SessionSnapshot{}, nil, fmt.Errorf("session %q not found", sessionID)
 	}
-	if s.hosted != nil {
+	if s.hosted != nil && !preserveUpdatedAt {
 		if descriptor, hosted := s.hostedDescriptor(session.Metadata); hosted {
 			updated, err := s.hosted.UpdateMetadata(context.Background(), descriptor, sessionID, metadata)
 			if err != nil {
@@ -514,7 +522,9 @@ func (s *Service) UpdateMetadata(sessionID string, metadata map[string]any) (peb
 	}
 	cleanMetadata := cloneSessionMetadataMap(metadata)
 	session.Metadata = cleanMetadata
-	session.UpdatedAt = time.Now().UnixMilli()
+	if !preserveUpdatedAt {
+		session.UpdatedAt = time.Now().UnixMilli()
+	}
 	if err := s.store.UpdateSession(session); err != nil {
 		return pebblestore.SessionSnapshot{}, nil, err
 	}
