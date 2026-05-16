@@ -909,7 +909,7 @@ checkpoint_6() {
     "$(jq -nc --arg content "${CHECKPOINT6_PROMPT}" '{role:"user",content:$content}')" \
     "${cp_dir}/user_message.json" 60
 
-  run_body="$(jq -nc --arg prompt "${CHECKPOINT6_PROMPT}" --arg workspace_path "${runtime_workspace_path}" '{type:"run.start",prompt:$prompt,background:true,workspace_path:$workspace_path,worktree_mode:"off"}')"
+  run_body="$(jq -nc --arg prompt "${CHECKPOINT6_PROMPT}" --arg workspace_path "${runtime_workspace_path}" '{type:"run.start",prompt:$prompt,background:true,execution_context:{workspace_path:$workspace_path,worktree_mode:"off"}}')"
   api_json POST "/v1/sessions/${session_id}/run/stream" "${run_body}" "${cp_dir}/run_start.json" 60
   run_id="$(jq -r '.run_id // empty' "${cp_dir}/run_start.json")"
   [[ -n "${run_id}" ]] || fail "checkpoint 6 run start did not return run_id"
