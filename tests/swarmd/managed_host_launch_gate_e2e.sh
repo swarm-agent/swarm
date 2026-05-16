@@ -615,7 +615,9 @@ checkpoint_4() {
     --arg child_backend_url "${child_backend_url}" \
     '{deployment_id:$deployment_id,child_swarm_id:$child_swarm_id,managed_swarm_id:$managed_swarm_id,host_container_id:$host_container_id,attachment_id:$attachment_id,container_name:$container_name,runtime_workspace_path:$runtime_workspace_path,child_backend_url:$child_backend_url,product_path:"primary /v1/swarm/replicate -> managed host /v1/deploy/container/create",fallback_allowed:false}' \
     >"${cp_dir}/checkpoint_4_summary.json"
-  record_checkpoint "4" "PASS" "managed-host container created through primary API; primary topology/router/mirror identify managed host, child runtime, host container, attachment, and workspace binding without local fallback" "${cp_dir}"
+  cleanup_checkpoint6_container "${cp_dir}" "${deployment_id}" "${child_swarm_id}" "${host_container_id}" "${attachment_id}"
+
+  record_checkpoint "4" "PASS" "managed-host container created through primary API; primary topology/router/mirror identify managed host, child runtime, host container, attachment, and workspace binding without local fallback; container cleaned up" "${cp_dir}"
 }
 
 
