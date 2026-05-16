@@ -37,6 +37,11 @@ type PermissionUpsertInput struct {
 	Requirement     string
 	Title           string
 	Body            string
+	SessionTitle    string
+	SessionLabel    string
+	WorkspacePath   string
+	WorkspaceName   string
+	OriginLabel     string
 	Severity        string
 	Status          string
 	SourceEventType string
@@ -152,6 +157,11 @@ func (s *Service) UpsertPermissionNotification(input PermissionUpsertInput) (peb
 		PermissionID:    permissionID,
 		ToolName:        strings.TrimSpace(input.ToolName),
 		Requirement:     strings.TrimSpace(input.Requirement),
+		SessionTitle:    strings.TrimSpace(input.SessionTitle),
+		SessionLabel:    strings.TrimSpace(input.SessionLabel),
+		WorkspacePath:   strings.TrimSpace(input.WorkspacePath),
+		WorkspaceName:   strings.TrimSpace(input.WorkspaceName),
+		OriginLabel:     strings.TrimSpace(input.OriginLabel),
 		ReadAt:          input.ReadAt,
 		AckedAt:         input.AckedAt,
 		MutedAt:         input.MutedAt,
@@ -190,6 +200,9 @@ func (s *Service) UpsertPermissionNotification(input PermissionUpsertInput) (peb
 	}
 	if record.Severity == "" {
 		record.Severity = pebblestore.NotificationSeverityWarning
+	}
+	if record.ActionURL == "" && record.WorkspacePath != "" && record.SessionID != "" {
+		record.ActionURL = NotificationActionURL(record.WorkspaceName, record.WorkspacePath, record.SessionID)
 	}
 	if record.Status == "" {
 		record.Status = pebblestore.NotificationStatusActive
@@ -248,6 +261,9 @@ func (s *Service) UpsertSystemNotification(record pebblestore.NotificationRecord
 	record.Category = pebblestore.NotificationCategorySystem
 	if strings.TrimSpace(record.Severity) == "" {
 		record.Severity = pebblestore.NotificationSeverityInfo
+	}
+	if record.ActionURL == "" && record.WorkspacePath != "" && record.SessionID != "" {
+		record.ActionURL = NotificationActionURL(record.WorkspaceName, record.WorkspacePath, record.SessionID)
 	}
 	if strings.TrimSpace(record.Status) == "" {
 		record.Status = pebblestore.NotificationStatusActive
@@ -477,6 +493,47 @@ func permissionNotificationBody(toolName, requirement string) string {
 	return fmt.Sprintf("The %s %s action is waiting for approval.", requirement, toolName)
 }
 
+func NotificationActionURL(workspaceName, workspacePath, sessionID string) string {
+	workspaceSlug := notificationWorkspaceSlug(workspaceName, workspacePath)
+	if workspaceSlug == "" || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	return "/" + workspaceSlug + "/" + strings.TrimSpace(sessionID)
+}
+
+func notificationWorkspaceSlug(workspaceName, workspacePath string) string {
+	base := strings.TrimSpace(workspaceName)
+	if base == "" {
+		trimmedPath := strings.TrimRight(strings.TrimSpace(workspacePath), `/\\`)
+		parts := strings.FieldsFunc(trimmedPath, func(r rune) bool { return r == '/' || r == '\\' })
+		if len(parts) > 0 {
+			base = parts[len(parts)-1]
+		}
+	}
+	base = strings.ToLower(strings.TrimSpace(base))
+	var out strings.Builder
+	lastDash := false
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			out.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && out.Len() > 0 {
+			out.WriteByte('-')
+			lastDash = true
+		}
+	}
+	slug := strings.Trim(out.String(), "-")
+	if slug == "" {
+		return "workspace"
+	}
+	if slug == "swarm" {
+		return "swarm-workspace"
+	}
+	return slug
+}
+
 func notificationRecordsEqual(a, b pebblestore.NotificationRecord) bool {
 	return a.ID == b.ID &&
 		a.SwarmID == b.SwarmID &&
@@ -492,6 +549,12 @@ func notificationRecordsEqual(a, b pebblestore.NotificationRecord) bool {
 		a.PermissionID == b.PermissionID &&
 		a.ToolName == b.ToolName &&
 		a.Requirement == b.Requirement &&
+		a.SessionTitle == b.SessionTitle &&
+		a.SessionLabel == b.SessionLabel &&
+		a.WorkspacePath == b.WorkspacePath &&
+		a.WorkspaceName == b.WorkspaceName &&
+		a.OriginLabel == b.OriginLabel &&
+		a.ActionURL == b.ActionURL &&
 		a.ReadAt == b.ReadAt &&
 		a.AckedAt == b.AckedAt &&
 		a.MutedAt == b.MutedAt &&

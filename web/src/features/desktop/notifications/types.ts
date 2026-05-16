@@ -19,6 +19,12 @@ export interface DurableNotificationRecord {
   permission_id?: string
   tool_name?: string
   requirement?: string
+  session_title?: string
+  session_label?: string
+  workspace_path?: string
+  workspace_name?: string
+  origin_label?: string
+  action_url?: string
   read_at?: number
   acked_at?: number
   muted_at?: number

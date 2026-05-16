@@ -37,6 +37,12 @@ type NotificationRecord struct {
 	PermissionID    string `json:"permission_id,omitempty"`
 	ToolName        string `json:"tool_name,omitempty"`
 	Requirement     string `json:"requirement,omitempty"`
+	SessionTitle    string `json:"session_title,omitempty"`
+	SessionLabel    string `json:"session_label,omitempty"`
+	WorkspacePath   string `json:"workspace_path,omitempty"`
+	WorkspaceName   string `json:"workspace_name,omitempty"`
+	OriginLabel     string `json:"origin_label,omitempty"`
+	ActionURL       string `json:"action_url,omitempty"`
 	ReadAt          int64  `json:"read_at,omitempty"`
 	AckedAt         int64  `json:"acked_at,omitempty"`
 	MutedAt         int64  `json:"muted_at,omitempty"`
@@ -311,6 +317,12 @@ func sanitizeNotificationRecord(record NotificationRecord) NotificationRecord {
 	record.PermissionID = strings.TrimSpace(record.PermissionID)
 	record.ToolName = strings.TrimSpace(record.ToolName)
 	record.Requirement = strings.TrimSpace(strings.ToLower(record.Requirement))
+	record.SessionTitle = strings.TrimSpace(record.SessionTitle)
+	record.SessionLabel = strings.TrimSpace(record.SessionLabel)
+	record.WorkspacePath = strings.TrimSpace(record.WorkspacePath)
+	record.WorkspaceName = strings.TrimSpace(record.WorkspaceName)
+	record.OriginLabel = strings.TrimSpace(record.OriginLabel)
+	record.ActionURL = strings.TrimSpace(record.ActionURL)
 	if record.CreatedAt < 0 {
 		record.CreatedAt = 0
 	}

@@ -154,6 +154,12 @@ export interface DesktopNotificationCenterRecord {
   permissionId: string | null
   toolName: string | null
   requirement: string | null
+  sessionTitle: string | null
+  sessionLabel: string | null
+  workspacePath: string | null
+  workspaceName: string | null
+  originLabel: string | null
+  actionURL: string | null
   readAt: number | null
   ackedAt: number | null
   mutedAt: number | null

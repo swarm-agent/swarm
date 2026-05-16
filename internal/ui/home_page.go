@@ -99,6 +99,7 @@ type HomePage struct {
 	swarmModal                swarmModalState
 	swarmName                 string
 	swarmNotificationCount    int
+	alertsModal               alertsModalState
 	sessionsModal             sessionsModalState
 	commandSuggestions        []CommandSuggestion
 	commandPaletteIndex       int
@@ -159,7 +160,7 @@ func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
 		p.handleAgentsModalMouse(ev)
 		return
 	}
-	if p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
+	if p.alertsModal.Visible || p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.mcpModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
 		return
 	}
 
@@ -253,6 +254,10 @@ func (p *HomePage) HandleTick() bool {
 }
 
 func (p *HomePage) HandleKey(ev *tcell.EventKey) {
+	if p.alertsModal.Visible {
+		p.handleAlertsModalKey(ev)
+		return
+	}
 	if p.sessionsModal.Visible {
 		p.handleSessionsModalKey(ev)
 		return
@@ -431,7 +436,8 @@ func (p *HomePage) ChatOverlayVisible() bool {
 	if p == nil {
 		return false
 	}
-	return p.keybindsModal.Visible ||
+	return p.alertsModal.Visible ||
+		p.keybindsModal.Visible ||
 		p.authDefaultsInfoModal.Visible ||
 		p.authModal.Visible ||
 		p.workspaceModal.Visible ||
@@ -466,6 +472,9 @@ func (p *HomePage) HandleChatOverlayKey(ev *tcell.EventKey) bool {
 		return false
 	}
 	switch {
+	case p.alertsModal.Visible:
+		p.handleAlertsModalKey(ev)
+		return true
 	case p.keybindsModal.Visible:
 		p.handleKeybindsModalKey(ev)
 		return true
@@ -515,6 +524,7 @@ func (p *HomePage) DrawChatOverlay(s tcell.Screen) {
 	p.drawVoiceModal(s)
 	p.drawThemeModal(s)
 	p.drawKeybindsModal(s)
+	p.drawAlertsModal(s)
 }
 
 func (p *HomePage) Draw(s tcell.Screen) {
@@ -754,6 +764,7 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	p.drawThemeModal(s)
 	p.drawKeybindsModal(s)
 	p.drawSessionsModal(s)
+	p.drawAlertsModal(s)
 	toastInset := 1
 	drawToastOverlay(s, p.theme, &p.toast, Rect{X: 0, Y: 0, W: w, H: h}, toastInset)
 }

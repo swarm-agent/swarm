@@ -128,6 +128,12 @@ function mapDurableNotification(record: DurableNotificationRecord): DesktopNotif
     permissionId: record.permission_id?.trim() || null,
     toolName: record.tool_name?.trim() || null,
     requirement: record.requirement?.trim() || null,
+    sessionTitle: record.session_title?.trim() || null,
+    sessionLabel: record.session_label?.trim() || null,
+    workspacePath: record.workspace_path?.trim() || null,
+    workspaceName: record.workspace_name?.trim() || null,
+    originLabel: record.origin_label?.trim() || null,
+    actionURL: record.action_url?.trim() || null,
     readAt: typeof record.read_at === 'number' && record.read_at > 0 ? record.read_at : null,
     ackedAt: typeof record.acked_at === 'number' && record.acked_at > 0 ? record.acked_at : null,
     mutedAt: typeof record.muted_at === 'number' && record.muted_at > 0 ? record.muted_at : null,
@@ -161,6 +167,12 @@ function notificationCenterRecordsEqual(left: DesktopNotificationCenterRecord, r
     && left.permissionId === right.permissionId
     && left.toolName === right.toolName
     && left.requirement === right.requirement
+    && left.sessionTitle === right.sessionTitle
+    && left.sessionLabel === right.sessionLabel
+    && left.workspacePath === right.workspacePath
+    && left.workspaceName === right.workspaceName
+    && left.originLabel === right.originLabel
+    && left.actionURL === right.actionURL
     && left.readAt === right.readAt
     && left.ackedAt === right.ackedAt
     && left.mutedAt === right.mutedAt

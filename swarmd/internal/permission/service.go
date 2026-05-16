@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1466,6 +1467,7 @@ func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID,
 			severity = pebblestore.NotificationSeverityInfo
 		}
 	}
+	sessionTitle, workspaceName, workspacePath, originLabel := s.permissionNotificationSessionContext(record.SessionID, firstNonEmpty(originSwarmID, swarmID))
 	_, _, _ = s.notifications.UpsertPermissionNotification(notification.PermissionUpsertInput{
 		SwarmID:         swarmID,
 		OriginSwarmID:   firstNonEmpty(originSwarmID, swarmID),
@@ -1476,6 +1478,11 @@ func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID,
 		Requirement:     record.Requirement,
 		Title:           permissionNotificationTitleFromRecord(record),
 		Body:            permissionNotificationBodyFromRecord(record),
+		SessionTitle:    sessionTitle,
+		SessionLabel:    permissionNotificationSessionLabel(sessionTitle, workspaceName, record.SessionID),
+		WorkspacePath:   workspacePath,
+		WorkspaceName:   workspaceName,
+		OriginLabel:     originLabel,
 		Severity:        severity,
 		Status:          status,
 		SourceEventType: sourceEventType,
@@ -1514,6 +1521,51 @@ func permissionNotificationEventType(record pebblestore.PermissionRecord) string
 		return "permission.requested"
 	}
 	return "permission.updated"
+}
+
+func (s *Service) permissionNotificationSessionContext(sessionID, originSwarmID string) (sessionTitle, workspaceName, workspacePath, originLabel string) {
+	if s == nil || s.sessions == nil || strings.TrimSpace(sessionID) == "" {
+		return "", "", "", shortPermissionNotificationID(originSwarmID)
+	}
+	session, ok, err := s.sessions.GetSession(strings.TrimSpace(sessionID))
+	if err != nil || !ok {
+		return "", "", "", shortPermissionNotificationID(originSwarmID)
+	}
+	sessionTitle = strings.TrimSpace(session.Title)
+	workspacePath = strings.TrimSpace(session.WorkspacePath)
+	workspaceName = strings.TrimSpace(session.WorkspaceName)
+	if workspaceName == "" && workspacePath != "" {
+		workspaceName = filepath.Base(workspacePath)
+	}
+	originLabel = permissionNotificationOriginLabel(originSwarmID, session.Metadata)
+	return sessionTitle, workspaceName, workspacePath, originLabel
+}
+
+func permissionNotificationSessionLabel(title, workspaceName, sessionID string) string {
+	if title = strings.TrimSpace(title); title != "" {
+		return title
+	}
+	if workspaceName = strings.TrimSpace(workspaceName); workspaceName != "" {
+		return workspaceName + " " + shortPermissionNotificationID(sessionID)
+	}
+	return shortPermissionNotificationID(sessionID)
+}
+
+func permissionNotificationOriginLabel(originSwarmID string, metadata map[string]any) string {
+	for _, key := range []string{"swarm_route_label", "swarm_target_name", "target_display_name"} {
+		if value := strings.TrimSpace(fmt.Sprint(metadata[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return shortPermissionNotificationID(originSwarmID)
+}
+
+func shortPermissionNotificationID(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 8 {
+		return value
+	}
+	return value[:8]
 }
 
 func permissionNotificationTitleFromRecord(record pebblestore.PermissionRecord) string {

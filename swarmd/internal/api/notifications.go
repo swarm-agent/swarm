@@ -2,11 +2,14 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"swarm/packages/swarmd/internal/notification"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
@@ -16,17 +19,17 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimSpace(r.URL.Path)
 	switch path {
-	case "/v1/notifications":
+	case "/v1/alerts", "/v1/notifications":
 		s.handleNotificationList(w, r)
 		return
-	case "/v1/notifications/summary":
+	case "/v1/alerts/summary", "/v1/notifications/summary":
 		s.handleNotificationSummary(w, r)
 		return
-	case "/v1/notifications/clear":
+	case "/v1/alerts/clear", "/v1/notifications/clear":
 		s.handleNotificationClear(w, r)
 		return
 	default:
-		if strings.HasPrefix(path, "/v1/notifications/") {
+		if strings.HasPrefix(path, "/v1/alerts/") || strings.HasPrefix(path, "/v1/notifications/") {
 			s.handleNotificationUpdate(w, r)
 			return
 		}
@@ -48,7 +51,7 @@ func (s *Server) handleNotificationList(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "notifications": records})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "notifications": s.enrichNotificationRecords(records)})
 }
 
 func (s *Server) handleNotificationSummary(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +85,10 @@ func (s *Server) handleNotificationUpdate(w http.ResponseWriter, r *http.Request
 		methodNotAllowed(w)
 		return
 	}
-	notificationID := strings.Trim(strings.TrimPrefix(strings.TrimSpace(r.URL.Path), "/v1/notifications/"), "/")
+	notificationID := strings.TrimSpace(r.URL.Path)
+	notificationID = strings.TrimPrefix(notificationID, "/v1/alerts/")
+	notificationID = strings.TrimPrefix(notificationID, "/v1/notifications/")
+	notificationID = strings.Trim(notificationID, "/")
 	if notificationID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("notification id is required"))
 		return
@@ -115,7 +121,87 @@ func (s *Server) handleNotificationUpdate(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "notification": record, "summary": summary})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "notification": s.enrichNotificationRecord(record), "summary": summary})
+}
+
+func (s *Server) enrichNotificationRecords(records []pebblestore.NotificationRecord) []pebblestore.NotificationRecord {
+	if len(records) == 0 {
+		return records
+	}
+	out := make([]pebblestore.NotificationRecord, 0, len(records))
+	for _, record := range records {
+		out = append(out, s.enrichNotificationRecord(record))
+	}
+	return out
+}
+
+func (s *Server) enrichNotificationRecord(record pebblestore.NotificationRecord) pebblestore.NotificationRecord {
+	sessionID := strings.TrimSpace(record.SessionID)
+	if sessionID == "" || s.sessions == nil {
+		if record.SessionLabel == "" && sessionID != "" {
+			record.SessionLabel = shortNotificationID(sessionID)
+		}
+		return record
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		if record.SessionLabel == "" {
+			record.SessionLabel = shortNotificationID(sessionID)
+		}
+		return record
+	}
+	if record.SessionTitle == "" {
+		record.SessionTitle = strings.TrimSpace(session.Title)
+	}
+	if record.WorkspacePath == "" {
+		record.WorkspacePath = strings.TrimSpace(session.WorkspacePath)
+	}
+	if record.WorkspaceName == "" {
+		record.WorkspaceName = strings.TrimSpace(session.WorkspaceName)
+	}
+	if record.WorkspaceName == "" && record.WorkspacePath != "" {
+		record.WorkspaceName = filepath.Base(record.WorkspacePath)
+	}
+	if record.SessionLabel == "" {
+		record.SessionLabel = notificationSessionLabel(record.SessionTitle, record.WorkspaceName, sessionID)
+	}
+	if record.OriginLabel == "" {
+		record.OriginLabel = notificationOriginLabel(record, session.Metadata)
+	}
+	if record.ActionURL == "" && record.WorkspacePath != "" && sessionID != "" {
+		record.ActionURL = notification.NotificationActionURL(record.WorkspaceName, record.WorkspacePath, sessionID)
+	}
+	return record
+}
+
+func notificationSessionLabel(title, workspaceName, sessionID string) string {
+	if title = strings.TrimSpace(title); title != "" {
+		return title
+	}
+	if workspaceName = strings.TrimSpace(workspaceName); workspaceName != "" {
+		return workspaceName + " " + shortNotificationID(sessionID)
+	}
+	return shortNotificationID(sessionID)
+}
+
+func notificationOriginLabel(record pebblestore.NotificationRecord, metadata map[string]any) string {
+	for _, key := range []string{"swarm_route_label", "swarm_target_name", "target_display_name"} {
+		if value := strings.TrimSpace(fmt.Sprint(metadata[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	if value := strings.TrimSpace(record.OriginSwarmID); value != "" {
+		return shortNotificationID(value)
+	}
+	return ""
+}
+
+func shortNotificationID(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 8 {
+		return value
+	}
+	return value[:8]
 }
 
 func parseIntQuery(r *http.Request, key string, fallback int) int {

@@ -101,7 +101,9 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 	}
 	items := []ui.CommandSuggestion{
 		{Command: "/add-dir", Hint: "Open linked-directory flow in the workspace manager"},
+		{Command: "/alerts", Hint: "Open alerts / notifications (c clears all, Enter opens session)"},
 		{Command: "/agents", Hint: "Open agents manager modal", QuickTips: []string{"/agents reset", "/agents restore", "/agents use <name>", "/agents prompt <name> <text>", "/agents delete <name>"}},
+		{Command: "/notifications", Hint: "Alias for /alerts"},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
 		{Command: "/codex", Hint: "Show Codex gpt-5.4/gpt-5.5 runtime settings (Fast on/off)", QuickTips: []string{"/codex status", "/codex fast", "/fast"}},
 		{Command: "/commit", Hint: "Launch the memory agent in background to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
@@ -642,6 +644,7 @@ func (a *App) Run() error {
 			if a.route == "chat" && a.home != nil {
 				if a.home.HandleChatOverlayKey(e) {
 					a.consumeHomeOverlayActions()
+					a.consumeHomeActions()
 					dirty = true
 					continue
 				}
@@ -1907,7 +1910,8 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 }
 
 func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
-	if a.home.SessionsModalVisible() ||
+	if a.home.AlertsModalVisible() ||
+		a.home.SessionsModalVisible() ||
 		a.home.AuthModalVisible() ||
 		a.home.VaultModalVisible() ||
 		a.home.WorkspaceModalVisible() ||
@@ -2031,6 +2035,8 @@ func (a *App) executeCommand(raw string) {
 		a.home.SetStatus("exiting swarmtui")
 	case "sessions":
 		a.handleSessionsCommand(args)
+	case "alerts", "notifications":
+		a.handleAlertsCommand(args)
 	case "new":
 		a.handleNewCommand()
 	case "plan":
@@ -2283,6 +2289,83 @@ func (a *App) handleSessionsCommand(args []string) {
 		return
 	}
 	a.openHomeSessionsModal(query)
+}
+
+func (a *App) handleAlertsCommand(args []string) {
+	query := strings.TrimSpace(strings.Join(args, " "))
+	a.home.ClearCommandOverlay()
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	notifications, err := a.api.ListNotifications(ctx, 200, "")
+	if err != nil {
+		a.home.SetStatus(fmt.Sprintf("/alerts failed: %v", err))
+		return
+	}
+	items := alertModalItemsFromNotifications(notifications)
+	if !a.home.OpenAlertsModal(items, query) {
+		a.home.SetStatus("alerts unavailable while another modal is open")
+		return
+	}
+	a.setSwarmNotificationCount(unreadNotificationCount(notifications))
+}
+
+func (a *App) clearAlertsFromModal() {
+	if a == nil || a.api == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	deleted, err := a.api.ClearNotifications(ctx, "")
+	if err != nil {
+		a.home.SetStatus(fmt.Sprintf("clear alerts failed: %v", err))
+		return
+	}
+	a.home.SetAlertsModalItems(nil)
+	a.setSwarmNotificationCount(0)
+	a.home.SetStatus(fmt.Sprintf("cleared %d alerts", deleted))
+}
+
+func alertModalItemsFromNotifications(records []client.NotificationRecord) []ui.AlertModalItem {
+	items := make([]ui.AlertModalItem, 0, len(records))
+	for _, record := range records {
+		items = append(items, ui.AlertModalItem{
+			ID:            strings.TrimSpace(record.ID),
+			Title:         strings.TrimSpace(record.Title),
+			Body:          strings.TrimSpace(record.Body),
+			Status:        strings.TrimSpace(record.Status),
+			Severity:      strings.TrimSpace(record.Severity),
+			Category:      strings.TrimSpace(record.Category),
+			ToolName:      strings.TrimSpace(record.ToolName),
+			Requirement:   strings.TrimSpace(record.Requirement),
+			SessionID:     strings.TrimSpace(record.SessionID),
+			SessionTitle:  strings.TrimSpace(record.SessionTitle),
+			SessionLabel:  strings.TrimSpace(record.SessionLabel),
+			WorkspacePath: strings.TrimSpace(record.WorkspacePath),
+			WorkspaceName: strings.TrimSpace(record.WorkspaceName),
+			OriginLabel:   strings.TrimSpace(record.OriginLabel),
+			UpdatedAgo:    formatAgo(firstNonZeroInt64(record.UpdatedAt, record.CreatedAt)),
+		})
+	}
+	return items
+}
+
+func unreadNotificationCount(records []client.NotificationRecord) int {
+	count := 0
+	for _, record := range records {
+		if record.ReadAt <= 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func firstNonZeroInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (a *App) handleNewCommand() {
@@ -3809,6 +3892,18 @@ func (a *App) consumeHomeOverlayActions() {
 }
 
 func (a *App) consumeHomeActions() {
+	if a.route == "chat" && a.home != nil && a.home.AlertsModalVisible() {
+		for {
+			action, ok := a.home.PopHomeAction()
+			if !ok {
+				return
+			}
+			a.handleHomeAction(action)
+			if !a.home.AlertsModalVisible() {
+				return
+			}
+		}
+	}
 	if a.route != "home" || a.home == nil {
 		return
 	}
@@ -4206,7 +4301,7 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 	switch action.Kind {
 	case ui.HomeActionSetDefaultSessionMode:
 		a.applyDefaultNewSessionModeSetting(action.SessionMode)
-	case ui.HomeActionOpenSession:
+	case ui.HomeActionOpenSession, ui.HomeActionOpenAlertSession:
 		err := a.openExistingSession(model.SessionSummary{
 			ID:               strings.TrimSpace(action.SessionID),
 			WorkspacePath:    strings.TrimSpace(action.WorkspacePath),
@@ -4241,6 +4336,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.cycleThinkingLevel()
 	case ui.HomeActionCycleRoute:
 		a.cycleChatRoute()
+	case ui.HomeActionClearAlerts:
+		a.clearAlertsFromModal()
 	}
 }
 

@@ -17,6 +17,8 @@ const (
 	HomeActionCycleRoute            HomeActionKind = "cycle-route"
 	HomeActionSelectWorkspace       HomeActionKind = "select-workspace"
 	HomeActionSetDefaultSessionMode HomeActionKind = "set-default-session-mode"
+	HomeActionOpenAlertSession      HomeActionKind = "open-alert-session"
+	HomeActionClearAlerts           HomeActionKind = "clear-alerts"
 )
 
 type HomeAction struct {
@@ -29,6 +31,7 @@ type HomeAction struct {
 	WorktreeBranch   string
 	WorktreeEnabled  bool
 	WorktreeRootPath string
+	NotificationID   string
 }
 
 func (p *HomePage) PopHomeAction() (HomeAction, bool) {

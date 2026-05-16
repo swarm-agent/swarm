@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
-import { Bell, BellOff, CheckCheck, Clock3, Trash2 } from 'lucide-react'
+import { Bell, BellOff, CheckCheck, Clock3, ExternalLink, Trash2 } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
@@ -73,12 +72,33 @@ function connectionLabel(connectionState: DesktopConnectionState): string {
   }
 }
 
-function NotificationActionSlot({ show, children }: { show: boolean; children: ReactNode }) {
-  return (
-    <span className="inline-flex min-h-9 min-w-[112px] justify-start">
-      {show ? children : <span aria-hidden="true" className="h-9 w-full" />}
-    </span>
-  )
+function shortID(value: string | null): string {
+  if (!value) {
+    return ''
+  }
+  return value.length > 8 ? value.slice(0, 8) : value
+}
+
+function notificationSessionLabel(record: DesktopNotificationCenterRecord): string {
+  return record.sessionLabel || record.sessionTitle || (record.sessionId ? `Session ${shortID(record.sessionId)}` : '')
+}
+
+function notificationMeta(record: DesktopNotificationCenterRecord): string[] {
+  const meta: string[] = []
+  const origin = record.originLabel || (record.originSwarmID ? shortID(record.originSwarmID) : '')
+  if (origin) {
+    meta.push(`Origin: ${origin}`)
+  }
+  if (record.workspaceName || record.workspacePath) {
+    meta.push(`Workspace: ${record.workspaceName || record.workspacePath}`)
+  }
+  if (record.toolName) {
+    meta.push(`Tool: ${record.toolName}`)
+  }
+  if (record.requirement) {
+    meta.push(`Requirement: ${record.requirement}`)
+  }
+  return meta
 }
 
 export function DesktopNotificationsModal({
@@ -172,7 +192,10 @@ export function DesktopNotificationsModal({
                 <div>No notifications yet.</div>
               </Card>
             ) : (
-              notifications.map((record) => (
+              notifications.map((record) => {
+                const sessionLabel = notificationSessionLabel(record)
+                const meta = notificationMeta(record)
+                return (
                 <Card key={record.id} className={cn('space-y-3 p-4', !record.readAt && 'border-[var(--app-primary)]/40')}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1 space-y-1">
@@ -181,6 +204,7 @@ export function DesktopNotificationsModal({
                         <Badge tone={statusTone(record)}>{statusLabel(record)}</Badge>
                         {record.status === 'active' ? <Badge tone="live">Active</Badge> : <Badge tone="neutral">Resolved</Badge>}
                       </div>
+                      {sessionLabel ? <div className="truncate text-sm font-medium text-[var(--app-text)]">{sessionLabel}</div> : null}
                       <div className="text-sm text-[var(--app-text-muted)]">{record.body || 'No details provided.'}</div>
                     </div>
                     <div className="flex items-center gap-2 text-xs text-[var(--app-text-subtle)]">
@@ -191,31 +215,43 @@ export function DesktopNotificationsModal({
 
                   <div className="flex flex-wrap gap-2 text-xs text-[var(--app-text-muted)]">
                     <span>Category: {record.category}</span>
-                    {record.toolName ? <span>Tool: {record.toolName}</span> : null}
-                    {record.requirement ? <span>Requirement: {record.requirement}</span> : null}
-                    {record.originSwarmID ? <span>Origin: {record.originSwarmID}</span> : null}
-                    {record.sessionId ? <span>Session: {record.sessionId}</span> : null}
+                    {meta.map((item) => <span key={item}>{item}</span>)}
+                    {record.sessionId ? <span title={record.sessionId}>Session: {shortID(record.sessionId)}</span> : null}
                   </div>
 
-                  <div className="grid gap-2 text-xs text-[var(--app-text-muted)] sm:grid-cols-[112px_112px_112px]">
-                    <NotificationActionSlot show={!record.readAt}>
-                      <Button variant="secondary" size="sm" className="w-full justify-center" onClick={() => void onMarkRead(record)}>
-                        <CheckCheck size={14} /> Mark read
-                      </Button>
-                    </NotificationActionSlot>
-                    <NotificationActionSlot show={!record.ackedAt}>
-                      <Button variant="secondary" size="sm" className="w-full justify-center" onClick={() => void onAcknowledge(record)}>
-                        Acknowledge
-                      </Button>
-                    </NotificationActionSlot>
-                    <NotificationActionSlot show={!record.mutedAt}>
-                      <Button variant="ghost" size="sm" className="w-full justify-center" onClick={() => void onMute(record)}>
-                        Mute
-                      </Button>
-                    </NotificationActionSlot>
-                  </div>
+                  {record.status === 'active' || record.actionURL ? (
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-muted)]">
+                      {record.actionURL ? (
+                        <a
+                          className="inline-flex min-h-9 min-w-[160px] items-center justify-center gap-2 rounded-xl border border-[var(--app-primary)] px-3 text-sm font-medium text-[var(--app-primary)] transition hover:bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)] hover:text-[var(--app-primary-hover)]"
+                          href={record.actionURL}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Open session in a new tab"
+                        >
+                          <ExternalLink size={14} /> Go to session
+                        </a>
+                      ) : null}
+                      {record.status === 'active' && !record.readAt ? (
+                        <Button variant="secondary" size="sm" className="min-w-[112px] justify-center" onClick={() => void onMarkRead(record)}>
+                          <CheckCheck size={14} /> Mark read
+                        </Button>
+                      ) : null}
+                      {record.status === 'active' && !record.ackedAt ? (
+                        <Button variant="secondary" size="sm" className="min-w-[112px] justify-center" onClick={() => void onAcknowledge(record)}>
+                          Acknowledge
+                        </Button>
+                      ) : null}
+                      {record.status === 'active' && !record.mutedAt ? (
+                        <Button variant="ghost" size="sm" className="min-w-[112px] justify-center" onClick={() => void onMute(record)}>
+                          Mute
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </Card>
-              ))
+                )
+              })
             )}
 
             {!loading && notifications.length > 0 && activeNotifications.length === 0 ? (
