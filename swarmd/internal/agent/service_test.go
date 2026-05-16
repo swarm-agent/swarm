@@ -134,6 +134,51 @@ func TestServicePublishesCustomToolMutationEvents(t *testing.T) {
 	}
 }
 
+func TestIntegrationBuilderIsTransientAndHiddenFromNormalAgentAPIs(t *testing.T) {
+	svc, agents := newTestService(t)
+	if err := svc.EnsureDefaults(); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+
+	builder, err := svc.ResolveIntegrationBuilderAgent(IntegrationBuilderAgentID)
+	if err != nil {
+		t.Fatalf("ResolveIntegrationBuilderAgent() error = %v", err)
+	}
+	if builder.Name != IntegrationBuilderAgentID || builder.Mode != ModeSubagent || !builder.Enabled {
+		t.Fatalf("builder profile = %+v", builder)
+	}
+	if builder.Prompt != IntegrationBuilderPrompt() {
+		t.Fatalf("builder prompt mismatch")
+	}
+	if builder.ToolContract == nil {
+		t.Fatalf("builder missing tool contract")
+	}
+	if _, ok, err := agents.GetProfile(IntegrationBuilderAgentID); err != nil || ok {
+		t.Fatalf("builder persisted ok=%v err=%v, want hidden transient profile", ok, err)
+	}
+	if _, ok, err := svc.GetProfile(IntegrationBuilderAgentID); err != nil || ok {
+		t.Fatalf("service GetProfile builder ok=%v err=%v, want hidden", ok, err)
+	}
+	state, err := svc.ListState(2000)
+	if err != nil {
+		t.Fatalf("ListState() error = %v", err)
+	}
+	for _, profile := range state.Profiles {
+		if IsIntegrationBuilderAgentName(profile.Name) {
+			t.Fatalf("transient builder leaked into ListState: %+v", profile)
+		}
+	}
+	if _, err := svc.ResolveAgent(IntegrationBuilderAgentID); err == nil {
+		t.Fatalf("ResolveAgent(%q) unexpectedly resolved hidden builder", IntegrationBuilderAgentID)
+	}
+	if _, err := svc.ResolveSubagent(IntegrationBuilderAgentID); err == nil {
+		t.Fatalf("ResolveSubagent(%q) unexpectedly resolved hidden builder", IntegrationBuilderAgentID)
+	}
+	if _, _, _, err := svc.Upsert(UpsertInput{Name: IntegrationBuilderAgentID, Mode: ModeSubagent, Prompt: "persist me"}); err == nil {
+		t.Fatalf("Upsert(%q) unexpectedly succeeded", IntegrationBuilderAgentID)
+	}
+}
+
 func TestResolveAgentAllowsEnabledNonPrimaryProfiles(t *testing.T) {
 	svc, agents := newTestService(t)
 	if err := agents.PutProfile(pebblestore.AgentProfile{

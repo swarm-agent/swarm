@@ -16,7 +16,57 @@ const (
 	ModePrimary    = "primary"
 	ModeSubagent   = "subagent"
 	ModeBackground = "background"
+
+	IntegrationBuilderAgentID   = "integration-builder"
+	IntegrationBuilderAgentName = "Integration Builder"
 )
+
+func IntegrationBuilderPrompt() string {
+	return strings.TrimSpace("You are the Integration Builder agent. Help the user design, inspect, and refine scoped Swarm Integration Packs. Prefer CLI-first or local-API-first designs, keep secrets outside Swarm, and only use the `manage-integrations` tool plus web/repository read tools. Do not run shell commands, write files directly, or expose hidden tools. When an integration is selected, use its workspace context automatically and explain concise next steps, risks, and validation status.")
+}
+
+func IsIntegrationBuilderAgentName(name string) bool {
+	switch normalizeName(name) {
+	case IntegrationBuilderAgentID, "integration_builder", "integration builder":
+		return true
+	default:
+		return false
+	}
+}
+
+func IntegrationBuilderToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{
+		Tools: map[string]pebblestore.AgentToolConfig{
+			"read":                {Enabled: pebblestore.BoolPtr(true)},
+			"search":              {Enabled: pebblestore.BoolPtr(true)},
+			"list":                {Enabled: pebblestore.BoolPtr(true)},
+			"websearch":           {Enabled: pebblestore.BoolPtr(true)},
+			"webfetch":            {Enabled: pebblestore.BoolPtr(true)},
+			"manage-integrations": {Enabled: pebblestore.BoolPtr(true)},
+			"write":               {Enabled: pebblestore.BoolPtr(false)},
+			"edit":                {Enabled: pebblestore.BoolPtr(false)},
+			"bash":                {Enabled: pebblestore.BoolPtr(false)},
+			"task":                {Enabled: pebblestore.BoolPtr(false)},
+			"skill_use":           {Enabled: pebblestore.BoolPtr(false)},
+			"plan_manage":         {Enabled: pebblestore.BoolPtr(false)},
+			"ask_user":            {Enabled: pebblestore.BoolPtr(false)},
+			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(false)},
+		},
+	}
+}
+
+func IntegrationBuilderProfile() pebblestore.AgentProfile {
+	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name:                IntegrationBuilderAgentID,
+		Mode:                ModeSubagent,
+		Description:         "Hidden transient Integration Pack builder",
+		Prompt:              IntegrationBuilderPrompt(),
+		ExecutionSetting:    pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false),
+		ToolContract:        IntegrationBuilderToolContract(),
+		Enabled:             true,
+	})
+}
 
 type Service struct {
 	store   *pebblestore.AgentStore
@@ -651,6 +701,9 @@ func (s *Service) GetProfile(name string) (pebblestore.AgentProfile, bool, error
 	if name == "" {
 		return pebblestore.AgentProfile{}, false, errors.New("agent name is required")
 	}
+	if IsIntegrationBuilderAgentName(name) {
+		return pebblestore.AgentProfile{}, false, nil
+	}
 	return s.store.GetProfile(name)
 }
 
@@ -661,6 +714,9 @@ func (s *Service) Upsert(input UpsertInput) (pebblestore.AgentProfile, int64, *p
 	profile, err := normalizeUpsertInput(input)
 	if err != nil {
 		return pebblestore.AgentProfile{}, 0, nil, err
+	}
+	if IsIntegrationBuilderAgentName(profile.Name) {
+		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for the transient integration builder", profile.Name)
 	}
 	existing, ok, err := s.store.GetProfile(profile.Name)
 	if err != nil {
@@ -802,6 +858,9 @@ func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEn
 	name = normalizeName(name)
 	if name == "" {
 		return DeleteResult{}, 0, nil, errors.New("agent name is required")
+	}
+	if IsIntegrationBuilderAgentName(name) {
+		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is transient and cannot be deleted", name)
 	}
 	if name == "memory" {
 		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is protected and cannot be deleted", name)
@@ -1198,6 +1257,13 @@ func (s *Service) ResolveAgent(name string) (pebblestore.AgentProfile, error) {
 	return s.resolveProfile(name)
 }
 
+func (s *Service) ResolveIntegrationBuilderAgent(name string) (pebblestore.AgentProfile, error) {
+	if !IsIntegrationBuilderAgentName(name) {
+		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is not the integration builder", strings.TrimSpace(name))
+	}
+	return IntegrationBuilderProfile(), nil
+}
+
 func (s *Service) resolveProfile(name string) (pebblestore.AgentProfile, error) {
 	name = normalizeName(name)
 	if name == "" {
@@ -1211,6 +1277,9 @@ func (s *Service) resolveProfile(name string) (pebblestore.AgentProfile, error) 
 	}
 	if name == "" {
 		name = "swarm"
+	}
+	if IsIntegrationBuilderAgentName(name) {
+		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q not found", name)
 	}
 	profile, ok, err := s.store.GetProfile(name)
 	if err != nil {
@@ -1229,6 +1298,9 @@ func (s *Service) ResolveSubagent(nameOrPurpose string) (pebblestore.AgentProfil
 	key := normalizeName(nameOrPurpose)
 	if key == "" {
 		key = "explorer"
+	}
+	if IsIntegrationBuilderAgentName(key) {
+		return pebblestore.AgentProfile{}, fmt.Errorf("subagent %q not found", strings.TrimSpace(nameOrPurpose))
 	}
 
 	if profile, ok, err := s.store.GetProfile(key); err != nil {

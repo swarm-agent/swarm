@@ -126,6 +126,7 @@ type RunOptions struct {
 	ToolScope           *RunToolScope
 	CompiledPolicy      *permission.Policy
 	ExecutionContext    *RunExecutionContext
+	IntegrationFlow     bool
 }
 
 type RunResult struct {
@@ -771,7 +772,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return RunResult{}, err
 	}
 	targetedSubagentViaTask := targetKind == RunTargetKindSubagent && !options.AllowSubagent
-	agentProfile, err := s.resolveAgentProfile(agentName, targetKind)
+	agentProfile, err := s.resolveAgentProfile(agentName, targetKind, options.IntegrationFlow)
 	if err != nil {
 		return RunResult{}, err
 	}

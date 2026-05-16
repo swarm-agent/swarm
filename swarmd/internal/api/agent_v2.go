@@ -294,8 +294,16 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !ok {
-			writeError(w, http.StatusNotFound, errors.New("agent not found"))
-			return
+			if isIntegrationFlowRequest(r) {
+				profile, err = s.agents.ResolveIntegrationBuilderAgent(name)
+				if err != nil {
+					writeError(w, http.StatusNotFound, errors.New("agent not found"))
+					return
+				}
+			} else {
+				writeError(w, http.StatusNotFound, errors.New("agent not found"))
+				return
+			}
 		}
 		if s.runner == nil {
 			writeError(w, http.StatusInternalServerError, errors.New("run service not configured"))
@@ -474,6 +482,22 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		})
 	default:
 		methodNotAllowed(w)
+	}
+}
+
+func isIntegrationFlowRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("flow"))) {
+	case "integration", "integrations":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("integration_flow"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
 	}
 }
 

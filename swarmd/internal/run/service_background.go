@@ -57,6 +57,7 @@ type RunStartMeta struct {
 	RunID               string
 	OwnerTransport      string
 	CompiledPolicy      *permission.Policy
+	IntegrationFlow     bool
 }
 
 func (r RunRequest) Normalized() RunRequest {
@@ -102,6 +103,7 @@ func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 		ToolScope:           request.ToolScope,
 		CompiledPolicy:      meta.CompiledPolicy,
 		ExecutionContext:    request.ExecutionContext,
+		IntegrationFlow:     meta.IntegrationFlow,
 	}
 }
 

@@ -192,8 +192,17 @@ func normalizeThinkingLevel(value string) string {
 	}
 }
 
-func (s *Service) resolveAgentProfile(name, targetKind string) (pebblestore.AgentProfile, error) {
+func (s *Service) resolveAgentProfile(name, targetKind string, integrationFlow bool) (pebblestore.AgentProfile, error) {
 	targetKind = normalizeRunTargetKind(targetKind)
+	if integrationFlow || agentruntime.IsIntegrationBuilderAgentName(name) {
+		if !integrationFlow {
+			return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is reserved for integration flows", strings.TrimSpace(name))
+		}
+		if s.agents == nil {
+			return pebblestore.AgentProfile{}, fmt.Errorf("integration builder %q cannot resolve without agent service", strings.TrimSpace(name))
+		}
+		return s.agents.ResolveIntegrationBuilderAgent(name)
+	}
 	switch targetKind {
 	case "", RunTargetKindAgent:
 		return s.resolveAgent(name)

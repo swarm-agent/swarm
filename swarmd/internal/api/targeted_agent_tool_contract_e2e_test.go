@@ -274,6 +274,66 @@ func TestDefaultMemoryAgentOwnsCommitToolContract(t *testing.T) {
 	}
 }
 
+func TestIntegrationBuilderHiddenFromNormalAgentsAPIAndResolvableForIntegrationToolContract(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "integration-builder-v2-api.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	eventLog, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	modelSvc := model.NewService(pebblestore.NewModelStore(store), eventLog, nil)
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
+	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
+	if err := agentSvc.EnsureDefaults(); err != nil {
+		t.Fatalf("ensure default agents: %v", err)
+	}
+	providers := registry.New()
+	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, agentSvc, nil, eventLog)
+	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
+	handler := server.Handler()
+
+	var listResp struct {
+		OK    bool               `json:"ok"`
+		State agentruntime.State `json:"state"`
+	}
+	status := doJSONRequestLocal(t, handler, http.MethodGet, "/v2/agents", nil, &listResp)
+	if status != http.StatusOK {
+		t.Fatalf("GET /v2/agents status=%d", status)
+	}
+	for _, profile := range listResp.State.Profiles {
+		if agentruntime.IsIntegrationBuilderAgentName(profile.Name) {
+			t.Fatalf("integration builder leaked into normal agent list: %+v", profile)
+		}
+	}
+
+	var missing map[string]any
+	status = doJSONRequestLocal(t, handler, http.MethodGet, "/v2/agents/"+agentruntime.IntegrationBuilderAgentID, nil, &missing)
+	if status != http.StatusNotFound {
+		t.Fatalf("GET hidden builder status=%d, want 404", status)
+	}
+
+	resolved := resolvedToolContractResponse{}
+	status = doJSONRequestLocal(t, handler, http.MethodGet, "/v2/agents/"+agentruntime.IntegrationBuilderAgentID+"/tool-contract?flow=integration", nil, &resolved)
+	if status != http.StatusOK {
+		t.Fatalf("GET builder integration tool-contract status=%d", status)
+	}
+	for _, name := range []string{"read", "search", "list", "websearch", "webfetch", "manage_integrations"} {
+		if !requestResolvedToolEnabled(resolved, name) {
+			t.Fatalf("builder resolved tool %s disabled: %+v", name, resolved.Resolved.Tools[name])
+		}
+	}
+	for _, name := range []string{"bash", "write", "edit", "task", "skill_use", "plan_manage", "ask_user", "exit_plan_mode"} {
+		if requestResolvedToolEnabled(resolved, name) {
+			t.Fatalf("builder resolved tool %s enabled, want disabled", name)
+		}
+	}
+}
+
 func TestAgentAndCustomToolsManageableViaV2API(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-custom-tools-v2-api.pebble"))
 	if err != nil {
