@@ -2079,6 +2079,13 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			if resolved := s.resolveRemoteHostBackendURL(r.Context(), *remoteTarget); strings.TrimSpace(resolved) != "" {
 				hostBackendURL = strings.TrimSpace(resolved)
 			}
+			routeBackendURL := strings.TrimSpace(remoteTarget.BackendURL)
+			proxyTarget := *remoteTarget
+			if strings.EqualFold(strings.TrimSpace(remoteTarget.Kind), "mirrored") {
+				if backendURL := s.proxyBackendURLForTarget(*remoteTarget); backendURL != "" {
+					proxyTarget.BackendURL = backendURL
+				}
+			}
 			routeMetadata := map[string]any{
 				"swarm_route_id":          "swarm:" + strings.TrimSpace(remoteTarget.SwarmID) + ":" + strings.TrimSpace(req.RuntimeWorkspacePath),
 				"swarm_route_label":       firstNonEmpty(strings.TrimSpace(remoteTarget.Name), strings.TrimSpace(remoteTarget.SwarmID)),
@@ -2104,7 +2111,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			routeRecord := pebblestore.SessionRouteRecord{
 				SessionID:            session.ID,
 				ChildSwarmID:         strings.TrimSpace(remoteTarget.SwarmID),
-				ChildBackendURL:      strings.TrimSpace(remoteTarget.BackendURL),
+				ChildBackendURL:      routeBackendURL,
 				HostWorkspacePath:    strings.TrimSpace(req.HostWorkspacePath),
 				RuntimeWorkspacePath: strings.TrimSpace(req.RuntimeWorkspacePath),
 				CreatedAt:            session.CreatedAt,
@@ -2137,7 +2144,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				Session pebblestore.SessionSnapshot `json:"session"`
 				Warning string                      `json:"warning,omitempty"`
 			}
-			if err := s.postPeerJSONToSwarmTarget(r.Context(), *remoteTarget, "/v1/swarm/peer/sessions/open", peerSessionOpenRequest{
+			if err := s.postPeerJSONToSwarmTarget(r.Context(), proxyTarget, "/v1/swarm/peer/sessions/open", peerSessionOpenRequest{
 				SessionID: session.ID,
 				Request:   req,
 				Hosted:    childDescriptor,
