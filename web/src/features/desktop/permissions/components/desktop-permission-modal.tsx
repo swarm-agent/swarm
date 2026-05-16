@@ -179,7 +179,7 @@ function ModalShell({
           </div>
           <ModalCloseButton onClick={handleRequestClose} aria-label="Close permission modal" />
         </div>
-        <div className={cn('min-h-0 flex-1 overflow-auto px-3 py-3 sm:px-5 sm:py-4', bodyClassName)}>{children}</div>
+        <div className={cn('min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-3 sm:px-5 sm:py-4', bodyClassName)}>{children}</div>
         {footer}
       </DialogPanel>
     </Dialog>
@@ -202,6 +202,7 @@ function PermissionActionBar({
   noteLabel = 'Optional note',
   notePlaceholder = 'Optional note to send back with this action…',
   shortcutHint = 'Enter approves · Esc denies',
+  compactDesktop = false,
 }: {
   onApprove: () => void
   onDeny: () => void
@@ -218,6 +219,7 @@ function PermissionActionBar({
   noteLabel?: string
   notePlaceholder?: string
   shortcutHint?: string
+  compactDesktop?: boolean
 }) {
   const [noteOpen, setNoteOpen] = useState(false)
   const showPersistentGroup = showPersistentActions && (onAlwaysDeny || onAlwaysAllow)
@@ -225,71 +227,79 @@ function PermissionActionBar({
   const hasNote = Boolean(note?.trim())
 
   return (
-    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 pb-[max(0.5rem,var(--app-safe-area-bottom))] sm:px-5 sm:py-3 sm:pb-3">
-      {showNoteToggle ? (
-        <div className="mb-2">
+    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 pb-[max(0.5rem,var(--app-safe-area-bottom))] shadow-[0_-18px_36px_rgba(0,0,0,0.16)] sm:px-5 sm:py-3 sm:pb-3">
+      <div
+        className={cn(
+          'min-w-0',
+          compactDesktop && showNoteToggle ? 'sm:flex sm:items-end sm:gap-3' : null,
+        )}
+      >
+        {showNoteToggle ? (
+          <div className={cn('mb-2 min-w-0', compactDesktop ? 'sm:mb-0 sm:flex-1' : null)}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setNoteOpen((current) => !current)}
+              className="min-h-8 px-2.5 text-xs sm:hidden"
+              aria-expanded={noteOpen}
+            >
+              {noteOpen ? 'Hide note' : hasNote ? 'Edit note' : 'Add note'}
+            </Button>
+            <label className={cn('mt-2 gap-1.5 sm:mt-0 sm:grid', noteOpen ? 'grid' : 'hidden')}>
+              <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{noteLabel}</span>
+              <Textarea
+                value={note ?? ''}
+                onChange={(event) => onNoteChange?.(event.target.value)}
+                placeholder={notePlaceholder}
+                className="min-h-11 resize-none bg-[var(--app-bg-alt)] sm:min-h-[3.25rem]"
+                rows={2}
+              />
+            </label>
+          </div>
+        ) : null}
+        <div
+          className={cn(
+            'flex touch-manipulation flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end',
+            showNoteToggle && !compactDesktop ? (noteOpen ? 'pt-3 sm:pt-4' : 'sm:pt-4') : null,
+            compactDesktop ? 'sm:shrink-0 sm:flex-nowrap sm:self-end' : null,
+          )}
+        >
+          <Button
+            type="button"
+            variant="primary"
+            onClick={onApprove}
+            disabled={loading}
+            title="Enter"
+            className="order-1 w-full sm:order-4 sm:w-auto sm:min-w-36"
+          >
+            {approveLabel}
+          </Button>
           <Button
             type="button"
             variant="ghost"
-            size="sm"
-            onClick={() => setNoteOpen((current) => !current)}
-            className="min-h-8 px-2.5 text-xs sm:hidden"
-            aria-expanded={noteOpen}
+            onClick={onDeny}
+            disabled={loading}
+            title="Esc"
+            className="order-2 w-full sm:order-1 sm:w-auto"
           >
-            {noteOpen ? 'Hide note' : hasNote ? 'Edit note' : 'Add note'}
+            {denyLabel}
           </Button>
-          <label className={cn('mt-2 gap-1.5 sm:mt-0 sm:grid', noteOpen ? 'grid' : 'hidden')}>
-            <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{noteLabel}</span>
-            <Textarea
-              value={note ?? ''}
-              onChange={(event) => onNoteChange?.(event.target.value)}
-              placeholder={notePlaceholder}
-              className="min-h-11 resize-none bg-[var(--app-bg-alt)] sm:min-h-[3.5rem]"
-              rows={2}
-            />
-          </label>
+          {showPersistentGroup ? (
+            <div className="order-3 grid grid-cols-2 gap-2 sm:contents">
+              {onAlwaysDeny ? (
+                <Button type="button" variant="outline" onClick={onAlwaysDeny} disabled={loading} className="w-full sm:order-2 sm:w-auto">
+                  {alwaysDenyLabel}
+                </Button>
+              ) : null}
+              {onAlwaysAllow ? (
+                <Button type="button" variant="outline" onClick={onAlwaysAllow} disabled={loading} className="w-full sm:order-3 sm:w-auto">
+                  {alwaysAllowLabel}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-      ) : null}
-      <div
-        className={cn(
-          'flex touch-manipulation flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end',
-          showNoteToggle ? (noteOpen ? 'pt-3 sm:pt-4' : 'sm:pt-4') : null,
-        )}
-      >
-        <Button
-          type="button"
-          variant="primary"
-          onClick={onApprove}
-          disabled={loading}
-          title="Enter"
-          className="order-1 w-full sm:order-4 sm:w-auto"
-        >
-          {approveLabel}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={onDeny}
-          disabled={loading}
-          title="Esc"
-          className="order-2 w-full sm:order-1 sm:w-auto"
-        >
-          {denyLabel}
-        </Button>
-        {showPersistentGroup ? (
-          <div className="order-3 grid grid-cols-2 gap-2 sm:contents">
-            {onAlwaysDeny ? (
-              <Button type="button" variant="outline" onClick={onAlwaysDeny} disabled={loading} className="w-full sm:order-2 sm:w-auto">
-                {alwaysDenyLabel}
-              </Button>
-            ) : null}
-            {onAlwaysAllow ? (
-              <Button type="button" variant="outline" onClick={onAlwaysAllow} disabled={loading} className="w-full sm:order-3 sm:w-auto">
-                {alwaysAllowLabel}
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
       </div>
       {shortcutHint ? <div className="mt-1.5 hidden text-center text-[11px] text-[var(--app-text-subtle)] sm:block sm:text-right">{shortcutHint}</div> : null}
     </div>
@@ -1145,7 +1155,8 @@ function TaskLaunchModal({
       subtitle={payload.subtitle || 'Review the delegated task before spawning subagents'}
       pendingCount={pendingCount}
       sessionMode={sessionMode}
-      widthClassName="w-full sm:w-[min(1140px,calc(100vw-48px))]"
+      widthClassName="w-[min(100%,calc(100vw-12px))] sm:w-[min(980px,calc(100vw-48px))] xl:w-[min(1040px,calc(100vw-64px))]"
+      bodyClassName="px-3 py-3 sm:px-4 sm:py-4"
       footer={
         <PermissionActionBar
           loading={loading}
@@ -1155,6 +1166,9 @@ function TaskLaunchModal({
           note={note}
           onNoteChange={setNote}
           noteLabel="Message to agent"
+          notePlaceholder="Optional note for the agents before launch…"
+          shortcutHint="Enter launches · Esc denies"
+          compactDesktop
         />
       }
       onOpenChange={onOpenChange}
@@ -1168,47 +1182,57 @@ function TaskLaunchModal({
         void resolve('deny')
       }}
     >
-      <div className="grid gap-4">
-        <section className="rounded-2xl border border-[var(--app-border-accent)] bg-[var(--app-surface-subtle)] p-4">
+      <div className="grid min-w-0 gap-3 sm:gap-4">
+        <section className="min-w-0 rounded-2xl border border-[var(--app-border-accent)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
           <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-primary)]">Task</div>
-          <div className="rounded-xl bg-[var(--app-bg-alt)] p-3 text-sm leading-6 text-[var(--app-text)]">
-            <ChatMarkdown content={payload.description || 'Delegated task'} />
+          <div className="min-w-0 rounded-xl bg-[var(--app-bg-alt)] p-3 text-sm leading-6 text-[var(--app-text)]">
+            <ChatMarkdown className="[overflow-wrap:anywhere]" content={payload.description || 'Delegated task'} />
           </div>
         </section>
 
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-          <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Agent roles</div>
+        <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Agent roles</div>
+            <div className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text-subtle)]">
+              {payload.launchCount} launch{payload.launchCount === 1 ? '' : 'es'}
+            </div>
+          </div>
           {payload.launches.length > 0 ? (
-            <div className="overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-              <div className="grid grid-cols-[3.5rem_minmax(7rem,12rem)_1fr] gap-3 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-                <div>#</div>
-                <div>Agent</div>
-                <div>Assignment</div>
-              </div>
-              {payload.launches.map((launch) => (
-                <div key={`${launch.index}:${launch.requestedSubagentType}:${launch.resolvedAgentName}`} className="grid grid-cols-[3.5rem_minmax(7rem,12rem)_1fr] gap-3 border-b border-[var(--app-border)] px-3 py-3 text-sm last:border-b-0">
-                  <div className="font-medium text-[var(--app-text-subtle)]">#{launch.index}</div>
-                  <div className="break-words font-medium text-[var(--app-text)]">{launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'}</div>
-                  <div className="min-w-0 text-[var(--app-text)]">
-                    <ChatMarkdown content={launch.assignment || 'No launch-specific instructions.'} />
-                    {launch.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{launch.resolvedAgentError}</div> : null}
+            <div className="grid min-w-0 gap-2">
+              {payload.launches.map((launch) => {
+                const agentName = launch.resolvedAgentName || launch.requestedSubagentType || 'subagent'
+                return (
+                  <div
+                    key={`${launch.index}:${launch.requestedSubagentType}:${launch.resolvedAgentName}`}
+                    className="grid min-w-0 gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm sm:grid-cols-[minmax(8rem,12rem)_minmax(0,1fr)] sm:gap-4"
+                  >
+                    <div className="min-w-0">
+                      <div className="mb-2 inline-flex rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-semibold text-[var(--app-text-subtle)]">
+                        #{launch.index}
+                      </div>
+                      <div className="min-w-0 break-words font-semibold text-[var(--app-text)] [overflow-wrap:anywhere]">{agentName}</div>
+                      <div className="mt-1 text-xs text-[var(--app-text-subtle)]">{launch.childMode || payload.effectiveChildMode || 'subagent'}</div>
+                    </div>
+                    <div className="min-w-0 rounded-lg bg-[var(--app-bg-alt)] px-3 py-2 text-[var(--app-text)]">
+                      <ChatMarkdown className="text-sm leading-6 [overflow-wrap:anywhere]" content={launch.assignment || 'No launch-specific instructions.'} />
+                      {launch.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{launch.resolvedAgentError}</div> : null}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           ) : (
             <div className="rounded-xl bg-[var(--app-bg-alt)] px-3 py-2 text-sm text-[var(--app-text-muted)]">No launches were included in the manifest.</div>
           )}
         </section>
 
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+        <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
           <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Meta</div>
-          <div className="text-sm text-[var(--app-text-subtle)]">
-            launches {payload.launchCount}
-            <span className="px-2">·</span>
-            bash {payload.allowBash ? 'yes' : 'no'}
-            {payload.reportMaxChars > 0 ? <><span className="px-2">·</span>report {payload.reportMaxChars} chars</> : null}
-            {payload.resolvedAgentName ? <><span className="px-2">·</span>router {payload.resolvedAgentName}</> : null}
+          <div className="flex min-w-0 flex-wrap gap-2 text-xs text-[var(--app-text-subtle)] sm:text-sm">
+            <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1">launches {payload.launchCount}</span>
+            <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1">bash {payload.allowBash ? 'yes' : 'no'}</span>
+            {payload.reportMaxChars > 0 ? <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1">report {payload.reportMaxChars} chars</span> : null}
+            {payload.resolvedAgentName ? <span className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 [overflow-wrap:anywhere]">router {payload.resolvedAgentName}</span> : null}
           </div>
           {payload.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
         </section>
