@@ -12,9 +12,11 @@ import (
 	"testing"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	deployruntime "swarm/packages/swarmd/internal/deploy"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
@@ -72,6 +74,67 @@ func TestPeerMirrorSnapshotListsResourcesAndWatchReturnsBookmark(t *testing.T) {
 	}
 	if !watch.ResyncRequired {
 		t.Fatalf("watch resync_required = false, response=%#v", watch)
+	}
+}
+
+func TestMirroredManagedHostChildTargetIsSelectableViaOwnerHostGroup(t *testing.T) {
+	primary, primaryCleanup := newMirrorTestServer(t)
+	defer primaryCleanup()
+
+	primaryState := swarmStateWithManagedPeer("https://managed.example.test", "host-to-managed-token")
+	setReplicateFakeSwarmState(primary, primaryState)
+	primary.SetDeployContainerService(&fakeReplicateDeployService{lastMirroredDeployment: deployruntime.ContainerDeployment{
+		ID:              "managed-child-deployment",
+		Name:            "managed-child",
+		AttachStatus:    "attached",
+		HostSwarmID:     "managed-swarm-1",
+		ChildSwarmID:    "child-swarm-1",
+		ChildBackendURL: "http://127.0.0.1:7782",
+	}})
+	targetBytes, err := json.Marshal(swarmTarget{
+		SwarmID:      "child-swarm-1",
+		Name:         "managed-child",
+		Role:         "child",
+		Relationship: swarmruntime.RelationshipChild,
+		Kind:         "local",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   "http://127.0.0.1:7782",
+	})
+	if err != nil {
+		t.Fatalf("marshal mirrored target: %v", err)
+	}
+	if _, err := primary.swarmMirror.UpsertRemoteResource("managed-swarm-1", pebblestore.SwarmMirrorEventRecord{Sequence: 1, EventType: pebblestore.SwarmMirrorEventTypeUpsert, Kind: mirrorResourceTarget, ID: "child-swarm-1", Resource: targetBytes}); err != nil {
+		t.Fatalf("upsert mirrored target: %v", err)
+	}
+	if err := primary.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:          "child-swarm-1",
+		Name:             "managed-child",
+		Relationship:     "child",
+		BackendURL:       "http://127.0.0.1:7782",
+		OwnerHostSwarmID: "managed-swarm-1",
+	}); err != nil {
+		t.Fatalf("upsert runtime: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets?swarm_id=child-swarm-1", nil)
+	rec := httptest.NewRecorder()
+	primary.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("targets status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp swarmTargetsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode targets: %v", err)
+	}
+	foundCurrent := false
+	for _, target := range resp.Targets {
+		if target.SwarmID == "child-swarm-1" && target.Kind == "mirrored" && target.Current {
+			foundCurrent = true
+		}
+	}
+	if !foundCurrent {
+		t.Fatalf("targets = %#v, want current mirrored managed child", resp.Targets)
 	}
 }
 
@@ -151,6 +214,7 @@ func newMirrorTestServer(t *testing.T) (*Server, func()) {
 	server := NewServer("test", nil, nil, nil, nil, nil, workspaceSvc, nil, nil, nil, nil, nil, events, stream.NewHub(events))
 	server.SetStartupConfigPath(startupPath)
 	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
+	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, workspaceStore))
 	server.SetSwarmNodeStore(pebblestore.NewSwarmNodeStore(store))
 	server.SetSwarmDesktopTargetSelectionStore(pebblestore.NewSwarmDesktopTargetSelectionStore(store))
 	server.SetSwarmService(fakeReplicateSwarmService{

@@ -270,7 +270,7 @@ func (s *Server) swarmTargetsForRequestWithOptions(r *http.Request, strict bool)
 		markSwarmTargetSeen(seenTargets, deployment)
 	}
 	for _, mirrored := range mirroredTargets {
-		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, mirrored.SwarmID) {
+		if !swarmTargetInCurrentGroup(currentGroupSwarmIDs, mirrored.SwarmID) && !s.mirroredTargetOwnedByCurrentGroupHost(mirrored, currentGroupSwarmIDs) {
 			continue
 		}
 		if swarmTargetSeen(seenTargets, mirrored) {
@@ -400,6 +400,37 @@ func (s *Server) listDeployContainerTargets(r *http.Request) ([]swarmTarget, err
 		out = append(out, target)
 	}
 	return out, nil
+}
+
+func (s *Server) mirroredTargetOwnedByCurrentGroupHost(target swarmTarget, currentGroupSwarmIDs map[string]struct{}) bool {
+	if s == nil || s.topology == nil || len(currentGroupSwarmIDs) == 0 {
+		return false
+	}
+	swarmID := strings.TrimSpace(target.SwarmID)
+	if swarmID == "" {
+		return false
+	}
+	if runtimeRecord, _, err := s.topology.GetRuntime(swarmID); err == nil && swarmTargetInCurrentGroup(currentGroupSwarmIDs, runtimeRecord.OwnerHostSwarmID) {
+		return true
+	}
+	if _, err := s.topology.EnsureSnapshot(); err == nil {
+		if runtimeRecord, _, err := s.topology.GetRuntime(swarmID); err == nil && swarmTargetInCurrentGroup(currentGroupSwarmIDs, runtimeRecord.OwnerHostSwarmID) {
+			return true
+		}
+	}
+	if s.deployContainers == nil {
+		return false
+	}
+	deployments, err := s.deployContainers.List(context.Background())
+	if err != nil {
+		return false
+	}
+	for _, deployment := range deployments {
+		if strings.EqualFold(strings.TrimSpace(deployment.ChildSwarmID), swarmID) && swarmTargetInCurrentGroup(currentGroupSwarmIDs, deployment.HostSwarmID) {
+			return true
+		}
+	}
+	return false
 }
 
 func listTrustedPeerTargets(peers []swarmruntime.TrustedPeer) []swarmTarget {
