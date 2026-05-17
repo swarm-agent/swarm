@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Bell, Bot, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plug, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Pencil, Play, Plug, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -38,6 +38,7 @@ import {
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveLocalContainerUpdateWarningDismissal } from '../settings/swarm/mutations/save-local-container-update-warning-dismissal'
+import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
 import { localContainerUpdateWarningDismissed, normalizeSwarmSettings, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { fetchSwarmTargets, selectSwarmTarget, type SwarmTarget } from '../swarm/api/swarm-targets'
 import { fetchRemoteDeploySessions, type RemoteDeploySession } from '../swarm/api/deploy-container'
@@ -1461,6 +1462,10 @@ export function DesktopAppPage() {
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
   const [swarmMenu, setSwarmMenu] = useState<SwarmTargetMenuState>({ open: false })
+  const [editingSidebarSwarmName, setEditingSidebarSwarmName] = useState(false)
+  const [sidebarSwarmNameDraft, setSidebarSwarmNameDraft] = useState('')
+  const [sidebarSwarmNameSaving, setSidebarSwarmNameSaving] = useState(false)
+  const [sidebarSwarmNameError, setSidebarSwarmNameError] = useState<string | null>(null)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [flowMenuOpen, setFlowMenuOpen] = useState(false)
   const [flowBusyID, setFlowBusyID] = useState<string | null>(null)
@@ -1646,6 +1651,7 @@ export function DesktopAppPage() {
   const swarmTargets = swarmTargetsQuery.data?.targets ?? []
   const currentSwarmTarget = swarmTargets.find((target) => target.current) ?? null
   const swarmName = currentSwarmTarget?.name ?? swarmSettingsQuery.data?.name ?? 'Local'
+  const sidebarSwarmNameDirty = sidebarSwarmNameDraft.trim() !== swarmName.trim()
   const currentSwarmRoleLabel = swarmRoleLabel(currentSwarmTarget)
   const masterWorkspaceName = selectedWorkspace?.workspaceName ?? routeWorkspace?.workspaceName ?? fallbackWorkspaceNameFromPath(selectedWorkspacePath ?? '')
   const sortedSwarmTargets = useMemo(() => [...swarmTargets]
@@ -1715,6 +1721,12 @@ export function DesktopAppPage() {
     [swarmTargets],
   )
   const [swarmSwitchError, setSwarmSwitchError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!editingSidebarSwarmName) {
+      setSidebarSwarmNameDraft(swarmName)
+    }
+  }, [editingSidebarSwarmName, swarmName])
 
   useEffect(() => {
     debugLog('desktop-app-page', 'route-state', {
@@ -1843,6 +1855,53 @@ export function DesktopAppPage() {
   const closeGitPanel = useCallback(() => {
     setGitPanel(null)
   }, [])
+
+  const handleStartSidebarSwarmNameEdit = useCallback(() => {
+    setSidebarSwarmNameDraft(swarmName)
+    setSidebarSwarmNameError(null)
+    setEditingSidebarSwarmName(true)
+  }, [swarmName])
+
+  const handleCancelSidebarSwarmNameEdit = useCallback(() => {
+    setSidebarSwarmNameDraft(swarmName)
+    setSidebarSwarmNameError(null)
+    setEditingSidebarSwarmName(false)
+  }, [swarmName])
+
+  const handleSaveSidebarSwarmName = useCallback(async () => {
+    const normalized = sidebarSwarmNameDraft.trim()
+    if (!normalized) {
+      setSidebarSwarmNameError('Swarm name is required.')
+      return
+    }
+    if (!sidebarSwarmNameDirty) {
+      setEditingSidebarSwarmName(false)
+      setSidebarSwarmNameError(null)
+      return
+    }
+    setSidebarSwarmNameSaving(true)
+    setSidebarSwarmNameError(null)
+    try {
+      const savedSettings = await saveSwarmSettings({ name: normalized })
+      const savedName = savedSettings.name.trim() || normalized
+      setUISettings(savedSettings.raw)
+      setSidebarSwarmNameDraft(savedName)
+      queryClient.setQueryData(uiSettingsQueryKey(), savedSettings.raw)
+      queryClient.setQueryData(['ui-settings', 'swarm'], savedSettings)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['ui-settings'] }),
+        queryClient.invalidateQueries({ queryKey: ['ui-settings', 'swarm'] }),
+        queryClient.invalidateQueries({ queryKey: ['swarm-targets'] }),
+        queryClient.invalidateQueries({ queryKey: ['workspace-overview'] }),
+      ])
+      window.dispatchEvent(new CustomEvent('swarm:name-updated', { detail: { name: savedName } }))
+      setEditingSidebarSwarmName(false)
+    } catch (error) {
+      setSidebarSwarmNameError(error instanceof Error ? error.message : 'Failed to save swarm name')
+    } finally {
+      setSidebarSwarmNameSaving(false)
+    }
+  }, [queryClient, sidebarSwarmNameDirty, sidebarSwarmNameDraft])
 
   const handleSelectSwarmTarget = useCallback(async (target: SwarmTarget) => {
     setSwarmSwitchError(null)
@@ -2639,7 +2698,69 @@ export function DesktopAppPage() {
             <div className="grid h-[60px] items-center border-b border-[var(--app-border)] bg-[var(--app-surface)] pl-[13px] pr-0">
                 <div className={headerActionRowClass}>
                   <div className="min-w-0">
-                    <div className="truncate text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)]">{swarmName}</div>
+                    {editingSidebarSwarmName ? (
+                      <form
+                        className="grid min-w-0 gap-1"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          void handleSaveSidebarSwarmName()
+                        }}
+                      >
+                        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_24px_24px] items-center gap-1">
+                          <input
+                            value={sidebarSwarmNameDraft}
+                            onChange={(event) => setSidebarSwarmNameDraft(event.target.value)}
+                            disabled={sidebarSwarmNameSaving}
+                            autoFocus
+                            aria-label="Swarm name"
+                            className="h-7 min-w-0 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-inset)] px-2 text-[13px] font-semibold tracking-[-0.035em] text-[var(--app-text)] outline-none focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                          />
+                          <button
+                            type="submit"
+                            className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'text-[var(--app-success)]')}
+                            disabled={sidebarSwarmNameSaving || !sidebarSwarmNameDirty}
+                            aria-label="Save swarm name"
+                            title="Save swarm name"
+                          >
+                            {sidebarSwarmNameSaving ? <LoaderCircle size={14} strokeWidth={1.8} className="animate-spin" /> : <Check size={14} strokeWidth={1.8} />}
+                          </button>
+                          <button
+                            type="button"
+                            className={SIDEBAR_ACTION_BUTTON_CLASS}
+                            onClick={handleCancelSidebarSwarmNameEdit}
+                            disabled={sidebarSwarmNameSaving}
+                            aria-label="Cancel swarm name edit"
+                            title="Cancel"
+                          >
+                            <X size={14} strokeWidth={1.8} />
+                          </button>
+                        </div>
+                        {sidebarSwarmNameError ? (
+                          <div className="truncate text-[10px] leading-[1.1] text-[var(--app-error)]" title={sidebarSwarmNameError}>{sidebarSwarmNameError}</div>
+                        ) : null}
+                      </form>
+                    ) : (
+                      <div className="group/name grid min-w-0 grid-cols-[minmax(0,1fr)_24px] items-center gap-1">
+                        <button
+                          type="button"
+                          className="min-w-0 truncate rounded-md text-left text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)] hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                          onClick={handleStartSidebarSwarmNameEdit}
+                          aria-label="Edit swarm name"
+                          title="Edit swarm name"
+                        >
+                          {swarmName}
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'opacity-75 group-hover/name:opacity-100')}
+                          onClick={handleStartSidebarSwarmNameEdit}
+                          aria-label="Edit swarm name"
+                          title="Edit swarm name"
+                        >
+                          <Pencil size={13} strokeWidth={1.8} />
+                        </button>
+                      </div>
+                    )}
                     <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
                       <strong className="font-medium text-[var(--app-text-muted)]">{currentSwarmRoleLabel}</strong> · {masterWorkspaceName}
                     </div>

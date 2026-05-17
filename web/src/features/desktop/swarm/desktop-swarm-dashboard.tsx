@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { Boxes, CheckSquare, Link2, Monitor, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { Badge } from '../../../components/ui/badge'
@@ -127,8 +128,8 @@ function displayNameFromHost(host: string | null | undefined): string {
 }
 
 function defaultLocalSwarmName(status: DesktopOnboardingStatus | null, nodeName?: string): string {
-  return status?.config.swarmName.trim()
-    || String(nodeName ?? '').trim()
+  return String(nodeName ?? '').trim()
+    || status?.config.swarmName.trim()
     || displayNameFromHost(status?.network.tailscale.dnsName)
     || displayNameFromHost(hostnameFromURL(status?.network.tailscale.tailnetURL || status?.config.tailscaleURL))
     || 'Local swarm'
@@ -1038,6 +1039,7 @@ function DeleteSwarmsModal({
 }
 
 export function DesktopSwarmDashboard() {
+  const queryClient = useQueryClient()
 
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -1084,7 +1086,7 @@ export function DesktopSwarmDashboard() {
     setSwarmState(state)
     setOnboardingStatus(onboarding)
     setUISettings(nextUISettings)
-    setLocalNameDraft(onboarding.config.swarmName || state.node.name || '')
+    setLocalNameDraft(state.node.name || onboarding.config.swarmName || '')
   }
 
   const applySupplementalDashboardState = (
@@ -1278,6 +1280,16 @@ export function DesktopSwarmDashboard() {
   }, [])
 
   useEffect(() => {
+    const refreshLocalName = () => {
+      void refresh().catch((err) => {
+        setError((current) => current ?? (err instanceof Error ? err.message : 'Failed to refresh swarm name'))
+      })
+    }
+    window.addEventListener('swarm:name-updated', refreshLocalName)
+    return () => window.removeEventListener('swarm:name-updated', refreshLocalName)
+  }, [refresh])
+
+  useEffect(() => {
     let cancelled = false
     const refreshMirrors = () => {
       void Promise.all([fetchSwarmMirrorResources(), fetchSwarmTargets()])
@@ -1327,7 +1339,7 @@ export function DesktopSwarmDashboard() {
   const localContainersSectionLoading = localContainersLoading || deploymentsLoading
   const staleAttachedLoading = deploymentsLoading
   const localSwarmID = onboardingStatus?.config.swarmID || swarmState?.node.swarm_id || ''
-  const localSwarmName = onboardingStatus?.config.swarmName || swarmState?.node.name || 'Local swarm'
+  const localSwarmName = swarmState?.node.name || onboardingStatus?.config.swarmName || 'Local swarm'
   const localSwarmRole = onboardingStatus?.config.swarmRole || swarmState?.node.role || (onboardingStatus?.config.child ? 'child' : 'master')
   const localSwarmRoleLabel = swarmRoleLabel(localSwarmRole)
   const localIsManagedHost = String(localSwarmRole).trim().toLowerCase() === 'managed'
@@ -1810,13 +1822,28 @@ export function DesktopSwarmDashboard() {
     setError(null)
     setStatus(null)
     try {
+      const savedSettings = await saveSwarmSettings({ name: normalized })
+      const savedName = savedSettings.name.trim() || normalized
+      setUISettings(savedSettings.raw)
+      setSwarmState((current) => current
+        ? { ...current, node: { ...current.node, name: savedName } }
+        : current)
+      setOnboardingStatus((current) => current
+        ? { ...current, config: { ...current.config, swarmName: savedName } }
+        : current)
+      setLocalNameDraft(savedName)
+      const nextTargets = await fetchSwarmTargets()
+      setSwarmTargets(nextTargets.targets)
       await Promise.all([
-        saveSwarmSettings({ name: normalized }),
-        saveDesktopOnboarding({ swarmName: normalized }),
+        queryClient.invalidateQueries({ queryKey: ['ui-settings'] }),
+        queryClient.invalidateQueries({ queryKey: ['ui-settings', 'swarm'] }),
+        queryClient.invalidateQueries({ queryKey: ['swarm-targets'] }),
+        queryClient.invalidateQueries({ queryKey: ['workspace-overview'] }),
       ])
+      window.dispatchEvent(new CustomEvent('swarm:name-updated', { detail: { name: savedName } }))
       await refresh()
       setEditingLocalName(false)
-      setStatus(`Saved swarm name as ${normalized}.`)
+      setStatus(`Saved swarm name as ${savedName}.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save swarm name')
     } finally {

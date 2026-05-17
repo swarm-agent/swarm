@@ -17,7 +17,7 @@ test('withLocalContainerUpdateWarningDismissed preserves existing settings while
   const current: UISettingsWire = {
     theme: { active_id: 'crimson' },
     chat: { thinking_tags: false, default_new_session_mode: 'plan' },
-    swarm: { name: 'Desk' },
+    swarm: { name: 'Primary' },
     updates: { local_container_warning_dismissed: false },
   }
 

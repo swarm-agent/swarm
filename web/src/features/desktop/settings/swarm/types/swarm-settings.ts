@@ -62,6 +62,7 @@ export interface SwarmSettings {
   name: string
   defaultNewSessionMode: 'auto' | 'plan'
   updatedAt: number
+  raw: UISettingsWire
 }
 
 export function normalizeSwarmName(value: string): string {
@@ -170,9 +171,11 @@ function normalizeThemeLabel(themeId: string): string {
 }
 
 export function normalizeSwarmSettings(payload?: UISettingsWire | null): SwarmSettings {
+  const raw = payload ?? {}
   return {
-    name: normalizeSwarmName(typeof payload?.swarm?.name === 'string' ? payload.swarm.name : ''),
-    defaultNewSessionMode: normalizeDefaultNewSessionMode(payload?.chat?.default_new_session_mode),
-    updatedAt: typeof payload?.updated_at === 'number' ? payload.updated_at : 0,
+    name: normalizeSwarmName(typeof raw.swarm?.name === 'string' ? raw.swarm.name : ''),
+    defaultNewSessionMode: normalizeDefaultNewSessionMode(raw.chat?.default_new_session_mode),
+    updatedAt: typeof raw.updated_at === 'number' ? raw.updated_at : 0,
+    raw,
   }
 }

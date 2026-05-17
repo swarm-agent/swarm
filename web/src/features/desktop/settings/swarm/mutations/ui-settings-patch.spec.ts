@@ -33,12 +33,24 @@ test('saveThinkingTagsSetting sends only thinking_tags patch', async () => {
   }
 })
 
-test('saveSwarmSettings sends only swarm name patch', async () => {
+test('saveSwarmSettings sends only swarm name patch and returns refreshed target name', async () => {
   let capturedBody = ''
-  const restore = installFetchMock(async (_input, init) => {
+  const seenURLs: string[] = []
+  const restore = installFetchMock(async (input, init) => {
+    const url = String(input)
+    seenURLs.push(url)
+    if (url.includes('/v1/swarm/targets')) {
+      return new Response(JSON.stringify({
+        ok: true,
+        targets: [{ swarm_id: 'primary-swarm', name: 'Primary Renamed', role: 'master', relationship: 'self', kind: 'self', online: true, selectable: true, current: true }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     capturedBody = String(init?.body ?? '')
     return new Response(JSON.stringify({
-      swarm: { name: 'Desk' },
+      swarm: { name: 'Primary Renamed' },
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -46,11 +58,12 @@ test('saveSwarmSettings sends only swarm name patch', async () => {
   })
 
   try {
-    const response = await saveSwarmSettings({ name: 'Desk' })
-    assert.equal(response.name, 'Desk')
+    const response = await saveSwarmSettings({ name: 'Primary Renamed' })
+    assert.equal(response.name, 'Primary Renamed')
     assert.deepEqual(JSON.parse(capturedBody), {
-      swarm: { name: 'Desk' },
+      swarm: { name: 'Primary Renamed' },
     })
+    assert(seenURLs.some((url) => url.includes('/v1/swarm/targets')), 'expected immediate target refresh')
   } finally {
     restore()
   }

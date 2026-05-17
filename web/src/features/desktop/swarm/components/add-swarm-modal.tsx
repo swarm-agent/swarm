@@ -262,12 +262,17 @@ export function AddSwarmModal({
   )
   const hostSwarmID = group?.group.hostSwarmID || currentOnboardingStatus?.config.swarmID || ''
   const hostVaultEnabled = Boolean(vault.enabled)
+  const currentSelfTarget = useMemo(
+    () => targetHosts.find((target) => target.current || target.kind === 'self') ?? null,
+    [targetHosts],
+  )
   const managerName = useMemo(
     () =>
+      currentSelfTarget?.name?.trim() ||
       group?.members.find((member) => member.swarmID === hostSwarmID)?.name ||
       currentOnboardingStatus?.config.swarmName ||
       'This host',
-    [group, hostSwarmID],
+    [currentSelfTarget?.name, group, hostSwarmID, currentOnboardingStatus?.config.swarmName],
   )
   const managedTargetHosts = useMemo(
     () => managedHostTargets(targetHosts),
