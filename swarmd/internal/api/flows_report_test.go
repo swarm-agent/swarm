@@ -55,6 +55,60 @@ func TestPeerFlowReportStoresMirroredSummary(t *testing.T) {
 	}
 }
 
+func TestPeerFlowReportFromLocalChildForwardsThroughManagedHostToController(t *testing.T) {
+	managedHost, _ := newFlowPeerTestServer(t)
+	var got flowRunReportRequest
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != flowPeerReportPath {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "managed-host-swarm" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode report: %v", err)
+		}
+		writeJSON(w, http.StatusOK, flowRunReportResponse{OK: true, Summary: got.Summary})
+	}))
+	defer controller.Close()
+
+	startupPath := writeFlowReportStartupConfig(t, startupconfig.FileConfig{
+		Child:         false,
+		ParentSwarmID: "controller-swarm",
+		ManagedHostSync: startupconfig.ManagedHostSyncConfig{
+			OwnerSwarmID:   "controller-swarm",
+			HostAPIBaseURL: controller.URL,
+		},
+	})
+	managedHost.SetStartupConfigPath(startupPath)
+	managedHost.SetSwarmService(fakeRoutedSwarmService{
+		state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-host-swarm", Name: "managed-host", Role: "managed"}, Pairing: swarmruntime.PairingState{ParentSwarmID: "controller-swarm"}},
+		token: "peer-token",
+	})
+
+	report := flowRunReportRequest{Summary: pebblestore.FlowRunSummaryRecord{
+		RunID:         "run-local-child-report",
+		FlowID:        "flow-local-child-report",
+		Revision:      1,
+		TargetSwarmID: "local-child-swarm",
+		ScheduledAt:   time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+		StartedAt:     time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC),
+		FinishedAt:    time.Date(2025, 1, 2, 9, 2, 0, 0, time.UTC),
+		Status:        pebblestore.FlowRunStatusSuccess,
+		SessionID:     "session-local-child-report",
+	}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, flowPeerReportPath, jsonReader(t, report))
+	managedHost.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got.Summary.RunID != report.Summary.RunID || got.Summary.TargetSwarmID != "local-child-swarm" || got.Summary.Status != pebblestore.FlowRunStatusSuccess {
+		t.Fatalf("forwarded report = %+v", got.Summary)
+	}
+}
+
 func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	hostWorkspace := filepath.Join(t.TempDir(), "swarm-go")

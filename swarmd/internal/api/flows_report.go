@@ -65,7 +65,7 @@ func (s *Server) handlePeerFlowReport(w http.ResponseWriter, r *http.Request) {
 	peerSwarmID, _ := extractPeerAuth(r)
 	summary := req.Summary
 	payloadTargetSwarmID := strings.TrimSpace(summary.TargetSwarmID)
-	if strings.TrimSpace(peerSwarmID) != "" {
+	if payloadTargetSwarmID == "" && strings.TrimSpace(peerSwarmID) != "" {
 		summary.TargetSwarmID = strings.TrimSpace(peerSwarmID)
 	}
 	flowRouteDiagLog("controller_report_received",
@@ -87,6 +87,20 @@ func (s *Server) handlePeerFlowReport(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.mirrorFlowRunSessionFromReport(stored, req.Session, req.Messages); err != nil {
 		log.Printf("warning: mirror flow run session failed flow_id=%q run_id=%q session_id=%q: %v", strings.TrimSpace(stored.FlowID), strings.TrimSpace(stored.RunID), strings.TrimSpace(stored.SessionID), err)
+	}
+	forwarded, err := s.forwardPeerFlowReportToController(r.Context(), flowRunReportRequest{Summary: stored, Session: req.Session, Messages: req.Messages})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	if forwarded {
+		flowRouteDiagLog("peer_report_forwarded_to_controller",
+			"flow_id", stored.FlowID,
+			"run_id", stored.RunID,
+			"session_id", stored.SessionID,
+			"target_swarm_id", stored.TargetSwarmID,
+			"peer_header_swarm_id", peerSwarmID,
+		)
 	}
 	writeJSON(w, http.StatusOK, flowRunReportResponse{OK: true, Summary: stored})
 }
@@ -388,6 +402,32 @@ func (s *Server) reportFlowRunSummary(ctx context.Context, summary pebblestore.F
 		}
 		return s.mirrorFlowRunSessionFromReport(stored, nil, nil)
 	}
+	reportedSession, reportedMessages, err := s.flowRunReportSessionPayload(summary)
+	if err != nil {
+		return err
+	}
+	return s.sendFlowRunReportToController(ctx, cfg, flowRunReportRequest{Summary: summary, Session: reportedSession, Messages: reportedMessages})
+}
+
+func (s *Server) forwardPeerFlowReportToController(ctx context.Context, report flowRunReportRequest) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		return false, err
+	}
+	if flowShouldMirrorRunSummaryLocally(cfg) || !flowControllerReportEndpointConfigured(cfg) {
+		return false, nil
+	}
+	return true, s.sendFlowRunReportToController(ctx, cfg, report)
+}
+
+func (s *Server) sendFlowRunReportToController(ctx context.Context, cfg startupconfig.FileConfig, report flowRunReportRequest) error {
+	if s == nil {
+		return nil
+	}
+	summary := flowReportSummaryPayload(report.Summary)
 	target, err := s.resolveFlowControllerReportTarget(ctx, cfg)
 	if err != nil {
 		return err
@@ -395,11 +435,7 @@ func (s *Server) reportFlowRunSummary(ctx context.Context, summary pebblestore.F
 	if strings.TrimSpace(summary.TargetSwarmID) == "" {
 		summary.TargetSwarmID = target.LocalSwarmID
 	}
-	reportedSession, reportedMessages, err := s.flowRunReportSessionPayload(summary)
-	if err != nil {
-		return err
-	}
-	payload, err := json.Marshal(flowRunReportRequest{Summary: summary, Session: reportedSession, Messages: reportedMessages})
+	payload, err := json.Marshal(flowRunReportRequest{Summary: summary, Session: report.Session, Messages: report.Messages})
 	if err != nil {
 		return err
 	}
@@ -508,13 +544,17 @@ func flowShouldMirrorRunSummaryLocally(cfg startupconfig.FileConfig) bool {
 	if cfg.Child {
 		return false
 	}
-	if strings.TrimSpace(cfg.DeployContainer.LocalTransportSocketPath) != "" {
-		return false
-	}
-	if strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL) != "" || strings.TrimSpace(cfg.RemoteDeploy.HostAPIBaseURL) != "" {
+	if flowControllerReportEndpointConfigured(cfg) {
 		return false
 	}
 	return strings.TrimSpace(cfg.ParentSwarmID) == ""
+}
+
+func flowControllerReportEndpointConfigured(cfg startupconfig.FileConfig) bool {
+	return strings.TrimSpace(cfg.DeployContainer.LocalTransportSocketPath) != "" ||
+		strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL) != "" ||
+		strings.TrimSpace(cfg.RemoteDeploy.HostAPIBaseURL) != "" ||
+		strings.TrimSpace(cfg.ManagedHostSync.HostAPIBaseURL) != ""
 }
 
 func flowReportSummaryPayload(summary pebblestore.FlowRunSummaryRecord) pebblestore.FlowRunSummaryRecord {
