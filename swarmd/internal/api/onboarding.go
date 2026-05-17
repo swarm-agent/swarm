@@ -519,6 +519,11 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		}
 	}
 	if req.SwarmName != nil && !(req.SwarmMode != nil && !*req.SwarmMode) {
+		if s.swarm != nil {
+			if _, err := s.currentSwarmState(updated); err != nil {
+				return onboardingResponse{}, err
+			}
+		}
 		if err := s.persistUISwarmName(updated.SwarmName); err != nil {
 			return onboardingResponse{}, err
 		}

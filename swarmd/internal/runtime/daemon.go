@@ -401,6 +401,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetIntegrationService(integrationSvc)
 	apiServer.SetSwarmService(swarmSvc)
+	apiServer.SetSwarmStore(swarmStore)
 	apiServer.SetContainerProfileService(containerProfileSvc)
 	apiServer.SetLocalContainerService(localContainerSvc)
 	deployContainerSvc.SetHostCallbackURLResolver(localContainerSvc.HostCallbackURL)

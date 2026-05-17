@@ -144,6 +144,10 @@ type EnsureLocalStateInput struct {
 	Transports    []TransportSummary
 }
 
+type RenameLocalSwarmInput struct {
+	Name string
+}
+
 type CreateInviteInput struct {
 	PrimarySwarmID       string
 	PrimaryName          string
@@ -491,7 +495,9 @@ func (s *Service) EnsureLocalState(input EnsureLocalStateInput) (LocalState, err
 		swarmID = generated
 	}
 	nodeRecord.SwarmID = swarmID
-	nodeRecord.Name = strings.TrimSpace(input.Name)
+	if strings.TrimSpace(nodeRecord.Name) == "" {
+		nodeRecord.Name = strings.TrimSpace(input.Name)
+	}
 	nodeRecord.Role = strings.ToLower(strings.TrimSpace(input.Role))
 	publicKey := firstNonEmpty(strings.TrimSpace(input.PublicKey), strings.TrimSpace(nodeRecord.PublicKey))
 	privateKey := firstNonEmpty(strings.TrimSpace(input.PrivateKey), strings.TrimSpace(nodeRecord.PrivateKey))
@@ -556,6 +562,57 @@ func (s *Service) EnsureLocalState(input EnsureLocalStateInput) (LocalState, err
 	}
 	if currentGroupID == "" {
 		currentGroupID = storedCurrentGroupID
+	}
+	return LocalState{
+		Node:           toLocalNodeState(nodeRecord),
+		Pairing:        toPairingState(pairingRecord),
+		TrustedPeers:   toTrustedPeers(trustedPeers),
+		CurrentGroupID: currentGroupID,
+		Groups:         groups,
+	}, nil
+}
+
+func (s *Service) RenameLocalSwarm(input RenameLocalSwarmInput) (LocalState, error) {
+	if s == nil || s.store == nil {
+		return LocalState{}, errors.New("swarm service is not configured")
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return LocalState{}, errors.New("swarm name is required")
+	}
+	nodeRecord, ok, err := s.store.GetLocalNode()
+	if err != nil {
+		return LocalState{}, err
+	}
+	if !ok || strings.TrimSpace(nodeRecord.SwarmID) == "" {
+		return LocalState{}, errors.New("local swarm is not initialized")
+	}
+	nodeRecord.Name = name
+	nodeRecord, err = s.store.PutLocalNode(nodeRecord)
+	if err != nil {
+		return LocalState{}, err
+	}
+	pairingRecord, ok, err := s.store.GetLocalPairing()
+	if err != nil {
+		return LocalState{}, err
+	}
+	if !ok {
+		pairingRecord = pebblestore.SwarmLocalPairingRecord{}
+	}
+	trustedPeers, err := s.store.ListTrustedPeers(500)
+	if err != nil {
+		return LocalState{}, err
+	}
+	groups, currentGroupID, err := s.ListGroupsForSwarm(nodeRecord.SwarmID, 500)
+	if err != nil {
+		return LocalState{}, err
+	}
+	if currentGroupID == "" {
+		if storedCurrentGroupID, ok, err := s.store.GetCurrentGroupID(); err != nil {
+			return LocalState{}, err
+		} else if ok {
+			currentGroupID = storedCurrentGroupID
+		}
 	}
 	return LocalState{
 		Node:           toLocalNodeState(nodeRecord),

@@ -127,6 +127,7 @@ type Server struct {
 	desktopLocalSessions      *desktopLocalSessionManager
 	gitRealtime               *gitRealtimeManager
 	swarmTargetHealth         swarmTargetHealthCache
+	swarmStore                *pebblestore.SwarmStore
 	swarmMirror               *pebblestore.SwarmMirrorStore
 	mirrorSyncStarted         atomic.Bool
 	remoteCandidateProbePorts []int
@@ -386,6 +387,20 @@ func (s *Server) SetSwarmService(swarmSvc swarmService) {
 		return
 	}
 	s.swarm = swarmSvc
+}
+
+func (s *Server) SetSwarmStore(store *pebblestore.SwarmStore) {
+	if s == nil {
+		return
+	}
+	s.swarmStore = store
+}
+
+func (s *Server) swarmLocalNode() (pebblestore.SwarmLocalNodeRecord, bool, error) {
+	if s == nil || s.swarmStore == nil {
+		return pebblestore.SwarmLocalNodeRecord{}, false, nil
+	}
+	return s.swarmStore.GetLocalNode()
 }
 
 func (s *Server) SetContainerProfileService(containerProfileSvc containerProfileService) {
