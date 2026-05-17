@@ -262,11 +262,11 @@ func (s *Server) outgoingPeerAuthTokenForTarget(r *http.Request, target swarmTar
 }
 
 func (s *Server) peerAuthSwarmIDForTarget(target swarmTarget) string {
-	if hostSwarmID := strings.TrimSpace(target.HostSwarmID); hostSwarmID != "" {
+	if hostSwarmID := strings.TrimSpace(target.HostSwarmID); hostSwarmID != "" && !s.isLocalSwarmID(hostSwarmID) {
 		return hostSwarmID
 	}
 	if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
-		if hostSwarmID := s.ownerHostSwarmIDForTarget(target); hostSwarmID != "" {
+		if hostSwarmID := s.ownerHostSwarmIDForTarget(target); hostSwarmID != "" && !s.isLocalSwarmID(hostSwarmID) {
 			return hostSwarmID
 		}
 	}

@@ -464,6 +464,22 @@ func TestRoutedSessionGetUsesStoredRouteWithoutSwarmID(t *testing.T) {
 	}
 }
 
+func TestLocalChildTargetUsesChildPeerAuthWhenOwnerHostIsSelf(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	target := swarmTarget{
+		SwarmID:     "child-swarm",
+		Kind:        "local",
+		HostSwarmID: "host-swarm-id",
+		BackendURL:  "http://127.0.0.1:7782",
+	}
+	if peerSwarmID := server.peerAuthSwarmIDForTarget(target); peerSwarmID != "child-swarm" {
+		t.Fatalf("peer auth swarm id = %q, want child-swarm", peerSwarmID)
+	}
+	if token, err := server.outgoingPeerAuthTokenForTarget(nil, target); err != nil || token != "peer-token" {
+		t.Fatalf("target token = %q err=%v, want peer-token", token, err)
+	}
+}
+
 func TestRoutedSessionTargetUsesOwnerHostPeerAuth(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	sessionID := "session-routed"
