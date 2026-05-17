@@ -216,6 +216,37 @@ func TestRunGoBuildWithArgsPreservesExistingBinaryOnFailure(t *testing.T) {
 	}
 }
 
+func TestCopyFileReplacesReadOnlyExistingTargetWhenDirectoryIsWritable(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "source")
+	targetPath := filepath.Join(root, "target")
+	if err := os.WriteFile(sourcePath, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("old"), 0o444); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	if err := copyFile(sourcePath, targetPath); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(data) != "new" {
+		t.Fatalf("target content = %q, want new", string(data))
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("target mode = %04o, want 0644", got)
+	}
+}
+
 func TestSwitchRuntimeLinksReplacesLegacyTopLevelRuntimeDirs(t *testing.T) {
 	installRoot := t.TempDir()
 	targetRoot := filepath.Join(installRoot, "versions", "v1.2.3")

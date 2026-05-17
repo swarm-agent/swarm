@@ -2272,15 +2272,27 @@ func copyFile(sourcePath, targetPath string) error {
 		return err
 	}
 	defer sourceFile.Close()
-	targetFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	tmpFile, err := os.CreateTemp(filepath.Dir(targetPath), "."+filepath.Base(targetPath)+".tmp-")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(targetFile, sourceFile); err != nil {
-		_ = targetFile.Close()
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmpFile, sourceFile); err != nil {
+		_ = tmpFile.Close()
 		return err
 	}
-	return targetFile.Close()
+	if err := tmpFile.Chmod(info.Mode().Perm()); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		return err
+	}
+	return nil
 }
 
 func writeCompressedDesktopAssets(distDir string) error {
