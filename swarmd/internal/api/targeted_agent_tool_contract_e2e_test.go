@@ -469,6 +469,11 @@ type fakeAgentAPISwarmService struct {
 func (f fakeAgentAPISwarmService) EnsureLocalState(input swarmruntime.EnsureLocalStateInput) (swarmruntime.LocalState, error) {
 	return f.state, nil
 }
+func (f fakeAgentAPISwarmService) RenameLocalSwarm(input swarmruntime.RenameLocalSwarmInput) (swarmruntime.LocalState, error) {
+	state := f.state
+	state.Node.Name = strings.TrimSpace(input.Name)
+	return state, nil
+}
 func (f fakeAgentAPISwarmService) ListGroupsForSwarm(string, int) ([]swarmruntime.GroupState, string, error) {
 	return nil, "", nil
 }

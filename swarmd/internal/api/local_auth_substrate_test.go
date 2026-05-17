@@ -476,6 +476,12 @@ func (f fakeLocalAuthSwarmService) EnsureLocalState(swarmruntime.EnsureLocalStat
 	return f.state, nil
 }
 
+func (f fakeLocalAuthSwarmService) RenameLocalSwarm(input swarmruntime.RenameLocalSwarmInput) (swarmruntime.LocalState, error) {
+	state := f.state
+	state.Node.Name = strings.TrimSpace(input.Name)
+	return state, nil
+}
+
 func (f fakeLocalAuthSwarmService) ListGroupsForSwarm(string, int) ([]swarmruntime.GroupState, string, error) {
 	return nil, "", nil
 }

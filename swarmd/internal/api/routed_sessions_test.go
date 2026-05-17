@@ -1211,6 +1211,12 @@ func (f fakeRoutedSwarmService) EnsureLocalState(swarmruntime.EnsureLocalStateIn
 	return f.state, nil
 }
 
+func (f fakeRoutedSwarmService) RenameLocalSwarm(input swarmruntime.RenameLocalSwarmInput) (swarmruntime.LocalState, error) {
+	state := f.state
+	state.Node.Name = strings.TrimSpace(input.Name)
+	return state, nil
+}
+
 func (f fakeRoutedSwarmService) ListGroupsForSwarm(string, int) ([]swarmruntime.GroupState, string, error) {
 	return nil, "", nil
 }

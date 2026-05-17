@@ -144,6 +144,7 @@ type runService interface {
 
 type swarmService interface {
 	EnsureLocalState(input swarmruntime.EnsureLocalStateInput) (swarmruntime.LocalState, error)
+	RenameLocalSwarm(input swarmruntime.RenameLocalSwarmInput) (swarmruntime.LocalState, error)
 	ListGroupsForSwarm(swarmID string, limit int) ([]swarmruntime.GroupState, string, error)
 	UpsertGroup(input swarmruntime.UpsertGroupInput) (swarmruntime.Group, error)
 	DeleteGroup(groupID string) error
@@ -3391,6 +3392,18 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		settings := mergeUISettingsPatch(current, patch, raw)
+		if raw.Swarm != nil && raw.Swarm.Name != nil {
+			if s.swarm == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("swarm service is not configured"))
+				return
+			}
+			state, err := s.swarm.RenameLocalSwarm(swarmruntime.RenameLocalSwarmInput{Name: patch.Swarm.Name})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			settings.Swarm.Name = strings.TrimSpace(state.Node.Name)
+		}
 		saved, err := s.uiSettings.Set(settings)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)

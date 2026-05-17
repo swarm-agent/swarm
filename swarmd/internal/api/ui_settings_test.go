@@ -10,6 +10,7 @@ import (
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
+	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/uisettings"
 )
 
@@ -29,6 +30,12 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	settingsSvc.SetEventPublisher(events, hub.Publish)
 	server := NewServer("test", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
 	server.SetUISettingsService(settingsSvc)
+	swarmSvc := swarmruntime.NewService(pebblestore.NewSwarmStore(store), events, hub.Publish)
+	localState, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Local", Role: "master", SwarmMode: true})
+	if err != nil {
+		t.Fatalf("ensure local swarm: %v", err)
+	}
+	server.SetSwarmService(swarmSvc)
 
 	saved, err := settingsSvc.Set(uisettings.UISettings{
 		Chat: uisettings.ChatSettings{
@@ -49,7 +56,7 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 		t.Fatal("seed thinking tags = true, want false")
 	}
 
-	reqBody := []byte(`{"theme":{"active_id":"midnight"},"swarm":{"name":"Desk"}}`)
+	reqBody := []byte(`{"theme":{"active_id":"midnight"},"swarm":{"name":"Renamed Local"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -71,8 +78,18 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	if response.Theme.ActiveID != "midnight" {
 		t.Fatalf("theme active id = %q, want midnight", response.Theme.ActiveID)
 	}
-	if response.Swarm.Name != "Desk" {
-		t.Fatalf("swarm name = %q, want Desk", response.Swarm.Name)
+	if response.Swarm.Name != "Renamed Local" {
+		t.Fatalf("swarm name = %q, want Renamed Local", response.Swarm.Name)
+	}
+	renamedState, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{Name: "Startup Config Name", Role: "master", SwarmMode: true})
+	if err != nil {
+		t.Fatalf("reload local swarm: %v", err)
+	}
+	if renamedState.Node.Name != "Renamed Local" {
+		t.Fatalf("db swarm name = %q, want Renamed Local", renamedState.Node.Name)
+	}
+	if renamedState.Node.SwarmID != localState.Node.SwarmID {
+		t.Fatalf("swarm id changed on rename: got %q want %q", renamedState.Node.SwarmID, localState.Node.SwarmID)
 	}
 }
 
@@ -101,7 +118,7 @@ func TestUISettingsPostPreservesThemeWhenUpdatesOnlyPayloadSent(t *testing.T) {
 			DefaultNewSessionMode: "plan",
 			ToolStream:            uisettings.ChatToolStreamSettings{ShowAnchor: true, RunningSymbol: "•"},
 		},
-		Swarm: uisettings.SwarmSettings{Name: "Desk"},
+		Swarm: uisettings.SwarmSettings{Name: "Local"},
 	})
 	if err != nil {
 		t.Fatalf("seed settings: %v", err)
@@ -126,8 +143,8 @@ func TestUISettingsPostPreservesThemeWhenUpdatesOnlyPayloadSent(t *testing.T) {
 	if !response.Updates.LocalContainerWarningDismissed {
 		t.Fatal("local container warning dismissed = false, want true")
 	}
-	if response.Swarm.Name != "Desk" {
-		t.Fatalf("swarm name = %q, want Desk", response.Swarm.Name)
+	if response.Swarm.Name != "Local" {
+		t.Fatalf("swarm name = %q, want Local", response.Swarm.Name)
 	}
 	if response.Chat.DefaultNewSessionMode != "plan" || response.Chat.ThinkingTags {
 		t.Fatalf("chat settings were not preserved: %+v", response.Chat)
