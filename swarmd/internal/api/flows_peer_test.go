@@ -240,6 +240,94 @@ func TestFlowAssignmentDeliveryUsesResolvedRemoteTargetSwarm(t *testing.T) {
 	}
 }
 
+func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHost(t *testing.T) {
+	server, _ := newFlowPeerTestServer(t)
+	managedHostHits := 0
+	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != flowPeerApplyPath {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		managedHostHits++
+		if got := r.Header.Get(peerAuthSwarmIDHeader); got != "host-swarm-id" {
+			t.Fatalf("peer auth swarm id = %q, want host-swarm-id", got)
+		}
+		if got := r.Header.Get(peerAuthTokenHeader); got != "peer-token" {
+			t.Fatalf("peer auth token = %q, want peer-token", got)
+		}
+		var delivered flow.AssignmentCommand
+		if err := json.NewDecoder(r.Body).Decode(&delivered); err != nil {
+			t.Fatalf("decode managed host command: %v", err)
+		}
+		if delivered.Assignment.Target.SwarmID != "managed-child" || delivered.Assignment.Target.Kind != "mirrored" {
+			t.Fatalf("delivered target = %+v", delivered.Assignment.Target)
+		}
+		writeJSON(w, http.StatusOK, flowAssignmentApplyResponse{OK: true, Ack: flow.AssignmentAck{
+			CommandID:        delivered.CommandID,
+			FlowID:           delivered.FlowID,
+			AcceptedRevision: delivered.Revision,
+			Status:           flow.AssignmentAccepted,
+			TargetSwarmID:    "managed-child",
+			TargetClock:      time.Date(2025, 1, 2, 10, 0, 0, 0, time.UTC),
+		}})
+	}))
+	defer managedHost.Close()
+
+	server.SetSwarmService(fakeRoutedSwarmService{
+		state: swarmStateWithManagedPeer(managedHost.URL, "peer-token"),
+		token: "peer-token",
+	})
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:          "managed-child",
+		Name:             "managed child",
+		Relationship:     "child",
+		BackendURL:       "http://127.0.0.1:7782",
+		Status:           "attached",
+		OwnerHostSwarmID: "managed-swarm-1",
+	}); err != nil {
+		t.Fatalf("upsert child runtime: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:      "managed-swarm-1",
+		Name:         "managed host",
+		Relationship: "managed",
+		BackendURL:   managedHost.URL,
+		Status:       "online",
+	}); err != nil {
+		t.Fatalf("upsert managed runtime: %v", err)
+	}
+	targetBytes, err := json.Marshal(swarmTarget{
+		SwarmID:      "managed-child",
+		Name:         "managed child",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "managed-deployment",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   "http://127.0.0.1:7782",
+	})
+	if err != nil {
+		t.Fatalf("marshal mirrored target: %v", err)
+	}
+	if _, err := server.swarmMirror.UpsertRemoteResource("managed-swarm-1", pebblestore.SwarmMirrorEventRecord{Sequence: 1, EventType: pebblestore.SwarmMirrorEventTypeUpsert, Kind: mirrorResourceTarget, ID: "managed-child", Resource: targetBytes}); err != nil {
+		t.Fatalf("upsert mirrored target: %v", err)
+	}
+
+	assignment := testAPIFlowAssignment("flow-managed-child", 1)
+	assignment.Target = flow.TargetSelection{SwarmID: "managed-child", Kind: "mirrored", Name: "managed child", DeploymentID: "managed-deployment"}
+	command := testAPIFlowCommand("cmd-managed-child", assignment, flow.CommandInstall)
+	result, err := server.EnqueueAndDeliverFlowAssignmentCommand(t.Context(), command)
+	if err != nil {
+		t.Fatalf("enqueue deliver: %v", err)
+	}
+	if managedHostHits != 1 {
+		t.Fatalf("managed host hits = %d, want 1", managedHostHits)
+	}
+	if !result.Delivered || result.Ack.Status != flow.AssignmentAccepted || result.Ack.TargetSwarmID != "managed-child" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 func TestFlowAssignmentDeliveryTranslatesReplicatedWorkspacePath(t *testing.T) {
 	server, _ := newFlowPeerTestServer(t)
 	hostWorkspace := filepath.Join(t.TempDir(), "swarm-go")
@@ -443,6 +531,7 @@ func newFlowPeerTestServer(t *testing.T) (*Server, *pebblestore.FlowStore) {
 	modelSvc := modelruntime.NewService(modelStore, eventLog, nil)
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
 	server := NewServer("test", nil, agentSvc, modelSvc, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(eventLog))
+	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, pebblestore.NewWorkspaceStore(store)))
 	flows := pebblestore.NewFlowStore(store)
 	server.SetFlowStore(flows)

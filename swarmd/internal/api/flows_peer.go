@@ -290,9 +290,10 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 			PendingSync:     state.PendingSync,
 		}, nil
 	}
-	if strings.TrimSpace(target.BackendURL) == "" || !target.Online || !target.Selectable {
-		reason := firstNonEmpty(strings.TrimSpace(target.LastError), "target is not currently reachable")
-		flowdiaglog.Printf("controller_deliver_blocked_target_unreachable", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q target_kind=%q target_name=%q backend_url_present=%t online=%t selectable=%t reason=%q", record.FlowID, record.CommandID, record.Command.Action, s.flows.StorePath(), target.SwarmID, target.Kind, target.Name, strings.TrimSpace(target.BackendURL) != "", target.Online, target.Selectable, reason)
+	deliveryTarget := s.flowDeliveryTarget(target)
+	if strings.TrimSpace(deliveryTarget.BackendURL) == "" || !deliveryTarget.Online || !deliveryTarget.Selectable {
+		reason := firstNonEmpty(strings.TrimSpace(deliveryTarget.LastError), "target is not currently reachable")
+		flowdiaglog.Printf("controller_deliver_blocked_target_unreachable", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q target_kind=%q target_name=%q backend_url_present=%t online=%t selectable=%t reason=%q", record.FlowID, record.CommandID, record.Command.Action, s.flows.StorePath(), deliveryTarget.SwarmID, deliveryTarget.Kind, deliveryTarget.Name, strings.TrimSpace(deliveryTarget.BackendURL) != "", deliveryTarget.Online, deliveryTarget.Selectable, reason)
 		updated, state, err := s.markFlowAssignmentPending(record, flow.AssignmentTargetOffline, reason, nil)
 		return flowAssignmentDeliverResult{Outbox: updated, AssignmentState: state, PendingSync: true}, err
 	}
@@ -307,12 +308,14 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 		"target_kind", target.Kind,
 		"target_name", target.Name,
 		"target_backend_url_present", strings.TrimSpace(target.BackendURL) != "",
+		"delivery_backend_url_present", strings.TrimSpace(deliveryTarget.BackendURL) != "",
+		"delivery_host_swarm_id", deliveryTarget.HostSwarmID,
 	)
 	var resp flowAssignmentApplyResponse
-	flowdiaglog.Printf("controller_http_post_start", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q target_kind=%q target_name=%q endpoint=%q accepted_key_expected_on_child=%q", record.FlowID, record.CommandID, record.Command.Action, s.flows.StorePath(), target.SwarmID, target.Kind, target.Name, strings.TrimRight(strings.TrimSpace(target.BackendURL), "/")+flowPeerApplyPath, pebblestore.KeyFlowTargetAccepted(record.FlowID))
-	deliverErr := s.postPeerJSONToSwarmTarget(ctx, target, flowPeerApplyPath, record.Command, &resp)
+	flowdiaglog.Printf("controller_http_post_start", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q target_kind=%q target_name=%q delivery_host_swarm_id=%q endpoint=%q accepted_key_expected_on_child=%q", record.FlowID, record.CommandID, record.Command.Action, s.flows.StorePath(), target.SwarmID, target.Kind, target.Name, deliveryTarget.HostSwarmID, strings.TrimRight(strings.TrimSpace(deliveryTarget.BackendURL), "/")+flowPeerApplyPath, pebblestore.KeyFlowTargetAccepted(record.FlowID))
+	deliverErr := s.postPeerJSONToSwarmTarget(ctx, deliveryTarget, flowPeerApplyPath, record.Command, &resp)
 	if deliverErr != nil {
-		flowdiaglog.Printf("controller_http_post_failed", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q endpoint=%q err=%q", record.FlowID, record.CommandID, record.Command.Action, s.flows.StorePath(), target.SwarmID, strings.TrimRight(strings.TrimSpace(target.BackendURL), "/")+flowPeerApplyPath, deliverErr.Error())
+		flowdiaglog.Printf("controller_http_post_failed", "flow_id=%q command_id=%q action=%q controller_db_path=%q target_swarm_id=%q endpoint=%q err=%q", record.FlowID, record.CommandID, record.Command.Action, s.flows.StorePath(), target.SwarmID, strings.TrimRight(strings.TrimSpace(deliveryTarget.BackendURL), "/")+flowPeerApplyPath, deliverErr.Error())
 		updated, state, updateErr := s.markFlowAssignmentPending(record, flow.AssignmentTargetOffline, deliverErr.Error(), nil)
 		if updateErr != nil {
 			return flowAssignmentDeliverResult{}, updateErr
@@ -342,6 +345,23 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 		Delivered:       ack.Status == flow.AssignmentAccepted || ack.Status == flow.AssignmentDuplicate,
 		PendingSync:     state.PendingSync,
 	}, nil
+}
+
+func (s *Server) flowDeliveryTarget(target swarmTarget) swarmTarget {
+	if s == nil {
+		return target
+	}
+	if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") || strings.TrimSpace(target.HostSwarmID) != "" {
+		if backendURL := s.proxyBackendURLForTarget(target); strings.TrimSpace(backendURL) != "" && !sameBackendURL(backendURL, target.BackendURL) {
+			deliveryTarget := target
+			deliveryTarget.BackendURL = strings.TrimSpace(backendURL)
+			if strings.TrimSpace(deliveryTarget.HostSwarmID) == "" {
+				deliveryTarget.HostSwarmID = s.ownerHostSwarmIDForTarget(target)
+			}
+			return deliveryTarget
+		}
+	}
+	return target
 }
 
 func validateFlowAssignmentApplyResponse(record pebblestore.FlowOutboxCommandRecord, resp flowAssignmentApplyResponse) (flow.AssignmentAck, error) {
