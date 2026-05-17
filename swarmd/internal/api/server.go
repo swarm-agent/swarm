@@ -2145,6 +2145,28 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
+			if s.topology != nil {
+				if topologyRoute, ok, err := s.topology.GetSessionRoute(session.ID); err != nil {
+					if cleanupErr := s.rollbackHostedSessionCreate(session.ID); cleanupErr != nil {
+						log.Printf("hosted session create rollback failed session_id=%q err=%v", session.ID, cleanupErr)
+					}
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				} else if ok {
+					routeRecord = pebblestore.SessionRouteRecord{
+						SessionID:            topologyRoute.SessionID,
+						ChildSwarmID:         topologyRoute.RuntimeSwarmID,
+						ChildBackendURL:      topologyRoute.BackendURL,
+						HostSwarmID:          topologyRoute.HostSwarmID,
+						HostContainerID:      topologyRoute.HostContainerID,
+						HostWorkspacePath:    topologyRoute.HostWorkspacePath,
+						RuntimeWorkspacePath: topologyRoute.RuntimeWorkspacePath,
+						WorkspaceBindingID:   topologyRoute.WorkspaceBindingID,
+						CreatedAt:            topologyRoute.CreatedAt,
+						UpdatedAt:            topologyRoute.UpdatedAt,
+					}
+				}
+			}
 			childDescriptor := sessionruntime.HostedSessionDescriptor{
 				HostSwarmID:          strings.TrimSpace(state.Node.SwarmID),
 				HostBackendURL:       hostBackendURL,
