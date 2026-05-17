@@ -66,6 +66,9 @@ func (s *Server) handlePeerFlowApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if s.proxyPeerFlowApplyToLocalChild(w, r, command, peerSwarmID) {
+		return
+	}
 	targetSwarmID := s.flowPeerApplyTargetSwarmID(command)
 	flowRouteDiagLog("peer_apply_received",
 		"peer_header_swarm_id", peerSwarmID,
@@ -345,6 +348,68 @@ func (s *Server) deliverFlowAssignmentOutboxCommand(ctx context.Context, record 
 		Delivered:       ack.Status == flow.AssignmentAccepted || ack.Status == flow.AssignmentDuplicate,
 		PendingSync:     state.PendingSync,
 	}, nil
+}
+
+func (s *Server) proxyPeerFlowApplyToLocalChild(w http.ResponseWriter, r *http.Request, command flow.AssignmentCommand, peerSwarmID string) bool {
+	if s == nil || r == nil || strings.EqualFold(strings.TrimSpace(peerSwarmID), "") {
+		return false
+	}
+	selection := normalizeFlowTargetSelection(command.Assignment.Target)
+	if strings.TrimSpace(selection.SwarmID) == "" || !strings.EqualFold(strings.TrimSpace(selection.Kind), "mirrored") {
+		return false
+	}
+	target, ok := s.localFlowChildTargetForMirroredApply(selection)
+	if !ok {
+		return false
+	}
+	flowRouteDiagLog("peer_apply_proxy_to_local_child",
+		"peer_header_swarm_id", peerSwarmID,
+		"flow_id", command.FlowID,
+		"command_id", command.CommandID,
+		"action", command.Action,
+		"requested_target_swarm_id", selection.SwarmID,
+		"local_child_swarm_id", target.SwarmID,
+		"local_child_backend_url_present", strings.TrimSpace(target.BackendURL) != "",
+	)
+	var resp flowAssignmentApplyResponse
+	if err := s.postPeerJSONToSwarmTarget(r.Context(), target, flowPeerApplyPath, command, &resp); err != nil {
+		flowdiaglog.Printf("peer_apply_proxy_to_local_child_failed", "flow_id=%q command_id=%q peer_header_swarm_id=%q requested_target_swarm_id=%q local_child_swarm_id=%q err=%q", command.FlowID, command.CommandID, peerSwarmID, selection.SwarmID, target.SwarmID, err.Error())
+		writeError(w, http.StatusBadGateway, err)
+		return true
+	}
+	writeJSON(w, http.StatusOK, resp)
+	return true
+}
+
+func (s *Server) localFlowChildTargetForMirroredApply(selection flow.TargetSelection) (swarmTarget, bool) {
+	if s == nil || s.deployContainers == nil {
+		return swarmTarget{}, false
+	}
+	items, err := s.deployContainers.List(context.Background())
+	if err != nil {
+		return swarmTarget{}, false
+	}
+	deploymentID := strings.TrimSpace(selection.DeploymentID)
+	name := strings.TrimSpace(selection.Name)
+	for _, item := range items {
+		if !strings.EqualFold(strings.TrimSpace(item.AttachStatus), "attached") {
+			continue
+		}
+		if strings.TrimSpace(item.ChildBackendURL) == "" || strings.TrimSpace(item.ChildSwarmID) == "" {
+			continue
+		}
+		if deploymentID != "" && !strings.EqualFold(strings.TrimSpace(item.ID), deploymentID) && !strings.EqualFold(strings.TrimSpace(item.ContainerName), deploymentID) {
+			continue
+		}
+		if deploymentID == "" && name != "" && !strings.EqualFold(strings.TrimSpace(item.Name), name) && !strings.EqualFold(strings.TrimSpace(item.ContainerName), name) && !strings.EqualFold(strings.TrimSpace(item.ChildDisplayName), name) {
+			continue
+		}
+		if deploymentID == "" && name == "" {
+			continue
+		}
+		return mapDeployContainerTarget(item)
+	}
+	return swarmTarget{}, false
 }
 
 func (s *Server) flowDeliveryTarget(target swarmTarget) swarmTarget {
