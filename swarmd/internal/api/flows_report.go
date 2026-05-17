@@ -456,7 +456,11 @@ func (s *Server) resolveFlowControllerReportTarget(ctx context.Context, cfg star
 			LocalTransport: true,
 		}, nil
 	}
-	baseURL := firstNonEmpty(strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL), strings.TrimSpace(cfg.RemoteDeploy.HostAPIBaseURL))
+	baseURL := firstNonEmpty(
+		strings.TrimSpace(cfg.DeployContainer.HostAPIBaseURL),
+		strings.TrimSpace(cfg.RemoteDeploy.HostAPIBaseURL),
+		strings.TrimSpace(cfg.ManagedHostSync.HostAPIBaseURL),
+	)
 	if baseURL == "" {
 		return flowControllerReportTarget{}, errors.New("flow controller report endpoint is not configured")
 	}

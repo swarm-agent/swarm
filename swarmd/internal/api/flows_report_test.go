@@ -439,6 +439,52 @@ func TestFlowRunSummaryReportingIsNonFatalWhenControllerUnreachable(t *testing.T
 	}
 }
 
+func TestFlowRunSummaryReportsFromManagedHostUsingManagedSyncController(t *testing.T) {
+	server, _ := newFlowPeerTestServer(t)
+	var got flowRunReportRequest
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != flowPeerReportPath {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "managed-host-swarm" || r.Header.Get(peerAuthTokenHeader) != "peer-token" {
+			t.Fatalf("peer auth headers = %q/%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode report: %v", err)
+		}
+		writeJSON(w, http.StatusOK, flowRunReportResponse{OK: true, Summary: got.Summary})
+	}))
+	defer controller.Close()
+
+	startupPath := writeFlowReportStartupConfig(t, startupconfig.FileConfig{
+		Child:         true,
+		ParentSwarmID: "controller-swarm",
+		ManagedHostSync: startupconfig.ManagedHostSyncConfig{
+			OwnerSwarmID:   "controller-swarm",
+			HostAPIBaseURL: controller.URL,
+		},
+	})
+	server.SetStartupConfigPath(startupPath)
+	server.SetSwarmService(fakeRoutedSwarmService{
+		state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "managed-host-swarm", Name: "managed-host", Role: "managed"}, Pairing: swarmruntime.PairingState{ParentSwarmID: "controller-swarm"}},
+		token: "peer-token",
+	})
+
+	if err := server.putFlowRunSummary(flow.RunStart{
+		RunID:       "run-managed-host-report",
+		FlowID:      "flow-managed-host-report",
+		Revision:    1,
+		ScheduledAt: time.Date(2025, 1, 2, 9, 0, 0, 0, time.UTC),
+		Status:      pebblestore.FlowRunStatusRunning,
+	}, time.Date(2025, 1, 2, 9, 1, 0, 0, time.UTC), time.Time{}, ""); err != nil {
+		t.Fatalf("put/report managed host summary: %v", err)
+	}
+	if got.Summary.RunID != "run-managed-host-report" || got.Summary.TargetSwarmID != "managed-host-swarm" || got.Summary.Status != pebblestore.FlowRunStatusRunning {
+		t.Fatalf("got report = %+v", got.Summary)
+	}
+}
+
 func TestFlowRunSummaryReportsRunningSessionToController(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	localSession := pebblestore.SessionSnapshot{
@@ -610,6 +656,7 @@ func writeFlowReportStartupConfig(t *testing.T, overrides startupconfig.FileConf
 	cfg.AdvertisePort = 7781
 	cfg.Child = overrides.Child
 	cfg.ParentSwarmID = overrides.ParentSwarmID
+	cfg.ManagedHostSync = overrides.ManagedHostSync
 	cfg.DeployContainer = overrides.DeployContainer
 	cfg.RemoteDeploy = overrides.RemoteDeploy
 	if err := startupconfig.Write(cfg); err != nil {
