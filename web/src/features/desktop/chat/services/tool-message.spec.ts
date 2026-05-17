@@ -314,6 +314,39 @@ function testManageTodosAgentListShowsOnlyCurrentSession(): void {
   );
 }
 
+function testManageTodosAgentListPrioritizesActiveOpenItems(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage_todos",
+    callId: "call_todos_5",
+    outputText: JSON.stringify({
+      tool: "manage_todos",
+      action: "list",
+      owner_kind: "agent",
+      session_id: "session-1",
+      items: [
+        { id: "todo_done_1", text: "Completed one", done: true, session_id: "session-1" },
+        { id: "todo_done_2", text: "Completed two", done: true, session_id: "session-1" },
+        { id: "todo_done_3", text: "Completed three", done: true, session_id: "session-1" },
+        { id: "todo_active", text: "Actually active item", done: false, in_progress: true, session_id: "session-1" },
+        { id: "todo_open", text: "Open next item", done: false, session_id: "session-1" },
+      ],
+    }),
+  });
+  assert(Boolean(message), "expected structured manage_todos agent list message");
+  assert(
+    message?.previewLines.some((line) => line.includes("> [ ] Actually active item")) === true,
+    `missing active agent todo: ${message?.previewLines.join(" | ")}`,
+  );
+  assert(
+    message?.previewLines.some((line) => line.includes("[ ] Open next item")) === true,
+    `missing open agent todo: ${message?.previewLines.join(" | ")}`,
+  );
+  assert(
+    message?.previewLines.some((line) => line.includes("Completed one") || line.includes("Completed two") || line.includes("Completed three")) === false,
+    `completed todos should not crowd out active todos: ${message?.previewLines.join(" | ")}`,
+  );
+}
+
 function testEditToolPreservesFullExpandedDiff(): void {
   const longOld = 'A'.repeat(50)
   const longNew = 'B'.repeat(50)
@@ -556,6 +589,7 @@ function main(): void {
   testManageTodosBatchShowsOnlyChangedItems();
   testManageImageGenerateShowsSessionRefs();
   testManageTodosAgentListShowsOnlyCurrentSession();
+  testManageTodosAgentListPrioritizesActiveOpenItems();
   testEditToolPreservesFullExpandedDiff();
   testEditToolShowsMultiEditHunks();
   testTaskRowsMapReasoningToThinkingWithoutPreviewLeak();

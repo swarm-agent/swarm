@@ -1682,9 +1682,11 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	if _, err := installLaunchersForUpdate(profile.Root); err != nil {
 		return err
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Reconciling Swarm systemd service unit.", "")
-	if err := ensureSystemdServiceUnitForUpdate(); err != nil {
-		return fmt.Errorf("reconcile systemd service unit after launcher install: %w", err)
+	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdScope == systemdServiceSystem {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Reconciling Swarm systemd service unit.", "")
+		if err := ensureSystemdServiceUnitForUpdate(); err != nil {
+			return fmt.Errorf("reconcile systemd service unit after launcher install: %w", err)
+		}
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Restarting Swarm backend.", "")
 	markManagedDevHostPhase(profile, managedDevPhaseReconnect, updateJobStatusCompleted, "Primary backend restarted; managed hosts should reconnect after their remote rebuilds.", "")
@@ -1912,71 +1914,92 @@ func isWSL() bool {
 	return false
 }
 
+func stopBackendForRebuild(profile Profile) error {
+	if ready, _ := ReadyStatus(profile); ready == http.StatusOK {
+		headers := map[string]string{
+			"Accept":       "application/json",
+			"Content-Type": "application/json",
+		}
+		payload := map[string]string{"reason": envOrString("SWARM_REBUILD_REASON", "swarmtui-rebuild")}
+		body, status, err := localTransportRequest(profile, http.MethodPost, profile.URL+"/v1/system/shutdown", headers, payload)
+		if err != nil {
+			return err
+		}
+		if status != http.StatusAccepted {
+			return fmt.Errorf("shutdown request failed (%d): %s", status, strings.TrimSpace(string(body)))
+		}
+		confirmed := false
+		for i := 0; i < 30; i++ {
+			status, err := ReadyStatus(profile)
+			if err != nil || status == http.StatusServiceUnavailable {
+				confirmed = true
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !confirmed {
+			return errors.New("shutdown request accepted but daemon stayed ready")
+		}
+	}
+	return StopBackend(profile)
+}
+
 func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 	serviceActive := false
 	serviceScope := systemdServiceScope("")
 	serviceUnit := ""
+	forceSystemdRestart := false
 	manager, managerKnown, err := resolveLifecycleManager(profile)
 	if err != nil {
 		return err
 	}
-	switch manager.Kind {
-	case lifecycleKindSystemd:
+	if restartSystemd {
 		if profile.Lane != "main" {
 			return errors.New("automatic systemd restart is only supported for the main lane")
 		}
-		serviceScope = normalizeSystemdScope(manager.Scope)
-		serviceUnit = strings.TrimSpace(manager.Unit)
-		if serviceScope == "" || serviceUnit == "" {
-			return errors.New("systemd lifecycle metadata is incomplete")
-		}
-		active, installed, err := serviceActiveForScope(serviceScope, serviceUnit)
+		serviceScope, serviceUnit, serviceActive, err = resolveExplicitRebuildSystemdService(manager, managerKnown)
 		if err != nil {
 			return err
 		}
-		if !installed {
-			return fmt.Errorf("systemd service %s is not installed", serviceUnit)
-		}
-		serviceActive = active
+		forceSystemdRestart = true
 		if !serviceActive {
-			if err := StopBackend(profile); err != nil {
+			if err := stopBackendForRebuild(profile); err != nil {
 				return err
 			}
 		}
-	case lifecycleKindDirect:
-		fallthrough
-	default:
-		if restartSystemd && !managerKnown {
-			return errors.New("automatic manager restart requires a running daemon or recorded lifecycle metadata")
-		}
-		if ready, _ := ReadyStatus(profile); ready == http.StatusOK {
-			headers := map[string]string{
-				"Accept":       "application/json",
-				"Content-Type": "application/json",
+	} else {
+		switch manager.Kind {
+		case lifecycleKindSystemd:
+			if profile.Lane != "main" {
+				return errors.New("automatic systemd restart is only supported for the main lane")
 			}
-			payload := map[string]string{"reason": envOrString("SWARM_REBUILD_REASON", "swarmtui-rebuild")}
-			body, status, err := localTransportRequest(profile, http.MethodPost, profile.URL+"/v1/system/shutdown", headers, payload)
+			serviceScope = normalizeSystemdScope(manager.Scope)
+			serviceUnit = strings.TrimSpace(manager.Unit)
+			if serviceScope == "" || serviceUnit == "" {
+				return errors.New("systemd lifecycle metadata is incomplete")
+			}
+			active, installed, err := serviceActiveForScope(serviceScope, serviceUnit)
 			if err != nil {
 				return err
 			}
-			if status != http.StatusAccepted {
-				return fmt.Errorf("shutdown request failed (%d): %s", status, strings.TrimSpace(string(body)))
+			if !installed {
+				return fmt.Errorf("systemd service %s is not installed", serviceUnit)
 			}
-			confirmed := false
-			for i := 0; i < 30; i++ {
-				status, err := ReadyStatus(profile)
-				if err != nil || status == http.StatusServiceUnavailable {
-					confirmed = true
-					break
+			serviceActive = active
+			if !serviceActive {
+				if err := StopBackend(profile); err != nil {
+					return err
 				}
-				time.Sleep(100 * time.Millisecond)
 			}
-			if !confirmed {
-				return errors.New("shutdown request accepted but daemon stayed ready")
+		case lifecycleKindDirect:
+			fallthrough
+		default:
+			if restartSystemd && !managerKnown {
+				return errors.New("automatic manager restart requires a running daemon or recorded lifecycle metadata")
 			}
-		}
-		if err := StopBackend(profile); err != nil {
-			return err
+			if err := stopBackendForRebuild(profile); err != nil {
+				return err
+			}
 		}
 	}
 	if err := BuildSwarmdBinaries(profile); err != nil {
@@ -2001,13 +2024,51 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 	if _, err := InstallLaunchers(profile.Root); err != nil {
 		return err
 	}
+	if forceSystemdRestart && serviceScope == systemdServiceSystem {
+		if err := EnsureSystemdServiceUnit(); err != nil {
+			return fmt.Errorf("reconcile systemd service unit after launcher install: %w", err)
+		}
+	}
 	if serviceScope != "" && serviceUnit != "" {
-		return restartSystemdService(serviceScope, serviceUnit, serviceActive)
+		return restartSystemdService(serviceScope, serviceUnit, serviceActive || forceSystemdRestart)
 	}
 	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return err
 	}
 	return nil
+}
+
+func resolveExplicitRebuildSystemdService(manager lifecycleManager, managerKnown bool) (systemdServiceScope, string, bool, error) {
+	if manager.Kind == lifecycleKindSystemd {
+		scope := normalizeSystemdScope(manager.Scope)
+		unit := strings.TrimSpace(manager.Unit)
+		if scope == "" || unit == "" {
+			return "", "", false, errors.New("systemd lifecycle metadata is incomplete")
+		}
+		active, installed, err := serviceActiveForScope(scope, unit)
+		if err != nil {
+			return "", "", false, err
+		}
+		if active {
+			return scope, unit, true, nil
+		}
+		detectedScope, detectedActive, detectErr := detectSystemdService(unit)
+		if detectErr == nil {
+			return detectedScope, unit, detectedActive, nil
+		}
+		if installed {
+			return scope, unit, false, nil
+		}
+		return "", "", false, fmt.Errorf("systemd %s service %s is not installed", scope, unit)
+	}
+	scope, active, err := detectSystemdService("swarm.service")
+	if err == nil {
+		return scope, "swarm.service", active, nil
+	}
+	if managerKnown {
+		return "", "", false, fmt.Errorf("automatic systemd restart requires a systemd-managed Swarm service: %w", err)
+	}
+	return "", "", false, fmt.Errorf("automatic systemd restart requires a running daemon, recorded systemd lifecycle metadata, or an installed swarm.service: %w", err)
 }
 
 type systemdServiceScope string
@@ -2022,14 +2083,21 @@ func detectSystemdService(unit string) (systemdServiceScope, bool, error) {
 	if unit == "" {
 		return "", false, errors.New("systemd unit name must not be empty")
 	}
+	installedScope := systemdServiceScope("")
 	for _, scope := range []systemdServiceScope{systemdServiceUser, systemdServiceSystem} {
 		active, installed, err := serviceActiveForScope(scope, unit)
 		if err != nil {
 			return "", false, err
 		}
-		if installed {
-			return scope, active, nil
+		if active {
+			return scope, true, nil
 		}
+		if installed && installedScope == "" {
+			installedScope = scope
+		}
+	}
+	if installedScope != "" {
+		return installedScope, false, nil
 	}
 	return "", false, fmt.Errorf("systemd service %s is not installed", unit)
 }

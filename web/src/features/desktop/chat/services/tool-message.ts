@@ -972,7 +972,29 @@ function shouldShowManageTodosSummaryLines(action: string): boolean {
 function prioritizeManageTodosPreviewItems(
   payload: Record<string, unknown>,
 ): Record<string, unknown>[] {
-  return manageTodosPreviewItems(payload);
+  const items = manageTodosPreviewItems(payload);
+  if (items.length <= 1 || !isAgentManageTodosPayload(payload, items)) {
+    return items;
+  }
+  const prioritized = [...items].sort(
+    (a, b) => manageTodosItemPriority(a) - manageTodosItemPriority(b),
+  );
+  const openItems = prioritized.filter((item) => !jsonBool(item, "done"));
+  return openItems.length > 0 ? openItems : prioritized;
+}
+
+function isAgentManageTodosPayload(
+  payload: Record<string, unknown>,
+  items: Record<string, unknown>[],
+): boolean {
+  if (jsonStr(payload, "owner_kind").toLowerCase() === "agent") return true;
+  return items.some((item) => jsonStr(item, "owner_kind").toLowerCase() === "agent");
+}
+
+function manageTodosItemPriority(item: Record<string, unknown>): number {
+  if (!jsonBool(item, "done") && jsonBool(item, "in_progress")) return 0;
+  if (!jsonBool(item, "done")) return 1;
+  return 2;
 }
 
 function manageTodosPreviewItems(

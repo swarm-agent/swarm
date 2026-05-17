@@ -1408,7 +1408,56 @@ func shouldShowManageTodosSummaryLines(action string) bool {
 }
 
 func prioritizeManageTodosPreviewItems(payload map[string]any) []map[string]any {
-	return manageTodosPreviewItems(payload)
+	items := manageTodosPreviewItems(payload)
+	if len(items) <= 1 || !isAgentManageTodosPayload(payload) {
+		return items
+	}
+	prioritized := append([]map[string]any(nil), items...)
+	sort.SliceStable(prioritized, func(i, j int) bool {
+		return manageTodosPreviewItemPriority(prioritized[i]) < manageTodosPreviewItemPriority(prioritized[j])
+	})
+	if openItems := openManageTodosPreviewItems(prioritized); len(openItems) > 0 {
+		return openItems
+	}
+	return prioritized
+}
+
+func openManageTodosPreviewItems(items []map[string]any) []map[string]any {
+	openItems := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if item != nil && !jsonBool(item, "done") {
+			openItems = append(openItems, item)
+		}
+	}
+	return openItems
+}
+
+func isAgentManageTodosPayload(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(jsonString(payload, "owner_kind")), "agent") {
+		return true
+	}
+	for _, item := range manageTodosPreviewItems(payload) {
+		if strings.EqualFold(strings.TrimSpace(jsonString(item, "owner_kind")), "agent") {
+			return true
+		}
+	}
+	return false
+}
+
+func manageTodosPreviewItemPriority(item map[string]any) int {
+	if item == nil {
+		return 3
+	}
+	if !jsonBool(item, "done") && jsonBool(item, "in_progress") {
+		return 0
+	}
+	if !jsonBool(item, "done") {
+		return 1
+	}
+	return 2
 }
 
 func manageTodosPreviewItems(payload map[string]any) []map[string]any {
