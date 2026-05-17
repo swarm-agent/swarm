@@ -154,6 +154,27 @@ func TestFlowsV3CreateListGetUpdateRunNowDeleteHistoryAndStatus(t *testing.T) {
 	if updatedDefinition.Assignment.Agent.ProfileName != "swarm" || updatedDefinition.Assignment.Agent.ProfileMode != "primary" {
 		t.Fatalf("updated stored agent = %+v", updatedDefinition.Assignment.Agent)
 	}
+	unassignReq := flowV3UpsertRequest{UnassignTarget: true}
+	unassignRec := httptest.NewRecorder()
+	unassignHTTP := httptest.NewRequest(http.MethodPut, "/v3/flows/flow-v3-remote", jsonReader(t, unassignReq))
+	unassignHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(unassignRec, unassignHTTP)
+	if unassignRec.Code != http.StatusOK {
+		t.Fatalf("unassign status = %d body=%s", unassignRec.Code, unassignRec.Body.String())
+	}
+	var unassignPayload flowV3MutationResponse
+	if err := json.Unmarshal(unassignRec.Body.Bytes(), &unassignPayload); err != nil {
+		t.Fatalf("decode unassign: %v", err)
+	}
+	if unassignPayload.Flow.Definition.Enabled || flowV3HasTargetSelection(unassignPayload.Flow.Definition.Target) {
+		t.Fatalf("unassigned definition = %+v", unassignPayload.Flow.Definition)
+	}
+	if unassignPayload.Result == nil || unassignPayload.Result.Outbox.TargetSwarmID != "child-remote" || unassignPayload.Result.Outbox.Command.Assignment.Target.SwarmID != "child-remote" {
+		t.Fatalf("unassign delivery result = %+v", unassignPayload.Result)
+	}
+	if storedUnassign, ok, err := flows.GetDefinition("flow-v3-remote"); err != nil || !ok || storedUnassign.Assignment.Enabled || flowV3HasTargetSelection(storedUnassign.Assignment.Target) {
+		t.Fatalf("stored unassign definition = %+v ok=%v err=%v", storedUnassign, ok, err)
+	}
 	if _, err := flows.PutMirroredRunSummary(pebblestore.FlowRunSummaryRecord{
 		RunID:         "run-v3-1",
 		FlowID:        "flow-v3-remote",

@@ -375,7 +375,8 @@ func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRe
 	if !ok {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, fmt.Errorf("flow %q was not found", flowID)
 	}
-	assignment, err := s.flowV3AssignmentFromRequest(r, req, &existing.Assignment, flowID, existing.Revision+1)
+	previousAssignment := existing.Assignment
+	assignment, err := s.flowV3AssignmentFromRequest(r, req, &previousAssignment, flowID, existing.Revision+1)
 	if err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
@@ -388,7 +389,11 @@ func (s *Server) updateFlowV3(r *http.Request, flowID string, req flowV3UpsertRe
 	if err != nil {
 		return flowV3Record{}, flowAssignmentDeliverResult{}, err
 	}
-	command := flow.AssignmentCommand{CommandID: newFlowCommandID(updatedDefinition.FlowID, updatedDefinition.Revision, flow.CommandUpdate), FlowID: updatedDefinition.FlowID, Revision: updatedDefinition.Revision, Action: flow.CommandUpdate, CreatedAt: now, Assignment: updatedDefinition.Assignment}
+	commandAssignment := updatedDefinition.Assignment
+	if req.UnassignTarget {
+		commandAssignment.Target = normalizeFlowTargetSelection(previousAssignment.Target)
+	}
+	command := flow.AssignmentCommand{CommandID: newFlowCommandID(updatedDefinition.FlowID, updatedDefinition.Revision, flow.CommandUpdate), FlowID: updatedDefinition.FlowID, Revision: updatedDefinition.Revision, Action: flow.CommandUpdate, CreatedAt: now, Assignment: commandAssignment}
 	result, err := s.EnqueueAndDeliverFlowAssignmentCommand(r.Context(), command)
 	if err != nil {
 		if _, restoreErr := s.flows.PutDefinition(existing); restoreErr != nil {
