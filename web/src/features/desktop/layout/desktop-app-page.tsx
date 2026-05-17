@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { CSSProperties, JSX, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, Link } from '@tanstack/react-router'
-import { Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Pencil, Play, Plug, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
+import { Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, GitBranch, GitCommitHorizontal, Home, LayoutGrid, Link2, ListChecks, LoaderCircle, Menu, Pause, Play, Plug, Plus, RefreshCcw, Settings, Workflow, X, XCircle } from 'lucide-react'
 import { debugLog } from '../../../lib/debug-log'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -2740,26 +2740,15 @@ export function DesktopAppPage() {
                         ) : null}
                       </form>
                     ) : (
-                      <div className="group/name grid min-w-0 grid-cols-[minmax(0,1fr)_24px] items-center gap-1">
-                        <button
-                          type="button"
-                          className="min-w-0 truncate rounded-md text-left text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)] hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
-                          onClick={handleStartSidebarSwarmNameEdit}
-                          aria-label="Edit swarm name"
-                          title="Edit swarm name"
-                        >
-                          {swarmName}
-                        </button>
-                        <button
-                          type="button"
-                          className={cn(SIDEBAR_ACTION_BUTTON_CLASS, 'opacity-75 group-hover/name:opacity-100')}
-                          onClick={handleStartSidebarSwarmNameEdit}
-                          aria-label="Edit swarm name"
-                          title="Edit swarm name"
-                        >
-                          <Pencil size={13} strokeWidth={1.8} />
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        className="min-w-0 truncate rounded-md text-left text-[15px] font-semibold tracking-[-0.035em] text-[var(--app-text)] hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                        onClick={handleStartSidebarSwarmNameEdit}
+                        aria-label="Edit swarm name"
+                        title="Click to rename swarm"
+                      >
+                        {swarmName}
+                      </button>
                     )}
                     <div className="mt-px truncate text-[10px] leading-[1.25] text-[var(--app-text-subtle)]">
                       <strong className="font-medium text-[var(--app-text-muted)]">{currentSwarmRoleLabel}</strong> · {masterWorkspaceName}

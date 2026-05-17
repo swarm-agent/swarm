@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
-import { Boxes, CheckSquare, Link2, Monitor, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
+import { Boxes, CheckSquare, Link2, Monitor, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { Badge } from '../../../components/ui/badge'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -1808,6 +1808,13 @@ export function DesktopSwarmDashboard() {
     }
   }
 
+  const handleStartLocalNameEdit = () => {
+    setLocalNameDraft(localSwarmName)
+    setError(null)
+    setStatus(null)
+    setEditingLocalName(true)
+  }
+
   const handleSaveLocalName = async () => {
     const normalized = localNameDraft.trim()
     if (!normalized) {
@@ -2405,18 +2412,28 @@ export function DesktopSwarmDashboard() {
               </div>
               <div className="min-w-0">
                 {editingLocalName ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Input value={localNameDraft} onChange={(event) => setLocalNameDraft(event.target.value)} className="w-[280px]" />
-                    <Button onClick={() => void handleSaveLocalName()} disabled={busy || !localNameDirty}>Save</Button>
-                    <Button variant="outline" onClick={() => { setLocalNameDraft(localSwarmName); setEditingLocalName(false) }} disabled={busy}>Cancel</Button>
-                  </div>
+                  <form
+                    className="flex flex-wrap items-center gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      void handleSaveLocalName()
+                    }}
+                  >
+                    <Input value={localNameDraft} onChange={(event) => setLocalNameDraft(event.target.value)} className="w-[280px]" autoFocus aria-label="Swarm name" />
+                    <Button type="submit" disabled={busy || !localNameDirty}>Save</Button>
+                    <Button type="button" variant="outline" onClick={() => { setLocalNameDraft(localSwarmName); setEditingLocalName(false) }} disabled={busy}>Cancel</Button>
+                  </form>
                 ) : (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate text-lg font-semibold text-[var(--app-text)]">{localSwarmName}</h2>
-                    <Button variant="ghost" size="sm" className="h-7 w-7 min-h-7 min-w-7 rounded-full p-0" onClick={() => setEditingLocalName(true)} disabled={busy}>
-                      <Pencil size={14} />
-                    </Button>
-                  </div>
+                  <button
+                    type="button"
+                    className="max-w-full truncate rounded-md text-left text-lg font-semibold text-[var(--app-text)] hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                    onClick={handleStartLocalNameEdit}
+                    disabled={busy}
+                    aria-label="Edit swarm name"
+                    title="Click to rename swarm"
+                  >
+                    {localSwarmName}
+                  </button>
                 )}
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                   <Badge tone={localIsMaster ? 'live' : localIsManagedHost ? 'live' : localIsChild ? 'warning' : 'neutral'}>{localSwarmRoleLabel}</Badge>
