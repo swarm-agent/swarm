@@ -1,10 +1,12 @@
 # Contributing
 
-Swarm is not accepting code contributions or pull requests at this time.
+Swarm is open to collaboration, but I do not currently have enough bandwidth to take on pull requests at random.
 
-Swarm is currently undergoing many changes, and changes to Swarm Core need discussion before implementation. Active roadmap work includes the mobile app, TUI/desktop parity, voice models, better Git integration, and an agents SDK.
+I also want to set expectations: Swarm is moving quickly, and many areas are already planned or in active development. A change may look like a good fit, but the project is constantly shipping and the surrounding direction may still be changing.
 
-If you want to propose a change or report a problem, please open a GitHub issue first so the direction can be discussed.
+With that in mind, if you like the project and want to contribute, please reach out first or open a GitHub issue so we can discuss the direction before implementation.
+
+Feel free to clone the app and modify it in any way you like!
 
 For security issues, please contact swarm@swarmagent.dev.
 
