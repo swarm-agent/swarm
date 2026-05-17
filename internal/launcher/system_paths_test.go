@@ -30,10 +30,15 @@ func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 	})
 	for _, needle := range []string{
 		"StateDirectory=swarmd",
+		"StateDirectoryMode=0700",
 		"CacheDirectory=swarmd",
+		"CacheDirectoryMode=0700",
 		"RuntimeDirectory=swarmd",
+		"RuntimeDirectoryMode=0700",
 		"ConfigurationDirectory=swarmd",
+		"ConfigurationDirectoryMode=0700",
 		"LogsDirectory=swarmd",
+		"LogsDirectoryMode=0755",
 		"User=1234",
 		"Group=5678",
 		"Environment=SWARM_SYSTEMD_SCOPE=system",
@@ -43,6 +48,7 @@ func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 		"Environment=SWARMD_RUNTIME_DIR=" + runtimeRoot,
 		"Environment=SWARMD_CONFIG_DIR=" + configRoot,
 		"Environment=SWARMD_LOG_DIR=" + logsRoot,
+		"ExecStart=" + filepath.Join(systemRoot, "bin", "swarm") + " server run",
 		"WorkingDirectory=/",
 	} {
 		if !strings.Contains(unit, needle) {

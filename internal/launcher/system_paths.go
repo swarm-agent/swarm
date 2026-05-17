@@ -162,10 +162,15 @@ ExecStart=%s server run
 Restart=on-failure
 RestartSec=2
 StateDirectory=swarmd
+StateDirectoryMode=0700
 CacheDirectory=swarmd
+CacheDirectoryMode=0700
 RuntimeDirectory=swarmd
+RuntimeDirectoryMode=0700
 ConfigurationDirectory=swarmd
+ConfigurationDirectoryMode=0700
 LogsDirectory=swarmd
+LogsDirectoryMode=0755
 Environment=SWARM_SYSTEMD_SCOPE=system
 Environment=SWARM_SYSTEMD_UNIT=swarm.service
 Environment=SWARMD_DATA_DIR=%s
