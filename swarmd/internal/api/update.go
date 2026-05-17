@@ -65,10 +65,12 @@ type updateJobRunner struct {
 }
 
 var (
-	defaultUpdateJobRunner = &updateJobRunner{}
-	execCommandForUpdate   = exec.Command
-	execLookPathForUpdate  = exec.LookPath
-	osGeteuidForUpdate     = os.Geteuid
+	defaultUpdateJobRunner             = &updateJobRunner{}
+	execCommandForUpdate               = exec.Command
+	execLookPathForUpdate              = exec.LookPath
+	osGeteuidForUpdate                 = os.Geteuid
+	resolveSwarmLauncherPathForUpdate  = resolveSwarmLauncherPath
+	prepareUpdateHelperLaunchForUpdate = prepareUpdateHelperLaunch
 )
 
 func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
@@ -196,22 +198,27 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 	if err != nil {
 		return desktopUpdateJob{}, err
 	}
-	if existing := r.Status(s); existing.Status == updateJobStatusRunning {
-		if updateJobKindMatches(existing.Kind, kind) {
-			return existing, nil
+	statusSnapshot := r.Status(s)
+	if statusSnapshot.Status == updateJobStatusRunning {
+		if updateJobKindMatches(statusSnapshot.Kind, kind) {
+			return statusSnapshot, nil
 		}
-		r.supersedeMismatchedRunningJob(existing, kind, s)
+		r.supersedeMismatchedRunningJob(statusSnapshot, kind, s)
 	}
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	if r.current.Status == updateJobStatusRunning {
-		job := r.current
-		r.mu.Unlock()
-		if updateJobKindMatches(job.Kind, kind) {
-			return job, nil
+		if strings.TrimSpace(statusSnapshot.ID) != "" && statusSnapshot.ID == r.current.ID && statusSnapshot.Status != updateJobStatusRunning {
+			r.current = statusSnapshot
+		} else {
+			job := r.current
+			r.mu.Unlock()
+			if updateJobKindMatches(job.Kind, kind) {
+				return job, nil
+			}
+			r.supersedeMismatchedRunningJob(job, kind, s)
+			r.mu.Lock()
 		}
-		r.supersedeMismatchedRunningJob(job, kind, s)
-		r.mu.Lock()
 	}
 	job := desktopUpdateJob{
 		ID:            newUpdateJobID(now, kind),
@@ -299,7 +306,7 @@ func (r *updateJobRunner) updateLaunchDetails(id string, launch updateLaunchDeta
 }
 
 func (s *Server) startDetachedUpdateCommand(kind, jobID string, runner *updateJobRunner) (updateLaunchDetails, error) {
-	swarmPath, err := resolveSwarmLauncherPath()
+	swarmPath, err := resolveSwarmLauncherPathForUpdate()
 	if err != nil {
 		return updateLaunchDetails{}, err
 	}
@@ -329,7 +336,7 @@ func (s *Server) startDetachedUpdateCommand(kind, jobID string, runner *updateJo
 			return updateLaunchDetails{}, fmt.Errorf("prepare update helper log: %w", err)
 		}
 	}
-	launch, err := prepareUpdateHelperLaunch(updateHelperLaunchConfig{
+	launch, err := prepareUpdateHelperLaunchForUpdate(updateHelperLaunchConfig{
 		SwarmPath:    swarmPath,
 		Args:         helperArgs,
 		Env:          env,
