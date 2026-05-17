@@ -87,6 +87,98 @@ func TestUpdateLaneForKindUsesCurrentLane(t *testing.T) {
 	}
 }
 
+func TestStartDetachedUpdateCommandDevRequiresGoBeforeLaunch(t *testing.T) {
+	root := makeUpdateDevRoot(t)
+	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
+	cfg := startupconfig.Default(startupPath)
+	cfg.DevMode = true
+	cfg.DevRoot = root
+	if err := startupconfig.Write(cfg); err != nil {
+		t.Fatalf("Write startup config: %v", err)
+	}
+	server := &Server{dataDir: t.TempDir(), startupConfigPath: startupPath}
+
+	originalResolveLauncher := resolveSwarmLauncherPathForUpdate
+	originalPrepareLaunch := prepareUpdateHelperLaunchForUpdate
+	originalLookPath := execLookPathForUpdate
+	defer func() {
+		resolveSwarmLauncherPathForUpdate = originalResolveLauncher
+		prepareUpdateHelperLaunchForUpdate = originalPrepareLaunch
+		execLookPathForUpdate = originalLookPath
+	}()
+	t.Setenv("GO_BIN", filepath.Join(root, "missing-go"))
+	resolveSwarmLauncherPathForUpdate = func() (string, error) { return "/bin/echo", nil }
+	execLookPathForUpdate = func(name string) (string, error) {
+		if name == "go" {
+			return "", errors.New("missing")
+		}
+		return "/usr/bin/" + name, nil
+	}
+	prepareUpdateHelperLaunchForUpdate = func(updateHelperLaunchConfig) (updateHelperLaunchCommand, error) {
+		t.Fatalf("prepareUpdateHelperLaunch should not run when Go preflight fails")
+		return updateHelperLaunchCommand{}, nil
+	}
+
+	_, err := server.startDetachedUpdateCommand(updateKindDev, "job-no-go", &updateJobRunner{})
+	if err == nil {
+		t.Fatalf("startDetachedUpdateCommand succeeded; want Go preflight error")
+	}
+	if !strings.Contains(err.Error(), "dev update requires Go toolchain before stopping Swarm") || !strings.Contains(err.Error(), "missing Go toolchain") {
+		t.Fatalf("error = %q, want clear Go preflight failure", err)
+	}
+}
+
+func TestStartDetachedUpdateCommandDevPassesGoEnvToSystemdRun(t *testing.T) {
+	root := makeUpdateDevRoot(t)
+	goBin := filepath.Join(root, ".tools", "go", "bin", "go")
+	if err := os.MkdirAll(filepath.Dir(goBin), 0o755); err != nil {
+		t.Fatalf("mkdir go bin: %v", err)
+	}
+	if err := os.WriteFile(goBin, []byte("#!/bin/sh\nif [ \"$1\" = env ] && [ \"$2\" = GOROOT ]; then echo /tmp/test-goroot; exit 0; fi\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write go shim: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(goBin), "gofmt"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write gofmt shim: %v", err)
+	}
+	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
+	cfg := startupconfig.Default(startupPath)
+	cfg.DevMode = true
+	cfg.DevRoot = root
+	if err := startupconfig.Write(cfg); err != nil {
+		t.Fatalf("Write startup config: %v", err)
+	}
+	server := &Server{dataDir: t.TempDir(), startupConfigPath: startupPath}
+
+	originalResolveLauncher := resolveSwarmLauncherPathForUpdate
+	originalPrepareLaunch := prepareUpdateHelperLaunchForUpdate
+	defer func() {
+		resolveSwarmLauncherPathForUpdate = originalResolveLauncher
+		prepareUpdateHelperLaunchForUpdate = originalPrepareLaunch
+	}()
+	t.Setenv("GO_BIN", goBin)
+	resolveSwarmLauncherPathForUpdate = func() (string, error) { return "/bin/sleep", nil }
+	prepareUpdateHelperLaunchForUpdate = func(cfg updateHelperLaunchConfig) (updateHelperLaunchCommand, error) {
+		assertStringInSlice(t, cfg.Env, "SWARM_ROOT="+root)
+		assertStringInSlice(t, cfg.Env, "GO_BIN="+goBin)
+		assertStringInSlice(t, cfg.Env, "GOFMT_BIN="+filepath.Join(filepath.Dir(goBin), "gofmt"))
+		assertStringInSlice(t, cfg.Env, "GOROOT=/tmp/test-goroot")
+		assertStringInSlice(t, cfg.Env, "GOTOOLCHAIN=local")
+		return updateHelperLaunchCommand{CommandPath: "/bin/sleep", Args: []string{"60"}, Env: os.Environ()}, nil
+	}
+
+	details, err := server.startDetachedUpdateCommand(updateKindDev, "job-with-go", &updateJobRunner{})
+	if err != nil {
+		t.Fatalf("startDetachedUpdateCommand: %v", err)
+	}
+	if details.HelperPID <= 0 {
+		t.Fatalf("helper pid = %d, want positive", details.HelperPID)
+	}
+	proc, err := os.FindProcess(details.HelperPID)
+	if err == nil {
+		_ = proc.Kill()
+	}
+}
+
 func TestUpdateRunnerAllowsRetryAfterPersistedFailureForSameKind(t *testing.T) {
 	originalResolveLauncher := resolveSwarmLauncherPathForUpdate
 	originalPrepareLaunch := prepareUpdateHelperLaunchForUpdate

@@ -327,7 +327,14 @@ func (s *Server) startDetachedUpdateCommand(kind, jobID string, runner *updateJo
 		if err != nil {
 			return updateLaunchDetails{}, err
 		}
+		toolchainEnv, err := devUpdateToolchainEnv(devRoot)
+		if err != nil {
+			return updateLaunchDetails{}, fmt.Errorf("dev update requires Go toolchain before stopping Swarm: %w", err)
+		}
 		env = append(env, "SWARM_ROOT="+devRoot)
+		for key, value := range toolchainEnv {
+			env = append(env, key+"="+value)
+		}
 		dir = devRoot
 	}
 	logPath := s.updateHelperLogPath(jobID)
@@ -482,6 +489,10 @@ func updateHelperSystemdEnv(env []string) []string {
 		"SWARM_BIN_DIR",
 		"SWARM_TOOL_BIN_DIR",
 		"SWARM_ROOT",
+		"GO_BIN",
+		"GOFMT_BIN",
+		"GOROOT",
+		"GOTOOLCHAIN",
 		"SWARM_REBUILD_REASON",
 		"SWARM_UPDATE_JOB_ID",
 		"SWARM_UPDATE_JOB_KIND",
@@ -493,6 +504,99 @@ func updateHelperSystemdEnv(env []string) []string {
 		}
 	}
 	return out
+}
+
+func devUpdateToolchainEnv(root string) (map[string]string, error) {
+	goBin, err := findDevUpdateGoBin(root)
+	if err != nil {
+		return nil, err
+	}
+	goBinDir := filepath.Dir(goBin)
+	env := map[string]string{
+		"GO_BIN": goBin,
+		"PATH":   prependPathEntry(os.Getenv("PATH"), goBinDir),
+	}
+	if isExecutable(filepath.Join(goBinDir, "gofmt")) {
+		env["GOFMT_BIN"] = filepath.Join(goBinDir, "gofmt")
+	}
+	if goRoot := resolveGoRoot(goBin); goRoot != "" {
+		env["GOROOT"] = goRoot
+	}
+	if strings.TrimSpace(os.Getenv("GOTOOLCHAIN")) == "" {
+		env["GOTOOLCHAIN"] = "local"
+	}
+	return env, nil
+}
+
+func findDevUpdateGoBin(root string) (string, error) {
+	if value := strings.TrimSpace(os.Getenv("GO_BIN")); value != "" && isExecutable(value) {
+		return value, nil
+	}
+	candidates := []string{
+		filepath.Join(root, ".tools", "go", "bin", "go"),
+		filepath.Join(filepath.Dir(root), ".tools", "go", "bin", "go"),
+	}
+	for _, candidate := range candidates {
+		if isExecutable(candidate) {
+			return candidate, nil
+		}
+	}
+	if path, err := execLookPathForUpdate("go"); err == nil {
+		return path, nil
+	}
+	return "", errors.New("missing Go toolchain")
+}
+
+func isExecutable(path string) bool {
+	info, err := os.Stat(strings.TrimSpace(path))
+	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
+}
+
+func resolveGoRoot(goBin string) string {
+	goBin = strings.TrimSpace(goBin)
+	if goBin == "" {
+		return ""
+	}
+	cmd := execCommandForUpdate(goBin, "env", "GOROOT")
+	cmd.Env = envWithoutKey(os.Environ(), "GOROOT")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func envWithoutKey(env []string, key string) []string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return append([]string(nil), env...)
+	}
+	prefix := key + "="
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func prependPathEntry(existing, entry string) string {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return existing
+	}
+	cleanEntry := filepath.Clean(entry)
+	for _, candidate := range filepath.SplitList(existing) {
+		if filepath.Clean(strings.TrimSpace(candidate)) == cleanEntry {
+			return existing
+		}
+	}
+	if strings.TrimSpace(existing) == "" {
+		return cleanEntry
+	}
+	return cleanEntry + string(os.PathListSeparator) + existing
 }
 
 func updateHelperSudoPath() (string, error) {

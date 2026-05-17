@@ -48,6 +48,7 @@ var (
 	stopSystemdServiceForUpdate                        = stopSystemdService
 	restartSystemdServiceForUpdate                     = restartSystemdService
 	runManagedDevHostUpdatePhaseForUpdate              = runManagedDevHostUpdatePhase
+	preflightDevUpdateForUpdate                        = PreflightDevUpdate
 	buildSwarmdBinariesForUpdate                       = BuildSwarmdBinaries
 	forceBuildToolBinariesForUpdate                    = ForceBuildToolBinaries
 	buildSwarmTUIForUpdate                             = BuildSwarmTUI

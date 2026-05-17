@@ -431,18 +431,9 @@ func (p Profile) EnvMap() map[string]string {
 		"ADDR":                     p.URL,
 	}
 	if strings.TrimSpace(p.Root) != "" {
-		if goBin, err := FindGoBin(p.Root); err == nil {
-			goBinDir := filepath.Dir(goBin)
-			env["GO_BIN"] = goBin
-			env["PATH"] = prependPathEntry(os.Getenv("PATH"), goBinDir)
-			if isExecutable(filepath.Join(goBinDir, "gofmt")) {
-				env["GOFMT_BIN"] = filepath.Join(goBinDir, "gofmt")
-			}
-			if goRoot := ResolveGoRoot(goBin); goRoot != "" {
-				env["GOROOT"] = goRoot
-			}
-			if strings.TrimSpace(os.Getenv("GOTOOLCHAIN")) == "" {
-				env["GOTOOLCHAIN"] = "local"
+		if toolchainEnv, err := DevToolchainEnv(p.Root); err == nil {
+			for key, value := range toolchainEnv {
+				env[key] = value
 			}
 		}
 	}
@@ -478,6 +469,36 @@ func ResolveGoRoot(goBin string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func DevToolchainEnv(root string) (map[string]string, error) {
+	goBin, err := FindGoBin(root)
+	if err != nil {
+		return nil, err
+	}
+	goBinDir := filepath.Dir(goBin)
+	env := map[string]string{
+		"GO_BIN": goBin,
+		"PATH":   prependPathEntry(os.Getenv("PATH"), goBinDir),
+	}
+	if isExecutable(filepath.Join(goBinDir, "gofmt")) {
+		env["GOFMT_BIN"] = filepath.Join(goBinDir, "gofmt")
+	}
+	if goRoot := ResolveGoRoot(goBin); goRoot != "" {
+		env["GOROOT"] = goRoot
+	}
+	if strings.TrimSpace(os.Getenv("GOTOOLCHAIN")) == "" {
+		env["GOTOOLCHAIN"] = "local"
+	}
+	return env, nil
+}
+
+func PreflightDevUpdate(profile Profile) error {
+	if strings.TrimSpace(profile.Root) == "" {
+		return errors.New("update dev requires a source checkout")
+	}
+	_, err := DevToolchainEnv(profile.Root)
+	return err
 }
 
 func envWithout(env []string, key string) []string {
@@ -1598,6 +1619,10 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	}
 	if strings.TrimSpace(profile.Root) == "" {
 		return errors.New("update dev requires a source checkout")
+	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Checking dev update prerequisites.", "")
+	if err := preflightDevUpdateForUpdate(profile); err != nil {
+		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Checking managed host dev sync requirements.", "")
 	if err := runManagedDevHostUpdatePhaseForUpdate(profile); err != nil {

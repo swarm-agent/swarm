@@ -18,6 +18,7 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	originalServiceActive := serviceActiveForUpdate
 	originalRestartSystemd := restartSystemdServiceForUpdate
 	originalManagedDevPhase := runManagedDevHostUpdatePhaseForUpdate
+	originalPreflight := preflightDevUpdateForUpdate
 	originalBuildSwarmd := buildSwarmdBinariesForUpdate
 	originalForceBuildTools := forceBuildToolBinariesForUpdate
 	originalBuildTUI := buildSwarmTUIForUpdate
@@ -36,6 +37,7 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		serviceActiveForUpdate = originalServiceActive
 		restartSystemdServiceForUpdate = originalRestartSystemd
 		runManagedDevHostUpdatePhaseForUpdate = originalManagedDevPhase
+		preflightDevUpdateForUpdate = originalPreflight
 		buildSwarmdBinariesForUpdate = originalBuildSwarmd
 		forceBuildToolBinariesForUpdate = originalForceBuildTools
 		buildSwarmTUIForUpdate = originalBuildTUI
@@ -52,6 +54,10 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	calls := []string{}
 	profile := newDevUpdateTestProfile(t)
 
+	preflightDevUpdateForUpdate = func(Profile) error {
+		calls = append(calls, "preflight")
+		return nil
+	}
 	runManagedDevHostUpdatePhaseForUpdate = func(Profile) error {
 		calls = append(calls, "managed-dev")
 		return nil
@@ -143,9 +149,39 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	if !(installIndex < ensureIndex && ensureIndex < restartIndex) {
 		t.Fatalf("systemd unit reconciliation order wrong: calls=%v", calls)
 	}
-	want := []string{"managed-dev", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "sync-container-images", "write-rebuild-status", "install-launchers", "ensure-unit", "restart-systemd", "local-container-update", "remote-container-update"}
+	want := []string{"preflight", "managed-dev", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "sync-container-images", "write-rebuild-status", "install-launchers", "ensure-unit", "restart-systemd", "local-container-update", "remote-container-update"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
+func TestRunDevUpdatePreflightsBeforeStoppingBackend(t *testing.T) {
+	originalStopBackend := stopBackendForUpdate
+	originalManagedDevPhase := runManagedDevHostUpdatePhaseForUpdate
+	originalPreflight := preflightDevUpdateForUpdate
+	defer func() {
+		stopBackendForUpdate = originalStopBackend
+		runManagedDevHostUpdatePhaseForUpdate = originalManagedDevPhase
+		preflightDevUpdateForUpdate = originalPreflight
+	}()
+
+	profile := newDevUpdateTestProfile(t)
+	preflightDevUpdateForUpdate = func(Profile) error { return errors.New("missing Go toolchain") }
+	runManagedDevHostUpdatePhaseForUpdate = func(Profile) error {
+		t.Fatalf("managed dev phase should not run after preflight failure")
+		return nil
+	}
+	stopBackendForUpdate = func(Profile) error {
+		t.Fatalf("backend must not stop after preflight failure")
+		return nil
+	}
+
+	err := RunDevUpdate(profile, nil)
+	if err == nil {
+		t.Fatalf("RunDevUpdate succeeded; want preflight failure")
+	}
+	if !strings.Contains(err.Error(), "missing Go toolchain") {
+		t.Fatalf("error = %q, want Go preflight failure", err)
 	}
 }
 
@@ -156,6 +192,7 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 	originalServiceActive := serviceActiveForUpdate
 	originalRestartSystemd := restartSystemdServiceForUpdate
 	originalManagedDevPhase := runManagedDevHostUpdatePhaseForUpdate
+	originalPreflight := preflightDevUpdateForUpdate
 	originalBuildSwarmd := buildSwarmdBinariesForUpdate
 	originalForceBuildTools := forceBuildToolBinariesForUpdate
 	originalBuildTUI := buildSwarmTUIForUpdate
@@ -174,6 +211,7 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 		serviceActiveForUpdate = originalServiceActive
 		restartSystemdServiceForUpdate = originalRestartSystemd
 		runManagedDevHostUpdatePhaseForUpdate = originalManagedDevPhase
+		preflightDevUpdateForUpdate = originalPreflight
 		buildSwarmdBinariesForUpdate = originalBuildSwarmd
 		forceBuildToolBinariesForUpdate = originalForceBuildTools
 		buildSwarmTUIForUpdate = originalBuildTUI
@@ -189,6 +227,7 @@ func TestRunDevUpdateFailsClearlyWhenSystemdUnitReconcileFails(t *testing.T) {
 
 	profile := newDevUpdateTestProfile(t)
 
+	preflightDevUpdateForUpdate = func(Profile) error { return nil }
 	runManagedDevHostUpdatePhaseForUpdate = func(Profile) error { return nil }
 	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
 		return lifecycleManager{Kind: lifecycleKindSystemd, Scope: string(systemdServiceSystem), Unit: "swarm.service"}, true, nil
