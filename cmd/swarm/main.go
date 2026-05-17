@@ -115,7 +115,7 @@ func run(argv0 string, args []string) error {
 		if err := launcher.StopBackend(profile); err != nil {
 			return err
 		}
-		return launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, Bootstrap: bootstrap})
+		return launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, ForceRestart: true, Bootstrap: bootstrap})
 	case "backend-rebuild":
 		buildProfile, err := loadBuildProfile(lane, bypassOverride)
 		if err != nil {
@@ -127,7 +127,7 @@ func run(argv0 string, args []string) error {
 		if err := launcher.StopBackend(profile); err != nil {
 			return err
 		}
-		return launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, Bootstrap: bootstrap})
+		return launcher.StartBackend(profile, launcher.StartBackendOptions{BuildIfMissing: false, ForceRestart: true, Bootstrap: bootstrap})
 	case "update":
 		if len(args) < 2 {
 			return errors.New("usage: swarm [main|dev] update [apply|dev|dev-step]")

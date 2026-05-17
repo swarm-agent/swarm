@@ -1041,7 +1041,19 @@ func processRunning(pid string) bool {
 	if err != nil {
 		return false
 	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+	if runtime.GOOS == "linux" {
+		data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(id), "stat"))
+		if err == nil {
+			fields := strings.Fields(string(data))
+			if len(fields) >= 3 && fields[2] == "Z" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func serverHealthJSON(profile Profile) (string, bool) {
@@ -1077,14 +1089,18 @@ func healthBypassPermissions(body string) (bool, bool) {
 }
 
 func StartBackend(profile Profile, opts StartBackendOptions) error {
-	if healthBody, ok := serverHealthJSON(profile); ok && !opts.ForceRestart {
-		if current, found := healthBypassPermissions(healthBody); found && current == profile.Bypass {
-			return RecordPortFile(profile)
+	if healthBody, ok := serverHealthJSON(profile); ok {
+		if !opts.ForceRestart {
+			if current, found := healthBypassPermissions(healthBody); found && current == profile.Bypass {
+				return RecordPortFile(profile)
+			}
 		}
 		if err := StopBackend(profile); err != nil {
 			return err
 		}
-	} else if pid := ReadPIDFile(profile); pid != "" && processRunning(pid) && (opts.ForceRestart || true) {
+	} else if _, running, err := runningDaemonPID(profile); err != nil {
+		return err
+	} else if running {
 		if err := StopBackend(profile); err != nil {
 			return err
 		}
@@ -1108,6 +1124,7 @@ func StartBackend(profile Profile, opts StartBackendOptions) error {
 	}
 	if err := os.WriteFile(profile.PIDFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
 		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
 		return err
 	}
 	if err := waitForHealth(profile, 100); err != nil {
@@ -1161,7 +1178,21 @@ func RunBackend(profile Profile, opts StartBackendOptions) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if err := os.WriteFile(profile.PIDFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		_ = os.Remove(profile.PIDFile)
+		return err
+	}
+	err = cmd.Wait()
+	_ = os.Remove(profile.PIDFile)
+	if backendExitedAfterTerminateSignal(err) {
+		return nil
+	}
+	return err
 }
 
 func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []string, error) {
@@ -1313,30 +1344,140 @@ func waitForHealth(profile Profile, attempts int) error {
 	return fmt.Errorf("swarmd failed to become healthy at %s", profile.URL)
 }
 
-func StopBackend(profile Profile) error {
-	pid := ReadPIDFile(profile)
-	if pid == "" || !processRunning(pid) {
-		_ = os.Remove(profile.PIDFile)
-		ClearPortFile(profile)
-		return nil
-	}
-	id, err := strconv.Atoi(pid)
-	if err != nil {
-		return err
-	}
-	proc, err := os.FindProcess(id)
-	if err != nil {
-		return err
-	}
-	_ = proc.Signal(syscall.SIGTERM)
-	for i := 0; i < 30; i++ {
-		if !processRunning(pid) {
-			break
+func waitForHealthDown(profile Profile, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, ok := serverHealthJSON(profile); !ok {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if processRunning(pid) {
-		_ = proc.Signal(syscall.SIGKILL)
+}
+
+func backendStopCandidatePIDs(profile Profile) ([]int, error) {
+	seen := map[int]struct{}{}
+	pids := []int{}
+	addPID := func(pid int) {
+		if pid <= 0 {
+			return
+		}
+		if _, ok := seen[pid]; ok {
+			return
+		}
+		if !processRunning(strconv.Itoa(pid)) {
+			return
+		}
+		seen[pid] = struct{}{}
+		pids = append(pids, pid)
+	}
+	if pid, ok, err := readLockPID(profile.LockPath); err != nil {
+		return nil, err
+	} else if ok {
+		addPID(pid)
+	}
+	pidText := strings.TrimSpace(ReadPIDFile(profile))
+	if pidText != "" {
+		pid, err := strconv.Atoi(pidText)
+		if err != nil {
+			return nil, err
+		}
+		addPID(pid)
+	}
+	return pids, nil
+}
+
+func signalPID(pid int, signal syscall.Signal) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := proc.Signal(signal); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
+}
+
+func waitForPIDsExit(pids []int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		allStopped := true
+		for _, pid := range pids {
+			if processRunning(strconv.Itoa(pid)) {
+				allStopped = false
+				break
+			}
+		}
+		if allStopped {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func joinPIDs(pids []int) string {
+	parts := make([]string, 0, len(pids))
+	for _, pid := range pids {
+		parts = append(parts, strconv.Itoa(pid))
+	}
+	return strings.Join(parts, ",")
+}
+
+func backendExitedAfterTerminateSignal(err error) bool {
+	if err == nil {
+		return false
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() {
+		return false
+	}
+	sig := status.Signal()
+	return sig == syscall.SIGTERM || sig == syscall.SIGINT || sig == syscall.SIGKILL
+}
+
+func StopBackend(profile Profile) error {
+	wasHealthy := false
+	if _, ok := serverHealthJSON(profile); ok {
+		wasHealthy = true
+	}
+	pids, err := backendStopCandidatePIDs(profile)
+	if err != nil {
+		return err
+	}
+	if len(pids) == 0 {
+		_ = os.Remove(profile.PIDFile)
+		ClearPortFile(profile)
+		if wasHealthy {
+			return fmt.Errorf("swarmd is healthy at %s but no serving daemon pid could be resolved from %s or %s", profile.URL, profile.LockPath, profile.PIDFile)
+		}
+		return nil
+	}
+	for _, pid := range pids {
+		if err := signalPID(pid, syscall.SIGTERM); err != nil {
+			return err
+		}
+	}
+	if !waitForPIDsExit(pids, 6*time.Second) {
+		for _, pid := range pids {
+			if processRunning(strconv.Itoa(pid)) {
+				_ = signalPID(pid, syscall.SIGKILL)
+			}
+		}
+		if !waitForPIDsExit(pids, 2*time.Second) {
+			return fmt.Errorf("swarmd did not stop after terminating pid(s): %s", joinPIDs(pids))
+		}
+	}
+	if wasHealthy && !waitForHealthDown(profile, 6*time.Second) {
+		return fmt.Errorf("swarmd at %s stayed healthy after terminating pid(s): %s", profile.URL, joinPIDs(pids))
 	}
 	_ = os.Remove(profile.PIDFile)
 	ClearPortFile(profile)
@@ -1453,6 +1594,10 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	if err := runManagedDevHostUpdatePhase(profile); err != nil {
 		return err
 	}
+	restartPlan, err := resolveUpdateRestartPlan(profile)
+	if err != nil {
+		return err
+	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Stopping Swarm backend for dev rebuild.", "")
 	fmt.Fprintln(os.Stdout, "\nRebuilding local dev checkout...")
 	fmt.Fprintln(os.Stdout, "Swarm is shut down before rebuilding and restarting.")
@@ -1505,7 +1650,11 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Restarting Swarm backend.", "")
 	markManagedDevHostPhase(profile, managedDevPhaseReconnect, updateJobStatusCompleted, "Primary backend restarted; managed hosts should reconnect after their remote rebuilds.", "")
-	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
+	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdScope != "" && restartPlan.systemdUnit != "" {
+		if err := restartSystemdService(restartPlan.systemdScope, restartPlan.systemdUnit, restartPlan.systemdActive); err != nil {
+			return err
+		}
+	} else if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return err
 	}
 	markManagedDevHostPhase(profile, managedDevPhaseVerify, updateJobStatusCompleted, "Primary restart completed; verify managed host session routing from the desktop.", "")
@@ -1817,7 +1966,7 @@ func Rebuild(profile Profile, includeWeb, restartSystemd bool) error {
 	if serviceScope != "" && serviceUnit != "" {
 		return restartSystemdService(serviceScope, serviceUnit, serviceActive)
 	}
-	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
+	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return err
 	}
 	return nil

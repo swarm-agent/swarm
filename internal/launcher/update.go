@@ -249,7 +249,7 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Restarting Swarm backend.", "")
-	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
+	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
 	if err := writeLocalContainerUpdateRebuildStatus(profile, "release", result.Version, "", ""); err != nil {
@@ -911,7 +911,7 @@ func rollbackPendingUpdateAndRestart(profile Profile, relaunchArgs []string, pro
 	if _, err := rollbackPendingRuntimeUpdate(profile.InstallRoot, cause); err != nil {
 		return err
 	}
-	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
+	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return err
 	}
 	return RunTUIWithExtraEnv(profile, relaunchArgs, runtimeBootEnvironment())
