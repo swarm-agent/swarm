@@ -69,7 +69,7 @@ function tailscaleServeStatus(status: DesktopOnboardingStatus | null): { summary
   }
   const tailscale = status.network.tailscale
   const serve = tailscale.serve
-  const managedHostingOffPrefix = status.config.swarmMode ? '' : 'Managed Hosting is off; linking/networking APIs stay disabled until you enable it. '
+  const managedHostingOffPrefix = status.config.swarmMode ? '' : 'Swarm linking is off; linking/networking APIs stay disabled until you enable it. '
   if (serve.ready && serve.mode === 'desktop') {
     return { summary: 'Hosted on Tailscale', detail: `${managedHostingOffPrefix}Verified with Tailscale Serve status. The tailnet link opens this Swarm desktop and backend API.`, tone: 'live', badge: 'Serve verified' }
   }
@@ -1690,10 +1690,10 @@ export function DesktopSwarmDashboard() {
       })
       await refresh()
       setStatus(useTailscale
-        ? 'Managed Hosting is enabled with Tailscale reachability. Use Managed Hosting to link another host.'
-        : 'Managed Hosting is enabled. Tailscale was not connected, so reachability stayed on LAN for now.')
+        ? 'Swarm linking is enabled with Tailscale reachability. Use Swarm linking to link another host.'
+        : 'Swarm linking is enabled. Tailscale was not connected, so reachability stayed on LAN for now.')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to turn on Managed Hosting')
+      setError(err instanceof Error ? err.message : 'Failed to turn on Swarm linking')
     } finally {
       setBusy(false)
     }
@@ -1710,9 +1710,9 @@ export function DesktopSwarmDashboard() {
         ? { ...current, config: { ...current.config, swarmName: currentName, swarmMode: false } }
         : current)
       setLocalNameDraft(currentName)
-      setStatus('Managed Hosting is now off. Local containers remain available.')
+      setStatus('Swarm linking is now off. Local containers remain available.')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to turn off Managed Hosting')
+      setError(err instanceof Error ? err.message : 'Failed to turn off Swarm linking')
     } finally {
       setBusy(false)
     }
@@ -2316,7 +2316,7 @@ export function DesktopSwarmDashboard() {
           {isSwarmMode ? (
             <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" onClick={() => openLinkSwarm()} disabled={managedHostingControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}>
               <Link2 size={14} />
-              Managed Hosting
+              Link Managed Host
             </Button>
           ) : null}
           {isSwarmMode && (visiblePendingPairings.length > 0 || pendingLinkReviewTarget) ? (
@@ -2337,7 +2337,7 @@ export function DesktopSwarmDashboard() {
             disabled={managedHostingControlsDisabled}
             title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}
           >
-            {isSwarmMode ? 'Disable Managed Hosting' : 'Enable Managed Hosting'}
+            {isSwarmMode ? 'Disable Swarm Linking' : 'Enable Swarm Linking'}
           </Button>
         </div>
       </div>
@@ -2393,7 +2393,7 @@ export function DesktopSwarmDashboard() {
                 )}
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                   <Badge tone={localIsMaster ? 'live' : localIsManagedHost ? 'live' : localIsChild ? 'warning' : 'neutral'}>{localSwarmRoleLabel}</Badge>
-                  <Badge tone={isSwarmMode ? 'live' : 'neutral'}>{isSwarmMode ? 'Managed hosting on' : 'Managed hosting off'}</Badge>
+                  <Badge tone={isSwarmMode ? 'live' : 'neutral'}>{isSwarmMode ? 'Swarm linking on' : 'Swarm linking off'}</Badge>
                   <Badge tone={localTailscaleHosting.tone}>{localTailscaleHosting.summary}</Badge>
                   {localManagedLinked ? <Badge tone="neutral">Manager: {localManagerDisplay}</Badge> : null}
                   {localManagedLinked && localPairingState ? <Badge tone="neutral">Pairing: {formatUnderscoreLabel(localPairingState)}</Badge> : null}
@@ -2427,7 +2427,7 @@ export function DesktopSwarmDashboard() {
           {loading && onboardingStatus === null ? (
             <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Loading swarm configuration…</div>
           ) : !isSwarmMode ? (
-            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Managed Hosting is off. Local containers still work; enable Managed Hosting only to link other machines.</div>
+            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Swarm linking is off. Local containers still work; enable Swarm linking only to link other machines.</div>
           ) : null}
 
           <div className="mt-5 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
@@ -2578,7 +2578,7 @@ export function DesktopSwarmDashboard() {
           </div>
 
           {!isSwarmMode ? (
-            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Enable Managed Hosting to link Managed Hosts.</div>
+            <div className="mt-4 rounded-xl border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-text-muted)]">Enable Swarm linking to link Managed Hosts.</div>
           ) : managedHostMembers.length > 0 ? (
             <div className="mt-4 grid gap-4">
               {managedHostMembers.map((member) => {
