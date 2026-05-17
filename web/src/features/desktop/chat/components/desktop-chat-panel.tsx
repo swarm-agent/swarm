@@ -148,6 +148,13 @@ function appendDictationText(base: string, addition: string): string {
   return `${trimmedBaseEnd}${needsSpace ? ' ' : ''}${normalizedAddition}`
 }
 
+export function isSilentSpeechRecognitionError(error: string, message = ''): boolean {
+  const normalizedMessage = message.toLowerCase()
+  return error === 'no-speech' || (
+    normalizedMessage.includes('kafassistanterrordomain') && /\b(?:error|code)\s*=?\s*1107\b/.test(normalizedMessage)
+  )
+}
+
 function speechRecognitionErrorMessage(error: string, message = ''): string {
   switch (error) {
     case 'not-allowed':
@@ -1114,7 +1121,7 @@ export function DesktopChatPanel({
     recognition.onerror = (event) => {
       dictationStartingRef.current = false
       const error = event.error ?? ''
-      if (error === 'no-speech' && dictationEnabledRef.current) {
+      if (isSilentSpeechRecognitionError(error, event.message)) {
         setDictationError(null)
         return
       }

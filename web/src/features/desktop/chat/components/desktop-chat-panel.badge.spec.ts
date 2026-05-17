@@ -3,10 +3,16 @@ import assert from 'node:assert/strict'
 
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, metadataTodoSummary, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
+})
+
+test('isSilentSpeechRecognitionError suppresses iOS PWA speech silence aborts', () => {
+  assert.equal(isSilentSpeechRecognitionError('', 'The operation couldn’t be completed. (kAFAssistantErrorDomain error 1107.)'), true)
+  assert.equal(isSilentSpeechRecognitionError('', 'Error Domain=kAFAssistantErrorDomain Code=1107 "(null)"'), true)
+  assert.equal(isSilentSpeechRecognitionError('network', 'Browser speech recognition hit a network error.'), false)
 })
 
 test('formatAgentTodoBadge shows complete state when no tasks remain open', () => {
