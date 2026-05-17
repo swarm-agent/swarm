@@ -1,10 +1,14 @@
 package deploy
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
+	modelruntime "swarm/packages/swarmd/internal/model"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func TestPendingSyncVaultPasswordExpires(t *testing.T) {
@@ -50,5 +54,69 @@ func TestCreateResultDisplayNameFallsBackToInputName(t *testing.T) {
 	got := createResultDisplayName(ContainerCreateInput{Name: "child-swarm"}, localcontainers.Container{})
 	if got != "child-swarm" {
 		t.Fatalf("createResultDisplayName() = %q, want child-swarm", got)
+	}
+}
+
+func newModelDefaultsSyncTestService(t *testing.T) (*Service, *pebblestore.Store) {
+	t.Helper()
+	store, err := pebblestore.Open(t.TempDir() + "/swarm.pebble")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), events, nil)
+	return &Service{model: modelSvc}, store
+}
+
+func TestApplyManagedModelDefaultsBundleAllowsUnsetProviderAndModel(t *testing.T) {
+	svc, store := newModelDefaultsSyncTestService(t)
+	modelStore := pebblestore.NewModelStore(store)
+	if _, err := modelStore.SetGlobalPreference("codex", "gpt-5-codex", "high"); err != nil {
+		t.Fatalf("seed global preference: %v", err)
+	}
+
+	if err := svc.ApplyManagedModelDefaultsBundle(context.Background(), ContainerSyncModelDefaultsBundle{Preference: pebblestore.ModelPreference{Thinking: pebblestore.DefaultThinkingLevel}}); err != nil {
+		t.Fatalf("ApplyManagedModelDefaultsBundle() error = %v", err)
+	}
+	_, ok, err := modelStore.GetGlobalPreference()
+	if err != nil {
+		t.Fatalf("GetGlobalPreference() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("ApplyManagedModelDefaultsBundle() left a global default after applying an unset provider/model")
+	}
+}
+
+func TestApplyManagedModelDefaultsBundleRejectsPartialPreference(t *testing.T) {
+	svc, _ := newModelDefaultsSyncTestService(t)
+
+	err := svc.ApplyManagedModelDefaultsBundle(context.Background(), ContainerSyncModelDefaultsBundle{Preference: pebblestore.ModelPreference{Provider: "codex", Thinking: "high"}})
+	if err == nil {
+		t.Fatalf("ApplyManagedModelDefaultsBundle() expected partial preference error")
+	}
+	if !strings.Contains(err.Error(), "missing provider, model, or thinking") {
+		t.Fatalf("ApplyManagedModelDefaultsBundle() error = %v", err)
+	}
+}
+
+func TestApplyManagedModelDefaultsBundlePersistsCompletePreference(t *testing.T) {
+	svc, store := newModelDefaultsSyncTestService(t)
+
+	if err := svc.ApplyManagedModelDefaultsBundle(context.Background(), ContainerSyncModelDefaultsBundle{Preference: pebblestore.ModelPreference{Provider: " codex ", Model: " gpt-5-codex ", Thinking: " high "}}); err != nil {
+		t.Fatalf("ApplyManagedModelDefaultsBundle() error = %v", err)
+	}
+	pref, ok, err := pebblestore.NewModelStore(store).GetGlobalPreference()
+	if err != nil {
+		t.Fatalf("GetGlobalPreference() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("ApplyManagedModelDefaultsBundle() did not persist a complete preference")
+	}
+	if pref.Provider != "codex" || pref.Model != "gpt-5-codex" || pref.Thinking != "high" {
+		t.Fatalf("preference = %+v, want codex/gpt-5-codex/high", pref)
 	}
 }

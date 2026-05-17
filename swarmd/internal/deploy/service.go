@@ -3496,10 +3496,17 @@ func (s *Service) applyManagedModelDefaultsBundle(bundle ContainerSyncModelDefau
 		return nil
 	}
 	pref := bundle.Preference
-	if strings.TrimSpace(pref.Provider) == "" || strings.TrimSpace(pref.Model) == "" || strings.TrimSpace(pref.Thinking) == "" {
+	provider := strings.TrimSpace(pref.Provider)
+	modelName := strings.TrimSpace(pref.Model)
+	thinking := strings.TrimSpace(pref.Thinking)
+	if provider == "" && modelName == "" {
+		_, _, err := s.model.ClearGlobalPreference()
+		return err
+	}
+	if provider == "" || modelName == "" || thinking == "" {
 		return fmt.Errorf("model default sync bundle is missing provider, model, or thinking")
 	}
-	_, _, err := s.model.SetGlobalPreference(pref.Provider, pref.Model, pref.Thinking, pref.ServiceTier, pref.ContextMode)
+	_, _, err := s.model.SetGlobalPreference(provider, modelName, thinking, pref.ServiceTier, pref.ContextMode)
 	return err
 }
 
