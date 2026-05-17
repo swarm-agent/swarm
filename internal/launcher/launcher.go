@@ -507,6 +507,14 @@ func (p Profile) EnvList(extra map[string]string) []string {
 		}
 		merged[key] = value
 	}
+	for _, key := range []string{
+		"SWARM_SYSTEM_BINARY_DIR",
+		"SWARM_SYSTEM_LIBEXEC_DIR",
+		"SWARM_SYSTEM_LIB_DIR",
+		"SWARM_SYSTEM_SHARE_DIR",
+	} {
+		delete(merged, key)
+	}
 	for key, value := range p.EnvMap() {
 		merged[key] = value
 	}

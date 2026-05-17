@@ -128,6 +128,51 @@ func TestEnvMapIncludesInstalledLibDirInLDLibraryPath(t *testing.T) {
 	}
 }
 
+func TestEnvListStripsArtifactInstallPathOverrides(t *testing.T) {
+	systemRoot := t.TempDir()
+	installRoot := filepath.Join(systemRoot, "share", "swarm")
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", installRoot)
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", filepath.Join(systemRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_BINARY_DIR", filepath.Join(installRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_LIBEXEC_DIR", filepath.Join(installRoot, "libexec"))
+	t.Setenv("SWARM_SYSTEM_LIB_DIR", filepath.Join(installRoot, "lib"))
+	t.Setenv("SWARM_SYSTEM_SHARE_DIR", filepath.Join(installRoot, "share"))
+
+	profile, err := LoadRuntimeProfile("main", nil)
+	if err != nil {
+		t.Fatalf("LoadRuntimeProfile: %v", err)
+	}
+	env := profile.EnvList(nil)
+	for _, entry := range env {
+		for _, forbidden := range []string{
+			"SWARM_SYSTEM_BINARY_DIR=",
+			"SWARM_SYSTEM_LIBEXEC_DIR=",
+			"SWARM_SYSTEM_LIB_DIR=",
+			"SWARM_SYSTEM_SHARE_DIR=",
+		} {
+			if strings.HasPrefix(entry, forbidden) {
+				t.Fatalf("EnvList leaked install override %q in %v", forbidden, env)
+			}
+		}
+	}
+	if got := envValueFromList(env, "SWARM_SYSTEM_BIN_DIR"); got != filepath.Join(systemRoot, "bin") {
+		t.Fatalf("SWARM_SYSTEM_BIN_DIR = %q", got)
+	}
+	if got := envValueFromList(env, "LD_LIBRARY_PATH"); !strings.HasPrefix(got, filepath.Join(installRoot, "lib")) {
+		t.Fatalf("LD_LIBRARY_PATH = %q, want installed lib prefix", got)
+	}
+}
+
+func envValueFromList(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
 func TestLoadRuntimeProfileUsesStorageContractDaemonRoots(t *testing.T) {
 	installRoot := t.TempDir()
 	systemRoot := filepath.Join(installRoot, "system")
