@@ -31,6 +31,9 @@ const (
 
 	updateKindRelease = "release"
 	updateKindDev     = "dev"
+
+	updateHelperScopeEnv = "SWARM_UPDATE_HELPER_SYSTEMD_SCOPE"
+	updateHelperUnitEnv  = "SWARM_UPDATE_HELPER_SYSTEMD_UNIT"
 )
 
 type desktopUpdateJob struct {
@@ -61,7 +64,12 @@ type updateJobRunner struct {
 	current desktopUpdateJob
 }
 
-var defaultUpdateJobRunner = &updateJobRunner{}
+var (
+	defaultUpdateJobRunner = &updateJobRunner{}
+	execCommandForUpdate   = exec.Command
+	execLookPathForUpdate  = exec.LookPath
+	osGeteuidForUpdate     = os.Geteuid
+)
 
 func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	if s.update == nil {
@@ -296,32 +304,48 @@ func (s *Server) startDetachedUpdateCommand(kind, jobID string, runner *updateJo
 		return updateLaunchDetails{}, err
 	}
 	lane := updateLaneForKind(kind)
-	args := []string{lane, "update"}
+	helperArgs := []string{lane, "update"}
 	if kind == updateKindDev {
-		args = append(args, "dev")
+		helperArgs = append(helperArgs, "dev")
 	} else {
-		args = append(args, "apply")
+		helperArgs = append(helperArgs, "apply")
 	}
-	cmd := exec.Command(swarmPath, args...)
 	env := append(os.Environ(),
 		"SWARM_UPDATE_JOB_ID="+strings.TrimSpace(jobID),
 		"SWARM_UPDATE_JOB_KIND="+strings.TrimSpace(kind),
 	)
+	dir := ""
 	if kind == updateKindDev {
 		devRoot, err := s.configuredDevRoot()
 		if err != nil {
 			return updateLaunchDetails{}, err
 		}
 		env = append(env, "SWARM_ROOT="+devRoot)
-		cmd.Dir = devRoot
+		dir = devRoot
 	}
-	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	logPath := s.updateHelperLogPath(jobID)
 	if logPath != "" {
 		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 			return updateLaunchDetails{}, fmt.Errorf("prepare update helper log: %w", err)
 		}
+	}
+	launch, err := prepareUpdateHelperLaunch(updateHelperLaunchConfig{
+		SwarmPath:    swarmPath,
+		Args:         helperArgs,
+		Env:          env,
+		Dir:          dir,
+		LogPath:      logPath,
+		SystemdUnit:  strings.TrimSpace(os.Getenv("SWARM_SYSTEMD_UNIT")),
+		SystemdScope: strings.TrimSpace(os.Getenv("SWARM_SYSTEMD_SCOPE")),
+	})
+	if err != nil {
+		return updateLaunchDetails{}, err
+	}
+	cmd := execCommandForUpdate(launch.CommandPath, launch.Args...)
+	cmd.Env = launch.Env
+	cmd.Dir = launch.Dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if logPath != "" {
 		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err != nil {
 			return updateLaunchDetails{}, fmt.Errorf("open update helper log: %w", err)
@@ -337,14 +361,181 @@ func (s *Server) startDetachedUpdateCommand(kind, jobID string, runner *updateJo
 	if err := cmd.Start(); err != nil {
 		return updateLaunchDetails{}, fmt.Errorf("start desktop update helper: %w", err)
 	}
-	launch := updateLaunchDetails{
+	details := updateLaunchDetails{
 		Lane:      lane,
-		Command:   strings.Join(append([]string{swarmPath}, args...), " "),
+		Command:   strings.Join(append([]string{swarmPath}, helperArgs...), " "),
 		HelperPID: cmd.Process.Pid,
 		LogPath:   logPath,
 	}
 	go s.watchDetachedUpdateCommand(cmd, strings.TrimSpace(jobID), runner)
-	return launch, nil
+	return details, nil
+}
+
+type updateHelperLaunchConfig struct {
+	SwarmPath    string
+	Args         []string
+	Env          []string
+	Dir          string
+	LogPath      string
+	SystemdUnit  string
+	SystemdScope string
+}
+
+type updateHelperLaunchCommand struct {
+	CommandPath string
+	Args        []string
+	Env         []string
+	Dir         string
+}
+
+func prepareUpdateHelperLaunch(cfg updateHelperLaunchConfig) (updateHelperLaunchCommand, error) {
+	command := updateHelperLaunchCommand{
+		CommandPath: strings.TrimSpace(cfg.SwarmPath),
+		Args:        append([]string(nil), cfg.Args...),
+		Env:         append([]string(nil), cfg.Env...),
+		Dir:         strings.TrimSpace(cfg.Dir),
+	}
+	if !shouldLaunchUpdateHelperWithSystemdScope(cfg) {
+		return command, nil
+	}
+	systemdRunPath, err := execLookPathForUpdate("systemd-run")
+	if err != nil {
+		return updateHelperLaunchCommand{}, errors.New("systemd-run not found; cannot launch update helper outside swarm.service cgroup")
+	}
+	systemdArgs := []string{
+		"--quiet",
+		"--collect",
+		"--property=KillMode=process",
+		"--property=SendSIGHUP=no",
+		"--unit=" + updateHelperSystemdScopeUnit(cfg),
+	}
+	if normalizeUpdateHelperSystemdScope(cfg.SystemdScope) == "system" {
+		systemdArgs = append(systemdArgs, "--uid="+currentUpdateHelperUser())
+		if osGeteuidForUpdate() == 0 {
+			command.CommandPath = systemdRunPath
+			command.Args = systemdArgs
+		} else {
+			sudoPath, err := updateHelperSudoPath()
+			if err != nil {
+				return updateHelperLaunchCommand{}, err
+			}
+			command.CommandPath = sudoPath
+			command.Args = append([]string{"-n", systemdRunPath}, systemdArgs...)
+		}
+	} else {
+		systemdArgs = append([]string{"--user"}, systemdArgs...)
+		command.CommandPath = systemdRunPath
+		command.Args = systemdArgs
+	}
+	if command.Dir != "" {
+		command.Args = append(command.Args, "--working-directory="+command.Dir)
+	}
+	for _, entry := range updateHelperSystemdEnv(command.Env) {
+		command.Args = append(command.Args, "--setenv="+entry)
+	}
+	command.Args = append(command.Args, strings.TrimSpace(cfg.SwarmPath))
+	command.Args = append(command.Args, cfg.Args...)
+	command.Env = os.Environ()
+	command.Dir = ""
+	return command, nil
+}
+
+func updateHelperSystemdEnv(env []string) []string {
+	values := make(map[string]string, len(env))
+	for _, entry := range env {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			continue
+		}
+		values[strings.TrimSpace(key)] = entry
+	}
+	allowed := []string{
+		"PATH",
+		"HOME",
+		"USER",
+		"LOGNAME",
+		"SHELL",
+		"STATE_DIRECTORY",
+		"CACHE_DIRECTORY",
+		"RUNTIME_DIRECTORY",
+		"CONFIGURATION_DIRECTORY",
+		"LOGS_DIRECTORY",
+		"SWARMD_DATA_DIR",
+		"SWARMD_CACHE_DIR",
+		"SWARMD_RUNTIME_DIR",
+		"SWARMD_CONFIG_DIR",
+		"SWARMD_LOG_DIR",
+		"SWARM_SYSTEMD_SCOPE",
+		"SWARM_SYSTEMD_UNIT",
+		"SWARM_LANE",
+		"SWARM_BIN_DIR",
+		"SWARM_TOOL_BIN_DIR",
+		"SWARM_ROOT",
+		"SWARM_REBUILD_REASON",
+		"SWARM_UPDATE_JOB_ID",
+		"SWARM_UPDATE_JOB_KIND",
+	}
+	out := make([]string, 0, len(allowed))
+	for _, key := range allowed {
+		if entry := strings.TrimSpace(values[key]); entry != "" {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func updateHelperSudoPath() (string, error) {
+	if osGeteuidForUpdate() == 0 {
+		return "", nil
+	}
+	sudoPath, err := execLookPathForUpdate("sudo")
+	if err != nil {
+		return "", errors.New("sudo not found; cannot launch update helper outside swarm.service cgroup")
+	}
+	return sudoPath, nil
+}
+
+func currentUpdateHelperUser() string {
+	for _, key := range []string{"USER", "LOGNAME"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return fmt.Sprintf("%d", osGeteuidForUpdate())
+}
+
+func shouldLaunchUpdateHelperWithSystemdScope(cfg updateHelperLaunchConfig) bool {
+	if os.Getenv(updateHelperScopeEnv) == "0" {
+		return false
+	}
+	if strings.TrimSpace(cfg.SwarmPath) == "" {
+		return false
+	}
+	return normalizeUpdateHelperSystemdScope(cfg.SystemdScope) != "" && strings.TrimSpace(cfg.SystemdUnit) != ""
+}
+
+func normalizeUpdateHelperSystemdScope(scope string) string {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "system", "systemd-system":
+		return "system"
+	case "user", "systemd-user":
+		return "user"
+	default:
+		return ""
+	}
+}
+
+func updateHelperSystemdScopeUnit(cfg updateHelperLaunchConfig) string {
+	if unit := strings.TrimSpace(os.Getenv(updateHelperUnitEnv)); unit != "" {
+		return unit
+	}
+	seed := strings.Join(append([]string{cfg.SwarmPath}, cfg.Args...), " ") + "\x00" + cfg.Dir + "\x00" + cfg.LogPath + "\x00" + time.Now().UTC().Format(time.RFC3339Nano)
+	sum := sha1.Sum([]byte(seed))
+	return "swarm-update-" + hex.EncodeToString(sum[:])[:12]
 }
 
 func (s *Server) watchDetachedUpdateCommand(cmd *exec.Cmd, jobID string, runner *updateJobRunner) {
