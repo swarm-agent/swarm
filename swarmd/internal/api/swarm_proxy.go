@@ -312,6 +312,9 @@ func (s *Server) ownerHostSwarmIDForTarget(target swarmTarget) string {
 	if swarmID == "" || s == nil {
 		return ""
 	}
+	if localHostSwarmID := s.localOwnerHostSwarmIDForRuntime(swarmID); localHostSwarmID != "" {
+		return localHostSwarmID
+	}
 	if s.topology != nil {
 		if runtimeRecord, ok, err := s.topology.GetRuntime(swarmID); err == nil && ok {
 			if hostSwarmID := strings.TrimSpace(runtimeRecord.OwnerHostSwarmID); hostSwarmID != "" {
@@ -319,6 +322,9 @@ func (s *Server) ownerHostSwarmIDForTarget(target swarmTarget) string {
 			}
 		}
 		if _, err := s.topology.EnsureSnapshot(); err == nil {
+			if localHostSwarmID := s.localOwnerHostSwarmIDForRuntime(swarmID); localHostSwarmID != "" {
+				return localHostSwarmID
+			}
 			if runtimeRecord, ok, err := s.topology.GetRuntime(swarmID); err == nil && ok {
 				if hostSwarmID := strings.TrimSpace(runtimeRecord.OwnerHostSwarmID); hostSwarmID != "" {
 					return hostSwarmID
@@ -339,6 +345,21 @@ func (s *Server) ownerHostSwarmIDForTarget(target swarmTarget) string {
 		}
 	}
 	return ""
+}
+
+func (s *Server) localOwnerHostSwarmIDForRuntime(runtimeSwarmID string) string {
+	runtimeSwarmID = strings.TrimSpace(runtimeSwarmID)
+	if runtimeSwarmID == "" || s == nil || s.topology == nil || s.swarm == nil {
+		return ""
+	}
+	runtimeRecord, ok, err := s.topology.GetRuntime(runtimeSwarmID)
+	if err != nil || !ok || strings.TrimSpace(runtimeRecord.OwnerHostSwarmID) == "" {
+		return ""
+	}
+	if !s.isLocalSwarmID(runtimeRecord.OwnerHostSwarmID) {
+		return ""
+	}
+	return strings.TrimSpace(runtimeRecord.OwnerHostSwarmID)
 }
 
 func isWebsocketUpgradeRequest(r *http.Request) bool {

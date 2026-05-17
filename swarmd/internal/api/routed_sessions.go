@@ -83,6 +83,9 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 		}
 	}
 	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID))
+	if localHostSwarmID := s.localOwnerHostSwarmIDForRuntime(record.RuntimeSwarmID); localHostSwarmID != "" {
+		hostSwarmID = localHostSwarmID
+	}
 	backendURL := strings.TrimSpace(record.BackendURL)
 	if hostSwarmID != "" && isLoopbackBackendURL(backendURL) {
 		if ownerBackendURL := s.ownerHostBackendURLForTarget(swarmTarget{SwarmID: strings.TrimSpace(record.RuntimeSwarmID), HostSwarmID: hostSwarmID}); ownerBackendURL != "" {
@@ -404,6 +407,9 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.TrimSpace(routeRecord.RuntimeWorkspacePath) == "" {
 			routeRecord.RuntimeWorkspacePath = strings.TrimSpace(req.Hosted.RuntimeWorkspacePath)
+		}
+		if localHostSwarmID := s.localOwnerHostSwarmIDForRuntime(routeRecord.ChildSwarmID); localHostSwarmID != "" {
+			routeRecord.HostSwarmID = localHostSwarmID
 		}
 		if routeRecord.CreatedAt == 0 {
 			routeRecord.CreatedAt = session.CreatedAt

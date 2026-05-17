@@ -132,11 +132,51 @@ func TestProxyBackendURLUsesChildLoopbackOnOwnerHost(t *testing.T) {
 	got := server.proxyBackendURLForTarget(swarmTarget{
 		SwarmID:     "child-swarm",
 		Kind:        "mirrored",
-		HostSwarmID: "managed-swarm",
+		HostSwarmID: "host-swarm-id",
 		BackendURL:  "http://127.0.0.1:7782",
 	})
 	if got != "http://127.0.0.1:7782" {
 		t.Fatalf("backend url = %q, want child loopback backend", got)
+	}
+}
+
+func TestRoutedSessionTargetUsesLocalOwnerHostWhenCopiedFromManager(t *testing.T) {
+	server, _, _, _ := newRoutedSessionTestServer(t)
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:              "child-swarm",
+		Name:                 "managed child",
+		Relationship:         "child",
+		BackendURL:           "http://127.0.0.1:7782",
+		OwnerHostSwarmID:     "host-swarm-id",
+		OwnerHostContainerID: "managed-container",
+	}); err != nil {
+		t.Fatalf("upsert child runtime: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:      "manager-swarm",
+		Name:         "manager",
+		Relationship: "manager",
+		BackendURL:   "https://manager.example.test",
+	}); err != nil {
+		t.Fatalf("upsert manager runtime: %v", err)
+	}
+	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
+		SessionID:            "session-managed-child",
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      "http://127.0.0.1:7782",
+		HostSwarmID:          "manager-swarm",
+		HostContainerID:      "managed-container",
+		RuntimeWorkspacePath: "/workspaces/swarm-go",
+	}); err != nil {
+		t.Fatalf("upsert session route: %v", err)
+	}
+
+	target, ok, err := server.routedSessionTarget("session-managed-child")
+	if err != nil || !ok {
+		t.Fatalf("routed session target ok=%t err=%v", ok, err)
+	}
+	if target.HostSwarmID != "host-swarm-id" || target.BackendURL != "http://127.0.0.1:7782" {
+		t.Fatalf("routed target = %+v", target)
 	}
 }
 
