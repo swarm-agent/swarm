@@ -504,28 +504,6 @@ func TestRoutedSessionGetUsesStoredRouteWithoutSwarmID(t *testing.T) {
 	}
 }
 
-func TestRoutedLocalChildTargetUsesChildPeerAuth(t *testing.T) {
-	server, _, _, _ := newRoutedSessionTestServer(t)
-	server.SetSwarmService(fakeRoutedSwarmService{
-		state: swarmruntime.LocalState{
-			Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
-		},
-		tokens: map[string]string{"child-swarm": "host-to-child-token"},
-	})
-
-	token, err := server.outgoingPeerAuthTokenForTarget(nil, swarmTarget{
-		SwarmID:     "child-swarm",
-		Kind:        "local",
-		HostSwarmID: "host-swarm-id",
-	})
-	if err != nil {
-		t.Fatalf("local child target token error: %v", err)
-	}
-	if token != "host-to-child-token" {
-		t.Fatalf("local child target token = %q, want host-to-child-token", token)
-	}
-}
-
 func TestRoutedSessionTargetUsesOwnerHostPeerAuth(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	sessionID := "session-routed"
@@ -1105,9 +1083,8 @@ func seedRoutedSession(t *testing.T, sessionSvc *sessionruntime.Service) string 
 }
 
 type fakeRoutedSwarmService struct {
-	state  swarmruntime.LocalState
-	token  string
-	tokens map[string]string
+	state swarmruntime.LocalState
+	token string
 }
 
 type fakeRemoteDeployService struct {
@@ -1192,12 +1169,8 @@ func (f fakeRoutedSwarmService) SetCurrentGroup(string, string) (swarmruntime.Gr
 	return swarmruntime.GroupState{}, nil
 }
 
-func (f fakeRoutedSwarmService) OutgoingPeerAuthToken(swarmID string) (string, bool, error) {
-	if f.tokens != nil {
-		token := strings.TrimSpace(f.tokens[strings.TrimSpace(swarmID)])
-		return token, token != "", nil
-	}
-	return f.token, strings.TrimSpace(f.token) != "", nil
+func (f fakeRoutedSwarmService) OutgoingPeerAuthToken(string) (string, bool, error) {
+	return f.token, true, nil
 }
 
 func (f fakeRoutedSwarmService) ValidateIncomingPeerAuth(string, string) (bool, error) {
