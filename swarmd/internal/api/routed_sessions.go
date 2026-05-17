@@ -84,7 +84,7 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 	}
 	hostSwarmID := firstNonEmpty(strings.TrimSpace(record.HostSwarmID), strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID))
 	backendURL := strings.TrimSpace(record.BackendURL)
-	if hostSwarmID != "" && isLoopbackBackendURL(backendURL) {
+	if hostSwarmID != "" && !s.isLocalSwarmID(hostSwarmID) && isLoopbackBackendURL(backendURL) {
 		if ownerBackendURL := s.ownerHostBackendURLForTarget(swarmTarget{SwarmID: strings.TrimSpace(record.RuntimeSwarmID), HostSwarmID: hostSwarmID}); ownerBackendURL != "" {
 			backendURL = ownerBackendURL
 		}

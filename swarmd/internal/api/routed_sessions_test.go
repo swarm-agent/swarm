@@ -480,6 +480,55 @@ func TestLocalChildTargetUsesChildPeerAuthWhenOwnerHostIsSelf(t *testing.T) {
 	}
 }
 
+func TestRoutedSessionTargetKeepsLocalChildLoopbackBackendWhenOwnerHostIsSelf(t *testing.T) {
+	server, _, _, routeStore := newRoutedSessionTestServer(t)
+	sessionID := "session-local-child-routed"
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
+		SessionID:            sessionID,
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      "http://127.0.0.1:7782",
+		HostSwarmID:          "host-swarm-id",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/runtime/workspace",
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
+		SwarmID:          "child-swarm",
+		Name:             "child",
+		Relationship:     "child",
+		BackendURL:       "http://127.0.0.1:7782",
+		Status:           "attached",
+		OwnerHostSwarmID: "host-swarm-id",
+	}); err != nil {
+		t.Fatalf("upsert runtime: %v", err)
+	}
+	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
+		SessionID:            sessionID,
+		ChildSwarmID:         "child-swarm",
+		ChildBackendURL:      "http://127.0.0.1:7782",
+		HostSwarmID:          "host-swarm-id",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/runtime/workspace",
+	}); err != nil {
+		t.Fatalf("upsert topology route: %v", err)
+	}
+
+	target, ok, err := server.routedSessionTarget(sessionID)
+	if err != nil {
+		t.Fatalf("routed target: %v", err)
+	}
+	if !ok || target == nil {
+		t.Fatalf("routed target not found")
+	}
+	if target.BackendURL != "http://127.0.0.1:7782" {
+		t.Fatalf("target backend url = %q, want child loopback backend", target.BackendURL)
+	}
+	if token, err := server.outgoingPeerAuthTokenForTarget(nil, *target); err != nil || token != "peer-token" {
+		t.Fatalf("target token = %q err=%v, want peer-token", token, err)
+	}
+}
+
 func TestRoutedSessionTargetUsesOwnerHostPeerAuth(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	sessionID := "session-routed"
