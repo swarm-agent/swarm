@@ -79,6 +79,7 @@ const TODO_DRAG_MIME = 'application/x-swarm-workspace-todo'
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
 const ALWAYS_APPLY_SAVED_NOTICE_MS = 5_000
+const RETURN_TO_SCROLL_LOCK_MIN_DISTANCE_PX = 48
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 
@@ -434,8 +435,18 @@ function optionKey(provider: string, model: string, contextMode = ''): string {
   return `${provider}:${model}:${contextMode.trim().toLowerCase()}`
 }
 
-function nearBottom(element: HTMLDivElement): boolean {
-  return element.scrollHeight - element.scrollTop - element.clientHeight < 48
+type ScrollMetrics = Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>
+
+function scrollBottomGap(element: ScrollMetrics): number {
+  return Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight)
+}
+
+function nearBottom(element: ScrollMetrics): boolean {
+  return scrollBottomGap(element) < RETURN_TO_SCROLL_LOCK_MIN_DISTANCE_PX
+}
+
+export function shouldShowScrollLockReturnButton(element: ScrollMetrics): boolean {
+  return scrollBottomGap(element) >= Math.max(RETURN_TO_SCROLL_LOCK_MIN_DISTANCE_PX, element.clientHeight / 2)
 }
 
 type RenderItem =
@@ -925,6 +936,7 @@ export function DesktopChatPanel({
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const shouldStickToBottomRef = useRef(true)
   const scrollToLatestFrameRef = useRef<number | null>(null)
+  const [showScrollLockReturnButton, setShowScrollLockReturnButton] = useState(false)
   const liveAssistantHandoffRef = useRef<{ sessionId: string; content: string; key: string } | null>(null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const dictationEnabledRef = useRef(false)
@@ -1519,12 +1531,22 @@ export function DesktopChatPanel({
     [actionablePendingPermissions, liveSession?.permissionsHydrated],
   )
   const pendingPermissionCount = actionablePendingPermissions.length
+  const updateScrollLockReturnButton = useCallback(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) {
+      setShowScrollLockReturnButton(false)
+      return
+    }
+    setShowScrollLockReturnButton(!shouldStickToBottomRef.current && shouldShowScrollLockReturnButton(scroller))
+  }, [])
+
   const persistScrollState = useCallback(() => {
     const scroller = scrollerRef.current
     if (!scroller) {
       return
     }
     shouldStickToBottomRef.current = nearBottom(scroller)
+    setShowScrollLockReturnButton(!shouldStickToBottomRef.current && shouldShowScrollLockReturnButton(scroller))
   }, [])
 
   const scrollToLatest = useCallback((attempts = 3) => {
@@ -1553,6 +1575,7 @@ export function DesktopChatPanel({
 
   const pinToLatest = useCallback(() => {
     shouldStickToBottomRef.current = true
+    setShowScrollLockReturnButton(false)
     scrollToLatest()
   }, [scrollToLatest])
 
@@ -1801,9 +1824,18 @@ export function DesktopChatPanel({
 
   useEffect(() => {
     if (shouldStickToBottomRef.current) {
+      setShowScrollLockReturnButton(false)
       scrollToLatest()
+      return
     }
-  }, [messages, renderMeasurementKey, scrollToLatest, sessionId])
+    updateScrollLockReturnButton()
+  }, [messages, renderMeasurementKey, scrollToLatest, sessionId, updateScrollLockReturnButton])
+
+  useEffect(() => {
+    const handleResize = () => updateScrollLockReturnButton()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [updateScrollLockReturnButton])
 
   useEffect(() => {
     return () => {
@@ -2863,7 +2895,8 @@ export function DesktopChatPanel({
         </div>
       </header>
 
-      <div ref={scrollerRef} data-testid="desktop-chat-scroller" onScroll={persistScrollState} className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain bg-[var(--app-bg-alt)] px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-6 sm:py-5">
+      <div className="relative flex-1 min-h-0 min-w-0 bg-[var(--app-bg-alt)]">
+        <div ref={scrollerRef} data-testid="desktop-chat-scroller" onScroll={persistScrollState} className="h-full min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-6 sm:py-5">
         {loadingMessages && messages.length === 0 ? (
           <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text-muted)]">Loading conversation…</div>
         ) : null}
@@ -2997,6 +3030,18 @@ export function DesktopChatPanel({
             )
           })}
         </div>
+        </div>
+        {showScrollLockReturnButton ? (
+          <button
+            type="button"
+            onClick={pinToLatest}
+            aria-label="Return to locked scroll position"
+            title="Return to latest"
+            className="absolute bottom-3 right-4 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:right-6"
+          >
+            <ChevronDown size={18} aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
 
       <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]">

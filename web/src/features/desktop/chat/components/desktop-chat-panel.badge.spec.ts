@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -59,6 +59,13 @@ test('savedRuleCountdownSeconds counts down the visible saved-rule notice', () =
   assert.equal(savedRuleCountdownSeconds(5_000, 1_001), 4)
   assert.equal(savedRuleCountdownSeconds(5_000, 5_000), 0)
   assert.equal(savedRuleCountdownSeconds(null, 0), 0)
+})
+
+test('shouldShowScrollLockReturnButton appears only after scrolling at least halfway away from lock', () => {
+  assert.equal(shouldShowScrollLockReturnButton({ scrollHeight: 2_000, scrollTop: 1_625, clientHeight: 360 }), false)
+  assert.equal(shouldShowScrollLockReturnButton({ scrollHeight: 2_000, scrollTop: 1_420, clientHeight: 360 }), true)
+  assert.equal(shouldShowScrollLockReturnButton({ scrollHeight: 2_000, scrollTop: 1_840, clientHeight: 120 }), false)
+  assert.equal(shouldShowScrollLockReturnButton({ scrollHeight: 2_000, scrollTop: 1_780, clientHeight: 120 }), true)
 })
 
 function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {

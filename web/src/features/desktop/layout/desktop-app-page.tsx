@@ -64,6 +64,7 @@ const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
+type MobileSidebarSwipeState = { startX: number; startY: number; tracking: boolean; completed: boolean; mode: 'open' | 'close' }
 const UPDATE_STATUS_REFETCH_INTERVAL_MS = 5 * 60_000
 const SWARM_TARGET_REFETCH_INTERVAL_MS = 10_000
 const SIDEBAR_ACTION_RAIL_WIDTH_CLASS = 'w-[52px]'
@@ -1475,7 +1476,7 @@ export function DesktopAppPage() {
   const [routeSessionPending, setRouteSessionPending] = useState(false)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
-  const mobileSidebarSwipeRef = useRef<{ startX: number; startY: number; tracking: boolean; opened: boolean } | null>(null)
+  const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
   const resizeStateRef = useRef<SidebarResizeState | null>(null)
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
@@ -2508,12 +2509,16 @@ export function DesktopAppPage() {
   }, [])
 
   const handleMobileSidebarTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
-    if (mobileSidebarOpen || event.touches.length !== 1) {
+    if (event.touches.length !== 1) {
       mobileSidebarSwipeRef.current = null
       return
     }
     const touch = event.touches[0]
-    if (!touch || touch.clientX > MOBILE_SIDEBAR_SWIPE_EDGE_PX) {
+    if (!touch) {
+      mobileSidebarSwipeRef.current = null
+      return
+    }
+    if (!mobileSidebarOpen && touch.clientX > MOBILE_SIDEBAR_SWIPE_EDGE_PX) {
       mobileSidebarSwipeRef.current = null
       return
     }
@@ -2521,25 +2526,32 @@ export function DesktopAppPage() {
       startX: touch.clientX,
       startY: touch.clientY,
       tracking: true,
-      opened: false,
+      completed: false,
+      mode: mobileSidebarOpen ? 'close' : 'open',
     }
   }, [mobileSidebarOpen])
 
   const handleMobileSidebarTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     const swipe = mobileSidebarSwipeRef.current
     const touch = event.touches[0]
-    if (!swipe?.tracking || !touch || swipe.opened) {
+    if (!swipe?.tracking || !touch || swipe.completed) {
       return
     }
     const deltaX = touch.clientX - swipe.startX
+    const absDeltaX = Math.abs(deltaX)
     const deltaY = Math.abs(touch.clientY - swipe.startY)
-    if (deltaY > MOBILE_SIDEBAR_SWIPE_MAX_Y_PX && deltaY > deltaX) {
+    if (deltaY > MOBILE_SIDEBAR_SWIPE_MAX_Y_PX && deltaY > absDeltaX) {
       mobileSidebarSwipeRef.current = null
       return
     }
-    if (deltaX >= MOBILE_SIDEBAR_SWIPE_MIN_X_PX && deltaY <= MOBILE_SIDEBAR_SWIPE_MAX_Y_PX) {
-      swipe.opened = true
+    if (swipe.mode === 'open' && deltaX >= MOBILE_SIDEBAR_SWIPE_MIN_X_PX && deltaY <= MOBILE_SIDEBAR_SWIPE_MAX_Y_PX) {
+      swipe.completed = true
       handleOpenMobileSidebar()
+      return
+    }
+    if (swipe.mode === 'close' && absDeltaX >= MOBILE_SIDEBAR_SWIPE_MIN_X_PX && deltaY <= MOBILE_SIDEBAR_SWIPE_MAX_Y_PX) {
+      swipe.completed = true
+      setMobileSidebarOpen(false)
     }
   }, [handleOpenMobileSidebar])
 
