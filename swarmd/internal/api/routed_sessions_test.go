@@ -480,6 +480,39 @@ func TestLocalChildTargetUsesChildPeerAuthWhenOwnerHostIsSelf(t *testing.T) {
 	}
 }
 
+func TestRoutedSessionTargetSkipsLocalRuntimeSelfRoute(t *testing.T) {
+	server, _, _, routeStore := newRoutedSessionTestServer(t)
+	sessionID := "session-local-runtime-routed"
+	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
+		SessionID:            sessionID,
+		ChildSwarmID:         "host-swarm-id",
+		ChildBackendURL:      "http://127.0.0.1:7781",
+		HostSwarmID:          "host-swarm-id",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/host/workspace",
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	if _, err := server.topology.UpsertSessionRoute(pebblestore.SessionRouteRecord{
+		SessionID:            sessionID,
+		ChildSwarmID:         "host-swarm-id",
+		ChildBackendURL:      "http://127.0.0.1:7781",
+		HostSwarmID:          "host-swarm-id",
+		HostWorkspacePath:    "/host/workspace",
+		RuntimeWorkspacePath: "/host/workspace",
+	}); err != nil {
+		t.Fatalf("upsert topology route: %v", err)
+	}
+
+	target, ok, err := server.routedSessionTarget(sessionID)
+	if err != nil {
+		t.Fatalf("routed target: %v", err)
+	}
+	if ok || target != nil {
+		t.Fatalf("routed target ok=%t target=%+v, want local handling", ok, target)
+	}
+}
+
 func TestRoutedSessionTargetKeepsLocalChildLoopbackBackendWhenOwnerHostIsSelf(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	sessionID := "session-local-child-routed"

@@ -67,10 +67,14 @@ func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, erro
 	if retired {
 		return nil, false, nil
 	}
-	if strings.TrimSpace(record.RuntimeSwarmID) == "" || strings.TrimSpace(record.BackendURL) == "" {
+	runtimeSwarmID := strings.TrimSpace(record.RuntimeSwarmID)
+	if runtimeSwarmID == "" || strings.TrimSpace(record.BackendURL) == "" {
 		return nil, false, errors.New("routed session is missing canonical topology route details")
 	}
-	runtimeRecord, _, err := s.topology.GetRuntime(record.RuntimeSwarmID)
+	if s.isLocalSwarmID(runtimeSwarmID) {
+		return nil, false, nil
+	}
+	runtimeRecord, _, err := s.topology.GetRuntime(runtimeSwarmID)
 	if err != nil {
 		return nil, false, err
 	}
