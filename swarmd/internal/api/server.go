@@ -2117,10 +2117,15 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				}
 				writeError(w, http.StatusBadGateway, cause)
 			}
+			routeHostSwarmID := strings.TrimSpace(remoteTarget.HostSwarmID)
+			if routeHostSwarmID == "" && strings.EqualFold(strings.TrimSpace(remoteTarget.Kind), "mirrored") {
+				routeHostSwarmID = s.ownerHostSwarmIDForTarget(*remoteTarget)
+			}
 			routeRecord := pebblestore.SessionRouteRecord{
 				SessionID:            session.ID,
 				ChildSwarmID:         strings.TrimSpace(remoteTarget.SwarmID),
 				ChildBackendURL:      routeBackendURL,
+				HostSwarmID:          routeHostSwarmID,
 				HostWorkspacePath:    strings.TrimSpace(req.HostWorkspacePath),
 				RuntimeWorkspacePath: strings.TrimSpace(req.RuntimeWorkspacePath),
 				CreatedAt:            session.CreatedAt,

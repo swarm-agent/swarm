@@ -187,6 +187,38 @@ func TestRoutedRunStreamControlProxiesHostedMirrorSession(t *testing.T) {
 
 func TestRoutedSessionTargetRewritesManagedLoopbackBackendToHostBackend(t *testing.T) {
 	server, _, _, _ := newRoutedSessionTestServer(t)
+	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/swarm/peer/sessions/open" {
+			http.NotFound(w, r)
+			return
+		}
+		var req peerSessionOpenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode child request: %v", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true,
+			"session": map[string]any{
+				"id":             req.SessionID,
+				"title":          req.Request.Title,
+				"workspace_path": req.Request.RuntimeWorkspacePath,
+				"workspace_name": req.Request.WorkspaceName,
+				"mode":           req.Request.Mode,
+				"created_at":     1,
+				"updated_at":     2,
+			},
+		})
+	}))
+	defer managedHost.Close()
+	if _, err := server.swarmMirror.UpsertRemoteResource("managed-swarm", pebblestore.SwarmMirrorEventRecord{
+		Sequence:  1,
+		EventType: pebblestore.SwarmMirrorEventTypeUpsert,
+		Kind:      mirrorResourceTarget,
+		ID:        "target:child-swarm",
+		Resource:  []byte(`{"swarm_id":"child-swarm","name":"managed child","role":"child","relationship":"child","kind":"remote","backend_url":"http://127.0.0.1:7782","online":true,"selectable":true}`),
+	}); err != nil {
+		t.Fatalf("upsert mirrored target: %v", err)
+	}
 	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{
 		SwarmID:              "child-swarm",
 		Name:                 "managed child",
@@ -203,7 +235,7 @@ func TestRoutedSessionTargetRewritesManagedLoopbackBackendToHostBackend(t *testi
 		SwarmID:      "managed-swarm",
 		Name:         "managed host",
 		Relationship: "managed",
-		BackendURL:   "https://managed.example.test",
+		BackendURL:   managedHost.URL,
 		Status:       "online",
 	}); err != nil {
 		t.Fatalf("upsert managed runtime: %v", err)
@@ -227,11 +259,35 @@ func TestRoutedSessionTargetRewritesManagedLoopbackBackendToHostBackend(t *testi
 	if !ok || target == nil {
 		t.Fatal("routed target not found")
 	}
-	if target.BackendURL != "https://managed.example.test" {
+	if target.BackendURL != managedHost.URL {
 		t.Fatalf("backend url = %q, want managed host backend", target.BackendURL)
 	}
 	if target.HostSwarmID != "managed-swarm" {
 		t.Fatalf("host swarm id = %q, want managed-swarm", target.HostSwarmID)
+	}
+
+	body := bytes.NewBufferString(`{"title":"managed child","mode":"plan","workspace_path":"/host/workspace","host_workspace_path":"/host/workspace","runtime_workspace_path":"/workspaces/swarm-go","workspace_name":"swarm-go","preference":{"provider":"fireworks","model":"accounts/fireworks/models/kimi-k2p6","thinking":"low"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=child-swarm", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Session struct {
+			ID string `json:"id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	createdRoute, ok, err := server.topology.GetSessionRoute(payload.Session.ID)
+	if err != nil || !ok {
+		t.Fatalf("get created topology route ok=%t err=%v", ok, err)
+	}
+	if createdRoute.HostSwarmID != "managed-swarm" {
+		t.Fatalf("created route host swarm id = %q, want managed-swarm", createdRoute.HostSwarmID)
 	}
 }
 
@@ -937,6 +993,7 @@ func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service,
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, routeStore, pebblestore.NewWorkspaceStore(store)))
 	server.SetSessionRouteStore(routeStore)
 	server.SetSwarmNodeStore(nodeStore)
+	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetSwarmService(fakeRoutedSwarmService{
 		state: swarmruntime.LocalState{
 			Node: swarmruntime.LocalNodeState{
