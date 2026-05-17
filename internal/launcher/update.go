@@ -39,14 +39,27 @@ const (
 )
 
 var (
-	stopBackendForUpdate                     = StopBackend
-	applyReleaseUpdateForUpdate              = ApplyReleaseUpdate
-	startBackendForUpdate                    = StartBackend
-	runTUIWithExtraEnvForUpdate              = RunTUIWithExtraEnv
-	resolveLifecycleManagerForUpdate         = resolveLifecycleManager
-	serviceActiveForUpdate                   = serviceActiveForScope
-	stopSystemdServiceForUpdate              = stopSystemdService
-	rollbackPendingUpdateAndRestartForUpdate = rollbackPendingUpdateAndRestart
+	stopBackendForUpdate                               = StopBackend
+	applyReleaseUpdateForUpdate                        = ApplyReleaseUpdate
+	startBackendForUpdate                              = StartBackend
+	runTUIWithExtraEnvForUpdate                        = RunTUIWithExtraEnv
+	resolveLifecycleManagerForUpdate                   = resolveLifecycleManager
+	serviceActiveForUpdate                             = serviceActiveForScope
+	stopSystemdServiceForUpdate                        = stopSystemdService
+	restartSystemdServiceForUpdate                     = restartSystemdService
+	runManagedDevHostUpdatePhaseForUpdate              = runManagedDevHostUpdatePhase
+	buildSwarmdBinariesForUpdate                       = BuildSwarmdBinaries
+	forceBuildToolBinariesForUpdate                    = ForceBuildToolBinaries
+	buildSwarmTUIForUpdate                             = BuildSwarmTUI
+	devFrontendAssetsNeedRebuildForUpdate              = DevFrontendAssetsNeedRebuild
+	buildAndInstallWebAssetsForUpdate                  = BuildAndInstallWebAssets
+	syncDevContainerImagesWithFingerprintForUpdate     = SyncDevContainerImagesWithFingerprint
+	writeLocalContainerUpdateRebuildStatusForUpdate    = writeLocalContainerUpdateRebuildStatus
+	installLaunchersForUpdate                          = InstallLaunchers
+	ensureSystemdServiceUnitForUpdate                  = EnsureSystemdServiceUnit
+	runDevLocalContainerUpdateJobAfterRestartForUpdate = runDevLocalContainerUpdateJobAfterRestart
+	runDevRemoteDeployUpdateJobAfterRestartForUpdate   = runDevRemoteDeployUpdateJobAfterRestart
+	rollbackPendingUpdateAndRestartForUpdate           = rollbackPendingUpdateAndRestart
 )
 
 type runtimeBootStatus struct {

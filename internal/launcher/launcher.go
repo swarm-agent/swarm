@@ -508,6 +508,7 @@ func (p Profile) EnvList(extra map[string]string) []string {
 		merged[key] = value
 	}
 	for _, key := range []string{
+		"SWARM_SYSTEM_BIN_DIR",
 		"SWARM_SYSTEM_BINARY_DIR",
 		"SWARM_SYSTEM_LIBEXEC_DIR",
 		"SWARM_SYSTEM_LIB_DIR",
@@ -1599,7 +1600,7 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 		return errors.New("update dev requires a source checkout")
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Checking managed host dev sync requirements.", "")
-	if err := runManagedDevHostUpdatePhase(profile); err != nil {
+	if err := runManagedDevHostUpdatePhaseForUpdate(profile); err != nil {
 		return err
 	}
 	restartPlan, err := resolveUpdateRestartPlan(profile)
@@ -1609,28 +1610,28 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Stopping Swarm backend for dev rebuild.", "")
 	fmt.Fprintln(os.Stdout, "\nRebuilding local dev checkout...")
 	fmt.Fprintln(os.Stdout, "Swarm is shut down before rebuilding and restarting.")
-	if err := StopBackend(profile); err != nil {
+	if err := stopBackendForUpdate(profile); err != nil {
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding swarmd binaries.", "")
-	if err := BuildSwarmdBinaries(profile); err != nil {
+	if err := buildSwarmdBinariesForUpdate(profile); err != nil {
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding launcher/tool binaries.", "")
-	if err := ForceBuildToolBinaries(profile.Root, map[string]bool{"rebuild": true}); err != nil {
+	if err := forceBuildToolBinariesForUpdate(profile.Root, map[string]bool{"rebuild": true}); err != nil {
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding Swarm TUI.", "")
-	if err := BuildSwarmTUI(profile); err != nil {
+	if err := buildSwarmTUIForUpdate(profile); err != nil {
 		return err
 	}
-	webNeedsRebuild, err := DevFrontendAssetsNeedRebuild(profile)
+	webNeedsRebuild, err := devFrontendAssetsNeedRebuildForUpdate(profile)
 	if err != nil {
 		return err
 	}
 	if webNeedsRebuild {
 		_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Building desktop web assets after frontend source changes.", "")
-		if err := BuildAndInstallWebAssets(profile); err != nil {
+		if err := buildAndInstallWebAssetsForUpdate(profile); err != nil {
 			return err
 		}
 	} else {
@@ -1646,31 +1647,35 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding/syncing dev container image.", "")
-	if err := SyncDevContainerImagesWithFingerprint(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true, fingerprint); err != nil {
+	if err := syncDevContainerImagesWithFingerprintForUpdate(profile, envOrString("SWARM_REBUILD_REASON", "swarmtui-update-dev"), true, fingerprint); err != nil {
 		return err
 	}
-	if err := writeLocalContainerUpdateRebuildStatus(profile, "dev", "", devmode.DefaultContainerImageRef, fingerprint); err != nil {
+	if err := writeLocalContainerUpdateRebuildStatusForUpdate(profile, "dev", "", devmode.DefaultContainerImageRef, fingerprint); err != nil {
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing Swarm launchers.", "")
-	if _, err := InstallLaunchers(profile.Root); err != nil {
+	if _, err := installLaunchersForUpdate(profile.Root); err != nil {
 		return err
+	}
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Reconciling Swarm systemd service unit.", "")
+	if err := ensureSystemdServiceUnitForUpdate(); err != nil {
+		return fmt.Errorf("reconcile systemd service unit after launcher install: %w", err)
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Restarting Swarm backend.", "")
 	markManagedDevHostPhase(profile, managedDevPhaseReconnect, updateJobStatusCompleted, "Primary backend restarted; managed hosts should reconnect after their remote rebuilds.", "")
 	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.blockedErr == nil && restartPlan.systemdScope != "" && restartPlan.systemdUnit != "" {
-		if err := restartSystemdService(restartPlan.systemdScope, restartPlan.systemdUnit, restartPlan.systemdActive); err != nil {
+		if err := restartSystemdServiceForUpdate(restartPlan.systemdScope, restartPlan.systemdUnit, restartPlan.systemdActive); err != nil {
 			return err
 		}
-	} else if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
+	} else if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return err
 	}
 	markManagedDevHostPhase(profile, managedDevPhaseVerify, updateJobStatusCompleted, "Primary restart completed; verify managed host session routing from the desktop.", "")
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Updating local and remote container images.", "")
-	if err := runDevLocalContainerUpdateJobAfterRestart(profile); err != nil {
+	if err := runDevLocalContainerUpdateJobAfterRestartForUpdate(profile); err != nil {
 		return err
 	}
-	if err := runDevRemoteDeployUpdateJobAfterRestart(profile); err != nil {
+	if err := runDevRemoteDeployUpdateJobAfterRestartForUpdate(profile); err != nil {
 		return err
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusCompleted, "Dev rebuild completed. Local and remote container image updates completed.", "")

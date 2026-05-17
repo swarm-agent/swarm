@@ -132,7 +132,7 @@ func TestEnvListStripsArtifactInstallPathOverrides(t *testing.T) {
 	systemRoot := t.TempDir()
 	installRoot := filepath.Join(systemRoot, "share", "swarm")
 	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", installRoot)
-	t.Setenv("SWARM_SYSTEM_BIN_DIR", filepath.Join(systemRoot, "bin"))
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", filepath.Join(systemRoot, "poisoned-bin"))
 	t.Setenv("SWARM_SYSTEM_BINARY_DIR", filepath.Join(installRoot, "bin"))
 	t.Setenv("SWARM_SYSTEM_LIBEXEC_DIR", filepath.Join(installRoot, "libexec"))
 	t.Setenv("SWARM_SYSTEM_LIB_DIR", filepath.Join(installRoot, "lib"))
@@ -142,9 +142,10 @@ func TestEnvListStripsArtifactInstallPathOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRuntimeProfile: %v", err)
 	}
-	env := profile.EnvList(nil)
+	env := profile.EnvList(map[string]string{"SWARM_REBUILD_REASON": "test", "CUSTOM_VALUE": "kept"})
 	for _, entry := range env {
 		for _, forbidden := range []string{
+			"SWARM_SYSTEM_BIN_DIR=",
 			"SWARM_SYSTEM_BINARY_DIR=",
 			"SWARM_SYSTEM_LIBEXEC_DIR=",
 			"SWARM_SYSTEM_LIB_DIR=",
@@ -155,8 +156,14 @@ func TestEnvListStripsArtifactInstallPathOverrides(t *testing.T) {
 			}
 		}
 	}
-	if got := envValueFromList(env, "SWARM_SYSTEM_BIN_DIR"); got != filepath.Join(systemRoot, "bin") {
-		t.Fatalf("SWARM_SYSTEM_BIN_DIR = %q", got)
+	if got := envValueFromList(env, "SWARM_LANE"); got != "main" {
+		t.Fatalf("SWARM_LANE = %q, want main", got)
+	}
+	if got := envValueFromList(env, "SWARM_REBUILD_REASON"); got != "test" {
+		t.Fatalf("SWARM_REBUILD_REASON = %q, want test", got)
+	}
+	if got := envValueFromList(env, "CUSTOM_VALUE"); got != "kept" {
+		t.Fatalf("CUSTOM_VALUE = %q, want kept", got)
 	}
 	if got := envValueFromList(env, "LD_LIBRARY_PATH"); !strings.HasPrefix(got, filepath.Join(installRoot, "lib")) {
 		t.Fatalf("LD_LIBRARY_PATH = %q, want installed lib prefix", got)
