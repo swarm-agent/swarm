@@ -240,7 +240,7 @@ func TestFlowAssignmentDeliveryUsesResolvedRemoteTargetSwarm(t *testing.T) {
 	}
 }
 
-func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHost(t *testing.T) {
+func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHostEvenWhenChildHealthIsOffline(t *testing.T) {
 	server, _ := newFlowPeerTestServer(t)
 	managedHostHits := 0
 	managedHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -311,6 +311,9 @@ func TestFlowAssignmentDeliveryRoutesMirroredChildThroughManagedHost(t *testing.
 	}
 	if _, err := server.swarmMirror.UpsertRemoteResource("managed-swarm-1", pebblestore.SwarmMirrorEventRecord{Sequence: 1, EventType: pebblestore.SwarmMirrorEventTypeUpsert, Kind: mirrorResourceTarget, ID: "managed-child", Resource: targetBytes}); err != nil {
 		t.Fatalf("upsert mirrored target: %v", err)
+	}
+	server.swarmTargetHealth.entries = map[string]swarmTargetHealthEntry{
+		"mirrored|managed-child|http://127.0.0.1:7782": {online: false, checkedAt: time.Now()},
 	}
 
 	assignment := testAPIFlowAssignment("flow-managed-child", 1)
