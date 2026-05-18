@@ -574,14 +574,13 @@ func swarmTargetSeen(seen map[string]struct{}, target swarmTarget) bool {
 }
 
 func swarmTargetIdentityKeys(target swarmTarget) []string {
-	keys := make([]string, 0, 2)
 	if swarmID := strings.ToLower(strings.TrimSpace(target.SwarmID)); swarmID != "" {
-		keys = append(keys, "swarm:"+swarmID)
+		return []string{"swarm:" + swarmID}
 	}
 	if backendURL := strings.ToLower(strings.TrimRight(strings.TrimSpace(target.BackendURL), "/")); backendURL != "" {
-		keys = append(keys, "backend:"+backendURL)
+		return []string{"backend:" + backendURL}
 	}
-	return keys
+	return nil
 }
 
 func probeSwarmTargetBackend(ctx context.Context, backendURL string) bool {

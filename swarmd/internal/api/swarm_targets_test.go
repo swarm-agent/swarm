@@ -142,6 +142,59 @@ func TestSwarmTargetsForRequestPrefersRegistryNodes(t *testing.T) {
 	}
 }
 
+func TestSwarmTargetsForRequestKeepsMirroredTargetsSharingHostLocalBackend(t *testing.T) {
+	server, _ := newFlowPeerTestServer(t)
+	targetBytes, err := json.Marshal(swarmTarget{
+		SwarmID:      "managed-child-new",
+		Name:         "managed child new",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "deployment-new",
+		HostSwarmID:  "managed-swarm-1",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   "http://127.0.0.1:7782",
+	})
+	if err != nil {
+		t.Fatalf("marshal target: %v", err)
+	}
+	if _, err := server.swarmMirror.UpsertRemoteResource("managed-swarm-1", pebblestore.SwarmMirrorEventRecord{Sequence: 1, EventType: pebblestore.SwarmMirrorEventTypeUpsert, Kind: mirrorResourceTarget, ID: "managed-child-new", Resource: targetBytes}); err != nil {
+		t.Fatalf("upsert new mirrored target: %v", err)
+	}
+	olderTargetBytes, err := json.Marshal(swarmTarget{
+		SwarmID:      "managed-child-old",
+		Name:         "managed child old",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "deployment-old",
+		HostSwarmID:  "managed-swarm-1",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   "http://127.0.0.1:7782",
+	})
+	if err != nil {
+		t.Fatalf("marshal older target: %v", err)
+	}
+	if _, err := server.swarmMirror.UpsertRemoteResource("managed-swarm-1", pebblestore.SwarmMirrorEventRecord{Sequence: 2, EventType: pebblestore.SwarmMirrorEventTypeUpsert, Kind: mirrorResourceTarget, ID: "managed-child-old", Resource: olderTargetBytes}); err != nil {
+		t.Fatalf("upsert older mirrored target: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/swarm/targets", nil)
+	targets, _, err := server.swarmTargetsForRequest(req)
+	if err != nil {
+		t.Fatalf("targets: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, target := range targets {
+		if target.SwarmID == "managed-child-new" || target.SwarmID == "managed-child-old" {
+			seen[target.SwarmID] = true
+		}
+	}
+	if !seen["managed-child-new"] || !seen["managed-child-old"] {
+		t.Fatalf("mirrored targets sharing owner-local backend were deduped: seen=%v targets=%+v", seen, targets)
+	}
+}
+
 func TestSwarmTargetsForRequestIncludesTrustedManagedPeerTargets(t *testing.T) {
 	managedBackendURL := "https://managed-host.tailnet.ts.net"
 	server := &Server{
