@@ -131,6 +131,12 @@ func TestMirroredManagedHostChildTargetIsSelectableViaOwnerHostGroup(t *testing.
 	for _, target := range resp.Targets {
 		if target.SwarmID == "child-swarm-1" && target.Kind == "mirrored" && target.Current {
 			foundCurrent = true
+			if target.BackendURL != "http://127.0.0.1:7782" || target.HostSwarmID != "managed-swarm-1" || !target.Online || !target.Selectable {
+				t.Fatalf("mirrored target = %+v, want child backend plus owner host pointer", target)
+			}
+			if got := primary.proxyBackendURLForTarget(target); got != "https://managed.example.test" {
+				t.Fatalf("proxy backend url = %q, want managed owner host backend", got)
+			}
 		}
 	}
 	if !foundCurrent {

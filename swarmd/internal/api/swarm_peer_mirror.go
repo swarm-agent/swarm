@@ -591,9 +591,7 @@ func (s *Server) listMirroredSwarmTargets() ([]swarmTarget, error) {
 		if target.Relationship == "" {
 			target.Relationship = "child"
 		}
-		if !target.Online {
-			target.Selectable = false
-		}
+		s.resolveMirroredTargetRoute(&target)
 		out = append(out, target)
 	}
 	return out, nil

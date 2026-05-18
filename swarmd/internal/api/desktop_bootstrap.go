@@ -440,8 +440,11 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 		if !runtimeAlive {
 			continue
 		}
+		runtimeRecord := topologyRuntimes[strings.ToLower(runtimeSwarmID)]
 		if !runtimeTarget.Online || !runtimeTarget.Selectable {
-			continue
+			if !s.topologyRouteOwnerHostSelectable(runtimeTarget, runtimeRecord, runtimeTargets) {
+				continue
+			}
 		}
 		if seenByWorkspace[workspacePath] == nil {
 			seenByWorkspace[workspacePath] = make(map[string]struct{})
@@ -451,7 +454,7 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 		}
 		seenByWorkspace[workspacePath][routeID] = struct{}{}
 
-		hostSwarmID := strings.TrimSpace(binding.DestinationHostSwarmID)
+		hostSwarmID := firstNonEmpty(strings.TrimSpace(binding.DestinationHostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID), strings.TrimSpace(runtimeTarget.HostSwarmID))
 		hostSwarmName := ""
 		if hostSwarmID != "" {
 			if hostTarget, ok := runtimeTargets[strings.ToLower(hostSwarmID)]; ok {
@@ -497,6 +500,15 @@ func (s *Server) workspaceOverviewTopologyRoutesByWorkspace(swarmTargets []swarm
 		})
 	}
 	return out, nil
+}
+
+func (s *Server) topologyRouteOwnerHostSelectable(runtimeTarget swarmTarget, runtimeRecord pebblestore.TopologyRuntimeRecord, runtimeTargets map[string]swarmTarget) bool {
+	hostSwarmID := firstNonEmpty(strings.TrimSpace(runtimeTarget.HostSwarmID), strings.TrimSpace(runtimeRecord.OwnerHostSwarmID))
+	if hostSwarmID == "" || s.isLocalSwarmID(hostSwarmID) || !isLoopbackBackendURL(runtimeTarget.BackendURL) {
+		return false
+	}
+	hostTarget, ok := runtimeTargets[strings.ToLower(hostSwarmID)]
+	return ok && hostTarget.Online && hostTarget.Selectable && strings.TrimSpace(hostTarget.BackendURL) != ""
 }
 
 func workspaceOverviewTopologyRouteID(runtimeSwarmID, runtimeWorkspacePath string) string {

@@ -157,6 +157,75 @@ func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
 	}
 }
 
+func TestWorkspaceOverviewIncludesManagedChildLoopbackRouteViaOwnerHost(t *testing.T) {
+	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
+	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
+		Node:           swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
+		CurrentGroupID: "group-1",
+		TrustedPeers: []swarmruntime.TrustedPeer{{
+			SwarmID:      "managed-swarm-1",
+			Name:         "managed-host",
+			Role:         swarmruntime.RelationshipManaged,
+			Relationship: swarmruntime.RelationshipManaged,
+			RendezvousTransports: []swarmruntime.TransportSummary{{
+				Kind:    startupconfig.NetworkModeTailscale,
+				Primary: "https://managed.example.test",
+				All:     []string{"https://managed.example.test"},
+			}},
+		}},
+		Groups: []swarmruntime.GroupState{{
+			Group: swarmruntime.Group{ID: "group-1", Name: "Primary Group", HostSwarmID: "host-swarm-id"},
+			Members: []swarmruntime.GroupMember{
+				{GroupID: "group-1", SwarmID: "host-swarm-id", Name: "host-swarm", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost},
+				{GroupID: "group-1", SwarmID: "managed-swarm-1", Name: "managed-host", SwarmRole: swarmruntime.RelationshipManaged, MembershipRole: swarmruntime.GroupMembershipRoleMember},
+			},
+		}},
+	})
+	topologyStore := pebblestore.NewTopologyStore(store)
+	if err := pebblestore.UpsertTopologyRuntimeRecord(topologyStore, pebblestore.TopologyRuntimeRecord{SwarmID: "managed-swarm-1", Name: "managed-host", Relationship: "managed", BackendURL: "https://managed.example.test"}); err != nil {
+		t.Fatalf("upsert host runtime: %v", err)
+	}
+	if err := pebblestore.UpsertTopologyRuntimeRecord(topologyStore, pebblestore.TopologyRuntimeRecord{SwarmID: "child-swarm-1", Name: "heytest", Relationship: "child", BackendURL: "http://127.0.0.1:7782", OwnerHostSwarmID: "managed-swarm-1", Status: "attached"}); err != nil {
+		t.Fatalf("upsert child runtime: %v", err)
+	}
+	if _, err := pebblestore.UpsertTopologyWorkspaceBinding(topologyStore, pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                 "binding-managed-child",
+		SourceWorkspacePath:       workspacePath,
+		SourceWorkspaceName:       "workspace-one",
+		DestinationRuntimeSwarmID: "child-swarm-1",
+		DestinationHostSwarmID:    "managed-swarm-1",
+		DestinationContainerID:    "managed-swarm-1:container-1",
+		DestinationWorkspacePath:  "/workspaces/swarm-go",
+		Writable:                  true,
+	}); err != nil {
+		t.Fatalf("upsert binding: %v", err)
+	}
+	if _, err := server.swarmMirror.UpsertRemoteResource("managed-swarm-1", pebblestore.SwarmMirrorEventRecord{Sequence: 1, EventType: pebblestore.SwarmMirrorEventTypeUpsert, Kind: mirrorResourceTarget, ID: "child-swarm-1", Resource: []byte(`{"swarm_id":"child-swarm-1","name":"heytest","role":"child","relationship":"child","kind":"local","backend_url":"http://127.0.0.1:7782","online":false,"selectable":false}`)}); err != nil {
+		t.Fatalf("upsert mirrored target: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/workspace/overview?limit=25&discover_limit=1", nil)
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response workspaceOverviewResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	if len(response.Workspaces) != 1 || len(response.Workspaces[0].TopologyRoutes) != 1 {
+		t.Fatalf("overview response=%+v", response)
+	}
+	route := response.Workspaces[0].TopologyRoutes[0]
+	if route.RuntimeSwarmID != "child-swarm-1" || route.RuntimeSwarmName != "heytest" || route.RuntimeBackendURL != "http://127.0.0.1:7782" {
+		t.Fatalf("runtime route fields = %+v", route)
+	}
+	if route.HostSwarmID != "managed-swarm-1" || route.HostSwarmName != "managed-host" || route.RuntimeKind != "mirrored" {
+		t.Fatalf("host route fields = %+v", route)
+	}
+}
+
 func TestWorkspaceOverviewSkipsOfflineTopologyBindings(t *testing.T) {
 	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
 	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
@@ -228,6 +297,7 @@ func newWorkspaceOverviewTopologyTestServer(t *testing.T) (*Server, string, *peb
 		t.Fatalf("new event log: %v", err)
 	}
 	server := NewServer("test", nil, nil, nil, nil, sessionSvc, workspaceSvc, nil, nil, nil, nil, nil, eventLog, stream.NewHub(nil))
+	server.SetSwarmMirrorStore(pebblestore.NewSwarmMirrorStore(store))
 	server.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(store), nil, nil, nil, nil, nil, nil, workspaceStore))
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")
 	cfg := startupconfig.Default(startupPath)

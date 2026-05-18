@@ -125,19 +125,20 @@ func (s *Server) proxyWebsocketToSwarmTarget(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) proxyBackendURLForTarget(target swarmTarget) string {
 	backendURL := strings.TrimSpace(target.BackendURL)
-	if strings.TrimSpace(target.HostSwarmID) != "" && s.isLocalSwarmID(target.HostSwarmID) {
+	if backendURL == "" || !isLoopbackBackendURL(backendURL) {
 		return backendURL
 	}
-	if strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") || strings.TrimSpace(target.HostSwarmID) != "" {
-		if ownerBackendURL := s.ownerHostBackendURLForTarget(target); ownerBackendURL != "" && !sameBackendURL(ownerBackendURL, backendURL) {
-			return ownerBackendURL
-		}
+	hostSwarmID := strings.TrimSpace(target.HostSwarmID)
+	if hostSwarmID == "" && strings.EqualFold(strings.TrimSpace(target.Kind), "mirrored") {
+		hostSwarmID = s.ownerHostSwarmIDForTarget(target)
+	}
+	if hostSwarmID == "" || s.isLocalSwarmID(hostSwarmID) {
+		return backendURL
+	}
+	if ownerBackendURL := s.backendURLForSwarmID(hostSwarmID); ownerBackendURL != "" {
+		return ownerBackendURL
 	}
 	return backendURL
-}
-
-func sameBackendURL(a, b string) bool {
-	return strings.EqualFold(strings.TrimRight(strings.TrimSpace(a), "/"), strings.TrimRight(strings.TrimSpace(b), "/"))
 }
 
 func (s *Server) isLocalSwarmID(swarmID string) bool {

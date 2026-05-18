@@ -477,6 +477,10 @@ func (s *Server) applyCachedSwarmTargetHealth(target *swarmTarget) {
 	if s == nil || target == nil || target.Kind == "self" || strings.TrimSpace(target.BackendURL) == "" {
 		return
 	}
+	healthBackendURL := s.proxyBackendURLForTarget(*target)
+	if strings.TrimSpace(healthBackendURL) == "" {
+		return
+	}
 	if !target.Online {
 		s.markSwarmTargetHealth(target, false)
 		return
@@ -515,7 +519,7 @@ func (s *Server) applyCachedSwarmTargetHealth(target *swarmTarget) {
 	s.swarmTargetHealth.entries[key] = entry
 	s.swarmTargetHealth.mu.Unlock()
 
-	go s.refreshSwarmTargetHealth(key, target.BackendURL)
+	go s.refreshSwarmTargetHealth(key, healthBackendURL)
 }
 
 func (s *Server) markSwarmTargetHealth(target *swarmTarget, online bool) {
@@ -607,7 +611,11 @@ func probeSwarmTargetBackend(ctx context.Context, backendURL string) bool {
 }
 
 func swarmTargetHealthKey(target swarmTarget) string {
-	return strings.Join([]string{strings.TrimSpace(target.Kind), strings.TrimSpace(target.SwarmID), strings.TrimSpace(target.BackendURL)}, "|")
+	healthBackendURL := strings.TrimSpace(target.BackendURL)
+	if isLoopbackBackendURL(healthBackendURL) && strings.TrimSpace(target.HostSwarmID) != "" {
+		healthBackendURL = "owner:" + strings.TrimSpace(target.HostSwarmID)
+	}
+	return strings.Join([]string{strings.TrimSpace(target.Kind), strings.TrimSpace(target.SwarmID), healthBackendURL}, "|")
 }
 
 func mapSwarmNodeTarget(item pebblestore.SwarmNodeRecord) (swarmTarget, bool) {
@@ -723,6 +731,39 @@ func firstTrustedPeerTransportValue(transport swarmruntime.TransportSummary) str
 		}
 	}
 	return ""
+}
+
+func (s *Server) resolveMirroredTargetRoute(target *swarmTarget) {
+	if s == nil || target == nil {
+		return
+	}
+	backendURL := strings.TrimSpace(target.BackendURL)
+	hostSwarmID := strings.TrimSpace(target.HostSwarmID)
+	if hostSwarmID == "" {
+		hostSwarmID = s.ownerHostSwarmIDForTarget(*target)
+		if hostSwarmID != "" {
+			target.HostSwarmID = hostSwarmID
+		}
+	}
+	if target.Relationship == "" {
+		target.Relationship = swarmruntime.RelationshipChild
+	}
+	if hostSwarmID != "" && !s.isLocalSwarmID(hostSwarmID) && isLoopbackBackendURL(backendURL) {
+		if ownerBackendURL := s.backendURLForSwarmID(hostSwarmID); ownerBackendURL != "" {
+			target.Online = true
+			target.Selectable = true
+			return
+		}
+		target.Online = false
+		target.Selectable = false
+		if strings.TrimSpace(target.AttachStatus) == "" || strings.EqualFold(target.AttachStatus, "attached") {
+			target.AttachStatus = "owner-unreachable"
+		}
+		return
+	}
+	if !target.Online {
+		target.Selectable = false
+	}
 }
 
 func mapDeployContainerTarget(item deployruntime.ContainerDeployment) (swarmTarget, bool) {
