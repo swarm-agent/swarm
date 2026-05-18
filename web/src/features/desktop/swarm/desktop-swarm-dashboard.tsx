@@ -571,7 +571,7 @@ function ManagedSwarmSettingsDialog({
     if (!deployment || !open) {
       return
     }
-    const modules = new Set(deployment.sync_modules ?? ['credentials', 'agents', 'custom_tools', 'skills'])
+    const modules = new Set(deployment.sync_modules ?? ['credentials', 'agents', 'custom_tools', 'skills', 'permissions', 'model_defaults'])
     setSyncEnabled(Boolean(deployment.sync_enabled))
     setSyncAgents(modules.has('agents'))
     setSyncCustomTools(modules.has('custom_tools'))
@@ -583,7 +583,7 @@ function ManagedSwarmSettingsDialog({
     return null
   }
 
-  const modules = ['credentials', ...(syncAgents ? ['agents'] : []), ...(syncCustomTools ? ['custom_tools'] : []), ...(syncSkills ? ['skills'] : [])]
+  const modules = ['credentials', ...(syncAgents ? ['agents'] : []), ...(syncCustomTools ? ['custom_tools'] : []), ...(syncSkills ? ['skills'] : []), 'permissions', 'model_defaults']
 
   return (
     <Dialog>

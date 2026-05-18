@@ -242,6 +242,8 @@ export function ReplicateSwarmModal({
         ...(syncAgentsEnabled ? ['agents'] : []),
         ...(syncCustomToolsEnabled ? ['custom_tools'] : []),
         ...(syncSkillsEnabled ? ['skills'] : []),
+        'permissions',
+        'model_defaults',
       ]
       const result = await replicateSwarm({
         mode: targetMode,
@@ -689,7 +691,7 @@ export function ReplicateSwarmModal({
                   <div>Runtime: <span className="font-medium text-[var(--app-text)]">{targetMode === 'remote' ? 'managed host' : (runtimeChoice || 'Unavailable')}</span></div>
                   <div>Selected workspaces: <span className="font-medium text-[var(--app-text)]">{selectedCount}</span></div>
                   <div>Sync: <span className="font-medium text-[var(--app-text)]">{syncEnabled ? `enabled (${syncMode})` : 'disabled'}</span></div>
-                  <div>Sync modules: <span className="font-medium text-[var(--app-text)]">{syncEnabled ? ['credentials', ...(syncAgentsEnabled ? ['agents'] : []), ...(syncCustomToolsEnabled ? ['custom_tools'] : []), ...(syncSkillsEnabled ? ['skills'] : [])].join(', ') : 'none'}</span></div>
+                  <div>Sync modules: <span className="font-medium text-[var(--app-text)]">{syncEnabled ? ['credentials', ...(syncAgentsEnabled ? ['agents'] : []), ...(syncCustomToolsEnabled ? ['custom_tools'] : []), ...(syncSkillsEnabled ? ['skills'] : []), 'permissions', 'model_defaults'].join(', ') : 'none'}</span></div>
                   <div>Bypass permissions: <span className="font-medium text-[var(--app-text)]">{bypassPermissions ? 'bypass ON; host policy not mirrored' : 'host-managed; host policy mirrored'}</span></div>
                 </div>
               </Card>

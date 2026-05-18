@@ -525,7 +525,7 @@ export function AddSwarmModal({
         : 'Creating local container…',
     )
     try {
-      const syncModules = ['credentials', 'agents', 'custom_tools', 'skills']
+      const syncModules = ['credentials', 'agents', 'custom_tools', 'skills', 'permissions', 'model_defaults']
       const result = await replicateSwarm({
         mode: 'local',
         swarmName: swarmName.trim(),
