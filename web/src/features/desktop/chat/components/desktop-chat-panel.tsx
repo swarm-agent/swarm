@@ -384,12 +384,12 @@ function dedupeMessages(messages: ChatMessageRecord[]): ChatMessageRecord[] {
   return Array.from(map.values()).sort(messageSort)
 }
 
-function messageRoleLabel(role: string): string {
+function messageRoleLabel(role: string, assistantLabel = 'Swarm'): string {
   switch (role) {
     case 'user':
       return 'You'
     case 'assistant':
-      return 'Swarm'
+      return assistantLabel.trim() || 'Swarm'
     case 'reasoning':
       return 'Thinking'
     case 'tool':
@@ -399,6 +399,12 @@ function messageRoleLabel(role: string): string {
     default:
       return role
   }
+}
+
+export function resolveMessageAssistantLabel(message: ChatMessageRecord | null | undefined, fallbackAgent: string): string {
+  const metadata = metadataRecord(message?.metadata)
+  const agentName = metadataString(metadata, 'agent_name') || metadataString(metadata, 'resolved_agent_name')
+  return agentName || fallbackAgent.trim() || 'swarm'
 }
 
 export function isDesktopCompactionCheckpointMessage(message: ChatMessageRecord | null | undefined): boolean {
@@ -2903,7 +2909,7 @@ export function DesktopChatPanel({
         {!loadingMessages && messages.length === 0 && (!sessionId || emptyStateMessage) ? (
           <div className="flex items-center gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text-muted)]">
             <Sparkles size={16} />
-            {emptyStateMessage ?? 'No conversation yet. Ask Swarm to do something in this workspace.'}
+            {emptyStateMessage ?? `No conversation yet. Ask ${currentSessionAgent || 'swarm'} to do something in this workspace.`}
           </div>
         ) : null}
         <div
@@ -2949,7 +2955,7 @@ export function DesktopChatPanel({
                 >
                   <article className="w-full min-w-0 max-w-[95%]">
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-                      Swarm
+                      {currentSessionAgent || 'swarm'}
                     </div>
                     <ChatMarkdown content={item.content} toolMessage={null} />
                   </article>
@@ -3021,7 +3027,7 @@ export function DesktopChatPanel({
                 <article className="w-full min-w-0 max-w-[95%]">
                   {message.role !== 'tool' ? (
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-                      {messageRoleLabel(message.role)}
+                      {messageRoleLabel(message.role, resolveMessageAssistantLabel(message, currentSessionAgent))}
                     </div>
                   ) : null}
                   <ChatMarkdown content={message.content} toolMessage={message.toolMessage ?? null} nowMs={timerNow} />

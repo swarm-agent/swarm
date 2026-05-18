@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopSessionRecord } from '../../types/realtime'
 import type { ChatMessageRecord } from '../types/chat'
-import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
+import { formatAgentTodoBadge, formatMobileAgentTodoBadge, isDesktopCompactionCheckpointMessage, isDesktopManualCompactionAckMessage, isSilentSpeechRecognitionError, metadataTodoSummary, resolveMessageAssistantLabel, resolveSessionEffectiveAgentName, savedRuleCountdownSeconds, sessionUsesReadOnlyFlowIdentity, shouldShowScrollLockReturnButton, visibleDesktopChatMessages } from './desktop-chat-panel'
 
 test('formatAgentTodoBadge shows progress-first badge with active count', () => {
   assert.equal(formatAgentTodoBadge({ taskCount: 6, openCount: 2, inProgressCount: 1, activeText: '' }), '4/6 complete • 1 active')
@@ -155,6 +155,12 @@ function makeMessage(overrides: Partial<ChatMessageRecord> = {}): ChatMessageRec
     ...overrides,
   }
 }
+
+test('resolveMessageAssistantLabel uses per-turn message metadata before current agent fallback', () => {
+  assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'swarm', model: 'gpt-5.4' } }), 'explorer'), 'swarm')
+  assert.equal(resolveMessageAssistantLabel(makeMessage({ metadata: { agent_name: 'reviewer', model: 'claude-sonnet' } }), 'swarm'), 'reviewer')
+  assert.equal(resolveMessageAssistantLabel(makeMessage(), 'explorer'), 'explorer')
+})
 
 test('desktop chat shows the context compact checkpoint and hides the duplicate ack', () => {
   const checkpoint = makeMessage({

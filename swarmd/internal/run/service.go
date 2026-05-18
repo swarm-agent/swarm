@@ -30,17 +30,18 @@ import (
 )
 
 const (
-	defaultHistoryLimit = 500
-	maxToolPreviewChars = 280
-	maxToolDeltaChars   = 4000
-	maxToolInputBytes   = 96 * 1024
-	maxToolInputPreview = 1200
-	maxRulePromptFiles  = 3
-	maxRulePromptBytes  = 4000
-	runFailurePathID    = "run.turn.error.v3"
-	emptyStepRetryBase  = 250 * time.Millisecond
-	emptyStepRetryMax   = 2 * time.Second
-	emptyStepRetryLimit = 2
+	defaultHistoryLimit          = 500
+	maxToolPreviewChars          = 280
+	maxToolDeltaChars            = 4000
+	maxToolInputBytes            = 96 * 1024
+	maxToolInputPreview          = 1200
+	maxRulePromptFiles           = 3
+	maxRulePromptBytes           = 4000
+	runFailurePathID             = "run.turn.error.v3"
+	messageMetadataSourceRunTurn = "run_turn"
+	emptyStepRetryBase           = 250 * time.Millisecond
+	emptyStepRetryMax            = 2 * time.Second
+	emptyStepRetryLimit          = 2
 
 	contextCompactionRetryLimit           = 2
 	memoryCompactionHeartbeatInterval     = 2 * time.Second
@@ -841,6 +842,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		sessionSnapshot = updatedSession
 	}
 	workspaceCtx := resolveRunWorkspaceContext(resolvedExecutionContext)
+	runMessageMetadata := buildRunTurnMessageMetadata(activeAgent, providerID, resolvedPreference.Preference, runID, targetKind, targetName)
 
 	baseInstructions := s.composeInstructionsForScope(tool.WorkspaceScope{
 		PrimaryPath: workspaceCtx.WorkspacePath,
@@ -945,7 +947,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		userEvent   *pebblestore.EventEnvelope
 	)
 	if !manualCompact {
-		userMessage, _, userEvent, err = s.sessions.AppendMessage(sessionID, "user", prompt, map[string]any{"source": "run_turn"})
+		userMessage, _, userEvent, err = s.sessions.AppendMessage(sessionID, "user", prompt, runMessageMetadataWith(runMessageMetadata, map[string]any{"source": messageMetadataSourceRunTurn}))
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -1098,7 +1100,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		reasoningSummary = fmt.Sprintf("Context compacted into checkpoint #%d.", compactIndex)
 		assistantText := buildManualCompactionAssistantText(compactedSummary, compactIndex, attachedPlanLabel)
-		assistantMessage, _, assistantEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", assistantText, map[string]any{"source": "manual_context_compaction_ack"})
+		assistantMessage, _, assistantEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", assistantText, runMessageMetadataWith(runMessageMetadata, map[string]any{"source": "manual_context_compaction_ack"}))
 		if appendErr != nil {
 			return RunResult{}, appendErr
 		}
@@ -1138,7 +1140,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if assistantText == "" {
 			return pebblestore.MessageSnapshot{}, false, nil
 		}
-		assistantMessage, _, assistantEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", assistantText, nil)
+		assistantMessage, _, assistantEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", assistantText, runMessageMetadata)
 		if appendErr != nil {
 			return pebblestore.MessageSnapshot{}, false, appendErr
 		}
@@ -1546,7 +1548,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				if commentaryText == "" {
 					continue
 				}
-				commentaryMessage, _, commentaryEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", commentaryText, map[string]any{"phase": string(provideriface.AssistantPhaseCommentary)})
+				commentaryMessage, _, commentaryEvent, appendErr := s.sessions.AppendMessage(sessionID, "assistant", commentaryText, runMessageMetadataWith(runMessageMetadata, map[string]any{"phase": string(provideriface.AssistantPhaseCommentary)}))
 				if appendErr != nil {
 					return RunResult{}, appendErr
 				}
@@ -1921,7 +1923,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if !flushedFinalAssistant {
 		assistantText := "No assistant text output."
 		var assistantEvent *pebblestore.EventEnvelope
-		assistantMessage, _, assistantEvent, err = s.sessions.AppendMessage(sessionID, "assistant", assistantText, nil)
+		assistantMessage, _, assistantEvent, err = s.sessions.AppendMessage(sessionID, "assistant", assistantText, runMessageMetadata)
 		if err != nil {
 			return RunResult{}, err
 		}

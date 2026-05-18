@@ -84,6 +84,9 @@ func TestRunTurnStoresAssistantTextBeforeToolAsSeparateTimelineMessage(t *testin
 	if messages[3].Content != "final after tool" {
 		t.Fatalf("final assistant content = %q", messages[3].Content)
 	}
+	assertRunTurnMessageMetadata(t, messages[0], "swarm", "fake", "fake-model", "off")
+	assertRunTurnMessageMetadata(t, messages[1], "swarm", "fake", "fake-model", "off")
+	assertRunTurnMessageMetadata(t, messages[3], "swarm", "fake", "fake-model", "off")
 
 	storedRoles := make([]string, 0, len(storedEvents))
 	for _, event := range storedEvents {
@@ -155,6 +158,26 @@ func cloneProviderInput(input []map[string]any) []map[string]any {
 		out = append(out, clone)
 	}
 	return out
+}
+
+func assertRunTurnMessageMetadata(t *testing.T, message pebblestore.MessageSnapshot, agentName, provider, modelName, thinking string) {
+	t.Helper()
+	metadata := message.Metadata
+	if metadata == nil {
+		t.Fatalf("message %s metadata is nil", message.ID)
+	}
+	checks := map[string]string{
+		"source":     messageMetadataSourceRunTurn,
+		"agent_name": agentName,
+		"provider":   provider,
+		"model":      modelName,
+		"thinking":   thinking,
+	}
+	for key, want := range checks {
+		if got, _ := metadata[key].(string); got != want {
+			t.Fatalf("message %s metadata[%s] = %q, want %q; metadata = %#v", message.ID, key, got, want, metadata)
+		}
+	}
 }
 
 func inputKinds(input []map[string]any) []string {
