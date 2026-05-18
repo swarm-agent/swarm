@@ -263,20 +263,22 @@ test('recordToFlow marks saved flows with unresolved targets as needing review a
   assert.match(flow.targetStaleReason, /swarm-missing/)
 })
 
-test('groupedTargetOptions keeps primary and managed host sections actionable', () => {
+test('groupedTargetOptions keeps managed host outside Primary and first in its managed section', () => {
   const primary: FlowSwarmTarget = { swarm_id: 'primary-swarm', kind: 'self', name: 'swarm-bomb', role: 'master', relationship: 'self', online: true, selectable: true, current: true }
+  const primaryChild: FlowSwarmTarget = { swarm_id: 'localtest-swarm', kind: 'local', name: 'localtest', role: 'child', relationship: 'child', host_swarm_id: 'primary-swarm', online: true, selectable: true, current: false }
   const managedHost: FlowSwarmTarget = { swarm_id: 'managed-swarm', kind: 'host', name: 'swarm-bomb-2', role: 'managed', relationship: 'managed', online: true, selectable: true, current: false }
   const managedChild: FlowSwarmTarget = { swarm_id: 'child-swarm', kind: 'mirrored', name: 'heytest', role: 'child', relationship: 'child', host_swarm_id: 'managed-swarm', online: true, selectable: true, current: false }
   const options = [
     { key: 'primary', label: 'swarm-bomb (current)', helper: 'Runs on the primary swarm.', groupLabel: 'Primary', target: primary },
-    { key: 'managed-host', label: 'swarm-bomb-2', helper: 'Runs on this managed host.', groupLabel: 'Primary', target: managedHost },
-    { key: 'managed-child', label: 'heytest', helper: 'Runs in a container on its managed host.', groupLabel: 'swarm-bomb-2', target: managedChild },
+    { key: 'primary-child', label: 'localtest', helper: 'Runs in a linked container.', groupLabel: 'Primary', target: primaryChild },
+    { key: 'managed-child', label: 'heytest', helper: 'Runs in a container on its managed host.', groupLabel: 'Managed host', target: managedChild },
+    { key: 'managed-host', label: 'swarm-bomb-2', helper: 'Runs on this managed host.', groupLabel: 'Managed host', target: managedHost },
   ]
 
   const groups = groupedTargetOptions(options)
 
-  assert.deepEqual(groups.map((group) => group.label), ['Primary', 'swarm-bomb-2'])
-  assert.deepEqual(groups.map((group) => group.options.map((option) => option.label)), [['swarm-bomb (current)', 'swarm-bomb-2'], ['heytest']])
+  assert.deepEqual(groups.map((group) => group.label), ['Primary', 'Managed host'])
+  assert.deepEqual(groups.map((group) => group.options.map((option) => option.label)), [['swarm-bomb (current)', 'localtest'], ['swarm-bomb-2', 'heytest']])
   assert.equal(options[2]?.label.includes('/'), false)
   assert.equal(options[2]?.helper.includes('selectable'), false)
 })

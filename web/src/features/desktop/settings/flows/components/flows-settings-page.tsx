@@ -460,10 +460,18 @@ function targetHostKey(target: FlowSwarmTarget): string {
   return target.host_swarm_id?.trim() || ''
 }
 
+function managedTargetGroupKey(target: FlowSwarmTarget): string {
+  return targetHostKey(target) || target.swarm_id?.trim() || target.name?.trim() || 'managed-host'
+}
+
 function isPrimaryTarget(target: FlowSwarmTarget): boolean {
   const kind = target.kind?.trim().toLowerCase()
   const relationship = target.relationship?.trim().toLowerCase()
   return kind === 'self' || relationship === 'self' || target.current
+}
+
+function isPrimaryContainerTarget(target: FlowSwarmTarget): boolean {
+  return target.kind?.trim().toLowerCase() === 'local'
 }
 
 function isManagedHostTarget(target: FlowSwarmTarget): boolean {
@@ -490,26 +498,44 @@ function targetOptionHelper(target: FlowSwarmTarget): string {
   return host ? 'Runs in a container on its managed host.' : 'Runs in a linked container.'
 }
 
-function targetOptionGroupLabel(target: FlowSwarmTarget, targets: FlowSwarmTarget[]): string {
-  if (isPrimaryTarget(target) || !targetHostKey(target)) {
+function targetOptionGroupLabel(target: FlowSwarmTarget, _targets: FlowSwarmTarget[]): string {
+  if (isPrimaryTarget(target) || isPrimaryContainerTarget(target) || !targetHostKey(target) && !isManagedHostTarget(target)) {
     return 'Primary'
   }
-  const hostID = targetHostKey(target)
-  const host = targets.find((candidate) => candidate.swarm_id?.trim() === hostID)
-  return host ? targetDisplayName(host) : 'Managed host'
+  return 'Managed host'
 }
 
-export function groupedTargetOptions(options: FlowTargetOption[]): Array<{ label: string; options: FlowTargetOption[] }> {
-  const groups: Array<{ label: string; options: FlowTargetOption[] }> = []
-  for (const option of options) {
-    let group = groups.find((candidate) => candidate.label === option.groupLabel)
+export function groupedTargetOptions(options: FlowTargetOption[]): Array<{ key: string; label: string; options: FlowTargetOption[] }> {
+  const primaryGroup = { key: 'primary', label: 'Primary', options: [] as FlowTargetOption[] }
+  const managedGroups: Array<{ key: string; label: string; options: FlowTargetOption[] }> = []
+  const managedByHost = new Map<string, { key: string; label: string; options: FlowTargetOption[] }>()
+
+  function ensureManagedGroup(option: FlowTargetOption): { key: string; label: string; options: FlowTargetOption[] } {
+    const hostKey = managedTargetGroupKey(option.target)
+    let group = managedByHost.get(hostKey)
     if (!group) {
-      group = { label: option.groupLabel, options: [] }
-      groups.push(group)
+      group = { key: `managed:${hostKey}`, label: 'Managed host', options: [] }
+      managedByHost.set(hostKey, group)
+      managedGroups.push(group)
+    }
+    return group
+  }
+
+  for (const option of options) {
+    const target = option.target
+    if (isPrimaryTarget(target) || isPrimaryContainerTarget(target) || !targetHostKey(target) && !isManagedHostTarget(target)) {
+      primaryGroup.options.push(option)
+      continue
+    }
+    const group = ensureManagedGroup(option)
+    if (isManagedHostTarget(target)) {
+      group.options.unshift(option)
+      continue
     }
     group.options.push(option)
   }
-  return groups
+
+  return [primaryGroup, ...managedGroups].filter((group) => group.options.length > 0)
 }
 
 function targetToSelection(target?: FlowSwarmTarget): CreateFlowInput['target'] {
@@ -1213,7 +1239,7 @@ function FlowSettingsModal({
                 <span className={labelClass}>Target swarm</span>
                 <select data-testid="flows-add-target" value={form.targetKey} onChange={update('targetKey')} className={fieldClass} disabled={loadingOptions || !targetOptions.length}>
                   {groupedTargetOptions(targetOptions).map((group) => (
-                    <optgroup key={group.label} label={group.label}>
+                    <optgroup key={group.key} label={group.label}>
                       {group.options.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                     </optgroup>
                   ))}
