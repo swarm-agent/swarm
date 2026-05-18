@@ -335,6 +335,80 @@ func TestFlowsV3LocalContainerCRUDSyncsAcrossHTTPBoundary(t *testing.T) {
 	}
 }
 
+func TestFlowsV3CreateAllowsLocalContainerTargetWithLocalOwnerHost(t *testing.T) {
+	server, flows := newFlowPeerTestServer(t)
+	ensureFlowTestAgent(t, server)
+	workspace := t.TempDir()
+	var delivered []flow.AssignmentCommand
+	child := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != flowPeerApplyPath {
+			http.NotFound(w, r)
+			return
+		}
+		var command flow.AssignmentCommand
+		if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+			t.Fatalf("decode child command: %v", err)
+		}
+		delivered = append(delivered, command)
+		ack, inserted, err := server.applyFlowAssignmentCommandLocally(r.Context(), command, "local-container-swarm")
+		if err != nil {
+			t.Fatalf("apply child command: %v", err)
+		}
+		writeJSON(w, http.StatusOK, flowAssignmentApplyResponse{OK: true, Ack: ack, Inserted: inserted})
+	}))
+	defer child.Close()
+	server.SetDeployContainerService(&fakeFlowDeployService{targets: []swarmTarget{{
+		SwarmID:      "local-container-swarm",
+		Name:         "local container",
+		Relationship: "child",
+		Kind:         "local",
+		DeploymentID: "pc-local-container",
+		HostSwarmID:  "host-swarm-id",
+		Online:       true,
+		Selectable:   true,
+		BackendURL:   child.URL,
+	}}})
+	req := flowV3UpsertRequest{
+		FlowID:  "flow-v3-local-container-owner-host",
+		Name:    "Local container owner-host flow",
+		Enabled: boolPtr(true),
+		Target:  flow.TargetSelection{SwarmID: "local-container-swarm", Kind: "local", DeploymentID: "pc-local-container", Name: "local container"},
+		Agent:   flow.AgentSelection{ProfileName: "flow-test", ProfileMode: "subagent"},
+		Workspace: flow.WorkspaceContext{
+			WorkspacePath: workspace,
+		},
+		Schedule:      flow.ScheduleSpec{Cadence: flow.CadenceOnDemand},
+		CatchUpPolicy: flow.CatchUpPolicy{Mode: flow.CatchUpOnce},
+		Intent:        flow.PromptIntent{Prompt: "Create on a local container target."},
+	}
+	createRec := httptest.NewRecorder()
+	createHTTP := httptest.NewRequest(http.MethodPost, "/v3/flows", jsonReader(t, req))
+	createHTTP.Header.Set("Content-Type", "application/json")
+	server.Handler().ServeHTTP(createRec, createHTTP)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	if strings.Contains(createRec.Body.String(), "target must be a managed host") {
+		t.Fatalf("create unexpectedly used managed-host-only validation: %s", createRec.Body.String())
+	}
+	if len(delivered) != 1 {
+		t.Fatalf("delivered commands = %d, want 1: %+v", len(delivered), delivered)
+	}
+	if delivered[0].Action != flow.CommandInstall || delivered[0].Assignment.Target.SwarmID != "local-container-swarm" || delivered[0].Assignment.Target.Kind != "local" {
+		t.Fatalf("delivered command = %+v", delivered[0])
+	}
+	if _, ok, err := flows.GetDefinition("flow-v3-local-container-owner-host"); err != nil || !ok {
+		t.Fatalf("stored definition ok=%v err=%v", ok, err)
+	}
+	status, ok, err := flows.GetAssignmentStatus("flow-v3-local-container-owner-host", "local-container-swarm")
+	if err != nil || !ok {
+		t.Fatalf("assignment status ok=%v err=%v", ok, err)
+	}
+	if status.PendingSync || status.Status != flow.AssignmentAccepted || status.AcceptedRevision != 1 {
+		t.Fatalf("assignment status = %+v", status)
+	}
+}
+
 func TestFlowsV3ChildListsTargetAcceptedAssignmentsWithoutControllerDefinitions(t *testing.T) {
 	server, flows := newFlowPeerTestServer(t)
 	ensureFlowTestAgent(t, server)
