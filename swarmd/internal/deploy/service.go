@@ -3103,6 +3103,15 @@ func (s *Service) finalizeChildAttach(cfg startupconfig.FileConfig, state swarmr
 				return err
 			}
 		}
+		if workspaceruntime.ReplicationSyncModuleEnabled(cfg.DeployContainer.SyncModules, workspaceruntime.ReplicationSyncModuleModelDefaults) {
+			bundle, err := s.fetchSyncModelDefaultsBundle(context.Background(), cfg, status)
+			if err != nil {
+				return err
+			}
+			if err := s.applyManagedModelDefaultsBundle(bundle, cfg.DeployContainer.SyncModules); err != nil {
+				return err
+			}
+		}
 		if !cfg.BypassPermissions {
 			bundle, err := s.fetchSyncPermissionBundle(context.Background(), cfg, status)
 			if err != nil {
