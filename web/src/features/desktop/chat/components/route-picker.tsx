@@ -54,26 +54,40 @@ interface RouteGroup {
   routes: DesktopChatRoute[]
 }
 
+function managedHostGroupKey(route: DesktopChatRoute): string {
+  return route.hostSwarmId.trim() || route.swarmId?.trim() || route.hostSwarmName.trim() || 'managed-host'
+}
+
 export function groupDesktopChatRoutes(routes: DesktopChatRoute[]): RouteGroup[] {
   const primary: DesktopChatRoute[] = []
   const managedGroups: RouteGroup[] = []
   const managedByHost = new Map<string, RouteGroup>()
 
-  for (const route of routes) {
-    if (!route.swarmId || routeKind(route) !== 'remote') {
-      primary.push(route)
-      continue
-    }
-    const hostKey = route.hostSwarmId.trim() || route.hostSwarmName.trim() || 'managed-host'
+  function ensureManagedGroup(route: DesktopChatRoute): RouteGroup {
+    const hostKey = managedHostGroupKey(route)
     let group = managedByHost.get(hostKey)
     if (!group) {
       group = {
         key: `managed:${hostKey}`,
-        label: route.hostSwarmName.trim() || route.hostSwarmId.trim() || 'Managed host',
+        label: 'Managed host',
         routes: [],
       }
       managedByHost.set(hostKey, group)
       managedGroups.push(group)
+    }
+    return group
+  }
+
+  for (const route of routes) {
+    const kind = routeKind(route)
+    if (!route.swarmId || kind === 'local') {
+      primary.push(route)
+      continue
+    }
+    const group = ensureManagedGroup(route)
+    if (kind === 'managed') {
+      group.routes.unshift(route)
+      continue
     }
     group.routes.push(route)
   }

@@ -341,7 +341,7 @@ test('buildDesktopChatRouteOptions deduplicates topology routes by route id', ()
   assert.equal(routes.length, 2)
 })
 
-test('groupDesktopChatRoutes sections primary routes before managed host containers', async () => {
+test('groupDesktopChatRoutes keeps managed host outside Primary and first in its managed section', async () => {
   const { groupDesktopChatRoutes } = await import('../components/route-picker')
   const routes = [
     {
@@ -357,6 +357,30 @@ test('groupDesktopChatRoutes sections primary routes before managed host contain
       runtimeWorkspacePath: '/home/swarm/swarm-go',
     },
     {
+      id: 'swarm:localtest:/workspaces/swarm-go',
+      label: 'localtest',
+      swarmId: 'localtest-swarm',
+      targetKind: 'local',
+      targetRelationship: 'child',
+      hostSwarmId: 'primary-swarm',
+      hostSwarmName: 'swarm-bomb',
+      hostWorkspacePath: '/home/swarm/swarm-go',
+      hostWorkspaceName: 'swarm-go',
+      runtimeWorkspacePath: '/workspaces/swarm-go',
+    },
+    {
+      id: 'swarm:heytest:/workspaces/swarm-go',
+      label: 'heytest',
+      swarmId: 'child-swarm',
+      targetKind: 'mirrored',
+      targetRelationship: 'child',
+      hostSwarmId: 'managed-swarm',
+      hostSwarmName: 'swarm-bomb-2',
+      hostWorkspacePath: '/home/swarm/swarm-go',
+      hostWorkspaceName: 'swarm-go',
+      runtimeWorkspacePath: '/workspaces/swarm-go',
+    },
+    {
       id: 'swarm:managed:/home/swarm/swarm-go',
       label: 'swarm-bomb-2',
       swarmId: 'managed-swarm',
@@ -368,22 +392,10 @@ test('groupDesktopChatRoutes sections primary routes before managed host contain
       hostWorkspaceName: 'swarm-go',
       runtimeWorkspacePath: '/home/swarm/swarm-go',
     },
-    {
-      id: 'swarm:child:/workspaces/swarm-go',
-      label: 'heytest',
-      swarmId: 'child-swarm',
-      targetKind: 'mirrored',
-      targetRelationship: 'child',
-      hostSwarmId: 'managed-swarm',
-      hostSwarmName: 'swarm-bomb-2',
-      hostWorkspacePath: '/home/swarm/swarm-go',
-      hostWorkspaceName: 'swarm-go',
-      runtimeWorkspacePath: '/workspaces/swarm-go',
-    },
   ]
 
   const groups = groupDesktopChatRoutes(routes)
 
-  assert.deepEqual(groups.map((group) => group.label), ['Primary', 'swarm-bomb-2'])
-  assert.deepEqual(groups.map((group) => group.routes.map((route) => route.label)), [['swarm-bomb', 'swarm-bomb-2'], ['heytest']])
+  assert.deepEqual(groups.map((group) => group.label), ['Primary', 'Managed host'])
+  assert.deepEqual(groups.map((group) => group.routes.map((route) => route.label)), [['swarm-bomb', 'localtest'], ['swarm-bomb-2', 'heytest']])
 })
