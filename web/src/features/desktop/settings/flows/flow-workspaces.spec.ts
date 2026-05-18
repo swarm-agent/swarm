@@ -59,10 +59,14 @@ test('fetchFlowWorkspaces scopes workspace records to the selected target withou
     const local = await fetchFlowWorkspaces({ swarm_id: 'local-swarm', kind: 'self', name: 'Local', role: 'master', relationship: 'self', online: true, selectable: true, current: true })
     assert.deepEqual(local.map((workspace) => workspace.path), ['/local/workspace'])
 
+    const localChild = await fetchFlowWorkspaces({ swarm_id: 'local-child-swarm', host_swarm_id: 'local-swarm', kind: 'local', name: 'localtest', role: 'child', relationship: 'child', online: true, selectable: true, current: false })
+    assert.deepEqual(localChild.map((workspace) => workspace.path), ['/local/workspace'])
+
     const remote = await fetchFlowWorkspaces({ swarm_id: 'remote-swarm', kind: 'remote', name: 'Remote', role: 'child', relationship: 'child', online: true, selectable: true, current: false })
     assert.deepEqual(remote.map((workspace) => workspace.path), ['/remote/workspace'])
 
     assert.deepEqual(calls.map((call) => String(call.input)), [
+      '/v1/workspace/list?limit=200',
       '/v1/workspace/list?limit=200',
       '/v1/swarm/managed-workspaces/inventory?target_swarm_id=remote-swarm&limit=200',
     ])

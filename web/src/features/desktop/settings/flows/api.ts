@@ -271,7 +271,8 @@ export async function fetchFlowWorkspaces(target?: FlowSwarmTarget | null, signa
   }
   const kind = target.kind?.trim().toLowerCase()
   const relationship = target.relationship?.trim().toLowerCase()
-  if (kind === 'self' || relationship === 'self') {
+  const usesLocalWorkspaceList = kind === 'self' || relationship === 'self' || (kind === 'local' && relationship === 'child')
+  if (usesLocalWorkspaceList) {
     return listWorkspaces(200)
   }
   const targetSwarmID = target.host_swarm_id?.trim() || target.swarm_id?.trim()
