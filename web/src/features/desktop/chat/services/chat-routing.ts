@@ -65,10 +65,7 @@ export function buildDesktopChatRouteOptions(input: {
       ? 'host'
       : runtimeKind
     const hostSwarmName = topologyRoute.hostSwarmName.trim()
-    const targetKindLabel = targetKind.trim().toLowerCase()
-    const label = targetKindLabel === 'mirrored'
-      ? hostSwarmName || topologyRoute.runtimeSwarmName.trim() || swarmId
-      : topologyRoute.runtimeSwarmName.trim() || swarmId
+    const label = topologyRoute.runtimeSwarmName.trim() || swarmId
     options.push({
       id,
       label,
