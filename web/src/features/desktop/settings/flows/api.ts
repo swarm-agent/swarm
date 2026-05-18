@@ -266,19 +266,19 @@ export async function fetchFlowWorkspaces(target?: FlowSwarmTarget | null, signa
   if (!target) {
     return []
   }
+  if (signal?.aborted) {
+    throw new DOMException('The operation was aborted.', 'AbortError')
+  }
   const kind = target.kind?.trim().toLowerCase()
   const relationship = target.relationship?.trim().toLowerCase()
   if (kind === 'self' || relationship === 'self') {
     return listWorkspaces(200)
   }
-  if (signal?.aborted) {
-    throw new DOMException('The operation was aborted.', 'AbortError')
-  }
-  const swarmID = target.swarm_id?.trim()
-  if (!swarmID) {
+  const targetSwarmID = target.host_swarm_id?.trim() || target.swarm_id?.trim()
+  if (!targetSwarmID) {
     return []
   }
-  const inventory = await fetchManagedWorkspaceInventory({ targetSwarmID: swarmID, limit: 200 })
+  const inventory = await fetchManagedWorkspaceInventory({ targetSwarmID, limit: 200 })
   return inventory.savedWorkspaces
 }
 

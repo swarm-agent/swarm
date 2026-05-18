@@ -62,6 +62,45 @@ func TestPeerManagedWorkspaceInventoryReturnsSavedDiscoveredAndCWDs(t *testing.T
 	}
 }
 
+func TestManagedWorkspaceInventoryUsesSelectedManagedHostWithoutTargetQuery(t *testing.T) {
+	handler, _, _ := newReplicateTestHandler(t)
+	var sawInventory bool
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" || r.URL.Path == "/healthz" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
+		if r.URL.Path != peerManagedWorkspaceInventoryPath {
+			t.Fatalf("unexpected peer path %q", r.URL.Path)
+		}
+		if r.Header.Get(peerAuthSwarmIDHeader) != "host-swarm-id" || r.Header.Get(peerAuthTokenHeader) != "host-to-managed-token" {
+			t.Fatalf("peer auth headers id=%q token=%q", r.Header.Get(peerAuthSwarmIDHeader), r.Header.Get(peerAuthTokenHeader))
+		}
+		sawInventory = true
+		managedHome := filepath.Join(string(os.PathSeparator), "srv", "managed")
+		writeJSON(w, http.StatusOK, peerManagedWorkspaceInventoryResponse{OK: true, ManagedHome: managedHome, SavedWorkspaces: []workspace.Entry{{Path: filepath.Join(managedHome, "swarm-go"), WorkspaceName: "swarm-go"}}})
+	}))
+	t.Cleanup(remote.Close)
+	state := swarmStateWithManagedPeer(remote.URL, "host-to-managed-token")
+	handler.SetSwarmService(fakeReplicateSwarmService{state: state, outgoingTokens: map[string]string{"managed-swarm-1": "host-to-managed-token"}, incomingTokens: map[string]string{"manager-swarm": "manager-token"}})
+	req := httptest.NewRequest(http.MethodGet, managedWorkspaceInventoryPath, nil)
+	recorder := httptest.NewRecorder()
+	handler.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !sawInventory {
+		t.Fatal("peer inventory was not called")
+	}
+	var response managedWorkspaceInventoryResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if response.ManagedHome != filepath.Join(string(os.PathSeparator), "srv", "managed") || len(response.SavedWorkspaces) != 1 {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
 func TestManagedWorkspaceInventoryCallsPeerWithAuth(t *testing.T) {
 	handler, _, _ := newReplicateTestHandler(t)
 	var sawInventory bool

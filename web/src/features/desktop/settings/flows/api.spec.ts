@@ -15,6 +15,12 @@ async function withFetchStub(run: (calls: Array<{ input: RequestInfo | URL; init
         headers: { 'Content-Type': 'application/json' },
       })
     }
+    if (url === '/v1/swarm/managed-workspaces/inventory?target_swarm_id=managed-swarm&limit=200') {
+      return new Response(JSON.stringify({ ok: true, target: { swarm_id: 'managed-swarm', name: 'swarm-bomb-2', online: true }, managed_home: '/home/swarm', saved_workspaces: [{ path: '/home/swarm/swarm-go', workspace_name: 'swarm-go' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
     if (url === '/v3/flows' && init?.method === 'POST') {
       const body = JSON.parse(String(init.body))
       return new Response(JSON.stringify({
@@ -138,5 +144,26 @@ test('flows API uses canonical v3 endpoints', async () => {
     assert.equal(String(calls[4]?.input), '/v3/flows/flow-ui/run-now')
     assert.equal(String(calls[5]?.input), '/v3/flows/flow-ui')
     assert.equal(calls[5]?.init?.method, 'DELETE')
+  })
+})
+
+test('fetchFlowWorkspaces uses managed host inventory for mirrored child targets', async () => {
+  const { fetchFlowWorkspaces } = await import('./api')
+
+  await withFetchStub(async (calls) => {
+    const workspaces = await fetchFlowWorkspaces({
+      swarm_id: 'child-swarm',
+      host_swarm_id: 'managed-swarm',
+      kind: 'mirrored',
+      name: 'heytest',
+      role: 'child',
+      relationship: 'child',
+      online: true,
+      selectable: true,
+      current: false,
+    })
+
+    assert.equal(workspaces[0]?.path, '/home/swarm/swarm-go')
+    assert.equal(String(calls[0]?.input), '/v1/swarm/managed-workspaces/inventory?target_swarm_id=managed-swarm&limit=200')
   })
 })

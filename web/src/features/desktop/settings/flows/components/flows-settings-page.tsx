@@ -107,6 +107,7 @@ export interface FlowTargetOption {
   key: string
   label: string
   helper: string
+  groupLabel: string
   target: FlowSwarmTarget
 }
 
@@ -451,19 +452,64 @@ function targetOptionKey(target: FlowSwarmTarget): string {
   return `target:${target.kind}:${target.name}`
 }
 
+function targetDisplayName(target: FlowSwarmTarget): string {
+  return target.name?.trim() || target.swarm_id?.trim() || target.kind
+}
+
+function targetHostKey(target: FlowSwarmTarget): string {
+  return target.host_swarm_id?.trim() || ''
+}
+
+function isPrimaryTarget(target: FlowSwarmTarget): boolean {
+  const kind = target.kind?.trim().toLowerCase()
+  const relationship = target.relationship?.trim().toLowerCase()
+  return kind === 'self' || relationship === 'self' || target.current
+}
+
+function isManagedHostTarget(target: FlowSwarmTarget): boolean {
+  const kind = target.kind?.trim().toLowerCase()
+  const relationship = target.relationship?.trim().toLowerCase()
+  return kind === 'host' || relationship === 'managed'
+}
+
 function targetOptionLabel(target: FlowSwarmTarget): string {
-  const name = target.name?.trim() || target.swarm_id?.trim() || target.kind
-  const role = target.role?.trim()
-  const relationship = target.relationship?.trim()
-  const parts = [name, role, relationship].filter(Boolean)
-  return target.current ? `${parts.join(' / ')} (current)` : parts.join(' / ')
+  return target.current ? `${targetDisplayName(target)} (current)` : targetDisplayName(target)
 }
 
 function targetOptionHelper(target: FlowSwarmTarget): string {
-  return [target.kind, target.online ? 'online' : 'offline', target.selectable ? 'selectable' : 'not selectable', target.swarm_id]
-    .map((value) => String(value ?? '').trim())
-    .filter(Boolean)
-    .join(' • ')
+  if (!target.selectable) {
+    return target.last_error?.trim() || 'Not selectable from here.'
+  }
+  if (isPrimaryTarget(target)) {
+    return 'Runs on the primary swarm.'
+  }
+  if (isManagedHostTarget(target)) {
+    return 'Runs on this managed host.'
+  }
+  const host = target.host_swarm_id?.trim()
+  return host ? 'Runs in a container on its managed host.' : 'Runs in a linked container.'
+}
+
+function targetOptionGroupLabel(target: FlowSwarmTarget, targets: FlowSwarmTarget[]): string {
+  if (isPrimaryTarget(target) || !targetHostKey(target)) {
+    return 'Primary'
+  }
+  const hostID = targetHostKey(target)
+  const host = targets.find((candidate) => candidate.swarm_id?.trim() === hostID)
+  return host ? targetDisplayName(host) : 'Managed host'
+}
+
+export function groupedTargetOptions(options: FlowTargetOption[]): Array<{ label: string; options: FlowTargetOption[] }> {
+  const groups: Array<{ label: string; options: FlowTargetOption[] }> = []
+  for (const option of options) {
+    let group = groups.find((candidate) => candidate.label === option.groupLabel)
+    if (!group) {
+      group = { label: option.groupLabel, options: [] }
+      groups.push(group)
+    }
+    group.options.push(option)
+  }
+  return groups
 }
 
 function targetToSelection(target?: FlowSwarmTarget): CreateFlowInput['target'] {
@@ -1166,7 +1212,11 @@ function FlowSettingsModal({
               <label className="flex flex-col gap-2">
                 <span className={labelClass}>Target swarm</span>
                 <select data-testid="flows-add-target" value={form.targetKey} onChange={update('targetKey')} className={fieldClass} disabled={loadingOptions || !targetOptions.length}>
-                  {targetOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                  {groupedTargetOptions(targetOptions).map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.options.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                    </optgroup>
+                  ))}
                 </select>
                 <span className={helperClass}>
                   {loadingOptions ? 'Loading linked swarms…' : selectedTarget?.helper || 'No linked swarm targets returned by the controller.'}
@@ -1550,7 +1600,13 @@ export function FlowsSettingsPage() {
     const seen = new Set<string>()
     return (swarmTargetsQuery.data ?? [])
       .filter((target) => target.selectable || target.current)
-      .map((target) => ({ key: targetOptionKey(target), label: targetOptionLabel(target), helper: targetOptionHelper(target), target }))
+      .map((target) => ({
+        key: targetOptionKey(target),
+        label: targetOptionLabel(target),
+        helper: targetOptionHelper(target),
+        groupLabel: targetOptionGroupLabel(target, swarmTargetsQuery.data ?? []),
+        target,
+      }))
       .filter((option) => {
         if (!option.key || seen.has(option.key)) {
           return false

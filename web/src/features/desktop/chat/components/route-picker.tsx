@@ -15,8 +15,8 @@ interface RoutePickerProps {
 }
 
 const VIEWPORT_GUTTER = 8
-const MIN_DROPDOWN_WIDTH = 220
-const MAX_DROPDOWN_WIDTH = 320
+const MIN_DROPDOWN_WIDTH = 260
+const MAX_DROPDOWN_WIDTH = 360
 
 function routeKind(route: DesktopChatRoute): 'managed' | 'remote' | 'local' {
   const targetKind = route.targetKind.trim().toLowerCase()
@@ -35,7 +35,7 @@ function RouteIcon({ route, className }: { route: DesktopChatRoute; className?: 
 
 function routeCaption(route: DesktopChatRoute): string {
   if (!route.swarmId) {
-    return 'Host machine'
+    return 'Primary host'
   }
   const kind = routeKind(route)
   if (kind === 'managed') {
@@ -43,9 +43,45 @@ function routeCaption(route: DesktopChatRoute): string {
   }
   if (kind === 'remote') {
     const hostName = route.hostSwarmName.trim() || route.hostSwarmId.trim()
-    return hostName || 'Remote swarm'
+    return hostName ? `Container on ${hostName}` : 'Container'
   }
-  return 'Local swarm'
+  return 'Primary container'
+}
+
+interface RouteGroup {
+  key: string
+  label: string
+  routes: DesktopChatRoute[]
+}
+
+export function groupDesktopChatRoutes(routes: DesktopChatRoute[]): RouteGroup[] {
+  const primary: DesktopChatRoute[] = []
+  const managedGroups: RouteGroup[] = []
+  const managedByHost = new Map<string, RouteGroup>()
+
+  for (const route of routes) {
+    if (!route.swarmId || routeKind(route) !== 'remote') {
+      primary.push(route)
+      continue
+    }
+    const hostKey = route.hostSwarmId.trim() || route.hostSwarmName.trim() || 'managed-host'
+    let group = managedByHost.get(hostKey)
+    if (!group) {
+      group = {
+        key: `managed:${hostKey}`,
+        label: route.hostSwarmName.trim() || route.hostSwarmId.trim() || 'Managed host',
+        routes: [],
+      }
+      managedByHost.set(hostKey, group)
+      managedGroups.push(group)
+    }
+    group.routes.push(route)
+  }
+
+  return [
+    { key: 'primary', label: 'Primary', routes: primary },
+    ...managedGroups,
+  ].filter((group) => group.routes.length > 0)
 }
 
 export function RoutePicker({ currentRoute, routes, onSelect, defaultRouteId, onSetDefault, defaultDisabled = false, disabled = false, title }: RoutePickerProps) {
@@ -58,6 +94,7 @@ export function RoutePicker({ currentRoute, routes, onSelect, defaultRouteId, on
     () => routes.find((route) => route.id === currentRoute.id) ?? currentRoute,
     [currentRoute, routes],
   )
+  const routeGroups = useMemo(() => groupDesktopChatRoutes(routes), [routes])
 
   const updatePosition = useCallback(() => {
     if (!triggerRef.current || typeof window === 'undefined') {
@@ -148,48 +185,55 @@ export function RoutePicker({ currentRoute, routes, onSelect, defaultRouteId, on
           </span>
         </div>
         <div className="py-1">
-          {routes.map((route) => {
-            const isSelected = route.id === selectedRoute.id
-            const isDefault = route.id === defaultRouteId
-            const canSetDefault = Boolean(onSetDefault) && !isDefault
-            return (
-              <div
-                key={route.id}
-                className={isSelected
-                  ? 'flex w-full items-center gap-1 bg-[var(--app-surface-subtle)] px-1.5 py-1 text-[var(--app-text)] transition'
-                  : 'flex w-full items-center gap-1 px-1.5 py-1 text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}
-              >
-                <button
-                  type="button"
-                  onClick={() => handleSelect(route.id)}
-                  className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-1.5 py-1.5 text-left"
-                >
-                  <RouteIcon route={route} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{route.label}</span>
-                    <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">
-                      {isDefault ? 'Workspace default' : routeCaption(route)}
-                    </span>
-                  </span>
-                  {isSelected ? <Check size={14} className="shrink-0 text-[var(--app-primary)]" /> : null}
-                </button>
-                {onSetDefault ? (
-                  <button
-                    type="button"
-                    onClick={(event) => handleSetDefault(event, route.id)}
-                    disabled={!canSetDefault || defaultDisabled}
-                    title={isDefault ? 'Workspace default' : 'Set as workspace default'}
-                    aria-label={isDefault ? `${route.label} is the workspace default` : `Set ${route.label} as workspace default`}
-                    className={isDefault
-                      ? 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-primary)]'
-                      : 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50'}
-                  >
-                    <Star size={14} fill={isDefault ? 'currentColor' : 'none'} />
-                  </button>
-                ) : null}
+          {routeGroups.map((group) => (
+            <div key={group.key} className="py-1 first:pt-0 last:pb-0">
+              <div className="px-3 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
+                {group.label}
               </div>
-            )
-          })}
+              {group.routes.map((route) => {
+                const isSelected = route.id === selectedRoute.id
+                const isDefault = route.id === defaultRouteId
+                const canSetDefault = Boolean(onSetDefault) && !isDefault
+                return (
+                  <div
+                    key={route.id}
+                    className={isSelected
+                      ? 'flex w-full items-center gap-1 bg-[var(--app-surface-subtle)] px-1.5 py-1 text-[var(--app-text)] transition'
+                      : 'flex w-full items-center gap-1 px-1.5 py-1 text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleSelect(route.id)}
+                      className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-1.5 py-1.5 text-left"
+                    >
+                      <RouteIcon route={route} className="mt-0.5 shrink-0 text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{route.label}</span>
+                        <span className="mt-0.5 block truncate text-[11px] text-[var(--app-text-subtle)]">
+                          {isDefault ? `Workspace default · ${routeCaption(route)}` : routeCaption(route)}
+                        </span>
+                      </span>
+                      {isSelected ? <Check size={14} className="shrink-0 text-[var(--app-primary)]" /> : null}
+                    </button>
+                    {onSetDefault ? (
+                      <button
+                        type="button"
+                        onClick={(event) => handleSetDefault(event, route.id)}
+                        disabled={!canSetDefault || defaultDisabled}
+                        title={isDefault ? 'Workspace default' : 'Set as workspace default'}
+                        aria-label={isDefault ? `${route.label} is the workspace default` : `Set ${route.label} as workspace default`}
+                        className={isDefault
+                          ? 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-primary)]'
+                          : 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50'}
+                      >
+                        <Star size={14} fill={isDefault ? 'currentColor' : 'none'} />
+                      </button>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
+          ))}
         </div>
       </div>
     </div>,

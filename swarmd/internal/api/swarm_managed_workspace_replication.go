@@ -259,12 +259,40 @@ func (s *Server) handleManagedWorkspaceInventory(w http.ResponseWriter, r *http.
 		return
 	}
 	targetSwarmID := strings.TrimSpace(r.URL.Query().Get("target_swarm_id"))
+	if targetSwarmID == "" {
+		selectedTargetSwarmID, status, err := s.selectedManagedWorkspaceInventoryTargetSwarmID(r)
+		if err != nil {
+			writeError(w, status, err)
+			return
+		}
+		targetSwarmID = selectedTargetSwarmID
+	}
 	response, status, err := s.managedWorkspaceInventory(r, targetSwarmID)
 	if err != nil {
 		writeError(w, status, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) selectedManagedWorkspaceInventoryTargetSwarmID(r *http.Request) (string, int, error) {
+	remoteTarget, err := s.currentRemoteSwarmTargetForRequest(r)
+	if err != nil {
+		return "", http.StatusBadGateway, err
+	}
+	if remoteTarget != nil && strings.TrimSpace(remoteTarget.SwarmID) != "" {
+		return strings.TrimSpace(remoteTarget.SwarmID), http.StatusOK, nil
+	}
+	targets, _, err := s.swarmTargetsForRequest(r)
+	if err != nil {
+		return "", http.StatusBadRequest, err
+	}
+	for _, target := range targets {
+		if strings.EqualFold(strings.TrimSpace(target.Relationship), swarmruntime.RelationshipManaged) && !strings.EqualFold(strings.TrimSpace(target.Kind), "manager") && strings.TrimSpace(target.SwarmID) != "" {
+			return strings.TrimSpace(target.SwarmID), http.StatusOK, nil
+		}
+	}
+	return "", http.StatusBadRequest, errors.New("target_swarm_id is required")
 }
 
 func (s *Server) handlePeerManagedWorkspacePreflight(w http.ResponseWriter, r *http.Request) {
@@ -840,12 +868,12 @@ func (s *Server) resolveManagedWorkspaceTarget(r *http.Request, targetSwarmID st
 	if strings.TrimSpace(target.BackendURL) == "" {
 		return nil, "", "", http.StatusBadRequest, errors.New("managed host route is missing")
 	}
-	if !target.Selectable {
-		return nil, "", "", http.StatusBadRequest, errors.New("managed host is not selectable")
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), swarmTargetHealthTimeout)
 	defer cancel()
-	if !probeSwarmTargetBackend(ctx, target.BackendURL) {
+	if probeSwarmTargetBackend(ctx, target.BackendURL) {
+		target.Online = true
+		target.Selectable = true
+	} else {
 		return nil, "", "", http.StatusBadGateway, errors.New("managed host route is not reachable")
 	}
 	peerToken, err := s.outgoingPeerAuthTokenForTarget(r, *target)
