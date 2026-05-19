@@ -57,11 +57,11 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
+import { orderSidebarSessions } from './sidebar-session-order'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
-const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
@@ -994,14 +994,6 @@ function sessionIsActive(session: DesktopSessionRecord): boolean {
   return sessionHasPendingPermission(session) || session.live.awaitingAck || ['starting', 'running', 'blocked'].includes(session.live.status)
 }
 
-function sessionActivityAnchor(session: DesktopSessionRecord): number {
-  return session.live.startedAt
-    ?? (session.lifecycle?.startedAt && session.lifecycle.startedAt > 0 ? session.lifecycle.startedAt : null)
-    ?? session.live.lastEventAt
-    ?? session.updatedAt
-    ?? 0
-}
-
 function sessionDurableActivityAt(session: DesktopSessionRecord): number {
   if (session.updatedAt > 0) {
     return session.updatedAt
@@ -1018,51 +1010,6 @@ function sessionSidebarDisplayTimestamp(session: DesktopSessionRecord): number |
   }
   const durableAt = sessionDurableActivityAt(session)
   return durableAt > 0 ? durableAt : null
-}
-
-function sessionSidebarSortAnchor(session: DesktopSessionRecord): number {
-  if (sessionIsActive(session)) {
-    return sessionActivityAnchor(session)
-  }
-  return sessionDurableActivityAt(session)
-}
-
-function sessionShouldPinInSidebar(session: DesktopSessionRecord, now: number): boolean {
-  if (sessionIsActive(session)) {
-    return true
-  }
-
-  const lastActivityAt = sessionDurableActivityAt(session)
-  return lastActivityAt > 0
-    && now - lastActivityAt <= SIDEBAR_ACTIVITY_GRACE_MS
-    && sessionSidebarSortAnchor(session) > 0
-}
-
-function compareSidebarSessions(left: DesktopSessionRecord, right: DesktopSessionRecord, now: number): number {
-  const leftPinned = sessionShouldPinInSidebar(left, now)
-  const rightPinned = sessionShouldPinInSidebar(right, now)
-  if (leftPinned !== rightPinned) {
-    return leftPinned ? -1 : 1
-  }
-
-  if (leftPinned && rightPinned) {
-    const anchorDelta = sessionSidebarSortAnchor(left) - sessionSidebarSortAnchor(right)
-    if (anchorDelta !== 0) {
-      return anchorDelta
-    }
-  }
-
-  const updatedDelta = right.updatedAt - left.updatedAt
-  if (updatedDelta !== 0) {
-    return updatedDelta
-  }
-
-  const createdDelta = right.createdAt - left.createdAt
-  if (createdDelta !== 0) {
-    return createdDelta
-  }
-
-  return left.id.localeCompare(right.id)
 }
 
 function sessionStatusDetail(session: DesktopSessionRecord, now: number): string {
@@ -1130,11 +1077,14 @@ interface SidebarSessionNode {
   label: string | null
 }
 
-function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number): SidebarSessionNode[] {
-  const sortedSessions = sessions.length > 1
-    ? [...sessions].sort((left, right) => compareSidebarSessions(left, right, now))
-    : sessions
+function buildSidebarSessionTree(sessions: DesktopSessionRecord[], _now: number): SidebarSessionNode[] {
+  void _now
+  const sortedSessions = sessions
   const byID = new Map<string, SidebarSessionNode>()
+  const orderByID = new Map<string, number>()
+  sortedSessions.forEach((session, index) => {
+    orderByID.set(session.id, index)
+  })
   for (const session of sortedSessions) {
     const descriptor = sessionChildDescriptor(session)
     byID.set(session.id, {
@@ -1182,7 +1132,7 @@ function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number):
   dedupeChildren(uniqueRoots)
 
   const sortNodes = (nodes: SidebarSessionNode[]) => {
-    nodes.sort((left, right) => compareSidebarSessions(left.session, right.session, now))
+    nodes.sort((left, right) => (orderByID.get(left.session.id) ?? 0) - (orderByID.get(right.session.id) ?? 0))
     for (const node of nodes) {
       if (node.children.length > 0) {
         sortNodes(node.children)
@@ -1505,6 +1455,7 @@ export function DesktopAppPage() {
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [routeSessionPending, setRouteSessionPending] = useState(false)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
+  const sidebarSessionOrderRef = useRef<Record<string, string[]>>({})
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
   const resizeStateRef = useRef<SidebarResizeState | null>(null)
@@ -3160,7 +3111,13 @@ export function DesktopAppPage() {
                   {flowMenuError ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
                 </div>
               ) : visibleSidebarWorkspaceEntries.map((workspace, index) => {
-                const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
+                const incomingWorkspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
+                const orderedWorkspaceSessions = orderSidebarSessions(
+                  incomingWorkspaceSessions,
+                  sidebarSessionOrderRef.current[workspace.path] ?? [],
+                )
+                sidebarSessionOrderRef.current[workspace.path] = orderedWorkspaceSessions.order
+                const workspaceSessions = orderedWorkspaceSessions.sessions
                 const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
                 const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, selectedSession?.id)
                 const layout = workspaceLayout[workspace.path]
