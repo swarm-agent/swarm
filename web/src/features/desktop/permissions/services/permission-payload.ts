@@ -37,6 +37,22 @@ export interface PlanUpdatePayload {
   approvedArguments: Record<string, unknown>
 }
 
+export type PlanUpdateDiffRowKind = 'added' | 'removed' | 'context' | 'gap'
+
+export interface PlanUpdateDiffRow {
+  kind: PlanUpdateDiffRowKind
+  text: string
+  lineNumberBefore: number | null
+  lineNumberAfter: number | null
+  omittedCount?: number
+}
+
+export interface PlanUpdateDiffPreview {
+  rows: PlanUpdateDiffRow[]
+  addedCount: number
+  removedCount: number
+}
+
 export interface ManageTodosPreviewRow {
   text: string
   metadata: string[]
@@ -543,6 +559,97 @@ export function parsePlanUpdatePermission(permission: DesktopPermissionRecord): 
     diffLines: mapStringArrayArg(payload, 'diff_lines'),
     approvedArguments: mapObjectArg(payload, 'approved_arguments'),
   }
+}
+
+function splitPlanPreviewLines(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/g, '')
+  return normalized ? normalized.split('\n') : []
+}
+
+function appendFallbackChangedRows(rows: PlanUpdateDiffRow[], beforeLine: string | undefined, afterLine: string | undefined, lineNumber: number): void {
+  if (beforeLine !== undefined) {
+    rows.push({ kind: 'removed', text: beforeLine, lineNumberBefore: lineNumber, lineNumberAfter: null })
+  }
+  if (afterLine !== undefined) {
+    rows.push({ kind: 'added', text: afterLine, lineNumberBefore: null, lineNumberAfter: lineNumber })
+  }
+}
+
+export function buildPlanUpdateDiffPreview(diffLines: string[], priorPlan: string, plan: string): PlanUpdateDiffPreview {
+  const rows: PlanUpdateDiffRow[] = []
+  let addedCount = 0
+  let removedCount = 0
+  let beforeLineNumber = 1
+  let afterLineNumber = 1
+  let pendingContext: PlanUpdateDiffRow[] = []
+  let emittedChange = false
+
+  const flushContextBeforeChange = () => {
+    if (pendingContext.length === 0) {
+      return
+    }
+    if (emittedChange && pendingContext.length > 4) {
+      rows.push({ kind: 'gap', text: `${pendingContext.length - 4} unchanged lines`, lineNumberBefore: null, lineNumberAfter: null, omittedCount: pendingContext.length - 4 })
+      rows.push(...pendingContext.slice(-2))
+    } else {
+      rows.push(...pendingContext.slice(-2))
+    }
+    pendingContext = []
+  }
+
+  const rememberContext = (text: string) => {
+    pendingContext.push({ kind: 'context', text, lineNumberBefore: beforeLineNumber, lineNumberAfter: afterLineNumber })
+    beforeLineNumber += 1
+    afterLineNumber += 1
+  }
+
+  diffLines.forEach((rawLine) => {
+    const line = rawLine.replace(/\r$/, '')
+    if (line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')) {
+      return
+    }
+    if (line.startsWith('  ')) {
+      rememberContext(line.slice(2))
+      return
+    }
+    if (line.startsWith('-')) {
+      flushContextBeforeChange()
+      rows.push({ kind: 'removed', text: line.startsWith('- ') ? line.slice(2) : line.slice(1), lineNumberBefore: beforeLineNumber, lineNumberAfter: null })
+      beforeLineNumber += 1
+      removedCount += 1
+      emittedChange = true
+      return
+    }
+    if (line.startsWith('+')) {
+      flushContextBeforeChange()
+      rows.push({ kind: 'added', text: line.startsWith('+ ') ? line.slice(2) : line.slice(1), lineNumberBefore: null, lineNumberAfter: afterLineNumber })
+      afterLineNumber += 1
+      addedCount += 1
+      emittedChange = true
+      return
+    }
+    rememberContext(line)
+  })
+
+  if (rows.length > 0) {
+    rows.push(...pendingContext.slice(0, 2))
+    return { rows, addedCount, removedCount }
+  }
+
+  const beforeLines = splitPlanPreviewLines(priorPlan)
+  const afterLines = splitPlanPreviewLines(plan)
+  const max = Math.max(beforeLines.length, afterLines.length)
+  for (let index = 0; index < max; index += 1) {
+    const beforeLine = beforeLines[index]
+    const afterLine = afterLines[index]
+    if ((beforeLine ?? '') === (afterLine ?? '')) {
+      continue
+    }
+    appendFallbackChangedRows(rows, beforeLine, afterLine, index + 1)
+  }
+  addedCount = rows.filter((row) => row.kind === 'added').length
+  removedCount = rows.filter((row) => row.kind === 'removed').length
+  return { rows, addedCount, removedCount }
 }
 
 export function parseManageTodosPermission(permission: DesktopPermissionRecord): ManageTodosPayload {
