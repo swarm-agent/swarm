@@ -93,9 +93,6 @@ func (p *ChatPage) renderAssistantMessageLines(message chatMessageItem, width in
 	if body == "" {
 		body = " "
 	}
-	if label := assistantTimelineLabel(message.Metadata); label != "" {
-		body = label + "\n" + body
-	}
 	variant := normalizeVariant(p.assistantVariant, chatAssistantVariantCount)
 
 	switch variant {
@@ -121,43 +118,6 @@ func (p *ChatPage) renderAssistantMessageLines(message chatMessageItem, width in
 	default:
 		return p.renderAssistantCopyAwareMessageLines("▢ ", "", body, width, p.theme.Accent, message)
 	}
-}
-
-func assistantTimelineLabel(metadata map[string]any) string {
-	if len(metadata) == 0 {
-		return ""
-	}
-	source, _ := metadata["source"].(string)
-	lineageKind, _ := metadata["lineage_kind"].(string)
-	lineageLabel, _ := metadata["lineage_label"].(string)
-	subagent, _ := metadata["subagent"].(string)
-	backgroundAgent, _ := metadata["background_agent"].(string)
-	targetName, _ := metadata["target_name"].(string)
-	if !strings.EqualFold(strings.TrimSpace(source), "targeted_subagent") &&
-		!strings.EqualFold(strings.TrimSpace(lineageKind), "delegated_subagent") &&
-		!strings.EqualFold(strings.TrimSpace(lineageKind), "background_agent") &&
-		strings.TrimSpace(lineageLabel) == "" &&
-		strings.TrimSpace(subagent) == "" &&
-		strings.TrimSpace(backgroundAgent) == "" &&
-		strings.TrimSpace(targetName) == "" {
-		return ""
-	}
-	name := strings.TrimSpace(subagent)
-	if name == "" {
-		name = strings.TrimSpace(backgroundAgent)
-	}
-	if name == "" {
-		name = strings.TrimSpace(lineageLabel)
-		name = strings.TrimPrefix(name, "@")
-		name = strings.TrimSpace(name)
-	}
-	if name == "" {
-		name = strings.TrimSpace(targetName)
-	}
-	if name == "" {
-		return "@subagent"
-	}
-	return "@" + name
 }
 
 func styledWrapped(firstPrefix, continuationPrefix, body string, width int, style tcell.Style) []chatRenderLine {
