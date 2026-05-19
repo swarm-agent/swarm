@@ -19,6 +19,8 @@ export type SwarmToolSidebarAction = {
 type SwarmToolSidebarProps = {
   backLabel: string
   onBack: () => void
+  topSecondaryLabel?: string
+  onTopSecondary?: () => void
   darkModeEnabled: boolean
   onToggleDarkMode: () => void
   darkModeStyle?: CSSProperties
@@ -50,6 +52,8 @@ type SwarmToolSidebarProps = {
 export function SwarmToolSidebar({
   backLabel,
   onBack,
+  topSecondaryLabel,
+  onTopSecondary,
   darkModeEnabled,
   onToggleDarkMode,
   darkModeStyle,
@@ -78,12 +82,17 @@ export function SwarmToolSidebar({
   children,
 }: SwarmToolSidebarProps) {
   return (
-    <aside className="mr-5 flex w-[276px] shrink-0 flex-col border-r border-[var(--app-border)] py-5 pl-3 pr-4 font-mono text-[12px] text-[var(--app-text-muted)]">
+    <aside className="flex min-h-0 w-full shrink-0 flex-1 flex-col overflow-hidden py-2 font-mono text-[12px] text-[var(--app-text-muted)] lg:mr-5 lg:w-[276px] lg:flex-none lg:border-r lg:border-[var(--app-border)] lg:py-5 lg:pl-3 lg:pr-4">
       <div className="mb-5 flex items-center justify-between gap-2">
         <button type="button" onClick={onBack} className="flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
           <ArrowLeft size={14} />
           <span className="truncate">{backLabel}</span>
         </button>
+        {topSecondaryLabel && onTopSecondary ? (
+          <button type="button" onClick={onTopSecondary} className="h-9 shrink-0 px-2 text-left hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+            <span className="truncate">{topSecondaryLabel}</span>
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onToggleDarkMode}
@@ -138,12 +147,12 @@ export function SwarmToolSidebar({
         </button>
       </div>
 
-      <div className="mt-4 border-y border-[var(--app-border)] py-3">
+      <div className="mt-4 min-h-0 flex-1 border-y border-[var(--app-border)] py-3">
         <div className="mb-2 flex items-center justify-between px-2">
           <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">{sessionsLabel}</p>
           {sessionsLoading ? <Loader2 size={12} className="animate-spin" /> : null}
         </div>
-        <div className="max-h-[236px] overflow-y-auto pr-1">
+        <div className="max-h-full overflow-y-auto pr-1 lg:max-h-[236px]">
           {sessions.length === 0 && !sessionsLoading ? (
             <div className="px-2 py-3 text-[11px] leading-5 text-[var(--app-text-subtle)]">
               {emptySessionsMessage}
@@ -177,7 +186,7 @@ export function SwarmToolSidebar({
         </div>
       ) : null}
 
-      {children}
+      {children ? <div className="hidden lg:contents">{children}</div> : null}
     </aside>
   )
 }

@@ -424,6 +424,13 @@ export function ImageToolPage() {
   const displayedChargeInfo = lastGeminiChargeInfo ?? selectedSessionChargeInfo
   const selectedModelLabel = selectedModelOption.label
   const canGenerateImage = Boolean(selectedThread && promptText.trim() && selectedProviderReady && !generatingImage)
+  const imageSessionsLoading = imageThreadsQuery.isLoading || workspacesQuery.isLoading
+  const imageSessionSidebarItems = imageThreads.map((thread) => ({
+    id: thread.id,
+    title: thread.title || 'Image Thread',
+    subtitle: String(thread.imageAssets.length) + ' asset' + (thread.imageAssets.length === 1 ? '' : 's') + ' · ' + formatStartedAt(thread.createdAt),
+  }))
+  const showMobileSessionLauncher = !routeImageSessionId && !selectedThread
   const generationSlotCount = generatingImage ? activeGenerationCount : selectedFinalImageCount
   const activeLivePreview = selectedLivePreviewId
     ? livePreviews.find((preview) => preview.id === selectedLivePreviewId) ?? null
@@ -555,7 +562,18 @@ export function ImageToolPage() {
     setLightboxNaturalSize(null)
   }, [selectedImageAsset])
 
-  const handleBackToWorkspace = useMemo(() => {
+  const handleBackToTools = useMemo(() => {
+    if (routeWorkspaceSlug) {
+      return () => {
+        void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug: routeWorkspaceSlug } })
+      }
+    }
+    return () => {
+      void navigate({ to: '/tools' })
+    }
+  }, [navigate, routeWorkspaceSlug])
+
+  const handleBackToLauncher = useMemo(() => {
     if (routeWorkspaceSlug) {
       if (activeSessionId) {
         return () => {
@@ -638,6 +656,15 @@ export function ImageToolPage() {
     setSelectedLivePreviewId(null)
     void navigate({ to: '/$workspaceSlug/tools/image', params: { workspaceSlug } })
   }, [navigate, workspaceSlugByPath, workspaces])
+
+  const handleSelectImageSession = useCallback((threadId: string) => {
+    setSelectedThreadId(threadId)
+    if (selectedWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/tools/image/$imageSessionId', params: { workspaceSlug: selectedWorkspaceSlug, imageSessionId: threadId } })
+    } else {
+      void navigate({ to: '/tools/image/$imageSessionId', params: { imageSessionId: threadId } })
+    }
+  }, [navigate, selectedWorkspaceSlug])
 
   const handlePreviousPreview = useCallback(() => {
     if (orderedImageAssets.length === 0) return
@@ -921,17 +948,20 @@ export function ImageToolPage() {
 
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
-      <div className="mx-auto flex h-full w-full max-w-none flex-col px-4 py-4 sm:px-5 sm:py-5">
+      <div className="mx-auto flex h-full w-full max-w-none flex-col p-0 lg:px-5 lg:py-5">
         {createError || generationError ? (
-          <div className="mb-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm text-[var(--app-text)]">
+          <div className="mx-4 mt-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm text-[var(--app-text)] lg:mx-0 lg:mb-4 lg:mt-0">
             {createError || generationError}
           </div>
         ) : null}
 
-        <main className="flex min-h-0 flex-1 overflow-hidden py-5">
+        <main className="flex min-h-0 flex-1 overflow-hidden py-0 lg:py-5">
+          <div className={showMobileSessionLauncher ? 'flex min-h-dvh w-full flex-col overflow-hidden px-4 pb-[calc(var(--app-safe-area-bottom)+1rem)] pt-[calc(var(--app-safe-area-top)+0.75rem)] lg:contents lg:p-0' : 'hidden lg:contents'}>
           <SwarmToolSidebar
-            backLabel={routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}
-            onBack={handleBackToWorkspace}
+            backLabel="Tools"
+            onBack={handleBackToTools}
+            topSecondaryLabel={routeWorkspaceSlug ? (activeSessionId ? 'Chat' : 'Launcher') : 'Launcher'}
+            onTopSecondary={handleBackToLauncher}
             darkModeEnabled={blackModeEnabled}
             onToggleDarkMode={() => setBlackModeEnabled((enabled) => !enabled)}
             darkModeStyle={darkOverrideButtonStyle}
@@ -1013,21 +1043,10 @@ export function ImageToolPage() {
             creating={creatingSession}
             createDisabled={!selectedWorkspacePath}
             sessionsLabel="Image sessions"
-            sessionsLoading={imageThreadsQuery.isLoading || workspacesQuery.isLoading}
-            sessions={imageThreads.map((thread) => ({
-              id: thread.id,
-              title: thread.title || 'Image Thread',
-              subtitle: String(thread.imageAssets.length) + ' asset' + (thread.imageAssets.length === 1 ? '' : 's') + ' · ' + formatStartedAt(thread.createdAt),
-            }))}
+            sessionsLoading={imageSessionsLoading}
+            sessions={imageSessionSidebarItems}
             selectedSessionId={selectedThread?.id ?? null}
-            onSelectSession={(threadId) => {
-              setSelectedThreadId(threadId)
-              if (selectedWorkspaceSlug) {
-                void navigate({ to: '/$workspaceSlug/tools/image/$imageSessionId', params: { workspaceSlug: selectedWorkspaceSlug, imageSessionId: threadId } })
-              } else {
-                void navigate({ to: '/tools/image/$imageSessionId', params: { imageSessionId: threadId } })
-              }
-            }}
+            onSelectSession={handleSelectImageSession}
             emptySessionsMessage="No image sessions yet. Start session to get started."
             defaultSessionTitle="Image Thread"
           >
@@ -1062,9 +1081,12 @@ export function ImageToolPage() {
             ) : null}
           </SwarmToolSidebar>
 
-          <section className="flex min-w-0 flex-1 flex-col overflow-y-auto xl:overflow-hidden">
+          <section className={showMobileSessionLauncher ? 'hidden min-w-0 flex-1 flex-col overflow-y-auto lg:flex xl:overflow-hidden' : 'flex min-w-0 flex-1 flex-col overflow-y-auto xl:overflow-hidden'}>
             <div className="mb-4 flex items-center justify-between gap-3 lg:hidden">
-              <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBackToWorkspace}><ArrowLeft size={15} />{routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Workspace') : 'Launcher'}</Button>
+              <div className="flex min-w-0 items-center gap-2">
+                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBackToTools}><ArrowLeft size={15} />Tools</Button>
+                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-subtle)]" onClick={handleBackToLauncher}>{routeWorkspaceSlug ? (activeSessionId ? 'Chat' : 'Launcher') : 'Launcher'}</Button>
+              </div>
               <Button variant="outline" style={darkOverrideButtonStyle} className={`h-8 w-8 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
             </div>
 
@@ -1321,6 +1343,7 @@ export function ImageToolPage() {
               </div>
             )}
           </section>
+          </div>
         </main>
         {imageLightboxOpen && selectedThread && selectedImageAsset ? (
           <Dialog className="z-[80] p-0">
