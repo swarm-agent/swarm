@@ -25,6 +25,7 @@ type SwarmToolSidebarProps = {
   onToggleDarkMode: () => void
   darkModeStyle?: CSSProperties
   darkModeActiveClassName?: string
+  darkModeIconStyle?: CSSProperties
   toolIcon: ReactNode
   toolTitle: string
   toolDescription: string
@@ -58,6 +59,7 @@ export function SwarmToolSidebar({
   onToggleDarkMode,
   darkModeStyle,
   darkModeActiveClassName,
+  darkModeIconStyle,
   toolIcon,
   toolTitle,
   toolDescription,
@@ -97,12 +99,12 @@ export function SwarmToolSidebar({
           type="button"
           onClick={onToggleDarkMode}
           style={darkModeStyle}
-          className={`grid h-9 w-9 shrink-0 place-items-center border ${darkModeEnabled ? (darkModeActiveClassName ?? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]') : 'border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}
+          className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl border lg:h-9 lg:w-9 lg:rounded-none ${darkModeEnabled ? (darkModeActiveClassName ?? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]') : 'border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}
           aria-label="Toggle dark mode override for this page"
           aria-pressed={darkModeEnabled}
           title="Toggle dark mode override for this page"
         >
-          <Moon size={15} aria-hidden="true" />
+          <Moon size={15} aria-hidden="true" style={darkModeIconStyle} />
         </button>
       </div>
 

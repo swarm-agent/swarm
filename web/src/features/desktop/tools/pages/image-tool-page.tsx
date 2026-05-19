@@ -522,7 +522,7 @@ export function ImageToolPage() {
 
   const handleOpenThumbnail = useCallback((item: ImageThumbnailItem) => {
     handleSelectThumbnail(item)
-    if (item.kind === 'asset') {
+    if (item.kind === 'asset' && window.matchMedia('(min-width: 1024px)').matches) {
       setImageLightboxOpen(true)
     }
   }, [handleSelectThumbnail])
@@ -737,11 +737,12 @@ export function ImageToolPage() {
   useEffect(() => {
     if (!imageLightboxOpen) return
     const handleKeyDown = (event: KeyboardEvent) => {
+      const desktopLightbox = window.matchMedia('(min-width: 1024px)').matches
       if (event.key === 'Escape') {
         setImageLightboxOpen(false)
-      } else if (event.key === 'ArrowLeft') {
+      } else if (desktopLightbox && event.key === 'ArrowLeft') {
         handlePreviousPreview()
-      } else if (event.key === 'ArrowRight') {
+      } else if (desktopLightbox && event.key === 'ArrowRight') {
         handleNextPreview()
       }
     }
@@ -750,7 +751,7 @@ export function ImageToolPage() {
   }, [handleNextPreview, handlePreviousPreview, imageLightboxOpen])
 
   const openImageLightbox = useCallback(() => {
-    if (!selectedImageAsset) return
+    if (!selectedImageAsset || !window.matchMedia('(min-width: 1024px)').matches) return
     setImageLightboxOpen(true)
   }, [selectedImageAsset])
 
@@ -803,18 +804,17 @@ export function ImageToolPage() {
     window.open(selectedImageSource, '_blank', 'noopener,noreferrer')
   }, [selectedImageSource])
 
-  const handleDownloadSelectedImage = useCallback(async () => {
-    if (!selectedImageAsset || !selectedImageSource) return
+  const handleDownloadImage = useCallback(async (asset: ImageAsset, source: string) => {
     setGenerationError(null)
     setImageActionStatus('')
     try {
-      const response = await fetch(selectedImageSource)
+      const response = await fetch(source)
       if (!response.ok) throw new Error(`Download failed with status ${response.status}`)
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = imageDownloadName(selectedImageAsset)
+      anchor.download = imageDownloadName(asset)
       document.body.appendChild(anchor)
       anchor.click()
       anchor.remove()
@@ -824,7 +824,35 @@ export function ImageToolPage() {
     } catch (error) {
       setGenerationError(error instanceof Error ? error.message : String(error))
     }
-  }, [selectedImageAsset, selectedImageSource])
+  }, [])
+
+  const handleDownloadSelectedImage = useCallback(async () => {
+    if (!selectedImageAsset || !selectedImageSource) return
+    await handleDownloadImage(selectedImageAsset, selectedImageSource)
+  }, [handleDownloadImage, selectedImageAsset, selectedImageSource])
+
+  const handleCopyImageToClipboard = useCallback(async (source: string) => {
+    setGenerationError(null)
+    setImageActionStatus('')
+    try {
+      if (typeof navigator === 'undefined' || !navigator.clipboard?.write) throw new Error('Image clipboard unavailable')
+      if (typeof ClipboardItem === 'undefined') throw new Error('Image clipboard unavailable')
+      const response = await fetch(source)
+      if (!response.ok) throw new Error(`Copy failed with status ${response.status}`)
+      const fetchedBlob = await response.blob()
+      const imageBlob = fetchedBlob.type ? fetchedBlob : new Blob([fetchedBlob], { type: 'image/png' })
+      await navigator.clipboard.write([new ClipboardItem({ [imageBlob.type]: imageBlob })])
+      setImageActionStatus('Image copied.')
+      setPathCopyStatus('')
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
+  const handleCopySelectedImage = useCallback(async () => {
+    if (!selectedImageSource) return
+    await handleCopyImageToClipboard(selectedImageSource)
+  }, [handleCopyImageToClipboard, selectedImageSource])
 
   const handleGenerateImage = useCallback(async () => {
     if (!selectedThread) {
@@ -1015,7 +1043,8 @@ export function ImageToolPage() {
             darkModeEnabled={blackModeEnabled}
             onToggleDarkMode={() => setBlackModeEnabled((enabled) => !enabled)}
             darkModeStyle={darkOverrideButtonStyle}
-            darkModeActiveClassName="border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]"
+            darkModeIconStyle={{ width: 22, height: 22, minWidth: 22, minHeight: 22 }}
+            darkModeActiveClassName="border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)] lg:rounded-none"
             toolIcon={<Image size={16} strokeWidth={1.8} />}
             toolTitle="Image"
             toolDescription="Swarm image sessions store generated assets in Swarm’s private app-managed workspace bucket, outside the repository."
@@ -1138,7 +1167,7 @@ export function ImageToolPage() {
                 <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToTools}><ArrowLeft size={15} />Tools</Button>
                 <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-subtle)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToLauncher}>{routeWorkspaceSlug ? (activeSessionId ? 'Chat' : 'Launcher') : 'Launcher'}</Button>
               </div>
-              <Button variant="outline" style={darkOverrideButtonStyle} className={`h-11 w-11 rounded-2xl px-0 max-[400px]:h-9 max-[400px]:w-9 ${blackModeEnabled ? 'border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={20} aria-hidden="true" /></Button>
+              <Button variant="outline" style={darkOverrideButtonStyle} className={`h-11 w-11 rounded-2xl px-0 max-[400px]:h-9 max-[400px]:w-9 ${blackModeEnabled ? 'border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon aria-hidden="true" strokeWidth={2.2} className="shrink-0" style={{ width: 22, height: 22, minWidth: 22, minHeight: 22 }} /></Button>
             </div>
 
             {!selectedThread ? (
@@ -1153,23 +1182,16 @@ export function ImageToolPage() {
               </div>
             ) : (
               <>
-                <div data-testid="image-mobile-workspace" className="flex h-full min-h-0 w-full max-w-full min-w-0 flex-1 flex-col overflow-hidden overflow-x-hidden lg:hidden">
+                <div className="flex h-full min-h-0 w-full max-w-full min-w-0 flex-1 flex-col overflow-hidden overflow-x-hidden lg:hidden">
                   <div className="mb-2 flex min-w-0 shrink-0 items-center justify-between gap-2 max-[400px]:mb-1">
                     <div className="min-w-0">
                       <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)] max-[400px]:sr-only">Image workspace</p>
                       <h2 className="truncate text-base font-semibold tracking-[-0.045em] text-[var(--app-text)] max-[400px]:text-sm">{selectedThread.title || 'Image thread'}</h2>
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {selectedImageAsset ? (
-                        <Button variant="outline" className="h-8 rounded-xl px-3 text-xs max-[400px]:h-7 max-[400px]:px-2" onClick={() => void handleDownloadSelectedImage()}>
-                          <Download size={13} />Save
-                        </Button>
-                      ) : null}
-                    </div>
                   </div>
 
-                  <div data-testid="image-mobile-shell" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto_auto] overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
-                    <div data-testid="image-mobile-canvas" className="relative grid min-h-0 min-w-0 place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_36%),var(--app-bg)] p-2 max-[400px]:p-1.5">
+                  <div className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto_auto] overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
+                    <div className="relative grid min-h-0 min-w-0 place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_36%),var(--app-bg)] p-2 max-[400px]:p-1.5">
                       <div className="grid h-full max-h-full min-h-0 w-full min-w-0 max-w-full place-items-center overflow-hidden border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-surface)_0%,var(--app-bg)_56%,var(--app-surface-hover)_100%)]">
                         {activeLivePreview ? (
                           <div className="relative flex h-full max-h-full min-h-0 w-full min-w-0 max-w-full items-center justify-center overflow-hidden p-2 text-center max-[400px]:p-1">
@@ -1179,14 +1201,17 @@ export function ImageToolPage() {
                             </div>
                           </div>
                         ) : selectedImageAsset ? (
-                          <button type="button" className="group relative flex h-full max-h-full min-h-0 w-full min-w-0 max-w-full cursor-zoom-in items-center justify-center overflow-hidden p-2 max-[400px]:p-1" onClick={openImageLightbox} aria-label="Open image fullscreen">
-                            <span className="flex h-full max-h-full min-h-0 w-full min-w-0 max-w-full items-center justify-center overflow-hidden">
-                              <img data-testid="image-mobile-selected-img" src={selectedImageSource} alt={selectedImageAsset.name} className="min-h-0 min-w-0 transition duration-150 group-active:scale-[0.99]" style={containedImageStyle} />
-                            </span>
-                            <span className="pointer-events-none absolute bottom-2 right-2 hidden rounded-full border border-white/20 bg-black/60 px-2.5 py-1 text-[10px] font-medium text-white shadow-lg min-[401px]:inline-flex">
-                              Tap to view
-                            </span>
-                          </button>
+                          <div className="relative flex h-full max-h-full min-h-0 w-full min-w-0 max-w-full items-center justify-center overflow-hidden p-2 max-[400px]:p-1">
+                            <img src={selectedImageSource} alt={selectedImageAsset.name} className="min-h-0 min-w-0" style={containedImageStyle} />
+                            <div className="absolute bottom-2 right-2 flex gap-1.5">
+                              <Button variant="outline" className="h-8 rounded-xl bg-[var(--app-surface)] px-2.5 text-[10px] shadow-lg" onClick={() => void handleDownloadSelectedImage()}>
+                                <Download size={12} />Save
+                              </Button>
+                              <Button variant="outline" className="h-8 rounded-xl bg-[var(--app-surface)] px-2.5 text-[10px] shadow-lg" onClick={() => void handleCopySelectedImage()}>
+                                <Clipboard size={12} />Copy
+                              </Button>
+                            </div>
+                          </div>
                         ) : generatingImage ? (
                           <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
                             <Sparkles className="animate-pulse text-[var(--app-primary)]" size={44} strokeWidth={1.35} />
@@ -1207,7 +1232,7 @@ export function ImageToolPage() {
                       </div>
                     </div>
 
-                    <section data-testid="image-mobile-gallery" className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 max-[400px]:py-1" aria-label="Gallery">
+                    <section className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 max-[400px]:py-1" aria-label="Gallery">
                       <div className="mb-1 flex items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-[0.18em] text-[var(--app-text-subtle)] max-[400px]:sr-only">
                         <span>Gallery</span>
                         <span>{orderedImageAssets.length} saved</span>
@@ -1221,23 +1246,27 @@ export function ImageToolPage() {
                               ? item.preview.dataUrl
                               : ''
                           return (
-                            <button
+                            <div
                               key={item.id}
-                              ref={selected ? mobileSelectedThumbnailButtonRef : null}
-                              type="button"
-                              onClick={() => handleSelectThumbnail(item)}
-                              className={['group min-w-[68px] max-w-[68px] snap-start border bg-[var(--app-bg)] p-1 text-left transition max-[400px]:min-w-[56px] max-[400px]:max-w-[56px]', selected ? 'border-[var(--app-border-accent)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)]'].join(' ')}
-                              aria-pressed={selected}
+                              className={['group min-w-[92px] max-w-[92px] snap-start border bg-[var(--app-bg)] p-1 text-left transition max-[400px]:min-w-[82px] max-[400px]:max-w-[82px]', selected ? 'border-[var(--app-border-accent)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)]'].join(' ')}
                             >
-                              <div className="grid aspect-square place-items-center overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
-                                {imageSrc ? (
-                                  <img src={imageSrc} alt={item.label} className="h-full w-full object-contain" />
-                                ) : (
-                                  <Sparkles className="animate-pulse text-[var(--app-primary)]" size={18} strokeWidth={1.4} />
-                                )}
-                              </div>
-                              <p className="mt-1 truncate text-[9px] font-medium text-[var(--app-text-muted)] max-[400px]:sr-only">{item.kind === 'pending' ? 'Pending' : item.label}</p>
-                            </button>
+                              <button
+                                ref={selected ? mobileSelectedThumbnailButtonRef : null}
+                                type="button"
+                                onClick={() => handleSelectThumbnail(item)}
+                                className="block w-full text-left"
+                                aria-pressed={selected}
+                              >
+                                <div className="grid aspect-square place-items-center overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
+                                  {imageSrc ? (
+                                    <img src={imageSrc} alt={item.label} className="h-full w-full object-contain" />
+                                  ) : (
+                                    <Sparkles className="animate-pulse text-[var(--app-primary)]" size={18} strokeWidth={1.4} />
+                                  )}
+                                </div>
+                                <p className="mt-1 truncate text-[9px] font-medium text-[var(--app-text-muted)] max-[400px]:sr-only">{item.kind === 'pending' ? 'Pending' : item.label}</p>
+                              </button>
+                            </div>
                           )
                         }) : (
                           <div className="min-w-full border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-4 text-center text-xs text-[var(--app-text-muted)]">
@@ -1247,7 +1276,7 @@ export function ImageToolPage() {
                       </div>
                     </section>
 
-                    <div data-testid="image-mobile-composer" className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-bg)] px-2 pb-[calc(var(--app-safe-area-bottom)+0.5rem)] pt-2 max-[400px]:px-1.5 max-[400px]:pb-[calc(var(--app-safe-area-bottom)+0.25rem)] max-[400px]:pt-1">
+                    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-bg)] px-2 pb-[calc(var(--app-safe-area-bottom)+0.5rem)] pt-2 max-[400px]:px-1.5 max-[400px]:pb-[calc(var(--app-safe-area-bottom)+0.25rem)] max-[400px]:pt-1">
                       <div className="mb-2 flex max-w-full items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 text-[11px] max-[400px]:mb-1 max-[400px]:gap-1.5 max-[400px]:text-[10px]">
                         <button type="button" className="inline-flex h-9 max-w-[52vw] shrink-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 font-semibold text-[var(--app-text)] max-[400px]:h-7 max-[400px]:px-2" onClick={() => setMobileDetailsOpen(true)} aria-label="Open image settings">
                           <span className="text-[var(--app-text-subtle)]">Model</span>
@@ -1541,61 +1570,63 @@ export function ImageToolPage() {
           </section>
         </main>
         {imageLightboxOpen && selectedThread && selectedImageAsset ? (
-          <Dialog className="z-[80] p-0 overflow-hidden">
+          <Dialog className="z-[80] hidden overflow-hidden p-0 lg:grid">
             <DialogBackdrop className="bg-black/90" onClick={() => setImageLightboxOpen(false)} />
             <DialogPanel
-              className="h-[100dvh] max-h-none w-screen max-w-none rounded-none border-0 bg-black p-0 text-white"
+              className="h-[100dvh] max-h-none w-screen max-w-[100vw] rounded-none border-0 bg-black p-0 text-white"
               style={{ height: '100dvh', maxHeight: 'none', width: '100vw' }}
             >
-              <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
-                <div className="relative z-10 flex min-w-0 items-center justify-between gap-2 border-b border-white/10 bg-black/70 px-3 py-2 backdrop-blur sm:gap-3 sm:px-4 sm:py-3">
-                  <div className="min-w-0">
+              <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden lg:grid-rows-[auto_minmax(0,1fr)_auto]">
+                <div className="relative z-10 flex min-w-0 items-center border-b border-white/10 bg-black/70 px-3 pb-2 pt-[calc(var(--app-safe-area-top)+0.5rem)] backdrop-blur lg:items-center lg:justify-between lg:gap-3 lg:px-4 lg:py-3">
+                  <Button variant="outline" className="h-10 rounded-full border-white/20 bg-white/10 px-4 text-sm font-semibold text-white hover:bg-white/20 lg:hidden" onClick={() => setImageLightboxOpen(false)} aria-label="Back to image workspace">
+                    <ArrowLeft size={17} />Back
+                  </Button>
+                  <div className="hidden min-w-0 lg:block">
                     <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-white/50">Fullscreen preview</p>
                     <h2 className="mt-1 truncate text-sm font-semibold text-white">{selectedImageAsset.name}</h2>
                   </div>
-                  <div className="flex shrink-0 items-center justify-end gap-2">
-                    <span className="hidden rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs text-white/75 sm:inline-flex">
+                  <div className="hidden shrink-0 items-center justify-end gap-2 lg:flex">
+                    <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs text-white/75">
                       {activePreviewNumber} / {orderedImageAssets.length}
                     </span>
-                    <Button variant="outline" className="hidden h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20 sm:inline-flex" onClick={() => void handleDownloadSelectedImage()}>
+                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={() => void handleDownloadSelectedImage()}>
                       <Download size={13} />Download
                     </Button>
-                    <Button variant="outline" className="hidden h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20 sm:inline-flex" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
+                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
                       <Clipboard size={13} />Copy filepath
                     </Button>
-                    <Button variant="outline" className="hidden h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20 sm:inline-flex" onClick={handleOpenSelectedImage}>
+                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={handleOpenSelectedImage}>
                       <ExternalLink size={13} />Open full-res
                     </Button>
                     <Button variant="outline" className="hidden h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20 md:inline-flex" onClick={() => void handleRevealImageStorage(selectedImageAsset.id)} disabled={revealingStorage}>
                       <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Reveal local'}
                     </Button>
-                    <Button variant="outline" className="h-11 w-11 shrink-0 rounded-full border-white/20 bg-white/10 px-0 text-white hover:bg-white/20" onClick={() => setImageLightboxOpen(false)} aria-label="Close fullscreen preview">
-                      <X size={24} strokeWidth={2.4} />
+                    <Button variant="outline" className="h-9 w-9 shrink-0 rounded-full border-white/20 bg-white/10 px-0 text-white hover:bg-white/20" onClick={() => setImageLightboxOpen(false)} aria-label="Close fullscreen preview">
+                      <X size={20} strokeWidth={2.4} />
                     </Button>
                   </div>
                 </div>
 
-                <div className="relative grid min-h-0 min-w-0 place-items-center overflow-hidden px-3 py-3 sm:px-8 sm:py-6">
-                  <Button variant="outline" className="absolute left-2 top-1/2 z-10 h-11 w-11 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15 sm:left-3 sm:h-12 sm:w-12" onClick={handlePreviousPreview} disabled={orderedImageAssets.length <= 1} aria-label="Previous image">
-                    <ChevronLeft size={24} />
-                  </Button>
-                  <div className="flex h-full max-h-full min-h-0 w-full min-w-0 max-w-full items-center justify-center overflow-hidden">
+                <div className="min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain lg:relative lg:grid lg:place-items-center lg:overflow-hidden lg:px-8 lg:py-6">
+                  <div className="flex min-h-full w-full min-w-0 items-start justify-center p-0 lg:h-full lg:max-h-full lg:items-center lg:overflow-hidden">
                     <img
                       key={selectedImageAsset.id}
                       src={selectedImageSource}
                       alt={selectedImageAsset.name}
-                      className={`block min-h-0 min-w-0 select-none shadow-2xl shadow-black/70 ${orderedImageAssets.length > 1 ? 'cursor-pointer' : ''}`}
-                      style={containedImageStyle}
-                      onClick={orderedImageAssets.length > 1 ? handleNextPreview : undefined}
+                      className="block h-auto w-full max-w-full select-none lg:h-auto lg:w-auto lg:min-h-0 lg:min-w-0 lg:max-h-full lg:max-w-full lg:object-contain lg:shadow-2xl lg:shadow-black/70"
+                      style={{ maxInlineSize: '100%' }}
                       onLoad={(event) => setLightboxNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
                     />
                   </div>
-                  <Button variant="outline" className="absolute right-2 top-1/2 z-10 h-11 w-11 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15 sm:right-3 sm:h-12 sm:w-12" onClick={handleNextPreview} disabled={orderedImageAssets.length <= 1} aria-label="Next image">
+                  <Button variant="outline" className="absolute left-3 top-1/2 z-10 hidden h-12 w-12 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15 lg:inline-flex" onClick={handlePreviousPreview} disabled={orderedImageAssets.length <= 1} aria-label="Previous image">
+                    <ChevronLeft size={24} />
+                  </Button>
+                  <Button variant="outline" className="absolute right-3 top-1/2 z-10 hidden h-12 w-12 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15 lg:inline-flex" onClick={handleNextPreview} disabled={orderedImageAssets.length <= 1} aria-label="Next image">
                     <ChevronRight size={24} />
                   </Button>
                 </div>
 
-                <div className="min-w-0 border-t border-white/10 bg-black/80 px-3 py-2 backdrop-blur sm:py-3">
+                <div className="hidden min-w-0 border-t border-white/10 bg-black/80 px-3 py-3 backdrop-blur lg:block">
                   <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/60">
                     <span className="shrink-0">Session images</span>
                     <span className="min-w-0 truncate text-right">{lightboxNaturalSize ? `${lightboxNaturalSize.width} × ${lightboxNaturalSize.height}px` : 'Resolution loading…'} · {formatBytes(selectedImageAsset.sizeBytes)}</span>
@@ -1619,7 +1650,7 @@ export function ImageToolPage() {
                             setSelectedLivePreviewId(null)
                             setSelectedImageAssetId(asset.id)
                           }}
-                          className={['group min-w-[74px] max-w-[74px] rounded-xl border bg-white/5 p-1.5 text-left transition hover:bg-white/10 sm:min-w-[92px] sm:max-w-[92px]', selected ? 'border-white ring-1 ring-white' : 'border-white/15'].join(' ')}
+                          className={['group min-w-[92px] max-w-[92px] rounded-xl border bg-white/5 p-1.5 text-left transition hover:bg-white/10', selected ? 'border-white ring-1 ring-white' : 'border-white/15'].join(' ')}
                           aria-pressed={selected}
                         >
                           <div className="grid aspect-square place-items-center overflow-hidden rounded-lg bg-white/5">
@@ -1636,9 +1667,9 @@ export function ImageToolPage() {
           </Dialog>
         ) : null}
         {mobileDetailsOpen && selectedThread ? (
-          <Dialog className="z-[70] items-end p-0 lg:hidden">
+          <Dialog className="z-[70] items-end justify-items-center overflow-hidden p-0 lg:hidden">
             <DialogBackdrop className="bg-black/45" onClick={() => setMobileDetailsOpen(false)} />
-            <DialogPanel className="max-h-[82dvh] w-screen max-w-none rounded-t-3xl rounded-b-none border-x-0 border-b-0 bg-[var(--app-surface)] px-4 pb-[calc(var(--app-safe-area-bottom)+1rem)] pt-4">
+            <DialogPanel className="mx-auto max-h-[82dvh] w-[calc(100dvw-16px)] max-w-[420px] rounded-t-3xl rounded-b-none border-x border-b-0 bg-[var(--app-surface)] px-4 pb-[calc(var(--app-safe-area-bottom)+1rem)] pt-4 max-[400px]:w-[calc(100dvw-8px)] max-[400px]:px-3">
               <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-[var(--app-border-strong)]" />
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -1646,7 +1677,7 @@ export function ImageToolPage() {
                   <h2 className="mt-1 truncate text-lg font-semibold tracking-[-0.045em] text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
                 </div>
                 <Button variant="outline" className="h-9 w-9 shrink-0 rounded-full px-0" onClick={() => setMobileDetailsOpen(false)} aria-label="Close image settings">
-                  <X size={16} />
+                  <X aria-hidden="true" strokeWidth={2.2} className="shrink-0" style={{ width: 22, height: 22, minWidth: 22, minHeight: 22 }} />
                 </Button>
               </div>
 
@@ -1731,9 +1762,6 @@ export function ImageToolPage() {
                     </Button>
                     <Button variant="outline" className="h-10 rounded-xl px-3 text-xs" onClick={() => void handleCopySessionLink()} disabled={!selectedSessionURL}>
                       <Link2 size={13} />Copy URL
-                    </Button>
-                    <Button variant="outline" className="col-span-2 h-10 rounded-xl px-3 text-xs" onClick={() => void handleRevealImageStorage(selectedImageAsset?.id)} disabled={revealingStorage}>
-                      <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Reveal in folder'}
                     </Button>
                   </div>
                 </div>
