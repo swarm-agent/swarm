@@ -519,6 +519,22 @@ function splitPlanPreviewLines(text: string): string[] {
   return normalized ? normalized.split('\n') : []
 }
 
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length
+}
+
+function promptWordPreview(text: string, maxWords: number): string {
+  const words = text.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) {
+    return ''
+  }
+  const limit = Math.max(1, maxWords)
+  if (words.length <= limit) {
+    return words.join(' ')
+  }
+  return `${words.slice(0, limit).join(' ')}…`
+}
+
 function buildPlanChangedLineSets(diffLines: string[], priorPlan: string, plan: string): { before: Set<number>; after: Set<number> } {
   const before = new Set<number>()
   const after = new Set<number>()
@@ -1214,11 +1230,13 @@ function TaskLaunchModal({
 }: DesktopPermissionModalProps) {
   const [note, setNote] = useState('')
   const [loading, setLoading] = useState(false)
+  const [promptExpanded, setPromptExpanded] = useState(false)
 
   useEffect(() => {
     if (open) {
       setNote('')
       setLoading(false)
+      setPromptExpanded(false)
     }
   }, [open, permission?.id])
 
@@ -1227,6 +1245,8 @@ function TaskLaunchModal({
   }
 
   const payload = parseTaskLaunchPermission(permission)
+  const promptWords = countWords(payload.prompt)
+  const promptPreview = promptWordPreview(payload.prompt, 18)
 
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
@@ -1324,6 +1344,31 @@ function TaskLaunchModal({
             {payload.resolvedAgentName ? <span className="min-w-0 break-words rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2.5 py-1 [overflow-wrap:anywhere]">router {payload.resolvedAgentName}</span> : null}
           </div>
           {payload.resolvedAgentError ? <div className="mt-2 text-sm text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
+        </section>
+
+        <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Full prompt</div>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="h-8 px-3 text-xs"
+              onClick={() => setPromptExpanded((value) => !value)}
+            >
+              {promptExpanded ? 'Hide full prompt' : 'Show full prompt'}
+            </Button>
+          </div>
+          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 text-sm text-[var(--app-text)]">
+            <div className="text-xs text-[var(--app-text-subtle)]">
+              {promptWords} {promptWords === 1 ? 'word' : 'words'} · {promptPreview || 'No prompt text.'}
+            </div>
+            {promptExpanded ? (
+              <div className="mt-3 max-h-[34vh] overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm leading-6">
+                <ChatMarkdown className="[overflow-wrap:anywhere]" content={payload.prompt || 'No prompt was included in the manifest.'} />
+              </div>
+            ) : null}
+          </div>
         </section>
       </div>
     </ModalShell>

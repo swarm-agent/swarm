@@ -192,6 +192,7 @@ function testTaskLaunchPayloadParsing(): void {
   assert(payload.launches.length === 2, 'expected launch rows to be parsed')
   assert(payload.launches[0]?.requestedSubagentType === 'explorer', 'expected first launch requested subagent type')
   assert(payload.launches[1]?.assignment === 'extract concise findings', 'expected second launch assignment')
+  assert(payload.prompt === 'Map the relevant files and summarize findings.', 'expected full prompt to be parsed')
   assert(payload.summary.includes('Bypass permissions does not skip this review.'), 'expected bypass warning in summary')
 }
 

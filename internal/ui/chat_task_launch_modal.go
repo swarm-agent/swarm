@@ -25,6 +25,7 @@ func (p *ChatPage) OpenTaskLaunchPermissionModal(record ChatPermissionRecord) bo
 	p.taskLaunchPermission = strings.TrimSpace(record.ID)
 	p.taskLaunchScroll = 0
 	p.taskLaunchInput = ""
+	p.taskLaunchPromptExpanded = false
 	p.taskLaunchApproveRect = Rect{}
 	p.taskLaunchDenyRect = Rect{}
 	p.statusLine = "task launch permission active"
@@ -35,6 +36,7 @@ func (p *ChatPage) closeTaskLaunchModal() {
 	p.taskLaunchPermission = ""
 	p.taskLaunchScroll = 0
 	p.taskLaunchInput = ""
+	p.taskLaunchPromptExpanded = false
 	p.taskLaunchApproveRect = Rect{}
 	p.taskLaunchDenyRect = Rect{}
 }
@@ -98,6 +100,15 @@ func (p *ChatPage) handleTaskLaunchModalKey(ev *tcell.EventKey) bool {
 		return true
 	case p.keybinds.Match(ev, KeybindChatJumpEnd):
 		p.taskLaunchScroll = 1 << 30
+		return true
+	case ev.Key() == tcell.KeyRune && (ev.Rune() == 'p' || ev.Rune() == 'P') && strings.TrimSpace(p.taskLaunchInput) == "":
+		p.taskLaunchPromptExpanded = !p.taskLaunchPromptExpanded
+		p.taskLaunchScroll = 1 << 30
+		if p.taskLaunchPromptExpanded {
+			p.statusLine = "task launch prompt opened"
+		} else {
+			p.statusLine = "task launch prompt hidden"
+		}
 		return true
 	case ev.Key() == tcell.KeyBackspace || ev.Key() == tcell.KeyBackspace2:
 		if len(p.taskLaunchInput) > 0 {
@@ -235,7 +246,7 @@ func (p *ChatPage) drawTaskLaunchModal(s tcell.Screen, screen Rect) {
 	}
 
 	helpY := modal.Y + modal.H - 3
-	help := "PgUp/PgDn scroll • Enter approve • Esc deny"
+	help := "PgUp/PgDn scroll • p prompt • Enter approve • Esc deny"
 	helpWidth := modal.W - 4
 	if maxScroll > 0 {
 		scrollLabel := fmt.Sprintf("scroll %d/%d", p.taskLaunchScroll+1, maxScroll+1)
@@ -273,6 +284,7 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 	}
 
 	goal := strings.TrimSpace(firstNonEmptyToolValue(jsonString(manifest, "goal"), jsonString(manifest, "description")))
+	prompt := strings.TrimSpace(jsonString(manifest, "prompt"))
 	launches := p.taskLaunchOrderedLaunches(jsonObjectSlice(manifest, "launches"))
 	launchCount := maxInt(len(launches), jsonInt(manifest, "launch_count"))
 	resolvedAgent := strings.TrimSpace(jsonString(manifest, "resolved_agent_name"))
@@ -296,6 +308,7 @@ func (p *ChatPage) taskLaunchModalLines(record ChatPermissionRecord, width int) 
 		{Title: "Task", BorderStyle: p.theme.BorderActive, TitleStyle: p.theme.Primary.Bold(true), Lines: p.taskLaunchMarkdownSectionLines(goal, "No task summary provided.")},
 		{Title: "Agent roles", BorderStyle: p.theme.Border, TitleStyle: p.theme.Secondary.Bold(true), Lines: p.taskLaunchLaunchTableLines(launches, maxInt(16, width-4))},
 		{Title: "Meta", BorderStyle: p.theme.Border, TitleStyle: p.theme.TextMuted.Bold(true), Lines: meta},
+		{Title: p.taskLaunchPromptSectionTitle(prompt), BorderStyle: p.theme.Border, TitleStyle: p.theme.Primary.Bold(true), Lines: p.taskLaunchPromptSectionLines(prompt)},
 	}
 
 	out := make([]chatRenderLine, 0, 96)
@@ -336,6 +349,51 @@ func (p *ChatPage) taskLaunchMarkdownSectionLines(body, empty string) []chatRend
 		return []chatRenderLine{{Text: empty, Style: p.theme.TextMuted}}
 	}
 	return rows
+}
+
+func (p *ChatPage) taskLaunchPromptSectionTitle(prompt string) string {
+	count := taskLaunchPromptWordCount(prompt)
+	if count == 1 {
+		return "Prompt · 1 word"
+	}
+	return fmt.Sprintf("Prompt · %d words", count)
+}
+
+func (p *ChatPage) taskLaunchPromptSectionLines(prompt string) []chatRenderLine {
+	prompt = strings.TrimSpace(strings.ReplaceAll(prompt, "\r\n", "\n"))
+	if prompt == "" {
+		return []chatRenderLine{{Text: "No prompt was included in the manifest.", Style: p.theme.TextMuted}}
+	}
+	preview := taskLaunchPromptPreview(prompt, 14)
+	if !p.taskLaunchPromptExpanded {
+		return []chatRenderLine{
+			{Text: fmt.Sprintf("%d words · %s", taskLaunchPromptWordCount(prompt), preview), Style: p.theme.TextMuted},
+			{Text: "Press p to show the full prompt.", Style: p.theme.Primary},
+		}
+	}
+	lines := []chatRenderLine{{Text: fmt.Sprintf("%d words · %s", taskLaunchPromptWordCount(prompt), preview), Style: p.theme.TextMuted}}
+	lines = append(lines, chatRenderLine{Text: "Press p to hide the full prompt.", Style: p.theme.Primary})
+	lines = append(lines, chatRenderLine{Text: "", Style: p.theme.TextMuted})
+	lines = append(lines, p.taskLaunchMarkdownSectionLines(prompt, "No prompt was included in the manifest.")...)
+	return lines
+}
+
+func taskLaunchPromptWordCount(prompt string) int {
+	return len(strings.Fields(strings.TrimSpace(prompt)))
+}
+
+func taskLaunchPromptPreview(prompt string, maxWords int) string {
+	words := strings.Fields(strings.TrimSpace(prompt))
+	if len(words) == 0 {
+		return "No prompt text."
+	}
+	if maxWords < 1 {
+		maxWords = 1
+	}
+	if len(words) <= maxWords {
+		return strings.Join(words, " ")
+	}
+	return strings.Join(words[:maxWords], " ") + "..."
 }
 
 func trimBlankRenderLines(lines []chatRenderLine) []chatRenderLine {

@@ -392,11 +392,12 @@ type ChatPage struct {
 	permDetailMaxScroll      int
 	permDetailTargetID       string
 
-	taskLaunchPermission  string
-	taskLaunchScroll      int
-	taskLaunchInput       string
-	taskLaunchApproveRect Rect
-	taskLaunchDenyRect    Rect
+	taskLaunchPermission     string
+	taskLaunchScroll         int
+	taskLaunchInput          string
+	taskLaunchPromptExpanded bool
+	taskLaunchApproveRect    Rect
+	taskLaunchDenyRect       Rect
 
 	agentChangePermission          string
 	agentChangeScroll              int
