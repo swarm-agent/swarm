@@ -2342,25 +2342,26 @@ export function DesktopSwarmDashboard() {
             Manage this host, linked Managed Hosts, and local containers from one flat view.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="primary" data-testid="swarm-dashboard-add-container" onClick={() => openAddSwarm()} disabled={addContainerDisabled}>
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+          <Button type="button" variant="primary" data-testid="swarm-dashboard-add-container" className={isSwarmMode ? 'col-span-2 w-full sm:col-span-1 sm:w-auto' : 'w-full sm:w-auto'} onClick={() => openAddSwarm()} disabled={addContainerDisabled}>
             <Plus size={14} />
             Add Container
           </Button>
           {isSwarmMode ? (
-            <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" onClick={() => openLinkSwarm()} disabled={managedHostingControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}>
+            <Button type="button" variant="outline" data-testid="swarm-dashboard-link-swarm" className="w-full sm:w-auto" onClick={() => openLinkSwarm()} disabled={managedHostingControlsDisabled} title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}>
               <Link2 size={14} />
-              Link Managed Host
+              Link Host
             </Button>
           ) : null}
           {isSwarmMode && (visiblePendingPairings.length > 0 || pendingLinkReviewTarget) ? (
-            <Button type="button" variant="primary" data-testid="swarm-dashboard-link-request" onClick={() => setLinkRequestOpen(true)}>
+            <Button type="button" variant="primary" data-testid="swarm-dashboard-link-request" className="w-full sm:w-auto" onClick={() => setLinkRequestOpen(true)}>
               <Link2 size={14} />
               Link request{visiblePendingPairings.length > 0 ? ` (${visiblePendingPairings.length})` : ''}
             </Button>
           ) : null}
           <Button
             variant="outline"
+            className={isSwarmMode && (visiblePendingPairings.length > 0 || pendingLinkReviewTarget) ? 'col-span-2 w-full sm:col-span-1 sm:w-auto' : 'w-full sm:w-auto'}
             onClick={() => {
               if (isSwarmMode) {
                 void handleDisableSwarmMode()
@@ -2371,7 +2372,7 @@ export function DesktopSwarmDashboard() {
             disabled={managedHostingControlsDisabled}
             title={managedHostControlTitle || (localIsChild ? 'This host is already linked to a Manager.' : undefined)}
           >
-            {isSwarmMode ? 'Disable Swarm Linking' : 'Enable Swarm Linking'}
+            {isSwarmMode ? 'Disable Linking' : 'Enable Linking'}
           </Button>
         </div>
       </div>
@@ -2403,23 +2404,23 @@ export function DesktopSwarmDashboard() {
         </div>
       ) : null}
 
-      <div className="grid gap-6 pt-4">
-        <section className="rounded-2xl border border-[var(--app-border)] bg-transparent p-6 pb-8">
+      <div className="grid min-w-0 gap-4 pt-4 sm:gap-6">
+        <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-transparent p-4 pb-6 sm:p-6 sm:pb-8">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0 flex items-start gap-3">
+            <div className="min-w-0 flex items-start gap-3 overflow-hidden">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] text-[var(--app-text-muted)]">
                 <Monitor size={20} />
               </div>
               <div className="min-w-0">
                 {editingLocalName ? (
                   <form
-                    className="flex flex-wrap items-center gap-2"
+                    className="grid gap-2 sm:flex sm:flex-wrap sm:items-center"
                     onSubmit={(event) => {
                       event.preventDefault()
                       void handleSaveLocalName()
                     }}
                   >
-                    <Input value={localNameDraft} onChange={(event) => setLocalNameDraft(event.target.value)} className="w-[280px]" autoFocus aria-label="Swarm name" />
+                    <Input value={localNameDraft} onChange={(event) => setLocalNameDraft(event.target.value)} className="w-full min-w-0 sm:w-[280px]" autoFocus aria-label="Swarm name" />
                     <Button type="submit" disabled={busy || !localNameDirty}>Save</Button>
                     <Button type="button" variant="outline" onClick={() => { setLocalNameDraft(localSwarmName); setEditingLocalName(false) }} disabled={busy}>Cancel</Button>
                   </form>
@@ -2446,9 +2447,9 @@ export function DesktopSwarmDashboard() {
               </div>
             </div>
             <div className="grid gap-1 text-xs text-[var(--app-text-muted)] lg:text-right">
-              <div>Swarm ID: <span className="font-mono text-[var(--app-text)]">{localSwarmID || 'not assigned yet'}</span></div>
-              <div>Backend: <span className="font-mono text-[var(--app-text)]">{configuredHost}:{backendPort}</span></div>
-              <div>Desktop: <span className="font-mono text-[var(--app-text)]">:{desktopPort}</span></div>
+              <div>Swarm ID: <span className="break-all font-mono text-[var(--app-text)]">{localSwarmID || 'not assigned yet'}</span></div>
+              <div>Backend: <span className="break-all font-mono text-[var(--app-text)]">{configuredHost}:{backendPort}</span></div>
+              <div>Desktop: <span className="break-all font-mono text-[var(--app-text)]">:{desktopPort}</span></div>
             </div>
           </div>
 
@@ -2478,7 +2479,7 @@ export function DesktopSwarmDashboard() {
             <div className="space-y-3">
               <div>
                 <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--app-text-muted)]">swarm.conf</div>
-                <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+                <div className="mt-3 grid min-w-0 gap-3 text-sm sm:grid-cols-2">
                   <div>
                     <div className="text-xs text-[var(--app-text-muted)]">Who can reach this host</div>
                     <div className="font-medium text-[var(--app-text)]">{localBindStatus}</div>
@@ -2486,7 +2487,7 @@ export function DesktopSwarmDashboard() {
                   </div>
                   <div>
                     <div className="text-xs text-[var(--app-text-muted)]">Advertised to swarms</div>
-                    <div className="font-medium text-[var(--app-text)]">{(onboardingStatus?.config.advertiseHost || backendHost)}:{onboardingStatus?.config.advertisePort || backendPort}</div>
+                    <div className="break-all font-medium text-[var(--app-text)]">{(onboardingStatus?.config.advertiseHost || backendHost)}:{onboardingStatus?.config.advertisePort || backendPort}</div>
                     <div className="text-xs text-[var(--app-text-muted)]">Mode: {localTailscalePrimary ? 'Tailscale' : formatUnderscoreLabel(onboardingStatus?.config.mode || swarmState?.node.advertise_mode || 'lan')}</div>
                   </div>
                   <div>
@@ -2512,8 +2513,8 @@ export function DesktopSwarmDashboard() {
               <div className="text-sm text-[var(--app-text-muted)]">{localTailscaleHosting.detail}</div>
               {localTailscaleURL ? <AccessURLRow label="Tailnet link" url={localTailscaleURL} /> : null}
               {tailscaleCandidate.available ? (
-                <div className="flex items-center gap-2">
-                  <div className="min-w-0 flex-1 truncate rounded-lg border border-[var(--app-border)] px-3 py-2 font-mono text-[11px] text-[var(--app-text)]" title={desktopServeCommand}>{desktopServeCommand}</div>
+                <div className="grid gap-2 sm:flex sm:items-center">
+                  <div className="min-w-0 break-all rounded-lg border border-[var(--app-border)] px-3 py-2 font-mono text-[11px] text-[var(--app-text)] sm:flex-1 sm:truncate" title={desktopServeCommand}>{desktopServeCommand}</div>
                   <Button type="button" variant="outline" size="sm" className="h-8 text-[11px]" onClick={() => void handleCopyTailscaleCommand(desktopServeCommand)}>
                     {copyState === 'desktop' ? 'Copied' : 'Copy'}
                   </Button>
@@ -2527,19 +2528,19 @@ export function DesktopSwarmDashboard() {
             </div>
           </div>
 
-          <div className="mt-6 border-t border-[var(--app-border)] pt-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="mt-6 min-w-0 border-t border-[var(--app-border)] pt-4">
+            <div className="grid gap-3 sm:flex sm:flex-wrap sm:items-center sm:justify-between">
               <div>
                 <div className="text-sm font-semibold text-[var(--app-text)]">Containers on this host</div>
                 <div className="text-xs text-[var(--app-text-muted)]">Container swarms running on {localSwarmName}.</div>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={openDeleteContainers} disabled={busy || deleteCandidates.length === 0}>
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+                <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={openDeleteContainers} disabled={busy || deleteCandidates.length === 0}>
                   <CheckSquare size={14} />
                   Delete containers
                 </Button>
                 {staleLocalContainers.length > 0 ? (
-                  <Button type="button" variant="outline" size="sm" onClick={() => void handlePruneMissingLocalContainers()} disabled={busy}>Remove stale</Button>
+                  <Button type="button" variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void handlePruneMissingLocalContainers()} disabled={busy}>Remove stale</Button>
                 ) : null}
                 {runtimeLoading ? <Badge tone="neutral">detecting runtime…</Badge> : null}
               </div>
@@ -2579,24 +2580,24 @@ export function DesktopSwarmDashboard() {
                   const mountedWorkspaces = attachedDeployment?.workspace_bootstrap?.map(summarizeWorkspaceBootstrap) ?? container.mounts.map(summarizeContainerMount)
                   const assignedFlows = flowsByLocalContainerID.get(container.id) ?? []
                   return (
-                    <div key={container.id} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div className="min-w-0 flex items-center gap-2">
-                          <Boxes size={16} className="text-[var(--app-text-muted)]" />
+                    <div key={container.id} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-transparent p-3">
+                      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                        <div className="min-w-0 flex items-start gap-2 overflow-hidden">
+                          <Boxes size={16} className="mt-0.5 shrink-0 text-[var(--app-text-muted)]" />
                           <div className="min-w-0">
                             <div className="truncate text-sm font-semibold text-[var(--app-text)]">{containerLocationLabel(localSwarmName, container.containerName || container.name)}</div>
-                            <div className="truncate text-xs text-[var(--app-text-muted)]">Swarm: {attachedDeployment?.child_display_name || container.name} · Container: {container.containerName} · {container.runtime || 'runtime unknown'} · API {container.runtimePort || 'auto'}</div>
+                            <div className="break-words text-xs text-[var(--app-text-muted)]">Swarm: {attachedDeployment?.child_display_name || container.name} · Container: {container.containerName} · {container.runtime || 'runtime unknown'} · API {container.runtimePort || 'auto'}</div>
                           </div>
                         </div>
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap md:justify-end">
                           {attachedDeployment ? <Badge tone="live">{attachedDeployment.child_display_name || attachedDeployment.child_swarm_id || 'attached swarm'}</Badge> : null}
                           <Badge tone={running ? 'live' : missing ? 'warning' : 'neutral'}>{container.status || 'created'}</Badge>
-                          {childDesktopURL ? <a href={childDesktopURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">Desktop</a> : null}
-                          {childAPIURL ? <a href={childAPIURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">API</a> : null}
+                          {childDesktopURL ? <a href={childDesktopURL} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[var(--app-border)] px-3 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">Desktop</a> : null}
+                          {childAPIURL ? <a href={childAPIURL} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[var(--app-border)] px-3 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">API</a> : null}
                           {missing ? (
-                            <Button type="button" variant="outline" size="sm" onClick={() => void handleRemoveMissingLocalContainer(container)} disabled={busy}>Remove stale</Button>
+                            <Button type="button" variant="outline" size="sm" className="col-span-2 w-full sm:col-span-1 sm:w-auto" onClick={() => void handleRemoveMissingLocalContainer(container)} disabled={busy}>Remove stale</Button>
                           ) : (
-                            <Button type="button" variant="outline" size="sm" onClick={() => void containerAction()} disabled={busy}>{running ? 'Stop' : 'Start'}</Button>
+                            <Button type="button" variant="outline" size="sm" className="col-span-2 w-full sm:col-span-1 sm:w-auto" onClick={() => void containerAction()} disabled={busy}>{running ? 'Stop' : 'Start'}</Button>
                           )}
                         </div>
                       </div>
@@ -2612,7 +2613,7 @@ export function DesktopSwarmDashboard() {
           </div>
         </section>
 
-        <section className="rounded-2xl border border-[var(--app-border)] bg-transparent p-5">
+        <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-transparent p-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-[var(--app-text)]">Linked Managed Hosts</h2>
@@ -2635,9 +2636,9 @@ export function DesktopSwarmDashboard() {
                 const mirroredHostWorkspaces = mirroredWorkspacesByHostSwarmID.get(member.swarmID) ?? []
                 const totalHostContainers = hostContainers.length + mirroredHostContainers.length
                 return (
-                  <div key={`${member.groupID}:${member.swarmID}`} className="rounded-xl border border-[var(--app-border)] bg-transparent p-4">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                      <div className="min-w-0 flex items-start gap-3">
+                  <div key={`${member.groupID}:${member.swarmID}`} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-transparent p-3 sm:p-4">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+                      <div className="min-w-0 flex items-start gap-3 overflow-hidden">
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] text-[var(--app-text-muted)]">
                           <Monitor size={18} />
                         </div>
@@ -2649,18 +2650,18 @@ export function DesktopSwarmDashboard() {
                             <Badge tone="live">Managed sync linked</Badge>
                             {target && !target.online ? <Badge tone="warning">stale record</Badge> : null}
                           </div>
-                          <div className="mt-2 grid gap-1 text-xs text-[var(--app-text-muted)]">
-                            <div>Swarm ID: <span className="font-mono text-[var(--app-text)]">{member.swarmID}</span></div>
+                          <div className="mt-2 grid min-w-0 gap-1 text-xs text-[var(--app-text-muted)]">
+                            <div>Swarm ID: <span className="break-all font-mono text-[var(--app-text)]">{member.swarmID}</span></div>
                             <div>Runtime: host · Relationship: managed</div>
                             <div>Mirrored resources: {mirroredHostWorkspaces.length} workspace{mirroredHostWorkspaces.length === 1 ? '' : 's'} · {mirroredHostContainers.length} container{mirroredHostContainers.length === 1 ? '' : 's'}</div>
                             {target?.last_error ? <div className="text-[var(--app-warning-text)]">{target.last_error}</div> : null}
                           </div>
                         </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                        {hostDesktopURL ? <a href={hostDesktopURL} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">Desktop</a> : null}
-                        {hostAPIURL ? <a href={hostAPIURL} target="_blank" rel="noreferrer" className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">API</a> : null}
-                        <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => void handleRemoveManagedHost(member, target)} disabled={busy || removingManagedHostID === member.swarmID}>
+                      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:justify-end">
+                        {hostDesktopURL ? <a href={hostDesktopURL} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[var(--app-border)] px-3 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">Desktop</a> : null}
+                        {hostAPIURL ? <a href={hostAPIURL} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[var(--app-border)] px-3 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">API</a> : null}
+                        <Button type="button" variant="outline" size="sm" className="col-span-2 w-full text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)] sm:col-span-1 sm:w-auto" onClick={() => void handleRemoveManagedHost(member, target)} disabled={busy || removingManagedHostID === member.swarmID}>
                           {removingManagedHostID === member.swarmID ? 'Removing…' : 'Remove Host'}
                         </Button>
                       </div>
@@ -2708,20 +2709,20 @@ export function DesktopSwarmDashboard() {
                           const mountedWorkspaces = session.preflight.payloads?.map(summarizeRemotePayload) ?? []
                           const assignedFlows = flows.filter((flow) => flowMatchesContainerTarget(flow, { swarmID: session.child_swarm_id }))
                           return (
-                            <div key={session.id} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
-                              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                                <div className="min-w-0 flex items-center gap-2">
-                                  <Boxes size={16} className="text-[var(--app-text-muted)]" />
+                            <div key={session.id} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-transparent p-3">
+                              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                <div className="min-w-0 flex items-start gap-2 overflow-hidden">
+                                  <Boxes size={16} className="mt-0.5 shrink-0 text-[var(--app-text-muted)]" />
                                   <div className="min-w-0">
                                     <div className="truncate text-sm font-semibold text-[var(--app-text)]">{containerLocationLabel(hostName, containerName)}</div>
-                                    <div className="truncate text-xs text-[var(--app-text-muted)]">Swarm: {childName} · Container: {containerName} · {session.remote_runtime || 'runtime unknown'}</div>
+                                    <div className="break-words text-xs text-[var(--app-text-muted)]">Swarm: {childName} · Container: {containerName} · {session.remote_runtime || 'runtime unknown'}</div>
                                   </div>
                                 </div>
-                                <div className="flex flex-wrap items-center gap-2">
+                                <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap md:justify-end">
                                   <Badge tone={running ? 'live' : 'neutral'}>{formatRemoteSessionStatus(session.status || 'unknown')}</Badge>
-                                  {remoteDesktopURL ? <a href={remoteDesktopURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">Desktop</a> : null}
-                                  {remoteAPIURL ? <a href={remoteAPIURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">API</a> : null}
-                                  {deleteCandidate ? <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => openDeleteSwarms([deleteCandidate.selectionID], [deleteCandidate.selectionID])} disabled={busy}>Remove</Button> : null}
+                                  {remoteDesktopURL ? <a href={remoteDesktopURL} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[var(--app-border)] px-3 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">Desktop</a> : null}
+                                  {remoteAPIURL ? <a href={remoteAPIURL} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[var(--app-border)] px-3 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">API</a> : null}
+                                  {deleteCandidate ? <Button type="button" variant="outline" size="sm" className="col-span-2 w-full text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)] sm:col-span-1 sm:w-auto" onClick={() => openDeleteSwarms([deleteCandidate.selectionID], [deleteCandidate.selectionID])} disabled={busy}>Remove</Button> : null}
                                 </div>
                               </div>
                               <MountedWorkspaceDetails items={mountedWorkspaces} />
@@ -2747,21 +2748,21 @@ export function DesktopSwarmDashboard() {
                             deploymentID: attachedDeployment?.id || container.id,
                           }))
                           return (
-                            <div key={`mirrored:${mirroredContainer.managedSwarmID}:${mirroredContainer.id}`} className="rounded-xl border border-[var(--app-border)] bg-transparent p-3">
-                              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                                <div className="min-w-0 flex items-center gap-2">
-                                  <Boxes size={16} className="text-[var(--app-text-muted)]" />
+                            <div key={`mirrored:${mirroredContainer.managedSwarmID}:${mirroredContainer.id}`} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-transparent p-3">
+                              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                <div className="min-w-0 flex items-start gap-2 overflow-hidden">
+                                  <Boxes size={16} className="mt-0.5 shrink-0 text-[var(--app-text-muted)]" />
                                   <div className="min-w-0">
                                     <div className="truncate text-sm font-semibold text-[var(--app-text)]">{containerLocationLabel(hostName, container.containerName || container.name)}</div>
-                                    <div className="truncate text-xs text-[var(--app-text-muted)]">Swarm: {childName} · Container: {container.containerName || container.id} · {container.runtime || attachedDeployment?.runtime || 'runtime unknown'} · API {container.runtimePort || attachedDeployment?.backend_host_port || 'auto'}</div>
+                                    <div className="break-words text-xs text-[var(--app-text-muted)]">Swarm: {childName} · Container: {container.containerName || container.id} · {container.runtime || attachedDeployment?.runtime || 'runtime unknown'} · API {container.runtimePort || attachedDeployment?.backend_host_port || 'auto'}</div>
                                   </div>
                                 </div>
-                                <div className="flex flex-wrap items-center gap-2">
+                                <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap md:justify-end">
                                   {attachedDeployment ? <Badge tone="live">{attachedDeployment.child_display_name || attachedDeployment.child_swarm_id || 'attached swarm'}</Badge> : <Badge tone="neutral">mirrored</Badge>}
                                   <Badge tone={running ? 'live' : container.status === 'missing' ? 'warning' : 'neutral'}>{container.status || 'created'}</Badge>
-                                  {childDesktopURL ? <a href={childDesktopURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">Desktop</a> : null}
-                                  {childAPIURL ? <a href={childAPIURL} target="_blank" rel="noreferrer" className="text-xs text-[var(--app-primary)] hover:underline">API</a> : null}
-                                  <Button type="button" variant="outline" size="sm" className="text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)]" onClick={() => {
+                                  {childDesktopURL ? <a href={childDesktopURL} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[var(--app-border)] px-3 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">Desktop</a> : null}
+                                  {childAPIURL ? <a href={childAPIURL} target="_blank" rel="noreferrer" className="inline-flex min-h-9 items-center justify-center rounded-lg border border-[var(--app-border)] px-3 text-xs font-medium text-[var(--app-primary)] hover:border-[var(--app-border-strong)]">API</a> : null}
+                                  <Button type="button" variant="outline" size="sm" className="col-span-2 w-full text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] hover:border-[var(--app-danger-border)] hover:text-[var(--app-danger)] sm:col-span-1 sm:w-auto" onClick={() => {
                                     const localDeleteID = container.id || container.containerID || container.containerName || mirroredContainer.id
                                     setSelectedDeleteContainerIDs([`managed-host:${mirroredContainer.managedSwarmID}:${attachedDeployment?.id || localDeleteID}`])
                                     setDeleteResult(null)
