@@ -319,6 +319,11 @@ export function resolveSessionEffectiveAgentName(session: DesktopSessionRecord |
   return fallbackPrimary.trim() || 'swarm'
 }
 
+interface DesktopToastPayload {
+  message: string
+  tone: 'success' | 'error' | 'info'
+}
+
 interface DesktopChatPanelProps {
   hostSwarmName: string
   workspacePath: string
@@ -347,6 +352,7 @@ interface DesktopChatPanelProps {
   onOpenWorkspaceLauncher: () => void
   onOpenSidebarMenu: () => void
   onStartNewSession: (workspacePath: string, workspaceName: string) => void
+  onToast?: (toast: DesktopToastPayload) => void
   compactHeader?: boolean
   emptyStateMessage?: ReactNode
 }
@@ -879,7 +885,7 @@ function commitStatusLabel(state: CommitModalState): string {
     case 'running':
       return state.mode === 'manual' ? 'Manual commit running…' : 'Memory commit running…'
     case 'success':
-      return state.mode === 'manual' ? 'Manual git commit completed. You can commit again.' : 'Save completed. You can save again.'
+      return ''
     case 'error':
       return state.error || 'Save failed.'
     default:
@@ -901,6 +907,7 @@ export function DesktopChatPanel({
   onOpenWorkspaceLauncher,
   onOpenSidebarMenu,
   onStartNewSession,
+  onToast,
   sessionCreateOverride,
   lockedAgentName,
   lockedAgentLabel,
@@ -2450,16 +2457,13 @@ export function DesktopChatPanel({
             ? `/v1/swarm/managed-hosts/workspace/git/commit?swarm_id=${encodeURIComponent(activeChatRoute.swarmId || '')}`
             : undefined,
         })
-        setCommitModal((current) => ({
-          ...current,
-          status: 'success',
-          error: null,
-          runId: null,
-          targetSessionId: session.id,
-          open: true,
-        }))
+        setCommitModal({
+          ...EMPTY_COMMIT_MODAL_STATE,
+          open: false,
+        })
         setPanelError(null)
         const summary = committed.output?.trim() || committed.summary?.trim() || 'Manual git commit completed.'
+        onToast?.({ message: summary, tone: 'success' })
         upsertSession({
           ...session,
           live: {
@@ -2490,6 +2494,7 @@ export function DesktopChatPanel({
           ...EMPTY_COMMIT_MODAL_STATE,
           open: false,
         })
+        onToast?.({ message: 'Memory commit started.', tone: 'info' })
         return
       }
 
@@ -2500,7 +2505,7 @@ export function DesktopChatPanel({
         error: error instanceof Error ? error.message : 'Failed to start save run.',
       }))
     }
-  }, [activeChatRoute, activePreferenceRecord.preference, commitModal.instructions, commitModal.mode, selectedPrimaryAgent, session, upsertSession, workspaceName])
+  }, [activeChatRoute, activePreferenceRecord.preference, commitModal.instructions, commitModal.mode, onToast, selectedPrimaryAgent, session, upsertSession, workspaceName])
 
 
   const handleModeChange = useCallback(async (nextMode: 'plan' | 'auto') => {

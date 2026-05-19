@@ -480,6 +480,15 @@ function savePendingDesktopToast(toast: DesktopToastState): void {
   saveStoredValue(DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY, JSON.stringify({ ...toast, createdAt: Date.now() } satisfies StoredDesktopToastState))
 }
 
+function toastMessageFromCommitSummary(message: string): string {
+  const normalized = message.trim()
+  if (!normalized) {
+    return 'Manual commit completed.'
+  }
+  const firstLine = normalized.split(/\r?\n/, 1)[0]?.trim() ?? ''
+  return firstLine || 'Manual commit completed.'
+}
+
 function updateProgressStepIndex(job: DesktopUpdateJob | null): number {
   const status = job?.status?.trim().toLowerCase() ?? ''
   const message = updateJobMessage(job).toLowerCase()
@@ -1510,6 +1519,13 @@ export function DesktopAppPage() {
     const timer = window.setTimeout(() => setDesktopToast(null), 5_000)
     return () => window.clearTimeout(timer)
   }, [desktopToast])
+
+  const showDesktopToast = useCallback((toast: DesktopToastState) => {
+    setDesktopToast({
+      ...toast,
+      message: toast.tone === 'success' ? toastMessageFromCommitSummary(toast.message) : toast.message.trim(),
+    })
+  }, [])
 
   const temporaryRouteWorkspace = useMemo<WorkspaceEntry | null>(() => {
     const candidatePath = activeWorkspacePath?.trim() ?? ''
@@ -3367,6 +3383,7 @@ export function DesktopAppPage() {
             onOpenWorkspaceLauncher={handleOpenWorkspaceLauncher}
             onOpenSidebarMenu={handleOpenMobileSidebar}
             onStartNewSession={handleStartNewSessionInWorkspace}
+            onToast={showDesktopToast}
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
@@ -3482,7 +3499,7 @@ export function DesktopAppPage() {
       ) : null}
 
       {desktopToast ? (
-        <div className="pointer-events-none absolute right-6 top-6 z-[70] max-w-md" role="status" aria-live="polite">
+        <div className="pointer-events-none absolute left-1/2 top-4 z-[70] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 sm:left-auto sm:right-6 sm:top-6 sm:w-auto sm:translate-x-0" role="status" aria-live="polite">
           <Card className={cn(
             'border p-4 shadow-2xl',
             desktopToast.tone === 'success'
