@@ -97,6 +97,7 @@ func (r *Runtime) manageFlowInspect(scope WorkspaceScope, args map[string]any) (
 		items = items[:limit]
 	}
 	workspaceSummary := r.manageFlowWorkspaceSummary(scope)
+	agentInventory := r.manageFlowAgentInventory(limit)
 	response := map[string]any{
 		"status":            "ok",
 		"action":            "inspect",
@@ -104,8 +105,9 @@ func (r *Runtime) manageFlowInspect(scope WorkspaceScope, args map[string]any) (
 		"count":             len(items),
 		"limit":             limit,
 		"workspace":         workspaceSummary,
+		"available_agents":  agentInventory,
 		"supported_actions": []string{"inspect", "list", "get", "history", "status", "create", "update", "delete"},
-		"instructions":      "Use manage-flow to inspect and manage Flows. A Flow is a user-configured background task run by a saved agent profile on a schedule. Call inspect/list first in a conversation after the user states a flow request so you can see existing flows, agents, schedules, workspace context, and exact required fields. Read-only actions inspect/list/get/history/status do not need approval. Mutating actions create/update/delete return approval-ready previews unless confirm=true after user approval. Be specific: include flow name, saved agent profile_name/profile_mode, workspace_path, target selection, schedule cadence/time/times/weekday/month_day/timezone/cron, catch_up_policy, and the exact prompt/tasks the background agent will run.",
+		"instructions":      "Use manage-flow to inspect and manage Flows. A Flow is a user-configured background task run by a saved agent profile on a schedule. Call inspect/list first in a conversation after the user states a flow request so you can see existing flows, compact available_agents, schedules, workspace context, and exact required fields without needing manage-agent just to choose a profile. Use manage-agent get only when you need full agent prompt/tool details before configuring a flow. Read-only actions inspect/list/get/history/status do not need approval. Mutating actions create/update/delete return approval-ready previews unless confirm=true after user approval. Be specific: include flow name, saved agent profile_name/profile_mode, workspace_path, target selection, schedule cadence/time/times/weekday/month_day/timezone/cron, catch_up_policy, and the exact prompt/tasks the background agent will run.",
 		"examples": []map[string]any{
 			{"action": "inspect"},
 			{"action": "create", "content": map[string]any{"name": "Daily AGENTS.md memory refresh", "agent": map[string]any{"profile_name": "memory", "profile_mode": "background"}, "target": map[string]any{"kind": "self"}, "workspace": map[string]any{"workspace_path": workspaceSummary["workspace_path"]}, "schedule": map[string]any{"cadence": "daily", "time": "09:00", "timezone": "UTC"}, "intent": map[string]any{"prompt": "Check the last day's git diffs and update AGENTS.md with durable agent guidance when needed."}}},
@@ -630,6 +632,51 @@ func manageFlowHasCatchUp(policy flow.CatchUpPolicy) bool {
 
 func manageFlowHasIntent(intent flow.PromptIntent) bool {
 	return strings.TrimSpace(intent.Prompt) != "" || strings.TrimSpace(intent.Mode) != "" || len(intent.Tasks) > 0
+}
+
+func (r *Runtime) manageFlowAgentInventory(limit int) map[string]any {
+	inventory := map[string]any{
+		"configured": false,
+		"agents":     []map[string]any{},
+		"count":      0,
+	}
+	if r == nil || r.agents == nil {
+		inventory["note"] = "manage-agent service is not configured; use manage-agent inspect if available"
+		return inventory
+	}
+	state, err := r.agents.ListState(clampManageFlowLimit(limit))
+	if err != nil {
+		inventory["error"] = fmt.Sprintf("list saved agents failed: %v", err)
+		return inventory
+	}
+	agents := make([]map[string]any, 0, len(state.Profiles))
+	for _, profile := range state.Profiles {
+		mode := strings.TrimSpace(profile.Mode)
+		flowProfileMode := flow.NormalizeAgentProfileMode(mode)
+		agents = append(agents, map[string]any{
+			"name":                        strings.TrimSpace(profile.Name),
+			"mode":                        mode,
+			"flow_profile_mode":           flowProfileMode,
+			"description":                 strings.TrimSpace(profile.Description),
+			"enabled":                     profile.Enabled,
+			"active_primary":              strings.EqualFold(strings.TrimSpace(state.ActivePrimary), strings.TrimSpace(profile.Name)),
+			"active_purposes":             manageAgentPurposesForProfile(state.ActiveSubagent, profile.Name),
+			"execution_setting":           strings.TrimSpace(profile.ExecutionSetting),
+			"effective_execution_setting": manageAgentEffectiveExecutionSetting(profile),
+			"exit_plan_mode_enabled":      pebblestore.AgentExitPlanModeEnabled(profile),
+			"flow_agent": map[string]any{
+				"profile_name": strings.TrimSpace(profile.Name),
+				"profile_mode": flowProfileMode,
+			},
+		})
+	}
+	inventory["configured"] = true
+	inventory["agents"] = agents
+	inventory["count"] = len(agents)
+	inventory["active_primary"] = strings.TrimSpace(state.ActivePrimary)
+	inventory["active_subagent"] = cloneStringMap(state.ActiveSubagent)
+	inventory["note"] = "Compact inventory for choosing flow content.agent.profile_name/profile_mode; call manage-agent get for full prompt/tool contract details."
+	return inventory
 }
 
 func manageFlowOutboxForFlow(records []pebblestore.FlowOutboxCommandRecord, flowID string) []pebblestore.FlowOutboxCommandRecord {

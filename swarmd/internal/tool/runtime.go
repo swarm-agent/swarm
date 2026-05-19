@@ -873,7 +873,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-flow",
-			Description: "Inspect and manage Flows: user-configured background tasks run by saved agents on schedules; call inspect first once the user states a flow request; supports inspect/list/get/history/status/create/update/delete, and mutating actions return approval-ready previews unless confirm=true",
+			Description: "Inspect and manage Flows: user-configured background tasks run by saved agents on schedules; call inspect first once the user states a flow request; inspect/list include compact available_agents for choosing a saved agent without also calling manage-agent; supports inspect/list/get/history/status/create/update/delete, and mutating actions return approval-ready previews unless confirm=true",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

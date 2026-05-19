@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/flow"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -39,6 +40,27 @@ func TestManageFlowDefinitionAndInspect(t *testing.T) {
 	}
 	if payload["instructions"] == "" {
 		t.Fatal("instructions missing")
+	}
+	availableAgents, ok := payload["available_agents"].(map[string]any)
+	if !ok {
+		t.Fatalf("available_agents missing or wrong type: %T", payload["available_agents"])
+	}
+	if availableAgents["configured"] != true {
+		t.Fatalf("available_agents configured = %v", availableAgents["configured"])
+	}
+	if int(availableAgents["count"].(float64)) == 0 {
+		t.Fatalf("available_agents count = %v", availableAgents["count"])
+	}
+	agents, ok := availableAgents["agents"].([]any)
+	if !ok || len(agents) == 0 {
+		t.Fatalf("available_agents agents missing or empty: %T", availableAgents["agents"])
+	}
+	firstAgent, ok := agents[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first available agent type = %T", agents[0])
+	}
+	if _, ok := firstAgent["flow_agent"].(map[string]any); !ok {
+		t.Fatalf("available agent flow_agent missing or wrong type: %T", firstAgent["flow_agent"])
 	}
 }
 
@@ -102,7 +124,12 @@ func newManageFlowTestRuntime(t *testing.T) (*Runtime, *pebblestore.FlowStore) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	flows := pebblestore.NewFlowStore(store)
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), nil)
+	if err := agents.EnsureDefaults(); err != nil {
+		t.Fatalf("ensure default agents: %v", err)
+	}
 	rt := NewRuntime(1)
+	rt.SetManageAgentService(agents)
 	rt.SetManageFlowServices(flows, fakeManageFlowWorkspace{path: t.TempDir()})
 	return rt, flows
 }
