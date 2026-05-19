@@ -373,6 +373,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		log.Printf("warning: reconcile pending permissions: %v", err)
 	}
 	flowStore := pebblestore.NewFlowStore(store)
+	toolRuntime.SetManageFlowServices(flowStore, workspaceSvc)
 	if err := reconcileFlowRunsFromLifecycles(flowStore, sessionSvc); err != nil {
 		log.Printf("warning: reconcile flow runs: %v", err)
 	}

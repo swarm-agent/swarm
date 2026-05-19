@@ -566,6 +566,10 @@ func (s *Service) executeControlPlaneTool(ctx context.Context, sessionID, sessio
 		output, err := s.executeManageIntegrationsTool(sessionID, call)
 		result.Output = output
 		return true, result, err
+	case "manage_flow":
+		output, err := s.executeManageFlowTool(sessionID, call, approvedArguments)
+		result.Output = output
+		return true, result, err
 	case "manage_theme":
 		output, err := s.executeManageThemeTool(sessionID, call, approvedArguments)
 		result.Output = output
@@ -719,6 +723,81 @@ func (s *Service) executeManageAgentTool(sessionID string, call tool.Call, feedb
 		return output, err
 	}
 	return output, nil
+}
+
+func (s *Service) executeManageFlowTool(sessionID string, call tool.Call, feedback string) (string, error) {
+	feedback = strings.TrimSpace(feedback)
+	if feedback != "" {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(feedback), &payload); err != nil {
+			return "", fmt.Errorf("approved manage-flow payload invalid: %w", err)
+		}
+		args := manageFlowApprovalArguments(payload)
+		if len(args) == 0 {
+			return "", errors.New("approved manage-flow payload missing approved arguments")
+		}
+		session, ok, err := s.sessions.GetSession(sessionID)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("session %q not found", sessionID)
+		}
+		scope := buildPermissionWorkspaceScope(session)
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return "", err
+		}
+		if s.tools != nil {
+			output, err := s.tools.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: string(raw)})
+			if err != nil {
+				return output, err
+			}
+			return output, nil
+		}
+		output, err := tool.ExecuteForWorkspaceScope(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: string(raw)})
+		if err != nil {
+			return output, err
+		}
+		return output, nil
+	}
+
+	arguments := strings.TrimSpace(call.Arguments)
+	if arguments == "" {
+		arguments = "{}"
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("session %q not found", sessionID)
+	}
+	scope := buildPermissionWorkspaceScope(session)
+	if s.tools != nil {
+		output, err := s.tools.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
+		if err != nil {
+			return output, err
+		}
+		return output, nil
+	}
+	output, err := tool.ExecuteForWorkspaceScope(context.Background(), scope, tool.Call{CallID: call.CallID, Name: call.Name, Arguments: arguments})
+	if err != nil {
+		return output, err
+	}
+	return output, nil
+}
+
+func manageFlowApprovalArguments(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	if raw, ok := payload["approved_arguments"]; ok {
+		if approved, ok := raw.(map[string]any); ok {
+			return approved
+		}
+	}
+	return cloneGenericMap(payload)
 }
 
 func (s *Service) executeManageIntegrationsTool(sessionID string, call tool.Call) (string, error) {
@@ -2464,6 +2543,8 @@ func canonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
+	case "manage-flow", "manage_flow":
+		return "manage_flow"
 	case "manage-image", "manage_image":
 		return "manage_image"
 	default:
@@ -2508,6 +2589,11 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return "agent_change", true
 		}
 		return "manage_agent", false
+	case "manage_flow":
+		if permission.ShouldApproveManageFlowMutation(arguments) {
+			return "flow_change", true
+		}
+		return "manage_flow", false
 	case "task":
 		return "task_launch", true
 	case "ask_user", "exit_plan_mode":

@@ -1071,8 +1071,18 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 	}
 }
 
+func ShouldApproveManageFlowMutation(toolArguments string) bool {
+	action := manageAction(toolArguments)
+	switch action {
+	case "create", "update", "delete", "remove":
+		return true
+	default:
+		return false
+	}
+}
+
 func ShouldApproveManageAgentMutation(toolArguments string) bool {
-	action := manageAgentAction(toolArguments)
+	action := manageAction(toolArguments)
 	switch action {
 	case "create", "update", "delete", "remove", "create_custom_tool", "create-custom-tool", "update_custom_tool", "update-custom-tool", "delete_custom_tool", "delete-custom-tool", "remove_custom_tool", "remove-custom-tool", "assign_custom_tool", "assign-custom-tool", "unassign_custom_tool", "unassign-custom-tool":
 		return true
@@ -1082,6 +1092,10 @@ func ShouldApproveManageAgentMutation(toolArguments string) bool {
 }
 
 func manageAgentAction(toolArguments string) string {
+	return manageAction(toolArguments)
+}
+
+func manageAction(toolArguments string) string {
 	toolArguments = strings.TrimSpace(toolArguments)
 	if toolArguments == "" {
 		return "inspect"
