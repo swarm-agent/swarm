@@ -981,6 +981,9 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, list)
 	case http.MethodPost:
+		if _, ok := s.requireProductActor(w, r); !ok {
+			return
+		}
 		var req struct {
 			ID           string   `json:"id"`
 			Provider     string   `json:"provider"`
@@ -1561,6 +1564,9 @@ func (s *Server) handleWorkspaceFolderCreate(w http.ResponseWriter, r *http.Requ
 func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+	if _, ok := s.requireProductActor(w, r); !ok {
 		return
 	}
 	var req struct {

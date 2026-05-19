@@ -221,10 +221,29 @@ func productActorFromRequest(r *http.Request) (identity.ActorContext, bool) {
 		return identity.ActorContext{}, false
 	}
 	actor, ok := r.Context().Value(productActorRequestContextKey).(identity.ActorContext)
-	if !ok || strings.TrimSpace(actor.UserID) == "" {
+	if !ok || !isCompleteProductActor(actor) {
 		return identity.ActorContext{}, false
 	}
 	return actor, true
+}
+
+func isCompleteProductActor(actor identity.ActorContext) bool {
+	return strings.TrimSpace(actor.UserID) != "" &&
+		strings.TrimSpace(actor.TeamID) != "" &&
+		strings.TrimSpace(actor.User.ID) != "" &&
+		strings.TrimSpace(actor.Team.ID) != "" &&
+		strings.TrimSpace(actor.Membership.UserID) != "" &&
+		strings.TrimSpace(actor.Membership.TeamID) != "" &&
+		strings.TrimSpace(actor.Selection.UserID) != "" &&
+		strings.TrimSpace(actor.Selection.TeamID) != ""
+}
+
+func (s *Server) requireProductActor(w http.ResponseWriter, r *http.Request) (identity.ActorContext, bool) {
+	if actor, ok := productActorFromRequest(r); ok {
+		return actor, true
+	}
+	writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+	return identity.ActorContext{}, false
 }
 
 func isLocalTransportRequest(r *http.Request) bool {

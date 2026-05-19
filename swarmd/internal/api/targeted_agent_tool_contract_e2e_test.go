@@ -15,6 +15,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
@@ -71,7 +72,7 @@ func TestTargetedScopedSubagentToolContractAPIEndToEnd(t *testing.T) {
 		},
 		token: "peer-token",
 	})
-	handler := server.Handler()
+	handler := testProductActorHandler(server.Handler())
 
 	upsertScopedAgentV2(t, handler, "scopedsub-e2e", "subagent", allowedCommand)
 	upsertScopedAgentV2(t, handler, "scopedbg-e2e", "background", allowedCommand)
@@ -180,7 +181,7 @@ func TestTargetedBackgroundFullBashToolContractAPIEndToEnd(t *testing.T) {
 		},
 		token: "peer-token",
 	})
-	handler := server.Handler()
+	handler := testProductActorHandler(server.Handler())
 
 	upsertFullBashAgentV2(t, handler, "fullbashbg-e2e", "background")
 	resolved := getResolvedToolContractV2(t, handler, "fullbashbg-e2e")
@@ -246,7 +247,7 @@ func TestDefaultMemoryAgentOwnsCommitToolContract(t *testing.T) {
 	providers := registry.New()
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, agentSvc, nil, eventLog)
 	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
-	handler := server.Handler()
+	handler := testProductActorHandler(server.Handler())
 
 	if _, ok, err := pebblestore.NewAgentStore(store).GetProfile("commit"); err != nil {
 		t.Fatalf("get commit profile: %v", err)
@@ -295,7 +296,7 @@ func TestIntegrationBuilderHiddenFromNormalAgentsAPIAndResolvableForIntegrationT
 	providers := registry.New()
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, agentSvc, nil, eventLog)
 	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
-	handler := server.Handler()
+	handler := testProductActorHandler(server.Handler())
 
 	var listResp struct {
 		OK    bool               `json:"ok"`
@@ -358,7 +359,7 @@ func TestAgentAndCustomToolsManageableViaV2API(t *testing.T) {
 	providers := registry.New()
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, providers, tool.NewRuntime(2), nil, agentSvc, nil, eventLog)
 	server := NewServer("test", nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, providers, nil, nil, eventLog, hub)
-	handler := server.Handler()
+	handler := testProductActorHandler(server.Handler())
 
 	putCustomToolV2(t, handler, "git_status_short", map[string]any{
 		"kind":        "fixed_bash",
@@ -717,6 +718,20 @@ func stringMapValue(values map[string]any, key string) string {
 	return value
 }
 
+func testProductActorHandler(next http.Handler) http.Handler {
+	actor := identity.ActorContext{
+		UserID:     "user_targeted_agent_test",
+		TeamID:     "team_targeted_agent_test",
+		User:       pebblestore.UserRecord{ID: "user_targeted_agent_test", Username: "targeted-agent-test"},
+		Team:       pebblestore.TeamRecord{ID: "team_targeted_agent_test", Name: "Default", Default: true},
+		Membership: pebblestore.TeamMembershipRecord{TeamID: "team_targeted_agent_test", UserID: "user_targeted_agent_test", Role: pebblestore.TeamRoleOwner},
+		Selection:  pebblestore.CurrentSelectionRecord{UserID: "user_targeted_agent_test", TeamID: "team_targeted_agent_test"},
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, requestWithActorContext(r, actor))
+	})
+}
+
 func doJSONRequestLocal(t *testing.T, handler http.Handler, method, path string, payload any, out any) int {
 	t.Helper()
 
@@ -741,7 +756,7 @@ func doJSONRequestLocal(t *testing.T, handler http.Handler, method, path string,
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
-	if out != nil {
+	if out != nil && recorder.Body.Len() > 0 {
 		decoder := json.NewDecoder(recorder.Body)
 		if err := decoder.Decode(out); err != nil {
 			t.Fatalf("decode response body: %v", err)

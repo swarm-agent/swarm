@@ -388,6 +388,9 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			"profile": profile,
 		})
 	case http.MethodPut:
+		if _, ok := s.requireProductActor(w, r); !ok {
+			return
+		}
 		var req struct {
 			Mode                string                                  `json:"mode"`
 			Description         string                                  `json:"description"`
