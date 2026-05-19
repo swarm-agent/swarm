@@ -1198,12 +1198,16 @@ interface SessionAgentSummary {
   running: number
 }
 
-function summarizeSubagentDescendants(node: SidebarSessionNode): SessionAgentSummary {
+function sidebarChildCountsAsAgent(node: SidebarSessionNode): boolean {
+  return node.kind === 'subagent' || node.kind === 'background'
+}
+
+function summarizeAgentDescendants(node: SidebarSessionNode): SessionAgentSummary {
   let total = 0
   let running = 0
   const visit = (nodes: SidebarSessionNode[]) => {
     for (const child of nodes) {
-      if (child.kind === 'subagent') {
+      if (sidebarChildCountsAsAgent(child)) {
         total += 1
         if (sessionIsActive(child.session)) {
           running += 1
@@ -1218,9 +1222,9 @@ function summarizeSubagentDescendants(node: SidebarSessionNode): SessionAgentSum
   return { total, running }
 }
 
-function nodeHasSubagentDescendants(node: SidebarSessionNode): boolean {
+function nodeHasAgentDescendants(node: SidebarSessionNode): boolean {
   for (const child of node.children) {
-    if (child.kind === 'subagent' || nodeHasSubagentDescendants(child)) {
+    if (sidebarChildCountsAsAgent(child) || nodeHasAgentDescendants(child)) {
       return true
     }
   }
@@ -1248,7 +1252,7 @@ function flattenVisibleSidebarSessionNodes(
   const output: SidebarSessionNode[] = []
   const visit = (node: SidebarSessionNode) => {
     output.push(node)
-    const shouldExpand = !nodeHasSubagentDescendants(node)
+    const shouldExpand = !nodeHasAgentDescendants(node)
       || Boolean(expandedSessionIDs[node.session.id])
       || nodeContainsDescendantSession(node, forcedVisibleSessionID)
     if (!shouldExpand) {
@@ -1412,9 +1416,9 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
                   event.stopPropagation()
                   onToggleAgents(session.id)
                 }}
-                aria-label={`${agentSummary.running} running of ${agentSummary.total} subagents`}
+                aria-label={`${agentSummary.running} running of ${agentSummary.total} child agents`}
                 aria-pressed={agentsExpanded}
-                title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
+                title={`${agentSummary.total} child agent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide child sessions' : ' · click to show child sessions'}`}
               >
                 {agentsExpanded ? <ChevronDown size={10} className="shrink-0 opacity-75" /> : <ChevronRight size={10} className="shrink-0 opacity-75" />}
                 <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse' : null)} />
@@ -3246,7 +3250,7 @@ export function DesktopAppPage() {
                               depth={node.depth}
                               childLabel={node.label}
                               childKind={node.kind}
-                              agentSummary={summarizeSubagentDescendants(node)}
+                              agentSummary={summarizeAgentDescendants(node)}
                               agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, selectedSession?.id)}
                               onSelect={handleSelectSession}
                               onPrefetch={handlePrefetchSession}
