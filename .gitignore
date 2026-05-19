@@ -62,6 +62,10 @@ coverage.out
 /.tmp-tools/
 /audit/
 /docs/*
+!/docs/checkpoints/
+!/docs/checkpoints/*.md
+!/docs/identity/
+!/docs/identity/*.md
 !/docs/swarm-harness-vm.md
 !/docs/flows-smoke-harness.md
 !/docs/managed-host-launch-gate.md

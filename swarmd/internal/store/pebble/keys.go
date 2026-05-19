@@ -16,6 +16,13 @@ const (
 	KeyAuthManagedVaultKeyPrefix                = "auth/managed_vault_key/"
 	KeyUISettingsDefault                        = "ui/settings/default"
 	KeyUIChatSettingsDefault                    = "ui/chat_settings/default"
+	KeyIdentityPrefix                           = "identity/"
+	KeyIdentityUserPrefix                       = "identity/user/"
+	KeyIdentityUserByUsernamePrefix             = "identity/user_by_username/"
+	KeyIdentityTeamPrefix                       = "identity/team/"
+	KeyIdentityTeamMembershipPrefix             = "identity/membership/"
+	KeyIdentityCurrentSelectionDefault          = "identity/current_selection/default"
+	KeyIdentityCurrentSelectionPrefix           = "identity/current_selection/"
 	KeyVoiceConfigDefault                       = "voice/config/default"
 	KeyVoiceProfilePrefix                       = "voice/profile/"
 	KeyVoiceProfileActiveSTT                    = "voice/profile_active/stt"
@@ -117,6 +124,54 @@ func ModelFavoritePrefix(providerID string) string {
 		return KeyModelFavoritePrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyModelFavoritePrefix, providerPart)
+}
+
+func IdentityPrefix() string {
+	return KeyIdentityPrefix
+}
+
+func KeyIdentityUser(userID string) string {
+	return KeyIdentityUserPrefix + keyPart(userID)
+}
+
+func IdentityUserPrefix() string {
+	return KeyIdentityUserPrefix
+}
+
+func KeyIdentityUserByUsername(username string) string {
+	return KeyIdentityUserByUsernamePrefix + keyPart(username)
+}
+
+func IdentityUserByUsernamePrefix() string {
+	return KeyIdentityUserByUsernamePrefix
+}
+
+func KeyIdentityTeam(teamID string) string {
+	return KeyIdentityTeamPrefix + keyPart(teamID)
+}
+
+func IdentityTeamPrefix() string {
+	return KeyIdentityTeamPrefix
+}
+
+func KeyIdentityTeamMembership(teamID, userID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyIdentityTeamMembershipPrefix, keyPart(teamID), keyPart(userID))
+}
+
+func IdentityTeamMembershipPrefix(teamID string) string {
+	part := keyPart(teamID)
+	if part == "" {
+		return KeyIdentityTeamMembershipPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyIdentityTeamMembershipPrefix, part)
+}
+
+func KeyIdentityCurrentSelection() string {
+	return KeyIdentityCurrentSelectionDefault
+}
+
+func IdentityCurrentSelectionPrefix() string {
+	return KeyIdentityCurrentSelectionPrefix
 }
 
 func KeySession(sessionID string) string {
