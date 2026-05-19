@@ -767,6 +767,14 @@ export function VideoToolPage() {
     }
   }, [activeSessionId, navigate, routeWorkspaceSlug])
 
+  const handleBackToTools = useCallback(() => {
+    if (routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug: routeWorkspaceSlug } })
+      return
+    }
+    void navigate({ to: '/tools' })
+  }, [navigate, routeWorkspaceSlug])
+
   const loadBrowser = useCallback(async (path: string) => {
     setBrowserLoading(true)
     setBrowserError(null)
@@ -1057,7 +1065,23 @@ export function VideoToolPage() {
   }, [navigate, routeWorkspaceSlug, selectedClips, selectedFolderPath, selectedThread, selectedWorkspaceName, setActiveSession, setActiveWorkspacePath, upsertSession])
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
-      <div className="mx-auto flex h-full w-full max-w-none flex-col px-4 py-4 sm:px-5 sm:py-5">
+      <div className="flex min-h-dvh flex-col px-5 pt-[calc(var(--app-safe-area-top)+24px)] pb-[calc(var(--app-safe-area-bottom)+24px)] lg:hidden">
+        <button type="button" onClick={handleBackToTools} className="mb-6 inline-flex h-10 items-center gap-2 self-start rounded-xl px-2 text-sm text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
+          <ArrowLeft size={16} />
+          Tools
+        </button>
+        <div className="grid flex-1 place-items-center text-center">
+          <div className="max-w-sm rounded-[2rem] border border-[var(--app-border)] bg-[var(--app-surface)] px-6 py-8 shadow-[var(--shadow-panel)]">
+            <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]">
+              <Film size={26} strokeWidth={1.7} />
+            </span>
+            <p className="mt-6 text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--app-text-subtle)]">Video Tool</p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-[-0.05em] text-[var(--app-text)]">Coming soon for mobile</h1>
+            <p className="mt-3 text-sm leading-6 text-[var(--app-text-muted)]">Video editing is desktop only for now.</p>
+          </div>
+        </div>
+      </div>
+      <div className="mx-auto hidden h-full w-full max-w-none flex-col px-4 py-4 sm:px-5 sm:py-5 lg:flex">
         {createError ? (
           <div className="mb-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm text-[var(--app-text)]">
             {createError}

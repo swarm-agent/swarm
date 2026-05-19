@@ -18,15 +18,15 @@ const toolCards: ToolCard[] = [
   {
     id: 'video',
     name: 'Video Tool',
-    description: 'Organize clips and drafts with DB-backed sessions; tool files live in Swarm’s private app-managed workspace bucket.',
-    status: 'First tool',
+    description: 'Edit clips and drafts on desktop. Mobile support is coming soon.',
+    status: 'Edit Videos',
     icon: 'video',
   },
   {
     id: 'image',
-    name: 'Image Tool',
+    name: 'Image Creator',
     description: 'Create DB-backed image sessions with generated assets stored in Swarm’s private app-managed workspace bucket.',
-    status: 'Outline',
+    status: 'Image Gen',
     icon: 'image',
   },
 ]
@@ -95,8 +95,8 @@ export function SwarmToolsPage() {
           </p>
         </header>
 
-        <main className="flex-1 py-8">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <main className="flex-1 py-5 sm:py-8">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
             {toolCards.map((tool) => (
               <button
                 key={tool.id}
@@ -106,22 +106,22 @@ export function SwarmToolsPage() {
                 aria-label={`Open ${tool.name}`}
               >
                 <Card className={cn(
-                  'flex aspect-square min-h-[210px] flex-col overflow-hidden p-5 transition-all duration-200',
+                  'flex aspect-square min-h-0 flex-col overflow-hidden p-3 transition-all duration-200 sm:min-h-[210px] sm:p-5',
                   'hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:shadow-[var(--shadow-panel)]',
                 )}
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <span className="grid h-12 w-12 place-items-center rounded-2xl border border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]">
+                    <span className="grid h-9 w-9 place-items-center rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)] sm:h-12 sm:w-12 sm:rounded-2xl">
                       {tool.icon === 'video' ? <Film size={22} strokeWidth={1.8} /> : <Image size={22} strokeWidth={1.8} />}
                     </span>
-                    <span className="rounded-full border border-[var(--app-border)] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+                    <span className="rounded-full border border-[var(--app-border)] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-[var(--app-text-subtle)] sm:px-2 sm:py-1 sm:text-[10px] sm:tracking-[0.16em]">
                       {tool.status}
                     </span>
                   </div>
                   <div className="mt-auto">
-                    <h2 className="text-xl font-semibold tracking-[-0.04em] text-[var(--app-text)]">{tool.name}</h2>
-                    <p className="mt-2 line-clamp-3 text-sm leading-5 text-[var(--app-text-muted)]">{tool.description}</p>
-                    <p className="mt-4 text-xs font-medium text-[var(--app-primary)] opacity-80 transition-opacity group-hover:opacity-100">Open tool →</p>
+                    <h2 className="text-base font-semibold tracking-[-0.04em] text-[var(--app-text)] sm:text-xl">{tool.name}</h2>
+                    <p className="mt-2 hidden line-clamp-3 text-sm leading-5 text-[var(--app-text-muted)] sm:block">{tool.description}</p>
+                    <p className="mt-2 text-[11px] font-medium text-[var(--app-primary)] opacity-80 transition-opacity group-hover:opacity-100 sm:mt-4 sm:text-xs">Open →</p>
                   </div>
                 </Card>
               </button>
