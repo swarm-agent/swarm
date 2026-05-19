@@ -270,9 +270,9 @@ const runStatusClasses: Record<FlowRun['status'], string> = {
 }
 
 const surfaceClass = 'rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm'
-const filterControlClass = 'inline-flex min-h-9 items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 text-xs text-[var(--app-text-muted)] transition hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]'
-const fieldClass = 'h-9 rounded-xl border border-[rgba(255,255,255,0.13)] bg-[rgba(255,255,255,0.045)] px-3 text-sm text-[rgba(255,255,255,0.88)] outline-none transition placeholder:text-[rgba(255,255,255,0.38)] hover:border-[rgba(255,255,255,0.20)] focus:border-[#b87586] focus:ring-1 focus:ring-[#b87586]/25 disabled:cursor-not-allowed disabled:opacity-55'
-const textareaClass = 'min-h-[80px] resize-none rounded-xl border border-[rgba(255,255,255,0.13)] bg-[rgba(255,255,255,0.045)] px-3 py-2 text-sm leading-5 text-[rgba(255,255,255,0.88)] outline-none transition placeholder:text-[rgba(255,255,255,0.38)] hover:border-[rgba(255,255,255,0.20)] focus:border-[#b87586] focus:ring-1 focus:ring-[#b87586]/25'
+const filterControlClass = 'inline-flex min-h-9 min-w-0 max-w-full items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 text-xs text-[var(--app-text-muted)] transition hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]'
+const fieldClass = 'h-9 w-full min-w-0 rounded-xl border border-[rgba(255,255,255,0.13)] bg-[rgba(255,255,255,0.045)] px-3 text-sm text-[rgba(255,255,255,0.88)] outline-none transition placeholder:text-[rgba(255,255,255,0.38)] hover:border-[rgba(255,255,255,0.20)] focus:border-[#b87586] focus:ring-1 focus:ring-[#b87586]/25 disabled:cursor-not-allowed disabled:opacity-55'
+const textareaClass = 'min-h-[80px] w-full min-w-0 resize-none rounded-xl border border-[rgba(255,255,255,0.13)] bg-[rgba(255,255,255,0.045)] px-3 py-2 text-sm leading-5 text-[rgba(255,255,255,0.88)] outline-none transition placeholder:text-[rgba(255,255,255,0.38)] hover:border-[rgba(255,255,255,0.20)] focus:border-[#b87586] focus:ring-1 focus:ring-[#b87586]/25'
 const labelClass = 'text-[11px] font-medium uppercase tracking-[0.14em] text-[rgba(255,255,255,0.62)]'
 const helperClass = 'text-[11px] leading-4 text-[rgba(255,255,255,0.55)]'
 
@@ -773,17 +773,17 @@ function isoDisplay(value?: string): string {
 
 function FlowDateTime({ value, meta }: { value: string; meta?: string }) {
   if (!value || value === '—' || value === 'Never') {
-    return <div className="text-sm text-[var(--app-text)]">{value || '—'}</div>
+    return <div className="min-w-0 break-words text-sm text-[var(--app-text)]">{value || '—'}</div>
   }
   const match = value.match(/^(.*)\s(\d{1,2}:\d{2}\u00A0(?:AM|PM))$/)
   if (!match) {
-    return <div className="whitespace-nowrap text-sm text-[var(--app-text)]">{value}</div>
+    return <div className="min-w-0 break-words text-sm text-[var(--app-text)]">{value}</div>
   }
   return (
-    <div className="leading-tight">
-      <div className="whitespace-nowrap text-sm text-[var(--app-text)]">{match[1]}</div>
-      <div className="mt-1 whitespace-nowrap font-mono text-xs text-[var(--app-text-muted)]">{match[2]}</div>
-      {meta ? <div className="mt-1 whitespace-nowrap text-xs text-[var(--app-text-muted)]">{meta}</div> : null}
+    <div className="min-w-0 leading-tight">
+      <div className="break-words text-sm text-[var(--app-text)]">{match[1]}</div>
+      <div className="mt-1 break-words font-mono text-xs text-[var(--app-text-muted)]">{match[2]}</div>
+      {meta ? <div className="mt-1 break-words text-xs text-[var(--app-text-muted)]">{meta}</div> : null}
     </div>
   )
 }
@@ -1044,8 +1044,8 @@ function FilterSelect({ value, onChange, options, label }: { value: string; onCh
           <option key={option.value} value={option.value}>{option.label}</option>
         ))}
       </select>
-      <span>{options.find((option) => option.value === value)?.label ?? label}</span>
-      <ChevronDown size={14} className="absolute right-3 text-[var(--app-text-muted)]" />
+      <span className="min-w-0 truncate">{options.find((option) => option.value === value)?.label ?? label}</span>
+      <ChevronDown size={14} className="absolute right-3 shrink-0 text-[var(--app-text-muted)]" />
     </label>
   )
 }
@@ -1211,31 +1211,31 @@ function FlowSettingsModal({
   }
 
   return (
-    <Dialog role="dialog" aria-modal="true" aria-label={mode === 'edit' ? 'Edit Flow' : 'Add Flow'} className="z-[80] p-3 sm:p-5" data-testid="flows-add-modal">
+    <Dialog role="dialog" aria-modal="true" aria-label={mode === 'edit' ? 'Edit Flow' : 'Add Flow'} className="z-[80] p-2 sm:p-5" data-testid="flows-add-modal">
       <DialogBackdrop onClick={busy ? undefined : onClose} />
-      <DialogPanel className="w-[min(920px,100%)] gap-0 rounded-[14px] border border-[rgba(255,255,255,0.12)] bg-[#1a1921] p-0 shadow-xl shadow-black/30">
-        <form onSubmit={submit} className="flex max-h-[min(820px,calc(100vh-40px))] flex-col">
-          <div className="flex items-start justify-between gap-4 border-b border-[rgba(255,255,255,0.10)] px-5 py-4">
-            <div>
+      <DialogPanel className="max-h-[calc(100vh-16px)] w-[min(920px,100%)] min-w-0 gap-0 overflow-hidden rounded-[14px] border border-[rgba(255,255,255,0.12)] bg-[#1a1921] p-0 shadow-xl shadow-black/30 sm:max-h-[calc(100vh-40px)]">
+        <form onSubmit={submit} className="flex max-h-[calc(100vh-16px)] min-w-0 flex-col sm:max-h-[min(820px,calc(100vh-40px))]">
+          <div className="grid gap-3 border-b border-[rgba(255,255,255,0.10)] px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:px-5">
+            <div className="min-w-0">
               <div className={labelClass}>{mode === 'edit' ? 'Flow settings' : 'New scheduled job'}</div>
-              <h2 className="mt-1 text-lg font-semibold text-[rgba(255,255,255,0.90)]">{mode === 'edit' ? 'Edit Flow' : 'Add Flow'}</h2>
-              <p className="mt-1 text-sm text-[rgba(255,255,255,0.55)]">{mode === 'edit' ? 'Updates the controller Flow and syncs the new assignment to the target.' : 'Creates a controller Flow and syncs it to the selected target.'}</p>
+              <h2 className="mt-1 break-words text-lg font-semibold text-[rgba(255,255,255,0.90)]">{mode === 'edit' ? 'Edit Flow' : 'Add Flow'}</h2>
+              <p className="mt-1 break-words text-sm text-[rgba(255,255,255,0.55)]">{mode === 'edit' ? 'Updates the controller Flow and syncs the new assignment to the target.' : 'Creates a controller Flow and syncs it to the selected target.'}</p>
             </div>
-            <div className="flex items-start gap-3">
-              <div className="whitespace-nowrap rounded-xl border border-[#b87586]/20 bg-[#b87586]/10 px-3 py-2 text-right text-[11px] leading-4 text-[#d7a0ad]">
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 sm:flex sm:items-start">
+              <div className="min-w-0 rounded-xl border border-[#b87586]/20 bg-[#b87586]/10 px-3 py-2 text-left text-[11px] leading-4 text-[#d7a0ad] sm:whitespace-nowrap sm:text-right">
                 Need complex cron? Ask your agent.
               </div>
               <ModalCloseButton className="rounded-xl" onClick={onClose} aria-label={mode === 'edit' ? 'Close Edit Flow' : 'Close Add Flow'} />
             </div>
           </div>
 
-          <div className="overflow-y-auto px-5 py-4">
-            <div className="grid gap-x-5 gap-y-4 md:grid-cols-2">
-              <label className="flex flex-col gap-2">
+          <div className="min-w-0 overflow-y-auto px-4 py-4 sm:px-5">
+            <div className="grid min-w-0 gap-x-5 gap-y-4 md:grid-cols-2">
+              <label className="flex min-w-0 flex-col gap-2">
                 <span className={labelClass}>Flow name</span>
                 <Input data-testid="flows-add-name" value={form.name} onChange={update('name')} className={fieldClass} />
               </label>
-              <label className="flex flex-col gap-2">
+              <label className="flex min-w-0 flex-col gap-2">
                 <span className={labelClass}>Target swarm</span>
                 <select data-testid="flows-add-target" value={form.targetKey} onChange={update('targetKey')} className={fieldClass} disabled={loadingOptions || !targetOptions.length}>
                   {groupedTargetOptions(targetOptions).map((group) => (
@@ -1248,7 +1248,7 @@ function FlowSettingsModal({
                   {loadingOptions ? 'Loading linked swarms…' : selectedTarget?.helper || 'No linked swarm targets returned by the controller.'}
                 </span>
               </label>
-              <label className="flex flex-col gap-2">
+              <label className="flex min-w-0 flex-col gap-2">
                 <span className={labelClass}>Workspace</span>
                 <select data-testid="flows-add-workspace" value={form.workspacePath} onChange={update('workspacePath')} className={fieldClass} disabled={selectorsLoading || !scopedWorkspaceOptions.length}>
                   {scopedWorkspaceOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
@@ -1257,7 +1257,7 @@ function FlowSettingsModal({
                   {targetWorkspacesLoading ? 'Loading target workspaces…' : targetWorkspacesError || selectedWorkspace?.helper || 'No workspace records returned by the selected target.'}
                 </span>
               </label>
-              <label className="flex flex-col gap-2">
+              <label className="flex min-w-0 flex-col gap-2">
                 <span className={labelClass}>Agent</span>
                 <select data-testid="flows-add-agent" value={form.agentKey} onChange={update('agentKey')} className={fieldClass} disabled={loadingOptions || !agentOptions.length}>
                   {groupedAgentOptions(agentOptions).map((group) => (
@@ -1271,14 +1271,14 @@ function FlowSettingsModal({
                 </span>
               </label>
               <section className="grid gap-3 rounded-[14px] border border-[rgba(255,255,255,0.10)] bg-transparent p-3 md:col-span-2" aria-label="Schedule">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                  <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
                     <span className={labelClass}>Schedule</span>
                     <span className="text-[rgba(255,255,255,0.38)]">·</span>
-                    <span className="text-sm font-medium text-[rgba(255,255,255,0.86)]">{schedulePreview}</span>
+                    <span className="min-w-0 break-words text-sm font-medium text-[rgba(255,255,255,0.86)]">{schedulePreview}</span>
                   </div>
 
-                  <div className="flex shrink-0 rounded-xl border border-[rgba(255,255,255,0.10)] bg-[rgba(255,255,255,0.025)] p-0.5">
+                  <div className="grid grid-cols-2 rounded-xl border border-[rgba(255,255,255,0.10)] bg-[rgba(255,255,255,0.025)] p-0.5 sm:flex sm:shrink-0">
                     {(['guided', 'cron'] as ScheduleMode[]).map((mode) => {
                       const selected = form.scheduleMode === mode
                       return (
@@ -1321,7 +1321,7 @@ function FlowSettingsModal({
                             {scheduleDateOptions.map((date) => <option key={date}>{date}</option>)}
                           </select>
                         ) : (
-                          <div className="flex h-8 items-center rounded-lg border border-[rgba(255,255,255,0.10)] bg-[rgba(255,255,255,0.025)] px-2">
+                          <div className="flex min-h-8 items-center rounded-lg border border-[rgba(255,255,255,0.10)] bg-[rgba(255,255,255,0.025)] px-2 py-1">
                             <div className="flex min-w-0 flex-wrap gap-1">
                               {scheduleDayOptions.map((day) => {
                                 const selected = selectedScheduleDayValues.includes(day)
@@ -1349,7 +1349,7 @@ function FlowSettingsModal({
                       <label className="flex min-w-0 flex-col gap-1.5">
                         <span className={labelClass}>{form.scheduleCadence === 'Daily' && form.dailyMode !== 'once' ? 'Run window' : 'Run time'}</span>
                         {form.scheduleCadence === 'Daily' && form.dailyMode === 'times_between' ? (
-                          <div className="grid grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)_minmax(0,1fr)] gap-1.5">
+                          <div className="grid gap-1.5 sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)_minmax(0,1fr)]">
                             <input type="number" min="1" max={maxDailyScheduleTimes} value={form.dailyRunCount} onChange={update('dailyRunCount')} aria-label="Runs per day" className={cn(fieldClass, 'h-8 rounded-lg px-2 text-xs')} />
                             <select value={form.dailyWindowStart} onChange={update('dailyWindowStart')} aria-label="Start" className={cn(fieldClass, 'h-8 rounded-lg px-2 text-xs')}>
                               {scheduleTimeOptions.map((option) => <option key={option}>{option}</option>)}
@@ -1359,7 +1359,7 @@ function FlowSettingsModal({
                             </select>
                           </div>
                         ) : form.scheduleCadence === 'Daily' && form.dailyMode === 'interval_window' ? (
-                          <div className="grid grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)_minmax(0,1fr)] gap-1.5">
+                          <div className="grid gap-1.5 sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)_minmax(0,1fr)]">
                             <div className="flex items-center gap-1.5">
                               <input type="number" min="1" max="24" value={form.dailyIntervalHours} onChange={update('dailyIntervalHours')} aria-label="Interval hours" className={cn(fieldClass, 'h-8 min-w-0 rounded-lg px-2 text-xs')} />
                               <span className="text-[11px] text-[rgba(255,255,255,0.55)]">h</span>
@@ -1396,7 +1396,7 @@ function FlowSettingsModal({
                         placeholder="0 0 * * *"
                       />
                     </label>
-                    <div className={helperClass}>{schedulePreview}</div>
+                    <div className={cn(helperClass, 'break-words')}>{schedulePreview}</div>
                   </div>
                 )}
 
@@ -1408,7 +1408,7 @@ function FlowSettingsModal({
                       onChange={(event) => setForm((current) => ({ ...current, highRunCountConfirmed: event.target.checked }))}
                       className="mt-0.5 h-3.5 w-3.5 accent-[#b87586]"
                     />
-                    <span>
+                    <span className="min-w-0 break-words">
                       This will run {guidedScheduleTimes.length} times per day. Yes, I really want to run this many.
                     </span>
                   </label>
@@ -1432,7 +1432,7 @@ function FlowSettingsModal({
                       ))}
                     </select>
                   </label>
-                  <span className="text-xs text-[rgba(255,255,255,0.55)] sm:pt-5">Currently {selectedTimezoneNow}</span>
+                  <span className="min-w-0 break-words text-xs text-[rgba(255,255,255,0.55)] sm:pt-5">Currently {selectedTimezoneNow}</span>
                 </div>
               </section>
               <label className="flex flex-col gap-2 md:col-span-2">
@@ -1442,12 +1442,9 @@ function FlowSettingsModal({
             </div>
           </div>
 
-          <div className="sticky bottom-0 flex items-center justify-between border-t border-[rgba(255,255,255,0.10)] bg-[#1a1921] px-5 py-3">
-            <p className="text-xs text-[rgba(255,255,255,0.55)]">Targets keep accepted assignments and schedule locally.</p>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" className="rounded-xl border-[rgba(255,255,255,0.13)] bg-transparent text-[rgba(255,255,255,0.70)] hover:border-[rgba(255,255,255,0.20)] hover:bg-[rgba(255,255,255,0.035)]" onClick={onClose} disabled={busy}>Cancel</Button>
-              <Button data-testid="flows-add-submit" type="submit" variant="primary" className="rounded-xl border-[#b87586]/40 bg-[#a86678] text-white hover:bg-[#b87586] active:bg-[#96596a]" disabled={!canSubmit}>{busy ? (mode === 'edit' ? 'Saving…' : 'Adding…') : (mode === 'edit' ? 'Save changes' : 'Add Flow')}</Button>
-            </div>
+          <div className="grid gap-2 border-t border-[rgba(255,255,255,0.10)] bg-[#1a1921] px-4 py-3 sm:flex sm:items-center sm:justify-end sm:px-5">
+            <Button variant="outline" className="w-full rounded-xl border-[rgba(255,255,255,0.13)] bg-transparent text-[rgba(255,255,255,0.70)] hover:border-[rgba(255,255,255,0.20)] hover:bg-[rgba(255,255,255,0.035)] sm:w-auto" onClick={onClose} disabled={busy}>Cancel</Button>
+            <Button data-testid="flows-add-submit" type="submit" variant="primary" className="w-full rounded-xl border-[#b87586]/40 bg-[#a86678] text-white hover:bg-[#b87586] active:bg-[#96596a] sm:w-auto" disabled={!canSubmit}>{busy ? (mode === 'edit' ? 'Saving…' : 'Adding…') : (mode === 'edit' ? 'Save' : 'Add Flow')}</Button>
           </div>
         </form>
       </DialogPanel>
@@ -1474,28 +1471,28 @@ function FlowDetail({
 }) {
   return (
     <div data-testid="flows-detail" className="flex min-h-full flex-col gap-8 pb-10 text-[var(--app-text)]">
-      <div className="flex items-center justify-between gap-4 border-b border-[var(--app-border)] pb-5">
+      <div className="grid gap-4 border-b border-[var(--app-border)] pb-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
         <div className="min-w-0">
           <button type="button" onClick={onBack} className="mb-4 inline-flex items-center gap-2 text-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)]">
             <ArrowLeft size={16} /> Back to flows
           </button>
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
-            <FlowStatusDot status={flow.status} /> {statusLabels[flow.status]} / {flow.mode}
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+            <FlowStatusDot status={flow.status} /> <span className="min-w-0 break-words">{statusLabels[flow.status]} / {flow.mode}</span>
           </div>
-          <h1 className="mt-2 truncate text-2xl font-semibold tracking-tight text-[var(--app-text)]">{flow.name}</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--app-text-muted)]">{flow.task}</p>
+          <h1 className="mt-2 break-words text-2xl font-semibold tracking-tight text-[var(--app-text)]">{flow.name}</h1>
+          <p className="mt-2 max-w-3xl break-words text-sm leading-6 text-[var(--app-text-muted)]">{flow.task}</p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button data-testid="flows-detail-edit" variant="outline" className="rounded-xl" onClick={() => onEdit(flow)} disabled={busy}>
+        <div className="grid grid-cols-2 gap-2 md:flex md:shrink-0 md:items-center">
+          <Button data-testid="flows-detail-edit" variant="outline" className="w-full rounded-xl md:w-auto" onClick={() => onEdit(flow)} disabled={busy}>
             Edit
           </Button>
-          <Button data-testid="flows-detail-run-now" variant="outline" className="rounded-xl" onClick={() => onRunNow(flow.id)} disabled={busy}>
+          <Button data-testid="flows-detail-run-now" variant="outline" className="w-full rounded-xl md:w-auto" onClick={() => onRunNow(flow.id)} disabled={busy}>
             Run once
           </Button>
-          <Button variant="outline" className="rounded-xl" onClick={() => onToggleEnabled(flow)} disabled={busy}>
-            {flow.enabled ? 'Stop schedule' : 'Start schedule'}
+          <Button variant="outline" className="w-full rounded-xl md:w-auto" onClick={() => onToggleEnabled(flow)} disabled={busy}>
+            {flow.enabled ? 'Stop' : 'Start'}
           </Button>
-          <Button variant="ghost" className="rounded-xl text-[var(--app-danger)]" onClick={() => onDelete(flow.id)} disabled={busy}>
+          <Button variant="ghost" className="w-full rounded-xl text-[var(--app-danger)] md:w-auto" onClick={() => onDelete(flow.id)} disabled={busy}>
             Delete
           </Button>
         </div>
@@ -1519,9 +1516,9 @@ function FlowDetail({
           ['Saved status', statusLabels[flow.status]],
           ['Saved runs', String(flow.totalRuns)],
         ].map(([label, value]) => (
-          <div key={label}>
+          <div key={label} className="min-w-0">
             <div className={labelClass}>{label}</div>
-            <div className="mt-2 text-sm text-[var(--app-text)]">{value}</div>
+            <div className="mt-2 break-words text-sm text-[var(--app-text)]">{value}</div>
           </div>
         ))}
       </section>
@@ -1535,12 +1532,12 @@ function FlowDetail({
           </div>
           <div className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
             {flow.tasks.map((task, index) => (
-              <div key={task.id} className="grid gap-4 border-b border-[var(--app-border)] px-4 py-4 last:border-b-0 md:grid-cols-[36px_120px_minmax(0,1fr)]">
+              <div key={task.id} className="grid min-w-0 gap-3 border-b border-[var(--app-border)] px-4 py-4 last:border-b-0 sm:grid-cols-[36px_minmax(0,1fr)] md:grid-cols-[36px_120px_minmax(0,1fr)] md:gap-4">
                 <div className="font-mono text-xs text-[var(--app-text-muted)]">{String(index + 1).padStart(2, '0')}</div>
-                <div className="text-xs uppercase tracking-[0.16em] text-[var(--app-text-muted)]">{task.action}</div>
-                <div>
-                  <div className="text-sm font-medium text-[var(--app-text)]">{task.title}</div>
-                  <div className="mt-1 text-sm leading-6 text-[var(--app-text-muted)]">{task.detail}</div>
+                <div className="min-w-0 text-xs uppercase tracking-[0.16em] text-[var(--app-text-muted)] sm:col-span-1 md:col-span-1">{task.action}</div>
+                <div className="min-w-0 sm:col-span-2 md:col-span-1">
+                  <div className="break-words text-sm font-medium text-[var(--app-text)]">{task.title}</div>
+                  <div className="mt-1 break-words text-sm leading-6 text-[var(--app-text-muted)]">{task.detail}</div>
                 </div>
               </div>
             ))}
@@ -1552,11 +1549,11 @@ function FlowDetail({
           <div data-testid="flows-recent-runs" className="mt-4 overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)]">
             {flow.runs.length ? flow.runs.map((run) => (
               <div key={run.id} className="border-b border-[var(--app-border)] px-4 py-3 last:border-b-0">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-mono text-xs text-[var(--app-text-muted)]">{run.startedAt}</span>
+                <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+                  <span className="break-words font-mono text-xs text-[var(--app-text-muted)]">{run.startedAt}</span>
                   <span className={cn('text-xs capitalize', runStatusClasses[run.status])}>{run.status}</span>
                 </div>
-                <p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)]">{run.summary}</p>
+                <p className="mt-2 break-words text-xs leading-5 text-[var(--app-text-muted)]">{run.summary}</p>
                 <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">{run.duration}</div>
               </div>
             )) : (
@@ -1888,20 +1885,20 @@ export function FlowsSettingsPage() {
   }
 
   return (
-    <div data-testid="flows-settings-page" className="flex min-h-full flex-col gap-5 pb-10 text-[var(--app-text)]">
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--app-border)] pb-5">
+    <div data-testid="flows-settings-page" className="flex min-h-full min-w-0 flex-col gap-5 pb-10 text-[var(--app-text)]">
+      <header className="grid gap-4 border-b border-[var(--app-border)] pb-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
-            <Workflow size={14} /> Workspace / Flows
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+            <Workflow size={14} className="shrink-0" /> <span className="min-w-0 break-words">Workspace / Flows</span>
           </div>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-[var(--app-text)]">Flows</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">Triage scheduled and background agent jobs from real controller data.</p>
+          <p className="mt-2 max-w-2xl break-words text-sm leading-6 text-[var(--app-text-muted)]">Triage scheduled and background agent jobs from real controller data.</p>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button variant="outline" className="rounded-xl" onClick={handleBackToChat}>
-            <ArrowLeft size={15} /> Back to chat
+        <div className="grid grid-cols-2 gap-2 md:flex md:items-center md:justify-end">
+          <Button variant="outline" className="w-full rounded-xl md:w-auto" onClick={handleBackToChat}>
+            <ArrowLeft size={15} /> Back
           </Button>
-          <Button data-testid="flows-add-open" variant="outline" className="rounded-xl" onClick={() => setAddOpen(true)}>
+          <Button data-testid="flows-add-open" variant="outline" className="w-full rounded-xl md:w-auto" onClick={() => setAddOpen(true)}>
             <Plus size={16} /> Add Flow
           </Button>
         </div>
@@ -1919,31 +1916,31 @@ export function FlowsSettingsPage() {
         </div>
       ) : null}
 
-      <section className={cn(surfaceClass, 'flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3')}>
+      <section className={cn(surfaceClass, 'grid grid-cols-2 gap-3 px-3 py-3 sm:grid-cols-3 lg:grid-cols-6 lg:px-4')}>
         {metaHeaderItems.map((item) => {
           const toneClass = item.tone === 'primary' ? 'text-[var(--app-primary)]' : statusTextClasses[item.tone]
           return (
-            <div key={item.label} className="flex min-w-[132px] items-center gap-3 border-r border-[var(--app-border)] pr-6 last:border-r-0 last:pr-0">
+            <div key={item.label} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 lg:flex lg:items-center lg:gap-3 lg:border-0 lg:bg-transparent lg:px-0 lg:py-0 lg:pr-4 lg:[&:not(:last-child)]:border-r">
               <FlowStatusDot status={item.tone === 'primary' ? 'active' : item.tone} className={cn('h-1.5 w-1.5', item.tone === 'primary' ? 'bg-[var(--app-primary)]' : '')} />
               <div className="min-w-0">
-                <div className="flex items-baseline gap-2">
-                  <span className={cn('font-mono text-sm font-semibold', toneClass)}>{item.value}</span>
-                  <span className="truncate text-xs font-medium text-[var(--app-text)]">{item.label}</span>
+                <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span className={cn('break-words font-mono text-sm font-semibold', toneClass)}>{item.value}</span>
+                  <span className="min-w-0 break-words text-xs font-medium text-[var(--app-text)]">{item.label}</span>
                 </div>
-                <div className="mt-0.5 max-w-[220px] truncate text-[11px] text-[var(--app-text-muted)]">{item.helper}</div>
+                <div className="mt-0.5 min-w-0 break-words text-[11px] text-[var(--app-text-muted)]">{item.helper}</div>
               </div>
             </div>
           )
         })}
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <div className={cn(surfaceClass, 'p-5')}>
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
+      <section className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className={cn(surfaceClass, 'min-w-0 p-4 sm:p-5')}>
+          <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+            <div className="min-w-0">
               <h2 className="text-base font-semibold text-[var(--app-text)]">Schedule</h2>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-3 md:flex md:flex-wrap md:items-center md:justify-end">
               <FilterSelect label="Workspace filter" value={workspaceFilter} onChange={setWorkspaceFilter} options={workspaceOptions} />
               <FilterSelect label="Agent filter" value={agentFilter} onChange={setAgentFilter} options={agentFilterOptions} />
               <FilterSelect label="Status filter" value={statusFilter} onChange={setStatusFilter} options={statusOptions} />
@@ -1951,7 +1948,7 @@ export function FlowsSettingsPage() {
           </div>
 
           <div className="mt-5 border-y border-[var(--app-border)]">
-            <div className="grid grid-cols-[88px_140px_minmax(0,1fr)_120px] gap-3 border-b border-[var(--app-border)] px-0 py-2 text-[11px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
+            <div className="hidden grid-cols-[88px_140px_minmax(0,1fr)_120px] gap-3 border-b border-[var(--app-border)] px-0 py-2 text-[11px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)] md:grid">
               <div>Time</div>
               <div>Next</div>
               <div>Flow</div>
@@ -1959,31 +1956,31 @@ export function FlowsSettingsPage() {
             </div>
             <div className="divide-y divide-[var(--app-border)]">
               {scheduleItems.length ? scheduleItems.map((event) => (
-                <button key={event.flow.id} type="button" onClick={() => setSelectedFlowID(event.flow.id)} className="grid w-full grid-cols-[88px_140px_minmax(0,1fr)_120px] items-center gap-3 py-4 text-left transition hover:bg-[var(--app-surface-subtle)]">
+                <button key={event.flow.id} type="button" onClick={() => setSelectedFlowID(event.flow.id)} className="grid w-full min-w-0 gap-2 py-4 text-left transition hover:bg-[var(--app-surface-subtle)] md:grid-cols-[88px_140px_minmax(0,1fr)_120px] md:items-center md:gap-3">
                   <span className="font-mono text-sm text-[var(--app-text)]">{event.time}</span>
-                  <span className="truncate text-xs text-[var(--app-text-muted)]">{event.day}</span>
+                  <span className="min-w-0 break-words text-xs text-[var(--app-text-muted)]">{event.day}</span>
                   <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium text-[var(--app-text)]">{event.flow.name}</span>
-                    <span className="mt-1 block truncate text-xs text-[var(--app-text-muted)]">{event.flow.workspace} / {event.flow.agent} / {event.meta}</span>
+                    <span className="block break-words text-sm font-medium text-[var(--app-text)] md:truncate">{event.flow.name}</span>
+                    <span className="mt-1 block break-words text-xs text-[var(--app-text-muted)] md:truncate">{event.flow.workspace} / {event.flow.agent} / {event.meta}</span>
                   </span>
-                  <span className="justify-self-end"><StatusOutlineToken status={event.flow.status} /></span>
+                  <span className="justify-self-start md:justify-self-end"><StatusOutlineToken status={event.flow.status} /></span>
                 </button>
               )) : <div className="px-4 py-5 text-sm text-[var(--app-text-muted)]">No scheduled flows yet.</div>}
             </div>
           </div>
         </div>
 
-        <aside className={cn(surfaceClass, 'flex flex-col p-5')}>
+        <aside className={cn(surfaceClass, 'flex min-w-0 flex-col p-4 sm:p-5')}>
           <h2 className="text-base font-semibold text-[var(--app-text)]">Needs attention</h2>
           <div className="mt-4 flex-1 divide-y divide-[var(--app-border)] overflow-hidden border-y border-[var(--app-border)]">
             {attentionItems.length ? attentionItems.map((item) => (
-              <button key={item.flow.id} type="button" onClick={() => setSelectedFlowID(item.flow.id)} className="flex w-full items-start gap-3 px-3 py-3 text-left transition hover:bg-[var(--app-surface-subtle)]">
+              <button key={item.flow.id} type="button" onClick={() => setSelectedFlowID(item.flow.id)} className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-3 px-3 py-3 text-left transition hover:bg-[var(--app-surface-subtle)] sm:grid-cols-[auto_minmax(0,1fr)_auto]">
                 <FlowStatusDot status={item.dotStatus} className="mt-1" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-[var(--app-text)]">{item.flow.name}</span>
-                  <span className="mt-1 block truncate text-xs text-[var(--app-text-muted)]">{item.meta}</span>
+                <span className="min-w-0">
+                  <span className="block break-words text-sm font-medium text-[var(--app-text)]">{item.flow.name}</span>
+                  <span className="mt-1 block break-words text-xs text-[var(--app-text-muted)]">{item.meta}</span>
                 </span>
-                <StatusOutlineToken status={item.flow.status} />
+                <span className="col-span-2 justify-self-start sm:col-span-1 sm:justify-self-auto"><StatusOutlineToken status={item.flow.status} /></span>
               </button>
             )) : <div className="px-4 py-5 text-sm text-[var(--app-text-muted)]">No flows need attention.</div>}
           </div>
@@ -1991,16 +1988,16 @@ export function FlowsSettingsPage() {
         </aside>
       </section>
 
-      <section className={cn(surfaceClass, 'overflow-hidden')}>
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--app-border)] p-5">
-          <div>
+      <section className={cn(surfaceClass, 'min-w-0 overflow-hidden')}>
+        <div className="grid gap-4 border-b border-[var(--app-border)] p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+          <div className="min-w-0">
             <h2 className="text-base font-semibold text-[var(--app-text)]">Flow controls</h2>
-            <p className="mt-1 text-sm text-[var(--app-text-muted)]">Run and delete controller-backed flows.</p>
+            <p className="mt-1 break-words text-sm text-[var(--app-text-muted)]">Run and delete controller-backed flows.</p>
           </div>
-          <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
-            <label className="relative w-[148px] shrink-0">
+          <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center lg:justify-end">
+            <label className="relative min-w-0 sm:col-span-2 lg:w-[148px] lg:shrink-0">
               <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
-              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search flows" className="!h-9 !min-h-9 rounded-xl border-[var(--app-border)] bg-[var(--app-surface-subtle)] !py-0 pl-8 pr-3 text-xs leading-none focus-visible:ring-0 focus-visible:ring-offset-0" />
+              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search flows" className="!h-9 !min-h-9 w-full min-w-0 rounded-xl border-[var(--app-border)] bg-[var(--app-surface-subtle)] !py-0 pl-8 pr-3 text-xs leading-none focus-visible:ring-0 focus-visible:ring-offset-0" />
             </label>
             <FilterSelect label="Workspace filter" value={workspaceFilter} onChange={setWorkspaceFilter} options={workspaceOptions} />
             <FilterSelect label="Agent filter" value={agentFilter} onChange={setAgentFilter} options={agentFilterOptions} />
@@ -2008,7 +2005,7 @@ export function FlowsSettingsPage() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table data-testid="flows-table" className="w-full min-w-[840px] border-collapse text-left">
             <thead>
               <tr className="border-b border-[var(--app-border)] text-[11px] uppercase tracking-[0.16em] text-[var(--app-text-muted)]">
@@ -2025,9 +2022,9 @@ export function FlowsSettingsPage() {
               {filteredFlows.length ? filteredFlows.map((flow) => (
                 <tr key={flow.id} data-testid="flows-row" data-flow-id={flow.id} className="border-b border-[var(--app-border)] last:border-b-0 hover:bg-[var(--app-surface-subtle)]">
                   <td className="px-5 py-4 align-top">
-                    <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="max-w-[520px] text-left">
+                    <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="max-w-[520px] min-w-0 text-left">
                       <div className="truncate text-sm font-medium text-[var(--app-text)]">{flow.name}</div>
-                      <div className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--app-text-muted)]">{flow.task}</div>
+                      <div className="mt-1 line-clamp-2 break-words text-xs leading-5 text-[var(--app-text-muted)]">{flow.task}</div>
                       <div className="mt-3 flex max-w-[680px] flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--app-text-subtle)]">
                         <span className="inline-flex min-w-0 items-center gap-1.5"><MapPin size={12} className="shrink-0" /> <span className="truncate">{flow.workspace} / {flow.target}</span></span>
                         <span className="inline-flex min-w-0 items-center gap-1.5"><Bot size={12} className="shrink-0" /> <span className="truncate">{flow.agent}</span></span>
@@ -2067,6 +2064,50 @@ export function FlowsSettingsPage() {
               )}
             </tbody>
           </table>
+        </div>
+        <div data-testid="flows-cards" className="divide-y divide-[var(--app-border)] md:hidden">
+          {filteredFlows.length ? filteredFlows.map((flow) => (
+            <article key={flow.id} data-testid="flows-card" data-flow-id={flow.id} className="min-w-0 px-4 py-4">
+              <button type="button" onClick={() => setSelectedFlowID(flow.id)} className="block w-full min-w-0 text-left">
+                <div className="flex min-w-0 items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="break-words text-sm font-medium text-[var(--app-text)]">{flow.name}</h3>
+                    <p className="mt-1 line-clamp-3 break-words text-xs leading-5 text-[var(--app-text-muted)]">{flow.task}</p>
+                  </div>
+                  <StatusOutlineToken status={flow.status} />
+                </div>
+                <div className="mt-3 grid min-w-0 grid-cols-2 gap-2 text-xs">
+                  <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2">
+                    <div className={labelClass}>Last</div>
+                    <FlowDateTime value={flow.lastRun} />
+                  </div>
+                  <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2">
+                    <div className={labelClass}>Next</div>
+                    <FlowDateTime value={flow.nextRun} meta={flow.nextRunMeta} />
+                  </div>
+                  <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2">
+                    <div className={labelClass}>Runs</div>
+                    <div className="mt-1 font-mono text-sm text-[var(--app-text)]">{flow.totalRuns}</div>
+                  </div>
+                  <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2">
+                    <div className={labelClass}>Manage</div>
+                    <div className="mt-1 text-sm text-[var(--app-text)]">Open details</div>
+                  </div>
+                </div>
+                <div className="mt-3 grid min-w-0 gap-1.5 text-[11px] text-[var(--app-text-subtle)]">
+                  <span className="inline-flex min-w-0 items-start gap-1.5"><MapPin size={12} className="mt-0.5 shrink-0" /> <span className="min-w-0 break-words">{flow.workspace} / {flow.target}</span></span>
+                  <span className="inline-flex min-w-0 items-start gap-1.5"><Bot size={12} className="mt-0.5 shrink-0" /> <span className="min-w-0 break-words">{flow.agent}</span></span>
+                  <span className="inline-flex min-w-0 items-start gap-1.5"><Clock size={12} className="mt-0.5 shrink-0" /> <span className="min-w-0 break-words">{flow.schedule}</span></span>
+                </div>
+              </button>
+              <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2">
+                <span className={labelClass}>Enabled</span>
+                <EnabledToggle enabled={flow.enabled} disabled={busyID === flow.id} onToggle={() => { void handleToggleEnabled(flow) }} />
+              </div>
+            </article>
+          )) : (
+            <div className="px-4 py-8 text-center text-sm text-[var(--app-text-muted)]">No flows found.</div>
+          )}
         </div>
       </section>
 
