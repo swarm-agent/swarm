@@ -597,17 +597,17 @@ export function AuthSettingsPage() {
                   const showProviderInMeta = hasCustomLabel(credential)
 
                   return (
-                    <div key={`${credential.provider}:${credential.id}`} className="flex flex-col sm:flex-row sm:items-center justify-between px-4 py-3 border-b border-[var(--app-border)] last:border-0 bg-[var(--app-bg)] hover:bg-[var(--app-surface-subtle)] transition-colors group">
-                      <div className="flex items-center gap-4 mb-3 sm:mb-0">
-                        <div className="w-8 h-8 rounded-lg bg-[var(--app-surface-elevated)] border border-[var(--app-border)] flex flex-shrink-0 items-center justify-center">
+                    <div key={`${credential.provider}:${credential.id}`} className="grid gap-3 px-4 py-4 border-b border-[var(--app-border)] last:border-0 bg-[var(--app-bg)] hover:bg-[var(--app-surface-subtle)] transition-colors group sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:py-3">
+                      <div className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] items-center gap-3 sm:gap-4">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-elevated)]">
                           <Key size={16} className="text-[var(--app-text)] opacity-70" />
                         </div>
-                        <div>
-                          <div className="text-sm font-medium text-[var(--app-text)] leading-tight">{title}</div>
-                          <div className="flex items-center gap-2 text-xs text-[var(--app-text-muted)] mt-0.5">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium leading-tight text-[var(--app-text)]">{title}</div>
+                          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--app-text-muted)]">
                             {showProviderInMeta ? (
                               <>
-                                <span>{credential.provider}</span>
+                                <span className="max-w-full truncate">{credential.provider}</span>
                                 <span>•</span>
                               </>
                             ) : null}
@@ -618,8 +618,8 @@ export function AuthSettingsPage() {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-4 sm:justify-end ml-12 sm:ml-0">
-                        <div className="flex items-center gap-1.5 w-20">
+                      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 sm:flex sm:justify-end sm:gap-4 sm:border-0 sm:bg-transparent sm:p-0">
+                        <div className="flex min-w-0 items-center gap-1.5">
                           <div className={cn('h-1.5 w-1.5 rounded-full', credential.active ? 'bg-[var(--app-success)] shadow-[0_0_8px_var(--app-success)] opacity-80' : 'bg-[var(--app-border-strong)]')} />
                           <span className={cn("text-xs font-semibold", credential.active ? 'text-[var(--app-text)]' : 'text-[var(--app-text-muted)]')}>{statusLabel}</span>
                         </div>
