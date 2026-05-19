@@ -1298,7 +1298,11 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const committedDeltaSummary = sessionCommittedDeltaSummary(session)
   const commitMetaLabel = [commitSummary, committedFileSummary, committedDeltaSummary].filter(Boolean).join(' · ')
   const tooltip = sessionStatusTooltip(session)
-  const indentStyle = depth > 0 ? { paddingLeft: `${Math.min(depth, 5) * 16}px` } : undefined
+  const isNestedSession = depth > 0
+  const nestedDepth = Math.min(depth, 5)
+  const indentOffset = nestedDepth * 10
+  const indentStyle = isNestedSession ? { marginLeft: `${indentOffset}px`, width: `calc(100% - ${indentOffset}px)` } : undefined
+  const nestedToneClass = childKind === 'subagent' ? 'text-sky-300/80' : 'text-[var(--app-text-subtle)]'
   const hasAgentChildren = agentSummary.total > 0
   const agentDescriptor = agentSummaryDescriptor(agentSummary)
 
@@ -1322,19 +1326,25 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
       onMouseEnter={() => onPrefetch(session.id)}
       onFocus={() => onPrefetch(session.id)}
       className={cn(
-        'grid w-full min-w-0 gap-1 rounded-lg px-3 py-2 text-left transition-colors outline-none',
+        'grid w-full min-w-0 gap-1 rounded-lg text-left transition-colors outline-none',
+        isNestedSession ? 'px-2.5 py-1.5' : 'px-3 py-2',
         active
           ? 'bg-[var(--app-surface-subtle)]'
           : 'bg-transparent hover:bg-[var(--app-surface-subtle)]',
-        depth > 0 && childKind === 'subagent' ? 'border-l border-sky-400/25' : null,
+        isNestedSession ? 'rounded-md' : null,
         hasAgentChildren && agentsExpanded ? 'ring-1 ring-sky-400/20' : null,
       )}
       style={indentStyle}
     >
       <div className="flex items-center justify-between gap-3 min-w-0 w-full">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          {depth > 0 ? <span className="text-[var(--app-text-subtle)]">↳</span> : null}
-          <span className="truncate flex-1 min-w-0 text-sm font-medium text-[var(--app-text)]">{session.title || 'New conversation'}</span>
+          {isNestedSession ? (
+            <span aria-hidden="true" className={cn('relative h-5 w-3 shrink-0', nestedToneClass)}>
+              <span className="absolute left-1 top-0 h-full w-px rounded-full bg-current opacity-25" />
+              <span className="absolute left-1 top-1/2 h-px w-2 rounded-full bg-current opacity-45" />
+            </span>
+          ) : null}
+          <span className={cn('truncate flex-1 min-w-0 font-medium text-[var(--app-text)]', isNestedSession ? 'text-[13px]' : 'text-sm')}>{session.title || 'New conversation'}</span>
         </div>
         <span
           className={cn(
@@ -1383,12 +1393,13 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
               <button
                 type="button"
                 className={cn(
-                  'inline-flex h-5 shrink-0 items-center gap-1 rounded-md border px-1.5 transition-colors',
+                  'inline-flex h-5 shrink-0 items-center gap-1 rounded-full border px-1.5 transition-colors',
                   agentsExpanded
-                    ? 'border-[var(--app-border-strong)] text-[var(--app-text)]'
-                    : 'border-transparent text-[var(--app-text-subtle)] hover:text-[var(--app-text)]',
+                    ? 'border-sky-400/25 bg-sky-400/10 text-[var(--app-text)]'
+                    : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-subtle)] hover:border-[var(--app-border-strong)] hover:text-[var(--app-text)]',
                 )}
                 onClick={(event) => {
+                  event.preventDefault()
                   event.stopPropagation()
                   onToggleAgents(session.id)
                 }}
@@ -1396,6 +1407,7 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
                 aria-pressed={agentsExpanded}
                 title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
               >
+                {agentsExpanded ? <ChevronDown size={10} className="shrink-0 opacity-75" /> : <ChevronRight size={10} className="shrink-0 opacity-75" />}
                 <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse' : null)} />
                 <span className={cn('font-mono tabular-nums text-[10px] leading-none', agentSummary.running > 0 ? 'text-emerald-300' : null)}>{agentDescriptor.primary}</span>
                 {agentDescriptor.secondary ? (
@@ -2318,6 +2330,7 @@ export function DesktopAppPage() {
 
   const handleOpenSettingsTab = useCallback((tab: SettingsTabID) => {
     setQuickSettingsTab(null)
+    setMobileSidebarOpen(false)
     if (routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug/settings', params: { workspaceSlug: routeWorkspaceSlug }, search: { tab } })
       return
@@ -2328,6 +2341,7 @@ export function DesktopAppPage() {
   const handleOpenFlowsSettings = useCallback(() => {
     setFlowMenuOpen(false)
     setWorkspaceMenuOpen(false)
+    setMobileSidebarOpen(false)
     if (routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug/flow', params: { workspaceSlug: routeWorkspaceSlug } })
       return
@@ -2345,6 +2359,7 @@ export function DesktopAppPage() {
   const handleOpenFlow = useCallback((flow: SidebarFlowRow) => {
     setFlowMenuOpen(false)
     setWorkspaceMenuOpen(false)
+    setMobileSidebarOpen(false)
     if (routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug/flow/$flowId', params: { workspaceSlug: routeWorkspaceSlug, flowId: flow.id } })
       return
@@ -2391,10 +2406,12 @@ export function DesktopAppPage() {
   }, [handleOpenSettingsTab])
 
   const handleOpenTools = useCallback(() => {
+    setMobileSidebarOpen(false)
     void navigate({ to: '/tools' })
   }, [navigate])
 
   const handleOpenIntegrations = useCallback(() => {
+    setMobileSidebarOpen(false)
     void navigate({ to: '/integrations' })
   }, [navigate])
 
