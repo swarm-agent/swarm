@@ -57,11 +57,11 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
-import { orderSidebarSessions } from './sidebar-session-order'
 
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const MIN_WORKSPACE_SECTION_HEIGHT_PX = 120
+const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
@@ -478,15 +478,6 @@ function loadPendingDesktopToast(): DesktopToastState | null {
 
 function savePendingDesktopToast(toast: DesktopToastState): void {
   saveStoredValue(DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY, JSON.stringify({ ...toast, createdAt: Date.now() } satisfies StoredDesktopToastState))
-}
-
-function toastMessageFromCommitSummary(message: string): string {
-  const normalized = message.trim()
-  if (!normalized) {
-    return 'Manual commit completed.'
-  }
-  const firstLine = normalized.split(/\r?\n/, 1)[0]?.trim() ?? ''
-  return firstLine || 'Manual commit completed.'
 }
 
 function updateProgressStepIndex(job: DesktopUpdateJob | null): number {
@@ -994,6 +985,14 @@ function sessionIsActive(session: DesktopSessionRecord): boolean {
   return sessionHasPendingPermission(session) || session.live.awaitingAck || ['starting', 'running', 'blocked'].includes(session.live.status)
 }
 
+function sessionActivityAnchor(session: DesktopSessionRecord): number {
+  return session.live.startedAt
+    ?? (session.lifecycle?.startedAt && session.lifecycle.startedAt > 0 ? session.lifecycle.startedAt : null)
+    ?? session.live.lastEventAt
+    ?? session.updatedAt
+    ?? 0
+}
+
 function sessionDurableActivityAt(session: DesktopSessionRecord): number {
   if (session.updatedAt > 0) {
     return session.updatedAt
@@ -1010,6 +1009,51 @@ function sessionSidebarDisplayTimestamp(session: DesktopSessionRecord): number |
   }
   const durableAt = sessionDurableActivityAt(session)
   return durableAt > 0 ? durableAt : null
+}
+
+function sessionSidebarSortAnchor(session: DesktopSessionRecord): number {
+  if (sessionIsActive(session)) {
+    return sessionActivityAnchor(session)
+  }
+  return sessionDurableActivityAt(session)
+}
+
+function sessionShouldPinInSidebar(session: DesktopSessionRecord, now: number): boolean {
+  if (sessionIsActive(session)) {
+    return true
+  }
+
+  const lastActivityAt = sessionDurableActivityAt(session)
+  return lastActivityAt > 0
+    && now - lastActivityAt <= SIDEBAR_ACTIVITY_GRACE_MS
+    && sessionSidebarSortAnchor(session) > 0
+}
+
+function compareSidebarSessions(left: DesktopSessionRecord, right: DesktopSessionRecord, now: number): number {
+  const leftPinned = sessionShouldPinInSidebar(left, now)
+  const rightPinned = sessionShouldPinInSidebar(right, now)
+  if (leftPinned !== rightPinned) {
+    return leftPinned ? -1 : 1
+  }
+
+  if (leftPinned && rightPinned) {
+    const anchorDelta = sessionSidebarSortAnchor(left) - sessionSidebarSortAnchor(right)
+    if (anchorDelta !== 0) {
+      return anchorDelta
+    }
+  }
+
+  const updatedDelta = right.updatedAt - left.updatedAt
+  if (updatedDelta !== 0) {
+    return updatedDelta
+  }
+
+  const createdDelta = right.createdAt - left.createdAt
+  if (createdDelta !== 0) {
+    return createdDelta
+  }
+
+  return left.id.localeCompare(right.id)
 }
 
 function sessionStatusDetail(session: DesktopSessionRecord, now: number): string {
@@ -1077,14 +1121,11 @@ interface SidebarSessionNode {
   label: string | null
 }
 
-function buildSidebarSessionTree(sessions: DesktopSessionRecord[], _now: number): SidebarSessionNode[] {
-  void _now
-  const sortedSessions = sessions
+function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number): SidebarSessionNode[] {
+  const sortedSessions = sessions.length > 1
+    ? [...sessions].sort((left, right) => compareSidebarSessions(left, right, now))
+    : sessions
   const byID = new Map<string, SidebarSessionNode>()
-  const orderByID = new Map<string, number>()
-  sortedSessions.forEach((session, index) => {
-    orderByID.set(session.id, index)
-  })
   for (const session of sortedSessions) {
     const descriptor = sessionChildDescriptor(session)
     byID.set(session.id, {
@@ -1132,7 +1173,7 @@ function buildSidebarSessionTree(sessions: DesktopSessionRecord[], _now: number)
   dedupeChildren(uniqueRoots)
 
   const sortNodes = (nodes: SidebarSessionNode[]) => {
-    nodes.sort((left, right) => (orderByID.get(left.session.id) ?? 0) - (orderByID.get(right.session.id) ?? 0))
+    nodes.sort((left, right) => compareSidebarSessions(left.session, right.session, now))
     for (const node of nodes) {
       if (node.children.length > 0) {
         sortNodes(node.children)
@@ -1148,16 +1189,12 @@ interface SessionAgentSummary {
   running: number
 }
 
-function sidebarChildCountsAsAgent(node: SidebarSessionNode): boolean {
-  return node.kind === 'subagent' || node.kind === 'background'
-}
-
-function summarizeAgentDescendants(node: SidebarSessionNode): SessionAgentSummary {
+function summarizeSubagentDescendants(node: SidebarSessionNode): SessionAgentSummary {
   let total = 0
   let running = 0
   const visit = (nodes: SidebarSessionNode[]) => {
     for (const child of nodes) {
-      if (sidebarChildCountsAsAgent(child)) {
+      if (child.kind === 'subagent') {
         total += 1
         if (sessionIsActive(child.session)) {
           running += 1
@@ -1172,9 +1209,9 @@ function summarizeAgentDescendants(node: SidebarSessionNode): SessionAgentSummar
   return { total, running }
 }
 
-function nodeHasAgentDescendants(node: SidebarSessionNode): boolean {
+function nodeHasSubagentDescendants(node: SidebarSessionNode): boolean {
   for (const child of node.children) {
-    if (sidebarChildCountsAsAgent(child) || nodeHasAgentDescendants(child)) {
+    if (child.kind === 'subagent' || nodeHasSubagentDescendants(child)) {
       return true
     }
   }
@@ -1202,7 +1239,7 @@ function flattenVisibleSidebarSessionNodes(
   const output: SidebarSessionNode[] = []
   const visit = (node: SidebarSessionNode) => {
     output.push(node)
-    const shouldExpand = !nodeHasAgentDescendants(node)
+    const shouldExpand = !nodeHasSubagentDescendants(node)
       || Boolean(expandedSessionIDs[node.session.id])
       || nodeContainsDescendantSession(node, forcedVisibleSessionID)
     if (!shouldExpand) {
@@ -1262,9 +1299,6 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
   const commitMetaLabel = [commitSummary, committedFileSummary, committedDeltaSummary].filter(Boolean).join(' · ')
   const tooltip = sessionStatusTooltip(session)
   const isNestedSession = depth > 0
-  const nestedDepth = Math.min(depth, 5)
-  const indentOffset = nestedDepth * 10
-  const indentStyle = isNestedSession ? { marginLeft: `${indentOffset}px`, width: `calc(100% - ${indentOffset}px)` } : undefined
   const nestedToneClass = childKind === 'subagent' ? 'text-sky-300/80' : 'text-[var(--app-text-subtle)]'
   const hasAgentChildren = agentSummary.total > 0
   const agentDescriptor = agentSummaryDescriptor(agentSummary)
@@ -1293,18 +1327,18 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
         isNestedSession ? 'px-2.5 py-1.5' : 'px-3 py-2',
         active
           ? 'bg-[var(--app-surface-subtle)]'
-          : 'bg-transparent hover:bg-[var(--app-surface-subtle)]',
-        isNestedSession ? 'rounded-md' : null,
+          : isNestedSession
+            ? 'bg-[var(--app-surface)]/45 hover:bg-[var(--app-surface-subtle)]'
+            : 'bg-transparent hover:bg-[var(--app-surface-subtle)]',
+        isNestedSession ? 'rounded-md border border-[var(--app-border)]/60' : null,
         hasAgentChildren && agentsExpanded ? 'ring-1 ring-sky-400/20' : null,
       )}
-      style={indentStyle}
     >
       <div className="flex items-center justify-between gap-3 min-w-0 w-full">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {isNestedSession ? (
-            <span aria-hidden="true" className={cn('relative h-5 w-3 shrink-0', nestedToneClass)}>
-              <span className="absolute left-1 top-0 h-full w-px rounded-full bg-current opacity-25" />
-              <span className="absolute left-1 top-1/2 h-px w-2 rounded-full bg-current opacity-45" />
+            <span aria-hidden="true" className={cn('relative grid h-5 w-5 shrink-0 place-items-center rounded-full border bg-[var(--app-bg-alt)]', nestedToneClass, childKind === 'subagent' ? 'border-sky-400/25' : 'border-[var(--app-border)]')}>
+              {childKind === 'subagent' ? <Bot size={10} /> : <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />}
             </span>
           ) : null}
           <span className={cn('truncate flex-1 min-w-0 font-medium text-[var(--app-text)]', isNestedSession ? 'text-[13px]' : 'text-sm')}>{session.title || 'New conversation'}</span>
@@ -1366,9 +1400,9 @@ function SessionRow({ active, now, session: initialSession, fallbackSwarmName, r
                   event.stopPropagation()
                   onToggleAgents(session.id)
                 }}
-                aria-label={`${agentSummary.running} running of ${agentSummary.total} child agents`}
+                aria-label={`${agentSummary.running} running of ${agentSummary.total} subagents`}
                 aria-pressed={agentsExpanded}
-                title={`${agentSummary.total} child agent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide child sessions' : ' · click to show child sessions'}`}
+                title={`${agentSummary.total} subagent${agentSummary.total === 1 ? '' : 's'} · ${agentSummary.running} running${agentsExpanded ? ' · click to hide subagent sessions' : ' · click to show subagent sessions'}`}
               >
                 {agentsExpanded ? <ChevronDown size={10} className="shrink-0 opacity-75" /> : <ChevronRight size={10} className="shrink-0 opacity-75" />}
                 <Bot size={11} className={cn('shrink-0', agentSummary.running > 0 ? 'animate-pulse' : null)} />
@@ -1455,7 +1489,6 @@ export function DesktopAppPage() {
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
   const [routeSessionPending, setRouteSessionPending] = useState(false)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
-  const sidebarSessionOrderRef = useRef<Record<string, string[]>>({})
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
   const resizeStateRef = useRef<SidebarResizeState | null>(null)
@@ -1474,13 +1507,6 @@ export function DesktopAppPage() {
     const timer = window.setTimeout(() => setDesktopToast(null), 5_000)
     return () => window.clearTimeout(timer)
   }, [desktopToast])
-
-  const showDesktopToast = useCallback((toast: DesktopToastState) => {
-    setDesktopToast({
-      ...toast,
-      message: toast.tone === 'success' ? toastMessageFromCommitSummary(toast.message) : toast.message.trim(),
-    })
-  }, [])
 
   const temporaryRouteWorkspace = useMemo<WorkspaceEntry | null>(() => {
     const candidatePath = activeWorkspacePath?.trim() ?? ''
@@ -3111,13 +3137,7 @@ export function DesktopAppPage() {
                   {flowMenuError ? <div className="border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2 py-1.5 text-[11px] text-[var(--app-warning)]">{flowMenuError}</div> : null}
                 </div>
               ) : visibleSidebarWorkspaceEntries.map((workspace, index) => {
-                const incomingWorkspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
-                const orderedWorkspaceSessions = orderSidebarSessions(
-                  incomingWorkspaceSessions,
-                  sidebarSessionOrderRef.current[workspace.path] ?? [],
-                )
-                sidebarSessionOrderRef.current[workspace.path] = orderedWorkspaceSessions.order
-                const workspaceSessions = orderedWorkspaceSessions.sessions
+                const workspaceSessions = sessionsByWorkspace.get(workspace.path) ?? []
                 const sessionNodes = buildSidebarSessionTree(workspaceSessions, sidebarNow)
                 const flattenedSessionNodes = flattenVisibleSidebarSessionNodes(sessionNodes, expandedAgentSessions, selectedSession?.id)
                 const layout = workspaceLayout[workspace.path]
@@ -3207,7 +3227,7 @@ export function DesktopAppPage() {
                               depth={node.depth}
                               childLabel={node.label}
                               childKind={node.kind}
-                              agentSummary={summarizeAgentDescendants(node)}
+                              agentSummary={summarizeSubagentDescendants(node)}
                               agentsExpanded={Boolean(expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, selectedSession?.id)}
                               onSelect={handleSelectSession}
                               onPrefetch={handlePrefetchSession}
@@ -3344,7 +3364,6 @@ export function DesktopAppPage() {
             onOpenWorkspaceLauncher={handleOpenWorkspaceLauncher}
             onOpenSidebarMenu={handleOpenMobileSidebar}
             onStartNewSession={handleStartNewSessionInWorkspace}
-            onToast={showDesktopToast}
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
@@ -3460,7 +3479,7 @@ export function DesktopAppPage() {
       ) : null}
 
       {desktopToast ? (
-        <div className="pointer-events-none absolute left-1/2 top-4 z-[70] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 sm:left-auto sm:right-6 sm:top-6 sm:w-auto sm:translate-x-0" role="status" aria-live="polite">
+        <div className="pointer-events-none absolute right-6 top-6 z-[70] max-w-md" role="status" aria-live="polite">
           <Card className={cn(
             'border p-4 shadow-2xl',
             desktopToast.tone === 'success'
