@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
@@ -285,8 +284,8 @@ func (s *Server) allowSensitiveOnboardingMetadata(r *http.Request) bool {
 	if isLocalTransportRequest(r) {
 		return true
 	}
-	if shouldUseDesktopLocalSessionAuth(r) && s != nil && s.desktopLocalSessions != nil {
-		if token := desktopLocalSessionTokenFromRequest(r); s.desktopLocalSessions.Validate(token, time.Now()) {
+	if shouldUseDesktopLocalSessionAuth(r) && s != nil {
+		if _, ok := s.actorFromDesktopLocalSession(r); ok {
 			return true
 		}
 	}

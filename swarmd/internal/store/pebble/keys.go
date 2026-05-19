@@ -23,6 +23,7 @@ const (
 	KeyIdentityTeamMembershipPrefix             = "identity/membership/"
 	KeyIdentityCurrentSelectionDefault          = "identity/current_selection/default"
 	KeyIdentityCurrentSelectionPrefix           = "identity/current_selection/"
+	KeyIdentityLocalProductJWTSigningKeyDefault = "identity/session/local_product_jwt_signing_key"
 	KeyVoiceConfigDefault                       = "voice/config/default"
 	KeyVoiceProfilePrefix                       = "voice/profile/"
 	KeyVoiceProfileActiveSTT                    = "voice/profile_active/stt"
@@ -172,6 +173,10 @@ func KeyIdentityCurrentSelection() string {
 
 func IdentityCurrentSelectionPrefix() string {
 	return KeyIdentityCurrentSelectionPrefix
+}
+
+func KeyIdentityLocalProductJWTSigningKey() string {
+	return KeyIdentityLocalProductJWTSigningKeyDefault
 }
 
 func KeySession(sessionID string) string {

@@ -24,6 +24,7 @@ import (
 	containerprofiles "swarm/packages/swarmd/internal/containerprofiles"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/discovery"
+	identityruntime "swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
@@ -381,6 +382,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 
 	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	apiServer.SetIdentitySessionService(identityruntime.NewSessionService(pebblestore.NewIdentityStore(store), pebblestore.NewIdentitySessionStore(secretStore)))
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
 	apiServer.SetDataDir(cfg.DataDir)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)

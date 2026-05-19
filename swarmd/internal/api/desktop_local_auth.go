@@ -2,33 +2,32 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
+
+	"swarm/packages/swarmd/internal/identity"
 )
 
 const (
 	desktopLocalSessionCookieName = "swarm_desktop_session"
-	desktopLocalSessionTTL        = 12 * time.Hour
+	desktopLocalSessionTTL        = identity.LocalProductSessionTTL
 )
 
 type desktopLocalAuthContextKey string
 
+type productActorContextKey string
+
 const (
 	desktopLocalAuthIssuedTokenKey desktopLocalAuthContextKey = "desktop-local-auth-issued-token"
 	localTransportAuthEnabledKey   desktopLocalAuthContextKey = "local-transport-auth-enabled"
+	productActorRequestContextKey  productActorContextKey     = "product-actor"
 )
 
 type desktopLocalSessionManager struct {
-	mu        sync.Mutex
-	token     string
-	expiresAt time.Time
+	server *Server
 }
 
 func newDesktopLocalSessionManager() *desktopLocalSessionManager {
@@ -36,42 +35,22 @@ func newDesktopLocalSessionManager() *desktopLocalSessionManager {
 }
 
 func (m *desktopLocalSessionManager) Ensure(now time.Time) (string, time.Time, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if now.IsZero() {
-		now = time.Now()
+	if m == nil || m.server == nil || m.server.identitySessions == nil {
+		return "", time.Time{}, errors.New("legacy singleton desktop local session token has been removed; use product JWT sessions")
 	}
-	if strings.TrimSpace(m.token) == "" || !now.Before(m.expiresAt) {
-		token, err := generateDesktopLocalSessionToken()
-		if err != nil {
-			return "", time.Time{}, err
-		}
-		m.token = token
+	issued, err := m.server.identitySessions.IssueForCurrentSelection()
+	if err != nil {
+		return "", time.Time{}, err
 	}
-	m.expiresAt = now.Add(desktopLocalSessionTTL)
-	return m.token, m.expiresAt, nil
+	return issued.Token, issued.ExpiresAt, nil
 }
 
 func (m *desktopLocalSessionManager) Validate(token string, now time.Time) bool {
-	token = strings.TrimSpace(token)
-	if token == "" {
+	if m == nil || m.server == nil || m.server.identitySessions == nil {
 		return false
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if now.IsZero() {
-		now = time.Now()
-	}
-	if strings.TrimSpace(m.token) == "" || !now.Before(m.expiresAt) {
-		return false
-	}
-	if len(token) != len(m.token) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(token), []byte(m.token)) == 1
+	_, err := m.server.identitySessions.Validate(token)
+	return err == nil
 }
 
 func (s *Server) withDesktopLocalSession(next http.Handler) http.Handler {
@@ -143,16 +122,16 @@ func shouldBootstrapDesktopLocalSession(r *http.Request) bool {
 }
 
 func (s *Server) issueDesktopLocalSession(w http.ResponseWriter, r *http.Request) (*http.Request, error) {
-	if s == nil || s.desktopLocalSessions == nil {
-		return r, nil
+	if s == nil || s.identitySessions == nil {
+		return r, identity.ErrSessionServiceNotConfigured
 	}
-	token, expiresAt, err := s.desktopLocalSessions.Ensure(time.Now())
+	issued, err := s.identitySessions.IssueForCurrentSelection()
 	if err != nil {
 		return r, err
 	}
-	http.SetCookie(w, buildDesktopLocalSessionCookie(token, expiresAt, requestScheme(r) == "https"))
+	http.SetCookie(w, buildDesktopLocalSessionCookie(issued.Token, issued.ExpiresAt, requestScheme(r) == "https"))
 	if r != nil {
-		r = r.WithContext(context.WithValue(r.Context(), desktopLocalAuthIssuedTokenKey, token))
+		r = requestWithActorContext(r.WithContext(context.WithValue(r.Context(), desktopLocalAuthIssuedTokenKey, issued.Token)), issued.Actor)
 	}
 	return r, nil
 }
@@ -200,12 +179,48 @@ func (s *Server) handleDesktopLocalSessionBootstrap(w http.ResponseWriter, r *ht
 	var err error
 	r, err = s.issueDesktopLocalSession(w, r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		status := http.StatusInternalServerError
+		if errors.Is(err, identity.ErrProductIdentityRequired) || errors.Is(err, identity.ErrSessionServiceNotConfigured) {
+			status = http.StatusUnauthorized
+		}
+		writeError(w, status, err)
 		return
 	}
+	actor, _ := productActorFromRequest(r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true,
+		"ok":         true,
+		"user_id":    actor.UserID,
+		"expires_at": actor.TokenExpires,
 	})
+}
+
+func (s *Server) actorFromDesktopLocalSession(r *http.Request) (identity.ActorContext, bool) {
+	if s == nil || s.identitySessions == nil {
+		return identity.ActorContext{}, false
+	}
+	actor, err := s.identitySessions.Validate(desktopLocalSessionTokenFromRequest(r))
+	if err != nil {
+		return identity.ActorContext{}, false
+	}
+	return actor, true
+}
+
+func requestWithActorContext(r *http.Request, actor identity.ActorContext) *http.Request {
+	if r == nil {
+		return nil
+	}
+	return r.WithContext(context.WithValue(r.Context(), productActorRequestContextKey, actor))
+}
+
+func productActorFromRequest(r *http.Request) (identity.ActorContext, bool) {
+	if r == nil {
+		return identity.ActorContext{}, false
+	}
+	actor, ok := r.Context().Value(productActorRequestContextKey).(identity.ActorContext)
+	if !ok || strings.TrimSpace(actor.UserID) == "" {
+		return identity.ActorContext{}, false
+	}
+	return actor, true
 }
 
 func isLocalTransportRequest(r *http.Request) bool {
@@ -214,12 +229,4 @@ func isLocalTransportRequest(r *http.Request) bool {
 	}
 	enabled, _ := r.Context().Value(localTransportAuthEnabledKey).(bool)
 	return enabled
-}
-
-func generateDesktopLocalSessionToken() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
 }

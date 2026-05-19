@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/security"
@@ -380,6 +381,19 @@ func newLocalAuthTestServer(t *testing.T) *Server {
 		t.Fatalf("create event log: %v", err)
 	}
 	authSvc := auth.NewService(pebblestore.NewAuthStore(store), eventLog)
+	identityStore := pebblestore.NewIdentityStore(store)
+	if _, err := identity.NewService(identityStore, identity.WithIDGenerator(func(prefix string) (string, error) {
+		switch prefix {
+		case "user":
+			return "user_local_auth_test", nil
+		case "team":
+			return "team_local_auth_test", nil
+		default:
+			return prefix + "_local_auth_test", nil
+		}
+	})).BootstrapFirstIdentity("local-auth-test-user"); err != nil {
+		t.Fatalf("bootstrap local auth identity: %v", err)
+	}
 	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), eventLog)
 	if _, err := securitySvc.EnsureAttachAuth(); err != nil {
 		t.Fatalf("ensure attach auth: %v", err)
@@ -388,6 +402,7 @@ func newLocalAuthTestServer(t *testing.T) *Server {
 	hub := stream.NewHub(eventLog)
 	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), eventLog, hub.Publish)
 	server := NewServer("test", authSvc, nil, nil, nil, nil, workspaceSvc, nil, securitySvc, nil, nil, notificationSvc, eventLog, hub)
+	server.SetIdentitySessionService(identity.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(store)))
 	server.swarm = fakeLocalAuthSwarmService{state: swarmruntime.LocalState{Node: swarmruntime.LocalNodeState{SwarmID: "local-auth-test", Name: "Local Auth Test", Role: "standalone", PublicKey: "local-auth-public-key", Fingerprint: "local-auth-fingerprint"}}}
 
 	startupPath := filepath.Join(t.TempDir(), "swarm.conf")

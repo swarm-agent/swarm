@@ -25,6 +25,7 @@ import (
 	containerprofiles "swarm/packages/swarmd/internal/containerprofiles"
 	deployruntime "swarm/packages/swarmd/internal/deploy"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
@@ -125,6 +126,7 @@ type Server struct {
 	activeRuns                atomic.Int32
 	requestStop               func(reason string)
 	desktopLocalSessions      *desktopLocalSessionManager
+	identitySessions          *identity.SessionService
 	gitRealtime               *gitRealtimeManager
 	swarmTargetHealth         swarmTargetHealthCache
 	swarmStore                *pebblestore.SwarmStore
@@ -294,6 +296,9 @@ func NewServer(mode string, authSvc *auth.Service, agentSvc *agentruntime.Servic
 		runCtx:               runCtx,
 		runCancel:            runCancel,
 	}
+	if server.desktopLocalSessions != nil {
+		server.desktopLocalSessions.server = server
+	}
 	if permissionSvc, ok := permSvc.(*permission.Service); ok {
 		permissionSvc.SetHostedSync(NewManagedHostPermissionControlClient(server))
 	}
@@ -322,6 +327,13 @@ func (s *Server) SetDataDir(path string) {
 		return
 	}
 	s.dataDir = strings.TrimSpace(path)
+}
+
+func (s *Server) SetIdentitySessionService(sessionSvc *identity.SessionService) {
+	if s == nil {
+		return
+	}
+	s.identitySessions = sessionSvc
 }
 
 func (s *Server) BypassPermissions() bool {
@@ -3675,8 +3687,8 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		}
 
 		if shouldUseDesktopLocalSessionAuth(r) {
-			if token := desktopLocalSessionTokenFromRequest(r); s.desktopLocalSessions != nil && s.desktopLocalSessions.Validate(token, time.Now()) {
-				next.ServeHTTP(w, r)
+			if actor, ok := s.actorFromDesktopLocalSession(r); ok {
+				next.ServeHTTP(w, requestWithActorContext(r, actor))
 				return
 			}
 		}
