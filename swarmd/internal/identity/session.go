@@ -2,8 +2,10 @@ package identity
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,6 +53,8 @@ type ActorContext struct {
 
 type IssuedSession struct {
 	Token     string       `json:"token"`
+	SessionID string       `json:"session_id"`
+	JWTID     string       `json:"jti"`
 	IssuedAt  time.Time    `json:"issued_at"`
 	ExpiresAt time.Time    `json:"expires_at"`
 	Actor     ActorContext `json:"actor"`
@@ -60,6 +64,9 @@ type localProductClaims struct {
 	Issuer    string `json:"iss"`
 	Subject   string `json:"sub"`
 	Audience  string `json:"aud"`
+	SessionID string `json:"sid"`
+	JWTID     string `json:"jti"`
+	TeamID    string `json:"team_id,omitempty"`
 	IssuedAt  int64  `json:"iat"`
 	NotBefore int64  `json:"nbf"`
 	ExpiresAt int64  `json:"exp"`
@@ -84,10 +91,21 @@ func (s *SessionService) IssueForCurrentSelection() (IssuedSession, error) {
 	if err != nil {
 		return IssuedSession{}, err
 	}
+	sessionID, err := randomLocalProductSessionID("sid")
+	if err != nil {
+		return IssuedSession{}, err
+	}
+	jwtID, err := randomLocalProductSessionID("jti")
+	if err != nil {
+		return IssuedSession{}, err
+	}
 	claims := localProductClaims{
 		Issuer:    LocalProductSessionIssuer,
 		Subject:   actor.UserID,
 		Audience:  LocalProductSessionAudience,
+		SessionID: sessionID,
+		JWTID:     jwtID,
+		TeamID:    actor.TeamID,
 		IssuedAt:  now.Unix(),
 		NotBefore: now.Add(-1 * time.Minute).Unix(),
 		ExpiresAt: now.Add(LocalProductSessionTTL).Unix(),
@@ -101,7 +119,7 @@ func (s *SessionService) IssueForCurrentSelection() (IssuedSession, error) {
 		return IssuedSession{}, err
 	}
 	actor.TokenExpires = time.Unix(claims.ExpiresAt, 0).UTC()
-	return IssuedSession{Token: token, IssuedAt: now, ExpiresAt: actor.TokenExpires, Actor: actor}, nil
+	return IssuedSession{Token: token, SessionID: sessionID, JWTID: jwtID, IssuedAt: now, ExpiresAt: actor.TokenExpires, Actor: actor}, nil
 }
 
 func (s *SessionService) Validate(token string) (ActorContext, error) {
@@ -127,15 +145,30 @@ func (s *SessionService) Validate(token string) (ActorContext, error) {
 	if strings.TrimSpace(claims.Subject) == "" {
 		return ActorContext{}, ErrInvalidProductSession
 	}
-	if claims.NotBefore != 0 && now < claims.NotBefore {
+	if strings.TrimSpace(claims.SessionID) == "" || strings.TrimSpace(claims.JWTID) == "" {
 		return ActorContext{}, ErrInvalidProductSession
 	}
-	if claims.ExpiresAt == 0 || now >= claims.ExpiresAt {
+	if claims.IssuedAt == 0 || claims.NotBefore == 0 || claims.ExpiresAt == 0 {
+		return ActorContext{}, ErrInvalidProductSession
+	}
+	if claims.IssuedAt > now {
+		return ActorContext{}, ErrInvalidProductSession
+	}
+	if now < claims.NotBefore {
+		return ActorContext{}, ErrInvalidProductSession
+	}
+	if now >= claims.ExpiresAt {
+		return ActorContext{}, ErrInvalidProductSession
+	}
+	if strings.TrimSpace(claims.TeamID) == "" {
 		return ActorContext{}, ErrInvalidProductSession
 	}
 	actor, err := s.actorForUserID(claims.Subject)
 	if err != nil {
 		return ActorContext{}, err
+	}
+	if claims.TeamID != actor.TeamID {
+		return ActorContext{}, ErrInvalidProductSession
 	}
 	actor.TokenExpires = time.Unix(claims.ExpiresAt, 0).UTC()
 	return actor, nil
@@ -209,8 +242,20 @@ func (s *SessionService) currentTime() time.Time {
 	return time.Now().UTC()
 }
 
+func randomLocalProductSessionID(prefix string) (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return prefix + "_" + hex.EncodeToString(buf[:]), nil
+}
+
 func signLocalProductJWT(claims localProductClaims, key []byte) (string, error) {
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
+	return signLocalProductJWTWithHeader(header, claims, key)
+}
+
+func signLocalProductJWTWithHeader(header map[string]string, claims localProductClaims, key []byte) (string, error) {
 	headerPayload, err := json.Marshal(header)
 	if err != nil {
 		return "", err
@@ -270,5 +315,5 @@ func signLocalProductJWTBytes(unsigned string, key []byte) []byte {
 }
 
 func (c localProductClaims) String() string {
-	return fmt.Sprintf("local product session sub=%q aud=%q exp=%d", c.Subject, c.Audience, c.ExpiresAt)
+	return fmt.Sprintf("local product session sub=%q sid=%q jti=%q aud=%q exp=%d", c.Subject, c.SessionID, c.JWTID, c.Audience, c.ExpiresAt)
 }

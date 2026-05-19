@@ -34,7 +34,7 @@ func newDesktopLocalSessionManager() *desktopLocalSessionManager {
 	return &desktopLocalSessionManager{}
 }
 
-func (m *desktopLocalSessionManager) Ensure(now time.Time) (string, time.Time, error) {
+func (m *desktopLocalSessionManager) Ensure(_ time.Time) (string, time.Time, error) {
 	if m == nil || m.server == nil || m.server.identitySessions == nil {
 		return "", time.Time{}, errors.New("legacy singleton desktop local session token has been removed; use product JWT sessions")
 	}
@@ -45,7 +45,7 @@ func (m *desktopLocalSessionManager) Ensure(now time.Time) (string, time.Time, e
 	return issued.Token, issued.ExpiresAt, nil
 }
 
-func (m *desktopLocalSessionManager) Validate(token string, now time.Time) bool {
+func (m *desktopLocalSessionManager) Validate(token string, _ time.Time) bool {
 	if m == nil || m.server == nil || m.server.identitySessions == nil {
 		return false
 	}
@@ -62,7 +62,11 @@ func (s *Server) withDesktopLocalSession(next http.Handler) http.Handler {
 			var err error
 			r, err = s.issueDesktopLocalSession(w, r)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
+				status := http.StatusInternalServerError
+				if errors.Is(err, identity.ErrProductIdentityRequired) || errors.Is(err, identity.ErrSessionServiceNotConfigured) {
+					status = http.StatusUnauthorized
+				}
+				writeError(w, status, err)
 				return
 			}
 		}

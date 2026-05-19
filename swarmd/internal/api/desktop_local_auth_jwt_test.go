@@ -1,6 +1,9 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,11 +20,11 @@ import (
 )
 
 func TestDesktopSessionBootstrapFailsBeforeIdentityAndDoesNotCreateIdentity(t *testing.T) {
-	server, identityStore, cleanup := newDesktopJWTTestServer(t, false)
+	server, _, identityStore, cleanup := newDesktopJWTTestServer(t, false)
 	defer cleanup()
 
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newSameOriginDesktopRequest(http.MethodGet, "/v1/auth/desktop/session"))
+	server.DesktopHandler().ServeHTTP(rec, newSameOriginDesktopRequest(http.MethodGet, "/v1/auth/desktop/session"))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("desktop session before identity status=%d want %d body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
@@ -35,17 +38,26 @@ func TestDesktopSessionBootstrapFailsBeforeIdentityAndDoesNotCreateIdentity(t *t
 }
 
 func TestDesktopSessionBootstrapIssuesJWTAndProtectedAPIAcceptsAfterRestart(t *testing.T) {
-	server, _, cleanup := newDesktopJWTTestServer(t, true)
+	server, storePath, _, cleanup := newDesktopJWTPersistentTestServer(t, true)
 	defer cleanup()
 
 	bootstrapRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(bootstrapRec, newSameOriginDesktopRequest(http.MethodGet, "/v1/auth/desktop/session"))
+	server.DesktopHandler().ServeHTTP(bootstrapRec, newSameOriginDesktopRequest(http.MethodGet, "/v1/auth/desktop/session"))
 	if bootstrapRec.Code != http.StatusOK {
 		t.Fatalf("desktop session status=%d want %d body=%s", bootstrapRec.Code, http.StatusOK, bootstrapRec.Body.String())
 	}
 	cookie := sessionCookieFromRecorder(t, bootstrapRec)
 	if parts := strings.Split(cookie.Value, "."); len(parts) != 3 {
 		t.Fatalf("desktop session cookie is not a compact jwt: %q", cookie.Value)
+	}
+	claims := decodeDesktopJWTClaims(t, cookie.Value)
+	if claims["sub"] != "user_desktop_jwt_test" || claims["team_id"] != "team_desktop_jwt_test" {
+		t.Fatalf("claims sub/team_id = %v/%v", claims["sub"], claims["team_id"])
+	}
+	for _, required := range []string{"iss", "aud", "sid", "jti", "iat", "nbf", "exp"} {
+		if _, ok := claims[required]; !ok {
+			t.Fatalf("jwt claims missing %s: %+v", required, claims)
+		}
 	}
 	var response struct {
 		OK     bool   `json:"ok"`
@@ -58,66 +70,187 @@ func TestDesktopSessionBootstrapIssuesJWTAndProtectedAPIAcceptsAfterRestart(t *t
 		t.Fatalf("bootstrap response = %+v", response)
 	}
 
-	restarted := server
+	cleanup()
+	restartedStore, err := pebblestore.Open(storePath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() { _ = restartedStore.Close() }()
+	restarted := newDesktopJWTServerFromStore(t, restartedStore)
 	vaultRec := httptest.NewRecorder()
 	vaultReq := newSameOriginDesktopRequest(http.MethodGet, "/v1/vault")
 	vaultReq.AddCookie(cookie)
-	restarted.Handler().ServeHTTP(vaultRec, vaultReq)
+	restarted.DesktopHandler().ServeHTTP(vaultRec, vaultReq)
 	if vaultRec.Code != http.StatusOK {
 		t.Fatalf("protected API with persisted jwt status=%d want %d body=%s", vaultRec.Code, http.StatusOK, vaultRec.Body.String())
 	}
 }
 
 func TestDesktopSessionRejectsOldRandomSingletonCookie(t *testing.T) {
-	server, _, cleanup := newDesktopJWTTestServer(t, true)
+	server, _, _, cleanup := newDesktopJWTTestServer(t, true)
 	defer cleanup()
 
 	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/vault")
 	req.AddCookie(buildDesktopLocalSessionCookie("not-a-jwt-random-cookie", time.Now().Add(identity.LocalProductSessionTTL), false))
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.DesktopHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("old random cookie status=%d want %d body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 	}
 }
 
-func newDesktopJWTTestServer(t *testing.T, bootstrap bool) (*Server, *pebblestore.IdentityStore, func()) {
+func TestDesktopSessionRejectsTeamOnlyJWTCookieForProtectedAPI(t *testing.T) {
+	server, store, _, cleanup := newDesktopJWTTestServer(t, true)
+	defer cleanup()
+
+	teamOnlyJWT := signDesktopJWTForTest(t, store, map[string]any{
+		"iss":     identity.LocalProductSessionIssuer,
+		"aud":     identity.LocalProductSessionAudience,
+		"sid":     "sid_team_only",
+		"jti":     "jti_team_only",
+		"team_id": "team_desktop_jwt_test",
+		"iat":     time.Now().Unix(),
+		"nbf":     time.Now().Add(-time.Minute).Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/vault")
+	req.AddCookie(buildDesktopLocalSessionCookie(teamOnlyJWT, time.Now().Add(time.Hour), false))
+	rec := httptest.NewRecorder()
+	server.DesktopHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("team-only jwt cookie status=%d want %d body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
+func TestDesktopSessionRejectsStaleTeamMismatchJWTCookie(t *testing.T) {
+	server, store, _, cleanup := newDesktopJWTTestServer(t, true)
+	defer cleanup()
+
+	staleTeamJWT := signDesktopJWTForTest(t, store, map[string]any{
+		"iss":     identity.LocalProductSessionIssuer,
+		"sub":     "user_desktop_jwt_test",
+		"aud":     identity.LocalProductSessionAudience,
+		"sid":     "sid_stale_team",
+		"jti":     "jti_stale_team",
+		"team_id": "team_stale",
+		"iat":     time.Now().Unix(),
+		"nbf":     time.Now().Add(-time.Minute).Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/vault")
+	req.AddCookie(buildDesktopLocalSessionCookie(staleTeamJWT, time.Now().Add(time.Hour), false))
+	rec := httptest.NewRecorder()
+	server.DesktopHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("stale team jwt cookie status=%d want %d body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
+func newDesktopJWTTestServer(t *testing.T, bootstrap bool) (*Server, *pebblestore.Store, *pebblestore.IdentityStore, func()) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "desktop-jwt.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	identityStore := bootstrapDesktopJWTIdentity(t, store, bootstrap)
+	server := newDesktopJWTServerFromStore(t, store)
+	return server, store, identityStore, func() { _ = store.Close() }
+}
+
+func newDesktopJWTPersistentTestServer(t *testing.T, bootstrap bool) (*Server, string, *pebblestore.IdentityStore, func()) {
+	t.Helper()
+	storePath := filepath.Join(t.TempDir(), "desktop-jwt.pebble")
+	store, err := pebblestore.Open(storePath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	identityStore := bootstrapDesktopJWTIdentity(t, store, bootstrap)
+	server := newDesktopJWTServerFromStore(t, store)
+	closed := false
+	cleanup := func() {
+		if closed {
+			return
+		}
+		closed = true
+		_ = store.Close()
+	}
+	return server, storePath, identityStore, cleanup
+}
+
+func bootstrapDesktopJWTIdentity(t *testing.T, store *pebblestore.Store, bootstrap bool) *pebblestore.IdentityStore {
+	t.Helper()
+	identityStore := pebblestore.NewIdentityStore(store)
+	if !bootstrap {
+		return identityStore
+	}
+	_, err := identity.NewService(identityStore, identity.WithIDGenerator(func(prefix string) (string, error) {
+		switch prefix {
+		case "user":
+			return "user_desktop_jwt_test", nil
+		case "team":
+			return "team_desktop_jwt_test", nil
+		default:
+			return prefix + "_desktop_jwt_test", nil
+		}
+	})).BootstrapFirstIdentity("desktop-jwt-user")
+	if err != nil {
+		t.Fatalf("bootstrap identity: %v", err)
+	}
+	return identityStore
+}
+
+func newDesktopJWTServerFromStore(t *testing.T, store *pebblestore.Store) *Server {
+	t.Helper()
 	events, err := pebblestore.NewEventLog(store)
 	if err != nil {
-		_ = store.Close()
 		t.Fatalf("event log: %v", err)
-	}
-	identityStore := pebblestore.NewIdentityStore(store)
-	if bootstrap {
-		_, err := identity.NewService(identityStore, identity.WithIDGenerator(func(prefix string) (string, error) {
-			switch prefix {
-			case "user":
-				return "user_desktop_jwt_test", nil
-			case "team":
-				return "team_desktop_jwt_test", nil
-			default:
-				return prefix + "_desktop_jwt_test", nil
-			}
-		})).BootstrapFirstIdentity("desktop-jwt-user")
-		if err != nil {
-			_ = store.Close()
-			t.Fatalf("bootstrap identity: %v", err)
-		}
 	}
 	securitySvc := security.NewService(pebblestore.NewClientAuthStore(store), events)
 	if _, err := securitySvc.EnsureAttachAuth(); err != nil {
-		_ = store.Close()
 		t.Fatalf("ensure attach auth: %v", err)
 	}
+	identityStore := pebblestore.NewIdentityStore(store)
 	server := NewServer("test", auth.NewService(pebblestore.NewAuthStore(store), events), nil, nil, nil, nil, nil, nil, securitySvc, nil, nil, nil, events, stream.NewHub(events))
 	server.SetIdentityService(identity.NewService(identityStore))
 	server.SetIdentitySessionService(identity.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(store)))
-	return server, identityStore, func() { _ = store.Close() }
+	return server
+}
+
+func signDesktopJWTForTest(t *testing.T, store *pebblestore.Store, claims map[string]any) string {
+	t.Helper()
+	key, _, err := pebblestore.NewIdentitySessionStore(store).EnsureLocalProductJWTSigningKey()
+	if err != nil {
+		t.Fatalf("load signing key: %v", err)
+	}
+	headerPayload, err := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	if err != nil {
+		t.Fatalf("marshal header: %v", err)
+	}
+	claimsPayload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	unsigned := base64.RawURLEncoding.EncodeToString(headerPayload) + "." + base64.RawURLEncoding.EncodeToString(claimsPayload)
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(unsigned))
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func decodeDesktopJWTClaims(t *testing.T, token string) map[string]any {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token is not jwt: %q", token)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode jwt claims: %v", err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatalf("unmarshal jwt claims: %v", err)
+	}
+	return claims
 }
 
 func newSameOriginDesktopRequest(method, path string) *http.Request {

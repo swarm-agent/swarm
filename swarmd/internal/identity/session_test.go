@@ -22,6 +22,23 @@ func TestLocalProductSessionIssuesValidatesAndPersistsSigningKey(t *testing.T) {
 	if !strings.HasPrefix(issued.Token, "ey") || issued.Actor.UserID != "user_session_test" || issued.Actor.TeamID != "team_session_test" {
 		t.Fatalf("issued session = %+v token=%q", issued, issued.Token)
 	}
+	if issued.SessionID == "" || issued.JWTID == "" {
+		t.Fatalf("issued session missing sid/jti: %+v", issued)
+	}
+
+	claims := mustVerifySessionClaims(t, rawStore, issued.Token)
+	if claims.Issuer != LocalProductSessionIssuer || claims.Audience != LocalProductSessionAudience {
+		t.Fatalf("issuer/audience = %q/%q", claims.Issuer, claims.Audience)
+	}
+	if claims.Subject != "user_session_test" || claims.TeamID != "team_session_test" {
+		t.Fatalf("subject/team_id = %q/%q", claims.Subject, claims.TeamID)
+	}
+	if claims.SessionID != issued.SessionID || claims.JWTID != issued.JWTID {
+		t.Fatalf("claims sid/jti = %q/%q issued = %q/%q", claims.SessionID, claims.JWTID, issued.SessionID, issued.JWTID)
+	}
+	if claims.IssuedAt == 0 || claims.NotBefore == 0 || claims.ExpiresAt == 0 {
+		t.Fatalf("claims missing time safety fields: %+v", claims)
+	}
 
 	actor, err := sessions.Validate(issued.Token)
 	if err != nil {
@@ -37,7 +54,7 @@ func TestLocalProductSessionIssuesValidatesAndPersistsSigningKey(t *testing.T) {
 	}
 }
 
-func TestLocalProductSessionRejectsNegativeCases(t *testing.T) {
+func TestLocalProductSessionRejectsInvalidJWTClaims(t *testing.T) {
 	fixedNow := time.Unix(1779199000, 0).UTC()
 	rawStore, identityStore := newSessionTestIdentityStore(t)
 	bootstrapSessionIdentity(t, identityStore)
@@ -46,8 +63,13 @@ func TestLocalProductSessionRejectsNegativeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
+	validClaims := mustVerifySessionClaims(t, rawStore, issued.Token)
 
-	forged := issued.Token[:len(issued.Token)-1] + "x"
+	parts := strings.Split(issued.Token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("issued token is not compact JWT: %q", issued.Token)
+	}
+	forged := parts[0] + "." + parts[1] + ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	if _, err := sessions.Validate(forged); !errors.Is(err, ErrInvalidProductSession) {
 		t.Fatalf("forged token err=%v, want ErrInvalidProductSession", err)
 	}
@@ -59,17 +81,45 @@ func TestLocalProductSessionRejectsNegativeCases(t *testing.T) {
 		t.Fatalf("expired token err=%v, want ErrInvalidProductSession", err)
 	}
 
-	teamOnlyClaims := localProductClaims{Issuer: LocalProductSessionIssuer, Subject: "team_session_test", Audience: LocalProductSessionAudience, IssuedAt: fixedNow.Unix(), NotBefore: fixedNow.Unix(), ExpiresAt: fixedNow.Add(time.Hour).Unix()}
-	key, _, err := pebblestore.NewIdentitySessionStore(rawStore).EnsureLocalProductJWTSigningKey()
-	if err != nil {
-		t.Fatalf("load signing key: %v", err)
+	tests := []struct {
+		name   string
+		mutate func(localProductClaims) localProductClaims
+	}{
+		{name: "missing subject", mutate: func(c localProductClaims) localProductClaims { c.Subject = ""; return c }},
+		{name: "missing sid", mutate: func(c localProductClaims) localProductClaims { c.SessionID = ""; return c }},
+		{name: "missing jti", mutate: func(c localProductClaims) localProductClaims { c.JWTID = ""; return c }},
+		{name: "wrong issuer", mutate: func(c localProductClaims) localProductClaims { c.Issuer = "other"; return c }},
+		{name: "wrong audience", mutate: func(c localProductClaims) localProductClaims { c.Audience = "other"; return c }},
+		{name: "missing iat", mutate: func(c localProductClaims) localProductClaims { c.IssuedAt = 0; return c }},
+		{name: "future iat", mutate: func(c localProductClaims) localProductClaims { c.IssuedAt = fixedNow.Add(time.Hour).Unix(); return c }},
+		{name: "not yet valid", mutate: func(c localProductClaims) localProductClaims { c.NotBefore = fixedNow.Add(time.Hour).Unix(); return c }},
+		{name: "missing exp", mutate: func(c localProductClaims) localProductClaims { c.ExpiresAt = 0; return c }},
+		{name: "team as subject", mutate: func(c localProductClaims) localProductClaims { c.Subject = "team_session_test"; return c }},
+		{name: "missing team", mutate: func(c localProductClaims) localProductClaims { c.TeamID = ""; return c }},
+		{name: "stale team mismatch", mutate: func(c localProductClaims) localProductClaims { c.TeamID = "team_stale"; return c }},
 	}
-	teamOnlyToken, err := signLocalProductJWT(teamOnlyClaims, key)
-	if err != nil {
-		t.Fatalf("sign team-only token: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			token := mustSignSessionClaims(t, rawStore, tc.mutate(validClaims))
+			if _, err := sessions.Validate(token); !errors.Is(err, ErrInvalidProductSession) {
+				t.Fatalf("err=%v, want ErrInvalidProductSession", err)
+			}
+		})
 	}
-	if _, err := sessions.Validate(teamOnlyToken); !errors.Is(err, ErrInvalidProductSession) {
-		t.Fatalf("team-only token err=%v, want ErrInvalidProductSession", err)
+
+	wrongAlgToken := mustSignSessionClaimsWithHeader(t, rawStore, map[string]string{"alg": "none", "typ": "JWT"}, validClaims)
+	if _, err := sessions.Validate(wrongAlgToken); !errors.Is(err, ErrInvalidProductSession) {
+		t.Fatalf("wrong alg err=%v, want ErrInvalidProductSession", err)
+	}
+}
+
+func TestLocalProductSessionRejectsMissingCanonicalIdentity(t *testing.T) {
+	rawStore, identityStore := newSessionTestIdentityStore(t)
+	bootstrapSessionIdentity(t, identityStore)
+	sessions := NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(rawStore))
+	issued, err := sessions.IssueForCurrentSelection()
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
 	}
 
 	if err := rawStore.Delete(pebblestore.KeyIdentityUser("user_session_test")); err != nil {
@@ -94,6 +144,37 @@ func TestLocalProductSessionRejectsUserWithoutSelectedMembership(t *testing.T) {
 	if _, err := sessions.Validate(issued.Token); !errors.Is(err, ErrProductIdentityRequired) {
 		t.Fatalf("missing membership err=%v, want ErrProductIdentityRequired", err)
 	}
+}
+
+func mustVerifySessionClaims(t *testing.T, rawStore *pebblestore.Store, token string) localProductClaims {
+	t.Helper()
+	key, _, err := pebblestore.NewIdentitySessionStore(rawStore).EnsureLocalProductJWTSigningKey()
+	if err != nil {
+		t.Fatalf("load signing key: %v", err)
+	}
+	claims, err := verifyLocalProductJWT(token, key)
+	if err != nil {
+		t.Fatalf("verify jwt: %v", err)
+	}
+	return claims
+}
+
+func mustSignSessionClaims(t *testing.T, rawStore *pebblestore.Store, claims localProductClaims) string {
+	t.Helper()
+	return mustSignSessionClaimsWithHeader(t, rawStore, map[string]string{"alg": "HS256", "typ": "JWT"}, claims)
+}
+
+func mustSignSessionClaimsWithHeader(t *testing.T, rawStore *pebblestore.Store, header map[string]string, claims localProductClaims) string {
+	t.Helper()
+	key, _, err := pebblestore.NewIdentitySessionStore(rawStore).EnsureLocalProductJWTSigningKey()
+	if err != nil {
+		t.Fatalf("load signing key: %v", err)
+	}
+	token, err := signLocalProductJWTWithHeader(header, claims, key)
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	return token
 }
 
 func newSessionTestIdentityStore(t *testing.T) (*pebblestore.Store, *pebblestore.IdentityStore) {
