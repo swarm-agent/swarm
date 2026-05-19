@@ -126,6 +126,7 @@ type Server struct {
 	activeRuns                atomic.Int32
 	requestStop               func(reason string)
 	desktopLocalSessions      *desktopLocalSessionManager
+	identityService           *identity.Service
 	identitySessions          *identity.SessionService
 	gitRealtime               *gitRealtimeManager
 	swarmTargetHealth         swarmTargetHealthCache
@@ -327,6 +328,13 @@ func (s *Server) SetDataDir(path string) {
 		return
 	}
 	s.dataDir = strings.TrimSpace(path)
+}
+
+func (s *Server) SetIdentityService(identitySvc *identity.Service) {
+	if s == nil {
+		return
+	}
+	s.identityService = identitySvc
 }
 
 func (s *Server) SetIdentitySessionService(sessionSvc *identity.SessionService) {
@@ -3802,7 +3810,7 @@ func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 	case "/v1/auth/desktop/session":
 		return r.Method == http.MethodGet && shouldUseDesktopLocalSessionAuth(r)
 	case "/v1/onboarding":
-		return r.Method == http.MethodGet
+		return r.Method == http.MethodGet || (r.Method == http.MethodPost && shouldUseDesktopLocalSessionAuth(r))
 	case "/v1/update/status", "/v1/update/local-containers":
 		return loopback && r.Method == http.MethodGet
 	case "/v1/swarm/discovery":

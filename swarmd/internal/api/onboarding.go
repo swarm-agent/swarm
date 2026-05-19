@@ -12,9 +12,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/identity"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 )
 
@@ -70,6 +72,19 @@ type onboardingTailscaleServePayload struct {
 	Error                      string `json:"error,omitempty"`
 }
 
+type onboardingIdentityPayload struct {
+	Bootstrapped   bool   `json:"bootstrapped"`
+	UserID         string `json:"user_id,omitempty"`
+	Username       string `json:"username,omitempty"`
+	TeamID         string `json:"team_id,omitempty"`
+	TeamDefault    bool   `json:"team_default,omitempty"`
+	MembershipRole string `json:"membership_role,omitempty"`
+}
+
+type onboardingSessionPayload struct {
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
 type onboardingTailscalePayload struct {
 	Available    bool                            `json:"available"`
 	Connected    bool                            `json:"connected"`
@@ -103,12 +118,15 @@ type onboardingDiscoveredSwarmPayload struct {
 type onboardingResponse struct {
 	OK              bool                        `json:"ok"`
 	NeedsOnboarding bool                        `json:"needs_onboarding"`
+	Identity        onboardingIdentityPayload   `json:"identity"`
+	Session         *onboardingSessionPayload   `json:"session,omitempty"`
 	Config          onboardingConfigPayload     `json:"config"`
 	Heuristics      onboardingHeuristicsPayload `json:"heuristics"`
 	Tailscale       onboardingTailscalePayload  `json:"tailscale"`
 }
 
 type onboardingUpdateRequest struct {
+	Username          *string `json:"username,omitempty"`
 	SwarmName         *string `json:"swarm_name,omitempty"`
 	SwarmMode         *bool   `json:"swarm_mode,omitempty"`
 	Child             *bool   `json:"child,omitempty"`
@@ -266,10 +284,13 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		response, err := s.updateOnboarding(req, includeSensitive)
+		response, issued, err := s.updateOnboarding(req, includeSensitive)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			writeError(w, onboardingErrorStatus(err), err)
 			return
+		}
+		if issued != nil {
+			http.SetCookie(w, buildDesktopLocalSessionCookie(issued.Token, issued.ExpiresAt, requestScheme(r) == "https"))
 		}
 		writeJSON(w, http.StatusOK, response)
 	default:
@@ -331,7 +352,11 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 	if err != nil {
 		return onboardingResponse{}, err
 	}
-	needsOnboarding := shouldShowOnboarding(cfg, vaultStatus, credentialList.Total, savedCount)
+	identityPayload, identityBootstrapped, err := s.onboardingIdentityPayload()
+	if err != nil {
+		return onboardingResponse{}, err
+	}
+	needsOnboarding := shouldShowOnboarding(cfg, vaultStatus, credentialList.Total, savedCount) || !identityBootstrapped
 	tailscale, _ := detectTailscaleWithStatus()
 	if !needsOnboarding && swarmModeEnabled(cfg) {
 		tailscale.TailnetURL = firstNonEmpty(strings.TrimSpace(cfg.TailscaleURL), strings.TrimSpace(tailscale.TailnetURL))
@@ -340,6 +365,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 	response := onboardingResponse{
 		OK:              true,
 		NeedsOnboarding: needsOnboarding,
+		Identity:        identityPayload,
 		Config: onboardingConfigPayload{
 			SwarmName:         strings.TrimSpace(cfg.SwarmName),
 			SwarmMode:         swarmModeEnabled(cfg),
@@ -399,13 +425,75 @@ func redactSensitiveOnboardingTailscale(payload onboardingTailscalePayload) onbo
 	}
 }
 
-func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive bool) (onboardingResponse, error) {
+func (s *Server) onboardingIdentityPayload() (onboardingIdentityPayload, bool, error) {
+	if s == nil || s.identityService == nil {
+		return onboardingIdentityPayload{}, false, nil
+	}
+	summary, err := s.identityService.StateSummary()
+	if err != nil {
+		return onboardingIdentityPayload{}, false, err
+	}
+	if summary.CurrentUser == nil || summary.CurrentTeam == nil || summary.CurrentMembership == nil || summary.CurrentSelection == nil {
+		return onboardingIdentityPayload{Bootstrapped: false}, false, nil
+	}
+	payload := onboardingIdentityPayload{
+		Bootstrapped:   true,
+		UserID:         summary.CurrentUser.ID,
+		Username:       summary.CurrentUser.Username,
+		TeamID:         summary.CurrentTeam.ID,
+		TeamDefault:    summary.CurrentTeam.Default,
+		MembershipRole: summary.CurrentMembership.Role,
+	}
+	return payload, true, nil
+}
+
+func actorOnboardingIdentityPayload(actor identity.ActorContext) onboardingIdentityPayload {
+	return onboardingIdentityPayload{
+		Bootstrapped:   strings.TrimSpace(actor.UserID) != "",
+		UserID:         actor.UserID,
+		Username:       actor.User.Username,
+		TeamID:         actor.TeamID,
+		TeamDefault:    actor.Team.Default,
+		MembershipRole: actor.Membership.Role,
+	}
+}
+
+func onboardingErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, identity.ErrBootstrapExists):
+		return http.StatusConflict
+	case errors.Is(err, identity.ErrProductIdentityRequired), errors.Is(err, identity.ErrServiceNotConfigured), errors.Is(err, identity.ErrSessionServiceNotConfigured):
+		return http.StatusUnauthorized
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive bool) (onboardingResponse, *identity.IssuedSession, error) {
 	cfg, err := s.loadStartupConfig()
 	if err != nil {
-		return onboardingResponse{}, err
+		return onboardingResponse{}, nil, err
 	}
 	if !cfg.Exists {
 		cfg = startupconfig.Default(cfg.Path)
+	}
+
+	identityPayload, identityBootstrapped, err := s.onboardingIdentityPayload()
+	if err != nil {
+		return onboardingResponse{}, nil, err
+	}
+	bootstrapUsername := ""
+	if req.Username != nil {
+		bootstrapUsername = strings.TrimSpace(*req.Username)
+	}
+	if !identityBootstrapped && bootstrapUsername == "" {
+		return onboardingResponse{}, nil, errors.New("username is required for product identity bootstrap")
+	}
+	if !identityBootstrapped && (req.SwarmName == nil || strings.TrimSpace(*req.SwarmName) == "") {
+		return onboardingResponse{}, nil, errors.New("swarm name is required for daemon identity")
+	}
+	if identityBootstrapped && bootstrapUsername != "" {
+		return onboardingResponse{}, nil, identity.ErrBootstrapExists
 	}
 
 	updated := cfg
@@ -417,7 +505,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if req.SwarmName != nil {
 		updated.SwarmName = strings.TrimSpace(*req.SwarmName)
 		if updated.SwarmName == "" && !requestChangesSwarmShape(req) {
-			return onboardingResponse{}, errors.New("swarm name is required")
+			return onboardingResponse{}, nil, errors.New("swarm name is required")
 		}
 		changed = true
 	}
@@ -436,7 +524,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if req.Mode != nil {
 		updated.NetworkMode = strings.ToLower(strings.TrimSpace(*req.Mode))
 		if !isValidBootstrapNetworkMode(updated.NetworkMode) {
-			return onboardingResponse{}, fmt.Errorf("mode must be %q or %q", startupconfig.NetworkModeLAN, startupconfig.NetworkModeTailscale)
+			return onboardingResponse{}, nil, fmt.Errorf("mode must be %q or %q", startupconfig.NetworkModeLAN, startupconfig.NetworkModeTailscale)
 		}
 		changed = true
 		restartRequired = true
@@ -445,7 +533,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if req.Port != nil {
 		updated.Port = *req.Port
 		if updated.Port < 1 || updated.Port > 65535 {
-			return onboardingResponse{}, fmt.Errorf("port must be between %d and %d", 1, 65535)
+			return onboardingResponse{}, nil, fmt.Errorf("port must be between %d and %d", 1, 65535)
 		}
 		changed = true
 	}
@@ -456,7 +544,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if req.AdvertisePort != nil {
 		updated.AdvertisePort = *req.AdvertisePort
 		if updated.AdvertisePort < 1 || updated.AdvertisePort > 65535 {
-			return onboardingResponse{}, fmt.Errorf("advertise_port must be between %d and %d", 1, 65535)
+			return onboardingResponse{}, nil, fmt.Errorf("advertise_port must be between %d and %d", 1, 65535)
 		}
 		changed = true
 	}
@@ -475,7 +563,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if req.PeerTransportPort != nil {
 		updated.PeerTransportPort = *req.PeerTransportPort
 		if updated.PeerTransportPort < 1 || updated.PeerTransportPort > 65535 {
-			return onboardingResponse{}, fmt.Errorf("peer_transport_port must be between %d and %d", 1, 65535)
+			return onboardingResponse{}, nil, fmt.Errorf("peer_transport_port must be between %d and %d", 1, 65535)
 		}
 		changed = true
 		restartRequired = true
@@ -484,9 +572,11 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if !swarmModeEnabled(updated) {
 		updated.Child = false
 	}
-	if swarmModeEnabled(updated) && strings.TrimSpace(updated.SwarmName) == "" {
-		updated.SwarmName = defaultOnboardingSwarmName(updated)
-		changed = true
+	if swarmModeEnabled(updated) && strings.TrimSpace(updated.SwarmName) == "" && identityBootstrapped {
+		if req.SwarmMode != nil && *req.SwarmMode && req.SwarmName == nil {
+			updated.SwarmName = defaultOnboardingSwarmName(updated)
+			changed = true
+		}
 	}
 	if swarmModeEnabled(updated) && bootstrapNetworkMode(updated) == startupconfig.NetworkModeLAN {
 		updated.AdvertiseHost = firstNonEmpty(
@@ -498,44 +588,70 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 			updated.AdvertisePort = updated.Port
 		}
 		if strings.TrimSpace(updated.AdvertiseHost) == "" {
-			return onboardingResponse{}, errors.New("could not determine a LAN advertise host; enter one explicitly")
+			return onboardingResponse{}, nil, errors.New("could not determine a LAN advertise host; enter one explicitly")
 		}
 	}
 
-	if !changed {
-		return onboardingResponse{}, errors.New("no onboarding fields were provided")
+	if !changed && bootstrapUsername == "" {
+		return onboardingResponse{}, nil, errors.New("no onboarding fields were provided")
+	}
+	if !identityBootstrapped && swarmModeEnabled(updated) && strings.TrimSpace(updated.SwarmName) == "" {
+		return onboardingResponse{}, nil, errors.New("swarm name is required for daemon identity")
 	}
 	if err := startupconfig.Write(updated); err != nil {
-		return onboardingResponse{}, err
+		return onboardingResponse{}, nil, err
 	}
 	if turnedOffChildMode && s.swarm != nil {
 		state, err := s.currentSwarmState(cfg)
 		if err != nil {
-			return onboardingResponse{}, err
+			return onboardingResponse{}, nil, err
 		}
 		if err := s.swarm.DetachToStandalone(strings.TrimSpace(state.Node.SwarmID)); err != nil {
-			return onboardingResponse{}, err
+			return onboardingResponse{}, nil, err
 		}
 	}
 	if req.SwarmName != nil && !(req.SwarmMode != nil && !*req.SwarmMode) {
 		if s.swarm != nil {
 			if _, err := s.currentSwarmState(updated); err != nil {
-				return onboardingResponse{}, err
+				return onboardingResponse{}, nil, err
 			}
 		}
 		if err := s.persistUISwarmName(updated.SwarmName); err != nil {
-			return onboardingResponse{}, err
+			return onboardingResponse{}, nil, err
 		}
+	}
+
+	var issued *identity.IssuedSession
+	if !identityBootstrapped {
+		if s.identityService == nil {
+			return onboardingResponse{}, nil, identity.ErrServiceNotConfigured
+		}
+		if s.identitySessions == nil {
+			return onboardingResponse{}, nil, identity.ErrSessionServiceNotConfigured
+		}
+		if _, err := s.identityService.BootstrapFirstIdentity(bootstrapUsername); err != nil {
+			return onboardingResponse{}, nil, err
+		}
+		createdSession, err := s.identitySessions.IssueForCurrentSelection()
+		if err != nil {
+			return onboardingResponse{}, nil, err
+		}
+		issued = &createdSession
+		identityPayload = actorOnboardingIdentityPayload(createdSession.Actor)
 	}
 	response, err := s.onboardingResponse(includeSensitive)
 	if err != nil {
-		return onboardingResponse{}, err
+		return onboardingResponse{}, nil, err
+	}
+	if issued != nil {
+		response.Identity = identityPayload
+		response.Session = &onboardingSessionPayload{ExpiresAt: issued.ExpiresAt.UTC().Format(time.RFC3339)}
 	}
 	if restartRequired {
 		response.Config.RestartRequired = true
 		response.Config.RestartReason = strings.Join(dedupeTransportStrings(restartReasons), "; ")
 	}
-	return response, nil
+	return response, issued, nil
 }
 
 func (s *Server) loadStartupConfig() (startupconfig.FileConfig, error) {

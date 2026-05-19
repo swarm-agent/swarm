@@ -162,7 +162,7 @@ func TestUpdateOnboardingEnablesSwarmModeWithoutExplicitName(t *testing.T) {
 	mode := startupconfig.NetworkModeTailscale
 	enabled := true
 	child := false
-	status, err := server.updateOnboarding(onboardingUpdateRequest{
+	status, _, err := server.updateOnboarding(onboardingUpdateRequest{
 		SwarmMode:    &enabled,
 		Child:        &child,
 		Mode:         &mode,
@@ -197,7 +197,7 @@ func TestUpdateOnboardingDisablesSwarmModeWithoutDetaching(t *testing.T) {
 	})
 
 	enabled := false
-	status, err := server.updateOnboarding(onboardingUpdateRequest{SwarmMode: &enabled}, true)
+	status, _, err := server.updateOnboarding(onboardingUpdateRequest{SwarmMode: &enabled}, true)
 	if err != nil {
 		t.Fatalf("updateOnboarding returned error: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestUpdateOnboardingDisablesSwarmModeIgnoresStaleNameForUISettings(t *testi
 	})
 
 	enabled := false
-	if _, err := server.updateOnboarding(onboardingUpdateRequest{SwarmName: onboardingStringPtr("Stale Name"), SwarmMode: &enabled}, true); err != nil {
+	if _, _, err := server.updateOnboarding(onboardingUpdateRequest{SwarmName: onboardingStringPtr("Stale Name"), SwarmMode: &enabled}, true); err != nil {
 		t.Fatalf("updateOnboarding returned error: %v", err)
 	}
 	if got := events.CurrentSequence(); got != baselineSeq {
@@ -287,7 +287,7 @@ func TestUpdateOnboardingDisablesSwarmModeWithoutPublishingUISettings(t *testing
 	})
 
 	enabled := false
-	if _, err := server.updateOnboarding(onboardingUpdateRequest{SwarmMode: &enabled}, true); err != nil {
+	if _, _, err := server.updateOnboarding(onboardingUpdateRequest{SwarmMode: &enabled}, true); err != nil {
 		t.Fatalf("updateOnboarding returned error: %v", err)
 	}
 	if got := events.CurrentSequence(); got != baselineSeq {

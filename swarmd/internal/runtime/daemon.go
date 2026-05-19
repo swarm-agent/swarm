@@ -382,7 +382,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 
 	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
-	apiServer.SetIdentitySessionService(identityruntime.NewSessionService(pebblestore.NewIdentityStore(store), pebblestore.NewIdentitySessionStore(secretStore)))
+	identityStore := pebblestore.NewIdentityStore(store)
+	apiServer.SetIdentityService(identityruntime.NewService(identityStore))
+	apiServer.SetIdentitySessionService(identityruntime.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(secretStore)))
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
 	apiServer.SetDataDir(cfg.DataDir)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)

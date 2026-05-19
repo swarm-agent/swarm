@@ -50,8 +50,11 @@ type BootstrapResult struct {
 }
 
 type StateSummary struct {
-	Counts           pebblestore.IdentityCounts          `json:"counts"`
-	CurrentSelection *pebblestore.CurrentSelectionRecord `json:"current_selection,omitempty"`
+	Counts            pebblestore.IdentityCounts          `json:"counts"`
+	CurrentUser       *pebblestore.UserRecord             `json:"current_user,omitempty"`
+	CurrentTeam       *pebblestore.TeamRecord             `json:"current_team,omitempty"`
+	CurrentMembership *pebblestore.TeamMembershipRecord   `json:"current_membership,omitempty"`
+	CurrentSelection  *pebblestore.CurrentSelectionRecord `json:"current_selection,omitempty"`
 }
 
 func (s *Service) BootstrapFirstIdentity(username string) (BootstrapResult, error) {
@@ -129,9 +132,34 @@ func (s *Service) StateSummary() (StateSummary, error) {
 		return StateSummary{}, err
 	}
 	summary := StateSummary{Counts: counts}
-	if ok {
-		summary.CurrentSelection = &selection
+	if !ok {
+		return summary, nil
 	}
+	summary.CurrentSelection = &selection
+	user, ok, err := s.store.GetUser(selection.UserID)
+	if err != nil {
+		return StateSummary{}, err
+	}
+	if !ok {
+		return StateSummary{}, fmt.Errorf("current selection user %q is missing", selection.UserID)
+	}
+	team, ok, err := s.store.GetTeam(selection.TeamID)
+	if err != nil {
+		return StateSummary{}, err
+	}
+	if !ok {
+		return StateSummary{}, fmt.Errorf("current selection team %q is missing", selection.TeamID)
+	}
+	membership, ok, err := s.store.GetTeamMembership(selection.TeamID, selection.UserID)
+	if err != nil {
+		return StateSummary{}, err
+	}
+	if !ok {
+		return StateSummary{}, fmt.Errorf("current selection membership team=%q user=%q is missing", selection.TeamID, selection.UserID)
+	}
+	summary.CurrentUser = &user
+	summary.CurrentTeam = &team
+	summary.CurrentMembership = &membership
 	return summary, nil
 }
 
