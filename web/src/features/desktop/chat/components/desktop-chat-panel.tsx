@@ -2907,7 +2907,9 @@ export function DesktopChatPanel({
       </header>
 
       <div className="relative flex-1 min-h-0 min-w-0 bg-[var(--app-bg-alt)]">
-        <div ref={scrollerRef} data-testid="desktop-chat-scroller" onScroll={persistScrollState} className="h-full min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-6 sm:py-5">
+        <div ref={scrollerRef} data-testid="desktop-chat-scroller" onScroll={persistScrollState} className="h-full min-h-0 min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain py-4 [-webkit-overflow-scrolling:touch] sm:py-5">
+        <div className="mx-auto min-w-0 w-full max-w-[1080px] px-4 sm:px-6">
+        <div className="mx-auto min-w-0 w-full max-w-[980px]">
         {loadingMessages && messages.length === 0 ? (
           <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text-muted)]">Loading conversation…</div>
         ) : null}
@@ -2936,10 +2938,10 @@ export function DesktopChatPanel({
                   data-testid="desktop-chat-row"
                   data-render-item-type={item.type}
                   data-render-item-key={String(virtualItem.key)}
-                  className="absolute left-0 top-0 w-full py-2 flex justify-start"
+                  className="absolute left-0 top-0 w-full py-2 flex justify-center"
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                 >
-                  <article className="w-full min-w-0 max-w-[95%]">
+                  <article className="w-full min-w-0">
                     <ChatMarkdown content="" toolMessage={item.toolMessage} nowMs={timerNow} />
                   </article>
                 </div>
@@ -2955,10 +2957,10 @@ export function DesktopChatPanel({
                   data-testid="desktop-chat-row"
                   data-render-item-type={item.type}
                   data-render-item-key={String(virtualItem.key)}
-                  className="absolute left-0 top-0 w-full py-2 flex justify-start"
+                  className="absolute left-0 top-0 w-full py-2 flex justify-center"
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                 >
-                  <article className="w-full min-w-0 max-w-[95%]">
+                  <article className="w-full min-w-0 max-w-[980px]">
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
                       {currentSessionAgent || 'swarm'}
                     </div>
@@ -3003,11 +3005,11 @@ export function DesktopChatPanel({
                   data-testid="desktop-chat-row"
                   data-render-item-type={item.type}
                   data-render-item-key={String(virtualItem.key)}
-                  className="absolute left-0 top-0 w-full py-2 flex justify-start"
+                  className="absolute left-0 top-0 w-full py-2 flex justify-center"
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                   data-global-seq={message.globalSeq}
                 >
-                  <article className="w-full min-w-0 max-w-[95%] border-l-2 border-[var(--app-border)] pl-4 opacity-80">
+                  <article className="w-full min-w-0 max-w-[980px] border-l-2 border-[var(--app-border)] pl-4 opacity-80">
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
                       {reasoningLabel}
                     </div>
@@ -3025,11 +3027,11 @@ export function DesktopChatPanel({
                 data-testid="desktop-chat-row"
                 data-render-item-type={item.type}
                 data-render-item-key={String(virtualItem.key)}
-                className="absolute left-0 top-0 w-full py-2 flex justify-start"
+                className="absolute left-0 top-0 w-full py-2 flex justify-center"
                 style={{ transform: `translateY(${virtualItem.start}px)` }}
                 data-global-seq={message.globalSeq}
               >
-                <article className="w-full min-w-0 max-w-[95%]">
+                <article className={message.role === 'tool' ? "w-full min-w-0" : "w-full min-w-0 max-w-[980px]"}>
                   {message.role !== 'tool' ? (
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
                       {messageRoleLabel(message.role, resolveMessageAssistantLabel(message, currentSessionAgent))}
@@ -3040,6 +3042,8 @@ export function DesktopChatPanel({
               </div>
             )
           })}
+        </div>
+        </div>
         </div>
         </div>
         {showScrollLockReturnButton ? (
@@ -3056,7 +3060,7 @@ export function DesktopChatPanel({
       </div>
 
       <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]">
-        <div className="grid gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
+        <div className="mx-auto grid w-full max-w-[1080px] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 focus-within:pb-[calc(1rem+var(--app-safe-area-bottom))] sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5">
           {panelError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{panelError}</div> : null}
           {permissionError ? <div className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{permissionError}</div> : null}
           {dictationError ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning-text)]">{dictationError}</div> : null}
