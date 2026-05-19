@@ -129,6 +129,20 @@ export interface ManageImagePayload {
   approvedArguments: Record<string, unknown>
 }
 
+export interface ManageFlowPayload {
+  title: string
+  subtitle: string
+  summary: string
+  action: string
+  flowId: string
+  flowName: string
+  isDelete: boolean
+  content: Record<string, unknown>
+  before: Record<string, unknown>
+  after: Record<string, unknown>
+  approvedArguments: Record<string, unknown>
+}
+
 export interface AgentToolInventoryTool {
   name: string
   description: string
@@ -171,7 +185,7 @@ export interface AgentChangePayload {
   changes: AgentChangeField[]
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image'
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'manage-todos' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change' | 'manage-image' | 'manage-flow'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -372,6 +386,8 @@ export function normalizePermissionToolName(raw: string): string {
       return 'manage_todos'
     case 'manageimage':
       return 'manage_image'
+    case 'manageflow':
+      return 'manage_flow'
     default:
       return name
   }
@@ -434,8 +450,12 @@ export function countApprovalRequiredPermissions(
 }
 
 export function permissionKind(permission: DesktopPermissionRecord): DesktopPermissionKind {
-  if (permission.requirement.trim().toLowerCase() === 'workspace_scope') {
+  const requirement = permission.requirement.trim().toLowerCase()
+  if (requirement === 'workspace_scope') {
     return 'workspace-scope'
+  }
+  if (requirement === 'flow_change') {
+    return 'manage-flow'
   }
   switch (normalizePermissionToolName(permission.toolName)) {
     case 'exit_plan_mode':
@@ -449,6 +469,8 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
       return 'manage-todos'
     case 'manage_image':
       return 'manage-image'
+    case 'manage_flow':
+      return 'manage-flow'
     case 'ask_user':
       return 'ask-user'
     case 'task':
@@ -480,6 +502,8 @@ export function permissionDisplayToolName(raw: string): string {
       return 'manage_todos'
     case 'manage_image':
       return 'manage-image'
+    case 'manage_flow':
+      return 'manage-flow'
     default:
       return normalized
   }
@@ -643,6 +667,48 @@ export function parseManageTodosPermission(permission: DesktopPermissionRecord):
     isBatch: false,
     batchRows: [],
     summaryLine: '',
+    approvedArguments,
+  }
+}
+
+export function parseManageFlowPermission(permission: DesktopPermissionRecord): ManageFlowPayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const action = firstNonEmptyString(mapStringArg(payload, 'action'), mapStringArg(mapObjectArg(payload, 'change'), 'operation'), 'create').toLowerCase()
+  const approvedArguments = mapObjectArg(payload, 'approved_arguments')
+  const change = mapObjectArg(payload, 'change')
+  const before = asRecord(normalizePermissionPayloadValue(change.before)) ?? {}
+  const after = asRecord(normalizePermissionPayloadValue(change.after)) ?? mapObjectArg(payload, 'flow')
+  const approvedContent = mapObjectArg(approvedArguments, 'content')
+  const content = Object.keys(approvedContent).length > 0 ? approvedContent : after
+  const flowId = firstNonEmptyString(
+    mapStringArg(approvedArguments, 'flow_id'),
+    mapStringArg(approvedArguments, 'id'),
+    mapStringArg(payload, 'flow_id'),
+    mapStringArg(payload, 'id'),
+    mapStringArg(content, 'flow_id'),
+    mapStringArg(after, 'flow_id'),
+    mapStringArg(before, 'flow_id'),
+  )
+  const flowName = firstNonEmptyString(
+    mapStringArg(content, 'name'),
+    mapStringArg(after, 'name'),
+    mapStringArg(before, 'name'),
+    mapStringArg(payload, 'name'),
+    flowId,
+  )
+  const summary = firstNonEmptyString(mapStringArg(change, 'approval_summary'), mapStringArg(payload, 'approval_summary'), mapStringArg(payload, 'summary'))
+  const actionLabel = capitalizeLabel(action || 'change')
+  return {
+    title: action === 'delete' ? 'Delete Flow' : `${actionLabel} Flow`,
+    subtitle: flowName ? `${flowName}${flowId && flowId !== flowName ? ` · ${flowId}` : ''}` : 'Review this manage-flow change before applying it',
+    summary: summary || `${actionLabel} flow ${flowName || flowId || '(new flow)'}`,
+    action,
+    flowId,
+    flowName,
+    isDelete: action === 'delete',
+    content,
+    before,
+    after,
     approvedArguments,
   }
 }

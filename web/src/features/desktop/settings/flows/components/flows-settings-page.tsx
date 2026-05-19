@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, Bot, ChevronDown, Clock, MapPin, MoreHorizontal, Plus, Search, Workflow } from 'lucide-react'
@@ -78,7 +78,7 @@ interface FlowDefinition {
   raw: FlowSummaryRecord
 }
 
-interface AddFlowForm {
+export interface AddFlowForm {
   name: string
   agentKey: string
   targetKey: string
@@ -440,7 +440,7 @@ function cronPreviewLabels(expression: string): string[] {
   return labels.length ? labels : ['Preview unavailable for this cron expression.']
 }
 
-function targetOptionKey(target: FlowSwarmTarget): string {
+export function targetOptionKey(target: FlowSwarmTarget): string {
   const swarmID = target.swarm_id?.trim()
   if (swarmID) {
     return `swarm:${swarmID}`
@@ -480,11 +480,11 @@ function isManagedHostTarget(target: FlowSwarmTarget): boolean {
   return kind === 'host' || relationship === 'managed'
 }
 
-function targetOptionLabel(target: FlowSwarmTarget): string {
+export function targetOptionLabel(target: FlowSwarmTarget): string {
   return target.current ? `${targetDisplayName(target)} (current)` : targetDisplayName(target)
 }
 
-function targetOptionHelper(target: FlowSwarmTarget): string {
+export function targetOptionHelper(target: FlowSwarmTarget): string {
   if (!target.selectable) {
     return target.last_error?.trim() || 'Not selectable from here.'
   }
@@ -498,7 +498,7 @@ function targetOptionHelper(target: FlowSwarmTarget): string {
   return host ? 'Runs in a container on its managed host.' : 'Runs in a linked container.'
 }
 
-function targetOptionGroupLabel(target: FlowSwarmTarget, _targets: FlowSwarmTarget[]): string {
+export function targetOptionGroupLabel(target: FlowSwarmTarget, _targets: FlowSwarmTarget[]): string {
   if (isPrimaryTarget(target) || isPrimaryContainerTarget(target) || !targetHostKey(target) && !isManagedHostTarget(target)) {
     return 'Primary'
   }
@@ -580,15 +580,15 @@ export function workspaceOptionsFromEntries(workspaces: FlowWorkspaceEntry[]): F
     })
 }
 
-function agentOptionKey(profile: FlowAgentProfile): string {
+export function agentOptionKey(profile: FlowAgentProfile): string {
   return `${profile.name.trim().toLowerCase()}::${profile.mode.trim().toLowerCase()}`
 }
 
-function agentOptionLabel(profile: FlowAgentProfile): string {
+export function agentOptionLabel(profile: FlowAgentProfile): string {
   return profile.name.trim() || 'Unnamed agent'
 }
 
-function agentOptionGroupLabel(profile: FlowAgentProfile): string {
+export function agentOptionGroupLabel(profile: FlowAgentProfile): string {
   switch (profile.mode.trim().toLowerCase()) {
     case 'primary':
       return 'Primary'
@@ -599,7 +599,7 @@ function agentOptionGroupLabel(profile: FlowAgentProfile): string {
   }
 }
 
-function agentOptionGroupRank(profile: FlowAgentProfile): number {
+export function agentOptionGroupRank(profile: FlowAgentProfile): number {
   switch (profile.mode.trim().toLowerCase()) {
     case 'primary':
       return 0
@@ -623,14 +623,14 @@ export function groupedAgentOptions(options: FlowAgentOption[]): Array<{ label: 
   return groups
 }
 
-function agentOptionHelper(profile: FlowAgentProfile): string {
+export function agentOptionHelper(profile: FlowAgentProfile): string {
   const provider = profile.provider.trim() || 'Inherit'
   const model = profile.model.trim() || 'Inherit'
   const thinking = profile.thinking.trim() || 'Inherit'
   return `${provider} / ${model} • thinking ${thinking}`
 }
 
-function agentContractSummary(profile: FlowAgentProfile): string {
+export function agentContractSummary(profile: FlowAgentProfile): string {
   const toolScope = profile.toolScope
   if (!toolScope) {
     return 'No explicit contract restrictions saved'
@@ -1050,7 +1050,7 @@ function FilterSelect({ value, onChange, options, label }: { value: string; onCh
   )
 }
 
-function FlowSettingsModal({
+export function FlowSettingsModal({
   open,
   mode = 'create',
   initialForm,
@@ -1063,6 +1063,7 @@ function FlowSettingsModal({
   agentOptions,
   loadingOptions,
   loadWorkspacesForTarget,
+  footerAccessory,
 }: {
   open: boolean
   mode?: 'create' | 'edit'
@@ -1076,6 +1077,7 @@ function FlowSettingsModal({
   agentOptions: FlowAgentOption[]
   loadingOptions?: boolean
   loadWorkspacesForTarget: (target: FlowSwarmTarget, signal?: AbortSignal) => Promise<FlowWorkspaceEntry[]>
+  footerAccessory?: ReactNode
 }) {
   const defaultInitialForm = useMemo(() => initialAddFlowForm(targetOptions, workspaceOptions, agentOptions), [agentOptions, targetOptions, workspaceOptions])
   const effectiveInitialForm = useMemo(() => initialForm ?? defaultInitialForm, [defaultInitialForm, initialForm])
@@ -1442,9 +1444,12 @@ function FlowSettingsModal({
             </div>
           </div>
 
-          <div className="grid gap-2 border-t border-[rgba(255,255,255,0.10)] bg-[#1a1921] px-4 py-3 sm:flex sm:items-center sm:justify-end sm:px-5">
-            <Button variant="outline" className="w-full rounded-xl border-[rgba(255,255,255,0.13)] bg-transparent text-[rgba(255,255,255,0.70)] hover:border-[rgba(255,255,255,0.20)] hover:bg-[rgba(255,255,255,0.035)] sm:w-auto" onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button data-testid="flows-add-submit" type="submit" variant="primary" className="w-full rounded-xl border-[#b87586]/40 bg-[#a86678] text-white hover:bg-[#b87586] active:bg-[#96596a] sm:w-auto" disabled={!canSubmit}>{busy ? (mode === 'edit' ? 'Saving…' : 'Adding…') : (mode === 'edit' ? 'Save' : 'Add Flow')}</Button>
+          <div className="grid gap-3 border-t border-[rgba(255,255,255,0.10)] bg-[#1a1921] px-4 py-3 sm:px-5">
+            {footerAccessory ? <div className="min-w-0">{footerAccessory}</div> : null}
+            <div className="grid gap-2 sm:flex sm:items-center sm:justify-end">
+              <Button variant="outline" className="w-full rounded-xl border-[rgba(255,255,255,0.13)] bg-transparent text-[rgba(255,255,255,0.70)] hover:border-[rgba(255,255,255,0.20)] hover:bg-[rgba(255,255,255,0.035)] sm:w-auto" onClick={onClose} disabled={busy}>Cancel</Button>
+              <Button data-testid="flows-add-submit" type="submit" variant="primary" className="w-full rounded-xl border-[#b87586]/40 bg-[#a86678] text-white hover:bg-[#b87586] active:bg-[#96596a] sm:w-auto" disabled={!canSubmit}>{busy ? (mode === 'edit' ? 'Saving…' : 'Adding…') : (mode === 'edit' ? 'Save' : 'Add Flow')}</Button>
+            </div>
           </div>
         </form>
       </DialogPanel>

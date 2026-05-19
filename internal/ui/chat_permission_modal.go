@@ -221,6 +221,13 @@ func permissionPrimaryRequestSummary(toolName string, payload map[string]any) st
 			return "task " + description
 		}
 		return "task"
+	case "manage_flow":
+		action := strings.TrimSpace(jsonString(payload, "action"))
+		flowID := strings.TrimSpace(firstNonEmptyString(jsonString(payload, "flow_id"), jsonString(payload, "id"), jsonString(payload, "name")))
+		if flowID == "" {
+			return "manage-flow " + firstNonEmptyString(action, "change")
+		}
+		return "manage-flow " + firstNonEmptyString(action, "change") + " " + flowID
 	case "manage_todos":
 		action := strings.TrimSpace(jsonString(payload, "action"))
 		text := strings.TrimSpace(jsonString(payload, "text"))
@@ -345,6 +352,8 @@ func permissionPreferredArgumentKeys(toolName string) []string {
 		return []string{"action", "theme", "workspace_path", "change", "summary"}
 	case "manage_todos":
 		return []string{"action", "owner_kind", "operations", "text", "id", "done", "priority", "group", "tags", "in_progress", "ordered_ids", "workspace_path"}
+	case "manage_flow":
+		return []string{"action", "flow_id", "name", "approval_summary", "change", "approved_arguments", "preview", "content"}
 	default:
 		return nil
 	}
@@ -614,6 +623,8 @@ func normalizePermissionToolName(raw string) string {
 		return "exit_plan_mode"
 	case "managetodos":
 		return "manage_todos"
+	case "manageflow":
+		return "manage_flow"
 	case "managetheme":
 		return "manage_theme"
 	}
@@ -632,6 +643,8 @@ func permissionDisplayToolName(raw string) string {
 		return "exit_plan_mode"
 	case "manage_todos":
 		return "manage_todos"
+	case "manage_flow":
+		return "manage-flow"
 	case "manage_theme":
 		return "manage-theme"
 	default:

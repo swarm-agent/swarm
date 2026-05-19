@@ -440,6 +440,15 @@ type ChatPage struct {
 	planExitCancelRect  Rect
 	planExitConfirmRect Rect
 
+	manageFlowPermission  string
+	manageFlowTitle       string
+	manageFlowBody        string
+	manageFlowScroll      int
+	manageFlowSelection   int
+	manageFlowInput       string
+	manageFlowCancelRect  Rect
+	manageFlowConfirmRect Rect
+
 	planEditorVisible     bool
 	planEditorPlan        ChatSessionPlan
 	planEditorInput       string
@@ -786,6 +795,9 @@ func (p *ChatPage) HandleMouse(ev *tcell.EventMouse) {
 	if p.handlePlanExitModalMouse(ev) {
 		return
 	}
+	if p.handleManageFlowModalMouse(ev) {
+		return
+	}
 	if p.handleManageTodosModalMouse(ev) {
 		return
 	}
@@ -914,6 +926,9 @@ func (p *ChatPage) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 	if p.handlePlanExitModalKey(ev) {
+		return
+	}
+	if p.handleManageFlowModalKey(ev) {
 		return
 	}
 	if p.handleManageTodosModalKey(ev) {
@@ -1365,7 +1380,7 @@ func (p *ChatPage) permissionReason() string {
 }
 
 func (p *ChatPage) permissionModalActive() bool {
-	return !p.planUpdateModalActive() && !p.planExitModalActive() && !p.askUserModalActive() && !p.workspaceScopeModalActive() && !p.taskLaunchModalActive() && !p.agentChangeModalActive() && !p.skillChangeModalActive() && p.genericPermissionCount() > 0
+	return !p.planUpdateModalActive() && !p.planExitModalActive() && !p.manageFlowModalActive() && !p.askUserModalActive() && !p.workspaceScopeModalActive() && !p.taskLaunchModalActive() && !p.agentChangeModalActive() && !p.skillChangeModalActive() && p.genericPermissionCount() > 0
 }
 
 func (p *ChatPage) Draw(s tcell.Screen) {
@@ -1537,6 +1552,8 @@ func (p *ChatPage) Draw(s tcell.Screen) {
 		p.drawPlanUpdateModal(s, Rect{X: 0, Y: 0, W: w, H: h})
 	} else if p.planExitModalActive() {
 		p.drawPlanExitModal(s, Rect{X: 0, Y: 0, W: w, H: h})
+	} else if p.manageFlowModalActive() {
+		p.drawManageFlowModal(s, Rect{X: 0, Y: 0, W: w, H: h})
 	} else if p.manageTodosModalActive() {
 		p.drawManageTodosModal(s, Rect{X: 0, Y: 0, W: w, H: h})
 	} else if p.askUserModalActive() {
@@ -5146,7 +5163,7 @@ func (p *ChatPage) ensurePermissionSelection() {
 func (p *ChatPage) genericPermissionCount() int {
 	count := 0
 	for i := range p.pendingPerms {
-		if isPlanUpdatePermission(p.pendingPerms[i]) || isExitPlanPermission(p.pendingPerms[i]) || isManageTodosPermission(p.pendingPerms[i]) || isAskUserPermission(p.pendingPerms[i]) || isWorkspaceScopePermission(p.pendingPerms[i]) || isTaskLaunchPermission(p.pendingPerms[i]) || isThemeChangePermission(p.pendingPerms[i]) || isAgentChangePermission(p.pendingPerms[i]) || isSkillChangePermission(p.pendingPerms[i]) {
+		if isPlanUpdatePermission(p.pendingPerms[i]) || isExitPlanPermission(p.pendingPerms[i]) || isManageFlowPermission(p.pendingPerms[i]) || isManageTodosPermission(p.pendingPerms[i]) || isAskUserPermission(p.pendingPerms[i]) || isWorkspaceScopePermission(p.pendingPerms[i]) || isTaskLaunchPermission(p.pendingPerms[i]) || isThemeChangePermission(p.pendingPerms[i]) || isAgentChangePermission(p.pendingPerms[i]) || isSkillChangePermission(p.pendingPerms[i]) {
 			continue
 		}
 		count++
@@ -5160,7 +5177,7 @@ func (p *ChatPage) genericPermissionIndexes() []int {
 	}
 	indexes := make([]int, 0, len(p.pendingPerms))
 	for i := range p.pendingPerms {
-		if isPlanUpdatePermission(p.pendingPerms[i]) || isExitPlanPermission(p.pendingPerms[i]) || isManageTodosPermission(p.pendingPerms[i]) || isAskUserPermission(p.pendingPerms[i]) || isWorkspaceScopePermission(p.pendingPerms[i]) || isTaskLaunchPermission(p.pendingPerms[i]) || isThemeChangePermission(p.pendingPerms[i]) || isSkillChangePermission(p.pendingPerms[i]) {
+		if isPlanUpdatePermission(p.pendingPerms[i]) || isExitPlanPermission(p.pendingPerms[i]) || isManageFlowPermission(p.pendingPerms[i]) || isManageTodosPermission(p.pendingPerms[i]) || isAskUserPermission(p.pendingPerms[i]) || isWorkspaceScopePermission(p.pendingPerms[i]) || isTaskLaunchPermission(p.pendingPerms[i]) || isThemeChangePermission(p.pendingPerms[i]) || isSkillChangePermission(p.pendingPerms[i]) {
 			continue
 		}
 		indexes = append(indexes, i)
@@ -5232,6 +5249,9 @@ func (p *ChatPage) syncSpecialPermissionModals() {
 	if p.planExitModalActive() {
 		return
 	}
+	if p.manageFlowModalActive() {
+		return
+	}
 	if p.manageTodosModalActive() {
 		return
 	}
@@ -5279,6 +5299,14 @@ func (p *ChatPage) syncSpecialPermissionModals() {
 		break
 	}
 	if !found {
+		for i := range p.pendingPerms {
+			record := p.pendingPerms[i]
+			if !isManageFlowPermission(record) {
+				continue
+			}
+			p.OpenManageFlowPermissionModal(record)
+			return
+		}
 		for i := range p.pendingPerms {
 			record := p.pendingPerms[i]
 			if !isManageTodosPermission(record) {
