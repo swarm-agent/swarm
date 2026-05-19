@@ -1,7 +1,7 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, ChevronLeft, ChevronRight, Clipboard, Download, ExternalLink, FolderOpen, Image, Link2, Moon, Sparkles, TriangleAlert, X } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Clipboard, Download, ExternalLink, FolderOpen, Image, Link2, Moon, Settings2, Sparkles, TriangleAlert, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Select } from '../../../../components/ui/select'
@@ -128,6 +128,45 @@ const GOOGLE_GEMINI_IMAGE_SIZE_OPTIONS = [
   { id: '2K', label: '2K', helper: 'Higher resolution' },
   { id: '4K', label: '4K', helper: 'Highest resolution' },
 ] as const
+
+const containedImageStyle: CSSProperties = {
+  display: 'block',
+  inlineSize: 'auto',
+  blockSize: 'auto',
+  maxInlineSize: '100%',
+  maxBlockSize: '100%',
+  objectFit: 'contain',
+}
+
+const fillContainedImageStyle: CSSProperties = {
+  display: 'block',
+  inlineSize: '100%',
+  blockSize: '100%',
+  maxInlineSize: '100%',
+  maxBlockSize: '100%',
+  objectFit: 'contain',
+}
+
+function aspectRatioPreviewSizeClass(aspectRatio: string): string {
+  switch (aspectRatio) {
+    case '1:1':
+      return 'h-7 w-7'
+    case '21:9':
+      return 'h-2.5 w-9'
+    case '16:9':
+      return 'h-4 w-9'
+    case '3:2':
+    case '4:3':
+      return 'h-5 w-8'
+    case '9:16':
+      return 'h-9 w-5'
+    case '2:3':
+    case '3:4':
+      return 'h-8 w-5'
+    default:
+      return 'h-6 w-7'
+  }
+}
 
 function livePreviewSlotKey(value: { item_id?: string; output_index?: number }): string {
   const itemId = String(value.item_id ?? '').trim()
@@ -277,10 +316,13 @@ export function ImageToolPage() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [selectedImageAssetId, setSelectedImageAssetId] = useState<string | null>(null)
   const [imageLightboxOpen, setImageLightboxOpen] = useState(false)
+  const [mobileDetailsOpen, setMobileDetailsOpen] = useState(false)
   const [lightboxNaturalSize, setLightboxNaturalSize] = useState<{ width: number; height: number } | null>(null)
   const followLivePreviewRef = useRef(false)
   const selectedThumbnailButtonRef = useRef<HTMLButtonElement | null>(null)
   const thumbnailScrollerRef = useRef<HTMLDivElement | null>(null)
+  const mobileSelectedThumbnailButtonRef = useRef<HTMLButtonElement | null>(null)
+  const mobileThumbnailScrollerRef = useRef<HTMLDivElement | null>(null)
   const [selectedImageModel, setSelectedImageModel] = useState<string>(IMAGE_MODEL_OPTIONS[0]?.id ?? '')
   const [imageDefaultSaving, setImageDefaultSaving] = useState(false)
   const [imageDefaultStatus, setImageDefaultStatus] = useState('')
@@ -487,12 +529,14 @@ export function ImageToolPage() {
 
   useEffect(() => {
     if (!selectedThumbnailId) return
-    const scroller = thumbnailScrollerRef.current
-    const selectedButton = selectedThumbnailButtonRef.current
-    if (!scroller || !selectedButton) return
-    const buttonCenter = selectedButton.offsetLeft + selectedButton.offsetWidth / 2
-    const targetLeft = buttonCenter - scroller.clientWidth / 2
-    scroller.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' })
+    const scrollSelectedThumbnailIntoView = (scroller: HTMLDivElement | null, selectedButton: HTMLButtonElement | null) => {
+      if (!scroller || !selectedButton) return
+      const buttonCenter = selectedButton.offsetLeft + selectedButton.offsetWidth / 2
+      const targetLeft = buttonCenter - scroller.clientWidth / 2
+      scroller.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' })
+    }
+    scrollSelectedThumbnailIntoView(thumbnailScrollerRef.current, selectedThumbnailButtonRef.current)
+    scrollSelectedThumbnailIntoView(mobileThumbnailScrollerRef.current, mobileSelectedThumbnailButtonRef.current)
   }, [selectedThumbnailId, thumbnailItems.length])
 
   useEffect(() => {
@@ -561,6 +605,12 @@ export function ImageToolPage() {
     }
     setLightboxNaturalSize(null)
   }, [selectedImageAsset])
+
+  useEffect(() => {
+    if (!selectedThread) {
+      setMobileDetailsOpen(false)
+    }
+  }, [selectedThread])
 
   const handleBackToTools = useMemo(() => {
     if (routeWorkspaceSlug) {
@@ -948,14 +998,14 @@ export function ImageToolPage() {
 
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
-      <div className="mx-auto flex h-full w-full max-w-none flex-col p-0 lg:px-5 lg:py-5">
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-none flex-col overflow-hidden p-0 lg:px-5 lg:py-5">
         {createError || generationError ? (
           <div className="mx-4 mt-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm text-[var(--app-text)] lg:mx-0 lg:mb-4 lg:mt-0">
             {createError || generationError}
           </div>
         ) : null}
 
-        <main className="flex min-h-0 flex-1 overflow-hidden py-0 lg:py-5">
+        <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden overflow-x-hidden py-0 lg:py-5">
           <div className={showMobileSessionLauncher ? 'flex min-h-dvh w-full flex-col overflow-hidden px-4 pb-[calc(var(--app-safe-area-bottom)+1rem)] pt-[calc(var(--app-safe-area-top)+0.75rem)] lg:contents lg:p-0' : 'hidden lg:contents'}>
           <SwarmToolSidebar
             backLabel="Tools"
@@ -1080,14 +1130,15 @@ export function ImageToolPage() {
               </div>
             ) : null}
           </SwarmToolSidebar>
+          </div>
 
-          <section className={showMobileSessionLauncher ? 'hidden min-w-0 flex-1 flex-col overflow-y-auto lg:flex xl:overflow-hidden' : 'flex min-w-0 flex-1 flex-col overflow-y-auto xl:overflow-hidden'}>
-            <div className="mb-4 flex items-center justify-between gap-3 lg:hidden">
+          <section className={showMobileSessionLauncher ? 'hidden min-w-0 flex-1 flex-col overflow-y-auto lg:flex xl:overflow-hidden' : 'flex h-[100dvh] min-h-0 w-full max-w-[100dvw] min-w-0 flex-1 flex-col overflow-hidden overflow-x-hidden px-3 pt-[calc(var(--app-safe-area-top)+0.75rem)] max-[400px]:px-2 max-[400px]:pt-[calc(var(--app-safe-area-top)+0.5rem)] lg:h-auto lg:max-w-full lg:px-0 lg:pt-0 lg:overflow-y-auto xl:overflow-hidden'}>
+            <div className="mb-3 flex shrink-0 items-center justify-between gap-2 max-[400px]:mb-1.5 lg:hidden">
               <div className="flex min-w-0 items-center gap-2">
-                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBackToTools}><ArrowLeft size={15} />Tools</Button>
-                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-subtle)]" onClick={handleBackToLauncher}>{routeWorkspaceSlug ? (activeSessionId ? 'Chat' : 'Launcher') : 'Launcher'}</Button>
+                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToTools}><ArrowLeft size={15} />Tools</Button>
+                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-subtle)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToLauncher}>{routeWorkspaceSlug ? (activeSessionId ? 'Chat' : 'Launcher') : 'Launcher'}</Button>
               </div>
-              <Button variant="outline" style={darkOverrideButtonStyle} className={`h-8 w-8 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
+              <Button variant="outline" style={darkOverrideButtonStyle} className={`h-11 w-11 rounded-2xl px-0 max-[400px]:h-9 max-[400px]:w-9 ${blackModeEnabled ? 'border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={20} aria-hidden="true" /></Button>
             </div>
 
             {!selectedThread ? (
@@ -1101,8 +1152,152 @@ export function ImageToolPage() {
                 </div>
               </div>
             ) : (
-              <div className="grid min-h-full gap-3 xl:h-full xl:min-h-0 xl:grid-cols-[minmax(0,1fr)_360px] xl:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_400px]">
-                <div className="grid min-h-[520px] grid-rows-[minmax(0,1fr)_auto] gap-3 overflow-hidden xl:min-h-0">
+              <>
+                <div data-testid="image-mobile-workspace" className="flex h-full min-h-0 w-full max-w-full min-w-0 flex-1 flex-col overflow-hidden overflow-x-hidden lg:hidden">
+                  <div className="mb-2 flex min-w-0 shrink-0 items-center justify-between gap-2 max-[400px]:mb-1">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)] max-[400px]:sr-only">Image workspace</p>
+                      <h2 className="truncate text-base font-semibold tracking-[-0.045em] text-[var(--app-text)] max-[400px]:text-sm">{selectedThread.title || 'Image thread'}</h2>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {selectedImageAsset ? (
+                        <Button variant="outline" className="h-8 rounded-xl px-3 text-xs max-[400px]:h-7 max-[400px]:px-2" onClick={() => void handleDownloadSelectedImage()}>
+                          <Download size={13} />Save
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div data-testid="image-mobile-shell" className="grid h-full min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto_auto] overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
+                    <div data-testid="image-mobile-canvas" className="relative grid min-h-0 min-w-0 place-items-center overflow-hidden bg-[radial-gradient(circle_at_top,var(--app-surface-hover),transparent_36%),var(--app-bg)] p-2 max-[400px]:p-1.5">
+                      <div className="grid h-full max-h-full min-h-0 w-full min-w-0 max-w-full place-items-center overflow-hidden border border-[var(--app-border)] bg-[linear-gradient(135deg,var(--app-surface)_0%,var(--app-bg)_56%,var(--app-surface-hover)_100%)]">
+                        {activeLivePreview ? (
+                          <div className="relative flex h-full max-h-full min-h-0 w-full min-w-0 max-w-full items-center justify-center overflow-hidden p-2 text-center max-[400px]:p-1">
+                            <img src={activeLivePreview.dataUrl} alt={activeLivePreview.label} className="min-h-0 min-w-0" style={fillContainedImageStyle} />
+                            <div className="absolute bottom-2 left-2 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-[10px] text-[var(--app-text-muted)]">
+                              Generating preview
+                            </div>
+                          </div>
+                        ) : selectedImageAsset ? (
+                          <button type="button" className="group relative flex h-full max-h-full min-h-0 w-full min-w-0 max-w-full cursor-zoom-in items-center justify-center overflow-hidden p-2 max-[400px]:p-1" onClick={openImageLightbox} aria-label="Open image fullscreen">
+                            <span className="flex h-full max-h-full min-h-0 w-full min-w-0 max-w-full items-center justify-center overflow-hidden">
+                              <img data-testid="image-mobile-selected-img" src={selectedImageSource} alt={selectedImageAsset.name} className="min-h-0 min-w-0 transition duration-150 group-active:scale-[0.99]" style={containedImageStyle} />
+                            </span>
+                            <span className="pointer-events-none absolute bottom-2 right-2 hidden rounded-full border border-white/20 bg-black/60 px-2.5 py-1 text-[10px] font-medium text-white shadow-lg min-[401px]:inline-flex">
+                              Tap to view
+                            </span>
+                          </button>
+                        ) : generatingImage ? (
+                          <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
+                            <Sparkles className="animate-pulse text-[var(--app-primary)]" size={44} strokeWidth={1.35} />
+                            <div className="max-w-[260px]">
+                              <p className="text-xl font-semibold tracking-[-0.055em] text-[var(--app-text)]">Generating…</p>
+                              <p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)]">Streaming previews into this session.</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
+                            <Sparkles className="text-[var(--app-primary)]" size={44} strokeWidth={1.35} />
+                            <div className="max-w-[280px]">
+                              <p className="text-xl font-semibold tracking-[-0.055em] text-[var(--app-text)]">Start with a prompt</p>
+                              <p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)]">Generated images stay focused here. The gallery is below.</p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <section data-testid="image-mobile-gallery" className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 max-[400px]:py-1" aria-label="Gallery">
+                      <div className="mb-1 flex items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-[0.18em] text-[var(--app-text-subtle)] max-[400px]:sr-only">
+                        <span>Gallery</span>
+                        <span>{orderedImageAssets.length} saved</span>
+                      </div>
+                      <div ref={mobileThumbnailScrollerRef} className="flex max-w-full snap-x snap-mandatory gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain pb-1 max-[400px]:gap-1.5">
+                        {thumbnailItems.length > 0 ? thumbnailItems.map((item) => {
+                          const selected = item.id === selectedThumbnailId
+                          const imageSrc = item.kind === 'asset'
+                            ? item.asset.url ?? imageAssetURL(selectedThread.id, item.asset.id)
+                            : item.kind === 'live'
+                              ? item.preview.dataUrl
+                              : ''
+                          return (
+                            <button
+                              key={item.id}
+                              ref={selected ? mobileSelectedThumbnailButtonRef : null}
+                              type="button"
+                              onClick={() => handleSelectThumbnail(item)}
+                              className={['group min-w-[68px] max-w-[68px] snap-start border bg-[var(--app-bg)] p-1 text-left transition max-[400px]:min-w-[56px] max-[400px]:max-w-[56px]', selected ? 'border-[var(--app-border-accent)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)]'].join(' ')}
+                              aria-pressed={selected}
+                            >
+                              <div className="grid aspect-square place-items-center overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
+                                {imageSrc ? (
+                                  <img src={imageSrc} alt={item.label} className="h-full w-full object-contain" />
+                                ) : (
+                                  <Sparkles className="animate-pulse text-[var(--app-primary)]" size={18} strokeWidth={1.4} />
+                                )}
+                              </div>
+                              <p className="mt-1 truncate text-[9px] font-medium text-[var(--app-text-muted)] max-[400px]:sr-only">{item.kind === 'pending' ? 'Pending' : item.label}</p>
+                            </button>
+                          )
+                        }) : (
+                          <div className="min-w-full border border-dashed border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-4 text-center text-xs text-[var(--app-text-muted)]">
+                            Images appear here as soon as they are saved.
+                          </div>
+                        )}
+                      </div>
+                    </section>
+
+                    <div data-testid="image-mobile-composer" className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-bg)] px-2 pb-[calc(var(--app-safe-area-bottom)+0.5rem)] pt-2 max-[400px]:px-1.5 max-[400px]:pb-[calc(var(--app-safe-area-bottom)+0.25rem)] max-[400px]:pt-1">
+                      <div className="mb-2 flex max-w-full items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 text-[11px] max-[400px]:mb-1 max-[400px]:gap-1.5 max-[400px]:text-[10px]">
+                        <button type="button" className="inline-flex h-9 max-w-[52vw] shrink-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 font-semibold text-[var(--app-text)] max-[400px]:h-7 max-[400px]:px-2" onClick={() => setMobileDetailsOpen(true)} aria-label="Open image settings">
+                          <span className="text-[var(--app-text-subtle)]">Model</span>
+                          <span className="truncate">{selectedModelLabel}</span>
+                        </button>
+                        <button type="button" className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 font-semibold text-[var(--app-text)] max-[400px]:h-7 max-[400px]:px-2" onClick={() => setMobileDetailsOpen(true)} aria-label="Open image shape settings">
+                          <span className="text-[var(--app-text-subtle)]">Shape</span>
+                          <span>{selectedShapeLabel}</span>
+                        </button>
+                        <button type="button" className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 font-semibold text-[var(--app-text)] max-[400px]:h-7 max-[400px]:px-2" onClick={() => setMobileDetailsOpen(true)} aria-label="Open image size settings">
+                          <span className="text-[var(--app-text-subtle)]">Size</span>
+                          <span>{selectedSizeLabel}</span>
+                        </button>
+                        <button type="button" className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 font-semibold text-[var(--app-text)] max-[400px]:h-7 max-[400px]:px-2" onClick={() => setMobileDetailsOpen(true)} aria-label="Open image count settings">
+                          <span className="text-[var(--app-text-subtle)]">Count</span>
+                          <span>{selectedFinalImageCount}</span>
+                        </button>
+                      </div>
+                      {!selectedProviderReady ? (
+                        <div className="mb-2 flex items-start gap-2 border border-[var(--app-warning)]/40 bg-[var(--app-warning)]/10 px-2.5 py-2 text-[10px] leading-snug text-[var(--app-text)]">
+                          <TriangleAlert size={14} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
+                          <span>{selectedProviderWarning}</span>
+                        </div>
+                      ) : null}
+                      <div className="flex h-11 items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-2 shadow-lg shadow-black/10 max-[400px]:h-9">
+                        <input
+                          className="h-full min-w-0 flex-1 border-0 bg-transparent px-2 text-sm text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-subtle)] max-[400px]:text-[13px]"
+                          value={promptText}
+                          onChange={(event) => setPromptText(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' && !event.shiftKey) {
+                              event.preventDefault()
+                              if (canGenerateImage) void handleGenerateImage()
+                            }
+                          }}
+                          placeholder="Describe the image…"
+                        />
+                        <button type="button" className="grid h-9 w-9 shrink-0 place-items-center text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] max-[400px]:h-8 max-[400px]:w-8" onClick={() => setMobileDetailsOpen(true)} aria-label="Open image settings">
+                          <Settings2 size={18} />
+                        </button>
+                        <button type="button" className="grid h-9 w-9 shrink-0 place-items-center text-[var(--app-primary)] transition hover:text-[var(--app-primary-hover)] disabled:text-[var(--app-text-muted)] max-[400px]:h-8 max-[400px]:w-8" disabled={!canGenerateImage} onClick={() => void handleGenerateImage()} aria-label={generatingImage ? 'Generating image' : 'Generate image'}>
+                          <Sparkles size={18} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="hidden min-h-full gap-3 lg:grid xl:h-full xl:min-h-0 xl:grid-cols-[minmax(0,1fr)_360px] xl:overflow-hidden 2xl:grid-cols-[minmax(0,1fr)_400px]">
+                  <div className="grid min-h-[520px] grid-rows-[minmax(0,1fr)_auto] gap-3 overflow-hidden xl:min-h-0">
                   <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
                     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-3 py-2">
                     <div className="min-w-0">
@@ -1261,7 +1456,7 @@ export function ImageToolPage() {
                           <button key={option.id} type="button" onClick={() => setSelectedGoogleAspectRatio(option.id)} className={['relative flex flex-col justify-center rounded-xl border p-2.5 text-left transition-all', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-text-muted)]'].join(' ')} disabled={generatingImage}>
                             <span className="text-xs font-bold">{option.label}</span>
                             <span className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">{option.helper}</span>
-                            <div className={['absolute right-2 top-2 rounded-sm border', option.id === '1:1' ? 'h-4 w-4' : option.id === '16:9' || option.id === '21:9' || option.id === '3:2' || option.id === '4:3' ? 'h-3 w-5' : 'h-5 w-3', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-primary)] bg-[var(--app-primary)]/20' : 'border-[var(--app-border)] bg-[var(--app-surface)]'].join(' ')} />
+                            <div className={['absolute right-2 top-2 rounded-sm border', aspectRatioPreviewSizeClass(option.id), selectedGoogleAspectRatio === option.id ? 'border-[var(--app-primary)] bg-[var(--app-primary)]/20' : 'border-[var(--app-border)] bg-[var(--app-surface)]'].join(' ')} />
                           </button>
                         )) : OPENAI_IMAGE_SIZE_OPTIONS.map((option) => (
                           <button key={option.id} type="button" onClick={() => setSelectedOpenAIImageSize(option.id)} className={['relative flex flex-col justify-center rounded-xl border p-2.5 text-left transition-all', selectedOpenAIImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-text-muted)]'].join(' ')} disabled={generatingImage}>
@@ -1341,66 +1536,69 @@ export function ImageToolPage() {
                   </div>
                 </aside>
               </div>
+              </>
             )}
           </section>
-          </div>
         </main>
         {imageLightboxOpen && selectedThread && selectedImageAsset ? (
-          <Dialog className="z-[80] p-0">
+          <Dialog className="z-[80] p-0 overflow-hidden">
             <DialogBackdrop className="bg-black/90" onClick={() => setImageLightboxOpen(false)} />
             <DialogPanel
               className="h-[100dvh] max-h-none w-screen max-w-none rounded-none border-0 bg-black p-0 text-white"
               style={{ height: '100dvh', maxHeight: 'none', width: '100vw' }}
             >
-              <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]">
-                <div className="relative z-10 flex items-center justify-between gap-3 border-b border-white/10 bg-black/70 px-4 py-3 backdrop-blur">
+              <div className="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
+                <div className="relative z-10 flex min-w-0 items-center justify-between gap-2 border-b border-white/10 bg-black/70 px-3 py-2 backdrop-blur sm:gap-3 sm:px-4 sm:py-3">
                   <div className="min-w-0">
                     <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-white/50">Fullscreen preview</p>
                     <h2 className="mt-1 truncate text-sm font-semibold text-white">{selectedImageAsset.name}</h2>
                   </div>
-                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                  <div className="flex shrink-0 items-center justify-end gap-2">
                     <span className="hidden rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs text-white/75 sm:inline-flex">
                       {activePreviewNumber} / {orderedImageAssets.length}
                     </span>
-                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={() => void handleDownloadSelectedImage()}>
+                    <Button variant="outline" className="hidden h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20 sm:inline-flex" onClick={() => void handleDownloadSelectedImage()}>
                       <Download size={13} />Download
                     </Button>
-                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
+                    <Button variant="outline" className="hidden h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20 sm:inline-flex" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
                       <Clipboard size={13} />Copy filepath
                     </Button>
-                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={handleOpenSelectedImage}>
+                    <Button variant="outline" className="hidden h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20 sm:inline-flex" onClick={handleOpenSelectedImage}>
                       <ExternalLink size={13} />Open full-res
                     </Button>
-                    <Button variant="outline" className="h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20" onClick={() => void handleRevealImageStorage(selectedImageAsset.id)} disabled={revealingStorage}>
+                    <Button variant="outline" className="hidden h-9 rounded-full border-white/20 bg-white/10 px-3 text-xs text-white hover:bg-white/20 md:inline-flex" onClick={() => void handleRevealImageStorage(selectedImageAsset.id)} disabled={revealingStorage}>
                       <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Reveal local'}
                     </Button>
-                    <Button variant="outline" className="h-11 w-11 rounded-full border-white/20 bg-white/10 px-0 text-white hover:bg-white/20" onClick={() => setImageLightboxOpen(false)} aria-label="Close fullscreen preview">
+                    <Button variant="outline" className="h-11 w-11 shrink-0 rounded-full border-white/20 bg-white/10 px-0 text-white hover:bg-white/20" onClick={() => setImageLightboxOpen(false)} aria-label="Close fullscreen preview">
                       <X size={24} strokeWidth={2.4} />
                     </Button>
                   </div>
                 </div>
 
-                <div className="relative flex min-h-0 justify-center overflow-auto px-4 py-4 sm:px-8 sm:py-6">
-                  <Button variant="outline" className="absolute left-3 top-1/2 z-10 h-12 w-12 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15" onClick={handlePreviousPreview} disabled={orderedImageAssets.length <= 1} aria-label="Previous image">
+                <div className="relative grid min-h-0 min-w-0 place-items-center overflow-hidden px-3 py-3 sm:px-8 sm:py-6">
+                  <Button variant="outline" className="absolute left-2 top-1/2 z-10 h-11 w-11 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15 sm:left-3 sm:h-12 sm:w-12" onClick={handlePreviousPreview} disabled={orderedImageAssets.length <= 1} aria-label="Previous image">
                     <ChevronLeft size={24} />
                   </Button>
-                  <img
-                    key={selectedImageAsset.id}
-                    src={selectedImageSource}
-                    alt={selectedImageAsset.name}
-                    className={`h-auto w-auto max-w-full select-none object-contain shadow-2xl shadow-black/70 ${orderedImageAssets.length > 1 ? 'cursor-pointer' : ''}`}
-                    onClick={orderedImageAssets.length > 1 ? handleNextPreview : undefined}
-                    onLoad={(event) => setLightboxNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
-                  />
-                  <Button variant="outline" className="absolute right-3 top-1/2 z-10 h-12 w-12 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15" onClick={handleNextPreview} disabled={orderedImageAssets.length <= 1} aria-label="Next image">
+                  <div className="flex h-full max-h-full min-h-0 w-full min-w-0 max-w-full items-center justify-center overflow-hidden">
+                    <img
+                      key={selectedImageAsset.id}
+                      src={selectedImageSource}
+                      alt={selectedImageAsset.name}
+                      className={`block min-h-0 min-w-0 select-none shadow-2xl shadow-black/70 ${orderedImageAssets.length > 1 ? 'cursor-pointer' : ''}`}
+                      style={containedImageStyle}
+                      onClick={orderedImageAssets.length > 1 ? handleNextPreview : undefined}
+                      onLoad={(event) => setLightboxNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+                    />
+                  </div>
+                  <Button variant="outline" className="absolute right-2 top-1/2 z-10 h-11 w-11 -translate-y-1/2 rounded-full border-white/20 bg-black/45 px-0 text-white backdrop-blur hover:bg-white/15 sm:right-3 sm:h-12 sm:w-12" onClick={handleNextPreview} disabled={orderedImageAssets.length <= 1} aria-label="Next image">
                     <ChevronRight size={24} />
                   </Button>
                 </div>
 
-                <div className="border-t border-white/10 bg-black/80 px-3 py-3 backdrop-blur">
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-white/60">
-                    <span>Session images</span>
-                    <span>{lightboxNaturalSize ? `${lightboxNaturalSize.width} × ${lightboxNaturalSize.height}px` : 'Resolution loading…'} · {formatBytes(selectedImageAsset.sizeBytes)}</span>
+                <div className="min-w-0 border-t border-white/10 bg-black/80 px-3 py-2 backdrop-blur sm:py-3">
+                  <div className="mb-2 flex items-center justify-between gap-2 text-xs text-white/60">
+                    <span className="shrink-0">Session images</span>
+                    <span className="min-w-0 truncate text-right">{lightboxNaturalSize ? `${lightboxNaturalSize.width} × ${lightboxNaturalSize.height}px` : 'Resolution loading…'} · {formatBytes(selectedImageAsset.sizeBytes)}</span>
                   </div>
                   {(pathCopyStatus || imageActionStatus || lastStoragePath) ? (
                     <div className="mb-2 space-y-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-[10px] text-white/55">
@@ -1408,7 +1606,7 @@ export function ImageToolPage() {
                       {lastStoragePath ? <p className="break-all">{lastStoragePath}</p> : null}
                     </div>
                   ) : null}
-                  <div className="flex gap-2 overflow-x-auto pb-1">
+                  <div className="flex max-w-full gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain pb-1">
                     {orderedImageAssets.map((asset, index) => {
                       const selected = asset.id === selectedImageAsset.id
                       const imageSrc = asset.url ?? imageAssetURL(selectedThread.id, asset.id)
@@ -1421,7 +1619,7 @@ export function ImageToolPage() {
                             setSelectedLivePreviewId(null)
                             setSelectedImageAssetId(asset.id)
                           }}
-                          className={['group min-w-[92px] max-w-[92px] rounded-xl border bg-white/5 p-1.5 text-left transition hover:bg-white/10', selected ? 'border-white ring-1 ring-white' : 'border-white/15'].join(' ')}
+                          className={['group min-w-[74px] max-w-[74px] rounded-xl border bg-white/5 p-1.5 text-left transition hover:bg-white/10 sm:min-w-[92px] sm:max-w-[92px]', selected ? 'border-white ring-1 ring-white' : 'border-white/15'].join(' ')}
                           aria-pressed={selected}
                         >
                           <div className="grid aspect-square place-items-center overflow-hidden rounded-lg bg-white/5">
@@ -1431,6 +1629,112 @@ export function ImageToolPage() {
                         </button>
                       )
                     })}
+                  </div>
+                </div>
+              </div>
+            </DialogPanel>
+          </Dialog>
+        ) : null}
+        {mobileDetailsOpen && selectedThread ? (
+          <Dialog className="z-[70] items-end p-0 lg:hidden">
+            <DialogBackdrop className="bg-black/45" onClick={() => setMobileDetailsOpen(false)} />
+            <DialogPanel className="max-h-[82dvh] w-screen max-w-none rounded-t-3xl rounded-b-none border-x-0 border-b-0 bg-[var(--app-surface)] px-4 pb-[calc(var(--app-safe-area-bottom)+1rem)] pt-4">
+              <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-[var(--app-border-strong)]" />
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">Image settings</p>
+                  <h2 className="mt-1 truncate text-lg font-semibold tracking-[-0.045em] text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
+                </div>
+                <Button variant="outline" className="h-9 w-9 shrink-0 rounded-full px-0" onClick={() => setMobileDetailsOpen(false)} aria-label="Close image settings">
+                  <X size={16} />
+                </Button>
+              </div>
+
+              <div className="mt-4 min-h-0 overflow-y-auto pr-1" style={{ maxHeight: 'calc(82dvh - 96px - var(--app-safe-area-bottom))' }}>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Model</p>
+                    <p className="mt-1 truncate font-semibold text-[var(--app-text)]">{selectedModelLabel}</p>
+                  </div>
+                  <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Saved</p>
+                    <p className="mt-1 font-semibold text-[var(--app-text)]">{orderedImageAssets.length}</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Model</span>
+                    <Select className="h-11 rounded-xl border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm font-medium" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={generatingImage}>
+                      {IMAGE_MODEL_OPTIONS.map((option) => (
+                        <option key={option.id} value={option.id}>{option.label} · {option.provider === 'google_gemini' ? 'Google API key' : 'OAuth only'}</option>
+                      ))}
+                    </Select>
+                  </label>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Shape</span>
+                      <span className="text-[10px] text-[var(--app-text-muted)]">{isGoogleGeminiModel ? 'Aspect' : 'Output size'}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {isGoogleGeminiModel ? GOOGLE_GEMINI_ASPECT_RATIO_OPTIONS.map((option) => (
+                        <button key={option.id} type="button" onClick={() => setSelectedGoogleAspectRatio(option.id)} className={['relative flex min-h-[72px] items-center gap-3 rounded-xl border p-3 pr-2.5 text-left transition-all', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)]'].join(' ')} disabled={generatingImage}>
+                          <span className={['grid h-11 w-11 shrink-0 place-items-center rounded-xl border', selectedGoogleAspectRatio === option.id ? 'border-[var(--app-primary)] bg-[var(--app-primary)]/10' : 'border-[var(--app-border)] bg-[var(--app-surface)]'].join(' ')} aria-hidden="true">
+                            <span className={['rounded-sm border-2', aspectRatioPreviewSizeClass(option.id), selectedGoogleAspectRatio === option.id ? 'border-[var(--app-primary)] bg-[var(--app-primary)]/20' : 'border-[var(--app-text-muted)]/55 bg-[var(--app-bg)]'].join(' ')} />
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-sm font-bold text-[var(--app-text)]">{option.label}</span>
+                            <span className="mt-0.5 block text-[11px] text-[var(--app-text-muted)]">{option.helper}</span>
+                          </span>
+                        </button>
+                      )) : OPENAI_IMAGE_SIZE_OPTIONS.map((option) => (
+                        <button key={option.id} type="button" onClick={() => setSelectedOpenAIImageSize(option.id)} className={['relative flex flex-col justify-center rounded-xl border p-2.5 text-left transition-all', selectedOpenAIImageSize === option.id ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)] ring-1 ring-[var(--app-border-accent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)]'].join(' ')} disabled={generatingImage}>
+                          <span className="text-xs font-bold">{option.label}</span>
+                          <span className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">{option.helper}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {isGoogleGeminiModel ? (
+                      <label className="col-span-2 flex flex-col gap-1">
+                        <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">SIZE</span>
+                        <Select className="h-11 rounded-xl border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm font-medium" value={selectedGoogleImageSize} onChange={(event) => setSelectedGoogleImageSize(event.target.value)} disabled={generatingImage}>
+                          {GOOGLE_GEMINI_IMAGE_SIZE_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id} disabled={option.id === '512' && selectedModelOption.model !== 'gemini-2.5-flash-image'}>{option.label} · {option.helper}</option>
+                          ))}
+                        </Select>
+                      </label>
+                    ) : null}
+                    <label className="col-span-2 flex flex-col gap-1">
+                      <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">QUANTITY</span>
+                      <Select className="h-11 rounded-xl border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm font-medium" value={String(selectedFinalImageCount)} onChange={(event) => setSelectedFinalImageCount(Number(event.target.value) as (typeof FINAL_IMAGE_COUNT_OPTIONS)[number])} disabled={generatingImage}>
+                        {selectedCountOptions.map((count) => (
+                          <option key={count} value={count}>{count} final image{count === 1 ? '' : 's'}</option>
+                        ))}
+                      </Select>
+                    </label>
+                  </div>
+
+                  {(pathCopyStatus || sessionLinkCopyStatus || imageActionStatus || lastStoragePath || selectedSessionStoragePath) ? (
+                    <div className="space-y-1 border border-[var(--app-border)] bg-[var(--app-bg)] p-3 text-[10px] leading-4 text-[var(--app-text-muted)]">
+                      {(pathCopyStatus || sessionLinkCopyStatus || imageActionStatus) ? <p>{pathCopyStatus || sessionLinkCopyStatus || imageActionStatus}</p> : null}
+                      {(lastStoragePath || selectedSessionStoragePath) ? <p className="break-all">{lastStoragePath || selectedSessionStoragePath}</p> : null}
+                    </div>
+                  ) : null}
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <Button variant="outline" className="h-10 rounded-xl px-3 text-xs" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
+                      <Clipboard size={13} />Copy path
+                    </Button>
+                    <Button variant="outline" className="h-10 rounded-xl px-3 text-xs" onClick={() => void handleCopySessionLink()} disabled={!selectedSessionURL}>
+                      <Link2 size={13} />Copy URL
+                    </Button>
+                    <Button variant="outline" className="col-span-2 h-10 rounded-xl px-3 text-xs" onClick={() => void handleRevealImageStorage(selectedImageAsset?.id)} disabled={revealingStorage}>
+                      <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Reveal in folder'}
+                    </Button>
                   </div>
                 </div>
               </div>
