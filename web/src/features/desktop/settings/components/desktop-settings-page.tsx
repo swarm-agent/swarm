@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
 import { Bot, GitBranch, Home, Key, Palette, Shield, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
+import { Select } from '../../../../components/ui/select'
 import { AgentsSettingsPage } from '../agents/components/agents-settings-page'
 import { AuthSettingsPage } from '../auth/components/auth-settings-page'
 import { PermissionsSettingsPage } from '../permissions/components/permissions-settings-page'
@@ -77,7 +78,7 @@ export function DesktopSettingsPage() {
 
   return (
     <div className="absolute inset-0 flex overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
-      <aside className="flex w-[240px] shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-5">
+      <aside className="hidden w-[240px] shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-5 md:flex">
         <Button variant="outline" className="h-11 justify-start rounded-xl" onClick={handleBack}>
           <Home size={16} />
           {routeWorkspaceSlug ? (activeSessionId ? 'Back to chat' : 'Back to workspace') : 'Back to launcher'}
@@ -114,7 +115,27 @@ export function DesktopSettingsPage() {
       </aside>
 
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-6 py-8">
+        <div className="sticky top-0 z-10 grid min-h-16 grid-cols-[minmax(0,1fr)_minmax(7.5rem,42vw)] items-center gap-3 border-b border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-3 md:hidden">
+          <Button variant="outline" className="h-10 min-w-0 justify-start rounded-xl px-3" onClick={handleBack}>
+            <Home size={16} className="shrink-0" />
+            <span className="min-w-0 truncate">Workspace</span>
+          </Button>
+          <div className="min-w-0">
+            <label className="sr-only" htmlFor="settings-mobile-section">Settings section</label>
+            <Select
+              id="settings-mobile-section"
+              value={activeTab}
+              onChange={(event) => handleTabChange(event.target.value as SettingsTabID)}
+              className="h-10 min-h-0 w-full min-w-0 max-w-full rounded-xl bg-[var(--app-surface)] py-2 text-sm font-medium"
+              aria-label="Settings section"
+            >
+              {tabs.map((tab) => (
+                <option key={tab.id} value={tab.id}>{tab.label}</option>
+              ))}
+            </Select>
+          </div>
+        </div>
+        <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-5 md:px-6 md:py-8">
           <div className="w-full max-w-4xl">
             {activeTab === 'agents' ? <AgentsSettingsPage key={agentsPageKey} /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
