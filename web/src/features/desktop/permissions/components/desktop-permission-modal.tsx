@@ -514,6 +514,113 @@ function ExitPlanModal({
   )
 }
 
+function splitPlanPreviewLines(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/g, '')
+  return normalized ? normalized.split('\n') : []
+}
+
+function buildPlanChangedLineSets(diffLines: string[], priorPlan: string, plan: string): { before: Set<number>; after: Set<number> } {
+  const before = new Set<number>()
+  const after = new Set<number>()
+
+  if (diffLines.length > 0) {
+    let beforeIndex = 0
+    let afterIndex = 0
+
+    diffLines.forEach((line) => {
+      if (line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')) {
+        return
+      }
+      if (line.startsWith('  ')) {
+        beforeIndex += 1
+        afterIndex += 1
+        return
+      }
+      if (line.startsWith('-')) {
+        before.add(beforeIndex)
+        beforeIndex += 1
+        return
+      }
+      if (line.startsWith('+')) {
+        after.add(afterIndex)
+        afterIndex += 1
+        return
+      }
+      beforeIndex += 1
+      afterIndex += 1
+    })
+
+    return { before, after }
+  }
+
+  const beforeLines = splitPlanPreviewLines(priorPlan)
+  const afterLines = splitPlanPreviewLines(plan)
+  const max = Math.max(beforeLines.length, afterLines.length)
+  for (let index = 0; index < max; index += 1) {
+    if ((beforeLines[index] ?? '') !== (afterLines[index] ?? '')) {
+      if (index < beforeLines.length) before.add(index)
+      if (index < afterLines.length) after.add(index)
+    }
+  }
+  return { before, after }
+}
+
+function PlanComparisonPanel({
+  title,
+  text,
+  changedLines,
+  tone,
+  emptyMessage,
+}: {
+  title: string
+  text: string
+  changedLines: Set<number>
+  tone: 'before' | 'after'
+  emptyMessage: string
+}) {
+  const lines = splitPlanPreviewLines(text)
+  const changedCount = lines.reduce((count, _line, index) => count + (changedLines.has(index) ? 1 : 0), 0)
+  const changeToneClass = tone === 'after'
+    ? 'border-[var(--app-success)] bg-[color-mix(in_srgb,var(--app-success)_13%,transparent)]'
+    : 'border-[var(--app-danger)] bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)]'
+  const pillToneClass = tone === 'after'
+    ? 'border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success)]'
+    : 'border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger)]'
+
+  return (
+    <section className="min-w-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{title}</div>
+        <div className={cn('rounded-full border px-2 py-0.5 text-[11px] font-medium', changedCount > 0 ? pillToneClass : 'border-[var(--app-border)] text-[var(--app-text-subtle)]')}>
+          {changedCount > 0 ? `${changedCount} changed` : 'unchanged'}
+        </div>
+      </div>
+      <div className="mt-3 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)]">
+        {lines.length > 0 ? (
+          <div className="divide-y divide-[var(--app-border)]/60">
+            {lines.map((line, index) => {
+              const changed = changedLines.has(index)
+              return (
+                <div
+                  key={`${index}:${line}`}
+                  className={cn(
+                    'border-l-[3px] px-3 py-2 text-sm leading-6 text-[var(--app-text)]',
+                    changed ? changeToneClass : 'border-transparent',
+                  )}
+                >
+                  <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{line || '\u00a0'}</div>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="px-3 py-3 text-sm text-[var(--app-text-muted)]">{emptyMessage}</div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function PlanUpdateModal({
   permission,
   open,
@@ -537,6 +644,7 @@ function PlanUpdateModal({
   }
 
   const payload = parsePlanUpdatePermission(permission)
+  const changedLineSets = buildPlanChangedLineSets(payload.diffLines, payload.priorPlan, payload.plan)
 
   const resolve = async (action: 'approve' | 'deny') => {
     setLoading(true)
@@ -588,47 +696,26 @@ function PlanUpdateModal({
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      <div className="grid gap-5">
-        <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Diff preview</div>
-          <div className="mt-3 overflow-x-auto rounded-xl bg-[var(--app-bg-alt)] p-3 font-mono text-sm leading-6 text-[var(--app-text)]">
-            {payload.diffLines.length > 0 ? (
-              <div className="space-y-1">
-                {payload.diffLines.map((line, index) => (
-                  <div
-                    key={`${index}:${line}`}
-                    className={cn(
-                      line.startsWith('+') && !line.startsWith('+++') && 'text-[var(--app-success)]',
-                      line.startsWith('-') && !line.startsWith('---') && 'text-[var(--app-danger)]',
-                      line.startsWith('@@') && 'text-[var(--app-primary)]',
-                    )}
-                  >
-                    {line || ' '}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-[var(--app-text-muted)]">No diff lines were provided.</div>
-            )}
-          </div>
-        </section>
+      <div className="grid gap-4">
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm leading-6 text-[var(--app-text-muted)] sm:px-4">
+          Review the before and after plans. Changed lines are highlighted; the full plan text remains visible in both columns.
+        </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Previous plan</div>
-            <div className="mt-2 text-sm font-medium text-[var(--app-text)]">{payload.priorTitle || payload.title || 'Plan'}</div>
-            <div className="mt-3 rounded-xl bg-[var(--app-bg-alt)] p-3">
-              <ChatMarkdown content={payload.priorPlan || 'No prior plan text was provided.'} />
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Updated plan</div>
-            <div className="mt-2 text-sm font-medium text-[var(--app-text)]">{payload.title || 'Plan'}</div>
-            <div className="mt-3 rounded-xl bg-[var(--app-bg-alt)] p-3">
-              <ChatMarkdown content={payload.plan || 'No updated plan text was provided.'} />
-            </div>
-          </section>
+        <div className="grid gap-3 lg:grid-cols-2 lg:items-start">
+          <PlanComparisonPanel
+            title={`Before · ${payload.priorTitle || payload.title || 'Plan'}`}
+            text={payload.priorPlan}
+            changedLines={changedLineSets.before}
+            tone="before"
+            emptyMessage="No prior plan text was provided."
+          />
+          <PlanComparisonPanel
+            title={`After · ${payload.title || 'Plan'}`}
+            text={payload.plan}
+            changedLines={changedLineSets.after}
+            tone="after"
+            emptyMessage="No updated plan text was provided."
+          />
         </div>
       </div>
     </ModalShell>
