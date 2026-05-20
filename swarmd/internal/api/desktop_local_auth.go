@@ -20,10 +20,13 @@ type desktopLocalAuthContextKey string
 
 type productActorContextKey string
 
+type productPrincipalContextKey string
+
 const (
-	desktopLocalAuthIssuedTokenKey desktopLocalAuthContextKey = "desktop-local-auth-issued-token"
-	localTransportAuthEnabledKey   desktopLocalAuthContextKey = "local-transport-auth-enabled"
-	productActorRequestContextKey  productActorContextKey     = "product-actor"
+	desktopLocalAuthIssuedTokenKey    desktopLocalAuthContextKey = "desktop-local-auth-issued-token"
+	localTransportAuthEnabledKey      desktopLocalAuthContextKey = "local-transport-auth-enabled"
+	productActorRequestContextKey     productActorContextKey     = "product-actor"
+	productPrincipalRequestContextKey productPrincipalContextKey = "product-principal"
 )
 
 type desktopLocalSessionManager struct {
@@ -215,7 +218,11 @@ func requestWithActorContext(r *http.Request, actor identity.ActorContext) *http
 	if r == nil {
 		return nil
 	}
-	return r.WithContext(context.WithValue(r.Context(), productActorRequestContextKey, actor))
+	ctx := context.WithValue(r.Context(), productActorRequestContextKey, actor)
+	if principal, err := identity.PrincipalFromActor(actor); err == nil {
+		ctx = context.WithValue(ctx, productPrincipalRequestContextKey, principal)
+	}
+	return r.WithContext(ctx)
 }
 
 func productActorFromRequest(r *http.Request) (identity.ActorContext, bool) {
@@ -229,18 +236,40 @@ func productActorFromRequest(r *http.Request) (identity.ActorContext, bool) {
 	return actor, true
 }
 
+func PrincipalFromRequest(r *http.Request) (identity.Principal, bool) {
+	if r == nil {
+		return identity.Principal{}, false
+	}
+	principal, ok := r.Context().Value(productPrincipalRequestContextKey).(identity.Principal)
+	if ok && principal.Valid() {
+		return principal, true
+	}
+	actor, ok := productActorFromRequest(r)
+	if !ok {
+		return identity.Principal{}, false
+	}
+	principal, err := identity.PrincipalFromActor(actor)
+	if err != nil || !principal.Valid() {
+		return identity.Principal{}, false
+	}
+	return principal, true
+}
+
 func productSessionTokenFromRequest(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	if token := desktopLocalSessionTokenFromRequest(r); token != "" {
-		return token
+	if issued, _ := r.Context().Value(desktopLocalAuthIssuedTokenKey).(string); strings.TrimSpace(issued) != "" {
+		return strings.TrimSpace(issued)
 	}
 	if token := strings.TrimSpace(r.Header.Get("X-Swarm-Token")); token != "" {
 		return token
 	}
 	if authz := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(strings.ToLower(authz), "bearer ") {
 		return strings.TrimSpace(authz[7:])
+	}
+	if cookie, err := r.Cookie(desktopLocalSessionCookieName); err == nil {
+		return strings.TrimSpace(cookie.Value)
 	}
 	return ""
 }
@@ -249,8 +278,9 @@ func isCompleteProductActor(actor identity.ActorContext) bool {
 	if strings.TrimSpace(actor.UserID) == "" ||
 		strings.TrimSpace(actor.AccountScopeID) == "" ||
 		strings.TrimSpace(actor.User.ID) == "" ||
-		strings.TrimSpace(actor.User.AccountScopeID) == "" ||
 		strings.TrimSpace(actor.AccountScope.ID) == "" ||
+		strings.TrimSpace(actor.AccountUser.UserID) == "" ||
+		strings.TrimSpace(actor.AccountUser.AccountScopeID) == "" ||
 		strings.TrimSpace(actor.Selection.UserID) == "" {
 		return false
 	}

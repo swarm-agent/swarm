@@ -720,12 +720,12 @@ func stringMapValue(values map[string]any, key string) string {
 
 func testProductActorHandler(next http.Handler) http.Handler {
 	actor := identity.ActorContext{
-		UserID:     "user_targeted_agent_test",
-		TeamID:     "team_targeted_agent_test",
-		User:       pebblestore.UserRecord{ID: "user_targeted_agent_test", Username: "targeted-agent-test"},
-		Team:       pebblestore.TeamRecord{ID: "team_targeted_agent_test", Name: "Default", Default: true},
-		Membership: pebblestore.TeamMembershipRecord{TeamID: "team_targeted_agent_test", UserID: "user_targeted_agent_test", Role: pebblestore.TeamRoleOwner},
-		Selection:  pebblestore.CurrentSelectionRecord{UserID: "user_targeted_agent_test", TeamID: "team_targeted_agent_test"},
+		UserID:         "user_targeted_agent_test",
+		AccountScopeID: "acct_targeted_agent_test",
+		User:           pebblestore.UserRecord{ID: "user_targeted_agent_test", Username: "targeted-agent-test", AccountScopeID: "acct_targeted_agent_test"},
+		AccountScope:   pebblestore.AccountScopeRecord{ID: "acct_targeted_agent_test", Type: pebblestore.AccountScopeTypePersonal, CreatedByUserID: "user_targeted_agent_test"},
+		AccountUser:    pebblestore.AccountUserRecord{ID: "acct_targeted_agent_test:user_targeted_agent_test", AccountScopeID: "acct_targeted_agent_test", UserID: "user_targeted_agent_test", Status: pebblestore.AccountUserStatusActive},
+		Selection:      pebblestore.CurrentSelectionRecord{UserID: "user_targeted_agent_test"},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		next.ServeHTTP(w, requestWithActorContext(r, actor))

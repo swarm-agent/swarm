@@ -51,8 +51,8 @@ func TestDesktopSessionBootstrapIssuesJWTAndProtectedAPIAcceptsAfterRestart(t *t
 		t.Fatalf("desktop session cookie is not a compact jwt: %q", cookie.Value)
 	}
 	claims := decodeDesktopJWTClaims(t, cookie.Value)
-	if claims["sub"] != "user_desktop_jwt_test" || claims["team_id"] != "team_desktop_jwt_test" {
-		t.Fatalf("claims sub/team_id = %v/%v", claims["sub"], claims["team_id"])
+	if claims["sub"] != "user_desktop_jwt_test" || claims["account_scope_id"] != "acct_desktop_jwt_test" || claims["team_id"] != nil {
+		t.Fatalf("claims sub/account_scope_id/team_id = %v/%v/%v", claims["sub"], claims["account_scope_id"], claims["team_id"])
 	}
 	for _, required := range []string{"iss", "aud", "sid", "jti", "iat", "nbf", "exp"} {
 		if _, ok := claims[required]; !ok {
@@ -111,6 +111,66 @@ func TestLocalTransportSessionBootstrapReturnsTokenForTUI(t *testing.T) {
 	if !response.OK || strings.TrimSpace(response.Token) == "" || response.UserID != "user_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
 		t.Fatalf("local transport session response = %+v", response)
 	}
+
+	meRec := httptest.NewRecorder()
+	meReq := httptest.NewRequest(http.MethodGet, "http://swarm-local-transport/me", nil)
+	meReq.RemoteAddr = "192.0.2.10:43210"
+	meReq.Header.Set("X-Swarm-Token", response.Token)
+	server.LocalTransportHandler().ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("local transport /me with X-Swarm-Token status=%d want %d body=%s", meRec.Code, http.StatusOK, meRec.Body.String())
+	}
+	var me struct {
+		Type                 string  `json:"type"`
+		UserID               string  `json:"userID"`
+		AccountScopeID       string  `json:"accountScopeID"`
+		TeamID               *string `json:"teamID"`
+		AccountScopeSource   string  `json:"accountScopeSource"`
+		AccountScopeSourceUS string  `json:"account_scope_source"`
+		SessionID            string  `json:"session_id"`
+	}
+	if err := json.Unmarshal(meRec.Body.Bytes(), &me); err != nil {
+		t.Fatalf("decode local transport /me response: %v", err)
+	}
+	if me.Type != "user" || me.UserID != "user_desktop_jwt_test" || me.AccountScopeID != "acct_desktop_jwt_test" || me.TeamID != nil || strings.TrimSpace(me.SessionID) == "" {
+		t.Fatalf("local transport /me principal = %+v", me)
+	}
+	if me.AccountScopeSource != string(identity.AccountScopeSourceSession) || me.AccountScopeSourceUS != string(identity.AccountScopeSourceSession) {
+		t.Fatalf("local transport /me account scope source = %q/%q, want %q", me.AccountScopeSource, me.AccountScopeSourceUS, identity.AccountScopeSourceSession)
+	}
+}
+
+func TestXSwarmTokenPrincipalTakesPrecedenceOverInvalidDesktopCookie(t *testing.T) {
+	server, _, _, cleanup := newDesktopJWTTestServer(t, true)
+	defer cleanup()
+
+	bootstrapRec := httptest.NewRecorder()
+	server.DesktopHandler().ServeHTTP(bootstrapRec, newSameOriginDesktopRequest(http.MethodGet, "/v1/auth/desktop/session"))
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("desktop session status=%d want %d body=%s", bootstrapRec.Code, http.StatusOK, bootstrapRec.Body.String())
+	}
+	validToken := sessionCookieFromRecorder(t, bootstrapRec).Value
+
+	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/me")
+	req.AddCookie(buildDesktopLocalSessionCookie("not-a-valid-product-jwt", time.Now().Add(time.Hour), false))
+	req.Header.Set("X-Swarm-Token", validToken)
+	rec := httptest.NewRecorder()
+	server.DesktopHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/me with X-Swarm-Token and invalid cookie status=%d want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var me struct {
+		Type           string  `json:"type"`
+		UserID         string  `json:"userID"`
+		AccountScopeID string  `json:"accountScopeID"`
+		TeamID         *string `json:"teamID"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil {
+		t.Fatalf("decode /me response: %v", err)
+	}
+	if me.Type != "user" || me.UserID != "user_desktop_jwt_test" || me.AccountScopeID != "acct_desktop_jwt_test" || me.TeamID != nil {
+		t.Fatalf("/me principal = %+v", me)
+	}
 }
 
 func TestDesktopSessionRejectsOldRandomSingletonCookie(t *testing.T) {
@@ -131,14 +191,14 @@ func TestDesktopSessionRejectsTeamOnlyJWTCookieForProtectedAPI(t *testing.T) {
 	defer cleanup()
 
 	teamOnlyJWT := signDesktopJWTForTest(t, store, map[string]any{
-		"iss":     identity.LocalProductSessionIssuer,
-		"aud":     identity.LocalProductSessionAudience,
-		"sid":     "sid_team_only",
-		"jti":     "jti_team_only",
-		"team_id": "team_desktop_jwt_test",
-		"iat":     time.Now().Unix(),
-		"nbf":     time.Now().Add(-time.Minute).Unix(),
-		"exp":     time.Now().Add(time.Hour).Unix(),
+		"iss":              identity.LocalProductSessionIssuer,
+		"aud":              identity.LocalProductSessionAudience,
+		"sid":              "sid_team_only",
+		"jti":              "jti_team_only",
+		"account_scope_id": "acct_desktop_jwt_test",
+		"iat":              time.Now().Unix(),
+		"nbf":              time.Now().Add(-time.Minute).Unix(),
+		"exp":              time.Now().Add(time.Hour).Unix(),
 	})
 	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/vault")
 	req.AddCookie(buildDesktopLocalSessionCookie(teamOnlyJWT, time.Now().Add(time.Hour), false))
@@ -154,15 +214,16 @@ func TestDesktopSessionRejectsStaleTeamMismatchJWTCookie(t *testing.T) {
 	defer cleanup()
 
 	staleTeamJWT := signDesktopJWTForTest(t, store, map[string]any{
-		"iss":     identity.LocalProductSessionIssuer,
-		"sub":     "user_desktop_jwt_test",
-		"aud":     identity.LocalProductSessionAudience,
-		"sid":     "sid_stale_team",
-		"jti":     "jti_stale_team",
-		"team_id": "team_stale",
-		"iat":     time.Now().Unix(),
-		"nbf":     time.Now().Add(-time.Minute).Unix(),
-		"exp":     time.Now().Add(time.Hour).Unix(),
+		"iss":              identity.LocalProductSessionIssuer,
+		"sub":              "user_desktop_jwt_test",
+		"aud":              identity.LocalProductSessionAudience,
+		"sid":              "sid_stale_team",
+		"jti":              "jti_stale_team",
+		"account_scope_id": "acct_desktop_jwt_test",
+		"team_id":          "team_stale",
+		"iat":              time.Now().Unix(),
+		"nbf":              time.Now().Add(-time.Minute).Unix(),
+		"exp":              time.Now().Add(time.Hour).Unix(),
 	})
 	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/vault")
 	req.AddCookie(buildDesktopLocalSessionCookie(staleTeamJWT, time.Now().Add(time.Hour), false))
@@ -214,8 +275,8 @@ func bootstrapDesktopJWTIdentity(t *testing.T, store *pebblestore.Store, bootstr
 		switch prefix {
 		case "user":
 			return "user_desktop_jwt_test", nil
-		case "team":
-			return "team_desktop_jwt_test", nil
+		case "acct":
+			return "acct_desktop_jwt_test", nil
 		default:
 			return prefix + "_desktop_jwt_test", nil
 		}

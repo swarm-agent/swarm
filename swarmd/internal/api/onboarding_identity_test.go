@@ -125,7 +125,7 @@ func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("identity counts: %v", err)
 	}
-	want := pebblestore.IdentityCounts{Users: 1, Teams: 1, TeamMemberships: 1, CurrentSelections: 1}
+	want := pebblestore.IdentityCounts{Users: 1, AccountScopes: 1, AccountUsers: 1, CurrentSelections: 1}
 	if counts != want {
 		t.Fatalf("identity counts=%+v want %+v", counts, want)
 	}
@@ -170,7 +170,7 @@ func TestOnboardingPostRejectsRebootstrapAndSwarmNameUpdateDoesNotMutateUsername
 	if err != nil {
 		t.Fatalf("identity counts: %v", err)
 	}
-	want := pebblestore.IdentityCounts{Users: 1, Teams: 1, TeamMemberships: 1, CurrentSelections: 1}
+	want := pebblestore.IdentityCounts{Users: 1, AccountScopes: 1, AccountUsers: 1, CurrentSelections: 1}
 	if counts != want {
 		t.Fatalf("identity counts=%+v want %+v", counts, want)
 	}
@@ -226,8 +226,8 @@ func onboardingIdentityTestIDGenerator(prefix string) (string, error) {
 	switch prefix {
 	case "user":
 		return "user_onboarding_test", nil
-	case "team":
-		return "team_onboarding_test", nil
+	case "acct":
+		return "acct_onboarding_test", nil
 	default:
 		return "", errors.New("unexpected identity prefix")
 	}

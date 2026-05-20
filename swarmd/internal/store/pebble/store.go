@@ -17,10 +17,18 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
+	return openWithOptions(path, &pebble.Options{})
+}
+
+func OpenReadOnly(path string) (*Store, error) {
+	return openWithOptions(path, &pebble.Options{ReadOnly: true})
+}
+
+func openWithOptions(path string, opts *pebble.Options) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create db parent directory: %w", err)
 	}
-	db, err := pebble.Open(path, &pebble.Options{})
+	db, err := pebble.Open(path, opts)
 	if err != nil {
 		return nil, fmt.Errorf("open pebble db: %w", err)
 	}

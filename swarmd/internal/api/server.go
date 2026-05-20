@@ -3700,6 +3700,13 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		if s.identitySessions != nil {
+			if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil {
+				next.ServeHTTP(w, requestWithActorContext(r, actor))
+				return
+			}
+		}
+
 		if shouldUseDesktopLocalSessionAuth(r) {
 			if actor, ok := s.actorFromDesktopLocalSession(r); ok {
 				next.ServeHTTP(w, requestWithActorContext(r, actor))

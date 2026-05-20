@@ -19,7 +19,11 @@ const (
 	KeyIdentityPrefix                           = "identity/"
 	KeyIdentityUserPrefix                       = "identity/user/"
 	KeyIdentityUserByUsernamePrefix             = "identity/user_by_username/"
+	KeyIdentityAuthSubjectPrefix                = "identity/auth-subject/"
 	KeyIdentityAccountScopePrefix               = "identity/account_scope/"
+	KeyAccountScopePrefix                       = "account/scope/"
+	KeyAccountUserPrefix                        = "account/user/"
+	KeyAccountUserByUserPrefix                  = "account/user-by-user/"
 	KeyIdentityTeamPrefix                       = "identity/team/"
 	KeyIdentityTeamByAccountScopePrefix         = "identity/team_by_account_scope/"
 	KeyIdentityTeamMembershipPrefix             = "identity/membership/"
@@ -149,12 +153,56 @@ func IdentityUserByUsernamePrefix() string {
 	return KeyIdentityUserByUsernamePrefix
 }
 
+func KeyIdentityAuthSubject(provider, subject string) string {
+	return fmt.Sprintf("%s%s/%s", KeyIdentityAuthSubjectPrefix, keyPart(provider), keyPart(subject))
+}
+
+func IdentityAuthSubjectPrefix(provider string) string {
+	providerPart := keyPart(provider)
+	if providerPart == "" {
+		return KeyIdentityAuthSubjectPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyIdentityAuthSubjectPrefix, providerPart)
+}
+
 func KeyIdentityAccountScope(accountScopeID string) string {
 	return KeyIdentityAccountScopePrefix + keyPart(accountScopeID)
 }
 
+func KeyAccountScope(accountScopeID string) string {
+	return KeyAccountScopePrefix + keyPart(accountScopeID)
+}
+
 func IdentityAccountScopePrefix() string {
 	return KeyIdentityAccountScopePrefix
+}
+
+func AccountScopePrefix() string {
+	return KeyAccountScopePrefix
+}
+
+func KeyAccountUser(accountScopeID, userID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAccountUserPrefix, keyPart(accountScopeID), keyPart(userID))
+}
+
+func AccountUserPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyAccountUserPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyAccountUserPrefix, accountPart)
+}
+
+func KeyAccountUserByUser(userID, accountScopeID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAccountUserByUserPrefix, keyPart(userID), keyPart(accountScopeID))
+}
+
+func AccountUserByUserPrefix(userID string) string {
+	userPart := keyPart(userID)
+	if userPart == "" {
+		return KeyAccountUserByUserPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyAccountUserByUserPrefix, userPart)
 }
 
 func KeyIdentityTeam(teamID string) string {

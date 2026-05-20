@@ -19,7 +19,7 @@ func TestLocalProductSessionIssuesValidatesAndPersistsSigningKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
-	if !strings.HasPrefix(issued.Token, "ey") || issued.Actor.UserID != "user_session_test" || issued.Actor.TeamID != "team_session_test" {
+	if !strings.HasPrefix(issued.Token, "ey") || issued.Actor.UserID != "user_session_test" || issued.Actor.AccountScopeID != "acct_session_test" {
 		t.Fatalf("issued session = %+v token=%q", issued, issued.Token)
 	}
 	if issued.SessionID == "" || issued.JWTID == "" {
@@ -30,8 +30,8 @@ func TestLocalProductSessionIssuesValidatesAndPersistsSigningKey(t *testing.T) {
 	if claims.Issuer != LocalProductSessionIssuer || claims.Audience != LocalProductSessionAudience {
 		t.Fatalf("issuer/audience = %q/%q", claims.Issuer, claims.Audience)
 	}
-	if claims.Subject != "user_session_test" || claims.TeamID != "team_session_test" {
-		t.Fatalf("subject/team_id = %q/%q", claims.Subject, claims.TeamID)
+	if claims.Subject != "user_session_test" || claims.AccountScopeID != "acct_session_test" || claims.TeamID != "" {
+		t.Fatalf("subject/account_scope_id/team_id = %q/%q/%q", claims.Subject, claims.AccountScopeID, claims.TeamID)
 	}
 	if claims.SessionID != issued.SessionID || claims.JWTID != issued.JWTID {
 		t.Fatalf("claims sid/jti = %q/%q issued = %q/%q", claims.SessionID, claims.JWTID, issued.SessionID, issued.JWTID)
@@ -44,7 +44,7 @@ func TestLocalProductSessionIssuesValidatesAndPersistsSigningKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate session: %v", err)
 	}
-	if actor.UserID != "user_session_test" || actor.TeamID != "team_session_test" {
+	if actor.UserID != "user_session_test" || actor.AccountScopeID != "acct_session_test" || actor.TeamID != "" {
 		t.Fatalf("actor = %+v", actor)
 	}
 
@@ -94,8 +94,9 @@ func TestLocalProductSessionRejectsInvalidJWTClaims(t *testing.T) {
 		{name: "future iat", mutate: func(c localProductClaims) localProductClaims { c.IssuedAt = fixedNow.Add(time.Hour).Unix(); return c }},
 		{name: "not yet valid", mutate: func(c localProductClaims) localProductClaims { c.NotBefore = fixedNow.Add(time.Hour).Unix(); return c }},
 		{name: "missing exp", mutate: func(c localProductClaims) localProductClaims { c.ExpiresAt = 0; return c }},
-		{name: "team as subject", mutate: func(c localProductClaims) localProductClaims { c.Subject = "team_session_test"; return c }},
-		{name: "missing team", mutate: func(c localProductClaims) localProductClaims { c.TeamID = ""; return c }},
+		{name: "account as subject", mutate: func(c localProductClaims) localProductClaims { c.Subject = "acct_session_test"; return c }},
+		{name: "missing account scope", mutate: func(c localProductClaims) localProductClaims { c.AccountScopeID = ""; return c }},
+		{name: "stale account scope mismatch", mutate: func(c localProductClaims) localProductClaims { c.AccountScopeID = "acct_stale"; return c }},
 		{name: "stale team mismatch", mutate: func(c localProductClaims) localProductClaims { c.TeamID = "team_stale"; return c }},
 	}
 	for _, tc := range tests {
@@ -138,8 +139,8 @@ func TestLocalProductSessionRejectsUserWithoutSelectedMembership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
-	if err := rawStore.Delete(pebblestore.KeyIdentityTeamMembership("team_session_test", "user_session_test")); err != nil {
-		t.Fatalf("delete membership: %v", err)
+	if err := rawStore.Delete(pebblestore.KeyAccountUser("acct_session_test", "user_session_test")); err != nil {
+		t.Fatalf("delete account user: %v", err)
 	}
 	if _, err := sessions.Validate(issued.Token); !errors.Is(err, ErrProductIdentityRequired) {
 		t.Fatalf("missing membership err=%v, want ErrProductIdentityRequired", err)
@@ -193,8 +194,8 @@ func bootstrapSessionIdentity(t *testing.T, identityStore *pebblestore.IdentityS
 		switch prefix {
 		case "user":
 			return "user_session_test", nil
-		case "team":
-			return "team_session_test", nil
+		case "acct":
+			return "acct_session_test", nil
 		default:
 			return prefix + "_session_test", nil
 		}

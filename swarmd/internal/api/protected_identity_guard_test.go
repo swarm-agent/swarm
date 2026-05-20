@@ -78,14 +78,15 @@ func TestProtectedCreateAPIsRejectNonProductAuthAndIncompleteActors(t *testing.T
 
 	t.Run("team-only jwt is rejected", func(t *testing.T) {
 		teamOnlyJWT := signDesktopJWTForTest(t, store, map[string]any{
-			"iss":     identity.LocalProductSessionIssuer,
-			"aud":     identity.LocalProductSessionAudience,
-			"sid":     "sid_team_only_slice15",
-			"jti":     "jti_team_only_slice15",
-			"team_id": "team_guard_test",
-			"iat":     time.Now().Unix(),
-			"nbf":     time.Now().Add(-time.Minute).Unix(),
-			"exp":     time.Now().Add(time.Hour).Unix(),
+			"iss":              identity.LocalProductSessionIssuer,
+			"aud":              identity.LocalProductSessionAudience,
+			"sid":              "sid_team_only_slice15",
+			"jti":              "jti_team_only_slice15",
+			"account_scope_id": "acct_guard_test",
+			"team_id":          "team_guard_test",
+			"iat":              time.Now().Unix(),
+			"nbf":              time.Now().Add(-time.Minute).Unix(),
+			"exp":              time.Now().Add(time.Hour).Unix(),
 		})
 		req := newProtectedJSONRequest(t, http.MethodPost, "/v1/workspace/add", map[string]any{"path": filepath.Join(t.TempDir(), "team-only")}, nil)
 		req.AddCookie(buildDesktopLocalSessionCookie(teamOnlyJWT, time.Now().Add(time.Hour), false))
@@ -96,18 +97,29 @@ func TestProtectedCreateAPIsRejectNonProductAuthAndIncompleteActors(t *testing.T
 		}
 	})
 
-	t.Run("valid jwt without current team membership is rejected", func(t *testing.T) {
-		membershipKey := pebblestore.KeyIdentityTeamMembership("team_guard_test", "user_guard_test")
-		membershipPayload, ok, err := store.GetBytes(membershipKey)
+	t.Run("valid jwt without account association is rejected", func(t *testing.T) {
+		accountUserKey := pebblestore.KeyAccountUser("acct_guard_test", "user_guard_test")
+		accountUserByUserKey := pebblestore.KeyAccountUserByUser("user_guard_test", "acct_guard_test")
+		accountUserPayload, ok, err := store.GetBytes(accountUserKey)
 		if err != nil || !ok {
-			t.Fatalf("read membership ok=%v err=%v", ok, err)
+			t.Fatalf("read account user ok=%v err=%v", ok, err)
 		}
-		if err := store.Delete(membershipKey); err != nil {
-			t.Fatalf("delete membership: %v", err)
+		accountUserByUserPayload, ok, err := store.GetBytes(accountUserByUserKey)
+		if err != nil || !ok {
+			t.Fatalf("read account user by-user ok=%v err=%v", ok, err)
+		}
+		if err := store.Delete(accountUserKey); err != nil {
+			t.Fatalf("delete account user: %v", err)
+		}
+		if err := store.Delete(accountUserByUserKey); err != nil {
+			t.Fatalf("delete account user by-user: %v", err)
 		}
 		t.Cleanup(func() {
-			if err := store.PutBytes(membershipKey, membershipPayload); err != nil {
-				t.Fatalf("restore membership: %v", err)
+			if err := store.PutBytes(accountUserKey, accountUserPayload); err != nil {
+				t.Fatalf("restore account user: %v", err)
+			}
+			if err := store.PutBytes(accountUserByUserKey, accountUserByUserPayload); err != nil {
+				t.Fatalf("restore account user by-user: %v", err)
 			}
 		})
 
@@ -117,7 +129,7 @@ func TestProtectedCreateAPIsRejectNonProductAuthAndIncompleteActors(t *testing.T
 		rec := httptest.NewRecorder()
 		server.DesktopHandler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("missing membership status=%d want %d body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+			t.Fatalf("missing account association status=%d want %d body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
 		}
 	})
 }
@@ -212,8 +224,8 @@ func protectedGuardIdentityTestIDGenerator(prefix string) (string, error) {
 	switch prefix {
 	case "user":
 		return "user_guard_test", nil
-	case "team":
-		return "team_guard_test", nil
+	case "acct":
+		return "acct_guard_test", nil
 	default:
 		return prefix + "_guard_test", nil
 	}
@@ -221,15 +233,15 @@ func protectedGuardIdentityTestIDGenerator(prefix string) (string, error) {
 
 func validProtectedGuardClaims() map[string]any {
 	return map[string]any{
-		"iss":     identity.LocalProductSessionIssuer,
-		"sub":     "user_guard_test",
-		"aud":     identity.LocalProductSessionAudience,
-		"sid":     "sid_guard_test",
-		"jti":     "jti_guard_test",
-		"team_id": "team_guard_test",
-		"iat":     time.Now().Unix(),
-		"nbf":     time.Now().Add(-time.Minute).Unix(),
-		"exp":     time.Now().Add(time.Hour).Unix(),
+		"iss":              identity.LocalProductSessionIssuer,
+		"sub":              "user_guard_test",
+		"aud":              identity.LocalProductSessionAudience,
+		"sid":              "sid_guard_test",
+		"jti":              "jti_guard_test",
+		"account_scope_id": "acct_guard_test",
+		"iat":              time.Now().Unix(),
+		"nbf":              time.Now().Add(-time.Minute).Unix(),
+		"exp":              time.Now().Add(time.Hour).Unix(),
 	}
 }
 

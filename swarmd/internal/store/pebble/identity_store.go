@@ -11,8 +11,12 @@ import (
 )
 
 const (
-	AccountRoleOwner = "owner"
-	TeamRoleOwner    = "owner"
+	AccountRoleOwner         = "owner"
+	AccountScopeTypePersonal = "personal"
+	AccountScopeTypeOrg      = "org"
+	AccountScopeTypeSystem   = "system"
+	AccountUserStatusActive  = "active"
+	TeamRoleOwner            = "owner"
 )
 
 var (
@@ -23,18 +27,33 @@ var (
 
 type UserRecord struct {
 	ID             string    `json:"id"`
-	AccountScopeID string    `json:"account_scope_id"`
-	Username       string    `json:"username"`
+	AuthProvider   string    `json:"auth_provider,omitempty"`
+	AuthSubject    string    `json:"auth_subject,omitempty"`
+	Email          string    `json:"email,omitempty"`
+	DisplayName    string    `json:"display_name,omitempty"`
+	AccountScopeID string    `json:"account_scope_id,omitempty"` // legacy/bootstrap current account hint; association is account_users.
+	Username       string    `json:"username,omitempty"`         // legacy display/login name.
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type AccountScopeRecord struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"`
-	Role      string    `json:"role"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	Type            string    `json:"type"`
+	CreatedByUserID string    `json:"created_by_user_id"`
+	UserID          string    `json:"user_id,omitempty"` // legacy owner metadata.
+	Role            string    `json:"role,omitempty"`    // legacy owner metadata; not IAM.
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type AccountUserRecord struct {
+	ID             string    `json:"id"`
+	AccountScopeID string    `json:"account_scope_id"`
+	UserID         string    `json:"user_id"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type TeamRecord struct {
@@ -65,6 +84,7 @@ type CurrentSelectionRecord struct {
 type IdentityCounts struct {
 	Users             int `json:"users"`
 	AccountScopes     int `json:"account_scopes"`
+	AccountUsers      int `json:"account_users"`
 	Teams             int `json:"teams"`
 	TeamMemberships   int `json:"team_memberships"`
 	CurrentSelections int `json:"current_selections"`
@@ -73,7 +93,10 @@ type IdentityCounts struct {
 type BootstrapIdentityRecords struct {
 	User             UserRecord             `json:"user"`
 	AccountScope     AccountScopeRecord     `json:"account_scope"`
+	AccountUser      AccountUserRecord      `json:"account_user"`
 	CurrentSelection CurrentSelectionRecord `json:"current_selection"`
+	Team             TeamRecord             `json:"team,omitempty"`       // legacy input ignored by Checkpoint 1 bootstrap.
+	Membership       TeamMembershipRecord   `json:"membership,omitempty"` // legacy input ignored by Checkpoint 1 bootstrap.
 }
 
 type TeamOptInRecords struct {
@@ -95,14 +118,8 @@ func (s *IdentityStore) PutUser(record UserRecord) (UserRecord, error) {
 		return UserRecord{}, err
 	}
 	record = normalizeUserRecord(record)
-	if record.ID == "" {
-		return UserRecord{}, errors.New("user id is required")
-	}
-	if record.AccountScopeID == "" {
-		return UserRecord{}, errors.New("account scope id is required")
-	}
-	if record.Username == "" {
-		return UserRecord{}, errors.New("username is required")
+	if err := validateUserRecord(record); err != nil {
+		return UserRecord{}, err
 	}
 	now := time.Now().UTC()
 	if record.CreatedAt.IsZero() {
@@ -111,12 +128,19 @@ func (s *IdentityStore) PutUser(record UserRecord) (UserRecord, error) {
 	record.UpdatedAt = now
 
 	priorUsername := ""
+	priorAuthProvider := ""
+	priorAuthSubject := ""
 	if existing, ok, err := s.GetUser(record.ID); err != nil {
 		return UserRecord{}, err
 	} else if ok {
 		priorUsername = existing.Username
-		if existing.AccountScopeID != record.AccountScopeID {
+		priorAuthProvider = existing.AuthProvider
+		priorAuthSubject = existing.AuthSubject
+		if existing.AccountScopeID != "" && record.AccountScopeID != "" && existing.AccountScopeID != record.AccountScopeID {
 			return UserRecord{}, errors.New("user account scope cannot be changed")
+		}
+		if record.AccountScopeID == "" {
+			record.AccountScopeID = existing.AccountScopeID
 		}
 		if record.CreatedAt.IsZero() {
 			record.CreatedAt = existing.CreatedAt
@@ -127,7 +151,14 @@ func (s *IdentityStore) PutUser(record UserRecord) (UserRecord, error) {
 	} else if ok && existing.ID != record.ID {
 		return UserRecord{}, fmt.Errorf("username already exists: %w", ErrIdentityRecordExists)
 	}
-	return s.saveUser(record, priorUsername)
+	if record.AuthProvider != "" {
+		if existing, ok, err := s.GetUserByAuthSubject(record.AuthProvider, record.AuthSubject); err != nil {
+			return UserRecord{}, err
+		} else if ok && existing.ID != record.ID {
+			return UserRecord{}, fmt.Errorf("auth subject already exists: %w", ErrIdentityRecordExists)
+		}
+	}
+	return s.saveUser(record, priorUsername, priorAuthProvider, priorAuthSubject)
 }
 
 func (s *IdentityStore) CreateUserIfAbsent(record UserRecord) (UserRecord, error) {
@@ -135,14 +166,8 @@ func (s *IdentityStore) CreateUserIfAbsent(record UserRecord) (UserRecord, error
 		return UserRecord{}, err
 	}
 	record = normalizeUserRecord(record)
-	if record.ID == "" {
-		return UserRecord{}, errors.New("user id is required")
-	}
-	if record.AccountScopeID == "" {
-		return UserRecord{}, errors.New("account scope id is required")
-	}
-	if record.Username == "" {
-		return UserRecord{}, errors.New("username is required")
+	if err := validateUserRecord(record); err != nil {
+		return UserRecord{}, err
 	}
 	if _, ok, err := s.GetUser(record.ID); err != nil {
 		return UserRecord{}, err
@@ -154,10 +179,19 @@ func (s *IdentityStore) CreateUserIfAbsent(record UserRecord) (UserRecord, error
 	} else if ok {
 		return UserRecord{}, fmt.Errorf("username already exists: %w", ErrIdentityRecordExists)
 	}
-	if existing, ok, err := s.GetAccountScope(record.AccountScopeID); err != nil {
-		return UserRecord{}, err
-	} else if ok && existing.UserID != record.ID {
-		return UserRecord{}, fmt.Errorf("account scope already exists: %w", ErrIdentityRecordExists)
+	if record.AccountScopeID != "" {
+		if existing, ok, err := s.GetAccountScope(record.AccountScopeID); err != nil {
+			return UserRecord{}, err
+		} else if ok && existing.CreatedByUserID != "" && existing.CreatedByUserID != record.ID {
+			return UserRecord{}, fmt.Errorf("account scope already exists: %w", ErrIdentityRecordExists)
+		}
+	}
+	if record.AuthProvider != "" {
+		if _, ok, err := s.GetUserByAuthSubject(record.AuthProvider, record.AuthSubject); err != nil {
+			return UserRecord{}, err
+		} else if ok {
+			return UserRecord{}, fmt.Errorf("auth subject already exists: %w", ErrIdentityRecordExists)
+		}
 	}
 	now := time.Now().UTC()
 	if record.CreatedAt.IsZero() {
@@ -166,10 +200,10 @@ func (s *IdentityStore) CreateUserIfAbsent(record UserRecord) (UserRecord, error
 	if record.UpdatedAt.IsZero() {
 		record.UpdatedAt = record.CreatedAt
 	}
-	return s.saveUser(record, "")
+	return s.saveUser(record, "", "", "")
 }
 
-func (s *IdentityStore) saveUser(record UserRecord, priorUsername string) (UserRecord, error) {
+func (s *IdentityStore) saveUser(record UserRecord, priorUsername, priorAuthProvider, priorAuthSubject string) (UserRecord, error) {
 	payload, err := json.Marshal(record)
 	if err != nil {
 		return UserRecord{}, fmt.Errorf("marshal user: %w", err)
@@ -186,6 +220,16 @@ func (s *IdentityStore) saveUser(record UserRecord, priorUsername string) (UserR
 	}
 	if err := batch.Set([]byte(KeyIdentityUserByUsername(record.Username)), []byte(record.ID), nil); err != nil {
 		return UserRecord{}, err
+	}
+	if priorAuthProvider != "" && (priorAuthProvider != record.AuthProvider || priorAuthSubject != record.AuthSubject) {
+		if err := batch.Delete([]byte(KeyIdentityAuthSubject(priorAuthProvider, priorAuthSubject)), nil); err != nil {
+			return UserRecord{}, err
+		}
+	}
+	if record.AuthProvider != "" {
+		if err := batch.Set([]byte(KeyIdentityAuthSubject(record.AuthProvider, record.AuthSubject)), []byte(record.ID), nil); err != nil {
+			return UserRecord{}, err
+		}
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return UserRecord{}, err
@@ -224,6 +268,29 @@ func (s *IdentityStore) GetUserByUsername(username string) (UserRecord, bool, er
 	return s.GetUser(string(payload))
 }
 
+func (s *IdentityStore) GetUserByAuthSubject(provider, subject string) (UserRecord, bool, error) {
+	if err := s.configured(); err != nil {
+		return UserRecord{}, false, err
+	}
+	provider = normalizeIdentityProvider(provider)
+	subject = normalizeIdentitySubject(subject)
+	if provider == "" || subject == "" {
+		return UserRecord{}, false, nil
+	}
+	payload, ok, err := s.store.GetBytes(KeyIdentityAuthSubject(provider, subject))
+	if err != nil || !ok {
+		return UserRecord{}, ok, err
+	}
+	user, userOK, err := s.GetUser(string(payload))
+	if err != nil {
+		return UserRecord{}, false, err
+	}
+	if !userOK {
+		return UserRecord{}, false, fmt.Errorf("auth subject user %q: %w", string(payload), ErrIdentityRecordNotFound)
+	}
+	return user, true, nil
+}
+
 func (s *IdentityStore) ListUsers(limit int) ([]UserRecord, error) {
 	if err := s.configured(); err != nil {
 		return nil, err
@@ -242,7 +309,7 @@ func (s *IdentityStore) PutAccountScope(record AccountScopeRecord) (AccountScope
 		return AccountScopeRecord{}, err
 	}
 	record = normalizeAccountScopeRecord(record)
-	if err := validateAccountScopeRecord(record); err != nil {
+	if err := s.validateAccountScopeRecord(record); err != nil {
 		return AccountScopeRecord{}, err
 	}
 	now := time.Now().UTC()
@@ -250,7 +317,7 @@ func (s *IdentityStore) PutAccountScope(record AccountScopeRecord) (AccountScope
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyIdentityAccountScope(record.ID), record); err != nil {
+	if err := s.saveAccountScope(record); err != nil {
 		return AccountScopeRecord{}, err
 	}
 	return record, nil
@@ -261,7 +328,7 @@ func (s *IdentityStore) CreateAccountScopeIfAbsent(record AccountScopeRecord) (A
 		return AccountScopeRecord{}, err
 	}
 	record = normalizeAccountScopeRecord(record)
-	if err := validateAccountScopeRecord(record); err != nil {
+	if err := s.validateAccountScopeRecord(record); err != nil {
 		return AccountScopeRecord{}, err
 	}
 	if _, ok, err := s.GetAccountScope(record.ID); err != nil {
@@ -276,21 +343,47 @@ func (s *IdentityStore) CreateAccountScopeIfAbsent(record AccountScopeRecord) (A
 	if record.UpdatedAt.IsZero() {
 		record.UpdatedAt = record.CreatedAt
 	}
-	if err := s.store.PutJSON(KeyIdentityAccountScope(record.ID), record); err != nil {
+	if err := s.saveAccountScope(record); err != nil {
 		return AccountScopeRecord{}, err
 	}
 	return record, nil
 }
 
-func validateAccountScopeRecord(record AccountScopeRecord) error {
+func (s *IdentityStore) saveAccountScope(record AccountScopeRecord) error {
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal account scope: %w", err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeyIdentityAccountScope(record.ID)), payload, nil); err != nil {
+		return err
+	}
+	if err := batch.Set([]byte(KeyAccountScope(record.ID)), payload, nil); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
+}
+
+func (s *IdentityStore) validateAccountScopeRecord(record AccountScopeRecord) error {
 	if record.ID == "" {
 		return errors.New("account scope id is required")
 	}
-	if record.UserID == "" {
-		return errors.New("account scope user id is required")
+	if record.Type == "" {
+		return errors.New("account scope type is required")
 	}
-	if record.Role == "" {
-		return errors.New("account scope role is required")
+	if record.Type != AccountScopeTypePersonal && record.Type != AccountScopeTypeOrg && record.Type != AccountScopeTypeSystem {
+		return errors.New("account scope type is invalid")
+	}
+	if record.CreatedByUserID == "" && record.Type != AccountScopeTypeSystem {
+		return errors.New("account scope created_by_user_id is required")
+	}
+	if record.CreatedByUserID != "" {
+		if _, ok, err := s.GetUser(record.CreatedByUserID); err != nil {
+			return err
+		} else if !ok {
+			return fmt.Errorf("account scope creator %q: %w", record.CreatedByUserID, ErrIdentityRecordNotFound)
+		}
 	}
 	return nil
 }
@@ -304,9 +397,15 @@ func (s *IdentityStore) GetAccountScope(accountScopeID string) (AccountScopeReco
 		return AccountScopeRecord{}, false, nil
 	}
 	var record AccountScopeRecord
-	ok, err := s.store.GetJSON(KeyIdentityAccountScope(accountScopeID), &record)
-	if err != nil || !ok {
-		return AccountScopeRecord{}, ok, err
+	ok, err := s.store.GetJSON(KeyAccountScope(accountScopeID), &record)
+	if err != nil {
+		return AccountScopeRecord{}, false, err
+	}
+	if !ok {
+		ok, err = s.store.GetJSON(KeyIdentityAccountScope(accountScopeID), &record)
+		if err != nil || !ok {
+			return AccountScopeRecord{}, ok, err
+		}
 	}
 	return normalizeAccountScopeRecord(record), true, nil
 }
@@ -315,13 +414,159 @@ func (s *IdentityStore) ListAccountScopes(limit int) ([]AccountScopeRecord, erro
 	if err := s.configured(); err != nil {
 		return nil, err
 	}
-	return listIdentityRecords(s.store, IdentityAccountScopePrefix(), limit, func(value []byte) (AccountScopeRecord, error) {
+	return listIdentityRecords(s.store, AccountScopePrefix(), limit, func(value []byte) (AccountScopeRecord, error) {
 		var record AccountScopeRecord
 		if err := json.Unmarshal(value, &record); err != nil {
 			return AccountScopeRecord{}, fmt.Errorf("decode account scope: %w", err)
 		}
 		return normalizeAccountScopeRecord(record), nil
 	})
+}
+
+func (s *IdentityStore) PutAccountUser(record AccountUserRecord) (AccountUserRecord, error) {
+	if err := s.configured(); err != nil {
+		return AccountUserRecord{}, err
+	}
+	record = normalizeAccountUserRecord(record)
+	if err := s.validateAccountUserRecord(record); err != nil {
+		return AccountUserRecord{}, err
+	}
+	now := time.Now().UTC()
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = now
+	}
+	record.UpdatedAt = now
+	if err := s.saveAccountUser(record); err != nil {
+		return AccountUserRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *IdentityStore) CreateAccountUserIfAbsent(record AccountUserRecord) (AccountUserRecord, error) {
+	if err := s.configured(); err != nil {
+		return AccountUserRecord{}, err
+	}
+	record = normalizeAccountUserRecord(record)
+	if err := s.validateAccountUserRecord(record); err != nil {
+		return AccountUserRecord{}, err
+	}
+	if _, ok, err := s.GetAccountUser(record.AccountScopeID, record.UserID); err != nil {
+		return AccountUserRecord{}, err
+	} else if ok {
+		return AccountUserRecord{}, fmt.Errorf("account user already exists: %w", ErrIdentityRecordExists)
+	}
+	now := time.Now().UTC()
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = now
+	}
+	if record.UpdatedAt.IsZero() {
+		record.UpdatedAt = record.CreatedAt
+	}
+	if err := s.saveAccountUser(record); err != nil {
+		return AccountUserRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *IdentityStore) saveAccountUser(record AccountUserRecord) error {
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal account user: %w", err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeyAccountUser(record.AccountScopeID, record.UserID)), payload, nil); err != nil {
+		return err
+	}
+	if err := batch.Set([]byte(KeyAccountUserByUser(record.UserID, record.AccountScopeID)), []byte(record.ID), nil); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
+}
+
+func (s *IdentityStore) validateAccountUserRecord(record AccountUserRecord) error {
+	if record.ID == "" {
+		return errors.New("account user id is required")
+	}
+	if record.AccountScopeID == "" {
+		return errors.New("account user account scope id is required")
+	}
+	if record.UserID == "" {
+		return errors.New("account user user id is required")
+	}
+	if record.Status == "" {
+		return errors.New("account user status is required")
+	}
+	if _, ok, err := s.GetUser(record.UserID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("account user user %q: %w", record.UserID, ErrIdentityRecordNotFound)
+	}
+	if _, ok, err := s.GetAccountScope(record.AccountScopeID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("account user account scope %q: %w", record.AccountScopeID, ErrIdentityRecordNotFound)
+	}
+	return nil
+}
+
+func (s *IdentityStore) GetAccountUser(accountScopeID, userID string) (AccountUserRecord, bool, error) {
+	if err := s.configured(); err != nil {
+		return AccountUserRecord{}, false, err
+	}
+	accountScopeID = normalizeIdentityID(accountScopeID)
+	userID = normalizeIdentityID(userID)
+	if accountScopeID == "" || userID == "" {
+		return AccountUserRecord{}, false, nil
+	}
+	var record AccountUserRecord
+	ok, err := s.store.GetJSON(KeyAccountUser(accountScopeID, userID), &record)
+	if err != nil || !ok {
+		return AccountUserRecord{}, ok, err
+	}
+	return normalizeAccountUserRecord(record), true, nil
+}
+
+func (s *IdentityStore) ListAccountUsers(limit int) ([]AccountUserRecord, error) {
+	if err := s.configured(); err != nil {
+		return nil, err
+	}
+	return listIdentityRecords(s.store, AccountUserPrefix(""), limit, func(value []byte) (AccountUserRecord, error) {
+		var record AccountUserRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return AccountUserRecord{}, fmt.Errorf("decode account user: %w", err)
+		}
+		return normalizeAccountUserRecord(record), nil
+	})
+}
+
+func (s *IdentityStore) ListAccountUsersForUser(userID string, limit int) ([]AccountUserRecord, error) {
+	if err := s.configured(); err != nil {
+		return nil, err
+	}
+	records := make([]AccountUserRecord, 0)
+	err := s.store.IteratePrefix(AccountUserByUserPrefix(userID), limit, func(key string, value []byte) error {
+		accountScopeID := strings.TrimPrefix(key, AccountUserByUserPrefix(userID))
+		if strings.TrimSpace(accountScopeID) == "" {
+			return nil
+		}
+		record, ok, err := s.GetAccountUser(accountScopeID, userID)
+		if err != nil || !ok {
+			return err
+		}
+		records = append(records, record)
+		_ = value
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func (s *IdentityStore) AccountUserExists(accountScopeID, userID string) (bool, error) {
+	_, ok, err := s.GetAccountUser(accountScopeID, userID)
+	return ok, err
 }
 
 func (s *IdentityStore) PutTeam(record TeamRecord) (TeamRecord, error) {
@@ -646,13 +891,15 @@ func (s *IdentityStore) IdentityCounts() (IdentityCounts, error) {
 	if err := s.configured(); err != nil {
 		return IdentityCounts{}, err
 	}
-	users, err := countPrefix(s.store, IdentityUserPrefix(), func(key string) bool {
-		return strings.HasPrefix(key, KeyIdentityUserByUsernamePrefix)
-	})
+	users, err := countPrefix(s.store, IdentityUserPrefix(), nil)
 	if err != nil {
 		return IdentityCounts{}, err
 	}
-	accountScopes, err := countPrefix(s.store, IdentityAccountScopePrefix(), nil)
+	accountScopes, err := countPrefix(s.store, AccountScopePrefix(), nil)
+	if err != nil {
+		return IdentityCounts{}, err
+	}
+	accountUsers, err := countPrefix(s.store, AccountUserPrefix(""), nil)
 	if err != nil {
 		return IdentityCounts{}, err
 	}
@@ -668,7 +915,7 @@ func (s *IdentityStore) IdentityCounts() (IdentityCounts, error) {
 	if err != nil {
 		return IdentityCounts{}, err
 	}
-	return IdentityCounts{Users: users, AccountScopes: accountScopes, Teams: teams, TeamMemberships: memberships, CurrentSelections: selections}, nil
+	return IdentityCounts{Users: users, AccountScopes: accountScopes, AccountUsers: accountUsers, Teams: teams, TeamMemberships: memberships, CurrentSelections: selections}, nil
 }
 
 func (s *IdentityStore) IsIdentityNamespaceEmpty() (bool, error) {
@@ -694,7 +941,11 @@ func (s *IdentityStore) CreateBootstrapIdentityRecords(records BootstrapIdentity
 	normalized := BootstrapIdentityRecords{
 		User:             normalizeUserRecord(records.User),
 		AccountScope:     normalizeAccountScopeRecord(records.AccountScope),
+		AccountUser:      normalizeAccountUserRecord(records.AccountUser),
 		CurrentSelection: normalizeCurrentSelectionRecord(records.CurrentSelection),
+	}
+	if normalized.AccountUser.ID == "" && normalized.AccountScope.ID != "" && normalized.User.ID != "" {
+		normalized.AccountUser.ID = normalized.AccountScope.ID + ":" + normalized.User.ID
 	}
 	if err := validateBootstrapIdentityRecords(normalized); err != nil {
 		return BootstrapIdentityRecords{}, err
@@ -712,6 +963,12 @@ func (s *IdentityStore) CreateBootstrapIdentityRecords(records BootstrapIdentity
 	if normalized.AccountScope.UpdatedAt.IsZero() {
 		normalized.AccountScope.UpdatedAt = normalized.AccountScope.CreatedAt
 	}
+	if normalized.AccountUser.CreatedAt.IsZero() {
+		normalized.AccountUser.CreatedAt = now
+	}
+	if normalized.AccountUser.UpdatedAt.IsZero() {
+		normalized.AccountUser.UpdatedAt = normalized.AccountUser.CreatedAt
+	}
 	if normalized.CurrentSelection.CreatedAt.IsZero() {
 		normalized.CurrentSelection.CreatedAt = now
 	}
@@ -727,6 +984,10 @@ func (s *IdentityStore) CreateBootstrapIdentityRecords(records BootstrapIdentity
 	if err != nil {
 		return BootstrapIdentityRecords{}, fmt.Errorf("marshal bootstrap account scope: %w", err)
 	}
+	accountUserPayload, err := json.Marshal(normalized.AccountUser)
+	if err != nil {
+		return BootstrapIdentityRecords{}, fmt.Errorf("marshal bootstrap account user: %w", err)
+	}
 	selectionPayload, err := json.Marshal(normalized.CurrentSelection)
 	if err != nil {
 		return BootstrapIdentityRecords{}, fmt.Errorf("marshal bootstrap current selection: %w", err)
@@ -740,7 +1001,21 @@ func (s *IdentityStore) CreateBootstrapIdentityRecords(records BootstrapIdentity
 	if err := batch.Set([]byte(KeyIdentityUserByUsername(normalized.User.Username)), []byte(normalized.User.ID), nil); err != nil {
 		return BootstrapIdentityRecords{}, err
 	}
+	if normalized.User.AuthProvider != "" {
+		if err := batch.Set([]byte(KeyIdentityAuthSubject(normalized.User.AuthProvider, normalized.User.AuthSubject)), []byte(normalized.User.ID), nil); err != nil {
+			return BootstrapIdentityRecords{}, err
+		}
+	}
 	if err := batch.Set([]byte(KeyIdentityAccountScope(normalized.AccountScope.ID)), accountScopePayload, nil); err != nil {
+		return BootstrapIdentityRecords{}, err
+	}
+	if err := batch.Set([]byte(KeyAccountScope(normalized.AccountScope.ID)), accountScopePayload, nil); err != nil {
+		return BootstrapIdentityRecords{}, err
+	}
+	if err := batch.Set([]byte(KeyAccountUser(normalized.AccountUser.AccountScopeID, normalized.AccountUser.UserID)), accountUserPayload, nil); err != nil {
+		return BootstrapIdentityRecords{}, err
+	}
+	if err := batch.Set([]byte(KeyAccountUserByUser(normalized.AccountUser.UserID, normalized.AccountUser.AccountScopeID)), []byte(normalized.AccountUser.ID), nil); err != nil {
 		return BootstrapIdentityRecords{}, err
 	}
 	if err := batch.Set([]byte(KeyIdentityCurrentSelection()), selectionPayload, nil); err != nil {
@@ -762,14 +1037,37 @@ func validateBootstrapIdentityRecords(records BootstrapIdentityRecords) error {
 	if records.User.Username == "" {
 		return errors.New("bootstrap username is required")
 	}
+	if records.User.AuthProvider != "" || records.User.AuthSubject != "" {
+		if records.User.AuthProvider == "" || records.User.AuthSubject == "" {
+			return errors.New("bootstrap auth provider and subject must both be set")
+		}
+	}
 	if records.AccountScope.ID == "" {
 		return errors.New("bootstrap account scope id is required")
 	}
-	if records.AccountScope.UserID != records.User.ID {
-		return errors.New("bootstrap account scope user must match user record")
+	if records.AccountScope.Type == "" {
+		return errors.New("bootstrap account scope type is required")
+	}
+	if records.AccountScope.CreatedByUserID != records.User.ID {
+		return errors.New("bootstrap account scope creator must match user record")
+	}
+	if records.AccountScope.UserID != "" && records.AccountScope.UserID != records.User.ID {
+		return errors.New("bootstrap legacy account scope user must match user record")
 	}
 	if records.User.AccountScopeID != records.AccountScope.ID {
 		return errors.New("bootstrap user account scope must match account scope record")
+	}
+	if records.AccountUser.ID == "" {
+		return errors.New("bootstrap account user id is required")
+	}
+	if records.AccountUser.UserID != records.User.ID {
+		return errors.New("bootstrap account user user must match user record")
+	}
+	if records.AccountUser.AccountScopeID != records.AccountScope.ID {
+		return errors.New("bootstrap account user account scope must match account scope record")
+	}
+	if records.AccountUser.Status == "" {
+		return errors.New("bootstrap account user status is required")
 	}
 	if records.CurrentSelection.UserID != records.User.ID {
 		return errors.New("bootstrap selection user must match user record")
@@ -902,8 +1200,35 @@ func normalizeIdentityRole(role string) string {
 	return strings.ToLower(strings.TrimSpace(role))
 }
 
+func normalizeIdentityProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func normalizeIdentitySubject(subject string) string {
+	return strings.TrimSpace(subject)
+}
+
+func validateUserRecord(record UserRecord) error {
+	if record.ID == "" {
+		return errors.New("user id is required")
+	}
+	if record.Username == "" {
+		return errors.New("username is required")
+	}
+	if record.AuthProvider != "" || record.AuthSubject != "" {
+		if record.AuthProvider == "" || record.AuthSubject == "" {
+			return errors.New("auth provider and subject must both be set")
+		}
+	}
+	return nil
+}
+
 func normalizeUserRecord(record UserRecord) UserRecord {
 	record.ID = normalizeIdentityID(record.ID)
+	record.AuthProvider = normalizeIdentityProvider(record.AuthProvider)
+	record.AuthSubject = normalizeIdentitySubject(record.AuthSubject)
+	record.Email = strings.ToLower(strings.TrimSpace(record.Email))
+	record.DisplayName = strings.TrimSpace(record.DisplayName)
 	record.AccountScopeID = normalizeIdentityID(record.AccountScopeID)
 	record.Username = NormalizeIdentityUsername(record.Username)
 	return record
@@ -911,8 +1236,30 @@ func normalizeUserRecord(record UserRecord) UserRecord {
 
 func normalizeAccountScopeRecord(record AccountScopeRecord) AccountScopeRecord {
 	record.ID = normalizeIdentityID(record.ID)
+	record.Type = normalizeIdentityRole(record.Type)
+	record.CreatedByUserID = normalizeIdentityID(record.CreatedByUserID)
 	record.UserID = normalizeIdentityID(record.UserID)
 	record.Role = normalizeIdentityRole(record.Role)
+	if record.Type == "" {
+		record.Type = AccountScopeTypePersonal
+	}
+	if record.CreatedByUserID == "" && record.UserID != "" {
+		record.CreatedByUserID = record.UserID
+	}
+	return record
+}
+
+func normalizeAccountUserRecord(record AccountUserRecord) AccountUserRecord {
+	record.ID = normalizeIdentityID(record.ID)
+	record.AccountScopeID = normalizeIdentityID(record.AccountScopeID)
+	record.UserID = normalizeIdentityID(record.UserID)
+	record.Status = normalizeIdentityRole(record.Status)
+	if record.ID == "" && record.AccountScopeID != "" && record.UserID != "" {
+		record.ID = record.AccountScopeID + ":" + record.UserID
+	}
+	if record.Status == "" {
+		record.Status = AccountUserStatusActive
+	}
 	return record
 }
 

@@ -66,6 +66,8 @@ coverage.out
 !/docs/checkpoints/*.md
 !/docs/identity/
 !/docs/identity/*.md
+!/docs/migrations/
+!/docs/migrations/**
 !/docs/swarm-harness-vm.md
 !/docs/flows-smoke-harness.md
 !/docs/managed-host-launch-gate.md

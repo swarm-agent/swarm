@@ -17,6 +17,8 @@ var (
 	ErrTeamOptInUnauthorized = errors.New("team opt-in requires account owner/admin capability")
 )
 
+const defaultBackendTeamName = "Personal"
+
 type IDGenerator func(prefix string) (string, error)
 
 type Service struct {
@@ -45,8 +47,11 @@ func NewService(store *pebblestore.IdentityStore, opts ...Option) *Service {
 type BootstrapResult struct {
 	User             pebblestore.UserRecord             `json:"user"`
 	AccountScope     pebblestore.AccountScopeRecord     `json:"account_scope"`
+	AccountUser      pebblestore.AccountUserRecord      `json:"account_user"`
 	CurrentSelection pebblestore.CurrentSelectionRecord `json:"current_selection"`
 	Counts           pebblestore.IdentityCounts         `json:"counts"`
+	Team             pebblestore.TeamRecord             `json:"team,omitempty"`       // legacy response compatibility only; no team is persisted.
+	Membership       pebblestore.TeamMembershipRecord   `json:"membership,omitempty"` // legacy response compatibility only; no membership is persisted.
 }
 
 type TeamOptInResult struct {
@@ -91,13 +96,24 @@ func (s *Service) BootstrapFirstIdentity(username string) (BootstrapResult, erro
 	created, err := s.store.CreateBootstrapIdentityRecords(pebblestore.BootstrapIdentityRecords{
 		User: pebblestore.UserRecord{
 			ID:             userID,
+			AuthProvider:   LocalProductSessionIssuer,
+			AuthSubject:    userID,
+			DisplayName:    username,
 			AccountScopeID: accountScopeID,
 			Username:       username,
 		},
 		AccountScope: pebblestore.AccountScopeRecord{
-			ID:     accountScopeID,
-			UserID: userID,
-			Role:   pebblestore.AccountRoleOwner,
+			ID:              accountScopeID,
+			Type:            pebblestore.AccountScopeTypePersonal,
+			CreatedByUserID: userID,
+			UserID:          userID,
+			Role:            pebblestore.AccountRoleOwner,
+		},
+		AccountUser: pebblestore.AccountUserRecord{
+			ID:             accountScopeID + ":" + userID,
+			AccountScopeID: accountScopeID,
+			UserID:         userID,
+			Status:         pebblestore.AccountUserStatusActive,
 		},
 		CurrentSelection: pebblestore.CurrentSelectionRecord{
 			UserID: userID,
@@ -116,8 +132,18 @@ func (s *Service) BootstrapFirstIdentity(username string) (BootstrapResult, erro
 	return BootstrapResult{
 		User:             created.User,
 		AccountScope:     created.AccountScope,
+		AccountUser:      created.AccountUser,
 		CurrentSelection: created.CurrentSelection,
 		Counts:           counts,
+		Team: pebblestore.TeamRecord{
+			ID:             "",
+			AccountScopeID: created.AccountScope.ID,
+			Name:           defaultBackendTeamName,
+		},
+		Membership: pebblestore.TeamMembershipRecord{
+			UserID: created.User.ID,
+			Role:   pebblestore.TeamRoleOwner,
+		},
 	}, nil
 }
 
@@ -138,7 +164,7 @@ func (s *Service) UpgradeAccountToTeam(actor ActorContext, teamDisplayName strin
 	if strings.TrimSpace(actor.User.AccountScopeID) == "" || actor.User.AccountScopeID != actor.AccountScopeID || actor.AccountScope.UserID != actor.UserID {
 		return TeamOptInResult{}, ErrTeamOptInUnauthorized
 	}
-	if actor.AccountScope.Role != pebblestore.AccountRoleOwner {
+	if actor.AccountScope.Role != "" && actor.AccountScope.Role != pebblestore.AccountRoleOwner {
 		return TeamOptInResult{}, ErrTeamOptInUnauthorized
 	}
 	if strings.TrimSpace(actor.TeamID) != "" || strings.TrimSpace(actor.Membership.TeamID) != "" {

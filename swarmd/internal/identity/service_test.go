@@ -11,7 +11,7 @@ import (
 )
 
 func TestBootstrapFirstIdentityUsernameOnlyCreatesCanonicalRecords(t *testing.T) {
-	svc, store := newTestService(t, "user_generated", "team_generated")
+	svc, store := newTestService(t, "user_generated", "acct_generated")
 
 	result, err := svc.BootstrapFirstIdentity(" Alice ")
 	if err != nil {
@@ -20,16 +20,16 @@ func TestBootstrapFirstIdentityUsernameOnlyCreatesCanonicalRecords(t *testing.T)
 	if result.User.ID != "user_generated" || result.User.Username != "alice" {
 		t.Fatalf("user = %+v", result.User)
 	}
-	if result.Team.ID != "team_generated" || result.Team.Name != defaultBackendTeamName || !result.Team.Default {
-		t.Fatalf("team = %+v", result.Team)
+	if result.AccountScope.ID != "acct_generated" || result.AccountScope.Type != pebblestore.AccountScopeTypePersonal || result.AccountScope.CreatedByUserID != result.User.ID {
+		t.Fatalf("account scope = %+v", result.AccountScope)
 	}
-	if result.Membership.UserID != result.User.ID || result.Membership.TeamID != result.Team.ID || result.Membership.Role != pebblestore.TeamRoleOwner {
-		t.Fatalf("membership = %+v", result.Membership)
+	if result.AccountUser.UserID != result.User.ID || result.AccountUser.AccountScopeID != result.AccountScope.ID || result.AccountUser.Status != pebblestore.AccountUserStatusActive {
+		t.Fatalf("account user = %+v", result.AccountUser)
 	}
-	if result.CurrentSelection.UserID != result.User.ID || result.CurrentSelection.TeamID != result.Team.ID || result.CurrentSelection.WorkspaceID != "" {
+	if result.CurrentSelection.UserID != result.User.ID || result.CurrentSelection.TeamID != "" || result.CurrentSelection.WorkspaceID != "" {
 		t.Fatalf("selection = %+v", result.CurrentSelection)
 	}
-	if result.Counts != (pebblestore.IdentityCounts{Users: 1, Teams: 1, TeamMemberships: 1, CurrentSelections: 1}) {
+	if result.Counts != (pebblestore.IdentityCounts{Users: 1, AccountScopes: 1, AccountUsers: 1, CurrentSelections: 1}) {
 		t.Fatalf("counts = %+v", result.Counts)
 	}
 
@@ -47,7 +47,7 @@ func TestBootstrapFirstIdentityUsernameOnlyCreatesCanonicalRecords(t *testing.T)
 }
 
 func TestBootstrapFirstIdentityRejectsRebootstrapAndPartialState(t *testing.T) {
-	svc, _ := newTestService(t, "user_one", "team_one", "user_two", "team_two")
+	svc, _ := newTestService(t, "user_one", "acct_one", "user_two", "acct_two")
 	if _, err := svc.BootstrapFirstIdentity("alice"); err != nil {
 		t.Fatalf("first bootstrap: %v", err)
 	}
@@ -67,45 +67,48 @@ func TestBootstrapFirstIdentityRejectsRebootstrapAndPartialState(t *testing.T) {
 			},
 		},
 		{
-			name: "team only",
+			name: "account scope only",
 			seed: func(store *pebblestore.IdentityStore) error {
-				_, err := store.CreateTeamIfAbsent(pebblestore.TeamRecord{ID: "team_existing", Name: "Existing", Default: true})
+				if _, err := store.CreateUserIfAbsent(pebblestore.UserRecord{ID: "user_creator", Username: "creator"}); err != nil {
+					return err
+				}
+				_, err := store.CreateAccountScopeIfAbsent(pebblestore.AccountScopeRecord{ID: "acct_existing", Type: pebblestore.AccountScopeTypePersonal, CreatedByUserID: "user_creator"})
 				return err
 			},
 		},
 		{
-			name: "membership only is impossible but full partial membership state is rejected",
+			name: "account user partial association is rejected",
 			seed: func(store *pebblestore.IdentityStore) error {
-				if _, err := store.CreateUserIfAbsent(pebblestore.UserRecord{ID: "user_existing", Username: "existing"}); err != nil {
+				if _, err := store.CreateUserIfAbsent(pebblestore.UserRecord{ID: "user_existing", Username: "existing", AccountScopeID: "acct_existing"}); err != nil {
 					return err
 				}
-				if _, err := store.CreateTeamIfAbsent(pebblestore.TeamRecord{ID: "team_existing", Name: "Existing", Default: true}); err != nil {
+				if _, err := store.CreateAccountScopeIfAbsent(pebblestore.AccountScopeRecord{ID: "acct_existing", Type: pebblestore.AccountScopeTypePersonal, CreatedByUserID: "user_existing"}); err != nil {
 					return err
 				}
-				_, err := store.CreateTeamMembershipIfAbsent(pebblestore.TeamMembershipRecord{TeamID: "team_existing", UserID: "user_existing", Role: pebblestore.TeamRoleOwner})
+				_, err := store.CreateAccountUserIfAbsent(pebblestore.AccountUserRecord{AccountScopeID: "acct_existing", UserID: "user_existing"})
 				return err
 			},
 		},
 		{
 			name: "selection state",
 			seed: func(store *pebblestore.IdentityStore) error {
-				if _, err := store.CreateUserIfAbsent(pebblestore.UserRecord{ID: "user_existing", Username: "existing"}); err != nil {
+				if _, err := store.CreateUserIfAbsent(pebblestore.UserRecord{ID: "user_existing", Username: "existing", AccountScopeID: "acct_existing"}); err != nil {
 					return err
 				}
-				if _, err := store.CreateTeamIfAbsent(pebblestore.TeamRecord{ID: "team_existing", Name: "Existing", Default: true}); err != nil {
+				if _, err := store.CreateAccountScopeIfAbsent(pebblestore.AccountScopeRecord{ID: "acct_existing", Type: pebblestore.AccountScopeTypePersonal, CreatedByUserID: "user_existing"}); err != nil {
 					return err
 				}
-				if _, err := store.CreateTeamMembershipIfAbsent(pebblestore.TeamMembershipRecord{TeamID: "team_existing", UserID: "user_existing", Role: pebblestore.TeamRoleOwner}); err != nil {
+				if _, err := store.CreateAccountUserIfAbsent(pebblestore.AccountUserRecord{AccountScopeID: "acct_existing", UserID: "user_existing"}); err != nil {
 					return err
 				}
-				_, err := store.PutCurrentSelection(pebblestore.CurrentSelectionRecord{UserID: "user_existing", TeamID: "team_existing"})
+				_, err := store.PutCurrentSelection(pebblestore.CurrentSelectionRecord{UserID: "user_existing"})
 				return err
 			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			partialSvc, store := newTestService(t, "user_new", "team_new")
+			partialSvc, store := newTestService(t, "user_new", "acct_new")
 			if err := tc.seed(store); err != nil {
 				t.Fatalf("seed partial state: %v", err)
 			}
@@ -117,7 +120,7 @@ func TestBootstrapFirstIdentityRejectsRebootstrapAndPartialState(t *testing.T) {
 }
 
 func TestBootstrapFirstIdentityRejectsInvalidUsernameAndNormalizationCollision(t *testing.T) {
-	svc, store := newTestService(t, "user_one", "team_one")
+	svc, store := newTestService(t, "user_one", "acct_one")
 	if _, err := svc.BootstrapFirstIdentity("   "); err == nil || !strings.Contains(err.Error(), "username") {
 		t.Fatalf("empty username err=%v, want username error", err)
 	}
@@ -181,11 +184,11 @@ func TestBootstrapFirstIdentityDoesNotRequireTeamInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	if result.Team.Name != defaultBackendTeamName || !result.Team.Default {
-		t.Fatalf("default backend team = %+v", result.Team)
+	if result.AccountScope.ID != "acct_generated" || result.Team.ID != "" || result.Membership.TeamID != "" {
+		t.Fatalf("bootstrap should create account scope without team: result=%+v", result)
 	}
-	if !reflect.DeepEqual(seenPrefixes, []string{"user", "team"}) {
-		t.Fatalf("id generator prefixes = %v, want user/team only", seenPrefixes)
+	if !reflect.DeepEqual(seenPrefixes, []string{"user", "acct"}) {
+		t.Fatalf("id generator prefixes = %v, want user/acct only", seenPrefixes)
 	}
 }
 
