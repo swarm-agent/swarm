@@ -246,13 +246,20 @@ func productSessionTokenFromRequest(r *http.Request) string {
 }
 
 func isCompleteProductActor(actor identity.ActorContext) bool {
-	return strings.TrimSpace(actor.UserID) != "" &&
-		strings.TrimSpace(actor.TeamID) != "" &&
-		strings.TrimSpace(actor.User.ID) != "" &&
-		strings.TrimSpace(actor.Team.ID) != "" &&
+	if strings.TrimSpace(actor.UserID) == "" ||
+		strings.TrimSpace(actor.AccountScopeID) == "" ||
+		strings.TrimSpace(actor.User.ID) == "" ||
+		strings.TrimSpace(actor.User.AccountScopeID) == "" ||
+		strings.TrimSpace(actor.AccountScope.ID) == "" ||
+		strings.TrimSpace(actor.Selection.UserID) == "" {
+		return false
+	}
+	if strings.TrimSpace(actor.TeamID) == "" {
+		return true
+	}
+	return strings.TrimSpace(actor.Team.ID) != "" &&
 		strings.TrimSpace(actor.Membership.UserID) != "" &&
 		strings.TrimSpace(actor.Membership.TeamID) != "" &&
-		strings.TrimSpace(actor.Selection.UserID) != "" &&
 		strings.TrimSpace(actor.Selection.TeamID) != ""
 }
 

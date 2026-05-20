@@ -320,8 +320,10 @@ export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingS
   const identity: DesktopOnboardingIdentity = {
     bootstrapped: Boolean(onboarding.identity?.bootstrapped),
     userID: String(onboarding.identity?.user_id ?? '').trim(),
+    accountScopeID: String(onboarding.identity?.account_scope_id ?? '').trim(),
     username: String(onboarding.identity?.username ?? '').trim(),
     teamID: String(onboarding.identity?.team_id ?? '').trim(),
+    teamDisplayName: String(onboarding.identity?.team_display_name ?? '').trim(),
     teamDefault: Boolean(onboarding.identity?.team_default),
     membershipRole: String(onboarding.identity?.membership_role ?? '').trim(),
   }
@@ -468,6 +470,16 @@ export async function patchDesktopOnboarding(input: SaveDesktopOnboardingInput):
 export async function saveDesktopOnboarding(input: SaveDesktopOnboardingInput): Promise<DesktopOnboardingStatus> {
   await patchDesktopOnboarding(input)
   return fetchDesktopOnboardingStatus()
+}
+
+export async function upgradeAccountToTeam(teamName: string): Promise<void> {
+  await requestJson('/v1/account/team/upgrade', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ team_name: teamName }),
+  })
 }
 
 export async function fetchSwarmLocalRuntimeStatus(): Promise<SwarmLocalRuntimeStatus> {

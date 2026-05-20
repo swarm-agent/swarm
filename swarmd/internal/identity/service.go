@@ -5,15 +5,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-const defaultBackendTeamName = "Default backend team"
-
 var (
-	ErrServiceNotConfigured = errors.New("identity service is not configured")
-	ErrBootstrapExists      = errors.New("identity bootstrap already exists")
+	ErrServiceNotConfigured  = errors.New("identity service is not configured")
+	ErrBootstrapExists       = errors.New("identity bootstrap already exists")
+	ErrTeamAlreadyExists     = errors.New("account scope already has a team")
+	ErrTeamOptInUnauthorized = errors.New("team opt-in requires account owner/admin capability")
 )
 
 type IDGenerator func(prefix string) (string, error)
@@ -43,6 +44,12 @@ func NewService(store *pebblestore.IdentityStore, opts ...Option) *Service {
 
 type BootstrapResult struct {
 	User             pebblestore.UserRecord             `json:"user"`
+	AccountScope     pebblestore.AccountScopeRecord     `json:"account_scope"`
+	CurrentSelection pebblestore.CurrentSelectionRecord `json:"current_selection"`
+	Counts           pebblestore.IdentityCounts         `json:"counts"`
+}
+
+type TeamOptInResult struct {
 	Team             pebblestore.TeamRecord             `json:"team"`
 	Membership       pebblestore.TeamMembershipRecord   `json:"membership"`
 	CurrentSelection pebblestore.CurrentSelectionRecord `json:"current_selection"`
@@ -52,6 +59,7 @@ type BootstrapResult struct {
 type StateSummary struct {
 	Counts            pebblestore.IdentityCounts          `json:"counts"`
 	CurrentUser       *pebblestore.UserRecord             `json:"current_user,omitempty"`
+	AccountScope      *pebblestore.AccountScopeRecord     `json:"account_scope,omitempty"`
 	CurrentTeam       *pebblestore.TeamRecord             `json:"current_team,omitempty"`
 	CurrentMembership *pebblestore.TeamMembershipRecord   `json:"current_membership,omitempty"`
 	CurrentSelection  *pebblestore.CurrentSelectionRecord `json:"current_selection,omitempty"`
@@ -75,29 +83,24 @@ func (s *Service) BootstrapFirstIdentity(username string) (BootstrapResult, erro
 	if err != nil {
 		return BootstrapResult{}, fmt.Errorf("generate user id: %w", err)
 	}
-	teamID, err := s.generateID("team")
+	accountScopeID, err := s.generateID("acct")
 	if err != nil {
-		return BootstrapResult{}, fmt.Errorf("generate team id: %w", err)
+		return BootstrapResult{}, fmt.Errorf("generate account scope id: %w", err)
 	}
 
 	created, err := s.store.CreateBootstrapIdentityRecords(pebblestore.BootstrapIdentityRecords{
 		User: pebblestore.UserRecord{
-			ID:       userID,
-			Username: username,
+			ID:             userID,
+			AccountScopeID: accountScopeID,
+			Username:       username,
 		},
-		Team: pebblestore.TeamRecord{
-			ID:      teamID,
-			Name:    defaultBackendTeamName,
-			Default: true,
-		},
-		Membership: pebblestore.TeamMembershipRecord{
-			TeamID: teamID,
+		AccountScope: pebblestore.AccountScopeRecord{
+			ID:     accountScopeID,
 			UserID: userID,
-			Role:   pebblestore.TeamRoleOwner,
+			Role:   pebblestore.AccountRoleOwner,
 		},
 		CurrentSelection: pebblestore.CurrentSelectionRecord{
 			UserID: userID,
-			TeamID: teamID,
 		},
 	})
 	if err != nil {
@@ -112,6 +115,72 @@ func (s *Service) BootstrapFirstIdentity(username string) (BootstrapResult, erro
 	}
 	return BootstrapResult{
 		User:             created.User,
+		AccountScope:     created.AccountScope,
+		CurrentSelection: created.CurrentSelection,
+		Counts:           counts,
+	}, nil
+}
+
+func (s *Service) UpgradeAccountToTeam(actor ActorContext, teamDisplayName string) (TeamOptInResult, error) {
+	if err := s.configured(); err != nil {
+		return TeamOptInResult{}, err
+	}
+	teamDisplayName = strings.TrimSpace(teamDisplayName)
+	if teamDisplayName == "" {
+		return TeamOptInResult{}, errors.New("team name is required")
+	}
+	if strings.TrimSpace(actor.UserID) == "" || strings.TrimSpace(actor.User.ID) == "" {
+		return TeamOptInResult{}, ErrTeamOptInUnauthorized
+	}
+	if actor.UserID != actor.User.ID {
+		return TeamOptInResult{}, ErrTeamOptInUnauthorized
+	}
+	if strings.TrimSpace(actor.User.AccountScopeID) == "" || actor.User.AccountScopeID != actor.AccountScopeID || actor.AccountScope.UserID != actor.UserID {
+		return TeamOptInResult{}, ErrTeamOptInUnauthorized
+	}
+	if actor.AccountScope.Role != pebblestore.AccountRoleOwner {
+		return TeamOptInResult{}, ErrTeamOptInUnauthorized
+	}
+	if strings.TrimSpace(actor.TeamID) != "" || strings.TrimSpace(actor.Membership.TeamID) != "" {
+		return TeamOptInResult{}, ErrTeamAlreadyExists
+	}
+	if _, ok, err := s.store.GetTeamByAccountScope(actor.User.AccountScopeID); err != nil {
+		return TeamOptInResult{}, err
+	} else if ok {
+		return TeamOptInResult{}, ErrTeamAlreadyExists
+	}
+
+	teamID, err := s.generateID("team")
+	if err != nil {
+		return TeamOptInResult{}, fmt.Errorf("generate team id: %w", err)
+	}
+	created, err := s.store.CreateTeamOptInRecords(pebblestore.TeamOptInRecords{
+		Team: pebblestore.TeamRecord{
+			ID:             teamID,
+			AccountScopeID: actor.User.AccountScopeID,
+			Name:           teamDisplayName,
+		},
+		Membership: pebblestore.TeamMembershipRecord{
+			TeamID: teamID,
+			UserID: actor.UserID,
+			Role:   pebblestore.TeamRoleOwner,
+		},
+		CurrentSelection: pebblestore.CurrentSelectionRecord{
+			UserID: actor.UserID,
+			TeamID: teamID,
+		},
+	})
+	if err != nil {
+		if errors.Is(err, pebblestore.ErrIdentityRecordExists) {
+			return TeamOptInResult{}, ErrTeamAlreadyExists
+		}
+		return TeamOptInResult{}, err
+	}
+	counts, err := s.store.IdentityCounts()
+	if err != nil {
+		return TeamOptInResult{}, err
+	}
+	return TeamOptInResult{
 		Team:             created.Team,
 		Membership:       created.Membership,
 		CurrentSelection: created.CurrentSelection,
@@ -143,22 +212,30 @@ func (s *Service) StateSummary() (StateSummary, error) {
 	if !ok {
 		return StateSummary{}, fmt.Errorf("current selection user %q is missing", selection.UserID)
 	}
-	team, ok, err := s.store.GetTeam(selection.TeamID)
-	if err != nil {
-		return StateSummary{}, err
-	}
-	if !ok {
-		return StateSummary{}, fmt.Errorf("current selection team %q is missing", selection.TeamID)
-	}
-	membership, ok, err := s.store.GetTeamMembership(selection.TeamID, selection.UserID)
-	if err != nil {
-		return StateSummary{}, err
-	}
-	if !ok {
-		return StateSummary{}, fmt.Errorf("current selection membership team=%q user=%q is missing", selection.TeamID, selection.UserID)
-	}
 	summary.CurrentUser = &user
+	accountScope, ok, err := s.store.GetAccountScope(user.AccountScopeID)
+	if err != nil {
+		return StateSummary{}, err
+	}
+	if !ok {
+		return StateSummary{}, fmt.Errorf("current user account scope %q is missing", user.AccountScopeID)
+	}
+	summary.AccountScope = &accountScope
+	team, ok, err := s.store.GetTeamByAccountScope(user.AccountScopeID)
+	if err != nil {
+		return StateSummary{}, err
+	}
+	if !ok {
+		return summary, nil
+	}
 	summary.CurrentTeam = &team
+	membership, ok, err := s.store.GetTeamMembership(team.ID, user.ID)
+	if err != nil {
+		return StateSummary{}, err
+	}
+	if !ok {
+		return StateSummary{}, fmt.Errorf("current team membership team=%q user=%q is missing", team.ID, user.ID)
+	}
 	summary.CurrentMembership = &membership
 	return summary, nil
 }

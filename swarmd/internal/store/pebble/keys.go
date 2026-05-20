@@ -19,7 +19,9 @@ const (
 	KeyIdentityPrefix                           = "identity/"
 	KeyIdentityUserPrefix                       = "identity/user/"
 	KeyIdentityUserByUsernamePrefix             = "identity/user_by_username/"
+	KeyIdentityAccountScopePrefix               = "identity/account_scope/"
 	KeyIdentityTeamPrefix                       = "identity/team/"
+	KeyIdentityTeamByAccountScopePrefix         = "identity/team_by_account_scope/"
 	KeyIdentityTeamMembershipPrefix             = "identity/membership/"
 	KeyIdentityCurrentSelectionDefault          = "identity/current_selection/default"
 	KeyIdentityCurrentSelectionPrefix           = "identity/current_selection/"
@@ -147,12 +149,28 @@ func IdentityUserByUsernamePrefix() string {
 	return KeyIdentityUserByUsernamePrefix
 }
 
+func KeyIdentityAccountScope(accountScopeID string) string {
+	return KeyIdentityAccountScopePrefix + keyPart(accountScopeID)
+}
+
+func IdentityAccountScopePrefix() string {
+	return KeyIdentityAccountScopePrefix
+}
+
 func KeyIdentityTeam(teamID string) string {
 	return KeyIdentityTeamPrefix + keyPart(teamID)
 }
 
 func IdentityTeamPrefix() string {
 	return KeyIdentityTeamPrefix
+}
+
+func KeyIdentityTeamByAccountScope(accountScopeID string) string {
+	return KeyIdentityTeamByAccountScopePrefix + keyPart(accountScopeID)
+}
+
+func IdentityTeamByAccountScopePrefix() string {
+	return KeyIdentityTeamByAccountScopePrefix
 }
 
 func KeyIdentityTeamMembership(teamID, userID string) string {

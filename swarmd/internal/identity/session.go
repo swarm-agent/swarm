@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -42,13 +41,15 @@ func WithSessionClock(now func() time.Time) SessionOption {
 }
 
 type ActorContext struct {
-	UserID       string                             `json:"user_id"`
-	TeamID       string                             `json:"team_id"`
-	User         pebblestore.UserRecord             `json:"user"`
-	Team         pebblestore.TeamRecord             `json:"team"`
-	Membership   pebblestore.TeamMembershipRecord   `json:"membership"`
-	Selection    pebblestore.CurrentSelectionRecord `json:"selection"`
-	TokenExpires time.Time                          `json:"token_expires_at,omitempty"`
+	UserID         string                             `json:"user_id"`
+	AccountScopeID string                             `json:"account_scope_id"`
+	TeamID         string                             `json:"team_id,omitempty"`
+	User           pebblestore.UserRecord             `json:"user"`
+	AccountScope   pebblestore.AccountScopeRecord     `json:"account_scope"`
+	Team           pebblestore.TeamRecord             `json:"team,omitempty"`
+	Membership     pebblestore.TeamMembershipRecord   `json:"membership,omitempty"`
+	Selection      pebblestore.CurrentSelectionRecord `json:"selection"`
+	TokenExpires   time.Time                          `json:"token_expires_at,omitempty"`
 }
 
 type IssuedSession struct {
@@ -61,15 +62,16 @@ type IssuedSession struct {
 }
 
 type localProductClaims struct {
-	Issuer    string `json:"iss"`
-	Subject   string `json:"sub"`
-	Audience  string `json:"aud"`
-	SessionID string `json:"sid"`
-	JWTID     string `json:"jti"`
-	TeamID    string `json:"team_id,omitempty"`
-	IssuedAt  int64  `json:"iat"`
-	NotBefore int64  `json:"nbf"`
-	ExpiresAt int64  `json:"exp"`
+	Issuer         string `json:"iss"`
+	Subject        string `json:"sub"`
+	Audience       string `json:"aud"`
+	SessionID      string `json:"sid"`
+	JWTID          string `json:"jti"`
+	AccountScopeID string `json:"account_scope_id"`
+	TeamID         string `json:"team_id,omitempty"`
+	IssuedAt       int64  `json:"iat"`
+	NotBefore      int64  `json:"nbf"`
+	ExpiresAt      int64  `json:"exp"`
 }
 
 func NewSessionService(identityStore *pebblestore.IdentityStore, sessionStore *pebblestore.IdentitySessionStore, opts ...SessionOption) *SessionService {
@@ -100,15 +102,16 @@ func (s *SessionService) IssueForCurrentSelection() (IssuedSession, error) {
 		return IssuedSession{}, err
 	}
 	claims := localProductClaims{
-		Issuer:    LocalProductSessionIssuer,
-		Subject:   actor.UserID,
-		Audience:  LocalProductSessionAudience,
-		SessionID: sessionID,
-		JWTID:     jwtID,
-		TeamID:    actor.TeamID,
-		IssuedAt:  now.Unix(),
-		NotBefore: now.Add(-1 * time.Minute).Unix(),
-		ExpiresAt: now.Add(LocalProductSessionTTL).Unix(),
+		Issuer:         LocalProductSessionIssuer,
+		Subject:        actor.UserID,
+		Audience:       LocalProductSessionAudience,
+		SessionID:      sessionID,
+		JWTID:          jwtID,
+		AccountScopeID: actor.AccountScopeID,
+		TeamID:         actor.TeamID,
+		IssuedAt:       now.Unix(),
+		NotBefore:      now.Add(-1 * time.Minute).Unix(),
+		ExpiresAt:      now.Add(LocalProductSessionTTL).Unix(),
 	}
 	key, _, err := s.sessionStore.EnsureLocalProductJWTSigningKey()
 	if err != nil {
@@ -145,6 +148,9 @@ func (s *SessionService) Validate(token string) (ActorContext, error) {
 	if strings.TrimSpace(claims.Subject) == "" {
 		return ActorContext{}, ErrInvalidProductSession
 	}
+	if strings.TrimSpace(claims.AccountScopeID) == "" {
+		return ActorContext{}, ErrInvalidProductSession
+	}
 	if strings.TrimSpace(claims.SessionID) == "" || strings.TrimSpace(claims.JWTID) == "" {
 		return ActorContext{}, ErrInvalidProductSession
 	}
@@ -160,14 +166,14 @@ func (s *SessionService) Validate(token string) (ActorContext, error) {
 	if now >= claims.ExpiresAt {
 		return ActorContext{}, ErrInvalidProductSession
 	}
-	if strings.TrimSpace(claims.TeamID) == "" {
-		return ActorContext{}, ErrInvalidProductSession
-	}
 	actor, err := s.actorForUserID(claims.Subject)
 	if err != nil {
 		return ActorContext{}, err
 	}
-	if claims.TeamID != actor.TeamID {
+	if claims.AccountScopeID != actor.AccountScopeID {
+		return ActorContext{}, ErrInvalidProductSession
+	}
+	if strings.TrimSpace(claims.TeamID) != "" && claims.TeamID != actor.TeamID {
 		return ActorContext{}, ErrInvalidProductSession
 	}
 	actor.TokenExpires = time.Unix(claims.ExpiresAt, 0).UTC()
@@ -179,7 +185,7 @@ func (s *SessionService) actorForCurrentSelection() (ActorContext, error) {
 	if err != nil {
 		return ActorContext{}, err
 	}
-	if !ok || strings.TrimSpace(selection.UserID) == "" || strings.TrimSpace(selection.TeamID) == "" {
+	if !ok || strings.TrimSpace(selection.UserID) == "" {
 		return ActorContext{}, ErrProductIdentityRequired
 	}
 	return s.actorForSelection(selection)
@@ -194,7 +200,7 @@ func (s *SessionService) actorForUserID(userID string) (ActorContext, error) {
 	if err != nil {
 		return ActorContext{}, err
 	}
-	if !ok || strings.TrimSpace(selection.UserID) == "" || strings.TrimSpace(selection.TeamID) == "" {
+	if !ok || strings.TrimSpace(selection.UserID) == "" {
 		return ActorContext{}, ErrProductIdentityRequired
 	}
 	if selection.UserID != userID {
@@ -208,24 +214,38 @@ func (s *SessionService) actorForSelection(selection pebblestore.CurrentSelectio
 	if err != nil {
 		return ActorContext{}, err
 	}
-	if !ok {
+	if !ok || strings.TrimSpace(user.AccountScopeID) == "" {
 		return ActorContext{}, ErrProductIdentityRequired
 	}
-	team, ok, err := s.identityStore.GetTeam(selection.TeamID)
+	accountScope, ok, err := s.identityStore.GetAccountScope(user.AccountScopeID)
 	if err != nil {
 		return ActorContext{}, err
 	}
 	if !ok {
 		return ActorContext{}, ErrProductIdentityRequired
 	}
-	membership, ok, err := s.identityStore.GetTeamMembership(selection.TeamID, selection.UserID)
+	actor := ActorContext{UserID: user.ID, AccountScopeID: user.AccountScopeID, User: user, AccountScope: accountScope, Selection: selection}
+	team, ok, err := s.identityStore.GetTeamByAccountScope(user.AccountScopeID)
+	if err != nil {
+		return ActorContext{}, err
+	}
+	if !ok {
+		return actor, nil
+	}
+	membership, ok, err := s.identityStore.GetTeamMembership(team.ID, user.ID)
 	if err != nil {
 		return ActorContext{}, err
 	}
 	if !ok {
 		return ActorContext{}, ErrProductIdentityRequired
 	}
-	return ActorContext{UserID: user.ID, TeamID: team.ID, User: user, Team: team, Membership: membership, Selection: selection}, nil
+	actor.TeamID = team.ID
+	actor.Team = team
+	actor.Membership = membership
+	if actor.Selection.TeamID == "" {
+		actor.Selection.TeamID = team.ID
+	}
+	return actor, nil
 }
 
 func (s *SessionService) configured() error {
@@ -279,30 +299,15 @@ func verifyLocalProductJWT(token string, key []byte) (localProductClaims, error)
 	if err != nil {
 		return localProductClaims{}, ErrInvalidProductSession
 	}
-	expected := signLocalProductJWTBytes(unsigned, key)
-	if !hmac.Equal(sig, expected) {
+	if !hmac.Equal(sig, signLocalProductJWTBytes(unsigned, key)) {
 		return localProductClaims{}, ErrInvalidProductSession
 	}
-	headerPayload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return localProductClaims{}, ErrInvalidProductSession
-	}
-	var header struct {
-		Alg string `json:"alg"`
-		Typ string `json:"typ"`
-	}
-	if err := json.Unmarshal(headerPayload, &header); err != nil {
-		return localProductClaims{}, ErrInvalidProductSession
-	}
-	if header.Alg != "HS256" || header.Typ != "JWT" {
-		return localProductClaims{}, ErrInvalidProductSession
-	}
-	claimsPayload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return localProductClaims{}, ErrInvalidProductSession
 	}
 	var claims localProductClaims
-	if err := json.Unmarshal(claimsPayload, &claims); err != nil {
+	if err := json.Unmarshal(payload, &claims); err != nil {
 		return localProductClaims{}, ErrInvalidProductSession
 	}
 	return claims, nil
@@ -314,6 +319,34 @@ func signLocalProductJWTBytes(unsigned string, key []byte) []byte {
 	return mac.Sum(nil)
 }
 
-func (c localProductClaims) String() string {
-	return fmt.Sprintf("local product session sub=%q sid=%q jti=%q aud=%q exp=%d", c.Subject, c.SessionID, c.JWTID, c.Audience, c.ExpiresAt)
+func EncodeLocalProductJWTForTest(header map[string]string, claims map[string]any, key []byte) (string, error) {
+	if header == nil {
+		header = map[string]string{"alg": "HS256", "typ": "JWT"}
+	}
+	headerPayload, err := json.Marshal(header)
+	if err != nil {
+		return "", err
+	}
+	claimsPayload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	unsigned := base64.RawURLEncoding.EncodeToString(headerPayload) + "." + base64.RawURLEncoding.EncodeToString(claimsPayload)
+	signature := signLocalProductJWTBytes(unsigned, key)
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func LocalProductClaimsForTest(userID, accountScopeID, teamID, sessionID, jwtID string, issuedAt, notBefore, expiresAt time.Time) map[string]any {
+	return map[string]any{
+		"iss":              LocalProductSessionIssuer,
+		"sub":              userID,
+		"aud":              LocalProductSessionAudience,
+		"sid":              sessionID,
+		"jti":              jwtID,
+		"account_scope_id": accountScopeID,
+		"team_id":          teamID,
+		"iat":              issuedAt.Unix(),
+		"nbf":              notBefore.Unix(),
+		"exp":              expiresAt.Unix(),
+	}
 }

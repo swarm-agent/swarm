@@ -73,12 +73,14 @@ type onboardingTailscaleServePayload struct {
 }
 
 type onboardingIdentityPayload struct {
-	Bootstrapped   bool   `json:"bootstrapped"`
-	UserID         string `json:"user_id,omitempty"`
-	Username       string `json:"username,omitempty"`
-	TeamID         string `json:"team_id,omitempty"`
-	TeamDefault    bool   `json:"team_default,omitempty"`
-	MembershipRole string `json:"membership_role,omitempty"`
+	Bootstrapped    bool   `json:"bootstrapped"`
+	UserID          string `json:"user_id,omitempty"`
+	AccountScopeID  string `json:"account_scope_id,omitempty"`
+	Username        string `json:"username,omitempty"`
+	TeamID          string `json:"team_id,omitempty"`
+	TeamDisplayName string `json:"team_display_name,omitempty"`
+	TeamDefault     bool   `json:"team_default,omitempty"`
+	MembershipRole  string `json:"membership_role,omitempty"`
 }
 
 type onboardingSessionPayload struct {
@@ -439,28 +441,36 @@ func (s *Server) onboardingIdentityPayload() (onboardingIdentityPayload, bool, e
 	if err != nil {
 		return onboardingIdentityPayload{}, false, err
 	}
-	if summary.CurrentUser == nil || summary.CurrentTeam == nil || summary.CurrentMembership == nil || summary.CurrentSelection == nil {
+	if summary.CurrentUser == nil || summary.AccountScope == nil || summary.CurrentSelection == nil {
 		return onboardingIdentityPayload{Bootstrapped: false}, false, nil
 	}
 	payload := onboardingIdentityPayload{
 		Bootstrapped:   true,
 		UserID:         summary.CurrentUser.ID,
+		AccountScopeID: summary.CurrentUser.AccountScopeID,
 		Username:       summary.CurrentUser.Username,
-		TeamID:         summary.CurrentTeam.ID,
-		TeamDefault:    summary.CurrentTeam.Default,
-		MembershipRole: summary.CurrentMembership.Role,
+	}
+	if summary.CurrentTeam != nil {
+		payload.TeamID = summary.CurrentTeam.ID
+		payload.TeamDisplayName = summary.CurrentTeam.Name
+		payload.TeamDefault = summary.CurrentTeam.Default
+	}
+	if summary.CurrentMembership != nil {
+		payload.MembershipRole = summary.CurrentMembership.Role
 	}
 	return payload, true, nil
 }
 
 func actorOnboardingIdentityPayload(actor identity.ActorContext) onboardingIdentityPayload {
 	return onboardingIdentityPayload{
-		Bootstrapped:   strings.TrimSpace(actor.UserID) != "",
-		UserID:         actor.UserID,
-		Username:       actor.User.Username,
-		TeamID:         actor.TeamID,
-		TeamDefault:    actor.Team.Default,
-		MembershipRole: actor.Membership.Role,
+		Bootstrapped:    strings.TrimSpace(actor.UserID) != "",
+		UserID:          actor.UserID,
+		AccountScopeID:  actor.AccountScopeID,
+		Username:        actor.User.Username,
+		TeamID:          actor.TeamID,
+		TeamDisplayName: actor.Team.Name,
+		TeamDefault:     actor.Team.Default,
+		MembershipRole:  actor.Membership.Role,
 	}
 }
 

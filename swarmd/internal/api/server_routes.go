@@ -30,6 +30,7 @@ func (s *Server) registerAuthVaultRoutes(mux *http.ServeMux) {
 
 func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/onboarding", s.handleOnboarding)
+	mux.HandleFunc("/v1/account/team/upgrade", s.handleAccountTeamUpgrade)
 }
 
 func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {

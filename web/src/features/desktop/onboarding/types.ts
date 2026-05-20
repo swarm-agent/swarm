@@ -114,8 +114,10 @@ export interface DesktopOnboardingWorkspaceWire {
 export interface DesktopOnboardingIdentityWire {
   bootstrapped?: boolean
   user_id?: string
+  account_scope_id?: string
   username?: string
   team_id?: string
+  team_display_name?: string
   team_default?: boolean
   membership_role?: string
 }
@@ -273,8 +275,10 @@ export interface DesktopSwarmGroupState {
 export interface DesktopOnboardingIdentity {
   bootstrapped: boolean
   userID: string
+  accountScopeID: string
   username: string
   teamID: string
+  teamDisplayName: string
   teamDefault: boolean
   membershipRole: string
 }
