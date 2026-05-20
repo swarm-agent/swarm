@@ -45,6 +45,7 @@ interface FrameSample {
   transform: string
   itemType: string
   itemKey: string
+  text: string
 }
 
 function json(response: unknown): string {
@@ -86,7 +87,10 @@ function sessionWire(lifecycle: Record<string, unknown> | null = activeLifecycle
   }
 }
 
-async function startMockBackend(): Promise<{ server: Server; port: number }> {
+async function startMockBackend(): Promise<{ server: Server; port: number; setMessages: (messages: Record<string, unknown>[]) => void }> {
+  let sessionMessages: Record<string, unknown>[] = [
+    { id: 'msg-user', session_id: SESSION_ID, global_seq: 1, role: 'user', content: 'Stream markdown please.', created_at: 1 },
+  ]
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
@@ -175,7 +179,7 @@ async function startMockBackend(): Promise<{ server: Server; port: number }> {
       return
     }
     if (path === `/v1/sessions/${SESSION_ID}/messages`) {
-      writeJson(res, 200, { messages: [{ id: 'msg-user', session_id: SESSION_ID, global_seq: 1, role: 'user', content: 'Stream markdown please.', created_at: 1 }] })
+      writeJson(res, 200, { messages: sessionMessages })
       return
     }
     if (path === `/v1/sessions/${SESSION_ID}/preference`) {
@@ -205,7 +209,13 @@ async function startMockBackend(): Promise<{ server: Server; port: number }> {
   await once(server, 'listening')
   const address = server.address()
   assert(address && typeof address === 'object')
-  return { server, port: address.port }
+  return {
+    server,
+    port: address.port,
+    setMessages: (messages: Record<string, unknown>[]) => {
+      sessionMessages = messages
+    },
+  }
 }
 
 async function startVite(backendPort: number): Promise<{ vite: ChildProcessWithoutNullStreams; port: number }> {
@@ -335,6 +345,7 @@ async function installBrowserStreamControls(page: Page): Promise<void> {
         transform: row.style.transform,
         itemType: row.getAttribute('data-render-item-type') || '',
         itemKey: row.getAttribute('data-render-item-key') || '',
+        text: row.textContent || '',
       };
     };
   })()`)
@@ -398,6 +409,11 @@ test('desktop streaming markdown finalizes without a last-frame position jitter'
     })
     const before = await sampleAnimationFrames(page, 'before-final', 6)
 
+    backend.setMessages([
+      { id: 'msg-user', session_id: SESSION_ID, global_seq: 1, role: 'user', content: 'Stream markdown please.', created_at: 1 },
+      { id: 'msg-assistant-final', session_id: SESSION_ID, global_seq: 2, role: 'assistant', content: MARKDOWN_CONTENT, created_at: Date.now() },
+    ])
+
     await page.evaluate(({ runId, sessionId, content }) => {
       ;(window as any).__emitRunFrame({
         type: 'message.stored',
@@ -409,7 +425,16 @@ test('desktop streaming markdown finalizes without a last-frame position jitter'
       ;(window as any).__emitRunFrame({ type: 'session.lifecycle.updated', run_id: runId, seq: 502, lifecycle: { session_id: sessionId, run_id: runId, active: false, phase: 'completed', started_at: Date.now() - 1000, ended_at: Date.now(), updated_at: Date.now(), generation: 1 } })
     }, { runId: RUN_ID, sessionId: SESSION_ID, content: MARKDOWN_CONTENT })
 
-    const after = await sampleAnimationFrames(page, 'after-final', 18)
+    const afterFrame = await sampleAnimationFrames(page, 'after-final-frame', 10)
+    await page.evaluate(async ({ sessionId }) => {
+      const [{ queryClient }, { sessionMessagesQueryOptions }] = await Promise.all([
+        import('/src/app/query-client.ts'),
+        import('/src/features/queries/query-options.ts'),
+      ])
+      await queryClient.invalidateQueries({ queryKey: sessionMessagesQueryOptions(sessionId).queryKey })
+    }, { sessionId: SESSION_ID })
+    const afterRefetch = await sampleAnimationFrames(page, 'after-final-refetch', 18)
+    const after = [...afterFrame, ...afterRefetch]
     const samples = [...before, ...after]
     const last = samples.at(-1)
     assert(last, 'expected frame samples')
@@ -421,11 +446,15 @@ test('desktop streaming markdown finalizes without a last-frame position jitter'
     const topJump = maxConsecutiveDelta(samples, 'top')
     const bottomJump = maxConsecutiveDelta(samples, 'bottom')
     const scrollJump = maxConsecutiveDelta(after, 'scrollTop')
+    const blankFrame = after.find((sample) => !sample.text.includes('Final sentence after the blockquote'))
+    const keyResetFrame = after.find((sample) => sample.itemKey !== liveKey)
     const diagnostics = JSON.stringify(samples, null, 2)
 
     assert.ok(liveKey !== '', `expected live assistant row key before finalization\n${diagnostics}`)
     assert.equal(finalKey, liveKey, `final assistant message did not reuse live row virtualizer key\n${diagnostics}`)
     assert.ok(swapIndex >= 0, `expected sampled frame where stored message reused live key\n${diagnostics}`)
+    assert.equal(blankFrame, undefined, `assistant content blanked/reset during finalization/refetch\n${diagnostics}`)
+    assert.equal(keyResetFrame, undefined, `assistant row key changed during finalization/refetch\n${diagnostics}`)
     assert.ok(topJump <= 1, `last message top jittered by ${topJump}px\n${diagnostics}`)
     assert.ok(bottomJump <= 1, `last message bottom jittered by ${bottomJump}px\n${diagnostics}`)
     assert.ok(scrollJump <= 1, `scrollTop jittered after finalization by ${scrollJump}px\n${diagnostics}`)

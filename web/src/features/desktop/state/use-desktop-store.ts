@@ -1297,9 +1297,29 @@ function draftKeyForSession(sessionId: string | null, workspacePath?: string | n
   return `${NEW_SESSION_DRAFT_KEY_PREFIX}${normalizedWorkspacePath}`
 }
 
-function updateMessagesCache(sessionId: string, message: ChatMessageRecord): void {
+function updateMessagesCache(sessionId: string, message: ChatMessageRecord, afterSync?: () => void): void {
   deferDesktopCacheMutation('message cache sync', () => {
     queryClient.setQueryData(sessionMessagesQueryOptions(sessionId).queryKey, (current: ChatMessageRecord[] | undefined) => mergeMessageIntoCache(current, message))
+    afterSync?.()
+  })
+}
+
+function deferAssistantFinalization(sessionId: string, message: ChatMessageRecord, assistantDraft: string): void {
+  updateMessagesCache(message.sessionId, message, () => {
+    useDesktopStore.setState((current) => {
+      const currentSession = current.sessions[sessionId]
+      if (!currentSession || currentSession.live.assistantDraft !== assistantDraft) {
+        return current
+      }
+      const nextSession = { ...currentSession, live: { ...currentSession.live } }
+      resetLiveAssistantState(nextSession.live)
+      return {
+        sessions: {
+          ...current.sessions,
+          [sessionId]: nextSession,
+        },
+      }
+    })
   })
 }
 
@@ -1440,10 +1460,12 @@ function applyRunStreamFrame(state: DesktopStoreState, sessionId: string, payloa
     case 'message.updated': {
       const normalized = normalizeMessage(payload.message, sessionId)
       if (normalized) {
-        updateMessagesCache(normalized.sessionId, normalized)
         if (normalized.role === 'assistant') {
+          const finalizedAssistantDraft = session.live.assistantDraft
+          deferAssistantFinalization(sessionId, normalized, finalizedAssistantDraft)
           cancelDraftFlush(sessionId)
-          resetLiveAssistantState(session.live)
+        } else {
+          updateMessagesCache(normalized.sessionId, normalized)
         }
       }
       break
@@ -2130,10 +2152,12 @@ function applyEnvelope(state: DesktopStoreState, envelope: EventEnvelope): Parti
     case 'run.message.updated': {
       const normalized = normalizeMessage(payloadRecord.message as RunStreamEventMessage['message'], sessionId)
       if (normalized) {
-        updateMessagesCache(normalized.sessionId, normalized)
         if (normalized.role === 'assistant') {
+          const finalizedAssistantDraft = session.live.assistantDraft
+          deferAssistantFinalization(sessionId, normalized, finalizedAssistantDraft)
           cancelDraftFlush(sessionId)
-          resetLiveAssistantState(session.live)
+        } else {
+          updateMessagesCache(normalized.sessionId, normalized)
         }
       }
       break
