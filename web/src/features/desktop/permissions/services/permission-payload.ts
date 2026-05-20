@@ -51,6 +51,8 @@ export interface PlanUpdateDiffPreview {
   rows: PlanUpdateDiffRow[]
   addedCount: number
   removedCount: number
+  totalRows: number
+  omittedUnchangedRows: number
 }
 
 export interface ManageTodosPreviewRow {
@@ -566,13 +568,9 @@ function splitPlanPreviewLines(text: string): string[] {
   return normalized ? normalized.split('\n') : []
 }
 
-function appendFallbackChangedRows(rows: PlanUpdateDiffRow[], beforeLine: string | undefined, afterLine: string | undefined, lineNumber: number): void {
-  if (beforeLine !== undefined) {
-    rows.push({ kind: 'removed', text: beforeLine, lineNumberBefore: lineNumber, lineNumberAfter: null })
-  }
-  if (afterLine !== undefined) {
-    rows.push({ kind: 'added', text: afterLine, lineNumberBefore: null, lineNumberAfter: lineNumber })
-  }
+function planPreviewResult(rows: PlanUpdateDiffRow[], addedCount: number, removedCount: number, totalRows: number): PlanUpdateDiffPreview {
+  const omittedUnchangedRows = rows.reduce((count, row) => count + (row.kind === 'gap' ? row.omittedCount ?? 0 : 0), 0)
+  return { rows, addedCount, removedCount, totalRows, omittedUnchangedRows }
 }
 
 export function buildPlanUpdateDiffPreview(diffLines: string[], priorPlan: string, plan: string): PlanUpdateDiffPreview {
@@ -581,59 +579,37 @@ export function buildPlanUpdateDiffPreview(diffLines: string[], priorPlan: strin
   let removedCount = 0
   let beforeLineNumber = 1
   let afterLineNumber = 1
-  let pendingContext: PlanUpdateDiffRow[] = []
-  let emittedChange = false
+  const normalizedDiffLines = diffLines.map((rawLine) => rawLine.replace(/\r$/, ''))
 
-  const flushContextBeforeChange = () => {
-    if (pendingContext.length === 0) {
-      return
-    }
-    if (emittedChange && pendingContext.length > 4) {
-      rows.push({ kind: 'gap', text: `${pendingContext.length - 4} unchanged lines`, lineNumberBefore: null, lineNumberAfter: null, omittedCount: pendingContext.length - 4 })
-      rows.push(...pendingContext.slice(-2))
-    } else {
-      rows.push(...pendingContext.slice(-2))
-    }
-    pendingContext = []
-  }
-
-  const rememberContext = (text: string) => {
-    pendingContext.push({ kind: 'context', text, lineNumberBefore: beforeLineNumber, lineNumberAfter: afterLineNumber })
-    beforeLineNumber += 1
-    afterLineNumber += 1
-  }
-
-  diffLines.forEach((rawLine) => {
-    const line = rawLine.replace(/\r$/, '')
+  normalizedDiffLines.forEach((line) => {
     if (line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')) {
       return
     }
     if (line.startsWith('  ')) {
-      rememberContext(line.slice(2))
+      rows.push({ kind: 'context', text: line.slice(2), lineNumberBefore: beforeLineNumber, lineNumberAfter: afterLineNumber })
+      beforeLineNumber += 1
+      afterLineNumber += 1
       return
     }
     if (line.startsWith('-')) {
-      flushContextBeforeChange()
       rows.push({ kind: 'removed', text: line.startsWith('- ') ? line.slice(2) : line.slice(1), lineNumberBefore: beforeLineNumber, lineNumberAfter: null })
       beforeLineNumber += 1
       removedCount += 1
-      emittedChange = true
       return
     }
     if (line.startsWith('+')) {
-      flushContextBeforeChange()
       rows.push({ kind: 'added', text: line.startsWith('+ ') ? line.slice(2) : line.slice(1), lineNumberBefore: null, lineNumberAfter: afterLineNumber })
       afterLineNumber += 1
       addedCount += 1
-      emittedChange = true
       return
     }
-    rememberContext(line)
+    rows.push({ kind: 'context', text: line, lineNumberBefore: beforeLineNumber, lineNumberAfter: afterLineNumber })
+    beforeLineNumber += 1
+    afterLineNumber += 1
   })
 
   if (rows.length > 0) {
-    rows.push(...pendingContext.slice(0, 2))
-    return { rows, addedCount, removedCount }
+    return planPreviewResult(rows, addedCount, removedCount, rows.length)
   }
 
   const beforeLines = splitPlanPreviewLines(priorPlan)
@@ -643,13 +619,19 @@ export function buildPlanUpdateDiffPreview(diffLines: string[], priorPlan: strin
     const beforeLine = beforeLines[index]
     const afterLine = afterLines[index]
     if ((beforeLine ?? '') === (afterLine ?? '')) {
+      rows.push({ kind: 'context', text: beforeLine ?? afterLine ?? '', lineNumberBefore: beforeLine === undefined ? null : index + 1, lineNumberAfter: afterLine === undefined ? null : index + 1 })
       continue
     }
-    appendFallbackChangedRows(rows, beforeLine, afterLine, index + 1)
+    if (beforeLine !== undefined) {
+      rows.push({ kind: 'removed', text: beforeLine, lineNumberBefore: index + 1, lineNumberAfter: null })
+      removedCount += 1
+    }
+    if (afterLine !== undefined) {
+      rows.push({ kind: 'added', text: afterLine, lineNumberBefore: null, lineNumberAfter: index + 1 })
+      addedCount += 1
+    }
   }
-  addedCount = rows.filter((row) => row.kind === 'added').length
-  removedCount = rows.filter((row) => row.kind === 'removed').length
-  return { rows, addedCount, removedCount }
+  return planPreviewResult(rows, addedCount, removedCount, rows.length)
 }
 
 export function parseManageTodosPermission(permission: DesktopPermissionRecord): ManageTodosPayload {

@@ -788,24 +788,46 @@ function promptWordPreview(text: string, maxWords: number): string {
   return `${words.slice(0, limit).join(' ')}…`
 }
 
-function PlanUpdateDiffOverlay({ diffLines, priorPlan, plan }: { diffLines: string[]; priorPlan: string; plan: string }) {
+function PlanTextPanel({ title, text, emptyText, tone }: { title: string; text: string; emptyText: string; tone: 'previous' | 'updated' }) {
+  const body = text || emptyText
+  return (
+    <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]">
+      <div className="shrink-0 border-b border-[var(--app-border)] px-3 py-2 sm:px-4">
+        <div
+          className={cn(
+            'text-xs font-semibold uppercase tracking-[0.08em]',
+            tone === 'previous' ? 'text-[var(--app-warning)]' : 'text-[var(--app-success)]',
+          )}
+        >
+          {title}
+        </div>
+      </div>
+      <pre className="min-h-[220px] flex-1 overflow-auto whitespace-pre-wrap break-words bg-[var(--app-bg-alt)] px-3 py-3 font-mono text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere] sm:text-[13px]">
+        {body}
+      </pre>
+    </section>
+  )
+}
+
+function PlanUpdateFullDiff({ diffLines, priorPlan, plan }: { diffLines: string[]; priorPlan: string; plan: string }) {
   const preview = buildPlanUpdateDiffPreview(diffLines, priorPlan, plan)
-  const hasChanges = preview.addedCount > 0 || preview.removedCount > 0
+  const hasRows = preview.rows.length > 0
 
   return (
-    <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
+    <section className="min-h-0 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Changed lines</div>
-          <div className="mt-1 text-sm text-[var(--app-text-muted)]">Only actual plan edits are shown here. Unchanged lines appear only as nearby context.</div>
+          <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Complete line diff</div>
+          <div className="mt-1 text-sm text-[var(--app-text-muted)]">All diff rows are shown in order. Nothing is auto-collapsed or hidden.</div>
         </div>
         <div className="flex flex-wrap gap-2 text-[11px] font-medium">
           <span className="rounded-full border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-2 py-0.5 text-[var(--app-success)]">+{preview.addedCount}</span>
           <span className="rounded-full border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-2 py-0.5 text-[var(--app-danger)]">-{preview.removedCount}</span>
+          <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[var(--app-text-muted)]">{preview.totalRows} rows</span>
         </div>
       </div>
-      <div className="mt-3 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] font-mono text-[12px] leading-5 sm:text-[13px]">
-        {hasChanges ? (
+      <div className="mt-3 max-h-[34dvh] overflow-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] font-mono text-[12px] leading-5 sm:text-[13px]">
+        {hasRows ? (
           <div className="divide-y divide-[var(--app-border)]/50">
             {preview.rows.map((row, index) => {
               if (row.kind === 'gap') {
@@ -816,22 +838,22 @@ function PlanUpdateDiffOverlay({ diffLines, priorPlan, plan }: { diffLines: stri
                 )
               }
               const prefix = row.kind === 'added' ? '+' : row.kind === 'removed' ? '−' : ' '
-              const lineNumber = row.kind === 'added' ? row.lineNumberAfter : row.lineNumberBefore
               return (
                 <div
                   key={`${row.kind}:${index}:${row.text}`}
                   className={cn(
-                    'flex gap-2 px-3 py-1.5',
+                    'grid grid-cols-[3.25rem_3.25rem_1.25rem_minmax(0,1fr)] gap-2 px-3 py-1.5',
                     row.kind === 'added' && 'bg-[color-mix(in_srgb,var(--app-success)_12%,transparent)] text-[var(--app-text)]',
                     row.kind === 'removed' && 'bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] text-[var(--app-text)]',
                     row.kind === 'context' && 'text-[var(--app-text-muted)]',
                   )}
                 >
-                  <span className="w-14 shrink-0 select-none text-right text-[var(--app-text-subtle)]">{lineNumber ?? ''}</span>
-                  <span className={cn('w-5 shrink-0 select-none font-semibold', row.kind === 'added' && 'text-[var(--app-success)]', row.kind === 'removed' && 'text-[var(--app-danger)]')}>
+                  <span className="select-none text-right text-[var(--app-text-subtle)]">{row.lineNumberBefore ?? ''}</span>
+                  <span className="select-none text-right text-[var(--app-text-subtle)]">{row.lineNumberAfter ?? ''}</span>
+                  <span className={cn('select-none font-semibold', row.kind === 'added' && 'text-[var(--app-success)]', row.kind === 'removed' && 'text-[var(--app-danger)]')}>
                     {prefix}
                   </span>
-                  <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{row.text || '\u00a0'}</span>
+                  <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{row.text || '\u00a0'}</span>
                 </div>
               )
             })}
@@ -841,6 +863,21 @@ function PlanUpdateDiffOverlay({ diffLines, priorPlan, plan }: { diffLines: stri
         )}
       </div>
     </section>
+  )
+}
+
+function PlanUpdateReview({ diffLines, priorPlan, plan, priorTitle }: { diffLines: string[]; priorPlan: string; plan: string; priorTitle: string }) {
+  return (
+    <div className="flex min-h-0 flex-col gap-4">
+      <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm leading-6 text-[var(--app-text-muted)] sm:px-4">
+        Review the full previous and updated plan bodies first. The diff is secondary, complete, and non-collapsing.
+      </div>
+      <div className="grid min-h-0 gap-4 lg:grid-cols-2">
+        <PlanTextPanel title={priorTitle ? `Previous plan: ${priorTitle}` : 'Previous plan'} text={priorPlan} emptyText="No previous plan text was provided." tone="previous" />
+        <PlanTextPanel title="Updated plan" text={plan} emptyText="No updated plan text was provided." tone="updated" />
+      </div>
+      <PlanUpdateFullDiff diffLines={diffLines} priorPlan={priorPlan} plan={plan} />
+    </div>
   )
 }
 
@@ -918,12 +955,7 @@ function PlanUpdateModal({
       onDenyShortcut={() => void resolve('deny')}
       shortcutsDisabled={loading}
     >
-      <div className="flex flex-col gap-4">
-        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-sm leading-6 text-[var(--app-text-muted)] sm:px-4">
-          Review the minimal diff below. It shows changed lines directly instead of a full before/after grid.
-        </div>
-        <PlanUpdateDiffOverlay diffLines={payload.diffLines} priorPlan={payload.priorPlan} plan={payload.plan} />
-      </div>
+      <PlanUpdateReview diffLines={payload.diffLines} priorPlan={payload.priorPlan} plan={payload.plan} priorTitle={payload.priorTitle} />
     </ModalShell>
   )
 }

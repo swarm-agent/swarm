@@ -290,42 +290,42 @@ function testPlanUpdateKindAndPayloadParsing(): void {
   assert(Object.keys(payload.approvedArguments).length === 0, 'expected no approved arguments by default')
 }
 
-function testPlanUpdateDiffPreviewUsesOnlyActualChangedRows(): void {
-  const preview = buildPlanUpdateDiffPreview(
-    [
-      '  # Plan',
-      '  1. Keep setup',
-      '- 2. Old implementation detail',
-      '+ 2. New implementation detail',
-      '  3. Keep validation',
-      '  4. Keep release notes',
-      '  5. Keep follow-up',
-      '  6. Keep owner',
-      '  7. Keep timeline',
-      '- 8. Remove noisy grid',
-      '+ 8. Show minimal diff overlay',
-      '  9. Keep done',
-    ],
-    '',
-    '',
-  )
+function testPlanUpdateDiffPreviewPreservesAllDiffRows(): void {
+  const diffRows = [
+    '  # Plan',
+    '  1. Keep setup',
+    '- 2. Old implementation detail',
+    '+ 2. New implementation detail',
+    '  3. Keep validation',
+    '  4. Keep release notes',
+    '  5. Keep follow-up',
+    '  6. Keep owner',
+    '  7. Keep timeline',
+    '- 8. Remove noisy grid',
+    '+ 8. Show full review',
+    '  9. Keep done',
+  ]
+  const preview = buildPlanUpdateDiffPreview(diffRows, '', '')
 
   assert(preview.addedCount === 2, 'expected two added rows')
   assert(preview.removedCount === 2, 'expected two removed rows')
-  assert(preview.rows.filter((row) => row.kind === 'added').every((row) => row.text.includes('New') || row.text.includes('minimal diff')), 'expected only added rows to contain added text')
-  assert(preview.rows.filter((row) => row.kind === 'removed').every((row) => row.text.includes('Old') || row.text.includes('noisy grid')), 'expected only removed rows to contain removed text')
-  assert(preview.rows.some((row) => row.kind === 'gap'), 'expected distant unchanged context to collapse into a gap')
-  assert(!preview.rows.some((row) => row.kind !== 'context' && row.text.includes('Keep validation')), 'expected unchanged context not to be marked as changed')
+  assert(preview.totalRows === diffRows.length, 'expected every diff row to be shown')
+  assert(preview.omittedUnchangedRows === 0, 'expected no hidden unchanged rows')
+  assert(!preview.rows.some((row) => row.kind === 'gap'), 'expected no collapsed gaps')
+  assert(preview.rows.some((row) => row.kind === 'context' && row.text.includes('Keep validation')), 'expected unchanged context to remain visible')
 }
 
-function testPlanUpdateDiffPreviewFallsBackToChangedLinesOnly(): void {
+function testPlanUpdateDiffPreviewFallsBackToCompleteBeforeAfterRows(): void {
   const preview = buildPlanUpdateDiffPreview([], '# Plan\n1. Same\n2. Old\n3. Same', '# Plan\n1. Same\n2. New\n3. Same')
 
   assert(preview.addedCount === 1, 'expected one fallback added row')
   assert(preview.removedCount === 1, 'expected one fallback removed row')
-  assert(preview.rows.length === 2, 'expected fallback to omit unchanged rows')
-  assert(preview.rows[0]?.kind === 'removed' && preview.rows[0]?.text === '2. Old', 'expected removed fallback row')
-  assert(preview.rows[1]?.kind === 'added' && preview.rows[1]?.text === '2. New', 'expected added fallback row')
+  assert(preview.rows.length === 5, 'expected fallback to preserve unchanged rows')
+  assert(preview.rows[0]?.kind === 'context' && preview.rows[0]?.text === '# Plan', 'expected first unchanged row')
+  assert(preview.rows[1]?.kind === 'context' && preview.rows[1]?.text === '1. Same', 'expected second unchanged row')
+  assert(preview.rows[2]?.kind === 'removed' && preview.rows[2]?.text === '2. Old', 'expected removed fallback row')
+  assert(preview.rows[3]?.kind === 'added' && preview.rows[3]?.text === '2. New', 'expected added fallback row')
+  assert(preview.rows[4]?.kind === 'context' && preview.rows[4]?.text === '3. Same', 'expected trailing unchanged row')
 }
 
 function testGenericBashPermissionFormatsCommandAsCodeBlock(): void {
@@ -391,8 +391,8 @@ function main(): void {
   testManageTodosKindAndPayloadParsing()
   testManageFlowKindAndPayloadParsing()
   testPlanUpdateKindAndPayloadParsing()
-  testPlanUpdateDiffPreviewUsesOnlyActualChangedRows()
-  testPlanUpdateDiffPreviewFallsBackToChangedLinesOnly()
+  testPlanUpdateDiffPreviewPreservesAllDiffRows()
+  testPlanUpdateDiffPreviewFallsBackToCompleteBeforeAfterRows()
   testGenericBashPermissionFormatsCommandAsCodeBlock()
   testManageTodosBatchParsing()
   console.log('permission-payload tests passed')
