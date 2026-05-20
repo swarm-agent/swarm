@@ -373,8 +373,20 @@ func KeyAuthCredential(providerID, credentialID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyAuthCredentialPrefix, keyPart(providerID), keyPart(credentialID))
 }
 
+func KeyAuthCredentialForAccount(accountScopeID, providerID, credentialID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyAuthCredentialPrefix, keyPart(accountScopeID), keyPart(providerID), keyPart(credentialID))
+}
+
 func AuthCredentialPrefix() string {
 	return KeyAuthCredentialPrefix
+}
+
+func AuthCredentialAccountPrefix(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return KeyAuthCredentialPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyAuthCredentialPrefix, part)
 }
 
 func AuthCredentialProviderPrefix(providerID string) string {
@@ -385,8 +397,24 @@ func AuthCredentialProviderPrefix(providerID string) string {
 	return fmt.Sprintf("%s%s/", KeyAuthCredentialPrefix, part)
 }
 
+func AuthCredentialProviderPrefixForAccount(accountScopeID, providerID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyAuthCredentialPrefix
+	}
+	providerPart := keyPart(providerID)
+	if providerPart == "" {
+		return fmt.Sprintf("%s%s/", KeyAuthCredentialPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyAuthCredentialPrefix, accountPart, providerPart)
+}
+
 func KeyAuthCredentialActive(providerID string) string {
 	return KeyAuthCredentialActivePrefix + keyPart(providerID)
+}
+
+func KeyAuthCredentialActiveForAccount(accountScopeID, providerID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAuthCredentialActivePrefix, keyPart(accountScopeID), keyPart(providerID))
 }
 
 func KeyVoiceProfile(profileID string) string {
@@ -431,6 +459,10 @@ func SwarmGroupMembershipBySwarmPrefix(swarmID string) string {
 
 func KeyAuthCredentialTag(tag, providerID, credentialID string) string {
 	return fmt.Sprintf("%s%s/%s/%s", KeyAuthCredentialTagPrefix, keyPart(tag), keyPart(providerID), keyPart(credentialID))
+}
+
+func KeyAuthCredentialTagForAccount(accountScopeID, tag, providerID, credentialID string) string {
+	return fmt.Sprintf("%s%s/%s/%s/%s", KeyAuthCredentialTagPrefix, keyPart(accountScopeID), keyPart(tag), keyPart(providerID), keyPart(credentialID))
 }
 
 func KeyAuthManagedVaultKey(scopeID string) string {

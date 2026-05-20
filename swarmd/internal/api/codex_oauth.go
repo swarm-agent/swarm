@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/identity"
 	codexruntime "swarm/packages/swarmd/internal/provider/codex"
 )
 
@@ -29,6 +30,11 @@ type codexOAuthSessionResponse struct {
 }
 
 func (s *Server) handleCodexOAuthStart(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -80,16 +86,18 @@ func (s *Server) handleCodexOAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	session := &codexOAuthSession{
-		CodeVerifier: login.CodeVerifier,
-		State:        login.State,
-		Provider:     provider,
-		Label:        strings.TrimSpace(req.Label),
-		Active:       req.Active,
-		Method:       method,
-		AuthURL:      login.AuthURL,
-		Status:       "waiting",
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		CodeVerifier:   login.CodeVerifier,
+		State:          login.State,
+		UserID:         strings.TrimSpace(principal.UserID),
+		AccountScopeID: strings.TrimSpace(principal.AccountScopeID),
+		Provider:       provider,
+		Label:          strings.TrimSpace(req.Label),
+		Active:         req.Active,
+		Method:         method,
+		AuthURL:        login.AuthURL,
+		Status:         "waiting",
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	s.codexOAuthSet(sessionID, session)
 
@@ -101,6 +109,11 @@ func (s *Server) handleCodexOAuthStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCodexOAuthStatus(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
@@ -115,10 +128,19 @@ func (s *Server) handleCodexOAuthStatus(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, errors.New("oauth session not found"))
 		return
 	}
+	if !codexOAuthSessionMatchesPrincipal(session, principal) {
+		writeError(w, http.StatusNotFound, errors.New("oauth session not found"))
+		return
+	}
 	writeJSON(w, http.StatusOK, s.codexOAuthResponse(sessionID, session))
 }
 
 func (s *Server) handleCodexOAuthComplete(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -144,6 +166,10 @@ func (s *Server) handleCodexOAuthComplete(w http.ResponseWriter, r *http.Request
 	}
 	session, ok := s.codexOAuthGet(sessionID)
 	if !ok {
+		writeError(w, http.StatusNotFound, errors.New("oauth session not found"))
+		return
+	}
+	if !codexOAuthSessionMatchesPrincipal(session, principal) {
 		writeError(w, http.StatusNotFound, errors.New("oauth session not found"))
 		return
 	}
@@ -218,14 +244,15 @@ func (s *Server) finishCodexOAuthSession(sessionID string, tokens codexruntime.O
 	}
 
 	status, event, err := s.auth.UpsertCredential(auth.CredentialUpsertInput{
-		Provider:     session.Provider,
-		Type:         "oauth",
-		Label:        session.Label,
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
-		AccountID:    codexruntime.ExtractAccountID(tokens.AccessToken),
-		Active:       session.Active,
+		AccountScopeID: session.AccountScopeID,
+		Provider:       session.Provider,
+		Type:           "oauth",
+		Label:          session.Label,
+		AccessToken:    tokens.AccessToken,
+		RefreshToken:   tokens.RefreshToken,
+		ExpiresAt:      tokens.ExpiresAt,
+		AccountID:      codexruntime.ExtractAccountID(tokens.AccessToken),
+		Active:         session.Active,
 	})
 	if err != nil {
 		s.codexOAuthUpdate(sessionID, func(next *codexOAuthSession) {
@@ -238,7 +265,7 @@ func (s *Server) finishCodexOAuthSession(sessionID string, tokens codexruntime.O
 		s.hub.Publish(*event)
 	}
 
-	if connection, verifyErr := s.verifyAuthCredentialConnection(context.Background(), session.Provider, status.ID); verifyErr == nil {
+	if connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(context.Background(), session.AccountScopeID, session.Provider, status.ID); verifyErr == nil {
 		status.Connection = connection
 	}
 	if autoDefaults, defaultsErr := s.applyUtilityModelDefaults(session.Provider); defaultsErr != nil {
@@ -256,6 +283,13 @@ func (s *Server) finishCodexOAuthSession(sessionID string, tokens codexruntime.O
 
 	session, _ = s.codexOAuthGet(sessionID)
 	return s.codexOAuthResponse(sessionID, session), nil
+}
+
+func codexOAuthSessionMatchesPrincipal(session codexOAuthSession, principal identity.Principal) bool {
+	return strings.TrimSpace(session.UserID) != "" &&
+		strings.TrimSpace(session.AccountScopeID) != "" &&
+		strings.TrimSpace(session.UserID) == strings.TrimSpace(principal.UserID) &&
+		strings.TrimSpace(session.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID)
 }
 
 func (s *Server) codexOAuthResponse(sessionID string, session codexOAuthSession) codexOAuthSessionResponse {

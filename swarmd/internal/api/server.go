@@ -52,18 +52,20 @@ import (
 )
 
 type codexOAuthSession struct {
-	CodeVerifier string
-	State        string
-	Provider     string
-	Label        string
-	Active       bool
-	Method       string
-	AuthURL      string
-	Status       string
-	Error        string
-	Credential   *auth.CredentialStatus
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	CodeVerifier   string
+	State          string
+	UserID         string
+	AccountScopeID string
+	Provider       string
+	Label          string
+	Active         bool
+	Method         string
+	AuthURL        string
+	Status         string
+	Error          string
+	Credential     *auth.CredentialStatus
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type peerAuthContextKey string
@@ -897,9 +899,15 @@ func (s *Server) resolveWorktreeConfigPathForValue(path string) (string, error) 
 }
 
 func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
 	switch r.Method {
 	case http.MethodGet:
-		status, err := s.auth.CodexStatus()
+		status, err := s.auth.CodexStatusForAccount(accountScopeID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -934,9 +942,9 @@ func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
 		)
 		switch authType {
 		case "api":
-			status, event, err = s.auth.SetCodexKey(req.APIKey)
+			status, event, err = s.auth.SetCodexKeyForAccount(accountScopeID, req.APIKey)
 		case "oauth":
-			status, event, err = s.auth.SetCodexOAuth(req.AccessToken, req.RefreshToken, req.ExpiresAt, req.AccountID)
+			status, event, err = s.auth.SetCodexOAuthForAccount(accountScopeID, req.AccessToken, req.RefreshToken, req.ExpiresAt, req.AccountID)
 		default:
 			writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported codex auth type %q", authType))
 			return
@@ -961,6 +969,12 @@ func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
 	switch r.Method {
 	case http.MethodGet:
 		provider := strings.TrimSpace(r.URL.Query().Get("provider"))
@@ -974,16 +988,13 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			}
 			limit = n
 		}
-		list, err := s.auth.ListCredentials(provider, query, limit)
+		list, err := s.auth.ListCredentialsForAccount(accountScopeID, provider, query, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, list)
 	case http.MethodPost:
-		if _, ok := s.requireProductActor(w, r); !ok {
-			return
-		}
 		var req struct {
 			ID           string   `json:"id"`
 			Provider     string   `json:"provider"`
@@ -1007,17 +1018,18 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		status, event, err := s.auth.UpsertCredential(auth.CredentialUpsertInput{
-			ID:           req.ID,
-			Provider:     provider,
-			Type:         req.Type,
-			Label:        req.Label,
-			Tags:         req.Tags,
-			APIKey:       req.APIKey,
-			AccessToken:  req.AccessToken,
-			RefreshToken: req.RefreshToken,
-			ExpiresAt:    req.ExpiresAt,
-			AccountID:    req.AccountID,
-			Active:       req.Active,
+			ID:             req.ID,
+			Provider:       provider,
+			AccountScopeID: accountScopeID,
+			Type:           req.Type,
+			Label:          req.Label,
+			Tags:           req.Tags,
+			APIKey:         req.APIKey,
+			AccessToken:    req.AccessToken,
+			RefreshToken:   req.RefreshToken,
+			ExpiresAt:      req.ExpiresAt,
+			AccountID:      req.AccountID,
+			Active:         req.Active,
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -1026,7 +1038,7 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 		if event != nil {
 			s.hub.Publish(*event)
 		}
-		connection, verifyErr := s.verifyAuthCredentialConnection(r.Context(), provider, status.ID)
+		connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(r.Context(), accountScopeID, provider, status.ID)
 		if verifyErr != nil {
 			writeError(w, http.StatusInternalServerError, verifyErr)
 			return
@@ -1045,6 +1057,12 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthCredentialVerify(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -1067,7 +1085,7 @@ func (s *Server) handleAuthCredentialVerify(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, errors.New("id is required"))
 		return
 	}
-	connection, verifyErr := s.verifyAuthCredentialConnection(r.Context(), provider, credentialID)
+	connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(r.Context(), accountScopeID, provider, credentialID)
 	if verifyErr != nil {
 		writeError(w, http.StatusInternalServerError, verifyErr)
 		return
@@ -1087,6 +1105,12 @@ func (s *Server) handleAuthCredentialVerify(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleAuthCredentialActive(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -1104,7 +1128,7 @@ func (s *Server) handleAuthCredentialActive(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, errors.New("provider is required"))
 		return
 	}
-	status, event, err := s.auth.SetActiveCredential(provider, req.ID)
+	status, event, err := s.auth.SetActiveCredentialForAccount(accountScopeID, provider, req.ID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1112,7 +1136,7 @@ func (s *Server) handleAuthCredentialActive(w http.ResponseWriter, r *http.Reque
 	if event != nil {
 		s.hub.Publish(*event)
 	}
-	connection, verifyErr := s.verifyAuthCredentialConnection(r.Context(), provider, status.ID)
+	connection, verifyErr := s.verifyAuthCredentialConnectionForAccount(r.Context(), accountScopeID, provider, status.ID)
 	if verifyErr != nil {
 		writeError(w, http.StatusInternalServerError, verifyErr)
 		return
@@ -1128,6 +1152,12 @@ func (s *Server) handleAuthCredentialActive(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleAuthCredentialDelete(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
@@ -1145,7 +1175,7 @@ func (s *Server) handleAuthCredentialDelete(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, errors.New("provider is required"))
 		return
 	}
-	deleted, event, err := s.auth.DeleteCredential(provider, req.ID)
+	deleted, event, err := s.auth.DeleteCredentialForAccount(accountScopeID, provider, req.ID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

@@ -23,21 +23,22 @@ const (
 )
 
 type AuthCredentialRecord struct {
-	ID           string                          `json:"id"`
-	Provider     string                          `json:"provider"`
-	Type         string                          `json:"type"`
-	Label        string                          `json:"label,omitempty"`
-	Tags         []string                        `json:"tags,omitempty"`
-	APIKey       string                          `json:"api_key,omitempty"`
-	AccessToken  string                          `json:"access_token,omitempty"`
-	RefreshToken string                          `json:"refresh_token,omitempty"`
-	ExpiresAt    int64                           `json:"expires_at,omitempty"`
-	AccountID    string                          `json:"account_id,omitempty"`
-	Managed      bool                            `json:"managed,omitempty"`
-	OwnerSwarmID string                          `json:"owner_swarm_id,omitempty"`
-	Connection   *AuthCredentialConnectionRecord `json:"connection,omitempty"`
-	CreatedAt    int64                           `json:"created_at"`
-	UpdatedAt    int64                           `json:"updated_at"`
+	ID             string                          `json:"id"`
+	Provider       string                          `json:"provider"`
+	AccountScopeID string                          `json:"account_scope_id"`
+	Type           string                          `json:"type"`
+	Label          string                          `json:"label,omitempty"`
+	Tags           []string                        `json:"tags,omitempty"`
+	APIKey         string                          `json:"api_key,omitempty"`
+	AccessToken    string                          `json:"access_token,omitempty"`
+	RefreshToken   string                          `json:"refresh_token,omitempty"`
+	ExpiresAt      int64                           `json:"expires_at,omitempty"`
+	AccountID      string                          `json:"account_id,omitempty"`
+	Managed        bool                            `json:"managed,omitempty"`
+	OwnerSwarmID   string                          `json:"owner_swarm_id,omitempty"`
+	Connection     *AuthCredentialConnectionRecord `json:"connection,omitempty"`
+	CreatedAt      int64                           `json:"created_at"`
+	UpdatedAt      int64                           `json:"updated_at"`
 }
 
 type AuthCredentialConnectionRecord struct {
@@ -51,17 +52,18 @@ type AuthCredentialConnectionRecord struct {
 type CodexAuthRecord = AuthCredentialRecord
 
 type AuthCredentialInput struct {
-	ID           string
-	Provider     string
-	Type         string
-	Label        string
-	Tags         []string
-	APIKey       string
-	AccessToken  string
-	RefreshToken string
-	ExpiresAt    int64
-	AccountID    string
-	SetActive    bool
+	ID             string
+	Provider       string
+	AccountScopeID string
+	Type           string
+	Label          string
+	Tags           []string
+	APIKey         string
+	AccessToken    string
+	RefreshToken   string
+	ExpiresAt      int64
+	AccountID      string
+	SetActive      bool
 }
 
 type authCredentialActiveRecord struct {
@@ -104,32 +106,58 @@ func NewAuthStoreWithSecretStore(store, secretStore *Store) *AuthStore {
 }
 
 func (s *AuthStore) SetCodexAPIKey(apiKey string) (CodexAuthRecord, error) {
+	return CodexAuthRecord{}, errAccountScopeRequired
+}
+
+func (s *AuthStore) SetCodexAPIKeyForAccount(accountScopeID, apiKey string) (CodexAuthRecord, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CodexAuthRecord{}, err
+	}
 	return s.UpsertCredential(AuthCredentialInput{
-		ID:        DefaultAuthCredentialID,
-		Provider:  "codex",
-		Type:      CodexAuthTypeAPI,
-		Label:     "default",
-		APIKey:    strings.TrimSpace(apiKey),
-		SetActive: true,
+		AccountScopeID: accountScopeID,
+		ID:             DefaultAuthCredentialID,
+		Provider:       "codex",
+		Type:           CodexAuthTypeAPI,
+		Label:          "default",
+		APIKey:         strings.TrimSpace(apiKey),
+		SetActive:      true,
 	})
 }
 
 func (s *AuthStore) SetCodexOAuth(accessToken, refreshToken string, expiresAt int64, accountID string) (CodexAuthRecord, error) {
+	return CodexAuthRecord{}, errAccountScopeRequired
+}
+
+func (s *AuthStore) SetCodexOAuthForAccount(accountScopeID, accessToken, refreshToken string, expiresAt int64, accountID string) (CodexAuthRecord, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CodexAuthRecord{}, err
+	}
 	return s.UpsertCredential(AuthCredentialInput{
-		ID:           DefaultAuthCredentialID,
-		Provider:     "codex",
-		Type:         CodexAuthTypeOAuth,
-		Label:        "default",
-		AccessToken:  strings.TrimSpace(accessToken),
-		RefreshToken: strings.TrimSpace(refreshToken),
-		ExpiresAt:    expiresAt,
-		AccountID:    strings.TrimSpace(accountID),
-		SetActive:    true,
+		AccountScopeID: accountScopeID,
+		ID:             DefaultAuthCredentialID,
+		Provider:       "codex",
+		Type:           CodexAuthTypeOAuth,
+		Label:          "default",
+		AccessToken:    strings.TrimSpace(accessToken),
+		RefreshToken:   strings.TrimSpace(refreshToken),
+		ExpiresAt:      expiresAt,
+		AccountID:      strings.TrimSpace(accountID),
+		SetActive:      true,
 	})
 }
 
 func (s *AuthStore) UpdateOAuthCredential(provider, credentialID, accessToken, refreshToken string, expiresAt int64, accountID string) (AuthCredentialRecord, error) {
-	record, ok, err := s.GetCredential(provider, credentialID)
+	return AuthCredentialRecord{}, errAccountScopeRequired
+}
+
+func (s *AuthStore) UpdateOAuthCredentialForAccount(accountScopeID, provider, credentialID, accessToken, refreshToken string, expiresAt int64, accountID string) (AuthCredentialRecord, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return AuthCredentialRecord{}, err
+	}
+	record, ok, err := s.GetCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
@@ -160,24 +188,29 @@ func (s *AuthStore) UpdateOAuthCredential(provider, credentialID, accessToken, r
 }
 
 func (s *AuthStore) GetCodexAuthRecord() (CodexAuthRecord, bool, error) {
-	record, ok, err := s.GetActiveCredential("codex")
+	return CodexAuthRecord{}, false, errAccountScopeRequired
+}
+
+func (s *AuthStore) GetCodexAuthRecordForAccount(accountScopeID string) (CodexAuthRecord, bool, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CodexAuthRecord{}, false, err
+	}
+	record, ok, err := s.GetActiveCredentialForAccount(accountScopeID, "codex")
 	if err != nil {
 		return CodexAuthRecord{}, false, err
 	}
 	if ok {
 		return record, true, nil
 	}
-	legacy, migrated, err := s.migrateLegacyCodexRecord()
-	if err != nil {
-		return CodexAuthRecord{}, false, err
-	}
-	if migrated {
-		return legacy, true, nil
-	}
 	return CodexAuthRecord{}, false, nil
 }
 
 func (s *AuthStore) UpsertCredential(input AuthCredentialInput) (AuthCredentialRecord, error) {
+	accountScopeID, err := requireAccountScopeID(input.AccountScopeID)
+	if err != nil {
+		return AuthCredentialRecord{}, err
+	}
 	provider := normalizeProvider(input.Provider)
 	if provider == "" {
 		return AuthCredentialRecord{}, fmt.Errorf("provider must not be empty")
@@ -191,7 +224,7 @@ func (s *AuthStore) UpsertCredential(input AuthCredentialInput) (AuthCredentialR
 		credentialID = generated
 	}
 
-	current, exists, err := s.GetCredential(provider, credentialID)
+	current, exists, err := s.GetCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
@@ -222,12 +255,13 @@ func (s *AuthStore) UpsertCredential(input AuthCredentialInput) (AuthCredentialR
 	}
 
 	next := AuthCredentialRecord{
-		ID:        credentialID,
-		Provider:  provider,
-		Type:      authType,
-		Label:     label,
-		Tags:      tags,
-		UpdatedAt: now,
+		ID:             credentialID,
+		Provider:       provider,
+		AccountScopeID: accountScopeID,
+		Type:           authType,
+		Label:          label,
+		Tags:           tags,
+		UpdatedAt:      now,
 	}
 	if exists {
 		next.CreatedAt = current.CreatedAt
@@ -283,12 +317,20 @@ func (s *AuthStore) UpsertCredential(input AuthCredentialInput) (AuthCredentialR
 }
 
 func (s *AuthStore) GetCredential(provider, credentialID string) (AuthCredentialRecord, bool, error) {
+	return AuthCredentialRecord{}, false, errAccountScopeRequired
+}
+
+func (s *AuthStore) GetCredentialForAccount(accountScopeID, provider, credentialID string) (AuthCredentialRecord, bool, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return AuthCredentialRecord{}, false, err
+	}
 	provider = normalizeProvider(provider)
 	credentialID = normalizeCredentialID(credentialID)
 	if provider == "" || credentialID == "" {
 		return AuthCredentialRecord{}, false, nil
 	}
-	payload, ok, err := s.secretStore.GetBytes(KeyAuthCredential(provider, credentialID))
+	payload, ok, err := s.secretStore.GetBytes(authCredentialKey(accountScopeID, provider, credentialID))
 	if err != nil {
 		return AuthCredentialRecord{}, false, err
 	}
@@ -301,20 +343,29 @@ func (s *AuthStore) GetCredential(provider, credentialID string) (AuthCredential
 	}
 	record.Provider = provider
 	record.ID = credentialID
+	record.AccountScopeID = accountScopeID
 	return normalizeCredentialRecord(record), true, nil
 }
 
 func (s *AuthStore) GetActiveCredential(provider string) (AuthCredentialRecord, bool, error) {
+	return AuthCredentialRecord{}, false, errAccountScopeRequired
+}
+
+func (s *AuthStore) GetActiveCredentialForAccount(accountScopeID, provider string) (AuthCredentialRecord, bool, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return AuthCredentialRecord{}, false, err
+	}
 	provider = normalizeProvider(provider)
 	if provider == "" {
 		return AuthCredentialRecord{}, false, nil
 	}
-	credentialID, ok, err := s.getActiveCredentialID(provider)
+	credentialID, ok, err := s.getActiveCredentialIDForAccount(accountScopeID, provider)
 	if err != nil {
 		return AuthCredentialRecord{}, false, err
 	}
 	if !ok {
-		records, listErr := s.ListCredentials(provider, 200)
+		records, listErr := s.ListCredentialsForAccount(accountScopeID, provider, 200)
 		if listErr != nil {
 			return AuthCredentialRecord{}, false, listErr
 		}
@@ -322,43 +373,59 @@ func (s *AuthStore) GetActiveCredential(provider string) (AuthCredentialRecord, 
 			return AuthCredentialRecord{}, false, nil
 		}
 		record := records[0]
-		if _, setErr := s.SetActiveCredential(provider, record.ID); setErr != nil {
+		if _, setErr := s.SetActiveCredentialForAccount(accountScopeID, provider, record.ID); setErr != nil {
 			return AuthCredentialRecord{}, false, setErr
 		}
 		return record, true, nil
 	}
-	record, found, err := s.GetCredential(provider, credentialID)
+	record, found, err := s.GetCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		return AuthCredentialRecord{}, false, err
 	}
 	if !found {
-		_ = s.store.Delete(KeyAuthCredentialActive(provider))
+		_ = s.store.Delete(authCredentialActiveKey(accountScopeID, provider))
 		return AuthCredentialRecord{}, false, nil
 	}
 	return record, true, nil
 }
 
 func (s *AuthStore) SetActiveCredential(provider, credentialID string) (AuthCredentialRecord, error) {
+	return AuthCredentialRecord{}, errAccountScopeRequired
+}
+
+func (s *AuthStore) SetActiveCredentialForAccount(accountScopeID, provider, credentialID string) (AuthCredentialRecord, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return AuthCredentialRecord{}, err
+	}
 	provider = normalizeProvider(provider)
 	credentialID = normalizeCredentialID(credentialID)
 	if provider == "" || credentialID == "" {
 		return AuthCredentialRecord{}, fmt.Errorf("provider and id are required")
 	}
-	record, ok, err := s.GetCredential(provider, credentialID)
+	record, ok, err := s.GetCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
 	if !ok {
 		return AuthCredentialRecord{}, fmt.Errorf("credential not found: provider=%s id=%s", provider, credentialID)
 	}
-	if err := s.setActiveCredentialID(provider, credentialID, time.Now().UnixMilli()); err != nil {
+	if err := s.setActiveCredentialIDForAccount(accountScopeID, provider, credentialID, time.Now().UnixMilli()); err != nil {
 		return AuthCredentialRecord{}, err
 	}
 	return record, nil
 }
 
 func (s *AuthStore) UpdateCredentialConnection(provider, credentialID string, connection *AuthCredentialConnectionRecord) (AuthCredentialRecord, error) {
-	record, ok, err := s.GetCredential(provider, credentialID)
+	return AuthCredentialRecord{}, errAccountScopeRequired
+}
+
+func (s *AuthStore) UpdateCredentialConnectionForAccount(accountScopeID, provider, credentialID string, connection *AuthCredentialConnectionRecord) (AuthCredentialRecord, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return AuthCredentialRecord{}, err
+	}
+	record, ok, err := s.GetCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
@@ -370,12 +437,20 @@ func (s *AuthStore) UpdateCredentialConnection(provider, credentialID string, co
 }
 
 func (s *AuthStore) DeleteCredential(provider, credentialID string) (bool, error) {
+	return false, errAccountScopeRequired
+}
+
+func (s *AuthStore) DeleteCredentialForAccount(accountScopeID, provider, credentialID string) (bool, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return false, err
+	}
 	provider = normalizeProvider(provider)
 	credentialID = normalizeCredentialID(credentialID)
 	if provider == "" || credentialID == "" {
 		return false, nil
 	}
-	record, ok, err := s.GetCredential(provider, credentialID)
+	record, ok, err := s.GetCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		return false, err
 	}
@@ -389,11 +464,19 @@ func (s *AuthStore) DeleteCredential(provider, credentialID string) (bool, error
 }
 
 func (s *AuthStore) DeleteCredentialsByOwnerSwarmID(ownerSwarmID string) (int, error) {
+	return 0, errAccountScopeRequired
+}
+
+func (s *AuthStore) DeleteCredentialsByOwnerSwarmIDForAccount(accountScopeID, ownerSwarmID string) (int, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return 0, err
+	}
 	ownerSwarmID = strings.TrimSpace(ownerSwarmID)
 	if ownerSwarmID == "" {
 		return 0, nil
 	}
-	records, err := s.ListCredentials("", 10_000)
+	records, err := s.ListCredentialsForAccount(accountScopeID, "", 10_000)
 	if err != nil {
 		return 0, err
 	}
@@ -414,28 +497,32 @@ func (s *AuthStore) DeleteCredentialsByOwnerSwarmID(ownerSwarmID string) (int, e
 }
 
 func (s *AuthStore) deleteCredentialRecord(record AuthCredentialRecord) (bool, error) {
+	accountScopeID, err := requireAccountScopeID(record.AccountScopeID)
+	if err != nil {
+		return false, err
+	}
 	if err := s.deleteTagIndexes(record); err != nil {
 		return false, err
 	}
-	if err := s.secretStore.Delete(KeyAuthCredential(record.Provider, record.ID)); err != nil {
+	if err := s.secretStore.Delete(authCredentialKey(accountScopeID, record.Provider, record.ID)); err != nil {
 		return false, err
 	}
 
-	activeID, activeSet, err := s.getActiveCredentialID(record.Provider)
+	activeID, activeSet, err := s.getActiveCredentialIDForAccount(accountScopeID, record.Provider)
 	if err != nil {
 		return false, err
 	}
 	if activeSet && activeID == record.ID {
-		records, err := s.ListCredentials(record.Provider, 200)
+		records, err := s.ListCredentialsForAccount(accountScopeID, record.Provider, 200)
 		if err != nil {
 			return false, err
 		}
 		if len(records) == 0 {
-			if err := s.store.Delete(KeyAuthCredentialActive(record.Provider)); err != nil {
+			if err := s.store.Delete(authCredentialActiveKey(accountScopeID, record.Provider)); err != nil {
 				return false, err
 			}
 		} else {
-			if err := s.setActiveCredentialID(record.Provider, records[0].ID, time.Now().UnixMilli()); err != nil {
+			if err := s.setActiveCredentialIDForAccount(accountScopeID, record.Provider, records[0].ID, time.Now().UnixMilli()); err != nil {
 				return false, err
 			}
 		}
@@ -445,6 +532,14 @@ func (s *AuthStore) deleteCredentialRecord(record AuthCredentialRecord) (bool, e
 }
 
 func (s *AuthStore) ListCredentials(provider string, limit int) ([]AuthCredentialRecord, error) {
+	return nil, errAccountScopeRequired
+}
+
+func (s *AuthStore) ListCredentialsForAccount(accountScopeID, provider string, limit int) ([]AuthCredentialRecord, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
 	provider = normalizeProvider(provider)
 	if limit <= 0 {
 		limit = 200
@@ -457,17 +552,18 @@ func (s *AuthStore) ListCredentials(provider string, limit int) ([]AuthCredentia
 		scanLimit = maxInt(scanLimit, limit*4)
 	}
 
-	prefix := AuthCredentialPrefix()
+	prefix := AuthCredentialAccountPrefix(accountScopeID)
 	if provider != "" {
-		prefix = AuthCredentialProviderPrefix(provider)
+		prefix = AuthCredentialProviderPrefixForAccount(accountScopeID, provider)
 	}
 
 	records := make([]AuthCredentialRecord, 0, minInt(scanLimit, 256))
-	err := s.secretStore.IteratePrefix(prefix, scanLimit, func(_ string, value []byte) error {
+	err = s.secretStore.IteratePrefix(prefix, scanLimit, func(_ string, value []byte) error {
 		record, err := s.decodeStoredCredential(value)
 		if err != nil {
 			return err
 		}
+		record.AccountScopeID = accountScopeID
 		record = normalizeCredentialRecord(record)
 		if provider != "" && record.Provider != provider {
 			return nil
@@ -486,10 +582,18 @@ func (s *AuthStore) ListCredentials(provider string, limit int) ([]AuthCredentia
 }
 
 func (s *AuthStore) ListCredentialProviders(limit int) ([]string, error) {
+	return nil, errAccountScopeRequired
+}
+
+func (s *AuthStore) ListCredentialProvidersForAccount(accountScopeID string, limit int) ([]string, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = 200
 	}
-	records, err := s.ListCredentials("", maxInt(limit*20, 1000))
+	records, err := s.ListCredentialsForAccount(accountScopeID, "", maxInt(limit*20, 1000))
 	if err != nil {
 		return nil, err
 	}
@@ -511,7 +615,12 @@ func (s *AuthStore) ListCredentialProviders(limit int) ([]string, error) {
 
 func (s *AuthStore) saveCredential(next AuthCredentialRecord, setActive bool) (AuthCredentialRecord, error) {
 	next = normalizeCredentialRecord(next)
-	current, exists, err := s.GetCredential(next.Provider, next.ID)
+	accountScopeID, err := requireAccountScopeID(next.AccountScopeID)
+	if err != nil {
+		return AuthCredentialRecord{}, err
+	}
+	next.AccountScopeID = accountScopeID
+	current, exists, err := s.GetCredentialForAccount(accountScopeID, next.Provider, next.ID)
 	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
@@ -528,23 +637,23 @@ func (s *AuthStore) saveCredential(next AuthCredentialRecord, setActive bool) (A
 	if err != nil {
 		return AuthCredentialRecord{}, err
 	}
-	if err := s.secretStore.PutBytes(KeyAuthCredential(next.Provider, next.ID), payload); err != nil {
+	if err := s.secretStore.PutBytes(authCredentialKey(accountScopeID, next.Provider, next.ID), payload); err != nil {
 		return AuthCredentialRecord{}, err
 	}
 	if err := s.writeTagIndexes(next); err != nil {
 		return AuthCredentialRecord{}, err
 	}
 	if setActive {
-		if err := s.setActiveCredentialID(next.Provider, next.ID, next.UpdatedAt); err != nil {
+		if err := s.setActiveCredentialIDForAccount(accountScopeID, next.Provider, next.ID, next.UpdatedAt); err != nil {
 			return AuthCredentialRecord{}, err
 		}
 	} else {
-		_, ok, err := s.getActiveCredentialID(next.Provider)
+		_, ok, err := s.getActiveCredentialIDForAccount(accountScopeID, next.Provider)
 		if err != nil {
 			return AuthCredentialRecord{}, err
 		}
 		if !ok {
-			if err := s.setActiveCredentialID(next.Provider, next.ID, next.UpdatedAt); err != nil {
+			if err := s.setActiveCredentialIDForAccount(accountScopeID, next.Provider, next.ID, next.UpdatedAt); err != nil {
 				return AuthCredentialRecord{}, err
 			}
 		}
@@ -553,8 +662,16 @@ func (s *AuthStore) saveCredential(next AuthCredentialRecord, setActive bool) (A
 }
 
 func (s *AuthStore) getActiveCredentialID(provider string) (string, bool, error) {
+	return "", false, errAccountScopeRequired
+}
+
+func (s *AuthStore) getActiveCredentialIDForAccount(accountScopeID, provider string) (string, bool, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return "", false, err
+	}
 	var record authCredentialActiveRecord
-	ok, err := s.store.GetJSON(KeyAuthCredentialActive(provider), &record)
+	ok, err := s.store.GetJSON(authCredentialActiveKey(accountScopeID, provider), &record)
 	if err != nil {
 		return "", false, err
 	}
@@ -565,18 +682,30 @@ func (s *AuthStore) getActiveCredentialID(provider string) (string, bool, error)
 }
 
 func (s *AuthStore) setActiveCredentialID(provider, credentialID string, updatedAt int64) error {
+	return errAccountScopeRequired
+}
+
+func (s *AuthStore) setActiveCredentialIDForAccount(accountScopeID, provider, credentialID string, updatedAt int64) error {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return err
+	}
 	if updatedAt <= 0 {
 		updatedAt = time.Now().UnixMilli()
 	}
-	return s.store.PutJSON(KeyAuthCredentialActive(provider), authCredentialActiveRecord{
+	return s.store.PutJSON(authCredentialActiveKey(accountScopeID, provider), authCredentialActiveRecord{
 		ID:        normalizeCredentialID(credentialID),
 		UpdatedAt: updatedAt,
 	})
 }
 
 func (s *AuthStore) writeTagIndexes(record AuthCredentialRecord) error {
+	accountScopeID, err := requireAccountScopeID(record.AccountScopeID)
+	if err != nil {
+		return err
+	}
 	for _, tag := range normalizeTags(record.Tags) {
-		if err := s.store.PutBytes(KeyAuthCredentialTag(tag, record.Provider, record.ID), []byte(record.ID)); err != nil {
+		if err := s.store.PutBytes(authCredentialTagKey(accountScopeID, tag, record.Provider, record.ID), []byte(record.ID)); err != nil {
 			return err
 		}
 	}
@@ -584,8 +713,12 @@ func (s *AuthStore) writeTagIndexes(record AuthCredentialRecord) error {
 }
 
 func (s *AuthStore) deleteTagIndexes(record AuthCredentialRecord) error {
+	accountScopeID, err := requireAccountScopeID(record.AccountScopeID)
+	if err != nil {
+		return err
+	}
 	for _, tag := range normalizeTags(record.Tags) {
-		if err := s.store.Delete(KeyAuthCredentialTag(tag, record.Provider, record.ID)); err != nil {
+		if err := s.store.Delete(authCredentialTagKey(accountScopeID, tag, record.Provider, record.ID)); err != nil {
 			return err
 		}
 	}
@@ -593,40 +726,41 @@ func (s *AuthStore) deleteTagIndexes(record AuthCredentialRecord) error {
 }
 
 func (s *AuthStore) migrateLegacyCodexRecord() (AuthCredentialRecord, bool, error) {
-	var legacy AuthCredentialRecord
-	ok, err := s.store.GetJSON(KeyAuthCodexDefault, &legacy)
-	if err != nil {
-		return AuthCredentialRecord{}, false, err
-	}
-	if !ok {
-		return AuthCredentialRecord{}, false, nil
-	}
-
-	now := time.Now().UnixMilli()
-	legacy.Provider = "codex"
-	legacy.ID = DefaultAuthCredentialID
-	if legacy.UpdatedAt <= 0 {
-		legacy.UpdatedAt = now
-	}
-	if legacy.CreatedAt <= 0 {
-		legacy.CreatedAt = legacy.UpdatedAt
-	}
-	legacy.Type = normalizeAuthType(legacy.Type, legacy.APIKey, legacy.AccessToken, legacy.RefreshToken)
-	if legacy.Label == "" {
-		legacy.Label = DefaultAuthCredentialID
-	}
-	legacy = normalizeCredentialRecord(legacy)
-
-	record, err := s.saveCredential(legacy, true)
-	if err != nil {
-		return AuthCredentialRecord{}, false, err
-	}
-	_ = s.store.Delete(KeyAuthCodexDefault)
-	return record, true, nil
+	return AuthCredentialRecord{}, false, errAccountScopeRequired
 }
 
 func normalizeProvider(provider string) string {
 	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func normalizeAccountScopeID(accountScopeID string) string {
+	return strings.TrimSpace(accountScopeID)
+}
+
+var errAccountScopeRequired = fmt.Errorf("account scope is required")
+
+func missingAccountScopeRecord(record AuthCredentialRecord) bool {
+	return normalizeAccountScopeID(record.AccountScopeID) == ""
+}
+
+func requireAccountScopeID(accountScopeID string) (string, error) {
+	accountScopeID = normalizeAccountScopeID(accountScopeID)
+	if accountScopeID == "" {
+		return "", errAccountScopeRequired
+	}
+	return accountScopeID, nil
+}
+
+func authCredentialKey(accountScopeID, providerID, credentialID string) string {
+	return KeyAuthCredentialForAccount(accountScopeID, providerID, credentialID)
+}
+
+func authCredentialActiveKey(accountScopeID, providerID string) string {
+	return KeyAuthCredentialActiveForAccount(accountScopeID, providerID)
+}
+
+func authCredentialTagKey(accountScopeID, tag, providerID, credentialID string) string {
+	return KeyAuthCredentialTagForAccount(accountScopeID, tag, providerID, credentialID)
 }
 
 func normalizeCredentialID(credentialID string) string {
@@ -642,6 +776,7 @@ func normalizeCredentialRecord(record AuthCredentialRecord) AuthCredentialRecord
 		record.Label = record.ID
 	}
 	record.Tags = normalizeTags(record.Tags)
+	record.AccountScopeID = normalizeAccountScopeID(record.AccountScopeID)
 	record.APIKey = strings.TrimSpace(record.APIKey)
 	record.AccessToken = strings.TrimSpace(record.AccessToken)
 	record.RefreshToken = strings.TrimSpace(record.RefreshToken)

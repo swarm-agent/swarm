@@ -10,6 +10,10 @@ import (
 )
 
 func (s *Server) verifyAuthCredentialConnection(ctx context.Context, provider, credentialID string) (*auth.ConnectionStatus, error) {
+	return s.verifyAuthCredentialConnectionForAccount(ctx, "", provider, credentialID)
+}
+
+func (s *Server) verifyAuthCredentialConnectionForAccount(ctx context.Context, accountScopeID, provider, credentialID string) (*auth.ConnectionStatus, error) {
 	if s == nil || s.auth == nil || s.providers == nil {
 		return nil, nil
 	}
@@ -27,7 +31,7 @@ func (s *Server) verifyAuthCredentialConnection(ctx context.Context, provider, c
 		return nil, nil
 	}
 
-	record, found, err := s.auth.GetCredentialRecord(provider, credentialID)
+	record, found, err := s.auth.GetCredentialRecordForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		return &auth.ConnectionStatus{
 			Connected:  false,
@@ -83,7 +87,7 @@ func (s *Server) verifyAuthCredentialConnection(ctx context.Context, provider, c
 			status.Message = verifyErr.Error()
 		}
 	}
-	if _, event, persistErr := s.auth.UpdateCredentialConnection(provider, credentialID, status); persistErr != nil {
+	if _, event, persistErr := s.auth.UpdateCredentialConnectionForAccount(accountScopeID, provider, credentialID, status); persistErr != nil {
 		return nil, persistErr
 	} else if event != nil {
 		s.hub.Publish(*event)

@@ -17,6 +17,16 @@ type Service struct {
 	publish   func(pebblestore.EventEnvelope)
 }
 
+var errAccountScopeRequired = errors.New("account scope is required")
+
+func requireAccountScopeID(accountScopeID string) (string, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return "", errAccountScopeRequired
+	}
+	return accountScopeID, nil
+}
+
 type CodexStatus struct {
 	Provider     string              `json:"provider"`
 	Configured   bool                `json:"configured"`
@@ -85,17 +95,18 @@ type CredentialList struct {
 }
 
 type CredentialUpsertInput struct {
-	ID           string
-	Provider     string
-	Type         string
-	Label        string
-	Tags         []string
-	APIKey       string
-	AccessToken  string
-	RefreshToken string
-	ExpiresAt    int64
-	AccountID    string
-	Active       bool
+	ID             string
+	Provider       string
+	AccountScopeID string
+	Type           string
+	Label          string
+	Tags           []string
+	APIKey         string
+	AccessToken    string
+	RefreshToken   string
+	ExpiresAt      int64
+	AccountID      string
+	Active         bool
 }
 
 type VaultStatus = pebblestore.VaultStatus
@@ -240,12 +251,20 @@ func (s *Service) ImportCredentials(bundlePassword, vaultPassword string, payloa
 }
 
 func (s *Service) SetCodexKey(rawKey string) (CodexStatus, *pebblestore.EventEnvelope, error) {
+	return CodexStatus{}, nil, errAccountScopeRequired
+}
+
+func (s *Service) SetCodexKeyForAccount(accountScopeID, rawKey string) (CodexStatus, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CodexStatus{}, nil, err
+	}
 	apiKey := strings.TrimSpace(rawKey)
 	if apiKey == "" {
 		return CodexStatus{}, nil, errors.New("codex api key must not be empty")
 	}
 
-	record, err := s.authStore.SetCodexAPIKey(apiKey)
+	record, err := s.authStore.SetCodexAPIKeyForAccount(accountScopeID, apiKey)
 	if err != nil {
 		return CodexStatus{}, nil, fmt.Errorf("persist codex auth: %w", err)
 	}
@@ -259,6 +278,14 @@ func (s *Service) SetCodexKey(rawKey string) (CodexStatus, *pebblestore.EventEnv
 }
 
 func (s *Service) SetCodexOAuth(accessToken, refreshToken string, expiresAt int64, accountID string) (CodexStatus, *pebblestore.EventEnvelope, error) {
+	return CodexStatus{}, nil, errAccountScopeRequired
+}
+
+func (s *Service) SetCodexOAuthForAccount(accountScopeID, accessToken, refreshToken string, expiresAt int64, accountID string) (CodexStatus, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CodexStatus{}, nil, err
+	}
 	accessToken = strings.TrimSpace(accessToken)
 	refreshToken = strings.TrimSpace(refreshToken)
 	accountID = strings.TrimSpace(accountID)
@@ -269,7 +296,7 @@ func (s *Service) SetCodexOAuth(accessToken, refreshToken string, expiresAt int6
 		return CodexStatus{}, nil, errors.New("codex refresh token must not be empty")
 	}
 
-	record, err := s.authStore.SetCodexOAuth(accessToken, refreshToken, expiresAt, accountID)
+	record, err := s.authStore.SetCodexOAuthForAccount(accountScopeID, accessToken, refreshToken, expiresAt, accountID)
 	if err != nil {
 		return CodexStatus{}, nil, fmt.Errorf("persist codex oauth: %w", err)
 	}
@@ -283,7 +310,15 @@ func (s *Service) SetCodexOAuth(accessToken, refreshToken string, expiresAt int6
 }
 
 func (s *Service) CodexStatus() (CodexStatus, error) {
-	record, ok, err := s.authStore.GetCodexAuthRecord()
+	return CodexStatus{}, errAccountScopeRequired
+}
+
+func (s *Service) CodexStatusForAccount(accountScopeID string) (CodexStatus, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CodexStatus{}, err
+	}
+	record, ok, err := s.authStore.GetCodexAuthRecordForAccount(accountScopeID)
 	if err != nil {
 		return CodexStatus{}, fmt.Errorf("read codex auth: %w", err)
 	}
@@ -302,24 +337,32 @@ func (s *Service) CodexStatus() (CodexStatus, error) {
 }
 
 func (s *Service) ListCredentials(provider, query string, limit int) (CredentialList, error) {
+	return CredentialList{}, errAccountScopeRequired
+}
+
+func (s *Service) ListCredentialsForAccount(accountScopeID, provider, query string, limit int) (CredentialList, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CredentialList{}, err
+	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	query = strings.TrimSpace(query)
 	if limit <= 0 {
 		limit = 200
 	}
 
-	records, err := s.authStore.ListCredentials(provider, maxInt(limit*4, 400))
+	records, err := s.authStore.ListCredentialsForAccount(accountScopeID, provider, maxInt(limit*4, 400))
 	if err != nil {
 		return CredentialList{}, fmt.Errorf("list credentials: %w", err)
 	}
-	providers, err := s.authStore.ListCredentialProviders(200)
+	providers, err := s.authStore.ListCredentialProvidersForAccount(accountScopeID, 200)
 	if err != nil {
 		return CredentialList{}, fmt.Errorf("list providers: %w", err)
 	}
 
 	activeByProvider := make(map[string]string, len(providers))
 	for _, p := range providers {
-		active, ok, err := s.authStore.GetActiveCredential(p)
+		active, ok, err := s.authStore.GetActiveCredentialForAccount(accountScopeID, p)
 		if err != nil {
 			return CredentialList{}, fmt.Errorf("read active credential for provider %s: %w", p, err)
 		}
@@ -351,25 +394,30 @@ func (s *Service) ListCredentials(provider, query string, limit int) (Credential
 }
 
 func (s *Service) UpsertCredential(input CredentialUpsertInput) (CredentialStatus, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := requireAccountScopeID(input.AccountScopeID)
+	if err != nil {
+		return CredentialStatus{}, nil, err
+	}
 	input.Tags = normalizeCredentialTags(input.Tags)
 
 	record, err := s.authStore.UpsertCredential(pebblestore.AuthCredentialInput{
-		ID:           input.ID,
-		Provider:     input.Provider,
-		Type:         input.Type,
-		Label:        input.Label,
-		Tags:         input.Tags,
-		APIKey:       input.APIKey,
-		AccessToken:  input.AccessToken,
-		RefreshToken: input.RefreshToken,
-		ExpiresAt:    input.ExpiresAt,
-		AccountID:    input.AccountID,
-		SetActive:    input.Active,
+		ID:             input.ID,
+		Provider:       input.Provider,
+		AccountScopeID: accountScopeID,
+		Type:           input.Type,
+		Label:          input.Label,
+		Tags:           input.Tags,
+		APIKey:         input.APIKey,
+		AccessToken:    input.AccessToken,
+		RefreshToken:   input.RefreshToken,
+		ExpiresAt:      input.ExpiresAt,
+		AccountID:      input.AccountID,
+		SetActive:      input.Active,
 	})
 	if err != nil {
 		return CredentialStatus{}, nil, err
 	}
-	active, ok, err := s.authStore.GetActiveCredential(record.Provider)
+	active, ok, err := s.authStore.GetActiveCredentialForAccount(accountScopeID, record.Provider)
 	if err != nil {
 		return CredentialStatus{}, nil, err
 	}
@@ -385,7 +433,15 @@ func (s *Service) UpsertCredential(input CredentialUpsertInput) (CredentialStatu
 }
 
 func (s *Service) SetActiveCredential(provider, credentialID string) (CredentialStatus, *pebblestore.EventEnvelope, error) {
-	record, err := s.authStore.SetActiveCredential(provider, credentialID)
+	return CredentialStatus{}, nil, errAccountScopeRequired
+}
+
+func (s *Service) SetActiveCredentialForAccount(accountScopeID, provider, credentialID string) (CredentialStatus, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CredentialStatus{}, nil, err
+	}
+	record, err := s.authStore.SetActiveCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		return CredentialStatus{}, nil, err
 	}
@@ -398,11 +454,19 @@ func (s *Service) SetActiveCredential(provider, credentialID string) (Credential
 }
 
 func (s *Service) UpdateCredentialConnection(provider, credentialID string, connection *ConnectionStatus) (CredentialStatus, *pebblestore.EventEnvelope, error) {
-	record, err := s.authStore.UpdateCredentialConnection(provider, credentialID, connectionRecordFromStatus(connection))
+	return CredentialStatus{}, nil, errAccountScopeRequired
+}
+
+func (s *Service) UpdateCredentialConnectionForAccount(accountScopeID, provider, credentialID string, connection *ConnectionStatus) (CredentialStatus, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
 	if err != nil {
 		return CredentialStatus{}, nil, err
 	}
-	active, ok, err := s.authStore.GetActiveCredential(record.Provider)
+	record, err := s.authStore.UpdateCredentialConnectionForAccount(accountScopeID, provider, credentialID, connectionRecordFromStatus(connection))
+	if err != nil {
+		return CredentialStatus{}, nil, err
+	}
+	active, ok, err := s.authStore.GetActiveCredentialForAccount(accountScopeID, record.Provider)
 	if err != nil {
 		return CredentialStatus{}, nil, err
 	}
@@ -415,9 +479,17 @@ func (s *Service) UpdateCredentialConnection(provider, credentialID string, conn
 }
 
 func (s *Service) DeleteCredential(provider, credentialID string) (bool, *pebblestore.EventEnvelope, error) {
+	return false, nil, errAccountScopeRequired
+}
+
+func (s *Service) DeleteCredentialForAccount(accountScopeID, provider, credentialID string) (bool, *pebblestore.EventEnvelope, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return false, nil, err
+	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	credentialID = strings.ToLower(strings.TrimSpace(credentialID))
-	deleted, err := s.authStore.DeleteCredential(provider, credentialID)
+	deleted, err := s.authStore.DeleteCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil {
 		return false, nil, err
 	}
@@ -436,7 +508,15 @@ func (s *Service) DeleteCredential(provider, credentialID string) (bool, *pebble
 }
 
 func (s *Service) GetCredentialRecord(provider, credentialID string) (pebblestore.AuthCredentialRecord, bool, error) {
-	return s.authStore.GetCredential(provider, credentialID)
+	return pebblestore.AuthCredentialRecord{}, false, errAccountScopeRequired
+}
+
+func (s *Service) GetCredentialRecordForAccount(accountScopeID, provider, credentialID string) (pebblestore.AuthCredentialRecord, bool, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return pebblestore.AuthCredentialRecord{}, false, err
+	}
+	return s.authStore.GetCredentialForAccount(accountScopeID, provider, credentialID)
 }
 
 func (s *Service) statusFromRecord(record pebblestore.CodexAuthRecord) CodexStatus {
@@ -684,16 +764,20 @@ func (s *Service) enqueueCapabilityTagEnrichment(record pebblestore.AuthCredenti
 		return
 	}
 
-	go s.applyInferredCapabilityTags(provider, credentialID, authType, apiKey)
+	go s.applyInferredCapabilityTags(record.AccountScopeID, provider, credentialID, authType, apiKey)
 }
 
-func (s *Service) applyInferredCapabilityTags(provider, credentialID, authType, apiKey string) {
+func (s *Service) applyInferredCapabilityTags(accountScopeID, provider, credentialID, authType, apiKey string) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return
+	}
 	inferred := inferCredentialCapabilityTags(provider, authType, apiKey)
 	if len(inferred) == 0 {
 		return
 	}
 
-	current, ok, err := s.authStore.GetCredential(provider, credentialID)
+	current, ok, err := s.authStore.GetCredentialForAccount(accountScopeID, provider, credentialID)
 	if err != nil || !ok {
 		return
 	}
@@ -704,17 +788,18 @@ func (s *Service) applyInferredCapabilityTags(provider, credentialID, authType, 
 	}
 
 	updated, err := s.authStore.UpsertCredential(pebblestore.AuthCredentialInput{
-		ID:        credentialID,
-		Provider:  provider,
-		Type:      current.Type,
-		Label:     current.Label,
-		Tags:      merged,
-		SetActive: false,
+		ID:             credentialID,
+		Provider:       provider,
+		AccountScopeID: accountScopeID,
+		Type:           current.Type,
+		Label:          current.Label,
+		Tags:           merged,
+		SetActive:      false,
 	})
 	if err != nil {
 		return
 	}
-	active, activeSet, err := s.authStore.GetActiveCredential(provider)
+	active, activeSet, err := s.authStore.GetActiveCredentialForAccount(accountScopeID, provider)
 	if err != nil {
 		return
 	}

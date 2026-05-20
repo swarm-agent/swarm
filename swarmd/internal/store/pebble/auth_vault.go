@@ -91,12 +91,6 @@ func (s *AuthStore) enableVaultWithManagedKey(password, managedKey string) (Vaul
 		return VaultStatus{}, errors.New(vaultPasswordRequiredMessage)
 	}
 
-	if _, migrated, err := s.migrateLegacyCodexRecord(); err != nil {
-		return VaultStatus{}, err
-	} else if migrated {
-		s.clearVaultMetadataCache()
-	}
-
 	meta, dek, err := s.ensureSecretDEK()
 	if err != nil {
 		return VaultStatus{}, err
@@ -147,11 +141,14 @@ func (s *AuthStore) enableVaultWithManagedKey(password, managedKey string) (Vaul
 	batch := s.secretStore.NewBatch()
 	defer batch.Close()
 	for _, record := range records {
+		if missingAccountScopeRecord(record) {
+			return VaultStatus{}, errAccountScopeRequired
+		}
 		payload, err := encodeSealedCredential(dek, record, storageModePebbleVault)
 		if err != nil {
 			return VaultStatus{}, err
 		}
-		if err := batch.Set([]byte(KeyAuthCredential(record.Provider, record.ID)), payload, nil); err != nil {
+		if err := batch.Set([]byte(authCredentialKey(record.AccountScopeID, record.Provider, record.ID)), payload, nil); err != nil {
 			return VaultStatus{}, fmt.Errorf("write vaulted auth record %s/%s: %w", record.Provider, record.ID, err)
 		}
 	}
@@ -470,17 +467,25 @@ func (s *AuthStore) persistVaultMetadata(meta *VaultMetadata) error {
 }
 
 func (s *AuthStore) listStoredCredentialsWithDEK(provider string, limit int, meta *VaultMetadata, dek []byte) ([]AuthCredentialRecord, error) {
+	return nil, errAccountScopeRequired
+}
+
+func (s *AuthStore) listStoredCredentialsWithDEKForAccount(accountScopeID, provider string, limit int, meta *VaultMetadata, dek []byte) ([]AuthCredentialRecord, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
 	provider = normalizeProvider(provider)
 	if limit <= 0 {
 		limit = 200
 	}
 
-	prefix := AuthCredentialPrefix()
+	prefix := AuthCredentialAccountPrefix(accountScopeID)
 	if provider != "" {
-		prefix = AuthCredentialProviderPrefix(provider)
+		prefix = AuthCredentialProviderPrefixForAccount(accountScopeID, provider)
 	}
 	records := make([]AuthCredentialRecord, 0, minInt(limit, 256))
-	err := s.secretStore.IteratePrefix(prefix, limit, func(_ string, value []byte) error {
+	err = s.secretStore.IteratePrefix(prefix, limit, func(_ string, value []byte) error {
 		var (
 			record AuthCredentialRecord
 			err    error
@@ -499,6 +504,7 @@ func (s *AuthStore) listStoredCredentialsWithDEK(provider string, limit int, met
 		if err != nil {
 			return err
 		}
+		record.AccountScopeID = accountScopeID
 		records = append(records, normalizeCredentialRecord(record))
 		return nil
 	})
