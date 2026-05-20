@@ -111,9 +111,19 @@ export interface DesktopOnboardingWorkspaceWire {
   saved_count?: number
 }
 
+export interface DesktopOnboardingIdentityWire {
+  bootstrapped?: boolean
+  user_id?: string
+  username?: string
+  team_id?: string
+  team_default?: boolean
+  membership_role?: string
+}
+
 export interface DesktopOnboardingStatusWire {
   ok?: boolean
   needs_onboarding?: boolean
+  identity?: DesktopOnboardingIdentityWire
   config?: DesktopOnboardingConfigWire
   heuristics?: DesktopOnboardingHeuristicsWire
   pairing?: DesktopOnboardingPairingWire
@@ -260,9 +270,19 @@ export interface DesktopSwarmGroupState {
   members: DesktopSwarmGroupMember[]
 }
 
+export interface DesktopOnboardingIdentity {
+  bootstrapped: boolean
+  userID: string
+  username: string
+  teamID: string
+  teamDefault: boolean
+  membershipRole: string
+}
+
 export interface DesktopOnboardingStatus {
   ok: boolean
   needsOnboarding: boolean
+  identity: DesktopOnboardingIdentity
   config: DesktopOnboardingConfig
   heuristics: DesktopOnboardingHeuristics
   pairing: DesktopOnboardingPairing
@@ -276,6 +296,8 @@ export interface DesktopOnboardingStatus {
 }
 
 export interface SaveDesktopOnboardingInput {
+  username?: string
+  localOwnerConfirmation?: string
   swarmName?: string
   swarmMode?: boolean
   child?: boolean

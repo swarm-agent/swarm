@@ -7061,6 +7061,11 @@ func (a *App) refreshHomeModel(ctx context.Context) (model.HomeModel, error) {
 
 	if strings.TrimSpace(a.api.Token()) == "" {
 		if err := a.api.EnsureLocalAuth(ctx); err != nil {
+			if errors.Is(err, client.ErrLocalIdentityBootstrapRequired) {
+				next.HintLine = "No product user exists yet. Complete onboarding before using protected actions."
+				next.TipLine = "Create username + swarm name, then type desktop to confirm local owner bootstrap."
+				return next, nil
+			}
 			errorsSeen = append(errorsSeen, "local auth bootstrap failed")
 		}
 	}

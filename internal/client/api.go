@@ -29,6 +29,8 @@ const (
 	localTransportSocketEnv = "SWARMD_LOCAL_TRANSPORT_SOCKET"
 )
 
+var ErrLocalIdentityBootstrapRequired = errors.New("local product identity bootstrap required")
+
 type API struct {
 	baseURL string
 	http    *http.Client
@@ -40,6 +42,42 @@ type HealthStatus struct {
 	OK                bool   `json:"ok"`
 	Mode              string `json:"mode"`
 	BypassPermissions bool   `json:"bypass_permissions,omitempty"`
+}
+
+type LocalProductSession struct {
+	OK        bool   `json:"ok"`
+	Token     string `json:"token"`
+	UserID    string `json:"user_id"`
+	Username  string `json:"username"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+type OnboardingIdentity struct {
+	Bootstrapped   bool   `json:"bootstrapped"`
+	UserID         string `json:"user_id"`
+	Username       string `json:"username"`
+	TeamID         string `json:"team_id"`
+	TeamDefault    bool   `json:"team_default"`
+	MembershipRole string `json:"membership_role"`
+}
+
+type OnboardingConfig struct {
+	SwarmName string `json:"swarm_name"`
+}
+
+type OnboardingStatus struct {
+	OK              bool               `json:"ok"`
+	NeedsOnboarding bool               `json:"needs_onboarding"`
+	Identity        OnboardingIdentity `json:"identity"`
+	Config          OnboardingConfig   `json:"config"`
+}
+
+type SaveOnboardingInput struct {
+	Username               string `json:"username,omitempty"`
+	LocalOwnerConfirmation string `json:"local_owner_confirmation,omitempty"`
+	SwarmName              string `json:"swarm_name,omitempty"`
+	SwarmMode              *bool  `json:"swarm_mode,omitempty"`
+	Child                  *bool  `json:"child,omitempty"`
 }
 
 type UpdateStatus struct {
@@ -1172,8 +1210,49 @@ func (c *API) Token() string {
 }
 
 func (c *API) EnsureLocalAuth(ctx context.Context) error {
-	_ = ctx
+	if strings.TrimSpace(c.Token()) != "" {
+		return nil
+	}
+	status, err := c.GetOnboardingStatus(ctx)
+	if err != nil {
+		return err
+	}
+	if !status.Identity.Bootstrapped || strings.TrimSpace(status.Identity.UserID) == "" {
+		return ErrLocalIdentityBootstrapRequired
+	}
+	session, err := c.IssueLocalProductSession(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(session.Token) == "" {
+		return errors.New("local product session response missing token")
+	}
+	c.SetToken(session.Token)
 	return nil
+}
+
+func (c *API) GetOnboardingStatus(ctx context.Context) (OnboardingStatus, error) {
+	var status OnboardingStatus
+	if err := c.getJSON(ctx, "/v1/onboarding", &status, false); err != nil {
+		return OnboardingStatus{}, err
+	}
+	return status, nil
+}
+
+func (c *API) SaveOnboarding(ctx context.Context, input SaveOnboardingInput) (OnboardingStatus, error) {
+	var status OnboardingStatus
+	if err := c.postJSON(ctx, "/v1/onboarding", input, &status, false); err != nil {
+		return OnboardingStatus{}, err
+	}
+	return status, nil
+}
+
+func (c *API) IssueLocalProductSession(ctx context.Context) (LocalProductSession, error) {
+	var session LocalProductSession
+	if err := c.getJSON(ctx, "/v1/auth/desktop/session", &session, false); err != nil {
+		return LocalProductSession{}, err
+	}
+	return session, nil
 }
 
 func (c *API) requestTarget() (string, *http.Client, string) {

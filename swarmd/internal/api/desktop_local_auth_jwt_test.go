@@ -60,13 +60,15 @@ func TestDesktopSessionBootstrapIssuesJWTAndProtectedAPIAcceptsAfterRestart(t *t
 		}
 	}
 	var response struct {
-		OK     bool   `json:"ok"`
-		UserID string `json:"user_id"`
+		OK       bool   `json:"ok"`
+		Token    string `json:"token"`
+		UserID   string `json:"user_id"`
+		Username string `json:"username"`
 	}
 	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode bootstrap response: %v", err)
 	}
-	if !response.OK || response.UserID != "user_desktop_jwt_test" {
+	if !response.OK || response.Token != cookie.Value || response.UserID != "user_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
 		t.Fatalf("bootstrap response = %+v", response)
 	}
 
@@ -83,6 +85,31 @@ func TestDesktopSessionBootstrapIssuesJWTAndProtectedAPIAcceptsAfterRestart(t *t
 	restarted.DesktopHandler().ServeHTTP(vaultRec, vaultReq)
 	if vaultRec.Code != http.StatusOK {
 		t.Fatalf("protected API with persisted jwt status=%d want %d body=%s", vaultRec.Code, http.StatusOK, vaultRec.Body.String())
+	}
+}
+
+func TestLocalTransportSessionBootstrapReturnsTokenForTUI(t *testing.T) {
+	server, _, _, cleanup := newDesktopJWTTestServer(t, true)
+	defer cleanup()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://swarm-local-transport/v1/auth/desktop/session", nil)
+	req.RemoteAddr = "192.0.2.10:43210"
+	server.LocalTransportHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("local transport session status=%d want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		OK       bool   `json:"ok"`
+		Token    string `json:"token"`
+		UserID   string `json:"user_id"`
+		Username string `json:"username"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode local transport session response: %v", err)
+	}
+	if !response.OK || strings.TrimSpace(response.Token) == "" || response.UserID != "user_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
+		t.Fatalf("local transport session response = %+v", response)
 	}
 }
 

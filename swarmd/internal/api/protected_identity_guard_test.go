@@ -126,7 +126,7 @@ func TestProtectedCreateAPIsSucceedAfterBootstrapWithValidProductJWT(t *testing.
 	server, _, _ := newProtectedIdentityGuardTestServer(t, false)
 
 	bootstrapRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(bootstrapRec, newProtectedJSONRequest(t, http.MethodPost, "/v1/onboarding", map[string]any{"username": "guard-user", "swarm_name": "Guard Device"}, nil))
+	server.Handler().ServeHTTP(bootstrapRec, newProtectedJSONRequest(t, http.MethodPost, "/v1/onboarding", map[string]any{"username": "guard-user", "swarm_name": "Guard Device", "local_owner_confirmation": requiredLocalOwnerConfirmation}, nil))
 	if bootstrapRec.Code != http.StatusOK {
 		t.Fatalf("bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
 	}

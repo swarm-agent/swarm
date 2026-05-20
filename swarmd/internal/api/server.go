@@ -3707,6 +3707,12 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 		}
 		if isLocalTransportRequest(r) {
+			if s.identitySessions != nil {
+				if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil {
+					next.ServeHTTP(w, requestWithActorContext(r, actor))
+					return
+				}
+			}
 			next.ServeHTTP(w, r)
 			return
 		}

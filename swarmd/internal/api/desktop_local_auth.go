@@ -176,8 +176,8 @@ func (s *Server) handleDesktopLocalSessionBootstrap(w http.ResponseWriter, r *ht
 		methodNotAllowed(w)
 		return
 	}
-	if !shouldUseDesktopLocalSessionAuth(r) {
-		writeError(w, http.StatusForbidden, errors.New("desktop local session bootstrap requires a same-origin browser request from this machine"))
+	if !shouldUseDesktopLocalSessionAuth(r) && !isLocalTransportRequest(r) {
+		writeError(w, http.StatusForbidden, errors.New("desktop local session bootstrap requires a same-origin browser request from this machine or the local transport"))
 		return
 	}
 	var err error
@@ -193,7 +193,9 @@ func (s *Server) handleDesktopLocalSessionBootstrap(w http.ResponseWriter, r *ht
 	actor, _ := productActorFromRequest(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
+		"token":      desktopLocalSessionTokenFromRequest(r),
 		"user_id":    actor.UserID,
+		"username":   actor.User.Username,
 		"expires_at": actor.TokenExpires,
 	})
 }
@@ -225,6 +227,22 @@ func productActorFromRequest(r *http.Request) (identity.ActorContext, bool) {
 		return identity.ActorContext{}, false
 	}
 	return actor, true
+}
+
+func productSessionTokenFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if token := desktopLocalSessionTokenFromRequest(r); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(r.Header.Get("X-Swarm-Token")); token != "" {
+		return token
+	}
+	if authz := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(strings.ToLower(authz), "bearer ") {
+		return strings.TrimSpace(authz[7:])
+	}
+	return ""
 }
 
 func isCompleteProductActor(actor identity.ActorContext) bool {

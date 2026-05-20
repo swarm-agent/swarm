@@ -47,25 +47,55 @@ func TestOnboardingGetReportsUnbootstrappedIdentityWithoutCreatingRecords(t *tes
 	}
 }
 
-func TestOnboardingPostRequiresUsernameAndSwarmNameBeforeBootstrap(t *testing.T) {
+func TestOnboardingPostRequiresUsernameSwarmNameAndConfirmationBeforeBootstrap(t *testing.T) {
 	server, identityStore := newOnboardingIdentityTestServer(t, false)
 
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"swarm_name": "Device One"}))
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "username") {
-		t.Fatalf("missing username status=%d body=%s", rec.Code, rec.Body.String())
+	testCases := []struct {
+		name    string
+		payload map[string]any
+		wantErr string
+	}{
+		{
+			name:    "missing username",
+			payload: map[string]any{"swarm_name": "Device One", "local_owner_confirmation": requiredLocalOwnerConfirmation},
+			wantErr: "username",
+		},
+		{
+			name:    "missing swarm name",
+			payload: map[string]any{"username": "alice", "local_owner_confirmation": requiredLocalOwnerConfirmation},
+			wantErr: "swarm name",
+		},
+		{
+			name:    "missing confirmation",
+			payload: map[string]any{"username": "alice", "swarm_name": "Device One"},
+			wantErr: "local owner confirmation",
+		},
+		{
+			name:    "empty confirmation",
+			payload: map[string]any{"username": "alice", "swarm_name": "Device One", "local_owner_confirmation": ""},
+			wantErr: "local owner confirmation",
+		},
+		{
+			name:    "wrong confirmation",
+			payload: map[string]any{"username": "alice", "swarm_name": "Device One", "local_owner_confirmation": "Desktop"},
+			wantErr: "local owner confirmation",
+		},
 	}
-	rec = httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"username": "alice"}))
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "swarm name") {
-		t.Fatalf("missing swarm_name status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	counts, err := identityStore.IdentityCounts()
-	if err != nil {
-		t.Fatalf("identity counts: %v", err)
-	}
-	if counts != (pebblestore.IdentityCounts{}) {
-		t.Fatalf("failed onboarding created identity counts=%+v", counts)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, tc.payload))
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.wantErr) {
+				t.Fatalf("status=%d body=%s want error containing %q", rec.Code, rec.Body.String(), tc.wantErr)
+			}
+			counts, err := identityStore.IdentityCounts()
+			if err != nil {
+				t.Fatalf("identity counts: %v", err)
+			}
+			if counts != (pebblestore.IdentityCounts{}) {
+				t.Fatalf("failed onboarding created identity counts=%+v", counts)
+			}
+		})
 	}
 }
 
@@ -73,7 +103,7 @@ func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	server, identityStore := newOnboardingIdentityTestServer(t, false)
 
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"username": "Alice", "swarm_name": "Alice Laptop"}))
+	server.Handler().ServeHTTP(rec, newJSONSameOriginDesktopRequest(t, map[string]any{"username": "Alice", "swarm_name": "Alice Laptop", "local_owner_confirmation": requiredLocalOwnerConfirmation}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("bootstrap status=%d body=%s", rec.Code, rec.Body.String())
 	}

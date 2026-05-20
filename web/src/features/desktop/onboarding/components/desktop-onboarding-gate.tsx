@@ -27,7 +27,7 @@ interface DesktopOnboardingGateProps {
 }
 
 function deriveInitialStep(status: DesktopOnboardingStatus): OnboardingStep {
-  return status.config.swarmName ? 'provider' : 'identity'
+  return status.identity.bootstrapped && status.config.swarmName ? 'provider' : 'identity'
 }
 
 function apiCompatibleMethods(provider: ProviderStatus): AuthMethod[] {
@@ -87,7 +87,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
+  const [username, setUsername] = useState(initialStatus.identity.username)
   const [swarmName, setSwarmName] = useState(initialStatus.config.swarmName)
+  const [localOwnerConfirmation, setLocalOwnerConfirmation] = useState('')
 
   const providerOptions = useMemo(
     () => status.auth.providers.filter((provider) => provider.id !== '' && !provider.runReason.toLowerCase().includes('search-only provider')),
@@ -147,15 +149,24 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const persistIdentity = async () => {
+    const normalizedUsername = username.trim()
     const normalizedName = swarmName.trim()
     const normalizedGroupName = suggestedGroupName(status, normalizedName).trim()
+    if (!status.identity.bootstrapped && !normalizedUsername) {
+      throw new Error('Username is required for the product owner identity.')
+    }
     if (!normalizedName) {
       throw new Error('Swarm name is required.')
+    }
+    if (!status.identity.bootstrapped && localOwnerConfirmation !== 'desktop') {
+      throw new Error('Type desktop to confirm creating the local owner identity for this installed daemon.')
     }
     if (!normalizedGroupName) {
       throw new Error('Group name is required for the first swarm group.')
     }
     const next = await saveDesktopOnboarding({
+      username: status.identity.bootstrapped ? undefined : normalizedUsername,
+      localOwnerConfirmation: status.identity.bootstrapped ? undefined : localOwnerConfirmation,
       swarmName: normalizedName,
       swarmMode: true,
       child: false,
@@ -169,7 +180,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     })
     refreshed = await fetchDesktopOnboardingStatus()
     setStatus(refreshed)
+    setUsername(refreshed.identity.username)
     setSwarmName(refreshed.config.swarmName)
+    setLocalOwnerConfirmation('')
     return refreshed
   }
 
@@ -360,21 +373,64 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
           {step === 'identity' ? (
             <form className="grid gap-6" onSubmit={handleIdentitySubmit}>
+              {!status.identity.bootstrapped ? (
+                <div className="rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-4 py-4 text-sm leading-6 text-[var(--app-warning)]">
+                  No product user exists yet. Completing onboarding on this installed daemon creates the initial local owner identity for this daemon. This is separate from the swarm/device name below.
+                </div>
+              ) : null}
+
+              {!status.identity.bootstrapped ? (
+                <div className="grid gap-2">
+                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-username">
+                    Username
+                  </label>
+                  <Input
+                    id="desktop-onboarding-username"
+                    autoFocus
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    placeholder="alice"
+                    autoComplete="username"
+                  />
+                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+                    This is the product actor name for the local owner user. It is not the swarm or device name.
+                  </p>
+                </div>
+              ) : null}
+
               <div className="grid gap-2">
                 <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-swarm-name">
-                  Device / Swarm name
+                  Swarm name / device name
                 </label>
                 <Input
                   id="desktop-onboarding-swarm-name"
-                  autoFocus
+                  autoFocus={status.identity.bootstrapped}
                   value={swarmName}
                   onChange={(event) => setSwarmName(event.target.value)}
                   placeholder="my-device"
                 />
                 <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                  This is the label Swarm shows for this machine in discovery and launcher screens.
+                  This is the label Swarm shows for this machine in discovery and launcher screens. It does not change your username.
                 </p>
               </div>
+
+              {!status.identity.bootstrapped ? (
+                <div className="grid gap-2">
+                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-confirmation">
+                    Type desktop to confirm local owner bootstrap
+                  </label>
+                  <Input
+                    id="desktop-onboarding-confirmation"
+                    value={localOwnerConfirmation}
+                    onChange={(event) => setLocalOwnerConfirmation(event.target.value)}
+                    placeholder="desktop"
+                    autoComplete="off"
+                  />
+                  <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+                    This confirms that this installed daemon will be initialized with this user as the local owner. No team name or team picker is required.
+                  </p>
+                </div>
+              ) : null}
 
               <div className="flex justify-end">
                 <Button type="submit" disabled={submitting}>

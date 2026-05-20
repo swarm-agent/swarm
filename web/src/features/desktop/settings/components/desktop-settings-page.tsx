@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
-import { Bot, GitBranch, Home, Key, Palette, Shield, type LucideIcon } from 'lucide-react'
+import { Bot, GitBranch, Home, Key, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
+import { AccountSettingsPage } from '../account/components/account-settings-page'
 import { AgentsSettingsPage } from '../agents/components/agents-settings-page'
 import { AuthSettingsPage } from '../auth/components/auth-settings-page'
 import { PermissionsSettingsPage } from '../permissions/components/permissions-settings-page'
@@ -15,6 +16,7 @@ import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-ta
 import { useDesktopStore } from '../../state/use-desktop-store'
 
 const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }> = [
+  { id: 'account', label: 'Account', icon: UserRound },
   { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'auth', label: 'Auth', icon: Key },
   { id: 'permissions', label: 'Permissions', icon: Shield },
@@ -24,7 +26,7 @@ const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }
   { id: 'worktrees', label: 'Worktrees', icon: GitBranch },
 ]
 
-const tabs = [...settingsTabs].sort((left, right) => left.label.localeCompare(right.label))
+const tabs = settingsTabs
 
 interface SettingsSearchParams {
   tab?: unknown
@@ -137,6 +139,7 @@ export function DesktopSettingsPage() {
         </div>
         <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-5 md:px-6 md:py-8">
           <div className="w-full max-w-4xl">
+            {activeTab === 'account' ? <AccountSettingsPage /> : null}
             {activeTab === 'agents' ? <AgentsSettingsPage key={agentsPageKey} /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}

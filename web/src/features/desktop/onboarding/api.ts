@@ -11,6 +11,7 @@ import type {
   DesktopOnboardingDiscoveredSwarm,
   DesktopSwarmGroupState,
   DesktopOnboardingHeuristics,
+  DesktopOnboardingIdentity,
   DesktopOnboardingNetwork,
   DesktopOnboardingPairing,
   DesktopOnboardingStatus,
@@ -316,6 +317,14 @@ export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingS
     : rawSwarmRole === 'managed'
       ? 'managed'
       : child ? 'child' : 'master'
+  const identity: DesktopOnboardingIdentity = {
+    bootstrapped: Boolean(onboarding.identity?.bootstrapped),
+    userID: String(onboarding.identity?.user_id ?? '').trim(),
+    username: String(onboarding.identity?.username ?? '').trim(),
+    teamID: String(onboarding.identity?.team_id ?? '').trim(),
+    teamDefault: Boolean(onboarding.identity?.team_default),
+    membershipRole: String(onboarding.identity?.membership_role ?? '').trim(),
+  }
   const config: DesktopOnboardingConfig = {
     swarmName: String(onboarding.config?.swarm_name ?? '').trim(),
     child,
@@ -379,6 +388,7 @@ export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingS
   const result = {
     ok: Boolean(onboarding.ok),
     needsOnboarding: Boolean(onboarding.needs_onboarding),
+    identity,
     config,
     heuristics,
     pairing,
@@ -404,8 +414,14 @@ export async function fetchDesktopOnboardingStatus(): Promise<DesktopOnboardingS
   return result
 }
 
-function buildDesktopOnboardingPayload(input: SaveDesktopOnboardingInput): Record<string, unknown> {
+export function buildDesktopOnboardingPayload(input: SaveDesktopOnboardingInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {}
+  if (Object.prototype.hasOwnProperty.call(input, 'username')) {
+    payload.username = input.username
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'localOwnerConfirmation')) {
+    payload.local_owner_confirmation = input.localOwnerConfirmation
+  }
   if (Object.prototype.hasOwnProperty.call(input, 'swarmName')) {
     payload.swarm_name = input.swarmName
   }

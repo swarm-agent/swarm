@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,12 +11,51 @@ import (
 	"testing"
 )
 
-func TestEnsureLocalAuthIsNoOpWithoutAttachBootstrap(t *testing.T) {
+func TestEnsureLocalAuthRequiresBootstrappedIdentity(t *testing.T) {
+	t.Setenv("DATA_DIR", "")
+	t.Setenv(localTransportSocketEnv, filepath.Join(t.TempDir(), "missing.sock"))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/auth/attach/token" {
 			t.Fatalf("unexpected attach bootstrap request")
 		}
-		w.WriteHeader(http.StatusNotFound)
+		if r.URL.Path != "/v1/onboarding" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(OnboardingStatus{OK: true, NeedsOnboarding: true})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	if err := api.EnsureLocalAuth(context.Background()); !errors.Is(err, ErrLocalIdentityBootstrapRequired) {
+		t.Fatalf("EnsureLocalAuth() error = %v, want %v", err, ErrLocalIdentityBootstrapRequired)
+	}
+	if got := api.Token(); got != "" {
+		t.Fatalf("Token() = %q, want empty", got)
+	}
+}
+
+func TestEnsureLocalAuthIssuesProductSessionForBootstrappedIdentity(t *testing.T) {
+	t.Setenv("DATA_DIR", "")
+	t.Setenv(localTransportSocketEnv, filepath.Join(t.TempDir(), "missing.sock"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/onboarding":
+			_ = json.NewEncoder(w).Encode(OnboardingStatus{
+				OK: true,
+				Identity: OnboardingIdentity{
+					Bootstrapped: true,
+					UserID:       "user_123",
+					Username:     "alice",
+				},
+			})
+		case "/v1/auth/desktop/session":
+			_ = json.NewEncoder(w).Encode(LocalProductSession{OK: true, Token: "jwt-token", UserID: "user_123", Username: "alice"})
+		case "/v1/auth/attach/token":
+			t.Fatalf("unexpected attach bootstrap request")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 
@@ -22,8 +63,8 @@ func TestEnsureLocalAuthIsNoOpWithoutAttachBootstrap(t *testing.T) {
 	if err := api.EnsureLocalAuth(context.Background()); err != nil {
 		t.Fatalf("EnsureLocalAuth() error = %v", err)
 	}
-	if got := api.Token(); got != "" {
-		t.Fatalf("Token() = %q, want empty", got)
+	if got := api.Token(); got != "jwt-token" {
+		t.Fatalf("Token() = %q, want jwt-token", got)
 	}
 }
 
