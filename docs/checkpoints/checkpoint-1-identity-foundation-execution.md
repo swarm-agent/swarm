@@ -1,6 +1,6 @@
 # Checkpoint 1 execution document — user-first identity foundation, bootstrap, and local JWT sessions
 
-Status: active execution document for Checkpoint 1. This is not a roadmap sketch; each slice below is a real implementation checkpoint with its own tests and a fresh-VM proof before moving on.
+Status: active execution document for Checkpoint 1. Initial slices 1.1–1.7 are implemented and fresh-VM proven; continue with Section checkpoint 1.A next. This is not a roadmap sketch; each slice/section below is a real implementation checkpoint with its own tests and a fresh-VM proof before moving on.
 
 ## Purpose
 
@@ -458,6 +458,8 @@ VM proof before moving on:
 - Run a TUI/client-level smoke in the VM proving: before bootstrap it does not create identity; onboarding requires username+swarmName plus typed `desktop` confirmation only; wrong/empty confirmation creates no identity; after bootstrap it obtains/uses the local product session for the `UserID`; startup does not show a team picker; explicit team-scoped actions require validated team context only when that workflow is used.
 
 ### Slice 1.7 — VM harness scenario and final Checkpoint 1 gate
+
+Status: PASS — implemented by `tests/swarmd/identity_bootstrap_e2e.sh` and fresh-VM proven with `./scripts/swarm-harness-vm.sh reset`, `fast`, and `run -- ./tests/swarmd/identity_bootstrap_e2e.sh`. Host evidence path: `.tmp/checkpoint-1/slice-1.7/20260520T032335Z-vm-final-gate`; copied guest evidence under `evidence/`; `summary.json` status `PASS`, exit code `0`, request transcript includes negative and positive cases, and restart persistence passes.
 
 Scope:
 
