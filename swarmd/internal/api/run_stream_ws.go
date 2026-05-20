@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	transportws "swarm/packages/swarmd/internal/transport/ws"
@@ -590,6 +591,12 @@ func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+
 	conn, err := transportws.Accept(w, r)
 	if err != nil {
 		log.Printf("run stream websocket accept failed session_id=%s remote_addr=%s path=%s err=%v", sessionID, strings.TrimSpace(r.RemoteAddr), r.URL.Path, err)
@@ -616,7 +623,7 @@ func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request
 
 	switch inbound.Type {
 	case "run.start", "start":
-		s.handleRunStreamStart(conn, sessionID, inbound)
+		s.handleRunStreamStart(conn, sessionID, inbound, principal)
 		return
 	case "run.resume", "resume":
 		s.handleRunStreamResume(conn, sessionID, inbound)
@@ -647,7 +654,7 @@ func decodeRunStreamInbound(raw []byte) (runStreamInboundMessage, error) {
 	return inbound, nil
 }
 
-func (s *Server) handleRunStreamStart(conn *transportws.Conn, sessionID string, inbound runStreamInboundMessage) {
+func (s *Server) handleRunStreamStart(conn *transportws.Conn, sessionID string, inbound runStreamInboundMessage, principal identity.Principal) {
 	if inbound.RunRequest.Prompt == "" && !inbound.RunRequest.Compact {
 		log.Printf("run stream start rejected session_id=%s err=%s", sessionID, "prompt is required")
 		s.sendRunStreamControl(conn, runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, Error: "prompt is required"})
@@ -676,7 +683,7 @@ func (s *Server) handleRunStreamStart(conn *transportws.Conn, sessionID string, 
 		return
 	}
 	defer s.runStreams.unsubscribe(state.runID, sub.id)
-	started := s.startRunStreamExecution(state.runID, sessionID, inbound)
+	started := s.startRunStreamExecution(state.runID, sessionID, inbound, principal)
 	if startErr := <-started; startErr != nil {
 		log.Printf("run stream start failed session_id=%s run_id=%s err=%v", sessionID, state.runID, startErr)
 		status := runStreamControlMessage{Type: "error", OK: false, SessionID: sessionID, RunID: state.runID, Error: startErr.Error()}
@@ -810,6 +817,11 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 	inbound.Type = strings.ToLower(strings.TrimSpace(inbound.Type))
 	inbound.RunRequest = inbound.RunRequest.Normalized()
 	inbound.RunID = strings.TrimSpace(inbound.RunID)
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	switch inbound.Type {
 	case "run.start", "start":
 		state, err := s.runStreams.newRun(sessionID)
@@ -817,7 +829,7 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		started := s.startRunStreamExecution(state.runID, sessionID, inbound)
+		started := s.startRunStreamExecution(state.runID, sessionID, inbound, principal)
 		if startErr := <-started; startErr != nil {
 			status := http.StatusConflict
 			if !errors.Is(startErr, runruntime.ErrSessionAlreadyActive) {
@@ -874,7 +886,7 @@ func (s *Server) isManagedHostMirroredSession(sessionID string) bool {
 	return false
 }
 
-func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStreamInboundMessage) <-chan error {
+func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStreamInboundMessage, principal identity.Principal) <-chan error {
 	started := make(chan error, 1)
 	if s == nil || s.runner == nil || s.runStreams == nil {
 		started <- errors.New("run service is not configured")
@@ -916,10 +928,21 @@ func (s *Server) startRunStreamExecution(runID, sessionID string, inbound runStr
 			s.runStreams.publishError(runID, sessionID, contextErr)
 			return
 		}
+		if !principal.Valid() {
+			err := identity.ErrPrincipalRequired
+			select {
+			case started <- err:
+			default:
+			}
+			s.runStreams.publishError(runID, sessionID, err)
+			return
+		}
+		runCtx = identity.ContextWithPrincipal(runCtx, principal)
 		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, inbound.RunRequest, runruntime.RunStartMeta{
 			RunID:           runID,
 			OwnerTransport:  "background_api",
 			IntegrationFlow: integrationCtx.IntegrationFlow,
+			Principal:       principal,
 		}, func(event runruntime.StreamEvent) {
 			if !startSignaled && strings.EqualFold(strings.TrimSpace(event.Type), runruntime.StreamEventSessionLifecycle) && event.Lifecycle != nil && event.Lifecycle.Active {
 				startSignaled = true

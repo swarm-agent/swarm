@@ -17,7 +17,7 @@ func TestRebuildIgnoresLegacyWorkspaceReplicationLinks(t *testing.T) {
 	topologyStore := pebblestore.NewTopologyStore(store)
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 
-	if _, err := workspaceStore.Add("/src", "Source"); err != nil {
+	if _, err := workspaceStore.AddForAccount("account-1", "/src", "Source"); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
 	legacyLink := pebblestore.WorkspaceReplicationLink{
@@ -28,12 +28,12 @@ func TestRebuildIgnoresLegacyWorkspaceReplicationLinks(t *testing.T) {
 		ReplicationMode:     "mirror",
 		Writable:            true,
 	}
-	legacyEntry, ok, err := workspaceStore.Get("/src")
+	legacyEntry, ok, err := workspaceStore.GetForAccount("account-1", "/src")
 	if err != nil || !ok {
 		t.Fatalf("get workspace ok=%t err=%v", ok, err)
 	}
 	legacyEntry.ReplicationLinks = []pebblestore.WorkspaceReplicationLink{legacyLink}
-	if err := store.PutJSON(pebblestore.KeyWorkspaceEntry(legacyEntry.Path), legacyEntry); err != nil {
+	if err := store.PutJSON(pebblestore.KeyWorkspaceEntryForAccount("account-1", legacyEntry.Path), legacyEntry); err != nil {
 		t.Fatalf("seed legacy replication link: %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestRebuildPreservesCanonicalWorkspaceBindings(t *testing.T) {
 	topologyStore := pebblestore.NewTopologyStore(store)
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 
-	if _, err := workspaceStore.Add("/src", "Source"); err != nil {
+	if _, err := workspaceStore.AddForAccount("account-1", "/src", "Source"); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
 	legacyLink := pebblestore.WorkspaceReplicationLink{
@@ -138,12 +138,12 @@ func TestRebuildPreservesCanonicalWorkspaceBindings(t *testing.T) {
 		ReplicationMode:     "mirror",
 		Writable:            true,
 	}
-	legacyEntry, ok, err := workspaceStore.Get("/src")
+	legacyEntry, ok, err := workspaceStore.GetForAccount("account-1", "/src")
 	if err != nil || !ok {
 		t.Fatalf("get workspace ok=%t err=%v", ok, err)
 	}
 	legacyEntry.ReplicationLinks = []pebblestore.WorkspaceReplicationLink{legacyLink}
-	if err := store.PutJSON(pebblestore.KeyWorkspaceEntry(legacyEntry.Path), legacyEntry); err != nil {
+	if err := store.PutJSON(pebblestore.KeyWorkspaceEntryForAccount("account-1", legacyEntry.Path), legacyEntry); err != nil {
 		t.Fatalf("seed legacy replication link: %v", err)
 	}
 

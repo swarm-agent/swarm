@@ -214,7 +214,7 @@ func newMirrorTestServer(t *testing.T) (*Server, func()) {
 		_ = store.Close()
 		t.Fatalf("create workspace dir: %v", err)
 	}
-	if _, err := workspaceSvc.Add(workspacePath, "workspace", "", false); err != nil {
+	if _, err := workspaceSvc.AddForPrincipal(testPrincipal(), workspacePath, "workspace", "", false); err != nil {
 		_ = store.Close()
 		t.Fatalf("add workspace: %v", err)
 	}

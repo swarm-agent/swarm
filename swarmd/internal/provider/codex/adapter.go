@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/defaults"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -20,9 +21,20 @@ func (a *Adapter) ID() string {
 	return "codex"
 }
 
-func (a *Adapter) Status(context.Context) (provideriface.Status, error) {
+func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 	providerDefaults := defaults.MustLookup("codex")
-	record, ok, err := a.authStore.GetCodexAuthRecord()
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return provideriface.Status{
+			ID:              "codex",
+			Ready:           false,
+			Reason:          "product identity is required",
+			DefaultModel:    providerDefaults.PrimaryModel,
+			DefaultThinking: providerDefaults.PrimaryThinking,
+			AuthMethods:     codexAuthMethods(),
+		}, nil
+	}
+	record, ok, err := a.authStore.GetCodexAuthRecordForAccount(principal.AccountScopeID)
 	if err != nil {
 		return provideriface.Status{}, err
 	}

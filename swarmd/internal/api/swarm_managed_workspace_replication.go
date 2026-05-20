@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/workspace"
@@ -450,7 +451,7 @@ func (s *Server) handlePeerManagedWorkspaceLinkExisting(w http.ResponseWriter, r
 		writeError(w, http.StatusConflict, errors.New("destination no longer matches a linkable existing managed workspace"))
 		return
 	}
-	if _, err := s.workspace.Add(preflight.Workspaces[0].DestinationPath, workspaceName, "", false); err != nil {
+	if _, err := s.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), preflight.Workspaces[0].DestinationPath, workspaceName, "", false); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -521,7 +522,7 @@ func (s *Server) handlePeerManagedWorkspaceImportBundle(w http.ResponseWriter, r
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if _, err := s.workspace.Add(destinationPath, workspaceName, "", false); err != nil {
+	if _, err := s.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), destinationPath, workspaceName, "", false); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -673,6 +674,15 @@ func (s *Server) peerManagedWorkspaceInventory(r *http.Request) (peerManagedWork
 	return peerManagedWorkspaceInventoryResponse{OK: true, ManagedHome: filepath.Clean(home), SavedWorkspaces: saved, DiscoveredDirectories: discovered, ActiveCWDs: activeCWDs}, http.StatusOK, nil
 }
 
+func peerManagedWorkspacePrincipal() identity.Principal {
+	return identity.Principal{
+		Type:               identity.PrincipalTypeUser,
+		UserID:             "peer-managed-workspace",
+		AccountScopeID:     "peer-managed-workspace",
+		AccountScopeSource: identity.AccountScopeSourceServerState,
+	}
+}
+
 func (s *Server) peerManagedWorkspaceEnsureLink(req peerManagedWorkspaceEnsureLinkRequest) (peerManagedWorkspaceEnsureLinkResponse, int, error) {
 	workspaceName := sanitizeReplicationMountName(firstNonEmpty(strings.TrimSpace(req.WorkspaceName), defaultReplicatedWorkspaceName(req.SourceWorkspacePath)))
 	if workspaceName == "" {
@@ -704,7 +714,7 @@ func (s *Server) peerManagedWorkspaceEnsureLink(req peerManagedWorkspaceEnsureLi
 	} else {
 		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, statErr
 	}
-	if _, err := s.workspace.Add(destination, workspaceName, "", false); err != nil {
+	if _, err := s.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), destination, workspaceName, "", false); err != nil {
 		return peerManagedWorkspaceEnsureLinkResponse{}, http.StatusInternalServerError, err
 	}
 	registered = true

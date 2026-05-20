@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -115,12 +116,23 @@ func (s *Server) handleGitSyncInspect(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req gitSyncInspectRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	path := firstNonEmpty(req.Path, req.WorkspacePath, req.DevRoot)
+	owned, err := s.resolveAccountOwnedPath(principal, path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	path = owned.ResolvedPath
 	requireClean := true
 	if req.RequireClean != nil {
 		requireClean = *req.RequireClean
@@ -140,11 +152,26 @@ func (s *Server) handleGitSyncApply(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req gitSyncApplyRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	targetPath := firstNonEmpty(req.TargetPath, req.Path, req.WorkspacePath, req.DevRoot)
+	owned, err := s.resolveAccountOwnedPath(principal, targetPath)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, gitSyncApplyResponse{OK: false, Warning: gitSyncDestructiveWarning(), Error: err.Error()})
+		return
+	}
+	req.TargetPath = owned.ResolvedPath
+	req.Path = ""
+	req.WorkspacePath = ""
+	req.DevRoot = ""
 	resp, err := applyGitSync(r.Context(), req)
 	if err != nil {
 		resp.OK = false
@@ -179,7 +206,7 @@ func (s *Server) handleManagedHostGitSyncApply(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) handlePeerGitSyncApply(w http.ResponseWriter, r *http.Request) {
-	s.handleGitSyncApply(w, r)
+	writeError(w, http.StatusForbidden, errors.New("peer git sync apply requires persisted peer account binding and is blocked for Z2"))
 }
 
 func (s *Server) applyManagedHostGitSync(ctx context.Context, r *http.Request, req managedHostGitSyncApplyRequest) (managedHostGitSyncApplyResponse, int, error) {

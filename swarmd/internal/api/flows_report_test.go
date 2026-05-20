@@ -115,7 +115,7 @@ func TestPeerFlowReportMirrorsSessionIntoControllerWorkspace(t *testing.T) {
 	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
-	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
+	if _, err := server.workspace.AddForPrincipal(testPrincipal(), hostWorkspace, "swarm-go", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
 	seedFlowTopologyWorkspaceBinding(t, server, hostWorkspace, "swarm-go", "pc-container", "local", "target-swarm-1", "/workspaces/swarm-go")
@@ -252,7 +252,7 @@ func TestPeerFlowReportMirrorsRunningSessionIntoControllerWorkspace(t *testing.T
 	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
-	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
+	if _, err := server.workspace.AddForPrincipal(testPrincipal(), hostWorkspace, "swarm-go", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
 	seedFlowTopologyWorkspaceBinding(t, server, hostWorkspace, "swarm-go", "pc-container", "local", "target-swarm-1", "/workspaces/swarm-go")
@@ -352,7 +352,7 @@ func TestPeerFlowReportMirrorsRemoteChildSessionWithCanonicalTargetIdentity(t *t
 	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
-	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
+	if _, err := server.workspace.AddForPrincipal(testPrincipal(), hostWorkspace, "swarm-go", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
 	seedFlowTopologyWorkspaceBinding(t, server, hostWorkspace, "swarm-go", "swarm-child-4-e2727893", "remote", "child-4-swarm", "/workspaces/swarm-go")

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/flowdiaglog"
+	"swarm/packages/swarmd/internal/identity"
 	remotedeploy "swarm/packages/swarmd/internal/remotedeploy"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -695,11 +696,12 @@ func mirroredLifecycleEvent(snapshot pebblestore.SessionLifecycleSnapshot) (*peb
 	}, nil
 }
 
-func (s *Server) decodeSessionCreateRequest(r *http.Request) (sessionCreateRequest, error) {
+func (s *Server) decodeSessionCreateRequest(r *http.Request) (sessionCreateRequest, identity.Principal, bool, error) {
 	var req sessionCreateRequest
 	if err := decodeJSON(r, &req); err != nil {
-		return sessionCreateRequest{}, err
+		return sessionCreateRequest{}, identity.Principal{}, false, err
 	}
+	principal, principalOK := PrincipalFromRequest(r)
 	if strings.TrimSpace(req.HostWorkspacePath) == "" {
 		req.HostWorkspacePath = strings.TrimSpace(req.WorkspacePath)
 	}
@@ -707,9 +709,12 @@ func (s *Server) decodeSessionCreateRequest(r *http.Request) (sessionCreateReque
 		req.RuntimeWorkspacePath = firstNonEmpty(strings.TrimSpace(req.WorkspacePath), strings.TrimSpace(req.HostWorkspacePath))
 	}
 	if strings.TrimSpace(req.HostWorkspacePath) == "" {
-		current, ok, err := s.workspace.CurrentBinding()
+		if !principalOK {
+			return sessionCreateRequest{}, identity.Principal{}, false, identity.ErrPrincipalRequired
+		}
+		current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)
 		if err != nil {
-			return sessionCreateRequest{}, err
+			return sessionCreateRequest{}, identity.Principal{}, false, err
 		}
 		if ok {
 			req.HostWorkspacePath = current.ResolvedPath
@@ -724,7 +729,7 @@ func (s *Server) decodeSessionCreateRequest(r *http.Request) (sessionCreateReque
 	if strings.TrimSpace(req.WorkspaceName) == "" && strings.TrimSpace(req.HostWorkspacePath) != "" {
 		req.WorkspaceName = filepath.Base(strings.TrimSpace(req.HostWorkspacePath))
 	}
-	return req, nil
+	return req, principal, principalOK, nil
 }
 
 func (s *Server) resolveRemoteRuntimeWorkspacePath(ctx context.Context, target swarmTarget, hostWorkspacePath, workspaceName string) string {
@@ -793,11 +798,21 @@ func matchesRemoteDeployTarget(item remotedeploy.Session, target swarmTarget) bo
 	return strings.EqualFold(strings.TrimSpace(item.ChildSwarmID), strings.TrimSpace(target.SwarmID))
 }
 
-func (s *Server) createSessionFromRequest(req sessionCreateRequest, overrideMetadata map[string]any, allowWorktree bool) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {
-	return s.createSessionFromRequestWithSessionID(req, overrideMetadata, allowWorktree, "")
+func (s *Server) createSessionFromRequest(req sessionCreateRequest, principal identity.Principal, principalOK bool, overrideMetadata map[string]any, allowWorktree bool) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {
+	return s.createSessionFromRequestWithSessionID(req, overrideMetadata, allowWorktree, "", principal, principalOK)
 }
 
-func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest, overrideMetadata map[string]any, allowWorktree bool, sessionIDOverride string) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {
+func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest, overrideMetadata map[string]any, allowWorktree bool, sessionIDOverride string, principalAndOK ...any) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, string, string, error) {
+	principal := identity.Principal{}
+	principalOK := false
+	if len(principalAndOK) >= 2 {
+		if typed, ok := principalAndOK[0].(identity.Principal); ok {
+			principal = typed
+		}
+		if typed, ok := principalAndOK[1].(bool); ok {
+			principalOK = typed
+		}
+	}
 	createMetadata := mergeSessionCreateMetadata(req.Metadata, overrideMetadata)
 	workspacePath := strings.TrimSpace(req.HostWorkspacePath)
 	if _, hosted := sessionruntime.HostedSessionFromMetadata(createMetadata); hosted {
@@ -853,7 +868,7 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	}, createMetadata)
 	warning := ""
 	if allowWorktree {
-		nextWarning, worktreeErr := s.applySessionCreateWorktree(&createOptions, sessionID, requestedWorktreeMode)
+		nextWarning, worktreeErr := s.applySessionCreateWorktree(&createOptions, sessionID, requestedWorktreeMode, principal, principalOK)
 		if worktreeErr != nil {
 			return pebblestore.SessionSnapshot{}, nil, "", "", worktreeErr
 		}
@@ -878,7 +893,7 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 	return session, event, warning, modeWarning, nil
 }
 
-func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.CreateSessionOptions, sessionID, rawRequestedMode string) (string, error) {
+func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.CreateSessionOptions, sessionID, rawRequestedMode string, principal identity.Principal, principalOK bool) (string, error) {
 	if createOptions == nil {
 		return "", nil
 	}
@@ -893,7 +908,15 @@ func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.Create
 		return "", nil
 	}
 
-	config, cfgErr := s.worktrees.GetConfig(createOptions.WorkspacePath)
+	if !principalOK || !principal.Valid() {
+		switch requestedMode {
+		case "", runruntime.RunWorktreeModeInherit, runruntime.RunWorktreeModeOff:
+			return "", nil
+		default:
+			return "", identity.ErrPrincipalRequired
+		}
+	}
+	config, cfgErr := s.worktrees.GetConfigForPrincipal(principal, createOptions.WorkspacePath)
 	if cfgErr != nil {
 		return "", cfgErr
 	}

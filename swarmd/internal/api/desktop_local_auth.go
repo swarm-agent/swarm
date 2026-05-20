@@ -221,6 +221,7 @@ func requestWithActorContext(r *http.Request, actor identity.ActorContext) *http
 	ctx := context.WithValue(r.Context(), productActorRequestContextKey, actor)
 	if principal, err := identity.PrincipalFromActor(actor); err == nil {
 		ctx = context.WithValue(ctx, productPrincipalRequestContextKey, principal)
+		ctx = identity.ContextWithPrincipal(ctx, principal)
 	}
 	return r.WithContext(ctx)
 }

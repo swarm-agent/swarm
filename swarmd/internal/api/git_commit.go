@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"swarm/packages/swarmd/internal/identity"
 )
 
 const workspaceGitCommitTimeout = 30 * time.Second
@@ -37,12 +39,17 @@ func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req workspaceGitCommitRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	s.writeGitCommitResponse(w, r, req)
+	s.writeGitCommitResponse(w, r, req, principal)
 }
 
 func (s *Server) handleManagedHostWorkspaceGitCommit(w http.ResponseWriter, r *http.Request) {
@@ -73,8 +80,8 @@ func (s *Server) handleManagedHostWorkspaceGitCommit(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, peerResp)
 }
 
-func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, req workspaceGitCommitRequest) {
-	workspacePath, err := s.resolveGitCommitWorkspacePath(req)
+func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, req workspaceGitCommitRequest, principal identity.Principal) {
+	workspacePath, err := s.resolveGitCommitWorkspacePath(req, principal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -92,13 +99,13 @@ func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, status, result)
 }
 
-func (s *Server) resolveGitCommitWorkspacePath(req workspaceGitCommitRequest) (string, error) {
+func (s *Server) resolveGitCommitWorkspacePath(req workspaceGitCommitRequest, principal identity.Principal) (string, error) {
 	workspacePath := strings.TrimSpace(req.WorkspacePath)
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(req.CWD)
 	}
 	if workspacePath == "" && s != nil && s.workspace != nil {
-		current, ok, err := s.workspace.CurrentBinding()
+		current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)
 		if err != nil {
 			return "", err
 		}
@@ -109,7 +116,11 @@ func (s *Server) resolveGitCommitWorkspacePath(req workspaceGitCommitRequest) (s
 	if workspacePath == "" {
 		return "", errors.New("workspace_path is required")
 	}
-	return workspacePath, nil
+	owned, err := s.resolveAccountOwnedPath(principal, workspacePath)
+	if err != nil {
+		return "", err
+	}
+	return owned.ResolvedPath, nil
 }
 
 func runWorkspaceGitCommit(parent context.Context, workspacePath, message string, all bool) (workspaceGitCommitResponse, error) {

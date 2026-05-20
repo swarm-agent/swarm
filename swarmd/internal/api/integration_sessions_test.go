@@ -22,6 +22,7 @@ import (
 func TestIntegrationWorkspaceOpenCreatesLatestChildAndContext(t *testing.T) {
 	server, sessions, closeStore := newIntegrationSessionTestServer(t, nil)
 	defer closeStore()
+	handler := withTargetedAgentTestPrincipal(server.Handler())
 
 	var response struct {
 		OK        bool                                   `json:"ok"`
@@ -29,7 +30,7 @@ func TestIntegrationWorkspaceOpenCreatesLatestChildAndContext(t *testing.T) {
 		Session   pebblestore.SessionSnapshot            `json:"session"`
 		Sessions  []integrationWorkspaceChildSession     `json:"sessions"`
 	}
-	status := doJSONRequestLocal(t, server.Handler(), http.MethodPost, "/v1/integrations/workspaces", map[string]any{
+	status := doJSONRequestLocal(t, handler, http.MethodPost, "/v1/integrations/workspaces", map[string]any{
 		"workspace_id":     "Spotify Draft",
 		"display_name":     "Spotify integration",
 		"pack_id":          "Spotify",
@@ -70,11 +71,12 @@ func TestIntegrationWorkspaceSessionNewSwitchAndRunContext(t *testing.T) {
 	runner := &recordingRunService{}
 	server, _, closeStore := newIntegrationSessionTestServer(t, runner)
 	defer closeStore()
+	handler := withTargetedAgentTestPrincipal(server.Handler())
 
 	var opened struct {
 		Session pebblestore.SessionSnapshot `json:"session"`
 	}
-	status := doJSONRequestLocal(t, server.Handler(), http.MethodPost, "/v1/integrations/workspaces", map[string]any{
+	status := doJSONRequestLocal(t, handler, http.MethodPost, "/v1/integrations/workspaces", map[string]any{
 		"workspace_id":     "Demo",
 		"display_name":     "Demo integration",
 		"pack_id":          "DemoPack",
@@ -89,7 +91,7 @@ func TestIntegrationWorkspaceSessionNewSwitchAndRunContext(t *testing.T) {
 	var created struct {
 		Session pebblestore.SessionSnapshot `json:"session"`
 	}
-	status = doJSONRequestLocal(t, server.Handler(), http.MethodPost, "/v1/integrations/workspaces/demo/sessions", map[string]any{
+	status = doJSONRequestLocal(t, handler, http.MethodPost, "/v1/integrations/workspaces/demo/sessions", map[string]any{
 		"action":     "new",
 		"title":      "Second child",
 		"preference": map[string]any{"provider": "codex", "model": "gpt-5.4", "thinking": "medium"},
@@ -102,7 +104,7 @@ func TestIntegrationWorkspaceSessionNewSwitchAndRunContext(t *testing.T) {
 		Session  pebblestore.SessionSnapshot        `json:"session"`
 		Sessions []integrationWorkspaceChildSession `json:"sessions"`
 	}
-	status = doJSONRequestLocal(t, server.Handler(), http.MethodGet, "/v1/integrations/workspaces/demo", nil, &snapshot)
+	status = doJSONRequestLocal(t, handler, http.MethodGet, "/v1/integrations/workspaces/demo", nil, &snapshot)
 	if status != http.StatusOK {
 		t.Fatalf("snapshot status=%d", status)
 	}
@@ -113,13 +115,13 @@ func TestIntegrationWorkspaceSessionNewSwitchAndRunContext(t *testing.T) {
 	var switched struct {
 		Session pebblestore.SessionSnapshot `json:"session"`
 	}
-	status = doJSONRequestLocal(t, server.Handler(), http.MethodGet, "/v1/integrations/workspaces/demo/sessions/"+opened.Session.ID, nil, &switched)
+	status = doJSONRequestLocal(t, handler, http.MethodGet, "/v1/integrations/workspaces/demo/sessions/"+opened.Session.ID, nil, &switched)
 	if status != http.StatusOK || switched.Session.ID != opened.Session.ID {
 		t.Fatalf("switch status=%d session=%+v", status, switched.Session)
 	}
 
 	var runResp map[string]any
-	status = doJSONRequestLocal(t, server.Handler(), http.MethodPost, "/v1/sessions/"+created.Session.ID+"/run", map[string]any{"prompt": "review this draft"}, &runResp)
+	status = doJSONRequestLocal(t, handler, http.MethodPost, "/v1/sessions/"+created.Session.ID+"/run", map[string]any{"prompt": "review this draft"}, &runResp)
 	if status != http.StatusOK {
 		t.Fatalf("run status=%d response=%+v", status, runResp)
 	}

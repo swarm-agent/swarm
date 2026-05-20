@@ -36,10 +36,13 @@ const (
 	KeyModelPrefGlobal                          = "model_pref/global/default"
 	KeyModelFavoritePrefix                      = "model_favorite/"
 	KeyWorktreeGlobalConfig                     = "worktree/global/config"
-	KeyWorktreeConfigPrefix                     = "worktree/config/"
+	KeyWorktreeConfigPrefix                     = "worktree/config/" // legacy single-workspace config prefix; retained for migration.
+	KeyWorktreeConfigAccountPrefix              = "worktree/config_by_account/"
 	KeyMCPServerPrefix                          = "mcp/server/"
-	KeyWorkspaceCurrent                         = "workspace/current"
-	KeyWorkspaceEntryPrefix                     = "workspace/entry/"
+	KeyWorkspaceCurrent                         = "workspace/current" // legacy global current key; retained for explicit migration only.
+	KeyWorkspaceCurrentAccountPrefix            = "workspace/current_by_account/"
+	KeyWorkspaceEntryPrefix                     = "workspace/entry/" // legacy global entry prefix; retained for explicit migration only.
+	KeyWorkspaceEntryAccountPrefix              = "workspace/entry_by_account/"
 	KeyWorkspaceTodoItemPrefix                  = "workspace_todo/item/"
 	KeyVideoThreadPrefix                        = "video/thread/"
 	KeyImageThreadPrefix                        = "image/thread/"
@@ -325,6 +328,22 @@ func KeyWorkspaceEntry(path string) string {
 	return KeyWorkspaceEntryPrefix + keyPart(path)
 }
 
+func KeyWorkspaceEntryForAccount(accountScopeID, path string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkspaceEntryAccountPrefix, keyPart(accountScopeID), keyPart(path))
+}
+
+func WorkspaceEntryPrefixForAccount(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyWorkspaceEntryAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyWorkspaceEntryAccountPrefix, accountPart)
+}
+
+func KeyWorkspaceCurrentForAccount(accountScopeID, userID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorkspaceCurrentAccountPrefix, keyPart(accountScopeID), keyPart(userID))
+}
+
 func KeyVideoThread(threadID string) string {
 	return KeyVideoThreadPrefix + keyPart(threadID)
 }
@@ -343,6 +362,10 @@ func ImageThreadPrefix() string {
 
 func KeyWorktreeConfig(workspacePath string) string {
 	return KeyWorktreeConfigPrefix + keyPart(workspacePath)
+}
+
+func KeyWorktreeConfigForAccount(accountScopeID, workspacePath string) string {
+	return fmt.Sprintf("%s%s/%s", KeyWorktreeConfigAccountPrefix, keyPart(accountScopeID), keyPart(workspacePath))
 }
 
 func WorkspaceEntryPrefix() string {

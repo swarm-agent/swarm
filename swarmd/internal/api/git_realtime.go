@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/gitstatus"
+	"swarm/packages/swarmd/internal/identity"
 )
 
 const (
@@ -304,7 +305,12 @@ func (s *Server) handleGitRealtime(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	workspacePath, err := s.resolveGitStatusWorkspacePath(r)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	workspacePath, err := s.resolveGitStatusWorkspacePath(r, principal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

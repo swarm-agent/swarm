@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
@@ -75,6 +76,8 @@ type PruneResult struct {
 	Skipped []string `json:"skipped,omitempty"`
 }
 
+var errAccountOwnedWorkspaceRequired = errors.New("account-owned workspace path is required")
+
 type Service struct {
 	store     *pebblestore.WorktreeStore
 	workspace *workspaceruntime.Service
@@ -83,13 +86,15 @@ type Service struct {
 }
 
 func NewService(store *pebblestore.WorktreeStore, workspace *workspaceruntime.Service, events *pebblestore.EventLog) *Service {
-	service := &Service{store: store, workspace: workspace, events: events}
-	service.migrateLegacyConfig()
-	return service
+	return &Service{store: store, workspace: workspace, events: events}
 }
 
 func (s *Service) IsEnabled(workspacePath string) (bool, error) {
-	cfg, err := s.GetConfig(workspacePath)
+	return false, identity.ErrPrincipalRequired
+}
+
+func (s *Service) IsEnabledForPrincipal(principal identity.Principal, workspacePath string) (bool, error) {
+	cfg, err := s.GetConfigForPrincipal(principal, workspacePath)
 	if err != nil {
 		return false, err
 	}
@@ -101,7 +106,30 @@ func (s *Service) GetConfig(workspacePath string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	record, _, err := s.store.GetConfig(canonical)
+	record, _, err := s.store.GetConfigLegacy(canonical)
+	if err != nil {
+		return Config{}, fmt.Errorf("read legacy worktree config: %w", err)
+	}
+	useCurrentBranch := record.UseCurrentBranch != nil && *record.UseCurrentBranch
+	return Config{
+		WorkspacePath:    canonical,
+		Enabled:          record.Enabled,
+		UseCurrentBranch: useCurrentBranch,
+		BaseBranch:       strings.TrimSpace(record.BaseBranch),
+		BranchName:       normalizeWorktreeBranchPrefix(record.BranchName),
+		UpdatedAt:        record.UpdatedAt,
+	}, nil
+}
+
+func (s *Service) GetConfigForPrincipal(principal identity.Principal, workspacePath string) (Config, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Config{}, err
+	}
+	canonical, err := s.resolveWorkspaceConfigPathForPrincipal(principal, workspacePath)
+	if err != nil {
+		return Config{}, err
+	}
+	record, _, err := s.store.GetConfigForAccount(principal.AccountScopeID, canonical)
 	if err != nil {
 		return Config{}, fmt.Errorf("read worktree config: %w", err)
 	}
@@ -117,11 +145,18 @@ func (s *Service) GetConfig(workspacePath string) (Config, error) {
 }
 
 func (s *Service) SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (Config, *pebblestore.EventEnvelope, error) {
-	canonical, err := s.resolveWorkspaceConfigPath(workspacePath)
+	return Config{}, nil, identity.ErrPrincipalRequired
+}
+
+func (s *Service) SetConfigForPrincipal(principal identity.Principal, workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (Config, *pebblestore.EventEnvelope, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Config{}, nil, err
+	}
+	canonical, err := s.resolveWorkspaceConfigPathForPrincipal(principal, workspacePath)
 	if err != nil {
 		return Config{}, nil, err
 	}
-	record, err := s.store.SetConfig(canonical, enabled, useCurrentBranch, baseBranch, branchName)
+	record, err := s.store.SetConfigForAccount(principal.AccountScopeID, canonical, enabled, useCurrentBranch, baseBranch, branchName)
 	if err != nil {
 		return Config{}, nil, fmt.Errorf("persist worktree config: %w", err)
 	}
@@ -148,14 +183,7 @@ func (s *Service) SetConfig(workspacePath string, enabled, useCurrentBranch bool
 }
 
 func (s *Service) AllocateDetachedWorkspace(workspacePath, nameSeed string) (Allocation, error) {
-	cfg, err := s.GetConfig(workspacePath)
-	if err != nil {
-		return Allocation{}, err
-	}
-	if !cfg.Enabled {
-		return Allocation{}, errors.New("worktrees mode is disabled for this workspace")
-	}
-	return s.allocateSessionWorkspace(workspacePath, cfg.UseCurrentBranch, cfg.BaseBranch, cfg.BranchName, nameSeed)
+	return Allocation{}, identity.ErrPrincipalRequired
 }
 
 func (s *Service) AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (Allocation, error) {
@@ -239,6 +267,14 @@ func (s *Service) AllocateTaskWorkspace(workspacePath, baseBranch, nameSeed stri
 }
 
 func (s *Service) ListManaged(workspacePath string) ([]ManagedWorktree, error) {
+	return nil, identity.ErrPrincipalRequired
+}
+
+func (s *Service) ListManagedForPrincipal(principal identity.Principal, workspacePath string) ([]ManagedWorktree, error) {
+	workspacePath, err := s.resolveWorkspaceConfigPathForPrincipal(principal, workspacePath)
+	if err != nil {
+		return nil, err
+	}
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return nil, errors.New("workspace path is required")
@@ -280,6 +316,14 @@ func (s *Service) ListManaged(workspacePath string) ([]ManagedWorktree, error) {
 }
 
 func (s *Service) PruneManaged(workspacePath string) (PruneResult, error) {
+	return PruneResult{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) PruneManagedForPrincipal(principal identity.Principal, workspacePath string) (PruneResult, error) {
+	workspacePath, err := s.resolveWorkspaceConfigPathForPrincipal(principal, workspacePath)
+	if err != nil {
+		return PruneResult{}, err
+	}
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return PruneResult{}, errors.New("workspace path is required")
@@ -297,7 +341,7 @@ func (s *Service) PruneManaged(workspacePath string) (PruneResult, error) {
 	} else if err != nil {
 		return PruneResult{}, fmt.Errorf("stat managed worktree root: %w", err)
 	}
-	entries, err := s.ListManaged(repoRoot)
+	entries, err := s.ListManagedForPrincipal(principal, repoRoot)
 	if err != nil {
 		return PruneResult{}, err
 	}
@@ -323,29 +367,7 @@ func (s *Service) PruneManaged(workspacePath string) (PruneResult, error) {
 }
 
 func (s *Service) AttachBranch(workspacePath, sessionID, title string) (string, error) {
-	workspacePath = strings.TrimSpace(workspacePath)
-	sessionID = strings.TrimSpace(sessionID)
-	if workspacePath == "" {
-		return "", errors.New("workspace path is required")
-	}
-	if sessionID == "" {
-		return "", errors.New("session id is required")
-	}
-	cfg, err := s.GetConfig(workspacePath)
-	if err != nil {
-		return "", err
-	}
-	branchName := effectiveWorktreeBranchName(cfg.BranchName, sessionID)
-	current, err := currentBranch(workspacePath)
-	if err == nil && current == branchName {
-		return branchName, nil
-	}
-	if _, createErr := runGit(workspacePath, "checkout", "-b", branchName); createErr != nil {
-		if _, checkoutErr := runGit(workspacePath, "checkout", branchName); checkoutErr != nil {
-			return "", fmt.Errorf("attach session branch %q: %w", branchName, createErr)
-		}
-	}
-	return branchName, nil
+	return s.MoveWorkspaceToTitle(workspacePath, sessionID, title)
 }
 
 func (s *Service) MoveWorkspaceToTitle(workspacePath, sessionID, title string) (string, error) {
@@ -390,10 +412,25 @@ func (s *Service) MoveWorkspaceToTitle(workspacePath, sessionID, title string) (
 func (s *Service) resolveWorkspaceConfigPath(workspacePath string) (string, error) {
 	trimmed := strings.TrimSpace(workspacePath)
 	if trimmed == "" {
+		return "", errors.New("workspace path is required")
+	}
+	resolved, err := filepath.Abs(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace path: %w", err)
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func (s *Service) resolveWorkspaceConfigPathForPrincipal(principal identity.Principal, workspacePath string) (string, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return "", err
+	}
+	trimmed := strings.TrimSpace(workspacePath)
+	if trimmed == "" {
 		if s == nil || s.workspace == nil {
 			return "", errors.New("workspace path is required")
 		}
-		current, ok, err := s.workspace.CurrentBinding()
+		current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)
 		if err != nil {
 			return "", fmt.Errorf("resolve current workspace: %w", err)
 		}
@@ -406,13 +443,14 @@ func (s *Service) resolveWorkspaceConfigPath(workspacePath string) (string, erro
 		return "", errors.New("workspace path is required")
 	}
 	if s != nil && s.workspace != nil {
-		scope, err := s.workspace.ScopeForPath(trimmed)
+		scope, err := s.workspace.ScopeForPathForPrincipal(principal, trimmed)
 		if err != nil {
 			return "", fmt.Errorf("resolve workspace scope: %w", err)
 		}
 		if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
 			return strings.TrimSpace(scope.WorkspacePath), nil
 		}
+		return "", errAccountOwnedWorkspaceRequired
 	}
 	resolved, err := filepath.Abs(trimmed)
 	if err != nil {
@@ -421,22 +459,13 @@ func (s *Service) resolveWorkspaceConfigPath(workspacePath string) (string, erro
 	return filepath.Clean(resolved), nil
 }
 
-func (s *Service) migrateLegacyConfig() {
-	if s == nil || s.store == nil || s.workspace == nil {
-		return
+func (s *Service) migrateLegacyConfig() {}
+
+func requirePrincipal(principal identity.Principal) error {
+	if !principal.Valid() {
+		return identity.ErrPrincipalRequired
 	}
-	entries, err := s.workspace.ListKnown(100000)
-	if err != nil {
-		return
-	}
-	paths := make([]string, 0, len(entries)+1)
-	for _, entry := range entries {
-		paths = append(paths, strings.TrimSpace(entry.Path))
-	}
-	if current, ok, err := s.workspace.CurrentBinding(); err == nil && ok {
-		paths = append(paths, strings.TrimSpace(current.ResolvedPath))
-	}
-	_, _ = s.store.MigrateLegacyGlobalConfig(paths)
+	return nil
 }
 
 func resolveRepositoryRoot(workspacePath string) (string, error) {

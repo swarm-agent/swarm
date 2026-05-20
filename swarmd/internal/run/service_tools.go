@@ -13,6 +13,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -1555,6 +1556,7 @@ type taskExecutionRequest struct {
 	ParentMessages       []pebblestore.MessageSnapshot
 	PermissionSessionID  string
 	TargetedSubagentName string
+	Principal            identity.Principal
 }
 
 func executeTaskLaunchesInParallel[T any](ctx context.Context, launchCount int, runOne func(context.Context, int) (T, error)) ([]T, []error) {
@@ -1579,7 +1581,8 @@ func executeTaskLaunchesInParallel[T any](ctx context.Context, launchCount int, 
 }
 
 func (s *Service) executeTaskTool(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler) (string, error) {
-	return s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{})
+	principal, _ := identity.PrincipalFromContext(ctx)
+	return s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal})
 }
 
 func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler, req taskExecutionRequest) (string, error) {
@@ -1794,6 +1797,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			AllowSubagent:       true,
 			DisabledTools:       taskDisabledTools(false),
 			PermissionSessionID: sessionID,
+			Principal:           req.Principal,
 		}, func(event StreamEvent) {
 			eventType := strings.ToLower(strings.TrimSpace(event.Type))
 			switch eventType {

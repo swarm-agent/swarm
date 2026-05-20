@@ -16,6 +16,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/privacy"
@@ -128,6 +129,7 @@ type RunOptions struct {
 	CompiledPolicy      *permission.Policy
 	ExecutionContext    *RunExecutionContext
 	IntegrationFlow     bool
+	Principal           identity.Principal
 }
 
 type RunResult struct {
@@ -524,6 +526,7 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		// Targeted subagent runs should honor the saved subagent profile's
 		// resolved tool contract instead of inheriting the generic task baseline.
 		PermissionSessionID: parentSession.ID,
+		Principal:           options.Principal,
 	}, func(event StreamEvent) {
 		switch strings.TrimSpace(event.Type) {
 		case StreamEventStepStarted:
@@ -796,6 +799,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 	if s.providers == nil {
 		return RunResult{}, errors.New("provider registry is not configured")
+	}
+	runnerCtx := ctx
+	if options.Principal.Valid() {
+		runnerCtx = identity.ContextWithPrincipal(runnerCtx, options.Principal)
+		ctx = runnerCtx
 	}
 	providerRunner, ok := s.providers.GetRunner(providerID)
 	if !ok {
@@ -1416,6 +1424,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				workspaceOriginPath:  workspaceCtx.OriginWorkspacePath,
 				workspaceOriginRoots: append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
 				workspaceName:        sessionSnapshot.WorkspaceName,
+				principal:            options.Principal,
 				emit:                 emit,
 				policy:               compiledPolicy,
 			}),
@@ -1443,7 +1452,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			"input":               input,
 		})
 
-		response, err := providerRunner.CreateResponseStreaming(ctx, stepRequest, func(event provideriface.StreamEvent) {
+		response, err := providerRunner.CreateResponseStreaming(runnerCtx, stepRequest, func(event provideriface.StreamEvent) {
 			switch event.Type {
 			case provideriface.StreamEventOutputTextDelta:
 				emit(StreamEvent{Type: StreamEventAssistantDelta, Step: step, Delta: event.Delta})

@@ -33,7 +33,7 @@ func TestIntegrationsAPIDraftCRUDRedactsCredentialRefs(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/integrations?action=list&resource=adapter&pack_id=Demo&version_id=Draft", nil)
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -55,7 +55,7 @@ func postIntegration(t *testing.T, server *Server, payload map[string]any) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/integrations", bytes.NewReader(raw))
 	req.Header.Set("content-type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}

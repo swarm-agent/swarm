@@ -49,14 +49,15 @@ func TestCredentialDeleteCleanupClearsSessionPreferencesForDeletedProvider(t *te
 
 	ctx := context.Background()
 	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{
-		ID:       "cred-1",
-		Provider: "codex",
-		Type:     "api",
-		APIKey:   "test-key",
+		ID:             "cred-1",
+		Provider:       "codex",
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Type:           "api",
+		APIKey:         "test-key",
 	}); err != nil {
 		t.Fatalf("upsert credential: %v", err)
 	}
-	if _, _, err := authSvc.SetActiveCredential("codex", "cred-1"); err != nil {
+	if _, _, err := authSvc.SetActiveCredentialForAccount(testPrincipal().AccountScopeID, "codex", "cred-1"); err != nil {
 		t.Fatalf("set active credential: %v", err)
 	}
 

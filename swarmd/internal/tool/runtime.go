@@ -28,6 +28,7 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -171,6 +172,7 @@ type WorkspaceScope struct {
 	PrimaryPath string
 	Roots       []string
 	SessionID   string
+	Principal   identity.Principal
 }
 
 type manageWorktreeSessionService interface {
@@ -263,6 +265,7 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	}
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	normalized.SessionID = strings.TrimSpace(scope.SessionID)
+	normalized.Principal = scope.Principal
 	return context.WithValue(parent, workspaceScopeContextKey{}, normalized)
 }
 
@@ -308,6 +311,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	}
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)
 	normalized.SessionID = strings.TrimSpace(override.SessionID)
+	normalized.Principal = override.Principal
 	return normalized
 }
 

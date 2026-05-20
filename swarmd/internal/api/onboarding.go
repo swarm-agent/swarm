@@ -352,15 +352,15 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 	if err != nil {
 		return onboardingResponse{}, err
 	}
-	credentialList, err := s.readCredentialList()
-	if err != nil {
-		return onboardingResponse{}, err
-	}
-	savedCount, err := s.readSavedWorkspaceCount()
-	if err != nil {
-		return onboardingResponse{}, err
-	}
 	identityPayload, identityBootstrapped, err := s.onboardingIdentityPayload()
+	if err != nil {
+		return onboardingResponse{}, err
+	}
+	credentialList, err := s.readCredentialList(identityPayload.AccountScopeID)
+	if err != nil {
+		return onboardingResponse{}, err
+	}
+	savedCount, err := s.readSavedWorkspaceCount(identityPayload.AccountScopeID, identityPayload.UserID)
 	if err != nil {
 		return onboardingResponse{}, err
 	}
@@ -692,11 +692,17 @@ func (s *Server) readVaultStatus() (auth.VaultStatus, error) {
 	return s.auth.VaultStatus()
 }
 
-func (s *Server) readCredentialList() (auth.CredentialList, error) {
+func (s *Server) readCredentialList(accountScopeID string) (auth.CredentialList, error) {
 	if s == nil || s.auth == nil {
 		return auth.CredentialList{}, errors.New("auth service not configured")
 	}
-	return s.auth.ListCredentials("", "", 200)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		// Onboarding status is intentionally public before product identity exists.
+		// Do not read account credential data through the removed legacy global path.
+		return auth.CredentialList{}, nil
+	}
+	return s.auth.ListCredentialsForAccount(accountScopeID, "", "", 200)
 }
 
 func (s *Server) persistUISwarmName(name string) error {
@@ -712,15 +718,21 @@ func (s *Server) persistUISwarmName(name string) error {
 	return err
 }
 
-func (s *Server) readSavedWorkspaceCount() (int, error) {
+func (s *Server) readSavedWorkspaceCount(accountScopeID, userID string) (int, error) {
 	if s == nil || s.workspace == nil {
 		return 0, errors.New("workspace service not configured")
 	}
-	workspaces, err := s.workspace.ListKnown(10000)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: strings.TrimSpace(userID), AccountScopeID: strings.TrimSpace(accountScopeID)}
+	if !principal.Valid() {
+		// Onboarding status can be requested before a trusted product principal exists.
+		// Do not read account-scoped workspace data through legacy global access here.
+		return 0, nil
+	}
+	entries, err := s.workspace.ListKnownForPrincipal(principal, 200)
 	if err != nil {
 		return 0, err
 	}
-	return len(workspaces), nil
+	return len(entries), nil
 }
 
 func shouldShowOnboarding(cfg startupconfig.FileConfig, vault auth.VaultStatus, credentialCount, savedCount int) bool {

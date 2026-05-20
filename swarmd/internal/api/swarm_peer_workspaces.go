@@ -121,7 +121,7 @@ func (s *Server) handlePeerWorkspaceCreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if _, err := s.workspace.Add(targetPath, name, "", false); err != nil {
+	if _, err := s.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), targetPath, name, "", false); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -184,7 +184,7 @@ func (s *Server) handlePeerWorkspaceImportBundle(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if _, err := s.workspace.Add(targetPath, name, "", false); err != nil {
+	if _, err := s.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), targetPath, name, "", false); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

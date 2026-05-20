@@ -30,10 +30,11 @@ func TestHandleImageGenerationsStreamSerializesConcurrentEvents(t *testing.T) {
 
 	authStore := pebblestore.NewAuthStore(db)
 	if _, err := authStore.UpsertCredential(pebblestore.AuthCredentialInput{
-		Provider:  "google",
-		Type:      pebblestore.AuthTypeAPI,
-		APIKey:    "test-key",
-		SetActive: true,
+		Provider:       "google",
+		AccountScopeID: testPrincipal().AccountScopeID,
+		Type:           pebblestore.AuthTypeAPI,
+		APIKey:         "test-key",
+		SetActive:      true,
 	}); err != nil {
 		t.Fatalf("seed google credential: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestHandleImageGenerationsStreamSerializesConcurrentEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/image/generations", bytes.NewReader(body))
+	req := withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/image/generations", bytes.NewReader(body)))
 	req.Header.Set("Accept", "text/event-stream")
 	writer := newConcurrentDetectResponseWriter()
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegenlog"
 	"swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -63,6 +64,7 @@ type GenerateRequest struct {
 	Settings      map[string]any            `json:"settings,omitempty"`
 	Target        GenerationTarget          `json:"target"`
 	OnEvent       func(GenerateStreamEvent) `json:"-"`
+	Principal     identity.Principal        `json:"-"`
 }
 
 type GenerateStreamEvent struct {
@@ -172,16 +174,8 @@ func (s *Service) Capabilities(context.Context) (Capabilities, error) {
 		codexStatus.Ready = false
 		codexStatus.Reason = "codex image provider is not configured"
 	} else {
-		record, ok, err := s.authStore.GetCodexAuthRecord()
-		if err != nil {
-			return Capabilities{}, fmt.Errorf("read codex auth: %w", err)
-		}
-		if !ok || record.Type != pebblestore.CodexAuthTypeOAuth || strings.TrimSpace(record.AccessToken) == "" || strings.TrimSpace(record.RefreshToken) == "" {
-			codexStatus.Ready = false
-			codexStatus.Reason = "connect Codex with OAuth to enable image generation"
-		} else {
-			codexStatus.Ready = true
-		}
+		codexStatus.Ready = false
+		codexStatus.Reason = "connect Codex with OAuth to enable image generation"
 	}
 	geminiStatus := ProviderStatus{
 		ID:           ProviderGoogleGemini,
@@ -193,16 +187,8 @@ func (s *Service) Capabilities(context.Context) (Capabilities, error) {
 		geminiStatus.Ready = false
 		geminiStatus.Reason = "google gemini image provider is not configured"
 	} else {
-		record, ok, err := s.authStore.GetActiveCredential("google")
-		if err != nil {
-			return Capabilities{}, fmt.Errorf("read google auth: %w", err)
-		}
-		if !ok || strings.TrimSpace(record.APIKey) == "" {
-			geminiStatus.Ready = false
-			geminiStatus.Reason = "connect a Google API key to enable Gemini image generation"
-		} else {
-			geminiStatus.Ready = true
-		}
+		geminiStatus.Ready = false
+		geminiStatus.Reason = "connect a Google API key to enable Gemini image generation"
 	}
 	return Capabilities{Providers: []ProviderStatus{codexStatus, geminiStatus}}, nil
 }

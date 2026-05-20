@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	gorillaws "github.com/gorilla/websocket"
+	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -950,7 +951,8 @@ func (s *Server) startManagedHostRunStreamExecution(runID, sessionID string, req
 		defer s.endActiveRun()
 		defer close(started)
 		startSignaled := false
-		result, err := s.runner.RunTurnStreaming(s.runCtx, sessionID, request, runruntime.RunStartMeta{RunID: runID, OwnerTransport: "managed_host_peer"}, func(event runruntime.StreamEvent) {
+		runCtx := identity.ContextWithPrincipal(s.runCtx, peerManagedWorkspacePrincipal())
+		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, request, runruntime.RunStartMeta{RunID: runID, OwnerTransport: "managed_host_peer", Principal: peerManagedWorkspacePrincipal()}, func(event runruntime.StreamEvent) {
 			if !startSignaled && strings.EqualFold(strings.TrimSpace(event.Type), runruntime.StreamEventSessionLifecycle) && event.Lifecycle != nil && event.Lifecycle.Active {
 				startSignaled = true
 				select {

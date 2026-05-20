@@ -257,12 +257,16 @@ type notificationService interface {
 
 type worktreeService interface {
 	GetConfig(workspacePath string) (worktreeruntime.Config, error)
+	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
 	SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
+	SetConfigForPrincipal(principal identity.Principal, workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
 	AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error)
 	AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
 	ListManaged(workspacePath string) ([]worktreeruntime.ManagedWorktree, error)
+	ListManagedForPrincipal(principal identity.Principal, workspacePath string) ([]worktreeruntime.ManagedWorktree, error)
 	PruneManaged(workspacePath string) (worktreeruntime.PruneResult, error)
+	PruneManagedForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.PruneResult, error)
 }
 
 type mcpService interface {
@@ -707,8 +711,13 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("worktree service not configured"))
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 
-	workspacePath, err := s.resolveWorktreeConfigPath(r)
+	workspacePath, err := s.resolveWorktreeConfigPath(r, principal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -716,12 +725,12 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		config, err := s.worktrees.GetConfig(workspacePath)
+		config, err := s.worktrees.GetConfigForPrincipal(principal, workspacePath)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		managed, err := s.worktrees.ListManaged(workspacePath)
+		managed, err := s.worktrees.ListManagedForPrincipal(principal, workspacePath)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -745,13 +754,13 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.TrimSpace(req.WorkspacePath) != "" {
 			workspacePath = strings.TrimSpace(req.WorkspacePath)
-			workspacePath, err = s.resolveWorktreeConfigPathForValue(workspacePath)
+			workspacePath, err = s.resolveWorktreeConfigPathForValue(workspacePath, principal)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 		}
-		current, err := s.worktrees.GetConfig(workspacePath)
+		current, err := s.worktrees.GetConfigForPrincipal(principal, workspacePath)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -774,7 +783,7 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 		if req.BranchName != nil {
 			branchName = strings.TrimSpace(*req.BranchName)
 		}
-		config, event, err := s.worktrees.SetConfig(workspacePath, enabled, useCurrentBranch, baseBranch, branchName)
+		config, event, err := s.worktrees.SetConfigForPrincipal(principal, workspacePath, enabled, useCurrentBranch, baseBranch, branchName)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -787,7 +796,7 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 			"worktrees": config,
 		})
 	case http.MethodDelete:
-		result, err := s.worktrees.PruneManaged(workspacePath)
+		result, err := s.worktrees.PruneManagedForPrincipal(principal, workspacePath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -810,7 +819,12 @@ func (s *Server) handleManageWorktree(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errServiceNotConfigured("run service"))
 		return
 	}
-	workspacePath, err := s.resolveWorktreeConfigPath(r)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	workspacePath, err := s.resolveWorktreeConfigPath(r, principal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -829,19 +843,7 @@ func (s *Server) handleManageWorktree(w http.ResponseWriter, r *http.Request) {
 			query["cursor"] = parsed
 		}
 	}
-	current, ok, err := s.workspace.CurrentBinding()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if !ok {
-		writeError(w, http.StatusBadRequest, errors.New("current workspace is not selected"))
-		return
-	}
 	resolvedWorkspacePath := workspacePath
-	if strings.TrimSpace(resolvedWorkspacePath) == "" {
-		resolvedWorkspacePath = strings.TrimSpace(current.ResolvedPath)
-	}
 	callArgs, err := json.Marshal(query)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -860,27 +862,27 @@ func (s *Server) handleManageWorktree(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
-func (s *Server) resolveWorktreeConfigPath(r *http.Request) (string, error) {
+func (s *Server) resolveWorktreeConfigPath(r *http.Request, principal identity.Principal) (string, error) {
 	if r == nil {
 		return "", errors.New("request is required")
 	}
 	if value := strings.TrimSpace(r.URL.Query().Get("workspace_path")); value != "" {
-		return s.resolveWorktreeConfigPathForValue(value)
+		return s.resolveWorktreeConfigPathForValue(value, principal)
 	}
 	if s.workspace == nil {
 		return "", errors.New("workspace service not configured")
 	}
-	current, ok, err := s.workspace.CurrentBinding()
+	current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)
 	if err != nil {
 		return "", err
 	}
 	if !ok || strings.TrimSpace(current.ResolvedPath) == "" {
 		return "", errors.New("workspace path is required")
 	}
-	return s.resolveWorktreeConfigPathForValue(current.ResolvedPath)
+	return s.resolveWorktreeConfigPathForValue(current.ResolvedPath, principal)
 }
 
-func (s *Server) resolveWorktreeConfigPathForValue(path string) (string, error) {
+func (s *Server) resolveWorktreeConfigPathForValue(path string, principal identity.Principal) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", errors.New("workspace path is required")
@@ -888,14 +890,14 @@ func (s *Server) resolveWorktreeConfigPathForValue(path string) (string, error) 
 	if s.workspace == nil {
 		return "", errors.New("workspace service not configured")
 	}
-	scope, err := s.workspace.ScopeForPath(path)
+	scope, err := s.workspace.ScopeForPathForPrincipal(principal, path)
 	if err != nil {
 		return "", err
 	}
 	if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
 		return strings.TrimSpace(scope.WorkspacePath), nil
 	}
-	return strings.TrimSpace(scope.ResolvedPath), nil
+	return "", errors.New("account-owned workspace path is required")
 }
 
 func (s *Server) handleCodexAuth(w http.ResponseWriter, r *http.Request) {
@@ -1429,8 +1431,13 @@ func (s *Server) handleWorkspaceResolve(w http.ResponseWriter, r *http.Request) 
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	cwd := strings.TrimSpace(r.URL.Query().Get("cwd"))
-	resolution, err := s.workspace.Resolve(cwd)
+	resolution, err := s.workspace.ResolveForPrincipal(principal, cwd)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1443,6 +1450,11 @@ func (s *Server) handleWorkspaceSelect(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req struct {
 		Path string `json:"path"`
 	}
@@ -1450,7 +1462,7 @@ func (s *Server) handleWorkspaceSelect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resolution, err := s.workspace.Select(req.Path)
+	resolution, err := s.workspace.SelectForPrincipal(principal, req.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1466,7 +1478,12 @@ func (s *Server) handleWorkspaceCurrent(w http.ResponseWriter, r *http.Request) 
 		methodNotAllowed(w)
 		return
 	}
-	resolution, ok, err := s.workspace.CurrentBinding()
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	resolution, ok, err := s.workspace.CurrentBindingForPrincipal(principal)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1483,6 +1500,11 @@ func (s *Server) handleWorkspaceList(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	limit := 200
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
@@ -1492,12 +1514,12 @@ func (s *Server) handleWorkspaceList(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	entries, err := s.workspace.ListKnown(limit)
+	entries, err := s.workspace.ListKnownForPrincipal(principal, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	entries, err = s.applyWorkspaceWorktreeStatus(entries)
+	entries, err = s.applyWorkspaceWorktreeStatus(principal, entries)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1511,6 +1533,10 @@ func (s *Server) handleWorkspaceList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWorkspaceDiscover(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
+		return
+	}
+	if _, ok := PrincipalFromRequest(r); !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
 	limit := 200
@@ -1547,8 +1573,13 @@ func (s *Server) handleWorkspaceBrowse(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
-	browser, err := s.workspace.Browse(path)
+	browser, err := s.workspace.BrowseForPrincipal(principal, path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1564,6 +1595,11 @@ func (s *Server) handleWorkspaceFolderCreate(w http.ResponseWriter, r *http.Requ
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req struct {
 		ParentPath string `json:"parent_path"`
 		Name       string `json:"name"`
@@ -1572,7 +1608,7 @@ func (s *Server) handleWorkspaceFolderCreate(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	folder, err := s.workspace.CreateFolder(req.ParentPath, req.Name)
+	folder, err := s.workspace.CreateFolderForPrincipal(principal, req.ParentPath, req.Name)
 	if err != nil {
 		status := http.StatusBadRequest
 		if folder.RequiresSudo {
@@ -1596,7 +1632,9 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if _, ok := s.requireProductActor(w, r); !ok {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
 	var req struct {
@@ -1613,7 +1651,7 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	if req.MakeCurrent != nil {
 		makeCurrent = *req.MakeCurrent
 	}
-	resolution, err := s.workspace.Add(req.Path, req.Name, req.ThemeID, makeCurrent)
+	resolution, err := s.workspace.AddForPrincipal(principal, req.Path, req.Name, req.ThemeID, makeCurrent)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1629,6 +1667,11 @@ func (s *Server) handleWorkspaceDirectoryAdd(w http.ResponseWriter, r *http.Requ
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req struct {
 		WorkspacePath string `json:"workspace_path"`
 		DirectoryPath string `json:"directory_path"`
@@ -1637,7 +1680,7 @@ func (s *Server) handleWorkspaceDirectoryAdd(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resolution, err := s.workspace.AddDirectory(req.WorkspacePath, req.DirectoryPath)
+	resolution, err := s.workspace.AddDirectoryForPrincipal(principal, req.WorkspacePath, req.DirectoryPath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1653,6 +1696,11 @@ func (s *Server) handleWorkspaceDirectoryRemove(w http.ResponseWriter, r *http.R
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req struct {
 		WorkspacePath string `json:"workspace_path"`
 		DirectoryPath string `json:"directory_path"`
@@ -1661,7 +1709,7 @@ func (s *Server) handleWorkspaceDirectoryRemove(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resolution, err := s.workspace.RemoveDirectory(req.WorkspacePath, req.DirectoryPath)
+	resolution, err := s.workspace.RemoveDirectoryForPrincipal(principal, req.WorkspacePath, req.DirectoryPath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1677,6 +1725,11 @@ func (s *Server) handleWorkspaceMove(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req struct {
 		Path  string `json:"path"`
 		Delta int    `json:"delta"`
@@ -1685,7 +1738,7 @@ func (s *Server) handleWorkspaceMove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resolution, err := s.workspace.Move(req.Path, req.Delta)
+	resolution, err := s.workspace.MoveForPrincipal(principal, req.Path, req.Delta)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1701,6 +1754,11 @@ func (s *Server) handleWorkspaceRename(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req struct {
 		Path string `json:"path"`
 		Name string `json:"name"`
@@ -1709,7 +1767,7 @@ func (s *Server) handleWorkspaceRename(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resolution, err := s.workspace.Rename(req.Path, req.Name)
+	resolution, err := s.workspace.RenameForPrincipal(principal, req.Path, req.Name)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1725,6 +1783,11 @@ func (s *Server) handleWorkspaceTheme(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req struct {
 		Path    string `json:"path"`
 		ThemeID string `json:"theme_id"`
@@ -1733,7 +1796,7 @@ func (s *Server) handleWorkspaceTheme(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resolution, err := s.workspace.SetThemeID(req.Path, req.ThemeID)
+	resolution, err := s.workspace.SetThemeIDForPrincipal(principal, req.Path, req.ThemeID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1749,6 +1812,11 @@ func (s *Server) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var req struct {
 		Path string `json:"path"`
 	}
@@ -1756,7 +1824,7 @@ func (s *Server) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	resolution, err := s.workspace.Delete(req.Path)
+	resolution, err := s.workspace.DeleteForPrincipal(principal, req.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1776,19 +1844,24 @@ func (s *Server) handleWorkspaceTodos(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("workspace service not configured"))
 		return
 	}
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	resolveWorkspacePath := func(raw string) (string, error) {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			return "", errors.New("workspace path is required")
 		}
-		scope, err := s.workspace.ScopeForPath(raw)
+		scope, err := s.workspace.ScopeForPathForPrincipal(principal, raw)
 		if err != nil {
 			return "", err
 		}
 		if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
 			return strings.TrimSpace(scope.WorkspacePath), nil
 		}
-		return strings.TrimSpace(scope.ResolvedPath), nil
+		return "", errAccountOwnedWorkspacePathRequired
 	}
 
 	switch r.Method {
@@ -2007,22 +2080,39 @@ func (s *Server) handleContextSources(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("discovery service not configured"))
 		return
 	}
+	if s.workspace == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("workspace service not configured"))
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 
 	cwd := strings.TrimSpace(r.URL.Query().Get("cwd"))
 	if cwd == "" {
-		current, ok, err := s.workspace.CurrentBinding()
+		current, currentOK, err := s.workspace.CurrentBindingForPrincipal(principal)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if ok {
+		if currentOK {
 			cwd = current.ResolvedPath
 		}
 	}
+	if cwd == "" {
+		writeError(w, http.StatusBadRequest, errors.New("workspace path is required"))
+		return
+	}
 
-	scope, err := s.workspace.ScopeForPath(cwd)
+	scope, err := s.workspace.ScopeForPathForPrincipal(principal, cwd)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !scope.Matched || strings.TrimSpace(scope.WorkspacePath) == "" {
+		writeError(w, http.StatusBadRequest, errAccountOwnedWorkspacePathRequired)
 		return
 	}
 	report, err := s.discovery.ScanScope(scope.WorkspacePath, scope.Directories)
@@ -2062,17 +2152,24 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if cwd == "" {
 			sessions, listErr = s.sessions.ListSessions(limit)
 		} else if s.workspace != nil {
-			scope, scopeErr := s.workspace.ScopeForPath(cwd)
+			principal, principalOK := PrincipalFromRequest(r)
+			if !principalOK {
+				writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+				return
+			}
+			scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, cwd)
 			if scopeErr != nil {
 				writeError(w, http.StatusBadRequest, scopeErr)
 				return
 			}
+			if !scope.Matched || strings.TrimSpace(scope.WorkspacePath) == "" {
+				writeError(w, http.StatusBadRequest, errAccountOwnedWorkspacePathRequired)
+				return
+			}
 			if exactPath {
 				sessions, listErr = s.sessions.ListSessionsForPath(scope.ResolvedPath, limit)
-			} else if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
-				sessions, listErr = s.sessions.ListSessionsForScope(scope.WorkspacePath, limit)
 			} else {
-				sessions, listErr = s.sessions.ListSessionsForPath(scope.ResolvedPath, limit)
+				sessions, listErr = s.sessions.ListSessionsForScope(scope.WorkspacePath, limit)
 			}
 		} else {
 			sessions, listErr = s.sessions.ListSessionsForPath(cwd, limit)
@@ -2125,9 +2222,13 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			"sessions": responseSessions,
 		})
 	case http.MethodPost:
-		req, err := s.decodeSessionCreateRequest(r)
+		req, principal, principalOK, err := s.decodeSessionCreateRequest(r)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			status := http.StatusBadRequest
+			if errors.Is(err, identity.ErrPrincipalRequired) {
+				status = http.StatusUnauthorized
+			}
+			writeError(w, status, err)
 			return
 		}
 		remoteTarget, err := s.currentRemoteSwarmTargetForRequest(r)
@@ -2178,7 +2279,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				sessionruntime.HostedSessionMetadataRuntimeWorkspacePath: strings.TrimSpace(req.RuntimeWorkspacePath),
 			}
 			sessionID := sessionruntime.NewSessionID()
-			session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(req, routeMetadata, false, sessionID)
+			session, event, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(req, routeMetadata, false, sessionID, principal, principalOK)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -2277,7 +2378,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		session, event, warning, modeWarning, err := s.createSessionFromRequest(req, nil, true)
+		session, event, warning, modeWarning, err := s.createSessionFromRequest(req, principal, principalOK, nil, true)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -3075,7 +3176,12 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 
 		s.beginActiveRun()
 		defer s.endActiveRun()
-		result, err := s.runner.RunTurn(r.Context(), sessionID, req, runruntime.RunStartMeta{IntegrationFlow: integrationCtx.IntegrationFlow})
+		principal, principalOK := PrincipalFromRequest(r)
+		if !principalOK {
+			writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+			return
+		}
+		result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), principal), sessionID, req, runruntime.RunStartMeta{IntegrationFlow: integrationCtx.IntegrationFlow, Principal: principal})
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, runruntime.ErrSessionAlreadyActive) {
@@ -3204,7 +3310,13 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	statuses, err := s.providers.ListStatuses(context.Background())
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	statuses, err := s.providers.ListStatuses(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

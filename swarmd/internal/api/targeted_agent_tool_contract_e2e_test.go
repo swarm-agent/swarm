@@ -732,6 +732,10 @@ func testProductActorHandler(next http.Handler) http.Handler {
 	})
 }
 
+func withTargetedAgentTestPrincipal(next http.Handler) http.Handler {
+	return testProductActorHandler(next)
+}
+
 func doJSONRequestLocal(t *testing.T, handler http.Handler, method, path string, payload any, out any) int {
 	t.Helper()
 

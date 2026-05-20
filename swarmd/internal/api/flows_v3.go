@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -671,9 +672,13 @@ func (s *Server) flowV3AssignmentFromRequest(r *http.Request, req flowV3UpsertRe
 	}
 	if workspace.WorkspacePath == "" || workspace.WorkspacePath == "." {
 		if s.workspace != nil {
-			if current, ok, err := s.workspace.CurrentBinding(); err != nil {
+			principal, ok := PrincipalFromRequest(r)
+			if !ok {
+				return flow.Assignment{}, identity.ErrPrincipalRequired
+			}
+			if current, currentOK, err := s.workspace.CurrentBindingForPrincipal(principal); err != nil {
 				return flow.Assignment{}, err
-			} else if ok && strings.TrimSpace(current.ResolvedPath) != "" {
+			} else if currentOK && strings.TrimSpace(current.ResolvedPath) != "" {
 				workspace.WorkspacePath = strings.TrimSpace(current.ResolvedPath)
 			}
 		}

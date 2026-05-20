@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/flow"
+	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -233,10 +234,13 @@ func (s *Server) runAcceptedFlow(ctx context.Context, accepted flow.AcceptedAssi
 		return flow.RunStart{}, err
 	}
 	run := func(ctx context.Context) {
-		result, err := s.runner.RunTurnStreaming(ctx, session.ID, runReq, runruntime.RunStartMeta{
+		principal := peerManagedWorkspacePrincipal()
+		runCtx := identity.ContextWithPrincipal(ctx, principal)
+		result, err := s.runner.RunTurnStreaming(runCtx, session.ID, runReq, runruntime.RunStartMeta{
 			RunID:          runID,
 			OwnerTransport: "flow_scheduler",
 			AllowSubagent:  resolvedAgent.RuntimeTargetKind == runruntime.RunTargetKindSubagent,
+			Principal:      principal,
 		}, func(event runruntime.StreamEvent) {
 			if strings.TrimSpace(event.SessionID) == "" {
 				event.SessionID = session.ID

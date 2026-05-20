@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -22,6 +23,7 @@ type providerToolInvokerConfig struct {
 	workspaceOriginPath  string
 	workspaceOriginRoots []string
 	workspaceName        string
+	principal            identity.Principal
 	emit                 StreamHandler
 	policy               *permission.Policy
 	agentProfile         pebblestore.AgentProfile
@@ -147,6 +149,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			feedback = permissionFeedback[0]
 		}
 
+		principal, _ := identity.PrincipalFromContext(ctx)
+		if !principal.Valid() {
+			principal = config.principal
+		}
+		ctx = identity.ContextWithPrincipal(ctx, principal)
 		handled, controlResult, controlErr := s.executeControlPlaneTool(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, feedback.ApprovedArguments, config.emit)
 		if handled {
 			result = controlResult

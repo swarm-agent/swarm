@@ -2,13 +2,16 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -26,9 +29,17 @@ func (f *fakeWorktreeService) GetConfig(workspacePath string) (worktreeruntime.C
 	return cfg, nil
 }
 
+func (f *fakeWorktreeService) GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error) {
+	return f.GetConfig(workspacePath)
+}
+
 func (f *fakeWorktreeService) SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error) {
 	f.config = worktreeruntime.Config{WorkspacePath: workspacePath, Enabled: enabled, UseCurrentBranch: useCurrentBranch, BaseBranch: baseBranch, BranchName: branchName}
 	return f.config, nil, nil
+}
+
+func (f *fakeWorktreeService) SetConfigForPrincipal(principal identity.Principal, workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error) {
+	return f.SetConfig(workspacePath, enabled, useCurrentBranch, baseBranch, branchName)
 }
 
 func (f *fakeWorktreeService) AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error) {
@@ -47,8 +58,45 @@ func (f *fakeWorktreeService) ListManaged(workspacePath string) ([]worktreerunti
 	return f.managed, nil
 }
 
+func (f *fakeWorktreeService) ListManagedForPrincipal(principal identity.Principal, workspacePath string) ([]worktreeruntime.ManagedWorktree, error) {
+	return f.ListManaged(workspacePath)
+}
+
 func (f *fakeWorktreeService) PruneManaged(workspacePath string) (worktreeruntime.PruneResult, error) {
 	return f.prune, nil
+}
+
+func (f *fakeWorktreeService) PruneManagedForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.PruneResult, error) {
+	return f.PruneManaged(workspacePath)
+}
+
+func testPrincipal() identity.Principal {
+	actor := testActorContext()
+	principal, err := identity.PrincipalFromActor(actor)
+	if err != nil {
+		return identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}
+	}
+	return principal
+}
+
+func testActorContext() identity.ActorContext {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	user := pebblestore.UserRecord{ID: "user-1", Username: "test-user", AccountScopeID: "account-1", CreatedAt: now, UpdatedAt: now}
+	account := pebblestore.AccountScopeRecord{ID: "account-1", Type: "personal", CreatedByUserID: "user-1", UserID: "user-1", Role: "owner", CreatedAt: now, UpdatedAt: now}
+	accountUser := pebblestore.AccountUserRecord{ID: "acct-user-1", AccountScopeID: "account-1", UserID: "user-1", Status: "active", CreatedAt: now, UpdatedAt: now}
+	selection := pebblestore.CurrentSelectionRecord{UserID: "user-1", TeamID: "team-1", CreatedAt: now, UpdatedAt: now}
+	team := pebblestore.TeamRecord{ID: "team-1", AccountScopeID: "account-1", Name: "Test Team", Default: true, CreatedAt: now, UpdatedAt: now}
+	membership := pebblestore.TeamMembershipRecord{TeamID: "team-1", UserID: "user-1", Role: "owner", CreatedAt: now, UpdatedAt: now}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1", AccountScopeSource: identity.AccountScopeSourceSession, User: user, AccountScope: account, AccountUser: accountUser, TokenExpires: now.Add(time.Hour)}
+	return identity.ActorContext{Principal: principal, UserID: "user-1", AccountScopeID: "account-1", TeamID: "team-1", User: user, AccountScope: account, AccountUser: accountUser, Team: team, Membership: membership, Selection: selection, TokenExpires: now.Add(time.Hour)}
+}
+
+func withTestPrincipal(req *http.Request) *http.Request {
+	actor := testActorContext()
+	ctx := context.WithValue(req.Context(), productActorRequestContextKey, actor)
+	ctx = context.WithValue(ctx, productPrincipalRequestContextKey, actor.Principal)
+	ctx = identity.ContextWithPrincipal(ctx, actor.Principal)
+	return req.WithContext(ctx)
 }
 
 func newTestWorkspaceService(t *testing.T, path string) (*workspaceruntime.Service, string) {
@@ -62,7 +110,7 @@ func newTestWorkspaceService(t *testing.T, path string) (*workspaceruntime.Servi
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	workspaceSvc := workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
-	if _, err := workspaceSvc.Add(path, "repo", "", true); err != nil {
+	if _, err := workspaceSvc.AddForPrincipal(testPrincipal(), path, "repo", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
 	return workspaceSvc, path
@@ -74,7 +122,7 @@ func TestHandleWorktreesIncludesManagedInventory(t *testing.T) {
 		config:  worktreeruntime.Config{Enabled: true},
 		managed: []worktreeruntime.ManagedWorktree{{Path: "/tmp/swarmd/worktrees/ws_abc123", WorkspaceID: "ws_abc123", Exists: true, Managed: true}},
 	}}
-	req := httptest.NewRequest(http.MethodGet, "/v1/worktrees?workspace_path="+workspacePath, nil)
+	req := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/worktrees?workspace_path="+workspacePath, nil))
 	rr := httptest.NewRecorder()
 
 	s.handleWorktrees(rr, req)
@@ -97,7 +145,7 @@ func TestHandleWorktreesDeletePrunesManagedOnly(t *testing.T) {
 	fake := &fakeWorktreeService{prune: worktreeruntime.PruneResult{Root: "/tmp/swarmd/worktrees", Removed: []string{"/tmp/swarmd/worktrees/ws_missing"}}}
 	workspaceSvc, workspacePath := newTestWorkspaceService(t, t.TempDir())
 	s := &Server{workspace: workspaceSvc, worktrees: fake}
-	req := httptest.NewRequest(http.MethodDelete, "/v1/worktrees?workspace_path="+workspacePath, bytes.NewReader(nil))
+	req := withTestPrincipal(httptest.NewRequest(http.MethodDelete, "/v1/worktrees?workspace_path="+workspacePath, bytes.NewReader(nil)))
 	rr := httptest.NewRecorder()
 
 	s.handleWorktrees(rr, req)

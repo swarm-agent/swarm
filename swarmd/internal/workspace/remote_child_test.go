@@ -174,7 +174,7 @@ func TestPlainLaptopListKnownDoesNotRegisterMountedWorkspaces(t *testing.T) {
 	svc := NewService(store)
 	svc.SetStartupConfigForTesting(plainLaptopStartupConfig())
 
-	entries, err := svc.ListKnown(200)
+	entries, err := svc.ListKnownForPrincipal(testPrincipal(), 200)
 	if err != nil {
 		t.Fatalf("ListKnown: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestExplicitChildContainerListKnownRegistersMountedWorkspaces(t *testing.T)
 	svc := NewService(store)
 	svc.SetStartupConfigForTesting(explicitChildContainerStartupConfig())
 
-	entries, err := svc.ListKnown(200)
+	entries, err := svc.ListKnownForPrincipal(testPrincipal(), 200)
 	if err != nil {
 		t.Fatalf("ListKnown: %v", err)
 	}

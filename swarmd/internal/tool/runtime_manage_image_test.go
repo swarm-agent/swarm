@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	"swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -70,7 +71,7 @@ func TestManageImageGenerateCompactRefsNoBase64(t *testing.T) {
 		Models:       []string{"gemini-test"},
 	}}}}
 	rt.SetManageImageServices(fakeSvc, &fakeManageImageThreadStore{})
-	output, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: workspaceDir}, Call{
+	output, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: workspaceDir, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}}, Call{
 		CallID:    "manage-image-generate",
 		Name:      "manage-image",
 		Arguments: `{"action":"generate","prompt":"make one wallpaper","count":1}`,
@@ -160,13 +161,13 @@ func TestManageImageWithRealImagegenServiceSavesCompactRefsNoBase64(t *testing.T
 	defer secretStore.Close()
 	threadStore := pebblestore.NewImageThreadStore(store)
 	authStore := pebblestore.NewAuthStoreWithSecretStore(store, secretStore)
-	if _, err := authStore.UpsertCredential(pebblestore.AuthCredentialInput{Provider: "codex", ID: "test", Type: pebblestore.CodexAuthTypeOAuth, AccessToken: "test-access-token", RefreshToken: "test-refresh-token", AccountID: "test-account", SetActive: true}); err != nil {
+	if _, err := authStore.UpsertCredential(pebblestore.AuthCredentialInput{Provider: "codex", AccountScopeID: "account-1", ID: "test", Type: pebblestore.CodexAuthTypeOAuth, AccessToken: "test-access-token", RefreshToken: "test-refresh-token", AccountID: "test-account", SetActive: true}); err != nil {
 		t.Fatalf("put codex auth: %v", err)
 	}
 	svc := imagegen.NewService(fakeCodexImageClient{}, authStore, threadStore)
 	rt := NewRuntime(1)
 	rt.SetManageImageServices(svc, threadStore)
-	output, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: workspaceDir}, Call{
+	output, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), WorkspaceScope{PrimaryPath: workspaceDir, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}}, Call{
 		CallID:    "manage-image-real-generate",
 		Name:      "manage-image",
 		Arguments: `{"action":"generate","prompt":"make one wallpaper","provider":"codex","count":1}`,

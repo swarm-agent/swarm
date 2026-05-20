@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 )
 
@@ -50,12 +51,18 @@ func (s *Server) handleImageGenerations(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	req.Principal = principal
 	stream := strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream") || strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("stream")), "true")
 	if stream {
 		s.handleImageGenerationsStream(w, r, req)
 		return
 	}
-	result, err := s.imageGen.Generate(r.Context(), req)
+	result, err := s.imageGen.Generate(identity.ContextWithPrincipal(r.Context(), req.Principal), req)
 	if err != nil {
 		status := imageGenerationErrorStatus(err)
 		body := map[string]any{"ok": false, "error": err.Error(), "code": fmt.Sprintf("%d", status)}
@@ -92,7 +99,7 @@ func (s *Server) handleImageGenerationsStream(w http.ResponseWriter, r *http.Req
 	req.OnEvent = func(event imagegen.GenerateStreamEvent) {
 		send(event.Type, map[string]any{"ok": true, "event": event})
 	}
-	result, err := s.imageGen.Generate(r.Context(), req)
+	result, err := s.imageGen.Generate(identity.ContextWithPrincipal(r.Context(), req.Principal), req)
 	if err != nil {
 		status := imageGenerationErrorStatus(err)
 		body := map[string]any{"ok": false, "error": err.Error(), "code": fmt.Sprintf("%d", status)}

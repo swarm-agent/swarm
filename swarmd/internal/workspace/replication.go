@@ -246,29 +246,7 @@ func (s *Service) RemoveReplicationLink(path, linkID string) error {
 }
 
 func (s *Service) RemoveReplicationLinksByTargetSwarmID(targetSwarmID string) error {
-	if s == nil || s.store == nil {
-		return fmt.Errorf("workspace store is not configured")
-	}
-	targetSwarmID = strings.TrimSpace(targetSwarmID)
-	if targetSwarmID == "" {
-		return fmt.Errorf("target swarm id is required")
-	}
-
-	entries, err := s.ListKnown(100000)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		for _, link := range entry.ReplicationLinks {
-			if !strings.EqualFold(strings.TrimSpace(link.TargetSwarmID), targetSwarmID) {
-				continue
-			}
-			if err := s.RemoveReplicationLink(entry.Path, link.ID); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return fmt.Errorf("legacy global workspace replication link removal is disabled; account scope is required")
 }
 
 func normalizeReplicationWorkspacePath(path string) (resolvedPath string, gitWorkspace bool, err error) {

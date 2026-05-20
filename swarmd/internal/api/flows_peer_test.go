@@ -337,7 +337,7 @@ func TestFlowAssignmentDeliveryTranslatesReplicatedWorkspacePath(t *testing.T) {
 	if err := os.MkdirAll(hostWorkspace, 0o755); err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
-	if _, err := server.workspace.Add(hostWorkspace, "swarm-go", "", true); err != nil {
+	if _, err := server.workspace.AddForPrincipal(testPrincipal(), hostWorkspace, "swarm-go", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
 	seedFlowTopologyWorkspaceBinding(t, server, hostWorkspace, "swarm-go", "pc-container", "local", "child-container", "/root/swarm-go")

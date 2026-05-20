@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/workspace"
 )
@@ -61,12 +62,12 @@ type workspaceOverviewTopologyRoute struct {
 	UpdatedAt            int64                                `json:"updated_at"`
 }
 
-func (s *Server) applyWorkspaceWorktreeStatus(entries []workspace.Entry) ([]workspace.Entry, error) {
+func (s *Server) applyWorkspaceWorktreeStatus(principal identity.Principal, entries []workspace.Entry) ([]workspace.Entry, error) {
 	if len(entries) == 0 || s.worktrees == nil {
 		return entries, nil
 	}
 	for i := range entries {
-		config, err := s.worktrees.GetConfig(entries[i].Path)
+		config, err := s.worktrees.GetConfigForPrincipal(principal, entries[i].Path)
 		if err != nil {
 			return nil, err
 		}
@@ -112,6 +113,11 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, errServiceNotConfigured("workspace service"))
 		return
 	}
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	if s.sessions == nil {
 		writeError(w, http.StatusInternalServerError, errServiceNotConfigured("session service"))
 		return
@@ -140,24 +146,24 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	workspaces, err := s.workspace.ListKnown(workspaceLimit)
+	workspaces, err := s.workspace.ListKnownForPrincipal(principal, workspaceLimit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	workspaces, err = s.applyWorkspaceWorktreeStatus(workspaces)
+	workspaces, err = s.applyWorkspaceWorktreeStatus(principal, workspaces)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	current, currentOK, err := s.workspace.CurrentBinding()
+	current, currentOK, err := s.workspace.CurrentBindingForPrincipal(principal)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if cwd := strings.TrimSpace(r.URL.Query().Get("cwd")); cwd != "" {
-		resolvedCurrent, resolveErr := s.workspace.Resolve(cwd)
+		resolvedCurrent, resolveErr := s.workspace.ResolveForPrincipal(principal, cwd)
 		if resolveErr != nil {
 			writeError(w, http.StatusBadRequest, resolveErr)
 			return

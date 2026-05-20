@@ -439,7 +439,7 @@ func TestPeerWorkspaceImportBundleRequiresPeerAuth(t *testing.T) {
 	handler, _, _ := newReplicateTestHandler(t)
 	request := httptest.NewRequest(http.MethodPost, peerWorkspaceImportBundlePath, strings.NewReader("not a bundle"))
 	recorder := httptest.NewRecorder()
-	handler.Handler().ServeHTTP(recorder, request)
+	handler.Handler().ServeHTTP(recorder, withTestPrincipal(request))
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusUnauthorized, recorder.Body.String())
 	}
@@ -505,7 +505,7 @@ func newReplicateTestHandler(t *testing.T) (*Server, *fakeReplicateDeployService
 	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
-	if _, err := workspaceSvc.Add(workspacePath, "workspace-one", "", true); err != nil {
+	if _, err := workspaceSvc.AddForPrincipal(testPrincipal(), workspacePath, "workspace-one", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
 
@@ -566,7 +566,7 @@ func postReplicateRequest(t *testing.T, server *Server, body map[string]any, swa
 	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, request)
+	server.Handler().ServeHTTP(recorder, withTestPrincipal(request))
 	return recorder
 }
 
@@ -737,7 +737,7 @@ func TestSwarmManagedHostContainerDeleteResolvesCanonicalHostContainerIDs(t *tes
 	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/managed-host/container/delete", strings.NewReader(`{"managed_swarm_id":"managed-swarm-1","ids":["deployment-1"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rr, req)
+	server.Handler().ServeHTTP(rr, withTestPrincipal(req))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}
@@ -836,7 +836,7 @@ func TestSwarmManagedHostContainerDeleteResolvesDeploymentIDToManagedLocalIdenti
 	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/managed-host/container/delete", strings.NewReader(`{"managed_swarm_id":"managed-swarm-1","ids":["deployment-1"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rr, req)
+	server.Handler().ServeHTTP(rr, withTestPrincipal(req))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}
@@ -1014,7 +1014,7 @@ func TestDeployContainerSyncCredentialsPreservesPeerAuthBeforeTrustedNetworkExem
 	req.Header.Set(peerAuthSwarmIDHeader, "manager-swarm")
 	req.Header.Set(peerAuthTokenHeader, "manager-token")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -1056,7 +1056,7 @@ func TestDeployContainerActionForMirroredManagedDeploymentForwardsToManagedHost(
 	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/container/action", strings.NewReader(`{"id":"deployment-1","action":"stop"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rr, req)
+	server.Handler().ServeHTTP(rr, withTestPrincipal(req))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}
@@ -1098,7 +1098,7 @@ func TestDeployContainerSettingsForMirroredManagedDeploymentForwardsToManagedHos
 	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/container/settings", strings.NewReader(`{"id":"deployment-1","bypass_permissions":true,"sync_modules":["permissions"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rr, req)
+	server.Handler().ServeHTTP(rr, withTestPrincipal(req))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
 	}

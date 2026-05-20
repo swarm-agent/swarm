@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -16,4 +17,8 @@ func newTestWorkspaceStore(t *testing.T) (*pebblestore.WorkspaceStore, func()) {
 	return pebblestore.NewWorkspaceStore(store), func() {
 		_ = store.Close()
 	}
+}
+
+func testPrincipal() identity.Principal {
+	return identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}
 }

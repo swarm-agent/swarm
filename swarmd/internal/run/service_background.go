@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -58,6 +59,7 @@ type RunStartMeta struct {
 	OwnerTransport      string
 	CompiledPolicy      *permission.Policy
 	IntegrationFlow     bool
+	Principal           identity.Principal
 }
 
 func (r RunRequest) Normalized() RunRequest {
@@ -104,6 +106,7 @@ func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 		CompiledPolicy:      meta.CompiledPolicy,
 		ExecutionContext:    request.ExecutionContext,
 		IntegrationFlow:     meta.IntegrationFlow,
+		Principal:           meta.Principal,
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/gitstatus"
+	"swarm/packages/swarmd/internal/identity"
 )
 
 func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
@@ -15,7 +16,12 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	workspacePath, err := s.resolveGitStatusWorkspacePath(r)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	workspacePath, err := s.resolveGitStatusWorkspacePath(r, principal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -40,13 +46,13 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) resolveGitStatusWorkspacePath(r *http.Request) (string, error) {
+func (s *Server) resolveGitStatusWorkspacePath(r *http.Request, principal identity.Principal) (string, error) {
 	workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(r.URL.Query().Get("cwd"))
 	}
 	if workspacePath == "" && s.workspace != nil {
-		current, ok, err := s.workspace.CurrentBinding()
+		current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)
 		if err != nil {
 			return "", err
 		}
@@ -57,5 +63,9 @@ func (s *Server) resolveGitStatusWorkspacePath(r *http.Request) (string, error) 
 	if workspacePath == "" {
 		return "", errors.New("workspace_path is required")
 	}
-	return workspacePath, nil
+	owned, err := s.resolveAccountOwnedPath(principal, workspacePath)
+	if err != nil {
+		return "", err
+	}
+	return owned.ResolvedPath, nil
 }

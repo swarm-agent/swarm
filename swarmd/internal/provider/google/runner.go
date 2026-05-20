@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/privacy"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -143,7 +144,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	if modelID == "" {
 		return provideriface.Response{}, errors.New("model is required")
 	}
-	auth, err := r.ensureAuth()
+	auth, err := r.ensureAuth(ctx)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
@@ -193,7 +194,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if modelID == "" {
 		return provideriface.Response{}, errors.New("model is required")
 	}
-	auth, err := r.ensureAuth()
+	auth, err := r.ensureAuth(ctx)
 	if err != nil {
 		return provideriface.Response{}, err
 	}
@@ -239,8 +240,12 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	return accumulator.response(), nil
 }
 
-func (r *Runner) ensureAuth() (googleAuth, error) {
-	record, ok, err := r.authStore.GetActiveCredential("google")
+func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return googleAuth{}, identity.ErrPrincipalRequired
+	}
+	record, ok, err := r.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "google")
 	if err != nil {
 		return googleAuth{}, fmt.Errorf("read google auth: %w", err)
 	}

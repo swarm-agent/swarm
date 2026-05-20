@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/defaults"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -21,9 +22,20 @@ func (a *Adapter) ID() string {
 	return "google"
 }
 
-func (a *Adapter) Status(context.Context) (provideriface.Status, error) {
+func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 	providerDefaults := defaults.MustLookup("google")
-	record, ok, err := a.authStore.GetActiveCredential("google")
+	principal, principalOK := identity.PrincipalFromContext(ctx)
+	if !principalOK {
+		return provideriface.Status{
+			ID:              "google",
+			Ready:           false,
+			Reason:          "product identity is required",
+			DefaultModel:    providerDefaults.PrimaryModel,
+			DefaultThinking: providerDefaults.PrimaryThinking,
+			AuthMethods:     googleAuthMethods(),
+		}, nil
+	}
+	record, ok, err := a.authStore.GetActiveCredentialForAccount(principal.AccountScopeID, "google")
 	if err != nil {
 		return provideriface.Status{}, err
 	}

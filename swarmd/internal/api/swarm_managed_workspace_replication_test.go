@@ -26,7 +26,7 @@ func TestPeerManagedWorkspaceInventoryReturnsSavedDiscoveredAndCWDs(t *testing.T
 	if err := os.MkdirAll(savedPath, 0o755); err != nil {
 		t.Fatalf("mkdir saved: %v", err)
 	}
-	if _, err := handler.workspace.Add(savedPath, "saved-workspace", "", false); err != nil {
+	if _, err := handler.workspace.AddForPrincipal(testPrincipal(), savedPath, "saved-workspace", "", false); err != nil {
 		t.Fatalf("add saved: %v", err)
 	}
 	discoveredPath := filepath.Join(home, "discovered-workspace")
@@ -85,7 +85,7 @@ func TestManagedWorkspaceInventoryUsesSelectedManagedHostWithoutTargetQuery(t *t
 	handler.SetSwarmService(fakeReplicateSwarmService{state: state, outgoingTokens: map[string]string{"managed-swarm-1": "host-to-managed-token"}, incomingTokens: map[string]string{"manager-swarm": "manager-token"}})
 	req := httptest.NewRequest(http.MethodGet, managedWorkspaceInventoryPath, nil)
 	recorder := httptest.NewRecorder()
-	handler.Handler().ServeHTTP(recorder, req)
+	handler.Handler().ServeHTTP(recorder, withTestPrincipal(req))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -123,7 +123,7 @@ func TestManagedWorkspaceInventoryCallsPeerWithAuth(t *testing.T) {
 	setReplicateFakeSwarmState(handler, swarmStateWithManagedPeer(remote.URL, "host-to-managed-token"))
 	req := httptest.NewRequest(http.MethodGet, managedWorkspaceInventoryPath+"?target_swarm_id=managed-swarm-1", nil)
 	recorder := httptest.NewRecorder()
-	handler.Handler().ServeHTTP(recorder, req)
+	handler.Handler().ServeHTTP(recorder, withTestPrincipal(req))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -173,7 +173,7 @@ func TestPeerManagedWorkspacePreflightPlansImportLinkAndConflict(t *testing.T) {
 	if err := os.MkdirAll(registered, 0o755); err != nil {
 		t.Fatalf("mkdir registered: %v", err)
 	}
-	if _, err := handler.workspace.Add(registered, "registered", "", false); err != nil {
+	if _, err := handler.workspace.AddForPrincipal(testPrincipal(), registered, "registered", "", false); err != nil {
 		t.Fatalf("add registered: %v", err)
 	}
 	unknown := filepath.Join(root, "unknown")
@@ -366,7 +366,7 @@ func postManagedWorkspacePreflightRequest(t *testing.T, server *Server, body map
 	request := httptest.NewRequest(http.MethodPost, managedWorkspacePreflightPath, bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, request)
+	server.Handler().ServeHTTP(recorder, withTestPrincipal(request))
 	return recorder
 }
 
@@ -399,7 +399,7 @@ func postPeerManagedImportBundle(t *testing.T, server *Server, root, destination
 	request.Header.Set(peerAuthSwarmIDHeader, "manager-swarm")
 	request.Header.Set(peerAuthTokenHeader, "manager-token")
 	recorder := httptest.NewRecorder()
-	server.Handler().ServeHTTP(recorder, request)
+	server.Handler().ServeHTTP(recorder, withTestPrincipal(request))
 	return recorder
 }
 

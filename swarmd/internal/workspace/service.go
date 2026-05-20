@@ -12,8 +12,11 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+var errAccountOwnedWorkspaceRequired = errors.New("account-owned workspace path is required")
 
 type Service struct {
 	store                      *pebblestore.WorkspaceStore
@@ -148,20 +151,44 @@ func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(p
 }
 
 func (s *Service) Resolve(cwd string) (Resolution, error) {
-	scope, err := s.ScopeForPath(cwd)
+	scope, err := s.legacyScopeForPath(cwd)
 	if err != nil {
 		return Resolution{}, err
+	}
+	if !scope.Matched {
+		return Resolution{}, errAccountOwnedWorkspaceRequired
+	}
+	return resolutionFromScope(cwd, scope), nil
+}
+
+func (s *Service) ResolveForPrincipal(principal identity.Principal, cwd string) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	scope, err := s.ScopeForPathForPrincipal(principal, cwd)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if !scope.Matched {
+		return Resolution{}, errAccountOwnedWorkspaceRequired
 	}
 	return resolutionFromScope(cwd, scope), nil
 }
 
 func (s *Service) Select(path string) (Resolution, error) {
+	return Resolution{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) SelectForPrincipal(principal identity.Principal, path string) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Resolution{}, err
 	}
 
-	entry, ok, err := s.store.Get(resolved)
+	entry, ok, err := s.store.GetForAccount(principal.AccountScopeID, resolved)
 	if err != nil {
 		return Resolution{}, err
 	}
@@ -173,13 +200,20 @@ func (s *Service) Select(path string) (Resolution, error) {
 	if name == "" {
 		name = defaultWorkspaceName(resolved)
 	}
-	if _, err := s.store.SetCurrent(resolved, name); err != nil {
+	if _, err := s.store.SetCurrentForAccount(principal.AccountScopeID, principal.UserID, resolved, name); err != nil {
 		return Resolution{}, fmt.Errorf("persist workspace selection: %w", err)
 	}
 	return resolutionForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
 }
 
 func (s *Service) Add(path, name, themeID string, makeCurrent bool) (Resolution, error) {
+	return Resolution{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) AddForPrincipal(principal identity.Principal, path, name, themeID string, makeCurrent bool) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Resolution{}, err
@@ -192,18 +226,18 @@ func (s *Service) Add(path, name, themeID string, makeCurrent bool) (Resolution,
 		name = defaultWorkspaceName(resolved)
 	}
 	if makeCurrent {
-		if _, err := s.store.Save(resolved, name, themeID, true); err != nil {
+		if _, err := s.store.SaveForAccount(principal.AccountScopeID, resolved, name, themeID, true); err != nil {
 			return Resolution{}, fmt.Errorf("persist workspace binding: %w", err)
 		}
-		if _, err := s.store.SetCurrent(resolved, name); err != nil {
+		if _, err := s.store.SetCurrentForAccount(principal.AccountScopeID, principal.UserID, resolved, name); err != nil {
 			return Resolution{}, fmt.Errorf("persist workspace selection: %w", err)
 		}
 	} else {
-		if _, err := s.store.Save(resolved, name, themeID, false); err != nil {
+		if _, err := s.store.SaveForAccount(principal.AccountScopeID, resolved, name, themeID, false); err != nil {
 			return Resolution{}, fmt.Errorf("persist workspace entry: %w", err)
 		}
 	}
-	entry, ok, err := s.store.Get(resolved)
+	entry, ok, err := s.store.GetForAccount(principal.AccountScopeID, resolved)
 	if err != nil {
 		return Resolution{}, err
 	}
@@ -214,6 +248,13 @@ func (s *Service) Add(path, name, themeID string, makeCurrent bool) (Resolution,
 }
 
 func (s *Service) AddDirectory(path, directory string) (Resolution, error) {
+	return Resolution{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) AddDirectoryForPrincipal(principal identity.Principal, path, directory string) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
 	workspacePath, err := resolvePath(path)
 	if err != nil {
 		return Resolution{}, err
@@ -226,7 +267,7 @@ func (s *Service) AddDirectory(path, directory string) (Resolution, error) {
 		return Resolution{}, err
 	}
 
-	entry, err := s.store.AddDirectory(workspacePath, targetPath)
+	entry, err := s.store.AddDirectoryForAccount(principal.AccountScopeID, workspacePath, targetPath)
 	if err != nil {
 		return Resolution{}, fmt.Errorf("add workspace directory: %w", err)
 	}
@@ -238,6 +279,13 @@ func (s *Service) AddDirectory(path, directory string) (Resolution, error) {
 }
 
 func (s *Service) RemoveDirectory(path, directory string) (Resolution, error) {
+	return Resolution{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) RemoveDirectoryForPrincipal(principal identity.Principal, path, directory string) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
 	workspacePath, err := resolvePath(path)
 	if err != nil {
 		return Resolution{}, err
@@ -247,7 +295,7 @@ func (s *Service) RemoveDirectory(path, directory string) (Resolution, error) {
 		return Resolution{}, err
 	}
 
-	entry, err := s.store.RemoveDirectory(workspacePath, targetPath)
+	entry, err := s.store.RemoveDirectoryForAccount(principal.AccountScopeID, workspacePath, targetPath)
 	if err != nil {
 		return Resolution{}, fmt.Errorf("remove workspace directory: %w", err)
 	}
@@ -259,6 +307,13 @@ func (s *Service) RemoveDirectory(path, directory string) (Resolution, error) {
 }
 
 func (s *Service) Rename(path, name string) (Resolution, error) {
+	return Resolution{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) RenameForPrincipal(principal identity.Principal, path, name string) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Resolution{}, err
@@ -268,13 +323,13 @@ func (s *Service) Rename(path, name string) (Resolution, error) {
 		return Resolution{}, fmt.Errorf("workspace name is required")
 	}
 
-	if _, ok, err := s.store.Get(resolved); err != nil {
+	if _, ok, err := s.store.GetForAccount(principal.AccountScopeID, resolved); err != nil {
 		return Resolution{}, err
 	} else if !ok {
 		return Resolution{}, fmt.Errorf("workspace not found for path %q", resolved)
 	}
 
-	entry, err := s.store.Rename(resolved, name)
+	entry, err := s.store.RenameForAccount(principal.AccountScopeID, principal.UserID, resolved, name)
 	if err != nil {
 		return Resolution{}, fmt.Errorf("rename workspace: %w", err)
 	}
@@ -282,11 +337,18 @@ func (s *Service) Rename(path, name string) (Resolution, error) {
 }
 
 func (s *Service) SetThemeID(path, themeID string) (Resolution, error) {
+	return Resolution{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) SetThemeIDForPrincipal(principal identity.Principal, path, themeID string) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Resolution{}, err
 	}
-	entry, err := s.store.SetThemeID(resolved, themeID)
+	entry, err := s.store.SetThemeIDForAccount(principal.AccountScopeID, resolved, themeID)
 	if err != nil {
 		return Resolution{}, fmt.Errorf("set workspace theme: %w", err)
 	}
@@ -326,11 +388,18 @@ func (s *Service) publishThemeUpdated(resolution Resolution) error {
 }
 
 func (s *Service) Move(path string, delta int) (Resolution, error) {
+	return Resolution{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) MoveForPrincipal(principal identity.Principal, path string, delta int) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Resolution{}, err
 	}
-	entry, err := s.store.Move(resolved, delta)
+	entry, err := s.store.MoveForAccount(principal.AccountScopeID, resolved, delta)
 	if err != nil {
 		return Resolution{}, fmt.Errorf("move workspace: %w", err)
 	}
@@ -342,12 +411,19 @@ func (s *Service) Move(path string, delta int) (Resolution, error) {
 }
 
 func (s *Service) Delete(path string) (Resolution, error) {
+	return Resolution{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) DeleteForPrincipal(principal identity.Principal, path string) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Resolution{}, err
 	}
 
-	entry, ok, err := s.store.Get(resolved)
+	entry, ok, err := s.store.GetForAccount(principal.AccountScopeID, resolved)
 	if err != nil {
 		return Resolution{}, err
 	}
@@ -359,21 +435,50 @@ func (s *Service) Delete(path string) (Resolution, error) {
 		name = defaultWorkspaceName(resolved)
 	}
 
-	if err := s.store.Delete(resolved); err != nil {
+	if err := s.store.DeleteForAccount(principal.AccountScopeID, principal.UserID, resolved); err != nil {
 		return Resolution{}, fmt.Errorf("delete workspace: %w", err)
 	}
 	return resolutionForWorkspace(path, resolved, resolved, name, normalizeWorkspaceThemeID(entry.ThemeID)), nil
 }
 
 func (s *Service) ListKnown(limit int) ([]Entry, error) {
-	if err := s.ensureRemoteChildWorkspaceEntries(); err != nil {
-		return nil, err
-	}
-	entries, err := s.store.List(limit)
+	entries, err := s.store.ListLegacy(limit)
 	if err != nil {
 		return nil, err
 	}
-	current, ok, err := s.store.GetCurrent()
+	out := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		isGitRepo, _, _ := detectWorkspaceSignals(entry.Path)
+		out = append(out, Entry{
+			Path:             entry.Path,
+			WorkspaceName:    entry.Name,
+			ThemeID:          normalizeWorkspaceThemeID(entry.ThemeID),
+			Directories:      append([]string(nil), entry.Directories...),
+			IsGitRepo:        isGitRepo,
+			ReplicationLinks: append([]pebblestore.WorkspaceReplicationLink(nil), entry.ReplicationLinks...),
+			SortIndex:        entry.SortIndex,
+			AddedAt:          entry.AddedAt,
+			UpdatedAt:        entry.UpdatedAt,
+			LastSelectedAt:   entry.LastSelectedAt,
+			Active:           false,
+			WorktreeEnabled:  false,
+		})
+	}
+	return out, nil
+}
+
+func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int) ([]Entry, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return nil, err
+	}
+	if err := s.ensureRemoteChildWorkspaceEntriesForPrincipal(principal); err != nil {
+		return nil, err
+	}
+	entries, err := s.store.ListForAccount(principal.AccountScopeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	current, ok, err := s.store.GetCurrentForAccount(principal.AccountScopeID, principal.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -403,22 +508,44 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 }
 
 func (s *Service) CurrentBinding() (Resolution, bool, error) {
-	binding, ok, err := s.store.GetCurrent()
+	return Resolution{}, false, identity.ErrPrincipalRequired
+}
+
+func (s *Service) CurrentBindingForPrincipal(principal identity.Principal) (Resolution, bool, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, false, err
+	}
+	binding, ok, err := s.store.GetCurrentForAccount(principal.AccountScopeID, principal.UserID)
 	if err != nil {
 		return Resolution{}, false, err
 	}
 	if !ok {
 		return Resolution{}, false, nil
 	}
-	return resolutionForWorkspace(binding.Path, binding.Path, binding.Path, binding.Name, ""), true, nil
+	entry, entryOK, err := s.store.GetForAccount(principal.AccountScopeID, binding.Path)
+	if err != nil {
+		return Resolution{}, false, err
+	}
+	themeID := ""
+	if entryOK {
+		themeID = normalizeWorkspaceThemeID(entry.ThemeID)
+	}
+	return resolutionForWorkspace(binding.Path, binding.Path, binding.Path, binding.Name, themeID), true, nil
 }
 
 func (s *Service) ScopeForPath(path string) (Scope, error) {
+	return s.legacyScopeForPath(path)
+}
+
+func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path string) (Scope, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Scope{}, err
+	}
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Scope{}, err
 	}
-	entries, err := s.store.List(100000)
+	entries, err := s.store.ListForAccount(principal.AccountScopeID, 100000)
 	if err != nil {
 		return Scope{}, err
 	}
@@ -462,7 +589,33 @@ func (s *Service) ScopeForWorkspace(path string) (Scope, error) {
 	if err != nil {
 		return Scope{}, err
 	}
-	entry, ok, err := s.store.Get(resolved)
+	entry, ok, err := s.store.GetLegacy(resolved)
+	if err != nil {
+		return Scope{}, err
+	}
+	if !ok {
+		return Scope{}, fmt.Errorf("workspace not found for path %q", resolved)
+	}
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = defaultWorkspaceName(entry.Path)
+	}
+	directories := append([]string(nil), entry.Directories...)
+	if len(directories) == 0 {
+		directories = []string{entry.Path}
+	}
+	return scopeForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID), directories, true), nil
+}
+
+func (s *Service) ScopeForWorkspaceForPrincipal(principal identity.Principal, path string) (Scope, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Scope{}, err
+	}
+	resolved, err := resolvePath(path)
+	if err != nil {
+		return Scope{}, err
+	}
+	entry, ok, err := s.store.GetForAccount(principal.AccountScopeID, resolved)
 	if err != nil {
 		return Scope{}, err
 	}
@@ -481,9 +634,23 @@ func (s *Service) ScopeForWorkspace(path string) (Scope, error) {
 }
 
 func (s *Service) Browse(path string) (BrowseResult, error) {
+	return BrowseResult{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) BrowseForPrincipal(principal identity.Principal, path string) (BrowseResult, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return BrowseResult{}, err
+	}
 	resolved, err := s.resolveBrowsePath(path)
 	if err != nil {
 		return BrowseResult{}, err
+	}
+	scope, err := s.ScopeForPathForPrincipal(principal, resolved)
+	if err != nil {
+		return BrowseResult{}, err
+	}
+	if !scope.Matched {
+		return BrowseResult{}, errAccountOwnedWorkspaceRequired
 	}
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
 		return BrowseResult{}, err
@@ -535,9 +702,23 @@ func (s *Service) Browse(path string) (BrowseResult, error) {
 }
 
 func (s *Service) CreateFolder(parentPath, name string) (CreateFolderResult, error) {
+	return CreateFolderResult{}, identity.ErrPrincipalRequired
+}
+
+func (s *Service) CreateFolderForPrincipal(principal identity.Principal, parentPath, name string) (CreateFolderResult, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return CreateFolderResult{}, err
+	}
 	parent, err := resolveBrowsePath(parentPath)
 	if err != nil {
 		return CreateFolderResult{}, err
+	}
+	scope, err := s.ScopeForPathForPrincipal(principal, parent)
+	if err != nil {
+		return CreateFolderResult{}, err
+	}
+	if !scope.Matched {
+		return CreateFolderResult{}, errAccountOwnedWorkspaceRequired
 	}
 	if err := ensureWorkspaceDirectory(parent); err != nil {
 		return CreateFolderResult{}, err
@@ -681,6 +862,55 @@ func remoteChildWorkspaceRoot() (string, bool) {
 }
 
 func (s *Service) ensureRemoteChildWorkspaceEntries() error {
+	return identity.ErrPrincipalRequired
+}
+
+func (s *Service) legacyScopeForPath(path string) (Scope, error) {
+	resolved, err := resolvePath(path)
+	if err != nil {
+		return Scope{}, err
+	}
+	entries, err := s.store.ListLegacy(100000)
+	if err != nil {
+		return Scope{}, err
+	}
+	bestIndex := -1
+	bestRoot := ""
+	bestIsPrimary := false
+	for i, entry := range entries {
+		primaryPath := strings.TrimSpace(entry.Path)
+		for _, root := range entry.Directories {
+			if !pathWithinRoot(root, resolved) {
+				continue
+			}
+			trimmedRoot := strings.TrimSpace(root)
+			isPrimary := trimmedRoot != "" && trimmedRoot == primaryPath
+			if len(trimmedRoot) > len(bestRoot) || (len(trimmedRoot) == len(bestRoot) && isPrimary && !bestIsPrimary) {
+				bestRoot = trimmedRoot
+				bestIndex = i
+				bestIsPrimary = isPrimary
+			}
+		}
+	}
+	if bestIndex < 0 {
+		return scopeForWorkspace(path, resolved, resolved, defaultWorkspaceName(resolved), "", []string{resolved}, false), nil
+	}
+	entry := entries[bestIndex]
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = defaultWorkspaceName(entry.Path)
+	}
+	directories := append([]string(nil), entry.Directories...)
+	if len(directories) == 0 {
+		directories = []string{entry.Path}
+	}
+	return scopeForWorkspace(path, resolved, entry.Path, name, normalizeWorkspaceThemeID(entry.ThemeID), directories, true), nil
+}
+
+func (s *Service) ensureRemoteChildWorkspaceEntriesForPrincipal(principal identity.Principal) error {
+	if err := requirePrincipal(principal); err != nil {
+		return err
+	}
 	if s == nil || s.store == nil {
 		return nil
 	}
@@ -691,7 +921,7 @@ func (s *Service) ensureRemoteChildWorkspaceEntries() error {
 	if !ok {
 		return nil
 	}
-	entries, err := s.store.List(100000)
+	entries, err := s.store.ListForAccount(principal.AccountScopeID, 100000)
 	if err != nil {
 		return err
 	}
@@ -715,9 +945,16 @@ func (s *Service) ensureRemoteChildWorkspaceEntries() error {
 		if _, ok := known[filepath.Clean(workspacePath)]; ok {
 			continue
 		}
-		if _, err := s.Add(workspacePath, defaultWorkspaceName(workspacePath), "", false); err != nil {
+		if _, err := s.AddForPrincipal(principal, workspacePath, defaultWorkspaceName(workspacePath), "", false); err != nil {
 			return fmt.Errorf("register mounted remote child workspace %q: %w", workspacePath, err)
 		}
+	}
+	return nil
+}
+
+func requirePrincipal(principal identity.Principal) error {
+	if !principal.Valid() {
+		return identity.ErrPrincipalRequired
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/codex"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -229,7 +230,10 @@ func (s *Service) generateGoogleGemini(ctx context.Context, req GenerateRequest,
 	if s.authStore == nil {
 		return GenerateResult{}, errors.New("Google auth store is not configured")
 	}
-	record, ok, err := s.authStore.GetActiveCredential("google")
+	if !req.Principal.Valid() {
+		return GenerateResult{}, identity.ErrPrincipalRequired
+	}
+	record, ok, err := s.authStore.GetActiveCredentialForAccount(req.Principal.AccountScopeID, "google")
 	if err != nil {
 		return GenerateResult{}, fmt.Errorf("read google auth: %w", err)
 	}

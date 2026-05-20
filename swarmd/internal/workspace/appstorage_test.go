@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -25,10 +26,11 @@ func TestResolveCreatesManagedWorkspaceStorageMetadata(t *testing.T) {
 
 	store := openWorkspaceTestStore(t)
 	svc := NewService(pebblestore.NewWorkspaceStore(store))
-	if _, err := svc.Add(workspacePath, "Repo", "", true); err != nil {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}
+	if _, err := svc.AddForPrincipal(principal, workspacePath, "Repo", "", true); err != nil {
 		t.Fatalf("Add workspace: %v", err)
 	}
-	resolution, err := svc.Resolve(workspacePath)
+	resolution, err := svc.ResolveForPrincipal(principal, workspacePath)
 	if err != nil {
 		t.Fatalf("Resolve workspace: %v", err)
 	}
