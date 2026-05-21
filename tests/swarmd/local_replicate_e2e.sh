@@ -41,6 +41,7 @@ Options:
   --host-vault-password-env <name>    Read the host vault password from an environment variable
   --host-vault-password-file <path>   Read the host vault password from a local file
   --verify-sync-state                 After attach, create a host credential plus a custom agent/tool and wait for the child to read them
+  --verify-host-provider-key-sync     Add provider API key on host before deploy, then inspect inside child container for synced credential
   --verify-sync-crud-flow             After attach, prove real Fireworks credential CRUD plus synced agent/tool routed execution on the child
   --prove-routed-ai                   After attach, run an optional final routed AI proof session on the replicated child
   --verify-topology-cleanup           Delete the real child through /v1/deploy/container/delete and prove no stale topology remains
@@ -395,7 +396,7 @@ prepare_proof_provider_key_file() {
     return 0
   fi
   if [[ "${required}" == "true" ]]; then
-    fail "--verify-sync-crud-flow requires --proof-provider-key-file or --proof-provider-key-env"
+    fail "${display_name} requires --proof-provider-key-file or --proof-provider-key-env"
   fi
 }
 
@@ -1751,6 +1752,85 @@ run_final_routed_ai_proof() {
   fi
 }
 
+seed_host_provider_key_sync_diagnostic() {
+  [[ "${VERIFY_HOST_PROVIDER_KEY_SYNC}" == "true" ]] || return 0
+  [[ "${SYNC_ENABLED}" == "true" ]] || fail "--verify-host-provider-key-sync requires --sync-enabled"
+  sync_module_enabled "credentials" || fail "--verify-host-provider-key-sync requires credentials in --sync-modules"
+
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY_FILE" "PROOF_PROVIDER_KEY_ENV" "PROOF_PROVIDER_KEY_TMP_FILE" "host provider key sync diagnostic key" "true"
+
+  local probe_suffix credential_payload credential_response host_credentials_json
+  probe_suffix="$(date +%Y%m%d%H%M%S)"
+  HOST_SYNC_PROVIDER_CREDENTIAL_PROVIDER="${PROOF_PROVIDER}"
+  HOST_SYNC_PROVIDER_CREDENTIAL_ID="host-sync-${PROOF_PROVIDER}-${probe_suffix}"
+  HOST_SYNC_PROVIDER_CREDENTIAL_LABEL="host-sync-before-deploy-${probe_suffix}"
+
+  log "Adding host ${PROOF_PROVIDER} credential before local container deploy"
+  set_step "sync-diagnostic:seed-host-provider-key"
+  credential_payload="$(jq -nc \
+    --arg id "${HOST_SYNC_PROVIDER_CREDENTIAL_ID}" \
+    --arg provider "${PROOF_PROVIDER}" \
+    --arg label "${HOST_SYNC_PROVIDER_CREDENTIAL_LABEL}" \
+    --argjson active true \
+    --rawfile api_key "${PROOF_PROVIDER_KEY_FILE}" \
+    '{id:$id,provider:$provider,type:"api",label:$label,api_key:($api_key | sub("\\r?\\n$";"")),active:$active}')"
+  credential_response="$(api_post '/v1/auth/credentials' "${credential_payload}")"
+  write_artifact "host-sync-diagnostic-credential-create.json" "${credential_response}"
+  HOST_SYNC_PROVIDER_CREDENTIAL_LAST4="$(printf '%s' "${credential_response}" | jq -r '.last4 // empty')"
+  [[ -n "${HOST_SYNC_PROVIDER_CREDENTIAL_LAST4}" ]] || fail "host credential create did not return last4 for ${HOST_SYNC_PROVIDER_CREDENTIAL_ID}"
+
+  host_credentials_json="$(api_get "/v1/auth/credentials?provider=${PROOF_PROVIDER}&limit=50")"
+  write_artifact "host-sync-diagnostic-credentials-before-deploy.json" "${host_credentials_json}"
+  if ! printf '%s' "${host_credentials_json}" | jq -e --arg id "${HOST_SYNC_PROVIDER_CREDENTIAL_ID}" --arg last4 "${HOST_SYNC_PROVIDER_CREDENTIAL_LAST4}" '[.records[]? | select(.id == $id and .active == true and (.last4 // "") == $last4)] | length == 1' >/dev/null; then
+    fail "host credential ${HOST_SYNC_PROVIDER_CREDENTIAL_ID} was not visible through the normal host auth API before deploy"
+  fi
+}
+
+verify_host_provider_key_sync_diagnostic() {
+  [[ "${VERIFY_HOST_PROVIDER_KEY_SYNC}" == "true" ]] || return 0
+  [[ -n "${HOST_SYNC_PROVIDER_CREDENTIAL_ID}" ]] || fail "host provider key sync diagnostic credential id is not set"
+  [[ -n "${HOST_SYNC_PROVIDER_CREDENTIAL_LAST4}" ]] || fail "host provider key sync diagnostic last4 is not set"
+
+  ensure_child_attach_token
+  log "Inspecting inside child container for host-synced ${PROOF_PROVIDER} credential"
+  set_step "sync-diagnostic:inspect-child-provider-key"
+
+  local start_ts child_credentials_json child_match_count child_active_id child_last4 child_storage_mode
+  start_ts="$(date +%s)"
+  while :; do
+    child_credentials_json="$(child_api_get "/v1/auth/credentials?provider=${PROOF_PROVIDER}&limit=50")"
+    child_match_count="$(printf '%s' "${child_credentials_json}" | jq -r --arg id "${HOST_SYNC_PROVIDER_CREDENTIAL_ID}" '[.records[]? | select(.id == $id)] | length')"
+    child_active_id="$(printf '%s' "${child_credentials_json}" | jq -r '[.records[]? | select(.active == true) | .id] | if length == 1 then .[0] else "" end')"
+    child_last4="$(printf '%s' "${child_credentials_json}" | jq -r --arg id "${HOST_SYNC_PROVIDER_CREDENTIAL_ID}" '[.records[]? | select(.id == $id) | (.last4 // "")] | first // ""')"
+    child_storage_mode="$(printf '%s' "${child_credentials_json}" | jq -r --arg id "${HOST_SYNC_PROVIDER_CREDENTIAL_ID}" '[.records[]? | select(.id == $id) | (.storage_mode // "")] | first // ""')"
+    if [[ "${child_match_count}" == "1" && "${child_active_id}" == "${HOST_SYNC_PROVIDER_CREDENTIAL_ID}" && "${child_last4}" == "${HOST_SYNC_PROVIDER_CREDENTIAL_LAST4}" ]]; then
+      write_artifact "child-sync-diagnostic-credentials-inside-container.json" "${child_credentials_json}"
+      write_artifact "child-sync-diagnostic-result.json" "$(jq -nc \
+        --arg provider "${PROOF_PROVIDER}" \
+        --arg credential_id "${HOST_SYNC_PROVIDER_CREDENTIAL_ID}" \
+        --arg last4 "${HOST_SYNC_PROVIDER_CREDENTIAL_LAST4}" \
+        --arg storage_mode "${child_storage_mode}" \
+        --arg container_name "${CONTAINER_NAME}" \
+        '{ok:true,provider:$provider,credential_id:$credential_id,last4:$last4,storage_mode:$storage_mode,container_name:$container_name,checked_from:"inside_child_container_api"}')"
+      return 0
+    fi
+    if (( "$(date +%s)" - start_ts >= SYNC_VERIFY_TIMEOUT_SECONDS )); then
+      write_artifact "child-sync-diagnostic-credentials-inside-container.timeout.json" "${child_credentials_json}"
+      write_artifact "child-sync-diagnostic-result.timeout.json" "$(jq -nc \
+        --arg provider "${PROOF_PROVIDER}" \
+        --arg credential_id "${HOST_SYNC_PROVIDER_CREDENTIAL_ID}" \
+        --arg expected_last4 "${HOST_SYNC_PROVIDER_CREDENTIAL_LAST4}" \
+        --arg saw_active_id "${child_active_id:-}" \
+        --arg saw_last4 "${child_last4:-}" \
+        --arg saw_match_count "${child_match_count:-0}" \
+        --arg container_name "${CONTAINER_NAME}" \
+        '{ok:false,provider:$provider,credential_id:$credential_id,expected_last4:$expected_last4,saw_match_count:($saw_match_count|tonumber),saw_active_id:$saw_active_id,saw_last4:$saw_last4,container_name:$container_name,checked_from:"inside_child_container_api"}')"
+      fail "host ${PROOF_PROVIDER} credential ${HOST_SYNC_PROVIDER_CREDENTIAL_ID} was not visible inside child container after deploy (matches=${child_match_count:-0}, active=${child_active_id:-<empty>}, last4=${child_last4:-<empty>})"
+    fi
+    sleep "${POLL_INTERVAL_SECONDS}"
+  done
+}
+
 exercise_sync_crud_flow() {
   [[ "${VERIFY_SYNC_CRUD_FLOW}" == "true" ]] || return 0
   [[ "${SYNC_ENABLED}" == "true" ]] || fail "--verify-sync-crud-flow requires --sync-enabled"
@@ -2259,6 +2339,7 @@ verify_final_state() {
   exercise_topology_routed_session_route
   verify_workspace_link
   exercise_sync_state
+  verify_host_provider_key_sync_diagnostic
   exercise_sync_crud_flow
   run_final_routed_ai_proof
   if [[ "${VERIFY_TOPOLOGY_CLEANUP}" == "true" ]]; then
@@ -2297,6 +2378,7 @@ verify_final_state() {
     --arg sync_mode "${SYNC_MODE}" \
     --argjson sync_modules "$(sync_modules_json)" \
     --argjson verify_sync_state "${VERIFY_SYNC_STATE}" \
+    --argjson verify_host_provider_key_sync "${VERIFY_HOST_PROVIDER_KEY_SYNC}" \
     --argjson verify_sync_crud_flow "${VERIFY_SYNC_CRUD_FLOW}" \
     --argjson verify_topology_cleanup "${VERIFY_TOPOLOGY_CLEANUP}" \
     --arg proof_provider "${PROOF_PROVIDER}" \
@@ -2309,11 +2391,13 @@ verify_final_state() {
     --arg topology_probe_session_id "${TOPOLOGY_PROBE_SESSION_ID:-}" \
     --arg sync_probe_credential_provider "${SYNC_PROBE_CREDENTIAL_PROVIDER:-}" \
     --arg sync_probe_credential_id "${SYNC_PROBE_CREDENTIAL_ID:-}" \
+    --arg host_sync_provider_credential_provider "${HOST_SYNC_PROVIDER_CREDENTIAL_PROVIDER:-}" \
+    --arg host_sync_provider_credential_id "${HOST_SYNC_PROVIDER_CREDENTIAL_ID:-}" \
     --arg sync_probe_tool_name "${SYNC_PROBE_TOOL_NAME:-}" \
     --arg sync_probe_agent_name "${SYNC_PROBE_AGENT_NAME:-}" \
     --argjson backend_probe "${BACKEND_PROBE_JSON}" \
     --argjson desktop_probe "${DESKTOP_PROBE_JSON}" \
-    '{runtime:$runtime,host_root:$host_root,host_install_mode:$host_install_mode,host_install_artifact_root:$host_install_artifact_root,host_swarm_name:$host_swarm_name,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_log_file:$host_log_file,source_workspace_path:$source_workspace_path,workspace_name:$workspace_name,swarm_name:$swarm_name,run_index:$run_index,artifact_dir:$artifact_dir,replication_mode:$replication_mode,writable:$writable,sync_enabled:$sync_enabled,sync_mode:$sync_mode,sync_modules:$sync_modules,verify_sync_state:$verify_sync_state,verify_sync_crud_flow:$verify_sync_crud_flow,verify_topology_cleanup:$verify_topology_cleanup,group_id:$group_id,group_name:$group_name,group_network_name:$group_network_name,deployment_id:$deployment_id,container_name:$container_name,host_container_id:$host_container_id,attachment_id:$attachment_id,child_swarm_id:$child_swarm_id,child_backend_url:$child_backend_url,child_desktop_url:$child_desktop_url,target_workspace_path:$target_workspace_path,proof:{provider:$proof_provider,model:$proof_model,thinking:$proof_thinking,primary_credential_id:$proof_primary_credential_id,secondary_credential_id:$proof_secondary_credential_id,session_id:$proof_session_id,success_token:$proof_success_token},topology_probe:{session_id:$topology_probe_session_id,cleanup_verified:$verify_topology_cleanup},sync_probe:{credential_provider:$sync_probe_credential_provider,credential_id:$sync_probe_credential_id,tool_name:$sync_probe_tool_name,agent_name:$sync_probe_agent_name},backend_probe:$backend_probe,desktop_probe:$desktop_probe}')"
+    '{runtime:$runtime,host_root:$host_root,host_install_mode:$host_install_mode,host_install_artifact_root:$host_install_artifact_root,host_swarm_name:$host_swarm_name,host_api_url:$host_api_url,host_desktop_url:$host_desktop_url,host_log_file:$host_log_file,source_workspace_path:$source_workspace_path,workspace_name:$workspace_name,swarm_name:$swarm_name,run_index:$run_index,artifact_dir:$artifact_dir,replication_mode:$replication_mode,writable:$writable,sync_enabled:$sync_enabled,sync_mode:$sync_mode,sync_modules:$sync_modules,verify_sync_state:$verify_sync_state,verify_host_provider_key_sync:$verify_host_provider_key_sync,verify_sync_crud_flow:$verify_sync_crud_flow,verify_topology_cleanup:$verify_topology_cleanup,group_id:$group_id,group_name:$group_name,group_network_name:$group_network_name,deployment_id:$deployment_id,container_name:$container_name,host_container_id:$host_container_id,attachment_id:$attachment_id,child_swarm_id:$child_swarm_id,child_backend_url:$child_backend_url,child_desktop_url:$child_desktop_url,target_workspace_path:$target_workspace_path,proof:{provider:$proof_provider,model:$proof_model,thinking:$proof_thinking,primary_credential_id:$proof_primary_credential_id,secondary_credential_id:$proof_secondary_credential_id,session_id:$proof_session_id,success_token:$proof_success_token},topology_probe:{session_id:$topology_probe_session_id,cleanup_verified:$verify_topology_cleanup},sync_probe:{credential_provider:$sync_probe_credential_provider,credential_id:$sync_probe_credential_id,host_provider_credential_provider:$host_sync_provider_credential_provider,host_provider_credential_id:$host_sync_provider_credential_id,tool_name:$sync_probe_tool_name,agent_name:$sync_probe_agent_name},backend_probe:$backend_probe,desktop_probe:$desktop_probe}')"
   write_artifact "summary.json" "${SUMMARY_JSON}"
 
   log ""
@@ -2356,6 +2440,7 @@ HOST_VAULT_PASSWORD=""
 HOST_VAULT_PASSWORD_ENV=""
 HOST_VAULT_PASSWORD_FILE=""
 VERIFY_SYNC_STATE="false"
+VERIFY_HOST_PROVIDER_KEY_SYNC="false"
 VERIFY_SYNC_CRUD_FLOW="false"
 VERIFY_TOPOLOGY_CLEANUP="false"
 PROVE_ROUTED_AI="false"
@@ -2405,6 +2490,10 @@ PROOF_RUN_PROMPT=""
 PROOF_SUCCESS_TOKEN=""
 SYNC_PROBE_CREDENTIAL_PROVIDER=""
 SYNC_PROBE_CREDENTIAL_ID=""
+HOST_SYNC_PROVIDER_CREDENTIAL_PROVIDER=""
+HOST_SYNC_PROVIDER_CREDENTIAL_ID=""
+HOST_SYNC_PROVIDER_CREDENTIAL_LABEL=""
+HOST_SYNC_PROVIDER_CREDENTIAL_LAST4=""
 SYNC_PROBE_TOOL_NAME=""
 SYNC_PROBE_TOOL_CONTRACT_NAME=""
 SYNC_PROBE_TOOL_COMMAND=""
@@ -2490,6 +2579,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --verify-sync-state)
       VERIFY_SYNC_STATE="true"
+      shift
+      ;;
+    --verify-host-provider-key-sync)
+      VERIFY_HOST_PROVIDER_KEY_SYNC="true"
       shift
       ;;
     --verify-sync-crud-flow)
@@ -2680,6 +2773,9 @@ fi
 if [[ "${VERIFY_SYNC_STATE}" == "true" && "${SYNC_ENABLED}" != "true" ]]; then
   fail "--verify-sync-state requires --sync-enabled"
 fi
+if [[ "${VERIFY_HOST_PROVIDER_KEY_SYNC}" == "true" && "${SYNC_ENABLED}" != "true" ]]; then
+  fail "--verify-host-provider-key-sync requires --sync-enabled"
+fi
 if [[ "${VERIFY_SYNC_CRUD_FLOW}" == "true" && "${SYNC_ENABLED}" != "true" ]]; then
   fail "--verify-sync-crud-flow requires --sync-enabled"
 fi
@@ -2688,6 +2784,9 @@ if [[ "${PROVE_ROUTED_AI}" == "true" && "${VERIFY_SYNC_CRUD_FLOW}" == "true" ]];
 fi
 if [[ "${VERIFY_SYNC_STATE}" == "true" && -z "${SYNC_MODULES_RAW}" ]]; then
   SYNC_MODULES_RAW="credentials,agents,custom_tools"
+fi
+if [[ "${VERIFY_HOST_PROVIDER_KEY_SYNC}" == "true" && -z "${SYNC_MODULES_RAW}" ]]; then
+  SYNC_MODULES_RAW="credentials"
 fi
 if [[ "${VERIFY_SYNC_CRUD_FLOW}" == "true" && -z "${SYNC_MODULES_RAW}" ]]; then
   SYNC_MODULES_RAW="credentials,agents,custom_tools"
@@ -2708,6 +2807,9 @@ if [[ -n "${PROOF_PROVIDER_KEY_ENV}" && -n "${PROOF_PROVIDER_KEY_FILE}" ]]; then
 fi
 if [[ -n "${PROOF_PROVIDER_KEY2_ENV}" && -n "${PROOF_PROVIDER_KEY2_FILE}" ]]; then
   fail "only one of --proof-provider-key2-env or --proof-provider-key2-file may be provided"
+fi
+if [[ "${VERIFY_HOST_PROVIDER_KEY_SYNC}" == "true" ]]; then
+  prepare_proof_provider_key_file "PROOF_PROVIDER_KEY_FILE" "PROOF_PROVIDER_KEY_ENV" "PROOF_PROVIDER_KEY_TMP_FILE" "host provider key sync diagnostic key" "true"
 fi
 if [[ "${VERIFY_SYNC_CRUD_FLOW}" == "true" ]]; then
   prepare_proof_provider_key_file "PROOF_PROVIDER_KEY_FILE" "PROOF_PROVIDER_KEY_ENV" "PROOF_PROVIDER_KEY_TMP_FILE" "primary proof provider key" "true"
@@ -2742,6 +2844,7 @@ maybe_rebuild_image
 seed_source_workspace
 ensure_target_group
 wait_for_target_group_in_host_state
+seed_host_provider_key_sync_diagnostic
 
 log "Running /v1/swarm/replicate end-to-end verification"
 log "host swarm name: ${HOST_SWARM_NAME}"
@@ -2759,6 +2862,7 @@ log "always on: ${ALWAYS_ON}"
 log "sync mode: ${SYNC_MODE:-<default>}"
 log "sync modules: $(IFS=, ; printf '%s' "${SYNC_MODULES[*]:-}")"
 log "verify sync state: ${VERIFY_SYNC_STATE}"
+log "verify host provider key sync: ${VERIFY_HOST_PROVIDER_KEY_SYNC}"
 log "verify sync CRUD flow: ${VERIFY_SYNC_CRUD_FLOW}"
 log "prove routed ai: ${PROVE_ROUTED_AI}"
 log "proof provider: ${PROOF_PROVIDER}"
