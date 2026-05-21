@@ -28,14 +28,16 @@ type Service struct {
 }
 
 type CreateSessionOptions struct {
-	SessionID     string
-	Title         string
-	WorkspacePath string
-	WorkspaceName string
-	Mode          string
-	Preference    *pebblestore.ModelPreference
-	Worktree      *CreateSessionWorktree
-	Metadata      map[string]any
+	SessionID      string
+	UserID         string
+	AccountScopeID string
+	Title          string
+	WorkspacePath  string
+	WorkspaceName  string
+	Mode           string
+	Preference     *pebblestore.ModelPreference
+	Worktree       *CreateSessionWorktree
+	Metadata       map[string]any
 }
 
 type CreateSessionWorktree struct {
@@ -123,12 +125,16 @@ func (s *Service) CreateSessionWithOptions(options CreateSessionOptions) (pebble
 	}
 
 	now := time.Now().UnixMilli()
+	userID := strings.TrimSpace(options.UserID)
+	accountScopeID := strings.TrimSpace(options.AccountScopeID)
 	sessionID := strings.TrimSpace(options.SessionID)
 	if sessionID == "" {
 		sessionID = s.newSessionID(now)
 	}
 	session := pebblestore.SessionSnapshot{
 		ID:                      sessionID,
+		UserID:                  userID,
+		AccountScopeID:          accountScopeID,
 		WorkspacePath:           workspacePath,
 		WorkspaceName:           workspaceName,
 		TemporaryWorkspaceRoots: nil,
@@ -204,6 +210,8 @@ func (s *Service) StoreMirroredSessionEvent(session pebblestore.SessionSnapshot,
 
 func (s *Service) StoreMirroredSessionWithEvent(session pebblestore.SessionSnapshot) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
 	session.ID = strings.TrimSpace(session.ID)
+	session.UserID = strings.TrimSpace(session.UserID)
+	session.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
 	session.WorkspacePath = strings.TrimSpace(session.WorkspacePath)
 	session.WorkspaceName = strings.TrimSpace(session.WorkspaceName)
 	session.Title = strings.TrimSpace(session.Title)
@@ -317,6 +325,14 @@ func (s *Service) StoreMirroredMessage(session pebblestore.SessionSnapshot, mess
 	if err != nil {
 		return pebblestore.SessionSnapshot{}, err
 	}
+	message.UserID = strings.TrimSpace(message.UserID)
+	message.AccountScopeID = strings.TrimSpace(message.AccountScopeID)
+	if message.UserID == "" {
+		message.UserID = mirrored.UserID
+	}
+	if message.AccountScopeID == "" {
+		message.AccountScopeID = mirrored.AccountScopeID
+	}
 	message.Metadata = cloneSessionMetadataMap(message.Metadata)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -335,6 +351,16 @@ func (s *Service) StoreMirroredLifecycle(snapshot pebblestore.SessionLifecycleSn
 	snapshot.SessionID = strings.TrimSpace(snapshot.SessionID)
 	if snapshot.SessionID == "" {
 		return errors.New("session id is required")
+	}
+	if session, ok, err := s.store.GetSession(snapshot.SessionID); err != nil {
+		return err
+	} else if ok {
+		if strings.TrimSpace(snapshot.UserID) == "" {
+			snapshot.UserID = session.UserID
+		}
+		if strings.TrimSpace(snapshot.AccountScopeID) == "" {
+			snapshot.AccountScopeID = session.AccountScopeID
+		}
 	}
 	return s.store.UpsertSessionLifecycle(snapshot)
 }
@@ -1294,6 +1320,12 @@ func (s *Service) localSwarmID() string {
 }
 
 func (s *Service) preserveHostedMirroredSession(existing, incoming pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {
+	if strings.TrimSpace(incoming.UserID) == "" {
+		incoming.UserID = existing.UserID
+	}
+	if strings.TrimSpace(incoming.AccountScopeID) == "" {
+		incoming.AccountScopeID = existing.AccountScopeID
+	}
 	localSwarmID := s.localSwarmID()
 	if descriptor, hosted := HostedSessionFromMetadata(existing.Metadata); hosted {
 		if _, incomingHosted := HostedSessionFromMetadata(incoming.Metadata); !incomingHosted {
@@ -1353,9 +1385,11 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok, err := s.store.GetSession(sessionID); err != nil {
+	session, ok, err := s.store.GetSession(sessionID)
+	if err != nil {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, err
-	} else if !ok {
+	}
+	if !ok {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, fmt.Errorf("session %q not found", sessionID)
 	}
 
@@ -1379,6 +1413,12 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	}
 
 	usage.SessionID = sessionID
+	if strings.TrimSpace(usage.UserID) == "" {
+		usage.UserID = session.UserID
+	}
+	if strings.TrimSpace(usage.AccountScopeID) == "" {
+		usage.AccountScopeID = session.AccountScopeID
+	}
 	if usage.CreatedAt <= 0 {
 		if hadPrevious && previous.CreatedAt > 0 {
 			usage.CreatedAt = previous.CreatedAt
@@ -1395,6 +1435,12 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	}
 	summary = applyTurnUsageDelta(summary, usage, 1)
 	summary.SessionID = sessionID
+	if strings.TrimSpace(summary.UserID) == "" {
+		summary.UserID = usage.UserID
+	}
+	if strings.TrimSpace(summary.AccountScopeID) == "" {
+		summary.AccountScopeID = usage.AccountScopeID
+	}
 	if usage.Provider != "" {
 		summary.Provider = usage.Provider
 	}
@@ -1466,15 +1512,19 @@ func (s *Service) ResetUsage(sessionID string, contextWindow int, provider, mode
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok, err := s.store.GetSession(sessionID); err != nil {
+	session, ok, err := s.store.GetSession(sessionID)
+	if err != nil {
 		return pebblestore.SessionUsageSummary{}, nil, err
-	} else if !ok {
+	}
+	if !ok {
 		return pebblestore.SessionUsageSummary{}, nil, fmt.Errorf("session %q not found", sessionID)
 	}
 
 	now := time.Now().UnixMilli()
 	summary := pebblestore.SessionUsageSummary{
 		SessionID:       sessionID,
+		UserID:          session.UserID,
+		AccountScopeID:  session.AccountScopeID,
 		Provider:        provider,
 		Model:           model,
 		Source:          source,
@@ -1553,9 +1603,11 @@ func (s *Service) SavePlan(sessionID, planID, title, plan, status, approvalState
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok, err := s.store.GetSession(sessionID); err != nil {
+	session, ok, err := s.store.GetSession(sessionID)
+	if err != nil {
 		return pebblestore.SessionPlanSnapshot{}, nil, err
-	} else if !ok {
+	}
+	if !ok {
 		return pebblestore.SessionPlanSnapshot{}, nil, fmt.Errorf("session %q not found", sessionID)
 	}
 
@@ -1569,18 +1621,26 @@ func (s *Service) SavePlan(sessionID, planID, title, plan, status, approvalState
 		return pebblestore.SessionPlanSnapshot{}, nil, err
 	}
 	record := pebblestore.SessionPlanSnapshot{
-		ID:            planID,
-		SessionID:     sessionID,
-		Title:         title,
-		Plan:          plan,
-		Status:        status,
-		ApprovalState: approvalState,
-		Active:        false,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:             planID,
+		SessionID:      sessionID,
+		UserID:         session.UserID,
+		AccountScopeID: session.AccountScopeID,
+		Title:          title,
+		Plan:           plan,
+		Status:         status,
+		ApprovalState:  approvalState,
+		Active:         false,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if found {
 		record.CreatedAt = existing.CreatedAt
+		if record.UserID == "" {
+			record.UserID = existing.UserID
+		}
+		if record.AccountScopeID == "" {
+			record.AccountScopeID = existing.AccountScopeID
+		}
 		record.PriorTitle = existing.Title
 		record.PriorPlan = existing.Plan
 		record.DiffLines = BuildPlanDiffLines(existing.Plan, plan)

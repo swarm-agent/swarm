@@ -15,6 +15,8 @@ import (
 
 type SessionSnapshot struct {
 	ID                      string                    `json:"id"`
+	UserID                  string                    `json:"user_id,omitempty"`
+	AccountScopeID          string                    `json:"account_scope_id,omitempty"`
 	WorkspacePath           string                    `json:"workspace_path"`
 	WorkspaceName           string                    `json:"workspace_name"`
 	TemporaryWorkspaceRoots []string                  `json:"temporary_workspace_roots,omitempty"`
@@ -35,6 +37,8 @@ type SessionSnapshot struct {
 
 type SessionLifecycleSnapshot struct {
 	SessionID      string `json:"session_id"`
+	UserID         string `json:"user_id,omitempty"`
+	AccountScopeID string `json:"account_scope_id,omitempty"`
 	RunID          string `json:"run_id,omitempty"`
 	Active         bool   `json:"active"`
 	Phase          string `json:"phase,omitempty"`
@@ -48,13 +52,15 @@ type SessionLifecycleSnapshot struct {
 }
 
 type MessageSnapshot struct {
-	ID        string         `json:"id"`
-	SessionID string         `json:"session_id"`
-	GlobalSeq uint64         `json:"global_seq"`
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	CreatedAt int64          `json:"created_at"`
+	ID             string         `json:"id"`
+	SessionID      string         `json:"session_id"`
+	UserID         string         `json:"user_id,omitempty"`
+	AccountScopeID string         `json:"account_scope_id,omitempty"`
+	GlobalSeq      uint64         `json:"global_seq"`
+	Role           string         `json:"role"`
+	Content        string         `json:"content"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	CreatedAt      int64          `json:"created_at"`
 }
 
 type SessionCodexConfig struct {
@@ -67,24 +73,28 @@ type SessionCodexConfig struct {
 }
 
 type SessionPlanSnapshot struct {
-	ID            string   `json:"id"`
-	SessionID     string   `json:"session_id"`
-	Title         string   `json:"title"`
-	Plan          string   `json:"plan"`
-	Status        string   `json:"status"`
-	ApprovalState string   `json:"approval_state"`
-	Active        bool     `json:"active"`
-	CreatedAt     int64    `json:"created_at"`
-	UpdatedAt     int64    `json:"updated_at"`
-	PriorTitle    string   `json:"prior_title,omitempty"`
-	PriorPlan     string   `json:"prior_plan,omitempty"`
-	DiffLines     []string `json:"diff_lines,omitempty"`
+	ID             string   `json:"id"`
+	SessionID      string   `json:"session_id"`
+	UserID         string   `json:"user_id,omitempty"`
+	AccountScopeID string   `json:"account_scope_id,omitempty"`
+	Title          string   `json:"title"`
+	Plan           string   `json:"plan"`
+	Status         string   `json:"status"`
+	ApprovalState  string   `json:"approval_state"`
+	Active         bool     `json:"active"`
+	CreatedAt      int64    `json:"created_at"`
+	UpdatedAt      int64    `json:"updated_at"`
+	PriorTitle     string   `json:"prior_title,omitempty"`
+	PriorPlan      string   `json:"prior_plan,omitempty"`
+	DiffLines      []string `json:"diff_lines,omitempty"`
 }
 
 type SessionPlanActive struct {
-	SessionID string `json:"session_id"`
-	PlanID    string `json:"plan_id"`
-	UpdatedAt int64  `json:"updated_at"`
+	SessionID      string `json:"session_id"`
+	UserID         string `json:"user_id,omitempty"`
+	AccountScopeID string `json:"account_scope_id,omitempty"`
+	PlanID         string `json:"plan_id"`
+	UpdatedAt      int64  `json:"updated_at"`
 }
 
 type SessionStore struct {
@@ -96,11 +106,66 @@ func NewSessionStore(store *Store) *SessionStore {
 }
 
 func (s *SessionStore) CreateSession(session SessionSnapshot) error {
-	return s.store.PutJSON(KeySession(session.ID), session)
+	session = normalizeSessionOwnership(session)
+	payload, err := json.Marshal(session)
+	if err != nil {
+		return fmt.Errorf("marshal session %q: %w", session.ID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
+		return err
+	}
+	if session.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySessionByAccount(session.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
+}
+
+func (s *SessionStore) CreateSessionForAccount(session SessionSnapshot, userID, accountScopeID string) error {
+	session.UserID = strings.TrimSpace(userID)
+	session.AccountScopeID = strings.TrimSpace(accountScopeID)
+	if session.AccountScopeID == "" {
+		return errors.New("account scope id is required")
+	}
+	return s.CreateSession(session)
+}
+
+func (s *SessionStore) UpdateSessionForAccount(session SessionSnapshot, userID, accountScopeID string) error {
+	session.UserID = strings.TrimSpace(userID)
+	session.AccountScopeID = strings.TrimSpace(accountScopeID)
+	if session.AccountScopeID == "" {
+		return errors.New("account scope id is required")
+	}
+	return s.UpdateSession(session)
 }
 
 func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
-	return s.store.PutJSON(KeySession(session.ID), session)
+	session = normalizeSessionOwnership(session)
+	payload, err := json.Marshal(session)
+	if err != nil {
+		return fmt.Errorf("marshal session %q: %w", session.ID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if existing, ok, err := s.GetSession(session.ID); err != nil {
+		return err
+	} else if ok && existing.AccountScopeID != "" && existing.AccountScopeID != session.AccountScopeID {
+		if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, session.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
+		return err
+	}
+	if session.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySessionByAccount(session.AccountScopeID, session.ID)), []byte(session.ID), nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) DeleteSession(sessionID string) error {
@@ -111,18 +176,35 @@ func (s *SessionStore) DeleteSession(sessionID string) error {
 	if sessionID == "" {
 		return errors.New("session id is required")
 	}
+	var existing SessionSnapshot
+	if loaded, ok, err := s.GetSession(sessionID); err != nil {
+		return err
+	} else if ok {
+		existing = loaded
+	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil {
+	if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 		return err
 	}
-	if err := batch.Delete([]byte(KeySessionLifecycle(sessionID)), nil); err != nil {
+	if existing.AccountScopeID != "" {
+		if err := batch.Delete([]byte(KeySessionByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+		if err := batch.Delete([]byte(KeySessionLifecycleByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+		if err := batch.Delete([]byte(KeySessionPlanActiveByAccount(existing.AccountScopeID, sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	if err := batch.Delete([]byte(KeySessionLifecycle(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 		return err
 	}
-	if err := batch.Delete([]byte(KeySessionPlanActive(sessionID)), nil); err != nil {
+	if err := batch.Delete([]byte(KeySessionPlanActive(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 		return err
 	}
-	return batch.Commit(nil)
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) GetSession(sessionID string) (SessionSnapshot, bool, error) {
@@ -134,6 +216,7 @@ func (s *SessionStore) GetSession(sessionID string) (SessionSnapshot, bool, erro
 	if !ok {
 		return SessionSnapshot{}, false, nil
 	}
+	session = normalizeSessionOwnership(session)
 	session.TemporaryWorkspaceRoots = NormalizeSessionTemporaryWorkspaceRoots(session.WorkspacePath, session.TemporaryWorkspaceRoots)
 	session.Metadata = cloneSessionMetadataMap(session.Metadata)
 	session.Lifecycle, err = s.loadSessionLifecycle(session.ID)
@@ -145,6 +228,14 @@ func (s *SessionStore) GetSession(sessionID string) (SessionSnapshot, bool, erro
 
 func (s *SessionStore) ListSessions(limit int) ([]SessionSnapshot, error) {
 	return s.listSessions(limit, nil)
+}
+
+func (s *SessionStore) ListSessionsForAccount(accountScopeID string, limit int) ([]SessionSnapshot, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	return s.listSessionsForAccount(accountScopeID, limit, nil)
 }
 
 func (s *SessionStore) ListSessionsForPath(path string, limit int) ([]SessionSnapshot, error) {
@@ -167,6 +258,38 @@ func (s *SessionStore) ListSessionsForScope(scopePath string, limit int) ([]Sess
 		return nil, err
 	}
 	return s.listSessions(limit, func(session SessionSnapshot) bool {
+		return pathInScope(session.WorkspacePath, normalizedScope)
+	})
+}
+
+func (s *SessionStore) ListSessionsForAccountPath(accountScopeID, path string, limit int) ([]SessionSnapshot, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	normalizedPath, err := normalizeSessionPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return s.listSessionsForAccount(accountScopeID, limit, func(session SessionSnapshot) bool {
+		normalizedWorkspacePath, err := normalizeSessionPath(session.WorkspacePath)
+		if err != nil {
+			return false
+		}
+		return normalizedWorkspacePath == normalizedPath
+	})
+}
+
+func (s *SessionStore) ListSessionsForAccountScope(accountScopeID, scopePath string, limit int) ([]SessionSnapshot, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	normalizedScope, err := normalizeSessionPath(scopePath)
+	if err != nil {
+		return nil, err
+	}
+	return s.listSessionsForAccount(accountScopeID, limit, func(session SessionSnapshot) bool {
 		return pathInScope(session.WorkspacePath, normalizedScope)
 	})
 }
@@ -209,6 +332,7 @@ func (s *SessionStore) ListTopSessionsByWorkspace(workspacePaths []string, perWo
 		if strings.TrimSpace(session.ID) == "" {
 			return nil
 		}
+		session = normalizeSessionOwnership(session)
 		normalizedWorkspacePath, err := normalizeSessionPath(session.WorkspacePath)
 		if err != nil {
 			return nil
@@ -339,22 +463,66 @@ func (s *SessionStore) listSessions(limit int, include func(SessionSnapshot) boo
 		if strings.TrimSpace(session.ID) == "" {
 			return nil
 		}
+		session = normalizeSessionOwnership(session)
 		if include != nil && !include(session) {
 			return nil
 		}
-		session.TemporaryWorkspaceRoots = NormalizeSessionTemporaryWorkspaceRoots(session.WorkspacePath, session.TemporaryWorkspaceRoots)
-		session.Metadata = cloneSessionMetadataMap(session.Metadata)
-		lifecycle, err := s.loadSessionLifecycle(session.ID)
-		if err != nil {
+		if err := s.appendSessionListItem(&out, session); err != nil {
 			return err
 		}
-		session.Lifecycle = lifecycle
-		out = append(out, session)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	return finalizeSessionList(out, limit), nil
+}
+
+func (s *SessionStore) listSessionsForAccount(accountScopeID string, limit int, include func(SessionSnapshot) bool) ([]SessionSnapshot, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]SessionSnapshot, 0, limit)
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(SessionByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
+		sessionID := strings.TrimSpace(string(value))
+		if sessionID == "" {
+			return nil
+		}
+		session, ok, err := s.GetSession(sessionID)
+		if err != nil {
+			return err
+		}
+		if !ok || strings.TrimSpace(session.AccountScopeID) != accountScopeID {
+			return nil
+		}
+		if include != nil && !include(session) {
+			return nil
+		}
+		if err := s.appendSessionListItem(&out, session); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return finalizeSessionList(out, limit), nil
+}
+
+func (s *SessionStore) appendSessionListItem(out *[]SessionSnapshot, session SessionSnapshot) error {
+	session.TemporaryWorkspaceRoots = NormalizeSessionTemporaryWorkspaceRoots(session.WorkspacePath, session.TemporaryWorkspaceRoots)
+	session.Metadata = cloneSessionMetadataMap(session.Metadata)
+	lifecycle, err := s.loadSessionLifecycle(session.ID)
+	if err != nil {
+		return err
+	}
+	session.Lifecycle = lifecycle
+	*out = append(*out, session)
+	return nil
+}
+
+func finalizeSessionList(out []SessionSnapshot, limit int) []SessionSnapshot {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].UpdatedAt == out[j].UpdatedAt {
 			return out[i].ID < out[j].ID
@@ -364,11 +532,13 @@ func (s *SessionStore) listSessions(limit int, include func(SessionSnapshot) boo
 	if len(out) > limit {
 		out = out[:limit]
 	}
-	return out, nil
+	return out
 }
 
 func (s *SessionStore) UpsertSessionLifecycle(snapshot SessionLifecycleSnapshot) error {
 	snapshot.SessionID = strings.TrimSpace(snapshot.SessionID)
+	snapshot.UserID = strings.TrimSpace(snapshot.UserID)
+	snapshot.AccountScopeID = strings.TrimSpace(snapshot.AccountScopeID)
 	snapshot.RunID = strings.TrimSpace(snapshot.RunID)
 	snapshot.Phase = strings.TrimSpace(snapshot.Phase)
 	snapshot.StopReason = strings.TrimSpace(snapshot.StopReason)
@@ -377,7 +547,21 @@ func (s *SessionStore) UpsertSessionLifecycle(snapshot SessionLifecycleSnapshot)
 	if snapshot.SessionID == "" {
 		return errors.New("session lifecycle session id is required")
 	}
-	return s.store.PutJSON(KeySessionLifecycle(snapshot.SessionID), snapshot)
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return fmt.Errorf("marshal session lifecycle %q: %w", snapshot.SessionID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeySessionLifecycle(snapshot.SessionID)), payload, nil); err != nil {
+		return err
+	}
+	if snapshot.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySessionLifecycleByAccount(snapshot.AccountScopeID, snapshot.SessionID)), []byte(snapshot.SessionID), nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) GetSessionLifecycle(sessionID string) (SessionLifecycleSnapshot, bool, error) {
@@ -394,6 +578,8 @@ func (s *SessionStore) GetSessionLifecycle(sessionID string) (SessionLifecycleSn
 		return SessionLifecycleSnapshot{}, false, nil
 	}
 	snapshot.SessionID = sessionID
+	snapshot.UserID = strings.TrimSpace(snapshot.UserID)
+	snapshot.AccountScopeID = strings.TrimSpace(snapshot.AccountScopeID)
 	snapshot.RunID = strings.TrimSpace(snapshot.RunID)
 	snapshot.Phase = strings.TrimSpace(snapshot.Phase)
 	snapshot.StopReason = strings.TrimSpace(snapshot.StopReason)
@@ -413,6 +599,8 @@ func (s *SessionStore) ListActiveSessionLifecycles(limit int) ([]SessionLifecycl
 			return err
 		}
 		snapshot.SessionID = strings.TrimSpace(snapshot.SessionID)
+		snapshot.UserID = strings.TrimSpace(snapshot.UserID)
+		snapshot.AccountScopeID = strings.TrimSpace(snapshot.AccountScopeID)
 		snapshot.RunID = strings.TrimSpace(snapshot.RunID)
 		snapshot.Phase = strings.TrimSpace(snapshot.Phase)
 		snapshot.StopReason = strings.TrimSpace(snapshot.StopReason)
@@ -522,7 +710,21 @@ func NormalizeSessionTemporaryWorkspaceRoots(workspacePath string, roots []strin
 
 func (s *SessionStore) PutMessage(message MessageSnapshot) error {
 	message = sanitizeMessageSnapshot(message)
-	return s.store.PutJSON(KeyMessage(message.SessionID, message.GlobalSeq), message)
+	payload, err := json.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("marshal message %q/%d: %w", message.SessionID, message.GlobalSeq, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeyMessage(message.SessionID, message.GlobalSeq)), payload, nil); err != nil {
+		return err
+	}
+	if message.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeyMessageByAccount(message.AccountScopeID, message.SessionID, message.GlobalSeq)), []byte(message.ID), nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) GetMessage(sessionID string, globalSeq uint64) (MessageSnapshot, bool, error) {
@@ -534,6 +736,9 @@ func (s *SessionStore) GetMessage(sessionID string, globalSeq uint64) (MessageSn
 	if !ok {
 		return MessageSnapshot{}, false, nil
 	}
+	message.SessionID = strings.TrimSpace(message.SessionID)
+	message.UserID = strings.TrimSpace(message.UserID)
+	message.AccountScopeID = strings.TrimSpace(message.AccountScopeID)
 	message.Metadata = sanitizeMessageMetadata(message.Metadata)
 	return message, true, nil
 }
@@ -597,7 +802,23 @@ func (s *SessionStore) listLatestMessages(sessionID string, limit int) ([]Messag
 }
 
 func (s *SessionStore) PutPlan(plan SessionPlanSnapshot) error {
-	return s.store.PutJSON(KeySessionPlan(plan.SessionID, plan.ID), plan)
+	plan.UserID = strings.TrimSpace(plan.UserID)
+	plan.AccountScopeID = strings.TrimSpace(plan.AccountScopeID)
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("marshal plan %q/%q: %w", plan.SessionID, plan.ID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeySessionPlan(plan.SessionID, plan.ID)), payload, nil); err != nil {
+		return err
+	}
+	if plan.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySessionPlanByAccount(plan.AccountScopeID, plan.SessionID, plan.ID)), []byte(plan.ID), nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) GetPlan(sessionID, planID string) (SessionPlanSnapshot, bool, error) {
@@ -609,6 +830,8 @@ func (s *SessionStore) GetPlan(sessionID, planID string) (SessionPlanSnapshot, b
 	if !ok {
 		return SessionPlanSnapshot{}, false, nil
 	}
+	plan.UserID = strings.TrimSpace(plan.UserID)
+	plan.AccountScopeID = strings.TrimSpace(plan.AccountScopeID)
 	return plan, true, nil
 }
 
@@ -652,15 +875,38 @@ func (s *SessionStore) GetActivePlan(sessionID string) (SessionPlanActive, bool,
 	if !ok {
 		return SessionPlanActive{}, false, nil
 	}
+	active.UserID = strings.TrimSpace(active.UserID)
+	active.AccountScopeID = strings.TrimSpace(active.AccountScopeID)
 	return active, true, nil
 }
 
 func (s *SessionStore) SetActivePlan(sessionID, planID string, updatedAt int64) error {
-	return s.store.PutJSON(KeySessionPlanActive(sessionID), SessionPlanActive{
+	active := SessionPlanActive{
 		SessionID: sessionID,
 		PlanID:    planID,
 		UpdatedAt: updatedAt,
-	})
+	}
+	if session, ok, err := s.GetSession(sessionID); err != nil {
+		return err
+	} else if ok {
+		active.UserID = strings.TrimSpace(session.UserID)
+		active.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
+	}
+	payload, err := json.Marshal(active)
+	if err != nil {
+		return fmt.Errorf("marshal active plan %q: %w", sessionID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeySessionPlanActive(sessionID)), payload, nil); err != nil {
+		return err
+	}
+	if active.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySessionPlanActiveByAccount(active.AccountScopeID, sessionID)), payload, nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func cloneSessionMetadataMap(input map[string]any) map[string]any {
@@ -695,7 +941,17 @@ func cloneSessionMetadataValue(value any) any {
 	}
 }
 
+func normalizeSessionOwnership(session SessionSnapshot) SessionSnapshot {
+	session.ID = strings.TrimSpace(session.ID)
+	session.UserID = strings.TrimSpace(session.UserID)
+	session.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
+	return session
+}
+
 func sanitizeMessageSnapshot(message MessageSnapshot) MessageSnapshot {
+	message.SessionID = strings.TrimSpace(message.SessionID)
+	message.UserID = strings.TrimSpace(message.UserID)
+	message.AccountScopeID = strings.TrimSpace(message.AccountScopeID)
 	message.Content = privacy.SanitizeText(message.Content)
 	message.Metadata = sanitizeMessageMetadata(message.Metadata)
 	return message

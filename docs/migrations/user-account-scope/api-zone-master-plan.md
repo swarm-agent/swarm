@@ -1,6 +1,17 @@
 # API zone master implementation plan
 
-This plan consolidates the six refined zone reports in `docs/migrations/user-account-scope/zone-reports/` for Checkpoint 2. It is the dispatch plan for real implementation agents.
+This document is the dispatch source of truth for the Pebble-native user/account API scoping migration. It supersedes the original broad zone order where it conflicts with the product reality below.
+
+## Product reality and migration target
+
+- Remote SSH / remote deploy containers are retired. Do not spend implementation time adding account-scoped remote deploy stores or indexes.
+- The active runtime product path is:
+  1. local Swarm account/session/workspace/API use,
+  2. local containers,
+  3. account-scoped user/provider/model/voice settings,
+  4. managed hosting,
+  5. flows.
+- Managed hosting and flows are intentionally last. The speed-run goal is to make the product buildable and manually testable for real local use before starting managed hosting and flow work.
 
 ## Non-negotiable invariants
 
@@ -8,199 +19,329 @@ This plan consolidates the six refined zone reports in `docs/migrations/user-acc
 - Every protected route derives `UserID` and `AccountScopeID` only from `api.PrincipalFromRequest(r)` or `requireProductActor`.
 - Request headers, body, query, path IDs, peer headers, attach tokens, env vars, CLI flags, and local transport markers are never account authority.
 - `TeamID` remains explicit opt-in metadata only; it is never account scope.
-- No SQL, IAM, wrappers, shims, broad compatibility forks, or silent fallback reads.
+- No SQL, IAM, wrappers, shims, broad compatibility forks, duplicate behavior paths, or silent fallback reads.
 - Existing global mutable keys may be used only as explicit one-way migration inputs. After an account-scoped miss, authenticated reads must not fall back to old global keys.
-- Each implementation slice must pass targeted Go tests plus the VM gate before the next dependent slice is declared ready.
+- Implementation is organized into small micro-slices inside a named slice group. Micro-slices are coding checkpoints only; do not write tests or run test commands during the group unless explicitly approved.
+- After all micro-slices in a group are complete, run one group-level VM gate before the next dependent slice group is declared ready.
+- VM gates must create two product users/accounts through canonical Pebble identity/session APIs and must inspect Pebble records or keys for account scope evidence.
 
-## Readiness verdict
+## Current completed foundation
 
-The refined zone reports are good enough for implementation dispatch, but not as broad “fix the whole zone” prompts. Real agents must receive the slices below, in order, with blockers respected.
+These are already complete or VM-proven in this migration thread and are prerequisites for the new order:
 
-## Priority order
+1. **Checkpoint 1 identity/account foundation**
+   - Pebble-native user/account records.
+   - Canonical principal resolver.
+   - Product JWT/session identity proof.
+   - Browser cookie, `X-Swarm-Token`, and local transport principal proof.
 
-### P0 — Security-critical principal boundary hardening
+2. **Slice A — credential/account fixture foundation**
+   - Account-scoped auth credential keys/routes and Codex OAuth account binding.
+   - Two-account credential isolation proof.
 
-These slices close routes that currently trust auth wrapper presence, local transport, peer auth, or body IDs without a route-local trusted principal/account check.
+3. **Slice B — workspace/worktree/path foundation**
+   - Account-scoped workspace/current/worktree/path foundation.
+   - Peer-managed workspace DB repair and targeted VM proof.
+   - Account-owned path resolver is now the prerequisite for local container mount checks.
 
-1. **Z1 credential/auth route guards and credential key scope**
-   - Ready now: `Z1-S001`, `Z1-S002`, `Z1-S003`, `Z1-S004`, `Z1-R54`, `Z1-R55`, `Z1-R56`, `Z1-R57`, `Z1-R58`, `Z1-R59`, `Z1-R60`.
-   - Blocked portions: `Z1-R61`, `Z1-R63`, `/ws`, onboarding post-bootstrap counts.
-   - Must deliver: account-scoped auth credential primary keys, active credential keys, OAuth session account binding, no legacy codex fallback after scoped miss.
+## Revised speed-run implementation order
 
-2. **Z2 local destructive git/workspace path guards for unblocked workspace storage**
-   - Ready now: `Z2-S001`, `Z2-S003`, workspace CRUD/current/list/select/resolve/browse/folder/theme/rename/move/delete routes, git status/commit/realtime/inspect/apply routes except peer/local unproven variants.
-   - Blocked portions: todos/session joins, topology bindings, peer workspace routes, peer/local git sync account binding.
-   - Must deliver: account-scoped workspace entries/current, account-scoped worktree config, trusted account-owned path resolver.
+### Slice 0 — migration plan correction and stale remote-deploy retirement notes
 
-3. **Z4B machine-affecting deploy/update guards**
-   - Ready now: `Z4B-S001`, `Z4B-S002`, `Z4B-S006`, deploy container list/create/settings/action/delete, remote deploy list/settings/delete/update/approve, shutdown/update principal guards.
-   - Blocked portions: attach/bootstrap/sync routes, managed-host session routes, managed target/git/update routes.
-   - Must deliver: deploy/remote records with `UserID` and `AccountScopeID`, account indexes, unauth shutdown/update denial.
-
-4. **Z4A pairing/groups/targets/container/mirror foundational ownership**
-   - Ready now: `Z4A-S001`, `Z4A-S002`, `Z4A-S004`, `Z4A-S005`, `Z4A-S006` partial, `Z4A-S007` partial; protected pairing approve/list/state, groups, current target, mirror, local container list/action/prune.
-   - Blocked/unproven portions: public/bootstrap pairing boundary (`R75`, `R76`, `R79`, `R80`, `R82`, `R94`), topology derived records, workspace mounts, session route lookups, delete cascades.
-   - Must deliver: account-bound invites/enrollments/trusted peers, groups/current group, current target, mirror peer relation filters, local container/profile account fields.
-
-### P1 — Foundational account-scoped domain stores
-
-5. **Z3 agents/flows/sessions/permissions core stores**
-   - Ready now: `Z3-S001`, `Z3-S002`, `Z3-S003`, `Z3-S004`, `Z3-R135`, `Z3-R136`, `Z3-R170`-`Z3-R173`, `Z3-R223`, `Z3-R241`, `Z3-R242`.
-   - Blocked portions: context sources (`Z2` workspace verifier), peer/local flow/session/permission routes (`Z4` peer/runtime binding), managed policy/provider inputs (`Z5`).
-   - Must deliver: account fields/indexes for mutable agents, flows, sessions/messages/lifecycle/plans/usage, permission policy/records.
-
-6. **Z5 independent user settings/provider state**
-   - Ready now: vault metadata/status/enable/lock/disable/export/import; model preference/favorites/catalog proof; provider readiness split; voice/STT config/profile routes.
-   - Blocked portions: custom tools/integration sessions (`Z3`), image threads/assets (`Z2`), UI settings device-global split (`Z4A`), child vault/deploy sync (`Z4`).
-   - Must deliver: account-scoped vault metadata/unlock cache, model preference/favorites, provider readiness from principal account credentials, voice config/profiles.
-
-### P2 — Cross-zone dependent route completion
-
-7. **Z2 + Z3 joins**
-   - Todos, workspace overview, context sources, session `cwd` joins.
-   - Requires Z2 workspace verifier and Z3 session account verifier.
-
-8. **Z2 + Z4 topology/peer workspace/managed workspace flows**
-   - Managed workspace replication, workspace bindings, peer workspace routes, managed-host workspace git.
-   - Requires Z4A/Z4B account-bound target/runtime/peer relation helpers.
-
-9. **Z4B + Z3/Z5 sync and managed-host sessions**
-   - Managed-host session open/message/run/stop/stream/event and deploy/remote credential/agent/model/permission sync.
-   - Requires Z3 session/run/permission account ownership and Z5 credential/model/account-scoped exporters.
-
-10. **Z5 integrations/custom tools/image/UI completion**
-    - Requires Z3 agent/session binding, Z2 workspace/image ownership, and device-global UI split proof.
-
-## Blocker dependency graph
-
-| Blocker | Needed by | Owner slice | Required output |
-|---|---|---|---|
-| Canonical two-account fixture | All zones | Z1/P0 | Product session/JWT fixture using Pebble identity only; no fake headers/context. |
-| Account-scoped credentials | Z1, Z5, Z4 sync | Z1/P0 + Z5/P1 | Credential primary, active, tag indexes keyed by account; export/import account filtered. |
-| Workspace ownership verifier | Z2, Z3, Z4A, Z4B, Z5 | Z2/P0 | Function/service path that accepts principal/account and proves workspace/current/path ownership. |
-| Session ownership verifier | Z2, Z3, Z4A, Z4B, Z5 | Z3/P1 | Account-filtered session lookup usable before subresource writes. |
-| Peer/runtime/target account binding | Z2, Z3, Z4A, Z4B | Z4A/Z4B/P0 | Trusted peer/runtime/target relation lookup returning account scope from persisted records. |
-| Deploy/remote account records | Z4A, Z4B, Z5 | Z4B/P0 | Deploy container and remote session records include user/account fields and by-account indexes. |
-| Provider/model/credential readiness split | Z3, Z4B, Z5 | Z5/P1 | Static catalog stays shared; readiness/credentials use principal account. |
-| Device-global UI boundary | Z5 with Z4A | Z5/P2 + Z4A | Account UI settings separated from local swarm machine identity rename/update. |
-
-## Dispatch slices for real agents
-
-### Slice A — Z1 credential/account fixture agent
-
-Status: **implementation staged; VM proof pending**.
+Status: **do first / docs-only before more code**.
 
 Scope:
-- Implement `Z1-S001`, `Z1-S002`, `Z1-S003`, `Z1-S004`, `Z1-R54`-`Z1-R60`.
-- Preserve proven `Z0` public health/ready, desktop session bootstrap, `/me`, and team upgrade behavior.
-- Do not implement blocked cleanup, attach rotate, `/ws`, or onboarding counts until dependency owners land.
+- Treat old remote SSH deploy as retired/dead in the migration plan.
+- Split local containers out from old Z4B deploy/remote wording.
+- Move managed hosting and flows to the final phases.
+- Keep stale remote deploy route cleanup as a retirement/blocking task only, not an account-scoped product migration.
 
-VM proof:
-- Two accounts create same provider/id credentials without cross-read.
-- Active credential differs per account.
-- OAuth status/complete denies cross-account session IDs.
-- Scoped codex miss does not read `auth/codex/default`.
+Do not implement:
+- Remote deploy session account indexes.
+- Remote SSH container create/start/settings/update flows.
 
-### Slice B — Z2 workspace/worktree/path foundation agent
+Required proof:
+- Docs identify local containers, managed hosting, and flows as separate phases.
+- `api-route-zone-matrix.md` summary no longer dispatches remote deploy as a live foundation slice.
 
-Status: **ready after Slice A fixture is available**.
+### Slice 1 group — core sessions/API usability foundation, excluding flows
 
-Scope:
-- Implement `Z2-S001`, `Z2-S003`, and unblocked workspace/worktree/git route guards.
-- Add account-owned path resolver used by later Z3/Z4/Z5 slices.
-- Do not implement peer/local git sync, topology binding, todos/session joins, or managed workspace replication until blockers land.
+Status: **next implementation group after docs correction**.
 
-VM proof:
-- Account A/B workspace list/current/select/rename/delete/theme/directories isolation.
-- No authenticated route reads `workspace/current` after account-scoped miss.
-- Worktree config has no global fallback.
-- Destructive git sync apply to another account path denied.
+Goal:
+- Make the app usable after account/workspace bootstrap: build it, create account, use normal API, create/list/read/update sessions.
+- Provide the session ownership verifier needed by later local-container, settings, managed-hosting, permissions, agents, and flow work.
 
-### Slice C — Z4A target/peer/group/mirror foundation agent
+Execution rule for this group:
+- Do **not** write new tests during Slice 1A through Slice 1D.
+- Do **not** run test commands during Slice 1A through Slice 1D unless the user explicitly overrides this rule.
+- Each micro-slice must stop after the smallest compile-safe implementation checkpoint and report changed files plus the next exact checkpoint.
+- Run one VM-focused verification pass only after Slice 1A through Slice 1D are complete and ready to be verified as a group.
 
-Status: **partially ready after Slice A; topology/mount/session pieces wait on B/D**.
-
-Scope:
-- Implement account-bound invites/enrollments/trusted peers, groups/current group, current target, mirror peer filters, local container/profile account fields for non-mount operations.
-- Decide and document principal-gated vs account-bound bootstrap behavior for unproven pairing routes before implementing them.
-
-VM proof:
-- Cross-account group/target/invite/enrollment/mirror access denied.
-- Peer mirror routes map peer auth to trusted peer account.
-- Unproven public/bootstrap routes expose no account-owned data or require principal.
-
-### Slice D — Z3 agent/session/permission foundation agent
-
-Status: **ready after Slice A; path/context pieces wait on Slice B; peer/local pieces wait on Slice C**.
+#### Slice 1A — Pebble session storage ownership only
 
 Scope:
-- Implement account-scoped agent profiles/custom tools where owned by Z3, flows, sessions, permissions, and notifications where source account is known.
-- Provide session ownership verifier for Z2/Z4/Z5.
+- Add account ownership fields/indexes for core session storage:
+  - sessions,
+  - messages,
+  - lifecycle,
+  - plans,
+  - usage,
+  - any session subresource directly touched by normal `/v1/sessions` routes.
+- Primary files:
+  - `swarmd/internal/store/pebble/session_store.go`
+  - `swarmd/internal/store/pebble/session_usage_store.go` if usage records are touched.
+  - `swarmd/internal/store/pebble/keys.go`
+- Add account-scoped store helpers, but do not broadly convert API handlers yet.
+- No tests written and no tests run in this micro-slice.
 
-VM proof:
-- Account A/B agent/flow/session/permission isolation.
-- Session subroutes deny cross-account session IDs.
-- Permission policy is not global.
+Stop condition:
+- Store models and helpers are account-capable.
+- Existing call sites are compile-adjusted only as needed.
+- Report follow-up API call sites that still use global session helpers.
 
-### Slice E — Z4B deploy/remote/update foundation agent
-
-Status: **ready after Slice A; managed-host/sync pieces wait on B/C/D/F**.
-
-Scope:
-- Implement account-scoped deploy container store, remote deploy store, update/shutdown principal guards.
-- Preserve static/no-state package defaults/validate and retired remote create/start behavior.
-
-VM proof:
-- Account A/B deploy and remote session isolation.
-- Unauthenticated shutdown/update/apply/run denied.
-- Existing global records without account fields block clearly or migrate explicitly; no fallback.
-
-### Slice F — Z5 settings/provider/vault foundation agent
-
-Status: **ready after Slice A for independent settings; dependent pieces wait on B/D/E**.
+#### Slice 1B — `/v1/sessions` collection route only
 
 Scope:
-- Implement account-scoped vault metadata/unlock, credential export/import consumers, model preference/favorites, provider readiness split, voice/STT config/profile routes.
-- Do not finish custom tools, image assets, integrations, UI device-global split, or child vault sync until dependencies land.
+- Convert only `/v1/sessions` list/create in `swarmd/internal/api/server.go`.
+- Resolve principal using `api.PrincipalFromRequest(r)`.
+- GET lists only sessions for `Principal.AccountScopeID`.
+- POST stamps new sessions with `Principal.UserID` and `Principal.AccountScopeID`.
+- Request body/query/metadata may be locators only; never account authority.
+- Use Slice B workspace/path ownership where session creation depends on `cwd` or workspace selection.
+- No tests written and no tests run in this micro-slice.
 
-VM proof:
-- Account A/B vault, model, favorites, voice, provider readiness isolated.
-- Static catalog has no account credential state.
-- Export/import does not leak credentials across accounts.
+Stop condition:
+- Collection list/create is account-scoped.
+- No `/v1/sessions/` subroute conversion beyond compile-required helper wiring.
 
-## Zone status summary
+#### Slice 1C — `/v1/sessions/{id}` ownership verifier and basic subroutes
 
-| Zone | Report | Implementation status |
-|---|---|---|
-| Z0/Z1 | `zone-reports/z0-z1-auth-local-identity.md` | Slice A implementation staged for auth credential keys/routes and Codex OAuth account binding; VM proof pending. `/ws`, attach rotate, credential delete cleanup, and onboarding post-bootstrap counts remain blocked. |
-| Z2 | `zone-reports/z2-workspaces-worktrees-git.md` | Ready for workspace/current/worktree/path foundation after Slice A; peer/topology/todo/media dependencies remain. |
-| Z3 | `zone-reports/z3-agents-sessions-flows-runs.md` | Ready for core agent/flow/session/permission stores after Slice A; peer/local/context dependencies remain. |
-| Z4A | `zone-reports/z4a-swarm-topology-local-containers.md` | Ready for groups/targets/pairing protected records/mirror partial; bootstrap/topology/mount/session pieces blocked. |
-| Z4B | `zone-reports/z4b-deploy-managed-hosts-runtime.md` | Ready for deploy/remote/update foundation; managed-host/session/sync/target pieces blocked. |
-| Z5 | `zone-reports/z5-integrations-credentials-settings.md` | Ready for vault/model/provider/voice foundation; image/custom-tool/integration/UI split dependencies remain. |
+Scope:
+- Add a shared session ownership verifier for `/v1/sessions/` path branches.
+- Use it before read/update/message/metadata/title/mode/lifecycle branches that are part of normal local session use.
+- Session subresources inherit the persisted session account; path IDs remain locators only.
+- No tests written and no tests run in this micro-slice.
 
-## VM gate requirements
+Stop condition:
+- Account B cannot be authorized by code path to read/update/message Account A's session by ID.
+- Shared helper is available for later permissions, local-container, managed-hosting, and flow work.
+
+#### Slice 1D — remaining normal local session subresources
+
+Scope:
+- Finish only normal local `/v1/sessions/` subresources required for out-of-box session usability, such as plans, usage, run, stream/proxy branches where they are directly under `/v1/sessions/`.
+- Keep all writes attached to the verified session account.
+- If minimal session creation needs agent profile reads, preserve built-in templates as shared read-only data and defer mutable agent account scoping unless it is absolutely required for session creation to work.
+- No tests written and no tests run in this micro-slice.
+
+Stop condition:
+- Normal local session use is account-scoped end-to-end.
+- Broad agent/profile and permission conversion remain separate follow-up groups.
+
+#### Slice 1E — group VM verification only after 1A–1D
+
+Scope:
+- Add or update the VM verification harness only after 1A through 1D are complete.
+- Run one VM proof with two product accounts:
+  - Account A creates session.
+  - Account B cannot list/read/update/message Account A session by ID.
+  - Session subresources inherit account scope.
+  - Pebble records contain account fields or account indexes.
+  - Denied cross-account session probes leave no records behind.
+
+Explicitly defer from Slice 1 group:
+- `/v3/flows` and `/v3/flows/`.
+- Peer/local flow routes.
+- Peer/local session routes.
+- Managed-host session routes.
+- Flow run/report/mirrored flow storage.
+- Broad permissions conversion.
+- Broad mutable agent/profile/custom-tool conversion.
+
+### Slice 2 — local containers and local deployment records
+
+Status: **run after Slice 1 and current Slice B workspace/path proof**.
+
+Goal:
+- Make local containers work under account scoping and prove them in the existing local container harness.
+- This is one precise slice. Do not mix in managed hosting, remote deploy, or flows.
+
+Scope:
+- Account-scope local container/profile routes:
+  - `/v1/swarm/containers/local/runtime`
+  - `/v1/swarm/containers/local`
+  - `/v1/swarm/containers/local/update-job`
+  - `/v1/swarm/containers/local/create`
+  - `/v1/swarm/containers/local/action`
+  - `/v1/swarm/containers/local/delete`
+  - `/v1/swarm/containers/local/prune-missing`
+  - `/v1/swarm/containers/profiles`
+  - `/v1/swarm/containers/profiles/upsert`
+  - `/v1/swarm/containers/profiles/delete`
+  - `/v1/update/local-containers`
+- Add account fields/indexes for local container records.
+- Use the Slice B account-owned path resolver for workspace mounts; request-supplied paths are locators only.
+- Add local deployment account fields only where local container/replicate lifecycle needs `deploy/container/<id>` records.
+- Preserve package defaults/validate static/no-state behavior if touched.
+
+Explicitly defer:
+- Managed-host session open/message/run/stop/stream/event.
+- Managed-host update/run/status.
+- Deploy attach/bootstrap/sync/export/import/apply routes.
+- Remote deploy session list/settings/delete/update/approve account migration.
+- Peer/local transport managed-host duplicates.
+
+Primary files:
+- `swarmd/internal/api/swarm_local_containers.go`
+- `swarmd/internal/localcontainers/service.go`
+- `swarmd/internal/store/pebble/swarm_local_container_store.go`
+- `swarmd/internal/api/swarm_container_profiles.go`
+- `swarmd/internal/store/pebble/swarm_container_profile_store.go`
+- `swarmd/internal/api/deploy_container.go` only for local deployment records required by local lifecycle.
+- `swarmd/internal/deploy/service.go` only for local deployment records required by local lifecycle.
+- `swarmd/internal/store/pebble/deploy_container_store.go` only for local deployment records required by local lifecycle.
+- `tests/swarmd/local_replicate_e2e.sh`
+
+Required harness/VM proof:
+- Extend the existing local replicate/local container harness for two product users/accounts.
+- Account A can create/use a local container.
+- Account B cannot list/action/delete Account A local container or local deployment record by ID.
+- Account A and B can have independent local container records.
+- Workspace mounts are checked through the account-owned path resolver.
+- Pebble shows `swarm/local_container` and local `deploy/container` records include account scope or account indexes.
+- No global list/read fallback after scoped miss.
+
+Suggested command shape:
+
+<copy label="targeted local container tests">cd swarmd && go test ./internal/api ./internal/localcontainers ./internal/store/pebble -run 'LocalContainer|DeployContainer|UpdateLocalContainer|Principal|Account'</copy>
+
+<copy label="VM local replicate harness">./scripts/swarm-harness-vm.sh local-replicate -- --verify-topology-cleanup</copy>
+
+### Slice 3 — Z5 local usability foundation
+
+Status: **run after local containers are VM-proven, or in parallel only if it does not touch local-container/managed-host state**.
+
+Goal:
+- Make normal local product settings usable per account before managed hosting/flows.
+
+Scope:
+- Account-scope independent Z5 state:
+  - vault metadata/status/enable/lock/disable/export/import where needed for local credential usability,
+  - model preference and model favorites,
+  - static model/catalog proof remains shared and credential-free,
+  - provider readiness split: static catalog shared, credential readiness by principal account,
+  - voice/STT config/profile/status/test routes.
+- Split account-owned user preferences from device-global machine identity before mutating `/v1/ui/settings` broadly. If the split is not complete, do not finish UI settings in this slice.
+
+Explicitly defer:
+- Custom tools if they require Z3 agent execution binding.
+- Integrations and builder sessions.
+- Image assets/generation if they require workspace/image ownership not proven in the slice.
+- Child vault sync and deploy credential sync.
+- Managed hosting sync/export/import.
+
+Primary files:
+- `swarmd/internal/api/vault.go`
+- `swarmd/internal/store/pebble/auth_store.go`
+- `swarmd/internal/api/server.go` model/provider/voice/UI handlers
+- `swarmd/internal/store/pebble/model_store.go`
+- `swarmd/internal/store/pebble/model_favorite_store.go`
+- `swarmd/internal/store/pebble/voice_store.go`
+- `swarmd/internal/store/pebble/ui_chat_settings_store.go` only for explicit account-settings/device-global split work.
+
+Required tests/VM proof:
+- Two product accounts have isolated model defaults/favorites.
+- Provider readiness differs by account credential state without leaking another account credential status.
+- Voice profiles/config are isolated by account.
+- Vault/export/import, if included, never exports or imports another account credential.
+- Static catalogs contain no account fields or credential readiness.
+- Pebble records or indexes prove account scope.
+
+Suggested command shape:
+
+<copy label="targeted Z5 usability tests">cd swarmd && go test ./internal/api ./internal/auth ./internal/model ./internal/voice ./internal/store/pebble -run 'Vault.*Account|Credential.*Account|Model.*Account|Voice.*Account|Provider.*Account|Principal'</copy>
+
+### Slice 4 — out-of-box local product acceptance gate
+
+Status: **required before managed hosting or flows**.
+
+Goal:
+- Prove the local product can be built and manually tested for real local use, with managed hosting and flows still disabled/deferred.
+
+Required VM proof:
+- Fresh VM / clean Pebble state.
+- Build succeeds.
+- First account bootstrap succeeds.
+- Browser cookie and `X-Swarm-Token` principal paths still resolve the same trusted principal shape.
+- Account can create workspace and use workspace APIs.
+- Account can create/list/read/update a normal session.
+- Account can configure model/provider/voice basics from account-scoped state.
+- Account can create/use/list/action/delete a local container via the local harness.
+- A second account cannot read or mutate the first account's workspace, session, settings, local container, or local deployment records.
+- Pebble inspect confirms account-scoped records/indexes for all converted sections.
+- Denied cross-account probes leave no records behind.
+
+Required output:
+- Commit evidence and VM proof artifact path before starting managed hosting.
+
+### Slice 5 — managed hosting foundation
+
+Status: **deferred until Slice 4 passes**.
+
+Scope:
+- Managed hosting target/runtime/peer/account binding.
+- Managed-host sessions and updates.
+- Managed workspace/topology/account binding.
+- Deploy attach/bootstrap/sync/export/import/apply only after account-bound deployment/session plus Z3/Z5 ownership APIs exist.
+
+Required prerequisite outputs:
+- Session ownership verifier from Slice 1.
+- Workspace/path verifier from Slice B.
+- Local container/deploy account proof from Slice 2.
+- Provider/credential/model readiness proof from Slice 3.
+
+### Slice 6 — flows foundation and managed flow completion
+
+Status: **final major migration phase after managed hosting foundation**.
+
+Scope:
+- `/v3/flows` and `/v3/flows/` account-scoped flow definitions/status/outbox/runs.
+- Peer/local flow apply/report only after managed peer/runtime account binding is proven.
+- Flow/session/permission joins and managed run/report paths.
+
+Required prerequisite outputs:
+- Managed hosting account binding from Slice 5.
+- Session and permission ownership from Slice 1 or its follow-up.
+- Provider/model/account-scoped readiness from Slice 3.
+
+## Remote deploy retirement rule
+
+`swarmd/internal/api/remote_deploy.go` is not a live product migration target. Remote SSH deploy routes must not receive new account-scoped product storage as part of the speed-run. If touched because a gate fails, make behavior clearly retired/no-state or explicitly denied. Do not implement fallback reads from old remote deploy records.
+
+## VM gate requirements for every slice
 
 Every dispatched implementation agent must:
 
-1. Run targeted Go tests named in its zone report.
-2. Run the Checkpoint 1 VM proof first or include it in the Checkpoint 2 VM gate.
+1. Run targeted Go tests named in the slice.
+2. Run the Checkpoint 1 principal proof first or include equivalent checks in the slice VM gate.
 3. Create two product users/accounts using canonical Pebble identity/session APIs.
-4. Exercise browser cookie, `X-Swarm-Token`, and local transport principal paths where applicable.
+4. Exercise browser cookie and `X-Swarm-Token`; exercise local transport where the slice owns local transport behavior.
 5. Inspect Pebble keys/records and prove account-scoped keys or fields exist.
 6. Prove denied cross-account/spoof requests leave no records behind.
-7. Document VM commands and proof output before marking any route complete.
+7. Document exact VM command, pass/fail output, and proof artifact path before marking any route complete.
 
 ## Do-not-dispatch list until blockers resolve
 
 Do not launch broad agents for these as standalone “fix it” tasks:
 
-- Z2 peer/local git sync and peer workspace replication until Z4 peer/runtime binding exists.
-- Z3 peer/local flow/session/permission routes until Z4 peer/runtime/session route binding exists.
-- Z4A public/bootstrap pairing boundary until product decision: principal-gated or account-bound bootstrap tokens.
-- Z4B attach/bootstrap/sync/import/export until account-bound deployment/session plus Z3/Z5 ownership APIs exist.
-- Z5 integrations/custom tools/image/UI settings until Z3 session/agent, Z2 workspace/image, and device-global UI boundaries exist.
+- Remote deploy account migration. Remote deploy is retired/dead.
+- Managed hosting before Slice 4 passes.
+- Flows before managed hosting account binding exists.
+- Peer/local flow/session/permission routes before managed peer/runtime/session route binding exists.
+- Deploy attach/bootstrap/sync/import/export until account-bound local/managed deployment/session plus Z3/Z5 ownership APIs exist.
+- Integrations/custom tools/image assets until Z3 session/agent and Z2 workspace/image ownership are proven.
 
 ## Next action
 
-Run the Slice A VM gate first. After Slice A passes VM proof, dispatch Slice B and the independent portions of Slices E/F. Dispatch C/D in parallel only where their blockers are satisfied by Slice B/A outputs. Do not start P2 dependent route completion until the owner verifier APIs are merged and VM-proven.
+Implement Slice 0 documentation correction, then dispatch Slice 1 core sessions/API usability. After Slice 1 VM proof, dispatch Slice 2 local containers with the extended local container harness. Do not start managed hosting or flows until Slice 4 out-of-box local product acceptance passes.

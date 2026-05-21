@@ -13,6 +13,8 @@ import (
 
 type SessionTurnUsageSnapshot struct {
 	SessionID        string           `json:"session_id"`
+	UserID           string           `json:"user_id,omitempty"`
+	AccountScopeID   string           `json:"account_scope_id,omitempty"`
 	RunID            string           `json:"run_id"`
 	Provider         string           `json:"provider"`
 	Model            string           `json:"model"`
@@ -37,6 +39,8 @@ type SessionTurnUsageSnapshot struct {
 
 type SessionUsageSummary struct {
 	SessionID          string `json:"session_id"`
+	UserID             string `json:"user_id,omitempty"`
+	AccountScopeID     string `json:"account_scope_id,omitempty"`
 	Provider           string `json:"provider"`
 	Model              string `json:"model"`
 	Source             string `json:"source"`
@@ -57,7 +61,21 @@ type SessionUsageSummary struct {
 
 func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	record = sanitizeTurnUsageSnapshot(record)
-	return s.store.PutJSON(KeySessionTurnUsage(record.SessionID, record.RunID), record)
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal turn usage %q/%q: %w", record.SessionID, record.RunID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeySessionTurnUsage(record.SessionID, record.RunID)), payload, nil); err != nil {
+		return err
+	}
+	if record.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySessionTurnUsageByAccount(record.AccountScopeID, record.SessionID, record.RunID)), []byte(record.RunID), nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) GetTurnUsage(sessionID, runID string) (SessionTurnUsageSnapshot, bool, error) {
@@ -105,7 +123,23 @@ func (s *SessionStore) ListTurnUsage(sessionID string, limit int) ([]SessionTurn
 }
 
 func (s *SessionStore) PutUsageSummary(summary SessionUsageSummary) error {
-	return s.store.PutJSON(KeySessionUsageSummary(summary.SessionID), summary)
+	summary.UserID = strings.TrimSpace(summary.UserID)
+	summary.AccountScopeID = strings.TrimSpace(summary.AccountScopeID)
+	payload, err := json.Marshal(summary)
+	if err != nil {
+		return fmt.Errorf("marshal usage summary %q: %w", summary.SessionID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeySessionUsageSummary(summary.SessionID)), payload, nil); err != nil {
+		return err
+	}
+	if summary.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(summary.AccountScopeID, summary.SessionID)), payload, nil); err != nil {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) GetUsageSummary(sessionID string) (SessionUsageSummary, bool, error) {
@@ -145,12 +179,20 @@ func (s *SessionStore) ResetUsage(sessionID string, summary SessionUsageSummary)
 
 	summaryKey := KeySessionUsageSummary(sessionID)
 	summary.SessionID = sessionID
+	summary.UserID = strings.TrimSpace(summary.UserID)
+	summary.AccountScopeID = strings.TrimSpace(summary.AccountScopeID)
 	payload, err := json.Marshal(summary)
 	if err != nil {
 		return fmt.Errorf("marshal usage summary reset payload: %w", err)
 	}
 	if err := batch.Set([]byte(summaryKey), payload, nil); err != nil {
 		return fmt.Errorf("set usage summary reset key %q: %w", summaryKey, err)
+	}
+	if summary.AccountScopeID != "" {
+		accountKey := KeySessionUsageSummaryByAccount(summary.AccountScopeID, sessionID)
+		if err := batch.Set([]byte(accountKey), payload, nil); err != nil {
+			return fmt.Errorf("set usage summary account key %q: %w", accountKey, err)
+		}
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return fmt.Errorf("commit usage reset batch: %w", err)
@@ -159,6 +201,10 @@ func (s *SessionStore) ResetUsage(sessionID string, summary SessionUsageSummary)
 }
 
 func sanitizeTurnUsageSnapshot(record SessionTurnUsageSnapshot) SessionTurnUsageSnapshot {
+	record.SessionID = strings.TrimSpace(record.SessionID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
+	record.RunID = strings.TrimSpace(record.RunID)
 	record.APIUsageRaw = nil
 	record.APIUsageRawPath = ""
 	record.APIUsageHistory = nil

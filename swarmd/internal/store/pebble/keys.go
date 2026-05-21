@@ -260,6 +260,18 @@ func SessionPrefix() string {
 	return "session/"
 }
 
+func KeySessionByAccount(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("session_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
+}
+
+func SessionByAccountPrefix(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return "session_by_account/"
+	}
+	return fmt.Sprintf("session_by_account/%s/", part)
+}
+
 func KeySessionRoute(sessionID string) string {
 	return fmt.Sprintf("session_route/%s", keyPart(sessionID))
 }
@@ -500,6 +512,22 @@ func MessagePrefix(sessionID string) string {
 	return fmt.Sprintf("msg/%s/", keyPart(sessionID))
 }
 
+func KeyMessageByAccount(accountScopeID, sessionID string, globalSeq uint64) string {
+	return fmt.Sprintf("msg_by_account/%s/%s/%020d", keyPart(accountScopeID), keyPart(sessionID), globalSeq)
+}
+
+func MessageByAccountPrefix(accountScopeID, sessionID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return "msg_by_account/"
+	}
+	sessionPart := keyPart(sessionID)
+	if sessionPart == "" {
+		return fmt.Sprintf("msg_by_account/%s/", accountPart)
+	}
+	return fmt.Sprintf("msg_by_account/%s/%s/", accountPart, sessionPart)
+}
+
 func KeySessionPlan(sessionID, planID string) string {
 	return fmt.Sprintf("session_plan/%s/%s", keyPart(sessionID), keyPart(planID))
 }
@@ -512,8 +540,28 @@ func SessionPlanPrefix(sessionID string) string {
 	return fmt.Sprintf("session_plan/%s/", part)
 }
 
+func KeySessionPlanByAccount(accountScopeID, sessionID, planID string) string {
+	return fmt.Sprintf("session_plan_by_account/%s/%s/%s", keyPart(accountScopeID), keyPart(sessionID), keyPart(planID))
+}
+
+func SessionPlanByAccountPrefix(accountScopeID, sessionID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return "session_plan_by_account/"
+	}
+	sessionPart := keyPart(sessionID)
+	if sessionPart == "" {
+		return fmt.Sprintf("session_plan_by_account/%s/", accountPart)
+	}
+	return fmt.Sprintf("session_plan_by_account/%s/%s/", accountPart, sessionPart)
+}
+
 func KeySessionPlanActive(sessionID string) string {
 	return fmt.Sprintf("session_plan_active/%s", keyPart(sessionID))
+}
+
+func KeySessionPlanActiveByAccount(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("session_plan_active_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }
 
 func KeySessionTurnUsage(sessionID, runID string) string {
@@ -528,8 +576,40 @@ func SessionTurnUsagePrefix(sessionID string) string {
 	return fmt.Sprintf("session_turn_usage/%s/", part)
 }
 
+func KeySessionTurnUsageByAccount(accountScopeID, sessionID, runID string) string {
+	return fmt.Sprintf("session_turn_usage_by_account/%s/%s/%s", keyPart(accountScopeID), keyPart(sessionID), keyPart(runID))
+}
+
+func SessionTurnUsageByAccountPrefix(accountScopeID, sessionID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return "session_turn_usage_by_account/"
+	}
+	sessionPart := keyPart(sessionID)
+	if sessionPart == "" {
+		return fmt.Sprintf("session_turn_usage_by_account/%s/", accountPart)
+	}
+	return fmt.Sprintf("session_turn_usage_by_account/%s/%s/", accountPart, sessionPart)
+}
+
 func KeySessionUsageSummary(sessionID string) string {
 	return fmt.Sprintf("session_usage_summary/%s", keyPart(sessionID))
+}
+
+func KeySessionUsageSummaryByAccount(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("session_usage_summary_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
+}
+
+func KeySessionLifecycleByAccount(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("session_lifecycle_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
+}
+
+func SessionLifecycleByAccountPrefix(accountScopeID string) string {
+	part := keyPart(accountScopeID)
+	if part == "" {
+		return "session_lifecycle_by_account/"
+	}
+	return fmt.Sprintf("session_lifecycle_by_account/%s/", part)
 }
 
 func KeyPermission(sessionID, permissionID string) string {
