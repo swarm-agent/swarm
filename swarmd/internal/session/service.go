@@ -1206,13 +1206,15 @@ func (s *Service) AppendMessage(sessionID, role, content string, metadata map[st
 	}
 
 	message := pebblestore.MessageSnapshot{
-		ID:        fmt.Sprintf("msg_%020d", env.GlobalSeq),
-		SessionID: sessionID,
-		GlobalSeq: env.GlobalSeq,
-		Role:      role,
-		Content:   content,
-		Metadata:  cleanMetadata,
-		CreatedAt: env.TsUnixMs,
+		ID:             fmt.Sprintf("msg_%020d", env.GlobalSeq),
+		SessionID:      sessionID,
+		UserID:         session.UserID,
+		AccountScopeID: session.AccountScopeID,
+		GlobalSeq:      env.GlobalSeq,
+		Role:           role,
+		Content:        content,
+		Metadata:       cleanMetadata,
+		CreatedAt:      env.TsUnixMs,
 	}
 	if err := s.store.PutMessage(message); err != nil {
 		return pebblestore.MessageSnapshot{}, pebblestore.SessionSnapshot{}, nil, err

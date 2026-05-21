@@ -149,6 +149,8 @@ Stop condition:
 
 #### Slice 1E — group VM verification only after 1A–1D
 
+Status: **complete** — VM proof passed with two product accounts and a real Fireworks model run using `accounts/fireworks/models/minimax-m2p7`; evidence directory `.tmp/user-account-scope/slice-1-sessions/20260521T043028Z-vm-proof`.
+
 Scope:
 - Add or update the VM verification harness only after 1A through 1D are complete.
 - Run one VM proof with two product accounts:
@@ -157,6 +159,12 @@ Scope:
   - Session subresources inherit account scope.
   - Pebble records contain account fields or account indexes.
   - Denied cross-account session probes leave no records behind.
+
+Proof notes:
+- Harness: `scripts/vm/slice-1-sessions-account-scope.sh`.
+- The proof adds a real Fireworks credential through `/v1/auth/credentials`, verifies the credential connection, creates a session with model `accounts/fireworks/models/minimax-m2p7`, and runs `/v1/sessions/{id}/run` successfully.
+- Account B list/read/message/metadata/preference/plans/usage/run probes against Account A's session all return not-found isolation responses.
+- Pebble inspection confirms the session, messages, plans, and usage summary carry Account A `AccountScopeID`, and account indexes are present.
 
 Explicitly defer from Slice 1 group:
 - `/v3/flows` and `/v3/flows/`.
