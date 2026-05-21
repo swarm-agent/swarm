@@ -659,7 +659,7 @@ func (s *Server) peerManagedWorkspaceInventory(r *http.Request) (peerManagedWork
 	if err != nil || strings.TrimSpace(home) == "" {
 		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, fmt.Errorf("resolve managed host home: %w", err)
 	}
-	saved, err := s.workspace.ListKnown(100000)
+	saved, err := s.workspace.ListKnownForPrincipal(peerManagedWorkspacePrincipal(), 100000)
 	if err != nil {
 		return peerManagedWorkspaceInventoryResponse{}, http.StatusInternalServerError, err
 	}
@@ -1043,7 +1043,7 @@ func (s *Server) peerManagedWorkspacePreflight(req peerManagedWorkspacePreflight
 }
 
 func (s *Server) knownWorkspacePathSet() (map[string]struct{}, error) {
-	entries, err := s.workspace.ListKnown(100000)
+	entries, err := s.workspace.ListKnownForPrincipal(peerManagedWorkspacePrincipal(), 100000)
 	if err != nil {
 		return nil, err
 	}

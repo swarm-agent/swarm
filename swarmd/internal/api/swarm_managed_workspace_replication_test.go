@@ -26,7 +26,7 @@ func TestPeerManagedWorkspaceInventoryReturnsSavedDiscoveredAndCWDs(t *testing.T
 	if err := os.MkdirAll(savedPath, 0o755); err != nil {
 		t.Fatalf("mkdir saved: %v", err)
 	}
-	if _, err := handler.workspace.AddForPrincipal(testPrincipal(), savedPath, "saved-workspace", "", false); err != nil {
+	if _, err := handler.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), savedPath, "saved-workspace", "", false); err != nil {
 		t.Fatalf("add saved: %v", err)
 	}
 	discoveredPath := filepath.Join(home, "discovered-workspace")
@@ -173,7 +173,7 @@ func TestPeerManagedWorkspacePreflightPlansImportLinkAndConflict(t *testing.T) {
 	if err := os.MkdirAll(registered, 0o755); err != nil {
 		t.Fatalf("mkdir registered: %v", err)
 	}
-	if _, err := handler.workspace.AddForPrincipal(testPrincipal(), registered, "registered", "", false); err != nil {
+	if _, err := handler.workspace.AddForPrincipal(peerManagedWorkspacePrincipal(), registered, "registered", "", false); err != nil {
 		t.Fatalf("add registered: %v", err)
 	}
 	unknown := filepath.Join(root, "unknown")
