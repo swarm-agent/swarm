@@ -482,6 +482,16 @@ func TestLocalChildTargetUsesChildPeerAuthWhenOwnerHostIsSelf(t *testing.T) {
 	}
 }
 
+func TestPrincipalForManagedHostSessionRunUsesStoredSessionPrincipal(t *testing.T) {
+	server, sessionSvc, _, _ := newRoutedSessionTestServer(t)
+	sessionID := seedRoutedSession(t, sessionSvc)
+
+	principal := server.principalForManagedHostSessionRun(sessionID)
+	if principal.UserID != testPrincipal().UserID || principal.AccountScopeID != testPrincipal().AccountScopeID {
+		t.Fatalf("principal = %q/%q, want session principal %q/%q", principal.UserID, principal.AccountScopeID, testPrincipal().UserID, testPrincipal().AccountScopeID)
+	}
+}
+
 func TestRoutedSessionTargetSkipsLocalRuntimeSelfRoute(t *testing.T) {
 	server, _, _, routeStore := newRoutedSessionTestServer(t)
 	sessionID := "session-local-runtime-routed"

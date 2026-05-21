@@ -951,8 +951,9 @@ func (s *Server) startManagedHostRunStreamExecution(runID, sessionID string, req
 		defer s.endActiveRun()
 		defer close(started)
 		startSignaled := false
-		runCtx := identity.ContextWithPrincipal(s.runCtx, peerManagedWorkspacePrincipal())
-		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, request, runruntime.RunStartMeta{RunID: runID, OwnerTransport: "managed_host_peer", Principal: peerManagedWorkspacePrincipal()}, func(event runruntime.StreamEvent) {
+		principal := s.principalForManagedHostSessionRun(sessionID)
+		runCtx := identity.ContextWithPrincipal(s.runCtx, principal)
+		result, err := s.runner.RunTurnStreaming(runCtx, sessionID, request, runruntime.RunStartMeta{RunID: runID, OwnerTransport: "managed_host_peer", Principal: principal}, func(event runruntime.StreamEvent) {
 			if !startSignaled && strings.EqualFold(strings.TrimSpace(event.Type), runruntime.StreamEventSessionLifecycle) && event.Lifecycle != nil && event.Lifecycle.Active {
 				startSignaled = true
 				select {
@@ -991,6 +992,36 @@ func (s *Server) startManagedHostRunStreamExecution(runID, sessionID string, req
 		s.runStreams.publishCompleted(runID, sessionID, streamResult)
 	}()
 	return started
+}
+
+func (s *Server) principalForManagedHostSessionRun(sessionID string) identity.Principal {
+	principal := peerManagedWorkspacePrincipal()
+	if s == nil {
+		return principal
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return principal
+	}
+	if s.sessions != nil {
+		if session, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
+			userID := strings.TrimSpace(session.UserID)
+			accountScopeID := strings.TrimSpace(session.AccountScopeID)
+			if userID != "" && accountScopeID != "" {
+				return identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceSession, SessionID: sessionID}
+			}
+		}
+	}
+	if s.sessionRoutes != nil {
+		if route, ok, err := s.sessionRoutes.Get(sessionID); err == nil && ok {
+			userID := strings.TrimSpace(route.UserID)
+			accountScopeID := strings.TrimSpace(route.AccountScopeID)
+			if userID != "" && accountScopeID != "" {
+				return identity.Principal{Type: identity.PrincipalTypeUser, UserID: userID, AccountScopeID: accountScopeID, AccountScopeSource: identity.AccountScopeSourceSession, SessionID: sessionID}
+			}
+		}
+	}
+	return principal
 }
 
 func (s *Server) publishManagedHostSessionEventToPrimary(event runruntime.StreamEvent) error {
