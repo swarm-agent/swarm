@@ -130,10 +130,20 @@ func (s *SwarmLocalContainerStore) Put(record SwarmLocalContainerRecord) (SwarmL
 }
 
 func (s *SwarmLocalContainerStore) PutForAccount(record SwarmLocalContainerRecord, userID, accountScopeID string) (SwarmLocalContainerRecord, error) {
+	record = normalizeSwarmLocalContainerRecord(record)
 	record.UserID = strings.TrimSpace(userID)
 	record.AccountScopeID = strings.TrimSpace(accountScopeID)
 	if record.AccountScopeID == "" {
 		return SwarmLocalContainerRecord{}, errors.New("account scope id is required")
+	}
+	if record.ID != "" {
+		existing, ok, err := s.Get(record.ID)
+		if err != nil {
+			return SwarmLocalContainerRecord{}, err
+		}
+		if ok && existing.AccountScopeID != "" && existing.AccountScopeID != record.AccountScopeID {
+			return SwarmLocalContainerRecord{}, errors.New("local container belongs to another account")
+		}
 	}
 	return s.Put(record)
 }

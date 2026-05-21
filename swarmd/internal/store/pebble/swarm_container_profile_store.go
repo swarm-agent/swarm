@@ -141,10 +141,20 @@ func (s *SwarmContainerProfileStore) PutProfile(profile ContainerProfileRecord) 
 }
 
 func (s *SwarmContainerProfileStore) PutProfileForAccount(profile ContainerProfileRecord, userID, accountScopeID string) (ContainerProfileRecord, error) {
+	profile = normalizeContainerProfileRecord(profile)
 	profile.UserID = strings.TrimSpace(userID)
 	profile.AccountScopeID = strings.TrimSpace(accountScopeID)
 	if profile.AccountScopeID == "" {
 		return ContainerProfileRecord{}, errors.New("account scope id is required")
+	}
+	if profile.ID != "" {
+		existing, ok, err := s.GetProfile(profile.ID)
+		if err != nil {
+			return ContainerProfileRecord{}, err
+		}
+		if ok && existing.AccountScopeID != "" && existing.AccountScopeID != profile.AccountScopeID {
+			return ContainerProfileRecord{}, errors.New("container profile belongs to another account")
+		}
 	}
 	return s.PutProfile(profile)
 }

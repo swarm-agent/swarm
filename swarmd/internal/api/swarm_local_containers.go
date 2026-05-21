@@ -140,7 +140,18 @@ func (s *Server) handleSwarmLocalContainerCreate(w http.ResponseWriter, r *http.
 			Reason: pkg.Reason,
 		})
 	}
-	container, err := s.localContainers.Create(context.Background(), localcontainers.CreateInput{
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	mounts, err := s.verifyLocalContainerMountsForPrincipal(principal, req.Mounts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	container, err := s.localContainers.Create(ctx, localcontainers.CreateInput{
 		Name:           req.Name,
 		Runtime:        req.Runtime,
 		HostAPIBaseURL: req.HostAPIBaseURL,
@@ -150,7 +161,9 @@ func (s *Server) handleSwarmLocalContainerCreate(w http.ResponseWriter, r *http.
 			PackageManager: req.ContainerPackages.PackageManager,
 			Packages:       packages,
 		},
-		Mounts: req.Mounts,
+		Mounts:         mounts,
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
 	})
 	if err != nil {
 		statusCode := http.StatusBadRequest

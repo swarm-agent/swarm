@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"net/http"
 
@@ -64,7 +63,18 @@ func (s *Server) handleSwarmContainerProfileUpsert(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	profile, err := s.containerProfiles.UpsertProfile(context.Background(), containerprofiles.UpsertInput{
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	mounts, err := s.verifyContainerProfileMountsForPrincipal(principal, req.Mounts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	profile, err := s.containerProfiles.UpsertProfile(ctx, containerprofiles.UpsertInput{
 		ID:                req.ID,
 		Name:              req.Name,
 		Description:       req.Description,
@@ -77,7 +87,7 @@ func (s *Server) handleSwarmContainerProfileUpsert(w http.ResponseWriter, r *htt
 		AdvertiseHost:     req.AdvertiseHost,
 		AdvertisePort:     req.AdvertisePort,
 		TailscaleHostname: req.TailscaleHostname,
-		Mounts:            req.Mounts,
+		Mounts:            mounts,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -61,9 +62,13 @@ func (s *Service) ListProfilesForAccount(_ context.Context, accountScopeID strin
 	return s.store.ListProfilesForAccount(accountScopeID, 500)
 }
 
-func (s *Service) UpsertProfile(_ context.Context, input UpsertInput) (Profile, error) {
+func (s *Service) UpsertProfile(ctx context.Context, input UpsertInput) (Profile, error) {
 	if s == nil || s.store == nil {
 		return Profile{}, errors.New("container profile service is not configured")
+	}
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok || !principal.Valid() {
+		return Profile{}, identity.ErrPrincipalRequired
 	}
 	record := pebblestore.ContainerProfileRecord{
 		ID:                input.ID,
@@ -84,14 +89,14 @@ func (s *Service) UpsertProfile(_ context.Context, input UpsertInput) (Profile, 
 		return Profile{}, errors.New("container profile name is required")
 	}
 	if strings.TrimSpace(record.ID) != "" {
-		if existing, ok, err := s.store.GetProfile(record.ID); err != nil {
+		if existing, ok, err := s.store.GetProfileForAccount(principal.AccountScopeID, record.ID); err != nil {
 			return Profile{}, err
 		} else if ok {
 			record.CreatedAt = existing.CreatedAt
 		}
 	}
 	record = applyContainerProfileDefaults(record)
-	return s.store.PutProfile(record)
+	return s.store.PutProfileForAccount(record, principal.UserID, principal.AccountScopeID)
 }
 
 func (s *Service) DeleteProfile(_ context.Context, profileID string) (DeleteResult, error) {

@@ -27,6 +27,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/localupdate"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
@@ -108,6 +109,8 @@ type CreateInput struct {
 	Env               []string
 	ExtraRunArgs      []string
 	RuntimeMount      *RuntimeMount
+	UserID            string
+	AccountScopeID    string
 }
 
 type ActionInput struct {
@@ -724,6 +727,13 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Container, err
 	if s == nil || s.store == nil {
 		return Container{}, errors.New("local container service is not configured")
 	}
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok || !principal.Valid() {
+		principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: strings.TrimSpace(input.UserID), AccountScopeID: strings.TrimSpace(input.AccountScopeID)}
+	}
+	if !principal.Valid() {
+		return Container{}, identity.ErrPrincipalRequired
+	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return Container{}, errors.New("name is required")
@@ -819,7 +829,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Container, err
 		record.Status = "created"
 		record.Warning = runErr.Error()
 	}
-	saved, saveErr := s.store.Put(record)
+	saved, saveErr := s.store.PutForAccount(record, principal.UserID, principal.AccountScopeID)
 	if saveErr != nil {
 		return Container{}, saveErr
 	}
