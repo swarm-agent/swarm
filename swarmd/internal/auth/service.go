@@ -116,17 +116,25 @@ type CredentialImportResult = pebblestore.CredentialImportResult
 type CredentialBundleMetadata = pebblestore.CredentialBundleMetadata
 
 func (s *Service) ImportManagedCredentials(ownerSwarmID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
+	return CredentialImportResult{}, errAccountScopeRequired
+}
+
+func (s *Service) ImportManagedCredentialsForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
 	if s == nil || s.authStore == nil {
 		return CredentialImportResult{}, errors.New("auth store is not configured")
 	}
-	return s.authStore.ImportManagedCredentials(ownerSwarmID, bundlePassword, vaultPassword, payload)
+	return s.authStore.ImportManagedCredentialsForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword, payload)
 }
 
 func (s *Service) ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey string, payload []byte) (CredentialImportResult, error) {
+	return CredentialImportResult{}, errAccountScopeRequired
+}
+
+func (s *Service) ImportManagedCredentialsWithVaultAccessForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey string, payload []byte) (CredentialImportResult, error) {
 	if s == nil || s.authStore == nil {
 		return CredentialImportResult{}, errors.New("auth store is not configured")
 	}
-	return s.authStore.ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey, payload)
+	return s.authStore.ImportManagedCredentialsWithVaultAccessForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey, payload)
 }
 
 func (s *Service) DeleteManagedCredentialsByOwnerSwarmID(ownerSwarmID string) (int, error) {
@@ -136,7 +144,18 @@ func (s *Service) DeleteManagedCredentialsByOwnerSwarmID(ownerSwarmID string) (i
 	return s.authStore.DeleteCredentialsByOwnerSwarmID(ownerSwarmID)
 }
 
+func (s *Service) DeleteManagedCredentialsByOwnerSwarmIDForAccount(accountScopeID, ownerSwarmID string) (int, error) {
+	if s == nil || s.authStore == nil {
+		return 0, errors.New("auth store is not configured")
+	}
+	return s.authStore.DeleteCredentialsByOwnerSwarmIDForAccount(accountScopeID, ownerSwarmID)
+}
+
 func (s *Service) NewManagedCredentialBundle(ownerSwarmID string) ([]byte, string, int, error) {
+	return nil, "", 0, errAccountScopeRequired
+}
+
+func (s *Service) NewManagedCredentialBundleForAccount(accountScopeID, ownerSwarmID string) ([]byte, string, int, error) {
 	if s == nil || s.authStore == nil {
 		return nil, "", 0, errors.New("auth store is not configured")
 	}
@@ -155,7 +174,7 @@ func (s *Service) NewManagedCredentialBundle(ownerSwarmID string) ([]byte, strin
 	if err != nil {
 		return nil, "", 0, err
 	}
-	payload, exported, err := s.authStore.ExportCredentials(password, "")
+	payload, exported, err := s.authStore.ExportCredentialsForAccount(accountScopeID, password, "")
 	if err != nil {
 		return nil, "", 0, err
 	}
@@ -230,10 +249,14 @@ func (s *Service) DisableVault(password string) (VaultStatus, error) {
 }
 
 func (s *Service) ExportCredentials(bundlePassword, vaultPassword string) ([]byte, int, error) {
+	return nil, 0, errAccountScopeRequired
+}
+
+func (s *Service) ExportCredentialsForAccount(accountScopeID, bundlePassword, vaultPassword string) ([]byte, int, error) {
 	if s == nil || s.authStore == nil {
 		return nil, 0, errors.New("auth store is not configured")
 	}
-	return s.authStore.ExportCredentials(bundlePassword, vaultPassword)
+	return s.authStore.ExportCredentialsForAccount(accountScopeID, bundlePassword, vaultPassword)
 }
 
 func (s *Service) CredentialBundleMetadata(bundlePassword string, payload []byte) (CredentialBundleMetadata, error) {
@@ -244,10 +267,14 @@ func (s *Service) CredentialBundleMetadata(bundlePassword string, payload []byte
 }
 
 func (s *Service) ImportCredentials(bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
+	return CredentialImportResult{}, errAccountScopeRequired
+}
+
+func (s *Service) ImportCredentialsForAccount(accountScopeID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
 	if s == nil || s.authStore == nil {
 		return CredentialImportResult{}, errors.New("auth store is not configured")
 	}
-	return s.authStore.ImportCredentials(bundlePassword, vaultPassword, payload)
+	return s.authStore.ImportCredentialsForAccount(accountScopeID, bundlePassword, vaultPassword, payload)
 }
 
 func (s *Service) SetCodexKey(rawKey string) (CodexStatus, *pebblestore.EventEnvelope, error) {

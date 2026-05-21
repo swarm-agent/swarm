@@ -52,6 +52,14 @@ type CredentialBundleMetadata struct {
 }
 
 func (s *AuthStore) ExportCredentials(bundlePassword, vaultPassword string) ([]byte, int, error) {
+	return nil, 0, errAccountScopeRequired
+}
+
+func (s *AuthStore) ExportCredentialsForAccount(accountScopeID, bundlePassword, vaultPassword string) ([]byte, int, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return nil, 0, err
+	}
 	bundlePassword = strings.TrimSpace(bundlePassword)
 	vaultPassword = strings.TrimSpace(vaultPassword)
 	if bundlePassword == "" {
@@ -71,7 +79,7 @@ func (s *AuthStore) ExportCredentials(bundlePassword, vaultPassword string) ([]b
 		}
 	}
 
-	bundle, err := s.buildCredentialBundle()
+	bundle, err := s.buildCredentialBundleForAccount(accountScopeID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -125,26 +133,46 @@ func (s *AuthStore) CredentialBundleMetadata(bundlePassword string, payload []by
 }
 
 func (s *AuthStore) ImportCredentials(bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
-	return s.importCredentialBundle(bundlePassword, vaultPassword, "", false, payload)
+	return CredentialImportResult{}, errAccountScopeRequired
+}
+
+func (s *AuthStore) ImportCredentialsForAccount(accountScopeID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
+	return s.importCredentialBundleForAccount(accountScopeID, bundlePassword, vaultPassword, "", false, payload)
 }
 
 func (s *AuthStore) ImportManagedCredentials(ownerSwarmID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
-	return s.ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, "", payload)
+	return CredentialImportResult{}, errAccountScopeRequired
+}
+
+func (s *AuthStore) ImportManagedCredentialsForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
+	return s.ImportManagedCredentialsWithVaultAccessForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword, "", payload)
 }
 
 func (s *AuthStore) ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey string, payload []byte) (CredentialImportResult, error) {
+	return CredentialImportResult{}, errAccountScopeRequired
+}
+
+func (s *AuthStore) ImportManagedCredentialsWithVaultAccessForAccount(accountScopeID, ownerSwarmID, bundlePassword, vaultPassword, managedVaultKey string, payload []byte) (CredentialImportResult, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CredentialImportResult{}, err
+	}
 	ownerSwarmID = strings.TrimSpace(ownerSwarmID)
 	if ownerSwarmID == "" {
 		return CredentialImportResult{}, errors.New("owner swarm id is required")
 	}
-	return s.importCredentialBundleWithManagedVault(bundlePassword, vaultPassword, managedVaultKey, ownerSwarmID, true, payload)
+	return s.importCredentialBundleWithManagedVaultForAccount(accountScopeID, bundlePassword, vaultPassword, managedVaultKey, ownerSwarmID, true, payload)
 }
 
-func (s *AuthStore) importCredentialBundle(bundlePassword, vaultPassword, ownerSwarmID string, managed bool, payload []byte) (CredentialImportResult, error) {
-	return s.importCredentialBundleWithManagedVault(bundlePassword, vaultPassword, "", ownerSwarmID, managed, payload)
+func (s *AuthStore) importCredentialBundleForAccount(accountScopeID, bundlePassword, vaultPassword, ownerSwarmID string, managed bool, payload []byte) (CredentialImportResult, error) {
+	return s.importCredentialBundleWithManagedVaultForAccount(accountScopeID, bundlePassword, vaultPassword, "", ownerSwarmID, managed, payload)
 }
 
-func (s *AuthStore) importCredentialBundleWithManagedVault(bundlePassword, vaultPassword, managedVaultKey, ownerSwarmID string, managed bool, payload []byte) (CredentialImportResult, error) {
+func (s *AuthStore) importCredentialBundleWithManagedVaultForAccount(accountScopeID, bundlePassword, vaultPassword, managedVaultKey, ownerSwarmID string, managed bool, payload []byte) (CredentialImportResult, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CredentialImportResult{}, err
+	}
 	bundlePassword = strings.TrimSpace(bundlePassword)
 	vaultPassword = strings.TrimSpace(vaultPassword)
 	managedVaultKey = strings.TrimSpace(managedVaultKey)
@@ -195,6 +223,7 @@ func (s *AuthStore) importCredentialBundleWithManagedVault(bundlePassword, vault
 	incomingManaged := make(map[string]struct{}, len(bundle.Credentials))
 	for _, record := range bundle.Credentials {
 		record = normalizeCredentialRecord(record)
+		record.AccountScopeID = accountScopeID
 		if managed {
 			record.Managed = true
 			record.OwnerSwarmID = ownerSwarmID
@@ -206,7 +235,7 @@ func (s *AuthStore) importCredentialBundleWithManagedVault(bundlePassword, vault
 		imported++
 	}
 	if managed {
-		existing, err := s.ListCredentials("", 10_000)
+		existing, err := s.ListCredentialsForAccount(accountScopeID, "", 10_000)
 		if err != nil {
 			return CredentialImportResult{}, err
 		}
@@ -228,7 +257,7 @@ func (s *AuthStore) importCredentialBundleWithManagedVault(bundlePassword, vault
 			if _, ok := incomingManaged[managedCredentialBundleKey(provider, credentialID)]; !ok {
 				continue
 			}
-			if _, err := s.SetActiveCredential(provider, credentialID); err != nil {
+			if _, err := s.SetActiveCredentialForAccount(accountScopeID, provider, credentialID); err != nil {
 				return CredentialImportResult{}, err
 			}
 		}
@@ -240,12 +269,16 @@ func (s *AuthStore) importCredentialBundleWithManagedVault(bundlePassword, vault
 	return CredentialImportResult{Imported: imported, Vault: status, SnapshotHash: bundle.SnapshotHash}, nil
 }
 
-func (s *AuthStore) buildCredentialBundle() (CredentialBundle, error) {
-	records, err := s.ListCredentials("", 10_000)
+func (s *AuthStore) buildCredentialBundleForAccount(accountScopeID string) (CredentialBundle, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
 	if err != nil {
 		return CredentialBundle{}, err
 	}
-	activeCredentialIDs, err := s.activeCredentialIDsForRecords(records)
+	records, err := s.ListCredentialsForAccount(accountScopeID, "", 10_000)
+	if err != nil {
+		return CredentialBundle{}, err
+	}
+	activeCredentialIDs, err := s.activeCredentialIDsForRecords(accountScopeID, records)
 	if err != nil {
 		return CredentialBundle{}, err
 	}
@@ -267,7 +300,7 @@ func (s *AuthStore) readCredentialBundle(bundlePassword string, payload []byte) 
 	return decryptCredentialBundle(bundlePassword, payload)
 }
 
-func (s *AuthStore) activeCredentialIDsForRecords(records []AuthCredentialRecord) (map[string]string, error) {
+func (s *AuthStore) activeCredentialIDsForRecords(accountScopeID string, records []AuthCredentialRecord) (map[string]string, error) {
 	seen := make(map[string]struct{}, len(records))
 	activeCredentialIDs := make(map[string]string, len(records))
 	for _, record := range records {
@@ -279,7 +312,7 @@ func (s *AuthStore) activeCredentialIDsForRecords(records []AuthCredentialRecord
 			continue
 		}
 		seen[provider] = struct{}{}
-		credentialID, ok, err := s.getActiveCredentialID(provider)
+		credentialID, ok, err := s.getActiveCredentialIDForAccount(accountScopeID, provider)
 		if err != nil {
 			return nil, err
 		}

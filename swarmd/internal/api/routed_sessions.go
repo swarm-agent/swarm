@@ -45,6 +45,7 @@ type peerSessionOpenRequest struct {
 	Request   sessionCreateRequest                   `json:"request"`
 	Hosted    sessionruntime.HostedSessionDescriptor `json:"hosted"`
 	Route     pebblestore.SessionRouteRecord         `json:"route,omitempty"`
+	Principal identity.Principal                     `json:"principal,omitempty"`
 }
 
 func (s *Server) routedSessionTarget(sessionID string) (*swarmTarget, bool, error) {
@@ -319,6 +320,10 @@ func (s *Server) postPeerJSONToSwarmTarget(ctx context.Context, target swarmTarg
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(state.Node.SwarmID))
 	req.Header.Set(peerAuthTokenHeader, peerToken)
+	if principal, ok := identity.PrincipalFromContext(ctx); ok && principal.Valid() {
+		req.Header.Set("X-Swarm-Principal-User-ID", strings.TrimSpace(principal.UserID))
+		req.Header.Set("X-Swarm-Principal-Account-Scope-ID", strings.TrimSpace(principal.AccountScopeID))
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("routed peer request failed swarm_id=%q path=%q elapsed_ms=%d err=%v", strings.TrimSpace(target.SwarmID), strings.TrimSpace(path), time.Since(startedAt).Milliseconds(), err)
@@ -367,7 +372,8 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if strings.TrimSpace(req.SessionID) == "" {
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if req.SessionID == "" {
 		writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 		return
 	}
@@ -391,16 +397,39 @@ func (s *Server) handlePeerSessionOpen(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(childReq.WorkspaceName) == "" {
 		childReq.WorkspaceName = filepath.Base(childWorkspacePath)
 	}
-	session, _, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, req.Hosted.WithMetadata(nil), true, req.SessionID)
+	principal := req.Principal
+	principalOK := principal.Valid()
+	if !principalOK {
+		principal, principalOK = PrincipalFromRequest(r)
+	}
+	if !principalOK || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	principal.Type = identity.PrincipalTypeUser
+	principal.UserID = strings.TrimSpace(principal.UserID)
+	principal.AccountScopeID = strings.TrimSpace(principal.AccountScopeID)
+	if routeUserID := strings.TrimSpace(req.Route.UserID); routeUserID != "" && routeUserID != principal.UserID {
+		writeError(w, http.StatusBadRequest, errors.New("route user id does not match principal"))
+		return
+	}
+	if routeAccountScopeID := strings.TrimSpace(req.Route.AccountScopeID); routeAccountScopeID != "" && routeAccountScopeID != principal.AccountScopeID {
+		writeError(w, http.StatusBadRequest, errors.New("route account scope id does not match principal"))
+		return
+	}
+	session, _, warning, modeWarning, err := s.createSessionFromRequestWithSessionID(childReq, req.Hosted.WithMetadata(nil), false, req.SessionID, principal, true)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	if strings.TrimSpace(req.Route.SessionID) != "" {
 		routeRecord := req.Route
-		if strings.TrimSpace(routeRecord.SessionID) == "" {
-			routeRecord.SessionID = req.SessionID
+		if routeSessionID := strings.TrimSpace(routeRecord.SessionID); routeSessionID != req.SessionID {
+			writeError(w, http.StatusBadRequest, errors.New("route session id does not match request session id"))
+			return
 		}
+		routeRecord.UserID = principal.UserID
+		routeRecord.AccountScopeID = principal.AccountScopeID
 		if strings.TrimSpace(routeRecord.HostSwarmID) == "" {
 			routeRecord.HostSwarmID = strings.TrimSpace(req.Hosted.HostSwarmID)
 		}

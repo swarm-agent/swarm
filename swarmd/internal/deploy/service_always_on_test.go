@@ -64,6 +64,8 @@ func TestRecoverLocalDeploymentsOnlyEnsuresAlwaysOnAttachedDeployments(t *testin
 			ChildBackendURL: ready.URL,
 			AttachStatus:    "attached",
 			AlwaysOn:        true,
+			UserID:          "user-1",
+			AccountScopeID:  "account-1",
 		},
 		{
 			ID:              "manual-child",
@@ -76,6 +78,8 @@ func TestRecoverLocalDeploymentsOnlyEnsuresAlwaysOnAttachedDeployments(t *testin
 			ChildBackendURL: ready.URL,
 			AttachStatus:    "attached",
 			AlwaysOn:        false,
+			UserID:          "user-1",
+			AccountScopeID:  "account-1",
 		},
 	}
 	for _, record := range records {
@@ -90,12 +94,14 @@ func TestRecoverLocalDeploymentsOnlyEnsuresAlwaysOnAttachedDeployments(t *testin
 			Status:         "exited",
 			HostAPIBaseURL: ready.URL,
 			HostPort:       record.BackendHostPort,
+			UserID:         "user-1",
+			AccountScopeID: "account-1",
 		}); err != nil {
 			t.Fatalf("put local container %s: %v", record.ID, err)
 		}
 	}
 
-	if err := deploySvc.RecoverLocalDeployments(context.Background()); err != nil {
+	if err := deploySvc.RecoverLocalDeployments(testPrincipalContext()); err != nil {
 		t.Fatalf("RecoverLocalDeployments() error = %v", err)
 	}
 	if len(started) != 1 || started[0] != "podman:start:always-on-child" {
@@ -240,6 +246,8 @@ func TestEnsureRunningWaitsForAPIReadiness(t *testing.T) {
 		ChildBackendURL: ready.URL,
 		AttachStatus:    "attached",
 		AlwaysOn:        true,
+		UserID:          "user-1",
+		AccountScopeID:  "account-1",
 	}
 	if _, err := deploymentStore.Put(record); err != nil {
 		t.Fatalf("put deployment: %v", err)
@@ -252,6 +260,8 @@ func TestEnsureRunningWaitsForAPIReadiness(t *testing.T) {
 		Status:         "exited",
 		HostAPIBaseURL: ready.URL,
 		HostPort:       record.BackendHostPort,
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
 	}); err != nil {
 		t.Fatalf("put local container: %v", err)
 	}

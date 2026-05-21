@@ -9,6 +9,8 @@ import (
 
 type SessionRouteRecord struct {
 	SessionID            string `json:"session_id"`
+	UserID               string `json:"user_id,omitempty"`
+	AccountScopeID       string `json:"account_scope_id,omitempty"`
 	ChildSwarmID         string `json:"child_swarm_id"`
 	ChildBackendURL      string `json:"child_backend_url,omitempty"`
 	HostSwarmID          string `json:"host_swarm_id,omitempty"`
@@ -96,6 +98,8 @@ func (s *SessionRouteStore) List(limit int) ([]SessionRouteRecord, error) {
 
 func normalizeSessionRouteRecord(record SessionRouteRecord) SessionRouteRecord {
 	record.SessionID = strings.TrimSpace(record.SessionID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.ChildSwarmID = strings.TrimSpace(record.ChildSwarmID)
 	record.ChildBackendURL = strings.TrimSpace(record.ChildBackendURL)
 	record.HostSwarmID = strings.TrimSpace(record.HostSwarmID)

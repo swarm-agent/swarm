@@ -343,6 +343,7 @@ type Service struct {
 	permission                   *permission.Service
 	model                        *modelruntime.Service
 	workspace                    *workspaceruntime.Service
+	identity                     *identity.Service
 	startupPath                  string
 	client                       *http.Client
 	hostCallbackURLFunc          func(string) (string, bool)
@@ -359,6 +360,7 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 	var modelSvc *modelruntime.Service
 	var swarmNodeStore *pebblestore.SwarmNodeStore
 	var topologyStore *pebblestore.TopologyStore
+	var identitySvc *identity.Service
 	for _, extra := range extras {
 		switch value := extra.(type) {
 		case *discovery.Service:
@@ -371,6 +373,8 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 			swarmNodeStore = value
 		case *pebblestore.TopologyStore:
 			topologyStore = value
+		case *identity.Service:
+			identitySvc = value
 		}
 	}
 	return &Service{
@@ -386,6 +390,7 @@ func NewService(store *pebblestore.DeployContainerStore, containers *localcontai
 		permission:                permissionSvc,
 		model:                     modelSvc,
 		workspace:                 workspaceSvc,
+		identity:                  identitySvc,
 		startupPath:               strings.TrimSpace(startupPath),
 		client:                    newBootstrapClient(),
 		pendingSyncVaultPasswords: make(map[string]pendingSyncVaultPassword),
@@ -796,6 +801,7 @@ func (s *Service) Act(ctx context.Context, input ContainerActionInput) (Containe
 	if !ok {
 		return ContainerDeployment{}, fmt.Errorf("deploy container not found")
 	}
+	ctx = s.contextWithRecordPrincipal(ctx, record)
 	container, err := s.containers.Act(ctx, localcontainers.ActionInput{ID: input.ID, Action: input.Action})
 	if err != nil {
 		return ContainerDeployment{}, err
@@ -1100,16 +1106,20 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 			}
 			item.RemovedTrustedPeer = true
 		}
-		if s.auth != nil {
-			if _, err := s.auth.DeleteManagedCredentialsByOwnerSwarmID(childSwarmID); err != nil && !errors.Is(err, pebblestore.ErrVaultLocked) {
-				item.Error = err.Error()
-				return item
+		if principal, ok := principalFromContext(ctx); ok {
+			if s.auth != nil {
+				if _, err := s.auth.DeleteManagedCredentialsByOwnerSwarmIDForAccount(principal.AccountScopeID, childSwarmID); err != nil && !errors.Is(err, pebblestore.ErrVaultLocked) {
+					item.Error = err.Error()
+					return item
+				}
 			}
-		}
-		if s.workspace != nil {
-			if err := s.workspace.RemoveReplicationLinksByTargetSwarmID(childSwarmID); err != nil {
-				item.Error = err.Error()
-				return item
+			if s.workspace != nil {
+				removed, err := s.workspace.RemoveReplicationLinksByTargetSwarmIDForAccount(principal.AccountScopeID, childSwarmID)
+				if err != nil {
+					item.Error = err.Error()
+					return item
+				}
+				item.RemovedWorkspaceRoutes += removed
 			}
 		}
 	}
@@ -1289,7 +1299,7 @@ func (s *Service) SyncCredentialBundle(ctx context.Context, input ContainerSyncC
 			SnapshotHash:   strings.TrimSpace(record.SyncCredentialSnapshotHash),
 		}, nil
 	}
-	payload, exported, err := s.auth.ExportCredentials(record.SyncBundlePassword, strings.TrimSpace(input.VaultPassword))
+	payload, exported, err := s.auth.ExportCredentialsForAccount(record.AccountScopeID, record.SyncBundlePassword, strings.TrimSpace(input.VaultPassword))
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
@@ -1472,7 +1482,6 @@ func (s *Service) SyncManagedHostCredentialBundle(ctx context.Context, input Con
 	if s == nil || s.auth == nil {
 		return ContainerSyncCredentialBundle{}, fmt.Errorf("deploy container service is not configured")
 	}
-	_ = ctx
 	ownerSwarmID := strings.TrimSpace(input.PeerSwarmID)
 	if ownerSwarmID == "" {
 		ownerSwarmID = s.localSwarmID()
@@ -1484,7 +1493,11 @@ func (s *Service) SyncManagedHostCredentialBundle(ctx context.Context, input Con
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
-	payload, exported, err := s.auth.ExportCredentials(bundlePassword, strings.TrimSpace(input.VaultPassword))
+	accountScopeID, err := s.accountScopeIDForManagedCredentialSync(ctx)
+	if err != nil {
+		return ContainerSyncCredentialBundle{}, err
+	}
+	payload, exported, err := s.auth.ExportCredentialsForAccount(accountScopeID, bundlePassword, strings.TrimSpace(input.VaultPassword))
 	if err != nil {
 		return ContainerSyncCredentialBundle{}, err
 	}
@@ -1598,7 +1611,7 @@ func (s *Service) ApplyManagedHostInitialSyncBundle(ctx context.Context, manager
 	}
 	ownerSwarmID := firstNonEmpty(bundle.OwnerSwarmID, strings.TrimSpace(bundle.CredentialBundle.OwnerSwarmID), strings.TrimSpace(managerSwarmID))
 	if workspaceruntime.ReplicationSyncModuleEnabled(modules, workspaceruntime.ReplicationSyncModuleCredentials) {
-		updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle.CredentialBundle, "", "")
+		updatedPairing, err := s.applyManagedCredentialBundle(ctx, pairing, ownerSwarmID, bundle.CredentialBundle, "", "")
 		if err != nil {
 			return ManagedHostSyncStatus{}, err
 		}
@@ -1719,6 +1732,27 @@ func principalFromContext(ctx context.Context) (identity.Principal, bool) {
 	return principal, true
 }
 
+func (s *Service) accountScopeIDForManagedCredentialSync(ctx context.Context) (string, error) {
+	if principal, ok := principalFromContext(ctx); ok {
+		return strings.TrimSpace(principal.AccountScopeID), nil
+	}
+	if s == nil || s.identity == nil {
+		return "", identity.ErrPrincipalRequired
+	}
+	summary, err := s.identity.StateSummary()
+	if err != nil {
+		return "", err
+	}
+	if summary.CurrentUser == nil || summary.AccountScope == nil {
+		return "", identity.ErrPrincipalRequired
+	}
+	accountScopeID := strings.TrimSpace(summary.AccountScope.ID)
+	if accountScopeID == "" || strings.TrimSpace(summary.CurrentUser.AccountScopeID) != accountScopeID {
+		return "", identity.ErrPrincipalRequired
+	}
+	return accountScopeID, nil
+}
+
 func (s *Service) listRecordsForContext(ctx context.Context, limit int) ([]pebblestore.DeployContainerRecord, error) {
 	if principal, ok := principalFromContext(ctx); ok {
 		return s.store.ListForAccount(principal.AccountScopeID, limit)
@@ -1735,12 +1769,35 @@ func (s *Service) getRecordForContext(ctx context.Context, deploymentID string) 
 
 func (s *Service) persistRecordForContext(ctx context.Context, record pebblestore.DeployContainerRecord) (pebblestore.DeployContainerRecord, error) {
 	if principal, ok := principalFromContext(ctx); ok {
+		if strings.TrimSpace(record.UserID) == "" {
+			record.UserID = principal.UserID
+		}
+		if strings.TrimSpace(record.AccountScopeID) == "" {
+			record.AccountScopeID = principal.AccountScopeID
+		}
 		if err := s.syncCanonicalFields(&record); err != nil {
 			return pebblestore.DeployContainerRecord{}, err
 		}
-		return s.store.PutForAccount(record, principal.UserID, principal.AccountScopeID)
+		return s.store.PutForAccount(record, record.UserID, record.AccountScopeID)
 	}
 	return s.persistRecord(record)
+}
+
+func (s *Service) contextWithRecordPrincipal(ctx context.Context, record pebblestore.DeployContainerRecord) context.Context {
+	if principal, ok := principalFromContext(ctx); ok {
+		return identity.ContextWithPrincipal(ctx, principal)
+	}
+	userID := strings.TrimSpace(record.UserID)
+	accountScopeID := strings.TrimSpace(record.AccountScopeID)
+	if userID == "" || accountScopeID == "" {
+		return ctx
+	}
+	return identity.ContextWithPrincipal(ctx, identity.Principal{
+		Type:               identity.PrincipalTypeUser,
+		UserID:             userID,
+		AccountScopeID:     accountScopeID,
+		AccountScopeSource: identity.AccountScopeSourceServerState,
+	})
 }
 
 func (s *Service) persistRecord(record pebblestore.DeployContainerRecord) (pebblestore.DeployContainerRecord, error) {
@@ -1799,7 +1856,7 @@ func (s *Service) FinalizeAttachFromHost(ctx context.Context, input ContainerAtt
 	if err != nil {
 		return err
 	}
-	return s.finalizeChildAttach(cfg, state, ContainerAttachState{
+	return s.finalizeChildAttach(ctx, cfg, state, ContainerAttachState{
 		DeploymentID:     strings.TrimSpace(input.DeploymentID),
 		AttachStatus:     "attached",
 		HostSwarmID:      strings.TrimSpace(input.HostSwarmID),
@@ -1843,7 +1900,7 @@ func (s *Service) AutoAttachChild(ctx context.Context) error {
 	if strings.TrimSpace(cfg.RemoteDeploy.SessionID) != "" && strings.TrimSpace(cfg.RemoteDeploy.InviteToken) != "" {
 		return nil
 	}
-	return s.finalizeChildAttach(cfg, state, attachState, ContainerAttachFinalizeInput{
+	return s.finalizeChildAttach(ctx, cfg, state, attachState, ContainerAttachFinalizeInput{
 		HostToChildPeerAuthToken: strings.TrimSpace(attachState.HostToChildPeerAuthToken),
 		ChildToHostPeerAuthToken: strings.TrimSpace(attachState.ChildToHostPeerAuthToken),
 		SyncVaultPassword:        strings.TrimSpace(attachState.SyncVaultPassword),
@@ -1979,6 +2036,7 @@ func (s *Service) reconcileLocalDeployment(ctx context.Context, record pebblesto
 	if !s.deploymentBelongsToLocalHost(record) {
 		return nil
 	}
+	ctx = s.contextWithRecordPrincipal(ctx, record)
 	if record.AlwaysOn && strings.TrimSpace(record.Status) != "running" {
 		log.Printf("deploy startup recovery starting local child deployment_id=%q status=%q attach_status=%q runtime=%q container=%q", record.ID, record.Status, record.AttachStatus, record.Runtime, record.ContainerName)
 		deployment, err := s.Act(ctx, ContainerActionInput{ID: record.ID, Action: "start"})
@@ -2202,7 +2260,7 @@ func (s *Service) finalizeApprovedAttach(record *pebblestore.DeployContainerReco
 			if s.auth == nil {
 				return fmt.Errorf("auth service is not configured")
 			}
-			_, exported, err := s.auth.ExportCredentials(record.SyncBundlePassword, strings.TrimSpace(syncVaultPassword))
+			_, exported, err := s.auth.ExportCredentialsForAccount(record.AccountScopeID, record.SyncBundlePassword, strings.TrimSpace(syncVaultPassword))
 			if err != nil {
 				return err
 			}
@@ -3004,7 +3062,7 @@ func (s *Service) postLocalAttachApprove(ctx context.Context, endpoint, socketPa
 	return decoded.Attach, nil
 }
 
-func (s *Service) finalizeChildAttach(cfg startupconfig.FileConfig, state swarmruntime.LocalState, status ContainerAttachState, finalizeInput ContainerAttachFinalizeInput) error {
+func (s *Service) finalizeChildAttach(ctx context.Context, cfg startupconfig.FileConfig, state swarmruntime.LocalState, status ContainerAttachState, finalizeInput ContainerAttachFinalizeInput) error {
 	if s == nil || s.swarmStore == nil {
 		return fmt.Errorf("deploy container service is not configured")
 	}
@@ -3103,6 +3161,16 @@ func (s *Service) finalizeChildAttach(cfg startupconfig.FileConfig, state swarmr
 			return err
 		}
 	}
+	var principal identity.Principal
+	principalRequired := cfg.DeployContainer.SyncEnabled || len(finalizeInput.WorkspaceBootstrap) > 0 || (!cfg.DeployContainer.HostDriven && cfg.Child && cfg.DeployContainer.Enabled)
+	if principalRequired {
+		var err error
+		principal, err = s.principalForChildBootstrap(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		ctx = identity.ContextWithPrincipal(ctx, principal)
+	}
 	if cfg.DeployContainer.SyncEnabled {
 		cfg.DeployContainer.SyncModules = workspaceruntime.NormalizeReplicationSyncModules(firstNonEmptyStringSlice(finalizeInput.SyncModules, cfg.DeployContainer.SyncModules))
 		if len(cfg.DeployContainer.SyncModules) == 0 {
@@ -3126,7 +3194,7 @@ func (s *Service) finalizeChildAttach(cfg startupconfig.FileConfig, state swarmr
 				}
 			}
 			ownerSwarmID := firstNonEmpty(bundle.OwnerSwarmID, strings.TrimSpace(cfg.DeployContainer.SyncOwnerSwarmID), hostSwarmID)
-			updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, strings.TrimSpace(finalizeInput.SyncVaultPassword), strings.TrimSpace(finalizeInput.SyncManagedVaultKey))
+			updatedPairing, err := s.applyManagedCredentialBundle(ctx, pairing, ownerSwarmID, bundle, strings.TrimSpace(finalizeInput.SyncVaultPassword), strings.TrimSpace(finalizeInput.SyncManagedVaultKey))
 			if err != nil {
 				return err
 			}
@@ -3169,13 +3237,15 @@ func (s *Service) finalizeChildAttach(cfg startupconfig.FileConfig, state swarmr
 			}
 		}
 	}
-	if cfg.DeployContainer.HostDriven {
-		if err := s.applyBootstrapWorkspaces(cfg, status, pairing, finalizeInput.WorkspaceBootstrap); err != nil {
-			return err
-		}
-	} else {
-		if err := s.provisionBootstrapWorkspaces(context.Background(), cfg, state, status, pairing); err != nil {
-			return err
+	if principal.Valid() {
+		if cfg.DeployContainer.HostDriven {
+			if err := s.applyBootstrapWorkspaces(principal, cfg, status, pairing, finalizeInput.WorkspaceBootstrap); err != nil {
+				return err
+			}
+		} else {
+			if err := s.provisionBootstrapWorkspaces(ctx, principal, cfg, state, status, pairing); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -3469,7 +3539,7 @@ func (s *Service) ApplyManagedCredentialBundle(ctx context.Context, bundle Conta
 	if ownerSwarmID == "" {
 		ownerSwarmID = strings.TrimSpace(pairing.ParentSwarmID)
 	}
-	_, err = s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, "", "")
+	_, err = s.applyManagedCredentialBundle(ctx, pairing, ownerSwarmID, bundle, "", "")
 	return err
 }
 
@@ -3633,7 +3703,7 @@ func (s *Service) SyncManagedCredentialsOnce(ctx context.Context) error {
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
-		updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, vaultPassword, "")
+		updatedPairing, err := s.applyManagedCredentialBundle(ctx, pairing, ownerSwarmID, bundle, vaultPassword, "")
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
@@ -3660,7 +3730,7 @@ func (s *Service) syncDeployContainerFromHost(ctx context.Context, cfg startupco
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
-		updatedPairing, err := s.applyManagedCredentialBundle(pairing, ownerSwarmID, bundle, "", "")
+		updatedPairing, err := s.applyManagedCredentialBundle(ctx, pairing, ownerSwarmID, bundle, "", "")
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
@@ -3721,7 +3791,7 @@ func (s *Service) syncManagedHostFromManager(ctx context.Context, cfg startupcon
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
 		credentialBundle = bundle
-		updatedPairing, err := s.applyManagedCredentialBundle(pairing, managerSwarmID, bundle, "", "")
+		updatedPairing, err := s.applyManagedCredentialBundle(ctx, pairing, managerSwarmID, bundle, "", "")
 		if err != nil {
 			return s.recordManagedCredentialSyncFailure(pairing, err)
 		}
@@ -3863,7 +3933,7 @@ func (s *Service) recordManagedHostBundleApplied(pairing pebblestore.SwarmLocalP
 	return err
 }
 
-func (s *Service) applyManagedCredentialBundle(pairing pebblestore.SwarmLocalPairingRecord, ownerSwarmID string, bundle ContainerSyncCredentialBundle, vaultPassword, managedVaultKey string) (pebblestore.SwarmLocalPairingRecord, error) {
+func (s *Service) applyManagedCredentialBundle(ctx context.Context, pairing pebblestore.SwarmLocalPairingRecord, ownerSwarmID string, bundle ContainerSyncCredentialBundle, vaultPassword, managedVaultKey string) (pebblestore.SwarmLocalPairingRecord, error) {
 	if s == nil || s.auth == nil || s.swarmStore == nil {
 		return pairing, fmt.Errorf("deploy container service is not configured")
 	}
@@ -3899,7 +3969,11 @@ func (s *Service) applyManagedCredentialBundle(pairing pebblestore.SwarmLocalPai
 		}
 		return saved, nil
 	}
-	result, err := s.auth.ImportManagedCredentialsWithVaultAccess(ownerSwarmID, bundle.BundlePassword, strings.TrimSpace(vaultPassword), strings.TrimSpace(managedVaultKey), bundle.Bundle)
+	accountScopeID, err := s.accountScopeIDForManagedCredentialSync(ctx)
+	if err != nil {
+		return pairing, err
+	}
+	result, err := s.auth.ImportManagedCredentialsWithVaultAccessForAccount(accountScopeID, ownerSwarmID, bundle.BundlePassword, strings.TrimSpace(vaultPassword), strings.TrimSpace(managedVaultKey), bundle.Bundle)
 	if err != nil {
 		return pairing, err
 	}
@@ -3926,18 +4000,73 @@ func (s *Service) recordManagedCredentialSyncFailure(pairing pebblestore.SwarmLo
 	return syncErr
 }
 
-func (s *Service) provisionBootstrapWorkspaces(ctx context.Context, cfg startupconfig.FileConfig, state swarmruntime.LocalState, status ContainerAttachState, pairing pebblestore.SwarmLocalPairingRecord) error {
+func (s *Service) principalForChildBootstrap(ctx context.Context, cfg startupconfig.FileConfig) (identity.Principal, error) {
+	if principal, ok := principalFromContext(ctx); ok {
+		return principal, nil
+	}
+	if s == nil || s.identity == nil {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	summary, err := s.identity.StateSummary()
+	if err != nil {
+		return identity.Principal{}, err
+	}
+	if summary.CurrentUser == nil || summary.AccountScope == nil || summary.CurrentSelection == nil {
+		if !cfg.Child || !cfg.DeployContainer.Enabled {
+			return identity.Principal{}, identity.ErrPrincipalRequired
+		}
+		if _, err := s.identity.BootstrapFirstIdentity(firstNonEmpty(strings.TrimSpace(cfg.SwarmName), strings.TrimSpace(cfg.DeployContainer.DeploymentID), "deploy-container-child")); err != nil {
+			return identity.Principal{}, err
+		}
+		summary, err = s.identity.StateSummary()
+		if err != nil {
+			return identity.Principal{}, err
+		}
+		if summary.CurrentUser == nil || summary.AccountScope == nil || summary.CurrentSelection == nil {
+			return identity.Principal{}, identity.ErrPrincipalRequired
+		}
+	}
+	if strings.TrimSpace(summary.CurrentUser.AccountScopeID) != strings.TrimSpace(summary.AccountScope.ID) {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	accountUser := pebblestore.AccountUserRecord{
+		ID:             strings.TrimSpace(summary.AccountScope.ID) + ":" + strings.TrimSpace(summary.CurrentUser.ID),
+		AccountScopeID: strings.TrimSpace(summary.AccountScope.ID),
+		UserID:         strings.TrimSpace(summary.CurrentUser.ID),
+		Status:         pebblestore.AccountUserStatusActive,
+	}
+	principal := identity.Principal{
+		Type:               identity.PrincipalTypeUser,
+		UserID:             strings.TrimSpace(summary.CurrentUser.ID),
+		AccountScopeID:     strings.TrimSpace(summary.AccountScope.ID),
+		AuthProvider:       strings.TrimSpace(summary.CurrentUser.AuthProvider),
+		AuthSubject:        strings.TrimSpace(summary.CurrentUser.AuthSubject),
+		AccountScopeSource: identity.AccountScopeSourceServerState,
+		User:               *summary.CurrentUser,
+		AccountScope:       *summary.AccountScope,
+		AccountUser:        accountUser,
+	}
+	if !principal.Valid() {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	return principal, nil
+}
+
+func (s *Service) provisionBootstrapWorkspaces(ctx context.Context, principal identity.Principal, cfg startupconfig.FileConfig, state swarmruntime.LocalState, status ContainerAttachState, pairing pebblestore.SwarmLocalPairingRecord) error {
 	_ = state
 	items, err := s.fetchWorkspaceBootstrap(ctx, cfg, status)
 	if err != nil {
 		return err
 	}
-	return s.applyBootstrapWorkspaces(cfg, status, pairing, items)
+	return s.applyBootstrapWorkspaces(principal, cfg, status, pairing, items)
 }
 
-func (s *Service) applyBootstrapWorkspaces(cfg startupconfig.FileConfig, status ContainerAttachState, pairing pebblestore.SwarmLocalPairingRecord, items []ContainerWorkspaceBootstrap) error {
+func (s *Service) applyBootstrapWorkspaces(principal identity.Principal, cfg startupconfig.FileConfig, status ContainerAttachState, pairing pebblestore.SwarmLocalPairingRecord, items []ContainerWorkspaceBootstrap) error {
 	if s == nil || s.workspace == nil || s.swarmStore == nil {
 		return fmt.Errorf("deploy container service is not configured")
+	}
+	if !principal.Valid() {
+		return identity.ErrPrincipalRequired
 	}
 	deploymentID := strings.TrimSpace(cfg.DeployContainer.DeploymentID)
 	if deploymentID == "" {
@@ -3955,7 +4084,7 @@ func (s *Service) applyBootstrapWorkspaces(cfg startupconfig.FileConfig, status 
 		}
 		return nil
 	}
-	known, err := s.workspace.ListKnown(100000)
+	known, err := s.workspace.ListKnownForPrincipal(principal, 100000)
 	if err != nil {
 		return err
 	}
@@ -3963,7 +4092,7 @@ func (s *Service) applyBootstrapWorkspaces(cfg startupconfig.FileConfig, status 
 	for _, entry := range known {
 		knownByPath[strings.TrimSpace(entry.Path)] = entry
 	}
-	current, hasCurrent, err := s.workspace.CurrentBinding()
+	current, hasCurrent, err := s.workspace.CurrentBindingForPrincipal(principal)
 	if err != nil {
 		return err
 	}
@@ -3976,10 +4105,10 @@ func (s *Service) applyBootstrapWorkspaces(cfg startupconfig.FileConfig, status 
 		}
 		entry, exists := knownByPath[workspacePath]
 		if !exists {
-			if _, err := s.workspace.Add(workspacePath, strings.TrimSpace(item.SourceWorkspaceName), strings.TrimSpace(item.ThemeID), false); err != nil {
+			if _, err := s.workspace.AddForPrincipal(principal, workspacePath, strings.TrimSpace(item.SourceWorkspaceName), strings.TrimSpace(item.ThemeID), false); err != nil {
 				return err
 			}
-			known, err := s.workspace.ListKnown(100000)
+			known, err := s.workspace.ListKnownForPrincipal(principal, 100000)
 			if err != nil {
 				return err
 			}
@@ -3997,7 +4126,7 @@ func (s *Service) applyBootstrapWorkspaces(cfg startupconfig.FileConfig, status 
 			if containsTrimmedString(entry.Directories, targetPath) {
 				continue
 			}
-			if _, err := s.workspace.AddDirectory(workspacePath, targetPath); err != nil {
+			if _, err := s.workspace.AddDirectoryForPrincipal(principal, workspacePath, targetPath); err != nil {
 				return err
 			}
 			entry.Directories = append(entry.Directories, targetPath)
@@ -4020,7 +4149,7 @@ func (s *Service) applyBootstrapWorkspaces(cfg startupconfig.FileConfig, status 
 			}
 		}
 		if item.MakeCurrent && !currentAssigned {
-			if _, err := s.workspace.Select(workspacePath); err != nil {
+			if _, err := s.workspace.SelectForPrincipal(principal, workspacePath); err != nil {
 				return err
 			}
 			currentAssigned = true
@@ -4442,7 +4571,7 @@ func (s *Service) pushManagedSyncToChild(ctx context.Context, record *pebblestor
 			}
 			record.SyncBundlePassword = bundlePassword
 		}
-		payload, exported, err := s.auth.ExportCredentials(record.SyncBundlePassword, "")
+		payload, exported, err := s.auth.ExportCredentialsForAccount(record.AccountScopeID, record.SyncBundlePassword, "")
 		if err != nil {
 			return err
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -142,7 +143,8 @@ func TestFinalizeChildAttachAppliesModelDefaultsDuringInitialLocalAttach(t *test
 	}))
 	defer host.Close()
 
-	err := svc.finalizeChildAttach(startupconfig.FileConfig{
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user_test", AccountScopeID: "acct_test"}
+	err := svc.finalizeChildAttach(identity.ContextWithPrincipal(context.Background(), principal), startupconfig.FileConfig{
 		BypassPermissions: true,
 		DeployContainer: startupconfig.DeployContainerBootstrap{
 			Enabled:         true,

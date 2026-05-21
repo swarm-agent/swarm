@@ -80,7 +80,7 @@ func TestCredentialDeleteCleanupClearsSessionPreferencesForDeletedProvider(t *te
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/credentials/delete", strings.NewReader(`{"provider":"codex","id":"cred-1"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}

@@ -209,7 +209,10 @@ func New(cfg config.Config) (*Daemon, error) {
 		topologyStore,
 	)
 	swarmNodeStore := pebblestore.NewSwarmNodeStore(store, topologyStore)
-	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc, modelSvc, swarmNodeStore, topologyStore)
+	identityStore := pebblestore.NewIdentityStore(store)
+	identitySvc := identityruntime.NewService(identityStore)
+	identitySessionSvc := identityruntime.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(secretStore))
+	deployContainerSvc := deployruntime.NewService(pebblestore.NewDeployContainerStore(store), localContainerSvc, swarmSvc, swarmStore, authSvc, agentSvc, workspaceSvc, cfg.ConfigPath, discoverySvc, permissionSvc, modelSvc, swarmNodeStore, topologyStore, identitySvc)
 	publishAndSync := func(env pebblestore.EventEnvelope) {
 		hub.Publish(env)
 		if deployContainerSvc == nil {
@@ -382,9 +385,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 
 	apiServer := api.NewServer(cfg.Mode, authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
-	identityStore := pebblestore.NewIdentityStore(store)
-	apiServer.SetIdentityService(identityruntime.NewService(identityStore))
-	apiServer.SetIdentitySessionService(identityruntime.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(secretStore)))
+	apiServer.SetIdentityService(identitySvc)
+	apiServer.SetIdentitySessionService(identitySessionSvc)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
 	apiServer.SetDataDir(cfg.DataDir)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)

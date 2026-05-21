@@ -22,6 +22,8 @@ func (s *Server) upsertTopologySessionRoute(record pebblestore.SessionRouteRecor
 	}
 	_, err = s.sessionRoutes.Put(pebblestore.SessionRouteRecord{
 		SessionID:            route.SessionID,
+		UserID:               record.UserID,
+		AccountScopeID:       record.AccountScopeID,
 		ChildSwarmID:         route.RuntimeSwarmID,
 		ChildBackendURL:      route.BackendURL,
 		HostSwarmID:          route.HostSwarmID,

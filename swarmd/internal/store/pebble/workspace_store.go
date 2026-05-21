@@ -521,6 +521,47 @@ func (s *WorkspaceStore) RemoveReplicationLink(path, linkID string) (WorkspaceEn
 	return WorkspaceEntry{}, fmt.Errorf("legacy global workspace replication links are disabled; account scope is required")
 }
 
+func (s *WorkspaceStore) RemoveReplicationLinksByTargetSwarmIDForAccount(accountScopeID, targetSwarmID string) (int, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return 0, fmt.Errorf("account scope is required")
+	}
+	targetSwarmID = strings.TrimSpace(targetSwarmID)
+	if targetSwarmID == "" {
+		return 0, nil
+	}
+	entries, err := s.listAllForAccount(accountScopeID)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	now := time.Now().UnixMilli()
+	for _, entry := range entries {
+		links := normalizeWorkspaceReplicationLinks(entry.ReplicationLinks)
+		if len(links) == 0 {
+			continue
+		}
+		kept := make([]WorkspaceReplicationLink, 0, len(links))
+		for _, link := range links {
+			if strings.TrimSpace(link.TargetSwarmID) == targetSwarmID {
+				removed++
+				continue
+			}
+			kept = append(kept, link)
+		}
+		if len(kept) == len(links) {
+			continue
+		}
+		entry.AccountScopeID = accountScopeID
+		entry.ReplicationLinks = normalizeWorkspaceReplicationLinks(kept)
+		entry.UpdatedAt = now
+		if err := s.store.PutJSON(KeyWorkspaceEntryForAccount(accountScopeID, entry.Path), entry); err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
+}
+
 func (s *WorkspaceStore) ListReplicationLinks(path string) ([]WorkspaceReplicationLink, error) {
 	return nil, fmt.Errorf("legacy global workspace replication links are disabled; account scope is required")
 }

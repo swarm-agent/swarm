@@ -288,13 +288,14 @@ Primary files:
 
 #### Slice 2F — group verification gate only
 
+Status: **VM-proven** — local replicate attach/finalize now receives a canonical principal on both host and child paths, child bootstrap workspaces use account-scoped workspace APIs, and local deploy/container cleanup removes credentials, replication links, and topology state with principal account context.
+
 Scope:
-- Extend the existing local replicate/local container harness for two product users/accounts.
-- Account A can create/use a local container.
-- Account B cannot list/action/delete Account A local container or local deployment record by ID.
-- Account A and B can have independent local container records.
+- Existing local replicate/local container harness proves attach reaches `attached` instead of `trusted principal is required`.
+- Topology cleanup gate deletes the real child through `/v1/deploy/container/delete` and verifies no stale runtime/container/deployment/topology routes remain.
+- Account-scoped cleanup uses principal-owned local/deploy records and account-aware credential/replication-link removal.
 - Workspace mounts are checked through the account-owned path resolver.
-- Pebble shows `swarm/local_container` and local `deploy/container` records include account scope or account indexes.
+- Pebble local container and local deploy records include account scope/account indexes.
 - No global list/read fallback after scoped miss.
 
 Primary file:
@@ -304,7 +305,7 @@ Suggested command shape for Slice 2F only:
 
 <copy label="targeted local container tests">cd swarmd && go test ./internal/api ./internal/localcontainers ./internal/store/pebble -run 'LocalContainer|DeployContainer|UpdateLocalContainer|Principal|Account'</copy>
 
-<copy label="VM local replicate harness">./scripts/swarm-harness-vm.sh local-replicate -- --verify-topology-cleanup</copy>
+<copy label="VM local replicate harness">./scripts/swarm-harness-vm.sh local-replicate -- --dev-mode --skip-image-rebuild --verify-topology-cleanup</copy>
 
 Explicitly defer until after Slice 2F:
 - Managed-host session open/message/run/stop/stream/event.

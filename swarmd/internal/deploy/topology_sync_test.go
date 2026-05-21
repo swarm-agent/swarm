@@ -102,7 +102,7 @@ func TestLocalContainerDeleteUsesCanonicalAttachmentsForCleanup(t *testing.T) {
 	localSvc := localcontainers.NewService(localStore, deploymentStore, swarmStore, nil, nil, filepath.Join(t.TempDir(), "swarm.conf"), topologyStore)
 	localSvc.SetControlContainerFuncForTest(func(context.Context, string, string, string) error { return nil })
 	localSvc.SetInspectContainerFuncForTest(func(string, string) (string, string, error) { return "missing", "", nil })
-	if _, err := localStore.Put(pebblestore.SwarmLocalContainerRecord{ID: "pc-child", Name: "pc child", ContainerName: "pc-child", Runtime: "podman", Status: "missing", ContainerID: "ctr-1"}); err != nil {
+	if _, err := localStore.Put(pebblestore.SwarmLocalContainerRecord{ID: "pc-child", Name: "pc child", ContainerName: "pc-child", Runtime: "podman", Status: "missing", ContainerID: "ctr-1", UserID: "user-1", AccountScopeID: "account-1"}); err != nil {
 		t.Fatalf("put local container: %v", err)
 	}
 	if err := pebblestore.UpsertTopologyHostContainer(topologyStore, pebblestore.TopologyHostContainerRecord{
@@ -139,7 +139,7 @@ func TestLocalContainerDeleteUsesCanonicalAttachmentsForCleanup(t *testing.T) {
 		t.Fatalf("put topology session route: %v", err)
 	}
 
-	result, err := localSvc.BulkDelete(context.Background(), []string{"pc-child"})
+	result, err := localSvc.BulkDelete(testPrincipalContext(), []string{"pc-child"})
 	if err != nil {
 		t.Fatalf("bulk delete: %v", err)
 	}

@@ -2299,6 +2299,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 			routeRecord := pebblestore.SessionRouteRecord{
 				SessionID:            session.ID,
+				UserID:               principal.UserID,
+				AccountScopeID:       principal.AccountScopeID,
 				ChildSwarmID:         strings.TrimSpace(remoteTarget.SwarmID),
 				ChildBackendURL:      routeBackendURL,
 				HostSwarmID:          routeHostSwarmID,
@@ -2331,6 +2333,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				} else if ok {
 					routeRecord = pebblestore.SessionRouteRecord{
 						SessionID:            topologyRoute.SessionID,
+						UserID:               principal.UserID,
+						AccountScopeID:       principal.AccountScopeID,
 						ChildSwarmID:         topologyRoute.RuntimeSwarmID,
 						ChildBackendURL:      topologyRoute.BackendURL,
 						HostSwarmID:          topologyRoute.HostSwarmID,
@@ -2361,6 +2365,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				Request:   req,
 				Hosted:    childDescriptor,
 				Route:     routeRecord,
+				Principal: principal,
 			}, &childResp); err != nil {
 				rollbackHostedCreate(hostedSessionOpenError(*remoteTarget, err))
 				return
@@ -3883,7 +3888,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 			if peerOK {
 				ctx := context.WithValue(r.Context(), peerAuthAuthorizedContextKey, peerAuthContextValue{SwarmID: peerSwarmID})
-				next.ServeHTTP(w, r.WithContext(ctx))
+				next.ServeHTTP(w, s.requestWithPeerSessionPrincipal(r.WithContext(ctx)))
 				return
 			}
 			log.Printf("peer auth denied method=%s path=%s remote_addr=%s peer_swarm_id=%q", r.Method, r.URL.Path, strings.TrimSpace(r.RemoteAddr), peerSwarmID)

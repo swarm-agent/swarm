@@ -89,7 +89,7 @@ func TestPeerSessionOpenPersistsRouteForManagedHostContainer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/swarm/peer/sessions/open", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -172,7 +172,7 @@ func TestRoutedRunStreamControlProxiesHostedMirrorSession(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/run/stream", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -270,7 +270,7 @@ func TestRoutedSessionTargetRewritesManagedLoopbackBackendToHostBackend(t *testi
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=child-swarm", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -373,7 +373,7 @@ func TestRoutedSessionMessagesReloadFromHostWithoutProxy(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID+"/messages?limit=10", nil)
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -436,7 +436,7 @@ func TestRoutedSessionGetUsesStoredRouteWithoutSwarmID(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID, nil)
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -638,7 +638,7 @@ func TestRoutedRunStreamControlUsesStoredRouteWithoutSwarmID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/run/stream", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -727,7 +727,7 @@ func TestSessionsListWithSwarmIDReadsHostWithoutProxy(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions?swarm_id=child-swarm-1", nil)
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -783,7 +783,7 @@ func TestRoutedFlowSessionFetchReturnsCanonicalHostMirror(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID, nil)
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -814,7 +814,7 @@ func TestRoutedSessionPreferenceReadFromHostWithoutProxy(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID+"/preference", nil)
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -876,7 +876,7 @@ func TestRemoteDeploySessionCreateUsesRemotePayloadTargetPath(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=child-swarm", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -964,7 +964,7 @@ func TestRemoteSessionCreateUsesRegistryMagicDNSBackend(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/sessions?swarm_id=registry-child", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
@@ -1004,7 +1004,7 @@ func TestRemoteDeploySessionStartIsRetired(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/remote/session/start", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusGone {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusGone, rec.Body.String())
@@ -1044,7 +1044,7 @@ func TestRemoteDeploySessionUpdateJobReturnsPartialResultOnConflict(t *testing.T
 	req := httptest.NewRequest(http.MethodPost, "/v1/deploy/remote/session/update-job", bytes.NewBufferString(`{"dev_mode":true,"post_rebuild_check":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusConflict, rec.Body.String())
@@ -1063,6 +1063,7 @@ func TestRemoteDeploySessionUpdateJobReturnsPartialResultOnConflict(t *testing.T
 
 func newRoutedSessionTestServer(t *testing.T) (*Server, *sessionruntime.Service, *permission.Service, *pebblestore.SessionRouteStore) {
 	t.Helper()
+	t.Setenv("SWARM_API_NO_AUTH", "1")
 
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "routed-session-api.pebble"))
 	if err != nil {
@@ -1123,11 +1124,13 @@ func seedRoutedSession(t *testing.T, sessionSvc *sessionruntime.Service) string 
 	t.Helper()
 
 	session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		SessionID:     "session-routed",
-		Title:         "Routed Session",
-		WorkspacePath: "/host/workspace",
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModePlan,
+		SessionID:      "session-routed",
+		Title:          "Routed Session",
+		WorkspacePath:  "/host/workspace",
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModePlan,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
 		Preference: &pebblestore.ModelPreference{
 			Provider: "codex",
 			Model:    "gpt-5.4",

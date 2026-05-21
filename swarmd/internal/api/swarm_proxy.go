@@ -69,6 +69,10 @@ func (s *Server) proxyRequestToSwarmTarget(w http.ResponseWriter, r *http.Reques
 	}
 	req.Header.Set(peerAuthSwarmIDHeader, strings.TrimSpace(state.Node.SwarmID))
 	req.Header.Set(peerAuthTokenHeader, peerToken)
+	if principal, ok := PrincipalFromRequest(r); ok && principal.Valid() {
+		req.Header.Set("X-Swarm-Principal-User-ID", strings.TrimSpace(principal.UserID))
+		req.Header.Set("X-Swarm-Principal-Account-Scope-ID", strings.TrimSpace(principal.AccountScopeID))
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		logSwarmProxyTiming(r, target, 0, startedAt, err)

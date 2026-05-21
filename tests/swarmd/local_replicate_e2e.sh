@@ -433,6 +433,7 @@ ensure_host_vault_ready() {
   local vault_password="${1:-}"
   [[ -n "${vault_password}" ]] || fail "host vault password is required"
   local status_json enabled unlocked payload response
+  ensure_host_identity_bootstrapped
   status_json="$(api_get '/v1/vault')"
   write_artifact "host-vault-status-before.json" "${status_json}"
   enabled="$(printf '%s' "${status_json}" | jq -r '.enabled // false')"
@@ -1100,6 +1101,25 @@ ensure_host_running() {
   "${HOST_ROOT}/start-host.sh"
   ready_code="$(curl_http_code "${HOST_ADMIN_API_URL%/}/readyz")"
   [[ "${ready_code}" == "200" ]] || fail "isolated replicate host did not become ready at ${HOST_ADMIN_API_URL}"
+}
+
+ensure_host_identity_bootstrapped() {
+  if [[ -z "${HOST_DESKTOP_SESSION_COOKIE_FILE:-}" ]]; then
+    HOST_DESKTOP_SESSION_COOKIE_FILE="$(mktemp)"
+  fi
+
+  local status_json bootstrapped bootstrap_body bootstrap_response
+  status_json="$(json_request "${HOST_ADMIN_API_URL}" "" GET "/v1/onboarding" "" 30 "${HOST_DESKTOP_SESSION_COOKIE_FILE}")"
+  safe_write_artifact "host-onboarding-before.json" "${status_json}"
+  bootstrapped="$(printf '%s' "${status_json}" | jq -r '.identity.bootstrapped // false')"
+  if [[ "${bootstrapped}" == "true" ]]; then
+    return 0
+  fi
+
+  bootstrap_body="$(jq -nc --arg username "local-replicate-host" --arg swarm_name "${HOST_SWARM_NAME}" '{username:$username, swarm_name:$swarm_name, local_owner_confirmation:"desktop"}')"
+  bootstrap_response="$(json_request "${HOST_ADMIN_API_URL}" "" POST "/v1/onboarding" "${bootstrap_body}" 30 "${HOST_DESKTOP_SESSION_COOKIE_FILE}")"
+  safe_write_artifact "host-onboarding-bootstrap.json" "${bootstrap_response}"
+  [[ "$(printf '%s' "${bootstrap_response}" | jq -r '.identity.bootstrapped // false')" == "true" ]] || fail "host onboarding bootstrap did not create product identity"
 }
 
 fetch_attach_token() {
@@ -2703,6 +2723,7 @@ require_command jq
 prepare_isolated_host
 maybe_rebuild_host
 ensure_host_running
+ensure_host_identity_bootstrapped
 fetch_attach_token
 if [[ -n "${HOST_VAULT_PASSWORD}" ]]; then
   ensure_host_vault_ready "${HOST_VAULT_PASSWORD}"

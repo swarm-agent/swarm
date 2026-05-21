@@ -128,7 +128,7 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 		t.Fatalf("upsert agent: %v", err)
 	}
 	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
-	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-sync", Active: true}); err != nil {
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-sync", Active: true}); err != nil {
 		t.Fatalf("upsert credential: %v", err)
 	}
 	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
@@ -180,11 +180,13 @@ func TestPushManagedSyncToLocalChildrenPushesAgentsAndCredentials(t *testing.T) 
 		SyncOwnerSwarmID: "host-swarm",
 		ChildBackendURL:  child.URL,
 		ChildSwarmID:     "child-swarm",
+		UserID:           "user-1",
+		AccountScopeID:   "account-1",
 	}); err != nil {
 		t.Fatalf("put deployment: %v", err)
 	}
 
-	if err := deploySvc.PushManagedSyncToLocalChildren(context.Background(), "test"); err != nil {
+	if err := deploySvc.PushManagedSyncToLocalChildren(testPrincipalContext(), "test"); err != nil {
 		t.Fatalf("PushManagedSyncToLocalChildren() error = %v", err)
 	}
 	if agentApplyCount != 1 {
@@ -229,7 +231,7 @@ func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 		t.Fatalf("upsert agent: %v", err)
 	}
 	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
-	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
 		t.Fatalf("upsert credential: %v", err)
 	}
 	permSvc := permission.NewService(pebblestore.NewPermissionStore(store), nil, nil)
@@ -301,7 +303,7 @@ func TestPushManagedSyncToManagedHostsPushesAgentsAndCredentials(t *testing.T) {
 		t.Fatalf("put swarm node: %v", err)
 	}
 
-	if err := deploySvc.PushManagedSyncToManagedHosts(context.Background(), "test"); err != nil {
+	if err := deploySvc.PushManagedSyncToManagedHosts(testPrincipalContext(), "test"); err != nil {
 		t.Fatalf("PushManagedSyncToManagedHosts() error = %v", err)
 	}
 	if credentialApplyCount != 1 {
@@ -335,7 +337,7 @@ func TestReconcilePermissionSyncPushesManagedHosts(t *testing.T) {
 		t.Fatalf("put trusted peer: %v", err)
 	}
 	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
-	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
 		t.Fatalf("upsert credential: %v", err)
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
@@ -359,7 +361,7 @@ func TestReconcilePermissionSyncPushesManagedHosts(t *testing.T) {
 		t.Fatalf("put swarm node: %v", err)
 	}
 
-	if err := deploySvc.ReconcilePermissionSync(context.Background()); err != nil {
+	if err := deploySvc.ReconcilePermissionSync(testPrincipalContext()); err != nil {
 		t.Fatalf("ReconcilePermissionSync() error = %v", err)
 	}
 	if permissionApplyCount != 1 {
@@ -388,7 +390,7 @@ func TestPushManagedSyncToManagedHostsRequiresAck(t *testing.T) {
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	authSvc := authruntime.NewService(pebblestore.NewAuthStore(store), events)
-	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
+	if _, _, err := authSvc.UpsertCredential(authruntime.CredentialUpsertInput{Provider: "openrouter", AccountScopeID: testPrincipal().AccountScopeID, Type: pebblestore.AuthTypeAPI, APIKey: "sk-test-managed-sync", Active: true}); err != nil {
 		t.Fatalf("upsert credential: %v", err)
 	}
 	deploySvc := NewService(pebblestore.NewDeployContainerStore(store), nil, nil, swarmStore, authSvc, agentSvc, nil, filepath.Join(t.TempDir(), "swarm.conf"), swarmNodeStore)
@@ -401,7 +403,7 @@ func TestPushManagedSyncToManagedHostsRequiresAck(t *testing.T) {
 		t.Fatalf("put swarm node: %v", err)
 	}
 
-	if err := deploySvc.PushManagedSyncToManagedHosts(context.Background(), "test"); err == nil {
+	if err := deploySvc.PushManagedSyncToManagedHosts(testPrincipalContext(), "test"); err == nil {
 		t.Fatalf("PushManagedSyncToManagedHosts() error = nil, want acknowledgement failure")
 	}
 }

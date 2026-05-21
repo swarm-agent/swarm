@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"swarm/packages/swarmd/internal/identity"
 )
 
 func (s *Server) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +138,12 @@ func (s *Server) handleVaultExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	payload, exported, err := s.auth.ExportCredentials(strings.TrimSpace(req.Password), strings.TrimSpace(req.VaultPassword))
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	payload, exported, err := s.auth.ExportCredentialsForAccount(principal.AccountScopeID, strings.TrimSpace(req.Password), strings.TrimSpace(req.VaultPassword))
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, io.EOF) {
@@ -173,7 +180,12 @@ func (s *Server) handleVaultImport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.auth.ImportCredentials(strings.TrimSpace(req.Password), strings.TrimSpace(req.VaultPassword), req.Bundle)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	result, err := s.auth.ImportCredentialsForAccount(principal.AccountScopeID, strings.TrimSpace(req.Password), strings.TrimSpace(req.VaultPassword), req.Bundle)
 	if err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(strings.ToLower(err.Error()), "unlock") {

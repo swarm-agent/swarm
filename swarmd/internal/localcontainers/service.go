@@ -1037,7 +1037,7 @@ func (s *Service) deleteContainer(ctx context.Context, principal identity.Princi
 	}
 	if s.authStore != nil {
 		for childSwarmID := range childSwarmIDs {
-			if _, err := s.authStore.DeleteCredentialsByOwnerSwarmID(childSwarmID); err != nil {
+			if _, err := s.authStore.DeleteCredentialsByOwnerSwarmIDForAccount(principal.AccountScopeID, childSwarmID); err != nil {
 				item.Error = err.Error()
 				return item
 			}
@@ -1045,10 +1045,12 @@ func (s *Service) deleteContainer(ctx context.Context, principal identity.Princi
 	}
 	for childSwarmID := range childSwarmIDs {
 		if s.workspace != nil {
-			if err := s.workspace.RemoveReplicationLinksByTargetSwarmID(childSwarmID); err != nil {
+			removed, err := s.workspace.RemoveReplicationLinksByTargetSwarmIDForAccount(principal.AccountScopeID, childSwarmID)
+			if err != nil {
 				item.Error = err.Error()
 				return item
 			}
+			item.RemovedWorkspaceRoutes += removed
 		}
 		removed, err := s.deleteTopologyWorkspaceBindingsByRuntime(childSwarmID)
 		if err != nil {

@@ -576,6 +576,7 @@ sync_repo() {
     --exclude '.swarm/' \
     --exclude '.tmp/' \
     --exclude 'tmp/' \
+    --exclude 'libpod/' \
     --exclude 'web/dist/' \
     --exclude 'web/tsconfig.tsbuildinfo' \
     -e "$(rsync_ssh_command)" \
@@ -601,7 +602,7 @@ provision_vm() {
 verify_guest_ready() {
   start_vm
   local repo_dir_literal="${GUEST_REPO_DIR/#\~/$HOME}"
-  remote_ssh_command "test -d $(shell_quote "${repo_dir_literal}") && test -f $(shell_quote "${repo_dir_literal}/go.mod") && test -x $(shell_quote "${repo_dir_literal}/.tools/go/bin/go") && command -v bash > /dev/null && command -v git > /dev/null && command -v npm > /dev/null && command -v podman > /dev/null && command -v docker > /dev/null"
+  remote_ssh_command "test -d $(shell_quote "${repo_dir_literal}") && test -f $(shell_quote "${repo_dir_literal}/go.mod") && test -x $(shell_quote "${repo_dir_literal}/.tools/go/bin/go") && PATH=$(shell_quote "${repo_dir_literal}/.tools/go/bin"):\$PATH command -v go > /dev/null && command -v bash > /dev/null && command -v git > /dev/null && command -v npm > /dev/null && command -v podman > /dev/null && command -v docker > /dev/null"
 }
 
 fast_vm() {
@@ -654,7 +655,7 @@ run_in_guest_repo() {
   local guest_repo_dir
   guest_repo_dir="${GUEST_REPO_DIR/#\~/$HOME}"
   local command_string
-  command_string="cd $(shell_quote "${guest_repo_dir}") && $(join_quoted "$@")"
+  command_string="cd $(shell_quote "${guest_repo_dir}") && export PATH=$(shell_quote "${guest_repo_dir}/.tools/go/bin"):\$PATH && $(join_quoted "$@")"
   log "[swarm-harness run] ${command_string}"
   remote_ssh_command "${command_string}"
 }

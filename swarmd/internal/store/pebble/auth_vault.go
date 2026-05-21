@@ -99,10 +99,7 @@ func (s *AuthStore) enableVaultWithManagedKey(password, managedKey string) (Vaul
 		return VaultStatus{}, errors.New("vault is already enabled")
 	}
 
-	records, err := s.ListCredentials("", 10_000)
-	if err != nil {
-		return VaultStatus{}, err
-	}
+	records := []AuthCredentialRecord{}
 
 	salt, err := randomBytes(16)
 	if err != nil {

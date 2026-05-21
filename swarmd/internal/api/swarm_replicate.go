@@ -18,6 +18,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -122,6 +123,12 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("swarm service is not configured"))
 		return
 	}
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
 
 	var req swarmReplicateRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -277,7 +284,7 @@ func (s *Server) handleSwarmReplicate(w http.ResponseWriter, r *http.Request) {
 		WorkspaceBootstrap: bootstrap,
 		ContainerPackages:  containerPackages,
 	}
-	deployment, err := s.createReplicatedContainer(r.Context(), targetHost, createPayload, targetHostIsLocal)
+	deployment, err := s.createReplicatedContainer(ctx, targetHost, createPayload, targetHostIsLocal)
 	if err != nil {
 		statusCode := http.StatusBadRequest
 		if strings.Contains(strings.ToLower(err.Error()), "start ") {
