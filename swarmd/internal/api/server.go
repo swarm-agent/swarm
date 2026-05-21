@@ -2481,11 +2481,27 @@ func (s *Server) verifySessionOwnershipForRequest(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 	}
-	if !found || strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
-		writeSessionNotFound(w)
-		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
+	if found {
+		if strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+			writeSessionNotFound(w)
+			return identity.Principal{}, pebblestore.SessionSnapshot{}, false
+		}
+		return principal, session, true
 	}
-	return principal, session, true
+	if s.sessionRoutes != nil {
+		route, routeFound, routeErr := s.sessionRoutes.Get(sessionID)
+		if routeErr != nil {
+			writeError(w, http.StatusBadRequest, routeErr)
+			return identity.Principal{}, pebblestore.SessionSnapshot{}, false
+		}
+		if routeFound && strings.TrimSpace(route.AccountScopeID) != "" && strings.TrimSpace(route.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID) {
+			if routeUserID := strings.TrimSpace(route.UserID); routeUserID == "" || routeUserID == strings.TrimSpace(principal.UserID) {
+				return principal, pebblestore.SessionSnapshot{}, true
+			}
+		}
+	}
+	writeSessionNotFound(w)
+	return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 }
 
 func writeSessionNotFound(w http.ResponseWriter) {

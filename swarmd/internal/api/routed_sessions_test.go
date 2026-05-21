@@ -426,6 +426,8 @@ func TestRoutedSessionGetUsesStoredRouteWithoutSwarmID(t *testing.T) {
 	sessionID := "session-routed"
 	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
 		ChildSwarmID:         "child-swarm",
 		ChildBackendURL:      child.URL,
 		HostWorkspacePath:    "/host/workspace",
@@ -626,6 +628,8 @@ func TestRoutedRunStreamControlUsesStoredRouteWithoutSwarmID(t *testing.T) {
 	sessionID := "session-routed"
 	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
 		ChildSwarmID:         "child-swarm",
 		ChildBackendURL:      child.URL,
 		HostWorkspacePath:    "/host/workspace",
@@ -678,7 +682,7 @@ func TestRoutedSessionPermissionsReadAndResolveFromHostWithoutProxy(t *testing.T
 
 	getReq := httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sessionID+"/permissions?limit=200", nil)
 	getRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(getRec, getReq)
+	server.Handler().ServeHTTP(getRec, withTestPrincipal(getReq))
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("permission list status = %d, want %d, body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
 	}
@@ -702,7 +706,7 @@ func TestRoutedSessionPermissionsReadAndResolveFromHostWithoutProxy(t *testing.T
 	resolveReq := httptest.NewRequest(http.MethodPost, "/v1/sessions/"+sessionID+"/permissions/"+record.ID+"/resolve", bytes.NewBufferString(`{"action":"approve","reason":"ok"}`))
 	resolveReq.Header.Set("Content-Type", "application/json")
 	resolveRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(resolveRec, resolveReq)
+	server.Handler().ServeHTTP(resolveRec, withTestPrincipal(resolveReq))
 	if resolveRec.Code != http.StatusOK {
 		t.Fatalf("permission resolve status = %d, want %d, body=%s", resolveRec.Code, http.StatusOK, resolveRec.Body.String())
 	}
@@ -749,11 +753,13 @@ func TestRoutedFlowSessionFetchReturnsCanonicalHostMirror(t *testing.T) {
 	server, sessionSvc, _, routeStore := newRoutedSessionTestServer(t)
 	sessionID := "session-flow-routed"
 	if _, err := sessionSvc.StoreMirroredSession(pebblestore.SessionSnapshot{
-		ID:            sessionID,
-		WorkspacePath: "/host/workspace",
-		WorkspaceName: "workspace",
-		Title:         "Flow smoke",
-		Mode:          sessionruntime.ModeAuto,
+		ID:             sessionID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		WorkspacePath:  "/host/workspace",
+		WorkspaceName:  "workspace",
+		Title:          "Flow smoke",
+		Mode:           sessionruntime.ModeAuto,
 		Metadata: map[string]any{
 			"source":            "flow",
 			"lineage_kind":      "flow",
@@ -773,6 +779,8 @@ func TestRoutedFlowSessionFetchReturnsCanonicalHostMirror(t *testing.T) {
 	}
 	if _, err := routeStore.Put(pebblestore.SessionRouteRecord{
 		SessionID:            sessionID,
+		UserID:               testPrincipal().UserID,
+		AccountScopeID:       testPrincipal().AccountScopeID,
 		ChildSwarmID:         "child-swarm",
 		ChildBackendURL:      "http://127.0.0.1:1",
 		HostWorkspacePath:    "/host/workspace",
