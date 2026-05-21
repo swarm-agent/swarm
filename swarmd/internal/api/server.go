@@ -2131,6 +2131,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
 		return
 	}
+	principal, principalOK := PrincipalFromRequest(r)
+	if !principalOK || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -2150,13 +2155,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			listErr  error
 		)
 		if cwd == "" {
-			sessions, listErr = s.sessions.ListSessions(limit)
+			sessions, listErr = s.sessions.ListSessionsForAccount(principal.AccountScopeID, limit)
 		} else if s.workspace != nil {
-			principal, principalOK := PrincipalFromRequest(r)
-			if !principalOK {
-				writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
-				return
-			}
 			scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, cwd)
 			if scopeErr != nil {
 				writeError(w, http.StatusBadRequest, scopeErr)
@@ -2167,12 +2167,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if exactPath {
-				sessions, listErr = s.sessions.ListSessionsForPath(scope.ResolvedPath, limit)
+				sessions, listErr = s.sessions.ListSessionsForAccountPath(principal.AccountScopeID, scope.ResolvedPath, limit)
 			} else {
-				sessions, listErr = s.sessions.ListSessionsForScope(scope.WorkspacePath, limit)
+				sessions, listErr = s.sessions.ListSessionsForAccountScope(principal.AccountScopeID, scope.WorkspacePath, limit)
 			}
 		} else {
-			sessions, listErr = s.sessions.ListSessionsForPath(cwd, limit)
+			sessions, listErr = s.sessions.ListSessionsForAccountPath(principal.AccountScopeID, cwd, limit)
 		}
 		if listErr != nil {
 			writeError(w, http.StatusInternalServerError, listErr)

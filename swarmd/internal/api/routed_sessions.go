@@ -831,6 +831,10 @@ func (s *Server) createSessionFromRequestWithSessionID(req sessionCreateRequest,
 			ContextMode: req.Preference.ContextMode,
 		},
 	}
+	if principalOK && principal.Valid() {
+		createOptions.UserID = principal.UserID
+		createOptions.AccountScopeID = principal.AccountScopeID
+	}
 	requestedWorktreeMode := strings.TrimSpace(req.WorktreeMode)
 	modeWarning := ""
 	if s.agents == nil {

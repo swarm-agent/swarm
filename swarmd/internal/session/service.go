@@ -710,9 +710,16 @@ func (s *Service) ListSessions(limit int) ([]pebblestore.SessionSnapshot, error)
 	if err != nil {
 		return nil, err
 	}
-	for i := range sessions {
-		sessions[i].Mode = NormalizeMode(sessions[i].Mode)
+	normalizeSessionListModes(sessions)
+	return sessions, nil
+}
+
+func (s *Service) ListSessionsForAccount(accountScopeID string, limit int) ([]pebblestore.SessionSnapshot, error) {
+	sessions, err := s.store.ListSessionsForAccount(accountScopeID, limit)
+	if err != nil {
+		return nil, err
 	}
+	normalizeSessionListModes(sessions)
 	return sessions, nil
 }
 
@@ -721,9 +728,16 @@ func (s *Service) ListSessionsForPath(path string, limit int) ([]pebblestore.Ses
 	if err != nil {
 		return nil, err
 	}
-	for i := range sessions {
-		sessions[i].Mode = NormalizeMode(sessions[i].Mode)
+	normalizeSessionListModes(sessions)
+	return sessions, nil
+}
+
+func (s *Service) ListSessionsForAccountPath(accountScopeID, path string, limit int) ([]pebblestore.SessionSnapshot, error) {
+	sessions, err := s.store.ListSessionsForAccountPath(accountScopeID, path, limit)
+	if err != nil {
+		return nil, err
 	}
+	normalizeSessionListModes(sessions)
 	return sessions, nil
 }
 
@@ -732,10 +746,23 @@ func (s *Service) ListSessionsForScope(scopePath string, limit int) ([]pebblesto
 	if err != nil {
 		return nil, err
 	}
+	normalizeSessionListModes(sessions)
+	return sessions, nil
+}
+
+func (s *Service) ListSessionsForAccountScope(accountScopeID, scopePath string, limit int) ([]pebblestore.SessionSnapshot, error) {
+	sessions, err := s.store.ListSessionsForAccountScope(accountScopeID, scopePath, limit)
+	if err != nil {
+		return nil, err
+	}
+	normalizeSessionListModes(sessions)
+	return sessions, nil
+}
+
+func normalizeSessionListModes(sessions []pebblestore.SessionSnapshot) {
 	for i := range sessions {
 		sessions[i].Mode = NormalizeMode(sessions[i].Mode)
 	}
-	return sessions, nil
 }
 
 func (s *Service) ListTopSessionsByWorkspace(workspacePaths []string, perWorkspaceLimit int) ([]pebblestore.WorkspaceSessionList, error) {

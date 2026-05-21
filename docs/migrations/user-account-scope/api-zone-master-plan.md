@@ -80,6 +80,8 @@ Execution rule for this group:
 
 #### Slice 1A — Pebble session storage ownership only
 
+Status: **complete** — commit `41307e7`; no tests written or run.
+
 Scope:
 - Add account ownership fields/indexes for core session storage:
   - sessions,
@@ -101,6 +103,8 @@ Stop condition:
 - Report follow-up API call sites that still use global session helpers.
 
 #### Slice 1B — `/v1/sessions` collection route only
+
+Status: **complete** — `/v1/sessions` list/create now use canonical principal account scope; no tests written or run.
 
 Scope:
 - Convert only `/v1/sessions` list/create in `swarmd/internal/api/server.go`.
