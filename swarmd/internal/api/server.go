@@ -3208,7 +3208,8 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 			return
 		}
-		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
+		if !ok {
 			return
 		}
 		if s.proxyRoutedSessionRequest(w, r, sessionID) {
@@ -3237,10 +3238,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 
 		s.beginActiveRun()
 		defer s.endActiveRun()
-		principal, _, principalOK := s.verifySessionOwnershipForRequest(w, r, sessionID)
-		if !principalOK {
-			return
-		}
 		result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), principal), sessionID, req, runruntime.RunStartMeta{IntegrationFlow: integrationCtx.IntegrationFlow, Principal: principal})
 		if err != nil {
 			status := http.StatusBadRequest
@@ -3267,14 +3264,15 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 			return
 		}
-		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+		principal, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
+		if !ok {
 			return
 		}
 		switch r.Method {
 		case http.MethodGet:
-			s.handleRunStreamWebsocket(w, r, sessionID)
+			s.handleRunStreamWebsocket(w, r, sessionID, principal)
 		case http.MethodPost:
-			s.handleRunStreamControl(w, r, sessionID)
+			s.handleRunStreamControl(w, r, sessionID, principal)
 		default:
 			writeError(w, http.StatusUpgradeRequired, errors.New("run stream requires websocket upgrade (GET) or control POST"))
 		}

@@ -551,7 +551,7 @@ func (s *runStreamState) removeSubscriberLocked(subscriberID string) {
 	}
 }
 
-func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
 	remoteTarget, ok, err := s.routedSessionTarget(sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -591,8 +591,7 @@ func (s *Server) handleRunStreamWebsocket(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	principal, principalOK := PrincipalFromRequest(r)
-	if !principalOK {
+	if !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
@@ -782,7 +781,7 @@ func (s *Server) handleRunStreamStop(conn *transportws.Conn, sessionID string, i
 	s.sendRunStreamControl(conn, runStreamControlMessage{Type: "run.stop.accepted", OK: true, SessionID: sessionID, RunID: inbound.RunID})
 }
 
-func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, sessionID string, principal identity.Principal) {
 	remoteTarget, ok, err := s.routedSessionTarget(sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
@@ -817,8 +816,7 @@ func (s *Server) handleRunStreamControl(w http.ResponseWriter, r *http.Request, 
 	inbound.Type = strings.ToLower(strings.TrimSpace(inbound.Type))
 	inbound.RunRequest = inbound.RunRequest.Normalized()
 	inbound.RunID = strings.TrimSpace(inbound.RunID)
-	principal, principalOK := PrincipalFromRequest(r)
-	if !principalOK {
+	if !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}

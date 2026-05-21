@@ -135,6 +135,8 @@ Stop condition:
 
 #### Slice 1D — remaining normal local session subresources
 
+Status: **complete** — remaining normal local `/v1/sessions/` plan/usage/run/stream/proxy branches use the shared ownership verifier before local execution or proxying, and run/stream execution reuses the verified principal; no tests written or run.
+
 Scope:
 - Finish only normal local `/v1/sessions/` subresources required for out-of-box session usability, such as plans, usage, run, stream/proxy branches where they are directly under `/v1/sessions/`.
 - Keep all writes attached to the verified session account.
