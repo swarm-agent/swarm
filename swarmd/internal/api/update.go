@@ -18,6 +18,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/localupdate"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/update"
@@ -139,7 +140,13 @@ func (s *Server) handleUpdateLocalContainers(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	input.TargetVersion = strings.TrimSpace(r.URL.Query().Get("target_version"))
-	plan, err := s.localContainers.UpdatePlan(r.Context(), input)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	plan, err := s.localContainers.UpdatePlan(ctx, input)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

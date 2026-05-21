@@ -65,7 +65,7 @@ func TestRunDevUpdateJobReplacesNeedsUpdateAndSkipsCurrent(t *testing.T) {
 		return runtimeImageInfo{ID: "sha256:" + containerName, Labels: map[string]string{devmode.ContainerImageFingerprintLabel: fingerprint}}, nil
 	}
 
-	result, err := svc.RunUpdateJob(context.Background(), UpdateJobInput{PostRebuildCheck: true})
+	result, err := svc.RunUpdateJob(testPrincipalContext(), UpdateJobInput{PostRebuildCheck: true})
 	if err != nil {
 		t.Fatalf("RunUpdateJob() error = %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRunDevUpdateJobContinuesAfterPartialFailure(t *testing.T) {
 		return runtimeImageInfo{ID: "sha256:old", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: "old-fingerprint"}}, nil
 	}
 
-	result, err := svc.RunUpdateJob(context.Background(), UpdateJobInput{PostRebuildCheck: true})
+	result, err := svc.RunUpdateJob(testPrincipalContext(), UpdateJobInput{PostRebuildCheck: true})
 	if err == nil || !strings.Contains(err.Error(), "failed for 1") {
 		t.Fatalf("RunUpdateJob() error = %v", err)
 	}
@@ -150,7 +150,7 @@ func TestRunDevUpdateJobNoContainerNoop(t *testing.T) {
 	devRoot := makeDevRoot(t)
 	svc, _, cleanup := newReplacementTestService(t, startupconfig.FileConfig{DevMode: true, DevRoot: devRoot})
 	defer cleanup()
-	result, err := svc.RunUpdateJob(context.Background(), UpdateJobInput{PostRebuildCheck: true})
+	result, err := svc.RunUpdateJob(testPrincipalContext(), UpdateJobInput{PostRebuildCheck: true})
 	if err != nil {
 		t.Fatalf("RunUpdateJob() error = %v", err)
 	}

@@ -23,7 +23,11 @@ func (s *Service) Replace(ctx context.Context, input ReplaceInput) (ReplaceResul
 	if id == "" {
 		return result, errors.New("local container id is required")
 	}
-	record, ok, err := s.store.Get(id)
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return result, err
+	}
+	record, ok, err := s.store.GetForAccount(principal.AccountScopeID, id)
 	if err != nil {
 		return result, err
 	}
@@ -140,20 +144,20 @@ func (s *Service) Replace(ctx context.Context, input ReplaceInput) (ReplaceResul
 	if len(runtimeResult.Mounts) > 0 {
 		updated.Mounts = normalizeMounts(runtimeResult.Mounts)
 	}
-	saved, saveErr := s.store.Put(updated)
+	saved, saveErr := s.store.PutForAccount(updated, principal.UserID, principal.AccountScopeID)
 	if saveErr != nil {
 		return result, saveErr
 	}
 	if attachUpdateErr := s.updateAttachedDeploymentAfterReplace(record, saved, wasRunning); attachUpdateErr != nil {
 		saved.Warning = attachUpdateErr.Error()
-		if rewritten, rewriteErr := s.store.Put(saved); rewriteErr == nil {
+		if rewritten, rewriteErr := s.store.PutForAccount(saved, principal.UserID, principal.AccountScopeID); rewriteErr == nil {
 			saved = rewritten
 		}
 		result.Warning = attachUpdateErr.Error()
 	}
 	resolvedSaved, resolveSavedErr := s.resolveRecord(saved)
 	if resolveSavedErr == nil {
-		if refreshedSaved, rewriteErr := s.store.Put(resolvedSaved); rewriteErr == nil {
+		if refreshedSaved, rewriteErr := s.store.PutForAccount(resolvedSaved, principal.UserID, principal.AccountScopeID); rewriteErr == nil {
 			resolvedSaved = refreshedSaved
 		}
 	}
@@ -177,7 +181,11 @@ func (s *Service) verifyReplacementRecordSupported(record pebblestore.SwarmLocal
 	if s == nil || s.deployments == nil {
 		return nil
 	}
-	deployments, err := s.deployments.List(500)
+	accountScopeID := strings.TrimSpace(record.AccountScopeID)
+	if accountScopeID == "" {
+		return nil
+	}
+	deployments, err := s.deployments.ListForAccount(accountScopeID, 500)
 	if err != nil {
 		return err
 	}
@@ -355,7 +363,11 @@ func (s *Service) updateAttachedDeploymentAfterReplace(previous, updated pebbles
 	if s == nil || s.deployments == nil {
 		return nil
 	}
-	deployments, err := s.deployments.List(500)
+	accountScopeID := strings.TrimSpace(updated.AccountScopeID)
+	if accountScopeID == "" {
+		return nil
+	}
+	deployments, err := s.deployments.ListForAccount(accountScopeID, 500)
 	if err != nil {
 		return err
 	}
@@ -375,7 +387,7 @@ func (s *Service) updateAttachedDeploymentAfterReplace(previous, updated pebbles
 		} else {
 			deployment.Status = "stopped"
 		}
-		if _, err := s.deployments.Put(deployment); err != nil {
+		if _, err := s.deployments.PutForAccount(deployment, updated.UserID, accountScopeID); err != nil {
 			return err
 		}
 	}

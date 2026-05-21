@@ -14,6 +14,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/devmode"
 	"swarm-refactor/swarmtui/pkg/localupdate"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -21,7 +22,7 @@ func TestUpdatePlanNoLocalContainers(t *testing.T) {
 	svc, cleanup := newUpdatePlanTestService(t, startupconfig.FileConfig{DevMode: true, DevRoot: makeDevRoot(t)})
 	defer cleanup()
 
-	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{})
+	plan, err := svc.UpdatePlan(testPrincipalContext(), UpdatePlanInput{})
 	if err != nil {
 		t.Fatalf("UpdatePlan() error = %v", err)
 	}
@@ -31,7 +32,7 @@ func TestUpdatePlanNoLocalContainers(t *testing.T) {
 	if plan.Summary.Total != 0 || plan.Summary.Affected != 0 || len(plan.Containers) != 0 {
 		t.Fatalf("summary = %+v containers=%d, want empty", plan.Summary, len(plan.Containers))
 	}
-	if plan.Contract.WarningCopy != "This will also update local and remote container images." {
+	if plan.Contract.WarningCopy != "This will also update local container images." {
 		t.Fatalf("WarningCopy = %q", plan.Contract.WarningCopy)
 	}
 }
@@ -57,7 +58,7 @@ func TestUpdatePlanDevAlreadyCurrentAndStale(t *testing.T) {
 		}
 	}
 
-	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{})
+	plan, err := svc.UpdatePlan(testPrincipalContext(), UpdatePlanInput{})
 	if err != nil {
 		t.Fatalf("UpdatePlan() error = %v", err)
 	}
@@ -113,7 +114,7 @@ func TestUpdatePlanProductionDigestTarget(t *testing.T) {
 		return runtimeImageInfo{ID: "sha256:prod", RepoDigests: []string{"ghcr.io/swarm-agent/swarm@sha256:olddigest"}}, nil
 	}
 
-	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{})
+	plan, err := svc.UpdatePlan(testPrincipalContext(), UpdatePlanInput{})
 	if err != nil {
 		t.Fatalf("UpdatePlan() error = %v", err)
 	}
@@ -141,7 +142,7 @@ func TestUpdatePlanContainerInspectFailure(t *testing.T) {
 		return "created", "", errors.New("container inspect failed")
 	}
 
-	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{})
+	plan, err := svc.UpdatePlan(testPrincipalContext(), UpdatePlanInput{})
 	if err != nil {
 		t.Fatalf("UpdatePlan() error = %v", err)
 	}
@@ -163,7 +164,7 @@ func TestUpdatePlanImageInspectFailure(t *testing.T) {
 		return runtimeImageInfo{}, errors.New("image inspect failed")
 	}
 
-	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{})
+	plan, err := svc.UpdatePlan(testPrincipalContext(), UpdatePlanInput{})
 	if err != nil {
 		t.Fatalf("UpdatePlan() error = %v", err)
 	}
@@ -192,7 +193,7 @@ func TestUpdatePlanDevPostRebuildTarget(t *testing.T) {
 		return runtimeImageInfo{ID: "sha256:stale", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: "old-fingerprint"}}, nil
 	}
 
-	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{PostRebuildCheck: true})
+	plan, err := svc.UpdatePlan(testPrincipalContext(), UpdatePlanInput{PostRebuildCheck: true})
 	if err != nil {
 		t.Fatalf("UpdatePlan() error = %v", err)
 	}
@@ -218,7 +219,7 @@ func TestUpdatePlanDevPostRebuildFallsBackToRuntimeInspect(t *testing.T) {
 		return runtimeImageInfo{ID: "sha256:rebuilt", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: expectedFingerprint}}, nil
 	}
 
-	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{PostRebuildCheck: true})
+	plan, err := svc.UpdatePlan(testPrincipalContext(), UpdatePlanInput{PostRebuildCheck: true})
 	if err != nil {
 		t.Fatalf("UpdatePlan() error = %v", err)
 	}
@@ -236,7 +237,7 @@ func TestUpdatePlanPackageAwareDevImageDeferred(t *testing.T) {
 		return runtimeImageInfo{ID: "sha256:pkg", Labels: map[string]string{devmode.ContainerImageBaseFingerprintLabel: "base"}}, nil
 	}
 
-	plan, err := svc.UpdatePlan(context.Background(), UpdatePlanInput{})
+	plan, err := svc.UpdatePlan(testPrincipalContext(), UpdatePlanInput{})
 	if err != nil {
 		t.Fatalf("UpdatePlan() error = %v", err)
 	}
@@ -269,13 +270,17 @@ func newUpdatePlanTestService(t *testing.T, cfg startupconfig.FileConfig) (*Serv
 	return svc, func() { _ = store.Close() }
 }
 
+func testPrincipalContext() context.Context {
+	return identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-test", AccountScopeID: "account-test"})
+}
+
 func putLocalContainerRecord(t *testing.T, store *pebblestore.SwarmLocalContainerStore, id, name, image string) {
 	t.Helper()
 	runtimeName := "podman"
 	if id == "stale" {
 		runtimeName = "docker"
 	}
-	if _, err := store.Put(pebblestore.SwarmLocalContainerRecord{
+	if _, err := store.PutForAccount(pebblestore.SwarmLocalContainerRecord{
 		ID:            id,
 		Name:          name,
 		ContainerName: id,
@@ -283,7 +288,7 @@ func putLocalContainerRecord(t *testing.T, store *pebblestore.SwarmLocalContaine
 		Status:        "running",
 		ContainerID:   "stored-" + id,
 		Image:         image,
-	}); err != nil {
+	}, "user-test", "account-test"); err != nil {
 		t.Fatalf("put local container: %v", err)
 	}
 }

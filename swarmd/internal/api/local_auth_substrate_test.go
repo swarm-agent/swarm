@@ -164,7 +164,7 @@ func TestMainHandlerUpdateStatusAllowsLoopbackWithoutAttachToken(t *testing.T) {
 	}
 }
 
-func TestMainHandlerUpdateLocalContainersAllowsLoopbackWithoutAttachTokenAndAcceptsPostRebuildCheck(t *testing.T) {
+func TestMainHandlerUpdateLocalContainersRequiresProductSessionAndAcceptsPostRebuildCheck(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	server.localContainers = fakeLocalContainerUpdatePlanner{plan: localcontainers.UpdatePlan{
 		PathID:  localcontainers.PathContainerUpdatePlan,
@@ -178,8 +178,13 @@ func TestMainHandlerUpdateLocalContainersAllowsLoopbackWithoutAttachTokenAndAcce
 		},
 	}}
 
+	issued, err := server.identitySessions.IssueForCurrentSelection()
+	if err != nil {
+		t.Fatalf("issue identity session: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/update/local-containers?dev_mode=true&post_rebuild_check=true", nil)
 	req.RemoteAddr = "127.0.0.1:43210"
+	req.Header.Set("X-Swarm-Token", issued.Token)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 

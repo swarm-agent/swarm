@@ -4026,7 +4026,7 @@ func isAuthExemptRequest(r *http.Request, loopback, trustedNetwork bool) bool {
 		return r.Method == http.MethodGet && shouldUseDesktopLocalSessionAuth(r)
 	case "/v1/onboarding":
 		return r.Method == http.MethodGet || (r.Method == http.MethodPost && shouldUseDesktopLocalSessionAuth(r))
-	case "/v1/update/status", "/v1/update/local-containers":
+	case "/v1/update/status":
 		return loopback && r.Method == http.MethodGet
 	case "/v1/swarm/discovery":
 		return trustedNetwork && r.Method == http.MethodGet

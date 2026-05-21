@@ -39,7 +39,7 @@ func TestReplaceRunningLocalContainerPreservesRecordAndUpdatesDeployment(t *test
 			Mode:       pebblestore.ContainerMountModeReadWrite,
 		}},
 	})
-	if _, err := deployStore.Put(pebblestore.DeployContainerRecord{
+	if _, err := deployStore.PutForAccount(pebblestore.DeployContainerRecord{
 		ID:              "alpha",
 		Name:            "Alpha",
 		Runtime:         "podman",
@@ -50,7 +50,7 @@ func TestReplaceRunningLocalContainerPreservesRecordAndUpdatesDeployment(t *test
 		Image:           defaultImageName,
 		AttachStatus:    "attached",
 		Status:          "running",
-	}); err != nil {
+	}, "user-test", "account-test"); err != nil {
 		t.Fatalf("put deployment: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestReplaceRunningLocalContainerPreservesRecordAndUpdatesDeployment(t *test
 		return runtimeImageInfo{ID: "sha256:old", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: "old-fingerprint"}}, nil
 	}
 
-	result, err := svc.Replace(context.Background(), ReplaceInput{
+	result, err := svc.Replace(testPrincipalContext(), ReplaceInput{
 		ID: "alpha",
 		Target: UpdatePlanTarget{
 			PostRebuildImageRef:    defaultImageName,
@@ -172,7 +172,7 @@ func TestReplaceStoppedLocalContainerStaysStopped(t *testing.T) {
 		return runtimeImageInfo{ID: "sha256:old", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: "old-fingerprint"}}, nil
 	}
 
-	result, err := svc.Replace(context.Background(), ReplaceInput{
+	result, err := svc.Replace(testPrincipalContext(), ReplaceInput{
 		ID: "stopped",
 		Target: UpdatePlanTarget{
 			PostRebuildImageRef:    defaultImageName,
@@ -239,7 +239,7 @@ func TestReplaceRunningLocalContainerIgnoresAlreadyStoppedBeforeRename(t *testin
 		return runtimeImageInfo{ID: "sha256:old", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: "old-fingerprint"}}, nil
 	}
 
-	result, err := svc.Replace(context.Background(), ReplaceInput{
+	result, err := svc.Replace(testPrincipalContext(), ReplaceInput{
 		ID: "already-stopped",
 		Target: UpdatePlanTarget{
 			PostRebuildImageRef:    defaultImageName,
@@ -288,7 +288,7 @@ func TestReplaceAlreadyCurrentSkips(t *testing.T) {
 		return runtimeImageInfo{ID: "sha256:target", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: targetFingerprint}}, nil
 	}
 
-	result, err := svc.Replace(context.Background(), ReplaceInput{
+	result, err := svc.Replace(testPrincipalContext(), ReplaceInput{
 		ID: "current",
 		Target: UpdatePlanTarget{
 			PostRebuildImageRef:    defaultImageName,
@@ -350,7 +350,7 @@ func TestReplaceFailureLeavesOldRecordUnderstandable(t *testing.T) {
 		return runtimeImageInfo{ID: "sha256:old", Labels: map[string]string{devmode.ContainerImageFingerprintLabel: "old-fingerprint"}}, nil
 	}
 
-	_, err = svc.Replace(context.Background(), ReplaceInput{
+	_, err = svc.Replace(testPrincipalContext(), ReplaceInput{
 		ID: "broken",
 		Target: UpdatePlanTarget{
 			PostRebuildImageRef:    defaultImageName,
@@ -410,7 +410,7 @@ func newReplacementTestService(t *testing.T, cfg startupconfig.FileConfig) (*Ser
 
 func putReplaceRecord(t *testing.T, store *pebblestore.SwarmLocalContainerStore, record pebblestore.SwarmLocalContainerRecord) {
 	t.Helper()
-	if _, err := store.Put(record); err != nil {
+	if _, err := store.PutForAccount(record, "user-test", "account-test"); err != nil {
 		t.Fatalf("put local container: %v", err)
 	}
 }

@@ -177,49 +177,116 @@ Explicitly defer from Slice 1 group:
 
 ### Slice 2 — local containers and local deployment records
 
-Status: **run after Slice 1 and current Slice B workspace/path proof**.
+Status: **run after Slice 1 and current Slice B workspace/path proof**. Split into micro-slices 2A–2F because this is a critical API/storage path.
 
 Goal:
 - Make local containers work under account scoping and prove them in the existing local container harness.
-- This is one precise slice. Do not mix in managed hosting, remote deploy, or flows.
+- Keep each implementation step small enough to audit. Do not mix in managed hosting, remote deploy, flows, broad topology/groups/mirror conversion, or package/workspace scan routes unless the local harness proves they are required.
+
+#### Slice 2A — storage/account primitives only
+
+Status: **complete** — local/profile/deploy container records now carry `UserID`/`AccountScopeID` plus account-aware Pebble helpers; no tests run.
 
 Scope:
-- Account-scope local container/profile routes:
+- Add `UserID` and `AccountScopeID` to:
+  - `SwarmLocalContainerRecord`.
+  - `ContainerProfileRecord`.
+  - local-use `DeployContainerRecord`.
+- Add account-aware store methods for list/get/delete/update paths needed by later slices.
+- Ensure account-scoped misses do not fall back to global list/read paths.
+- Preserve existing global keys only for explicit one-way migration/backfill needs, not runtime authorization fallback.
+- No route behavior changes in this micro-slice.
+
+Primary files:
+- `swarmd/internal/store/pebble/swarm_local_container_store.go`
+- `swarmd/internal/store/pebble/swarm_container_profile_store.go`
+- `swarmd/internal/store/pebble/deploy_container_store.go`
+- `swarmd/internal/store/pebble/keys.go`
+
+#### Slice 2B — principal plumbing for profiles and read-only local container routes
+
+Status: **complete** — profile list/delete and read-only local container runtime/list routes use canonical principal plumbing; no tests run.
+
+Scope:
+- Gate and account-scope:
+  - `/v1/swarm/containers/profiles`
+  - `/v1/swarm/containers/profiles/delete`
   - `/v1/swarm/containers/local/runtime`
   - `/v1/swarm/containers/local`
-  - `/v1/swarm/containers/local/update-job`
+- Use only `api.PrincipalFromRequest` as identity authority.
+- Profile/container lists filter by principal account.
+- Deletes verify same-account ownership before mutation.
+- Runtime status may remain machine-global only after principal gating; it must not leak account-owned records.
+
+Primary files:
+- `swarmd/internal/api/swarm_container_profiles.go`
+- `swarmd/internal/api/swarm_local_containers.go`
+- `swarmd/internal/containerprofiles/service.go`
+- `swarmd/internal/localcontainers/service.go`
+
+#### Slice 2C — create/upsert with Z2 workspace mount verification
+
+Status: **complete** — profile upsert and local container create stamp canonical principal ownership and verify mounts through the account-owned workspace resolver; no tests run.
+
+Scope:
+- Account-scope create/upsert routes:
+  - `/v1/swarm/containers/profiles/upsert`
   - `/v1/swarm/containers/local/create`
+- Stamp `UserID` and `AccountScopeID` from canonical principal.
+- Treat request-supplied workspace paths as locators only.
+- Verify every workspace mount through the Slice B/Z2 account-owned path resolver before storing or starting a container.
+- Reject body/query/header `user_id` or `account_scope_id` as authority.
+
+Primary files:
+- `swarmd/internal/api/swarm_container_profiles.go`
+- `swarmd/internal/api/swarm_local_containers.go`
+- `swarmd/internal/containerprofiles/service.go`
+- `swarmd/internal/localcontainers/service.go`
+- workspace/path resolver files as required by the existing Z2 implementation.
+
+#### Slice 2D — local container lifecycle mutations and update plan/job
+
+Status: **complete** — lifecycle/update handlers now require canonical principal, route through context, and service/store paths list/get/update/delete only principal-account local container records; no tests run.
+
+Scope:
+- Account-scope local lifecycle routes:
+  - `/v1/swarm/containers/local/update-job`
   - `/v1/swarm/containers/local/action`
   - `/v1/swarm/containers/local/delete`
   - `/v1/swarm/containers/local/prune-missing`
-  - `/v1/swarm/containers/profiles`
-  - `/v1/swarm/containers/profiles/upsert`
-  - `/v1/swarm/containers/profiles/delete`
   - `/v1/update/local-containers`
-- Add account fields/indexes for local container records.
-- Use the Slice B account-owned path resolver for workspace mounts; request-supplied paths are locators only.
-- Add local deployment account fields only where local container/replicate lifecycle needs `deploy/container/<id>` records.
-- Preserve package defaults/validate static/no-state behavior if touched.
-
-Explicitly defer:
-- Managed-host session open/message/run/stop/stream/event.
-- Managed-host update/run/status.
-- Deploy attach/bootstrap/sync/export/import/apply routes.
-- Remote deploy session list/settings/delete/update/approve account migration.
-- Peer/local transport managed-host duplicates.
+- Every operation must load/operate only on principal-account container records.
+- Delete/prune cascades must not touch unscoped cross-zone state unless the target record is already proven same-account.
+- Update plan/job must exclude other accounts' containers.
 
 Primary files:
 - `swarmd/internal/api/swarm_local_containers.go`
+- `swarmd/internal/api/update.go`
 - `swarmd/internal/localcontainers/service.go`
 - `swarmd/internal/store/pebble/swarm_local_container_store.go`
-- `swarmd/internal/api/swarm_container_profiles.go`
-- `swarmd/internal/store/pebble/swarm_container_profile_store.go`
-- `swarmd/internal/api/deploy_container.go` only for local deployment records required by local lifecycle.
-- `swarmd/internal/deploy/service.go` only for local deployment records required by local lifecycle.
-- `swarmd/internal/store/pebble/deploy_container_store.go` only for local deployment records required by local lifecycle.
-- `tests/swarmd/local_replicate_e2e.sh`
 
-Required harness/VM proof:
+#### Slice 2E — local deploy container records only
+
+Scope:
+- Account-scope only local lifecycle-ready deploy routes:
+  - `/v1/deploy/container/runtime`
+  - `/v1/deploy/container`
+  - `/v1/deploy/container/create`
+  - `/v1/deploy/container/settings`
+  - `/v1/deploy/container/action`
+  - `/v1/deploy/container/delete`
+- Stamp local `deploy/container/<id>` records from principal.
+- List/action/settings/delete verify principal account.
+- Preserve package defaults/validate static/no-state behavior if touched.
+
+Primary files:
+- `swarmd/internal/api/deploy_container.go`
+- `swarmd/internal/deploy/service.go`
+- `swarmd/internal/store/pebble/deploy_container_store.go`
+
+#### Slice 2F — group verification gate only
+
+Scope:
 - Extend the existing local replicate/local container harness for two product users/accounts.
 - Account A can create/use a local container.
 - Account B cannot list/action/delete Account A local container or local deployment record by ID.
@@ -228,11 +295,23 @@ Required harness/VM proof:
 - Pebble shows `swarm/local_container` and local `deploy/container` records include account scope or account indexes.
 - No global list/read fallback after scoped miss.
 
-Suggested command shape:
+Primary file:
+- `tests/swarmd/local_replicate_e2e.sh`
+
+Suggested command shape for Slice 2F only:
 
 <copy label="targeted local container tests">cd swarmd && go test ./internal/api ./internal/localcontainers ./internal/store/pebble -run 'LocalContainer|DeployContainer|UpdateLocalContainer|Principal|Account'</copy>
 
 <copy label="VM local replicate harness">./scripts/swarm-harness-vm.sh local-replicate -- --verify-topology-cleanup</copy>
+
+Explicitly defer until after Slice 2F:
+- Managed-host session open/message/run/stop/stream/event.
+- Managed-host update/run/status.
+- Deploy attach/bootstrap/sync/export/import/apply routes.
+- Remote deploy session list/settings/delete/update/approve account migration.
+- Peer/local transport managed-host duplicates.
+- Broad topology/groups/mirror conversion.
+- Package suggest/workspace scanning unless required by the local container harness.
 
 ### Slice 3 — Z5 local usability foundation
 

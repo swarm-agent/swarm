@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -82,7 +81,13 @@ func (s *Server) handleSwarmLocalContainerUpdateJob(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.localContainers.RunUpdateJob(r.Context(), localcontainers.UpdateJobInput{
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	result, err := s.localContainers.RunUpdateJob(ctx, localcontainers.UpdateJobInput{
 		DevMode:          req.DevMode,
 		TargetVersion:    req.TargetVersion,
 		PostRebuildCheck: req.PostRebuildCheck,
@@ -202,7 +207,13 @@ func (s *Server) handleSwarmLocalContainerAction(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	container, err := s.localContainers.Act(context.Background(), localcontainers.ActionInput{ID: req.ID, Action: req.Action})
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	container, err := s.localContainers.Act(ctx, localcontainers.ActionInput{ID: req.ID, Action: req.Action})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":        false,
@@ -235,7 +246,13 @@ func (s *Server) handleSwarmLocalContainerDelete(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.localContainers.BulkDelete(context.Background(), req.IDs)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	result, err := s.localContainers.BulkDelete(ctx, req.IDs)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":      false,
@@ -261,7 +278,13 @@ func (s *Server) handleSwarmLocalContainerPruneMissing(w http.ResponseWriter, r 
 		writeError(w, http.StatusInternalServerError, errors.New("local container service not configured"))
 		return
 	}
-	result, err := s.localContainers.PruneMissing(context.Background())
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	result, err := s.localContainers.PruneMissing(ctx)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":      false,

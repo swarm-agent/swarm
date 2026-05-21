@@ -118,6 +118,14 @@ type ActionInput struct {
 	Action string
 }
 
+func principalFromContext(ctx context.Context) (identity.Principal, error) {
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok || !principal.Valid() {
+		return identity.Principal{}, identity.ErrPrincipalRequired
+	}
+	return principal, nil
+}
+
 type DeleteItemResult struct {
 	ID                      string `json:"id"`
 	Name                    string `json:"name,omitempty"`
@@ -414,7 +422,11 @@ func (s *Service) UpdatePlan(ctx context.Context, input UpdatePlanInput) (Update
 	} else {
 		plan.Mode = "release"
 	}
-	records, err := s.store.List(500)
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return plan, err
+	}
+	records, err := s.store.ListForAccount(principal.AccountScopeID, 500)
 	if err != nil {
 		return plan, err
 	}
@@ -464,9 +476,9 @@ func (s *Service) UpdatePlan(ctx context.Context, input UpdatePlanInput) (Update
 
 func localUpdateContract() UpdateContract {
 	return UpdateContract{
-		WarningCopy:      "This will also update local and remote container images.",
+		WarningCopy:      "This will also update local container images.",
 		DismissalScope:   "local-container-update-warning",
-		FailureSemantics: "Swarm update succeeds independently; local or remote container update failures are reported as resumable follow-up work.",
+		FailureSemantics: "Swarm update succeeds independently; local container update failures are reported as resumable follow-up work.",
 		Replacement:      "replace-one-local-container-primitive",
 	}
 }
@@ -847,7 +859,11 @@ func (s *Service) Act(ctx context.Context, input ActionInput) (Container, error)
 	if s == nil || s.store == nil {
 		return Container{}, errors.New("local container service is not configured")
 	}
-	record, ok, err := s.store.Get(input.ID)
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return Container{}, err
+	}
+	record, ok, err := s.store.GetForAccount(principal.AccountScopeID, input.ID)
 	if err != nil {
 		return Container{}, err
 	}
@@ -872,7 +888,7 @@ func (s *Service) Act(ctx context.Context, input ActionInput) (Container, error)
 			record.Status = "exited"
 		}
 	}
-	saved, saveErr := s.store.Put(record)
+	saved, saveErr := s.store.PutForAccount(record, principal.UserID, principal.AccountScopeID)
 	if saveErr != nil {
 		return Container{}, saveErr
 	}
@@ -897,6 +913,10 @@ func (s *Service) BulkDelete(ctx context.Context, containerIDs []string) (Delete
 	if len(ids) == 0 {
 		return DeleteResult{}, errors.New("at least one local container id is required")
 	}
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return DeleteResult{}, err
+	}
 
 	items := make([]DeleteItemResult, len(ids))
 	var wg sync.WaitGroup
@@ -904,7 +924,7 @@ func (s *Service) BulkDelete(ctx context.Context, containerIDs []string) (Delete
 		wg.Add(1)
 		go func(index int, id string) {
 			defer wg.Done()
-			items[index] = s.deleteContainer(ctx, id)
+			items[index] = s.deleteContainer(ctx, principal, id)
 		}(i, containerID)
 	}
 	wg.Wait()
@@ -929,8 +949,8 @@ func (s *Service) BulkDelete(ctx context.Context, containerIDs []string) (Delete
 	return result, nil
 }
 
-func (s *Service) deleteContainer(ctx context.Context, containerID string) DeleteItemResult {
-	record, ok, err := s.store.Get(containerID)
+func (s *Service) deleteContainer(ctx context.Context, principal identity.Principal, containerID string) DeleteItemResult {
+	record, ok, err := s.store.GetForAccount(principal.AccountScopeID, containerID)
 	if err != nil {
 		return DeleteItemResult{ID: strings.TrimSpace(containerID), Error: err.Error()}
 	}
@@ -967,7 +987,7 @@ func (s *Service) deleteContainer(ctx context.Context, containerID string) Delet
 		item.Error = err.Error()
 		return item
 	}
-	if err := s.store.Delete(record.ID); err != nil {
+	if err := s.store.DeleteForAccount(principal.AccountScopeID, record.ID); err != nil {
 		item.Error = err.Error()
 		return item
 	}
@@ -982,7 +1002,7 @@ func (s *Service) deleteContainer(ctx context.Context, containerID string) Delet
 	for _, attachment := range attachments {
 		if attachment.deploymentID != "" {
 			if _, seen := removedDeployments[attachment.deploymentID]; !seen {
-				if err := s.deployments.Delete(attachment.deploymentID); err != nil {
+				if err := s.deployments.DeleteForAccount(principal.AccountScopeID, attachment.deploymentID); err != nil {
 					item.Error = err.Error()
 					return item
 				}
@@ -1268,7 +1288,11 @@ func (s *Service) PruneMissing(ctx context.Context) (DeleteResult, error) {
 	if s == nil || s.store == nil {
 		return DeleteResult{}, errors.New("local container service is not configured")
 	}
-	records, err := s.store.List(500)
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	records, err := s.store.ListForAccount(principal.AccountScopeID, 500)
 	if err != nil {
 		return DeleteResult{}, err
 	}
@@ -1278,7 +1302,7 @@ func (s *Service) PruneMissing(ctx context.Context) (DeleteResult, error) {
 		if resolved.Status != "missing" {
 			continue
 		}
-		if err := s.store.Delete(record.ID); err != nil {
+		if err := s.store.DeleteForAccount(principal.AccountScopeID, record.ID); err != nil {
 			return result, err
 		}
 		if err := s.deleteTopologyHostContainer(record); err != nil {
