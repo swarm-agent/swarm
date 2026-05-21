@@ -2457,6 +2457,36 @@ func overridableSessionCreateMetadataKey(key string) bool {
 	}
 }
 
+func (s *Server) verifySessionOwnershipForRequest(w http.ResponseWriter, r *http.Request, sessionID string) (identity.Principal, pebblestore.SessionSnapshot, bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("session id is required"))
+		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
+	}
+	session, found, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
+	}
+	if !found || strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
+		writeSessionNotFound(w)
+		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
+	}
+	return principal, session, true
+}
+
+func writeSessionNotFound(w http.ResponseWriter) {
+	writeJSON(w, http.StatusNotFound, map[string]any{
+		"ok":    false,
+		"error": "session not found",
+	})
+}
+
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	if s.sessions == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("session service not configured"))
@@ -2475,6 +2505,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		sessionID = strings.Trim(sessionID, "/")
 		if sessionID == "" {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
+			return
+		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
@@ -2545,21 +2578,16 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 			return
 		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+			return
+		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
 		switch r.Method {
 		case http.MethodGet:
-			session, ok, err := s.sessions.GetSession(sessionID)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
+			_, session, ok := s.verifySessionOwnershipForRequest(w, r, sessionID)
 			if !ok {
-				writeJSON(w, http.StatusNotFound, map[string]any{
-					"ok":    false,
-					"error": "session not found",
-				})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -2599,6 +2627,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		sessionID = strings.Trim(sessionID, "/")
 		if sessionID == "" {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
+			return
+		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
@@ -2674,6 +2705,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 			return
 		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+			return
+		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
@@ -2735,6 +2769,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 			return
 		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+			return
+		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
@@ -2778,6 +2815,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		sessionID = strings.Trim(sessionID, "/")
 		if sessionID == "" {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
+			return
+		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
@@ -2854,6 +2894,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 				methodNotAllowed(w)
 				return
 			}
+			if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+				return
+			}
 			plan, ok, err := s.sessions.GetPlan(sessionID, planID)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
@@ -2880,6 +2923,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		sessionID = strings.Trim(sessionID, "/")
 		if sessionID == "" {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
+			return
+		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
 		if r.Method == http.MethodPost && s.proxyRoutedSessionRequest(w, r, sessionID) {
@@ -2964,6 +3010,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w)
 			return
 		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+			return
+		}
 
 		var req struct {
 			Action string `json:"action"`
@@ -3014,6 +3063,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("permission id is required"))
 			return
 		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+			return
+		}
 
 		var req struct {
 			Action            string          `json:"action"`
@@ -3055,6 +3107,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
+			return
+		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
 		limit := 200
@@ -3099,6 +3154,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
+			return
+		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
 			return
 		}
 		limit := 50
@@ -3150,6 +3208,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 			return
 		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+			return
+		}
 		if s.proxyRoutedSessionRequest(w, r, sessionID) {
 			return
 		}
@@ -3176,9 +3237,8 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 
 		s.beginActiveRun()
 		defer s.endActiveRun()
-		principal, principalOK := PrincipalFromRequest(r)
+		principal, _, principalOK := s.verifySessionOwnershipForRequest(w, r, sessionID)
 		if !principalOK {
-			writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 			return
 		}
 		result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), principal), sessionID, req, runruntime.RunStartMeta{IntegrationFlow: integrationCtx.IntegrationFlow, Principal: principal})
@@ -3207,6 +3267,9 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("session id is required"))
 			return
 		}
+		if _, _, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			s.handleRunStreamWebsocket(w, r, sessionID)
@@ -3227,29 +3290,19 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if session, ok, err := s.localCanonicalSessionForRoutedFetch(sessionID); err != nil {
+	if _, session, ok := s.verifySessionOwnershipForRequest(w, r, sessionID); !ok {
+		return
+	} else if routedSession, routedOK, err := s.localCanonicalSessionForRoutedFetch(sessionID); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
-	} else if ok {
+	} else if routedOK {
+		s.writeSessionSnapshot(w, routedSession)
+		return
+	} else if s.proxyRoutedSessionRequest(w, r, sessionID) {
+		return
+	} else {
 		s.writeSessionSnapshot(w, session)
-		return
 	}
-	if s.proxyRoutedSessionRequest(w, r, sessionID) {
-		return
-	}
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]any{
-			"ok":    false,
-			"error": "session not found",
-		})
-		return
-	}
-	s.writeSessionSnapshot(w, session)
 }
 
 func (s *Server) localCanonicalSessionForRoutedFetch(sessionID string) (pebblestore.SessionSnapshot, bool, error) {

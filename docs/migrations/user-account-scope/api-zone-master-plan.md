@@ -121,6 +121,8 @@ Stop condition:
 
 #### Slice 1C — `/v1/sessions/{id}` ownership verifier and basic subroutes
 
+Status: **complete** — `/v1/sessions/` ID/subroute branches now use the shared canonical principal/account ownership verifier before local reads/writes/proxy decisions; no tests written or run.
+
 Scope:
 - Add a shared session ownership verifier for `/v1/sessions/` path branches.
 - Use it before read/update/message/metadata/title/mode/lifecycle branches that are part of normal local session use.
