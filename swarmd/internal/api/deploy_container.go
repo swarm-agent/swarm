@@ -12,10 +12,19 @@ import (
 	"strings"
 
 	deployruntime "swarm/packages/swarmd/internal/deploy"
+	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 )
 
 const syncManagedVaultKeyHeader = "X-Swarm-Sync-Managed-Vault-Key"
+
+func principalRequestContext(r *http.Request) (context.Context, bool) {
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		return nil, false
+	}
+	return identity.ContextWithPrincipal(r.Context(), principal), true
+}
 
 type deployContainerCreatePayload struct {
 	DeploymentID       string                                      `json:"deployment_id,omitempty"`
@@ -53,7 +62,12 @@ func (s *Server) handleDeployContainerRuntime(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
 		return
 	}
-	status, err := s.deployContainers.RuntimeStatus(context.Background())
+	ctx, ok := principalRequestContext(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	status, err := s.deployContainers.RuntimeStatus(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -74,7 +88,12 @@ func (s *Server) handleDeployContainers(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
 		return
 	}
-	items, err := s.deployContainers.List(context.Background())
+	ctx, ok := principalRequestContext(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	items, err := s.deployContainers.List(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -100,8 +119,14 @@ func (s *Server) handleDeployContainerCreate(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	ctx, ok := principalRequestContext(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	principal, _ := identity.PrincipalFromContext(ctx)
 	log.Printf("deploy container create request name=%q runtime=%q group_id=%q group_network_name=%q sync_enabled=%t mounts=%d remote_addr=%s", strings.TrimSpace(req.Name), strings.TrimSpace(req.Runtime), strings.TrimSpace(req.GroupID), strings.TrimSpace(req.GroupNetworkName), req.SyncEnabled, len(req.Mounts), strings.TrimSpace(r.RemoteAddr))
-	deployment, err := s.deployContainers.Create(context.Background(), deployruntime.ContainerCreateInput{
+	deployment, err := s.deployContainers.Create(ctx, deployruntime.ContainerCreateInput{
 		DeploymentID:       req.DeploymentID,
 		Name:               req.Name,
 		Runtime:            req.Runtime,
@@ -115,6 +140,8 @@ func (s *Server) handleDeployContainerCreate(w http.ResponseWriter, r *http.Requ
 		SyncVaultPassword:  req.SyncVaultPassword,
 		BypassPermissions:  req.BypassPermissions,
 		AlwaysOn:           req.AlwaysOn,
+		UserID:             principal.UserID,
+		AccountScopeID:     principal.AccountScopeID,
 		WorkspaceBootstrap: req.WorkspaceBootstrap,
 		ContainerPackages:  req.ContainerPackages,
 		Mounts:             req.Mounts,
@@ -150,7 +177,6 @@ func (s *Server) handleDeployContainerDeleteRequest(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusInternalServerError, errors.New("deploy container service not configured"))
 		return
 	}
-	_, peerAuthorized := authorizedPeerSwarmID(r)
 	var req struct {
 		IDs []string `json:"ids"`
 	}
@@ -158,27 +184,27 @@ func (s *Server) handleDeployContainerDeleteRequest(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	ctx, ok := principalRequestContext(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
 	var result localcontainers.DeleteResult
-	var err error
-	if peerAuthorized {
-		result, err = s.deployContainers.Delete(context.Background(), req.IDs)
-	} else {
-		deployments, listErr := s.deployContainers.List(context.Background())
-		if listErr != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerDelete, "result": result, "error": listErr.Error()})
+	deployments, listErr := s.deployContainers.List(ctx)
+	if listErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerDelete, "result": result, "error": listErr.Error()})
+		return
+	}
+	for _, deployment := range deployments {
+		if !containsDeploymentID(req.IDs, deployment.ID) {
+			continue
+		}
+		if deleteErr := s.deleteTargetHostDeployment(r.Context(), deployment); deleteErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerDelete, "result": result, "error": deleteErr.Error()})
 			return
 		}
-		for _, deployment := range deployments {
-			if !containsDeploymentID(req.IDs, deployment.ID) {
-				continue
-			}
-			if deleteErr := s.deleteTargetHostDeployment(r.Context(), deployment); deleteErr != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerDelete, "result": result, "error": deleteErr.Error()})
-				return
-			}
-		}
-		result, err = s.deployContainers.Delete(context.Background(), req.IDs)
 	}
+	result, err := s.deployContainers.Delete(ctx, req.IDs)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerDelete, "result": result, "error": err.Error()})
 		return
@@ -218,8 +244,13 @@ func (s *Server) handleDeployContainerSettings(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	ctx, principalOK := principalRequestContext(r)
 	if _, peerAuthorized := authorizedPeerSwarmID(r); !peerAuthorized {
-		if deployment, ok, err := s.findRemoteManagedDeployment(context.Background(), req.ID); err != nil {
+		if !principalOK {
+			writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+			return
+		}
+		if deployment, ok, err := s.findRemoteManagedDeployment(ctx, req.ID); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerSettings, "error": err.Error()})
 			return
 		} else if ok {
@@ -242,7 +273,11 @@ func (s *Server) handleDeployContainerSettings(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, errors.New("deploy container settings not configured"))
 		return
 	}
-	deployment, err := settingsSvc.UpdateSettings(context.Background(), deployruntime.ContainerSettingsUpdateInput{
+	if !principalOK {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	deployment, err := settingsSvc.UpdateSettings(ctx, deployruntime.ContainerSettingsUpdateInput{
 		ID:                req.ID,
 		SyncEnabled:       req.SyncEnabled,
 		SyncModules:       req.SyncModules,
@@ -274,8 +309,13 @@ func (s *Server) handleDeployContainerAction(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	ctx, principalOK := principalRequestContext(r)
 	if _, peerAuthorized := authorizedPeerSwarmID(r); !peerAuthorized {
-		if deployment, ok, err := s.findRemoteManagedDeployment(context.Background(), req.ID); err != nil {
+		if !principalOK {
+			writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+			return
+		}
+		if deployment, ok, err := s.findRemoteManagedDeployment(ctx, req.ID); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "path_id": deployruntime.PathContainerAction, "error": err.Error()})
 			return
 		} else if ok {
@@ -288,7 +328,11 @@ func (s *Server) handleDeployContainerAction(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
-	deployment, err := s.deployContainers.Act(context.Background(), deployruntime.ContainerActionInput{ID: req.ID, Action: req.Action})
+	if !principalOK {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	deployment, err := s.deployContainers.Act(ctx, deployruntime.ContainerActionInput{ID: req.ID, Action: req.Action})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":         false,

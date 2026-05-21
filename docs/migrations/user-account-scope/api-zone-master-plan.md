@@ -267,6 +267,8 @@ Primary files:
 
 #### Slice 2E — local deploy container records only
 
+Status: **complete** — local deploy container runtime/list/create/settings/action/delete routes require canonical principal; deploy service list/get/put/delete paths use principal-account store methods for request-scoped local records; no tests run.
+
 Scope:
 - Account-scope only local lifecycle-ready deploy routes:
   - `/v1/deploy/container/runtime`

@@ -24,6 +24,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	auth "swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
@@ -146,6 +147,8 @@ type ContainerCreateInput struct {
 	SyncVaultPassword  string
 	BypassPermissions  bool
 	AlwaysOn           bool
+	UserID             string
+	AccountScopeID     string
 }
 
 type ContainerActionInput struct {
@@ -495,7 +498,7 @@ func (s *Service) List(ctx context.Context) ([]ContainerDeployment, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("deploy container service is not configured")
 	}
-	records, err := s.store.List(500)
+	records, err := s.listRecordsForContext(ctx, 500)
 	if err != nil {
 		return nil, err
 	}
@@ -512,6 +515,10 @@ func (s *Service) List(ctx context.Context) ([]ContainerDeployment, error) {
 func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (ContainerDeployment, error) {
 	if s == nil || s.store == nil || s.containers == nil || s.swarms == nil || s.swarmStore == nil {
 		return ContainerDeployment{}, fmt.Errorf("deploy container service is not configured")
+	}
+	principal, ok := principalFromContext(ctx)
+	if !ok {
+		return ContainerDeployment{}, identity.ErrPrincipalRequired
 	}
 	startupCfg, hostState, err := s.resolveBootstrapContext()
 	if err != nil {
@@ -586,7 +593,7 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 		extraRunArgs = s.localTransportMountArgs()
 	}
 	runtimeMount := localcontainers.CurrentRuntimeMount()
-	container, createErr := s.containers.Create(ctx, localcontainers.CreateInput{
+	containerCreateInput := localcontainers.CreateInput{
 		Name:              input.Name,
 		Runtime:           input.Runtime,
 		NetworkName:       groupNetworkName,
@@ -616,7 +623,10 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 			SyncAgentURL:             syncAgentURL,
 			BypassPermissions:        input.BypassPermissions,
 		}),
-	})
+	}
+	containerCreateInput.UserID = principal.UserID
+	containerCreateInput.AccountScopeID = principal.AccountScopeID
+	container, createErr := s.containers.Create(ctx, containerCreateInput)
 	if createErr != nil && !createResultCanBePersisted(container) {
 		return ContainerDeployment{}, createErr
 	}
@@ -662,7 +672,7 @@ func (s *Service) Create(ctx context.Context, input ContainerCreateInput) (Conta
 		CreatedAt:           container.CreatedAt,
 		UpdatedAt:           container.UpdatedAt,
 	}
-	saved, saveErr := s.persistRecord(record)
+	saved, saveErr := s.persistRecordForContext(ctx, record)
 	if saveErr != nil {
 		return ContainerDeployment{}, saveErr
 	}
@@ -700,7 +710,7 @@ func (s *Service) UpdateSettings(ctx context.Context, input ContainerSettingsUpd
 	if s == nil || s.store == nil {
 		return ContainerDeployment{}, fmt.Errorf("deploy container service is not configured")
 	}
-	record, ok, err := s.store.Get(input.ID)
+	record, ok, err := s.getRecordForContext(ctx, input.ID)
 	if err != nil {
 		return ContainerDeployment{}, err
 	}
@@ -738,7 +748,7 @@ func (s *Service) UpdateSettings(ctx context.Context, input ContainerSettingsUpd
 	if record.SyncEnabled && strings.TrimSpace(input.SyncVaultPassword) != "" {
 		s.rememberPendingSyncVaultPassword(record.ID, strings.TrimSpace(input.SyncVaultPassword), time.Now().Add(10*time.Minute).UnixMilli())
 	}
-	saved, err := s.persistRecord(record)
+	saved, err := s.persistRecordForContext(ctx, record)
 	if err != nil {
 		return ContainerDeployment{}, err
 	}
@@ -779,16 +789,16 @@ func (s *Service) Act(ctx context.Context, input ContainerActionInput) (Containe
 	if s == nil || s.store == nil || s.containers == nil {
 		return ContainerDeployment{}, fmt.Errorf("deploy container service is not configured")
 	}
-	container, err := s.containers.Act(ctx, localcontainers.ActionInput{ID: input.ID, Action: input.Action})
-	if err != nil {
-		return ContainerDeployment{}, err
-	}
-	record, ok, getErr := s.store.Get(input.ID)
+	record, ok, getErr := s.getRecordForContext(ctx, input.ID)
 	if getErr != nil {
 		return ContainerDeployment{}, getErr
 	}
 	if !ok {
 		return ContainerDeployment{}, fmt.Errorf("deploy container not found")
+	}
+	container, err := s.containers.Act(ctx, localcontainers.ActionInput{ID: input.ID, Action: input.Action})
+	if err != nil {
+		return ContainerDeployment{}, err
 	}
 	record.Status = normalizeDeploymentStatus(container.Status)
 	record.Runtime = container.Runtime
@@ -802,7 +812,7 @@ func (s *Service) Act(ctx context.Context, input ContainerActionInput) (Containe
 	if record.Status == "running" && record.AttachStatus == "" {
 		record.AttachStatus = "launching"
 	}
-	saved, saveErr := s.persistRecord(record)
+	saved, saveErr := s.persistRecordForContext(ctx, record)
 	if saveErr != nil {
 		return ContainerDeployment{}, saveErr
 	}
@@ -999,7 +1009,7 @@ func (s *Service) AttachRequest(ctx context.Context, input ContainerAttachReques
 }
 
 func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) localcontainers.DeleteItemResult {
-	record, ok, err := s.store.Get(deploymentID)
+	record, ok, err := s.getRecordForContext(ctx, deploymentID)
 	if err != nil {
 		return localcontainers.DeleteItemResult{ID: strings.TrimSpace(deploymentID), Error: err.Error()}
 	}
@@ -1044,7 +1054,12 @@ func (s *Service) deleteDeployment(ctx context.Context, deploymentID string) loc
 			}
 		}
 	}
-	if err := s.store.Delete(record.ID); err != nil {
+	if principal, ok := principalFromContext(ctx); ok {
+		if err := s.store.DeleteForAccount(principal.AccountScopeID, record.ID); err != nil {
+			item.Error = err.Error()
+			return item
+		}
+	} else if err := s.store.Delete(record.ID); err != nil {
 		item.Error = err.Error()
 		return item
 	}
@@ -1694,6 +1709,38 @@ func (s *Service) syncCanonicalFields(record *pebblestore.DeployContainerRecord)
 		}
 	}
 	return nil
+}
+
+func principalFromContext(ctx context.Context) (identity.Principal, bool) {
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok || !principal.Valid() {
+		return identity.Principal{}, false
+	}
+	return principal, true
+}
+
+func (s *Service) listRecordsForContext(ctx context.Context, limit int) ([]pebblestore.DeployContainerRecord, error) {
+	if principal, ok := principalFromContext(ctx); ok {
+		return s.store.ListForAccount(principal.AccountScopeID, limit)
+	}
+	return s.store.List(limit)
+}
+
+func (s *Service) getRecordForContext(ctx context.Context, deploymentID string) (pebblestore.DeployContainerRecord, bool, error) {
+	if principal, ok := principalFromContext(ctx); ok {
+		return s.store.GetForAccount(principal.AccountScopeID, deploymentID)
+	}
+	return s.store.Get(deploymentID)
+}
+
+func (s *Service) persistRecordForContext(ctx context.Context, record pebblestore.DeployContainerRecord) (pebblestore.DeployContainerRecord, error) {
+	if principal, ok := principalFromContext(ctx); ok {
+		if err := s.syncCanonicalFields(&record); err != nil {
+			return pebblestore.DeployContainerRecord{}, err
+		}
+		return s.store.PutForAccount(record, principal.UserID, principal.AccountScopeID)
+	}
+	return s.persistRecord(record)
 }
 
 func (s *Service) persistRecord(record pebblestore.DeployContainerRecord) (pebblestore.DeployContainerRecord, error) {
