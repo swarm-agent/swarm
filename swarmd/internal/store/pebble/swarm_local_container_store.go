@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 type SwarmLocalContainerMount struct {
@@ -20,6 +22,8 @@ type SwarmLocalContainerMount struct {
 
 type SwarmLocalContainerRecord struct {
 	ID             string                     `json:"id"`
+	UserID         string                     `json:"user_id,omitempty"`
+	AccountScopeID string                     `json:"account_scope_id,omitempty"`
 	Name           string                     `json:"name"`
 	ContainerName  string                     `json:"container_name,omitempty"`
 	Runtime        string                     `json:"runtime,omitempty"`
@@ -67,6 +71,21 @@ func (s *SwarmLocalContainerStore) Get(containerID string) (SwarmLocalContainerR
 	return record, true, nil
 }
 
+func (s *SwarmLocalContainerStore) GetForAccount(accountScopeID, containerID string) (SwarmLocalContainerRecord, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return SwarmLocalContainerRecord{}, false, errors.New("account scope id is required")
+	}
+	record, ok, err := s.Get(containerID)
+	if err != nil || !ok {
+		return record, ok, err
+	}
+	if record.AccountScopeID != accountScopeID {
+		return SwarmLocalContainerRecord{}, false, nil
+	}
+	return record, true, nil
+}
+
 func (s *SwarmLocalContainerStore) Put(record SwarmLocalContainerRecord) (SwarmLocalContainerRecord, error) {
 	if s == nil || s.store == nil {
 		return SwarmLocalContainerRecord{}, errors.New("local container store is not configured")
@@ -83,10 +102,40 @@ func (s *SwarmLocalContainerStore) Put(record SwarmLocalContainerRecord) (SwarmL
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeySwarmLocalContainer(record.ID), record); err != nil {
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return SwarmLocalContainerRecord{}, fmt.Errorf("marshal local container %q: %w", record.ID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if existing, ok, err := s.Get(record.ID); err != nil {
+		return SwarmLocalContainerRecord{}, err
+	} else if ok && existing.AccountScopeID != "" && existing.AccountScopeID != record.AccountScopeID {
+		if err := batch.Delete([]byte(KeySwarmLocalContainerByAccount(existing.AccountScopeID, record.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return SwarmLocalContainerRecord{}, err
+		}
+	}
+	if err := batch.Set([]byte(KeySwarmLocalContainer(record.ID)), payload, nil); err != nil {
+		return SwarmLocalContainerRecord{}, err
+	}
+	if record.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySwarmLocalContainerByAccount(record.AccountScopeID, record.ID)), []byte(record.ID), nil); err != nil {
+			return SwarmLocalContainerRecord{}, err
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return SwarmLocalContainerRecord{}, err
 	}
 	return record, nil
+}
+
+func (s *SwarmLocalContainerStore) PutForAccount(record SwarmLocalContainerRecord, userID, accountScopeID string) (SwarmLocalContainerRecord, error) {
+	record.UserID = strings.TrimSpace(userID)
+	record.AccountScopeID = strings.TrimSpace(accountScopeID)
+	if record.AccountScopeID == "" {
+		return SwarmLocalContainerRecord{}, errors.New("account scope id is required")
+	}
+	return s.Put(record)
 }
 
 func (s *SwarmLocalContainerStore) Delete(containerID string) error {
@@ -97,7 +146,44 @@ func (s *SwarmLocalContainerStore) Delete(containerID string) error {
 	if containerID == "" {
 		return errors.New("local container id is required")
 	}
-	return s.store.Delete(KeySwarmLocalContainer(containerID))
+	return s.delete(containerID, "")
+}
+
+func (s *SwarmLocalContainerStore) DeleteForAccount(accountScopeID, containerID string) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return errors.New("account scope id is required")
+	}
+	containerID = normalizeSwarmLocalContainerID(containerID)
+	if containerID == "" {
+		return errors.New("local container id is required")
+	}
+	return s.delete(containerID, accountScopeID)
+}
+
+func (s *SwarmLocalContainerStore) delete(containerID, accountScopeID string) error {
+	var existing SwarmLocalContainerRecord
+	if loaded, ok, err := s.Get(containerID); err != nil {
+		return err
+	} else if ok {
+		existing = loaded
+	}
+	if accountScopeID != "" {
+		if existing.ID == "" || existing.AccountScopeID != accountScopeID {
+			return nil
+		}
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete([]byte(KeySwarmLocalContainer(containerID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		return err
+	}
+	if existing.AccountScopeID != "" {
+		if err := batch.Delete([]byte(KeySwarmLocalContainerByAccount(existing.AccountScopeID, containerID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SwarmLocalContainerStore) List(limit int) ([]SwarmLocalContainerRecord, error) {
@@ -126,17 +212,60 @@ func (s *SwarmLocalContainerStore) List(limit int) ([]SwarmLocalContainerRecord,
 	if err != nil {
 		return nil, err
 	}
+	return finalizeSwarmLocalContainerList(out, limit), nil
+}
+
+func (s *SwarmLocalContainerStore) ListForAccount(accountScopeID string, limit int) ([]SwarmLocalContainerRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, nil
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	out := make([]SwarmLocalContainerRecord, 0, min(limit, 16))
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(SwarmLocalContainerByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
+		containerID := strings.TrimSpace(string(value))
+		if containerID == "" {
+			return nil
+		}
+		record, ok, err := s.Get(containerID)
+		if err != nil {
+			return err
+		}
+		if !ok || record.AccountScopeID != accountScopeID || record.ID == "" || record.Name == "" {
+			return nil
+		}
+		out = append(out, record)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return finalizeSwarmLocalContainerList(out, limit), nil
+}
+
+func finalizeSwarmLocalContainerList(out []SwarmLocalContainerRecord, limit int) []SwarmLocalContainerRecord {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].UpdatedAt == out[j].UpdatedAt {
 			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 		}
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
-	return out, nil
+	if limit > 0 && len(out) > limit {
+		return out[:limit]
+	}
+	return out
 }
 
 func normalizeSwarmLocalContainerRecord(record SwarmLocalContainerRecord) SwarmLocalContainerRecord {
 	record.ID = normalizeSwarmLocalContainerID(record.ID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.Name = strings.TrimSpace(record.Name)
 	record.ContainerName = normalizeContainerSlug(record.ContainerName)
 	if record.ContainerName == "" {

@@ -59,9 +59,12 @@ const (
 	KeySwarmGroupMembershipPrefix               = "swarm/group_membership/"
 	KeySwarmGroupBySwarmPrefix                  = "swarm/group_membership_by_swarm/"
 	KeySwarmContainerProfilePrefix              = "swarm/container_profile/"
+	KeySwarmContainerProfileByAccountPrefix     = "swarm/container_profile_by_account/"
 	KeySwarmLocalContainerPrefix                = "swarm/local_container/"
+	KeySwarmLocalContainerByAccountPrefix       = "swarm/local_container_by_account/"
 	KeySwarmNodePrefix                          = "swarm/node/"
 	KeyDeployContainerPrefix                    = "deploy/container/"
+	KeyDeployContainerByAccountPrefix           = "deploy/container_by_account/"
 	KeyRemoteDeploySessionPrefix                = "deploy/remote_session/"
 	KeySwarmInvitePrefix                        = "swarm/invite/"
 	KeySwarmInviteTokenPrefix                   = "swarm/invite_token/"
@@ -956,8 +959,16 @@ func KeySwarmContainerProfile(profileID string) string {
 	return KeySwarmContainerProfilePrefix + keyPart(profileID)
 }
 
+func KeySwarmContainerProfileByAccount(accountScopeID, profileID string) string {
+	return fmt.Sprintf("%s%s/%s", KeySwarmContainerProfileByAccountPrefix, keyPart(accountScopeID), keyPart(profileID))
+}
+
 func KeySwarmLocalContainer(containerID string) string {
 	return KeySwarmLocalContainerPrefix + keyPart(containerID)
+}
+
+func KeySwarmLocalContainerByAccount(accountScopeID, containerID string) string {
+	return fmt.Sprintf("%s%s/%s", KeySwarmLocalContainerByAccountPrefix, keyPart(accountScopeID), keyPart(containerID))
 }
 
 func KeySwarmNode(swarmID string) string {
@@ -968,6 +979,10 @@ func KeyDeployContainer(deploymentID string) string {
 	return KeyDeployContainerPrefix + keyPart(deploymentID)
 }
 
+func KeyDeployContainerByAccount(accountScopeID, deploymentID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyDeployContainerByAccountPrefix, keyPart(accountScopeID), keyPart(deploymentID))
+}
+
 func KeyRemoteDeploySession(sessionID string) string {
 	return KeyRemoteDeploySessionPrefix + keyPart(sessionID)
 }
@@ -976,8 +991,24 @@ func SwarmContainerProfilePrefix() string {
 	return KeySwarmContainerProfilePrefix
 }
 
+func SwarmContainerProfileByAccountPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeySwarmContainerProfileByAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeySwarmContainerProfileByAccountPrefix, accountPart)
+}
+
 func SwarmLocalContainerPrefix() string {
 	return KeySwarmLocalContainerPrefix
+}
+
+func SwarmLocalContainerByAccountPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeySwarmLocalContainerByAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeySwarmLocalContainerByAccountPrefix, accountPart)
 }
 
 func SwarmNodePrefix() string {
@@ -986,6 +1017,14 @@ func SwarmNodePrefix() string {
 
 func DeployContainerPrefix() string {
 	return KeyDeployContainerPrefix
+}
+
+func DeployContainerByAccountPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyDeployContainerByAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyDeployContainerByAccountPrefix, accountPart)
 }
 
 func RemoteDeploySessionPrefix() string {

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 const (
@@ -31,6 +33,8 @@ type ContainerProfileMount struct {
 
 type ContainerProfileRecord struct {
 	ID                string                  `json:"id"`
+	UserID            string                  `json:"user_id,omitempty"`
+	AccountScopeID    string                  `json:"account_scope_id,omitempty"`
 	Name              string                  `json:"name"`
 	Description       string                  `json:"description,omitempty"`
 	RoleHint          string                  `json:"role_hint,omitempty"`
@@ -78,6 +82,21 @@ func (s *SwarmContainerProfileStore) GetProfile(profileID string) (ContainerProf
 	return record, true, nil
 }
 
+func (s *SwarmContainerProfileStore) GetProfileForAccount(accountScopeID, profileID string) (ContainerProfileRecord, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return ContainerProfileRecord{}, false, errors.New("account scope id is required")
+	}
+	record, ok, err := s.GetProfile(profileID)
+	if err != nil || !ok {
+		return record, ok, err
+	}
+	if record.AccountScopeID != accountScopeID {
+		return ContainerProfileRecord{}, false, nil
+	}
+	return record, true, nil
+}
+
 func (s *SwarmContainerProfileStore) PutProfile(profile ContainerProfileRecord) (ContainerProfileRecord, error) {
 	if s == nil || s.store == nil {
 		return ContainerProfileRecord{}, errors.New("container profile store is not configured")
@@ -94,10 +113,40 @@ func (s *SwarmContainerProfileStore) PutProfile(profile ContainerProfileRecord) 
 		profile.CreatedAt = now
 	}
 	profile.UpdatedAt = now
-	if err := s.store.PutJSON(KeySwarmContainerProfile(profile.ID), profile); err != nil {
+	payload, err := json.Marshal(profile)
+	if err != nil {
+		return ContainerProfileRecord{}, fmt.Errorf("marshal container profile %q: %w", profile.ID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if existing, ok, err := s.GetProfile(profile.ID); err != nil {
+		return ContainerProfileRecord{}, err
+	} else if ok && existing.AccountScopeID != "" && existing.AccountScopeID != profile.AccountScopeID {
+		if err := batch.Delete([]byte(KeySwarmContainerProfileByAccount(existing.AccountScopeID, profile.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return ContainerProfileRecord{}, err
+		}
+	}
+	if err := batch.Set([]byte(KeySwarmContainerProfile(profile.ID)), payload, nil); err != nil {
+		return ContainerProfileRecord{}, err
+	}
+	if profile.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySwarmContainerProfileByAccount(profile.AccountScopeID, profile.ID)), []byte(profile.ID), nil); err != nil {
+			return ContainerProfileRecord{}, err
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return ContainerProfileRecord{}, err
 	}
 	return profile, nil
+}
+
+func (s *SwarmContainerProfileStore) PutProfileForAccount(profile ContainerProfileRecord, userID, accountScopeID string) (ContainerProfileRecord, error) {
+	profile.UserID = strings.TrimSpace(userID)
+	profile.AccountScopeID = strings.TrimSpace(accountScopeID)
+	if profile.AccountScopeID == "" {
+		return ContainerProfileRecord{}, errors.New("account scope id is required")
+	}
+	return s.PutProfile(profile)
 }
 
 func (s *SwarmContainerProfileStore) DeleteProfile(profileID string) error {
@@ -108,7 +157,44 @@ func (s *SwarmContainerProfileStore) DeleteProfile(profileID string) error {
 	if profileID == "" {
 		return errors.New("container profile id is required")
 	}
-	return s.store.Delete(KeySwarmContainerProfile(profileID))
+	return s.deleteProfile(profileID, "")
+}
+
+func (s *SwarmContainerProfileStore) DeleteProfileForAccount(accountScopeID, profileID string) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return errors.New("account scope id is required")
+	}
+	profileID = normalizeContainerProfileID(profileID)
+	if profileID == "" {
+		return errors.New("container profile id is required")
+	}
+	return s.deleteProfile(profileID, accountScopeID)
+}
+
+func (s *SwarmContainerProfileStore) deleteProfile(profileID, accountScopeID string) error {
+	var existing ContainerProfileRecord
+	if loaded, ok, err := s.GetProfile(profileID); err != nil {
+		return err
+	} else if ok {
+		existing = loaded
+	}
+	if accountScopeID != "" {
+		if existing.ID == "" || existing.AccountScopeID != accountScopeID {
+			return nil
+		}
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete([]byte(KeySwarmContainerProfile(profileID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		return err
+	}
+	if existing.AccountScopeID != "" {
+		if err := batch.Delete([]byte(KeySwarmContainerProfileByAccount(existing.AccountScopeID, profileID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SwarmContainerProfileStore) ListProfiles(limit int) ([]ContainerProfileRecord, error) {
@@ -137,6 +223,44 @@ func (s *SwarmContainerProfileStore) ListProfiles(limit int) ([]ContainerProfile
 	if err != nil {
 		return nil, err
 	}
+	return finalizeContainerProfileList(out, limit), nil
+}
+
+func (s *SwarmContainerProfileStore) ListProfilesForAccount(accountScopeID string, limit int) ([]ContainerProfileRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, nil
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	out := make([]ContainerProfileRecord, 0, min(limit, 32))
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(SwarmContainerProfileByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
+		profileID := strings.TrimSpace(string(value))
+		if profileID == "" {
+			return nil
+		}
+		record, ok, err := s.GetProfile(profileID)
+		if err != nil {
+			return err
+		}
+		if !ok || record.AccountScopeID != accountScopeID || record.ID == "" || record.Name == "" {
+			return nil
+		}
+		out = append(out, record)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return finalizeContainerProfileList(out, limit), nil
+}
+
+func finalizeContainerProfileList(out []ContainerProfileRecord, limit int) []ContainerProfileRecord {
 	sort.Slice(out, func(i, j int) bool {
 		left := strings.ToLower(strings.TrimSpace(out[i].Name))
 		right := strings.ToLower(strings.TrimSpace(out[j].Name))
@@ -145,7 +269,10 @@ func (s *SwarmContainerProfileStore) ListProfiles(limit int) ([]ContainerProfile
 		}
 		return left < right
 	})
-	return out, nil
+	if limit > 0 && len(out) > limit {
+		return out[:limit]
+	}
+	return out
 }
 
 func normalizeContainerProfileRecord(record ContainerProfileRecord) ContainerProfileRecord {
@@ -154,6 +281,8 @@ func normalizeContainerProfileRecord(record ContainerProfileRecord) ContainerPro
 	if record.ID == "" {
 		record.ID = normalizeContainerProfileID(record.Name)
 	}
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.Description = strings.TrimSpace(record.Description)
 	record.RoleHint = normalizeContainerRoleHint(record.RoleHint)
 	record.AccessMode = normalizeContainerAccessMode(record.AccessMode)

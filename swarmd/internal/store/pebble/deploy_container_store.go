@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 type ContainerPackageSelectionRecord struct {
@@ -24,6 +26,8 @@ type ContainerPackageManifestRecord struct {
 
 type DeployContainerRecord struct {
 	ID                         string                              `json:"id"`
+	UserID                     string                              `json:"user_id,omitempty"`
+	AccountScopeID             string                              `json:"account_scope_id,omitempty"`
 	Kind                       string                              `json:"kind"`
 	Name                       string                              `json:"name"`
 	Status                     string                              `json:"status"`
@@ -144,10 +148,40 @@ func (s *DeployContainerStore) Put(record DeployContainerRecord) (DeployContaine
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeyDeployContainer(record.ID), record); err != nil {
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return DeployContainerRecord{}, fmt.Errorf("marshal deploy container %q: %w", record.ID, err)
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if existing, ok, err := s.Get(record.ID); err != nil {
+		return DeployContainerRecord{}, err
+	} else if ok && existing.AccountScopeID != "" && existing.AccountScopeID != record.AccountScopeID {
+		if err := batch.Delete([]byte(KeyDeployContainerByAccount(existing.AccountScopeID, record.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return DeployContainerRecord{}, err
+		}
+	}
+	if err := batch.Set([]byte(KeyDeployContainer(record.ID)), payload, nil); err != nil {
+		return DeployContainerRecord{}, err
+	}
+	if record.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeyDeployContainerByAccount(record.AccountScopeID, record.ID)), []byte(record.ID), nil); err != nil {
+			return DeployContainerRecord{}, err
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return DeployContainerRecord{}, err
 	}
 	return record, nil
+}
+
+func (s *DeployContainerStore) PutForAccount(record DeployContainerRecord, userID, accountScopeID string) (DeployContainerRecord, error) {
+	record.UserID = strings.TrimSpace(userID)
+	record.AccountScopeID = strings.TrimSpace(accountScopeID)
+	if record.AccountScopeID == "" {
+		return DeployContainerRecord{}, errors.New("account scope id is required")
+	}
+	return s.Put(record)
 }
 
 func (s *DeployContainerStore) Delete(deploymentID string) error {
@@ -158,7 +192,44 @@ func (s *DeployContainerStore) Delete(deploymentID string) error {
 	if deploymentID == "" {
 		return errors.New("deploy container id is required")
 	}
-	return s.store.Delete(KeyDeployContainer(deploymentID))
+	return s.delete(deploymentID, "")
+}
+
+func (s *DeployContainerStore) DeleteForAccount(accountScopeID, deploymentID string) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return errors.New("account scope id is required")
+	}
+	deploymentID = normalizeDeployContainerID(deploymentID)
+	if deploymentID == "" {
+		return errors.New("deploy container id is required")
+	}
+	return s.delete(deploymentID, accountScopeID)
+}
+
+func (s *DeployContainerStore) delete(deploymentID, accountScopeID string) error {
+	var existing DeployContainerRecord
+	if loaded, ok, err := s.Get(deploymentID); err != nil {
+		return err
+	} else if ok {
+		existing = loaded
+	}
+	if accountScopeID != "" {
+		if existing.ID == "" || existing.AccountScopeID != accountScopeID {
+			return nil
+		}
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete([]byte(KeyDeployContainer(deploymentID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		return err
+	}
+	if existing.AccountScopeID != "" {
+		if err := batch.Delete([]byte(KeyDeployContainerByAccount(existing.AccountScopeID, deploymentID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *DeployContainerStore) List(limit int) ([]DeployContainerRecord, error) {
@@ -187,17 +258,75 @@ func (s *DeployContainerStore) List(limit int) ([]DeployContainerRecord, error) 
 	if err != nil {
 		return nil, err
 	}
+	return finalizeDeployContainerList(out, limit), nil
+}
+
+func (s *DeployContainerStore) ListForAccount(accountScopeID string, limit int) ([]DeployContainerRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, nil
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	out := make([]DeployContainerRecord, 0, min(limit, 16))
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(DeployContainerByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
+		deploymentID := strings.TrimSpace(string(value))
+		if deploymentID == "" {
+			return nil
+		}
+		record, ok, err := s.Get(deploymentID)
+		if err != nil {
+			return err
+		}
+		if !ok || record.AccountScopeID != accountScopeID || record.ID == "" || record.Name == "" {
+			return nil
+		}
+		out = append(out, record)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return finalizeDeployContainerList(out, limit), nil
+}
+
+func (s *DeployContainerStore) GetForAccount(accountScopeID, deploymentID string) (DeployContainerRecord, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return DeployContainerRecord{}, false, errors.New("account scope id is required")
+	}
+	record, ok, err := s.Get(deploymentID)
+	if err != nil || !ok {
+		return record, ok, err
+	}
+	if record.AccountScopeID != accountScopeID {
+		return DeployContainerRecord{}, false, nil
+	}
+	return record, true, nil
+}
+
+func finalizeDeployContainerList(out []DeployContainerRecord, limit int) []DeployContainerRecord {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].UpdatedAt == out[j].UpdatedAt {
 			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 		}
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
-	return out, nil
+	if limit > 0 && len(out) > limit {
+		return out[:limit]
+	}
+	return out
 }
 
 func normalizeDeployContainerRecord(record DeployContainerRecord) DeployContainerRecord {
 	record.ID = normalizeDeployContainerID(record.ID)
+	record.UserID = strings.TrimSpace(record.UserID)
+	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 	record.Kind = strings.TrimSpace(record.Kind)
 	if record.Kind == "" {
 		record.Kind = "container"
