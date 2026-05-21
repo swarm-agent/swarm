@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	localcontainers "swarm/packages/swarmd/internal/localcontainers"
 )
 
@@ -18,7 +19,13 @@ func (s *Server) handleSwarmLocalContainerRuntime(w http.ResponseWriter, r *http
 		writeError(w, http.StatusInternalServerError, errors.New("local container service not configured"))
 		return
 	}
-	status, err := s.localContainers.RuntimeStatus(context.Background())
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	status, err := s.localContainers.RuntimeStatus(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -39,7 +46,13 @@ func (s *Server) handleSwarmLocalContainers(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, errors.New("local container service not configured"))
 		return
 	}
-	items, err := s.localContainers.List(context.Background())
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	items, err := s.localContainers.ListForAccount(ctx, principal.AccountScopeID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

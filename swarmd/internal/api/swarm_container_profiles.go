@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	containerprofiles "swarm/packages/swarmd/internal/containerprofiles"
+	"swarm/packages/swarmd/internal/identity"
 )
 
 func (s *Server) handleSwarmContainerProfiles(w http.ResponseWriter, r *http.Request) {
@@ -17,7 +18,13 @@ func (s *Server) handleSwarmContainerProfiles(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, errors.New("container profile service not configured"))
 		return
 	}
-	profiles, err := s.containerProfiles.ListProfiles(context.Background())
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	profiles, err := s.containerProfiles.ListProfilesForAccount(ctx, principal.AccountScopeID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -99,7 +106,13 @@ func (s *Server) handleSwarmContainerProfileDelete(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.containerProfiles.DeleteProfile(context.Background(), req.ID)
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	ctx := identity.ContextWithPrincipal(r.Context(), principal)
+	result, err := s.containerProfiles.DeleteProfileForAccount(ctx, principal.AccountScopeID, req.ID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

@@ -444,6 +444,10 @@ func (f fakeLocalContainerUpdatePlanner) List(context.Context) ([]localcontainer
 	return nil, nil
 }
 
+func (f fakeLocalContainerUpdatePlanner) ListForAccount(context.Context, string) ([]localcontainers.Container, error) {
+	return nil, nil
+}
+
 func (f fakeLocalContainerUpdatePlanner) Create(context.Context, localcontainers.CreateInput) (localcontainers.Container, error) {
 	return localcontainers.Container{}, nil
 }

@@ -54,6 +54,13 @@ func (s *Service) ListProfiles(context.Context) ([]Profile, error) {
 	return s.store.ListProfiles(500)
 }
 
+func (s *Service) ListProfilesForAccount(_ context.Context, accountScopeID string) ([]Profile, error) {
+	if s == nil || s.store == nil {
+		return nil, nil
+	}
+	return s.store.ListProfilesForAccount(accountScopeID, 500)
+}
+
 func (s *Service) UpsertProfile(_ context.Context, input UpsertInput) (Profile, error) {
 	if s == nil || s.store == nil {
 		return Profile{}, errors.New("container profile service is not configured")
@@ -99,6 +106,26 @@ func (s *Service) DeleteProfile(_ context.Context, profileID string) (DeleteResu
 		return DeleteResult{PathID: PathProfilesDelete}, nil
 	}
 	if err := s.store.DeleteProfile(record.ID); err != nil {
+		return DeleteResult{}, err
+	}
+	return DeleteResult{
+		PathID:  PathProfilesDelete,
+		Deleted: record.ID,
+	}, nil
+}
+
+func (s *Service) DeleteProfileForAccount(_ context.Context, accountScopeID, profileID string) (DeleteResult, error) {
+	if s == nil || s.store == nil {
+		return DeleteResult{}, errors.New("container profile service is not configured")
+	}
+	record, ok, err := s.store.GetProfileForAccount(accountScopeID, profileID)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	if !ok {
+		return DeleteResult{PathID: PathProfilesDelete}, nil
+	}
+	if err := s.store.DeleteProfileForAccount(accountScopeID, record.ID); err != nil {
 		return DeleteResult{}, err
 	}
 	return DeleteResult{

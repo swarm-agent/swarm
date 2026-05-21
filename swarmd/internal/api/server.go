@@ -172,13 +172,16 @@ type swarmService interface {
 
 type containerProfileService interface {
 	ListProfiles(ctx context.Context) ([]containerprofiles.Profile, error)
+	ListProfilesForAccount(ctx context.Context, accountScopeID string) ([]containerprofiles.Profile, error)
 	UpsertProfile(ctx context.Context, input containerprofiles.UpsertInput) (containerprofiles.Profile, error)
 	DeleteProfile(ctx context.Context, profileID string) (containerprofiles.DeleteResult, error)
+	DeleteProfileForAccount(ctx context.Context, accountScopeID, profileID string) (containerprofiles.DeleteResult, error)
 }
 
 type localContainerService interface {
 	RuntimeStatus(ctx context.Context) (localcontainers.RuntimeStatus, error)
 	List(ctx context.Context) ([]localcontainers.Container, error)
+	ListForAccount(ctx context.Context, accountScopeID string) ([]localcontainers.Container, error)
 	Create(ctx context.Context, input localcontainers.CreateInput) (localcontainers.Container, error)
 	Act(ctx context.Context, input localcontainers.ActionInput) (localcontainers.Container, error)
 	BulkDelete(ctx context.Context, containerIDs []string) (localcontainers.DeleteResult, error)

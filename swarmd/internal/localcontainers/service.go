@@ -367,6 +367,25 @@ func (s *Service) List(context.Context) ([]Container, error) {
 	return out, nil
 }
 
+func (s *Service) ListForAccount(_ context.Context, accountScopeID string) ([]Container, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("local container service is not configured")
+	}
+	records, err := s.store.ListForAccount(accountScopeID, 500)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Container, 0, len(records))
+	for _, record := range records {
+		resolved, resolveErr := s.resolveRecord(record)
+		if resolveErr != nil {
+			resolved.Warning = resolveErr.Error()
+		}
+		out = append(out, mapRecord(resolved))
+	}
+	return out, nil
+}
+
 func (s *Service) UpdatePlan(ctx context.Context, input UpdatePlanInput) (UpdatePlan, error) {
 	plan := UpdatePlan{
 		PathID:        PathContainerUpdatePlan,
